@@ -12,6 +12,7 @@ FORCE_FULL=false
 SKIP_TYPECHECK=false
 SKIP_PYTHON=false
 SKIP_MIGRATIONS=false
+VITEST_SHARD=""
 REPORTER="${NEXUS_RISK_GATE_REPORTER:-dot}"
 
 usage() {
@@ -26,6 +27,7 @@ Options:
   --skip-typecheck    Skip tsc; useful when CI has a separate typecheck job.
   --skip-python       Skip pytest execution even if content-engine changed.
   --skip-migrations   Skip changed-migration policy even if migrations changed.
+  --vitest-shard I/N  Run one full-suite Vitest shard (for parallel CI only).
   --dry-run           Print the selected commands without executing them.
 
 Env:
@@ -42,6 +44,14 @@ while [ $# -gt 0 ]; do
     --skip-typecheck) SKIP_TYPECHECK=true; shift ;;
     --skip-python) SKIP_PYTHON=true; shift ;;
     --skip-migrations) SKIP_MIGRATIONS=true; shift ;;
+    --vitest-shard)
+      if [ $# -lt 2 ]; then
+        echo "--vitest-shard requires an I/N value." >&2
+        exit 64
+      fi
+      VITEST_SHARD="$2"
+      shift 2
+      ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 64 ;;
@@ -117,11 +127,31 @@ if [ "${NEXUS_FORCE_FULL_GATE:-0}" = "1" ] || [ "$FORCE_FULL" = "true" ]; then
   VITEST_MODE="full"
 fi
 
+if [ -n "$VITEST_SHARD" ]; then
+  if ! [[ "$VITEST_SHARD" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]; then
+    echo "Invalid --vitest-shard value '$VITEST_SHARD' (expected I/N)." >&2
+    exit 64
+  fi
+  SHARD_INDEX="${VITEST_SHARD%/*}"
+  SHARD_TOTAL="${VITEST_SHARD#*/}"
+  if [ "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]; then
+    echo "Invalid --vitest-shard value '$VITEST_SHARD' (index exceeds total)." >&2
+    exit 64
+  fi
+  if [ "$VITEST_MODE" != "full" ]; then
+    echo "--vitest-shard requires full Vitest mode." >&2
+    exit 64
+  fi
+fi
+
 echo "═══════════════════════════════════════════════"
 echo "  Nexus risk gate"
 echo "═══════════════════════════════════════════════"
 echo "base: ${BASE_FOR_CHANGED:-unknown}"
 echo "vitest mode: $VITEST_MODE"
+if [ -n "$VITEST_SHARD" ]; then
+  echo "vitest shard: $VITEST_SHARD"
+fi
 if [ -n "$CANNOT_SKIP" ]; then
   echo "cannot-skip gates:"
   printf '  - %s\n' $CANNOT_SKIP
@@ -141,7 +171,11 @@ case "$VITEST_MODE" in
     echo "🧪 Vitest skipped: ${REASON:-classifier selected skip}"
     ;;
   full)
-    run_cmd npx vitest run --reporter="$REPORTER"
+    if [ -n "$VITEST_SHARD" ]; then
+      run_cmd npx vitest run --reporter="$REPORTER" --shard="$VITEST_SHARD"
+    else
+      run_cmd npx vitest run --reporter="$REPORTER"
+    fi
     ;;
   changed-only)
     run_cmd npx vitest run --reporter="$REPORTER" --changed "$BASE_FOR_CHANGED"

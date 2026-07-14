@@ -1,1 +1,3802 @@
-[]
+[
+  {
+    "assetId": "media_v1_ab_wheel_rollout_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "339a2bc8967f32baaeaaf025a767391ac048d5f81b1bf8c5c644ea43d731c558"
+  },
+  {
+    "assetId": "media_v1_archer_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/archer_pull_up-v4.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "54eaa93895b85f677a825120df4f08f59a1d929f38350a93f613dff3069e5b75"
+  },
+  {
+    "assetId": "media_v1_archer_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "fc53504b225915668f72679872568429fb6ca80ba6c3027187f32910f8c2cbb9"
+  },
+  {
+    "assetId": "media_v1_archer_ring_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "c73eadab0d34592a79addae6ed7920639bdaa6abb1ba023496fe719b1d89124b"
+  },
+  {
+    "assetId": "media_v1_assisted_pistol_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "15ccc00fbc9d558861cc7d959e249d8a85cea87e6a099be4ce44744b0edca3f4"
+  },
+  {
+    "assetId": "media_v1_back_extension_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9068c3292df3fafe0264d3396fc95a073903637bae6e8fb604f84c12035cce3c"
+  },
+  {
+    "assetId": "media_v1_back_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "65bb7dd744307518f3a4acb7079b3962aa745edbf40615b67eb52de6c7efb7a0"
+  },
+  {
+    "assetId": "media_v1_band_assisted_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "c8a1303fdd5702c0f59c6c1d5bbea9d661a6dd0e4ca60576146d29e580b08b3c"
+  },
+  {
+    "assetId": "media_v1_band_pulldown_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/band_pulldown-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e406d5cc71b02929c8b136919dae846b11fc3adb6e83e2a3ec287ffca10e2e52"
+  },
+  {
+    "assetId": "media_v1_band_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "5f802721305d3df0c11d1f9b4cd3e2426cbaa6479fda4c12cc72a195bf1cffe8"
+  },
+  {
+    "assetId": "media_v1_barbell_bent_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "3aaf2076b02b7fce01e5efb3e87a163c4031070ea866889861f18fa0dd0324d9"
+  },
+  {
+    "assetId": "media_v1_barbell_hip_thrust_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "307cad7f4fb00cc48a94d90735637d95bd11a89c89edda70533e1ecfb23f7cc2"
+  },
+  {
+    "assetId": "media_v1_barbell_overhead_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "359331576164aeb455c3b48c8bf1fac0b1a35480b8682a3c1ca070729c6fef29"
+  },
+  {
+    "assetId": "media_v1_battle_ropes_alternating_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/battle_ropes_alternating-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4dc4db212627c4eda0b6c336310d7bbf8288de778971c467c0c89932669aaf2d"
+  },
+  {
+    "assetId": "media_v1_battle_ropes_slams_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "935727058e39575751b54ecc1ac994f7c93b317856544fc47e7d9c615792c9af"
+  },
+  {
+    "assetId": "media_v1_battle_ropes_slams_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/battle_ropes_slams-overhead-loaded-start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e17b7c8fd854a7ef06c93a88c99619735eb23436fe30a934e006975772c3df5e"
+  },
+  {
+    "assetId": "media_v1_bear_crawl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ad824c7a60c363d945b7ee0e440247895d379b5bff4dab2801feb416aa3241d9"
+  },
+  {
+    "assetId": "media_v1_bench_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "116428b928ad1cf7019a7811100354e8e6abc8da493304f8231da427a8047249"
+  },
+  {
+    "assetId": "media_v1_bird_dog_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "89429005df237dbc591badd8fedfdafdef7f7557d72b7ec2a043ea0f2815e599"
+  },
+  {
+    "assetId": "media_v1_bodyweight_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ed8985787730a2dc010c3286a0b1c1083b38a3cd52f04692a8747c84d5d8b1b0"
+  },
+  {
+    "assetId": "media_v1_box_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9a74617b1bf5e1f2639778176fc68984796ab59a697f4fd7a57857f69a19a4ce"
+  },
+  {
+    "assetId": "media_v1_box_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/box_jump-floor-takeoff-loading-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "6958e27043eee356443e0b3906a59ac6356cfc8873e5950037884cd5843aa97e"
+  },
+  {
+    "assetId": "media_v1_box_pistol_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "5376615b57db1c058a9b157341150c22e06df5846b2a2adee40bb1446d7cffa4"
+  },
+  {
+    "assetId": "media_v1_broad_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "5b2f572db0b0f6605ba9a26cb64f873fcb88860af20c0fd85ebab9a37e7c2015"
+  },
+  {
+    "assetId": "media_v1_broad_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/broad_jump-airborne-horizontal-flight-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b064dc77e78d472cdde0d4cce33a780390e3ebf1d68ac3ff1295933bb9a355f7"
+  },
+  {
+    "assetId": "media_v1_broad_jump_supplemental_2",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/broad_jump-soft-two-foot-landing-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "f7b86bdd92e0c4dce40ad2bb8449899a04c8dc8e85b2d8dc21c5d5ea52c37d6b"
+  },
+  {
+    "assetId": "media_v1_bulgarian_split_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/bulgarian_split_squat-v3.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "94f1d07fa0dcb428ad86b638bb12abdf522f67dd6321432fc4f03247745b1aef"
+  },
+  {
+    "assetId": "media_v1_cable_pull_through_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "0afb26b7be05552480e2d78d0c38af3af4ed67d948906adc3ad01b62f2455eba"
+  },
+  {
+    "assetId": "media_v1_cable_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b48b9ed6e02c0b4879eb45376e1133fd6b77c9589114511d70b55672c818ffc5"
+  },
+  {
+    "assetId": "media_v1_cable_triceps_pressdown_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "0d5ca43918711586940861285282cc440b125c6f5b77f1b138379baf5143ff47"
+  },
+  {
+    "assetId": "media_v1_calf_raise_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "96c467bd6d92882d528161e30cdd8542b3fd9e87d0a6fb00b577b5dcb55e5b52"
+  },
+  {
+    "assetId": "media_v1_cat_cow_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "8f280eda48e41660f594533cc0f6914bb38b8ecf07571757e765004d37e300fc"
+  },
+  {
+    "assetId": "media_v1_cat_cow_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/cat_cow-cat_flexion-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "f8cd246db9a0ca71df5b47794b80aefe8ed77b628bab3897958583b4ec579db4"
+  },
+  {
+    "assetId": "media_v1_chest_supported_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "cb64798f545fa282ea4e4b2f78c977c85b0184d439b22ef0f58cd952b86f4b8e"
+  },
+  {
+    "assetId": "media_v1_childs_pose_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9d865768d81e4b7cb6407b56c3a10d86538ee3bedc855ccf223035750def58b8"
+  },
+  {
+    "assetId": "media_v1_chin_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2be4fe11464ab0ff84a1441124d349c88a3ea68bfd1050f0a5ab8e0e34b99628"
+  },
+  {
+    "assetId": "media_v1_close_grip_bench_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/close_grip_bench_press-v3.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "954b129bbf34eaef7a8c61424bae51bcbd05b4e3bd845a939ea7dcb26f548382"
+  },
+  {
+    "assetId": "media_v1_close_grip_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b10376c8b0f6343735d666d05af366019e0f60d67585346e45605bb7d8544fb0"
+  },
+  {
+    "assetId": "media_v1_conventional_deadlift_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4ee20a6c6022d1346edb6a3d4d86ee3683197da520d7650b7e04e7819f5341d3"
+  },
+  {
+    "assetId": "media_v1_cossack_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ba31518def9629c8497bcd5181e312c92298f86889581d838961e9ca7502f8f3"
+  },
+  {
+    "assetId": "media_v1_couch_stretch_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "069c09267530741f3fda21060b9d312f6133b0c66eac4c200402b7252769debb"
+  },
+  {
+    "assetId": "media_v1_dead_bug_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4fa9b30af7c1da689b0bfcae1149a4c7208effce612fa57e1e3812f1622bd54f"
+  },
+  {
+    "assetId": "media_v1_decline_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "18d100b46f9e2f58e0d1bc202bfa590f60ad3197552577631a586d83998514fe"
+  },
+  {
+    "assetId": "media_v1_deficit_deadlift_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d43c22f12e9768c941882ced279214c7bd4fd42b759c834389aadf59e5f7a329"
+  },
+  {
+    "assetId": "media_v1_depth_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-000-039.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e0beee04f418a06609f25cd6361f875e3c4d6610bf3e235cd27b0bec80d3f75a"
+  },
+  {
+    "assetId": "media_v1_depth_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/depth_jump-box-edge-step-off-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "026abb0381f5345e145115d6d1c229b23c8b837dac06728c3a791e90071b3448"
+  },
+  {
+    "assetId": "media_v1_depth_jump_supplemental_2",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/depth_jump-reactive-rebound-takeoff-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7fa5491322860660616057f1a96969655a11ced2dbf722ae725ea2781a371536"
+  },
+  {
+    "assetId": "media_v1_diamond_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/diamond_push_up-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "37e2912b37a279e3d98ecba5f03919ee5132a1c1bf37f7529a47a956b2b19905"
+  },
+  {
+    "assetId": "media_v1_dip_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7b51bd39cfd45c9b87c0a0e1225c897b3bd88914624cea41c2c1f8f8d914a1c3"
+  },
+  {
+    "assetId": "media_v1_dragon_flag_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1bf3a785947775429ea50b0866f887442f54caf313ebf29043f3e29940baf582"
+  },
+  {
+    "assetId": "media_v1_dragon_flag_tuck_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "79c14dfa48cbcb8b026ccf64c6fe3fdb8841f887d7ecf295f00c9d9c88ea72af"
+  },
+  {
+    "assetId": "media_v1_dumbbell_bench_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "242b598e690f5024ee977120a13cb61feb59c6c76dc10d36b43727e5512b6edb"
+  },
+  {
+    "assetId": "media_v1_dumbbell_curl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "dd9c2dd855205b8ac4d2556177dd0b2aefb9ecdc768acc47275129de0fa2e207"
+  },
+  {
+    "assetId": "media_v1_dumbbell_floor_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "af04716a32c6a4ded216f33328b3287dabd6035598c012f8d414029d7aecd968"
+  },
+  {
+    "assetId": "media_v1_dumbbell_hip_thrust_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7f623bc61c0c97b92156ab8791166061caf66967ce19c76d2122aa90e60365e5"
+  },
+  {
+    "assetId": "media_v1_dumbbell_lateral_raise_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "33e3333c8bb122b94eeef03c6cba184af2d912f131a48f4cdb9752140db8f8da"
+  },
+  {
+    "assetId": "media_v1_dumbbell_overhead_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4f1475f1aedbfeb6101eb25faab38bd1ad4911e860985e7dfc7e72a05d743ce3"
+  },
+  {
+    "assetId": "media_v1_dumbbell_reverse_lunge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "6cf04f5332246113c091cc771d16b9f52a2af7e208beed3d0209c7c765d01a6b"
+  },
+  {
+    "assetId": "media_v1_dumbbell_reverse_lunge_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/dumbbell_reverse_lunge-standing_step_back_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e276aaf463736a3b6f2460e3d1c7fd67d51d282f5efdb482dff1ef4a7501d61f"
+  },
+  {
+    "assetId": "media_v1_dumbbell_triceps_extension_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "0d11a870674694f276c82f298ad90295193cde1fbaf7db9c2044dadcc12131cf"
+  },
+  {
+    "assetId": "media_v1_explosive_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "a43898123397ca130ae08353c66f232bdff1af40430bf41f046ad87c65562271"
+  },
+  {
+    "assetId": "media_v1_explosive_pull_up_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/explosive_pull_up-active_hang_preload-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "069001e3ff85be6eb5d51f802b4bc13c48e27bc6d066937ee9d77583e806303f"
+  },
+  {
+    "assetId": "media_v1_face_pull_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ec7142baf0c2b44a64b679a27a5b5686a81227bec88a2e9f20d3d1c73e40385c"
+  },
+  {
+    "assetId": "media_v1_farmer_carry_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "78cce1baa9deecef80e7ce8244a4c23bc1d1f8debf5a28734511bd5394771bd2"
+  },
+  {
+    "assetId": "media_v1_front_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "03bc837127868fde833797be4d7374b3406dc52419f54bda3326c2ec856a2f75"
+  },
+  {
+    "assetId": "media_v1_glute_bridge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9d884c52bcaadbb9b74b6105ea836bd572beaf22d0166b6ab49005765b030649"
+  },
+  {
+    "assetId": "media_v1_goblet_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "78f5f13750c530bc9ba873a3bdee3055ebcf949d8fcbaf4436957a5e5f361f2d"
+  },
+  {
+    "assetId": "media_v1_good_morning_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2bd2abd9fa99ae79797519bc8275cdd21f52d9b0294d2458c5db05fe7f1bc51a"
+  },
+  {
+    "assetId": "media_v1_hack_squat_machine_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/hack_squat_machine-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b1ab5491f34241944b6557f407b74a99d3f6171f6ad9f23f0a453c8e5139304e"
+  },
+  {
+    "assetId": "media_v1_hammer_curl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "dfc7ef0f9d3ed088384aeaeae93de96eedaa5c49ac13d65e39ef14399f04b31d"
+  },
+  {
+    "assetId": "media_v1_handstand_hold_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "c8889c5c2d3451a034c39eee1c780c3bdca94620abd79c05698d98b6ed7b3906"
+  },
+  {
+    "assetId": "media_v1_handstand_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "cc81e8aaaf2975924ca8d2c794bdd2fa093abdf42802a6e0e9433d33144a6ba3"
+  },
+  {
+    "assetId": "media_v1_handstand_push_up_negative_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "3e7f48c629a3304b8f2543d839e9b82639fc753fe99ad2b3d45ae372d3c6f6bf"
+  },
+  {
+    "assetId": "media_v1_handstand_push_up_negative_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/handstand_push_up_negative-wall_handstand_lockout_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e81074ccad886d097d9db44ec4c13bc4f623afcb4782595bbd5f59475d79169a"
+  },
+  {
+    "assetId": "media_v1_hang_clean_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/hang_clean-v3.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7f539cc8ed1f60aa4c850c81c3d97279af193d6c256d101ee701c9c6186157d7"
+  },
+  {
+    "assetId": "media_v1_hang_clean_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/hang_clean-front_rack_catch-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1fb0addb055425612bab194dbf6b113544656873d7d080ad8afb1d55ee7ee010"
+  },
+  {
+    "assetId": "media_v1_hip_airplane_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e408ccdb452736a20628c36a202fc1b094ac50018610554a640e3a27cbd9c661"
+  },
+  {
+    "assetId": "media_v1_hip_airplane_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/hip_airplane-closed_pelvis_hinge-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "73d70954a5ef8cf129a813e69e0b580c13ad0d732372716d5b8315339a23945c"
+  },
+  {
+    "assetId": "media_v1_hip_flexor_stretch_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "8a75ae062661bd43aa80706c2136458b59caa2ca2dcfa95e6938dbba6ff46bdf"
+  },
+  {
+    "assetId": "media_v1_hip_hinge_band_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1131648f6f413b1fefe606d6af1808ee9326ad9d0783605172ceb724d1f357f6"
+  },
+  {
+    "assetId": "media_v1_hip_thrust_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "512741e572f44121a8de821762cb6ae9112f984abaf385415926b02cd01b54cc"
+  },
+  {
+    "assetId": "media_v1_hollow_hold_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "8d5f8a83c77c520f9a065edbbbba33110fd001922870dba30c90234b7c402a75"
+  },
+  {
+    "assetId": "media_v1_hollow_rocks_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "67afe9d2adb54566713545e6ccb576f24367145c514b09ee71aecd37591ce3de"
+  },
+  {
+    "assetId": "media_v1_hollow_rocks_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/hollow_rocks-opposite_rock_endpoint-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "eeda417f2fc479e110df2934d35160192dbcd7d6bf2c4b15850c4a0095568a99"
+  },
+  {
+    "assetId": "media_v1_incline_bench_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2f985cc2ad9ed42687aa10a3ea1928e516c3ad834a3d7569c4226a7a3a94422a"
+  },
+  {
+    "assetId": "media_v1_incline_dumbbell_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4b52bf07c21f49e5e9a6bdf977aa949a20deb00baf43da03ec914371e7d1a46e"
+  },
+  {
+    "assetId": "media_v1_incline_inverted_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "df697dd071a035f7454f30218c0c181ca8f2331b9457868fc1326b0038a7574c"
+  },
+  {
+    "assetId": "media_v1_incline_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ef83d647081a13ad1856b19298e7b04956c546e3e7bacc7320b46432f7d6ca30"
+  },
+  {
+    "assetId": "media_v1_inverted_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "cb9d5ee1754a8b334681ae17f0bd9c0486a1e31f12e0401e3c7b8547fee9f1b7"
+  },
+  {
+    "assetId": "media_v1_jefferson_curl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "23cb551147c692fcf665a7ba31fa52b9855f53008fccbdded9d8d77b65043233"
+  },
+  {
+    "assetId": "media_v1_jump_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "76efc83759e61cd2ce3be378c9232c9c405ee669658a2197ae125728b2803746"
+  },
+  {
+    "assetId": "media_v1_jump_squat_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/jump_squat-loaded-grounded-takeoff-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b5fdc6398f7f791e624460e46877585ed51da0a1a9b4b5fbd0a2d40a04f9a1f7"
+  },
+  {
+    "assetId": "media_v1_jumping_lunge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/jumping_lunge-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "702939712fc1e87ad20b190620525cdc48fa4f6805ab2a40ea37e60c1c151c78"
+  },
+  {
+    "assetId": "media_v1_jumping_lunge_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/jumping_lunge-landing-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b7cd2230ea24bec6f43d8094a3c8830d686548a715a767c2dd3f9b0ccce16527"
+  },
+  {
+    "assetId": "media_v1_kettlebell_clean_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "34d92e14af8c7b81791a952b3b492974afede1000651cd3e3b35c886c5aad9b9"
+  },
+  {
+    "assetId": "media_v1_kettlebell_clean_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/kettlebell_clean-backswing_hike_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "543c7abb8c1cd84237b563d879993efac36da38e9374f3af46f2e8a74c3db046"
+  },
+  {
+    "assetId": "media_v1_kettlebell_rdl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-040-079.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "352adcaa9bd7798f7978d9f92451300e8f1f6d6198d7ceee13be193263077c1a"
+  },
+  {
+    "assetId": "media_v1_kettlebell_swing_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b80909d3442a2a86f087942e453a50aaf9a32328d8247c41b52a55da6f4e1ebf"
+  },
+  {
+    "assetId": "media_v1_kettlebell_swing_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/kettlebell_swing-backswing_hinge-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d2676824a9437f284ca17cf9bfc924df71930c7f4e36975f83e2d2e7d6c8b923"
+  },
+  {
+    "assetId": "media_v1_kickstand_rdl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9152fcc1c33d315bddee7721af21da21d024ed4b56e1466b0cda989eccefeeda"
+  },
+  {
+    "assetId": "media_v1_knee_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9ce9fcc7b0ff5fa236048a3e8650f10cc0bf4e531386c826537c933786b4fc5a"
+  },
+  {
+    "assetId": "media_v1_l_sit_hold_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "861a05ab4e144d40d66dd4523c8d5b3b287bc341d79dbd2cd48b2031f74d6ffc"
+  },
+  {
+    "assetId": "media_v1_l_sit_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "f35ea1ca46c93dc8f853222598ac7b44e837c3df5a476b878895494b064614ec"
+  },
+  {
+    "assetId": "media_v1_l_sit_tuck_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "8e0d97633d3e3f78ebc08b9603f7a9b630a4f9cfe940b6bf124d2099b0a061c3"
+  },
+  {
+    "assetId": "media_v1_lat_pulldown_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "5bb6bae5c648c89c54df6a4fcff07079d017e919562158a9dbdbbe0eb3676d02"
+  },
+  {
+    "assetId": "media_v1_lateral_box_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "3019aaf3a4dc496c48b83bf4104eecd2016b10c1f82a7c0eb1378b70de18fae9"
+  },
+  {
+    "assetId": "media_v1_lateral_box_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/lateral_box_jump-lateral-floor-takeoff-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "170bf7b4587fbc289f61ffa9cca07b9c6a6debd1f7d4d91aa63ca699acb7545f"
+  },
+  {
+    "assetId": "media_v1_lateral_lunge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ac57f263e333115a0a5746af82aabe4c4da71cdcf265cfd6e4ac557d14768b7d"
+  },
+  {
+    "assetId": "media_v1_leg_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/leg_press-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "6ccf69c1c8753fd727bd5446ddc80867ea0c4e2b52567285e15ba9401cbdf8fd"
+  },
+  {
+    "assetId": "media_v1_lunging_iso_hold_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "11e70ca792e01815930d00ab2702824bd14e0b66462af06d4be83e0cf95fca26"
+  },
+  {
+    "assetId": "media_v1_machine_chest_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "c74eea86f60d3c6c14cb543cf13a697e63a8043eed82984f318fcbcbb0224a4a"
+  },
+  {
+    "assetId": "media_v1_med_ball_chest_pass_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "04fd672fd706309b84b5b27ea0ddead98afb4aa5ff94dee02d7a60c74f19bbfc"
+  },
+  {
+    "assetId": "media_v1_med_ball_chest_pass_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/med_ball_chest_pass-ball-loaded-at-sternum-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1f755b1f498addae121ecf7f002136163ed17d5877bcf80d9aca595a875ae5ed"
+  },
+  {
+    "assetId": "media_v1_med_ball_rotational_throw_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4591bd14e1c54f3bc00b61868b368049f3b9d584f4a996dc79c88cb6e9cb62b6"
+  },
+  {
+    "assetId": "media_v1_med_ball_rotational_throw_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/med_ball_rotational_throw-counter-rotated-loaded-start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d83054f1cd3f0f39a9bd3e8bd76612fd9d4c872af6192981c958130b072d7d1c"
+  },
+  {
+    "assetId": "media_v1_med_ball_slam_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "f88b3f6d85d948b7f72552a373ab97aba7688aa682d4bf9822da6fd741a84e4f"
+  },
+  {
+    "assetId": "media_v1_med_ball_slam_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/med_ball_slam-floor-impact-followthrough-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2bd885b2304dad68b5787a187be89a20981cdd455bbdcdf768942c01c2a5add1"
+  },
+  {
+    "assetId": "media_v1_muscle_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "8265550783c649cb83f4e610fd3423e1ea9522577c4a1f7e6ab7a7ab405fc619"
+  },
+  {
+    "assetId": "media_v1_muscle_up_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/muscle_up-chest_over_bar_transition-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1026de4ac892b5f520b4f86efe4de8325391f36155dcc8f15ed6688cfff291c0"
+  },
+  {
+    "assetId": "media_v1_muscle_up_supplemental_2",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/muscle_up-active_hang_start-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "04eb169283bd959067ddf4e56b968d45a79e543aec1906f0458b88cdeff5b72b"
+  },
+  {
+    "assetId": "media_v1_negative_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e46956e75beaad8be6ef441c4bb6a15d1dda032400c250dbf1c30a46760b3854"
+  },
+  {
+    "assetId": "media_v1_negative_pull_up_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/negative_pull_up-controlled_mid_descent-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d7df1db429768941df0f3f7f36000e008d8e8f2f1fbaa1c4c36798275b3e93c2"
+  },
+  {
+    "assetId": "media_v1_ninety_ninety_hip_switch_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "57a5a589a451bdbc66dcab5d56a5c0b3f74fbd9fd49127a3d3e80d4237644183"
+  },
+  {
+    "assetId": "media_v1_ninety_ninety_hip_switch_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/ninety_ninety_hip_switch-opposite_90_90_side-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2c3130a79138ce3d50153fc165843ae14aa4e744bbfd135ab4c89c8545010c5f"
+  },
+  {
+    "assetId": "media_v1_one_arm_dumbbell_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "413d07b226523231f192c0a9d021b8b9ef978c69079aaebec5e43ae7bddfb5a0"
+  },
+  {
+    "assetId": "media_v1_one_arm_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4e0155171323a8f86d3dc356e6aa4e5467de333a3205cb6f4893b1da231d1116"
+  },
+  {
+    "assetId": "media_v1_one_arm_ring_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4df264b8600b37a99afe1ab6e53e56b566622ccbbea575e07d706228d4339b8e"
+  },
+  {
+    "assetId": "media_v1_overhead_carry_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "f585f7db9c3368b018221c3a0589114529c86531ca887470b9c28806a6eda78c"
+  },
+  {
+    "assetId": "media_v1_overhead_triceps_extension_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "a78f67e3d9bec4f05a14608bad33cff7ad98cb09ed41b047b7b83b248e7c5efd"
+  },
+  {
+    "assetId": "media_v1_pallof_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "00dbcbf8546def9576d731d4a8b1cc7dd39625b67c9e2ae07dfaf2f5406d8952"
+  },
+  {
+    "assetId": "media_v1_pallof_press_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/pallof_press-chest_height_side_three_quarter-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "fc7a21e8c6b82897cf1849e5b801b4622f48db14f36078790aa3c794486c7904"
+  },
+  {
+    "assetId": "media_v1_paused_back_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "3fb2d158889bf53b118eaef4f0a521fdb43370f7ef5b85b972c6158d38b88fcd"
+  },
+  {
+    "assetId": "media_v1_paused_bench_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/paused_bench_press-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b41eec064768e5c5b2a51b88457bc7462ca1a221f99c39c6d0cf7e6a929bf7b2"
+  },
+  {
+    "assetId": "media_v1_pendlay_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e3baf48cc42fc9813e50081c32b024f1ea7cc45b66082dc00951482ac1e36dad"
+  },
+  {
+    "assetId": "media_v1_pendlay_row_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/pendlay_row-bar_floor_reset_start-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "08dee1cfa4349570aa4799c764e3b5be5390a890b51c4347d4005a1b5f4f30a9"
+  },
+  {
+    "assetId": "media_v1_pike_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "71dbf1c6bfcdc44cd35b7aa2e8f51fa0cf8110c46be75fd1b7335bf122dbbeb6"
+  },
+  {
+    "assetId": "media_v1_pistol_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "6c10839089785bacef8ae2e89c4ae8bc4c85cac1241fc9fa39331bcda93bba24"
+  },
+  {
+    "assetId": "media_v1_plank_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "353235d4e876eaf0792c80d693b19353383fccc08a9c7fd0e1d1727145d41ad9"
+  },
+  {
+    "assetId": "media_v1_plyo_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "a364c9ef7913dc6cc9b20854e73b7cbfb5d20a0621f400a2bea8fb4d2c61938f"
+  },
+  {
+    "assetId": "media_v1_plyo_push_up_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/plyo_push_up-loaded-bottom-landing-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "38ce8d626ecc683cc42dd7a656dd5a48608aba065964719eb4db0aab97c90476"
+  },
+  {
+    "assetId": "media_v1_power_clean_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/power_clean-v3.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "533299919985edbb19c779c2eafc9c04a2ae6f887c63a586eac0deafbb9e44af"
+  },
+  {
+    "assetId": "media_v1_power_clean_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/power_clean-bar_floor_start_or_first_pull-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2dd4bb2e4888db694c5ca9603b904d514f3d22bfbc2b585f7233352d2e067d3e"
+  },
+  {
+    "assetId": "media_v1_prone_lat_pulldown_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1d3c1c2844b8fc1698878ebf8b0e67ecef7511495c63fb38b2def8de69e0feda"
+  },
+  {
+    "assetId": "media_v1_prone_lat_pulldown_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/prone_lat_pulldown-arms_overhead_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2cd9d55035babed8196d4c7cc7ab6579445b56f668f825d73a531c8e9f3edea7"
+  },
+  {
+    "assetId": "media_v1_prone_y_raise_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "97ccfad5d5916b92db5deac891d4333b70dbf150e08ff74e01c3d9e2e748938c"
+  },
+  {
+    "assetId": "media_v1_prowler_push_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7d0cc90b13de0af386aa34297946bac3f4d946dba3ba25b5c01192dfcfb4cd6b"
+  },
+  {
+    "assetId": "media_v1_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "3f38f662a3cedfe5fb553e99f1d5b51eabed20f97ba13282780ab03d099b5b52"
+  },
+  {
+    "assetId": "media_v1_push_jerk_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ec19277082897c1b2eed4a74056d3fc8f0253f34642c4fa6f96d8b969b289a34"
+  },
+  {
+    "assetId": "media_v1_push_jerk_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/push_jerk-front_rack_dip_drive-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d51f529e7e244ac79ae4f72b04ad4dea2fad5d76b9cb5bf4cdfca76f64f90881"
+  },
+  {
+    "assetId": "media_v1_push_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "78e87b4d77ae5eacf43a3eb81e324825b6b1c704767b2c67d3838ac3a5aff3fc"
+  },
+  {
+    "assetId": "media_v1_push_press_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/push_press-front_rack_dip_drive-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d299816a1cd13c3b6b9c4fc95dad0da2772e3165a07cdc34e769731335723e27"
+  },
+  {
+    "assetId": "media_v1_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "94360daf6f8ebeecae78ccf6e90ea1fa56e4effdf2137c942b41f7ce1b1f55a5"
+  },
+  {
+    "assetId": "media_v1_rear_delt_fly_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-080-119.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "056db3617c6c69cdf89265ca3855b507bae5318b9019b639caf955eff49cb5a3"
+  },
+  {
+    "assetId": "media_v1_ring_push_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "3fbdee0c41307f11deb5bef83bc310002f4c6a6120d601486eb555fd81964d3f"
+  },
+  {
+    "assetId": "media_v1_ring_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d0357a6d78d74b6890c986f8255eb1bfc2da63ce390143ffeb0c9c599a2114c2"
+  },
+  {
+    "assetId": "media_v1_romanian_deadlift_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1830fe6814287660e4171b4021278a52d0fd84abfdf5678471006ab8d05d1a38"
+  },
+  {
+    "assetId": "media_v1_sandbag_hold_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7ea4f4ec8026a81b72339ff51b0f5598178d55aebb2282935efd43b6d12d9ee5"
+  },
+  {
+    "assetId": "media_v1_scapular_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "93e749656e522ade831fd00da371aba1937a3f7415d6ab813822e8a02a76458e"
+  },
+  {
+    "assetId": "media_v1_scapular_pull_up_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/scapular_pull_up-active_scapular_depression-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "63f2d77286d10280cdc47f66efbc451622fd619bca9f43552428c94512ecb0fe"
+  },
+  {
+    "assetId": "media_v1_seated_cable_row_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/seated_cable_row-v2.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1cec4aedea28c948365648c5d2d68ea8d231afd2cb4e1579e49028e0835ddd03"
+  },
+  {
+    "assetId": "media_v1_seated_dumbbell_shoulder_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "fbd0f30f6316397ca59e76223cf8793411efb629880c15ce09715fe48280e9e4"
+  },
+  {
+    "assetId": "media_v1_seated_leg_curl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/seated_leg_curl-v3.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-13T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e40f53162b6faeda00c32d60ae069b1a391ee9bbba050aad96e0f30d1c54db0b"
+  },
+  {
+    "assetId": "media_v1_shrimp_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "819a6eb0919b5b390e038cc2950196f288fae5d219062689a63b05e4c0e27313"
+  },
+  {
+    "assetId": "media_v1_side_lying_y_raise_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "4e2cf7634b25086f0fc55158be86b293aa8d7d829473f87ae1a1f8ea5040c736"
+  },
+  {
+    "assetId": "media_v1_side_plank_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "dca57d87d89023395e0dfe9bbfb046ff16789b3148d4348ccc8b01edf8efccfe"
+  },
+  {
+    "assetId": "media_v1_single_leg_box_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "87a8c000f464250d92402d7234bc706e0240a15d6c5a367178fb36f6661ee00c"
+  },
+  {
+    "assetId": "media_v1_single_leg_box_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/single_leg_box_jump-single-leg-floor-takeoff-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "1319c61c5edc06f1ae51cf944719bcf100f8f9127691312e4008e2863053cde3"
+  },
+  {
+    "assetId": "media_v1_single_leg_calf_raise_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2fd58e858842a0b371a1700ed80ebf30b730389d88fc73978ed14aae8251f07c"
+  },
+  {
+    "assetId": "media_v1_single_leg_glute_bridge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "07e63f2baf8d7491b67f83ea484404f7d4515746505e6faea57b6f12319448b1"
+  },
+  {
+    "assetId": "media_v1_single_leg_hip_hinge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "15f22cf329cb10f8cf30aa35e5586910be54075fddec08d16e6e19b5d13d4054"
+  },
+  {
+    "assetId": "media_v1_single_leg_rdl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2c600d4f7d47cd74ba606347a6581f935150176f4f68b1a194200ac775a0c211"
+  },
+  {
+    "assetId": "media_v1_single_leg_rdl_bodyweight_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7deb5d9597db8fa68e739d52026cfd0620d3b9c8b247121c3127130d2d4c9721"
+  },
+  {
+    "assetId": "media_v1_skater_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "dfb889ac36d3e208cd877e6a47cd0ea03d5e62fc6e9edb0d2a27cc3096e0e053"
+  },
+  {
+    "assetId": "media_v1_skater_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/skater_jump-controlled-single-leg-landing-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "b78051a28ea888a81cce9047ac04d5ab18f3fd7e85e507bc880eac891ca834b1"
+  },
+  {
+    "assetId": "media_v1_sled_drag_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-120-138.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "a21be3d7c4ee9d4006f9a55cd25ac1f31f733a49224ccbd2a98a44acb7ba2aef"
+  },
+  {
+    "assetId": "media_v1_slider_leg_curl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2bcf3915624792853b75e3aa3cc68a96761cac178e250b95021d9b5d7d043e11"
+  },
+  {
+    "assetId": "media_v1_slider_leg_curl_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/slider_leg_curl-legs_extended_bridge_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d05b6865db1ac7536270f9c2e20e14b92c6ccf83deda9e56811706735b1aa453"
+  },
+  {
+    "assetId": "media_v1_snatch_grip_deadlift_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "79d0fdfb017e15dbfc156e99ee362bb4c3aeef0b1a86a75c41ffe5c335fb1e8a"
+  },
+  {
+    "assetId": "media_v1_split_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "89faedf427e0bf70a2f798d69ddb7bf6107ae5ec5fc6443eae8fed0574cb438e"
+  },
+  {
+    "assetId": "media_v1_standing_calf_raise_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "fb43cedec3c9d04e1f590345cc2afd16d3d65239e84a0e46b2c04001b460fd5e"
+  },
+  {
+    "assetId": "media_v1_step_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "7132461eb021a1b757971dcb6aa87715bb2335ea78bbf4f0ea43cfc29423b655"
+  },
+  {
+    "assetId": "media_v1_suitcase_carry_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "df33c9bef6b7e8e878ddd4f7914ec580ed896c1a26b8c743e90ef10a80389d06"
+  },
+  {
+    "assetId": "media_v1_tempo_back_squat_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "839e57e7ff4d014ac409cecb5e272e84e94939bda36b6c9fb4558538d4755d64"
+  },
+  {
+    "assetId": "media_v1_tempo_back_squat_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/tempo_back_squat-top_start_and_descent_reference-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "9ee6ff8351f1677c329fa6d7f8786c87a10eef13b26fb487dcc11c3cd3acb780"
+  },
+  {
+    "assetId": "media_v1_tempo_bench_press_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "420c02064fff8ebe4fedde4e38f4e80f85b127a5436099a15be0e7b0fd5f100d"
+  },
+  {
+    "assetId": "media_v1_tempo_bench_press_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/tempo_bench_press-lockout_start_and_descent_reference-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "735dd49a1b9d0d8d029704b9645ad5faa80cf0ed5b2eed7e0092cd4a383b72ff"
+  },
+  {
+    "assetId": "media_v1_thoracic_rotation_open_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "2b21ce4917fd147251e142c6ceda14f075bfdd28e812a50a4c22f1d9d84e9a77"
+  },
+  {
+    "assetId": "media_v1_thoracic_rotation_open_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/thoracic_rotation_open-closed_book_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d40e56d4a2fb6bede19534041ab8921e11357108775c285aadd5631effca7ef5"
+  },
+  {
+    "assetId": "media_v1_towel_curl_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "786ce6c928ef2c46700577b308e04277c7fc016d503037a40aa241100d17ae46"
+  },
+  {
+    "assetId": "media_v1_tuck_jump_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "a8581f3d65accb71b252b8e28d3fe558a40009422fd8b5d46e0475100d09e3d1"
+  },
+  {
+    "assetId": "media_v1_tuck_jump_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/tuck_jump-soft-grounded-landing-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "61d4fa7eee45e7f688ff2816fa41919992e4910e371f2e347f1aedf183a01f67"
+  },
+  {
+    "assetId": "media_v1_v_sit_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "f81642c0d536c682443248c9792ace8c0594ef06dd205c961c18266de9624bd7"
+  },
+  {
+    "assetId": "media_v1_walking_lunge_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "e10de997487d6886fff632d8a56cffe2986ea9f47123535d7a2ee7698723a533"
+  },
+  {
+    "assetId": "media_v1_wall_walk_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "d6758ec22f2d4488266f8e361bc02e476d9800e7bad68ca9380bcf31fd2a2e1f"
+  },
+  {
+    "assetId": "media_v1_wall_walk_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/wall_walk-prone_plank_start-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "bc375fabd93853022174c2335d7496db808259bb6450aff1e0b756c70c415dd4"
+  },
+  {
+    "assetId": "media_v1_weighted_dip_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "df119dd389feb6f8d39952abb556f8e2c9132d044bc26d4ef6334d2eb462b919"
+  },
+  {
+    "assetId": "media_v1_weighted_pull_up_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "5e67a786877166b1f91385e4ec9cd0f4008c762686faa0cb3bd5facce846bcab"
+  },
+  {
+    "assetId": "media_v1_worlds_greatest_stretch_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-group-139-156.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-11T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "000183562af184500d039b3e07e17540bab82dc6306df526fe415857d440aab9"
+  },
+  {
+    "assetId": "media_v1_worlds_greatest_stretch_supplemental_1",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:images/worlds_greatest_stretch-elbow_to_instep_phase-v1.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "0345d746651a7e535982b45d7efce4f25f3ca55b75ec1dd7d58f4946ef3f9248"
+  },
+  {
+    "assetId": "media_v1_yoke_carry_primary_0",
+    "sourceKind": "GENERATED",
+    "sourceReference": "phase0:generation-remediation-2026-07-12.json",
+    "generatorModel": "not exposed by built-in tool",
+    "promptHash": null,
+    "generatedOrAcquiredAt": "2026-07-12T00:00:00.000Z",
+    "licenseIdentifier": "NEXUS_GENERATED_MEDIA_OWNER_APPROVED_V1",
+    "licenseUrl": null,
+    "rightsHolderRef": "nexus-hub-owner:felipe-dominguez",
+    "rightsExpiresAt": null,
+    "territories": [
+      "WORLDWIDE"
+    ],
+    "transformations": [],
+    "publicationAllowed": true,
+    "createdAt": "2026-07-13T18:23:53.000Z",
+    "provenanceHash": "ccadbf2165e6cd2b18e09c07c40f425a643770ac9d357fe2da2effe313088247"
+  }
+]

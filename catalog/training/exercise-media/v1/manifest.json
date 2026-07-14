@@ -1,12 +1,12 @@
 {
   "schemaVersion": "training-exercise-media-package.v1",
-  "manifestId": "training-exercise-media-v1-draft-20260712",
-  "manifestVersion": "training-exercise-media.v1-draft.1",
+  "manifestId": "training-exercise-media-v1-materialized-91829bc7100c-c7d8b39afcc6",
+  "manifestVersion": "training-exercise-media.v1-materialized.91829bc7100c",
   "scopeKey": "__global__",
   "catalogVersion": "training-exercise-identity-catalog.v1",
   "catalogSourceHash": "50ed5bdd523af02dcd36cd258f195d144e3a4ee86aaed8dcf057fe45532e0ed8",
-  "publicationState": "DRAFT",
-  "validationStatus": "PENDING",
+  "publicationState": "ACTIVE",
+  "validationStatus": "PASSED",
   "expectedExerciseCount": 158,
   "expectedExerciseIds": [
     "ab_wheel_rollout",
@@ -179,9 +179,11 @@
     "ACCESSIBILITY",
     "OWNER"
   ],
-  "allowedOrigins": [],
-  "approvedHostRef": null,
-  "ownerApprovalRef": null,
-  "createdAt": "2026-07-12T00:00:00.000Z",
-  "activatedAt": null
+  "allowedOrigins": [
+    "https://media.nexushub.me"
+  ],
+  "approvedHostRef": "host-training-media-owner-approval-2026-07-13-manifest-45eb4a62-artifacts-29e3d9be",
+  "ownerApprovalRef": "training-media-final-owner-approval-2026-07-13-51c1089c",
+  "createdAt": "2026-07-13T18:23:53.000Z",
+  "activatedAt": "2026-07-13T22:26:36.000Z"
 }

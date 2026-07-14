@@ -257,12 +257,12 @@ tokens are real. Be careful.
 
 ---
 
-## Training Exercise Media v1 (staging only until the catalog gate passes)
+## Training Exercise Media v1
 
-- Keep `TRAINING_EXERCISE_MEDIA_V1_ENABLED=false` during migration 229 rehearsal and draft-package seeding.
-- Verify the Git-tracked metadata with `npm run training:exercise-media:verify`. The current draft is expected to be structurally valid but activation-incomplete.
-- A future reviewed package must pass `npm run training:exercise-media:verify:activation` before any scoped flag is enabled.
-- Metadata seeding requires both `NEXUS_STAGING=1` and `TRAINING_EXERCISE_MEDIA_SEED_APPLY_ACK=staging-only-reviewed-manifest`; dry-run opens no database.
+- Keep `TRAINING_EXERCISE_MEDIA_V1_ENABLED=false` during migration 229 rehearsal, package seeding, and activation.
+- Verify the Git-tracked metadata and v2 release attestation with `npm run training:exercise-media:verify:activation` before any scoped flag is enabled.
+- Metadata seeding requires both `NEXUS_STAGING=1` and `TRAINING_EXERCISE_MEDIA_SEED_APPLY_ACK=staging-only-reviewed-manifest`; the compiled seed CLI additionally binds the target to the non-symlink `/home/dominguez/telegram-hub-bot-staging` checkout and a regular database file inside its own `data/` directory before opening SQLite. Dry-run opens no database.
+- Production never accepts the staging acknowledgement. Its separately approved path requires exact package, release-subject, and final-approval hashes plus two invocations (`--action=stage`, readback, then `--action=activate`) while the global flag is off. See the canonical Training Exercise Media operator runbook.
 - Before DRAFT → STAGED, the seed service must recompute the stored frozen package hash and write the one-time package-bound validation attestation. The expected approved asset bindings must match exactly; extra, missing, or substituted approved assets fail staging and activation.
 - From STAGED onward, frozen catalog/content rows reject inserts as well as updates and deletes. Only composite-scope-bound immutable review and takedown events remain appendable, and scheduled events do not apply before their effective timestamp.
 - The inverse at `migrations/down/229_training_exercise_media_v1.sql` is for disposable staging rehearsal only. Runtime rollback is flag off plus manifest deprecation/revocation; never run the destructive inverse in production.

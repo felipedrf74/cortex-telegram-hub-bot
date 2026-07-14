@@ -2,12 +2,12 @@
   "schemaVersion": "training-exercise-media-review-bundle.v1",
   "status": "DRAFT_PENDING_ALL_APPROVALS",
   "productionReleaseEligible": false,
-  "generatedDate": "2026-07-12",
+  "generatedDate": "2026-07-13",
   "source": {
-    "candidateManifestId": "training-media-eligibility-identity-v1-50ed5bdd-draft-v5",
-    "candidateManifestSha256": "8361517a657a39450c60ca1d5a3aa82cb71e166940b8975da833c6a894681acd",
+    "candidateManifestId": "training-media-eligibility-identity-v1-50ed5bdd-draft-v6",
+    "candidateManifestSha256": "45eb4a62d83417dbe5cb797940e21bbf2567c1b1b5a1d1c489c2533cd1072e10",
     "artifactIndexSchemaVersion": "training-exercise-media-artifact-index.v2",
-    "artifactIndexSha256": "83098cba6a58e9f75ab9c69b6e4b50551a953e77718d9e6f0f12b9719d87c88c",
+    "artifactIndexSha256": "29e3d9becd6d02a815c17496b5fb5aaba451d698be753ba30fbe14bb26372481",
     "catalogVersion": "training-exercise-identity-catalog.v1",
     "catalogSourceHash": "50ed5bdd523af02dcd36cd258f195d144e3a4ee86aaed8dcf057fe45532e0ed8",
     "externalArtifactRootRecorded": false
@@ -542,6 +542,14 @@
       "objectKey": "objects/sha256/43/438413f0dcedf07fac34da22920b53eaac564b9f80a36fe51cf4178ab949c3f0.png"
     },
     {
+      "sha256": "43d752ea7ae587ebc6ca579cd4dfcb782cbaf7e393d26905a45ff9a03c5a4454",
+      "byteSize": 2062433,
+      "width": 1200,
+      "height": 1920,
+      "format": "PNG",
+      "objectKey": "objects/sha256/43/43d752ea7ae587ebc6ca579cd4dfcb782cbaf7e393d26905a45ff9a03c5a4454.png"
+    },
+    {
       "sha256": "441ca6561efc19a679814dd4fd7f88a6ad4881f6de3b7f369fdadb24ff87cfb3",
       "byteSize": 1912637,
       "width": 1254,
@@ -694,14 +702,6 @@
       "objectKey": "objects/sha256/6c/6c3350ad77fb92109e6b179209060fa95b48411856f2ac8b32cfb03b678120f4.png"
     },
     {
-      "sha256": "6c7de2e98dac0b08ef982ea35845d917d9c480d23b61cb61a0ca5cb0d5d1c018",
-      "byteSize": 2066676,
-      "width": 1200,
-      "height": 1920,
-      "format": "PNG",
-      "objectKey": "objects/sha256/6c/6c7de2e98dac0b08ef982ea35845d917d9c480d23b61cb61a0ca5cb0d5d1c018.png"
-    },
-    {
       "sha256": "6ca1a1f2874e1c321d876a1f217705cef8f3ab250d5060cb412a53752f7d4591",
       "byteSize": 1770675,
       "width": 1254,
@@ -772,6 +772,14 @@
       "height": 1254,
       "format": "PNG",
       "objectKey": "objects/sha256/74/7406535ce25edfd16566cd256db73fd07116387a4b90ae660e1ab6c24df89839.png"
+    },
+    {
+      "sha256": "743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00",
+      "byteSize": 1462160,
+      "width": 1254,
+      "height": 1254,
+      "format": "PNG",
+      "objectKey": "objects/sha256/74/743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00.png"
     },
     {
       "sha256": "748aa412863bc9e9c8264182aebcb015af51d26cb23a38193cfbb5f6bef36279",
@@ -964,14 +972,6 @@
       "height": 1254,
       "format": "PNG",
       "objectKey": "objects/sha256/84/84d7149dfab576f4fc49f0a5a3ddf09308d85fec5a4a4cb75939c0f77fd25c19.png"
-    },
-    {
-      "sha256": "84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96",
-      "byteSize": 1966378,
-      "width": 1254,
-      "height": 1254,
-      "format": "PNG",
-      "objectKey": "objects/sha256/84/84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96.png"
     },
     {
       "sha256": "89a363e4315b1795501b1680aa8908c8a5bd9308946c9a0eca00d6e62397cdba",
@@ -1244,6 +1244,14 @@
       "height": 1254,
       "format": "PNG",
       "objectKey": "objects/sha256/b3/b3b69a911a3a2b8c508ada5ac573e9d98789f3c165ff8b09d9fbdc4ff1b2ea40.png"
+    },
+    {
+      "sha256": "b56007d732038d7cd2c0e536c0dd5a8014cb0b7b53a2fd25a5235d256c965ccd",
+      "byteSize": 2022573,
+      "width": 1200,
+      "height": 1800,
+      "format": "PNG",
+      "objectKey": "objects/sha256/b5/b56007d732038d7cd2c0e536c0dd5a8014cb0b7b53a2fd25a5235d256c965ccd.png"
     },
     {
       "sha256": "b8b4aff47a2f6399d77174f8cfc84f463882f910057b0aa6952ac69aa0609f1a",
@@ -1676,14 +1684,6 @@
       "height": 1254,
       "format": "PNG",
       "objectKey": "objects/sha256/fb/fbd7911cb333d45c72729750a8d084d5908289f2c683ccd2771a85f6c5cd97d0.png"
-    },
-    {
-      "sha256": "fe3fa092297402de912543a7a4874004aaa2fa4ffb9ca7d7c83c63430386916a",
-      "byteSize": 2029927,
-      "width": 1200,
-      "height": 1800,
-      "format": "PNG",
-      "objectKey": "objects/sha256/fe/fe3fa092297402de912543a7a4874004aaa2fa4ffb9ca7d7c83c63430386916a.png"
     },
     {
       "sha256": "fe922d429725a9c438019a76388a0a4a48339097cd152bdf3d80aa040767e048",
@@ -24578,10 +24578,10 @@
           "status": "DRAFT_SCAFFOLD_PENDING_DOMAIN_AUTHORING",
           "sourceBasis": "CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY",
           "sourceReferences": {
-            "candidatePath": "images/seated_leg_curl-contracted_heels_down_back-v1.png",
-            "sha256": "84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96",
-            "provenanceLedger": "generation-supplemental-mobility-core-other-2026-07-12.json",
-            "visualAuditStatus": "PASS_DRAFT_SELECTED_PRIMARY_WITH_MACHINE_REVIEW_NOTE"
+            "candidatePath": "images/seated_leg_curl-v3.png",
+            "sha256": "743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00",
+            "provenanceLedger": null,
+            "visualAuditStatus": "PASS_DRAFT_SELECTED_MAPPING"
           }
         },
         {
@@ -24604,10 +24604,10 @@
           "status": "DRAFT_SCAFFOLD_PENDING_DOMAIN_AUTHORING",
           "sourceBasis": "CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY",
           "sourceReferences": {
-            "candidatePath": "images/seated_leg_curl-contracted_heels_down_back-v1.png",
-            "sha256": "84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96",
-            "provenanceLedger": "generation-supplemental-mobility-core-other-2026-07-12.json",
-            "visualAuditStatus": "PASS_DRAFT_SELECTED_PRIMARY_WITH_MACHINE_REVIEW_NOTE"
+            "candidatePath": "images/seated_leg_curl-v3.png",
+            "sha256": "743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00",
+            "provenanceLedger": null,
+            "visualAuditStatus": "PASS_DRAFT_SELECTED_MAPPING"
           }
         },
         {
@@ -24630,39 +24630,39 @@
           "status": "DRAFT_SCAFFOLD_PENDING_DOMAIN_AUTHORING",
           "sourceBasis": "CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY",
           "sourceReferences": {
-            "candidatePath": "images/seated_leg_curl-contracted_heels_down_back-v1.png",
-            "sha256": "84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96",
-            "provenanceLedger": "generation-supplemental-mobility-core-other-2026-07-12.json",
-            "visualAuditStatus": "PASS_DRAFT_SELECTED_PRIMARY_WITH_MACHINE_REVIEW_NOTE"
+            "candidatePath": "images/seated_leg_curl-v3.png",
+            "sha256": "743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00",
+            "provenanceLedger": null,
+            "visualAuditStatus": "PASS_DRAFT_SELECTED_MAPPING"
           }
         }
       ],
       "candidateAssets": [
         {
-          "assetDraftId": "draft_f048e22b0afe47cec3d1d47c",
+          "assetDraftId": "draft_97b25a1fb41baee3f8dfb50e",
           "exerciseId": "seated_leg_curl",
           "candidateRole": "primary",
           "proposedViewRole": "PRIMARY",
           "ordinal": 0,
-          "candidatePath": "images/seated_leg_curl-contracted_heels_down_back-v1.png",
-          "objectKey": "objects/sha256/84/84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96.png",
-          "sha256": "84d82ed6e1bbc7c34090670f50a82ae11658ffe37a24aa02338b4dc1cda97c96",
-          "byteSize": 1966378,
+          "candidatePath": "images/seated_leg_curl-v3.png",
+          "objectKey": "objects/sha256/74/743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00.png",
+          "sha256": "743ba63ed0845687ef6adbcedd4331efedc006d15bbc7bdcf1cec7ffdc5dab00",
+          "byteSize": 1462160,
           "width": 1254,
           "height": 1254,
           "format": "PNG",
-          "selectionSource": "promoted_unambiguous_contracted_primary_after_machine_review",
+          "selectionSource": "accepted_versioned_primary",
           "selectionStatus": "DRAFT_SELECTED",
-          "visualAuditStatus": "PASS_DRAFT_SELECTED_PRIMARY_WITH_MACHINE_REVIEW_NOTE",
-          "provenanceLedger": "generation-supplemental-mobility-core-other-2026-07-12.json",
-          "provenanceSidecar": "images/seated_leg_curl-contracted_heels_down_back-v1.json",
+          "visualAuditStatus": "PASS_DRAFT_SELECTED_MAPPING",
+          "provenanceLedger": null,
+          "provenanceSidecar": "images/seated_leg_curl-v3.json",
           "publicationState": "DRAFT",
           "accessibilityScaffolds": [
             {
               "locale": "en-US",
               "caption": "Seated Leg Curl — candidate primary view.",
               "accessibilityDescription": "Draft candidate image for Seated Leg Curl, identified only as the primary view. Visual accuracy and final wording remain pending independent domain, accessibility, and localization review.",
-              "contentHash": "188154a85fbe831a51a537a801b51379be33c6cd0eb6c471c50fab71f89f2286",
+              "contentHash": "a4a6d8b1edb2349eb10a51e6d3bdaf051614b935c5049680eaa6587360bae71e",
               "status": "DRAFT_SCAFFOLD_PENDING_ACCESSIBILITY_AUTHORING",
               "sourceBasis": "CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY"
             },
@@ -24670,7 +24670,7 @@
               "locale": "pt-PT",
               "caption": "Seated Leg Curl — vista candidata primary.",
               "accessibilityDescription": "Imagem candidata em rascunho para Seated Leg Curl, identificada apenas como vista primary. A precisão visual e a descrição final aguardam revisão independente de domínio, acessibilidade e localização.",
-              "contentHash": "fbdb1ad299a63b884ec9faca7e0794bb90061d6dc1137bb7b5b1bcd8281cc1fe",
+              "contentHash": "3626eb3412f27ff1f895a4aaf78b9fccaca90dc47ef97bee75e97c3edbf88c14",
               "status": "DRAFT_SCAFFOLD_PENDING_ACCESSIBILITY_AUTHORING",
               "sourceBasis": "CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY"
             },
@@ -24678,7 +24678,7 @@
               "locale": "pt-BR",
               "caption": "Seated Leg Curl — vista candidata primary.",
               "accessibilityDescription": "Imagem candidata em rascunho para Seated Leg Curl, identificada apenas como vista primary. A precisão visual e a descrição final aguardam revisão independente de domínio, acessibilidade e localização.",
-              "contentHash": "375f22139a5da7e7567038e1d4e82ee3dbdfee64693a34ce852804e4d7a5ee44",
+              "contentHash": "023d788ad54eb5ef5d7735f1cb3b10575c2b5bb055f9cfc2a4e0faf45068c25c",
               "status": "DRAFT_SCAFFOLD_PENDING_ACCESSIBILITY_AUTHORING",
               "sourceBasis": "CANONICAL_NAME_AND_SELECTED_ASSET_METADATA_ONLY"
             }
@@ -29990,5 +29990,5 @@
       ]
     }
   ],
-  "bundleHash": "6afc1831369b2ae43f1c7b6c7b408dcbfcc4e52cc2ebf5696cd4a837a2cdc636"
+  "bundleHash": "c7e9bcc5e39dc0fef125737d57d288f35b335ea9f5ce7dc717b56064d6e50aa7"
 }

@@ -1,14 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 export const TRAINING_EXERCISE_MEDIA_CATALOG_ROOT_ENV =
-  'TRAINING_EXERCISE_MEDIA_CATALOG_ROOT' as const;
+  "TRAINING_EXERCISE_MEDIA_CATALOG_ROOT" as const;
 export const TRAINING_EXERCISE_MEDIA_PRODUCTION_VALIDATOR_SHA256 =
-  'afec1234ecdc5603eb809995a89288e9be420bf757eda9e9fc475156f4e2399f' as const;
+  "2c8d945917f7201dff820615300d31551fd25e7d7a0925fae4aaa8b5f1384cb5" as const;
 
 interface ExternalCatalogGateOptions {
   catalogRoot?: string;
@@ -33,31 +33,48 @@ export interface ExternalCatalogGateResult {
 export function assertExternalTrainingExerciseMediaProductionGate(
   options: ExternalCatalogGateOptions = {},
 ): ExternalCatalogGateResult {
-  const configuredRoot = options.catalogRoot ?? process.env[TRAINING_EXERCISE_MEDIA_CATALOG_ROOT_ENV];
+  const configuredRoot =
+    options.catalogRoot ??
+    process.env[TRAINING_EXERCISE_MEDIA_CATALOG_ROOT_ENV];
   if (!configuredRoot) {
     throw new Error(
       `${TRAINING_EXERCISE_MEDIA_CATALOG_ROOT_ENV} must name the absolute reviewed catalog root.`,
     );
   }
   if (!path.isAbsolute(configuredRoot)) {
-    throw new Error(`${TRAINING_EXERCISE_MEDIA_CATALOG_ROOT_ENV} must be an absolute path.`);
+    throw new Error(
+      `${TRAINING_EXERCISE_MEDIA_CATALOG_ROOT_ENV} must be an absolute path.`,
+    );
   }
 
-  const catalogRoot = requireNonSymlinkDirectory(configuredRoot, 'catalog root');
-  const validatorPath = path.join(catalogRoot, 'validate-catalog.mjs');
-  const validatorStats = lstatOrThrow(validatorPath, 'production catalog validator');
+  const catalogRoot = requireNonSymlinkDirectory(
+    configuredRoot,
+    "catalog root",
+  );
+  const validatorPath = path.join(catalogRoot, "validate-catalog.mjs");
+  const validatorStats = lstatOrThrow(
+    validatorPath,
+    "production catalog validator",
+  );
   if (validatorStats.isSymbolicLink() || !validatorStats.isFile()) {
-    throw new Error('Production catalog validator must be a regular non-symlink file.');
+    throw new Error(
+      "Production catalog validator must be a regular non-symlink file.",
+    );
   }
   const resolvedValidatorPath = fs.realpathSync(validatorPath);
   if (!isChild(catalogRoot, resolvedValidatorPath)) {
-    throw new Error('Production catalog validator resolves outside the reviewed catalog root.');
+    throw new Error(
+      "Production catalog validator resolves outside the reviewed catalog root.",
+    );
   }
 
   const validatorBytes = fs.readFileSync(resolvedValidatorPath);
-  const validatorSha256 = createHash('sha256').update(validatorBytes).digest('hex');
-  const expectedValidatorSha256 = options.expectedValidatorSha256
-    ?? TRAINING_EXERCISE_MEDIA_PRODUCTION_VALIDATOR_SHA256;
+  const validatorSha256 = createHash("sha256")
+    .update(validatorBytes)
+    .digest("hex");
+  const expectedValidatorSha256 =
+    options.expectedValidatorSha256 ??
+    TRAINING_EXERCISE_MEDIA_PRODUCTION_VALIDATOR_SHA256;
   if (validatorSha256 !== expectedValidatorSha256) {
     throw new Error(
       `Production catalog validator hash mismatch: expected ${expectedValidatorSha256}, received ${validatorSha256}.`,
@@ -66,27 +83,36 @@ export function assertExternalTrainingExerciseMediaProductionGate(
 
   const backendRootValue = options.backendRoot ?? process.cwd();
   if (!path.isAbsolute(backendRootValue)) {
-    throw new Error('Backend root must be an absolute path.');
+    throw new Error("Backend root must be an absolute path.");
   }
-  const backendRoot = requireNonSymlinkDirectory(backendRootValue, 'backend root');
+  const backendRoot = requireNonSymlinkDirectory(
+    backendRootValue,
+    "backend root",
+  );
   const result = spawnSync(
     options.nodeExecutable ?? process.execPath,
-    [resolvedValidatorPath, '--mode=production', `--backend-root=${backendRoot}`],
+    [
+      resolvedValidatorPath,
+      "--mode=production",
+      `--backend-root=${backendRoot}`,
+    ],
     {
       cwd: catalogRoot,
-      encoding: 'utf8',
+      encoding: "utf8",
       env: process.env,
       maxBuffer: 32 * 1024 * 1024,
     },
   );
   if (result.error) {
-    throw new Error(`Production catalog validator could not run: ${result.error.message}`);
+    throw new Error(
+      `Production catalog validator could not run: ${result.error.message}`,
+    );
   }
   if (result.status !== 0) {
-    const evidence = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+    const evidence = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
     throw new Error(
-      `Production catalog validator blocked activation (exit ${result.status ?? 'unknown'}).`
-        + (evidence ? `\n${evidence}` : ''),
+      `Production catalog validator blocked activation (exit ${result.status ?? "unknown"}).` +
+        (evidence ? `\n${evidence}` : ""),
     );
   }
 
@@ -94,7 +120,7 @@ export function assertExternalTrainingExerciseMediaProductionGate(
     catalogRoot,
     validatorPath: resolvedValidatorPath,
     validatorSha256,
-    stdout: result.stdout ?? '',
+    stdout: result.stdout ?? "",
   };
 }
 
@@ -127,8 +153,10 @@ function lstatOrThrow(value: string, label: string): fs.Stats {
 
 function isChild(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  return relative !== ''
-    && relative !== '..'
-    && !relative.startsWith(`..${path.sep}`)
-    && !path.isAbsolute(relative);
+  return (
+    relative !== "" &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }

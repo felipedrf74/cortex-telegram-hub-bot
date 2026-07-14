@@ -147,18 +147,34 @@ jobs:
   # ═══════════════════════════════════════════════════
   # FOCUSED OR FULL VITEST (driven by classifier)
   # ═══════════════════════════════════════════════════
-  test:
-    # Keep the check-run name stable because the main-branch ruleset
-    # requires the exact `🧪 Tests` context. The selected mode is still
-    # reported in the job logs and classifier output.
-    name: 🧪 Tests
+  test_full_shard:
+    name: 🧪 Full test shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: classify
-    if: needs.classify.outputs.vitest_mode != 'skip'
+    if: ${{ needs.classify.outputs.vitest_mode == 'full' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+
+      - name: Verify exact checked-out source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test "$HEAD_SHA" = "$EXPECTED_SHA"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            test -n "$PR_HEAD_SHA"
+            test "$(git rev-parse 'HEAD^2')" = "$PR_HEAD_SHA"
+            git merge-base --is-ancestor "$PR_HEAD_SHA" "$HEAD_SHA"
+          fi
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -167,7 +183,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Run vitest
+      - name: Run full Vitest shard
         env:
           NODE_ENV: test
           TELEGRAM_BOT_TOKEN: test_token
@@ -180,11 +196,100 @@ jobs:
           else
             BASE="HEAD~1"
           fi
-          ARGS=(--base "$BASE" --skip-typecheck --skip-python --skip-migrations)
-          if [ "${{ github.event.inputs.mode }}" = "full" ] || [ "${{ github.event.inputs.mode }}" = "full+coverage" ]; then
-            ARGS+=(--full)
+          scripts/risk-gate.sh \
+            --base "$BASE" \
+            --full \
+            --vitest-shard "${{ matrix.shard }}/4" \
+            --skip-typecheck \
+            --skip-python \
+            --skip-migrations
+
+  test_focused:
+    name: 🧪 Focused tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: classify
+    if: ${{ needs.classify.outputs.vitest_mode != 'skip' && needs.classify.outputs.vitest_mode != 'full' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact checked-out source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test "$HEAD_SHA" = "$EXPECTED_SHA"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            test -n "$PR_HEAD_SHA"
+            test "$(git rev-parse 'HEAD^2')" = "$PR_HEAD_SHA"
+            git merge-base --is-ancestor "$PR_HEAD_SHA" "$HEAD_SHA"
           fi
-          scripts/risk-gate.sh "${ARGS[@]}"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run focused Vitest gate
+        env:
+          NODE_ENV: test
+          TELEGRAM_BOT_TOKEN: test_token
+          TELEGRAM_ALLOWED_USER_IDS: '123456789'
+          ANTHROPIC_API_KEY: sk-ant-test-key
+          DATABASE_PATH: ':memory:'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          scripts/risk-gate.sh \
+            --base "$BASE" \
+            --skip-typecheck \
+            --skip-python \
+            --skip-migrations
+
+  test:
+    # Keep this aggregate check-run name stable because the main-branch
+    # ruleset requires the exact `🧪 Tests` context. Full mode succeeds only
+    # after all four shards pass; focused and skip modes are checked explicitly.
+    name: 🧪 Tests
+    runs-on: ubuntu-latest
+    needs: [classify, test_full_shard, test_focused]
+    if: ${{ always() }}
+    steps:
+      - name: Verify selected test lane
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          VITEST_MODE: ${{ needs.classify.outputs.vitest_mode }}
+          FULL_RESULT: ${{ needs.test_full_shard.result }}
+          FOCUSED_RESULT: ${{ needs.test_focused.result }}
+        run: |
+          test "$CLASSIFY_RESULT" = "success"
+          case "$VITEST_MODE" in
+            skip)
+              test "$FULL_RESULT" = "skipped"
+              test "$FOCUSED_RESULT" = "skipped"
+              ;;
+            full)
+              test "$FULL_RESULT" = "success"
+              test "$FOCUSED_RESULT" = "skipped"
+              ;;
+            focused|changed-only)
+              test "$FULL_RESULT" = "skipped"
+              test "$FOCUSED_RESULT" = "success"
+              ;;
+            *)
+              echo "Unexpected Vitest mode: $VITEST_MODE" >&2
+              exit 1
+              ;;
+          esac
 
   # ═══════════════════════════════════════════════════
   # BUILD VERIFICATION (parallel; no `needs: test`)

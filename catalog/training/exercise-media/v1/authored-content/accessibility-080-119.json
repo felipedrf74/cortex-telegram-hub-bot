@@ -1,0 +1,1682 @@
+[
+  {
+    "exerciseId": "kettlebell_rdl",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Kettlebell Romanian deadlift, hinged position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete in a hip hinge holding one kettlebell by the handle with both hands between the thighs, feet flat, knees softly bent, hips pushed back, arms long, and spine neutral.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c5bf5bbed8450f7b3ec4845825789bf53989667cefe76625a726afc5d77c33af"
+  },
+  {
+    "exerciseId": "kettlebell_rdl",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Peso morto romeno com kettlebell, posição inclinada.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta numa dobradiça da anca, segurando um kettlebell pela pega com ambas as mãos entre as coxas, pés assentes, joelhos suaves, anca para trás, braços longos e coluna neutra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "658c57479b5772fdec871585363956ce2562f5861414ce36eeeb0265783a9c2d"
+  },
+  {
+    "exerciseId": "kettlebell_rdl",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Terra romeno com kettlebell, posição inclinada.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta em dobradiça de quadril, segurando um kettlebell pela alça com as duas mãos entre as coxas, pés apoiados, joelhos suaves, quadril para trás, braços longos e coluna neutra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4db10e3cc133f256dbff87dbe6759889c7ff0314d4bc4d673ad627964176e7a4"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Kettlebell swing, chest-height float.",
+    "accessibilityDescription": "Side three-quarter view of a standing athlete at the top of a two-hand kettlebell swing, hips and knees extended, feet flat, torso tall, arms straight forward, and one kettlebell floating near chest height from both hands.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "124b27b1a266afbf23b0dacae6eab433621c5ebd95154b2c603562f451e7f381"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Swing com kettlebell, flutuação à altura do peito.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta em pé no topo de um swing a duas mãos, anca e joelhos estendidos, pés assentes, tronco alto, braços estendidos em frente e um kettlebell a flutuar perto da altura do peito.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "3851f20cf5a626bfb712e130a96914d647f947c5cbf24dc37b07396e8755758a"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Swing com kettlebell, flutuação na altura do peito.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta em pé no topo de um swing em duas mãos, quadril e joelhos estendidos, pés apoiados, tronco alto, braços estendidos à frente e um kettlebell flutuando perto da altura do peito.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "eb339bb2fea6971a861fc293cf2326e9ca868751a7fba87b05ace8198e00c60c"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Kettlebell swing, backswing hinge.",
+    "accessibilityDescription": "Side three-quarter view of an athlete in the backswing phase, feet flat, hips pushed back, knees softly bent, spine neutral, both long arms gripping one intact kettlebell handle as the bell passes high between the thighs.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "34b771a2a688fabd2df095e3f317a13dc3f84bf004bd836468c340002a08c219"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Swing com kettlebell, balanço atrás em dobradiça.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta na fase de balanço atrás, pés assentes, anca recuada, joelhos suaves, coluna neutra e ambos os braços longos a agarrar a pega de um kettlebell que passa alto entre as coxas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e3506cc81da3455a4eb4dfb9f1049e8c7461cfcf49e0dc539501d85c74df58ba"
+  },
+  {
+    "exerciseId": "kettlebell_swing",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Swing com kettlebell, balanço para trás em dobradiça.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta na fase de balanço para trás, pés apoiados, quadril recuado, joelhos suaves, coluna neutra e os dois braços longos segurando a alça de um kettlebell que passa alto entre as coxas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "83170b7a038ab652a1f2a76c3f84b36af91fbdec868f8db9e440443d8009d8d5"
+  },
+  {
+    "exerciseId": "kickstand_rdl",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Kickstand dumbbell RDL, bottom position.",
+    "accessibilityDescription": "Side three-quarter view of an athlete hinging over the loaded front leg with the rear toes lightly behind for balance, holding one dumbbell in each straight arm beside the front shin, hips square and spine long.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7b2485d5b2ea260929dace1032acb1f3d690507cb23fe2d6a54c8bee88565052"
+  },
+  {
+    "exerciseId": "kickstand_rdl",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Peso morto romeno em apoio escalonado, posição baixa.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta inclinado sobre a perna da frente carregada, dedos do pé traseiro apoiados levemente atrás, um haltere em cada braço estendido junto à canela da frente, bacia alinhada e coluna longa.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "066d7b934c44582c025b38d38f3a296db5a5bb1d2028b75c1ab5d858e428be72"
+  },
+  {
+    "exerciseId": "kickstand_rdl",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Terra romeno com apoio traseiro, posição baixa.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta inclinado sobre a perna da frente carregada, dedos do pé traseiro apoiados levemente atrás, um halter em cada braço estendido junto à canela da frente, pelve alinhada e coluna longa.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a31cb6253fd7b95d800d2bc98d9d0f97006c1841ead0485cab0724cb64df480b"
+  },
+  {
+    "exerciseId": "knee_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Knee push-up, bottom position.",
+    "accessibilityDescription": "Side three-quarter view of an athlete in the bottom of a knee push-up on a mat, both knees supported, hands beneath the shoulders, elbows bent back, chest above the floor, and head, hips, and knees aligned.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "9f1e4cabab3ae7d13869c470504f7f5373bc891f641e4884987537d0105208a1"
+  },
+  {
+    "exerciseId": "knee_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Flexão com joelhos apoiados, posição baixa.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta na posição baixa de uma flexão num tapete, ambos os joelhos apoiados, mãos sob os ombros, cotovelos fletidos para trás, peito acima do chão e cabeça, anca e joelhos alinhados.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4a50f6419a4604ff7f03684c8413b254949a257e839cea9b877c475a83291f75"
+  },
+  {
+    "exerciseId": "knee_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Flexão com joelhos apoiados, posição baixa.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta na posição baixa de uma flexão em colchonete, os dois joelhos apoiados, mãos sob os ombros, cotovelos dobrados para trás, peito acima do chão e cabeça, quadril e joelhos alinhados.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c1ee99ba5d9a8e91e27dcfd216b96c8834f3e82a3d9f28c0fb445fd6968018a6"
+  },
+  {
+    "exerciseId": "l_sit_hold",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Floor L-sit hold.",
+    "accessibilityDescription": "Side view of an athlete supported on two straight arms with palms flat beside the hips, torso upright, shoulders pressed down, and both straight joined legs lifted horizontally in front with heels clear of the floor.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f24a21a69f8cfb99b247df9df5b5a3496e9839a1b1f80be96e7d30e6776c3006"
+  },
+  {
+    "exerciseId": "l_sit_hold",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "L-sit no chão.",
+    "accessibilityDescription": "Vista lateral de um atleta apoiado em dois braços estendidos com palmas no chão junto à anca, tronco vertical, ombros baixos e ambas as pernas estendidas e juntas elevadas na horizontal, com calcanhares afastados do chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "051536bee041216970582e8967c34e4fcab5a554978a2757ca77a43c6047fe7f"
+  },
+  {
+    "exerciseId": "l_sit_hold",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "L-sit no chão.",
+    "accessibilityDescription": "Vista lateral de um atleta apoiado em dois braços estendidos com palmas no chão junto ao quadril, tronco vertical, ombros baixos e as duas pernas estendidas e unidas elevadas na horizontal, com calcanhares afastados do chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0366cc1abcb033845c7f065bff394f8ea1e570c268f83939056e0def45498697"
+  },
+  {
+    "exerciseId": "l_sit_pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "L-sit pull-up, top position.",
+    "accessibilityDescription": "Front view of an athlete at the top of a pull-up on a straight bar, chin above the bar, overhand hands wider than the shoulders, elbows bent, trunk upright, and both straight joined legs held horizontally forward.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a6a67627915cfa20dc82192807459c5db68f4a428de88e57f847338193e4c284"
+  },
+  {
+    "exerciseId": "l_sit_pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Elevação na barra em L-sit, posição alta.",
+    "accessibilityDescription": "Vista frontal de um atleta no topo de uma elevação numa barra reta, queixo acima da barra, mãos pronadas mais largas que os ombros, cotovelos fletidos, tronco vertical e ambas as pernas estendidas e juntas na horizontal à frente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "72fac3cb5a917750d95a96d989f8a0010cc44123a237558b77b3f7ec3355fd21"
+  },
+  {
+    "exerciseId": "l_sit_pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Barra fixa em L-sit, posição alta.",
+    "accessibilityDescription": "Vista frontal de um atleta no topo de uma barra fixa, queixo acima da barra, mãos pronadas mais largas que os ombros, cotovelos dobrados, tronco vertical e as duas pernas estendidas e unidas na horizontal à frente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f252713ef33d6db2d408c91232620de5763c9df1388bb2da92b1cd3b2085a01b"
+  },
+  {
+    "exerciseId": "l_sit_tuck",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Floor tuck L-sit hold.",
+    "accessibilityDescription": "Side view of an athlete supported on straight arms with palms flat beside the hips, torso upright, both feet lifted, and both bent knees drawn tightly toward the chest in a compact tuck position.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d9d9ba40c3183aa11f73eec52b4107c38ce82bf4d3dd7f4f163c4d8524007d8a"
+  },
+  {
+    "exerciseId": "l_sit_tuck",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "L-sit em tuck no chão.",
+    "accessibilityDescription": "Vista lateral de um atleta apoiado em braços estendidos com palmas no chão junto à anca, tronco vertical, ambos os pés elevados e os dois joelhos fletidos e aproximados do peito numa posição compacta.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d07c9ce2323ea44e1987822991f9a417ec61934b1de7ca67a8da55fdbf97d647"
+  },
+  {
+    "exerciseId": "l_sit_tuck",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "L-sit em tuck no chão.",
+    "accessibilityDescription": "Vista lateral de um atleta apoiado em braços estendidos com palmas no chão junto ao quadril, tronco vertical, os dois pés elevados e os dois joelhos dobrados e aproximados do peito em posição compacta.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "86915fbaf95755b9258f62da08fc5a2f7a37f2a19ae901bf52db1e7688c89e27"
+  },
+  {
+    "exerciseId": "lat_pulldown",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Lat pulldown, finish position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete seated at a complete cable pulldown machine with thighs secured, feet flat, and a wide straight bar pulled to the upper chest, elbows down beside the torso and cable vertical above.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "65594865006a3f662e5b2a012b445160b9f45ba3151e4110fc539a7293d23022"
+  },
+  {
+    "exerciseId": "lat_pulldown",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Puxada alta, posição final.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta sentado numa máquina completa de puxada com coxas fixas e pés assentes, barra reta e larga junto ao peito superior, cotovelos baixos ao lado do tronco e cabo vertical acima.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b362c1640fbf04c25d583ce4ec79bd486b42af7e16e12ef70199c4b6000a1542"
+  },
+  {
+    "exerciseId": "lat_pulldown",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Puxada alta, posição final.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta sentado em máquina completa de puxada com coxas presas e pés apoiados, barra reta e larga junto ao peito superior, cotovelos baixos ao lado do tronco e cabo vertical acima.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "777b7c9e385a1dc1c42a51220b5435815da091120f08db88aded527c9c91faf1"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Lateral box jump, top landing.",
+    "accessibilityDescription": "Front three-quarter view of an athlete in a two-foot landing on top of a sturdy box, knees and hips softly bent, feet fully inside the platform edges, torso balanced, and arms positioned for stability.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "57e2273a0be5e3b6751a935fbbd5e7d0a0404811294ce55d4a78bcbb5758aa2e"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Salto lateral para caixa, aterragem no topo.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta numa aterragem a dois pés sobre uma caixa resistente, joelhos e anca ligeiramente fletidos, pés inteiramente dentro das bordas da plataforma, tronco equilibrado e braços em posição de estabilidade.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c594a40a22a33fb6e879e6141bba830b5f4de86dff38d617bfc2554b97eaf153"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Salto lateral na caixa, aterrissagem no topo.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta em aterrissagem com os dois pés sobre uma caixa resistente, joelhos e quadril levemente dobrados, pés inteiros dentro das bordas da plataforma, tronco equilibrado e braços em posição de estabilidade.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b972e9fcac5b9e3c40fe5c5edacfde52893196d8f1726521c0230dbd25f2bba3"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Lateral box jump, grounded takeoff load.",
+    "accessibilityDescription": "Front three-quarter view of an athlete standing beside a complete box in a loaded partial squat, both shoes fully grounded with a visible gap from the box, knees aligned, and arms swung to prepare a sideways jump.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2569364ec19430b7340fc04aac338604d697d57fdbc8c761cf0d41b355bfa10b"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Salto lateral para caixa, carga antes da impulsão.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta ao lado de uma caixa completa num agachamento parcial de carga, ambos os sapatos assentes com espaço visível até à caixa, joelhos alinhados e braços atrás para preparar o salto lateral.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e38a9a9bdcd30b5766c1f36c98d0b461230de70825fce59c6458bde85a451bea"
+  },
+  {
+    "exerciseId": "lateral_box_jump",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Salto lateral na caixa, carga antes da impulsão.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta ao lado de uma caixa completa em agachamento parcial de carga, os dois tênis apoiados com espaço visível até a caixa, joelhos alinhados e braços atrás para preparar o salto lateral.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "65441d414c63ab1336fed56db607f2e7c9526981663fa39ed1208033be2dd275"
+  },
+  {
+    "exerciseId": "lateral_lunge",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Lateral lunge, bottom position.",
+    "accessibilityDescription": "Front view of an athlete in a wide lateral lunge, one knee deeply bent over a flat foot with the hips sitting back, opposite leg straight, opposite foot grounded, torso tall, and hands together at the chest.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7f9bb9085f4aad0cf7477508f0344be0810dced9b9b6cb870f42c03eff325afe"
+  },
+  {
+    "exerciseId": "lateral_lunge",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Afundo lateral, posição baixa.",
+    "accessibilityDescription": "Vista frontal de um atleta num afundo lateral largo, um joelho bem fletido sobre um pé assente com a bacia atrás, perna oposta estendida, pé oposto apoiado, tronco alto e mãos unidas junto ao peito.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "416b6f7b2a0acf278b86e9dc525712634ca712857f65e4cbb7a5db73991fddbd"
+  },
+  {
+    "exerciseId": "lateral_lunge",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Avanço lateral, posição baixa.",
+    "accessibilityDescription": "Vista frontal de um atleta em avanço lateral amplo, um joelho bem dobrado sobre um pé apoiado com o quadril para trás, perna oposta estendida, pé oposto apoiado, tronco alto e mãos unidas junto ao peito.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "69d9bb83c7c2a5b330ba0a5e8b82873390315838ccb34c71f467e9733935cbd5"
+  },
+  {
+    "exerciseId": "leg_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Leg press, controlled mid-range.",
+    "accessibilityDescription": "Side three-quarter view of an athlete reclined in a 45-degree sled leg press, back and pelvis supported, both feet flat on the large platform, knees bent and aligned with the toes, and the loaded carriage visible on its rails.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "44c5cdf83e1fce552d8273ab77d5f76e8f6fd26279e3a111ff10597a4c1a0339"
+  },
+  {
+    "exerciseId": "leg_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Prensa de pernas, posição intermédia.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta reclinado numa prensa de trenó a 45 graus, costas e bacia apoiadas, ambos os pés assentes na plataforma larga, joelhos fletidos e alinhados com os dedos e carro carregado visível nos carris.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d8737e5997ef6681645eb541d243492e2dc20f08c738d9158ad7f2011ebf5415"
+  },
+  {
+    "exerciseId": "leg_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Leg press, posição intermediária.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta reclinado em leg press de trenó a 45 graus, costas e quadril apoiados, os dois pés apoiados na plataforma ampla, joelhos dobrados e alinhados com os dedos e carrinho carregado visível nos trilhos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c094e0ff2f91123d2eb3f2043396a52754ca5125239d3b64d6870ffbd804b62a"
+  },
+  {
+    "exerciseId": "lunging_iso_hold",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Lunge isometric hold, bottom position.",
+    "accessibilityDescription": "Side view of an athlete holding a static split lunge, front foot flat and front knee bent near a right angle, rear knee hovering above the floor with the heel raised, torso upright, and hands resting on the hips.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1fc19eb71212b043c0d97d32cbe89a5df60687ae93069698f4e985a55da061d6"
+  },
+  {
+    "exerciseId": "lunging_iso_hold",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Afundo isométrico, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta a sustentar um afundo estático, pé da frente assente e joelho perto de um ângulo reto, joelho traseiro acima do chão com calcanhar elevado, tronco vertical e mãos na bacia.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "61f017915cdda3f76ed21ea3abf28d1801f6188a70f00fec26bed3e59c8d867b"
+  },
+  {
+    "exerciseId": "lunging_iso_hold",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Avanço isométrico, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta sustentando um avanço estático, pé da frente apoiado e joelho perto de um ângulo reto, joelho traseiro acima do chão com calcanhar elevado, tronco vertical e mãos no quadril.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "73b9484f4499294300f1f504a68932f8665b69eb03c24dd829f15d730a3dc0b2"
+  },
+  {
+    "exerciseId": "machine_chest_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Machine chest press, extended position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete seated against the back pad of a plate-loaded chest press machine, feet flat, both hands on matched handles at chest height, arms nearly extended, and both machine levers moving symmetrically.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7485efffa7c6c0baa5801024883828ef6849d6f9a865e5bf79ef1daadf2d5198"
+  },
+  {
+    "exerciseId": "machine_chest_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Press de peito na máquina, posição estendida.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta sentado contra o encosto de uma máquina de press com discos, pés assentes, ambas as mãos em pegas iguais à altura do peito, braços quase estendidos e as duas alavancas alinhadas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cb42eb0e15c7ecf952b80320a75338c85ccc2f2bb94e1547381327cb6f0aa739"
+  },
+  {
+    "exerciseId": "machine_chest_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Supino na máquina, posição estendida.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta sentado contra o encosto de uma máquina de supino com anilhas, pés apoiados, as duas mãos em alças iguais na altura do peito, braços quase estendidos e as duas alavancas alinhadas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "175c73daf16c2caad10a641da07899b0c4cafb0487774c571726bd908a07c457"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Medicine ball chest pass, release.",
+    "accessibilityDescription": "Side view of an athlete releasing one medicine ball straight from the chest toward a blank wall, both arms extended, hands open behind the ball, feet grounded, hips and knees softly bent, and the flight path clear.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cd6d34e8afc542129cfb006e0e2d1f24f77607b8208efec82b03e1675b2b9487"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Passe de peito com bola medicinal, largada.",
+    "accessibilityDescription": "Vista lateral de um atleta a largar uma bola medicinal diretamente do peito para uma parede lisa, ambos os braços estendidos, mãos abertas atrás da bola, pés assentes, anca e joelhos suaves e trajetória livre.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "75ddfb55e8cdb8d0ccb4c982254b6ea40139698a06cf7f411bf400b93b1cbdad"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Passe de peito com medicine ball, soltura.",
+    "accessibilityDescription": "Vista lateral de um atleta soltando uma medicine ball diretamente do peito para uma parede lisa, os dois braços estendidos, mãos abertas atrás da bola, pés apoiados, quadril e joelhos suaves e trajetória livre.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "811fbb59b2422c921514656466f0d12614634318b54235356b349898a55902d8"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Medicine ball chest pass, loaded start.",
+    "accessibilityDescription": "Side three-quarter view of an athlete facing a blank wall with one medicine ball held against the sternum by two distinct hands, elbows bent behind the ball, both feet flat, knees softly flexed, and torso upright.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7be97e24823fe69c9b26bf04a8979777580a2a9d29e647268df6237bb8d3bc85"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Passe de peito com bola medicinal, início carregado.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta diante de uma parede lisa com uma bola medicinal segura contra o esterno por duas mãos distintas, cotovelos fletidos atrás da bola, ambos os pés assentes, joelhos suaves e tronco vertical.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f83fc549a90299c105c1cb62764a26f067dcfcf22634d61007ec8d83fdad3e85"
+  },
+  {
+    "exerciseId": "med_ball_chest_pass",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Passe de peito com medicine ball, início carregado.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta diante de uma parede lisa com uma medicine ball segura contra o esterno por duas mãos distintas, cotovelos dobrados atrás da bola, os dois pés apoiados, joelhos suaves e tronco vertical.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c0d116f5727735a17496eb7e0cfc6beeb84e72dc36269c1905a0939f837d889d"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Medicine ball rotational throw, release.",
+    "accessibilityDescription": "Rear side view of an athlete rotating toward a sturdy wall as one medicine ball leaves both hands, hips and chest turned to the target, rear heel lifted, arms extended, and both feet maintaining a clear relationship to the floor.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "13509cd176a077f297c89124b295253de8b86b1ac4cfe8a8340758dfb7e12a3a"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Lançamento rotacional com bola medicinal, largada.",
+    "accessibilityDescription": "Vista posterior lateral de um atleta a rodar para uma parede resistente enquanto uma bola medicinal sai de ambas as mãos, anca e peito virados ao alvo, calcanhar traseiro elevado, braços estendidos e ambos os pés com apoio claro no chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8b8f7b20f9ee8152d7d260f941804e904f5af2020c674f77e636d079585edc77"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Arremesso rotacional com medicine ball, soltura.",
+    "accessibilityDescription": "Vista posterior lateral de um atleta girando para uma parede resistente enquanto uma medicine ball sai das duas mãos, quadril e peito voltados ao alvo, calcanhar traseiro elevado, braços estendidos e os dois pés com apoio claro no chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a4c86d40a682f67c24af19d0caec481dd9e0eaa9a2b37061d1d947d6b5033d0f"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Medicine ball rotational throw, loaded start.",
+    "accessibilityDescription": "Side three-quarter view of an athlete counter-rotated away from the target wall, one medicine ball held in both hands beside the rear hip and lower ribs, both feet grounded, knees soft, and torso visibly loaded for rotation.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "20b83e342f9255aba67ae1bcf77d69f7a0bf73015d2f934920b0de53ead3231c"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Lançamento rotacional, início carregado.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta rodado para longe da parede-alvo, uma bola medicinal segura por ambas as mãos junto à anca traseira e costelas inferiores, ambos os pés assentes, joelhos suaves e tronco carregado para a rotação.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f9ec5f968a34b3be1b17f9fc4c7f11569657c1145a5c28977298463b2436af7f"
+  },
+  {
+    "exerciseId": "med_ball_rotational_throw",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Arremesso rotacional, início carregado.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta girado para longe da parede-alvo, uma medicine ball segura pelas duas mãos junto ao quadril traseiro e costelas inferiores, os dois pés apoiados, joelhos suaves e tronco carregado para a rotação.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1b5e6c8eee5f4506333c405b24f3d58e767a9cfeb5acc60302d64997d5048dae"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Medicine ball slam, overhead load.",
+    "accessibilityDescription": "Front view of a standing athlete holding one medicine ball directly overhead with both hands, arms long, feet shoulder-width and flat, torso tall, and the ball centered above the head immediately before the downward slam.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "3d0295d6f5b8443c0e2aa0501fde6cfd9fa46ee30d3ced1d3da68e1bb59c558e"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Slam com bola medicinal, carga acima da cabeça.",
+    "accessibilityDescription": "Vista frontal de um atleta em pé a segurar uma bola medicinal diretamente acima da cabeça com ambas as mãos, braços longos, pés assentes à largura dos ombros, tronco alto e bola centrada antes do slam para baixo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7a3b4b315f0d87d5dbe1e41ca86700894134bbad5d19bb7e36b3f68504e81c3e"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Slam com medicine ball, carga acima da cabeça.",
+    "accessibilityDescription": "Vista frontal de um atleta em pé segurando uma medicine ball diretamente acima da cabeça com as duas mãos, braços longos, pés apoiados na largura dos ombros, tronco alto e bola centralizada antes do slam para baixo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cd515c92f2435ea1588b5078f3f319734b8b2fa4dae5f940293ca572b0db0ee8"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Medicine ball slam, floor impact follow-through.",
+    "accessibilityDescription": "Front three-quarter view of an athlete hinged over after a slam, one medicine ball visibly contacting the floor between the feet, both open hands released above it, knees bent, spine long, and no second ball present.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d0a3209aa1830162cb7636bb7e39f71a13d26cce2a69d021bfd185c71fe41215"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Slam com bola medicinal, impacto no chão.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta inclinado após o slam, uma bola medicinal visivelmente em contacto com o chão entre os pés, ambas as mãos abertas acima, joelhos fletidos, coluna longa e nenhuma segunda bola.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fbbd607d01b1ba5481042e1cd65d8d5aa07f8aeb09f3f49e853118510e86e589"
+  },
+  {
+    "exerciseId": "med_ball_slam",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Slam com medicine ball, impacto no chão.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta inclinado após o slam, uma medicine ball visivelmente em contato com o chão entre os pés, as duas mãos abertas acima, joelhos dobrados, coluna longa e nenhuma segunda bola.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8c89d5b320c90352226e02d78d8b357501f3932d349f3c89c6fb917d1055b73c"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Bar muscle-up, straight-arm support.",
+    "accessibilityDescription": "Front view of an athlete supported above a straight bar with both hands in closed grips, arms straight, shoulders over the bar, torso upright, legs together, and the complete bar and uprights visible below.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d0021910b12a6cf3100983d9d8fc558a84be8bebdd3b16f315c3b1ca3000201f"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Muscle-up na barra, apoio de braços estendidos.",
+    "accessibilityDescription": "Vista frontal de um atleta apoiado acima de uma barra reta com ambas as mãos em pegas fechadas, braços estendidos, ombros sobre a barra, tronco vertical, pernas juntas e barra completa com montantes visíveis abaixo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "667ec920fe54e962fd10ce7ae50b8ed0018398a56533e847f67f31de8f097292"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Muscle-up na barra, apoio de braços estendidos.",
+    "accessibilityDescription": "Vista frontal de um atleta apoiado acima de uma barra reta com as duas mãos em pegadas fechadas, braços estendidos, ombros sobre a barra, tronco vertical, pernas unidas e barra completa com montantes visíveis abaixo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "57f149108c921fff6e533b63fd9e228c6404669ba9270c45eeaacea1ced21af7"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Bar muscle-up, chest-over-bar transition.",
+    "accessibilityDescription": "Front three-quarter view of an athlete in the transition phase with the lower chest and shoulders leaning over a straight bar, both closed grips retained, elbows bent behind the bar, torso forward, and legs together below.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e776d9bdbb862ea63969bfbb525d2d33e044d01370958b61b2998ae0a4946f93"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Muscle-up, transição com peito sobre a barra.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta na transição com peito inferior e ombros inclinados sobre uma barra reta, ambas as pegas fechadas mantidas, cotovelos fletidos atrás da barra, tronco à frente e pernas juntas abaixo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "bfaa79786ac84da7dcf4603327ea6714b21b268a6a718c9566ca84a5275f9699"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Muscle-up, transição com peito sobre a barra.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta na transição com peito inferior e ombros inclinados sobre uma barra reta, as duas pegadas fechadas mantidas, cotovelos dobrados atrás da barra, tronco à frente e pernas unidas abaixo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "12ec61cafb142b2421b4b9eb08c604341580b4b56802f1592e6cc531356cb2c7"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "supplemental",
+    "ordinal": 2,
+    "locale": "en-US",
+    "caption": "Bar muscle-up, active-hang start.",
+    "accessibilityDescription": "Front view of an athlete suspended beneath a complete straight bar in an active hang, both hands in symmetric closed overhand grips, elbows straight, shoulders engaged, trunk braced, and straight legs together.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "01d478647ca19eedfb06271c8449a3a0cb704a8e47aa893b18f552830449ce28"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "supplemental",
+    "ordinal": 2,
+    "locale": "pt-PT",
+    "caption": "Muscle-up, início em suspensão ativa.",
+    "accessibilityDescription": "Vista frontal de um atleta suspenso sob uma barra reta completa numa suspensão ativa, ambas as mãos em pegas pronadas fechadas e simétricas, cotovelos estendidos, ombros ativos, tronco firme e pernas estendidas e juntas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ffd00b4566062f0e56a1a3ed0077c1ee93e1887c0c1984d52de4b120c134710a"
+  },
+  {
+    "exerciseId": "muscle_up",
+    "role": "supplemental",
+    "ordinal": 2,
+    "locale": "pt-BR",
+    "caption": "Muscle-up, início em suspensão ativa.",
+    "accessibilityDescription": "Vista frontal de um atleta suspenso sob uma barra reta completa em suspensão ativa, as duas mãos em pegadas pronadas fechadas e simétricas, cotovelos estendidos, ombros ativos, tronco firme e pernas estendidas e unidas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "21ed1bbc815093c37863ee06f5436d240927e6f8b93d5a09e469903234c7f76e"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Negative pull-up, controlled descent.",
+    "accessibilityDescription": "Front view of an athlete descending beneath a straight pull-up bar, chin still near bar height, both hands in closed overhand grips, elbows bent symmetrically, shoulders active, body vertical, and feet suspended.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2040eaa79cdcf7ea08344b9bd3231a50c554bd83eac9f4dfa7ee2745810b5cb7"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Descida de elevação na barra, fase controlada.",
+    "accessibilityDescription": "Vista frontal de um atleta a descer sob uma barra reta, queixo ainda perto da altura da barra, ambas as mãos em pegas pronadas fechadas, cotovelos fletidos de forma simétrica, ombros ativos, corpo vertical e pés suspensos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0c639e3deda7f061ea98e9c99afbe4a33120d3e05768d4f8e9a9016f6f5a2241"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Negativa na barra fixa, fase controlada.",
+    "accessibilityDescription": "Vista frontal de um atleta descendo sob uma barra reta, queixo ainda perto da altura da barra, as duas mãos em pegadas pronadas fechadas, cotovelos dobrados de modo simétrico, ombros ativos, corpo vertical e pés suspensos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d850b130e3a1724b6834aff611b722dac57d2fce57969daa30bb314908614a9b"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Negative pull-up, mid-descent detail.",
+    "accessibilityDescription": "Front three-quarter view of the negative pull-up at mid-descent, with symmetric closed overhand grips, elbows still bent, shoulders engaged, trunk and legs held still beneath the complete supported bar, and chin close to its plane.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cde182b2736bddc08527e2c78a51801e901752f51e303e70392b05b6a2f85ee3"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Descida na barra, detalhe da fase intermédia.",
+    "accessibilityDescription": "Vista frontal a três quartos da descida na barra, com pegas pronadas fechadas e simétricas, cotovelos ainda fletidos, ombros ativos, tronco e pernas imóveis sob a barra completa e queixo próximo do seu plano.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "33dfde1acb9484b41a08e536782f4e4a377ee2af319c22a55f204415b853048b"
+  },
+  {
+    "exerciseId": "negative_pull_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Negativa na barra, detalhe da fase intermediária.",
+    "accessibilityDescription": "Vista frontal em três quartos da descida na barra, com pegadas pronadas fechadas e simétricas, cotovelos ainda dobrados, ombros ativos, tronco e pernas imóveis sob a barra completa e queixo próximo do plano da barra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fe9f4ac5ba49bd94aa68eef3e80a45956d552f2407cb273ce40144c5e0647b8d"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "90/90 hip switch, first endpoint.",
+    "accessibilityDescription": "Front three-quarter view of a seated athlete in one 90/90 hip position, front knee and shin bent across the body, trailing knee and shin folded beside the hip, torso upright, and hands free from the floor.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f5f52971d6886bebe3b615701c8df1abe76e2891d253b50fcf6d226a89accc13"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Transição 90/90 da anca, primeiro extremo.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta sentado numa posição 90/90, joelho e canela da frente fletidos diante do corpo, joelho e canela traseiros dobrados ao lado da anca, tronco vertical e mãos sem apoio no chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1c45f9274a232e17a6491c26973f7f352af7438ca4355b96807dfe94c4b3cd93"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Transição 90/90 do quadril, primeiro extremo.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta sentado em posição 90/90, joelho e canela da frente dobrados diante do corpo, joelho e canela traseiros dobrados ao lado do quadril, tronco vertical e mãos sem apoio no chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a9c5d34558f8cbd12cc435b424a1355e1b7cb17f38dcced44fce0c66218257ba"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "90/90 hip switch, opposite endpoint.",
+    "accessibilityDescription": "Front three-quarter view of the mirrored seated 90/90 endpoint, with both bent knees and shins positioned on the opposite side, torso upright without hand support, pelvis grounded, and both feet anatomically visible.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0e73173c41967380c3f5ef1c048b5db4bd01caf7b494cbc3d36a0bef64ab8c0a"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Transição 90/90 da anca, extremo oposto.",
+    "accessibilityDescription": "Vista frontal a três quartos do extremo 90/90 espelhado, com ambos os joelhos e canelas fletidos no lado oposto, tronco vertical sem apoio das mãos, bacia assente e ambos os pés anatomicamente visíveis.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f735613e09bf4f1b2ce099c8a2eaf9b461ba5667b1ed0a6601591749123e63a7"
+  },
+  {
+    "exerciseId": "ninety_ninety_hip_switch",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Transição 90/90 do quadril, extremo oposto.",
+    "accessibilityDescription": "Vista frontal em três quartos do extremo 90/90 espelhado, com os dois joelhos e canelas dobrados no lado oposto, tronco vertical sem apoio das mãos, pelve apoiada e os dois pés anatomicamente visíveis.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6efa7ec53609c1425cc9904dacb04f1d6f7373dcf38cc2e371f9039e169988a8"
+  },
+  {
+    "exerciseId": "one_arm_dumbbell_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Supported one-arm dumbbell row, top position.",
+    "accessibilityDescription": "Side three-quarter view of an athlete supported by one hand and the same-side knee on a flat bench, opposite foot grounded, spine neutral, and one dumbbell pulled to the hip with the free elbow behind the torso.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "27c7bc23964482fed5be8448d5f22a93d406d3ae420e19499a6e887cd61fe222"
+  },
+  {
+    "exerciseId": "one_arm_dumbbell_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Remada unilateral com haltere, posição alta.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta apoiado por uma mão e o joelho do mesmo lado num banco plano, pé oposto assente, coluna neutra e um haltere puxado à anca com o cotovelo livre atrás do tronco.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d3c7755266fb777b61e974bcc2525bbe63a32a844451067ee3228c07f6874f42"
+  },
+  {
+    "exerciseId": "one_arm_dumbbell_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Remada unilateral com halter, posição alta.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta apoiado por uma mão e o joelho do mesmo lado em banco reto, pé oposto apoiado, coluna neutra e um halter puxado ao quadril com o cotovelo livre atrás do tronco.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fb56458f02de2019e617abae971732198a92b2e61d1ca2e316c8f71454fce4c2"
+  },
+  {
+    "exerciseId": "one_arm_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "One-arm push-up, lowered position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete in a lowered one-arm push-up, feet set wide for balance, one palm planted beneath the chest, the other arm held behind the torso, and the body aligned from head through heels.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "089b6787ab3b5ff06524bbb56d58eb818111a2151dda9869df914bf7b62c4dfc"
+  },
+  {
+    "exerciseId": "one_arm_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Flexão com um braço, posição baixa.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta na posição baixa de uma flexão com um braço, pés afastados para equilíbrio, uma palma assente sob o peito, o outro braço atrás do tronco e corpo alinhado da cabeça aos calcanhares.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a648d6318d7eb9cff8a7d7d01f75ff86a47681def4d6b625d05f4aaa062110ec"
+  },
+  {
+    "exerciseId": "one_arm_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Flexão com um braço, posição baixa.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta na posição baixa de uma flexão com um braço, pés afastados para equilíbrio, uma palma apoiada sob o peito, o outro braço atrás do tronco e corpo alinhado da cabeça aos calcanhares.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ea6b6ddce5156d475b31c028dff14aeabec962bef926ab9abf3e95fe7d9619c7"
+  },
+  {
+    "exerciseId": "one_arm_ring_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "One-arm ring row, top position.",
+    "accessibilityDescription": "Side view of an athlete leaning back with a rigid body line, one hand gripping a single suspended ring, working elbow bent beside the ribs at the top of the row, feet grounded, and the free arm held alongside the torso.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c4c6e3216c24b6215bf747a31d9eda6ea39e8ed4626c0d42e54ac4045ca64589"
+  },
+  {
+    "exerciseId": "one_arm_ring_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Remada unilateral nas argolas, posição alta.",
+    "accessibilityDescription": "Vista lateral de um atleta inclinado para trás numa linha corporal rígida, uma mão a agarrar uma única argola suspensa, cotovelo de trabalho fletido junto às costelas no topo da remada, pés assentes e braço livre ao lado do tronco.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6e6c52be5fee419635c48eee39683b8e2fbc2f1e432b1cc795a770fba546a344"
+  },
+  {
+    "exerciseId": "one_arm_ring_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Remada unilateral nas argolas, posição alta.",
+    "accessibilityDescription": "Vista lateral de um atleta inclinado para trás com o corpo rígido, uma mão segurando uma única argola suspensa, cotovelo de trabalho dobrado junto às costelas no topo da remada, pés apoiados e braço livre ao lado do tronco.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b605ebe7817e26b380c988ca6eb935d179c99a939606826918be8f362cc01a5a"
+  },
+  {
+    "exerciseId": "overhead_carry",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Single-arm overhead carry.",
+    "accessibilityDescription": "Front three-quarter view of an athlete taking a walking step with one kettlebell held overhead on a straight arm, wrist stacked above the shoulder, torso upright, and the opposite arm relaxed at the side.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "519ad45d0e3aecae19767f95db32dcd70a4b5cc3fbf31f88ba3e86a601bf5b31"
+  },
+  {
+    "exerciseId": "overhead_carry",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Transporte unilateral acima da cabeça.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta a dar um passo com um kettlebell sustentado acima da cabeça num braço estendido, pulso alinhado sobre o ombro, tronco vertical e braço oposto relaxado ao lado.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a7fd7a692c52e6e41032a294e3d0c290cb2ad2bacc705bf47eb419f753aaf38f"
+  },
+  {
+    "exerciseId": "overhead_carry",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Caminhada unilateral acima da cabeça.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta dando um passo com um kettlebell sustentado acima da cabeça em um braço estendido, punho alinhado sobre o ombro, tronco ereto e braço oposto relaxado ao lado.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d0a0ac72e8f4410867358a4ce3d9e3cf7f61eacc960bebfccf812ecb87a9fddf"
+  },
+  {
+    "exerciseId": "overhead_triceps_extension",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Two-hand overhead triceps extension, lowered position.",
+    "accessibilityDescription": "Front three-quarter view of a standing athlete holding one dumbbell vertically behind the head with both hands, elbows bent and pointing upward, upper arms close to the ears, feet planted, and torso tall.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e027a27b8c83656832649b21796536ce982bf0d9ba1b6851b7a9c4fd03336979"
+  },
+  {
+    "exerciseId": "overhead_triceps_extension",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Extensão de tríceps acima da cabeça, posição baixa.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta em pé a segurar um haltere vertical atrás da cabeça com ambas as mãos, cotovelos fletidos e apontados para cima, braços junto às orelhas, pés assentes e tronco alto.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "36601eb95e4c7653515823675ada132ca4d9953c416c641ef4fb441f3ebbcff1"
+  },
+  {
+    "exerciseId": "overhead_triceps_extension",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Extensão de tríceps acima da cabeça, posição baixa.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta em pé segurando um halter vertical atrás da cabeça com as duas mãos, cotovelos dobrados e apontados para cima, braços junto às orelhas, pés apoiados e tronco ereto.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "68dfffc3edd251e4e6d67c8db08a2672073b98508af2ace40bab44e019f6a246"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Pallof press, arms extended.",
+    "accessibilityDescription": "Front view of an athlete standing square with feet planted and both hands extended at chest height, holding an orange resistance band that runs horizontally from a post at the athlete's side while the torso remains facing forward.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5f25777630cbc1176a9b437dfd4619a68533079f063aaa061da4bdd81d1b9b94"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Press Pallof, braços estendidos.",
+    "accessibilityDescription": "Vista frontal de um atleta em pé, alinhado de frente e com os pés assentes, ambas as mãos estendidas à altura do peito a segurar uma banda elástica laranja que parte horizontalmente de um poste lateral, mantendo o tronco voltado em frente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2153778171ffcf0a4bef252e1bd946cb6a8c509657e97cdcdded4bc05c4f056b"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Press Pallof, braços estendidos.",
+    "accessibilityDescription": "Vista frontal de um atleta em pé, alinhado de frente e com os pés apoiados, as duas mãos estendidas na altura do peito segurando uma faixa elástica laranja que parte horizontalmente de um poste lateral, mantendo o tronco voltado para a frente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "dc869b5a1ee4683c4f30ffa2ba9b303ae982bca50044e5b66d93a9fb8434db56"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Cable Pallof press, chest-height setup.",
+    "accessibilityDescription": "Side three-quarter view of an athlete beside a selectorized cable tower, holding a triangular handle with both hands at chest height; an uninterrupted cable and carabiner connect the handle to the adjustable pulley while the stance stays square.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2ef7bbfe21062154e9834b65dd8c0d62857a0bc74e56157e65896d22df7bbafe"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Press Pallof no cabo, ajuste à altura do peito.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta junto a uma torre de cabos com placas selecionáveis, a segurar uma pega triangular com ambas as mãos à altura do peito; um cabo contínuo e um mosquetão ligam a pega à polia ajustável, mantendo a base alinhada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "20196e9d54719930393a3f3df6aac5182775026c26e8d7334292cc8120c1ab32"
+  },
+  {
+    "exerciseId": "pallof_press",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Press Pallof no cabo, ajuste na altura do peito.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta ao lado de uma torre de cabos com placas selecionáveis, segurando uma alça triangular com as duas mãos na altura do peito; um cabo contínuo e um mosquetão ligam a alça à polia ajustável, mantendo a base alinhada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b78a2854c745cfe3fdd6336159d54e7b52be813ed0b03140fe7c9a9fd920c3db"
+  },
+  {
+    "exerciseId": "paused_back_squat",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Paused back squat, bottom position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete holding a loaded barbell across the upper back at the bottom of a squat inside a rack, hips below knee level, feet flat, knees tracking over the toes, and chest controlled upright.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cbc0c3b441b1a57cf49e0e2e7f9a069c9c901bd5db34ec11ffa9deed6f7c1ce0"
+  },
+  {
+    "exerciseId": "paused_back_squat",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Agachamento traseiro com pausa, posição baixa.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta com uma barra carregada sobre a parte superior das costas, parado no fundo do agachamento dentro de um suporte, ancas abaixo dos joelhos, pés planos, joelhos alinhados com os dedos e peito controlado e elevado.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "29b2d05f6c5c001c3ba23531e557205e790301bb9e19d7cfc1c1c952732394fe"
+  },
+  {
+    "exerciseId": "paused_back_squat",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Agachamento com barra e pausa, posição baixa.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta com uma barra carregada sobre a parte superior das costas, parado no fundo do agachamento dentro de um suporte, quadris abaixo dos joelhos, pés planos, joelhos alinhados com os dedos e peito controlado e elevado.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "85d51939067e885d7d12d2b5c5ba96363eccc2198fb08bc62ff59032f155f593"
+  },
+  {
+    "exerciseId": "paused_bench_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Paused bench press, bar on chest.",
+    "accessibilityDescription": "Side three-quarter view of an athlete lying on a flat bench with feet planted and a loaded barbell held motionless against the lower chest, forearms nearly vertical, shoulder blades set, and rack safety arms visible beneath the bar path.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "38149a61903449db345a2f9a571363adf36515bc59e3fbf0a1b8d84268de3f2a"
+  },
+  {
+    "exerciseId": "paused_bench_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Supino com pausa, barra no peito.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta deitado num banco plano, pés assentes e uma barra carregada imóvel sobre a parte inferior do peito, antebraços quase verticais, omoplatas estabilizadas e braços de segurança do suporte visíveis sob o trajeto da barra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "751f4457e20773e8b8f786c3f211df06f5ce4da27f8347becd6607bb53f4c5a3"
+  },
+  {
+    "exerciseId": "paused_bench_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Supino com pausa, barra no peito.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta deitado em banco reto, pés apoiados e uma barra carregada imóvel sobre a parte inferior do peito, antebraços quase verticais, escápulas estabilizadas e braços de segurança do suporte visíveis sob o trajeto da barra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "bf691fed7cdeeb6717e0da1705b2cc30d6c8ca2941faf85390c6a688822d6235"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Pendlay row, bar at torso.",
+    "accessibilityDescription": "Side three-quarter view of an athlete with hips high and torso close to horizontal, holding a loaded barbell against the lower chest with elbows drawn behind the body, feet planted, neck neutral, and the bar kept level.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "28a4fe378d067042e22139f2edba5fc5884bc6d65397f7285a6084c52f8a0fcb"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Remada Pendlay, barra junto ao tronco.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta com ancas altas e tronco quase horizontal, a segurar uma barra carregada junto à parte inferior do peito, cotovelos puxados atrás do corpo, pés assentes, pescoço neutro e barra nivelada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "566c5c423b9fa0cad373e375c31fa2511fb14ef99c26004ef59c6978eb252a38"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Remada Pendlay, barra junto ao tronco.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta com quadris altos e tronco quase horizontal, segurando uma barra carregada junto à parte inferior do peito, cotovelos puxados atrás do corpo, pés apoiados, pescoço neutro e barra nivelada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7ff741bf1e5f26d9766c3db4ed56081744fd9babbaf6bbfcaa8ed0fa65650c0b"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Pendlay row, floor reset.",
+    "accessibilityDescription": "Side three-quarter view of a loaded barbell resting motionless on the floor over the athlete's midfoot, plates and collars matching on both ends, with hips above the knees, torso near parallel to the floor, arms straight, and hands set symmetrically.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8fabe9b4d212d4a43cd8d34e1c5e084e836488aab760e932cfd3846d08966dd7"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Remada Pendlay, reposição no chão.",
+    "accessibilityDescription": "Vista lateral a três quartos de uma barra carregada imóvel no chão sobre o meio dos pés do atleta, discos e colares iguais nas duas extremidades, ancas acima dos joelhos, tronco quase paralelo ao chão, braços estendidos e mãos colocadas simetricamente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "227fdbb80a7d893c5c11d1f6981efbf559c6ce5d5d87b9fa59c5d247eed68956"
+  },
+  {
+    "exerciseId": "pendlay_row",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Remada Pendlay, reposição no chão.",
+    "accessibilityDescription": "Vista lateral em três quartos de uma barra carregada imóvel no chão sobre o meio dos pés do atleta, anilhas e presilhas iguais nas duas extremidades, quadris acima dos joelhos, tronco quase paralelo ao chão, braços estendidos e mãos posicionadas simetricamente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ba5b9da8e59e10e1bec4deb7bd5133af7095a033d7dcfd9adbb06bf85bc313bd"
+  },
+  {
+    "exerciseId": "pike_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Pike push-up, lowered position.",
+    "accessibilityDescription": "Side view of an athlete in an inverted V shape with hips high, hands and feet planted, elbows bent, and the crown of the head lowered toward the floor slightly ahead of the hands while the spine remains long.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4193f9bc0d3608ff0e384dbcad877c210fac12876aabba0aea6b4d9d1e6c07bf"
+  },
+  {
+    "exerciseId": "pike_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Flexão em pike, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta em V invertido com ancas elevadas, mãos e pés assentes, cotovelos fletidos e topo da cabeça descido em direção ao chão ligeiramente à frente das mãos, mantendo a coluna alongada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "47cc88a5d346ee0e9fe319049423e9f6ebd9499138e53ec3957449aaaaa88cad"
+  },
+  {
+    "exerciseId": "pike_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Flexão pike, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta em V invertido com quadris elevados, mãos e pés apoiados, cotovelos dobrados e topo da cabeça descendo em direção ao chão ligeiramente à frente das mãos, mantendo a coluna alongada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "931829bcf696f75fc8d5aba79466548b5f09163236c3fea8b531881e4a0e4a51"
+  },
+  {
+    "exerciseId": "pistol_squat",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Pistol squat, bottom position.",
+    "accessibilityDescription": "Side view of an athlete in a deep single-leg squat with the supporting foot flat, hip close to the heel, free leg extended straight forward above the floor, and both arms reaching ahead for balance.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ec73028a99298f1363ce7734fc78c5dcbc1c9e38cb2792aa1625db650dcaf71d"
+  },
+  {
+    "exerciseId": "pistol_squat",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Agachamento pistol, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta num agachamento profundo sobre uma perna, pé de apoio plano, anca próxima do calcanhar, perna livre estendida em frente acima do chão e ambos os braços alcançados para a frente para equilíbrio.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "361d9cb4ffff4b15cfe847e975fe24a83b33656ca199d68e235cc80f63c381d1"
+  },
+  {
+    "exerciseId": "pistol_squat",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Agachamento pistol, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta em agachamento profundo sobre uma perna, pé de apoio plano, quadril próximo do calcanhar, perna livre estendida à frente acima do chão e os dois braços alcançados para a frente para equilíbrio.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1100850e812111764b3452ec9ca1e30cf9757e52fccb7e1f274b27770736c05a"
+  },
+  {
+    "exerciseId": "plank",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Forearm plank.",
+    "accessibilityDescription": "Side view of an athlete supported on both forearms and toes, elbows positioned beneath the shoulders, hands relaxed on the floor, and the body held in one straight line from the head through the heels.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b8c1f009e88600ddfff4107f4c18bac21bba4ff8414702938db4563b6c97fe32"
+  },
+  {
+    "exerciseId": "plank",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Prancha sobre os antebraços.",
+    "accessibilityDescription": "Vista lateral de um atleta apoiado nos dois antebraços e nos dedos dos pés, cotovelos posicionados sob os ombros, mãos relaxadas no chão e corpo mantido numa linha reta da cabeça aos calcanhares.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5bd2a7d57fa09a06fd759994d26352fe2c32887ab41f8a965e9ffa65176b9dfc"
+  },
+  {
+    "exerciseId": "plank",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Prancha nos antebraços.",
+    "accessibilityDescription": "Vista lateral de um atleta apoiado nos dois antebraços e nas pontas dos pés, cotovelos posicionados sob os ombros, mãos relaxadas no chão e corpo mantido em linha reta da cabeça aos calcanhares.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6d44409eff74dc5f026efa5ab969fbab0f08596bb94a771cebea2fac450e6cd8"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Plyometric push-up, airborne phase.",
+    "accessibilityDescription": "Side three-quarter view of an athlete in a rigid push-up line with both hands visibly airborne above the floor after an explosive press, feet still contacting the ground, elbows partly extended, and fingers naturally spread.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "9518111d6bac018a787d3f23be69ee4b0864e938a9f9b7bc28f3dd48bd490cde"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Flexão pliométrica, fase aérea.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta numa linha rígida de flexão, com ambas as mãos visivelmente no ar acima do chão após um impulso explosivo, pés ainda em contacto com o chão, cotovelos parcialmente estendidos e dedos naturalmente abertos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5cd01ae59355ec94c3721968d26971763930bc2364d039795c59d2a6dc7b11f1"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Flexão pliométrica, fase aérea.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta em linha rígida de flexão, com as duas mãos visivelmente no ar acima do chão após um impulso explosivo, pés ainda em contato com o chão, cotovelos parcialmente estendidos e dedos naturalmente abertos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4567acaf893402a0383f30acd5771056f77e8e1c11aa0d57ded1c29437ca0696"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Plyometric push-up, loaded landing position.",
+    "accessibilityDescription": "Side view of an athlete in the loaded bottom position with both palms grounded, elbows flexed, chest held just above the floor, toes planted, and the trunk and legs aligned to receive the landing.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e3d74fe9586d1e72ba52e67748fd11de0de93d3ad4e4759b0d745861cbe1cf05"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Flexão pliométrica, posição de receção baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta na posição baixa de receção, com ambas as palmas assentes, cotovelos fletidos, peito mantido pouco acima do chão, dedos dos pés apoiados e tronco e pernas alinhados para absorver a aterragem.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "87627acce5845692803ced325a1a96fc6341c7903b4ba62d4533776d1d923339"
+  },
+  {
+    "exerciseId": "plyo_push_up",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Flexão pliométrica, posição baixa de aterrissagem.",
+    "accessibilityDescription": "Vista lateral de um atleta na posição baixa de aterrissagem, com as duas palmas apoiadas, cotovelos dobrados, peito mantido pouco acima do chão, pontas dos pés apoiadas e tronco e pernas alinhados para absorver a chegada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0a3628338ffcfc7f2e33b84d550817f42b5c9f69a53bb785c86b64345193a46b"
+  },
+  {
+    "exerciseId": "power_clean",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Power clean, front-rack catch.",
+    "accessibilityDescription": "Front three-quarter view of an athlete receiving a straight technique bar across the front of the shoulders in a shallow squat, elbows high, fingertips beneath the bar, feet flat, and knees aligned over the toes.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "97901e57670448575c51b9e4df89387d7610ec141faf3270e72c08ea6d4317c8"
+  },
+  {
+    "exerciseId": "power_clean",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Power clean, receção na posição frontal.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta a receber uma barra técnica reta sobre a parte frontal dos ombros num agachamento pouco profundo, cotovelos altos, pontas dos dedos sob a barra, pés planos e joelhos alinhados sobre os dedos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b7b9a52e1eae3f79291d2426fc5e1519032912be9ca421deeeacb453b874c933"
+  },
+  {
+    "exerciseId": "power_clean",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Power clean, recepção na posição frontal.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta recebendo uma barra técnica reta sobre a parte frontal dos ombros em agachamento pouco profundo, cotovelos altos, pontas dos dedos sob a barra, pés planos e joelhos alinhados sobre os dedos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d794270ff2d819e62884fa926cb835fef86f39673fc0777082c4efffdb76b16c"
+  },
+  {
+    "exerciseId": "power_clean",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Power clean, floor start.",
+    "accessibilityDescription": "Front three-quarter view of an athlete gripping a loaded barbell on the floor close to the shins, with matching plates and collars on both sides, feet flat, hips between knee and shoulder height, arms straight, chest lifted, and spine neutral.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "14cfed7f0f95c5eb78d2b62430ad109d4b953c531bf9610dbe1a2acd5e8a1f19"
+  },
+  {
+    "exerciseId": "power_clean",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Power clean, posição inicial no chão.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta a agarrar uma barra carregada no chão junto às canelas, com discos e colares iguais nos dois lados, pés planos, ancas entre a altura dos joelhos e dos ombros, braços estendidos, peito elevado e coluna neutra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "58f2d7cdd352cc5cf8be46aff7fcac919454542013e0b23cd5ad83b6734cf831"
+  },
+  {
+    "exerciseId": "power_clean",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Power clean, posição inicial no chão.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta segurando uma barra carregada no chão junto às canelas, com anilhas e presilhas iguais nos dois lados, pés planos, quadris entre a altura dos joelhos e dos ombros, braços estendidos, peito elevado e coluna neutra.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "dc385402cf127a32facb6daf980074b069ab3f48162f9d8dfbd890119b4b847b"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Prone lat pulldown, finish position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete lying face down on a mat with the chest modestly lifted, elbows pulled down beside the ribs, forearms angled forward, legs together, and both feet resting naturally behind the body.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e8955b2c18a5680ba53c4661d27b2db3bc90e0d16ef834ace75f6d1bd093e5a9"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Puxada dorsal em decúbito ventral, posição final.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta deitado de barriga para baixo num tapete, peito moderadamente elevado, cotovelos puxados para baixo junto às costelas, antebraços orientados em frente, pernas unidas e ambos os pés em posição natural atrás do corpo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f578c7e973c6359b32d2f1a22ae908e7444fb07bb8ba55a9f5c158b6e2e56a62"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Puxada dorsal em decúbito ventral, posição final.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta deitado de barriga para baixo em um colchonete, peito moderadamente elevado, cotovelos puxados para baixo junto às costelas, antebraços orientados à frente, pernas unidas e os dois pés em posição natural atrás do corpo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2c903c7873a9157340046a22148dbfa5c7690ce9f590b74707eb6a5d89584cf8"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Prone lat pulldown, arms-overhead start.",
+    "accessibilityDescription": "Front three-quarter view of an athlete lying face down on a mat with both arms straight overhead in a shallow Y, palms facing inward, hands and upper chest lifted slightly, legs together, and pelvis remaining grounded.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f0fe5b27541981766444fb1b0a52160fdf25891a0932ef1b30bdb1200b2df292"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Puxada dorsal em decúbito ventral, braços acima da cabeça.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta deitado de barriga para baixo num tapete, ambos os braços estendidos acima da cabeça num Y pouco aberto, palmas viradas uma para a outra, mãos e parte superior do peito ligeiramente elevadas, pernas unidas e bacia assente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8ae9b784c7ef36cddf1cfad3ed1ad7eb43e68209173b09f974a19f796fc4efd7"
+  },
+  {
+    "exerciseId": "prone_lat_pulldown",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Puxada dorsal em decúbito ventral, braços acima da cabeça.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta deitado de barriga para baixo em um colchonete, os dois braços estendidos acima da cabeça em Y pouco aberto, palmas voltadas uma para a outra, mãos e parte superior do peito ligeiramente elevadas, pernas unidas e pelve apoiada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7c7640fd4d3f1744eb138130f1f8c4d47eae6bd29b902efac8625290c6354487"
+  },
+  {
+    "exerciseId": "prone_y_raise",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Prone Y raise, lifted position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete lying face down on a mat with both straight arms lifted diagonally into a Y, thumbs pointing upward, shoulders kept away from the ears, legs extended together, and pelvis grounded.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e9e1c9a3f3b1d223ea83a1bce89a9718eec0f42e02fab7dc70021375eddb116b"
+  },
+  {
+    "exerciseId": "prone_y_raise",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Elevação em Y em decúbito ventral.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta deitado de barriga para baixo num tapete, ambos os braços estendidos e elevados diagonalmente em Y, polegares apontados para cima, ombros afastados das orelhas, pernas unidas e bacia assente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b08e355bd943b212e8f51b737b6b922241725f8074a55217e98d5ba96be85d91"
+  },
+  {
+    "exerciseId": "prone_y_raise",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Elevação em Y em decúbito ventral.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta deitado de barriga para baixo em um colchonete, os dois braços estendidos e elevados diagonalmente em Y, polegares apontados para cima, ombros afastados das orelhas, pernas unidas e pelve apoiada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "da2e971c5aa39a01376cc2b0151499a1cfd10e49f718759dde8c2f9bb251ad11"
+  },
+  {
+    "exerciseId": "prowler_push",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Prowler sled push.",
+    "accessibilityDescription": "Side three-quarter view of an athlete leaning forward with both hands on the vertical handles of a plate-loaded prowler sled, arms straight, spine aligned, rear leg extended, and front knee driving forward as the sled moves across the floor.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4321358fe850911ad2e19d83360876c286a771991471df5a056864dea8290cc4"
+  },
+  {
+    "exerciseId": "prowler_push",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Empurrar o trenó prowler.",
+    "accessibilityDescription": "Vista lateral a três quartos de um atleta inclinado em frente com ambas as mãos nas pegas verticais de um trenó prowler carregado com discos, braços estendidos, coluna alinhada, perna traseira estendida e joelho da frente a avançar enquanto o trenó desliza no chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "86c4633dcd14618c933109576942d2ccd59545c5b220e8506f8eb3d120becc10"
+  },
+  {
+    "exerciseId": "prowler_push",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Empurrar o trenó prowler.",
+    "accessibilityDescription": "Vista lateral em três quartos de um atleta inclinado à frente com as duas mãos nas alças verticais de um trenó prowler carregado com anilhas, braços estendidos, coluna alinhada, perna traseira estendida e joelho da frente avançando enquanto o trenó desliza no chão.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b5ca89238444effc93f03b141be6291208b74d24f5036a77cf7fb9fd5b6fbbdc"
+  },
+  {
+    "exerciseId": "pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Pull-up, top position.",
+    "accessibilityDescription": "Front view of an athlete hanging from a straight pull-up bar with an overhand shoulder-width grip, elbows bent down beside the torso, chin above the bar, legs together, and body held vertically without added equipment.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "dab80503bd03a43223852ad1f668d1b8eda28b506c475d5d36d4fa850afe8d52"
+  },
+  {
+    "exerciseId": "pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Elevação na barra, posição alta.",
+    "accessibilityDescription": "Vista frontal de um atleta suspenso numa barra reta com pega pronada à largura dos ombros, cotovelos fletidos para baixo junto ao tronco, queixo acima da barra, pernas unidas e corpo vertical sem equipamento adicional.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "bc0ae248d23a96ab4d81606b40519e9dbd94d11e8ade3345afda9227892e3265"
+  },
+  {
+    "exerciseId": "pull_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Barra fixa, posição alta.",
+    "accessibilityDescription": "Vista frontal de um atleta suspenso em uma barra reta com pegada pronada na largura dos ombros, cotovelos dobrados para baixo junto ao tronco, queixo acima da barra, pernas unidas e corpo vertical sem equipamento adicional.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e57fb3154c684ba4e204157efc35f4575f08e331407c67d5d5a2869bf93494ec"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Push jerk, overhead receiving position.",
+    "accessibilityDescription": "Front three-quarter view of an athlete receiving a straight bar overhead on fully extended arms, knees re-bent in a shallow quarter squat, feet flat and slightly wider than the hips, torso upright, and bar stacked over the shoulders.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ea2103baf9036bc6104d7c7b0bc93dab1e5b58c5c6b0b5034b5344159f841e3a"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Push jerk, receção acima da cabeça.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta a receber uma barra reta acima da cabeça com braços completamente estendidos, joelhos novamente fletidos num agachamento pouco profundo, pés planos e ligeiramente mais afastados do que as ancas, tronco vertical e barra alinhada sobre os ombros.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4cc3d86e7ea0558b518392c4975b8144a6d2c5ffb5117f28433bf5ec885948ee"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Push jerk, recepção acima da cabeça.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta recebendo uma barra reta acima da cabeça com braços completamente estendidos, joelhos novamente dobrados em agachamento pouco profundo, pés planos e ligeiramente mais afastados que os quadris, tronco ereto e barra alinhada sobre os ombros.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fbdbcd7f67ecb07dca52390b7d09ad472ac40916e80d3c8fe0f4ab3ea59c0ded"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Push jerk, front-rack dip and drive.",
+    "accessibilityDescription": "Front three-quarter view of an athlete holding a straight bar across the front of the shoulders with elbows forward, torso vertical, feet flat, and knees flexed in a shallow dip before the upward drive.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e234832479baea166e42cf2af3869e6fe6e5e2f7e575b68a29d443a844b5d7fd"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Push jerk, flexão e impulso na posição frontal.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta a segurar uma barra reta sobre a parte frontal dos ombros, cotovelos orientados em frente, tronco vertical, pés planos e joelhos fletidos numa descida curta antes do impulso ascendente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "137e446ea792c3dff41b1e9dbf80831b72dc138785c76cdcf571fba65745237f"
+  },
+  {
+    "exerciseId": "push_jerk",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Push jerk, flexão e impulso na posição frontal.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta segurando uma barra reta sobre a parte frontal dos ombros, cotovelos orientados à frente, tronco ereto, pés planos e joelhos dobrados em uma descida curta antes do impulso para cima.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cd17120a9e808b1d46a49a27b9f768b02470d2f65c428d23a337612ee1d832ed"
+  },
+  {
+    "exerciseId": "push_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Push press, overhead lockout.",
+    "accessibilityDescription": "Front three-quarter view of an athlete standing tall with a straight bar held overhead on fully extended arms, elbows and knees straight, feet flat beneath the hips, torso vertical, and bar aligned above the shoulders.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "f65f701c3848e4000d992bc089290ea07fe5567434d10056e76bf6d4a40c7c8e"
+  },
+  {
+    "exerciseId": "push_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Push press, bloqueio acima da cabeça.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta em pé com uma barra reta sustentada acima da cabeça em braços completamente estendidos, cotovelos e joelhos estendidos, pés planos sob as ancas, tronco vertical e barra alinhada sobre os ombros.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d6e38bb4fb6349785e164f83c6462c1b27dcbd3588059c418e3a02d80d804016"
+  },
+  {
+    "exerciseId": "push_press",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Push press, bloqueio acima da cabeça.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta em pé com uma barra reta sustentada acima da cabeça em braços completamente estendidos, cotovelos e joelhos estendidos, pés planos sob os quadris, tronco ereto e barra alinhada sobre os ombros.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d40d763a6a4be77a2bd9fe37e89229acb2868d5ae925630e7717dcc7b4957898"
+  },
+  {
+    "exerciseId": "push_press",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "en-US",
+    "caption": "Push press, front-rack dip and drive.",
+    "accessibilityDescription": "Front three-quarter view of an athlete holding a straight bar across the front of the shoulders with elbows forward, torso upright, heels grounded, and knees bent in a shallow vertical dip that precedes the overhead press.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "86bcee2f9da147f26c1e423cdee6c1ce64801763831b1ef02e5b106abc74134f"
+  },
+  {
+    "exerciseId": "push_press",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-PT",
+    "caption": "Push press, flexão e impulso na posição frontal.",
+    "accessibilityDescription": "Vista frontal a três quartos de um atleta a segurar uma barra reta sobre a parte frontal dos ombros, cotovelos orientados em frente, tronco vertical, calcanhares assentes e joelhos fletidos numa descida vertical curta antes do press acima da cabeça.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "58323fe6efab3b924093505beebe894ddb2ea2bda02cbe3172d288ce28d94925"
+  },
+  {
+    "exerciseId": "push_press",
+    "role": "supplemental",
+    "ordinal": 1,
+    "locale": "pt-BR",
+    "caption": "Push press, flexão e impulso na posição frontal.",
+    "accessibilityDescription": "Vista frontal em três quartos de um atleta segurando uma barra reta sobre a parte frontal dos ombros, cotovelos orientados à frente, tronco ereto, calcanhares apoiados e joelhos dobrados em uma descida vertical curta antes do press acima da cabeça.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4f4c27159ebbd6fce2139399ae03e6c1bbe5b2bda30bed60ac819a5eded67d4b"
+  },
+  {
+    "exerciseId": "push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "en-US",
+    "caption": "Push-up, bottom position.",
+    "accessibilityDescription": "Side view of an athlete in the bottom of a strict push-up with both palms flat beneath the shoulders, elbows bent diagonally beside the torso, chest held just above the floor, toes planted, and body aligned from head through heels.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0b22bce38f0cc21fd7e217f47406881c8c68c61417456665ed999a60fca05bc7"
+  },
+  {
+    "exerciseId": "push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-PT",
+    "caption": "Flexão, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta no fundo de uma flexão estrita, ambas as palmas planas sob os ombros, cotovelos fletidos diagonalmente junto ao tronco, peito mantido pouco acima do chão, dedos dos pés apoiados e corpo alinhado da cabeça aos calcanhares.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "71d33ec9e4bbe39526f9d7d311b78ffbed16624e089f5c23f67d88aa3b4aa4a2"
+  },
+  {
+    "exerciseId": "push_up",
+    "role": "primary",
+    "ordinal": 0,
+    "locale": "pt-BR",
+    "caption": "Flexão, posição baixa.",
+    "accessibilityDescription": "Vista lateral de um atleta no fundo de uma flexão estrita, as duas palmas planas sob os ombros, cotovelos dobrados diagonalmente junto ao tronco, peito mantido pouco acima do chão, pontas dos pés apoiadas e corpo alinhado da cabeça aos calcanhares.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e9fad90d004bdeea0f2f8678c04d0eeb8db6f08d3768993156449e623d6ed1ec"
+  }
+]

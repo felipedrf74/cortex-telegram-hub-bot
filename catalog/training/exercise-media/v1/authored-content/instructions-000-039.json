@@ -1,0 +1,2162 @@
+[
+  {
+    "exerciseId": "ab_wheel_rollout",
+    "locale": "en-US",
+    "displayName": "Ab Wheel Rollout",
+    "steps": [
+      "Kneel on a padded surface, hold the wheel below your shoulders, and brace your abdomen before it moves.",
+      "Roll forward from the knees while keeping the ribs and pelvis controlled; stop before the lower back arches, then pull the wheel back toward the knees."
+    ],
+    "cues": [
+      "Move the shoulders and hips forward together instead of folding only at the hips."
+    ],
+    "cautions": [
+      "Use a shorter range if you cannot return without losing trunk position."
+    ],
+    "textFallback": "Ab Wheel Rollout. Kneel on a padded surface, hold the wheel below your shoulders, and brace your abdomen before it moves. Roll forward from the knees while keeping the ribs and pelvis controlled; stop before the lower back arches, then pull the wheel back toward the knees. Move the shoulders and hips forward together instead of folding only at the hips. Use a shorter range if you cannot return without losing trunk position.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a86ed9b4fb7b8c7ae8eaba32ccca3800545ff0c681addf6b24e86b6c1aa68dc0"
+  },
+  {
+    "exerciseId": "ab_wheel_rollout",
+    "locale": "pt-PT",
+    "displayName": "Extensão com Roda Abdominal",
+    "steps": [
+      "Ajoelhe-se numa superfície acolchoada, segure a roda por baixo dos ombros e contraia o abdómen antes de iniciar.",
+      "Faça a roda avançar a partir dos joelhos, mantendo costelas e bacia controladas; pare antes de arquear a zona lombar e puxe a roda de volta."
+    ],
+    "cues": [
+      "Desloque ombros e ancas em conjunto, em vez de dobrar apenas a cintura."
+    ],
+    "cautions": [
+      "Reduza a amplitude se não conseguir regressar sem perder a posição do tronco."
+    ],
+    "textFallback": "Extensão com Roda Abdominal. Ajoelhe-se numa superfície acolchoada, segure a roda por baixo dos ombros e contraia o abdómen antes de iniciar. Faça a roda avançar a partir dos joelhos, mantendo costelas e bacia controladas; pare antes de arquear a zona lombar e puxe a roda de volta. Desloque ombros e ancas em conjunto, em vez de dobrar apenas a cintura. Reduza a amplitude se não conseguir regressar sem perder a posição do tronco.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7dc53ddca207f6b7e4087732eb9ff9739d16a10049c5b6c6bf2a11b3fd952e4b"
+  },
+  {
+    "exerciseId": "ab_wheel_rollout",
+    "locale": "pt-BR",
+    "displayName": "Extensão com Roda Abdominal",
+    "steps": [
+      "Ajoelhe-se sobre uma superfície acolchoada, segure a roda abaixo dos ombros e firme o abdômen antes de começar.",
+      "Leve a roda à frente a partir dos joelhos, mantendo costelas e pelve controladas; pare antes de arquear a lombar e puxe a roda de volta."
+    ],
+    "cues": [
+      "Avance ombros e quadris juntos, em vez de dobrar somente a cintura."
+    ],
+    "cautions": [
+      "Diminua a amplitude se não conseguir retornar sem perder a posição do tronco."
+    ],
+    "textFallback": "Extensão com Roda Abdominal. Ajoelhe-se sobre uma superfície acolchoada, segure a roda abaixo dos ombros e firme o abdômen antes de começar. Leve a roda à frente a partir dos joelhos, mantendo costelas e pelve controladas; pare antes de arquear a lombar e puxe a roda de volta. Avance ombros e quadris juntos, em vez de dobrar somente a cintura. Diminua a amplitude se não conseguir retornar sem perder a posição do tronco.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "3b8cafefe9722fa81d686b74a33a9a5fe0b9590b60f8a68128b915135c67b135"
+  },
+  {
+    "exerciseId": "archer_pull_up",
+    "locale": "en-US",
+    "displayName": "Archer Pull-Up",
+    "steps": [
+      "Hang from a pull-up bar with a very wide overhand grip and begin with both shoulders active.",
+      "Pull the chest toward one hand while that elbow bends and the opposite arm lengthens along the bar; lower under control and alternate only as prescribed."
+    ],
+    "cues": [
+      "Keep the torso quiet and the straight-side shoulder connected rather than hanging passively."
+    ],
+    "cautions": [
+      "Use an assisted archer variation if a full repetition requires twisting, kicking, or a sudden drop."
+    ],
+    "textFallback": "Archer Pull-Up. Hang from a pull-up bar with a very wide overhand grip and begin with both shoulders active. Pull the chest toward one hand while that elbow bends and the opposite arm lengthens along the bar; lower under control and alternate only as prescribed. Keep the torso quiet and the straight-side shoulder connected rather than hanging passively. Use an assisted archer variation if a full repetition requires twisting, kicking, or a sudden drop.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "276aacfec5d929b6612eed555f72a844bd81b95e9e39c6d1e84938539efd769c"
+  },
+  {
+    "exerciseId": "archer_pull_up",
+    "locale": "pt-PT",
+    "displayName": "Elevação em Arqueiro",
+    "steps": [
+      "Suspenda-se na barra com preensão pronada muito larga e comece com ambos os ombros ativos.",
+      "Puxe o peito na direção de uma mão enquanto esse cotovelo flete e o braço oposto se alonga junto à barra; desça com controlo."
+    ],
+    "cues": [
+      "Mantenha o tronco estável e o ombro do braço estendido ativo, sem ficar pendurado passivamente."
+    ],
+    "cautions": [
+      "Use uma variante assistida se a repetição exigir rotação, balanço das pernas ou uma descida brusca."
+    ],
+    "textFallback": "Elevação em Arqueiro. Suspenda-se na barra com preensão pronada muito larga e comece com ambos os ombros ativos. Puxe o peito na direção de uma mão enquanto esse cotovelo flete e o braço oposto se alonga junto à barra; desça com controlo. Mantenha o tronco estável e o ombro do braço estendido ativo, sem ficar pendurado passivamente. Use uma variante assistida se a repetição exigir rotação, balanço das pernas ou uma descida brusca.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7880f376ffde444f7c1c38613dd91f4fba891bebcaf3ccebcf4480098108ed12"
+  },
+  {
+    "exerciseId": "archer_pull_up",
+    "locale": "pt-BR",
+    "displayName": "Barra Fixa Arqueiro",
+    "steps": [
+      "Pendure-se na barra com pegada pronada bem aberta e comece com os dois ombros ativos.",
+      "Puxe o peito em direção a uma mão enquanto esse cotovelo dobra e o braço oposto se alonga ao longo da barra; desça com controle."
+    ],
+    "cues": [
+      "Mantenha o tronco firme e o ombro do braço estendido ativo, sem relaxar na suspensão."
+    ],
+    "cautions": [
+      "Use uma variação assistida se a repetição exigir torção, impulso das pernas ou queda repentina."
+    ],
+    "textFallback": "Barra Fixa Arqueiro. Pendure-se na barra com pegada pronada bem aberta e comece com os dois ombros ativos. Puxe o peito em direção a uma mão enquanto esse cotovelo dobra e o braço oposto se alonga ao longo da barra; desça com controle. Mantenha o tronco firme e o ombro do braço estendido ativo, sem relaxar na suspensão. Use uma variação assistida se a repetição exigir torção, impulso das pernas ou queda repentina.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6522728eada9416c3a937fe826880ebfeda7e5f9d5b8969c2edfbd1c64d3403f"
+  },
+  {
+    "exerciseId": "archer_push_up",
+    "locale": "en-US",
+    "displayName": "Archer Push-Up",
+    "steps": [
+      "Set a wide hand position on the floor and form a straight line from head to heels.",
+      "Lower the chest toward one hand as that elbow bends, allowing the other arm to straighten; press back to center without rotating the hips."
+    ],
+    "cues": [
+      "Keep the working forearm stable and spread pressure through the whole hand."
+    ],
+    "cautions": [
+      "Elevate the hands or reduce depth if the shoulder or wrist cannot stay controlled."
+    ],
+    "textFallback": "Archer Push-Up. Set a wide hand position on the floor and form a straight line from head to heels. Lower the chest toward one hand as that elbow bends, allowing the other arm to straighten; press back to center without rotating the hips. Keep the working forearm stable and spread pressure through the whole hand. Elevate the hands or reduce depth if the shoulder or wrist cannot stay controlled.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c4d5c0ed53abbaba22027cd7da79fe22900846da810319cfe93e528bb298adda"
+  },
+  {
+    "exerciseId": "archer_push_up",
+    "locale": "pt-PT",
+    "displayName": "Flexão em Arqueiro",
+    "steps": [
+      "Coloque as mãos bem afastadas no chão e alinhe a cabeça, o tronco e os calcanhares.",
+      "Baixe o peito na direção de uma mão enquanto esse cotovelo flete e o outro braço estende; empurre para o centro sem rodar a bacia."
+    ],
+    "cues": [
+      "Mantenha o antebraço de trabalho estável e distribua a pressão por toda a mão."
+    ],
+    "cautions": [
+      "Eleve as mãos ou reduza a profundidade se não conseguir controlar o ombro ou o punho."
+    ],
+    "textFallback": "Flexão em Arqueiro. Coloque as mãos bem afastadas no chão e alinhe a cabeça, o tronco e os calcanhares. Baixe o peito na direção de uma mão enquanto esse cotovelo flete e o outro braço estende; empurre para o centro sem rodar a bacia. Mantenha o antebraço de trabalho estável e distribua a pressão por toda a mão. Eleve as mãos ou reduza a profundidade se não conseguir controlar o ombro ou o punho.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fe4a46e6d59a87f439f89e7fe4865d14f0243c3c5b2d19e55c5345ea5151f1ba"
+  },
+  {
+    "exerciseId": "archer_push_up",
+    "locale": "pt-BR",
+    "displayName": "Flexão Arqueiro",
+    "steps": [
+      "Apoie as mãos bem afastadas no chão e alinhe cabeça, tronco e calcanhares.",
+      "Desça o peito em direção a uma mão enquanto esse cotovelo dobra e o outro braço estende; empurre de volta ao centro sem girar o quadril."
+    ],
+    "cues": [
+      "Mantenha o antebraço de trabalho estável e distribua a pressão pela mão inteira."
+    ],
+    "cautions": [
+      "Eleve as mãos ou reduza a profundidade se o ombro ou o punho perderem o controle."
+    ],
+    "textFallback": "Flexão Arqueiro. Apoie as mãos bem afastadas no chão e alinhe cabeça, tronco e calcanhares. Desça o peito em direção a uma mão enquanto esse cotovelo dobra e o outro braço estende; empurre de volta ao centro sem girar o quadril. Mantenha o antebraço de trabalho estável e distribua a pressão pela mão inteira. Eleve as mãos ou reduza a profundidade se o ombro ou o punho perderem o controle.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e5a653bc56c0d6310f5b13b518672d017aa55560ab99dbde8f6261a0b7e188be"
+  },
+  {
+    "exerciseId": "archer_ring_row",
+    "locale": "en-US",
+    "displayName": "Archer Ring Row",
+    "steps": [
+      "Hold two secure rings with straight arms and walk the feet forward to the prescribed body angle.",
+      "Pull the chest toward one ring while bending that elbow and extending the opposite arm sideways; return slowly to a balanced hang."
+    ],
+    "cues": [
+      "Keep hips and ribs aligned as the torso shifts toward the working ring."
+    ],
+    "cautions": [
+      "Choose a more upright body angle if the rings drift or the trunk cannot remain rigid."
+    ],
+    "textFallback": "Archer Ring Row. Hold two secure rings with straight arms and walk the feet forward to the prescribed body angle. Pull the chest toward one ring while bending that elbow and extending the opposite arm sideways; return slowly to a balanced hang. Keep hips and ribs aligned as the torso shifts toward the working ring. Choose a more upright body angle if the rings drift or the trunk cannot remain rigid.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5c47cb916e9a0eca71770fe095bce04a0823f4651352d5faa2fc9ae151117262"
+  },
+  {
+    "exerciseId": "archer_ring_row",
+    "locale": "pt-PT",
+    "displayName": "Remada em Arqueiro nas Argolas",
+    "steps": [
+      "Segure duas argolas firmes com os braços estendidos e avance os pés até obter a inclinação prescrita.",
+      "Puxe o peito para uma argola enquanto flete esse cotovelo e estende o braço oposto para o lado; regresse lentamente."
+    ],
+    "cues": [
+      "Mantenha ancas e costelas alinhadas enquanto o tronco se desloca para a argola de trabalho."
+    ],
+    "cautions": [
+      "Adote uma posição mais vertical se as argolas oscilarem ou se o tronco perder rigidez."
+    ],
+    "textFallback": "Remada em Arqueiro nas Argolas. Segure duas argolas firmes com os braços estendidos e avance os pés até obter a inclinação prescrita. Puxe o peito para uma argola enquanto flete esse cotovelo e estende o braço oposto para o lado; regresse lentamente. Mantenha ancas e costelas alinhadas enquanto o tronco se desloca para a argola de trabalho. Adote uma posição mais vertical se as argolas oscilarem ou se o tronco perder rigidez.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "3f2b78cd4fbb8e1d12139aed465f1f0c1ae37a5203b552498514f63849df3d35"
+  },
+  {
+    "exerciseId": "archer_ring_row",
+    "locale": "pt-BR",
+    "displayName": "Remada Arqueiro nas Argolas",
+    "steps": [
+      "Segure duas argolas firmes com os braços estendidos e caminhe os pés para a frente até a inclinação indicada.",
+      "Puxe o peito para uma argola enquanto dobra esse cotovelo e estende o braço oposto para o lado; retorne devagar."
+    ],
+    "cues": [
+      "Mantenha quadris e costelas alinhados enquanto o tronco se desloca para a argola de trabalho."
+    ],
+    "cautions": [
+      "Use uma posição mais vertical se as argolas balançarem ou se o tronco perder firmeza."
+    ],
+    "textFallback": "Remada Arqueiro nas Argolas. Segure duas argolas firmes com os braços estendidos e caminhe os pés para a frente até a inclinação indicada. Puxe o peito para uma argola enquanto dobra esse cotovelo e estende o braço oposto para o lado; retorne devagar. Mantenha quadris e costelas alinhados enquanto o tronco se desloca para a argola de trabalho. Use uma posição mais vertical se as argolas balançarem ou se o tronco perder firmeza.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2ca6e7ed0bb8fc691e78f2173458259e0bf13542e8c1daa9ca55ddc9382112f3"
+  },
+  {
+    "exerciseId": "assisted_pistol_squat",
+    "locale": "en-US",
+    "displayName": "Assisted Pistol Squat",
+    "steps": [
+      "Stand beside a stable support, hold it lightly, and extend the free leg in front.",
+      "Sit the working hip down and back over one foot, then drive through that full foot to stand while using only the assistance needed."
+    ],
+    "cues": [
+      "Track the working knee in the same direction as the toes and keep the heel grounded."
+    ],
+    "cautions": [
+      "Use a higher target or more assistance if balance or knee tracking cannot be maintained."
+    ],
+    "textFallback": "Assisted Pistol Squat. Stand beside a stable support, hold it lightly, and extend the free leg in front. Sit the working hip down and back over one foot, then drive through that full foot to stand while using only the assistance needed. Track the working knee in the same direction as the toes and keep the heel grounded. Use a higher target or more assistance if balance or knee tracking cannot be maintained.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "22a42dfa506b3d4a32651d4bbaaecce2c9166fdef3dbc79f932a014326acd670"
+  },
+  {
+    "exerciseId": "assisted_pistol_squat",
+    "locale": "pt-PT",
+    "displayName": "Agachamento Pistol Assistido",
+    "steps": [
+      "Fique junto de um apoio estável, segure-o ligeiramente e estenda a perna livre à frente.",
+      "Baixe a anca de trabalho sobre um pé e volte a subir pressionando o pé por completo, usando apenas a assistência necessária."
+    ],
+    "cues": [
+      "Oriente o joelho de apoio na direção dos dedos do pé e mantenha o calcanhar no chão."
+    ],
+    "cautions": [
+      "Use um alvo mais alto ou mais apoio se não conseguir manter o equilíbrio ou o alinhamento do joelho."
+    ],
+    "textFallback": "Agachamento Pistol Assistido. Fique junto de um apoio estável, segure-o ligeiramente e estenda a perna livre à frente. Baixe a anca de trabalho sobre um pé e volte a subir pressionando o pé por completo, usando apenas a assistência necessária. Oriente o joelho de apoio na direção dos dedos do pé e mantenha o calcanhar no chão. Use um alvo mais alto ou mais apoio se não conseguir manter o equilíbrio ou o alinhamento do joelho.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "27816ae354afb6cf200b34ddead74395fe10672bd72a0406ad44d479f4a9b795"
+  },
+  {
+    "exerciseId": "assisted_pistol_squat",
+    "locale": "pt-BR",
+    "displayName": "Agachamento Pistol Assistido",
+    "steps": [
+      "Fique ao lado de um apoio estável, segure-o levemente e estenda a perna livre à frente.",
+      "Desça o quadril sobre um pé e suba pressionando o pé inteiro, usando apenas a assistência necessária."
+    ],
+    "cues": [
+      "Acompanhe o joelho de apoio na direção dos dedos e mantenha o calcanhar no chão."
+    ],
+    "cautions": [
+      "Use um alvo mais alto ou mais apoio se não conseguir manter o equilíbrio ou o alinhamento do joelho."
+    ],
+    "textFallback": "Agachamento Pistol Assistido. Fique ao lado de um apoio estável, segure-o levemente e estenda a perna livre à frente. Desça o quadril sobre um pé e suba pressionando o pé inteiro, usando apenas a assistência necessária. Acompanhe o joelho de apoio na direção dos dedos e mantenha o calcanhar no chão. Use um alvo mais alto ou mais apoio se não conseguir manter o equilíbrio ou o alinhamento do joelho.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6db91eee6103b122ee16b5f59a1015e4e074c5f9889b4a54d92f1632af3d3bd5"
+  },
+  {
+    "exerciseId": "back_extension",
+    "locale": "en-US",
+    "displayName": "Back Extension",
+    "steps": [
+      "Adjust the back-extension bench so the hip crease can move freely and secure both feet.",
+      "Hinge at the hips to lower the torso with a long spine, then extend the hips until the body forms a straight line without leaning beyond neutral."
+    ],
+    "cues": [
+      "Think of moving the pelvis against the pad rather than lifting with the neck."
+    ],
+    "cautions": [
+      "Reduce range or load if you cannot avoid rounding or overextending the lower back."
+    ],
+    "textFallback": "Back Extension. Adjust the back-extension bench so the hip crease can move freely and secure both feet. Hinge at the hips to lower the torso with a long spine, then extend the hips until the body forms a straight line without leaning beyond neutral. Think of moving the pelvis against the pad rather than lifting with the neck. Reduce range or load if you cannot avoid rounding or overextending the lower back.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "10e06ae1d3bf06efa00c5a39ce949ba8994122c6a874eb94b06c9195dfab750f"
+  },
+  {
+    "exerciseId": "back_extension",
+    "locale": "pt-PT",
+    "displayName": "Extensão Lombar no Banco",
+    "steps": [
+      "Ajuste o banco para deixar a dobra da anca livre e fixe bem os dois pés.",
+      "Incline-se pela anca com a coluna alongada e estenda depois as ancas até o corpo formar uma linha reta, sem ultrapassar a posição neutra."
+    ],
+    "cues": [
+      "Pense em mover a bacia contra o apoio, em vez de levantar com o pescoço."
+    ],
+    "cautions": [
+      "Reduza a amplitude ou a carga se não conseguir evitar arredondar ou hiperestender a zona lombar."
+    ],
+    "textFallback": "Extensão Lombar no Banco. Ajuste o banco para deixar a dobra da anca livre e fixe bem os dois pés. Incline-se pela anca com a coluna alongada e estenda depois as ancas até o corpo formar uma linha reta, sem ultrapassar a posição neutra. Pense em mover a bacia contra o apoio, em vez de levantar com o pescoço. Reduza a amplitude ou a carga se não conseguir evitar arredondar ou hiperestender a zona lombar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "da45b0ee52dd7b9b882862727eb1888173508c104ffd11c98c1c62272c5e6b8a"
+  },
+  {
+    "exerciseId": "back_extension",
+    "locale": "pt-BR",
+    "displayName": "Extensão de Tronco no Banco",
+    "steps": [
+      "Ajuste o banco para deixar a dobra do quadril livre e prenda bem os dois pés.",
+      "Incline pelo quadril com a coluna longa e depois estenda os quadris até o corpo formar uma linha reta, sem passar da posição neutra."
+    ],
+    "cues": [
+      "Pense em mover a pelve contra o apoio, em vez de levantar com o pescoço."
+    ],
+    "cautions": [
+      "Reduza a amplitude ou a carga se não conseguir evitar arredondar ou hiperestender a lombar."
+    ],
+    "textFallback": "Extensão de Tronco no Banco. Ajuste o banco para deixar a dobra do quadril livre e prenda bem os dois pés. Incline pelo quadril com a coluna longa e depois estenda os quadris até o corpo formar uma linha reta, sem passar da posição neutra. Pense em mover a pelve contra o apoio, em vez de levantar com o pescoço. Reduza a amplitude ou a carga se não conseguir evitar arredondar ou hiperestender a lombar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1e1bb0dd3fa7b3338ef082e6478d10f2a68f68553e22c341b5d139d73aedc086"
+  },
+  {
+    "exerciseId": "back_squat",
+    "locale": "en-US",
+    "displayName": "Back Squat",
+    "steps": [
+      "Set the bar securely across the upper back, brace the trunk, and stand with the chosen foot position.",
+      "Sit between the hips while the knees follow the toes, reach the prescribed depth, and drive the floor away to stand."
+    ],
+    "cues": [
+      "Keep the bar balanced over the midfoot throughout the descent and ascent."
+    ],
+    "cautions": [
+      "Use safety arms and a load that allows a controlled rerack; do not continue if the bar position becomes unstable."
+    ],
+    "textFallback": "Back Squat. Set the bar securely across the upper back, brace the trunk, and stand with the chosen foot position. Sit between the hips while the knees follow the toes, reach the prescribed depth, and drive the floor away to stand. Keep the bar balanced over the midfoot throughout the descent and ascent. Use safety arms and a load that allows a controlled rerack; do not continue if the bar position becomes unstable.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "9851c82975b4a40eaca86a52be942fa951bbc5986a6a5ce5ebeee740226ea4b1"
+  },
+  {
+    "exerciseId": "back_squat",
+    "locale": "pt-PT",
+    "displayName": "Agachamento com Barra às Costas",
+    "steps": [
+      "Apoie a barra de forma segura na parte superior das costas, estabilize o tronco e adote a posição dos pés indicada.",
+      "Desça entre as ancas com os joelhos na direção dos pés, alcance a profundidade prescrita e empurre o chão para subir."
+    ],
+    "cues": [
+      "Mantenha a barra equilibrada sobre o meio do pé durante toda a repetição."
+    ],
+    "cautions": [
+      "Use barras de segurança e uma carga que permita voltar ao suporte com controlo; pare se a barra ficar instável."
+    ],
+    "textFallback": "Agachamento com Barra às Costas. Apoie a barra de forma segura na parte superior das costas, estabilize o tronco e adote a posição dos pés indicada. Desça entre as ancas com os joelhos na direção dos pés, alcance a profundidade prescrita e empurre o chão para subir. Mantenha a barra equilibrada sobre o meio do pé durante toda a repetição. Use barras de segurança e uma carga que permita voltar ao suporte com controlo; pare se a barra ficar instável.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6aa8c1e182929e3575935d4db8438ba897e2da76cd0de3a02202c19b5c8728ab"
+  },
+  {
+    "exerciseId": "back_squat",
+    "locale": "pt-BR",
+    "displayName": "Agachamento Livre com Barra",
+    "steps": [
+      "Apoie a barra com segurança na parte superior das costas, firme o tronco e use a posição de pés indicada.",
+      "Agache entre os quadris com os joelhos acompanhando os pés, alcance a profundidade prescrita e empurre o chão para subir."
+    ],
+    "cues": [
+      "Mantenha a barra equilibrada sobre o meio do pé durante toda a repetição."
+    ],
+    "cautions": [
+      "Use travas de segurança e uma carga que permita recolocar a barra com controle; pare se ela ficar instável."
+    ],
+    "textFallback": "Agachamento Livre com Barra. Apoie a barra com segurança na parte superior das costas, firme o tronco e use a posição de pés indicada. Agache entre os quadris com os joelhos acompanhando os pés, alcance a profundidade prescrita e empurre o chão para subir. Mantenha a barra equilibrada sobre o meio do pé durante toda a repetição. Use travas de segurança e uma carga que permita recolocar a barra com controle; pare se ela ficar instável.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6f47a403e53ec033739bbdd83fd0ea80135a2202e947d361f2c3f37a1a143267"
+  },
+  {
+    "exerciseId": "band_assisted_pull_up",
+    "locale": "en-US",
+    "displayName": "Band-Assisted Pull-Up",
+    "steps": [
+      "Secure a resistance band to the pull-up bar, place the prescribed foot or knee in it, and take an overhand grip.",
+      "Start from active shoulders, pull until the upper chest approaches the bar, then lower slowly until the arms are long again."
+    ],
+    "cues": [
+      "Keep the band centered under the body and avoid swinging away from the bar."
+    ],
+    "cautions": [
+      "Check the band for damage and use a safe entry method; replace any band with cuts, cracks, or weak attachment."
+    ],
+    "textFallback": "Band-Assisted Pull-Up. Secure a resistance band to the pull-up bar, place the prescribed foot or knee in it, and take an overhand grip. Start from active shoulders, pull until the upper chest approaches the bar, then lower slowly until the arms are long again. Keep the band centered under the body and avoid swinging away from the bar. Check the band for damage and use a safe entry method; replace any band with cuts, cracks, or weak attachment.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6323ca135a0481ef6deef3bbbda26a5ba6dab601fb894e6795145141a3f65989"
+  },
+  {
+    "exerciseId": "band_assisted_pull_up",
+    "locale": "pt-PT",
+    "displayName": "Elevação Assistida com Banda",
+    "steps": [
+      "Prenda uma banda elástica à barra, coloque nela o pé ou o joelho indicado e use preensão pronada.",
+      "Comece com os ombros ativos, puxe até a parte superior do peito se aproximar da barra e desça lentamente."
+    ],
+    "cues": [
+      "Mantenha a banda centrada sob o corpo e evite balançar para longe da barra."
+    ],
+    "cautions": [
+      "Verifique o estado e a fixação da banda; não use uma banda com cortes, fissuras ou sinais de desgaste."
+    ],
+    "textFallback": "Elevação Assistida com Banda. Prenda uma banda elástica à barra, coloque nela o pé ou o joelho indicado e use preensão pronada. Comece com os ombros ativos, puxe até a parte superior do peito se aproximar da barra e desça lentamente. Mantenha a banda centrada sob o corpo e evite balançar para longe da barra. Verifique o estado e a fixação da banda; não use uma banda com cortes, fissuras ou sinais de desgaste.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6ab07155873ac1517dad6c019f10becc65721c813b475531f69154751b70ba61"
+  },
+  {
+    "exerciseId": "band_assisted_pull_up",
+    "locale": "pt-BR",
+    "displayName": "Barra Fixa Assistida com Faixa",
+    "steps": [
+      "Prenda uma faixa elástica à barra, coloque nela o pé ou o joelho indicado e use pegada pronada.",
+      "Comece com os ombros ativos, puxe até a parte superior do peito se aproximar da barra e desça lentamente."
+    ],
+    "cues": [
+      "Mantenha a faixa centralizada sob o corpo e evite balançar para longe da barra."
+    ],
+    "cautions": [
+      "Confira o estado e a fixação da faixa; não use material com cortes, rachaduras ou desgaste."
+    ],
+    "textFallback": "Barra Fixa Assistida com Faixa. Prenda uma faixa elástica à barra, coloque nela o pé ou o joelho indicado e use pegada pronada. Comece com os ombros ativos, puxe até a parte superior do peito se aproximar da barra e desça lentamente. Mantenha a faixa centralizada sob o corpo e evite balançar para longe da barra. Confira o estado e a fixação da faixa; não use material com cortes, rachaduras ou desgaste.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d4f2637f020bf5a50b8bb98c19e0b3a41d6806007fb802f2386dc958d014950f"
+  },
+  {
+    "exerciseId": "band_pulldown",
+    "locale": "en-US",
+    "displayName": "Band Pulldown",
+    "steps": [
+      "Anchor two band strands securely overhead and kneel or stand far enough away to create light starting tension.",
+      "Pull the handles from overhead toward the shoulders by driving both elbows down beside the ribs, then return with control."
+    ],
+    "cues": [
+      "Keep the torso stacked and finish with bent elbows rather than turning the movement into a straight-arm press."
+    ],
+    "cautions": [
+      "Inspect the anchor and bands before use and reduce tension if you cannot control the overhead return."
+    ],
+    "textFallback": "Band Pulldown. Anchor two band strands securely overhead and kneel or stand far enough away to create light starting tension. Pull the handles from overhead toward the shoulders by driving both elbows down beside the ribs, then return with control. Keep the torso stacked and finish with bent elbows rather than turning the movement into a straight-arm press. Inspect the anchor and bands before use and reduce tension if you cannot control the overhead return.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "97a32e7550daca25b51ed55abb5a1f6597dccd88718ba787ed0787e8712d227b"
+  },
+  {
+    "exerciseId": "band_pulldown",
+    "locale": "pt-PT",
+    "displayName": "Puxada Vertical com Banda",
+    "steps": [
+      "Fixe duas pontas da banda de forma segura acima da cabeça e ajoelhe-se ou fique de pé com ligeira tensão inicial.",
+      "Puxe as pegas para os ombros, levando ambos os cotovelos para baixo junto às costelas, e regresse com controlo."
+    ],
+    "cues": [
+      "Mantenha o tronco alinhado e termine com os cotovelos fletidos, sem transformar o movimento numa pressão de braços estendidos."
+    ],
+    "cautions": [
+      "Inspecione a fixação e a banda; reduza a tensão se não controlar o regresso acima da cabeça."
+    ],
+    "textFallback": "Puxada Vertical com Banda. Fixe duas pontas da banda de forma segura acima da cabeça e ajoelhe-se ou fique de pé com ligeira tensão inicial. Puxe as pegas para os ombros, levando ambos os cotovelos para baixo junto às costelas, e regresse com controlo. Mantenha o tronco alinhado e termine com os cotovelos fletidos, sem transformar o movimento numa pressão de braços estendidos. Inspecione a fixação e a banda; reduza a tensão se não controlar o regresso acima da cabeça.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c174b41c5161df3d03d7e13e6e1e62f2680486ed3d55568cf0a0e5a1263c7205"
+  },
+  {
+    "exerciseId": "band_pulldown",
+    "locale": "pt-BR",
+    "displayName": "Puxada Alta com Faixa",
+    "steps": [
+      "Prenda duas pontas da faixa com segurança acima da cabeça e ajoelhe-se ou fique em pé com leve tensão inicial.",
+      "Puxe as alças em direção aos ombros, levando os cotovelos para baixo junto às costelas, e retorne com controle."
+    ],
+    "cues": [
+      "Mantenha o tronco alinhado e termine com os cotovelos dobrados, sem transformar o movimento em pressão de braços estendidos."
+    ],
+    "cautions": [
+      "Inspecione a ancoragem e a faixa; reduza a tensão se não controlar o retorno acima da cabeça."
+    ],
+    "textFallback": "Puxada Alta com Faixa. Prenda duas pontas da faixa com segurança acima da cabeça e ajoelhe-se ou fique em pé com leve tensão inicial. Puxe as alças em direção aos ombros, levando os cotovelos para baixo junto às costelas, e retorne com controle. Mantenha o tronco alinhado e termine com os cotovelos dobrados, sem transformar o movimento em pressão de braços estendidos. Inspecione a ancoragem e a faixa; reduza a tensão se não controlar o retorno acima da cabeça.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b6b47a9c35f88b71f01f789613748f1e81b9acbf5ca997dd05a434c8f9531c8d"
+  },
+  {
+    "exerciseId": "band_row",
+    "locale": "en-US",
+    "displayName": "Band Row",
+    "steps": [
+      "Anchor the band at chest height, step back to create tension, and hold both ends with long arms.",
+      "Pull the hands toward the lower ribs while the elbows travel behind the torso, then extend the arms without losing posture."
+    ],
+    "cues": [
+      "Keep shoulders away from the ears and resist rotation as the band stretches."
+    ],
+    "cautions": [
+      "Confirm the anchor is secure and shorten the range or tension if the return pulls you off balance."
+    ],
+    "textFallback": "Band Row. Anchor the band at chest height, step back to create tension, and hold both ends with long arms. Pull the hands toward the lower ribs while the elbows travel behind the torso, then extend the arms without losing posture. Keep shoulders away from the ears and resist rotation as the band stretches. Confirm the anchor is secure and shorten the range or tension if the return pulls you off balance.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "72ff553e98e18f00d8b76199e324e3673e7c26affe835fabcd640ee8da6edc98"
+  },
+  {
+    "exerciseId": "band_row",
+    "locale": "pt-PT",
+    "displayName": "Remada com Banda",
+    "steps": [
+      "Fixe a banda à altura do peito, recue para criar tensão e segure as duas pontas com os braços estendidos.",
+      "Puxe as mãos para as costelas inferiores com os cotovelos para trás e volte a estender os braços sem alterar a postura."
+    ],
+    "cues": [
+      "Afaste os ombros das orelhas e resista à rotação à medida que a banda estica."
+    ],
+    "cautions": [
+      "Confirme que a fixação é segura e reduza a amplitude ou a tensão se perder o equilíbrio no regresso."
+    ],
+    "textFallback": "Remada com Banda. Fixe a banda à altura do peito, recue para criar tensão e segure as duas pontas com os braços estendidos. Puxe as mãos para as costelas inferiores com os cotovelos para trás e volte a estender os braços sem alterar a postura. Afaste os ombros das orelhas e resista à rotação à medida que a banda estica. Confirme que a fixação é segura e reduza a amplitude ou a tensão se perder o equilíbrio no regresso.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "affb491c160a7b4fc3eb9985d3a866e8ba3d55c00ea45cb9e86d73871874e8c4"
+  },
+  {
+    "exerciseId": "band_row",
+    "locale": "pt-BR",
+    "displayName": "Remada com Faixa",
+    "steps": [
+      "Prenda a faixa na altura do peito, recue para criar tensão e segure as duas pontas com os braços estendidos.",
+      "Puxe as mãos para as costelas inferiores, levando os cotovelos para trás, e estenda os braços sem mudar a postura."
+    ],
+    "cues": [
+      "Mantenha os ombros longe das orelhas e resista à rotação enquanto a faixa estica."
+    ],
+    "cautions": [
+      "Confirme que a ancoragem está firme e reduza a amplitude ou a tensão se perder o equilíbrio na volta."
+    ],
+    "textFallback": "Remada com Faixa. Prenda a faixa na altura do peito, recue para criar tensão e segure as duas pontas com os braços estendidos. Puxe as mãos para as costelas inferiores, levando os cotovelos para trás, e estenda os braços sem mudar a postura. Mantenha os ombros longe das orelhas e resista à rotação enquanto a faixa estica. Confirme que a ancoragem está firme e reduza a amplitude ou a tensão se perder o equilíbrio na volta.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fcc3ba65b7a21ae434b134618ac9650d7c171a8149ff69ad0912108a2169c7c9"
+  },
+  {
+    "exerciseId": "barbell_bent_row",
+    "locale": "en-US",
+    "displayName": "Barbell Bent-Over Row",
+    "steps": [
+      "Hold the bar outside the legs, hinge until the torso reaches the prescribed angle, and brace with the bar hanging below the shoulders.",
+      "Row the bar toward the lower ribs, pause without lifting the torso, and lower until the elbows straighten."
+    ],
+    "cues": [
+      "Keep the bar close and maintain the same hip-hinge angle throughout the set."
+    ],
+    "cautions": [
+      "Reduce the load or use support if the lower back position changes as the bar moves."
+    ],
+    "textFallback": "Barbell Bent-Over Row. Hold the bar outside the legs, hinge until the torso reaches the prescribed angle, and brace with the bar hanging below the shoulders. Row the bar toward the lower ribs, pause without lifting the torso, and lower until the elbows straighten. Keep the bar close and maintain the same hip-hinge angle throughout the set. Reduce the load or use support if the lower back position changes as the bar moves.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5d815c9fd7743b4ed01bedf0d847dee35e13dbd0620136041ef61df238224cac"
+  },
+  {
+    "exerciseId": "barbell_bent_row",
+    "locale": "pt-PT",
+    "displayName": "Remada Inclinada com Barra",
+    "steps": [
+      "Segure a barra fora das pernas, incline o tronco pela anca até ao ângulo indicado e estabilize com a barra sob os ombros.",
+      "Puxe a barra para as costelas inferiores, pare sem elevar o tronco e desça até estender os cotovelos."
+    ],
+    "cues": [
+      "Mantenha a barra próxima e conserve o mesmo ângulo da anca durante a série."
+    ],
+    "cautions": [
+      "Reduza a carga ou use apoio se a posição lombar mudar durante o movimento."
+    ],
+    "textFallback": "Remada Inclinada com Barra. Segure a barra fora das pernas, incline o tronco pela anca até ao ângulo indicado e estabilize com a barra sob os ombros. Puxe a barra para as costelas inferiores, pare sem elevar o tronco e desça até estender os cotovelos. Mantenha a barra próxima e conserve o mesmo ângulo da anca durante a série. Reduza a carga ou use apoio se a posição lombar mudar durante o movimento.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cc82332a2526d383321e4e4f539cddce4d22c811a80bc3888331117a689decbd"
+  },
+  {
+    "exerciseId": "barbell_bent_row",
+    "locale": "pt-BR",
+    "displayName": "Remada Curvada com Barra",
+    "steps": [
+      "Segure a barra fora das pernas, incline o tronco pelo quadril até o ângulo indicado e firme a posição com a barra sob os ombros.",
+      "Puxe a barra para as costelas inferiores, pause sem levantar o tronco e desça até estender os cotovelos."
+    ],
+    "cues": [
+      "Mantenha a barra perto e preserve o mesmo ângulo do quadril durante a série."
+    ],
+    "cautions": [
+      "Reduza a carga ou use apoio se a posição da lombar mudar durante o movimento."
+    ],
+    "textFallback": "Remada Curvada com Barra. Segure a barra fora das pernas, incline o tronco pelo quadril até o ângulo indicado e firme a posição com a barra sob os ombros. Puxe a barra para as costelas inferiores, pause sem levantar o tronco e desça até estender os cotovelos. Mantenha a barra perto e preserve o mesmo ângulo do quadril durante a série. Reduza a carga ou use apoio se a posição da lombar mudar durante o movimento.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "019c206825a180e522655585bb61d440d88f63ae064bc183f307d718c8777480"
+  },
+  {
+    "exerciseId": "barbell_hip_thrust",
+    "locale": "en-US",
+    "displayName": "Barbell Hip Thrust",
+    "steps": [
+      "Place the upper back against a stable bench, pad the bar over the hip crease, and plant both feet.",
+      "Lower the hips under control, then drive through the feet until hips extend and the torso is approximately level without arching the lower back."
+    ],
+    "cues": [
+      "Finish by squeezing the glutes while keeping the ribs down and shins near vertical."
+    ],
+    "cautions": [
+      "Secure the bench and bar; reduce load if the pad shifts or the feet cannot stay planted."
+    ],
+    "textFallback": "Barbell Hip Thrust. Place the upper back against a stable bench, pad the bar over the hip crease, and plant both feet. Lower the hips under control, then drive through the feet until hips extend and the torso is approximately level without arching the lower back. Finish by squeezing the glutes while keeping the ribs down and shins near vertical. Secure the bench and bar; reduce load if the pad shifts or the feet cannot stay planted.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "60fb1ccb6761725fedf7a2e97a52eadec9cf8a952397f0f35254767f6075754a"
+  },
+  {
+    "exerciseId": "barbell_hip_thrust",
+    "locale": "pt-PT",
+    "displayName": "Elevação da Bacia com Barra",
+    "steps": [
+      "Apoie a parte superior das costas num banco estável, proteja a barra sobre a dobra da anca e firme os pés.",
+      "Baixe a bacia com controlo e empurre pelos pés até estender as ancas, sem arquear a zona lombar."
+    ],
+    "cues": [
+      "Termine contraindo os glúteos, com as costelas controladas e as canelas próximas da vertical."
+    ],
+    "cautions": [
+      "Fixe o banco e a barra; reduza a carga se a proteção deslizar ou se os pés perderem apoio."
+    ],
+    "textFallback": "Elevação da Bacia com Barra. Apoie a parte superior das costas num banco estável, proteja a barra sobre a dobra da anca e firme os pés. Baixe a bacia com controlo e empurre pelos pés até estender as ancas, sem arquear a zona lombar. Termine contraindo os glúteos, com as costelas controladas e as canelas próximas da vertical. Fixe o banco e a barra; reduza a carga se a proteção deslizar ou se os pés perderem apoio.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "822746e15ec40fb8537402877d592c98b989d859fb2da7049ffe223073995017"
+  },
+  {
+    "exerciseId": "barbell_hip_thrust",
+    "locale": "pt-BR",
+    "displayName": "Elevação Pélvica com Barra",
+    "steps": [
+      "Apoie a parte superior das costas em um banco estável, proteja a barra sobre a dobra do quadril e firme os pés.",
+      "Desça a pelve com controle e pressione os pés até estender os quadris, sem arquear a lombar."
+    ],
+    "cues": [
+      "Termine contraindo os glúteos, com as costelas controladas e as canelas próximas da vertical."
+    ],
+    "cautions": [
+      "Estabilize o banco e a barra; reduza a carga se a proteção deslizar ou se os pés perderem apoio."
+    ],
+    "textFallback": "Elevação Pélvica com Barra. Apoie a parte superior das costas em um banco estável, proteja a barra sobre a dobra do quadril e firme os pés. Desça a pelve com controle e pressione os pés até estender os quadris, sem arquear a lombar. Termine contraindo os glúteos, com as costelas controladas e as canelas próximas da vertical. Estabilize o banco e a barra; reduza a carga se a proteção deslizar ou se os pés perderem apoio.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "53e3e97d5f4cb5de40e69f5f5b42e98acd38cbfa5ac44a7be3091c8e7420901d"
+  },
+  {
+    "exerciseId": "barbell_overhead_press",
+    "locale": "en-US",
+    "displayName": "Barbell Overhead Press",
+    "steps": [
+      "Hold the bar at the upper chest with forearms near vertical, feet planted, and trunk braced.",
+      "Press the bar overhead in a close path, moving the head slightly back then through as the elbows straighten; lower to the starting shelf."
+    ],
+    "cues": [
+      "Finish with the bar stacked over shoulders, hips, and midfoot without leaning back."
+    ],
+    "cautions": [
+      "Use a rack and manageable load; stop the set if the bar path forces a pronounced back arch."
+    ],
+    "textFallback": "Barbell Overhead Press. Hold the bar at the upper chest with forearms near vertical, feet planted, and trunk braced. Press the bar overhead in a close path, moving the head slightly back then through as the elbows straighten; lower to the starting shelf. Finish with the bar stacked over shoulders, hips, and midfoot without leaning back. Use a rack and manageable load; stop the set if the bar path forces a pronounced back arch.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0b153aac8322a87ede02d2a6751d0f86813ef1531963d52e73a97b41a4f2017f"
+  },
+  {
+    "exerciseId": "barbell_overhead_press",
+    "locale": "pt-PT",
+    "displayName": "Press de Ombros com Barra",
+    "steps": [
+      "Segure a barra na parte superior do peito com os antebraços próximos da vertical, pés firmes e tronco estável.",
+      "Empurre a barra acima da cabeça num trajeto próximo, afastando ligeiramente a cabeça e voltando a alinhá-la; desça ao ponto inicial."
+    ],
+    "cues": [
+      "Termine com a barra alinhada sobre ombros, ancas e meio do pé, sem inclinar o tronco para trás."
+    ],
+    "cautions": [
+      "Use um suporte e carga controlável; pare se o trajeto obrigar a arquear muito as costas."
+    ],
+    "textFallback": "Press de Ombros com Barra. Segure a barra na parte superior do peito com os antebraços próximos da vertical, pés firmes e tronco estável. Empurre a barra acima da cabeça num trajeto próximo, afastando ligeiramente a cabeça e voltando a alinhá-la; desça ao ponto inicial. Termine com a barra alinhada sobre ombros, ancas e meio do pé, sem inclinar o tronco para trás. Use um suporte e carga controlável; pare se o trajeto obrigar a arquear muito as costas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "528138a63d235442461faa7d15fb13db4215be3b074f6a1494092ddddf7d56cb"
+  },
+  {
+    "exerciseId": "barbell_overhead_press",
+    "locale": "pt-BR",
+    "displayName": "Desenvolvimento com Barra",
+    "steps": [
+      "Segure a barra na parte superior do peito com os antebraços próximos da vertical, pés firmes e tronco estável.",
+      "Empurre a barra acima da cabeça em trajetória próxima, afastando levemente a cabeça e voltando a alinhá-la; desça ao início."
+    ],
+    "cues": [
+      "Finalize com a barra alinhada sobre ombros, quadris e meio dos pés, sem inclinar o tronco para trás."
+    ],
+    "cautions": [
+      "Use um suporte e carga controlável; pare se a trajetória exigir um arco acentuado nas costas."
+    ],
+    "textFallback": "Desenvolvimento com Barra. Segure a barra na parte superior do peito com os antebraços próximos da vertical, pés firmes e tronco estável. Empurre a barra acima da cabeça em trajetória próxima, afastando levemente a cabeça e voltando a alinhá-la; desça ao início. Finalize com a barra alinhada sobre ombros, quadris e meio dos pés, sem inclinar o tronco para trás. Use um suporte e carga controlável; pare se a trajetória exigir um arco acentuado nas costas.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e8f08c923a48cfc8924289ca0d2840fce48812e6f56353cc2aef1f507fba6a1e"
+  },
+  {
+    "exerciseId": "battle_ropes_alternating",
+    "locale": "en-US",
+    "displayName": "Battle Ropes — Alternating Waves",
+    "steps": [
+      "Hold one end of each anchored rope, take an athletic stance, and create slight tension without lifting the anchor.",
+      "Raise one hand as the other lowers, switching rapidly to send separate alternating waves toward the anchor."
+    ],
+    "cues": [
+      "Keep knees soft and the torso braced while each arm moves independently."
+    ],
+    "cautions": [
+      "Clear the rope lanes and stop if the anchor shifts, a rope frays, or coordination breaks down."
+    ],
+    "textFallback": "Battle Ropes — Alternating Waves. Hold one end of each anchored rope, take an athletic stance, and create slight tension without lifting the anchor. Raise one hand as the other lowers, switching rapidly to send separate alternating waves toward the anchor. Keep knees soft and the torso braced while each arm moves independently. Clear the rope lanes and stop if the anchor shifts, a rope frays, or coordination breaks down.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0a6430334c1df9f91c527e216bc17076deadf4c643cb5280eb2674a7c8bb9c08"
+  },
+  {
+    "exerciseId": "battle_ropes_alternating",
+    "locale": "pt-PT",
+    "displayName": "Cordas de Batalha — Ondas Alternadas",
+    "steps": [
+      "Segure uma ponta de cada corda fixada, adote uma posição atlética e crie ligeira tensão sem mover a âncora.",
+      "Eleve uma mão enquanto baixa a outra, alternando rapidamente para enviar ondas separadas até à fixação."
+    ],
+    "cues": [
+      "Mantenha os joelhos fletidos e o tronco estável enquanto cada braço trabalha de forma independente."
+    ],
+    "cautions": [
+      "Deixe os trajetos livres e pare se a fixação se mover, a corda desfiar ou perder a coordenação."
+    ],
+    "textFallback": "Cordas de Batalha — Ondas Alternadas. Segure uma ponta de cada corda fixada, adote uma posição atlética e crie ligeira tensão sem mover a âncora. Eleve uma mão enquanto baixa a outra, alternando rapidamente para enviar ondas separadas até à fixação. Mantenha os joelhos fletidos e o tronco estável enquanto cada braço trabalha de forma independente. Deixe os trajetos livres e pare se a fixação se mover, a corda desfiar ou perder a coordenação.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ace40821fb6371bf651bbe0d695eb855eed5492a4fdcd0e6562018b19ea974c2"
+  },
+  {
+    "exerciseId": "battle_ropes_alternating",
+    "locale": "pt-BR",
+    "displayName": "Corda Naval — Ondas Alternadas",
+    "steps": [
+      "Segure uma ponta de cada corda ancorada, adote uma base atlética e crie leve tensão sem mover a ancoragem.",
+      "Eleve uma mão enquanto abaixa a outra, alternando rapidamente para enviar ondas separadas até o ponto de fixação."
+    ],
+    "cues": [
+      "Mantenha os joelhos flexionados e o tronco firme enquanto cada braço se move de forma independente."
+    ],
+    "cautions": [
+      "Deixe os corredores livres e pare se a ancoragem se mover, a corda desfiar ou a coordenação falhar."
+    ],
+    "textFallback": "Corda Naval — Ondas Alternadas. Segure uma ponta de cada corda ancorada, adote uma base atlética e crie leve tensão sem mover a ancoragem. Eleve uma mão enquanto abaixa a outra, alternando rapidamente para enviar ondas separadas até o ponto de fixação. Mantenha os joelhos flexionados e o tronco firme enquanto cada braço se move de forma independente. Deixe os corredores livres e pare se a ancoragem se mover, a corda desfiar ou a coordenação falhar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8c21c5b8ba68201b597716f7c4be22806ae27534298c31a0c8258cf9d301e154"
+  },
+  {
+    "exerciseId": "battle_ropes_slams",
+    "locale": "en-US",
+    "displayName": "Battle Ropes — Slams",
+    "steps": [
+      "Stand with one end of each securely anchored rope and lift both hands together to a controlled overhead position.",
+      "Drive both ropes down together while bending the hips and knees, then reset smoothly for the next prescribed repetition."
+    ],
+    "cues": [
+      "Coordinate the arm drive with a braced trunk rather than pulling only through the lower back."
+    ],
+    "cautions": [
+      "Keep the area and anchor clear; use a lower hand height if overhead control is limited."
+    ],
+    "textFallback": "Battle Ropes — Slams. Stand with one end of each securely anchored rope and lift both hands together to a controlled overhead position. Drive both ropes down together while bending the hips and knees, then reset smoothly for the next prescribed repetition. Coordinate the arm drive with a braced trunk rather than pulling only through the lower back. Keep the area and anchor clear; use a lower hand height if overhead control is limited.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2edbdcfaf898ad6200e1fcf2537bdf46742ceb87460937a5e5517adaa8f2593f"
+  },
+  {
+    "exerciseId": "battle_ropes_slams",
+    "locale": "pt-PT",
+    "displayName": "Cordas de Batalha — Batimentos",
+    "steps": [
+      "Fique de pé com uma ponta de cada corda bem fixada e eleve as duas mãos em conjunto acima da cabeça com controlo.",
+      "Projete as duas cordas para baixo ao mesmo tempo, fletindo ancas e joelhos, e reorganize a posição de forma suave."
+    ],
+    "cues": [
+      "Coordene a ação dos braços com o tronco estável, sem puxar apenas pela zona lombar."
+    ],
+    "cautions": [
+      "Mantenha a zona e a fixação livres; use menor altura das mãos se não controlar a posição acima da cabeça."
+    ],
+    "textFallback": "Cordas de Batalha — Batimentos. Fique de pé com uma ponta de cada corda bem fixada e eleve as duas mãos em conjunto acima da cabeça com controlo. Projete as duas cordas para baixo ao mesmo tempo, fletindo ancas e joelhos, e reorganize a posição de forma suave. Coordene a ação dos braços com o tronco estável, sem puxar apenas pela zona lombar. Mantenha a zona e a fixação livres; use menor altura das mãos se não controlar a posição acima da cabeça.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "3069774c9a469158183b33897f6efcba48d03215012e6a751fcc79dc1e66452e"
+  },
+  {
+    "exerciseId": "battle_ropes_slams",
+    "locale": "pt-BR",
+    "displayName": "Corda Naval — Batidas",
+    "steps": [
+      "Fique em pé com uma ponta de cada corda bem ancorada e leve as duas mãos juntas acima da cabeça com controle.",
+      "Conduza as duas cordas para baixo ao mesmo tempo, flexionando quadris e joelhos, e reorganize a postura de modo suave."
+    ],
+    "cues": [
+      "Coordene a ação dos braços com o tronco firme, sem puxar apenas pela lombar."
+    ],
+    "cautions": [
+      "Mantenha a área e a ancoragem livres; use menor altura das mãos se não controlar a posição acima da cabeça."
+    ],
+    "textFallback": "Corda Naval — Batidas. Fique em pé com uma ponta de cada corda bem ancorada e leve as duas mãos juntas acima da cabeça com controle. Conduza as duas cordas para baixo ao mesmo tempo, flexionando quadris e joelhos, e reorganize a postura de modo suave. Coordene a ação dos braços com o tronco firme, sem puxar apenas pela lombar. Mantenha a área e a ancoragem livres; use menor altura das mãos se não controlar a posição acima da cabeça.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "64ece288fe85ed73eaa76de18209539a94490f91b3c9bfec37b9109d4dd3bfde"
+  },
+  {
+    "exerciseId": "bear_crawl",
+    "locale": "en-US",
+    "displayName": "Bear Crawl",
+    "steps": [
+      "Start on hands and knees with wrists under shoulders, knees under hips, and lift the knees a few centimeters.",
+      "Move one hand with the opposite foot in short steps while keeping the hips low and the back level."
+    ],
+    "cues": [
+      "Press the floor away and keep each step quiet and controlled."
+    ],
+    "cautions": [
+      "Shorten the distance or pause if the hips twist, hands slip, or wrists cannot tolerate the position."
+    ],
+    "textFallback": "Bear Crawl. Start on hands and knees with wrists under shoulders, knees under hips, and lift the knees a few centimeters. Move one hand with the opposite foot in short steps while keeping the hips low and the back level. Press the floor away and keep each step quiet and controlled. Shorten the distance or pause if the hips twist, hands slip, or wrists cannot tolerate the position.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c81ace0f67f334ca94175b0548edcd140b001b4d212b14565a499a96945eb187"
+  },
+  {
+    "exerciseId": "bear_crawl",
+    "locale": "pt-PT",
+    "displayName": "Deslocamento do Urso",
+    "steps": [
+      "Comece em quatro apoios, com punhos sob os ombros e joelhos sob as ancas, e eleve ligeiramente os joelhos.",
+      "Avance uma mão com o pé oposto em passos curtos, mantendo a bacia baixa e as costas niveladas."
+    ],
+    "cues": [
+      "Empurre o chão e faça cada passo de forma silenciosa e controlada."
+    ],
+    "cautions": [
+      "Reduza a distância ou pare se a bacia rodar, as mãos escorregarem ou os punhos não tolerarem a posição."
+    ],
+    "textFallback": "Deslocamento do Urso. Comece em quatro apoios, com punhos sob os ombros e joelhos sob as ancas, e eleve ligeiramente os joelhos. Avance uma mão com o pé oposto em passos curtos, mantendo a bacia baixa e as costas niveladas. Empurre o chão e faça cada passo de forma silenciosa e controlada. Reduza a distância ou pare se a bacia rodar, as mãos escorregarem ou os punhos não tolerarem a posição.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ec2981ce03c1e4ae27458864433c9d248eee57e5de50ae53a0f66fd09df8f90c"
+  },
+  {
+    "exerciseId": "bear_crawl",
+    "locale": "pt-BR",
+    "displayName": "Caminhada do Urso",
+    "steps": [
+      "Comece em quatro apoios, com punhos sob os ombros e joelhos sob os quadris, e eleve os joelhos alguns centímetros.",
+      "Avance uma mão com o pé oposto em passos curtos, mantendo o quadril baixo e as costas niveladas."
+    ],
+    "cues": [
+      "Empurre o chão e faça cada passo de forma silenciosa e controlada."
+    ],
+    "cautions": [
+      "Reduza a distância ou pause se o quadril girar, as mãos escorregarem ou os punhos não tolerarem a posição."
+    ],
+    "textFallback": "Caminhada do Urso. Comece em quatro apoios, com punhos sob os ombros e joelhos sob os quadris, e eleve os joelhos alguns centímetros. Avance uma mão com o pé oposto em passos curtos, mantendo o quadril baixo e as costas niveladas. Empurre o chão e faça cada passo de forma silenciosa e controlada. Reduza a distância ou pause se o quadril girar, as mãos escorregarem ou os punhos não tolerarem a posição.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5d9dd666b7e1c87c2b2df4b7b521b845f2476e2097ed5bf47ec692c5eb8267e3"
+  },
+  {
+    "exerciseId": "bench_press",
+    "locale": "en-US",
+    "displayName": "Bench Press",
+    "steps": [
+      "Lie on the bench with eyes below the racked bar, feet planted, shoulder blades set, and hands evenly spaced.",
+      "Unrack with control, lower the bar toward the mid-to-lower chest with forearms near vertical, then press back over the shoulders."
+    ],
+    "cues": [
+      "Keep head, upper back, and hips supported while both feet remain firm."
+    ],
+    "cautions": [
+      "Use safety arms or a competent spotter and a load you can rerack without losing position."
+    ],
+    "textFallback": "Bench Press. Lie on the bench with eyes below the racked bar, feet planted, shoulder blades set, and hands evenly spaced. Unrack with control, lower the bar toward the mid-to-lower chest with forearms near vertical, then press back over the shoulders. Keep head, upper back, and hips supported while both feet remain firm. Use safety arms or a competent spotter and a load you can rerack without losing position.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "065af0bbce7c0f9db16aa9ab771d1c4afaeedb9f6a486b887f9525b158b5ff60"
+  },
+  {
+    "exerciseId": "bench_press",
+    "locale": "pt-PT",
+    "displayName": "Press de Peito com Barra",
+    "steps": [
+      "Deite-se com os olhos sob a barra, pés firmes, omoplatas estabilizadas e mãos à mesma distância.",
+      "Retire a barra com controlo, desça-a para a zona média-inferior do peito com antebraços próximos da vertical e empurre para cima."
+    ],
+    "cues": [
+      "Mantenha cabeça, parte superior das costas e bacia apoiadas, com ambos os pés firmes."
+    ],
+    "cautions": [
+      "Use barras de segurança ou um ajudante competente e uma carga que consiga recolocar sem perder a posição."
+    ],
+    "textFallback": "Press de Peito com Barra. Deite-se com os olhos sob a barra, pés firmes, omoplatas estabilizadas e mãos à mesma distância. Retire a barra com controlo, desça-a para a zona média-inferior do peito com antebraços próximos da vertical e empurre para cima. Mantenha cabeça, parte superior das costas e bacia apoiadas, com ambos os pés firmes. Use barras de segurança ou um ajudante competente e uma carga que consiga recolocar sem perder a posição.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "3adf463189c4623618c1b180aecaf7fcb2ff5c8eb52cf62aa40425b72a0bf912"
+  },
+  {
+    "exerciseId": "bench_press",
+    "locale": "pt-BR",
+    "displayName": "Supino Reto com Barra",
+    "steps": [
+      "Deite-se com os olhos sob a barra, pés firmes, escápulas estabilizadas e mãos igualmente espaçadas.",
+      "Retire a barra com controle, desça até a região média-inferior do peito com antebraços próximos da vertical e empurre para cima."
+    ],
+    "cues": [
+      "Mantenha cabeça, parte superior das costas e quadril apoiados, com os dois pés firmes."
+    ],
+    "cautions": [
+      "Use travas de segurança ou um parceiro capacitado e uma carga que consiga recolocar sem perder a posição."
+    ],
+    "textFallback": "Supino Reto com Barra. Deite-se com os olhos sob a barra, pés firmes, escápulas estabilizadas e mãos igualmente espaçadas. Retire a barra com controle, desça até a região média-inferior do peito com antebraços próximos da vertical e empurre para cima. Mantenha cabeça, parte superior das costas e quadril apoiados, com os dois pés firmes. Use travas de segurança ou um parceiro capacitado e uma carga que consiga recolocar sem perder a posição.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "eecdca05e38911aad91dd46ce4fd6921a9c55055dac991756e567cc6171e1121"
+  },
+  {
+    "exerciseId": "bird_dog",
+    "locale": "en-US",
+    "displayName": "Bird Dog",
+    "steps": [
+      "Begin on hands and knees with shoulders over wrists, hips over knees, and a neutral spine.",
+      "Reach one arm forward and the opposite leg back until both align with the torso, pause, then return without shifting the pelvis."
+    ],
+    "cues": [
+      "Imagine balancing a glass across the lower back while the limbs lengthen."
+    ],
+    "cautions": [
+      "Use a smaller reach or move one limb at a time if the trunk rotates or the back arches."
+    ],
+    "textFallback": "Bird Dog. Begin on hands and knees with shoulders over wrists, hips over knees, and a neutral spine. Reach one arm forward and the opposite leg back until both align with the torso, pause, then return without shifting the pelvis. Imagine balancing a glass across the lower back while the limbs lengthen. Use a smaller reach or move one limb at a time if the trunk rotates or the back arches.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ab6636ba074ea8d1b1cb4eac34e05d2b88dfe2104b4f8d041c3c8ed9fc802a34"
+  },
+  {
+    "exerciseId": "bird_dog",
+    "locale": "pt-PT",
+    "displayName": "Extensão Alternada em Quatro Apoios",
+    "steps": [
+      "Comece em quatro apoios, com ombros sobre os punhos, ancas sobre os joelhos e coluna neutra.",
+      "Estenda um braço à frente e a perna oposta atrás até alinharem com o tronco, pare e regresse sem deslocar a bacia."
+    ],
+    "cues": [
+      "Imagine um copo equilibrado sobre a zona lombar enquanto alonga os membros."
+    ],
+    "cautions": [
+      "Reduza o alcance ou mova um membro de cada vez se o tronco rodar ou as costas arquearem."
+    ],
+    "textFallback": "Extensão Alternada em Quatro Apoios. Comece em quatro apoios, com ombros sobre os punhos, ancas sobre os joelhos e coluna neutra. Estenda um braço à frente e a perna oposta atrás até alinharem com o tronco, pare e regresse sem deslocar a bacia. Imagine um copo equilibrado sobre a zona lombar enquanto alonga os membros. Reduza o alcance ou mova um membro de cada vez se o tronco rodar ou as costas arquearem.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "01281a89fbfa0745c5be45f11ea57fc506554a9975b90d4dec8a11f7503e6660"
+  },
+  {
+    "exerciseId": "bird_dog",
+    "locale": "pt-BR",
+    "displayName": "Bird Dog em Quatro Apoios",
+    "steps": [
+      "Comece em quatro apoios, com ombros sobre os punhos, quadris sobre os joelhos e coluna neutra.",
+      "Estenda um braço à frente e a perna oposta atrás até alinharem com o tronco, pause e retorne sem deslocar a pelve."
+    ],
+    "cues": [
+      "Imagine um copo equilibrado sobre a lombar enquanto alonga os membros."
+    ],
+    "cautions": [
+      "Reduza o alcance ou mova um membro por vez se o tronco girar ou as costas arquearem."
+    ],
+    "textFallback": "Bird Dog em Quatro Apoios. Comece em quatro apoios, com ombros sobre os punhos, quadris sobre os joelhos e coluna neutra. Estenda um braço à frente e a perna oposta atrás até alinharem com o tronco, pause e retorne sem deslocar a pelve. Imagine um copo equilibrado sobre a lombar enquanto alonga os membros. Reduza o alcance ou mova um membro por vez se o tronco girar ou as costas arquearem.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b3314ceb3bb3c8870cb6e7c7f8097801de5516b740ff4c3a094c6d8ccf636682"
+  },
+  {
+    "exerciseId": "bodyweight_squat",
+    "locale": "en-US",
+    "displayName": "Bodyweight Squat",
+    "steps": [
+      "Stand with feet in a comfortable squat stance and brace lightly before descending.",
+      "Sit down between the hips while knees follow toes, then press through the full feet to return to standing."
+    ],
+    "cues": [
+      "Keep heels grounded and let the torso incline only as much as needed for balance."
+    ],
+    "cautions": [
+      "Use a stable target or reduce depth if you cannot keep the feet and knees controlled."
+    ],
+    "textFallback": "Bodyweight Squat. Stand with feet in a comfortable squat stance and brace lightly before descending. Sit down between the hips while knees follow toes, then press through the full feet to return to standing. Keep heels grounded and let the torso incline only as much as needed for balance. Use a stable target or reduce depth if you cannot keep the feet and knees controlled.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8cf75b125bae4629ed83f40c1f66bfd1e55db5d8d709c3e721516cbc6202fbb4"
+  },
+  {
+    "exerciseId": "bodyweight_squat",
+    "locale": "pt-PT",
+    "displayName": "Agachamento sem Carga",
+    "steps": [
+      "Fique de pé numa posição confortável de agachamento e estabilize o tronco antes de descer.",
+      "Desça entre as ancas com os joelhos na direção dos pés e pressione o pé por completo para voltar a ficar de pé."
+    ],
+    "cues": [
+      "Mantenha os calcanhares apoiados e incline o tronco apenas o necessário para equilibrar."
+    ],
+    "cautions": [
+      "Use um alvo estável ou reduza a profundidade se não controlar os pés e os joelhos."
+    ],
+    "textFallback": "Agachamento sem Carga. Fique de pé numa posição confortável de agachamento e estabilize o tronco antes de descer. Desça entre as ancas com os joelhos na direção dos pés e pressione o pé por completo para voltar a ficar de pé. Mantenha os calcanhares apoiados e incline o tronco apenas o necessário para equilibrar. Use um alvo estável ou reduza a profundidade se não controlar os pés e os joelhos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "9ce97668395c89d3be81b9bd907c2258d0773bff6ce7264ff5c898e6291ac57c"
+  },
+  {
+    "exerciseId": "bodyweight_squat",
+    "locale": "pt-BR",
+    "displayName": "Agachamento com Peso Corporal",
+    "steps": [
+      "Fique em pé em uma base confortável de agachamento e firme o tronco antes de descer.",
+      "Agache entre os quadris com os joelhos acompanhando os pés e pressione o pé inteiro para voltar a ficar em pé."
+    ],
+    "cues": [
+      "Mantenha os calcanhares apoiados e incline o tronco apenas o necessário para equilibrar."
+    ],
+    "cautions": [
+      "Use um alvo estável ou reduza a profundidade se não controlar os pés e os joelhos."
+    ],
+    "textFallback": "Agachamento com Peso Corporal. Fique em pé em uma base confortável de agachamento e firme o tronco antes de descer. Agache entre os quadris com os joelhos acompanhando os pés e pressione o pé inteiro para voltar a ficar em pé. Mantenha os calcanhares apoiados e incline o tronco apenas o necessário para equilibrar. Use um alvo estável ou reduza a profundidade se não controlar os pés e os joelhos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "ad7af3307f33511caa1b43d8fe55dc610d57bb39dd48ed8cf373c08baed681e8"
+  },
+  {
+    "exerciseId": "box_jump",
+    "locale": "en-US",
+    "displayName": "Box Jump",
+    "steps": [
+      "Choose a stable box below your maximum ability, stand close enough for a two-foot takeoff, and load the hips with both feet grounded.",
+      "Swing the arms and jump onto the box, land with both feet fully supported and knees tracking over toes, then stand under control."
+    ],
+    "cues": [
+      "Aim for a quiet landing on the whole foot rather than pulling the knees excessively high."
+    ],
+    "cautions": [
+      "Step down unless the workout explicitly prescribes another safe exit; lower the box if you cannot clear it comfortably."
+    ],
+    "textFallback": "Box Jump. Choose a stable box below your maximum ability, stand close enough for a two-foot takeoff, and load the hips with both feet grounded. Swing the arms and jump onto the box, land with both feet fully supported and knees tracking over toes, then stand under control. Aim for a quiet landing on the whole foot rather than pulling the knees excessively high. Step down unless the workout explicitly prescribes another safe exit; lower the box if you cannot clear it comfortably.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "9ec77a8af17dd815a588f84814480c826b66b6d22cb00fedcedd9f72d4791211"
+  },
+  {
+    "exerciseId": "box_jump",
+    "locale": "pt-PT",
+    "displayName": "Salto para Caixa",
+    "steps": [
+      "Escolha uma caixa estável abaixo da sua capacidade máxima, posicione-se para uma impulsão a dois pés e carregue as ancas.",
+      "Balance os braços, salte para a caixa e aterre com os dois pés totalmente apoiados e joelhos alinhados, ficando depois de pé."
+    ],
+    "cues": [
+      "Procure uma aterragem silenciosa com o pé apoiado por completo, sem elevar excessivamente os joelhos."
+    ],
+    "cautions": [
+      "Desça com um passo, salvo indicação segura em contrário; use uma caixa mais baixa se não a ultrapassar com margem."
+    ],
+    "textFallback": "Salto para Caixa. Escolha uma caixa estável abaixo da sua capacidade máxima, posicione-se para uma impulsão a dois pés e carregue as ancas. Balance os braços, salte para a caixa e aterre com os dois pés totalmente apoiados e joelhos alinhados, ficando depois de pé. Procure uma aterragem silenciosa com o pé apoiado por completo, sem elevar excessivamente os joelhos. Desça com um passo, salvo indicação segura em contrário; use uma caixa mais baixa se não a ultrapassar com margem.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "11c6b2145d80abefa2e67274629ffd530624326cf679a9b82f081f02c9173aa2"
+  },
+  {
+    "exerciseId": "box_jump",
+    "locale": "pt-BR",
+    "displayName": "Salto na Caixa",
+    "steps": [
+      "Escolha uma caixa estável abaixo da sua capacidade máxima, posicione-se para impulsionar com os dois pés e carregue os quadris.",
+      "Balance os braços, salte sobre a caixa e aterrisse com os dois pés totalmente apoiados e joelhos alinhados, levantando em seguida."
+    ],
+    "cues": [
+      "Busque uma aterrissagem silenciosa sobre o pé inteiro, sem puxar os joelhos exageradamente."
+    ],
+    "cautions": [
+      "Desça com um passo, salvo orientação segura diferente; use uma caixa mais baixa se não houver margem para passar."
+    ],
+    "textFallback": "Salto na Caixa. Escolha uma caixa estável abaixo da sua capacidade máxima, posicione-se para impulsionar com os dois pés e carregue os quadris. Balance os braços, salte sobre a caixa e aterrisse com os dois pés totalmente apoiados e joelhos alinhados, levantando em seguida. Busque uma aterrissagem silenciosa sobre o pé inteiro, sem puxar os joelhos exageradamente. Desça com um passo, salvo orientação segura diferente; use uma caixa mais baixa se não houver margem para passar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e1bfe3f9e5309386383c2f149d4b08119c276140b31c6b7f852c365892d361e5"
+  },
+  {
+    "exerciseId": "box_pistol_squat",
+    "locale": "en-US",
+    "displayName": "Box Pistol Squat",
+    "steps": [
+      "Stand in front of a stable box on one leg, extend the other leg, and reach the hips back toward the target.",
+      "Touch down lightly without collapsing, then drive through the working foot to stand while the free leg stays clear."
+    ],
+    "cues": [
+      "Keep the heel heavy and the working knee aligned with the toes."
+    ],
+    "cautions": [
+      "Raise the box or use light assistance if you cannot control the final centimeters of the descent."
+    ],
+    "textFallback": "Box Pistol Squat. Stand in front of a stable box on one leg, extend the other leg, and reach the hips back toward the target. Touch down lightly without collapsing, then drive through the working foot to stand while the free leg stays clear. Keep the heel heavy and the working knee aligned with the toes. Raise the box or use light assistance if you cannot control the final centimeters of the descent.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "28c31f0c02cd124983ad5dbe5570c594f84feb99c972d0c58d7ecbc06bd92f4e"
+  },
+  {
+    "exerciseId": "box_pistol_squat",
+    "locale": "pt-PT",
+    "displayName": "Agachamento Pistol para Caixa",
+    "steps": [
+      "Fique diante de uma caixa estável apoiado numa perna, estenda a outra e leve as ancas para trás.",
+      "Toque levemente na caixa sem se deixar cair e empurre pelo pé de apoio para subir, mantendo a perna livre afastada."
+    ],
+    "cues": [
+      "Mantenha o calcanhar carregado e o joelho de apoio alinhado com os dedos."
+    ],
+    "cautions": [
+      "Eleve a caixa ou use assistência ligeira se não controlar os últimos centímetros da descida."
+    ],
+    "textFallback": "Agachamento Pistol para Caixa. Fique diante de uma caixa estável apoiado numa perna, estenda a outra e leve as ancas para trás. Toque levemente na caixa sem se deixar cair e empurre pelo pé de apoio para subir, mantendo a perna livre afastada. Mantenha o calcanhar carregado e o joelho de apoio alinhado com os dedos. Eleve a caixa ou use assistência ligeira se não controlar os últimos centímetros da descida.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "79d90dc97e05874799df827590af839625727bc25a7c6d09cf1b696dcb720368"
+  },
+  {
+    "exerciseId": "box_pistol_squat",
+    "locale": "pt-BR",
+    "displayName": "Agachamento Pistol no Banco",
+    "steps": [
+      "Fique diante de um banco ou caixa estável apoiado em uma perna, estenda a outra e leve o quadril para trás.",
+      "Toque levemente no apoio sem despencar e pressione o pé de trabalho para subir, mantendo a perna livre afastada."
+    ],
+    "cues": [
+      "Mantenha o calcanhar carregado e o joelho de apoio alinhado com os dedos."
+    ],
+    "cautions": [
+      "Eleve o apoio ou use assistência leve se não controlar os últimos centímetros da descida."
+    ],
+    "textFallback": "Agachamento Pistol no Banco. Fique diante de um banco ou caixa estável apoiado em uma perna, estenda a outra e leve o quadril para trás. Toque levemente no apoio sem despencar e pressione o pé de trabalho para subir, mantendo a perna livre afastada. Mantenha o calcanhar carregado e o joelho de apoio alinhado com os dedos. Eleve o apoio ou use assistência leve se não controlar os últimos centímetros da descida.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "763f11700f13dc3ad656005d0e4983fee1cef068fcf43da371b474becd72421b"
+  },
+  {
+    "exerciseId": "broad_jump",
+    "locale": "en-US",
+    "displayName": "Broad Jump",
+    "steps": [
+      "Stand with both feet parallel, swing the arms back, and load the hips and knees for a two-foot takeoff.",
+      "Drive forward, reach with the arms, and land on both feet together while bending hips and knees to absorb the horizontal travel."
+    ],
+    "cues": [
+      "Hold the landing briefly before resetting for another repetition."
+    ],
+    "cautions": [
+      "Use a clear, non-slip landing area and shorten the jump if either foot lands early or balance is lost."
+    ],
+    "textFallback": "Broad Jump. Stand with both feet parallel, swing the arms back, and load the hips and knees for a two-foot takeoff. Drive forward, reach with the arms, and land on both feet together while bending hips and knees to absorb the horizontal travel. Hold the landing briefly before resetting for another repetition. Use a clear, non-slip landing area and shorten the jump if either foot lands early or balance is lost.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "75b3cdd6c8cf5b1684ab8dcf8dd218d31bafd336bca7b1f85e702a3643cf8e6d"
+  },
+  {
+    "exerciseId": "broad_jump",
+    "locale": "pt-PT",
+    "displayName": "Salto Horizontal",
+    "steps": [
+      "Fique com os pés paralelos, leve os braços atrás e carregue ancas e joelhos para impulsionar com os dois pés.",
+      "Salte para a frente, alcance com os braços e aterre com os dois pés juntos, fletindo ancas e joelhos para absorver o movimento."
+    ],
+    "cues": [
+      "Estabilize a aterragem por um instante antes de repetir."
+    ],
+    "cautions": [
+      "Use uma zona livre e antiderrapante; reduza a distância se um pé tocar primeiro ou se perder o equilíbrio."
+    ],
+    "textFallback": "Salto Horizontal. Fique com os pés paralelos, leve os braços atrás e carregue ancas e joelhos para impulsionar com os dois pés. Salte para a frente, alcance com os braços e aterre com os dois pés juntos, fletindo ancas e joelhos para absorver o movimento. Estabilize a aterragem por um instante antes de repetir. Use uma zona livre e antiderrapante; reduza a distância se um pé tocar primeiro ou se perder o equilíbrio.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "dcae2b7e49dde1f5540d1198cf5603e2f1e2677f8fcb484d20c1385ee76ca54a"
+  },
+  {
+    "exerciseId": "broad_jump",
+    "locale": "pt-BR",
+    "displayName": "Salto em Distância Parado",
+    "steps": [
+      "Fique com os pés paralelos, leve os braços para trás e carregue quadris e joelhos para impulsionar com os dois pés.",
+      "Salte à frente, alcance com os braços e aterrisse com os dois pés juntos, flexionando quadris e joelhos para absorver o movimento."
+    ],
+    "cues": [
+      "Segure a aterrissagem por um instante antes de repetir."
+    ],
+    "cautions": [
+      "Use uma área livre e antiderrapante; reduza a distância se um pé tocar primeiro ou se perder o equilíbrio."
+    ],
+    "textFallback": "Salto em Distância Parado. Fique com os pés paralelos, leve os braços para trás e carregue quadris e joelhos para impulsionar com os dois pés. Salte à frente, alcance com os braços e aterrisse com os dois pés juntos, flexionando quadris e joelhos para absorver o movimento. Segure a aterrissagem por um instante antes de repetir. Use uma área livre e antiderrapante; reduza a distância se um pé tocar primeiro ou se perder o equilíbrio.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "345f838b4fa2899608f98da29a98afcbcc8cd991184812e438bda8888fe92d09"
+  },
+  {
+    "exerciseId": "bulgarian_split_squat",
+    "locale": "en-US",
+    "displayName": "Bulgarian Split Squat",
+    "steps": [
+      "Stand a stride in front of a stable bench, rest the top of the rear foot on it, and hold the prescribed dumbbells at the sides.",
+      "Lower the rear knee toward the floor as the front knee follows the toes, then drive through the front foot to rise."
+    ],
+    "cues": [
+      "Keep most of the pressure through the full front foot and the hips facing forward."
+    ],
+    "cautions": [
+      "Adjust the stance or remove load if the bench contact, front heel, or balance becomes unstable."
+    ],
+    "textFallback": "Bulgarian Split Squat. Stand a stride in front of a stable bench, rest the top of the rear foot on it, and hold the prescribed dumbbells at the sides. Lower the rear knee toward the floor as the front knee follows the toes, then drive through the front foot to rise. Keep most of the pressure through the full front foot and the hips facing forward. Adjust the stance or remove load if the bench contact, front heel, or balance becomes unstable.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a0a8ec6c03d7589e687a90d77d03823c814a6b634510bfdc04c3b44c8e5d81a3"
+  },
+  {
+    "exerciseId": "bulgarian_split_squat",
+    "locale": "pt-PT",
+    "displayName": "Agachamento Búlgaro",
+    "steps": [
+      "Fique a uma passada de um banco estável, apoie o peito do pé traseiro e segure os halteres indicados ao lado do corpo.",
+      "Baixe o joelho traseiro enquanto o joelho da frente acompanha os dedos e empurre pelo pé da frente para subir."
+    ],
+    "cues": [
+      "Mantenha a maior parte da pressão distribuída pelo pé da frente e as ancas voltadas para diante."
+    ],
+    "cautions": [
+      "Ajuste a distância ou retire carga se o apoio traseiro, o calcanhar da frente ou o equilíbrio ficarem instáveis."
+    ],
+    "textFallback": "Agachamento Búlgaro. Fique a uma passada de um banco estável, apoie o peito do pé traseiro e segure os halteres indicados ao lado do corpo. Baixe o joelho traseiro enquanto o joelho da frente acompanha os dedos e empurre pelo pé da frente para subir. Mantenha a maior parte da pressão distribuída pelo pé da frente e as ancas voltadas para diante. Ajuste a distância ou retire carga se o apoio traseiro, o calcanhar da frente ou o equilíbrio ficarem instáveis.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b36eca98a6f82ab70a545d3fde0b6425df84f22fdc9341df12b820f37ce37d57"
+  },
+  {
+    "exerciseId": "bulgarian_split_squat",
+    "locale": "pt-BR",
+    "displayName": "Agachamento Búlgaro",
+    "steps": [
+      "Fique a uma passada de um banco estável, apoie o peito do pé de trás e segure os halteres indicados ao lado do corpo.",
+      "Desça o joelho de trás enquanto o joelho da frente acompanha os dedos e pressione o pé da frente para subir."
+    ],
+    "cues": [
+      "Mantenha a maior parte da pressão no pé inteiro da frente e os quadris voltados para a frente."
+    ],
+    "cautions": [
+      "Ajuste a distância ou retire carga se o apoio traseiro, o calcanhar da frente ou o equilíbrio ficarem instáveis."
+    ],
+    "textFallback": "Agachamento Búlgaro. Fique a uma passada de um banco estável, apoie o peito do pé de trás e segure os halteres indicados ao lado do corpo. Desça o joelho de trás enquanto o joelho da frente acompanha os dedos e pressione o pé da frente para subir. Mantenha a maior parte da pressão no pé inteiro da frente e os quadris voltados para a frente. Ajuste a distância ou retire carga se o apoio traseiro, o calcanhar da frente ou o equilíbrio ficarem instáveis.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7f6b20848eb07b4481797f0bfa2dc369755f4678a7b8fcaf8c8c43a636c3921f"
+  },
+  {
+    "exerciseId": "cable_pull_through",
+    "locale": "en-US",
+    "displayName": "Cable Pull-Through",
+    "steps": [
+      "Attach a rope to a low cable, face away from the stack, and step forward with the rope passing safely between the legs.",
+      "Hinge the hips back while keeping arms long, then push the floor away and extend the hips to stand tall."
+    ],
+    "cues": [
+      "Keep the cable close to the body and finish with glutes, not a backward lean."
+    ],
+    "cautions": [
+      "Leave enough distance from the stack and reduce load if the cable pulls you backward or changes your footing."
+    ],
+    "textFallback": "Cable Pull-Through. Attach a rope to a low cable, face away from the stack, and step forward with the rope passing safely between the legs. Hinge the hips back while keeping arms long, then push the floor away and extend the hips to stand tall. Keep the cable close to the body and finish with glutes, not a backward lean. Leave enough distance from the stack and reduce load if the cable pulls you backward or changes your footing.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b4ac264af60d0f459e4c49e458c531e370a08ec88de001cc22e792c437a7e507"
+  },
+  {
+    "exerciseId": "cable_pull_through",
+    "locale": "pt-PT",
+    "displayName": "Extensão da Anca na Polia",
+    "steps": [
+      "Prenda uma corda à polia baixa, fique de costas para a torre e avance com a corda a passar de forma segura entre as pernas.",
+      "Leve as ancas atrás com os braços estendidos e depois empurre o chão para estender as ancas e ficar de pé."
+    ],
+    "cues": [
+      "Mantenha o cabo próximo e termine com os glúteos, sem inclinar o corpo para trás."
+    ],
+    "cautions": [
+      "Mantenha distância da torre e reduza a carga se o cabo o puxar para trás ou alterar os apoios."
+    ],
+    "textFallback": "Extensão da Anca na Polia. Prenda uma corda à polia baixa, fique de costas para a torre e avance com a corda a passar de forma segura entre as pernas. Leve as ancas atrás com os braços estendidos e depois empurre o chão para estender as ancas e ficar de pé. Mantenha o cabo próximo e termine com os glúteos, sem inclinar o corpo para trás. Mantenha distância da torre e reduza a carga se o cabo o puxar para trás ou alterar os apoios.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "c81a1a45531269c5a7e3f83278dcc3f81d4bba66036e166f62f24689118c8bd0"
+  },
+  {
+    "exerciseId": "cable_pull_through",
+    "locale": "pt-BR",
+    "displayName": "Pull-Through na Polia",
+    "steps": [
+      "Prenda uma corda na polia baixa, fique de costas para a torre e avance com a corda passando com segurança entre as pernas.",
+      "Leve o quadril para trás com os braços estendidos e depois empurre o chão para estender os quadris e ficar em pé."
+    ],
+    "cues": [
+      "Mantenha o cabo perto e finalize com os glúteos, sem inclinar o corpo para trás."
+    ],
+    "cautions": [
+      "Mantenha distância da torre e reduza a carga se o cabo puxar você para trás ou mudar seus apoios."
+    ],
+    "textFallback": "Pull-Through na Polia. Prenda uma corda na polia baixa, fique de costas para a torre e avance com a corda passando com segurança entre as pernas. Leve o quadril para trás com os braços estendidos e depois empurre o chão para estender os quadris e ficar em pé. Mantenha o cabo perto e finalize com os glúteos, sem inclinar o corpo para trás. Mantenha distância da torre e reduza a carga se o cabo puxar você para trás ou mudar seus apoios.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8f1ec52242bf14892984bc5b5d7f6fde0378a5daf46c4fbebd0ef69dfbd578d4"
+  },
+  {
+    "exerciseId": "cable_row",
+    "locale": "en-US",
+    "displayName": "Cable Row",
+    "steps": [
+      "Sit at the cable row with feet braced, grasp the handle, and establish a tall torso with arms extended.",
+      "Pull the handle toward the lower ribs while elbows pass beside the body, then return until the shoulders and arms lengthen without rounding forward."
+    ],
+    "cues": [
+      "Keep the torso nearly still and lead the pull with the elbows."
+    ],
+    "cautions": [
+      "Reduce load if you must rock backward or if the weight stack drops between repetitions."
+    ],
+    "textFallback": "Cable Row. Sit at the cable row with feet braced, grasp the handle, and establish a tall torso with arms extended. Pull the handle toward the lower ribs while elbows pass beside the body, then return until the shoulders and arms lengthen without rounding forward. Keep the torso nearly still and lead the pull with the elbows. Reduce load if you must rock backward or if the weight stack drops between repetitions.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "afd3185095fadd61db873cac74b792cc85859a51e985a54ea97e807b59bd31ea"
+  },
+  {
+    "exerciseId": "cable_row",
+    "locale": "pt-PT",
+    "displayName": "Remada Sentada na Polia",
+    "steps": [
+      "Sente-se na remada com os pés apoiados, segure a pega e alinhe o tronco com os braços estendidos.",
+      "Puxe a pega para as costelas inferiores com os cotovelos junto ao corpo e regresse sem arredondar as costas."
+    ],
+    "cues": [
+      "Mantenha o tronco quase imóvel e conduza a puxada com os cotovelos."
+    ],
+    "cautions": [
+      "Reduza a carga se precisar de balançar para trás ou se os pesos caírem entre repetições."
+    ],
+    "textFallback": "Remada Sentada na Polia. Sente-se na remada com os pés apoiados, segure a pega e alinhe o tronco com os braços estendidos. Puxe a pega para as costelas inferiores com os cotovelos junto ao corpo e regresse sem arredondar as costas. Mantenha o tronco quase imóvel e conduza a puxada com os cotovelos. Reduza a carga se precisar de balançar para trás ou se os pesos caírem entre repetições.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "487929b87f166c6447870a251d2235770e24095f2a060b78f0d46cafd06b8608"
+  },
+  {
+    "exerciseId": "cable_row",
+    "locale": "pt-BR",
+    "displayName": "Remada Baixa na Polia",
+    "steps": [
+      "Sente-se na remada com os pés apoiados, segure a alça e alinhe o tronco com os braços estendidos.",
+      "Puxe a alça para as costelas inferiores com os cotovelos junto ao corpo e retorne sem arredondar as costas."
+    ],
+    "cues": [
+      "Mantenha o tronco quase imóvel e conduza a puxada com os cotovelos."
+    ],
+    "cautions": [
+      "Reduza a carga se precisar balançar para trás ou se a pilha de pesos cair entre as repetições."
+    ],
+    "textFallback": "Remada Baixa na Polia. Sente-se na remada com os pés apoiados, segure a alça e alinhe o tronco com os braços estendidos. Puxe a alça para as costelas inferiores com os cotovelos junto ao corpo e retorne sem arredondar as costas. Mantenha o tronco quase imóvel e conduza a puxada com os cotovelos. Reduza a carga se precisar balançar para trás ou se a pilha de pesos cair entre as repetições.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5b3f5facdaa11554899e9500ef2954b7e368efd6f1113a49a76b602be9c2e8cc"
+  },
+  {
+    "exerciseId": "cable_triceps_pressdown",
+    "locale": "en-US",
+    "displayName": "Cable Triceps Pressdown",
+    "steps": [
+      "Attach the prescribed handle to a high cable, stand close to the stack, and hold it with elbows bent beside the ribs.",
+      "Straighten the elbows to press the handle down, pause with shoulders quiet, then return until the forearms rise without the elbows drifting forward."
+    ],
+    "cues": [
+      "Keep upper arms fixed and wrists aligned with the forearms."
+    ],
+    "cautions": [
+      "Reduce load if the torso rocks, shoulders roll forward, or the stack cannot return quietly."
+    ],
+    "textFallback": "Cable Triceps Pressdown. Attach the prescribed handle to a high cable, stand close to the stack, and hold it with elbows bent beside the ribs. Straighten the elbows to press the handle down, pause with shoulders quiet, then return until the forearms rise without the elbows drifting forward. Keep upper arms fixed and wrists aligned with the forearms. Reduce load if the torso rocks, shoulders roll forward, or the stack cannot return quietly.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "025b21c17581609bd1c6d7a7a4d257e116e630e62c88e8bb905c7759c19816fa"
+  },
+  {
+    "exerciseId": "cable_triceps_pressdown",
+    "locale": "pt-PT",
+    "displayName": "Extensão de Tríceps na Polia",
+    "steps": [
+      "Prenda a pega indicada à polia alta, fique perto da torre e segure-a com os cotovelos fletidos junto às costelas.",
+      "Estenda os cotovelos para pressionar a pega para baixo, pare e regresse sem deixar os cotovelos avançarem."
+    ],
+    "cues": [
+      "Mantenha os braços junto ao tronco e os punhos alinhados com os antebraços."
+    ],
+    "cautions": [
+      "Reduza a carga se o tronco balançar, os ombros avançarem ou os pesos não regressarem suavemente."
+    ],
+    "textFallback": "Extensão de Tríceps na Polia. Prenda a pega indicada à polia alta, fique perto da torre e segure-a com os cotovelos fletidos junto às costelas. Estenda os cotovelos para pressionar a pega para baixo, pare e regresse sem deixar os cotovelos avançarem. Mantenha os braços junto ao tronco e os punhos alinhados com os antebraços. Reduza a carga se o tronco balançar, os ombros avançarem ou os pesos não regressarem suavemente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "fc9fe48d34e622e4231665ef5a400a8ae4f18de3cdfab38948bc7db7eef38181"
+  },
+  {
+    "exerciseId": "cable_triceps_pressdown",
+    "locale": "pt-BR",
+    "displayName": "Tríceps na Polia",
+    "steps": [
+      "Prenda a alça indicada na polia alta, fique perto da torre e segure com os cotovelos dobrados junto às costelas.",
+      "Estenda os cotovelos para pressionar a alça para baixo, pause e retorne sem deixar os cotovelos avançarem."
+    ],
+    "cues": [
+      "Mantenha os braços junto ao tronco e os punhos alinhados com os antebraços."
+    ],
+    "cautions": [
+      "Reduza a carga se o tronco balançar, os ombros avançarem ou a pilha não retornar suavemente."
+    ],
+    "textFallback": "Tríceps na Polia. Prenda a alça indicada na polia alta, fique perto da torre e segure com os cotovelos dobrados junto às costelas. Estenda os cotovelos para pressionar a alça para baixo, pause e retorne sem deixar os cotovelos avançarem. Mantenha os braços junto ao tronco e os punhos alinhados com os antebraços. Reduza a carga se o tronco balançar, os ombros avançarem ou a pilha não retornar suavemente.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "7fa5a4d555664a4f0126202e237a42cfe48fd0f6625125c70f138ede0d6424ed"
+  },
+  {
+    "exerciseId": "calf_raise",
+    "locale": "en-US",
+    "displayName": "Calf Raise",
+    "steps": [
+      "Stand with the balls of both feet supported and use a stable handhold if needed.",
+      "Lower the heels under control, rise as high as possible through the forefeet, pause, and descend without bouncing."
+    ],
+    "cues": [
+      "Keep ankles tracking straight rather than rolling to the inner or outer edges."
+    ],
+    "cautions": [
+      "Use a smaller range or both legs if balance or foot pressure cannot remain even."
+    ],
+    "textFallback": "Calf Raise. Stand with the balls of both feet supported and use a stable handhold if needed. Lower the heels under control, rise as high as possible through the forefeet, pause, and descend without bouncing. Keep ankles tracking straight rather than rolling to the inner or outer edges. Use a smaller range or both legs if balance or foot pressure cannot remain even.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a5f837d8fc796f315551116c1a8b8af0b88306e7e194a3da0ab97fb58983e2b3"
+  },
+  {
+    "exerciseId": "calf_raise",
+    "locale": "pt-PT",
+    "displayName": "Elevação dos Gémeos",
+    "steps": [
+      "Fique com a parte anterior dos dois pés apoiada e use um apoio estável para as mãos se necessário.",
+      "Baixe os calcanhares com controlo, eleve-os através da parte anterior dos pés, pare e desça sem ressalto."
+    ],
+    "cues": [
+      "Mantenha os tornozelos alinhados, sem rodar para o bordo interno ou externo dos pés."
+    ],
+    "cautions": [
+      "Reduza a amplitude ou use as duas pernas se não conseguir manter equilíbrio e pressão uniforme."
+    ],
+    "textFallback": "Elevação dos Gémeos. Fique com a parte anterior dos dois pés apoiada e use um apoio estável para as mãos se necessário. Baixe os calcanhares com controlo, eleve-os através da parte anterior dos pés, pare e desça sem ressalto. Mantenha os tornozelos alinhados, sem rodar para o bordo interno ou externo dos pés. Reduza a amplitude ou use as duas pernas se não conseguir manter equilíbrio e pressão uniforme.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d52c1afb94c1a51aa3aac7aa5fc46c91a59acbfa866a9f6ccb044c0e668b746d"
+  },
+  {
+    "exerciseId": "calf_raise",
+    "locale": "pt-BR",
+    "displayName": "Elevação de Panturrilhas",
+    "steps": [
+      "Fique com a parte da frente dos dois pés apoiada e use um apoio estável para as mãos se necessário.",
+      "Desça os calcanhares com controle, eleve-os pressionando a parte da frente dos pés, pause e desça sem impulso."
+    ],
+    "cues": [
+      "Mantenha os tornozelos alinhados, sem rolar para a borda interna ou externa dos pés."
+    ],
+    "cautions": [
+      "Reduza a amplitude ou use as duas pernas se não conseguir manter equilíbrio e pressão uniforme."
+    ],
+    "textFallback": "Elevação de Panturrilhas. Fique com a parte da frente dos dois pés apoiada e use um apoio estável para as mãos se necessário. Desça os calcanhares com controle, eleve-os pressionando a parte da frente dos pés, pause e desça sem impulso. Mantenha os tornozelos alinhados, sem rolar para a borda interna ou externa dos pés. Reduza a amplitude ou use as duas pernas se não conseguir manter equilíbrio e pressão uniforme.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "155145a3a302e096b87aa53274e349f45053b72680c0428dc252c6115af1bca2"
+  },
+  {
+    "exerciseId": "cat_cow",
+    "locale": "en-US",
+    "displayName": "Cat-Cow",
+    "steps": [
+      "Start on hands and knees with wrists below shoulders and knees below hips.",
+      "Exhale to round the spine and tuck the pelvis, then inhale to extend the spine gently while lifting the breastbone without collapsing the lower back."
+    ],
+    "cues": [
+      "Move one spinal segment at a time and keep the arms long in both phases."
+    ],
+    "cautions": [
+      "Use a comfortable range and avoid forcing the neck or lower back at either endpoint."
+    ],
+    "textFallback": "Cat-Cow. Start on hands and knees with wrists below shoulders and knees below hips. Exhale to round the spine and tuck the pelvis, then inhale to extend the spine gently while lifting the breastbone without collapsing the lower back. Move one spinal segment at a time and keep the arms long in both phases. Use a comfortable range and avoid forcing the neck or lower back at either endpoint.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "0491aacd17f4b24d7d2a8da363849242bf407277e93744eae41b463118ce996b"
+  },
+  {
+    "exerciseId": "cat_cow",
+    "locale": "pt-PT",
+    "displayName": "Gato-Vaca",
+    "steps": [
+      "Comece em quatro apoios, com punhos sob os ombros e joelhos sob as ancas.",
+      "Expire ao arredondar a coluna e recolher a bacia; inspire ao estender suavemente a coluna e elevar o esterno sem colapsar a zona lombar."
+    ],
+    "cues": [
+      "Mova a coluna de forma gradual e mantenha os braços estendidos nas duas fases."
+    ],
+    "cautions": [
+      "Use uma amplitude confortável e não force o pescoço nem a zona lombar nos extremos."
+    ],
+    "textFallback": "Gato-Vaca. Comece em quatro apoios, com punhos sob os ombros e joelhos sob as ancas. Expire ao arredondar a coluna e recolher a bacia; inspire ao estender suavemente a coluna e elevar o esterno sem colapsar a zona lombar. Mova a coluna de forma gradual e mantenha os braços estendidos nas duas fases. Use uma amplitude confortável e não force o pescoço nem a zona lombar nos extremos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1d04a08be69a27efe2b4f02ef6412e68040d96b453ca4567a7402db24b824438"
+  },
+  {
+    "exerciseId": "cat_cow",
+    "locale": "pt-BR",
+    "displayName": "Gato-Vaca",
+    "steps": [
+      "Comece em quatro apoios, com punhos sob os ombros e joelhos sob os quadris.",
+      "Expire ao arredondar a coluna e encaixar a pelve; inspire ao estender suavemente a coluna e elevar o peito sem colapsar a lombar."
+    ],
+    "cues": [
+      "Mova a coluna de forma gradual e mantenha os braços estendidos nas duas fases."
+    ],
+    "cautions": [
+      "Use uma amplitude confortável e não force o pescoço nem a lombar nos extremos."
+    ],
+    "textFallback": "Gato-Vaca. Comece em quatro apoios, com punhos sob os ombros e joelhos sob os quadris. Expire ao arredondar a coluna e encaixar a pelve; inspire ao estender suavemente a coluna e elevar o peito sem colapsar a lombar. Mova a coluna de forma gradual e mantenha os braços estendidos nas duas fases. Use uma amplitude confortável e não force o pescoço nem a lombar nos extremos.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2733db7f239ceb0f1038da33ce928cfc91d578490f1ad7e62c0fb51824e47af5"
+  },
+  {
+    "exerciseId": "chest_supported_row",
+    "locale": "en-US",
+    "displayName": "Chest-Supported Row",
+    "steps": [
+      "Set an incline bench, lie with the chest supported, and hold the prescribed dumbbells with arms hanging freely.",
+      "Pull both elbows toward the hips until the weights approach the bench, then lower fully without lifting the chest."
+    ],
+    "cues": [
+      "Keep the neck long and let the bench prevent torso momentum."
+    ],
+    "cautions": [
+      "Adjust the bench or load if the weights strike the frame or the chest loses contact."
+    ],
+    "textFallback": "Chest-Supported Row. Set an incline bench, lie with the chest supported, and hold the prescribed dumbbells with arms hanging freely. Pull both elbows toward the hips until the weights approach the bench, then lower fully without lifting the chest. Keep the neck long and let the bench prevent torso momentum. Adjust the bench or load if the weights strike the frame or the chest loses contact.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "6c0d74bdc5e2e1143cde28df5a73c7eccfffb1d93a8fdf0c265f990c4e78ff7c"
+  },
+  {
+    "exerciseId": "chest_supported_row",
+    "locale": "pt-PT",
+    "displayName": "Remada com Peito Apoiado",
+    "steps": [
+      "Ajuste um banco inclinado, apoie o peito e segure os halteres indicados com os braços a cair livremente.",
+      "Puxe os cotovelos na direção das ancas até os pesos se aproximarem do banco e desça sem levantar o peito."
+    ],
+    "cues": [
+      "Mantenha o pescoço alongado e deixe o banco impedir o balanço do tronco."
+    ],
+    "cautions": [
+      "Ajuste o banco ou a carga se os pesos baterem na estrutura ou se o peito perder contacto."
+    ],
+    "textFallback": "Remada com Peito Apoiado. Ajuste um banco inclinado, apoie o peito e segure os halteres indicados com os braços a cair livremente. Puxe os cotovelos na direção das ancas até os pesos se aproximarem do banco e desça sem levantar o peito. Mantenha o pescoço alongado e deixe o banco impedir o balanço do tronco. Ajuste o banco ou a carga se os pesos baterem na estrutura ou se o peito perder contacto.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "35e7411c8fbc270051094f6d3b4d4b42b2c197b4302086e6f0fcdddc9bea0eec"
+  },
+  {
+    "exerciseId": "chest_supported_row",
+    "locale": "pt-BR",
+    "displayName": "Remada com Peito Apoiado",
+    "steps": [
+      "Ajuste um banco inclinado, apoie o peito e segure os halteres indicados com os braços soltos para baixo.",
+      "Puxe os cotovelos em direção aos quadris até os pesos se aproximarem do banco e desça sem levantar o peito."
+    ],
+    "cues": [
+      "Mantenha o pescoço alongado e deixe o banco impedir o embalo do tronco."
+    ],
+    "cautions": [
+      "Ajuste o banco ou a carga se os pesos baterem na estrutura ou se o peito perder contato."
+    ],
+    "textFallback": "Remada com Peito Apoiado. Ajuste um banco inclinado, apoie o peito e segure os halteres indicados com os braços soltos para baixo. Puxe os cotovelos em direção aos quadris até os pesos se aproximarem do banco e desça sem levantar o peito. Mantenha o pescoço alongado e deixe o banco impedir o embalo do tronco. Ajuste o banco ou a carga se os pesos baterem na estrutura ou se o peito perder contato.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "484074169e9962fc57483d0fae7e59e6a13d24412f19de36706d1e2bd50abe45"
+  },
+  {
+    "exerciseId": "childs_pose",
+    "locale": "en-US",
+    "displayName": "Child's Pose",
+    "steps": [
+      "Kneel on a mat, bring the hips toward the heels, and reach both hands forward along the floor.",
+      "Let the torso settle between or over the thighs while breathing slowly and keeping the shoulders relaxed."
+    ],
+    "cues": [
+      "Lengthen through the fingertips and tailbone instead of pressing the chest forcefully downward."
+    ],
+    "cautions": [
+      "Widen the knees, support the torso, or shorten the reach if the knees, hips, or shoulders feel restricted."
+    ],
+    "textFallback": "Child's Pose. Kneel on a mat, bring the hips toward the heels, and reach both hands forward along the floor. Let the torso settle between or over the thighs while breathing slowly and keeping the shoulders relaxed. Lengthen through the fingertips and tailbone instead of pressing the chest forcefully downward. Widen the knees, support the torso, or shorten the reach if the knees, hips, or shoulders feel restricted.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "2c16a0d8f0fff7d62e7b0986d5fed4d0cb4f63c47e04dbb0c2616e4c8cef5371"
+  },
+  {
+    "exerciseId": "childs_pose",
+    "locale": "pt-PT",
+    "displayName": "Postura da Criança",
+    "steps": [
+      "Ajoelhe-se num tapete, leve as ancas aos calcanhares e estenda as duas mãos à frente no chão.",
+      "Deixe o tronco pousar entre ou sobre as coxas enquanto respira lentamente e relaxa os ombros."
+    ],
+    "cues": [
+      "Alongue entre as pontas dos dedos e o cóccix, sem forçar o peito contra o chão."
+    ],
+    "cautions": [
+      "Afaste os joelhos, apoie o tronco ou reduza o alcance se joelhos, ancas ou ombros estiverem limitados."
+    ],
+    "textFallback": "Postura da Criança. Ajoelhe-se num tapete, leve as ancas aos calcanhares e estenda as duas mãos à frente no chão. Deixe o tronco pousar entre ou sobre as coxas enquanto respira lentamente e relaxa os ombros. Alongue entre as pontas dos dedos e o cóccix, sem forçar o peito contra o chão. Afaste os joelhos, apoie o tronco ou reduza o alcance se joelhos, ancas ou ombros estiverem limitados.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e3ed834b4cdb705011fb430941613b32ede55457325b3a58f71b3c69e37eaf57"
+  },
+  {
+    "exerciseId": "childs_pose",
+    "locale": "pt-BR",
+    "displayName": "Postura da Criança",
+    "steps": [
+      "Ajoelhe-se sobre um tapete, leve o quadril aos calcanhares e estenda as duas mãos à frente no chão.",
+      "Deixe o tronco repousar entre ou sobre as coxas enquanto respira devagar e relaxa os ombros."
+    ],
+    "cues": [
+      "Alongue entre as pontas dos dedos e o cóccix, sem forçar o peito contra o chão."
+    ],
+    "cautions": [
+      "Afaste os joelhos, apoie o tronco ou reduza o alcance se joelhos, quadris ou ombros estiverem limitados."
+    ],
+    "textFallback": "Postura da Criança. Ajoelhe-se sobre um tapete, leve o quadril aos calcanhares e estenda as duas mãos à frente no chão. Deixe o tronco repousar entre ou sobre as coxas enquanto respira devagar e relaxa os ombros. Alongue entre as pontas dos dedos e o cóccix, sem forçar o peito contra o chão. Afaste os joelhos, apoie o tronco ou reduza o alcance se joelhos, quadris ou ombros estiverem limitados.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4c94252b35bad5a827530504dc1d5c255a2c1bb8185d352993f6c1eb6519775c"
+  },
+  {
+    "exerciseId": "chin_up",
+    "locale": "en-US",
+    "displayName": "Chin-Up",
+    "steps": [
+      "Hang from a secure bar with palms facing you, hands around shoulder width, and shoulders active.",
+      "Pull the elbows down until the chin clears the bar, then lower under control to long arms without losing shoulder tension."
+    ],
+    "cues": [
+      "Keep the legs quiet and bring the chest toward the bar rather than craning the neck."
+    ],
+    "cautions": [
+      "Use assistance if you cannot control both the top position and the full descent."
+    ],
+    "textFallback": "Chin-Up. Hang from a secure bar with palms facing you, hands around shoulder width, and shoulders active. Pull the elbows down until the chin clears the bar, then lower under control to long arms without losing shoulder tension. Keep the legs quiet and bring the chest toward the bar rather than craning the neck. Use assistance if you cannot control both the top position and the full descent.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "01d2293240d8d769539dc87ca9787f72632197c7baf8135368a9995dfcbd0ba9"
+  },
+  {
+    "exerciseId": "chin_up",
+    "locale": "pt-PT",
+    "displayName": "Elevação com Preensão Supinada",
+    "steps": [
+      "Suspenda-se numa barra segura com as palmas voltadas para si, mãos à largura dos ombros e ombros ativos.",
+      "Puxe os cotovelos para baixo até o queixo ultrapassar a barra e desça com controlo até alongar os braços."
+    ],
+    "cues": [
+      "Mantenha as pernas imóveis e aproxime o peito da barra, sem projetar o pescoço."
+    ],
+    "cautions": [
+      "Use assistência se não controlar a posição superior e toda a descida."
+    ],
+    "textFallback": "Elevação com Preensão Supinada. Suspenda-se numa barra segura com as palmas voltadas para si, mãos à largura dos ombros e ombros ativos. Puxe os cotovelos para baixo até o queixo ultrapassar a barra e desça com controlo até alongar os braços. Mantenha as pernas imóveis e aproxime o peito da barra, sem projetar o pescoço. Use assistência se não controlar a posição superior e toda a descida.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "45bf4360f26c2051b7acc060124ab31fc618f9e820c2be926c88a49cdc7ce270"
+  },
+  {
+    "exerciseId": "chin_up",
+    "locale": "pt-BR",
+    "displayName": "Barra Fixa Supinada",
+    "steps": [
+      "Pendure-se em uma barra segura com as palmas voltadas para você, mãos na largura dos ombros e ombros ativos.",
+      "Puxe os cotovelos para baixo até o queixo passar da barra e desça com controle até alongar os braços."
+    ],
+    "cues": [
+      "Mantenha as pernas quietas e leve o peito à barra, sem projetar o pescoço."
+    ],
+    "cautions": [
+      "Use assistência se não controlar a posição superior e toda a descida."
+    ],
+    "textFallback": "Barra Fixa Supinada. Pendure-se em uma barra segura com as palmas voltadas para você, mãos na largura dos ombros e ombros ativos. Puxe os cotovelos para baixo até o queixo passar da barra e desça com controle até alongar os braços. Mantenha as pernas quietas e leve o peito à barra, sem projetar o pescoço. Use assistência se não controlar a posição superior e toda a descida.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "01ca76dee39c0d8d41a43e3ff10670c264e586b1656ccae5cc4b5c647135ead4"
+  },
+  {
+    "exerciseId": "close_grip_bench_press",
+    "locale": "en-US",
+    "displayName": "Close-Grip Bench Press",
+    "steps": [
+      "Lie on a flat bench with feet planted and grip the bar evenly at about shoulder width, keeping thumbs wrapped.",
+      "Lower the bar toward the lower chest with elbows near the ribs and forearms vertical, then press back over the shoulders."
+    ],
+    "cues": [
+      "Keep wrists stacked over elbows instead of using an extremely narrow grip."
+    ],
+    "cautions": [
+      "Use rack safeties or a competent spotter and reduce load if the wrists bend or elbows lose their path."
+    ],
+    "textFallback": "Close-Grip Bench Press. Lie on a flat bench with feet planted and grip the bar evenly at about shoulder width, keeping thumbs wrapped. Lower the bar toward the lower chest with elbows near the ribs and forearms vertical, then press back over the shoulders. Keep wrists stacked over elbows instead of using an extremely narrow grip. Use rack safeties or a competent spotter and reduce load if the wrists bend or elbows lose their path.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cda780568aba89b81d599441330c16dc8a759ced1dafcfb60825ae6ec4db26ef"
+  },
+  {
+    "exerciseId": "close_grip_bench_press",
+    "locale": "pt-PT",
+    "displayName": "Press de Peito com Preensão Fechada",
+    "steps": [
+      "Deite-se num banco plano com os pés firmes e segure a barra à largura aproximada dos ombros, com os polegares fechados.",
+      "Desça a barra para a parte inferior do peito com cotovelos junto às costelas e antebraços verticais; depois empurre para cima."
+    ],
+    "cues": [
+      "Mantenha os punhos sobre os cotovelos, sem usar uma preensão excessivamente estreita."
+    ],
+    "cautions": [
+      "Use barras de segurança ou um ajudante competente e reduza a carga se os punhos dobrarem ou os cotovelos perderem o trajeto."
+    ],
+    "textFallback": "Press de Peito com Preensão Fechada. Deite-se num banco plano com os pés firmes e segure a barra à largura aproximada dos ombros, com os polegares fechados. Desça a barra para a parte inferior do peito com cotovelos junto às costelas e antebraços verticais; depois empurre para cima. Mantenha os punhos sobre os cotovelos, sem usar uma preensão excessivamente estreita. Use barras de segurança ou um ajudante competente e reduza a carga se os punhos dobrarem ou os cotovelos perderem o trajeto.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5b82dda0bf5ec816bdca95da2f1ecc02dcf0761c983c55bcbde63bd0eaa3cf2d"
+  },
+  {
+    "exerciseId": "close_grip_bench_press",
+    "locale": "pt-BR",
+    "displayName": "Supino com Pegada Fechada",
+    "steps": [
+      "Deite-se em um banco plano com os pés firmes e segure a barra aproximadamente na largura dos ombros, com os polegares fechados.",
+      "Desça a barra para a parte inferior do peito com cotovelos perto das costelas e antebraços verticais; depois empurre para cima."
+    ],
+    "cues": [
+      "Mantenha os punhos sobre os cotovelos, sem usar uma pegada estreita demais."
+    ],
+    "cautions": [
+      "Use travas de segurança ou um parceiro capacitado e reduza a carga se os punhos dobrarem ou os cotovelos perderem a trajetória."
+    ],
+    "textFallback": "Supino com Pegada Fechada. Deite-se em um banco plano com os pés firmes e segure a barra aproximadamente na largura dos ombros, com os polegares fechados. Desça a barra para a parte inferior do peito com cotovelos perto das costelas e antebraços verticais; depois empurre para cima. Mantenha os punhos sobre os cotovelos, sem usar uma pegada estreita demais. Use travas de segurança ou um parceiro capacitado e reduza a carga se os punhos dobrarem ou os cotovelos perderem a trajetória.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "64c919b7527f475463c6003c9a62f31c0f85d5cdbc834fe3410a135f6bc6bd8c"
+  },
+  {
+    "exerciseId": "close_grip_push_up",
+    "locale": "en-US",
+    "displayName": "Close-Grip Push-Up",
+    "steps": [
+      "Place the hands slightly inside shoulder width beneath the chest and establish a straight plank.",
+      "Lower the chest between the hands while elbows track near the ribs, then press the floor away until the arms straighten."
+    ],
+    "cues": [
+      "Keep the hands flat and choose a spacing that lets wrists and elbows stay aligned."
+    ],
+    "cautions": [
+      "Elevate the hands if the trunk sags or the close position causes uncontrolled wrist or shoulder loading."
+    ],
+    "textFallback": "Close-Grip Push-Up. Place the hands slightly inside shoulder width beneath the chest and establish a straight plank. Lower the chest between the hands while elbows track near the ribs, then press the floor away until the arms straighten. Keep the hands flat and choose a spacing that lets wrists and elbows stay aligned. Elevate the hands if the trunk sags or the close position causes uncontrolled wrist or shoulder loading.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "37e9b7a4f7b40b50f02d40962712fbec313ed1030eb368b6cdebf7ff19c87fc6"
+  },
+  {
+    "exerciseId": "close_grip_push_up",
+    "locale": "pt-PT",
+    "displayName": "Flexão com Mãos Juntas",
+    "steps": [
+      "Coloque as mãos ligeiramente por dentro da largura dos ombros sob o peito e alinhe o corpo em prancha.",
+      "Baixe o peito entre as mãos com os cotovelos junto às costelas e empurre o chão até estender os braços."
+    ],
+    "cues": [
+      "Mantenha as mãos espalmadas e uma distância que permita alinhar punhos e cotovelos."
+    ],
+    "cautions": [
+      "Eleve as mãos se o tronco ceder ou se a posição fechada sobrecarregar punhos ou ombros sem controlo."
+    ],
+    "textFallback": "Flexão com Mãos Juntas. Coloque as mãos ligeiramente por dentro da largura dos ombros sob o peito e alinhe o corpo em prancha. Baixe o peito entre as mãos com os cotovelos junto às costelas e empurre o chão até estender os braços. Mantenha as mãos espalmadas e uma distância que permita alinhar punhos e cotovelos. Eleve as mãos se o tronco ceder ou se a posição fechada sobrecarregar punhos ou ombros sem controlo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a5cd9d5979e9b08f497266e7f34dc6f52455bd2b47a7fc34abc47eba532f3d10"
+  },
+  {
+    "exerciseId": "close_grip_push_up",
+    "locale": "pt-BR",
+    "displayName": "Flexão Fechada",
+    "steps": [
+      "Coloque as mãos um pouco mais fechadas que os ombros sob o peito e alinhe o corpo em prancha.",
+      "Desça o peito entre as mãos com os cotovelos perto das costelas e empurre o chão até estender os braços."
+    ],
+    "cues": [
+      "Mantenha as mãos espalmadas e uma distância que permita alinhar punhos e cotovelos."
+    ],
+    "cautions": [
+      "Eleve as mãos se o tronco ceder ou se a posição fechada sobrecarregar punhos ou ombros sem controle."
+    ],
+    "textFallback": "Flexão Fechada. Coloque as mãos um pouco mais fechadas que os ombros sob o peito e alinhe o corpo em prancha. Desça o peito entre as mãos com os cotovelos perto das costelas e empurre o chão até estender os braços. Mantenha as mãos espalmadas e uma distância que permita alinhar punhos e cotovelos. Eleve as mãos se o tronco ceder ou se a posição fechada sobrecarregar punhos ou ombros sem controle.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "80ee07ee6460429f06986327180ffe9b2c8ffa77053103b67bbbcf2e33af8e3a"
+  },
+  {
+    "exerciseId": "conventional_deadlift",
+    "locale": "en-US",
+    "displayName": "Conventional Deadlift",
+    "steps": [
+      "Stand with the bar over the midfoot, hinge to grip outside the legs, and brace with the shoulders slightly ahead of the bar.",
+      "Push through the floor and extend knees and hips together until standing tall, then guide the bar down close to the legs."
+    ],
+    "cues": [
+      "Keep the bar vertically over the midfoot and the spine steady from floor to lockout."
+    ],
+    "cautions": [
+      "Use plates, collars, and a load that can be lowered under control; reset if the grip or starting position changes."
+    ],
+    "textFallback": "Conventional Deadlift. Stand with the bar over the midfoot, hinge to grip outside the legs, and brace with the shoulders slightly ahead of the bar. Push through the floor and extend knees and hips together until standing tall, then guide the bar down close to the legs. Keep the bar vertically over the midfoot and the spine steady from floor to lockout. Use plates, collars, and a load that can be lowered under control; reset if the grip or starting position changes.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "a4488fb7ef8cf3ec55102b5111115e8558fe6967c69eaaed2040da3cb26ca434"
+  },
+  {
+    "exerciseId": "conventional_deadlift",
+    "locale": "pt-PT",
+    "displayName": "Peso Morto Convencional",
+    "steps": [
+      "Fique com a barra sobre o meio dos pés, incline-se para agarrar fora das pernas e estabilize com os ombros ligeiramente à frente.",
+      "Empurre o chão e estenda joelhos e ancas em conjunto até ficar de pé; depois desça a barra próxima das pernas."
+    ],
+    "cues": [
+      "Mantenha a barra sobre o meio do pé e a coluna estável desde o chão até ao final."
+    ],
+    "cautions": [
+      "Use discos, fechos e uma carga que consiga descer com controlo; reorganize-se se a preensão ou a posição mudar."
+    ],
+    "textFallback": "Peso Morto Convencional. Fique com a barra sobre o meio dos pés, incline-se para agarrar fora das pernas e estabilize com os ombros ligeiramente à frente. Empurre o chão e estenda joelhos e ancas em conjunto até ficar de pé; depois desça a barra próxima das pernas. Mantenha a barra sobre o meio do pé e a coluna estável desde o chão até ao final. Use discos, fechos e uma carga que consiga descer com controlo; reorganize-se se a preensão ou a posição mudar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "92f2a1e67df6264390c958efcec6dd35f6f79bc5a720e70bf620b015e0db9844"
+  },
+  {
+    "exerciseId": "conventional_deadlift",
+    "locale": "pt-BR",
+    "displayName": "Levantamento Terra Convencional",
+    "steps": [
+      "Fique com a barra sobre o meio dos pés, incline-se para segurar fora das pernas e firme o tronco com os ombros levemente à frente.",
+      "Empurre o chão e estenda joelhos e quadris juntos até ficar em pé; depois desça a barra perto das pernas."
+    ],
+    "cues": [
+      "Mantenha a barra sobre o meio do pé e a coluna estável do chão até o final."
+    ],
+    "cautions": [
+      "Use anilhas, presilhas e uma carga que consiga descer com controle; reorganize-se se a pegada ou a posição mudar."
+    ],
+    "textFallback": "Levantamento Terra Convencional. Fique com a barra sobre o meio dos pés, incline-se para segurar fora das pernas e firme o tronco com os ombros levemente à frente. Empurre o chão e estenda joelhos e quadris juntos até ficar em pé; depois desça a barra perto das pernas. Mantenha a barra sobre o meio do pé e a coluna estável do chão até o final. Use anilhas, presilhas e uma carga que consiga descer com controle; reorganize-se se a pegada ou a posição mudar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5b998f26fde376dc8dc55b22e8f9120916e3e9711cb172664d8575185e8af1bc"
+  },
+  {
+    "exerciseId": "cossack_squat",
+    "locale": "en-US",
+    "displayName": "Cossack Squat",
+    "steps": [
+      "Take a wide stance with toes turned slightly outward and shift body weight toward one foot.",
+      "Bend that knee and sit the hip down while the opposite leg stays long, then press through the bent-leg foot to return to center."
+    ],
+    "cues": [
+      "Keep the working heel grounded and let the straight-leg toes lift only if that matches your comfortable ankle position."
+    ],
+    "cautions": [
+      "Reduce depth or hold a support if the knee, foot, or pelvis cannot remain controlled."
+    ],
+    "textFallback": "Cossack Squat. Take a wide stance with toes turned slightly outward and shift body weight toward one foot. Bend that knee and sit the hip down while the opposite leg stays long, then press through the bent-leg foot to return to center. Keep the working heel grounded and let the straight-leg toes lift only if that matches your comfortable ankle position. Reduce depth or hold a support if the knee, foot, or pelvis cannot remain controlled.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1698381b865c0fe2974eb0ee21bf8eba1bbf362bfd7c8334821c40afa9eb0f34"
+  },
+  {
+    "exerciseId": "cossack_squat",
+    "locale": "pt-PT",
+    "displayName": "Agachamento Cossaco",
+    "steps": [
+      "Adote uma posição larga com os pés ligeiramente para fora e desloque o peso para um lado.",
+      "Fleta esse joelho e baixe a anca enquanto a perna oposta fica estendida; empurre pelo pé fletido para voltar ao centro."
+    ],
+    "cues": [
+      "Mantenha o calcanhar de trabalho no chão e eleve os dedos da perna estendida apenas se for confortável."
+    ],
+    "cautions": [
+      "Reduza a profundidade ou use apoio se não controlar o joelho, o pé ou a bacia."
+    ],
+    "textFallback": "Agachamento Cossaco. Adote uma posição larga com os pés ligeiramente para fora e desloque o peso para um lado. Fleta esse joelho e baixe a anca enquanto a perna oposta fica estendida; empurre pelo pé fletido para voltar ao centro. Mantenha o calcanhar de trabalho no chão e eleve os dedos da perna estendida apenas se for confortável. Reduza a profundidade ou use apoio se não controlar o joelho, o pé ou a bacia.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "61814964ae5ec6a33ef32e2f88a03e60026c73d0897b12368097964351b1bf9e"
+  },
+  {
+    "exerciseId": "cossack_squat",
+    "locale": "pt-BR",
+    "displayName": "Agachamento Cossaco",
+    "steps": [
+      "Adote uma base larga com os pés levemente para fora e transfira o peso para um lado.",
+      "Dobre esse joelho e desça o quadril enquanto a perna oposta fica estendida; pressione o pé dobrado para voltar ao centro."
+    ],
+    "cues": [
+      "Mantenha o calcanhar de trabalho no chão e eleve os dedos da perna estendida apenas se for confortável."
+    ],
+    "cautions": [
+      "Reduza a profundidade ou use apoio se não controlar o joelho, o pé ou a pelve."
+    ],
+    "textFallback": "Agachamento Cossaco. Adote uma base larga com os pés levemente para fora e transfira o peso para um lado. Dobre esse joelho e desça o quadril enquanto a perna oposta fica estendida; pressione o pé dobrado para voltar ao centro. Mantenha o calcanhar de trabalho no chão e eleve os dedos da perna estendida apenas se for confortável. Reduza a profundidade ou use apoio se não controlar o joelho, o pé ou a pelve.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "58989d1ed0031620503e072cf582ed80c0425b0cc8636393abfc7e9302e8c403"
+  },
+  {
+    "exerciseId": "couch_stretch",
+    "locale": "en-US",
+    "displayName": "Couch Stretch",
+    "steps": [
+      "Kneel on padding with one shin near a wall or stable bench and place the other foot forward.",
+      "Bring the torso upright and gently tuck the pelvis until a stretch is felt at the front of the rear hip and thigh."
+    ],
+    "cues": [
+      "Keep the rear glute lightly active instead of arching the lower back for more range."
+    ],
+    "cautions": [
+      "Move the rear knee farther from the support or lower the foot if the position is too intense."
+    ],
+    "textFallback": "Couch Stretch. Kneel on padding with one shin near a wall or stable bench and place the other foot forward. Bring the torso upright and gently tuck the pelvis until a stretch is felt at the front of the rear hip and thigh. Keep the rear glute lightly active instead of arching the lower back for more range. Move the rear knee farther from the support or lower the foot if the position is too intense.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "8919924f4820a396b9de789aa0f6d9502563bea8c31527b0b01584251a0b2cf3"
+  },
+  {
+    "exerciseId": "couch_stretch",
+    "locale": "pt-PT",
+    "displayName": "Alongamento do Flexor da Anca com Pé Elevado",
+    "steps": [
+      "Ajoelhe-se sobre proteção com uma canela junto a uma parede ou banco estável e coloque o outro pé à frente.",
+      "Eleve o tronco e recolha suavemente a bacia até sentir alongamento na frente da anca e coxa traseiras."
+    ],
+    "cues": [
+      "Mantenha o glúteo traseiro ligeiramente ativo, sem arquear a zona lombar para ganhar amplitude."
+    ],
+    "cautions": [
+      "Afaste o joelho do apoio ou baixe o pé se a posição for demasiado intensa."
+    ],
+    "textFallback": "Alongamento do Flexor da Anca com Pé Elevado. Ajoelhe-se sobre proteção com uma canela junto a uma parede ou banco estável e coloque o outro pé à frente. Eleve o tronco e recolha suavemente a bacia até sentir alongamento na frente da anca e coxa traseiras. Mantenha o glúteo traseiro ligeiramente ativo, sem arquear a zona lombar para ganhar amplitude. Afaste o joelho do apoio ou baixe o pé se a posição for demasiado intensa.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "e2ac4cc4c93f7fe98f425bee838f5ae1a09442d98ee791e9bfc97ced238c6b44"
+  },
+  {
+    "exerciseId": "couch_stretch",
+    "locale": "pt-BR",
+    "displayName": "Alongamento Couch",
+    "steps": [
+      "Ajoelhe-se sobre proteção com uma canela perto de uma parede ou banco estável e coloque o outro pé à frente.",
+      "Eleve o tronco e encaixe suavemente a pelve até sentir alongamento na frente do quadril e da coxa de trás."
+    ],
+    "cues": [
+      "Mantenha o glúteo de trás levemente ativo, sem arquear a lombar para ganhar amplitude."
+    ],
+    "cautions": [
+      "Afaste o joelho do apoio ou abaixe o pé se a posição estiver intensa demais."
+    ],
+    "textFallback": "Alongamento Couch. Ajoelhe-se sobre proteção com uma canela perto de uma parede ou banco estável e coloque o outro pé à frente. Eleve o tronco e encaixe suavemente a pelve até sentir alongamento na frente do quadril e da coxa de trás. Mantenha o glúteo de trás levemente ativo, sem arquear a lombar para ganhar amplitude. Afaste o joelho do apoio ou abaixe o pé se a posição estiver intensa demais.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "1617ac419aaae03220f568dabe2332011201bbb3f641bf6518f6bbb674b65ada"
+  },
+  {
+    "exerciseId": "dead_bug",
+    "locale": "en-US",
+    "displayName": "Dead Bug",
+    "steps": [
+      "Lie on the back with hips and knees bent to ninety degrees, arms reaching upward, and the lower trunk gently braced.",
+      "Slowly extend one leg and the opposite arm toward the floor, stop before the back lifts, then return and alternate sides."
+    ],
+    "cues": [
+      "Exhale through the reach and keep the pelvis quiet against the floor."
+    ],
+    "cautions": [
+      "Shorten the lever or move only the legs if the lower back cannot remain controlled."
+    ],
+    "textFallback": "Dead Bug. Lie on the back with hips and knees bent to ninety degrees, arms reaching upward, and the lower trunk gently braced. Slowly extend one leg and the opposite arm toward the floor, stop before the back lifts, then return and alternate sides. Exhale through the reach and keep the pelvis quiet against the floor. Shorten the lever or move only the legs if the lower back cannot remain controlled.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "5961c36f0870b414fdfc23e8b062321844bde2fb92e2d66c850d8ac586f72910"
+  },
+  {
+    "exerciseId": "dead_bug",
+    "locale": "pt-PT",
+    "displayName": "Dead Bug",
+    "steps": [
+      "Deite-se de costas com ancas e joelhos a noventa graus, braços apontados para cima e tronco suavemente contraído.",
+      "Estenda lentamente uma perna e o braço oposto na direção do chão, pare antes de as costas levantarem e regresse."
+    ],
+    "cues": [
+      "Expire durante o alcance e mantenha a bacia imóvel contra o chão."
+    ],
+    "cautions": [
+      "Reduza a extensão ou mova apenas as pernas se não conseguir controlar a zona lombar."
+    ],
+    "textFallback": "Dead Bug. Deite-se de costas com ancas e joelhos a noventa graus, braços apontados para cima e tronco suavemente contraído. Estenda lentamente uma perna e o braço oposto na direção do chão, pare antes de as costas levantarem e regresse. Expire durante o alcance e mantenha a bacia imóvel contra o chão. Reduza a extensão ou mova apenas as pernas se não conseguir controlar a zona lombar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "15ca6751043acc4cdc2327e4d2d003f4a848502cc5ddcf795dd39764086d7861"
+  },
+  {
+    "exerciseId": "dead_bug",
+    "locale": "pt-BR",
+    "displayName": "Dead Bug",
+    "steps": [
+      "Deite-se de costas com quadris e joelhos a noventa graus, braços apontados para cima e tronco levemente firme.",
+      "Estenda devagar uma perna e o braço oposto em direção ao chão, pare antes de as costas levantarem e retorne."
+    ],
+    "cues": [
+      "Expire durante o alcance e mantenha a pelve quieta contra o chão."
+    ],
+    "cautions": [
+      "Reduza a extensão ou mova apenas as pernas se não conseguir controlar a lombar."
+    ],
+    "textFallback": "Dead Bug. Deite-se de costas com quadris e joelhos a noventa graus, braços apontados para cima e tronco levemente firme. Estenda devagar uma perna e o braço oposto em direção ao chão, pare antes de as costas levantarem e retorne. Expire durante o alcance e mantenha a pelve quieta contra o chão. Reduza a extensão ou mova apenas as pernas se não conseguir controlar a lombar.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "4f42c5308f88e02aad6cc3263822acbcb1807ac7ec5d6ada6e24de464b2e8cf5"
+  },
+  {
+    "exerciseId": "decline_push_up",
+    "locale": "en-US",
+    "displayName": "Decline Push-Up",
+    "steps": [
+      "Place both feet on a stable bench and hands on the floor slightly wider than the shoulders, forming a rigid plank.",
+      "Lower the chest toward the floor with elbows at a controlled angle, then press up without letting the hips sag."
+    ],
+    "cues": [
+      "Keep the bench contact secure and move the body as one unit from shoulders to heels."
+    ],
+    "cautions": [
+      "Use a lower support if the elevated angle prevents a controlled full-body line."
+    ],
+    "textFallback": "Decline Push-Up. Place both feet on a stable bench and hands on the floor slightly wider than the shoulders, forming a rigid plank. Lower the chest toward the floor with elbows at a controlled angle, then press up without letting the hips sag. Keep the bench contact secure and move the body as one unit from shoulders to heels. Use a lower support if the elevated angle prevents a controlled full-body line.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "05775579306f571d5bd669efde200d7aad8d514627fb92825b7ecedd0a7819b8"
+  },
+  {
+    "exerciseId": "decline_push_up",
+    "locale": "pt-PT",
+    "displayName": "Flexão com Pés Elevados",
+    "steps": [
+      "Coloque os dois pés num banco estável e as mãos no chão ligeiramente mais largas que os ombros, formando uma prancha.",
+      "Baixe o peito com os cotovelos num ângulo controlado e empurre para cima sem deixar a bacia ceder."
+    ],
+    "cues": [
+      "Mantenha os pés seguros no banco e mova o corpo como uma unidade dos ombros aos calcanhares."
+    ],
+    "cautions": [
+      "Use um apoio mais baixo se o ângulo elevado impedir uma linha corporal controlada."
+    ],
+    "textFallback": "Flexão com Pés Elevados. Coloque os dois pés num banco estável e as mãos no chão ligeiramente mais largas que os ombros, formando uma prancha. Baixe o peito com os cotovelos num ângulo controlado e empurre para cima sem deixar a bacia ceder. Mantenha os pés seguros no banco e mova o corpo como uma unidade dos ombros aos calcanhares. Use um apoio mais baixo se o ângulo elevado impedir uma linha corporal controlada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "77bec256409023174bea804a1b4d3bf89f93164dbe129b734365f84466f78a56"
+  },
+  {
+    "exerciseId": "decline_push_up",
+    "locale": "pt-BR",
+    "displayName": "Flexão Declinada",
+    "steps": [
+      "Coloque os dois pés em um banco estável e as mãos no chão um pouco mais abertas que os ombros, formando uma prancha.",
+      "Desça o peito com os cotovelos em ângulo controlado e empurre para cima sem deixar o quadril ceder."
+    ],
+    "cues": [
+      "Mantenha os pés firmes no banco e mova o corpo como uma unidade dos ombros aos calcanhares."
+    ],
+    "cautions": [
+      "Use um apoio mais baixo se o ângulo elevado impedir uma linha corporal controlada."
+    ],
+    "textFallback": "Flexão Declinada. Coloque os dois pés em um banco estável e as mãos no chão um pouco mais abertas que os ombros, formando uma prancha. Desça o peito com os cotovelos em ângulo controlado e empurre para cima sem deixar o quadril ceder. Mantenha os pés firmes no banco e mova o corpo como uma unidade dos ombros aos calcanhares. Use um apoio mais baixo se o ângulo elevado impedir uma linha corporal controlada.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "251238748b8c8e1aa6cb52370659a596416c27b0746d78c2584e33b67180cbff"
+  },
+  {
+    "exerciseId": "deficit_deadlift",
+    "locale": "en-US",
+    "displayName": "Deficit Deadlift",
+    "steps": [
+      "Stand on a stable low platform with the bar over the midfoot, then hinge and bend the knees to take a secure grip.",
+      "Brace before the bar leaves the floor, extend knees and hips together to stand, and lower the bar close to the legs."
+    ],
+    "cues": [
+      "Use only enough platform height to preserve the same balanced bar path as a conventional deadlift."
+    ],
+    "cautions": [
+      "Remove the deficit or reduce load if the start position causes rounding, heel lift, or loss of bar control."
+    ],
+    "textFallback": "Deficit Deadlift. Stand on a stable low platform with the bar over the midfoot, then hinge and bend the knees to take a secure grip. Brace before the bar leaves the floor, extend knees and hips together to stand, and lower the bar close to the legs. Use only enough platform height to preserve the same balanced bar path as a conventional deadlift. Remove the deficit or reduce load if the start position causes rounding, heel lift, or loss of bar control.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "b8c965e8387867e24a5b364338d358eead06def9a9d3454b4e7543dff2f12485"
+  },
+  {
+    "exerciseId": "deficit_deadlift",
+    "locale": "pt-PT",
+    "displayName": "Peso Morto em Défice",
+    "steps": [
+      "Fique sobre uma plataforma baixa e estável com a barra sobre o meio dos pés e segure-a com uma posição equilibrada.",
+      "Estabilize antes de levantar, estenda joelhos e ancas em conjunto e desça a barra próxima das pernas."
+    ],
+    "cues": [
+      "Use apenas a altura necessária para manter o mesmo trajeto equilibrado do peso morto convencional."
+    ],
+    "cautions": [
+      "Retire o défice ou reduza a carga se a posição inicial causar arredondamento, elevação dos calcanhares ou perda de controlo."
+    ],
+    "textFallback": "Peso Morto em Défice. Fique sobre uma plataforma baixa e estável com a barra sobre o meio dos pés e segure-a com uma posição equilibrada. Estabilize antes de levantar, estenda joelhos e ancas em conjunto e desça a barra próxima das pernas. Use apenas a altura necessária para manter o mesmo trajeto equilibrado do peso morto convencional. Retire o défice ou reduza a carga se a posição inicial causar arredondamento, elevação dos calcanhares ou perda de controlo.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "32b315e487f7bb6baac33e3c9499378382f82b092239abb03e38590a56256650"
+  },
+  {
+    "exerciseId": "deficit_deadlift",
+    "locale": "pt-BR",
+    "displayName": "Levantamento Terra em Déficit",
+    "steps": [
+      "Fique sobre uma plataforma baixa e estável com a barra sobre o meio dos pés e segure em uma posição equilibrada.",
+      "Firme o tronco antes de levantar, estenda joelhos e quadris juntos e desça a barra perto das pernas."
+    ],
+    "cues": [
+      "Use somente a altura necessária para manter a mesma trajetória equilibrada do levantamento terra convencional."
+    ],
+    "cautions": [
+      "Retire o déficit ou reduza a carga se a posição inicial causar arredondamento, elevação dos calcanhares ou perda de controle."
+    ],
+    "textFallback": "Levantamento Terra em Déficit. Fique sobre uma plataforma baixa e estável com a barra sobre o meio dos pés e segure em uma posição equilibrada. Firme o tronco antes de levantar, estenda joelhos e quadris juntos e desça a barra perto das pernas. Use somente a altura necessária para manter a mesma trajetória equilibrada do levantamento terra convencional. Retire o déficit ou reduza a carga se a posição inicial causar arredondamento, elevação dos calcanhares ou perda de controle.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "9b82c9d7cac2aa9ef3531c4f50d4267c821a1ceac2f25ab3f34f7726be721dfc"
+  },
+  {
+    "exerciseId": "depth_jump",
+    "locale": "en-US",
+    "displayName": "Depth Jump",
+    "steps": [
+      "Stand at the edge of a low stable box and step off one foot at a time without jumping upward from the box.",
+      "Land on both feet, absorb briefly, and make the prescribed immediate rebound while keeping ground contact short and alignment controlled."
+    ],
+    "cues": [
+      "Think step off, meet the floor, and rebound; do not turn the first phase into a box jump."
+    ],
+    "cautions": [
+      "Use a low box, clear landing zone, and stop when the landing becomes heavy or the rebound loses alignment."
+    ],
+    "textFallback": "Depth Jump. Stand at the edge of a low stable box and step off one foot at a time without jumping upward from the box. Land on both feet, absorb briefly, and make the prescribed immediate rebound while keeping ground contact short and alignment controlled. Think step off, meet the floor, and rebound; do not turn the first phase into a box jump. Use a low box, clear landing zone, and stop when the landing becomes heavy or the rebound loses alignment.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "cc30fda286a8eaa5179810b306e0023f2a2e7968d658278bfd85d42be0a01598"
+  },
+  {
+    "exerciseId": "depth_jump",
+    "locale": "pt-PT",
+    "displayName": "Salto de Profundidade",
+    "steps": [
+      "Fique na extremidade de uma caixa baixa e estável e dê um passo para fora, sem saltar para cima a partir da caixa.",
+      "Aterre com os dois pés, absorva brevemente e faça o ressalto indicado, mantendo contacto curto e alinhamento controlado."
+    ],
+    "cues": [
+      "Pense em sair, receber o chão e ressaltar; não transforme a primeira fase num salto para a caixa."
+    ],
+    "cautions": [
+      "Use uma caixa baixa, uma zona livre e pare quando a aterragem ficar pesada ou o ressalto perder alinhamento."
+    ],
+    "textFallback": "Salto de Profundidade. Fique na extremidade de uma caixa baixa e estável e dê um passo para fora, sem saltar para cima a partir da caixa. Aterre com os dois pés, absorva brevemente e faça o ressalto indicado, mantendo contacto curto e alinhamento controlado. Pense em sair, receber o chão e ressaltar; não transforme a primeira fase num salto para a caixa. Use uma caixa baixa, uma zona livre e pare quando a aterragem ficar pesada ou o ressalto perder alinhamento.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "d4313c7d7042761049bc935c4c8a4805b62c4c696db9d06743f61a0bbe7a9376"
+  },
+  {
+    "exerciseId": "depth_jump",
+    "locale": "pt-BR",
+    "displayName": "Salto em Profundidade",
+    "steps": [
+      "Fique na borda de uma caixa baixa e estável e dê um passo para fora, sem saltar para cima a partir da caixa.",
+      "Aterrisse com os dois pés, absorva brevemente e faça o rebote indicado, mantendo contato curto e alinhamento controlado."
+    ],
+    "cues": [
+      "Pense em sair, encontrar o chão e rebater; não transforme a primeira fase em um salto na caixa."
+    ],
+    "cautions": [
+      "Use uma caixa baixa, área livre e pare quando a aterrissagem ficar pesada ou o rebote perder alinhamento."
+    ],
+    "textFallback": "Salto em Profundidade. Fique na borda de uma caixa baixa e estável e dê um passo para fora, sem saltar para cima a partir da caixa. Aterrisse com os dois pés, absorva brevemente e faça o rebote indicado, mantendo contato curto e alinhamento controlado. Pense em sair, encontrar o chão e rebater; não transforme a primeira fase em um salto na caixa. Use uma caixa baixa, área livre e pare quando a aterrissagem ficar pesada ou o rebote perder alinhamento.",
+    "authoringStatus": "AUTHORING_COMPLETE_UNAPPROVED",
+    "contentHash": "513f317ccd2b04d52dda55878aaca19ba6ac6651147d30764ef5a52b388c258b"
+  }
+]

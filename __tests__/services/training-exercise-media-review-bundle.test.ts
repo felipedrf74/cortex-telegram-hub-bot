@@ -81,33 +81,41 @@ describe('Training exercise media DRAFT review bundle', () => {
     ))).toBe(true);
   });
 
-  it('keeps scaffolds outside production localization sources and leaves activation fail-closed', () => {
-    expect(readJson<unknown[]>('instructions.json')).toEqual([]);
-    expect(readJson<unknown[]>('media-localizations.json')).toEqual([]);
-    expect(readJson<unknown[]>('assets.json')).toEqual([]);
-    expect(readJson<unknown[]>('provenance.json')).toEqual([]);
+  it('keeps draft scaffolds quarantined from the separately approved production package', () => {
+    const productionInstructions = readJson<Array<Record<string, unknown>>>('instructions.json');
+    const productionLocalizations = readJson<Array<Record<string, unknown>>>('media-localizations.json');
+    expect(productionInstructions).toHaveLength(474);
+    expect(productionLocalizations).toHaveLength(600);
+    expect(productionInstructions.every((entry) => (
+      !('status' in entry) && !('sourceBasis' in entry)
+    ))).toBe(true);
+    expect(productionLocalizations.every((entry) => (
+      !('status' in entry) && !('sourceBasis' in entry)
+    ))).toBe(true);
+    expect(readJson<unknown[]>('assets.json')).toHaveLength(200);
+    expect(readJson<unknown[]>('provenance.json')).toHaveLength(200);
     expect(readJson<unknown[]>('reviews.json')).toEqual([]);
     expect(readJson<unknown[]>('takedowns.json')).toEqual([]);
     expect(readJson<Record<string, unknown>>('approval-ledger.json')).toMatchObject({
-      approvedHostRef: null,
-      ownerApprovalRef: null,
-      assetReviews: [],
-      localizationReviews: [],
-      hostApprovals: [],
-      ownerApprovals: [],
+      approvedHostRef: expect.any(String),
+      ownerApprovalRef: expect.any(String),
+      assetReviews: expect.arrayContaining([expect.any(Object)]),
+      localizationReviews: expect.arrayContaining([expect.any(Object)]),
+      hostApprovals: [expect.any(Object)],
+      ownerApprovals: [expect.any(Object)],
     });
     const compiled = compileTrainingExerciseMediaPackage();
     const validation = validateCompiledTrainingExerciseMediaPackage(compiled, { requireActivation: true });
     expect(validation.structurallyValid).toBe(true);
-    expect(validation.activationReady).toBe(false);
+    expect(validation.activationReady).toBe(true);
     expect(validation.coverage).toMatchObject({
       expectedExercises: 158,
       listedExercises: 158,
-      approvedExercises: 0,
-      approvedAssets: 0,
-      instructionLocalizations: 0,
-      mediaLocalizations: 0,
-      approvedReviews: 0,
+      approvedExercises: 158,
+      approvedAssets: 200,
+      instructionLocalizations: 474,
+      mediaLocalizations: 600,
+      approvedReviews: 800,
     });
     expect(findForbiddenMediaBinaries()).toEqual([]);
   });

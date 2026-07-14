@@ -189,34 +189,28 @@ function buildActivationReadyPackage() {
 }
 
 describe('Training exercise media manifest tooling', () => {
-  it('keeps the checked-in draft deterministic, binary-free, and explicitly non-activatable', () => {
+  it('keeps the checked-in approved package deterministic, binary-free, and activation-ready', () => {
     const generated = compileTrainingExerciseMediaPackage();
     const checkedIn = readCompiledTrainingExerciseMediaPackage();
     const validation = validateCompiledTrainingExerciseMediaPackage(checkedIn, {
-      now: new Date('2026-07-12T12:00:00.000Z'),
+      now: new Date('2026-07-14T00:00:00.000Z'),
     });
 
     expect(checkedIn).toEqual(generated);
-    expect(checkedIn.packageHash).toBe('73bee5adec1718d3c4128741aec17d136c8404f8ff2a2109791b58a5f165edd1');
+    expect(checkedIn.packageHash).toBe('51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb');
     expect(findForbiddenMediaBinaries()).toEqual([]);
     expect(validation.structurallyValid).toBe(true);
-    expect(validation.activationReady).toBe(false);
+    expect(validation.activationReady).toBe(true);
     expect(validation.coverage).toMatchObject({
       expectedExercises: 158,
       listedExercises: 158,
-      approvedExercises: 0,
-      approvedAssets: 0,
-      instructionLocalizations: 0,
-      mediaLocalizations: 0,
-      approvedReviews: 0,
+      approvedExercises: 158,
+      approvedAssets: 200,
+      instructionLocalizations: 474,
+      mediaLocalizations: 600,
+      approvedReviews: 800,
     });
-    expect(validation.activationBlockers).toEqual(expect.arrayContaining([
-      'Manifest publication state is not ACTIVE.',
-      'Manifest has no approved delivery origin.',
-      'Manifest has no immutable approved host reference.',
-      'Manifest has no immutable owner approval reference.',
-      'Approved exercise coverage is 0/158.',
-    ]));
+    expect(validation.activationBlockers).toEqual([]);
   });
 
   it('detects compiled-package tampering and unsafe delivery origins', () => {
@@ -407,21 +401,21 @@ describe('Training exercise media manifest tooling', () => {
     expect(validation.errors).toContain('Takedown references an unknown asset: current-remove');
   });
 
-  it('seeds the draft idempotently without activating or serving it', () => {
+  it('seeds the approved package idempotently without activating it', () => {
     const db = new Database(':memory:');
     try {
       runMigrationsForTest(db);
       const compiled = readCompiledTrainingExerciseMediaPackage();
       const first = seedCompiledTrainingExerciseMediaPackage(db, compiled);
       const replay = seedCompiledTrainingExerciseMediaPackage(db, compiled);
-      expect(first).toMatchObject({ inserted: true, activated: false });
+      expect(first).toMatchObject({ inserted: true, staged: true, activated: false });
       expect(replay).toMatchObject({ inserted: false, activated: false });
       expect(db.prepare(`
         SELECT publication_state, validation_status FROM training_exercise_media_manifests
          WHERE manifest_id = ?
       `).get(compiled.manifest.manifestId)).toEqual({
-        publication_state: 'DRAFT',
-        validation_status: 'PENDING',
+        publication_state: 'STAGED',
+        validation_status: 'PASSED',
       });
       expect(db.prepare(`
         SELECT COUNT(*) AS count FROM training_exercise_media_manifests
@@ -434,7 +428,7 @@ describe('Training exercise media manifest tooling', () => {
         manifest: { ...changedSources.manifest, manifestVersion: 'training-exercise-media.v1-draft.2' },
       });
       expect(() => seedCompiledTrainingExerciseMediaPackage(db, changed))
-        .toThrow(/same manifest ID|already exists/i);
+        .toThrow(/owner approval.*exact package hash|same manifest ID|already exists/i);
     } finally {
       db.close();
     }
@@ -446,38 +440,26 @@ describe('Training exercise media manifest tooling', () => {
       runMigrationsForTest(db);
       const compiled = readCompiledTrainingExerciseMediaPackage();
       seedCompiledTrainingExerciseMediaPackage(db, compiled);
-      db.prepare(`
-        INSERT INTO training_exercise_media_host_approvals (
-          approval_id, manifest_id, scope_key, status, reviewer_ref,
-          subject_origins_json, subject_origins_hash, reason_codes_json,
-          reviewed_at, expires_at, created_at
-        ) VALUES ('durable-host', ?, '__global__', 'PENDING', 'reviewer:host',
-          '[]', ?, '[]', '2026-07-12T00:00:00.000Z', NULL,
-          '2026-07-12T00:00:00.000Z')
-      `).run(compiled.manifest.manifestId, buildTrainingExerciseMediaOriginsHash([]));
-      db.prepare(`
-        INSERT INTO training_exercise_media_owner_approvals (
-          approval_id, manifest_id, scope_key, status, reviewer_ref,
-          subject_package_hash, reason_codes_json, reviewed_at, expires_at, created_at
-        ) VALUES ('durable-owner', ?, '__global__', 'PENDING', 'reviewer:owner',
-          ?, '[]', '2026-07-12T00:00:00.000Z', NULL,
-          '2026-07-12T00:00:00.000Z')
-      `).run(compiled.manifest.manifestId, compiled.packageHash);
-      db.prepare(`
-        UPDATE training_exercise_media_manifests
-           SET approved_host_ref = 'durable-host', owner_approval_ref = 'durable-owner'
-         WHERE manifest_id = ?
-      `).run(compiled.manifest.manifestId);
-
-      expect(() => seedCompiledTrainingExerciseMediaPackage(db, compiled))
-        .toThrow(/cannot be replaced or erased by catalog synchronization/i);
+      expect(() => seedCompiledTrainingExerciseMediaPackage(db, compiled)).not.toThrow();
       expect(db.prepare(`
         SELECT approved_host_ref, owner_approval_ref
           FROM training_exercise_media_manifests WHERE manifest_id = ?
       `).get(compiled.manifest.manifestId)).toEqual({
-        approved_host_ref: 'durable-host',
-        owner_approval_ref: 'durable-owner',
+        approved_host_ref: compiled.manifest.approvedHostRef,
+        owner_approval_ref: compiled.manifest.ownerApprovalRef,
       });
+
+      expect(() => db.prepare(`
+        UPDATE training_exercise_media_manifests
+           SET owner_approval_ref = 'collision:owner-approval'
+         WHERE manifest_id = ?
+      `).run(compiled.manifest.manifestId)).toThrow(/approval references freeze at staging/i);
+
+      expect(() => db.prepare(`
+        UPDATE training_exercise_media_manifests
+           SET owner_approval_ref = NULL
+         WHERE manifest_id = ?
+      `).run(compiled.manifest.manifestId)).toThrow(/approval references freeze at staging/i);
     } finally {
       db.close();
     }
@@ -513,9 +495,18 @@ describe('Training exercise media manifest tooling', () => {
           manifestVersion: 'incomplete-staged.v1',
           publicationState: 'STAGED',
           validationStatus: 'PASSED',
-          allowedOrigins: ['https://media.nexushub.test'],
-          ownerApprovalRef: 'owner-approval:incomplete-staged',
+          activatedAt: null,
+          ownerApprovalRef: null,
         },
+        exercises: sources.exercises.map((exercise) => ({
+          ...exercise,
+          publicationState: 'DRAFT' as const,
+        })),
+        assets: sources.assets.map((asset) => ({
+          ...asset,
+          publicationState: 'DRAFT' as const,
+        })),
+        ownerApprovals: [],
       });
       expect(() => seedCompiledTrainingExerciseMediaPackage(db, incomplete))
         .toThrow(/not staging-ready.*Approved exercise coverage is 0\/158/i);
