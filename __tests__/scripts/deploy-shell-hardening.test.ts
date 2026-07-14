@@ -194,6 +194,115 @@ describe('deploy shell hardening', () => {
     }
   });
 
+  it('allows staging dedicated Garmin/Health keys while production uses the OAuth fallback', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-domain-key-fallback-'));
+    const binDir = join(root, 'bin');
+    const staging = join(root, 'staging');
+    const prod = join(root, 'prod');
+    mkdirSync(binDir);
+    mkdirSync(staging);
+    mkdirSync(prod);
+    writeExecSsh(binDir);
+    writeFileSync(
+      join(staging, '.env'),
+      [
+        'NODE_ENV=staging',
+        'BACKUP_ENCRYPT=false',
+        'AI_CALL_TIMEOUT_MS=60',
+        'OAUTH_ENCRYPTION_KEY=staging-oauth-key',
+        'GARMIN_ENCRYPTION_KEY=staging-garmin-key',
+        'HEALTH_DATA_ENCRYPTION_KEY=staging-health-key',
+        'INTERNAL_API_SECRET=staging-secret',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(prod, '.env'),
+      [
+        'NODE_ENV=production',
+        'BACKUP_ENCRYPT=true',
+        'AI_CALL_TIMEOUT_MS=30',
+        'OAUTH_ENCRYPTION_KEY=prod-oauth-fallback-key',
+        'INTERNAL_API_SECRET=prod-secret',
+      ].join('\n'),
+    );
+    try {
+      const output = execFileSync(
+        'bash',
+        [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+        {
+          cwd: ROOT,
+          encoding: 'utf8',
+          env: { ...process.env, PATH: prependPath(binDir) },
+        },
+      );
+      expect(output).toContain('env_parity_ok');
+      expect(output).not.toContain('staging-garmin-key');
+      expect(output).not.toContain('staging-health-key');
+      expect(output).not.toContain('prod-oauth-fallback-key');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails env parity without an effective Garmin or Health encryption key', () => {
+    const root = mkdtempSync(join(tmpdir(), 'env-parity-domain-key-missing-'));
+    const binDir = join(root, 'bin');
+    const staging = join(root, 'staging');
+    const prod = join(root, 'prod');
+    mkdirSync(binDir);
+    mkdirSync(staging);
+    mkdirSync(prod);
+    writeExecSsh(binDir);
+    writeFileSync(
+      join(staging, '.env'),
+      [
+        'NODE_ENV=staging',
+        'BACKUP_ENCRYPT=false',
+        'AI_CALL_TIMEOUT_MS=60',
+        'OAUTH_ENCRYPTION_KEY=""',
+        'GARMIN_ENCRYPTION_KEY=""',
+        'HEALTH_DATA_ENCRYPTION_KEY=""',
+        'INTERNAL_API_SECRET=staging-secret',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(prod, '.env'),
+      [
+        'NODE_ENV=production',
+        'BACKUP_ENCRYPT=true',
+        'AI_CALL_TIMEOUT_MS=30',
+        'OAUTH_ENCRYPTION_KEY=prod-oauth-key',
+        'INTERNAL_API_SECRET=prod-secret',
+      ].join('\n'),
+    );
+    try {
+      expect(() =>
+        execFileSync(
+          'bash',
+          [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+          {
+            cwd: ROOT,
+            env: { ...process.env, PATH: prependPath(binDir) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ),
+      ).toThrow(/GARMIN_ENCRYPTION_KEY:staging_effective_key_missing/);
+      expect(() =>
+        execFileSync(
+          'bash',
+          [ENV_PARITY, '--server', 'fake-server', '--staging-dir', staging, '--prod-dir', prod],
+          {
+            cwd: ROOT,
+            env: { ...process.env, PATH: prependPath(binDir) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ),
+      ).toThrow(/HEALTH_DATA_ENCRYPTION_KEY:staging_effective_key_missing/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('allows documented staging/prod-only env keys and reads prod NODE_ENV from ecosystem config', () => {
     const root = mkdtempSync(join(tmpdir(), 'env-parity-shape-'));
     const binDir = join(root, 'bin');

@@ -51,6 +51,12 @@ const [stagingPath, prodPath] = process.argv.slice(2);
 const path = require('path');
 
 const optional = new Set([
+  // These domain keys are intentionally optional because each environment
+  // may either use a dedicated key or the OAUTH_ENCRYPTION_KEY fallback.
+  // Presence parity would otherwise encourage unsafe cross-environment key
+  // copying. Effective-key checks below still fail closed without either.
+  'GARMIN_ENCRYPTION_KEY',
+  'HEALTH_DATA_ENCRYPTION_KEY',
   'SENTRY_DSN',
   'HEALTH_TOKEN',
   'PORTAL_REQUIRE_SESSION_AUTH',
@@ -122,6 +128,11 @@ function normalized(map, key) {
   return String(map.get(key) ?? '').trim().replace(/^['"]|['"]$/g, '');
 }
 
+function hasEffectiveEncryptionKey(map, dedicatedKey) {
+  return normalized(map, dedicatedKey).trim() !== ''
+    || normalized(map, 'OAUTH_ENCRYPTION_KEY').trim() !== '';
+}
+
 function matchesRule(key, rules) {
   return rules.some((rule) => {
     if (rule instanceof RegExp) return rule.test(key);
@@ -179,6 +190,15 @@ for (const key of productionRequired) {
 for (const key of stagingRequired) {
   if (!configured(staging, key)) {
     failures.push(`${key}:staging_required_missing`);
+  }
+}
+
+for (const dedicatedKey of ['GARMIN_ENCRYPTION_KEY', 'HEALTH_DATA_ENCRYPTION_KEY']) {
+  if (!hasEffectiveEncryptionKey(staging, dedicatedKey)) {
+    failures.push(`${dedicatedKey}:staging_effective_key_missing`);
+  }
+  if (!hasEffectiveEncryptionKey(prod, dedicatedKey)) {
+    failures.push(`${dedicatedKey}:prod_effective_key_missing`);
   }
 }
 
