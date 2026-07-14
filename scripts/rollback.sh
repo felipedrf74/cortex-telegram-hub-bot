@@ -14,6 +14,7 @@
 #   ./scripts/rollback.sh --dry-run v4.9.20   # Dry-run restore of specific version
 #   ./scripts/rollback.sh latest              # Apply rollback to most recent backup
 #   ./scripts/rollback.sh v4.9.20             # Apply rollback to specific version
+#   ./scripts/rollback.sh --backup-file /home/dominguez/backups/nexushub/v4.9.20_...tar.gz
 #
 # Safety rails this script adds on top of restore.sh:
 #   1. Interactive confirmation prompt showing current→target version
@@ -36,12 +37,21 @@ PM2="/home/dominguez/.npm-global/bin/pm2"
 # ── Parse args ───────────────────────────────────────
 DRY_RUN=false
 VERSION=""
+BACKUP_FILE_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)
       DRY_RUN=true
       shift
+      ;;
+    --backup-file)
+      if [ "$#" -lt 2 ]; then
+        echo "❌ --backup-file requires an absolute backup path"
+        exit 2
+      fi
+      BACKUP_FILE_OVERRIDE="$2"
+      shift 2
       ;;
     -h|--help)
       sed -n '2,28p' "$0" | sed 's/^# \?//'
@@ -100,7 +110,7 @@ done <<< "$METADATA"
 echo ""
 
 # ── If no version specified, just list and exit ──────
-if [ -z "$VERSION" ]; then
+if [ -z "$VERSION" ] && [ -z "$BACKUP_FILE_OVERRIDE" ]; then
   echo "Usage:"
   echo "  ./scripts/rollback.sh --dry-run latest      # Validate backup without applying"
   echo "  ./scripts/rollback.sh latest                # Apply latest rollback"
@@ -113,7 +123,20 @@ if [ -z "$VERSION" ]; then
 fi
 
 # ── Find the backup file ────────────────────────────
-if [ "$VERSION" = "latest" ]; then
+if [ -n "$BACKUP_FILE_OVERRIDE" ]; then
+  case "$BACKUP_FILE_OVERRIDE" in
+    "$BACKUP_DIR"/v*.tar.gz) ;;
+    *)
+      echo "❌ --backup-file must name a deploy backup inside $BACKUP_DIR"
+      exit 1
+      ;;
+  esac
+  if ! printf '%s\n' "$BACKUPS" | grep -Fxq -- "$BACKUP_FILE_OVERRIDE"; then
+    echo "❌ Exact backup is not present on the server: $BACKUP_FILE_OVERRIDE"
+    exit 1
+  fi
+  BACKUP_FILE="$BACKUP_FILE_OVERRIDE"
+elif [ "$VERSION" = "latest" ]; then
   BACKUP_FILE=$(echo "$BACKUPS" | head -1)
 else
   # Match version prefix (e.g., "4.9.20" matches "v4.9.20_20260407_...")

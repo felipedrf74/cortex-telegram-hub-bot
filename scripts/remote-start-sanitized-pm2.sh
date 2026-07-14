@@ -84,6 +84,56 @@ trap cleanup_failed_bootstrap EXIT
 install -d -m 700 "$PM2_HOME"
 cd "$REMOTE_DIR"
 
+# PM2 module configuration is keyed by module/app name. PM2 6.0.x treats a
+# stale string-valued entry for a normal application as additional process
+# environment and Object.assign() spreads it into numeric keys ("0", "1",
+# ...). Remove only entries for the apps we are about to recreate; keep the
+# strict named environment allowlist below rather than accepting those opaque
+# synthetic values.
+"$NODE_BIN" - "$PM2_HOME/module_conf.json" "$APP_CSV" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const filename = process.argv[2];
+const appNames = new Set(process.argv[3].split(',').filter(Boolean));
+if (!fs.existsSync(filename)) process.exit(0);
+
+const stat = fs.lstatSync(filename);
+if (!stat.isFile() || stat.isSymbolicLink()) {
+  throw new Error('PM2 module configuration is not a regular file');
+}
+const parsed = JSON.parse(fs.readFileSync(filename, 'utf8'));
+if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  throw new Error('PM2 module configuration must be a JSON object');
+}
+
+let changed = false;
+for (const appName of appNames) {
+  if (Object.prototype.hasOwnProperty.call(parsed, appName)) {
+    delete parsed[appName];
+    changed = true;
+  }
+}
+if (!changed) process.exit(0);
+
+const temporary = `${filename}.sanitizing-${process.pid}`;
+const descriptor = fs.openSync(temporary, 'wx', 0o600);
+try {
+  fs.writeFileSync(descriptor, JSON.stringify(parsed, null, 2) + '\n', 'utf8');
+  fs.fsyncSync(descriptor);
+} finally {
+  fs.closeSync(descriptor);
+}
+fs.renameSync(temporary, filename);
+fs.chmodSync(filename, 0o600);
+const directory = fs.openSync(path.dirname(filename), 'r');
+try {
+  fs.fsyncSync(directory);
+} finally {
+  fs.closeSync(directory);
+}
+NODE
+
 # Delete rather than restart: restart/start-by-name preserves the old PM2
 # process environment, including secrets inherited by a historical shell.
 "${SAFE_PM2_ENV[@]}" "$PM2" delete "${APP_NAMES[@]}" >/dev/null 2>&1 || true

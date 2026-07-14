@@ -291,19 +291,39 @@ if [ $DEPLOY_EXIT -ne 0 ]; then
   echo "═══════════════════════════════════════════════"
   echo ""
   if [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ] && [ -f "$DEPLOY_MUTATION_MARKER" ]; then
-    echo "Production deploy failed after production mutation. Auto-running rollback.sh latest..."
-    NEXUS_ROLLBACK_AUTO_CONFIRM=1 "$LOCAL_DIR/scripts/rollback.sh" latest || {
-      echo "⚠️ Auto rollback failed. Manual rollback commands:"
-      echo "  ./scripts/rollback.sh --dry-run latest"
-      echo "  ./scripts/rollback.sh latest"
-    }
+    EXACT_BACKUP=$(sed -n 's/^BACKUP_FILE=//p' "$DEPLOY_MUTATION_MARKER" | tail -1)
+    case "$EXACT_BACKUP" in
+      /home/dominguez/backups/nexushub/v*.tar.gz)
+        echo "Production deploy failed after production mutation. Auto-running rollback with the exact verified backup..."
+        NEXUS_ROLLBACK_AUTO_CONFIRM=1 "$LOCAL_DIR/scripts/rollback.sh" --backup-file "$EXACT_BACKUP" || {
+          echo "⚠️ Auto rollback failed. Manual rollback commands:"
+          printf '  ./scripts/rollback.sh --dry-run --backup-file %q\n' "$EXACT_BACKUP"
+          printf '  ./scripts/rollback.sh --backup-file %q\n' "$EXACT_BACKUP"
+        }
+        ;;
+      *)
+        echo "⚠️ Production was touched, but no exact verified backup was recorded."
+        echo "   Refusing to restore an arbitrary stale backup; keep services stopped and reconcile manually."
+        ;;
+    esac
   elif [ "${NEXUS_PROMOTE_AUTO_ROLLBACK:-1}" != "0" ]; then
     echo "Deploy failed before production mutation. Auto rollback skipped."
   else
-    echo "Production deploy failed. Rollback instructions:"
-    echo "  ./scripts/rollback.sh                    # list available backups"
-    echo "  ./scripts/rollback.sh --dry-run latest   # validate the latest backup"
-    echo "  ./scripts/rollback.sh latest             # apply the latest backup"
+    EXACT_BACKUP=""
+    if [ -f "$DEPLOY_MUTATION_MARKER" ]; then
+      EXACT_BACKUP=$(sed -n 's/^BACKUP_FILE=//p' "$DEPLOY_MUTATION_MARKER" | tail -1)
+    fi
+    case "$EXACT_BACKUP" in
+      /home/dominguez/backups/nexushub/v*.tar.gz)
+        echo "Production deploy failed. Exact rollback instructions:"
+        printf '  ./scripts/rollback.sh --dry-run --backup-file %q\n' "$EXACT_BACKUP"
+        printf '  ./scripts/rollback.sh --backup-file %q\n' "$EXACT_BACKUP"
+        ;;
+      *)
+        echo "Production deploy failed without an exact verified backup."
+        echo "Refusing to recommend an arbitrary stale backup; reconcile manually."
+        ;;
+    esac
   fi
   exit $DEPLOY_EXIT
 fi

@@ -55,6 +55,34 @@ function run(root: string, remote: string, pm2: string) {
 }
 
 describe('sanitized PM2 bootstrap', () => {
+  it('removes stale module configuration only for apps being recreated', () => {
+    const { root, remote, pm2 } = fixture(`
+case "\$1" in
+  delete|start) exit 0 ;;
+  jlist)
+    printf '%s\\n' '[{"name":"nexus-hub","pm2_env":{"status":"online","env":{"HOME":"safe","NODE_ENV":"production","GIT_COMMIT":"abcdef1"}}}]'
+    ;;
+  save)
+    mkdir -p "\$PM2_HOME"
+    printf '%s\\n' '[]' > "\$PM2_HOME/dump.pm2"
+    ;;
+  *) exit 1 ;;
+esac
+`);
+    mkdirSync(path.join(root, '.pm2'));
+    writeFileSync(
+      path.join(root, '.pm2', 'module_conf.json'),
+      JSON.stringify({ 'nexus-hub': 'xyz', 'unrelated-module': { enabled: true } }),
+    );
+
+    const result = run(root, remote, pm2);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(root, '.pm2', 'module_conf.json'), 'utf8'))).toEqual({
+      'unrelated-module': { enabled: true },
+    });
+  });
+
   it('cleans a partially created multi-app start when PM2 returns nonzero', () => {
     const { root, remote, pm2 } = fixture(`
 case "\$1" in
@@ -102,6 +130,29 @@ esac
     ]);
     expect(() => readFileSync(path.join(root, '.pm2', 'dump.pm2'))).toThrow();
     expect(() => readFileSync(path.join(root, '.pm2', 'dump.pm2.bak'))).toThrow();
+  });
+
+  it('continues to reject opaque numeric environment keys after module cleanup', () => {
+    const { root, remote, pm2 } = fixture(`
+case "\$1" in
+  delete|start) exit 0 ;;
+  jlist)
+    printf '%s\\n' '[{"name":"nexus-hub","pm2_env":{"status":"online","env":{"HOME":"safe","NODE_ENV":"production","GIT_COMMIT":"abcdef1","0":"x"}}}]'
+    ;;
+  *) exit 1 ;;
+esac
+`);
+
+    const result = run(root, remote, pm2);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain('outside the explicit allowlist');
+    expect(readFileSync(`${pm2}.log`, 'utf8').trim().split('\n')).toEqual([
+      'delete',
+      'start',
+      'jlist',
+      'delete',
+    ]);
   });
 
   it('atomically scrubs current and backup resurrection dumps after a clean start', () => {

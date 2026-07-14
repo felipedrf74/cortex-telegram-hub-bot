@@ -56,6 +56,34 @@ describe('deploy/promote rollback mutation marker', () => {
     expect(deploy).toContain('curl -sf -o /dev/null http://localhost:8200/api/snapshot');
   });
 
+  it('deploy.sh requires a verified backup and records its exact archive before rsync', () => {
+    const deploy = readFileSync(DEPLOY_SH, 'utf8');
+
+    const backup = deploy.indexOf('remote-create-release-backup.sh');
+    const exactArchive = deploy.indexOf("printf 'BACKUP_FILE=%s\\n' \"$BACKUP_FILE\"");
+    const rsync = deploy.indexOf('# ── 4. Sync files');
+    expect(backup).toBeGreaterThan(0);
+    expect(exactArchive).toBeGreaterThan(backup);
+    expect(rsync).toBeGreaterThan(exactArchive);
+    expect(deploy).toContain('Backup failed; refusing to replace production files');
+    expect(deploy).not.toContain('Backup skipped');
+  });
+
+  it('deploy.sh fails closed unless both production PM2 processes are proved stopped', () => {
+    const deploy = readFileSync(DEPLOY_SH, 'utf8');
+    const stopBlockStart = deploy.indexOf("<<'REMOTE_STOP_PRODUCTION'");
+    const stopBodyStart = deploy.indexOf('\n', stopBlockStart) + 1;
+    const stopBlockEnd = deploy.indexOf('\nREMOTE_STOP_PRODUCTION', stopBodyStart);
+    const stopBlock = deploy.slice(stopBodyStart, stopBlockEnd);
+
+    expect(stopBlockStart).toBeGreaterThan(0);
+    expect(stopBlock).toContain('set -euo pipefail');
+    expect(stopBlock).toContain('"$PM2_BIN" stop "$app_name"');
+    expect(stopBlock).toContain('"$PM2_BIN" jlist');
+    expect(stopBlock).toContain('PM2 process did not stop');
+    expect(stopBlock).not.toContain('2>/dev/null');
+  });
+
   it('deploy preflight requires the portal credential selected by its auth mode', () => {
     const production = readFileSync(DEPLOY_SH, 'utf8');
     const staging = readFileSync(DEPLOY_STAGING_SH, 'utf8');
@@ -135,5 +163,17 @@ describe('deploy/promote rollback mutation marker', () => {
     expect(promote).toContain('"$LOCAL_DIR/scripts/deploy.sh"');
     expect(promote).toMatch(/\[ -f "\$DEPLOY_MUTATION_MARKER" \]/);
     expect(promote).toMatch(/Deploy failed before production mutation\. Auto rollback skipped\./);
+    expect(promote).toContain("sed -n 's/^BACKUP_FILE=//p'");
+    expect(promote).toContain('rollback.sh" --backup-file "$EXACT_BACKUP"');
+    expect(promote).not.toContain('rollback.sh" latest');
+    expect(promote).toContain('Refusing to restore an arbitrary stale backup');
+  });
+
+  it('rollback accepts only an exact deploy archive under the production backup directory', () => {
+    const rollback = readFileSync(ROLLBACK_SH, 'utf8');
+
+    expect(rollback).toContain('--backup-file)');
+    expect(rollback).toContain('"$BACKUP_DIR"/v*.tar.gz');
+    expect(rollback).toContain('grep -Fxq -- "$BACKUP_FILE_OVERRIDE"');
   });
 });

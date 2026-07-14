@@ -4,6 +4,8 @@ import path from 'path';
 
 describe('deploy script security contracts', () => {
   const deploySource = () => fs.readFileSync(path.resolve(__dirname, '../../scripts/deploy.sh'), 'utf8');
+  const backupSource = () =>
+    fs.readFileSync(path.resolve(__dirname, '../../scripts/remote-create-release-backup.sh'), 'utf8');
   const restoreSource = () => fs.readFileSync(path.resolve(__dirname, '../../scripts/restore.sh'), 'utf8');
   const deployStagingSource = () => fs.readFileSync(path.resolve(__dirname, '../../scripts/deploy-staging.sh'), 'utf8');
   const stagingSmokeSource = () => fs.readFileSync(path.resolve(__dirname, '../../scripts/staging-smoke.sh'), 'utf8');
@@ -12,9 +14,15 @@ describe('deploy script security contracts', () => {
   it('creates production backup archives with owner-only permissions', () => {
     const deploy = deploySource();
     expect(deploy).toContain('umask 077');
-    expect(deploy).toContain('install -d -m 700');
-    expect(deploy).toContain('chmod 600 \\"\\$TMP_ARCHIVE\\"');
-    expect(deploy).toContain('mv -f \\"\\$TMP_ARCHIVE\\" \\"\\$ARCHIVE\\"');
+    expect(deploy).toContain('remote-create-release-backup.sh');
+
+    const backup = backupSource();
+    expect(backup).toContain('umask 077');
+    expect(backup).toContain('install -d -m 700 "$BACKUP_DIR"');
+    expect(backup).toContain('chmod 600 "$TMP_ARCHIVE"');
+    expect(backup).toContain('mv -f "$TMP_ARCHIVE" "$ARCHIVE"');
+    expect(backup).toContain("db.pragma('integrity_check')");
+    expect(backup).toContain("db.pragma('foreign_key_check')");
 
     const restore = restoreSource();
     expect(restore).toContain('umask 077');

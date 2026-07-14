@@ -561,7 +561,30 @@ echo "🛑 Stopping services on server..."
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEPLOY_MUTATION_MARKER"
 # ── Handle PM2 process rename (one-time migration) ──
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 delete telegram-hub-bot 2>/dev/null || true"
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
+ssh "$SERVER" bash -s -- "$PM2" "nexus-hub,content-engine" <<'REMOTE_STOP_PRODUCTION'
+set -euo pipefail
+PM2_BIN="$1"
+APP_NAMES_CSV="$2"
+IFS=',' read -r -a APP_NAMES <<< "$APP_NAMES_CSV"
+for app_name in "${APP_NAMES[@]}"; do
+  if "$PM2_BIN" describe "$app_name" >/dev/null 2>&1; then
+    "$PM2_BIN" stop "$app_name" >/dev/null
+  fi
+done
+"$PM2_BIN" jlist | /usr/bin/node -e '
+  const fs = require("fs");
+  const required = process.argv[1].split(",");
+  const processes = JSON.parse(fs.readFileSync(0, "utf8"));
+  for (const name of required) {
+    const entry = processes.find(processEntry => processEntry?.name === name);
+    if (!entry) continue;
+    if (entry.pm2_env?.status !== "stopped" || Number(entry.pid || 0) !== 0) {
+      throw new Error(`PM2 process did not stop: ${name}`);
+    }
+  }
+' "$APP_NAMES_CSV"
+echo '   Stopped and independently verified.'
+REMOTE_STOP_PRODUCTION
 
 # ── 2b. Backup on server (now includes data/bot.db) ───
 # Audit QW-10 finding: previous backups only contained code (dist/, prompts/,
@@ -573,34 +596,31 @@ ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/
 # them defensively in case shutdown was abrupt.
 echo ""
 echo "💾 Creating backup on server (now WITH bot.db)..."
-ssh "$SERVER" "
-  set -e
-  umask 077
-  BACKUP_DIR='/home/dominguez/backups/nexushub'
-  TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
-  install -d -m 700 \"\$BACKUP_DIR\"
-  cd '$REMOTE_DIR'
-  # Build the include list dynamically: code paths + DB + sidecars (if present)
-  INCLUDES='dist/ catalog/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js data/bot.db'
-  [ -f data/bot.db-wal ] && INCLUDES=\"\$INCLUDES data/bot.db-wal\"
-  [ -f data/bot.db-shm ] && INCLUDES=\"\$INCLUDES data/bot.db-shm\"
-  [ -d data/garmin-tokens ] && INCLUDES=\"\$INCLUDES data/garmin-tokens/\"
-  ARCHIVE=\"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\"
-  TMP_ARCHIVE=\"\$ARCHIVE.tmp\"
-  rm -f \"\$TMP_ARCHIVE\"
-  tar czf \"\$TMP_ARCHIVE\" \$INCLUDES 2>/dev/null || {
-    rm -f \"\$TMP_ARCHIVE\"
-    echo '   ⚠️  Backup tar failed'; exit 1;
-  }
-  chmod 600 \"\$TMP_ARCHIVE\"
-  mv -f \"\$TMP_ARCHIVE\" \"\$ARCHIVE\"
-  # Show resulting size + verify bot.db is actually in there
-  SIZE=\$(du -h \"\$ARCHIVE\" | cut -f1)
-  HAS_DB=\$(tar tzf \"\$ARCHIVE\" 2>/dev/null | grep -c 'bot.db\$' || echo 0)
-  echo \"   ✅ Backup created (\$SIZE, bot.db included: \$HAS_DB)\"
-  # Retention: keep 10 most recent
-  ls -t \"\$BACKUP_DIR\"/*.tar.gz 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
-" || echo "   ⚠️  Backup skipped"
+set +e
+BACKUP_OUTPUT=$(ssh "$SERVER" bash -s -- \
+  "$REMOTE_DIR" \
+  "/home/dominguez/backups/nexushub" \
+  "$VERSION" \
+  "$PM2" \
+  "nexus-hub,content-engine" \
+  < "$LOCAL_DIR/scripts/remote-create-release-backup.sh")
+BACKUP_EXIT=$?
+set -e
+printf '%s\n' "$BACKUP_OUTPUT"
+if [ "$BACKUP_EXIT" -ne 0 ]; then
+  echo "   ❌ Backup failed; refusing to replace production files"
+  exit "$BACKUP_EXIT"
+fi
+BACKUP_FILE=$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_FILE=//p' | tail -1)
+case "$BACKUP_FILE" in
+  /home/dominguez/backups/nexushub/v*.tar.gz) ;;
+  *)
+    echo "   ❌ Backup helper did not return a safe verified archive path"
+    exit 1
+    ;;
+esac
+printf 'BACKUP_FILE=%s\n' "$BACKUP_FILE" >> "$DEPLOY_MUTATION_MARKER"
+echo "   ✅ Exact rollback archive recorded"
 
 # ── 3b. Drain ports before restart (audit P0-4) ──────
 # pm2 stop returns when the process is gone, but the OS may keep port 8200
