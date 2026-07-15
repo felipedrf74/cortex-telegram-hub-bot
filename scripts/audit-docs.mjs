@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   DOCUMENTATION_POLICY_PATH,
+  gitHistoryOnlyDocumentationIssues,
   resolveDocumentationInventory,
 } from './lib/documentation-policy.mjs';
 import { missingCanonicalRegistryMarkdownPaths } from './lib/docs-audit-paths.mjs';
@@ -147,6 +148,9 @@ let governance = null;
 try {
   governance = resolveDocumentationInventory({ repoRoot: root, files: markdown });
   for (const issue of governance.issues) add(issue.type, issue.file, issue.message);
+  for (const issue of gitHistoryOnlyDocumentationIssues(governance.records)) {
+    add(issue.type, issue.file, issue.message);
+  }
 } catch (error) {
   add(
     'documentation-policy-invalid',

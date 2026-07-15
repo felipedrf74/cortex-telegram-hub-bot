@@ -283,6 +283,7 @@ describe('project map generation', () => {
     expect(audit).toContain("['scripts/generate-project-map.mjs', '--check']");
     expect(audit).toContain("add('project-map-drift'");
     expect(audit).toContain('resolveDocumentationInventory');
+    expect(audit).toContain('gitHistoryOnlyDocumentationIssues');
     expect(audit).toContain("'documentation-policy-invalid'");
     expect(workflow).toContain('name: Project map freshness');
     expect(workflow).toContain('run: npm run project:map:check');

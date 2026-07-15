@@ -14,7 +14,7 @@
     "archive": { "active": false }
   },
   "defaults": {
-    "reviewedOn": "2026-07-15",
+    "reviewedOn": "2026-07-16",
     "reviewIntervalDays": 180
   },
   "rules": [

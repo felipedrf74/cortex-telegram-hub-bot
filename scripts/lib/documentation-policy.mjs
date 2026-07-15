@@ -177,6 +177,22 @@ export function readDocumentationPolicy(repoRoot) {
   return validateDocumentationPolicy(JSON.parse(fs.readFileSync(policyPath, 'utf8')));
 }
 
+/**
+ * Repository documentation has no archive tier: Git history is the archive.
+ * Keep this as an audit projection instead of rejecting inactive status
+ * definitions structurally, so the policy parser can still explain precisely
+ * which tracked document violates the repository rule.
+ */
+export function gitHistoryOnlyDocumentationIssues(records) {
+  return records
+    .filter((record) => record.active === false)
+    .map((record) => ({
+      type: 'inactive-document-prohibited',
+      file: record.path,
+      message: `Tracked Markdown cannot use inactive status ${record.status}; Git history is the archive.`,
+    }));
+}
+
 function canonicalPathFor(repoRoot, file) {
   const absolute = path.join(repoRoot, file);
   const stat = fs.lstatSync(absolute);
