@@ -293,6 +293,7 @@ check_clean_rc_history() {
   local expected_sha
   local count=0
   local seen_run_keys=""
+  local validation_dir validation_json validation_err
 
   case "$min_count" in
     ''|*[!0-9]*)
@@ -302,12 +303,19 @@ check_clean_rc_history() {
   esac
 
   expected_sha="$(git rev-parse HEAD)"
+  validation_dir="$(mktemp -d "${TMPDIR:-/tmp}/nexus-clean-rc-evidence.XXXXXX")" || {
+    echo "❌ Could not create an isolated signed-evidence validation directory."
+    return 1
+  }
+  validation_json="$validation_dir/validated.json"
+  validation_err="$validation_dir/validation.err"
   echo "🧾 Checking distinct clean signed RC evidence history (${count}/${min_count})..."
   shopt -s nullglob
   local evidence_file run_key
   for evidence_file in "$evidence_dir"/release-evidence-"$expected_sha"-*.json "$evidence_dir"/release-evidence-"$expected_sha".json; do
-    if node scripts/release-evidence.mjs validate --evidence "$evidence_file" --expect-sha "$expected_sha" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json >/tmp/nexus-clean-rc-evidence.json 2>/tmp/nexus-clean-rc-evidence.err; then
-      run_key="$(release_evidence_run_key /tmp/nexus-clean-rc-evidence.json || true)"
+    [ -f "$evidence_file" ] || continue
+    if node scripts/release-evidence.mjs validate --evidence "$evidence_file" --expect-sha "$expected_sha" --public-key "$RELEASE_EVIDENCE_PUBLIC_KEY_REL" --json >"$validation_json" 2>"$validation_err"; then
+      run_key="$(release_evidence_run_key "$validation_json" || true)"
       if [ -z "$run_key" ]; then
         echo "🟡 Signed RC evidence lacks ci.runId and does not count: $evidence_file"
         continue
@@ -322,6 +330,7 @@ check_clean_rc_history() {
     fi
   done
   shopt -u nullglob
+  rm -rf "$validation_dir"
 
   if [ "$count" -lt "$min_count" ]; then
     echo "🟡 Distinct clean signed RC evidence run count is $count/$min_count for $expected_sha."

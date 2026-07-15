@@ -324,6 +324,7 @@ function createDuplicateRunIdEvidenceFiles(root: string) {
     `release-evidence-${sha}-1-1.json`,
     `release-evidence-${sha}-1-2.json`,
     `release-evidence-${sha}-2-1.json`,
+    `release-evidence-${sha}-3-1.json`,
   ]) {
     writeFileSync(join(evidenceDir, name), '{"ok":true}');
   }
