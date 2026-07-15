@@ -168,9 +168,10 @@ Production rollback is **always available**. The default release contract is:
    loopback health, public health, or snapshot-version readiness fails, restore
    the exact backup and previous release directory automatically. A changed or
    irreversible migration still requires explicit owner approval.
-5. **Legacy wrappers are emergency fallback only.** `scripts/rollback.sh` and
-   restore tooling remain available, but `deploy.sh`, `deploy-staging.sh`, and
-   `promote-to-prod.sh` are not the default production path.
+5. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
+   `deploy-staging.sh`, and `promote-to-prod.sh` paths must not be restored or
+   invoked. Exact `scripts/rollback.sh` and restore tooling remain available
+   for emergency predecessor recovery.
 
 ## 9. Incident runbook (must)
 
