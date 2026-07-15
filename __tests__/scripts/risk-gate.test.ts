@@ -3,6 +3,26 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('risk-gate dry run', () => {
+  it('resolves symbolic and hook fallback bases to one immutable commit', () => {
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/risk-gate.sh',
+        '--dry-run',
+        '--skip-typecheck',
+        '--skip-python',
+        '--skip-migrations',
+        '--files',
+        'src/services/content-radar-engine.ts',
+      ],
+      { encoding: 'utf8' },
+    );
+
+    expect(raw).toContain(`base: ${head}`);
+    expect(raw).toContain(`--base ${head}`);
+  });
+
   it('focused mode builds one changed, focused, and critical union', () => {
     const raw = execFileSync(
       'bash',

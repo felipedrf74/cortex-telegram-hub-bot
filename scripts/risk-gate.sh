@@ -104,6 +104,7 @@ json_get() {
 
 resolve_base_for_changed() {
   local candidate=""
+  local resolved=""
   if [ -n "$BASE_REF" ]; then
     candidate="$BASE_REF"
   else
@@ -113,11 +114,14 @@ resolve_base_for_changed() {
   # non-revision value crashes `vitest --changed` and migration-safety-check
   # with `fatal: Needed a single revision`. Staged work in that mode is
   # always relative to HEAD.
-  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null 2>&1; then
-    printf '%s' "$candidate"
-  else
-    printf '%s' "HEAD"
+  if [ -n "$candidate" ]; then
+    resolved="$(git rev-parse --verify --quiet "${candidate}^{commit}" 2>/dev/null || true)"
   fi
+  if [[ "$resolved" =~ ^[0-9a-f]{40}$ ]]; then
+    printf '%s' "$resolved"
+    return
+  fi
+  git rev-parse --verify 'HEAD^{commit}'
 }
 
 CLASSIFIER_JSON_FILE="$(mktemp)"
