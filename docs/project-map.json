@@ -4250,7 +4250,7 @@
     }
   ],
   "tests": {
-    "files": 930,
+    "files": 934,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4269,13 +4269,14 @@
       "regression": 1,
       "router": 3,
       "scope": 1,
-      "scripts": 47,
+      "scripts": 50,
       "sdk": 1,
       "security": 21,
       "services": 587,
       "skills": 12,
       "state": 17,
       "storage": 1,
+      "testing": 1,
       "tools": 9,
       "utils": 12
     }

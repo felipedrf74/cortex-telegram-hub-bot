@@ -2,7 +2,13 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { loadTestPolicy, matchFiles, root, walkTestFiles } from './lib/test-policy.mjs';
+import {
+  loadTestPolicy,
+  matchFiles,
+  partitionTestFiles,
+  root,
+  walkTestFiles,
+} from './lib/test-policy.mjs';
 import { staticTestDependencyImpact } from './lib/static-test-dependency-map.mjs';
 
 const args = process.argv.slice(2);
@@ -23,11 +29,12 @@ if (!base || !classifierPath) {
 
 const classifier = JSON.parse(fs.readFileSync(classifierPath, 'utf8'));
 const policy = loadTestPolicy();
-const allFiles = walkTestFiles(sourceRoot);
+const discoveredFiles = walkTestFiles(sourceRoot);
+const allFiles = partitionTestFiles(discoveredFiles, policy).deterministic;
 const focused = matchFiles(allFiles, classifier.vitest?.globs ?? []);
 const critical = matchFiles(allFiles, policy.tiers.critical.include);
 const dependencyImpact = staticTestDependencyImpact(sourceRoot, base);
-const changed = dependencyImpact.tests;
+const changed = dependencyImpact.tests.filter((file) => allFiles.includes(file));
 const removed = dependencyImpact.removedTestFiles;
 const removedDigest = createHash('sha256').update(JSON.stringify(removed)).digest('hex');
 

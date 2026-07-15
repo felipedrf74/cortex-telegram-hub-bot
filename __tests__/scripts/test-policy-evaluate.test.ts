@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { loadTestPolicy, matchFiles, walkTestFiles } from '../../scripts/lib/test-policy.mjs';
+import {
+  loadTestPolicy,
+  partitionTestFiles,
+  resolveTestDisposition,
+  walkTestFiles,
+} from '../../scripts/lib/test-policy.mjs';
 
 describe('test policy evaluation boundary', () => {
   it('keeps only subjective persona and output-quality grading in test:evaluate', () => {
     const policy = loadTestPolicy();
-    const evaluate = matchFiles(walkTestFiles(), policy.tiers.evaluate.include);
+    const evaluate = partitionTestFiles(walkTestFiles(), policy).evaluation;
 
     expect(evaluate).toEqual([
       '__tests__/services/coach-kernel-evaluation.test.ts',
@@ -22,6 +27,6 @@ describe('test policy evaluation boundary', () => {
     '__tests__/tools/content-evaluation-harness.test.ts',
   ])('keeps deterministic runtime evaluator coverage in correctness tiers: %s', (file) => {
     const policy = loadTestPolicy();
-    expect(matchFiles([file], policy.tiers.evaluate.include)).toEqual([]);
+    expect(resolveTestDisposition(file, policy)?.disposition).not.toBe('eval');
   });
 });

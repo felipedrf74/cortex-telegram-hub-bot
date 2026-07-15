@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-15",
+  "version": "2026-07-15.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -50,11 +50,7 @@
     },
     "evaluate": {
       "description": "Subjective quality, persona, provider, and long-running evaluation corpora.",
-      "include": [
-        "__tests__/services/coach-kernel-evaluation.test.ts",
-        "__tests__/services/content-day-to-day-evaluation.test.ts",
-        "__tests__/personas/**/*.test.ts"
-      ]
+      "dispositions": ["eval"]
     }
   },
   "fullSuiteTriggers": [
@@ -109,7 +105,27 @@
       "expires": "2026-09-15"
     }
   ],
+  "inventoryEvidence": {
+    "disposition": {
+      "requiredResolvedPercent": 100,
+      "provenanceRequired": true,
+      "maximumPatternFallbackFiles": 926
+    },
+    "timing": {
+      "minimumScopePercent": 100,
+      "minimumSamplesForPercentiles": 5
+    },
+    "uniqueCoverage": {
+      "minimumPercent": 0,
+      "status": "not-collected; ratchet only after a reproducible collector exists"
+    },
+    "lastFailure": {
+      "minimumPercent": 0,
+      "status": "not-collected; ratchet only after a durable CI history source exists"
+    }
+  },
   "dispositionRules": [
+    { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
     { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "keep", "reason": "Duplicate happy paths and source-import assertions were removed; the remaining cases cover malformed signals, filtering boundaries, multi-agent consumption, and digest edge behavior absent from the primary suite." },
     { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "keep", "reason": "Retains skill schema, constraint, index, and cascade behavior while the redundant file-existence checks and empty-database full migration replay were deleted." },
     { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },

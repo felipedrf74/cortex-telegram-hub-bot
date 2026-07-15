@@ -24,7 +24,7 @@ import {
   validateReleaseSelection,
   vitestTestFiles,
 } from './release-test-evidence.mjs';
-import { walkTestFiles } from './lib/test-policy.mjs';
+import { loadTestPolicy, partitionTestFiles, walkTestFiles } from './lib/test-policy.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'verify-candidate';
@@ -226,7 +226,7 @@ function recomputeReleaseSelection({ trustedRoot, candidateSourceRoot, selection
       selection,
       classifier,
       selected,
-      allFiles: walkTestFiles(candidateSourceRoot),
+      allFiles: partitionTestFiles(walkTestFiles(candidateSourceRoot), loadTestPolicy()).deterministic,
     });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -390,10 +390,12 @@ function regularFiles(rootDirectory) {
 }
 
 function testFilesAtCommit(sourceRoot, commitSha) {
-  return git(sourceRoot, 'ls-tree', '-r', '--name-only', commitSha, '--', '__tests__')
+  const files = git(sourceRoot, 'ls-tree', '-r', '--name-only', commitSha, '--', '__tests__')
     .split(/\r?\n/)
     .filter((file) => /^__tests__\/.+\.test\.ts$/.test(file))
     .sort();
+  const policy = JSON.parse(git(sourceRoot, 'show', `${commitSha}:config/test-policy.json`));
+  return partitionTestFiles(files, policy).deterministic;
 }
 
 export function validateNightlyGitHubIdentity({

@@ -71,6 +71,14 @@ function createRuntime(version: string, includeCatalog: boolean) {
     '#!/usr/bin/env bash\n[ "$#" -eq 2 ] || exit 9\n[ "$1" = "-s" ] || exit 9\n[ "$2" != "--" ] || exit 9\nexit 1\n',
   );
   fs.chmodSync(fuser, 0o755);
+  // Keep the production stability delay observable without paying its wall
+  // clock cost in every isolated shell fixture.
+  const sleep = path.join(bin, 'sleep');
+  fs.writeFileSync(
+    sleep,
+    '#!/usr/bin/env bash\n[ "$#" -eq 1 ] || exit 9\n[ "$1" = "1" ] || exit 9\nprintf \'%s\\n\' "$1" >> "$(dirname "$0")/../sleep.log"\n',
+  );
+  fs.chmodSync(sleep, 0o755);
   return { root, runtime, backups };
 }
 
@@ -125,6 +133,7 @@ describe('release backup runtime artifact boundary', () => {
     const result = runBackup(runtime, backups, {}, prepared);
 
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(fs.readFileSync(path.join(root, 'sleep.log'), 'utf8')).toBe('1\n');
     expect(fs.existsSync(prepared!)).toBe(false);
     const listing = execFileSync('tar', ['tzf', path.join(backups, archives(backups)[0])], {
       encoding: 'utf8',

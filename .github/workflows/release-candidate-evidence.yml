@@ -117,7 +117,11 @@ jobs:
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
-        run: npx vitest run --shard=${{ matrix.shard }}/4 --reporter=json --outputFile=vitest-results-${{ matrix.shard }}.json
+        run: |
+          node scripts/run-test-tier.mjs deterministic \
+            --shard '${{ matrix.shard }}/4' \
+            --reporter json \
+            --json-output 'vitest-results-${{ matrix.shard }}.json'
 
       - name: Upload shard result
         if: always()

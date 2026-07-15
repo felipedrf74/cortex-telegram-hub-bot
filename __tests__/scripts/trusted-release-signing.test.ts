@@ -12,6 +12,7 @@ import {
   validateRecomputedSelection,
   validateTestEvidence,
 } from '../../scripts/trusted-release-signer.mjs';
+import { partitionTestFiles } from '../../scripts/lib/test-policy.mjs';
 
 const runtimeSha = 'a'.repeat(40);
 const repository = 'felipedrf74/cortex-telegram-hub-bot';
@@ -267,10 +268,14 @@ describe('trusted release signing boundary', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-nightly-identity-'));
     roots.push(temp);
     const actualHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const testFiles = execFileSync('git', [
+    const discoveredTestFiles = execFileSync('git', [
       'ls-tree', '-r', '--name-only', actualHead, '--', '__tests__',
     ], { encoding: 'utf8' }).trim().split(/\r?\n/)
       .filter((file) => /^__tests__\/.+\.test\.ts$/.test(file)).sort();
+    const policyAtHead = JSON.parse(execFileSync('git', [
+      'show', `${actualHead}:config/test-policy.json`,
+    ], { encoding: 'utf8' }));
+    const testFiles = partitionTestFiles(discoveredTestFiles, policyAtHead).deterministic;
     const policyDocument = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8'));
     const policy = policyDocument.releaseEvidence.qualifyingNightly;
     const policyDigest = createHash('sha256').update(fs.readFileSync('config/test-policy.json')).digest('hex');
