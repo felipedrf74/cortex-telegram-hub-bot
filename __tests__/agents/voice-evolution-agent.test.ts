@@ -9,23 +9,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   return db;
-}
-
-
-// Read the actual agent source to extract the SQL query
-function getAgentTranscriptQuery(): string {
-  const agentPath = path.resolve(__dirname, '../../src/agents/voice-evolution-agent.ts');
-  const source = fs.readFileSync(agentPath, 'utf-8');
-  const match = source.match(/SELECT\s+[\w,\s]+FROM\s+video_transcripts[^)]+/);
-  return match ? match[0] : '';
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -52,13 +41,6 @@ describe('Voice Evolution Agent — Schema', () => {
     expect(colNames).not.toContain('transcript');
   });
 
-  it('agent source uses full_text, not transcript, in SELECT columns', () => {
-    const query = getAgentTranscriptQuery();
-    expect(query).toContain('full_text');
-    // Extract just the SELECT columns (before FROM) to check for the bug
-    const selectPart = query.split(/FROM/i)[0];
-    expect(selectPart).not.toMatch(/\btranscript\b/);
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

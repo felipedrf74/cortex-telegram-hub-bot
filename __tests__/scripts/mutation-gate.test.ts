@@ -344,7 +344,7 @@ describe('changed-critical mutation gate', () => {
     expect(policy.mutation.minimumMutants).toBeUndefined();
     expect(policy.mutation.cleanupMappings.flatMap(
       ({ mutationTargets = [] }) => mutationTargets,
-    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(18);
+    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(29);
   });
 
   it('maps deleted-test source text back to repository source dependencies', () => {
@@ -698,15 +698,15 @@ describe('changed-critical mutation gate', () => {
       };
     };
     const cases = [
-      '__tests__/api/training-plan-generation.test.ts',
-      '__tests__/brand/package-rename-qa-validation.test.ts',
+      { testFile: '__tests__/api/training-plan-generation.test.ts', expectedHistoricalOwners: 2 },
+      { testFile: '__tests__/brand/package-manifest.test.ts', expectedHistoricalOwners: 4 },
     ];
 
-    for (const testFile of cases) {
+    for (const { testFile, expectedHistoricalOwners } of cases) {
       const historicalOwners = policy.mutation.cleanupMappings.filter((mapping) => (
         (mapping.replacementTests as string[] | undefined)?.includes(testFile)
       ));
-      expect(historicalOwners, testFile).toHaveLength(2);
+      expect(historicalOwners, testFile).toHaveLength(expectedHistoricalOwners);
 
       const plan = buildMutationPlan({
         base: 'fixture-base',

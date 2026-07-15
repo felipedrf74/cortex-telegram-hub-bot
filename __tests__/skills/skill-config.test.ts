@@ -25,6 +25,7 @@ import {
 } from '../../src/skills/skill-config';
 import type { SkillDefinition, SubSkillDefinition } from '../../src/skills/skill-config';
 import { TOOLS } from '../../src/services/anthropic';
+import contentManifest from '../../src/skills/content/manifest.json';
 
 // ═══════════════════════════════════════════════════════════════════
 // STRUCTURE TESTS
@@ -168,6 +169,34 @@ describe('SkillConfig — content skill', () => {
 
   it('is version 2.0.0 with manifest v2 sub-skills', () => {
     expect(cnt.version).toBe('2.0.0');
+  });
+
+  it('keeps the content manifest v2 contract in parity with runtime configuration', () => {
+    expect({
+      manifestVersion: contentManifest.manifestVersion,
+      name: contentManifest.name,
+      version: contentManifest.version,
+      description: contentManifest.description,
+      subSkills: contentManifest.subSkills.map((subSkill) => ({
+        name: subSkill.module_name,
+        description: subSkill.description,
+        enabledByDefault: subSkill.enabled_by_default,
+        tools: subSkill.tools,
+        cronJobs: subSkill.cronJobs,
+      })),
+    }).toEqual({
+      manifestVersion: 2,
+      name: cnt.name,
+      version: cnt.version,
+      description: cnt.description,
+      subSkills: cnt.subSkills.map((subSkill) => ({
+        name: subSkill.name,
+        description: subSkill.description,
+        enabledByDefault: subSkill.enabledByDefault,
+        tools: subSkill.tools,
+        cronJobs: subSkill.cronJobs ?? [],
+      })),
+    });
   });
 
   it('has all 12 granular sub-skills', () => {
