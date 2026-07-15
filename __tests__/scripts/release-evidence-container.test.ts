@@ -48,6 +48,13 @@ describe('release-evidence-container wrapper', () => {
     expect(raw).toContain('timeout-minutes: 30');
   });
 
+  it('uploads the hidden immutable bundle completion seal', () => {
+    const raw = workflow();
+
+    expect(raw).toContain('.local/release/bundles/${{ github.sha }}/**/.complete.json');
+    expect(raw).toContain('include-hidden-files: true');
+  });
+
   it('promotes only the exact staged artifact through the versioned cutover path', () => {
     const operator = readFileSync('scripts/release-operator.sh', 'utf8');
     const promote = readFileSync('scripts/promote-exact-release.sh', 'utf8');

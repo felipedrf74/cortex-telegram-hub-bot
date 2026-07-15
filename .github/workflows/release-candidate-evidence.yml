@@ -265,9 +265,11 @@ jobs:
           path: |
             .local/release/manifests/${{ github.sha }}.json
             .local/release/bundles/${{ github.sha }}/**
+            .local/release/bundles/${{ github.sha }}/**/.complete.json
             .local/release/test-results.json
             .local/release/reward-${{ github.sha }}.json
             .local/release/reward-summary.json
             .local/release/cannot-skip-dashboard.json
             .local/release/rc-test-results/*
+          include-hidden-files: true
           retention-days: 30
