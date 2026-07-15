@@ -63,6 +63,12 @@
       "owner": "release",
       "reason": "Creates isolated Git repositories and runs the complete cannot-skip dashboard; retained as release-infrastructure proof.",
       "expires": "2026-09-15"
+    },
+    {
+      "file": "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts",
+      "owner": "database",
+      "reason": "Retains one production-runner rehearsal with pre-226 historical edge rows and a second-pass idempotency proof; shared runners may exceed the global correctness timeout.",
+      "expires": "2026-09-15"
     }
   ],
   "dispositionRules": [
