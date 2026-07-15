@@ -206,6 +206,40 @@ it('loads the selected module', async () => {
     ]);
   });
 
+  it('keeps full correctness escalation separate from bounded coverage selection', () => {
+    const { root, base } = fixture();
+    fs.writeFileSync(path.join(root, 'src/leaf.ts'), 'export const leaf = 2;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'change leaf under test infrastructure');
+    const classifierPath = path.join(root, 'classifier.json');
+    fs.writeFileSync(classifierPath, JSON.stringify({
+      vitest: { mode: 'full', globs: [] },
+      flags: { impactResolved: true, fullSuiteTrigger: true },
+    }));
+
+    const correctness = spawnSync(process.execPath, [
+      'scripts/select-vitest-files.mjs',
+      '--base', base,
+      '--classifier', classifierPath,
+      '--source-root', root,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(correctness.status, correctness.stderr).toBe(0);
+    expect(correctness.stdout.trim().split('\n').sort()).toEqual([
+      '__tests__/leaf.test.ts',
+      '__tests__/misc/unrelated.test.ts',
+    ]);
+
+    const coverage = spawnSync(process.execPath, [
+      'scripts/select-vitest-files.mjs',
+      '--base', base,
+      '--classifier', classifierPath,
+      '--source-root', root,
+      '--coverage',
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(coverage.status, coverage.stderr).toBe(0);
+    expect(coverage.stdout.trim()).toBe('__tests__/leaf.test.ts');
+  });
+
   it('separates a deleted test from the runnable changed-test selection and fails closed to all remaining tests', () => {
     const { root, base } = fixture();
     fs.rmSync(path.join(root, '__tests__/leaf.test.ts'));

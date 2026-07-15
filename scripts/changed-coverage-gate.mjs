@@ -170,6 +170,7 @@ function main() {
   fs.writeFileSync(classifierPath, classifier.stdout);
   const selected = run(process.execPath, [
     'scripts/select-vitest-files.mjs', '--base', exactBase, '--classifier', classifierPath,
+    '--coverage',
   ]);
   if (selected.status !== 0) {
     process.stderr.write(selected.stderr || selected.stdout);
