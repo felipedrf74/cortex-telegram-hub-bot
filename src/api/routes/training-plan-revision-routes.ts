@@ -47,6 +47,10 @@ import {
   type TrainingM4CapacityRefreshRequest,
 } from '../../services/training-m4-capacity-snapshots';
 import { getTrainingCapabilityMetadata } from '../../services/capability-manifest';
+import {
+  recordTrainingCompatibilityRegression,
+  recordTrainingPlanCorrectionObservations,
+} from '../../services/training-learning-producers';
 
 interface RevisionApiMeta {
   schemaVersion: typeof TRAINING_PLAN_REVISION_API_SCHEMA;
@@ -137,6 +141,8 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
 
 export interface TrainingPlanRevisionRouteDependencies {
   refreshCapacityContext?: typeof refreshTrainingM4AuthoritativeCapacityContext;
+  recordCompatibility?: typeof recordTrainingCompatibilityRegression;
+  recordPlanCorrection?: typeof recordTrainingPlanCorrectionObservations;
 }
 
 export function registerTrainingPlanRevisionRoutes(
@@ -227,6 +233,21 @@ export function registerTrainingPlanRevisionRoutes(
         scope,
         revisionId: candidateSet.candidates[0].revisionId,
       })];
+      const revision = candidateSet.candidates[0];
+      try {
+        (dependencies.recordCompatibility ?? recordTrainingCompatibilityRegression)({
+          scope,
+          revisionId: revision.revisionId,
+          contentHash: revision.contentHash,
+          reviewModel: buildTrainingPlanRevisionReviewReadModel(revision),
+          observedAt: revision.createdAt,
+        });
+      } catch (learningError) {
+        logger.warn(
+          { err: learningError, tenantId: scope.tenantId, userId: scope.userId },
+          'Training compatibility learning observation failed',
+        );
+      }
       incrementTrainingGenerationCounter('revision_candidate_succeeded_total');
       sendSuccess(res, { ...meta(), candidateSet }, { status: 201 });
     } catch (error) {
@@ -258,13 +279,14 @@ export function registerTrainingPlanRevisionRoutes(
     if (!scope || !requireActiveRoute(scope, res)) return;
     const idempotencyKey = req.header('idempotency-key') ?? '';
     const body = isRecord(req.body) ? req.body : {};
+    const edits = isRecord(body.edits) ? body.edits : {};
     try {
       const editPreview = editTrainingPlanRevisionPreview({
         scope,
         revisionId: req.params.revisionId,
         expectedContentHash: stringValue(body.expectedContentHash),
         idempotencyKey,
-        edits: isRecord(body.edits) ? body.edits : {},
+        edits,
         rationale: stringValue(body.rationale),
       });
       editPreview.proposedRevision = await bindTrainingPlanRevisionDecision({
@@ -285,6 +307,27 @@ export function registerTrainingPlanRevisionRoutes(
           relatedEntityType: 'training_plan_revision',
           relatedEntityId: editPreview.currentRevision.revisionId,
         });
+      }
+      try {
+        (dependencies.recordPlanCorrection ?? recordTrainingPlanCorrectionObservations)({
+          scope,
+          currentContentHash: editPreview.currentRevision.contentHash,
+          proposedContentHash: editPreview.proposedRevision.contentHash,
+          changedFields: Object.keys(edits),
+          observedAt: editPreview.proposedRevision.createdAt,
+        });
+        (dependencies.recordCompatibility ?? recordTrainingCompatibilityRegression)({
+          scope,
+          revisionId: editPreview.proposedRevision.revisionId,
+          contentHash: editPreview.proposedRevision.contentHash,
+          reviewModel: buildTrainingPlanRevisionReviewReadModel(editPreview.proposedRevision),
+          observedAt: editPreview.proposedRevision.createdAt,
+        });
+      } catch (learningError) {
+        logger.warn(
+          { err: learningError, tenantId: scope.tenantId, userId: scope.userId },
+          'Training plan correction learning observation failed',
+        );
       }
       sendSuccess(res, { ...meta(), editPreview }, { status: 201 });
     } catch (error) {

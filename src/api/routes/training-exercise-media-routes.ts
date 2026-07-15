@@ -17,6 +17,7 @@ import {
   type RuntimeFlagScope,
 } from '../../services/runtime-flags';
 import type { TrainingExerciseMediaLocale } from '../../services/training-exercise-media-manifest';
+import { recordTrainingMediaLookupObservations } from '../../services/training-learning-producers';
 import { logger } from '../../utils/logger';
 
 const MAX_EXERCISE_IDS = 50;
@@ -28,6 +29,7 @@ export interface TrainingExerciseMediaRouteDependencies {
   env?: NodeJS.ProcessEnv;
   lookup?: typeof lookupTrainingExerciseMedia;
   resolveEntitlement?: typeof getEffectiveEntitlement;
+  recordLearning?: typeof recordTrainingMediaLookupObservations;
 }
 
 /**
@@ -55,7 +57,15 @@ export function registerTrainingExerciseMediaRoutes(
       sendError(res, parsed.code, parsed.message, 400, parsed.details);
       return;
     }
-    serveLookup(req as MediaRequest, res, scope, parsed.exerciseIds, resolveLocale(req), lookup);
+    serveLookup(
+      req as MediaRequest,
+      res,
+      scope,
+      parsed.exerciseIds,
+      resolveLocale(req),
+      lookup,
+      dependencies.recordLearning ?? recordTrainingMediaLookupObservations,
+    );
   });
 
   router.get('/exercises/:exerciseId', (req: Request, res: Response) => {
@@ -68,7 +78,16 @@ export function registerTrainingExerciseMediaRoutes(
       sendError(res, 'INVALID_EXERCISE_ID', 'Exercise identifier is invalid.', 400);
       return;
     }
-    serveLookup(req as MediaRequest, res, scope, [rawExerciseId], resolveLocale(req), lookup, true);
+    serveLookup(
+      req as MediaRequest,
+      res,
+      scope,
+      [rawExerciseId],
+      resolveLocale(req),
+      lookup,
+      dependencies.recordLearning ?? recordTrainingMediaLookupObservations,
+      true,
+    );
   });
 }
 
@@ -120,6 +139,7 @@ function serveLookup(
   exerciseIds: string[],
   locale: TrainingExerciseMediaLocale,
   lookup: typeof lookupTrainingExerciseMedia,
+  recordLearning: typeof recordTrainingMediaLookupObservations,
   single = false,
 ): void {
   let result: TrainingExerciseMediaBatchDto | null;
@@ -136,6 +156,21 @@ function serveLookup(
   if (!result) {
     hiddenNotFound(res);
     return;
+  }
+
+  try {
+    recordLearning({
+      scope: { tenantId: Number(scope.tenantId), userId: Number(scope.userId) },
+      result,
+    });
+  } catch (error) {
+    // Learning telemetry must not turn an otherwise valid governed read into a
+    // failed product request. The producer is retry-safe and can be replayed
+    // from an equivalent later lookup.
+    logger.warn(
+      { err: error, userId: scope.userId, tenantId: scope.tenantId },
+      'Training exercise media learning observation failed',
+    );
   }
 
   if (single) {

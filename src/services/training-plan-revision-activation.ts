@@ -221,6 +221,7 @@ function activateUnderLock(input: {
         catalogSourceHash: revision.catalog.sourceHash,
         projectionPlanId: projection.planId,
         pointerVersion: 1,
+        ...capacityLearningPayload(input.scope, document),
       },
       privacyClassification: 'health',
       idempotencyKey: `training.plan_revision.activated:${input.revisionId}`,
@@ -446,6 +447,7 @@ function activateAdaptationUnderLock(
         catalogSourceHash: revision.catalog.sourceHash,
         projectionPlanId: projection.planId,
         pointerVersion: proposal.expected_active_pointer_version + 1,
+        ...capacityLearningPayload(input.scope, revision.document as TrainingPlanRevisionDocument),
       },
       privacyClassification: 'health',
       idempotencyKey: `training.plan_revision.activated:${revision.revisionId}`,
@@ -454,6 +456,25 @@ function activateAdaptationUnderLock(
     incrementTrainingGenerationCounter('adaptation_activated_total');
     return readActivationResult(db, input.scope, revision.familyId, revision.revisionId, false);
   })();
+}
+
+function capacityLearningPayload(
+  scope: TrainingPlanRevisionScope,
+  document: TrainingPlanRevisionDocument,
+): Record<string, string> {
+  const conflictSetHash = document.m4?.conflictSetHash;
+  if (document.capacityContext?.calendarConflictCoverage !== 'AUTHORITATIVE'
+      || typeof conflictSetHash !== 'string'
+      || !/^[a-f0-9]{64}$/.test(conflictSetHash)) return {};
+  return {
+    capacityCoverage: 'AUTHORITATIVE',
+    capacitySubjectFingerprint: createHash('sha256').update(JSON.stringify([
+      scope.tenantId,
+      scope.userId,
+      document.capacityContextVersion ?? null,
+      conflictSetHash,
+    ])).digest('hex'),
+  };
 }
 
 function applyAdaptationCompatibilityProjection(

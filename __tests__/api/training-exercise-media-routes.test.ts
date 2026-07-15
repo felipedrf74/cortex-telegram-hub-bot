@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerTrainingExerciseMediaRoutes } from '../../src/api/routes/training-exercise-media-routes';
 import { lookupTrainingExerciseMedia } from '../../src/services/training-exercise-media';
+import { recordTrainingMediaLookupObservations } from '../../src/services/training-learning-producers';
 import type { UserEntitlement } from '../../src/services/entitlement';
 import { runMigrationsForTest } from '../../src/services/database';
 import { seedApprovedExerciseMedia } from '../fixtures/training-exercise-media';
@@ -71,6 +72,7 @@ describe('Training exercise media API contracts', () => {
   let baseUrl: string;
   let env: NodeJS.ProcessEnv;
   let lookup: ReturnType<typeof vi.fn<typeof lookupTrainingExerciseMedia>>;
+  let recordLearning: ReturnType<typeof vi.fn<typeof recordTrainingMediaLookupObservations>>;
   let resolveEntitlement: ReturnType<typeof vi.fn<(userId: number) => UserEntitlement>>;
 
   beforeEach(async () => {
@@ -81,6 +83,7 @@ describe('Training exercise media API contracts', () => {
       tenantId, userId, ids, locale,
       { db, now: new Date('2026-07-12T12:00:00.000Z'), expectedExerciseIds: ['push_up'] },
     ));
+    recordLearning = vi.fn((input) => recordTrainingMediaLookupObservations(input, db));
     resolveEntitlement = vi.fn((userId: number) => (
       userId === 9 ? ineligibleEntitlement(userId) : entitlement(userId)
     ));
@@ -93,7 +96,7 @@ describe('Training exercise media API contracts', () => {
       next();
     });
     const router = Router();
-    registerTrainingExerciseMediaRoutes(router, { env, lookup, resolveEntitlement });
+    registerTrainingExerciseMediaRoutes(router, { env, lookup, resolveEntitlement, recordLearning });
     app.use(router);
     server = await new Promise((resolve) => {
       const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
@@ -152,7 +155,7 @@ describe('Training exercise media API contracts', () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('returns ordered available/unknown results with honest locale fallback and no GET writes', async () => {
+  it('returns honest locale fallback and records only bounded redacted learning outcomes', async () => {
     const before = db.prepare('SELECT total_changes() AS count').get() as { count: number };
     const response = await fetch(`${baseUrl}/exercises?ids=push_up,press_up,future_modal_xyz`, {
       headers: { 'x-language': 'pt-PT' },
@@ -180,7 +183,25 @@ describe('Training exercise media API contracts', () => {
     });
     const golden = goldenEnvelope('training-exercise-media-golden-batch.json');
     expect(normalizedTimestamp(body, golden)).toEqual(golden);
-    expect(after).toEqual(before);
+    expect(after.count).toBeGreaterThan(before.count);
+    expect(recordLearning).toHaveBeenCalledOnce();
+    const learningCases = db.prepare(`
+      SELECT redacted_input_json AS redactedInput,
+             evidence_references_json AS evidenceReferences,
+             lifecycle
+        FROM product_learning_cases
+       WHERE tenant_id = 7 AND user_id = 7
+       ORDER BY redacted_input_json
+    `).all() as Array<{ redactedInput: string; evidenceReferences: string; lifecycle: string }>;
+    expect(learningCases).toHaveLength(2);
+    expect(learningCases.map((row) => JSON.parse(row.redactedInput))).toEqual([
+      expect.objectContaining({ kind: 'media_fallback', outcomeCode: 'fallback_used' }),
+      expect.objectContaining({ kind: 'media_missing_mapping', outcomeCode: 'mapping_missing' }),
+    ]);
+    expect(learningCases.every((row) => row.lifecycle === 'observed')).toBe(true);
+    expect(JSON.stringify(learningCases)).not.toContain('push_up');
+    expect(JSON.stringify(learningCases)).not.toContain('press_up');
+    expect(JSON.stringify(learningCases)).not.toContain('future_modal_xyz');
   });
 
   it('supports single-item 404 and conditional ETag revalidation', async () => {

@@ -123,6 +123,21 @@ The current metric surfaces are:
    surfaced in `/admin#ai`.
 6. **iOS account-switching events**: `event=account_switching` lines
    from `/auth/logout` and `/auth/logout-all`.
+7. **Governed product learning**: the portal-admin-only
+   `/api/v1/admin/product-learning/summary` read model exposes aggregate
+   lifecycle, staleness, promotion, adaptation accept/dismiss, and Training
+   category-coverage counts. It never returns case payloads or user ids.
+
+Training learning producers persist closed outcome codes plus tenant-scoped
+SHA-256 fingerprints only. They must not persist raw plan edits, exercise ids,
+calendar content, device details, or free-form feedback. Every case enters as
+`observed`; only the existing Decision Center review receipt may advance it
+through `candidate -> reviewed -> golden`. The backend cannot infer physical
+device outcomes: an operator records those through the portal-admin-only
+`POST /api/v1/admin/product-learning/physical-device-observations` contract,
+which accepts an exact TestFlight build/check/result tuple and no free-form
+field. Product learning never mutates prompts or starts provider-side
+training.
 
 A future improvement is to ship these as proper Prometheus-style metrics
 with histograms instead of structured-log derivation. Until then, use

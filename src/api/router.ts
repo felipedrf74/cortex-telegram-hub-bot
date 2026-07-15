@@ -43,6 +43,7 @@ import { reportRoutes } from './routes/reports';
 import { summaryRoutes } from './routes/summaries';
 import { syncRoutes } from './routes/sync';
 import { eventBackboneAdminRoutes } from './routes/event-backbone-admin';
+import { productLearningAdminRoutes } from './routes/product-learning-admin';
 import { verifyAppleJws } from '../services/apple-jws-verifier';
 import { handleAppleNotification } from '../services/stripe-service';
 import { captureMessage } from '../services/error-tracker';
@@ -125,6 +126,7 @@ export function createApiRouter(): Router {
         summaries: 'GET /api/v1/summaries/{home|week|training|content|notifications} — fast app read models',
         decisions: 'GET /api/v1/decisions/summary, GET/POST/PATCH /api/v1/decisions — user-scoped decision orchestration',
         sync: 'GET /api/v1/sync/changes?since=cursor — RAMEN-lite delta sync',
+        productLearningAdmin: 'GET /api/v1/admin/product-learning/summary, POST /api/v1/admin/product-learning/physical-device-observations (portal admin only)',
       },
       auth_note: 'POST /auth/register/email, /auth/register/apple, or /auth/register/google/finish to get a JWT. Invite codes are optional and grant reviewer/early-access entitlements when supplied.',
     });
@@ -165,6 +167,7 @@ export function createApiRouter(): Router {
   router.use('/admin/content-dashboard', contentDashboardRoutes());
   router.use('/admin/content', contentAdminWriteRoutes());
   router.use('/admin/event-backbone', eventBackboneAdminRoutes());
+  router.use('/admin/product-learning', productLearningAdminRoutes());
 
   // Apple App Store Server Notifications — public (no JWT).
   // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.

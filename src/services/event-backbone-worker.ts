@@ -97,6 +97,29 @@ export const defaultEventHandlers: EventHandler[] = [
           subjectFingerprint: contentHash,
         });
       }
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[0].eventType
+          && event.sourceSkill === 'training'
+          && event.payload?.capacityCoverage === 'AUTHORITATIVE') {
+        const capacitySubjectFingerprint = event.payload.capacitySubjectFingerprint;
+        if (typeof capacitySubjectFingerprint !== 'string'
+            || !/^[a-f0-9]{64}$/.test(capacitySubjectFingerprint)) {
+          throw new Error('training capacity learning event requires a scoped sha256 fingerprint');
+        }
+        const observedAt = normalizeEventCreatedAtUtc(event.createdAt);
+        recordTrainingLearningObservation({
+          id: `training-capacity-confirmed-${event.eventId}`,
+          tenantId: event.tenantId,
+          userId: event.userId,
+          kind: 'capacity_conflict_accuracy',
+          outcomeCode: 'confirmed',
+          expectedContractId: 'training.capacity_conflict.v1',
+          evidenceReferences: [`event://training/capacity/${event.eventId}`],
+          producerVersion: event.schemaVersion,
+          confidence: 1,
+          observedAt,
+          subjectFingerprint: capacitySubjectFingerprint,
+        });
+      }
       if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[1].eventType
           && event.sourceSkill === 'training'
           && event.payload?.action === 'REJECT') {
