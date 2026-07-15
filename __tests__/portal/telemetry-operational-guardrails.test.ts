@@ -50,6 +50,16 @@ describe('portal telemetry operational guardrails', () => {
     vi.clearAllMocks();
   });
 
+  it('fails closed before an unregistered scheduled callback can execute', async () => {
+    const telemetry = await import('../../src/portal/telemetry');
+    const fn = vi.fn(async () => {});
+
+    expect(() => telemetry.wrapJob('missing_registration', fn)).toThrow(
+      'Cannot wrap unregistered scheduled job: missing_registration',
+    );
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('skips overlapping cron invocations instead of executing duplicate work', async () => {
     const telemetry = await import('../../src/portal/telemetry');
     const { logger } = await import('../../src/utils/logger');

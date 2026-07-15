@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -145,8 +146,7 @@ describe('SkillRegistry Migration', () => {
 
 describe('SkillRegistry — install()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -235,8 +235,7 @@ describe('SkillRegistry — install()', () => {
 
 describe('SkillRegistry — uninstall()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -277,8 +276,7 @@ describe('SkillRegistry — uninstall()', () => {
 
 describe('SkillRegistry — enable() / disable()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -335,8 +333,7 @@ describe('SkillRegistry — enable() / disable()', () => {
 
 describe('SkillRegistry — getEnabled()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -378,8 +375,7 @@ describe('SkillRegistry — getEnabled()', () => {
 
 describe('SkillRegistry — getByDomain()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -401,8 +397,7 @@ describe('SkillRegistry — getByDomain()', () => {
 
 describe('SkillRegistry — getByName()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -420,8 +415,7 @@ describe('SkillRegistry — getByName()', () => {
 
 describe('SkillRegistry — getAll()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -443,8 +437,7 @@ describe('SkillRegistry — getAll()', () => {
 
 describe('SkillRegistry — getSubmodules()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -479,8 +472,7 @@ describe('SkillRegistry — getSubmodules()', () => {
 
 describe('SkillRegistry — edge cases', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -534,8 +526,7 @@ describe('SkillRegistry — edge cases', () => {
 
 describe('SkillRegistry — enableSubmodule() / disableSubmodule()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -576,8 +567,7 @@ describe('SkillRegistry — enableSubmodule() / disableSubmodule()', () => {
 
 describe('SkillRegistry — getEnabledSubmodules()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -609,8 +599,7 @@ describe('SkillRegistry — getEnabledSubmodules()', () => {
 
 describe('SkillRegistry — isSubmoduleEnabled()', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 

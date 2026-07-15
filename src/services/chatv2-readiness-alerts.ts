@@ -74,7 +74,7 @@ export interface ChatV2ReadinessAlertRecordResult {
 
 const DEFAULT_SOURCE = 'chat_v2_readiness';
 const DEFAULT_OWNER = 'ai-platform';
-const DEFAULT_RUNBOOK_URL = 'docs/qa/work-orders/WO-chatv2-completion.md';
+const DEFAULT_RUNBOOK_URL = 'docs/release/README.md';
 
 const PHASES: Array<{ key: ChatV2ReadinessPhaseId; label: string }> = [
   { key: 'shadow', label: 'Shadow evidence' },

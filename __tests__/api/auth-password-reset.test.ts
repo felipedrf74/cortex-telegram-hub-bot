@@ -15,31 +15,16 @@
 //  - audit: logAudit called with the correct outcome strings on each path.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import type { Request } from 'express';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 const auditCalls: any[] = [];
 const passwordResetEmails: Array<{ email: string; resetUrl: string; firstName: string }> = [];
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some migrations depend on runtime-only services; isolation is fine.
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -107,9 +92,7 @@ async function dispatch(path: string, body: any): Promise<MockRes> {
 }
 
 beforeEach(async () => {
-  testDb = new Database(':memory:');
-  testDb.pragma('journal_mode = WAL');
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
 
   process.env.IOS_API_ENABLED = 'true';
   process.env.IOS_API_JWT_SECRET = 'test-secret-000000000000000000000000000000';

@@ -269,17 +269,16 @@ provider credentials. The fixture mode:
 Per `docs/release/risk-based-release-gate-matrix.md`, every
 backend production deploy that touches an app-facing surface produces a
 JSON smoke evidence row under
-`docs/release/smoke-evidence/staging-smoke-<sha>-<timestamp>.json`.
+`.local/release/smoke-evidence/staging-smoke-<sha>-<timestamp>.json`.
 The evidence file:
 
 - Lists the staging URL, the SHA tested, every check name and result.
-- Is referenced from `docs/release/CURRENT_RELEASE_STATE.md` (the
-  workspace-level release truth).
-- Is pruned on a 60-day retention window with the 5 newest per smokeName
-  always preserved (`scripts/smoke-evidence-prune.sh`).
+- Is uploaded as a CI artifact when it is current release proof.
+- Is pruned locally on a 60-day retention window
+  (`scripts/smoke-evidence-prune.sh`).
 
-A deploy claim without an evidence file is **rejected** by the release-gate
-review.
+A deploy claim without artifact-bound evidence is **rejected** by the
+release gate.
 
 ## 14. Forbidden patterns
 

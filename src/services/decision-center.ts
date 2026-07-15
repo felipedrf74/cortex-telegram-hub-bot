@@ -13,6 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
+import { emitDomainEvent } from './event-outbox';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
 import {
   buildSkillNotificationFixtureIntent,
@@ -86,6 +87,11 @@ import {
   type DecisionActionTruthTableEntry,
 } from './decision-center-action-truth-table';
 import { computeSharedNotificationActionEffectiveStatus } from './notification-action-state';
+import {
+  getLearningCase,
+  learningReviewApprovalReferenceForExecution,
+  recordLearningCaseReviewApproval,
+} from './product-learning';
 import {
   adviseSecretaryDecision,
   buildDecisionLogicV2,
@@ -765,6 +771,7 @@ const MUTATING_ACTIONS = new Set([
   'undo_reflow',
   'accept_chat_action_fix',
   'activate_training_plan_revision',
+  'approve_product_learning_case',
 ]);
 const VERSIONED_DECISION_ACTIONS = new Set([
   ...MUTATING_ACTIONS,
@@ -3847,6 +3854,16 @@ export async function performDecisionAction(
       execution.expectedEffect,
       execution.actualEffect,
     );
+    if (actionId === 'approve_product_learning_case'
+        && record.relatedEntityType === 'product_learning_case'
+        && record.relatedEntityId) {
+      recordLearningCaseReviewApproval({
+        tenantId,
+        userId,
+        caseId: record.relatedEntityId,
+        actionExecutionId: claimed.execution.action_execution_id,
+      });
+    }
     // Post-action: format the just-actioned decision directly from its record. The active-inbox visibility
     // filter (getDecisionItem → isUserFacingDecision) must NOT apply here — a successfully actioned decision
     // belongs to handled history and must be returned as the action result even when a live re-read would
@@ -8100,11 +8117,15 @@ function syncTrainingAdaptationProposalForDecisionState(
     return;
   }
   const proposal = db.prepare(`
-    SELECT proposal_id AS proposalId, status
+    SELECT proposal_id AS proposalId, status, material_fingerprint AS materialFingerprint
       FROM training_adaptation_proposals
      WHERE decision_id = ? AND user_id = ? AND tenant_id = ?
      LIMIT 1
-  `).get(decisionId, userId, tenantId) as { proposalId: string; status: string } | undefined;
+  `).get(decisionId, userId, tenantId) as {
+    proposalId: string;
+    status: string;
+    materialFingerprint: string;
+  } | undefined;
   if (!proposal) return;
   let update;
   if (state === 'PENDING_REVIEW') {
@@ -8135,6 +8156,25 @@ function syncTrainingAdaptationProposalForDecisionState(
     `).run(proposal.proposalId, userId, tenantId);
   }
   if ((update.changes ?? 0) !== 1) return;
+  if (state === 'REJECTED') {
+    emitDomainEvent({
+      tenantId,
+      userId,
+      sourceSkill: 'training',
+      eventType: 'training.adaptation.rejected.v1',
+      entityType: 'training_adaptation_proposal',
+      entityId: proposal.proposalId,
+      schemaVersion: 'training-adaptation-rejection.v1',
+      payload: {
+        action: 'REJECT',
+        proposalId: proposal.proposalId,
+        materialFingerprint: proposal.materialFingerprint,
+      },
+      privacyClassification: 'health',
+      idempotencyKey: `training.adaptation.rejected:${proposal.proposalId}`,
+      causationId: decisionId,
+    }, db);
+  }
   if (state === 'DEFERRED') incrementTrainingGenerationCounter('adaptation_deferred_total');
   else if (state === 'REJECTED') incrementTrainingGenerationCounter('adaptation_rejected_total');
   else if (state === 'EXPIRED') incrementTrainingGenerationCounter('adaptation_expired_total');
@@ -9398,6 +9438,17 @@ function idempotentActionResult(
   // the actioned decision, not be hidden by getDecisionItem's active-inbox visibility filter (which would
   // throw a spurious 404 on a replay of a write that already succeeded).
   const replayRecord = getDecisionRecord(decisionId, userId, tenantId);
+  if (actionId === 'approve_product_learning_case'
+      && replayRecord?.relatedEntityType === 'product_learning_case'
+      && replayRecord.relatedEntityId
+      && typeof execution.action_execution_id === 'string') {
+    recordLearningCaseReviewApproval({
+      tenantId,
+      userId,
+      caseId: replayRecord.relatedEntityId,
+      actionExecutionId: execution.action_execution_id,
+    });
+  }
   const current = replayRecord && isDecisionRecord(replayRecord) ? formatDecisionItemForApi(replayRecord) : null;
   if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
   return {
@@ -9659,6 +9710,32 @@ async function executeDecisionAction(
       }
       throw error;
     }
+  }
+
+  if (action.id === 'approve_product_learning_case') {
+    if (record.sourceSkill !== 'training'
+        || record.relatedEntityType !== 'product_learning_case'
+        || !record.relatedEntityId
+        || !actionExecutionId) {
+      throw new DecisionActionError(
+        'PRODUCT_LEARNING_REVIEW_CONTRACT_INVALID',
+        'This learning review decision is missing its exact scoped case contract.',
+        409,
+      );
+    }
+    const learningCase = getLearningCase(tenantId, userId, record.relatedEntityId);
+    if (!learningCase || learningCase.lifecycle !== 'candidate') {
+      throw new DecisionActionError(
+        'PRODUCT_LEARNING_CASE_NOT_CANDIDATE',
+        'This learning case is no longer a reviewable candidate.',
+        409,
+      );
+    }
+    return markDecisionActioned(record, action.id, {
+      productLearningCaseId: learningCase.id,
+      approved: true,
+      approvalReference: learningReviewApprovalReferenceForExecution(actionExecutionId),
+    }, 'The exact product learning case review was approved and durably recorded.');
   }
 
   if (MUTATING_ACTIONS.has(action.id)) {

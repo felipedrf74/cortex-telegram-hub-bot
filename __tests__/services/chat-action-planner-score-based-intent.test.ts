@@ -20,12 +20,8 @@
 //   3. Slot-completeness tie-break works for same-priority parsers
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 function createTestDb(): Database.Database {
@@ -35,16 +31,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (applied) continue;
-    db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-    db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-  }
-}
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -86,8 +72,7 @@ function inputFor(text: string, locale: 'en-US' | 'pt-BR' | 'es-ES' = 'en-US'): 
 
 describe('score-based intent picking (Phase 16 batch 89 second half)', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {

@@ -275,8 +275,8 @@ operator confirms manually if the auto-gate is bypassed.
 
 ## 16. PR checklist (runtime/ops changes)
 
-- [ ] No new env-key without a default in `src/config.ts` AND a doc
-      entry in `STAGING.md` and `DEPLOY.md`.
+- [ ] No new env-key without a default in `src/config.ts` AND a runbook
+      entry in `docs/release/README.md`.
 - [ ] Health-check change has a corresponding `/api/health/deep`
       assertion.
 - [ ] New alert source has a runbook entry and a dedupe strategy.

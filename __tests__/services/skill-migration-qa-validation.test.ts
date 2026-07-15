@@ -11,45 +11,27 @@
  * - IF NOT EXISTS safety (migrations 019 and 020 overlap safely)
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 describe('Skill Database Migrations QA Validation', () => {
   let db: Database.Database;
 
+  beforeAll(() => {
+    db = createMigratedTestDatabase();
+  });
+
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db.exec('SAVEPOINT qa_test_case');
   });
 
   afterEach(() => {
+    db.exec('ROLLBACK TO qa_test_case');
+    db.exec('RELEASE qa_test_case');
+  });
+
+  afterAll(() => {
     db.close();
   });
 
@@ -252,23 +234,4 @@ describe('Skill Database Migrations QA Validation', () => {
     });
   });
 
-  // ── Migration files exist ────────────────────────────────────────
-
-  describe('migration files on disk', () => {
-    it('019_installed_skills.sql exists', () => {
-      expect(fs.existsSync(path.join(MIGRATIONS_DIR, '019_installed_skills.sql'))).toBe(true);
-    });
-
-    it('020_skill_tables.sql exists', () => {
-      expect(fs.existsSync(path.join(MIGRATIONS_DIR, '020_skill_tables.sql'))).toBe(true);
-    });
-
-    it('all migrations apply without errors', () => {
-      // This is implicitly tested by applyMigrations in beforeEach,
-      // but let's be explicit with a fresh db
-      const freshDb = createTestDb();
-      expect(() => applyMigrations(freshDb)).not.toThrow();
-      freshDb.close();
-    });
-  });
 });

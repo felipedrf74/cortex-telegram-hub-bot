@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 
@@ -14,17 +13,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (!applied) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -146,8 +134,7 @@ describe('ChatActionPlanner', () => {
     resetChatActionStateForTests();
     resetPendingChatConfirmationsForTests();
     resetPendingChatCoreV2CommandsForTests();
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     for (const userId of [42, 999, 4201, 4202, 4210, 4211, 4213, 4301, 4302, 4303, 4401]) {
       seedPlannerUser(userId);
     }

@@ -1,0 +1,54 @@
+name: Weekly — Changed critical mutation score
+
+on:
+  schedule:
+    - cron: '35 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Optional explicit mutation base SHA
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22.23.1'
+
+jobs:
+  changed-critical-mutation:
+    name: Mutation score — changed critical modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Resolve the weekly source window
+        id: base
+        env:
+          INPUT_BASE: ${{ inputs.base_sha }}
+        run: |
+          BASE="$INPUT_BASE"
+          if [ -z "$BASE" ]; then
+            BASE="$(git rev-list -1 --before='7 days ago' HEAD)"
+          fi
+          test -n "$BASE"
+          git rev-parse --verify "${BASE}^{commit}"
+          echo "sha=$BASE" >> "$GITHUB_OUTPUT"
+      - name: Run changed-critical mutation gate
+        run: npm run test:mutation -- --base '${{ steps.base.outputs.sha }}' --scope changed-critical
+      - name: Upload mutation plan and score
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/mutation/
+          if-no-files-found: error
+          retention-days: 30

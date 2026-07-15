@@ -89,6 +89,7 @@ import { defaultEventHandlers, defaultJobHandlers, runEventBackboneOnce } from '
 import { persistExchange } from '../../src/api/routes/chat-persistence';
 import { runEventBackboneCleanup } from '../../src/tools/event-backbone-cleanup';
 import { logger } from '../../src/utils/logger';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 describe('event backbone foundation', () => {
   beforeEach(() => {
@@ -177,6 +178,95 @@ describe('event backbone foundation', () => {
         language: 'pt-BR',
       },
     });
+  });
+
+  it('projects an approved Training adaptation into one retry-safe learning case', async () => {
+    testDb.close();
+    testDb = createMigratedTestDatabase();
+    const event = emitDomainEvent({
+      tenantId: 44,
+      userId: 7,
+      sourceSkill: 'training',
+      eventType: 'training.plan_revision.activated.v1',
+      entityType: 'training_plan_revision',
+      entityId: 'revision-1',
+      schemaVersion: 'training-plan-revision-activation.v1',
+      payload: {
+        action: 'ADAPT',
+        contentHash: 'a'.repeat(64),
+      },
+      privacyClassification: 'health',
+      idempotencyKey: 'training.plan_revision.activated:revision-1',
+    });
+
+    expect(await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'learning-projector-1' }))
+      .toMatchObject({ processed: 1, failed: 0 });
+    testDb.prepare(`
+      UPDATE event_outbox
+         SET status = 'pending', processed_at = NULL, not_before = datetime('now')
+       WHERE event_id = ?
+    `).run(event.eventId);
+    expect(await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'learning-projector-2' }))
+      .toMatchObject({ processed: 1, failed: 0 });
+
+    const cases = testDb.prepare(`
+      SELECT tenant_id AS tenantId, user_id AS userId, lifecycle,
+             redacted_input_json AS redactedInput,
+             expected_contract_json AS expectedContract,
+             observed_at AS observedAt
+        FROM product_learning_cases
+       WHERE tenant_id = 44 AND user_id = 7
+    `).all();
+    expect(cases).toEqual([expect.objectContaining({
+      tenantId: 44,
+      userId: 7,
+      lifecycle: 'observed',
+      redactedInput: JSON.stringify({
+        kind: 'adaptation_accepted',
+        outcomeCode: 'user_approved',
+        subjectFingerprint: 'a'.repeat(64),
+      }),
+      expectedContract: JSON.stringify({ contractId: 'training.adaptation.activation.v1' }),
+      observedAt: new Date(`${event.createdAt.replace(' ', 'T')}Z`).toISOString(),
+    })]);
+  });
+
+  it('projects a rejected Training adaptation into one retry-safe learning case', async () => {
+    testDb.close();
+    testDb = createMigratedTestDatabase();
+    const event = emitDomainEvent({
+      tenantId: 44,
+      userId: 7,
+      sourceSkill: 'training',
+      eventType: 'training.adaptation.rejected.v1',
+      entityType: 'training_adaptation_proposal',
+      entityId: 'proposal-1',
+      schemaVersion: 'training-adaptation-rejection.v1',
+      payload: { action: 'REJECT', materialFingerprint: 'b'.repeat(64) },
+      privacyClassification: 'health',
+      idempotencyKey: 'training.adaptation.rejected:proposal-1',
+    });
+
+    await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'learning-rejection-1' });
+    testDb.prepare(`
+      UPDATE event_outbox SET status = 'pending', processed_at = NULL, not_before = datetime('now')
+       WHERE event_id = ?
+    `).run(event.eventId);
+    await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'learning-rejection-2' });
+
+    expect(testDb.prepare(`
+      SELECT redacted_input_json AS redactedInput,
+             expected_contract_json AS expectedContract
+        FROM product_learning_cases
+       WHERE tenant_id = 44 AND user_id = 7
+    `).all()).toEqual([{
+      redactedInput: JSON.stringify({
+        kind: 'adaptation_rejected',
+        outcomeCode: 'user_rejected',
+        subjectFingerprint: 'b'.repeat(64),
+      }),
+      expectedContract: JSON.stringify({ contractId: 'training.adaptation.rejection.v1' }),
+    }]);
   });
 
   it('claims events with a lease and dead-letters after bounded retries', async () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import express from 'express';
 import fs from 'fs';
@@ -10,8 +11,6 @@ import {
   clearTenantScopeAnomaliesForTests,
   getTenantScopeAnomalies,
 } from '../../src/services/tenant-scope-observability';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 
@@ -477,21 +476,6 @@ import { signChatConfirmationToken } from '../../src/services/chat-confirmation-
 import { resetPendingChatCoreV2CommandsForTests } from '../../src/services/chat-core-v2';
 import { upsertTask } from '../../src/services/task-store/unified-task-store';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some migrations depend on runtime-only services; the chat/history
-        // tests only need the schema that can apply cleanly in isolation.
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -679,9 +663,7 @@ describe('Chat API routes', () => {
   beforeEach(() => {
     Settings.now = () => new Date('2026-04-15T12:00:00.000Z').valueOf();
 
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     clearTenantScopeAnomaliesForTests();
     resetPendingChatConfirmationsForTests();
     resetPendingChatCoreV2CommandsForTests();

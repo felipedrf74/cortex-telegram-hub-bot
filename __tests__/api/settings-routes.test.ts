@@ -1,47 +1,37 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { Request } from 'express';
 
 async function getTenantScopeModule() {
   return import('../../src/services/tenant-scope-observability');
 }
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some migrations rely on runtime services not needed here.
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, number | string | readonly string[]>;
   status(code: number): MockRes;
   json(body: any): MockRes;
   send(body?: any): MockRes;
+  setHeader(name: string, value: number | string | readonly string[]): MockRes;
 }
 
 function mockRes(): MockRes {
   const res: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { res.statusCode = code; return res; },
     json(body: any) { res.body = body; return res; },
     send(body?: any) { res.body = body ?? null; return res; },
+    setHeader(name: string, value: number | string | readonly string[]) {
+      res.headers[name.toLowerCase()] = value;
+      return res;
+    },
   };
   return res;
 }
@@ -101,9 +91,12 @@ async function dispatchPushToken(userId: number, token: string, deviceId = 'test
   return res;
 }
 
-async function dispatchDeletePushToken(userId: number, deviceId = 'test-device-id'): Promise<MockRes> {
-  const { settingsRoutes } = await import('../../src/api/routes/settings');
-  const router = settingsRoutes();
+async function dispatchDeletePushToken(
+  userId: number,
+  deviceId = 'test-device-id',
+  routerOverride?: any,
+): Promise<MockRes> {
+  const router = routerOverride ?? (await import('../../src/api/routes/settings')).settingsRoutes();
   const req = mockReq(userId, {});
   (req as any).deviceId = deviceId;
   (req as any).method = 'DELETE';
@@ -124,11 +117,11 @@ async function dispatchDeletePushToken(userId: number, deviceId = 'test-device-i
   return res;
 }
 
-async function dispatchAccountExport(userId: number): Promise<MockRes> {
+async function dispatchAccountExport(userId: number, tenantId = userId): Promise<MockRes> {
   const { settingsRoutes } = await import('../../src/api/routes/settings');
   const router = settingsRoutes();
   const req = mockReq(userId, {});
-  (req as any).tenantId = userId;
+  (req as any).tenantId = tenantId;
   (req as any).ip = '203.0.113.10';
   (req as any).method = 'POST';
   (req as any).url = '/export';
@@ -217,9 +210,7 @@ async function dispatchPushPreferencesSet(userId: number, category: string, enab
 
 describe('Settings language route', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     testDb.prepare(`
       INSERT INTO users (id, first_name, language, status, auth_provider)
       VALUES (1, 'Beta Tester', 'pt-BR', 'active', 'invite_code')
@@ -308,6 +299,72 @@ describe('Settings language route', () => {
     expect(row.push_token).toBeNull();
   });
 
+  it('rate-limits repeated push-token revocations before additional database work', async () => {
+    const { config } = await import('../../src/config');
+    const originalLimit = config.ios.rateLimit;
+    config.ios.rateLimit = 2;
+    testDb.prepare(`
+      INSERT INTO users (id, first_name, language, status, auth_provider)
+      VALUES (2, 'Other Tester', 'en-US', 'active', 'invite_code')
+    `).run();
+    await dispatchPushToken(1, 'abc123token', 'rate-limited-device');
+    await dispatchPushToken(2, 'other-token', 'other-device');
+    const { settingsRoutes } = await import('../../src/api/routes/settings');
+    const router = settingsRoutes();
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const allowed = await dispatchDeletePushToken(1, 'rate-limited-device', router);
+        expect(allowed.statusCode).toBe(204);
+      }
+
+      testDb.prepare(`
+        UPDATE ios_devices SET push_token = 'must-survive-rate-limit'
+        WHERE user_id = ? AND device_id = ?
+      `).run(1, 'rate-limited-device');
+
+      const blocked = await dispatchDeletePushToken(1, 'rate-limited-device', router);
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.body.error).toEqual({
+        code: 'RATE_LIMITED',
+        message: 'Too many requests. Slow down.',
+        retryAfter: 60,
+      });
+      expect(blocked.headers['retry-after']).toBe(60);
+
+      const otherUser = await dispatchDeletePushToken(2, 'other-device', router);
+      expect(otherUser.statusCode).toBe(204);
+
+      const rows = testDb.prepare(`
+        SELECT user_id, push_token FROM ios_devices WHERE device_id IN (?, ?) ORDER BY user_id
+      `).all('rate-limited-device', 'other-device') as Array<{ user_id: number; push_token: string | null }>;
+      expect(rows).toEqual([
+        { user_id: 1, push_token: 'must-survive-rate-limit' },
+        { user_id: 2, push_token: null },
+      ]);
+    } finally {
+      config.ios.rateLimit = originalLimit;
+    }
+  });
+
+  it('rejects invalid push-token revoke scope before touching another user device', async () => {
+    await dispatchPushToken(1, 'protected-token', 'protected-device');
+    const res = await dispatchDeletePushToken(0, 'protected-device');
+
+    expect(res.statusCode).toBe(401);
+    const row = testDb.prepare(`
+      SELECT push_token FROM ios_devices WHERE user_id = ? AND device_id = ?
+    `).get(1, 'protected-device') as { push_token: string | null };
+    expect(row.push_token).toBe('protected-token');
+
+    const { getTenantScopeAnomalies } = await getTenantScopeModule();
+    expect(getTenantScopeAnomalies()).toContainEqual(expect.objectContaining({
+      operation: 'settings_route_delete_push_token',
+      reason: 'invalid_user_scope',
+      userId: 0,
+    }));
+  });
+
   it('audit-logs account export with table counts', async () => {
     const res = await dispatchAccountExport(1);
 
@@ -321,6 +378,43 @@ describe('Settings language route', () => {
     expect(audit).toBeTruthy();
     expect(audit.ip_address).toBe('203.0.113.10');
     expect(JSON.parse(audit.details).tableCounts).toBeDefined();
+  });
+
+  it('exports governed learning cases only from the authenticated tenant and user scope', async () => {
+    const insert = testDb.prepare(`
+      INSERT INTO product_learning_cases (
+        case_id, tenant_id, user_id, owner, lifecycle, privacy_class,
+        redacted_input_json, expected_contract_json, evidence_references_json,
+        producer_version, confidence, observed_at, expires_at
+      ) VALUES (?, ?, 1, 'training', 'observed', 'redacted-product', ?, ?, ?,
+        'training-learning.v1', 1, '2026-07-15T00:00:00.000Z', '2099-01-11T00:00:00.000Z')
+    `);
+    const input = JSON.stringify({ kind: 'capacity_conflict_accuracy', outcomeCode: 'confirmed' });
+    const contract = JSON.stringify({ contractId: 'training.capacity_conflict.v1' });
+    insert.run('case-tenant-44', 44, input, contract, JSON.stringify(['ci://run/44/case/1']));
+    insert.run('case-tenant-55', 55, input, contract, JSON.stringify(['ci://run/55/case/1']));
+
+    const res = await dispatchAccountExport(1, 44);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.productLearningCases).toEqual([
+      expect.objectContaining({
+        caseId: 'case-tenant-44',
+        tenantId: 44,
+        userId: 1,
+        redactedInput: { kind: 'capacity_conflict_accuracy', outcomeCode: 'confirmed' },
+        expectedContract: { contractId: 'training.capacity_conflict.v1' },
+      }),
+    ]);
+    expect(res.body.data.productLearningCaseTransitions).toEqual([
+      expect.objectContaining({
+        tenantId: 44,
+        userId: 1,
+        caseId: 'case-tenant-44',
+        fromLifecycle: null,
+        toLifecycle: 'observed',
+      }),
+    ]);
   });
 
   it('audit-logs account deletion after cascade so the row survives erasure', async () => {

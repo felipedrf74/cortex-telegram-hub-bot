@@ -1,0 +1,28 @@
+{
+  "schema": "nexus.training-catalog-summary.v1",
+  "generatedFrom": "materialization-attestation.json",
+  "catalogVersion": "training-exercise-identity-catalog.v1",
+  "status": "MATERIALIZED_FINAL_OWNER_APPROVED",
+  "manifestId": "training-exercise-media-v1-materialized-91829bc7100c-c7d8b39afcc6",
+  "approvedOrigin": "https://media.nexushub.me",
+  "activationState": "MATERIALIZED_FINAL_OWNER_APPROVED",
+  "releaseSubjectHash": "27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3",
+  "compiledPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
+  "compiledManifestSha256": "d2ab9077b2558fbeaf6cbb5627114e85a7a036880f429281a3a1dbf10fd85d1c",
+  "counts": {
+    "exercises": 158,
+    "assets": 200,
+    "instructions": 474,
+    "mediaLocalizations": 600,
+    "provenance": 200,
+    "assetReviews": 800,
+    "localizationReviews": 1074,
+    "hostApprovals": 1,
+    "ownerApprovals": 1
+  },
+  "sourceFiles": {
+    "largeCompiledManifest": "compiled-manifest.json",
+    "releaseAttestation": "materialization-attestation.json",
+    "policy": "authored-content/materialization-policy.json"
+  }
+}

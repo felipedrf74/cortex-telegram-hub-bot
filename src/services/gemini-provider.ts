@@ -870,8 +870,9 @@ export async function completeVisionOneShotWithFallback(
 
 /**
  * Convenience wrapper around `completeOneShot` that automatically falls back
- * to a caller-supplied Anthropic path on Gemini failure (or when Gemini is
- * not configured). Returns the result text plus which provider produced it.
+ * from Gemini to OpenAI, then to a caller-supplied Anthropic path when that
+ * final runtime fallback is enabled. Returns the result text plus which
+ * provider produced it.
  *
  * Designed to be the standard pattern for migrating existing `trackedCreate`
  * call sites: instead of duplicating the try-catch-fallback boilerplate at

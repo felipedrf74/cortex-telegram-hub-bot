@@ -14,7 +14,7 @@
 #
 # Until now, E5 had no machine-readable artifact. This script writes a
 # structured JSON record under
-# `engine/docs/release/testflight-evidence/<sha>-<timestamp>.json`,
+# `.local/release/testflight-evidence/<sha>-<timestamp>.json`,
 # mirroring the staging-smoke-evidence shape so future scripts (the
 # release-doc-drift-check, the cannot-skip-gate dashboard, the doc
 # audit) can refer to it without grepping markdown.
@@ -39,12 +39,12 @@
 #   - Evidence file at the canonical path (only with --apply).
 #
 # Reference shape: see staging-smoke evidence under
-# `engine/docs/release/smoke-evidence/`.
+# `engine/.local/release/smoke-evidence/`.
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 
 ENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EVIDENCE_DIR="$ENGINE_ROOT/docs/release/testflight-evidence"
+EVIDENCE_DIR="$ENGINE_ROOT/.local/release/testflight-evidence"
 
 SHA=""
 VERSION=""

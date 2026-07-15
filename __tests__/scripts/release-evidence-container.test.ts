@@ -1,9 +1,29 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+
+function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE',
+  ]) delete env[key];
+  return { ...env, ...overrides };
+}
 
 describe('release-evidence-container wrapper', () => {
   const script = () => readFileSync('scripts/release-evidence-container.sh', 'utf8');
   const workflow = () => readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
+  const releaseSigner = () => readFileSync('.github/workflows/sign-release-manifest.yml', 'utf8');
+  const stagingSigner = () => readFileSync('.github/workflows/sign-staging-attestation.yml', 'utf8');
 
   it('marks the bind-mounted workspace as a safe git directory', () => {
     const raw = script();
@@ -34,12 +54,199 @@ describe('release-evidence-container wrapper', () => {
     const raw = workflow();
     const stopIndex = raw.indexOf('Stop when full-suite prerequisites failed');
     const countIndex = raw.indexOf('Count tests from shard artifacts');
-    const writeIndex = raw.indexOf('- name: Write release evidence');
+    const writeIndex = raw.indexOf('- name: Write exact release-test result');
+    const unsignedIndex = raw.indexOf('- name: Write unsigned ReleaseManifestV2 candidate');
 
     expect(stopIndex).toBeGreaterThan(-1);
     expect(countIndex).toBeGreaterThan(stopIndex);
     expect(writeIndex).toBeGreaterThan(stopIndex);
+    expect(unsignedIndex).toBeGreaterThan(writeIndex);
     expect(raw).toContain("needs.vitest-full.result != 'success' || needs.python-full.result != 'success'");
+    expect(raw).toContain('release-manifest-v2.mjs write');
+    expect(raw).toContain('--allow-unsigned');
+    expect(raw).toContain('.local/release/test-results.json');
     expect(raw).toContain('timeout-minutes: 30');
+  });
+
+  it('uploads the hidden immutable bundle completion seal', () => {
+    const raw = workflow();
+
+    expect(raw).toContain('.local/release/bundles/${{ github.sha }}/**/.complete.json');
+    expect(raw).toContain('include-hidden-files: true');
+  });
+
+  it('promotes only the exact staged artifact through the versioned cutover path', () => {
+    const operator = readFileSync('scripts/release-operator.sh', 'utf8');
+    const promote = readFileSync('scripts/promote-exact-release.sh', 'utf8');
+
+    expect(operator).toContain('scripts/promote-exact-release.sh');
+    expect(operator).not.toContain('NEXUS_RELEASE_MANIFEST_PATH="$ROOT/$MANIFEST" scripts/promote-to-prod.sh');
+    expect(operator).toContain('git status --porcelain=v1 --untracked-files=normal');
+    expect(promote).toContain('rsync -a --delete');
+    expect(promote).toContain('artifact aggregate digest mismatch');
+    expect(promote).toContain('remote-create-release-backup.sh');
+    expect(promote).toContain('remote-prepare-release-backup.sh');
+    expect(promote).toContain('promotion failed after candidate mutation; restoring exact backup');
+    expect(promote).toContain('promotion failed after production stop began; restarting the untouched predecessor');
+    expect(operator.indexOf('resolve_remote_pm2')).toBeLessThan(operator.indexOf('mkdir -p'));
+    expect(operator).toContain('release-installed-tree-attestation.mjs write');
+    expect(operator).toContain('scripts/staging-smoke.sh');
+    expect(operator).toContain('release-staging-attestation.mjs request');
+    expect(operator).toContain('--retry-connrefused');
+    expect(operator).toContain('delete_staging_apps');
+    expect(operator).not.toContain('startOrReload');
+    expect(operator).not.toContain('--staging-evidence');
+    expect(promote).toContain('--expect-aggregate-digest "$installed_digest"');
+    expect(promote).toContain('(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha');
+    expect(promote).toContain('active PM2/current identity mismatch');
+    expect(promote).toContain('previous versioned runtime marker is missing');
+    expect(promote).not.toContain('startOrReload');
+    expect(promote).not.toContain('scripts/rollback.sh');
+    expect(promote).not.toContain('npm ci');
+    expect(promote).not.toContain('pip install');
+  });
+
+  it('rejects a dirty promotion checkout before manifest validation or SSH', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-operator-dirty-'));
+    try {
+      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+      copyFileSync('scripts/release-operator.sh', join(root, 'scripts/release-operator.sh'));
+      copyFileSync('scripts/lib/release-gates.sh', join(root, 'scripts/lib/release-gates.sh'));
+      chmodSync(join(root, 'scripts/release-operator.sh'), 0o755);
+      writeFileSync(join(root, 'package.json'), '{"version":"0.0.0"}\n');
+      const gitOptions = { cwd: root, env: cleanGitEnv() };
+      execFileSync('git', ['init', '--initial-branch=main'], gitOptions);
+      execFileSync('git', ['config', 'user.name', 'Release Fixture'], gitOptions);
+      execFileSync('git', ['config', 'user.email', 'release@example.invalid'], gitOptions);
+      execFileSync('git', ['add', '.'], gitOptions);
+      execFileSync('git', ['commit', '-m', 'fixture'], gitOptions);
+      writeFileSync(join(root, 'scripts/release-operator.sh'), '\n# dirty promotion helper\n', { flag: 'a' });
+
+      const result = spawnSync('bash', [
+        'scripts/release-operator.sh',
+        'promote',
+        '--manifest',
+        'missing.json',
+      ], { cwd: root, encoding: 'utf8', env: cleanGitEnv() });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('release:promote requires a clean checkout');
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain('missing.json');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('signs release and staging evidence only through protected-main environment secret paths', () => {
+    const raw = stagingSigner();
+    const rc = workflow();
+    const release = releaseSigner();
+    const request = readFileSync('scripts/request-staging-attestation.sh', 'utf8');
+
+    expect(raw).toContain('environment: release-signing');
+    expect(raw).toContain("github.ref == 'refs/heads/main'");
+    expect(raw).toContain('ref: refs/heads/main');
+    expect(raw).toContain('path: trusted-tooling');
+    expect(raw).toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
+    expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs validate-request');
+    expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs sign');
+    expect(raw).toContain('staging-attestation-${{ inputs.request_id }}');
+    expect(raw).not.toContain('SERVER_SSH_KEY');
+    expect(release).toContain('environment: release-signing');
+    expect(release).toContain('trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest');
+    expect(release).toContain('release-manifest-v2-${{ env.RUNTIME_SHA }}');
+    expect(rc).not.toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
+    expect(rc).not.toContain('sign_staging');
+    expect(request).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
+    expect(request).toContain('gh workflow run "$SIGNING_WORKFLOW" --ref "$REF"');
+  });
+
+  it.each([
+    {
+      label: 'release manifest',
+      script: 'request-release-manifest-signature.sh',
+      workflow: 'sign-release-manifest.yml',
+      args: (root: string, runtimeSha: string) => [runtimeSha, '123456', root],
+      prepare: (_root: string, _runtimeSha: string) => {},
+    },
+    {
+      label: 'staging attestation',
+      script: 'request-staging-attestation.sh',
+      workflow: 'sign-staging-attestation.yml',
+      args: (root: string, runtimeSha: string) => [
+        join(root, 'staging-request.json'),
+        join(root, 'release-manifest.json'),
+        join(root, 'staging-attestation.json'),
+      ],
+      prepare: (root: string, runtimeSha: string) => {
+        writeFileSync(join(root, 'staging-request.json'), JSON.stringify({
+          requestId: '11111111-1111-1111-1111-111111111111',
+          runtimeSha,
+        }));
+        writeFileSync(join(root, 'scripts/release-staging-attestation.mjs'), `
+          if (process.argv[2] !== 'validate-request') process.exit(70);
+        `);
+      },
+    },
+  ])('behaviorally probes the $label workflow YAML before dispatch', ({
+    script: scriptName,
+    workflow: workflowName,
+    args,
+    prepare,
+  }) => {
+    const root = mkdtempSync(join(tmpdir(), 'release-signing-probe-'));
+    const runtimeSha = 'a'.repeat(40);
+    const bin = join(root, 'bin');
+    const scripts = join(root, 'scripts');
+    const log = join(root, 'gh-argv.log');
+    try {
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(scripts, { recursive: true });
+      copyFileSync(join('scripts', scriptName), join(scripts, scriptName));
+      chmodSync(join(scripts, scriptName), 0o755);
+      prepare(root, runtimeSha);
+      writeFileSync(join(bin, 'gh'), `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+if [ "$1" = "workflow" ] && [ "$2" = "view" ]; then
+  case " $* " in
+    *" --ref "*" --yaml "*) exit 0 ;;
+    *) exit 72 ;;
+  esac
+fi
+if [ "$1" = "workflow" ] && [ "$2" = "run" ]; then
+  exit 73
+fi
+exit 74
+`);
+      chmodSync(join(bin, 'gh'), 0o755);
+
+      const result = spawnSync('bash', [
+        join('scripts', scriptName),
+        ...args(root, runtimeSha),
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanGitEnv({
+          FAKE_GH_LOG: log,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        }),
+      });
+
+      expect(result.status).toBe(73);
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      const viewIndex = calls.findIndex((call) => call.startsWith(`workflow view ${workflowName} `));
+      const dispatchIndex = calls.findIndex((call) => call.startsWith(`workflow run ${workflowName} `));
+      expect(viewIndex).toBeGreaterThan(-1);
+      expect(calls[viewIndex]).toContain('--ref main --yaml');
+      expect(dispatchIndex).toBeGreaterThan(viewIndex);
+      expect(calls.some((call) => call.startsWith('run watch '))).toBe(false);
+      expect(calls.some((call) => call.startsWith('run download '))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

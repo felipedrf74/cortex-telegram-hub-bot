@@ -1,6 +1,0 @@
-Chat tenant smoke base URL: http://127.0.0.1:8201
-PASS: Product health — local iOS API reachable
-Error: failed to register tenant-a-user-a: 403 {"ok":false,"error":{"code":"INVALID_INVITE","message":"Código de convite inválido"},"timestamp":"2026-04-30T06:32:46.167Z"}
-    at registerUser (/home/dominguez/telegram-hub-bot-staging/scripts/chat-tenant-security-smoke.js:100:11)
-    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
-    at async main (/home/dominguez/telegram-hub-bot-staging/scripts/chat-tenant-security-smoke.js:140:17)

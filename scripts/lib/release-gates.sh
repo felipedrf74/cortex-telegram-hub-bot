@@ -344,7 +344,7 @@ reclaim_marker_is_stale() {
   created_at="$(owner_value "$owner_file" createdAt)"
   created_epoch="$(epoch_from_iso8601 "$created_at")"
   now_epoch="$(date -u +%s)"
-  if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$marker_max_age" ]; then
+  if [ -n "$created_at" ] && [ $((now_epoch - created_epoch)) -gt "$marker_max_age" ]; then
     return 0
   fi
 
@@ -394,21 +394,16 @@ if [ -f "$lock_dir/owner" ]; then
   case "$max_age" in
     ''|*[!0-9]*) max_age=1800 ;;
   esac
-  if [ "$created_epoch" -gt 0 ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
+  if [ -n "$created_at" ] && [ $((now_epoch - created_epoch)) -gt "$max_age" ]; then
     stale=1
   fi
 
-  owner_host="$(lock_owner_value host)"
-  owner_pid="$(lock_owner_value pid)"
-  current_host="$(hostname 2>/dev/null || printf unknown)"
-  case "$owner_pid" in
-    ''|*[!0-9]*) ;;
-    *)
-      if [ "$owner_host" = "$current_host" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
-        stale=1
-      fi
-      ;;
-  esac
+  # The owner PID belongs to the short-lived SSH acquisition shell, not to
+  # the local deploy process that continues holding the lock. Reclaiming as
+  # soon as that remote shell exits makes every active lock immediately
+  # stealable. Remote locks therefore expire only by their bounded age; the
+  # normal local EXIT trap removes them at the end of a successful or failed
+  # operator invocation.
 fi
 
 if [ "$stale" = "1" ]; then
@@ -436,20 +431,26 @@ REMOTE_LOCK
   else
     return $?
   fi
-  release_append_lock_entry RELEASE_REMOTE_LOCKS "$server|$lock_dir"
+  release_append_lock_entry RELEASE_REMOTE_LOCKS "$server|$lock_dir|$token"
 }
 
 release_cleanup_remote_locks() {
-  local entry server lock_dir
+  local entry server remainder lock_dir token
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     server="${entry%%|*}"
-    lock_dir="${entry#*|}"
-    [ -n "$server" ] && [ -n "$lock_dir" ] || continue
-    ssh "$server" bash -s -- "$lock_dir" >/dev/null 2>&1 <<'REMOTE_CLEANUP' || true
+    remainder="${entry#*|}"
+    lock_dir="${remainder%%|*}"
+    token="${remainder#*|}"
+    [ -n "$server" ] && [ -n "$lock_dir" ] && [ -n "$token" ] || continue
+    ssh "$server" bash -s -- "$lock_dir" "$token" >/dev/null 2>&1 <<'REMOTE_CLEANUP' || true
 set -euo pipefail
 lock_dir="$1"
-[ -n "$lock_dir" ] || exit 0
+expected_token="$2"
+[ -n "$lock_dir" ] && [ -n "$expected_token" ] || exit 0
+[ -f "$lock_dir/owner" ] || exit 0
+actual_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1); exit }' "$lock_dir/owner")"
+[ "$actual_token" = "$expected_token" ] || exit 0
 rm -rf "$lock_dir"
 REMOTE_CLEANUP
   done <<< "${RELEASE_REMOTE_LOCKS:-}"

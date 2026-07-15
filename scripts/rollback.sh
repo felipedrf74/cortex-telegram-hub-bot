@@ -31,8 +31,9 @@ set -euo pipefail
 SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 REMOTE_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BACKUP_DIR="/home/dominguez/backups/nexushub"
-PM2="/home/dominguez/.npm-global/bin/pm2"
+source "$LOCAL_DIR/scripts/lib/release-gates.sh"
+BACKUP_DIR="${NEXUS_BACKUP_DIR:-/home/dominguez/backups/nexushub}"
+PM2="${NEXUS_PM2_BIN:-/home/dominguez/.npm-global/bin/pm2}"
 
 # ── Parse args ───────────────────────────────────────
 DRY_RUN=false
@@ -72,31 +73,87 @@ echo ""
 # ── List available backups ───────────────────────────
 echo "📦 Available backups on server:"
 echo ""
-BACKUPS=$(ssh "$SERVER" "ls -1t $BACKUP_DIR/v*.tar.gz 2>/dev/null" || true)
+# Batch archive size, data presence, and release identity into one SSH call.
+# The archive manifest is authoritative. Historical archives without a
+# manifest fall back to the archived package.json version and finally to the
+# old filename convention, so existing operator commands remain usable.
+METADATA="$(ssh "$SERVER" bash -s -- "$BACKUP_DIR" <<'REMOTE_BACKUP_METADATA'
+set -euo pipefail
+backup_dir="$1"
+node_bin=/usr/bin/node
+if [ ! -x "$node_bin" ]; then node_bin="$(command -v node || true)"; fi
+[ -n "$node_bin" ] || { echo "Node is required to inspect backup identity" >&2; exit 1; }
 
-if [ -z "$BACKUPS" ]; then
+while IFS= read -r archive; do
+  [ -n "$archive" ] || continue
+  size="$(du -h "$archive" | cut -f1)"
+  has_db=0
+  if tar tzf "$archive" 2>/dev/null | awk '$0 == "data/bot.db" { found = 1 } END { exit found ? 0 : 1 }'; then
+    has_db=1
+  fi
+
+  manifest="$(tar xOzf "$archive" .nexus-backup-manifest.json 2>/dev/null || true)"
+  archived_version=""
+  before_version=""
+  identity_source=""
+  if [ -n "$manifest" ]; then
+    identity="$(printf '%s' "$manifest" | "$node_bin" -e '
+      const fs = require("fs");
+      const value = JSON.parse(fs.readFileSync(0, "utf8"));
+      const valid = input => typeof input === "string" && /^[0-9A-Za-z.+-]+$/.test(input);
+      if (value.schema !== "nexus.release-backup.v1" || !valid(value.archivedVersion)) {
+        throw new Error("backup manifest release identity is invalid");
+      }
+      if (value.targetVersion != null && !valid(value.targetVersion)) {
+        throw new Error("backup manifest target identity is invalid");
+      }
+      process.stdout.write(`${value.archivedVersion}|${value.targetVersion || ""}`);
+    ')"
+    archived_version="${identity%%|*}"
+    before_version="${identity#*|}"
+    identity_source="manifest"
+  else
+    package_body="$(tar xOzf "$archive" package.json 2>/dev/null || true)"
+    if [ -n "$package_body" ]; then
+      archived_version="$(printf '%s' "$package_body" | "$node_bin" -e '
+        const fs = require("fs");
+        try {
+          const value = JSON.parse(fs.readFileSync(0, "utf8"));
+          if (typeof value.version === "string" && /^[0-9A-Za-z.+-]+$/.test(value.version)) {
+            process.stdout.write(value.version);
+          }
+        } catch {}
+      ')"
+    fi
+    identity_source="legacy-package"
+    filename="$(basename "$archive")"
+    if [[ "$filename" =~ ^v([^_]+)_before-v([^_]+)_[0-9]{8}_[0-9]{6}\.tar\.gz$ ]]; then
+      [ -n "$archived_version" ] || archived_version="${BASH_REMATCH[1]}"
+      before_version="${BASH_REMATCH[2]}"
+    elif [ -z "$archived_version" ] && [[ "$filename" =~ ^v([^_]+)_[0-9]{8}_[0-9]{6}\.tar\.gz$ ]]; then
+      archived_version="${BASH_REMATCH[1]}"
+      identity_source="legacy-filename"
+    fi
+  fi
+
+  [[ "$archived_version" =~ ^[0-9A-Za-z.+-]+$ ]] || {
+    echo "Unable to determine archived version for $archive" >&2
+    exit 1
+  }
+  printf '%s|%s|%s|%s|%s|%s\n' \
+    "$archive" "$size" "$has_db" "$archived_version" "$before_version" "$identity_source"
+done < <(ls -1t "$backup_dir"/v*.tar.gz 2>/dev/null || true)
+REMOTE_BACKUP_METADATA
+)"
+
+if [ -z "$METADATA" ]; then
   echo "   ❌ No backups found at $BACKUP_DIR"
   echo "   Run a deploy first to create a backup."
   exit 1
 fi
 
-# Batch the size + has_db checks into a single ssh call instead of 2 per
-# backup (which would be 2N round trips). This runs O(1) ssh invocations
-# regardless of backup count, and sidesteps the classic "ssh inside a
-# while-read loop consumes stdin" bug where ssh drains the loop's here-string
-# because its stdin is inherited — the loop then exits after one iteration.
-# We produce a pipe-delimited table ("path|size|has_db") and parse locally.
-METADATA=$(ssh "$SERVER" "
-  for f in \$(ls -1t $BACKUP_DIR/v*.tar.gz 2>/dev/null); do
-    sz=\$(du -h \"\$f\" | cut -f1)
-    hd=0
-    if tar tzf \"\$f\" 2>/dev/null | grep -q 'data/bot.db\$'; then hd=1; fi
-    echo \"\$f|\$sz|\$hd\"
-  done
-")
-
 i=1
-while IFS='|' read -r backup size has_db; do
+while IFS='|' read -r backup size has_db archived_version before_version identity_source; do
   [ -z "$backup" ] && continue
   fname=$(basename "$backup")
   if [ "$has_db" = "1" ]; then
@@ -104,7 +161,14 @@ while IFS='|' read -r backup size has_db; do
   else
     db_flag=" [code only ⚠️]"
   fi
-  echo "   [$i] $fname ($size)$db_flag"
+  if [ -n "$before_version" ]; then
+    identity_flag=" [archive v${archived_version}, before v${before_version}]"
+  elif [ "$identity_source" = "manifest" ]; then
+    identity_flag=" [archive v${archived_version}]"
+  else
+    identity_flag=" [archive v${archived_version}, legacy metadata]"
+  fi
+  echo "   [$i] $fname ($size)$db_flag$identity_flag"
   i=$((i + 1))
 done <<< "$METADATA"
 echo ""
@@ -122,7 +186,9 @@ if [ -z "$VERSION" ] && [ -z "$BACKUP_FILE_OVERRIDE" ]; then
   exit 0
 fi
 
-# ── Find the backup file ────────────────────────────
+# ── Find the backup file by archived runtime identity ──
+BACKUP_FILE=""
+SELECTED_METADATA=""
 if [ -n "$BACKUP_FILE_OVERRIDE" ]; then
   case "$BACKUP_FILE_OVERRIDE" in
     "$BACKUP_DIR"/v*.tar.gz) ;;
@@ -131,28 +197,50 @@ if [ -n "$BACKUP_FILE_OVERRIDE" ]; then
       exit 1
       ;;
   esac
-  if ! printf '%s\n' "$BACKUPS" | grep -Fxq -- "$BACKUP_FILE_OVERRIDE"; then
-    echo "❌ Exact backup is not present on the server: $BACKUP_FILE_OVERRIDE"
-    exit 1
-  fi
-  BACKUP_FILE="$BACKUP_FILE_OVERRIDE"
+  while IFS='|' read -r backup _; do
+    if [ "$backup" = "$BACKUP_FILE_OVERRIDE" ]; then
+      BACKUP_FILE="$backup"
+      SELECTED_METADATA="$(printf '%s\n' "$METADATA" | awk -F'|' -v selected="$backup" '$1 == selected { print; exit }')"
+      break
+    fi
+  done <<< "$METADATA"
 elif [ "$VERSION" = "latest" ]; then
-  BACKUP_FILE=$(echo "$BACKUPS" | head -1)
+  SELECTED_METADATA="$(printf '%s\n' "$METADATA" | head -1)"
+  BACKUP_FILE="${SELECTED_METADATA%%|*}"
 else
-  # Match version prefix (e.g., "4.9.20" matches "v4.9.20_20260407_...")
-  CLEAN_VERSION="${VERSION#v}"  # Strip leading 'v'
-  BACKUP_FILE=$(echo "$BACKUPS" | grep "/v${CLEAN_VERSION}_" | head -1 || true)
-
-  if [ -z "$BACKUP_FILE" ]; then
-    echo "❌ No backup found for version $VERSION"
-    echo "   Available versions:"
-    echo "$BACKUPS" | xargs -I{} basename {} | sed -E 's/_[0-9]+_[0-9]+\.tar\.gz$//' | sort -u | sed 's/^/   - /'
-    exit 1
-  fi
+  CLEAN_VERSION="${VERSION#v}"
+  while IFS='|' read -r backup _size _has_db archived_version _before_version _identity_source; do
+    if [ "$archived_version" = "$CLEAN_VERSION" ]; then
+      BACKUP_FILE="$backup"
+      SELECTED_METADATA="$(printf '%s\n' "$METADATA" | awk -F'|' -v selected="$backup" '$1 == selected { print; exit }')"
+      break
+    fi
+  done <<< "$METADATA"
 fi
 
+if [ -z "$BACKUP_FILE" ] || [ -z "$SELECTED_METADATA" ]; then
+  if [ -n "$BACKUP_FILE_OVERRIDE" ]; then
+    echo "❌ Exact backup is not present on the server: $BACKUP_FILE_OVERRIDE"
+  else
+    echo "❌ No backup found for archived version $VERSION"
+    echo "   Available archived versions:"
+    printf '%s\n' "$METADATA" | cut -d'|' -f4 | sort -u | sed 's/^/   - v/'
+  fi
+  exit 1
+fi
+
+IFS='|' read -r _selected_path _selected_size _selected_has_db TARGET_VERSION BACKUP_CREATED_BEFORE_VERSION _selected_source <<< "$SELECTED_METADATA"
+[[ "$TARGET_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || {
+  echo "❌ Selected archive has no trustworthy archivedVersion"
+  exit 1
+}
 BACKUP_NAME=$(basename "$BACKUP_FILE")
 echo "🎯 Selected: $BACKUP_NAME"
+if [ -n "$BACKUP_CREATED_BEFORE_VERSION" ]; then
+  echo "   Rollback target: v${TARGET_VERSION} (archived before v${BACKUP_CREATED_BEFORE_VERSION})"
+else
+  echo "   Rollback target: v${TARGET_VERSION}"
+fi
 echo ""
 
 # ── DRY-RUN mode: just run restore.sh dry-run remotely ───
@@ -177,9 +265,71 @@ if [ "$DRY_RUN" = true ]; then
   exit 0
 fi
 
-# ── APPLY mode: confirmation prompt ───────────────────
-CURRENT_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('$REMOTE_DIR/package.json').version\"" 2>/dev/null || echo "unknown")
-echo "⚠️  This will rollback from v${CURRENT_VERSION} to ${BACKUP_NAME}"
+# ── APPLY mode: prove the active runtime before any mutation ──
+# A versioned production install runs from BASE/current -> BASE/releases/....
+# Refuse to stop anything if PM2 is actually serving a different cwd. This
+# prevents a stale symlink, stale operator shell, or split PM2 state from
+# turning a rollback into an unbounded filesystem mutation.
+ACTIVE_RUNTIME_METADATA="$(ssh "$SERVER" bash -s -- "$REMOTE_DIR" "$PM2" <<'REMOTE_ACTIVE_RUNTIME'
+set -euo pipefail
+requested_base_dir="$1"
+pm2_bin="$2"
+[ -d "$requested_base_dir" ] || { echo "production base directory is missing" >&2; exit 1; }
+base_dir="$(cd "$requested_base_dir" && pwd -P)"
+[ -x "$pm2_bin" ] || { echo "PM2 is unavailable" >&2; exit 1; }
+
+active_runtime=""
+if [ -L "$base_dir/current" ]; then
+  active_runtime="$(cd "$base_dir/current" && pwd -P)"
+  [ -d "$active_runtime" ] || { echo "production current symlink is broken" >&2; exit 1; }
+elif [ -e "$base_dir/current" ]; then
+  echo "production current path is not a symlink" >&2
+  exit 1
+else
+  active_runtime="$base_dir"
+fi
+[ -n "$active_runtime" ] || { echo "active runtime could not be resolved" >&2; exit 1; }
+if [ "$active_runtime" != "$base_dir" ] && [[ "$active_runtime" != "$base_dir"/releases/* ]]; then
+  echo "active runtime escapes the production base: $active_runtime" >&2
+  exit 1
+fi
+
+node_bin=/usr/bin/node
+if [ ! -x "$node_bin" ]; then node_bin="$(command -v node || true)"; fi
+[ -n "$node_bin" ] || { echo "Node is unavailable" >&2; exit 1; }
+current_version="$("$node_bin" -e '
+  const value = require(process.argv[1]);
+  if (typeof value.version !== "string" || !value.version) process.exit(1);
+  process.stdout.write(value.version);
+' "$active_runtime/package.json")"
+
+"$pm2_bin" jlist | "$node_bin" -e '
+  const fs = require("fs");
+  const path = require("path");
+  const rows = JSON.parse(fs.readFileSync(0, "utf8"));
+  const runtime = process.argv[1];
+  const expected = new Map([
+    ["nexus-hub", runtime],
+    ["content-engine", path.join(runtime, "content-engine")],
+  ]);
+  for (const [name, cwd] of expected) {
+    const row = rows.find(entry => entry?.name === name);
+    const actual = row?.pm2_env?.pm_cwd;
+    if (row?.pm2_env?.status !== "online") {
+      throw new Error(`PM2 process is not online before rollback: ${name}`);
+    }
+    if (typeof actual !== "string" || path.resolve(actual) !== path.resolve(cwd)) {
+      throw new Error(`PM2 cwd does not match active runtime: ${name} expected=${cwd} actual=${actual || "missing"}`);
+    }
+  }
+' "$active_runtime"
+printf '%s|%s\n' "$active_runtime" "$current_version"
+REMOTE_ACTIVE_RUNTIME
+)"
+IFS='|' read -r ACTIVE_RUNTIME CURRENT_VERSION <<< "$ACTIVE_RUNTIME_METADATA"
+
+echo "⚠️  This will rollback from v${CURRENT_VERSION} to v${TARGET_VERSION}"
+echo "   Active runtime proved at: $ACTIVE_RUNTIME"
 echo "   Pre-restore snapshot will be saved automatically."
 if [ "${NEXUS_ROLLBACK_AUTO_CONFIRM:-0}" = "1" ]; then
   echo "   NEXUS_ROLLBACK_AUTO_CONFIRM=1 — confirmation supplied by caller"
@@ -194,23 +344,51 @@ if [ "$CONFIRM" != "YES" ]; then
   exit 0
 fi
 
+# Manual rollback shares the same cross-worktree production lock as exact
+# promotion and the legacy deploy path. Acquire only after confirmation so an
+# interactive prompt never holds production mutual exclusion indefinitely.
+trap release_cleanup_all_locks EXIT
+release_acquire_local_lock "$LOCAL_DIR" "prod-deploy"
+release_acquire_remote_lock "$SERVER" "$REMOTE_DIR" "prod-deploy"
+
 # ── 1. Stop services ────────────────────────────────
 echo ""
 echo "🛑 Stopping services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
+ssh "$SERVER" bash -s -- "$PM2" <<'REMOTE_STOP_ROLLBACK'
+set -euo pipefail
+pm2_bin="$1"
+for app in nexus-hub content-engine; do
+  "$pm2_bin" describe "$app" >/dev/null
+  "$pm2_bin" stop "$app" >/dev/null
+done
+"$pm2_bin" jlist | /usr/bin/node -e '
+  const fs = require("fs");
+  const rows = JSON.parse(fs.readFileSync(0, "utf8"));
+  for (const name of ["nexus-hub", "content-engine"]) {
+    const row = rows.find(entry => entry?.name === name);
+    if (!row || row.pm2_env?.status !== "stopped" || Number(row.pid || 0) !== 0) {
+      throw new Error(`PM2 process did not stop: ${name}`);
+    }
+  }
+'
+echo "   Stopped."
+REMOTE_STOP_ROLLBACK
 
-# ── 2. Wait for port 8200 to release ────────────────
-echo "   Waiting for port 8200 to release..."
-ssh "$SERVER" '
+# ── 2. Wait for both loopback ports to release ──────
+echo "   Waiting for ports 8200 and 8100 to release..."
+ssh "$SERVER" bash -s <<'REMOTE_WAIT_ROLLBACK_PORTS'
+  set -euo pipefail
   for i in $(seq 1 30); do
-    if ! ss -tln 2>/dev/null | grep -q ":8200 "; then
-      echo "   ✅ Port 8200 free (after ${i}s)"
+    listening="$(ss -tln 2>/dev/null || true)"
+    if ! printf '%s\n' "$listening" | grep -Eq ':(8200|8100)[[:space:]]'; then
+      echo "   ✅ Ports 8200 and 8100 free (after ${i}s)"
       exit 0
     fi
     sleep 1
   done
-  echo "   ⚠️  Port 8200 still bound after 30s — proceeding anyway"
-'
+  echo "Ports 8200 or 8100 remain bound after 30s" >&2
+  exit 1
+REMOTE_WAIT_ROLLBACK_PORTS
 
 # ── 3. Run restore.sh --apply on the server ─────────
 # The restore script handles:
@@ -220,7 +398,7 @@ ssh "$SERVER" '
 # We pipe "YES" to confirm non-interactively since we already prompted above.
 echo ""
 echo "📥 Restoring from $BACKUP_NAME..."
-ssh "$SERVER" "cd $REMOTE_DIR && echo YES | bash scripts/restore.sh --apply $(printf '%q' "$BACKUP_FILE")"
+ssh "$SERVER" "cd $REMOTE_DIR && printf 'YES\\n' | REMOTE_DIR=$REMOTE_DIR BACKUP_DIR=$BACKUP_DIR bash scripts/restore.sh --apply $(printf '%q' "$BACKUP_FILE")"
 
 # ── 4. Install dependencies ─────────────────────────
 # package.json / package-lock.json may differ between current and target.
@@ -242,12 +420,28 @@ ssh "$SERVER" "
   fi
 "
 
+# A manual rollback restores the archive into the legacy base. Remove the
+# versioned release selector before starting so current/current.next cannot
+# continue to advertise a different runtime than PM2 is serving.
+ssh "$SERVER" bash -s -- "$REMOTE_DIR" <<'REMOTE_SELECT_LEGACY_RUNTIME'
+set -euo pipefail
+base_dir="$1"
+for selector in current current.next; do
+  path="$base_dir/$selector"
+  if [ -e "$path" ] && [ ! -L "$path" ]; then
+    echo "refusing to remove non-symlink runtime selector: $path" >&2
+    exit 1
+  fi
+done
+rm -f "$base_dir/current" "$base_dir/current.next"
+[ ! -e "$base_dir/current" ] && [ ! -L "$base_dir/current" ]
+[ ! -e "$base_dir/current.next" ] && [ ! -L "$base_dir/current.next" ]
+REMOTE_SELECT_LEGACY_RUNTIME
+
 # ── 6. Recreate services without resurrecting historical PM2 secrets ──
 echo ""
 echo "🟢 Starting services..."
-ROLLBACK_RUNTIME_CONFIG="rollback-ecosystem.runtime.config.js"
-scp "$LOCAL_DIR/ecosystem.config.js" "$SERVER:$REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG"
-ssh "$SERVER" "chmod 600 $REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG"
+ROLLBACK_RUNTIME_CONFIG="ecosystem.config.js"
 if ssh "$SERVER" bash -s -- \
   "$REMOTE_DIR" \
   "$PM2" \
@@ -257,40 +451,82 @@ if ssh "$SERVER" bash -s -- \
   "NODE_ENV,ENV,GIT_COMMIT" \
   < "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"
 then
-  ssh "$SERVER" "rm -f $REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG"
   echo "   ✅ Running with sanitized PM2 state"
 else
-  ssh "$SERVER" "rm -f $REMOTE_DIR/$ROLLBACK_RUNTIME_CONFIG" || true
   echo "   ❌ Sanitized PM2 bootstrap failed after restore"
   exit 1
 fi
 
-# ── 7. Health check with retries ────────────────────
+# ── 7. Bound readiness by health + identity + version ──
 echo ""
-echo "🏥 Health check (waiting 10s for startup)..."
-sleep 10
+echo "🏥 Verifying simultaneous loopback health, PM2 cwd, and archived version..."
+set +e
+READINESS_OUTPUT="$(ssh "$SERVER" bash -s -- "$REMOTE_DIR" "$PM2" "$TARGET_VERSION" <<'REMOTE_VERIFY_ROLLBACK'
+set -euo pipefail
+runtime="$1"
+pm2_bin="$2"
+expected_version="$3"
+node_bin=/usr/bin/node
 
-HEALTH_OK=false
-for attempt in 1 2 3; do
-  STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | /usr/bin/node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='nexus-hub')?.pm2_env?.status\" 2>/dev/null" || echo "unknown")
-  if [ "$STATUS" = "online" ]; then
-    # Additional check: hit /health endpoint to confirm bot is actually serving
-    HEALTH=$(ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 50 || echo ''")
-    if [ -n "$HEALTH" ]; then
-      HEALTH_OK=true
-      break
-    fi
+actual_version="$("$node_bin" -e '
+  const value = require(process.argv[1]);
+  process.stdout.write(typeof value.version === "string" ? value.version : "");
+' "$runtime/package.json")"
+[ "$actual_version" = "$expected_version" ] || {
+  echo "restored package version mismatch: expected=$expected_version actual=$actual_version" >&2
+  exit 1
+}
+
+for attempt in $(seq 1 15); do
+  backend_ok=false
+  content_ok=false
+  curl --fail --silent --max-time 2 http://127.0.0.1:8200/health >/dev/null &
+  backend_pid=$!
+  curl --fail --silent --max-time 2 http://127.0.0.1:8100/health >/dev/null &
+  content_pid=$!
+  if wait "$backend_pid"; then backend_ok=true; fi
+  if wait "$content_pid"; then content_ok=true; fi
+
+  if [ "$backend_ok" = true ] && [ "$content_ok" = true ]; then
+    "$pm2_bin" jlist | "$node_bin" -e '
+      const fs = require("fs");
+      const path = require("path");
+      const rows = JSON.parse(fs.readFileSync(0, "utf8"));
+      const runtime = process.argv[1];
+      const expected = new Map([
+        ["nexus-hub", runtime],
+        ["content-engine", path.join(runtime, "content-engine")],
+      ]);
+      for (const [name, cwd] of expected) {
+        const row = rows.find(entry => entry?.name === name);
+        const actual = row?.pm2_env?.pm_cwd;
+        if (row?.pm2_env?.status !== "online" || typeof actual !== "string"
+            || path.resolve(actual) !== path.resolve(cwd)) {
+          throw new Error(`rollback PM2 identity mismatch: ${name}`);
+        }
+      }
+    ' "$runtime"
+    "$pm2_bin" save --force >/dev/null
+    echo "NEXUS_RESTORED_VERSION=$actual_version"
+    echo "   ✅ Backend and Content Engine are healthy with exact legacy cwd identity"
+    exit 0
   fi
-  echo "   ⏳ Attempt $attempt: not ready yet (status=$STATUS), retrying in 5s..."
-  sleep 5
+  echo "   ⏳ Attempt $attempt/15: backend=$backend_ok content=$content_ok"
+  if [ "$attempt" -lt 15 ]; then sleep 2; fi
 done
-
-RESTORED_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('$REMOTE_DIR/package.json').version\"" 2>/dev/null || echo "unknown")
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 list | grep -E 'nexus-hub|content-engine'"
+echo "rollback readiness failed within the bounded 60-second window" >&2
+exit 1
+REMOTE_VERIFY_ROLLBACK
+)"
+READINESS_EXIT=$?
+set -e
+printf '%s\n' "$READINESS_OUTPUT"
+RESTORED_VERSION="$(printf '%s\n' "$READINESS_OUTPUT" | sed -n 's/^NEXUS_RESTORED_VERSION=//p' | tail -1)"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 list | grep -E 'nexus-hub|content-engine'" || true
 
 echo ""
 echo "═══════════════════════════════════════════════"
-if [ "$HEALTH_OK" = true ]; then
+if [ "$READINESS_EXIT" -eq 0 ] && [ "$RESTORED_VERSION" = "$TARGET_VERSION" ]; then
   echo "  ✅ Rollback complete!"
   echo "  📦 Version: v${CURRENT_VERSION} → v${RESTORED_VERSION}"
   echo "  💾 Pre-restore snapshot saved by restore.sh"
@@ -303,6 +539,6 @@ else
 fi
 echo "═══════════════════════════════════════════════"
 
-if [ "$HEALTH_OK" != true ]; then
+if [ "$READINESS_EXIT" -ne 0 ] || [ "$RESTORED_VERSION" != "$TARGET_VERSION" ]; then
   exit 1
 fi

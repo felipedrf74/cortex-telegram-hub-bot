@@ -1,0 +1,443 @@
+{
+  "version": "2026-07-15",
+  "defaultTier": "full",
+  "releaseEvidence": {
+    "minimumTestCounts": {
+      "vitest": 9000,
+      "pytest": 6
+    },
+    "basis": "Protected-main floors preserve the existing 10000/7 release baselines with the governed 10 percent tolerance while allowing intentional test consolidation."
+  },
+  "tiers": {
+    "fast": {
+      "description": "Deterministic unit, schema, policy, and release-tooling checks.",
+      "targetSeconds": 90,
+      "include": [
+        "__tests__/utils/**/*.test.ts",
+        "__tests__/types/**/*.test.ts",
+        "__tests__/scripts/*.test.ts",
+        "__tests__/services/*policy*.test.ts",
+        "__tests__/services/*validation*.test.ts"
+      ]
+    },
+    "critical": {
+      "description": "Release-blocking security, migration, billing, routing, public contract, and rollback regressions.",
+      "targetSeconds": 240,
+      "include": [
+        "__tests__/security/**/*.test.ts",
+        "__tests__/scope/**/*.test.ts",
+        "__tests__/api/auth-*.test.ts",
+        "__tests__/api/*tenant*.test.ts",
+        "__tests__/api/billing*.test.ts",
+        "__tests__/migrations/**/*.test.ts",
+        "__tests__/services/provider-fallback*.test.ts",
+        "__tests__/services/cost-guardrail*.test.ts",
+        "__tests__/scripts/release-*.test.ts",
+        "__tests__/scripts/promote-*.test.ts",
+        "__tests__/scripts/rollback-*.test.ts",
+        "__tests__/scripts/deploy-*.test.ts",
+        "__tests__/scripts/changed-area-classifier.test.ts",
+        "__tests__/scripts/ci-required-test-sharding.test.ts",
+        "__tests__/scripts/runtime-manifests.test.ts",
+        "__tests__/services/capability-manifest-consolidation.test.ts",
+        "__tests__/services/event-backbone.test.ts",
+        "__tests__/services/product-learning.test.ts",
+        "__tests__/services/training-exercise-media*.test.ts"
+      ]
+    },
+    "evaluate": {
+      "description": "Subjective quality, persona, provider, and long-running evaluation corpora.",
+      "include": [
+        "__tests__/**/*evaluation*.test.ts",
+        "__tests__/**/*eval*.test.ts",
+        "__tests__/personas/**/*.test.ts"
+      ]
+    }
+  },
+  "fullSuiteTriggers": [
+    ".github/workflows/*.yml",
+    ".github/actions/**",
+    "vitest.config.ts",
+    "__tests__/setup.ts",
+    "__tests__/fixtures/**",
+    "config/test-policy.json",
+    "scripts/changed-area-classifier.sh",
+    "scripts/resolve-ci-change-base.sh",
+    "scripts/select-vitest-files.mjs",
+    "scripts/run-test-tier.mjs",
+    "scripts/risk-gate.sh",
+    "scripts/lib/test-policy.mjs",
+    "scripts/test-inventory.mjs",
+    "scripts/test-migration-hook-lint.mjs",
+    "scripts/changed-coverage-gate.mjs",
+    "scripts/mutation-gate.mjs",
+    "config/stryker.config.mjs",
+    "src/services/database.ts",
+    "package.json",
+    "package-lock.json"
+  ],
+  "timingExceptions": [
+    {
+      "file": "__tests__/scripts/changed-area-classifier.test.ts",
+      "owner": "release",
+      "reason": "Creates isolated Git repositories and runs the complete cannot-skip dashboard; retained as release-infrastructure proof.",
+      "expires": "2026-09-15"
+    },
+    {
+      "file": "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts",
+      "owner": "database",
+      "reason": "Retains one production-runner rehearsal with pre-226 historical edge rows and a second-pass idempotency proof; shared runners may exceed the global correctness timeout.",
+      "expires": "2026-09-15"
+    }
+  ],
+  "dispositionRules": [
+    { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "keep", "reason": "Duplicate happy paths and source-import assertions were removed; the remaining cases cover malformed signals, filtering boundaries, multi-agent consumption, and digest edge behavior absent from the primary suite." },
+    { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "keep", "reason": "Retains skill schema, constraint, index, and cascade behavior while the redundant file-existence checks and empty-database full migration replay were deleted." },
+    { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },
+    { "pattern": "__tests__/**/*qa-validation.test.ts", "disposition": "keep", "reason": "Residual QA suites retain distinct boundary coverage after duplicate happy paths, source mirrors, and redundant migration setup were removed or consolidated into module-owned suites." },
+    { "pattern": "__tests__/**/*source-contract.test.ts", "disposition": "convert", "reason": "Replace source-string assertions with typed, schema, AST, manifest, or generator checks." },
+    { "pattern": "__tests__/**/*evaluation*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
+    { "pattern": "__tests__/**/*eval*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
+    { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
+  ],
+  "coverage": {
+    "global": { "lines": 78, "branches": 68, "functions": 84, "statements": 75 },
+    "changed": { "lines": 80, "branches": 75 },
+    "critical": { "lines": 90, "branches": 85 },
+    "exceptions": [
+      {
+        "file": "src/services/database.ts",
+        "owner": "test-infrastructure",
+        "reason": "Legacy database facade baseline is 25.28% lines and 26.08% branches; the extracted migration runner is governed separately above 90/85 while facade coverage is ratcheted without blocking this delegation-only change.",
+        "expires": "2026-08-31",
+        "minimum": { "lines": 25.28, "branches": 26.08 }
+      },
+      {
+        "file": "src/services/gemini-provider.ts",
+        "owner": "provider-platform",
+        "reason": "The existing provider fallback matrix is 88.42% lines and 67.50% branches; this release changes provider injection boundaries but does not remove provider behavior, so coverage is ratcheted at the observed baseline while missing fallback branches are added outside the production path.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 88.42, "branches": 67.50 }
+      },
+      {
+        "file": "src/services/training-exercise-media-manifest.ts",
+        "owner": "training-platform",
+        "reason": "The generated catalog compatibility surface is 83.88% lines and 72.06% branches after the public-beta media expansion; preserve that baseline while rare malformed-catalog combinations are moved into the focused catalog corpus.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 83.88, "branches": 72.06 }
+      },
+      {
+        "file": "src/services/scheduler.ts",
+        "owner": "agent-runtime",
+        "reason": "The legacy scheduler remains at 53.64% lines and 38.79% branches while jobs migrate to AgentJobManifest adapters; ratchet the observed baseline and retire this exception as the monolith is split rather than adding duplicate scheduler happy paths.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 53.64, "branches": 38.79 }
+      }
+    ]
+  },
+  "mutation": {
+    "schedule": "weekly",
+    "scope": "changed-critical-modules",
+    "thresholds": { "high": 80, "low": 70, "break": 70 },
+    "criticalModulePatterns": [
+      "src/api/*auth*.ts",
+      "src/api/*tenant*.ts",
+      "src/api/routes/auth*.ts",
+      "src/api/routes/*billing*.ts",
+      "src/api/routes/*tenant*.ts",
+      "src/middleware/auth*.ts",
+      "src/services/*auth*.ts",
+      "src/services/*billing*.ts",
+      "src/services/*tenant*.ts",
+      "src/services/*provider*.ts",
+      "src/services/database.ts",
+      "src/services/migration-runner.ts",
+      "src/services/cost-guardrail*.ts",
+      "src/services/training-exercise-media*.ts"
+    ],
+  "cleanupMappings": [
+    {
+      "test": "__tests__/billing/pricing-display-contract.test.ts",
+      "replacementTests": [
+        "__tests__/billing/pricing-display-contract.test.ts"
+      ],
+      "sources": [
+        ".env.example",
+        "src/portal/landing.html",
+        "docs/TOKEN-QUOTA-CONTRACT.md"
+      ],
+      "reason": "Removed stale release-narrative price copies while retaining the canonical environment, portal, and quota price contracts."
+    },
+    {
+      "test": "__tests__/scripts/ci-required-test-sharding.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/ci-required-test-sharding.test.ts"
+      ],
+      "sources": [
+        ".github/workflows/ci.yml",
+        "scripts/resolve-ci-change-base.sh"
+      ],
+      "reason": "Replaced the old aggregate dependency assertion with exact mutation, coverage, and pushed-range fail-closed contracts."
+    },
+    {
+      "test": "__tests__/scripts/promote-deploy-rollback.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/promote-deploy-rollback.test.ts"
+      ],
+      "sources": [
+        "scripts/deploy.sh",
+        "scripts/deploy-staging.sh",
+        "scripts/promote-to-prod.sh",
+        "scripts/rollback.sh",
+        "scripts/remote-start-sanitized-pm2.sh"
+      ],
+      "reason": "Replaced obsolete backup and PM2 copy assertions with exact immutable release, rollback, and sanitized-start behavior checks."
+    },
+    {
+      "test": "__tests__/scripts/risk-gate.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/risk-gate.test.ts"
+      ],
+      "sources": [
+        "scripts/risk-gate.sh",
+        "scripts/select-vitest-files.mjs"
+      ],
+      "reason": "Replaced overlapping changed-test command assertions with one generated changed, focused, and critical test-selection contract."
+    },
+    {
+      "test": "__tests__/security/github-workflow-pinning.test.ts",
+      "replacementTests": [
+        "__tests__/security/github-workflow-pinning.test.ts"
+      ],
+      "sources": [
+        ".github/workflows/release-candidate-evidence.yml",
+        ".github/workflows/sign-release-manifest.yml"
+      ],
+      "reason": "Replaced legacy release-evidence path assertions with immutable ReleaseManifestV2 generation and trusted signing contracts."
+    },
+    {
+      "test": "__tests__/services/chatv2-readiness-alerts.test.ts",
+      "replacementTests": [
+        "__tests__/services/chatv2-readiness-alerts.test.ts"
+      ],
+      "sources": [
+        "src/services/chatv2-readiness-alerts.ts"
+      ],
+      "reason": "Updated the stale work-order runbook assertion to the consolidated canonical release runbook while preserving alert behavior."
+    },
+    {
+      "test": "__tests__/services/cross-agent-learning-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/cross-agent-learning-qa-validation.test.ts"
+      ],
+      "sources": [
+        "src/services/cross-agent-learning.ts",
+        "src/services/intelligence-bus.ts"
+      ],
+      "reason": "Merged repeated source scans and happy-path signal assertions into compact behavior, tenant-boundary, and prompt-format coverage."
+    },
+    {
+      "test": "__tests__/services/prompt-cleanliness.test.ts",
+      "replacementTests": [
+        "__tests__/services/prompt-cleanliness.test.ts"
+      ],
+      "sources": [
+        "docs/DOCS_INDEX.md"
+      ],
+      "reason": "Removed an obsolete archive-file existence contract after documentation consolidation retained canonical index routing."
+    },
+    {
+      "test": "__tests__/services/scheduler-user-scope.test.ts",
+      "replacementTests": [
+        "__tests__/services/scheduler-user-scope.test.ts"
+      ],
+      "sources": [
+        "src/services/scheduler.ts"
+      ],
+      "reason": "Replaced superseded content-generation call expectations with the current scoped scheduler selection and eligibility behavior."
+    },
+    {
+      "test": "__tests__/services/skill-migration-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/skill-migration-qa-validation.test.ts"
+      ],
+      "sources": [
+        "src/testing/migrated-test-database.ts",
+        "migrations/019_installed_skills.sql",
+        "migrations/020_skill_tables.sql"
+      ],
+      "reason": "Replaced redundant migration file and full-replay checks with one migrated template plus direct schema and constraint contracts."
+    },
+    {
+      "test": "__tests__/services/skill-version-registry.test.ts",
+      "replacementTests": [
+        "__tests__/services/skill-version-registry.test.ts"
+      ],
+      "sources": [
+        "src/services/skill-version-registry.ts"
+      ],
+      "reason": "Folded the standalone triathlon alias assertion into the richer governed training capability metadata contract."
+    },
+    {
+      "test": "__tests__/services/training-m4-capacity-snapshots.test.ts",
+      "replacementTests": [
+        "__tests__/services/training-m4-capacity-snapshots.test.ts"
+      ],
+      "sources": [
+        "src/services/training-m4-capacity-snapshots.ts",
+        "config/benchmark-baselines.json"
+      ],
+      "reason": "Moved the shared-runner one-second wall-clock assertion into a warmed p95 benchmark with an explicit governed baseline."
+    },
+    {
+      "test": "__tests__/api/training-plan-generation-source-contract.test.ts",
+        "replacementTests": ["__tests__/api/training-plan-generation.test.ts", "__tests__/api/training-routes.test.ts"],
+        "sources": ["src/api/routes/training-plan-generation.ts", "src/api/routes/training-plan-routes.ts"],
+        "reason": "Converted the source-substring contract into a quota-exhaustion token-zero route proof plus a recursive AST provider-boundary assertion."
+      },
+      {
+        "test": "__tests__/brand/package-name.test.ts",
+        "replacementTests": ["__tests__/brand/package-rename-qa-validation.test.ts"],
+        "sources": ["package.json"],
+        "reason": "Merged the duplicate package identity and license assertions into the retained brand contract suite."
+      },
+      {
+        "test": "__tests__/brand/rename-qa-validation.test.ts",
+        "replacementTests": ["__tests__/brand/package-rename-qa-validation.test.ts"],
+        "sources": ["package.json", "src/portal/server.ts"],
+        "reason": "Merged unique runtime-brand assertions into the retained package rename contract and removed repeated source scans."
+      },
+      {
+        "test": "__tests__/portal/domain-status-qa-validation.test.ts",
+        "replacementTests": ["__tests__/portal/domain-status.test.ts"],
+        "sources": ["src/portal/snapshot-builder.ts", "src/portal/snapshot-statements.ts"],
+        "reason": "Merged domain status behavior into the primary portal suite and removed brittle HTML and source substrings."
+      },
+      {
+        "test": "__tests__/portal/health-endpoint-qa-validation.test.ts",
+        "replacementTests": ["__tests__/portal/health-endpoints.test.ts"],
+        "sources": ["src/portal/health-routes.ts", "src/portal/server.ts"],
+        "reason": "Merged public health behavior and credential non-disclosure into the live HTTP contract suite."
+      },
+      {
+        "test": "__tests__/portal/integration-health-qa-validation.test.ts",
+        "replacementTests": ["__tests__/services/integration-health-observability.test.ts"],
+        "sources": ["src/portal/snapshot-builder.ts", "src/services/integration-health.ts"],
+        "reason": "Merged integration-health behavior into the typed observability suite and removed snapshot source mirrors."
+      },
+      {
+        "test": "__tests__/portal/oauth-ios-callbacks-qa-validation.test.ts",
+        "replacementTests": ["__tests__/portal/portal-oauth-routes.test.ts"],
+        "sources": ["src/portal/oauth-routes.ts"],
+        "reason": "Merged iOS callback response and redirect behavior into the primary OAuth route suite."
+      },
+      {
+        "test": "__tests__/portal/skill-management-qa-validation.test.ts",
+        "replacementTests": ["__tests__/portal/skill-management.test.ts"],
+        "sources": ["src/skills/skill-manager.ts", "src/skills/registry.ts"],
+        "reason": "Merged skill management boundaries into the primary suite and removed repeated existence checks."
+      },
+      {
+        "test": "__tests__/services/cooking-chef-qa-validation.test.ts",
+        "replacementTests": ["__tests__/services/cooking-chef.test.ts", "__tests__/services/cooking-private-scope.test.ts"],
+        "sources": ["src/services/cooking-chef.ts", "src/services/cooking-tenant-scope.ts"],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/cooking-tenant-scope.ts:54-57",
+            "anchor": "visibility_scope",
+            "behavior": "Private cooking reads require active, user-private, tenant-owned, and user-owned rows.",
+            "replacementTest": "__tests__/services/cooking-private-scope.test.ts",
+            "ownerTestName": "cooking private scope predicate admits only active user-private tenant-owned and user-owned rows",
+            "minimumMutants": 4
+          }
+        ],
+        "reason": "Merged cooking generation, fallback, and tenant boundaries into the primary chef suite."
+      },
+      {
+        "test": "__tests__/services/finance-tracker-qa-validation.test.ts",
+        "replacementTests": ["__tests__/services/finance-tracker.test.ts"],
+        "sources": ["src/services/finance-tracker.ts"],
+        "reason": "Merged finance parsing, validation, and tenant behavior into the primary tracker suite."
+      },
+      {
+        "test": "__tests__/services/training-skill-hardening-source-contract.test.ts",
+        "replacementTests": ["__tests__/services/coach-kernel-planner.test.ts", "__tests__/services/coach-kernel-feedback-analysis.test.ts", "__tests__/services/training-catalog-validation.test.ts", "__tests__/services/garmin-coach-user-scope.test.ts", "__tests__/api/training-plan-generation.test.ts"],
+        "sources": ["src/services/coach-kernel/knowledge-loader.ts", "src/services/coach-kernel/planner-engine.ts", "src/services/coach-kernel/feedback-analysis.ts", "src/api/routes/training-plan-generation.ts"],
+        "reason": "Converted broad source-string checks to module-owned behavioral, catalog, metering, and AST policy tests."
+      },
+      {
+        "test": "__tests__/services/usage-metering-qa-validation.test.ts",
+        "replacementTests": ["__tests__/services/usage-metering.test.ts", "__tests__/services/gemini-provider.test.ts", "__tests__/services/openai-provider.test.ts"],
+        "sources": ["src/services/usage-metering.ts", "src/portal/snapshot-builder.ts", "src/services/gemini-provider.ts", "src/services/openai-provider.ts"],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/gemini-provider.ts:639-639",
+            "anchor": "hasUnboundedProviderInjectedContext: true",
+            "behavior": "Grounded Gemini calls reserve budget under the unbounded provider-context risk policy.",
+            "replacementTest": "__tests__/services/gemini-provider.test.ts",
+            "ownerTestName": "GeminiProvider reserves unbounded grounded context and meters the provider search fee when grounding is used",
+            "minimumMutants": 1
+          },
+          {
+            "pattern": "src/services/openai-provider.ts:375-376",
+            "anchor": "getProviderToolFeeUsd('openai_web_search')",
+            "behavior": "OpenAI web search budget reservations include the maximum separately billed tool fees.",
+            "replacementTest": "__tests__/services/openai-provider.test.ts",
+            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
+            "minimumMutants": 2
+          },
+          {
+            "pattern": "src/services/openai-provider.ts:420-422",
+            "anchor": "webSearchRequests * getProviderToolFeeUsd",
+            "behavior": "Recorded OpenAI response cost includes the observed number of billed web search requests.",
+            "replacementTest": "__tests__/services/openai-provider.test.ts",
+            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
+            "minimumMutants": 2
+          },
+          {
+            "pattern": "src/services/openai-provider.ts:558-559",
+            "anchor": "input.webSearchRequests ?? 0",
+            "behavior": "Persisted OpenAI API usage stores provider tool cost and web search request attribution.",
+            "replacementTest": "__tests__/services/openai-provider.test.ts",
+            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
+            "minimumMutants": 2
+          },
+          {
+            "pattern": "src/services/openai-provider.ts:602-603",
+            "anchor": "recordUsage(input.userId",
+            "behavior": "Successful OpenAI response usage is mirrored to the calendar-aligned usage meter as best effort.",
+            "replacementTest": "__tests__/services/openai-provider.test.ts",
+            "ownerTestName": "OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Merged schema, aggregation, and isolation into the migrated-template primary suite while provider metering hooks remain behaviorally protected by the Gemini and OpenAI provider suites."
+      },
+      {
+        "test": "__tests__/services/webhook-registry-qa-validation.test.ts",
+        "replacementTests": ["__tests__/services/webhook-registry.test.ts"],
+        "sources": ["src/services/webhook-registry.ts"],
+        "reason": "Merged registry validation, retries, and tenant behavior into the primary webhook suite."
+      },
+      {
+        "test": "__tests__/skills/secretary-skill-package-qa-validation.test.ts",
+        "replacementTests": ["__tests__/skills/secretary-skill-package.test.ts"],
+        "sources": ["src/skills/skill-config.ts", "src/skills/skill-manager.ts"],
+        "reason": "Merged Secretary package contracts into the primary skill package suite."
+      },
+      {
+        "test": "__tests__/skills/skills-command-qa-validation.test.ts",
+        "replacementTests": ["__tests__/skills/skills-command.test.ts"],
+        "sources": ["src/skills/skill-config.ts", "src/skills/skill-manager.ts"],
+        "reason": "Merged command parsing, status, and toggle boundaries into the primary skills command suite."
+      },
+      {
+        "test": "__tests__/skills/sub-skill-arch-qa-validation.test.ts",
+        "replacementTests": ["__tests__/skills/skill-config.test.ts", "__tests__/skills/skill-manager.test.ts", "__tests__/skills/registry.test.ts"],
+        "sources": ["src/skills/skill-config.ts", "src/skills/skill-manager.ts", "src/skills/registry.ts"],
+        "reason": "Converted architecture source scans into typed config, manager, and registry contract suites."
+      }
+    ],
+    "exceptions": []
+  }
+}

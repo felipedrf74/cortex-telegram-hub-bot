@@ -34,16 +34,17 @@ With JSON output:
 npm run reward:check:json -- --area backend
 ```
 
-With a handoff:
+With an ignored local deliverable summary:
 
 ```bash
-node scripts/reward-check.mjs --area auto --handoff docs/agents/handoffs/<file>.md --advisory
+node scripts/reward-check.mjs --area auto --handoff .local/reward-handoff.md --advisory
 ```
 
-Enforced mode is reserved for calibrated gates:
+Enforced release mode validates the exact signed artifact manifest:
 
 ```bash
-node scripts/reward-check.mjs --area release --enforce --handoff <path>
+node scripts/reward-check.mjs --area release --enforce \
+  --release-manifest .local/release/release-manifest-v2.json --require-staging
 ```
 
 ## Existing signals to reuse
@@ -57,8 +58,8 @@ duplicating their logic:
 - `npm run docs:audit`
 - `npm run verify` or focused evidence named by the handoff
 - `scripts/verify-deliverable.mjs`
-- release identity, staging smoke, production health, and rollback drill
-  evidence when area is `release`
+- signed release manifest identity, staging smoke, production health, and
+  rollback drill evidence when area is `release`
 - iOS build/test evidence when backend work is paired with an iOS surface
 
 ## Verdict priority
@@ -94,11 +95,11 @@ Hard failures include:
 - Migration changes without migration safety evidence.
 - Missing required docs update.
 
-## Handoff summary
+## Result summary
 
-Add the compact reward block from the workspace handoff template. Raw JSON
-stays in `.local/reward-runs/`; tracked handoffs contain only summaries and
-links to promoted evidence.
+Return the compact reward block in the final response or canonical current
+release state. Raw JSON stays in `.local/reward-runs/`; do not create tracked
+handoffs. Only reviewed, sanitized, export-eligible records may leave `.local/`.
 
 ## Export
 

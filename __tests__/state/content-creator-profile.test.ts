@@ -8,12 +8,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -51,32 +47,13 @@ import {
   ContentCreatorProfile,
 } from '../../src/state/content-creator-profile';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (
-    id INTEGER PRIMARY KEY,
-    filename TEXT UNIQUE,
-    applied_at TEXT DEFAULT (datetime('now'))
-  )`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch (err) {
-        // Some migrations have FK deps not relevant to this test; skip.
-      }
-    }
-  }
-}
 
 const USER_A = 1001;
 const USER_B = 1002;
 
 describe('content-creator-profile (CONTENT-UI-O1)', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {

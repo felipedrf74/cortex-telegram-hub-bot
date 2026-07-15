@@ -7,12 +7,9 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import { afterEach } from 'vitest';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -21,22 +18,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (filename TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-    }
-  }
-  // Migration 042 added FOREIGN KEY (user_id) REFERENCES users(id) on the
-  // unified_* tables. Tests insert with arbitrary user IDs (7, 11, 42, etc),
-  // so we pre-seed user rows here. AUTOINCREMENT means we explicitly assign
-  // both id and telegram_id (which is NOT NULL UNIQUE).
-  const seedUser = db.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
-  for (let i = 1; i <= 1000; i++) seedUser.run(i, i);
-}
 
 let testDb: Database.Database;
 const mockGoogleGetEvents = vi.fn().mockResolvedValue([]);
@@ -105,8 +86,9 @@ function makeTask(overrides: Partial<NormalizedTask> = {}): NormalizedTask {
 }
 
 beforeEach(() => {
-  testDb = createTestDb();
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
+  const seedUser = testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
+  for (let id = 1; id <= 1000; id += 1) seedUser.run(id, id);
   _resetContextCacheForTests();
   mockGoogleGetEvents.mockReset();
   mockOutlookGetEvents.mockReset();

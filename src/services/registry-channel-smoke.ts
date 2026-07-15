@@ -318,7 +318,7 @@ export function summarizeChannelHealth(
 
 /**
  * Markdown report for the smoke result. Designed to be emailed to the
- * operator or appended to a docs/release/eval-evidence/* file by the
+ * operator or appended to a .local/release/eval-evidence/* file by the
  * scheduled runner.
  */
 export function formatChannelSmokeMarkdown(result: ChannelSmokeResult): string {

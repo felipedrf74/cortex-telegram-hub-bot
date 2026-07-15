@@ -12,13 +12,12 @@
  */
 
 import express from 'express';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import http from 'http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 let flagState = true;
@@ -48,20 +47,6 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`,
-  );
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* skip deps */ }
-    }
-  }
-}
 
 import { mountCoachV2Routes } from '../../src/api/routes/training-coach-v2';
 import { _resetRateLimiterForTests } from '../../src/api/rate-limiter';
@@ -71,8 +56,7 @@ let baseUrl: string;
 
 beforeEach(async () => {
   _resetRateLimiterForTests();
-  testDb = new Database(':memory:');
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
   flagState = true;
   // Seed a plan + week.
   testDb.prepare(`

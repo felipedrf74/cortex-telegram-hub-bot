@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -45,18 +46,6 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* skip deps */ }
-    }
-  }
-}
 
 import {
   storeScript,
@@ -76,9 +65,7 @@ import { buildContentCreativeProfileContext } from '../../src/services/content-m
 
 describe('content-learning-store: script storage', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
@@ -205,9 +192,7 @@ describe('content-learning-store: script storage', () => {
 
 describe('content-learning-store: performance feedback', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
@@ -378,9 +363,7 @@ describe('content-learning-store: performance feedback', () => {
 
 describe('content-learning-store: learned patterns', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
@@ -543,9 +526,7 @@ describe('content-learning-store: learned patterns', () => {
 
 describe('content-learning-store: artifact chain', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
@@ -704,9 +685,7 @@ describe('content-learning-store: artifact chain', () => {
 
 describe('content-learning-store: voice agent access', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 

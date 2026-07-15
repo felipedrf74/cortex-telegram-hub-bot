@@ -1,16 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 //
-// Phase 13 batch 69 (2026-05-16): per-skill metadata merged into the
-// action registry's `SKILL_METADATA` table. This file now imports the
-// shared metadata for the 9 overlapping skills (everything except
-// 'owner_admin' and 'chat' — those stay inline because they're not
-// part of `ChatActionSkill`). The routing helpers (`inferSkillFromText`,
-// `inferIntent`, etc.) stay here because they consume the broader
-// `NexusChatOwnerSkill` type.
+// Stable UI metadata and legacy domain-owner routing are projected from
+// CapabilityManifest. Granular inference and executable policy stay here.
 
 import type { DomainName } from '../domains/types';
 import type { NexusChatActionability, NexusChatOwnerSkill, NexusChatRiskLevel } from './chat-answer-contract';
 import { SKILL_METADATA, type ChatActionSkill } from './chat/registry';
+import { getCapabilityChatRoutingOwnerMap, getCapabilityOwnerUiSkillMap } from './capability-manifest';
 
 export interface ChatSkillCapability {
   skill: NexusChatOwnerSkill;
@@ -35,28 +31,17 @@ export interface ChatSkillCapabilityResolution {
   involvedSkills: NexusChatOwnerSkill[];
 }
 
-// Phase 13 batch 69: maps `NexusChatOwnerSkill` ('secretary') to the
-// corresponding `ChatActionSkill` ('secretary_calendar') so we can pull
-// per-skill metadata from the action registry's SKILL_METADATA table.
-const SHARED_METADATA_SKILL: Partial<Record<NexusChatOwnerSkill, ChatActionSkill>> = {
-  secretary: 'secretary_calendar',
-  tasks: 'tasks',
-  training: 'training',
-  cooking: 'cooking',
-  finance: 'finance',
-  content: 'content',
-  decision_center: 'decision_center',
-  connections: 'connections',
-  notifications: 'notifications',
-};
+// Maps `NexusChatOwnerSkill` ('secretary') to the corresponding
+// `ChatActionSkill` ('secretary_calendar') for the shared UI metadata view.
+const SHARED_METADATA_SKILL = getCapabilityOwnerUiSkillMap() as Partial<Record<NexusChatOwnerSkill, ChatActionSkill>>;
 
 function metadataFor(skill: NexusChatOwnerSkill) {
   const mapped = SHARED_METADATA_SKILL[skill];
   return mapped ? SKILL_METADATA[mapped] : null;
 }
 
-// Phase 13 batch 69: capability rows now read displayName / responseCardType /
-// latencyBudgetMs / privacyPolicy from the shared SKILL_METADATA table.
+// Capability rows read displayName / responseCardType / latencyBudgetMs /
+// privacyPolicy from the CapabilityManifest-backed SKILL_METADATA projection.
 // Capability-specific fields (readableFacts, executableActions, requiredFields,
 // confirmationPolicy, verifier, fallbackPolicy) stay inline because they have
 // no per-action counterpart in the action registry.
@@ -167,13 +152,7 @@ const CAPABILITIES: ChatSkillCapability[] = [
   }),
 ];
 
-const SKILL_BY_DOMAIN: Partial<Record<DomainName, NexusChatOwnerSkill>> = {
-  secretary: 'secretary',
-  triathlon: 'training',
-  cooking: 'cooking',
-  finance: 'finance',
-  content: 'content',
-};
+const SKILL_BY_DOMAIN = getCapabilityChatRoutingOwnerMap() as Partial<Record<DomainName, NexusChatOwnerSkill>>;
 
 export function getChatSkillCapabilityRegistry(): ChatSkillCapability[] {
   return CAPABILITIES.map((capability) => ({ ...capability }));

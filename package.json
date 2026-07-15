@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.218",
+  "version": "4.14.220",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -10,8 +10,21 @@
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "vitest run",
+    "test:fast": "node scripts/run-test-tier.mjs fast",
+    "test:changed": "node scripts/run-test-tier.mjs changed",
+    "test:critical": "node scripts/run-test-tier.mjs critical",
+    "test:release": "scripts/release-test-gate.sh",
+    "test:full:sharded": "node scripts/run-test-tier.mjs full-sharded",
+    "test:evaluate": "node scripts/run-test-tier.mjs evaluate",
+    "test:profile": "node scripts/run-test-tier.mjs profile",
+    "test:benchmark": "node scripts/run-test-tier.mjs benchmark",
+    "test:inventory": "node scripts/test-inventory.mjs",
+    "test:migration-hook-lint": "node scripts/test-migration-hook-lint.mjs",
+    "test:mutation": "node scripts/mutation-gate.mjs",
+    "test:mutation:plan": "node scripts/mutation-gate.mjs --plan",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:coverage:changed": "node scripts/changed-coverage-gate.mjs",
     "test:ui": "vitest --ui",
     "eval:training": "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-training-eval-token-disabled} TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-1} npm run build && TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-training-eval-token-disabled} TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-1} node dist/tools/training-eval-harness.js",
     "eval:content": "npm run build && node dist/tools/content-evaluation-harness.js",
@@ -32,7 +45,9 @@
     "fiscal:vendors:audit": "node dist/tools/invoice-vendor-cleanup.js",
     "fiscal:vendors:repair": "node dist/tools/invoice-vendor-cleanup.js --apply",
     "fiscal:storage:backfill": "node dist/tools/invoice-object-storage-backfill.js",
-    "docs:audit": "node scripts/audit-docs.mjs",
+    "docs:audit": "node scripts/audit-docs.mjs --strict",
+    "project:map": "node scripts/generate-project-map.mjs",
+    "manifests:validate": "node scripts/validate-runtime-manifests.mjs",
     "reward:check": "node scripts/reward-check.mjs",
     "reward:check:json": "node scripts/reward-check.mjs --json",
     "reward:test": "vitest run __tests__/scripts/reward-check.test.ts __tests__/scripts/export-reward-dataset.test.ts",
@@ -63,6 +78,10 @@
     "lint": "npm run typecheck",
     "verify": "npm run typecheck && npm run science-policy:check && npm run test",
     "release:prep": "scripts/release-prep.sh",
+    "release:prepare": "scripts/release-operator.sh prepare",
+    "release:staging": "scripts/release-operator.sh staging",
+    "release:promote": "scripts/release-operator.sh promote",
+    "release:status": "scripts/release-operator.sh status",
     "release:focused-verify": "scripts/release-focused-verify.sh",
     "release:verify": "scripts/release-focused-verify.sh",
     "release:verify:full": "scripts/release-verify.sh",
@@ -91,7 +110,7 @@
   "license": "MIT",
   "type": "commonjs",
   "engines": {
-    "node": ">=20 <26",
+    "node": ">=22.23.0 <22.24.0",
     "npm": ">=10"
   },
   "overrides": {
@@ -99,7 +118,8 @@
     "@opentelemetry/resources": "2.9.0",
     "@opentelemetry/sdk-trace-base": "2.9.0",
     "form-data": "4.0.6",
-    "protobufjs": "7.6.5"
+    "protobufjs": "7.6.5",
+    "qs": "6.15.3"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -132,12 +152,14 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "9.6.1",
+    "@stryker-mutator/vitest-runner": "9.6.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/luxon": "^3.7.1",
-    "@types/node": "^25.3.3",
+    "@types/node": "^22.20.1",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.8",
     "@vitest/ui": "^4.1.8",

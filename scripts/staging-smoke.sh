@@ -49,13 +49,13 @@ FAILED_TESTS=()
 # ── Smoke-evidence JSON (release-pipeline-risk-based-optimization, 2026-05-03)
 # Every check result also goes into an in-memory array so we can emit a
 # single JSON evidence file at the end. The file is written under
-# docs/release/smoke-evidence/ (mkdir-p safe) and named with the deployed
+# .local/release/smoke-evidence/ (mkdir-p safe) and named with the deployed
 # SHA + UTC timestamp so promote-to-prod.sh and audits can read it
 # instead of re-running this script. Disable with NEXUS_SMOKE_EVIDENCE=0.
 EVIDENCE_RESULTS=()
 EVIDENCE_ENABLED="${NEXUS_SMOKE_EVIDENCE:-1}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+EVIDENCE_DIR="$LOCAL_DIR/.local/release/smoke-evidence"
 SMOKE_START_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SMOKE_HEAD_SHA="$(cd "$LOCAL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 SMOKE_BRANCH="$(cd "$LOCAL_DIR" && git branch --show-current 2>/dev/null || echo unknown)"

@@ -14,6 +14,12 @@ export type SignalPriority = 'urgent' | 'normal' | 'background';
 export type SignalStatus = 'active' | 'consumed' | 'dismissed' | 'expired';
 export type MeshPriority = 1 | 2 | 3 | 4;
 
+export interface SignalProvenance {
+  producerVersion: string;
+  source: 'runtime' | 'user-feedback' | 'measured-outcome' | 'trusted-external' | 'human-approved';
+  observedAt: string;
+}
+
 export type SignalType =
   // ─── Content mesh signals (GLOBAL — user_id IS NULL) ──────────────
   | 'hook_effectiveness'
@@ -23,6 +29,7 @@ export type SignalType =
   // creator's phrasing and edits are private behavioral data.
   | 'voice_pattern'
   | 'voice_phrase_trend'
+  | 'voice_analysis_fingerprint'
   | 'channel_dna'
   | 'book_knowledge'
   | 'book_reference_effective'
@@ -132,6 +139,8 @@ export interface AgentSignal {
   pillar_tag: string | null;
   /** How many observations/data points back this signal. (Migration 060) */
   evidence_count: number;
+  /** Producer identity and evidence origin, persisted with the payload. */
+  provenance?: SignalProvenance;
   /** Stage 2 mesh coordination priority. Optional for backward compatibility. */
   meshPriority?: MeshPriority;
 }
@@ -175,6 +184,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   retention_pattern: 60 * 24,
   voice_pattern: 90 * 24,           // 90 days
   voice_phrase_trend: 90 * 24,
+  voice_analysis_fingerprint: 370 * 24,
   channel_dna: 30 * 24,             // 30 days
   book_knowledge: 365 * 24 * 10,    // effectively never
   book_reference_effective: 60 * 24,
@@ -428,6 +438,8 @@ export function writeSignal(signal: {
   /** Number of observations backing this signal. Default 1. */
   evidence_count?: number;
   meshPriority?: MeshPriority;
+  /** Versioned producer and evidence origin. Legacy callers receive an explicit legacy marker. */
+  provenance?: SignalProvenance;
 }): number {
   const d = db();
   if (!d) return -1;
@@ -485,6 +497,12 @@ export function writeSignal(signal: {
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
     const normalizedUserId = requiresUserScope ? scopedUserId! : null;
     const normalizedTenantId = hasTenantColumn ? (scopedTenantId ?? null) : undefined;
+    const provenance: SignalProvenance = signal.provenance ?? {
+      producerVersion: 'legacy-unknown',
+      source: 'runtime',
+      observedAt: new Date().toISOString(),
+    };
+    const persistedPayload = { ...signal.payload, _signalProvenance: provenance };
 
     const result = hasTenantColumn ? d.prepare(`
       INSERT INTO agent_signals
@@ -494,7 +512,7 @@ export function writeSignal(signal: {
     `).run(
       signal.source_agent,
       signal.signal_type,
-      JSON.stringify(signal.payload),
+      JSON.stringify(persistedPayload),
       priority,
       expires_at,
       normalizedTenantId,
@@ -512,7 +530,7 @@ export function writeSignal(signal: {
     `).run(
       signal.source_agent,
       signal.signal_type,
-      JSON.stringify(signal.payload),
+      JSON.stringify(persistedPayload),
       priority,
       expires_at,
       normalizedUserId,
@@ -816,11 +834,13 @@ export function logAgentRun(
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function parseSignalRow(row: any): AgentSignal {
+  const storedPayload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+  const { _signalProvenance, ...payload } = storedPayload ?? {};
   return {
     id: row.id,
     source_agent: row.source_agent,
     signal_type: row.signal_type,
-    payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload,
+    payload,
     priority: row.priority,
     consumed_by: typeof row.consumed_by === 'string' ? JSON.parse(row.consumed_by) : row.consumed_by,
     status: row.status,
@@ -832,6 +852,11 @@ function parseSignalRow(row: any): AgentSignal {
     format_tag: row.format_tag ?? null,
     pillar_tag: row.pillar_tag ?? null,
     evidence_count: row.evidence_count ?? 1,
+    provenance: _signalProvenance ?? {
+      producerVersion: 'legacy-unknown',
+      source: 'runtime',
+      observedAt: row.created_at,
+    },
     meshPriority: row.mesh_priority ?? undefined,
   };
 }

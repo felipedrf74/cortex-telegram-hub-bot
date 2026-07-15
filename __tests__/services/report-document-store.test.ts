@@ -12,11 +12,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({ getDb: () => testDb,
@@ -46,18 +46,6 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   userHasActivePushDeviceToken: () => hasActivePushDeviceToken,
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* skip deps */ }
-    }
-  }
-}
 
 import {
   storeReport, storeAndPushReport, getRecentReports, getReportById, getLatestByType,
@@ -72,9 +60,7 @@ import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../.
 
 describe('report-document-store: creation', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
@@ -156,7 +142,7 @@ describe('report-document-store: creation', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: retrieval', () => {
-  beforeEach(() => { testDb = new Database(':memory:'); testDb.pragma('journal_mode = WAL'); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => testDb?.close());
 
   it('filters by type', () => {
@@ -207,9 +193,7 @@ describe('report-document-store: retrieval', () => {
 
 describe('report-document-store: read lifecycle', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
@@ -253,7 +237,7 @@ describe('report-document-store: read lifecycle', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: user scoping', () => {
-  beforeEach(() => { testDb = new Database(':memory:'); testDb.pragma('journal_mode = WAL'); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => testDb?.close());
 
   it('users only see their own reports', () => {
@@ -271,9 +255,7 @@ describe('report-document-store: user scoping', () => {
 
 describe('report-document-store: push preferences', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
@@ -347,7 +329,7 @@ describe('report-document-store: push preferences', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: admin view', () => {
-  beforeEach(() => { testDb = new Database(':memory:'); testDb.pragma('journal_mode = WAL'); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => testDb?.close());
 
   it('getAllReports returns all users', () => {
@@ -363,9 +345,7 @@ describe('report-document-store: admin view', () => {
 
 describe('report-document-store: storeAndPushReport device-token gate', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     clearTenantScopeAnomaliesForTests();
     mockCreateNotificationIntent.mockClear();
     hasActivePushDeviceToken = false;

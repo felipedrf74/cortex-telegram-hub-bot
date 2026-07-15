@@ -28,7 +28,7 @@ describe('privileged GitHub workflow action pinning', () => {
     expect(mutableReferences).toEqual([]);
   });
 
-  it('keeps release evidence generation alive for failed RC gates', () => {
+  it('binds RC gate results to one immutable ReleaseManifestV2 artifact', () => {
     const workflow = fs.readFileSync(
       path.join(repoRoot, '.github/workflows/release-candidate-evidence.yml'),
       'utf8',
@@ -36,15 +36,27 @@ describe('privileged GitHub workflow action pinning', () => {
     const releaseEvidenceJob = workflow.match(/  release-evidence:\n(?<body>[\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|$)/)?.groups?.body || '';
 
     expect(releaseEvidenceJob).toContain('needs: [vitest-full, python-full]');
-    expect(releaseEvidenceJob).toMatch(/\n    if: always\(\)/);
-    expect(releaseEvidenceJob).toContain('mkdir -p rc-test-results');
+    expect(releaseEvidenceJob).toContain('if: ${{ always() }}');
+    expect(releaseEvidenceJob).toContain('mkdir -p .local/release/rc-test-results');
     expect(releaseEvidenceJob.match(/continue-on-error: true/g)?.length).toBeGreaterThanOrEqual(2);
     expect(releaseEvidenceJob).toContain("fs.existsSync(resultDir)");
     expect(releaseEvidenceJob).toContain('id: sandbox_smoke');
     expect(releaseEvidenceJob).toContain("NEXUS_RELEASE_VERDICT:");
     expect(releaseEvidenceJob).toContain("needs.vitest-full.result == 'success'");
     expect(releaseEvidenceJob).toContain("steps.sandbox_smoke.outcome == 'success'");
-    expect(releaseEvidenceJob).toContain('NEXUS_RELEASE_SMOKE_RESULT: ${{ steps.sandbox_smoke.outcome }}');
-    expect(releaseEvidenceJob).toContain('release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json');
+    expect(releaseEvidenceJob).toContain('node scripts/release-bundle.mjs');
+    expect(releaseEvidenceJob).toContain('node scripts/release-manifest-v2.mjs write');
+    expect(releaseEvidenceJob).toContain('node scripts/release-manifest-v2.mjs validate-payload');
+    expect(releaseEvidenceJob).toContain('release-candidate-v2-${{ github.sha }}');
+    expect(releaseEvidenceJob).not.toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
+
+    const signer = fs.readFileSync(
+      path.join(repoRoot, '.github/workflows/sign-release-manifest.yml'),
+      'utf8',
+    );
+    expect(signer).toContain('environment: release-signing');
+    expect(signer).toContain('ref: refs/heads/main');
+    expect(signer).toContain('node trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest');
+    expect(signer).toContain('release-manifest-v2-${{ env.RUNTIME_SHA }}');
   });
 });

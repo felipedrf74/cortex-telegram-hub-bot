@@ -17,12 +17,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -44,16 +40,6 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file)) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 import {
   startOrResume,
@@ -68,9 +54,7 @@ const USER = 9001;
 
 describe('onboarding idempotent answer (stepIndex concurrency)', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   it('advances normally when the client sends the server\'s current step', () => {
@@ -118,9 +102,7 @@ describe('onboarding idempotent answer (stepIndex concurrency)', () => {
 
 describe('onboarding completion is transactional', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   it('writes the profile atomically with the final session UPDATE', () => {
@@ -195,9 +177,7 @@ describe('onboarding completion is transactional', () => {
 
 describe('onboarding self-heals orphan completed sessions', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   it('re-saves the profile row when re-entering a completed session whose profile was lost', () => {

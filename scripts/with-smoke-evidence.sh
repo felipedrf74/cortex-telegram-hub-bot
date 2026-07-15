@@ -17,7 +17,7 @@
 #      and a tee buffer.
 #   2. Captures exit code.
 #   3. Writes a JSON evidence file to:
-#        engine/docs/release/smoke-evidence/<smoke-name>-<sha>-<utc>.json
+#        engine/.local/release/smoke-evidence/<smoke-name>-<sha>-<utc>.json
 #      Schema:
 #        {
 #          version, smokeName, runStartedAt, runCompletedAt,
@@ -47,7 +47,7 @@ SMOKE_NAME="$1"
 shift
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+EVIDENCE_DIR="$LOCAL_DIR/.local/release/smoke-evidence"
 EVIDENCE_ENABLED="${NEXUS_SMOKE_EVIDENCE:-1}"
 
 START_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

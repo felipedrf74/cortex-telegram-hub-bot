@@ -13,7 +13,12 @@ import { projectSummaryReadModelsForUser } from './app-summary-read-models';
 import { recordProductDecision } from './product-decision-log';
 import { syncContentTopicSecretaryArtifactsById } from './content-topic-secretary-sync';
 import { releaseDueNotificationDeliveries } from './notification-orchestrator';
+import { recordTrainingLearningObservation } from './product-learning';
 import { logger } from '../utils/logger';
+import {
+  assertAgentEventHandlerRuntimeParity,
+  assertAgentQueuedJobHandlerRuntimeParity,
+} from './agent-job-manifest';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
   'auth.user.logged_in',
@@ -39,11 +44,81 @@ const PROJECTABLE_EVENT_TYPES = new Set([
   'notification.item.updated',
 ]);
 
+// Direct effects run inside the event lease instead of creating a second
+// background_jobs row. Keep this compact registration aligned with
+// AgentJobManifest so new direct side effects cannot bypass governance.
+export const DEFAULT_EVENT_DIRECT_EFFECTS = [
+  {
+    eventType: 'training.plan_revision.activated.v1',
+    effect: 'record_training_learning_observation',
+  },
+  {
+    eventType: 'training.adaptation.rejected.v1',
+    effect: 'record_training_learning_observation',
+  },
+] as const;
+
+function normalizeEventCreatedAtUtc(value: string): string {
+  const trimmed = value.trim();
+  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}Z`
+    : trimmed;
+  const parsed = Date.parse(normalized);
+  if (!Number.isFinite(parsed)) {
+    throw new Error('training learning event requires a valid created_at timestamp');
+  }
+  return new Date(parsed).toISOString();
+}
+
 export const defaultEventHandlers: EventHandler[] = [
   {
     eventType: '*',
     handle(event) {
       if (!event.userId) return;
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[0].eventType
+          && event.sourceSkill === 'training'
+          && event.payload?.action === 'ADAPT') {
+        const contentHash = event.payload.contentHash;
+        if (typeof contentHash !== 'string' || !/^[a-f0-9]{64}$/.test(contentHash)) {
+          throw new Error('training adaptation learning event requires a sha256 content hash');
+        }
+        const observedAt = normalizeEventCreatedAtUtc(event.createdAt);
+        recordTrainingLearningObservation({
+          id: `training-adaptation-accepted-${event.eventId}`,
+          tenantId: event.tenantId,
+          userId: event.userId,
+          kind: 'adaptation_accepted',
+          outcomeCode: 'user_approved',
+          expectedContractId: 'training.adaptation.activation.v1',
+          evidenceReferences: [`event://training/plan-revision/${event.eventId}`],
+          producerVersion: event.schemaVersion,
+          confidence: 1,
+          observedAt,
+          subjectFingerprint: contentHash,
+        });
+      }
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[1].eventType
+          && event.sourceSkill === 'training'
+          && event.payload?.action === 'REJECT') {
+        const materialFingerprint = event.payload.materialFingerprint;
+        if (typeof materialFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(materialFingerprint)) {
+          throw new Error('training adaptation rejection learning event requires a sha256 material fingerprint');
+        }
+        const observedAt = normalizeEventCreatedAtUtc(event.createdAt);
+        recordTrainingLearningObservation({
+          id: `training-adaptation-rejected-${event.eventId}`,
+          tenantId: event.tenantId,
+          userId: event.userId,
+          kind: 'adaptation_rejected',
+          outcomeCode: 'user_rejected',
+          expectedContractId: 'training.adaptation.rejection.v1',
+          evidenceReferences: [`event://training/adaptation/${event.eventId}`],
+          producerVersion: event.schemaVersion,
+          confidence: 1,
+          observedAt,
+          subjectFingerprint: materialFingerprint,
+        });
+      }
       if (PROJECTABLE_EVENT_TYPES.has(event.eventType)) {
         enqueueJob({
           tenantId: event.tenantId,
@@ -188,6 +263,11 @@ export async function runEventBackboneOnce(opts: {
   events: Awaited<ReturnType<typeof processPendingEvents>>;
   jobs: Awaited<ReturnType<typeof processPendingJobs>>;
 }> {
+  // Handler arrays are executable runtime registries. Refuse to consume a
+  // queue when a handler is added, removed, renamed, or changes idempotency
+  // without regenerating and reviewing AgentJobManifest policy.
+  assertAgentEventHandlerRuntimeParity(defaultEventHandlers, 'event-backbone-default', DEFAULT_EVENT_DIRECT_EFFECTS);
+  assertAgentQueuedJobHandlerRuntimeParity(defaultJobHandlers, 'event-backbone-default');
   if (opts.disabled || process.env.EVENT_BACKBONE_WORKER_DISABLED === '1') {
     return {
       events: { processed: 0, failed: 0, deadLetter: 0 },

@@ -1,12 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import express from 'express';
-import fs from 'fs';
 import http from 'http';
-import path from 'path';
 import type { AddressInfo } from 'net';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 
@@ -61,20 +58,6 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { registerPortalAdminDataRoutes } from '../../src/portal/admin-data-routes';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some unrelated migrations require tables not present in this harness.
-      }
-    }
-  }
-}
 
 function seedTenantRows(): void {
   // Seed the users table so the admin target-user guard (Gap 5) can resolve
@@ -133,8 +116,7 @@ async function withServer<T>(
 
 describe('Portal admin data route tenant isolation', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     seedTenantRows();
   });
 

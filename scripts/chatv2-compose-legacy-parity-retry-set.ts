@@ -47,7 +47,7 @@ type SourceArtifact = {
 };
 
 const sourcePaths = parseListArg('--sources');
-const outPath = path.resolve(readArg('--out') ?? 'docs/release/eval-evidence/chatv2-legacy-parity-observations-composed.ndjson');
+const outPath = path.resolve(readArg('--out') ?? '.local/release/eval-evidence/chatv2-legacy-parity-observations-composed.ndjson');
 const minSamplesPerRoute = parsePositiveInt(readArg('--min-samples-per-route')) ?? 50;
 
 if (sourcePaths.length < 2) {

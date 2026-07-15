@@ -1,373 +1,331 @@
 /**
- * Usage Metering Service Tests
+ * Usage metering service contracts.
  *
- * Tests that:
- * - Recording usage creates/updates daily aggregate rows (UPSERT)
- * - Querying daily usage returns correct aggregates
- * - Range queries return multiple days
- * - Global daily usage aggregates across users
- * - Quota management (set, get, check)
- * - Quota enforcement correctly identifies exceeded limits
+ * This is the primary suite for the usage_metering and usage_quotas schema.
+ * Cross-module provider attribution belongs to each provider's behavior suite;
+ * this file verifies the durable database and service behavior once.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from 'vitest';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+import type { PortalSnapshotResponse } from '../../src/portal/snapshot-builder';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
-// ── Test helpers ────────────────────────────────────────────────────
+let db: Database.Database;
 
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
+vi.mock('../../src/services/database', () => ({
+  getDb: () => db,
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+}));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
+vi.mock('../../src/utils/logger', () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: [],
+}));
+
+import {
+  checkQuota,
+  getDailyUsage,
+  getGlobalDailyUsage,
+  getQuota,
+  getUsageRange,
+  recordUsage,
+  setQuota,
+} from '../../src/services/usage-metering';
+
+beforeAll(() => {
+  db = createMigratedTestDatabase();
+});
+
+beforeEach(() => {
+  db.exec('SAVEPOINT usage_metering_case');
+});
+
+afterEach(() => {
+  db.exec('ROLLBACK TO usage_metering_case');
+  db.exec('RELEASE usage_metering_case');
+});
+
+afterAll(() => {
+  db.close();
+});
+
+describe('Usage metering schema', () => {
+  it('exposes the required aggregate columns, types, defaults, and lookup indexes', () => {
+    const meteringColumns = db.prepare("PRAGMA table_info('usage_metering')").all() as Array<{
+      name: string;
+      type: string;
+      dflt_value: string | null;
+    }>;
+    const quotaColumns = db.prepare("PRAGMA table_info('usage_quotas')").all() as Array<{
+      name: string;
+      dflt_value: string | null;
+    }>;
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'usage_metering'",
+    ).all() as Array<{ name: string }>;
+
+    expect(meteringColumns.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      'id',
+      'user_id',
+      'date',
+      'message_count',
+      'input_tokens',
+      'output_tokens',
+      'total_tokens',
+      'api_calls',
+      'cost_usd',
+      'created_at',
+      'updated_at',
+    ]));
+    expect(meteringColumns.find(({ name }) => name === 'cost_usd')?.type).toBe('REAL');
+    for (const name of ['message_count', 'input_tokens', 'output_tokens', 'total_tokens', 'api_calls', 'cost_usd']) {
+      expect(meteringColumns.find((column) => column.name === name)?.dflt_value).toBe('0');
+    }
+    expect(quotaColumns.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      'user_id',
+      'daily_message_limit',
+      'daily_token_limit',
+      'daily_cost_limit_usd',
+    ]));
+    for (const name of ['daily_message_limit', 'daily_token_limit', 'daily_cost_limit_usd']) {
+      expect(quotaColumns.find((column) => column.name === name)?.dflt_value).toBeNull();
+    }
+    expect(indexes.map(({ name }) => name)).toEqual(expect.arrayContaining([
+      'idx_usage_metering_date',
+      'idx_usage_metering_user_date',
+    ]));
+  });
+
+  it('enforces one daily aggregate and one quota row per user while allowing different dates', () => {
+    const insertUsage = db.prepare(
+      'INSERT INTO usage_metering (user_id, date) VALUES (?, ?)',
     );
-  `);
+    insertUsage.run(123, '2026-04-01');
+    expect(() => insertUsage.run(123, '2026-04-01')).toThrow();
+    insertUsage.run(123, '2026-04-02');
+    expect(db.prepare('SELECT id FROM usage_metering WHERE user_id = 123').all()).toHaveLength(2);
 
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// MIGRATION TESTS
-// ═══════════════════════════════════════════════════════════════════
-
-describe('Usage Metering Migration', () => {
-  let db: Database.Database;
-
-  beforeEach(() => { db = createTestDb(); });
-  afterEach(() => { db.close(); });
-
-  it('creates usage_metering table', () => {
-    applyMigrations(db);
-    const table = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='usage_metering'"
-    ).get();
-    expect(table).toBeTruthy();
-  });
-
-  it('creates usage_quotas table', () => {
-    applyMigrations(db);
-    const table = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='usage_quotas'"
-    ).get();
-    expect(table).toBeTruthy();
-  });
-
-  it('creates unique index on (user_id, date)', () => {
-    applyMigrations(db);
-    const idx = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_usage_metering_user_date'"
-    ).get();
-    expect(idx).toBeTruthy();
-  });
-
-  it('enforces unique constraint on user_id+date', () => {
-    applyMigrations(db);
-    db.prepare(
-      'INSERT INTO usage_metering (user_id, date, message_count, input_tokens, output_tokens, total_tokens, api_calls, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(123, '2026-04-01', 1, 100, 50, 150, 1, 0.001);
-
-    expect(() => {
-      db.prepare(
-        'INSERT INTO usage_metering (user_id, date, message_count, input_tokens, output_tokens, total_tokens, api_calls, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(123, '2026-04-01', 1, 100, 50, 150, 1, 0.001);
-    }).toThrow();
-  });
-
-  it('allows same user on different dates', () => {
-    applyMigrations(db);
-    db.prepare(
-      'INSERT INTO usage_metering (user_id, date) VALUES (?, ?)'
-    ).run(123, '2026-04-01');
-    db.prepare(
-      'INSERT INTO usage_metering (user_id, date) VALUES (?, ?)'
-    ).run(123, '2026-04-02');
-
-    const rows = db.prepare('SELECT * FROM usage_metering WHERE user_id = 123').all();
-    expect(rows).toHaveLength(2);
-  });
-
-  it('enforces unique user_id in usage_quotas', () => {
-    applyMigrations(db);
-    db.prepare('INSERT INTO usage_quotas (user_id, daily_message_limit) VALUES (?, ?)').run(123, 100);
-
-    expect(() => {
-      db.prepare('INSERT INTO usage_quotas (user_id, daily_message_limit) VALUES (?, ?)').run(123, 200);
-    }).toThrow();
+    const insertQuota = db.prepare(
+      'INSERT INTO usage_quotas (user_id, daily_message_limit) VALUES (?, ?)',
+    );
+    insertQuota.run(123, 100);
+    expect(() => insertQuota.run(123, 200)).toThrow();
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-// SERVICE TESTS
-// ═══════════════════════════════════════════════════════════════════
+describe('Usage metering service', () => {
+  it('atomically accumulates calls, messages, tokens, and cost', () => {
+    recordUsage(101, 500, 200, 0.005, true);
+    recordUsage(101, 300, 100, 0.003, false);
 
-describe('Usage Metering Service', () => {
-  let db: Database.Database;
-
-  beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
-
-    // Mock getDb() to return our in-memory database
-    vi.doMock('../../src/services/database', () => ({
-      getDb: () => db,
-    }));
-    vi.doMock('../../src/utils/logger', () => ({
-      logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
-    }));
-  });
-
-  afterEach(() => {
-    db.close();
-    vi.restoreAllMocks();
-    vi.resetModules();
-  });
-
-  async function loadService() {
-    return await import('../../src/services/usage-metering');
-  }
-
-  describe('recordUsage', () => {
-    it('creates a new row for first call', async () => {
-      const { recordUsage, getDailyUsage } = await loadService();
-
-      recordUsage(123, 500, 200, 0.005, true);
-
-      const usage = getDailyUsage(123);
-      expect(usage.messageCount).toBe(1);
-      expect(usage.inputTokens).toBe(500);
-      expect(usage.outputTokens).toBe(200);
-      expect(usage.totalTokens).toBe(700);
-      expect(usage.apiCalls).toBe(1);
-      expect(usage.costUsd).toBeCloseTo(0.005);
-    });
-
-    it('increments existing row on subsequent calls (UPSERT)', async () => {
-      const { recordUsage, getDailyUsage } = await loadService();
-
-      recordUsage(123, 500, 200, 0.005, true);
-      recordUsage(123, 300, 100, 0.003, false);
-
-      const usage = getDailyUsage(123);
-      expect(usage.messageCount).toBe(1); // only first was isUserMessage
-      expect(usage.inputTokens).toBe(800);
-      expect(usage.outputTokens).toBe(300);
-      expect(usage.totalTokens).toBe(1100);
-      expect(usage.apiCalls).toBe(2);
-      expect(usage.costUsd).toBeCloseTo(0.008);
-    });
-
-    it('tracks separate rows for different users', async () => {
-      const { recordUsage, getDailyUsage } = await loadService();
-
-      recordUsage(123, 500, 200, 0.005, true);
-      recordUsage(456, 300, 100, 0.003, true);
-
-      const u1 = getDailyUsage(123);
-      const u2 = getDailyUsage(456);
-      expect(u1.inputTokens).toBe(500);
-      expect(u2.inputTokens).toBe(300);
-    });
-
-    it('uses userId 0 for system calls', async () => {
-      const { recordUsage, getDailyUsage } = await loadService();
-
-      recordUsage(0, 1000, 500, 0.01, false);
-
-      const usage = getDailyUsage(0);
-      expect(usage.apiCalls).toBe(1);
-      expect(usage.messageCount).toBe(0);
+    expect(getDailyUsage(101)).toMatchObject({
+      userId: 101,
+      messageCount: 1,
+      inputTokens: 800,
+      outputTokens: 300,
+      totalTokens: 1100,
+      apiCalls: 2,
+      costUsd: 0.008,
     });
   });
 
-  describe('getDailyUsage', () => {
-    it('returns zeros for user with no usage', async () => {
-      const { getDailyUsage } = await loadService();
+  it('accepts zero and large token counts without losing precision', () => {
+    recordUsage(102, 0, 0, 0, true);
+    recordUsage(103, 100_000, 50_000, 1.5, true);
 
-      const usage = getDailyUsage(999);
-      expect(usage.messageCount).toBe(0);
-      expect(usage.inputTokens).toBe(0);
-      expect(usage.totalTokens).toBe(0);
-      expect(usage.apiCalls).toBe(0);
-      expect(usage.costUsd).toBe(0);
-    });
-
-    it('returns correct data for specific date', async () => {
-      const { getDailyUsage } = await loadService();
-
-      // Insert directly for a specific past date
-      db.prepare(`
-        INSERT INTO usage_metering (user_id, date, message_count, input_tokens, output_tokens, total_tokens, api_calls, cost_usd)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(123, '2026-03-15', 5, 2000, 800, 2800, 10, 0.05);
-
-      const usage = getDailyUsage(123, '2026-03-15');
-      expect(usage.messageCount).toBe(5);
-      expect(usage.totalTokens).toBe(2800);
-      expect(usage.date).toBe('2026-03-15');
+    expect(getDailyUsage(102)).toMatchObject({ messageCount: 1, totalTokens: 0, apiCalls: 1 });
+    expect(getDailyUsage(103)).toMatchObject({
+      inputTokens: 100_000,
+      outputTokens: 50_000,
+      totalTokens: 150_000,
+      costUsd: 1.5,
     });
   });
 
-  describe('getUsageRange', () => {
-    it('returns usage for date range', async () => {
-      const { getUsageRange } = await loadService();
+  it('isolates user and system-owned aggregates', () => {
+    recordUsage(0, 1_000, 500, 0.01, false);
+    recordUsage(104, 100, 50, 0.001, true);
+    recordUsage(105, 200, 100, 0.002, true);
 
-      db.prepare(`INSERT INTO usage_metering (user_id, date, message_count, total_tokens, api_calls, cost_usd) VALUES (?, ?, ?, ?, ?, ?)`).run(123, '2026-03-01', 3, 1000, 5, 0.01);
-      db.prepare(`INSERT INTO usage_metering (user_id, date, message_count, total_tokens, api_calls, cost_usd) VALUES (?, ?, ?, ?, ?, ?)`).run(123, '2026-03-02', 5, 2000, 8, 0.02);
-      db.prepare(`INSERT INTO usage_metering (user_id, date, message_count, total_tokens, api_calls, cost_usd) VALUES (?, ?, ?, ?, ?, ?)`).run(123, '2026-03-03', 2, 500, 3, 0.005);
+    expect(getDailyUsage(0)).toMatchObject({ userId: 0, messageCount: 0, apiCalls: 1 });
+    expect(getDailyUsage(104)).toMatchObject({ inputTokens: 100, apiCalls: 1 });
+    expect(getDailyUsage(105)).toMatchObject({ inputTokens: 200, apiCalls: 1 });
+  });
 
-      const range = getUsageRange(123, '2026-03-01', '2026-03-03');
-      expect(range).toHaveLength(3);
-      expect(range[0].date).toBe('2026-03-01');
-      expect(range[2].date).toBe('2026-03-03');
-    });
-
-    it('returns empty array for date range with no data', async () => {
-      const { getUsageRange } = await loadService();
-      const range = getUsageRange(123, '2026-01-01', '2026-01-31');
-      expect(range).toHaveLength(0);
+  it('returns a complete zero record for a user with no usage', () => {
+    expect(getDailyUsage(999_999, '2026-01-01')).toEqual({
+      userId: 999_999,
+      date: '2026-01-01',
+      messageCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      apiCalls: 0,
+      costUsd: 0,
     });
   });
 
-  describe('getGlobalDailyUsage', () => {
-    it('aggregates across all users', async () => {
-      const { recordUsage, getGlobalDailyUsage } = await loadService();
+  it('returns only the requested user and inclusive date range in date order', () => {
+    const insert = db.prepare(
+      'INSERT INTO usage_metering (user_id, date, api_calls) VALUES (?, ?, ?)',
+    );
+    insert.run(106, '2026-03-01', 1);
+    insert.run(106, '2026-03-15', 5);
+    insert.run(106, '2026-03-31', 1);
+    insert.run(107, '2026-03-15', 9);
 
-      recordUsage(123, 500, 200, 0.005, true);
-      recordUsage(456, 300, 100, 0.003, true);
+    const range = getUsageRange(106, '2026-03-10', '2026-03-20');
+    expect(range).toEqual([
+      expect.objectContaining({ userId: 106, date: '2026-03-15', apiCalls: 5 }),
+    ]);
+    expect(getUsageRange(106, '2026-01-01', '2026-01-31')).toEqual([]);
+  });
 
-      const global = getGlobalDailyUsage();
-      expect(global.messageCount).toBe(2);
-      expect(global.inputTokens).toBe(800);
-      expect(global.outputTokens).toBe(300);
-      expect(global.apiCalls).toBe(2);
-      expect(global.costUsd).toBeCloseTo(0.008);
+  it('aggregates the requested day across users and returns zeros for an empty day', () => {
+    const insert = db.prepare(`
+      INSERT INTO usage_metering
+        (user_id, date, message_count, input_tokens, output_tokens, total_tokens, api_calls, cost_usd)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run(108, '2026-03-15', 1, 100, 50, 150, 1, 0.001);
+    insert.run(109, '2026-03-15', 2, 200, 100, 300, 2, 0.002);
+
+    expect(getGlobalDailyUsage('2026-03-15')).toEqual({
+      date: '2026-03-15',
+      messageCount: 3,
+      inputTokens: 300,
+      outputTokens: 150,
+      totalTokens: 450,
+      apiCalls: 3,
+      costUsd: 0.003,
     });
+    expect(getGlobalDailyUsage('2026-01-01')).toMatchObject({
+      messageCount: 0,
+      totalTokens: 0,
+      apiCalls: 0,
+      costUsd: 0,
+    });
+  });
+});
 
-    it('returns zeros when no data exists', async () => {
-      const { getGlobalDailyUsage } = await loadService();
-      const global = getGlobalDailyUsage('2026-01-01');
-      expect(global.messageCount).toBe(0);
-      expect(global.apiCalls).toBe(0);
+describe('Usage quota behavior', () => {
+  it('creates and updates quota limits without changing omitted limits', () => {
+    expect(getQuota(201)).toBeNull();
+
+    setQuota(201, {
+      dailyMessageLimit: 100,
+      dailyTokenLimit: 500_000,
+      dailyCostLimitUsd: 5,
+    });
+    setQuota(201, { dailyMessageLimit: 200 });
+
+    expect(getQuota(201)).toEqual({
+      userId: 201,
+      dailyMessageLimit: 200,
+      dailyTokenLimit: 500_000,
+      dailyCostLimitUsd: 5,
     });
   });
 
-  describe('Quota Management', () => {
-    it('returns null for user with no quota', async () => {
-      const { getQuota } = await loadService();
-      expect(getQuota(123)).toBeNull();
-    });
+  it('treats missing and all-null quota limits as unlimited', () => {
+    recordUsage(202, 100, 50, 0.001, true);
+    expect(checkQuota(202)).toMatchObject({ allowed: true, quota: null, exceeded: [] });
 
-    it('sets and retrieves a quota', async () => {
-      const { setQuota, getQuota } = await loadService();
-
-      setQuota(123, { dailyMessageLimit: 100, dailyTokenLimit: 500000, dailyCostLimitUsd: 5.0 });
-
-      const q = getQuota(123);
-      expect(q).not.toBeNull();
-      expect(q!.dailyMessageLimit).toBe(100);
-      expect(q!.dailyTokenLimit).toBe(500000);
-      expect(q!.dailyCostLimitUsd).toBe(5.0);
-    });
-
-    it('updates an existing quota', async () => {
-      const { setQuota, getQuota } = await loadService();
-
-      setQuota(123, { dailyMessageLimit: 100 });
-      setQuota(123, { dailyMessageLimit: 200 });
-
-      const q = getQuota(123);
-      expect(q!.dailyMessageLimit).toBe(200);
-    });
+    setQuota(203, {});
+    recordUsage(203, 999_999, 999_999, 999, true);
+    expect(checkQuota(203)).toMatchObject({ allowed: true, exceeded: [] });
   });
 
-  describe('checkQuota', () => {
-    it('allows usage when no quota is set', async () => {
-      const { recordUsage, checkQuota } = await loadService();
+  it.each([
+    {
+      name: 'message',
+      userId: 204,
+      limits: { dailyMessageLimit: 2 },
+      calls: [[100, 50, 0.001, true], [100, 50, 0.001, true]] as const,
+      exceeded: ['messages'],
+    },
+    {
+      name: 'token',
+      userId: 205,
+      limits: { dailyTokenLimit: 500 },
+      calls: [[300, 250, 0.005, true]] as const,
+      exceeded: ['tokens'],
+    },
+    {
+      name: 'cost',
+      userId: 206,
+      limits: { dailyCostLimitUsd: 0.01 },
+      calls: [[500, 200, 0.008, true], [500, 200, 0.005, false]] as const,
+      exceeded: ['cost'],
+    },
+    {
+      name: 'multiple',
+      userId: 207,
+      limits: { dailyMessageLimit: 1, dailyCostLimitUsd: 0.001 },
+      calls: [[500, 200, 0.005, true]] as const,
+      exceeded: ['messages', 'cost'],
+    },
+  ])('denies usage exactly at the $name limit', ({ userId, limits, calls, exceeded }) => {
+    setQuota(userId, limits);
+    for (const [inputTokens, outputTokens, costUsd, isUserMessage] of calls) {
+      recordUsage(userId, inputTokens, outputTokens, costUsd, isUserMessage);
+    }
 
-      recordUsage(123, 500, 200, 0.005, true);
-      const status = checkQuota(123);
+    const status = checkQuota(userId);
+    expect(status.allowed).toBe(false);
+    expect(status.exceeded).toEqual(exceeded);
+    expect(status.usage.userId).toBe(userId);
+  });
 
-      expect(status.allowed).toBe(true);
-      expect(status.quota).toBeNull();
-      expect(status.exceeded).toHaveLength(0);
-    });
+  it('keeps quotas isolated and allows usage one below a configured limit', () => {
+    setQuota(208, { dailyMessageLimit: 2 });
+    setQuota(209, { dailyMessageLimit: 10 });
+    recordUsage(208, 100, 50, 0.001, true);
+    recordUsage(209, 100, 50, 0.001, true);
 
-    it('allows usage under quota', async () => {
-      const { recordUsage, setQuota, checkQuota } = await loadService();
+    expect(checkQuota(208)).toMatchObject({ allowed: true, exceeded: [] });
+    expect(checkQuota(209)).toMatchObject({ allowed: true, exceeded: [] });
+  });
+});
 
-      setQuota(123, { dailyMessageLimit: 100 });
-      recordUsage(123, 500, 200, 0.005, true);
-
-      const status = checkQuota(123);
-      expect(status.allowed).toBe(true);
-      expect(status.exceeded).toHaveLength(0);
-    });
-
-    it('denies when message limit exceeded', async () => {
-      const { recordUsage, setQuota, checkQuota } = await loadService();
-
-      setQuota(123, { dailyMessageLimit: 2 });
-      recordUsage(123, 500, 200, 0.005, true);
-      recordUsage(123, 500, 200, 0.005, true);
-
-      const status = checkQuota(123);
-      expect(status.allowed).toBe(false);
-      expect(status.exceeded).toContain('messages');
-    });
-
-    it('denies when token limit exceeded', async () => {
-      const { recordUsage, setQuota, checkQuota } = await loadService();
-
-      setQuota(123, { dailyTokenLimit: 500 });
-      recordUsage(123, 300, 250, 0.005, true);
-
-      const status = checkQuota(123);
-      expect(status.allowed).toBe(false);
-      expect(status.exceeded).toContain('tokens');
-    });
-
-    it('denies when cost limit exceeded', async () => {
-      const { recordUsage, setQuota, checkQuota } = await loadService();
-
-      setQuota(123, { dailyCostLimitUsd: 0.01 });
-      recordUsage(123, 500, 200, 0.008, true);
-      recordUsage(123, 500, 200, 0.005, true);
-
-      const status = checkQuota(123);
-      expect(status.allowed).toBe(false);
-      expect(status.exceeded).toContain('cost');
-    });
-
-    it('reports multiple exceeded limits', async () => {
-      const { recordUsage, setQuota, checkQuota } = await loadService();
-
-      setQuota(123, { dailyMessageLimit: 1, dailyCostLimitUsd: 0.001 });
-      recordUsage(123, 500, 200, 0.005, true);
-
-      const status = checkQuota(123);
-      expect(status.allowed).toBe(false);
-      expect(status.exceeded).toContain('messages');
-      expect(status.exceeded).toContain('cost');
-    });
+describe('Portal usage contract', () => {
+  it('keeps usage metering in the typed portal snapshot response', () => {
+    expectTypeOf<PortalSnapshotResponse['usageMetering']>().toMatchTypeOf<{
+      today: {
+        messageCount: number;
+        totalTokens: number;
+        apiCalls: number;
+        costUsd: number;
+      };
+      byUser: Array<{
+        userId: number;
+        displayName: string;
+        messageCount: number;
+        totalTokens: number;
+        apiCalls: number;
+        costUsd: number;
+      }>;
+    }>();
   });
 });

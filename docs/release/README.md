@@ -1,97 +1,54 @@
-# Nexus Hub Release Docs
+# Release Runbook
 
 Status: canonical
-Owner: release lead (Felipe)
-Last verified: 2026-06-07
-Update policy: update when the release-process entrypoint structure changes.
+Owner: Felipe
+Last verified: 2026-07-15
 
-Date: 2026-06-07
+Current runtime truth is `release-state.json`. Release evidence is an ignored
+artifact, not a Markdown narrative.
 
-This folder is the active source of truth for the release process.
-
-Start here:
-
-1. `../DOCS_INDEX.md`
-2. `current-release-index.md`
-3. `CURRENT_RELEASE_STATE.md`
-4. `streamlined-release-process-v2.md`
-5. `risk-based-release-gate-matrix.md`
-6. `main-staging-production-gate-model.md`
-7. `production-promotion-checklist-v2.md`
-
-Before writing a release decision, generate current identity:
+## Commands
 
 ```bash
-scripts/release-identity.sh markdown
+npm run release:status
+npm run release:prepare -- --base <sha>
+gh workflow run release-candidate-evidence.yml --ref <candidate-ref>
+scripts/request-release-manifest-signature.sh <sha> <rc-run-id>
+npm run release:staging -- --manifest .local/release/manifests/<sha>.json
+npm run release:promote -- --manifest .local/release/manifests/<sha>.json
 ```
 
-Before staging a production candidate, prepare the versioned release commit:
+`release:prepare` runs the release gate, builds one governed runtime bundle,
+and writes an unsigned candidate payload. The RC workflow also contains no
+signing secret. Only the protected-main signer, gated by the `release-signing`
+environment, may turn a successful exact-run artifact into a promotable
+`ReleaseManifestV2`. A changed artifact or test policy invalidates the result.
+A docs-only commit cannot replace the required check for a runtime SHA.
 
-```bash
-scripts/release-prep.sh --patch
-```
+## Required Sequence
 
-Before reusing CI release evidence, ensure it is signed v2 evidence per
-`release-evidence-contract.md`. `auto-when-staged` remains default-off until
-the shadow period and rollback-drill requirements are satisfied.
+1. Start from a clean reviewed runtime SHA.
+2. Run changed plus critical tests, build, migration rehearsal, artifact
+   validation, and reward verification.
+3. Run the unprivileged RC workflow, then have protected-main tooling verify
+   its exact run, head SHA, jobs, test outputs, bundle bytes, and artifact
+   identity before signing. Candidate scripts are data only in the signing
+   job and never receive the private key.
+4. Install and verify the bundle in a versioned staging directory while the
+   current service remains online.
+5. Record staging smoke against the exact artifact digest.
+6. Obtain explicit owner authorization.
+7. Copy and hash the immutable runtime backup while production is live; then
+   briefly drain writes, checkpoint SQLite, append and verify the database
+   snapshot, switch PM2 atomically, and run both process readiness checks.
+8. Restore the exact previous release automatically if readiness fails.
 
-Current release verification contract:
+Do not rebuild, rsync the repository, or install dependencies while production
+is stopped. Promotion copies the already prepared staging release and verifies
+every governed artifact byte; it never invokes the legacy deploy wrapper. Keep
+that wrapper only as a separately invoked fallback until two staging rehearsals
+and two owner-authorized production releases prove the replacement path.
 
-1. Prepare the versioned release commit with `npm run release:prep -- --patch`
-   or the matching minor/major command.
-2. Run `npm run release:focused-verify` locally before the RC. Docs-only diffs
-   run docs audit/drift checks; risky deploy, migration, package, security,
-   auth, tenant, and test-config diffs escalate to the full local runner.
-3. Run `npm run release:pre-rc` to exercise the release-test container contract.
-4. Let the `RC — Release Evidence` workflow run the full Vitest suite once as
-   shards, full pytest once, typecheck, build, migration safety,
-   science-policy, sandbox smoke, and the cannot-skip dashboard.
-5. Download signed CI evidence into `.local/release/evidence/` for local
-   promote/deploy reuse. Keep the run-specific evidence files there until the
-   three-distinct-signed-run threshold is met for the candidate SHA.
-6. Deploy staging, run staging smoke/readiness, run promote dry-run, then
-   promote to production.
-
-Full local verification remains available, but it is not the normal minor
-release path:
-
-```bash
-npm run release:verify:full
-```
-
-Useful release-hardening commands:
-
-```bash
-npm run release:prep -- --patch
-npm run release:focused-verify
-npm run release:pre-rc
-npm run release:verify
-npm run release:verify:container
-npm run release:evidence:keygen
-npm run release:rollback-drill-check
-```
-
-`npm run release:verify` is the focused local pre-RC runner. Use
-`npm run release:verify:full` when evidence is missing, the classifier fails,
-the diff is high-risk, or an emergency fallback intentionally requires the full
-local suite.
-
-The keygen command writes the public verifier to `docs/release/evidence/` and a
-local private key under `.local/release/`; an owner must install that private key
-as the GitHub Actions secret before signed CI evidence can pass.
-
-Before creating new markdown reports or copying old verdicts/test counts, run:
-
-```bash
-npm run docs:audit
-```
-
-Historical release-specific packs were moved to:
-
-```text
-docs/release/archive/2026-05-01-pre-v2/
-```
-
-Archived docs are evidence, not active gates. Do not treat them as current
-blockers unless the active release index or gate matrix explicitly points to
-them.
+Backend and iOS are independently promotable unless a shared contract or native
+integration changed. Build 55 must pass physical-device smoke before build 54
+is expired.

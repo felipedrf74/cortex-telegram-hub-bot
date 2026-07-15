@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 const ROUTE_ROOT = path.resolve(__dirname, '../../src/api/routes');
 
 let testDb: Database.Database;
@@ -47,21 +47,6 @@ vi.mock('../../src/services/operator-alerts', async () => {
   };
 });
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some migrations depend on runtime-only extensions; tests assert the
-        // guardrail contract, not every unrelated migration side effect.
-      }
-    }
-  }
-}
 
 function seedUser(userId: number, plan: 'pro' | 'max' = 'pro'): void {
   testDb.prepare(`
@@ -96,9 +81,7 @@ function interactiveDecision(userId: number) {
 describe('global cost guardrail for REST AI routes', () => {
   beforeEach(() => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     seedUser(25, 'max');
     seedUser(28, 'pro');
   });

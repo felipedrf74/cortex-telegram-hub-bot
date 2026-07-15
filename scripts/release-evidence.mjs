@@ -19,7 +19,7 @@ function hasArg(name) {
 }
 
 const root = path.resolve(readArg('--root', process.cwd()));
-const evidencePath = readArg('--evidence', process.env.NEXUS_RELEASE_EVIDENCE_PATH || 'docs/release/evidence/latest-release-evidence.json');
+const evidencePath = readArg('--evidence', process.env.NEXUS_RELEASE_EVIDENCE_PATH || '.local/release/evidence/latest-release-evidence.json');
 const DEFAULT_MAX_AGE_SECONDS = 72 * 60 * 60;
 const MAX_AGE_CEILING_SECONDS = 7 * 24 * 60 * 60;
 const maxAgeSeconds = resolveMaxAge(

@@ -29,6 +29,7 @@ import { FINANCE_ACTIONS } from './definitions/finance';
 import { CONNECTIONS_ACTIONS } from './definitions/connections';
 import { NOTIFICATION_ACTIONS } from './definitions/notifications';
 import { DECISION_CENTER_ACTIONS } from './definitions/decision-center';
+import { getCapabilityUiSkillMetadata } from '../../capability-manifest';
 
 export type {
   ChatActionDefinition,
@@ -51,87 +52,10 @@ export { makeRequiredFieldsValidator, riskClassForRisk } from './helpers';
 
 // ──────────────────────────── Per-skill metadata ────────────────────────────
 //
-// Phase 13 batch 69 (2026-05-16): per-skill metadata table merged in from
-// `chat-skill-capability-registry.ts CAPABILITIES`. The audit at 2026-05-15
-// flagged the capability-registry as a MERGE candidate because its per-skill
-// data (responseCardType / latencyBudgetMs / privacyPolicy / displayName) had
-// no home in the action registry — actions are scoped narrower than skills.
-//
-// The merge keeps `chat-skill-capability-registry.ts` for its routing
-// helpers (`inferSkillFromText`, `inferIntent`, etc.) and `NexusChatOwnerSkill`
-// type (which includes 'owner_admin' / 'chat' beyond the action-registry's
-// 9 skills). The capability registry now reads this table for the 9
-// overlapping skills and falls back to inline data for 'owner_admin' /
-// 'chat'.
+// Stable UI metadata comes from CapabilityManifest. Granular action schemas,
+// executors, slot policies, and risk rules remain owned by this registry.
 
-export const SKILL_METADATA: Record<ChatActionSkill, ChatSkillMetadata> = {
-  secretary_calendar: {
-    displayName: 'Secretary',
-    responseCardType: 'calendar_action',
-    latencyBudgetMs: 2500,
-    privacyPolicy: 'private_detail',
-  },
-  secretary_reminders: {
-    displayName: 'Reminders',
-    responseCardType: 'calendar_action',
-    latencyBudgetMs: 1200,
-    privacyPolicy: 'private_detail',
-  },
-  mail: {
-    displayName: 'Mail',
-    responseCardType: 'mail_action',
-    latencyBudgetMs: 2200,
-    privacyPolicy: 'private_detail',
-  },
-  tasks: {
-    displayName: 'Tasks',
-    responseCardType: 'task_action',
-    latencyBudgetMs: 1800,
-    privacyPolicy: 'private_detail',
-  },
-  training: {
-    displayName: 'Training',
-    responseCardType: 'training_action',
-    latencyBudgetMs: 2200,
-    privacyPolicy: 'private_detail',
-  },
-  content: {
-    displayName: 'Content',
-    responseCardType: 'content_action',
-    latencyBudgetMs: 2400,
-    privacyPolicy: 'private_detail',
-  },
-  cooking: {
-    displayName: 'Cooking',
-    responseCardType: 'cooking_action',
-    latencyBudgetMs: 2000,
-    privacyPolicy: 'private_detail',
-  },
-  finance: {
-    displayName: 'Finance',
-    responseCardType: 'finance_action',
-    latencyBudgetMs: 2200,
-    privacyPolicy: 'sensitive_redacted',
-  },
-  connections: {
-    displayName: 'Connections',
-    responseCardType: 'provider_status',
-    latencyBudgetMs: 1500,
-    privacyPolicy: 'safe_preview',
-  },
-  notifications: {
-    displayName: 'Notifications',
-    responseCardType: 'notification_action',
-    latencyBudgetMs: 1400,
-    privacyPolicy: 'safe_preview',
-  },
-  decision_center: {
-    displayName: 'Decision Center',
-    responseCardType: 'decision_action',
-    latencyBudgetMs: 1800,
-    privacyPolicy: 'safe_preview',
-  },
-};
+export const SKILL_METADATA = getCapabilityUiSkillMetadata() as Record<ChatActionSkill, ChatSkillMetadata>;
 
 export function getSkillMetadata(skill: ChatActionSkill): ChatSkillMetadata {
   return SKILL_METADATA[skill];

@@ -6,38 +6,10 @@
  * stats queries, and subscription expiry.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 // Mock dependencies
 let testDb: Database.Database;
@@ -59,23 +31,33 @@ import {
   verifySignature,
   receiveWebhookEvent,
   getRecentEvents,
+  getEvent,
   replayEvent,
   getWebhookStats,
   expireSubscriptions,
   onWebhookEvent,
+  type WebhookProvider,
   type WebhookEvent,
 } from '../../src/services/webhook-registry';
 import { pushEvent } from '../../src/portal/telemetry';
 
 describe('Webhook Registry', () => {
+  beforeAll(() => {
+    testDb = createMigratedTestDatabase();
+  });
+
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb.exec('SAVEPOINT webhook_test_case');
     setDbProvider(() => testDb);
     vi.clearAllMocks();
   });
 
   afterEach(() => {
+    testDb.exec('ROLLBACK TO webhook_test_case');
+    testDb.exec('RELEASE webhook_test_case');
+  });
+
+  afterAll(() => {
     testDb.close();
   });
 
@@ -180,12 +162,19 @@ describe('Webhook Registry', () => {
       const id = registerSubscription({
         provider: 'google_calendar',
         endpoint_path: '/api/webhooks/google_calendar',
-        metadata: { calendarId: 'primary', resourceId: 'abc123' },
+        metadata: {
+          calendarId: 'primary',
+          resourceId: 'abc123',
+          nested: { deep: { value: 42 } },
+          tags: ['a', 'b', 'c'],
+        },
       });
       const row = testDb.prepare('SELECT metadata FROM webhook_subscriptions WHERE id = ?').get(id) as any;
       const meta = JSON.parse(row.metadata);
       expect(meta.calendarId).toBe('primary');
       expect(meta.resourceId).toBe('abc123');
+      expect(meta.nested.deep.value).toBe(42);
+      expect(meta.tags).toEqual(['a', 'b', 'c']);
     });
 
     it('stores secret and external_id', () => {
@@ -239,6 +228,8 @@ describe('Webhook Registry', () => {
       const active = getSubscriptions({ status: 'active' });
       expect(active.length).toBe(1);
       expect(active[0].provider).toBe('strava');
+      expect(getSubscriptions({ provider: 'strava', status: 'active' })).toHaveLength(1);
+      expect(getSubscriptions({ provider: 'garmin', status: 'active' })).toEqual([]);
     });
   });
 
@@ -250,11 +241,13 @@ describe('Webhook Registry', () => {
 
       const sub = getSubscription(id);
       expect(sub?.status).toBe('paused');
+      expect(sub?.updated_at).toBeTruthy();
     });
 
     it('returns false for non-existent subscription', () => {
       const ok = updateSubscriptionStatus(9999, 'paused');
       expect(ok).toBe(false);
+      expect(getSubscription(9999)).toBeNull();
     });
   });
 
@@ -281,14 +274,23 @@ describe('Webhook Registry', () => {
 
       const valid = verifySignature('custom', body, { 'x-webhook-signature': sig }, secret);
       expect(valid).toBe(true);
+
+      const emptySig = crypto.createHmac('sha256', secret).update('').digest('hex');
+      expect(verifySignature('custom', '', { 'x-webhook-signature': emptySig }, secret)).toBe(true);
     });
 
     it('rejects invalid signature', () => {
       const secret = 'test-webhook-secret';
       const body = '{"event":"test"}';
 
-      const valid = verifySignature('custom', body, { 'x-webhook-signature': 'deadbeef' }, secret);
-      expect(valid).toBe(false);
+      expect(verifySignature('custom', body, { 'x-webhook-signature': 'deadbeef' }, secret)).toBe(false);
+      expect(verifySignature('custom', body, { 'x-webhook-signature': 'tooshort' }, secret)).toBe(false);
+      const originalSig = crypto.createHmac('sha256', secret).update('{"event":"original"}').digest('hex');
+      expect(verifySignature('custom', body, { 'x-webhook-signature': originalSig }, secret)).toBe(false);
+      const wrongSecretSig = crypto.createHmac('sha256', 'wrong-secret').update(body).digest('hex');
+      expect(verifySignature('custom', body, { 'x-webhook-signature': wrongSecretSig }, secret)).toBe(false);
+      const validSig = crypto.createHmac('sha256', secret).update(body).digest('hex');
+      expect(verifySignature('custom', body, { 'x-webhook-signature': [validSig, validSig] as any }, secret)).toBe(false);
     });
 
     it('handles GitHub sha256= prefix', () => {
@@ -308,6 +310,10 @@ describe('Webhook Registry', () => {
       // Google uses x-goog-channel-token
       const valid = verifySignature('google_calendar', body, { 'x-goog-channel-token': sig }, secret);
       expect(valid).toBe(true);
+      expect(verifySignature('garmin', body, { 'x-garmin-signature': sig }, secret)).toBe(true);
+      expect(verifySignature('garmin', body, { 'x-webhook-signature': sig }, secret)).toBe(false);
+      expect(verifySignature('outlook_calendar', body, { 'x-ms-client-state': sig }, secret)).toBe(true);
+      expect(verifySignature('outlook_mail', body, { 'x-ms-client-state': sig }, secret)).toBe(true);
     });
 
     it('fails closed when no secret is configured', () => {
@@ -434,15 +440,17 @@ describe('Webhook Registry', () => {
         endpoint_path: '/api/webhooks/google_calendar',
       });
 
-      await receiveWebhookEvent({
-        provider: 'google_calendar',
-        event_type: 'update',
-        payload: { resourceId: 'abc' },
-        subscription_id: subId,
-      });
+      for (const eventType of ['update', 'update', 'delete']) {
+        await receiveWebhookEvent({
+          provider: 'google_calendar',
+          event_type: eventType,
+          payload: { resourceId: 'abc' },
+          subscription_id: subId,
+        });
+      }
 
       const sub = getSubscription(subId);
-      expect(sub?.event_count).toBe(1);
+      expect(sub?.event_count).toBe(3);
       expect(sub?.last_event_at).toBeTruthy();
     });
 
@@ -537,11 +545,18 @@ describe('Webhook Registry', () => {
       expect(event.status).toBe('failed');
 
       // Replay should succeed (second invocation won't throw)
+      const deliveriesBefore = (testDb.prepare(
+        'SELECT COUNT(*) as count FROM webhook_delivery_log WHERE event_id = ?',
+      ).get(eventId) as { count: number }).count;
       const success = await replayEvent(eventId);
       expect(success).toBe(true);
 
       event = testDb.prepare('SELECT status FROM webhook_events WHERE id = ?').get(eventId) as any;
       expect(event.status).toBe('processed');
+      const deliveriesAfter = (testDb.prepare(
+        'SELECT COUNT(*) as count FROM webhook_delivery_log WHERE event_id = ?',
+      ).get(eventId) as { count: number }).count;
+      expect(deliveriesAfter).toBeGreaterThan(deliveriesBefore);
     });
 
     it('returns false for non-existent event', async () => {
@@ -623,6 +638,7 @@ describe('Webhook Registry', () => {
 
       const googleStats = stats.byProvider.find(p => p.provider === 'google_calendar');
       expect(googleStats?.count).toBe(2);
+      expect(googleStats?.lastEvent).toBeTruthy();
     });
   });
 
@@ -654,6 +670,184 @@ describe('Webhook Registry', () => {
     it('returns 0 when nothing to expire', () => {
       registerSubscription({ provider: 'garmin', endpoint_path: '/a' });
       expect(expireSubscriptions()).toBe(0);
+    });
+  });
+
+  describe('Webhook schema and edge matrices', () => {
+    it('keeps subscription, event, and delivery defaults', () => {
+      const subscriptionId = Number(testDb.prepare(`
+        INSERT INTO webhook_subscriptions (provider, endpoint_path)
+        VALUES ('garmin', '/api/webhooks/garmin')
+      `).run().lastInsertRowid);
+      const subscription = testDb.prepare('SELECT * FROM webhook_subscriptions WHERE id = ?').get(subscriptionId) as any;
+      expect(subscription).toMatchObject({ status: 'active', event_types: '["*"]', event_count: 0 });
+      expect(subscription.created_at).toBeTruthy();
+      expect(subscription.updated_at).toBeTruthy();
+
+      const eventId = Number(testDb.prepare(`
+        INSERT INTO webhook_events (provider, event_type, payload)
+        VALUES ('garmin', 'activity', '{}')
+      `).run().lastInsertRowid);
+      const event = testDb.prepare('SELECT * FROM webhook_events WHERE id = ?').get(eventId) as any;
+      expect(event).toMatchObject({ status: 'received', subscription_id: null, processed_at: null });
+      expect(event.received_at).toBeTruthy();
+
+      const deliveryId = Number(testDb.prepare(`
+        INSERT INTO webhook_delivery_log (event_id, handler)
+        VALUES (?, 'test_handler')
+      `).run(eventId).lastInsertRowid);
+      const delivery = testDb.prepare('SELECT * FROM webhook_delivery_log WHERE id = ?').get(deliveryId) as any;
+      expect(delivery).toMatchObject({ status: 'pending', attempt: 1 });
+      expect(delivery.created_at).toBeTruthy();
+    });
+
+    it('enforces SET NULL and CASCADE foreign-key behavior', () => {
+      const subscriptionId = Number(testDb.prepare(`
+        INSERT INTO webhook_subscriptions (provider, endpoint_path)
+        VALUES ('garmin', '/api/webhooks/garmin')
+      `).run().lastInsertRowid);
+      const eventId = Number(testDb.prepare(`
+        INSERT INTO webhook_events (subscription_id, provider, event_type, payload)
+        VALUES (?, 'garmin', 'activity', '{}')
+      `).run(subscriptionId).lastInsertRowid);
+      testDb.prepare(`
+        INSERT INTO webhook_delivery_log (event_id, handler, status)
+        VALUES (?, 'test_handler', 'success')
+      `).run(eventId);
+
+      testDb.prepare('DELETE FROM webhook_subscriptions WHERE id = ?').run(subscriptionId);
+      expect(testDb.prepare('SELECT subscription_id FROM webhook_events WHERE id = ?').get(eventId)).toMatchObject({ subscription_id: null });
+      testDb.prepare('DELETE FROM webhook_events WHERE id = ?').run(eventId);
+      expect((testDb.prepare('SELECT COUNT(*) as count FROM webhook_delivery_log').get() as { count: number }).count).toBe(0);
+    });
+
+    it('cleans only old processed events and accepts multiple null idempotency keys', () => {
+      testDb.prepare(`
+        INSERT INTO webhook_events (provider, event_type, payload, status, received_at)
+        VALUES ('garmin', 'old', '{}', 'processed', datetime('now', '-31 days'))
+      `).run();
+      testDb.prepare(`
+        INSERT INTO webhook_events (provider, event_type, payload, status, received_at)
+        VALUES ('garmin', 'old_failed', '{}', 'failed', datetime('now', '-31 days'))
+      `).run();
+      testDb.prepare(`INSERT INTO webhook_events (provider, event_type, payload) VALUES ('garmin', 'new-a', '{}')`).run();
+      testDb.prepare(`INSERT INTO webhook_events (provider, event_type, payload) VALUES ('garmin', 'new-b', '{}')`).run();
+
+      const types = (testDb.prepare('SELECT event_type FROM webhook_events').all() as Array<{ event_type: string }>).map(row => row.event_type);
+      expect(types).not.toContain('old');
+      expect(types).toEqual(expect.arrayContaining(['old_failed', 'new-a', 'new-b']));
+    });
+
+    it('round-trips empty and large event payloads', async () => {
+      const payloads = [{}, Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`field_${i}`, 'x'.repeat(100)]))];
+      for (const [index, payload] of payloads.entries()) {
+        const eventId = await receiveWebhookEvent({ provider: 'custom', event_type: `payload-${index}`, payload });
+        expect(getEvent(eventId)?.payload).toEqual(payload);
+      }
+    });
+
+    it('retries a failed idempotent event', async () => {
+      const handler = vi.fn().mockRejectedValue(new Error('always fails'));
+      onWebhookEvent('custom', 'retry-matrix', handler);
+      const first = await receiveWebhookEvent({
+        provider: 'custom', event_type: 'retry-matrix', payload: {}, idempotency_key: 'retry-key-001',
+      });
+      const second = await receiveWebhookEvent({
+        provider: 'custom', event_type: 'retry-matrix', payload: {}, idempotency_key: 'retry-key-001',
+      });
+      expect(first).toBeGreaterThan(0);
+      expect(second).toBeGreaterThan(0);
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
+
+    it('records every handler result when one handler fails', async () => {
+      const failed = vi.fn().mockRejectedValue(new Error('fails'));
+      const succeeded = vi.fn().mockResolvedValue(undefined);
+      onWebhookEvent('custom', 'partial-failure-matrix', failed);
+      onWebhookEvent('custom', 'partial-failure-matrix', succeeded);
+      const eventId = await receiveWebhookEvent({
+        provider: 'custom', event_type: 'partial-failure-matrix', payload: {},
+      });
+      expect(failed).toHaveBeenCalledTimes(1);
+      expect(succeeded).toHaveBeenCalledTimes(1);
+      expect(getEvent(eventId)?.status).toBe('failed');
+      const statuses = (testDb.prepare(
+        'SELECT status FROM webhook_delivery_log WHERE event_id = ?',
+      ).all(eventId) as Array<{ status: string }>).map(row => row.status);
+      expect(statuses).toEqual(expect.arrayContaining(['failed', 'success']));
+    });
+
+    it('counts failed events in daily stats', async () => {
+      onWebhookEvent('custom', 'stats-failure-matrix', vi.fn().mockRejectedValue(new Error('boom')));
+      await receiveWebhookEvent({ provider: 'custom', event_type: 'stats-failure-matrix', payload: {} });
+      await receiveWebhookEvent({ provider: 'custom', event_type: 'stats-failure-matrix', payload: {} });
+      expect(getWebhookStats()).toMatchObject({ failedToday: 2, eventsToday: 2 });
+    });
+
+    it('expires only active past-due subscriptions, including batches', () => {
+      const paused = registerSubscription({
+        provider: 'garmin', endpoint_path: '/paused', expires_at: '2020-01-01T00:00:00Z',
+      });
+      updateSubscriptionStatus(paused, 'paused');
+      registerSubscription({ provider: 'garmin', endpoint_path: '/future', expires_at: '2099-12-31T23:59:59Z' });
+      registerSubscription({ provider: 'strava', endpoint_path: '/expired-a', expires_at: '2020-01-01T00:00:00Z' });
+      registerSubscription({ provider: 'github', endpoint_path: '/expired-b', expires_at: '2020-06-15T00:00:00Z' });
+      expect(expireSubscriptions()).toBe(2);
+      expect(getSubscription(paused)?.status).toBe('paused');
+      expect(getSubscriptions({ status: 'active' }).map(sub => sub.endpoint_path)).toEqual(['/future']);
+    });
+
+    it('fails closed with safe defaults when the database is unavailable', async () => {
+      setDbProvider(() => { throw new Error('no db'); });
+      expect(registerSubscription({ provider: 'garmin', endpoint_path: '/a' })).toBe(-1);
+      expect(getSubscriptions()).toEqual([]);
+      expect(getSubscription(1)).toBeNull();
+      expect(updateSubscriptionStatus(1, 'paused')).toBe(false);
+      expect(removeSubscription(1)).toBe(false);
+      expect(getEvent(1)).toBeNull();
+      expect(getRecentEvents()).toEqual([]);
+      expect(expireSubscriptions()).toBe(0);
+      expect(getWebhookStats()).toMatchObject({ totalSubscriptions: 0, byProvider: [] });
+      expect(await receiveWebhookEvent({ provider: 'garmin', event_type: 'activity', payload: {} })).toBe(-1);
+    });
+
+    it('supports every declared provider for registration and receipt', async () => {
+      const providers: WebhookProvider[] = [
+        'google_calendar', 'google_gmail', 'outlook_calendar', 'outlook_mail',
+        'outlook_todo', 'garmin', 'strava', 'github', 'custom',
+      ];
+      for (const provider of providers) {
+        expect(registerSubscription({ provider, endpoint_path: `/api/webhooks/${provider}` })).toBeGreaterThan(0);
+        expect(await receiveWebhookEvent({ provider, event_type: 'provider-matrix', payload: { provider } })).toBeGreaterThan(0);
+      }
+      expect(getSubscriptions()).toHaveLength(providers.length);
+    });
+
+    it('keeps webhook configuration typed with production defaults', async () => {
+      const { config } = await import('../../src/config');
+      expect(config.webhooks).toMatchObject({
+        enabled: expect.any(Boolean),
+        secret: expect.any(String),
+        maxPayloadBytes: 1_048_576,
+        eventRetentionDays: 30,
+      });
+    });
+
+    it('returns an empty recent list and applies the default limit of 50', async () => {
+      expect(getRecentEvents()).toEqual([]);
+      for (let index = 0; index < 55; index += 1) {
+        await receiveWebhookEvent({ provider: 'custom', event_type: 'bulk-matrix', payload: { index } });
+      }
+      expect(getRecentEvents()).toHaveLength(50);
+    });
+
+    it('combines provider and failure-status recent-event filters', async () => {
+      onWebhookEvent('custom', 'combined-filter-matrix', vi.fn().mockRejectedValue(new Error('fail')));
+      await receiveWebhookEvent({ provider: 'custom', event_type: 'combined-filter-matrix', payload: {} });
+      await receiveWebhookEvent({ provider: 'garmin', event_type: 'other-matrix', payload: {} });
+      expect(getRecentEvents({ provider: 'custom', status: 'failed' })).toEqual([
+        expect.objectContaining({ provider: 'custom', status: 'failed' }),
+      ]);
     });
   });
 });

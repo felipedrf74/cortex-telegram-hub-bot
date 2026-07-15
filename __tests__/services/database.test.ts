@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -179,8 +180,7 @@ describe('Database Schema', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
   });
   afterEach(() => { db.close(); });
 
@@ -213,8 +213,7 @@ describe('Database CRUD Operations', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
   });
   afterEach(() => { db.close(); });
 

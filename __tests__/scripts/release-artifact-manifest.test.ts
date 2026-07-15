@@ -33,6 +33,7 @@ describe('release-artifact-manifest', () => {
     fs.mkdirSync(path.join(tmp, 'migrations'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'prompts'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'content-engine/services'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'scripts/lib'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'dist/index.js'), 'console.log("one");\n');
     fs.writeFileSync(
       path.join(tmp, 'catalog/training/exercise-media/v1/compiled-manifest.json'),
@@ -44,6 +45,7 @@ describe('release-artifact-manifest', () => {
     fs.writeFileSync(path.join(tmp, 'package-lock.json'), '{"lockfileVersion":3}\n');
     fs.writeFileSync(path.join(tmp, 'content-engine/requirements.txt'), 'fastapi\n');
     fs.writeFileSync(path.join(tmp, 'content-engine/services/orchestrator.py'), 'VALUE = 1\n');
+    fs.writeFileSync(path.join(tmp, 'scripts/promote-exact-release.sh'), '#!/usr/bin/env bash\nexit 0\n');
   });
 
   afterEach(() => {
@@ -61,6 +63,7 @@ describe('release-artifact-manifest', () => {
     ['python source', 'content-engine/services/orchestrator.py'],
     ['dist', 'dist/index.js'],
     ['runtime catalog', 'catalog/training/exercise-media/v1/compiled-manifest.json'],
+    ['production promotion tooling', 'scripts/promote-exact-release.sh'],
   ])('changes digest when %s changes', (_label, relativePath) => {
     const before = digest();
     fs.appendFileSync(path.join(tmp, relativePath), 'changed\n');
@@ -79,12 +82,16 @@ describe('release-evidence', () => {
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-evidence-'));
     gitEnv = cleanGitEnv();
-    fs.mkdirSync(path.join(tmp, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'scripts/lib'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'dist'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'migrations'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'prompts'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'content-engine/services'), { recursive: true });
     fs.copyFileSync(script, path.join(tmp, 'scripts/release-artifact-manifest.mjs'));
+    fs.copyFileSync(
+      path.resolve('scripts/lib/release-artifact-manifest.mjs'),
+      path.join(tmp, 'scripts/lib/release-artifact-manifest.mjs'),
+    );
     fs.writeFileSync(path.join(tmp, 'dist/index.js'), 'console.log("one");\n');
     fs.writeFileSync(path.join(tmp, 'migrations/001_init.sql'), 'CREATE TABLE x(id INTEGER);\n');
     fs.writeFileSync(path.join(tmp, 'prompts/content.md'), 'prompt one\n');

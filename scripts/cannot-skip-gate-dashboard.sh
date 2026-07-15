@@ -42,7 +42,7 @@
 set -euo pipefail
 
 ENGINE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EVIDENCE_DIR="$ENGINE_ROOT/docs/release/cannot-skip-gate-evidence"
+EVIDENCE_DIR="$ENGINE_ROOT/.local/release/cannot-skip-gate-evidence"
 TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 OUTPUT_FORMAT="markdown"
 WRITE_EVIDENCE=true

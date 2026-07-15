@@ -226,6 +226,25 @@ describe('portal oauth routes', () => {
     expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
   });
 
+  it.each(['google', 'outlook', 'strava', 'whoop'] as const)(
+    'preserves the shared nonce validation and custom-scheme contract for %s iOS callbacks',
+    async (provider) => {
+      const services = createServices({
+        consumeNonce: vi.fn(() => ({ userId: 7, provider })),
+      });
+      const routes = captureRoutes(services);
+
+      const res = await invoke(findRoute(routes, `/oauth/${provider}/callback`), {
+        query: { code: `code-${provider}`, state: `ios:7:nonce-${provider}` },
+      });
+
+      expect(services.consumeNonce).toHaveBeenCalledWith(`nonce-${provider}`);
+      expect(services.exchangeCode).toHaveBeenCalledWith(provider, `code-${provider}`, 7);
+      expect(services.storeTokens).toHaveBeenCalledWith(7, provider, { access_token: 'token' });
+      expect(res.redirectedTo).toBe(`me.nexushub.app://oauth/${provider}?status=success`);
+    },
+  );
+
   it('serves fragment recovery for Outlook callbacks missing query parameters', async () => {
     const services = createServices();
     const routes = captureRoutes(services);

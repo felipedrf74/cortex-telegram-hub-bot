@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('risk-gate dry run', () => {
-  it('focused mode includes classifier globs and graph-aware changed tests', () => {
+  it('focused mode builds one changed, focused, and critical union', () => {
     const raw = execFileSync(
       'bash',
       [
@@ -18,8 +18,16 @@ describe('risk-gate dry run', () => {
       { encoding: 'utf8' },
     );
 
-    expect(raw).toContain('__tests__/services/content-radar-engine.test.ts');
-    expect(raw).toContain('--changed');
+    expect(raw).toContain('scripts/select-vitest-files.mjs');
+    expect(raw).toContain('<changed+focused+critical-union>');
+    expect(raw.match(/npx vitest run/g)).toHaveLength(1);
+  });
+
+  it('keeps classifier-mandated full runs fail-closed in the shared selector', () => {
+    const selector = readFileSync('scripts/select-vitest-files.mjs', 'utf8');
+    expect(selector).toContain("classifier.vitest?.mode === 'full'");
+    expect(selector).toContain("escalated: 'classifier-full'");
+    expect(selector).toContain('selected: allFiles');
   });
 
   it('prints cannot-skip gates from classifier output', () => {

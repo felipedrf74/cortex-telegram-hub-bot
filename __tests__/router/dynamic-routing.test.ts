@@ -14,6 +14,30 @@ import {
 } from '../../src/skills/skill-config';
 import type { PatternRoute, KeywordRoute, ClassificationHint } from '../../src/skills/skill-config';
 
+// Vitest hoists these factories. Keep them at module scope so future Vitest
+// versions do not reject mocks declared inside a suite.
+vi.mock('../../src/skills/skill-manager', async () => {
+  const config = await import('../../src/skills/skill-config');
+  return {
+    getEnabledPatternRoutes: () => config.getPatternRoutes(),
+    getEnabledKeywordRoutes: () => config.getKeywordRoutes(),
+    getEnabledClassificationHints: () => config.getClassificationHints(),
+    isDomainEnabled: () => true,
+  };
+});
+
+vi.mock('../../src/services/anthropic', () => ({
+  classifyMessage: vi.fn(),
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
+    trace: vi.fn(), child: vi.fn().mockReturnThis(),
+  },
+  LOGGER_REDACTION_PATHS: [],
+}));
+
 describe('skill-config routing', () => {
 
   describe('getPatternRoutes', () => {
@@ -209,29 +233,6 @@ describe('skill-config routing', () => {
 });
 
 describe('dynamic routing integration with classifier', () => {
-  // Mock skill-manager so classifier uses all skill routes
-  vi.mock('../../src/skills/skill-manager', async () => {
-    const config = await import('../../src/skills/skill-config');
-    return {
-      getEnabledPatternRoutes: () => config.getPatternRoutes(),
-      getEnabledKeywordRoutes: () => config.getKeywordRoutes(),
-      getEnabledClassificationHints: () => config.getClassificationHints(),
-      isDomainEnabled: () => true,
-    };
-  });
-
-  vi.mock('../../src/services/anthropic', () => ({
-    classifyMessage: vi.fn(),
-  }));
-
-  vi.mock('../../src/utils/logger', () => ({
-    logger: {
-      info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
-      trace: vi.fn(), child: vi.fn().mockReturnThis(),
-    },
-    LOGGER_REDACTION_PATHS: [],
-}));
-
   it('patternMatch uses skill-config routes', async () => {
     const { patternMatch } = await import('../../src/router/classifier');
     expect(patternMatch('/todo buy milk')).toBe('secretary');

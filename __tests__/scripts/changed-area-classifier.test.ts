@@ -1,7 +1,51 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
 
 describe('changed-area-classifier closed-beta content-agent routing', () => {
+  it('does not lose early matches when a large change set exceeds the pipe buffer', () => {
+    const files = [
+      '__tests__/services/product-learning.test.ts',
+      'src/services/product-learning.ts',
+      ...Array.from({ length: 2_000 }, (_, index) => `docs/generated-${index}.md`),
+    ];
+    const raw = execFileSync(
+      'bash',
+      ['scripts/changed-area-classifier.sh', '--json', '--files', files.join(',')],
+      { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
+    );
+    const result = JSON.parse(raw) as { flags: Record<string, boolean>; vitest: { mode: string } };
+
+    expect(result.flags.backendSrc).toBe(true);
+    expect(result.flags.backendTest).toBe(true);
+    expect(result.flags.docsOnly).toBe(false);
+    expect(result.vitest.mode).toBe('changed-only');
+  });
+
   it('routes src/agents changes into content-agent neutrality and cross-agent tests', () => {
     const raw = execFileSync(
       'bash',
@@ -515,6 +559,25 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.vitest.mode).toBe('full');
   });
 
+  it.each([
+    'config/test-policy.json',
+    'scripts/changed-area-classifier.sh',
+    'scripts/resolve-ci-change-base.sh',
+    'scripts/select-vitest-files.mjs',
+    'scripts/run-test-tier.mjs',
+    'scripts/risk-gate.sh',
+    'scripts/lib/test-policy.mjs',
+    '.github/workflows/ci.yml',
+    '__tests__/fixtures/shared-database.ts',
+  ])('forces full Vitest for governed test infrastructure: %s', (file) => {
+    const result = classify(file);
+
+    expect(result.flags.docsOnly).toBe(false);
+    expect(result.flags.fullSuiteTrigger).toBe(true);
+    expect(result.vitest.mode).toBe('full');
+    expect(result.cannotSkip).toContain('test-infrastructure-full-suite');
+  });
+
   it('classifies unmapped backend source as changed-only', () => {
     const result = classify('src/misc/unmapped-helper.ts');
 
@@ -594,5 +657,139 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.flags.docsOnly).toBe(false);
     expect(result.vitest.mode).toBe('full');
     expect(result.stagingSmoke.generic).toBe(true);
+  });
+});
+
+describe('changed-area-classifier push range identity', () => {
+  it('includes a runtime commit followed by a docs commit when the push base is used', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-push-range-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+
+    try {
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      mkdirSync(join(repo, 'config'), { recursive: true });
+      copyFileSync('scripts/changed-area-classifier.sh', join(repo, 'scripts/changed-area-classifier.sh'));
+      copyFileSync('config/test-policy.json', join(repo, 'config/test-policy.json'));
+      chmodSync(join(repo, 'scripts/changed-area-classifier.sh'), 0o755);
+      writeFileSync(join(repo, 'README.md'), 'fixture\n');
+
+      git('init');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      const pushBefore = git('rev-parse', 'HEAD');
+
+      mkdirSync(join(repo, 'src'), { recursive: true });
+      writeFileSync(join(repo, 'src/runtime-feature.ts'), 'export const runtimeFeature = true;\n');
+      git('add', 'src/runtime-feature.ts');
+      git('commit', '-m', 'feat: runtime');
+
+      mkdirSync(join(repo, 'docs'), { recursive: true });
+      writeFileSync(join(repo, 'docs/release.md'), '# Release\n');
+      git('add', 'docs/release.md');
+      git('commit', '-m', 'docs: release');
+
+      const raw = execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--base', pushBefore],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      );
+      const result = JSON.parse(raw) as {
+        changedFiles: string[];
+        flags: Record<string, boolean>;
+        vitest: { mode: string };
+      };
+
+      expect(result.changedFiles).toEqual([
+        'docs/release.md',
+        'src/runtime-feature.ts',
+      ]);
+      expect(result.flags.docsOnly).toBe(false);
+      expect(result.flags.backendSrc).toBe(true);
+      expect(result.vitest.mode).not.toBe('skip');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects zero, missing, unresolved, and non-ancestor push bases', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-ci-base-resolution-'));
+    const gitEnv = cleanGitEnv();
+    const resolver = join(process.cwd(), 'scripts/resolve-ci-change-base.sh');
+    const classifierSource = join(process.cwd(), 'scripts/changed-area-classifier.sh');
+    const classifier = join(repo, 'scripts/changed-area-classifier.sh');
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    const resolvePush = (before?: string) => execFileSync('bash', [resolver], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: {
+        ...gitEnv,
+        NEXUS_CI_REPO_ROOT: repo,
+        EVENT_NAME: 'push',
+        ...(before === undefined ? {} : { PUSH_BEFORE_SHA: before }),
+      },
+    }).trim();
+
+    try {
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      mkdirSync(join(repo, 'config'), { recursive: true });
+      copyFileSync(classifierSource, classifier);
+      chmodSync(classifier, 0o755);
+      copyFileSync('config/test-policy.json', join(repo, 'config/test-policy.json'));
+      writeFileSync(join(repo, 'base.txt'), 'base\n');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      const ancestor = git('rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'runtime.txt'), 'runtime\n');
+      git('add', '.');
+      git('commit', '-m', 'fixture: runtime');
+
+      expect(resolvePush(ancestor)).toBe(ancestor);
+      expect(resolvePush()).toBe('');
+      expect(resolvePush('0000000000000000000000000000000000000000')).toBe('');
+      expect(resolvePush('f'.repeat(40))).toBe('');
+
+      git('checkout', '--orphan', 'rewritten');
+      execFileSync('git', ['rm', '-rf', '.'], { cwd: repo, env: gitEnv });
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      mkdirSync(join(repo, 'config'), { recursive: true });
+      copyFileSync(classifierSource, classifier);
+      chmodSync(classifier, 0o755);
+      copyFileSync('config/test-policy.json', join(repo, 'config/test-policy.json'));
+      writeFileSync(join(repo, 'docs-only.md'), 'rewritten\n');
+      git('add', '.');
+      git('commit', '-m', 'fixture: unrelated rewrite');
+      expect(resolvePush(ancestor)).toBe('');
+
+      const raw = execFileSync('bash', [classifier, '--json', '--base', ancestor], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: gitEnv,
+      });
+      const result = JSON.parse(raw) as {
+        flags: Record<string, boolean>;
+        vitest: { mode: string };
+      };
+      expect(result.flags.impactResolved).toBe(false);
+      expect(result.flags.docsOnly).toBe(false);
+      expect(result.flags.migration).toBe(true);
+      expect(result.flags.pythonEngine).toBe(true);
+      expect(result.vitest.mode).toBe('full');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

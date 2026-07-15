@@ -15,12 +15,6 @@ Run before final handoff/final answer for non-trivial work:
 node scripts/reward-check.mjs --area auto --advisory
 ```
 
-With a handoff:
-
-```bash
-node scripts/reward-check.mjs --area auto --handoff docs/agents/handoffs/<file>.md --advisory
-```
-
 Interpret verdicts before scores:
 
 - `FAIL`: fix or report a blocker.
@@ -30,8 +24,8 @@ Interpret verdicts before scores:
 - `NOT_APPLICABLE`: no meaningful reward check applies.
 
 Document skipped checks as acceptable skip, warning, manual review required, or
-hard failure. Add the Verifiable Reward Summary block to handoffs. Keep raw
-JSON under `.local/reward-runs/`; do not paste raw JSON into normal handoffs.
+hard failure. Keep raw JSON under `.local/reward-runs/`; put the compact summary
+in the response or the canonical current release state, not a new handoff file.
 
 Do not start provider fine-tuning. Export only reviewed, sanitized,
 export-eligible reward records.

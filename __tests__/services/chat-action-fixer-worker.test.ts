@@ -243,6 +243,32 @@ describe('chat action retry policy and fixer worker', () => {
     });
   });
 
+  it('makes zero additional model calls when an unchanged completed fixer input is enqueued again', async () => {
+    const review = {
+      input,
+      plan,
+      step,
+      result: {
+        step,
+        status: 'partial_success' as const,
+        error: 'verifier_mismatch',
+        result: { providerReadBack: { title: 'Wrong event' } },
+      },
+    };
+    const first = enqueueChatActionFixerReview(review, testDb);
+    const proposeCorrection = vi.fn(() => ({
+      proposed_step: null,
+      reasoning: 'No safe correction is available.',
+    }));
+
+    expect(await processChatActionFixerJobs({ db: testDb, proposeCorrection })).toMatchObject({ completed: 1 });
+    const replay = enqueueChatActionFixerReview(review, testDb);
+    expect(replay.jobId).toBe(first.jobId);
+    expect(replay.status).toBe('completed');
+    expect(await processChatActionFixerJobs({ db: testDb, proposeCorrection })).toMatchObject({ completed: 0 });
+    expect(proposeCorrection).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses high-risk fixer proposals instead of creating executable Decision Center actions', async () => {
     enqueueChatActionFixerReview({
       input,

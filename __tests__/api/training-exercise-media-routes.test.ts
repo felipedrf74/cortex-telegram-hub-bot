@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import http from 'node:http';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { Router } from 'express';
@@ -73,8 +74,7 @@ describe('Training exercise media API contracts', () => {
   let resolveEntitlement: ReturnType<typeof vi.fn<(userId: number) => UserEntitlement>>;
 
   beforeEach(async () => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     seedApprovedExerciseMedia(db, { alias: 'press_up' });
     env = { TRAINING_EXERCISE_MEDIA_V1_ENABLED: 'true' };
     lookup = vi.fn((tenantId, userId, ids, locale) => lookupTrainingExerciseMedia(

@@ -22,7 +22,7 @@ const evidencePath = path.resolve(
   root,
   readArg(
     '--evidence',
-    process.env.NEXUS_ROLLBACK_DRILL_EVIDENCE_PATH || 'docs/release/evidence/rollback-drill-latest.json',
+    process.env.NEXUS_ROLLBACK_DRILL_EVIDENCE_PATH || '.local/release/rollback-drill-latest.json',
   ),
 );
 const DEFAULT_MAX_AGE_DAYS = 30;

@@ -17,9 +17,9 @@ logs/
 !.claude/settings.json
 !.claude/skills/
 .claude/skills/*
-!.claude/skills/verifiable-reward-check/
-.claude/skills/verifiable-reward-check/*
-!.claude/skills/verifiable-reward-check/SKILL.md
+!.claude/skills/*/
+.claude/skills/*/*
+!.claude/skills/*/SKILL.md
 # prompts/ — tracked (needed for autoresearch)
 content-engine/.venv/
 content-engine/__pycache__/

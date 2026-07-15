@@ -716,7 +716,8 @@ async function extractPatternsForCreatorContext(
   );
 
   // Gemini-first: gemini-2.5-flash matches Sonnet for analytical pattern
-  // extraction at ~9× lower cost. Falls back to Anthropic on failure.
+  // extraction at ~9× lower cost. Falls back through OpenAI, then gated
+  // Anthropic on failure.
   const { text: rawAnalysisText } = await withAiBudgetReservation({
     userId: meteringScope.userId ?? 0,
     requestSource: budgetContext.requestSource,

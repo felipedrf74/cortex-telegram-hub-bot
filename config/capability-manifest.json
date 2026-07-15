@@ -1,0 +1,348 @@
+{
+  "schema": "nexus.capability-manifest.v1",
+  "version": "2026-07-15",
+  "evaluationCoverage": {
+    "allergy-safety": ["__tests__/services/cooking-allergen-vocabulary.test.ts"],
+    "auditability": ["__tests__/services/audit-trail.test.ts"],
+    "capacity": ["__tests__/services/training-m4-capacity-snapshots.test.ts"],
+    "choice-contract": ["__tests__/services/decision-action-contract.test.ts"],
+    "consent": ["__tests__/services/health-consent.test.ts", "__tests__/api/connections-routes.test.ts"],
+    "delivery-contract": ["__tests__/api/notifications-routes.test.ts"],
+    "device-smoke": ["scripts/testflight-evidence.sh"],
+    "expiry": ["__tests__/api/decision-cursor.test.ts"],
+    "media-contract": ["__tests__/services/training-exercise-media-manifest.test.ts"],
+    "precision": ["__tests__/api/finance-money-precision.test.ts"],
+    "preferences": ["__tests__/services/cooking-preferences.test.ts", "__tests__/services/notification-orchestrator.test.ts"],
+    "provenance": ["__tests__/services/content-reference-provenance.test.ts"],
+    "public-contract": ["__tests__/services/chat-answer-contract.test.ts"],
+    "quality": ["__tests__/services/content-generation-quality.test.ts"],
+    "quiet-hours": ["__tests__/services/notification-orchestrator.test.ts"],
+    "routing": ["__tests__/router/dynamic-routing.test.ts"],
+    "safety": ["__tests__/services/chat-core-v2-training-safety-policy.test.ts"],
+    "tenant-isolation": ["__tests__/security/chat-fastpath-tenant-leak.test.ts"]
+  },
+  "chatResponsePolicyOrder": ["secretary", "tasks", "training", "content", "cooking", "finance", "connections", "notifications", "decision_center"],
+  "chatUiSkillOrder": ["secretary_calendar", "secretary_reminders", "mail", "tasks", "training", "content", "cooking", "finance", "connections", "notifications", "decision_center"],
+  "capabilities": [
+    {
+      "id": "secretary",
+      "aliases": [],
+      "version": "2.0.0",
+      "lifecycle": "active",
+      "owner": "secretary",
+      "runtimeRouting": { "domain": "secretary", "chatOwnerSkill": "secretary" },
+      "requiredTier": "free",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "routed",
+      "costBudget": "standard",
+      "latencyBudgetMs": 180000,
+      "supportedChannels": ["telegram", "rest", "ios"],
+      "requiredEvaluations": ["routing", "tenant-isolation", "public-contract"],
+      "restrictedPlanAccess": { "free": true, "beta": true },
+      "onboardingQuestionnaires": [],
+      "chatOwnerSkills": ["secretary", "tasks"],
+      "chatActionSkills": ["secretary_calendar", "secretary_reminders", "mail", "tasks"],
+      "chatOwnerUiSkills": { "secretary": "secretary_calendar", "tasks": "tasks" },
+      "responsePolicies": [
+        {
+          "skill": "secretary",
+          "genericAnswerExamples": ["how should I think about prioritizing a busy day?"],
+          "localReadExamples": ["what should I do next today?", "show my agenda", "do I have free time?"],
+          "internetEligibleExamples": ["what public holiday affects my agenda next week?"],
+          "actionExamples": ["schedule focus time", "move my meeting"],
+          "defaultGenericShape": "direct_answer",
+          "defaultLocalShape": "agenda_summary",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.secretary"
+        },
+        {
+          "skill": "tasks",
+          "genericAnswerExamples": ["how should I break a big task down?"],
+          "localReadExamples": ["what tasks are overdue?", "what should I complete first?"],
+          "internetEligibleExamples": ["what is a good GTD workflow?"],
+          "actionExamples": ["create a task", "mark this task done", "delete all my tasks"],
+          "defaultGenericShape": "direct_answer",
+          "defaultLocalShape": "task_options",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.tasks"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "secretary_calendar", "displayName": "Secretary", "responseCardType": "calendar_action", "latencyBudgetMs": 2500, "privacyPolicy": "private_detail" },
+        { "skill": "secretary_reminders", "displayName": "Reminders", "responseCardType": "calendar_action", "latencyBudgetMs": 1200, "privacyPolicy": "private_detail" },
+        { "skill": "mail", "displayName": "Mail", "responseCardType": "mail_action", "latencyBudgetMs": 2200, "privacyPolicy": "private_detail" },
+        { "skill": "tasks", "displayName": "Tasks", "responseCardType": "task_action", "latencyBudgetMs": 1800, "privacyPolicy": "private_detail" }
+      ]
+    },
+    {
+      "id": "triathlon",
+      "aliases": ["training"],
+      "version": "3.0.0",
+      "lifecycle": "active",
+      "owner": "training",
+      "runtimeRouting": { "domain": "triathlon", "chatOwnerSkill": "training" },
+      "requiredTier": "pro",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "routed",
+      "costBudget": "standard",
+      "latencyBudgetMs": 180000,
+      "supportedChannels": ["telegram", "rest", "ios"],
+      "requiredEvaluations": ["safety", "capacity", "media-contract", "device-smoke"],
+      "restrictedPlanAccess": { "free": false, "beta": true },
+      "onboardingQuestionnaires": ["fitness", "triathlon-gym", "triathlon-running", "triathlon-cycling", "triathlon-swim"],
+      "chatOwnerSkills": ["training"],
+      "chatActionSkills": ["training"],
+      "chatOwnerUiSkills": { "training": "training" },
+      "responsePolicies": [
+        {
+          "skill": "training",
+          "genericAnswerExamples": ["how should I structure a simple strength plan?"],
+          "localReadExamples": ["what is my training plan today?", "am I recovered enough?"],
+          "internetEligibleExamples": ["latest marathon taper guidance"],
+          "actionExamples": ["create a training plan", "move this workout"],
+          "defaultGenericShape": "training_advice",
+          "defaultLocalShape": "training_advice",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.training"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "training", "displayName": "Training", "responseCardType": "training_action", "latencyBudgetMs": 2200, "privacyPolicy": "private_detail" }
+      ],
+      "trainingCapabilities": {
+        "catalog": {
+          "summaryPath": "catalog/training/exercise-media/v1/summary.json",
+          "summarySchema": "nexus.training-catalog-summary.v1",
+          "catalogVersion": "training-exercise-identity-catalog.v1",
+          "mediaApiSchemaVersion": "training_exercise_media_api.v1",
+          "approvedOrigin": "https://media.nexushub.me",
+          "activationState": "MATERIALIZED_FINAL_OWNER_APPROVED"
+        },
+        "capacity": {
+          "capabilitiesPath": "/plan/revision-capabilities",
+          "refreshMethod": "POST",
+          "refreshPath": "/plan/capacity-context/refresh",
+          "refreshApiSchema": "training_m4_capacity_refresh.v1",
+          "authoritativeClientModification": "NARROW_ONLY",
+          "storageMigration": "migrations/231_training_m4_capacity_snapshots.sql"
+        }
+      }
+    },
+    {
+      "id": "content",
+      "aliases": [],
+      "version": "2.0.0",
+      "lifecycle": "active",
+      "owner": "content",
+      "runtimeRouting": { "domain": "content", "chatOwnerSkill": "content" },
+      "requiredTier": "pro",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "routed",
+      "costBudget": "metered",
+      "latencyBudgetMs": 180000,
+      "supportedChannels": ["telegram", "rest", "ios", "portal"],
+      "requiredEvaluations": ["quality", "provenance", "tenant-isolation"],
+      "restrictedPlanAccess": { "free": false, "beta": true },
+      "onboardingQuestionnaires": [],
+      "chatOwnerSkills": ["content"],
+      "chatActionSkills": ["content"],
+      "chatOwnerUiSkills": { "content": "content" },
+      "responsePolicies": [
+        {
+          "skill": "content",
+          "genericAnswerExamples": ["give me title ideas", "rewrite this hook"],
+          "localReadExamples": ["what content drafts are ready?", "what voice card are we using?"],
+          "internetEligibleExamples": ["fresh research for this topic", "latest trend about AI"],
+          "actionExamples": ["generate a draft", "expand this section"],
+          "defaultGenericShape": "content_draft",
+          "defaultLocalShape": "content_draft",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.content"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "content", "displayName": "Content", "responseCardType": "content_action", "latencyBudgetMs": 2400, "privacyPolicy": "private_detail" }
+      ]
+    },
+    {
+      "id": "finance",
+      "aliases": [],
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "finance",
+      "runtimeRouting": { "domain": "finance", "chatOwnerSkill": "finance" },
+      "requiredTier": "pro",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "routed",
+      "costBudget": "restricted",
+      "latencyBudgetMs": 180000,
+      "supportedChannels": ["telegram", "rest", "ios"],
+      "requiredEvaluations": ["precision", "tenant-isolation", "auditability"],
+      "restrictedPlanAccess": { "free": false, "beta": true },
+      "onboardingQuestionnaires": [],
+      "chatOwnerSkills": ["finance"],
+      "chatActionSkills": ["finance"],
+      "chatOwnerUiSkills": { "finance": "finance" },
+      "responsePolicies": [
+        {
+          "skill": "finance",
+          "genericAnswerExamples": ["explain what a deductible expense is"],
+          "localReadExamples": ["how much did I spend this month?", "what bills are due?"],
+          "internetEligibleExamples": ["current exchange rate", "latest tax deadline"],
+          "actionExamples": ["categorize this receipt", "mark this bill paid"],
+          "defaultGenericShape": "finance_summary",
+          "defaultLocalShape": "finance_summary",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.finance"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "finance", "displayName": "Finance", "responseCardType": "finance_action", "latencyBudgetMs": 2200, "privacyPolicy": "sensitive_redacted" }
+      ]
+    },
+    {
+      "id": "cooking",
+      "aliases": [],
+      "version": "1.1.0",
+      "lifecycle": "active",
+      "owner": "cooking",
+      "runtimeRouting": { "domain": "cooking", "chatOwnerSkill": "cooking" },
+      "requiredTier": "pro",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "routed",
+      "costBudget": "standard",
+      "latencyBudgetMs": 180000,
+      "supportedChannels": ["telegram", "rest", "ios", "portal"],
+      "requiredEvaluations": ["preferences", "allergy-safety", "routing"],
+      "restrictedPlanAccess": { "free": false, "beta": true },
+      "onboardingQuestionnaires": ["diet"],
+      "chatOwnerSkills": ["cooking"],
+      "chatActionSkills": ["cooking"],
+      "chatOwnerUiSkills": { "cooking": "cooking" },
+      "responsePolicies": [
+        {
+          "skill": "cooking",
+          "genericAnswerExamples": ["suggest an oven-baked vegetable recipe", "how do I store grated carrots?"],
+          "localReadExamples": ["what meals did I plan this week?", "what is on my grocery list?"],
+          "internetEligibleExamples": ["latest food safety guidance for leftovers"],
+          "actionExamples": ["create a grocery list", "add this dinner to my plan"],
+          "defaultGenericShape": "recipe",
+          "defaultLocalShape": "direct_answer",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.cooking"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "cooking", "displayName": "Cooking", "responseCardType": "cooking_action", "latencyBudgetMs": 2000, "privacyPolicy": "private_detail" }
+      ]
+    },
+    {
+      "id": "connections",
+      "aliases": [],
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "connections",
+      "runtimeRouting": { "domain": "connections", "chatOwnerSkill": null },
+      "requiredTier": "free",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "routed",
+      "costBudget": "standard",
+      "latencyBudgetMs": 180000,
+      "supportedChannels": ["telegram", "rest", "ios"],
+      "requiredEvaluations": ["consent", "tenant-isolation", "routing"],
+      "restrictedPlanAccess": { "free": false, "beta": false },
+      "onboardingQuestionnaires": [],
+      "chatOwnerSkills": ["connections"],
+      "chatActionSkills": ["connections"],
+      "chatOwnerUiSkills": { "connections": "connections" },
+      "responsePolicies": [
+        {
+          "skill": "connections",
+          "genericAnswerExamples": ["what is Google Calendar used for in Nexus?"],
+          "localReadExamples": ["is Gmail connected?", "why is Apple Health unavailable?"],
+          "internetEligibleExamples": ["current Google OAuth status page"],
+          "actionExamples": ["retry sync", "open connection settings"],
+          "defaultGenericShape": "connection_status",
+          "defaultLocalShape": "connection_status",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.connections"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "connections", "displayName": "Connections", "responseCardType": "provider_status", "latencyBudgetMs": 1500, "privacyPolicy": "safe_preview" }
+      ]
+    },
+    {
+      "id": "notifications",
+      "aliases": [],
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "notifications",
+      "runtimeRouting": { "domain": "notifications", "chatOwnerSkill": null },
+      "requiredTier": "free",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "deterministic-first",
+      "costBudget": "minimal",
+      "latencyBudgetMs": 30000,
+      "supportedChannels": ["rest", "ios"],
+      "requiredEvaluations": ["preferences", "quiet-hours", "delivery-contract"],
+      "restrictedPlanAccess": { "free": false, "beta": false },
+      "onboardingQuestionnaires": [],
+      "chatOwnerSkills": ["notifications"],
+      "chatActionSkills": ["notifications"],
+      "chatOwnerUiSkills": { "notifications": "notifications" },
+      "responsePolicies": [
+        {
+          "skill": "notifications",
+          "genericAnswerExamples": ["how do quiet hours work?"],
+          "localReadExamples": ["why did I miss this notification?", "show my alert settings"],
+          "internetEligibleExamples": ["current APNs status"],
+          "actionExamples": ["turn on decision alerts", "test push notification"],
+          "defaultGenericShape": "notification_summary",
+          "defaultLocalShape": "notification_summary",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.notifications"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "notifications", "displayName": "Notifications", "responseCardType": "notification_action", "latencyBudgetMs": 1400, "privacyPolicy": "safe_preview" }
+      ]
+    },
+    {
+      "id": "decision_center",
+      "aliases": [],
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "decision-center",
+      "runtimeRouting": { "domain": "decision_center", "chatOwnerSkill": null },
+      "requiredTier": "free",
+      "memoryScope": "tenant-user",
+      "providerPolicy": "deterministic-first",
+      "costBudget": "minimal",
+      "latencyBudgetMs": 30000,
+      "supportedChannels": ["telegram", "rest", "ios"],
+      "requiredEvaluations": ["provenance", "expiry", "choice-contract"],
+      "restrictedPlanAccess": { "free": false, "beta": false },
+      "onboardingQuestionnaires": [],
+      "chatOwnerSkills": ["decision_center"],
+      "chatActionSkills": ["decision_center"],
+      "chatOwnerUiSkills": { "decision_center": "decision_center" },
+      "responsePolicies": [
+        {
+          "skill": "decision_center",
+          "genericAnswerExamples": ["how should I compare two options?"],
+          "localReadExamples": ["what decisions are waiting?", "why does it say all clear?"],
+          "internetEligibleExamples": ["decision framework examples from current sources"],
+          "actionExamples": ["choose this option", "snooze this decision"],
+          "defaultGenericShape": "decision_summary",
+          "defaultLocalShape": "decision_summary",
+          "defaultGrounding": "none",
+          "telemetryLabel": "chat.skill.decision_center"
+        }
+      ],
+      "uiSkillMetadata": [
+        { "skill": "decision_center", "displayName": "Decision Center", "responseCardType": "decision_action", "latencyBudgetMs": 1800, "privacyPolicy": "safe_preview" }
+      ]
+    }
+  ]
+}

@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
 let testDb: Database.Database;
 
 const mockCompleteOneShotWithFallback = vi.fn();
@@ -59,6 +57,7 @@ vi.mock('../../src/services/ai-automation-policy', () => ({
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
+  AiBudgetError: class AiBudgetError extends Error {},
   withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
 }));
 
@@ -67,8 +66,6 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
@@ -76,21 +73,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-
-  for (const file of fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort()) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 function seedUser(id: number, label: string): void {
   testDb.prepare(`
@@ -110,6 +92,36 @@ function seedTranscript(userId: number, videoId: string, text: string): void {
   `).run(videoId, `${videoId} title`, text, userId, userId, userId, userId, userId);
 }
 
+function validVoiceAnalysis(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    additions: [],
+    removals: [],
+    rephrasing: [],
+    recurring_phrases: [],
+    book_influences: [],
+    voice_summary: 'valid scoped voice summary',
+    ...overrides,
+  };
+}
+
+async function captureAggregateFailure(run: Promise<void>): Promise<AggregateError> {
+  const result = await run.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  expect(result).toBeInstanceOf(AggregateError);
+  return result as AggregateError;
+}
+
+async function captureFailure(run: Promise<void>): Promise<Error & { cause?: unknown }> {
+  const result = await run.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  expect(result).toBeInstanceOf(Error);
+  return result as Error & { cause?: unknown };
+}
+
 describe('Voice Evolution Agent — multi-tenant scope', () => {
   beforeEach(async () => {
     vi.resetModules();
@@ -126,8 +138,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       if (typeof fn === 'function' && 'mockClear' in fn) fn.mockClear();
     });
 
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
 
     const { setDbProvider, setScopeAnomalyReporter } = await import('../../src/services/intelligence-bus');
     setDbProvider(() => testDb);
@@ -198,8 +209,38 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     });
 
     await runVoiceEvolutionAgent();
+    await runVoiceEvolutionAgent();
 
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(2);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
+
+    seedTranscript(28, 'knitter-video-new', 'knitter-only-transcript with a newly changed stitch cadence');
+    await runVoiceEvolutionAgent();
+
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).toContain('newly changed stitch cadence');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).not.toContain('founder-only-transcript');
+
+    // A fourth unchanged run must observe the fingerprint written only after
+    // the successful changed-input outputs and make zero additional calls.
+    await runVoiceEvolutionAgent();
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
+
+    const fingerprints = testDb.prepare(`
+      SELECT user_id, tenant_id, payload
+      FROM agent_signals
+      WHERE signal_type = 'voice_analysis_fingerprint'
+      ORDER BY user_id, id
+    `).all() as { user_id: number; tenant_id: number; payload: string }[];
+    expect(fingerprints).toHaveLength(3);
+    expect(fingerprints.map((row) => [row.user_id, row.tenant_id])).toEqual([
+      [25, 25],
+      [28, 28],
+      [28, 28],
+    ]);
+    expect(fingerprints.every((row) => !row.payload.includes('transcript'))).toBe(true);
 
     const signals = testDb.prepare(`
       SELECT user_id, tenant_id, signal_type, payload
@@ -231,6 +272,275 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       expect.objectContaining({ user_id: 25, tenant_id: 25, pattern_text: 'founder-signal' }),
       expect.objectContaining({ user_id: 28, tenant_id: 28, pattern_text: 'knitter-signal' }),
     ]);
+  });
+
+  it('rejects syntactically valid JSON that does not satisfy the provider output schema', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'malformed-provider-output');
+    seedTranscript(25, 'malformed-provider-video', 'tenant-private malformed-provider transcript');
+    mockCompleteOneShotWithFallback.mockResolvedValue({
+      text: JSON.stringify(validVoiceAnalysis({
+        additions: [{
+          pattern: 'invalid frequency must not be processed',
+          examples: ['private example'],
+          frequency: 'always',
+          category: 'argument',
+        }],
+      })),
+    });
+
+    const failure = await captureAggregateFailure(runVoiceEvolutionAgent());
+    expect((failure.errors[0] as Error).message).toContain(
+      'Voice Evolution provider schema invalid at $.additions[0].frequency',
+    );
+
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+  });
+
+  it.each([
+    {
+      label: 'top-level array cardinality',
+      analysis: validVoiceAnalysis({
+        additions: Array.from({ length: 21 }, (_, index) => ({
+          pattern: `bounded pattern ${index}`,
+          examples: ['bounded example'],
+          frequency: 'often',
+          category: 'argument',
+        })),
+      }),
+      expectedMessage: 'Voice Evolution provider schema invalid at $.additions: exceeds 20 items',
+    },
+    {
+      label: 'field length',
+      analysis: validVoiceAnalysis({ voice_summary: 'x'.repeat(2_001) }),
+      expectedMessage: 'Voice Evolution provider schema invalid at $.voice_summary: exceeds 2000 characters',
+    },
+  ])('rejects otherwise valid JSON exceeding the $label limit', async ({ analysis, expectedMessage }) => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'oversized-provider-output');
+    seedTranscript(25, 'oversized-provider-video', 'tenant-private oversized-provider transcript');
+    mockCompleteOneShotWithFallback.mockResolvedValue({ text: JSON.stringify(analysis) });
+
+    const failure = await captureAggregateFailure(runVoiceEvolutionAgent());
+    expect((failure.errors[0] as Error).message).toContain(expectedMessage);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+  });
+
+  it('serializes concurrent identical tenant runs into one reservation, provider call, and output set', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'concurrent-run');
+    seedTranscript(25, 'concurrent-run-video', 'tenant-private concurrent-run transcript');
+
+    let resolveProvider!: (result: { text: string }) => void;
+    mockCompleteOneShotWithFallback.mockImplementation(() => new Promise((resolve) => {
+      resolveProvider = resolve;
+    }));
+
+    const firstRun = runVoiceEvolutionAgent();
+    await vi.waitFor(() => expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1));
+    const overlappingRun = runVoiceEvolutionAgent();
+    await vi.waitFor(() => expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(1));
+
+    resolveProvider({ text: JSON.stringify(validVoiceAnalysis()) });
+    await Promise.all([firstRun, overlappingRun]);
+
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(testDb.prepare(`
+      SELECT signal_type, COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+      GROUP BY signal_type
+      ORDER BY signal_type
+    `).all(25, 25)).toEqual([
+      { signal_type: 'voice_analysis_fingerprint', count: 1 },
+      { signal_type: 'voice_pattern', count: 1 },
+    ]);
+  });
+
+  it('attempts later tenants before surfacing an aggregate provider-schema failure', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'first-malformed');
+    seedUser(28, 'second-valid');
+    seedTranscript(25, 'first-malformed-video', 'first tenant malformed-output transcript');
+    seedTranscript(28, 'second-valid-video', 'second tenant valid-output transcript');
+    mockCompleteOneShotWithFallback.mockImplementation(async (...args: unknown[]) => {
+      const prompt = String(args[1]);
+      if (prompt.includes('first tenant malformed-output transcript')) {
+        return {
+          text: JSON.stringify(validVoiceAnalysis({ recurring_phrases: 'not-an-array' })),
+        };
+      }
+      if (prompt.includes('second tenant valid-output transcript')) {
+        return {
+          text: JSON.stringify(validVoiceAnalysis({ voice_summary: 'second tenant persisted summary' })),
+        };
+      }
+      throw new Error('unexpected tenant prompt');
+    });
+
+    const failure = await captureAggregateFailure(runVoiceEvolutionAgent());
+
+    expect(failure.message).toContain('after all targets were attempted (1/2)');
+    expect((failure.errors[0] as Error).message).toContain(
+      'Voice Evolution provider schema invalid at $.recurring_phrases: expected array',
+    );
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(2);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain(
+      'first tenant malformed-output transcript',
+    );
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[1][1])).toContain(
+      'second tenant valid-output transcript',
+    );
+    expect(testDb.prepare(`
+      SELECT user_id, tenant_id, signal_type
+      FROM agent_signals
+      ORDER BY user_id, id
+    `).all()).toEqual([
+      { user_id: 28, tenant_id: 28, signal_type: 'voice_pattern' },
+      { user_id: 28, tenant_id: 28, signal_type: 'voice_analysis_fingerprint' },
+    ]);
+  });
+
+  it('rolls back signals and learned patterns when the final fingerprint write fails', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'persistence-failure');
+    seedTranscript(25, 'persistence-failure-video', 'tenant-private persistence-failure transcript');
+    mockCompleteOneShotWithFallback.mockResolvedValue({
+      text: JSON.stringify(validVoiceAnalysis({
+        additions: [{
+          pattern: 'retryable learned pattern',
+          examples: ['retryable example'],
+          frequency: 'often',
+          category: 'argument',
+        }],
+      })),
+    });
+    testDb.exec(`
+      CREATE TRIGGER fail_voice_fingerprint_insert
+      BEFORE INSERT ON agent_signals
+      WHEN NEW.signal_type = 'voice_analysis_fingerprint'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected final fingerprint failure');
+      END
+    `);
+
+    const failure = await captureFailure(runVoiceEvolutionAgent());
+    expect(failure.name).toBe('VoiceEvolutionPersistenceError');
+    expect(failure.message).toBe('Voice Evolution governed output transaction failed');
+    expect((failure.cause as Error).message).toContain(
+      'Voice Evolution failed to persist voice_analysis_fingerprint output',
+    );
+
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM content_learned_patterns
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+
+    // The same input remains retryable because the fingerprint was not written.
+    testDb.exec('DROP TRIGGER fail_voice_fingerprint_insert');
+    await runVoiceEvolutionAgent();
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(2);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE signal_type = 'voice_analysis_fingerprint'
+        AND user_id = ?
+        AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 3 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM content_learned_patterns
+      WHERE user_id = ?
+        AND tenant_id = ?
+        AND pattern_text = 'retryable learned pattern'
+    `).get(25, 25)).toEqual({ count: 1 });
+  });
+
+  it('aborts later tenants after a typed governed persistence failure', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'first-persistence-failure');
+    seedUser(28, 'later-must-not-run');
+    seedTranscript(25, 'first-persistence-video', 'first tenant persistence-failure transcript');
+    seedTranscript(28, 'later-must-not-run-video', 'later tenant must not enter provider prompt');
+    mockCompleteOneShotWithFallback.mockResolvedValue({
+      text: JSON.stringify(validVoiceAnalysis({
+        additions: [{
+          pattern: 'must roll back before abort',
+          examples: ['rollback evidence'],
+          frequency: 'often',
+          category: 'argument',
+        }],
+      })),
+    });
+    testDb.exec(`
+      CREATE TRIGGER fail_first_voice_fingerprint_insert
+      BEFORE INSERT ON agent_signals
+      WHEN NEW.signal_type = 'voice_analysis_fingerprint'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected global persistence failure');
+      END
+    `);
+
+    const failure = await captureFailure(runVoiceEvolutionAgent());
+
+    expect(failure.name).toBe('VoiceEvolutionPersistenceError');
+    expect((failure.cause as Error).message).toContain(
+      'Voice Evolution failed to persist voice_analysis_fingerprint output',
+    );
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain(
+      'first tenant persistence-failure transcript',
+    );
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).not.toContain(
+      'later tenant must not enter provider prompt',
+    );
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id IN (?, ?)
+    `).get(25, 28)).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM content_learned_patterns
+      WHERE user_id IN (?, ?)
+    `).get(25, 28)).toEqual({ count: 0 });
+  });
+
+  it('fails closed without budget or provider work when the fingerprint read fails', async () => {
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'fingerprint-read-failure');
+    seedTranscript(25, 'fingerprint-read-failure-video', 'tenant-private read-failure transcript');
+    testDb.exec('ALTER TABLE agent_signals RENAME TO agent_signals_unavailable');
+
+    await expect(runVoiceEvolutionAgent()).rejects.toThrow(
+      'Voice Evolution fingerprint read failed; provider call blocked',
+    );
+
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
   });
 
   it('skips Free/trial scopes before data or model work and attributes the paid call as automation', async () => {

@@ -31,7 +31,7 @@
 # does NOT short-circuit — it runs all five and reports a single
 # summary at the end.
 #
-# Each leg's stdout/stderr is captured to docs/release/smoke-evidence/
+# Each leg's stdout/stderr is captured to .local/release/smoke-evidence/
 # under closed-beta-smoke-<commit>-<utc-timestamp>/ so the operator
 # has the per-leg log if any leg fails.
 #
@@ -58,7 +58,7 @@ cd "$ROOT_DIR"
 
 UTC_NOW="$(date -u +%Y%m%dT%H%M%SZ)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-EVIDENCE_DIR="docs/release/smoke-evidence/closed-beta-smoke-${COMMIT}-${UTC_NOW}"
+EVIDENCE_DIR=".local/release/smoke-evidence/closed-beta-smoke-${COMMIT}-${UTC_NOW}"
 mkdir -p "$EVIDENCE_DIR"
 
 # Optional skip flags so individual legs can be excluded when the

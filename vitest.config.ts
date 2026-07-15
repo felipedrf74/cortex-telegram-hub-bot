@@ -18,13 +18,10 @@ export default defineConfig({
         'src/**/*.d.ts',
       ],
       thresholds: {
-        // Current main: 1.82% lines, 56% branches, 29% functions
-        // Lines/statements low because tests only cover router + database (2 of 60+ files)
-        // Raise these AFTER merging feature/test-expansion branch
-        lines: 1,
-        functions: 15,
-        branches: 15,
-        statements: 1,
+        lines: 78,
+        functions: 84,
+        branches: 68,
+        statements: 75,
       },
     },
     testTimeout: 10000,

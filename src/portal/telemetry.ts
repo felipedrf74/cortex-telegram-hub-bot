@@ -120,6 +120,11 @@ export function setJobFailureNotifier(fn: FailureNotifier): void {
 export type JobResult = void | 'skipped';
 
 export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promise<void> {
+  const status = jobMap.get(name);
+  if (!status) {
+    throw new Error(`Cannot wrap unregistered scheduled job: ${name}`);
+  }
+
   const wrapped = async () => {
     // Each cron tick runs inside its own request context so all log lines
     // emitted during the job (and any HTTP calls it makes to content-engine
@@ -132,12 +137,6 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
         // Skip if the owning sub-skill is disabled
         if (!isJobEnabled(name)) {
           logger.debug({ job: name }, 'Cron job skipped — sub-skill disabled');
-          return;
-        }
-
-        const status = jobMap.get(name);
-        if (!status) {
-          await fn(); // unregistered — run without tracking
           return;
         }
 
@@ -201,8 +200,7 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
   };
 
   // Store the wrapped callback so DST watchdog can re-invoke missed jobs
-  const status = jobMap.get(name);
-  if (status) status.wrappedFn = wrapped;
+  status.wrappedFn = wrapped;
 
   return wrapped;
 }

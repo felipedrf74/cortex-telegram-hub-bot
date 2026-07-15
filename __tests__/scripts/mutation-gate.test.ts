@@ -1,0 +1,1012 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import {
+  buildMutationPlan,
+  buildStrykerInvocation,
+  countTestDeclarations,
+  extractTestEvidence,
+  extractReferencedSourceLiterals,
+  extractRelativeImports,
+  isCriticalModule,
+  isTestCleanupChange,
+  mutationPlanExitCode,
+  parseMutationTarget,
+  resolveImportedSourcePaths,
+  resolveReferencedSourcePaths,
+  resolveDeletedTestCleanupMappings,
+  validateCleanupMapping,
+  validateGovernedMutationTarget,
+  validateMutationException,
+  validateMutationReport,
+} from '../../scripts/mutation-gate.mjs';
+
+const currentGovernedRanges = [
+  {
+    pattern: 'src/services/cooking-tenant-scope.ts:54-57',
+    replacementTest: '__tests__/services/cooking-private-scope.test.ts',
+    ownerTestName: 'cooking private scope predicate admits only active user-private tenant-owned and user-owned rows',
+    minimumMutants: 4,
+  },
+  {
+    pattern: 'src/services/gemini-provider.ts:639-639',
+    replacementTest: '__tests__/services/gemini-provider.test.ts',
+    ownerTestName: 'GeminiProvider reserves unbounded grounded context and meters the provider search fee when grounding is used',
+    minimumMutants: 1,
+  },
+  {
+    pattern: 'src/services/openai-provider.ts:375-376',
+    replacementTest: '__tests__/services/openai-provider.test.ts',
+    ownerTestName: 'OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage',
+    minimumMutants: 2,
+  },
+  {
+    pattern: 'src/services/openai-provider.ts:420-422',
+    replacementTest: '__tests__/services/openai-provider.test.ts',
+    ownerTestName: 'OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage',
+    minimumMutants: 2,
+  },
+  {
+    pattern: 'src/services/openai-provider.ts:558-559',
+    replacementTest: '__tests__/services/openai-provider.test.ts',
+    ownerTestName: 'OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage',
+    minimumMutants: 2,
+  },
+  {
+    pattern: 'src/services/openai-provider.ts:602-603',
+    replacementTest: '__tests__/services/openai-provider.test.ts',
+    ownerTestName: 'OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage',
+    minimumMutants: 1,
+  },
+];
+
+const mutant = (id: string, line: number, killedBy: string[], status = 'Killed') => ({
+  id,
+  status,
+  killedBy,
+  location: {
+    start: { line, column: 1 },
+    end: { line, column: 2 },
+  },
+});
+
+function currentMutationReport() {
+  return {
+    files: {
+      'src/services/cooking-tenant-scope.ts': {
+        mutants: [54, 55, 56, 57].map((line, index) => mutant(`c${index}`, line, ['cooking-owner'])),
+      },
+      'src/services/gemini-provider.ts': {
+        mutants: [mutant('g0', 639, ['gemini-owner'])],
+      },
+      'src/services/openai-provider.ts': {
+        mutants: [
+          mutant('o0', 376, ['openai-owner']),
+          mutant('o1', 376, ['openai-owner']),
+          mutant('o2', 421, ['openai-owner']),
+          mutant('o3', 421, ['openai-owner']),
+          mutant('o4', 558, ['openai-owner']),
+          mutant('o5', 559, ['openai-owner']),
+          mutant('o6', 603, ['openai-owner']),
+        ],
+      },
+    },
+    testFiles: {
+      '__tests__/services/cooking-private-scope.test.ts': {
+        tests: [{
+          id: 'cooking-owner',
+          name: 'cooking private scope predicate admits only active user-private tenant-owned and user-owned rows',
+        }],
+      },
+      '__tests__/services/gemini-provider.test.ts': {
+        tests: [{
+          id: 'gemini-owner',
+          name: 'GeminiProvider reserves unbounded grounded context and meters the provider search fee when grounding is used',
+        }],
+      },
+      '__tests__/services/openai-provider.test.ts': {
+        tests: [{
+          id: 'openai-owner',
+          name: 'OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage',
+        }],
+      },
+    },
+  };
+}
+
+describe('changed-critical mutation gate', () => {
+  it('extracts static, dynamic, and require imports without package imports', () => {
+    expect(extractRelativeImports(`
+      import { authenticate } from '../../src/middleware/auth';
+      const provider = await import('../../src/services/provider-router');
+      const database = require('../../src/services/database');
+      import { describe } from 'vitest';
+    `)).toEqual([
+      '../../src/middleware/auth',
+      '../../src/services/database',
+      '../../src/services/provider-router',
+    ]);
+  });
+
+  it('matches only explicitly governed critical modules', () => {
+    const patterns = ['src/services/*auth*.ts', 'src/services/database.ts'];
+    expect(isCriticalModule('src/services/google-auth.ts', patterns)).toBe(true);
+    expect(isCriticalModule('src/services/database.ts', patterns)).toBe(true);
+    expect(isCriticalModule('src/services/content-scheduler.ts', patterns)).toBe(false);
+  });
+
+  it('detects removed and replaced AST assertions without flagging fixture-only shortening', () => {
+    expect(countTestDeclarations("it('a', () => {}); test.each([1])('b', () => {});")).toBe(2);
+    expect(isTestCleanupChange({ status: 'D' }, '', "it('previous', () => {});")).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "it('remaining', () => { expect(result.ok).toBe(true); });",
+      "it('remaining', () => { expect(result.ok).toBe(true); expect(result.owner).toBe('user'); });",
+    )).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "it('remaining', () => { expect(result.status).toBe(201); });",
+      "it('remaining', () => { expect(result.status).toBe(200); });",
+    )).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "it('remaining', () => { expect(result.ok).toBe(true); expect(result.status).toBe(200); expect(result.timestamp).toBeDefined(); });",
+      "it('remaining', () => { expect(result.ok).toBe(true); expect(result.owner).toBe('user'); });",
+    )).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "it('remaining', () => true);",
+      "it('remaining', () => expect(result.ok).toBe(true));",
+    )).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "const fixture = { id: 1 }; it('same behavior', () => { expect(fixture.id).toBe(1); });",
+      "const fixture = { id: 1, unusedName: 'boilerplate', unusedRole: 'admin' }; it('same behavior', () => { expect(fixture.id).toBe(1); });",
+    )).toBe(false);
+    expect(isTestCleanupChange({ status: 'A' }, "test('new', () => {});", '')).toBe(false);
+  });
+
+  it('detects removed it.each rows even when the declaration and assertion counts are unchanged', () => {
+    const previous = `
+      it.each([
+        [1, 'owner'],
+        [2, 'delegate'],
+      ])('allows user %s', (userId) => {
+        expect(canAccess(userId)).toBe(true);
+      });
+    `;
+    const current = `
+      it.each([
+        [1, 'owner'],
+      ])('allows user %s', (userId) => {
+        expect(canAccess(userId)).toBe(true);
+      });
+    `;
+
+    expect(extractTestEvidence(previous).declarationCount).toBe(1);
+    expect(extractTestEvidence(current).declarationCount).toBe(1);
+    expect(extractTestEvidence(previous).eachRows).toHaveLength(2);
+    expect(extractTestEvidence(current).eachRows).toHaveLength(1);
+    expect(isTestCleanupChange({ status: 'M', file: '__tests__/matrix.test.ts' }, current, previous)).toBe(true);
+  });
+
+  it('protects test control-flow predicates and loop bounds from silent weakening', () => {
+    const previous = `
+      it('guards tenant rows', () => {
+        if (row.tenantId === tenantId) expect(row.allowed).toBe(true);
+        const selected = row.active ? row : null;
+        while (cursor < 2) cursor += 1;
+        do { attempts += 1; } while (attempts < 2);
+        for (let index = 0; index < rows.length; index += 1) consume(rows[index]);
+        switch (row.scope) { case 'private': consume(row); break; }
+        expect(selected).toBeDefined();
+      });
+    `;
+    const current = previous.replace('row.tenantId === tenantId', 'true');
+    const evidence = extractTestEvidence(previous);
+
+    expect(evidence.controlFlow).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^if:/),
+      expect.stringMatching(/^conditional:/),
+      expect.stringMatching(/^while:/),
+      expect.stringMatching(/^do:/),
+      expect.stringMatching(/^for:/),
+      expect.stringMatching(/^switch:/),
+      expect.stringMatching(/^case:/),
+    ]));
+    expect(isTestCleanupChange(
+      { status: 'M', file: '__tests__/tenant-guard.test.ts' },
+      current,
+      previous,
+    )).toBe(true);
+  });
+
+  it('fails closed on TypeScript parse diagnostics even for a newly added test', () => {
+    const testFile = '__tests__/services/malformed-added.test.ts';
+    const malformed = "it('broken', () => {";
+    expect(extractTestEvidence(malformed, testFile).parseDiagnostics.length).toBeGreaterThan(0);
+
+    const plan = buildMutationPlan({
+      base: 'fixture-base',
+      changes: [{ status: 'A', file: testFile, previous: null }],
+      patterns: ['src/services/*provider*.ts'],
+      scope: 'test-cleanup',
+      readCurrent: () => malformed,
+      readPrevious: () => '',
+    });
+
+    expect(plan.testEvidenceParseDiagnostics).toHaveLength(1);
+    expect(mutationPlanExitCode(plan)).toBe(3);
+  });
+
+  it('returns a blocking exit code for an unmapped modified test that loses behavior evidence', () => {
+    const testFile = '__tests__/services/unmapped-provider-cleanup.test.ts';
+    const plan = buildMutationPlan({
+      base: 'fixture-base',
+      changes: [{ status: 'M', file: testFile, previous: null }],
+      patterns: ['src/services/*provider*.ts'],
+      scope: 'test-cleanup',
+      cleanupMappings: [],
+      readCurrent: () => "it('kept', () => expect(result.status).toBe(201));",
+      readPrevious: () => "it('kept', () => expect(result.status).toBe(200));",
+    });
+
+    expect(plan.targets).toEqual([]);
+    expect(plan.unmappedRetainedCleanupTests).toEqual([testFile]);
+    expect(mutationPlanExitCode(plan)).toBe(3);
+  });
+
+  it('resolves nested and computed it.each tables before comparing row evidence', () => {
+    const previous = `
+      describe('matrix', () => {
+        const baseRows = [['owner', 1], ['delegate', 2]];
+        const matrices = { auth: [...baseRows, ['admin', 3]] };
+        it.each(matrices.auth.map((row) => row))('allows %s', (role) => expect(role).toBeTruthy());
+      });
+    `;
+    const current = `
+      describe('matrix', () => {
+        const baseRows = [['owner', 1], ['auditor', 4]];
+        const matrices = { auth: [...baseRows, ['admin', 3]] };
+        it.each(matrices.auth.map((row) => row))('allows %s', (role) => expect(role).toBeTruthy());
+      });
+    `;
+
+    expect(extractTestEvidence(previous).eachRows).toHaveLength(1);
+    expect(extractTestEvidence(current).eachRows).toHaveLength(1);
+    expect(extractTestEvidence(previous).eachRows).not.toEqual(extractTestEvidence(current).eachRows);
+    expect(extractTestEvidence(previous).assertions).toHaveLength(1);
+    expect(isTestCleanupChange({ status: 'M', file: '__tests__/computed-matrix.test.ts' }, current, previous)).toBe(true);
+  });
+
+  it('governs root API authentication and tenant-scope modules', () => {
+    const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
+      mutation: { criticalModulePatterns: string[] };
+    };
+
+    expect(isCriticalModule('src/api/auth-middleware.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/api/tenant-route-scope.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+  });
+
+  it('keeps exact observed coverage ratchets independent from mutation policy', () => {
+    const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
+      coverage: { exceptions: Array<{ file: string; minimum: { lines: number; branches: number } }> };
+      mutation: {
+        minimumMutants?: Record<string, number>;
+        cleanupMappings: Array<{ mutationTargets?: Array<{ minimumMutants: number }> }>;
+        respectCoverageExceptions?: boolean;
+      };
+    };
+    const minimumFor = (file: string) => policy.coverage.exceptions.find(
+      (exception) => exception.file === file,
+    )?.minimum;
+
+    expect(minimumFor('src/services/database.ts')).toEqual({ lines: 25.28, branches: 26.08 });
+    expect(minimumFor('src/services/gemini-provider.ts')).toEqual({ lines: 88.42, branches: 67.5 });
+    expect(minimumFor('src/services/training-exercise-media-manifest.ts')).toEqual({
+      lines: 83.88,
+      branches: 72.06,
+    });
+    expect(minimumFor('src/services/scheduler.ts')).toEqual({ lines: 53.64, branches: 38.79 });
+    expect(policy.mutation.respectCoverageExceptions).toBeUndefined();
+    expect(policy.mutation.minimumMutants).toBeUndefined();
+    expect(policy.mutation.cleanupMappings.flatMap(
+      ({ mutationTargets = [] }) => mutationTargets,
+    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(12);
+  });
+
+  it('maps deleted-test source text back to repository source dependencies', () => {
+    const existing = new Set([
+      path.resolve('src/services/database.ts'),
+      path.resolve('src/services/provider-router.ts'),
+    ]);
+    const resolved = resolveImportedSourcePaths(
+      '__tests__/scripts/deleted-cleanup.test.ts',
+      `
+        import '../../src/services/database';
+        import('../../src/services/provider-router');
+      `,
+      (candidate) => existing.has(candidate),
+    );
+    expect(resolved).toEqual([
+      'src/services/database.ts',
+      'src/services/provider-router.ts',
+    ]);
+  });
+
+  it('maps source files read through fs/path helpers instead of treating them as unowned deletions', () => {
+    const source = `
+      const direct = read('src/api/routes/training-plan-generation.ts');
+      const resolved = fs.readFileSync(path.resolve(__dirname, '../../src/portal/health-routes.ts'));
+    `;
+    expect(extractReferencedSourceLiterals(source)).toEqual([
+      'src/api/routes/training-plan-generation.ts',
+      'src/portal/health-routes.ts',
+    ]);
+
+    const existing = new Set([
+      path.resolve('src/api/routes/training-plan-generation.ts'),
+      path.resolve('src/portal/health-routes.ts'),
+    ]);
+    expect(resolveReferencedSourcePaths(
+      '__tests__/scripts/deleted-source-read.test.ts',
+      source,
+      (candidate) => existing.has(candidate),
+    )).toEqual([
+      'src/api/routes/training-plan-generation.ts',
+      'src/portal/health-routes.ts',
+    ]);
+  });
+
+  it('requires deleted-test mappings to retained tests and real governed sources', () => {
+    const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
+      mutation: { cleanupMappings: Array<Record<string, unknown>> };
+    };
+    expect(policy.mutation.cleanupMappings.length).toBeGreaterThan(0);
+    for (const mapping of policy.mutation.cleanupMappings) {
+      expect(validateCleanupMapping(mapping), JSON.stringify(mapping)).toEqual([]);
+    }
+
+    const missing = resolveDeletedTestCleanupMappings(
+      [{ status: 'D', file: '__tests__/security/removed-contract.test.ts', previous: null }],
+      policy.mutation.cleanupMappings,
+    );
+    expect(missing.unmapped).toEqual(['__tests__/security/removed-contract.test.ts']);
+    expect(missing.resolved).toEqual([]);
+
+    const mapped = policy.mutation.cleanupMappings[0];
+    const resolved = resolveDeletedTestCleanupMappings(
+      [{ status: 'D', file: mapped.test, previous: null }],
+      policy.mutation.cleanupMappings,
+    );
+    expect(resolved.unmapped).toEqual([]);
+    expect(resolved.invalid).toEqual([]);
+    expect(resolved.resolved).toEqual([mapped]);
+  });
+
+  it('validates governed ranges, in-range anchors, behavior ownership, and retained tests', () => {
+    expect(parseMutationTarget('src/services/gemini-provider.ts:149-203')).toEqual({
+      file: 'src/services/gemini-provider.ts',
+      startLine: 149,
+      endLine: 203,
+    });
+    expect(parseMutationTarget('src/services/gemini-provider.ts:203-149')).toBeNull();
+    expect(parseMutationTarget('src/services/gemini-provider.ts')).toBeNull();
+
+    const existing = new Set([
+      path.resolve('__tests__/services/retained-cleanup.test.ts'),
+      path.resolve('src/services/gemini-provider.ts'),
+    ]);
+    const baseMapping = {
+      test: '__tests__/services/deleted-cleanup.test.ts',
+      replacementTests: ['__tests__/services/retained-cleanup.test.ts'],
+      sources: ['src/services/gemini-provider.ts'],
+      reason: 'Retained behavior protects the removed cleanup assertions.',
+    };
+    const exists = (candidate: string) => existing.has(candidate);
+    const source = Array.from({ length: 220 }, (_, index) => (
+      index === 148 ? 'assertAiBudgetReservationForProvider({ ownedBehavior: true });' : `// line ${index + 1}`
+    )).join('\n');
+    const readSource = () => source;
+    const target = {
+      pattern: 'src/services/gemini-provider.ts:149-155',
+      anchor: 'ownedBehavior: true',
+      behavior: 'The retained provider test owns this budget reservation behavior.',
+      replacementTest: '__tests__/services/retained-cleanup.test.ts',
+      ownerTestName: 'retained provider suite proves budget reservation behavior',
+      minimumMutants: 1,
+    };
+
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [target],
+    }, exists, readSource)).toEqual([]);
+    expect(validateGovernedMutationTarget(target, baseMapping, exists, readSource)).toEqual([]);
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, pattern: 'src/services/openai-provider.ts:10-20' }],
+    }, exists, readSource)).toContain(
+      'mutation target source is not governed by mapping.sources: src/services/openai-provider.ts',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      sources: ['src/services/missing-provider.ts'],
+      mutationTargets: [{ ...target, pattern: 'src/services/missing-provider.ts:10-20' }],
+    }, exists, readSource)).toEqual(expect.arrayContaining([
+      'source path does not exist: src/services/missing-provider.ts',
+      'mutation target source does not exist: src/services/missing-provider.ts',
+    ]));
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, pattern: 'src/services/gemini-provider.ts:0-20' }],
+    }, exists, readSource)).toContain(
+      'invalid mutation target pattern: src/services/gemini-provider.ts:0-20',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, pattern: 'src/services/gemini-provider.ts:149-221' }],
+    }, exists, readSource)).toContain(
+      'mutation target line range exceeds src/services/gemini-provider.ts (220 lines): src/services/gemini-provider.ts:149-221',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, anchor: 'not-in-selected-lines' }],
+    }, exists, readSource)).toContain(
+      'mutation target anchor is absent from selected lines: src/services/gemini-provider.ts:149-155',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, replacementTest: '__tests__/services/unowned.test.ts' }],
+    }, exists, readSource)).toContain(
+      'mutation target replacementTest is not retained by the cleanup mapping: src/services/gemini-provider.ts:149-155',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, minimumMutants: 0 }],
+    }, exists, readSource)).toContain(
+      'mutation target minimumMutants must be a positive integer: src/services/gemini-provider.ts:149-155',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [{ ...target, pattern: 'src/services/gemini-provider.ts:149-203' }],
+    }, exists, readSource)).toContain(
+      'mutation target range exceeds 12 lines: src/services/gemini-provider.ts:149-203',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [target, { ...target }],
+    }, exists, readSource)).toContain(
+      'duplicate governed mutation range: src/services/gemini-provider.ts:149-155',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [
+        target,
+        {
+          ...target,
+          pattern: 'src/services/gemini-provider.ts:150-156',
+          anchor: 'secondOwnedBehavior',
+        },
+      ],
+    }, exists, () => Array.from({ length: 220 }, (_, index) => {
+      if (index === 148) return 'ownedBehavior: true';
+      if (index === 149) return 'secondOwnedBehavior';
+      return `line ${index + 1}`;
+    }).join('\n'))).toContain(
+      'governed mutation ranges overlap: src/services/gemini-provider.ts:149-155 and src/services/gemini-provider.ts:150-156',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [target],
+    }, exists, () => Array.from({ length: 220 }, (_, index) => (
+      index === 148 || index === 149 ? 'ownedBehavior: true' : `line ${index + 1}`
+    )).join('\n'))).toContain(
+      'mutation target anchor must occur exactly once in selected lines: src/services/gemini-provider.ts:149-155',
+    );
+    const { ownerTestName: _ownerTestName, ...targetWithoutOwnerTest } = target;
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: [targetWithoutOwnerTest],
+    }, exists, readSource)).toContain(
+      'mutation target must declare exactly one ownerTestName or ownerTestNamePattern: src/services/gemini-provider.ts:149-155',
+    );
+    expect(validateCleanupMapping({
+      ...baseMapping,
+      mutationTargets: ['src/services/gemini-provider.ts:149-155'],
+    }, exists, readSource)).toContain('mutation target must be a structured ownership entry');
+  });
+
+  it('separates exact test-cleanup ownership from weekly changed-critical source edits', () => {
+    const deletedTest = '__tests__/services/deleted-cleanup.test.ts';
+    const retainedTest = '__tests__/services/retained-cleanup.test.ts';
+    const shrunkTest = '__tests__/services/shrunk-cleanup.test.ts';
+    const files = new Set([
+      retainedTest,
+      shrunkTest,
+      'src/services/cooking-tenant-scope.ts',
+      'src/services/gemini-provider.ts',
+      'src/services/openai-provider.ts',
+      'src/services/unrelated-provider.ts',
+    ]);
+    const relative = (candidate: string) => path.relative(path.resolve('.'), candidate).split(path.sep).join('/');
+    const exists = (candidate: string) => files.has(relative(candidate));
+    const current = new Map([
+      [shrunkTest, `import '../../src/services/openai-provider'; test('kept', () => {});`],
+    ]);
+    const previous = new Map([
+      [deletedTest, `import '../../src/services/cooking-tenant-scope'; test('removed', () => {});`],
+      [shrunkTest, `import '../../src/services/openai-provider'; test('kept', () => {}); test('removed', () => {});`],
+    ]);
+    const changes = [
+      { status: 'M', file: 'src/services/unrelated-provider.ts', previous: null },
+      { status: 'D', file: deletedTest, previous: null },
+      { status: 'M', file: shrunkTest, previous: null },
+    ];
+    const cleanupMappings = [{
+      test: deletedTest,
+      replacementTests: [retainedTest],
+      sources: ['src/services/gemini-provider.ts'],
+      mutationTargets: [
+        {
+          pattern: 'src/services/gemini-provider.ts:10-20',
+          anchor: 'firstOwnedBehavior',
+          behavior: 'The retained cleanup suite owns the first provider behavior range.',
+          replacementTest: retainedTest,
+          ownerTestName: 'retained provider owner proves first behavior range',
+          minimumMutants: 1,
+        },
+        {
+          pattern: 'src/services/gemini-provider.ts:30-40',
+          anchor: 'secondOwnedBehavior',
+          behavior: 'The retained cleanup suite owns the second provider behavior range.',
+          replacementTest: retainedTest,
+          ownerTestName: 'retained provider owner proves second behavior range',
+          minimumMutants: 1,
+        },
+      ],
+      reason: 'Retained behavior protects the removed cleanup assertions.',
+    }, {
+      test: shrunkTest,
+      replacementTests: [shrunkTest],
+      sources: ['src/services/openai-provider.ts'],
+      mutationTargets: [{
+        pattern: 'src/services/openai-provider.ts:5-6',
+        anchor: 'openAiOwnedBehavior',
+        behavior: 'The retained modified suite owns this OpenAI provider behavior range.',
+        replacementTest: shrunkTest,
+        ownerTestName: 'shrunk provider suite proves owned behavior range',
+        minimumMutants: 1,
+      }],
+      reason: 'Retained modified assertions continue to own the provider behavior.',
+    }];
+    const shared = {
+      base: 'fixture-base',
+      changes,
+      patterns: ['src/services/*tenant*.ts', 'src/services/*provider*.ts'],
+      cleanupMappings,
+      // Coverage ratchets are intentionally not mutation exemptions.
+      coverageExceptions: [{
+        file: 'src/services/gemini-provider.ts',
+        owner: 'provider-platform',
+        reason: 'Coverage ratchet must not suppress cleanup mutation ownership.',
+        expires: '2099-12-31',
+      }],
+      exists,
+      readCurrent: (file: string) => current.get(file) ?? '',
+      readPrevious: (_base: string, file: string) => previous.get(file) ?? '',
+      readSource: (candidate: string) => Array.from({ length: 50 }, (_, index) => {
+        if (index === 9) return 'firstOwnedBehavior';
+        if (index === 29) return 'secondOwnedBehavior';
+        if (candidate.endsWith('openai-provider.ts') && index === 4) return 'openAiOwnedBehavior';
+        return `line ${index + 1}`;
+      }).join('\n'),
+    };
+
+    const cleanup = buildMutationPlan({ ...shared, scope: 'test-cleanup' });
+    expect(cleanup.targets).toEqual([
+      'src/services/gemini-provider.ts:10-20',
+      'src/services/gemini-provider.ts:30-40',
+      'src/services/openai-provider.ts:5-6',
+    ]);
+    expect(cleanup.testFiles).toEqual([retainedTest, shrunkTest]);
+    expect(cleanup.excludedTargets).toEqual([]);
+    expect(cleanup.minimumMutants).toBe(3);
+
+    const weekly = buildMutationPlan({ ...shared, scope: 'changed-critical' });
+    expect(weekly.targets).toEqual(['src/services/unrelated-provider.ts']);
+    expect(weekly.testFiles).toEqual([]);
+  });
+
+  it('selects only each governed range owner test for a modified replacement suite', () => {
+    const changedTest = '__tests__/services/changed-provider.test.ts';
+    const ownerTest = '__tests__/services/owner-provider.test.ts';
+    const legacyTest = '__tests__/services/legacy-provider.test.ts';
+    const source = 'src/services/gemini-provider.ts';
+    const files = new Set([changedTest, ownerTest, source]);
+    const relative = (candidate: string) => path.relative(path.resolve('.'), candidate).split(path.sep).join('/');
+    const exists = (candidate: string) => files.has(relative(candidate));
+    const plan = buildMutationPlan({
+      base: 'fixture-base',
+      changes: [{ status: 'M', file: changedTest, previous: null }],
+      patterns: ['src/services/*provider*.ts'],
+      scope: 'test-cleanup',
+      cleanupMappings: [{
+        test: legacyTest,
+        replacementTests: [changedTest, ownerTest],
+        sources: [source],
+        mutationTargets: [{
+          pattern: `${source}:10-10`,
+          anchor: 'ownedProviderBehavior',
+          behavior: 'The dedicated retained owner suite protects the selected provider behavior.',
+          replacementTest: ownerTest,
+          ownerTestName: 'dedicated retained owner proves selected provider behavior',
+          minimumMutants: 1,
+        }],
+        reason: 'The modified suite delegates the selected behavior to its retained owner.',
+      }],
+      exists,
+      readCurrent: () => "it('kept', () => expect(result.status).toBe(201));",
+      readPrevious: () => "it('kept', () => expect(result.status).toBe(200));",
+      readSource: () => Array.from({ length: 20 }, (_, index) => (
+        index === 9 ? 'ownedProviderBehavior' : `line ${index + 1}`
+      )).join('\n'),
+    });
+
+    expect(plan.unmappedRetainedCleanupTests).toEqual([]);
+    expect(plan.targets).toEqual([`${source}:10-10`]);
+    expect(plan.testFiles).toEqual([ownerTest]);
+    expect(mutationPlanExitCode(plan)).toBe(0);
+  });
+
+  it('unions multiple historical mappings for modified shared replacement suites', () => {
+    const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
+      mutation: {
+        criticalModulePatterns: string[];
+        cleanupMappings: Array<Record<string, unknown>>;
+      };
+    };
+    const cases = [
+      '__tests__/api/training-plan-generation.test.ts',
+      '__tests__/brand/package-rename-qa-validation.test.ts',
+    ];
+
+    for (const testFile of cases) {
+      const historicalOwners = policy.mutation.cleanupMappings.filter((mapping) => (
+        (mapping.replacementTests as string[] | undefined)?.includes(testFile)
+      ));
+      expect(historicalOwners, testFile).toHaveLength(2);
+
+      const plan = buildMutationPlan({
+        base: 'fixture-base',
+        changes: [{ status: 'M', file: testFile, previous: null }],
+        patterns: policy.mutation.criticalModulePatterns,
+        scope: 'test-cleanup',
+        cleanupMappings: policy.mutation.cleanupMappings,
+        readCurrent: () => "it('retained contract', () => expect(contract.version).toBe(2));",
+        readPrevious: () => "it('retained contract', () => expect(contract.version).toBe(1));",
+      });
+
+      expect(plan.cleanupTests).toEqual([testFile]);
+      expect(plan.unmappedRetainedCleanupTests).toEqual([]);
+      expect(plan.invalidCleanupMappings).toEqual([]);
+      expect(plan.targets).toEqual([]);
+      expect(mutationPlanExitCode(plan)).toBe(0);
+    }
+  });
+
+  it('fails malformed mutation exceptions closed instead of suppressing the only target', () => {
+    const source = 'src/services/gemini-provider.ts';
+    const exists = (candidate: string) => path.relative(path.resolve('.'), candidate) === source;
+    const malformed = {
+      file: source,
+      owner: '',
+      reason: 'short',
+      expires: '2026-02-30',
+    };
+    expect(validateMutationException(
+      malformed,
+      exists,
+      Date.parse('2026-07-15T00:00:00Z'),
+      ['src/services/*provider*.ts'],
+    )).toEqual(
+      expect.arrayContaining([
+        `mutation exception owner is missing: ${source}`,
+        `mutation exception reason is insufficient: ${source}`,
+        `mutation exception expiry is invalid: ${source}`,
+      ]),
+    );
+
+    const shared = {
+      base: 'fixture-base',
+      changes: [{ status: 'M', file: source, previous: null }],
+      patterns: ['src/services/*provider*.ts'],
+      exists,
+      now: Date.parse('2026-07-15T00:00:00Z'),
+    };
+    const malformedPlan = buildMutationPlan({
+      ...shared,
+      mutationExceptions: [malformed],
+      scope: 'changed-critical',
+    });
+    expect(malformedPlan.targets).toEqual([source]);
+    expect(malformedPlan.excludedTargets).toEqual([]);
+    expect(malformedPlan.invalidMutationExemptions).toHaveLength(1);
+
+    const validPlan = buildMutationPlan({
+      ...shared,
+      mutationExceptions: [{
+        file: source,
+        owner: 'provider-platform',
+        reason: 'Weekly mutation is temporarily covered by an owned external campaign.',
+        expires: '2099-12-31',
+      }],
+      scope: 'changed-critical',
+    });
+    expect(validPlan.targets).toEqual([]);
+    expect(validPlan.excludedTargets).toHaveLength(1);
+    expect(validPlan.invalidMutationExemptions).toEqual([]);
+  });
+
+  it('rejects mutation exceptions outside the governed critical module patterns', () => {
+    const source = 'src/services/ordinary-service.ts';
+    const exists = (candidate: string) => path.relative(path.resolve('.'), candidate) === source;
+    const exception = {
+      file: source,
+      owner: 'service-platform',
+      reason: 'This otherwise valid exception must not expand mutation governance scope.',
+      expires: '2099-12-31',
+    };
+
+    expect(validateMutationException(
+      exception,
+      exists,
+      Date.parse('2026-07-15T00:00:00Z'),
+      ['src/services/*provider*.ts'],
+    )).toContain(`mutation exception file is outside governed critical module patterns: ${source}`);
+  });
+
+  it('maps removed provider metering assertions to both provider implementations and suites', () => {
+    const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
+      mutation: {
+        cleanupMappings: Array<{
+          test: string;
+          sources: string[];
+          replacementTests: string[];
+          mutationTargets?: Array<{
+            pattern: string;
+            anchor: string;
+            behavior: string;
+            replacementTest: string;
+            minimumMutants: number;
+          }>;
+        }>;
+      };
+    };
+    const mapping = policy.mutation.cleanupMappings.find(
+      ({ test }) => test === '__tests__/services/usage-metering-qa-validation.test.ts',
+    );
+
+    expect(mapping?.sources).toEqual(expect.arrayContaining([
+      'src/services/gemini-provider.ts',
+      'src/services/openai-provider.ts',
+    ]));
+    expect(mapping?.replacementTests).toEqual(expect.arrayContaining([
+      '__tests__/services/gemini-provider.test.ts',
+      '__tests__/services/openai-provider.test.ts',
+    ]));
+    expect(mapping?.mutationTargets?.map(({ pattern }) => pattern)).toEqual([
+      'src/services/gemini-provider.ts:639-639',
+      'src/services/openai-provider.ts:375-376',
+      'src/services/openai-provider.ts:420-422',
+      'src/services/openai-provider.ts:558-559',
+      'src/services/openai-provider.ts:602-603',
+    ]);
+    expect(mapping?.mutationTargets?.reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(8);
+  });
+
+  it('accepts the governed 12-mutant, three-source cleanup report', () => {
+    const validation = validateMutationReport(currentMutationReport(), {
+      governedSources: [
+        'src/services/cooking-tenant-scope.ts',
+        'src/services/gemini-provider.ts',
+        'src/services/openai-provider.ts',
+      ],
+      governedRanges: currentGovernedRanges,
+      minimumScore: 70,
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.totalMutants).toBe(12);
+    expect(validation.minimumMutants).toBe(12);
+    expect(validation.sources).toHaveLength(3);
+    expect(validation.ranges).toHaveLength(6);
+    expect(validation.ranges.every((range) => range.ownerKilled === range.minimumMutants)).toBe(true);
+    expect(validation.errors).toEqual([]);
+  });
+
+  it('fails closed when a governed source reports an unscored mutation status', () => {
+    const report = currentMutationReport();
+    report.files['src/services/openai-provider.ts'].mutants.push(
+      mutant('compile-error', 375, [], 'CompileError'),
+    );
+    const validation = validateMutationReport(report, {
+      governedSources: [
+        'src/services/cooking-tenant-scope.ts',
+        'src/services/gemini-provider.ts',
+        'src/services/openai-provider.ts',
+      ],
+      governedRanges: currentGovernedRanges,
+      minimumScore: 70,
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.errors).toContain(
+      'governed source contains unscored mutation status CompileError: src/services/openai-provider.ts',
+    );
+  });
+
+  it('rejects zero-mutant ranges and kills not owned by their retained replacement test', () => {
+    const report = currentMutationReport();
+    report.testFiles['__tests__/services/openai-provider.test.ts'].tests.push({
+      id: 'foreign-test',
+      name: 'OpenAIProvider unrelated provider behavior',
+    });
+    report.files['src/services/openai-provider.ts'].mutants[0].killedBy = ['foreign-test'];
+    const validation = validateMutationReport(report, {
+      governedSources: [
+        'src/services/cooking-tenant-scope.ts',
+        'src/services/gemini-provider.ts',
+        'src/services/openai-provider.ts',
+      ],
+      governedRanges: [
+        ...currentGovernedRanges,
+        {
+          pattern: 'src/services/openai-provider.ts:365-368',
+          replacementTest: '__tests__/services/openai-provider.test.ts',
+          ownerTestName: 'OpenAIProvider one-shot helpers bounds hosted web search, reserves unbounded context, and meters actual provider tool usage',
+          minimumMutants: 1,
+        },
+      ],
+      minimumScore: 70,
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.errors).toEqual(expect.arrayContaining([
+      'governed range owner-killed total 1 is below floor 2: src/services/openai-provider.ts:375-376',
+      'governed range mutant total 0 is below floor 1: src/services/openai-provider.ts:365-368',
+      'governed range mutation score 0.00 is below 70: src/services/openai-provider.ts:365-368',
+      'governed range owner-killed total 0 is below floor 1: src/services/openai-provider.ts:365-368',
+    ]));
+  });
+
+  it('derives a one-mutant floor for a legitimate small future cleanup range', () => {
+    const validation = validateMutationReport({
+      files: {
+        'src/services/gemini-provider.ts': {
+          mutants: [mutant('small', 639, ['small-owner'])],
+        },
+      },
+      testFiles: {
+        '__tests__/services/gemini-provider.test.ts': {
+          tests: [{ id: 'small-owner', name: 'small provider owner proves grounded budget behavior' }],
+        },
+      },
+    }, {
+      governedSources: ['src/services/gemini-provider.ts'],
+      governedRanges: [{
+        pattern: 'src/services/gemini-provider.ts:639-639',
+        replacementTest: '__tests__/services/gemini-provider.test.ts',
+        ownerTestName: 'small provider owner proves grounded budget behavior',
+        minimumMutants: 1,
+      }],
+      minimumScore: 70,
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.minimumMutants).toBe(1);
+  });
+
+  it('rejects a thin report, missing governed source, NoCoverage, and sub-70 source score', () => {
+    const validation = validateMutationReport({
+      files: {
+        'src/services/gemini-provider.ts': {
+          mutants: [
+            { id: '1', status: 'Killed' },
+          ],
+        },
+        'src/services/openai-provider.ts': {
+          mutants: [
+            { id: '4', status: 'NoCoverage' },
+          ],
+        },
+      },
+    }, {
+      governedSources: [
+        'src/services/cooking-tenant-scope.ts',
+        'src/services/gemini-provider.ts',
+        'src/services/openai-provider.ts',
+      ],
+      minimumScore: 70,
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.errors).toEqual(expect.arrayContaining([
+      'governed source is missing from Stryker report: src/services/cooking-tenant-scope.ts',
+      'governed source contains 1 NoCoverage mutant(s): src/services/openai-provider.ts',
+      'governed source mutation score 0.00 is below 70: src/services/openai-provider.ts',
+      'governed mutant total 2 is below plan-derived floor 3',
+    ]));
+  });
+
+  it('passes Stryker 9 thresholds through config environment instead of removed CLI flags', () => {
+    const invocation = buildStrykerInvocation({
+      config: '/repo/config/stryker.config.mjs',
+      targets: ['src/services/database.ts'],
+      thresholds: { high: 80, low: 70, break: 70 },
+      testFiles: ['__tests__/services/database.test.ts'],
+      scope: 'test-cleanup',
+    });
+
+    expect(invocation.args).toEqual(['run', '/repo/config/stryker.config.mjs']);
+    expect(invocation.args.join(' ')).not.toContain('--thresholds.');
+    expect(JSON.parse(invocation.env.NEXUS_MUTATE_FILES)).toEqual(['src/services/database.ts']);
+    expect(JSON.parse(invocation.env.NEXUS_MUTATION_THRESHOLDS)).toEqual({
+      high: 80,
+      low: 70,
+      break: 70,
+    });
+    expect(JSON.parse(invocation.env.NEXUS_MUTATION_TEST_FILES)).toEqual([
+      '__tests__/services/database.test.ts',
+    ]);
+    expect(invocation.env.NEXUS_MUTATION_SCOPE).toBe('test-cleanup');
+
+    const weekly = buildStrykerInvocation({
+      config: '/repo/config/stryker.config.mjs',
+      targets: ['src/services/database.ts'],
+      thresholds: { high: 80, low: 70, break: 70 },
+      testFiles: [],
+      scope: 'changed-critical',
+    });
+    expect(weekly.env).not.toHaveProperty('NEXUS_MUTATION_TEST_FILES');
+    expect(weekly.env.NEXUS_MUTATION_SCOPE).toBe('changed-critical');
+  });
+
+  it('configures exact cleanup tests but leaves weekly Vitest related selection open', async () => {
+    const prior = {
+      mutate: process.env.NEXUS_MUTATE_FILES,
+      thresholds: process.env.NEXUS_MUTATION_THRESHOLDS,
+      tests: process.env.NEXUS_MUTATION_TEST_FILES,
+      scope: process.env.NEXUS_MUTATION_SCOPE,
+    };
+    const configUrl = pathToFileURL(path.resolve('config/stryker.config.mjs')).href;
+    try {
+      process.env.NEXUS_MUTATE_FILES = JSON.stringify(['src/services/database.ts']);
+      process.env.NEXUS_MUTATION_THRESHOLDS = JSON.stringify({ high: 80, low: 70, break: 70 });
+      delete process.env.NEXUS_MUTATION_TEST_FILES;
+      process.env.NEXUS_MUTATION_SCOPE = 'changed-critical';
+      const weekly = (await import(`${configUrl}?weekly=${Date.now()}`)).default;
+      expect(weekly.testFiles).toBeUndefined();
+      expect(weekly.vitest).toEqual({ related: true });
+      expect(weekly.ignoreStatic).toBe(false);
+
+      process.env.NEXUS_MUTATION_TEST_FILES = JSON.stringify(['__tests__/services/database.test.ts']);
+      process.env.NEXUS_MUTATION_SCOPE = 'test-cleanup';
+      const cleanup = (await import(`${configUrl}?cleanup=${Date.now()}`)).default;
+      expect(cleanup.testFiles).toEqual(['__tests__/services/database.test.ts']);
+      expect(cleanup.ignoreStatic).toBe(true);
+      expect(cleanup.ignorePatterns).toEqual(['/.local', '/.local/**']);
+      expect(cleanup.dryRunTimeoutMinutes).toBe(10);
+    } finally {
+      for (const [key, value] of Object.entries({
+        NEXUS_MUTATE_FILES: prior.mutate,
+        NEXUS_MUTATION_THRESHOLDS: prior.thresholds,
+        NEXUS_MUTATION_TEST_FILES: prior.tests,
+        NEXUS_MUTATION_SCOPE: prior.scope,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});

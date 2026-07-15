@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { ScopedContentReference } from '../../src/services/content-reference-context';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -42,20 +40,6 @@ import {
 } from '../../src/services/content-editorial-workflow';
 import { upsertContentVoiceProfile } from '../../src/services/content-memory-profile';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-
-  for (const file of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith('.sql')).sort()) {
-    db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-    db.prepare('INSERT OR IGNORE INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 function addReadyLink(input: {
   userId: number;
@@ -131,9 +115,7 @@ function registeredReference(overrides: Partial<ContentRegisteredReference> = {}
 
 describe('Content Creation security red-team controls', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('foreign_keys = ON');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {

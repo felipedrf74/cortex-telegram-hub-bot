@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import http from 'node:http';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import express, { Router } from 'express';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -62,8 +63,7 @@ describe('Training plan revision API contracts', () => {
 
   beforeEach(async () => {
     resetTrainingM4CapacityRefreshRateLimitForTests();
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     refreshCapacityContext = refreshTrainingM4AuthoritativeCapacityContext;
     const app = express();
     app.use(express.json());

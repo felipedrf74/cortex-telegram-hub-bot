@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 const NOW = '2026-05-16T12:00:00+01:00';
 
 let testDb: Database.Database;
@@ -16,16 +13,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (applied) continue;
-    db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-    db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-  }
-}
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -180,8 +167,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
   beforeEach(() => {
     vi.clearAllMocks();
     resetChatActionStateForTests();
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     previousReadBackTimeout = process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS;
   });
 

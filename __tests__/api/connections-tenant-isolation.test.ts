@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { Request } from 'express';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 
@@ -70,20 +67,6 @@ vi.mock('../../src/utils/logger', () => ({
 import { connectionRoutes } from '../../src/api/routes/connections';
 import { storeTokens } from '../../src/services/oauth-store';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some unrelated migrations require tables not present in this harness.
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -135,8 +118,7 @@ async function dispatch(userId: number): Promise<MockRes> {
 describe('Connections API tenant isolation', () => {
   beforeEach(() => {
     process.env.OAUTH_ENCRYPTION_KEY = 'tenant-isolation-oauth-key-32-bytes-minimum';
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {

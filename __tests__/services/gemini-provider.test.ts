@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockGenerateContent = vi.fn();
 const mockAssertAiBudgetReservationForProvider = vi.fn();
+const mockRecordUsage = vi.fn();
 
 vi.mock('@google/genai', () => {
   return {
@@ -218,6 +219,88 @@ describe('GeminiProvider', () => {
     expect(promptArg).toContain('[redacted-email]');
     expect(promptArg).toContain('[redacted-phone]');
     expect(genArgs.config.tools).toEqual([{ googleSearch: {} }]);
+  });
+
+  it('reserves unbounded grounded context and meters the provider search fee when grounding is used', async () => {
+    const originalGroundingFee = process.env.GEMINI_GROUNDING_COST_USD_PER_PROMPT;
+    process.env.GEMINI_GROUNDING_COST_USD_PER_PROMPT = '0.041';
+    mockGenerateContent.mockResolvedValue({
+      text: 'Grounded answer.',
+      functionCalls: [],
+      candidates: [{
+        finishReason: 'STOP',
+        groundingMetadata: {
+          groundingChunks: [{ web: { uri: 'https://official.example/source' } }],
+          webSearchQueries: ['official source'],
+        },
+      }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        totalTokenCount: 150,
+      },
+    });
+    const nodeModule = require('node:module') as {
+      _load: (request: string, parent: unknown, isMain: boolean) => unknown;
+    };
+    const originalModuleLoad = nodeModule._load;
+    nodeModule._load = function loadWithUsageMeteringFake(
+      request: string,
+      parent: unknown,
+      isMain: boolean,
+    ): unknown {
+      if (request === './usage-metering') return { recordUsage: mockRecordUsage };
+      return originalModuleLoad.call(this, request, parent, isMain);
+    };
+
+    try {
+      const result = await completeOneShotWithSearch(
+        'Use public web context.',
+        'Find the official source.',
+        'content_discovery',
+        { userId: 7, tenantId: 9 },
+      );
+
+      expect(result).toEqual({
+        text: 'Grounded answer.',
+        sources: ['https://official.example/source'],
+      });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+      expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledTimes(1);
+      expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith({
+        userId: 7,
+        category: 'content_discovery',
+        hasUnboundedProviderInjectedContext: true,
+        maxCostUsd: expect.any(Number),
+      });
+      expect(mockAssertAiBudgetReservationForProvider.mock.calls[0][0].maxCostUsd).toBeGreaterThan(0.041);
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'content_discovery',
+        'gemini-2.0-pro',
+        9,
+        7,
+        100,
+        50,
+        0,
+        expect.closeTo(0.041375, 8),
+        expect.any(Number),
+        'resolved',
+        'gemini-2.0-pro',
+        'interactive',
+        null,
+        'content_discovery',
+        null,
+        0.041,
+        1,
+      );
+      expect(mockDbRun).toHaveBeenCalledTimes(1);
+      expect(mockRecordUsage).toHaveBeenCalledWith(7, 100, 50, expect.closeTo(0.041375, 8), false);
+      expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    } finally {
+      nodeModule._load = originalModuleLoad;
+      if (originalGroundingFee === undefined) delete process.env.GEMINI_GROUNDING_COST_USD_PER_PROMPT;
+      else process.env.GEMINI_GROUNDING_COST_USD_PER_PROMPT = originalGroundingFee;
+    }
   });
 
   it('rejects incomplete Google Search grounded responses when Gemini stops for token limits', async () => {

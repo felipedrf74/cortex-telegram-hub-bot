@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────
 # smoke-evidence-summary.sh — Render a human-readable summary of
-# all smoke-evidence JSON files under docs/release/smoke-evidence/.
+# all smoke-evidence JSON files under .local/release/smoke-evidence/.
 #
 # release-pipeline-risk-based-optimization (2026-05-03) — Round 3.
 #
@@ -14,7 +14,7 @@
 #                                                       (newest run only)
 #
 # Reads:
-#   engine/docs/release/smoke-evidence/<smoke-name>-<sha>-<utc>.json
+#   engine/.local/release/smoke-evidence/<smoke-name>-<sha>-<utc>.json
 #
 # Output (markdown):
 #   | Smoke | SHA | Branch | Verdict | Duration | Run completed | File |
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+EVIDENCE_DIR="$LOCAL_DIR/.local/release/smoke-evidence"
 
 FORMAT="markdown"
 FILTER_SHA=""

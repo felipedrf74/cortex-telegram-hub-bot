@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../../src/testing/migrated-test-database';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyMigrations } from '../../helpers/apply-migrations';
 import {
@@ -18,9 +19,7 @@ vi.mock('../../../src/services/database', () => ({
 
 describe('provider-aware task read model', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('foreign_keys = ON');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id, auth_provider) VALUES (?, ?, ?)').run(42, 42, 'ios');
     testDb.prepare('INSERT OR IGNORE INTO native_task_lists (user_id, name, is_default) VALUES (?, ?, 1)').run(42, 'Inbox');
   });

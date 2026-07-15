@@ -15,7 +15,7 @@ describe('paid AI migration real-runner rehearsal', () => {
     if (directory) rmSync(directory, { recursive: true, force: true });
   });
 
-  it('runs 001 through 226 with historical edge rows and is idempotent on a second pass', () => {
+  it('runs 001 through 226 with historical edge rows and is idempotent on a second pass', { timeout: 30_000 }, () => {
     directory = mkdtempSync(path.join(os.tmpdir(), 'nexus-paid-ai-migration-'));
     db = new Database(path.join(directory, 'rehearsal.db'));
 

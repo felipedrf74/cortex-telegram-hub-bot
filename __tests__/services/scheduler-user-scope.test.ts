@@ -396,7 +396,9 @@ describe('scheduler tenant scoping', () => {
         entitlement,
       };
     });
-    mockGetMissingScheduledInventoryCount.mockReturnValue(5);
+    mockGetMissingScheduledInventoryCount.mockImplementation(
+      (_userId: number, request: { targetCount: number }) => request.targetCount,
+    );
     mockGenerateAndStoreTopicCandidates.mockResolvedValue({ candidates: [] });
     mockGenerateWeeklyPackage.mockResolvedValue({ youtube: [], reels: [] });
     mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
@@ -1169,46 +1171,43 @@ describe('scheduler tenant scoping', () => {
 
   it('makes zero provider calls when Tuesday pending inventory is already full', async () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      automationAllowed: true,
+    });
     mockGetMissingScheduledInventoryCount.mockReturnValue(0);
 
     await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
 
     expect(mockResolveAiAutomationEligibility).toHaveBeenCalledTimes(2);
+    expect(mockGetMissingScheduledInventoryCount).toHaveBeenCalledTimes(2);
     expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
     expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
   });
 
-  it('keeps legacy Content delivery counts when paid-AI enforcement is observing', async () => {
+  it('makes zero provider calls for full Content inventory while paid-AI enforcement is observing', async () => {
     mockGetMissingScheduledInventoryCount.mockReturnValue(0);
-    mockGetDb.mockReturnValue({
-      prepare: vi.fn((sql: string) => {
-        if (sql.includes('FROM users')) {
-          return { all: () => [{ id: 11, telegram_id: null }, { id: 22, telegram_id: null }] };
-        }
-        throw new Error('engagement storage unavailable');
-      }),
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    expect(mockGetMissingScheduledInventoryCount).toHaveBeenCalledTimes(6);
+    expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+    expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without provider calls when Content inventory cannot be resolved', async () => {
+    mockGetMissingScheduledInventoryCount.mockImplementation(() => {
+      throw new Error('inventory unavailable');
     });
 
     await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
     await runWeeklyContentPackageCronForActiveUsers();
 
-    expect(mockGetMissingScheduledInventoryCount).not.toHaveBeenCalled();
-    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledTimes(2);
-    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledWith(
-      11,
-      'reel',
-      'tuesday_reels',
-      11,
-      5,
-      expect.objectContaining({ requestSource: 'automation' }),
-    );
-    expect(mockGenerateWeeklyPackage).toHaveBeenCalledTimes(2);
-    expect(mockGenerateWeeklyPackage).toHaveBeenCalledWith(
-      11,
-      11,
-      { reels: 4, youtube: 2 },
-      expect.objectContaining({ requestSource: 'automation' }),
-    );
+    expect(mockGetMissingScheduledInventoryCount).toHaveBeenCalledTimes(4);
+    expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+    expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
   });
 
   it('makes zero provider calls for users without paid Content automation eligibility', async () => {

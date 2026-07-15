@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import { activateApprovedTrainingPlanRevision as activateApprovedTrainingPlanRevisionAtRuntime } from '../../src/services/training-plan-revision-activation';
@@ -56,8 +57,7 @@ describe('Training adaptation proposal service', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
   });
 
   it('persists one active preview, returns exact iOS presentation, and keeps duplicate events idempotent', async () => {
@@ -250,6 +250,14 @@ describe('Training adaptation proposal service', () => {
       expect(db.prepare('SELECT lifecycle_state AS lifecycleState, approval_state AS approvalState FROM training_plan_revisions WHERE revision_id = ?')
         .get(option.proposedRevision!.revisionId)).toEqual({ lifecycleState: 'EXPIRED', approvalState: 'REJECTED' });
       expect(getTrainingAdaptationProposal({ userId: 7, tenantId: 7 }, option.adaptationId, db)?.status).toBe('REJECTED');
+      expect(db.prepare(`
+        SELECT event_type AS eventType, entity_id AS entityId, payload_json AS payloadJson
+          FROM event_outbox WHERE event_type = 'training.adaptation.rejected.v1'
+      `).all()).toEqual([expect.objectContaining({
+        eventType: 'training.adaptation.rejected.v1',
+        entityId: expect.any(String),
+        payloadJson: expect.stringContaining('materialFingerprint'),
+      })]);
 
       const duplicatePreview = previewTrainingAdaptation(busyPreviewInput(source, target.workoutKey, 'event-review-2'));
       const duplicate = duplicatePreview.preview.options.find((entry) => entry.action === 'SHORTEN')!;

@@ -6,12 +6,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
@@ -19,23 +15,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      name TEXT PRIMARY KEY,
-      applied_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (!applied) {
-      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-      db.exec(sql);
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 let testDb: Database.Database;
 
@@ -77,8 +56,7 @@ import {
 
 describe('QA: Onboarding migration schema', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -154,8 +132,7 @@ describe('QA: Onboarding migration schema', () => {
 
 describe('QA: Answer validation', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -227,8 +204,7 @@ describe('QA: Answer validation', () => {
 
 describe('QA: Concurrent sessions per user', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -288,8 +264,7 @@ describe('QA: Concurrent sessions per user', () => {
 
 describe('QA: Error boundaries', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -352,8 +327,7 @@ describe('QA: Error boundaries', () => {
 
 describe('QA: Session restart after abandon', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -385,8 +359,7 @@ describe('QA: Session restart after abandon', () => {
 
 describe('QA: Full completion flow — fitness', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -428,8 +401,7 @@ describe('QA: Full completion flow — fitness', () => {
 
 describe('QA: Full completion flow — diet', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -467,8 +439,7 @@ describe('QA: Full completion flow — diet', () => {
 
 describe('QA: Full completion flow — homeschool', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -508,8 +479,7 @@ describe('QA: Full completion flow — homeschool', () => {
 
 describe('QA: Profile upsert on re-completion', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
