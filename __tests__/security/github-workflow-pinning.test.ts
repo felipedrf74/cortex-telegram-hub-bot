@@ -36,7 +36,7 @@ describe('privileged GitHub workflow action pinning', () => {
     const releaseEvidenceJob = workflow.match(/  release-evidence:\n(?<body>[\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|$)/)?.groups?.body || '';
 
     expect(releaseEvidenceJob).toContain('needs: [vitest-full, python-full]');
-    expect(releaseEvidenceJob).toMatch(/\n    if: always\(\)/);
+    expect(releaseEvidenceJob).toContain("if: ${{ always() && inputs.operation != 'sign_staging' }}");
     expect(releaseEvidenceJob).toContain('mkdir -p .local/release/rc-test-results');
     expect(releaseEvidenceJob.match(/continue-on-error: true/g)?.length).toBeGreaterThanOrEqual(2);
     expect(releaseEvidenceJob).toContain("fs.existsSync(resultDir)");

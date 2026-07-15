@@ -86,6 +86,8 @@ describe('release-evidence-container wrapper', () => {
 
   it('signs detached staging evidence only through the owner-gated CI secret path', () => {
     const raw = stagingSigner();
+    const rc = workflow();
+    const request = readFileSync('scripts/request-staging-attestation.sh', 'utf8');
 
     expect(raw).toContain('github.actor == github.repository_owner');
     expect(raw).toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
@@ -93,5 +95,11 @@ describe('release-evidence-container wrapper', () => {
     expect(raw).toContain('release-staging-attestation.mjs sign');
     expect(raw).toContain('staging-attestation-${{ inputs.request_id }}');
     expect(raw).not.toContain('SERVER_SSH_KEY');
+    expect(rc).toContain("inputs.operation == 'sign_staging' && github.actor == github.repository_owner");
+    expect(rc).toContain('Sign detached staging attestation');
+    expect(rc).toContain('staging-attestation-${{ inputs.request_id }}');
+    expect(request).toContain('gh workflow view sign-staging-attestation.yml');
+    expect(request).toContain('SIGNING_WORKFLOW="release-candidate-evidence.yml"');
+    expect(request).toContain('WORKFLOW_ARGS=(-f "operation=sign_staging")');
   });
 });

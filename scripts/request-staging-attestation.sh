@@ -26,14 +26,30 @@ node scripts/release-staging-attestation.mjs validate-request \
 REF="${NEXUS_RELEASE_SIGNING_REF:-$(git branch --show-current)}"
 [ -n "$REF" ] || REF="main"
 REQUEST_B64="$(base64 < "$REQUEST" | tr -d '\r\n')"
-gh workflow run sign-staging-attestation.yml --ref "$REF" \
+SIGNING_WORKFLOW="${NEXUS_RELEASE_SIGNING_WORKFLOW:-}"
+WORKFLOW_ARGS=()
+if [ -z "$SIGNING_WORKFLOW" ]; then
+  if gh workflow view sign-staging-attestation.yml >/dev/null 2>&1; then
+    SIGNING_WORKFLOW="sign-staging-attestation.yml"
+  else
+    # A newly introduced workflow cannot be dispatched until its path exists
+    # on the default branch. Reuse the established RC workflow entry point so
+    # branch releases can still obtain the same owner-only detached signature.
+    SIGNING_WORKFLOW="release-candidate-evidence.yml"
+  fi
+fi
+if [ "$SIGNING_WORKFLOW" = "release-candidate-evidence.yml" ]; then
+  WORKFLOW_ARGS=(-f "operation=sign_staging")
+fi
+gh workflow run "$SIGNING_WORKFLOW" --ref "$REF" \
+  "${WORKFLOW_ARGS[@]}" \
   -f "request_id=$REQUEST_ID" \
   -f "runtime_sha=$RUNTIME_SHA" \
   -f "request_b64=$REQUEST_B64"
 
 RUN_ID=""
 for _ in $(seq 1 30); do
-  RUN_ID="$(gh run list --workflow sign-staging-attestation.yml --limit 30 \
+  RUN_ID="$(gh run list --workflow "$SIGNING_WORKFLOW" --limit 30 \
     --json databaseId,displayTitle \
     --jq ".[] | select(.displayTitle == \"Sign staging attestation $REQUEST_ID\") | .databaseId" \
     | head -1)"
