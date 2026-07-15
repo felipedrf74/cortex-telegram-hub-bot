@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { CAPABILITY_SKILL_METADATA } from '../../src/generated/capability-skill-metadata';
 import {
   getCapabilityManifestEntry,
   getRestrictedPlanCapabilityIds,
@@ -27,6 +28,7 @@ describe('runtime manifests', () => {
     expect(result).toMatchObject({
       ok: true,
       capabilities: 8,
+      generatedCapabilitySkillMetadata: true,
       jobManifestSchema: 'nexus.agent-job-manifest.v3',
       generatedParity: true,
       providerCapableJobs: 8,
@@ -36,6 +38,36 @@ describe('runtime manifests', () => {
       queuedJobHandlers: 7,
     });
     expect(result).toMatchObject({ jobs: 53, scheduledJobs: 53 });
+  });
+
+  it('keeps parent skill and domain metadata byte-identical to CapabilityManifest generation', () => {
+    const generatedPath = path.resolve('src/generated/capability-skill-metadata.ts');
+    const before = fs.readFileSync(generatedPath, 'utf8');
+    const result = JSON.parse(execFileSync(process.execPath, [
+      'scripts/generate-capability-skill-metadata.mjs',
+      '--check',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    }));
+    expect(result).toEqual({
+      ok: true,
+      check: true,
+      output: 'src/generated/capability-skill-metadata.ts',
+      capabilities: 8,
+      manifestSchema: 'nexus.capability-manifest.v2',
+    });
+    expect(fs.readFileSync(generatedPath, 'utf8')).toBe(before);
+    expect(Object.keys(CAPABILITY_SKILL_METADATA)).toEqual([
+      'secretary',
+      'triathlon',
+      'content',
+      'finance',
+      'cooking',
+      'connections',
+      'notifications',
+      'decision_center',
+    ]);
   });
 
   it('keeps AgentJobManifest byte-identical to generated names, domains, schedules, and policies', () => {

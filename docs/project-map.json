@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "bcfe0a550497556eb53ffc1894226f6788f495e8a9c1f469120f50ddb8aa818f",
-    "baseCommit": "e0a06a10ff0bd89d591837785665494f34c91544",
-    "baseCommitTimestamp": "2026-07-16T03:08:12+01:00",
-    "trackedFiles": 2555,
-    "sourceFiles": 968
+    "sourceDigest": "dd90ba94acfd778562b97d3d9d27b8a7dfdc3050638bea105588467140019bf4",
+    "baseCommit": "85ea37b59f8652665af5401e5b5ab0110f62393a",
+    "baseCommitTimestamp": "2026-07-16T03:09:35+01:00",
+    "trackedFiles": 2557,
+    "sourceFiles": 969
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -60,6 +60,11 @@
       "path": "src/domains",
       "owner": "backend",
       "files": 8
+    },
+    {
+      "path": "src/generated",
+      "owner": "backend",
+      "files": 1
     },
     {
       "path": "src/index.ts",
@@ -4193,56 +4198,88 @@
       "version": "2.0.0",
       "lifecycle": "active",
       "owner": "secretary",
-      "requiredTier": "free"
+      "requiredTier": "free",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "triathlon",
       "version": "3.0.0",
       "lifecycle": "active",
       "owner": "training",
-      "requiredTier": "pro"
+      "requiredTier": "pro",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "content",
       "version": "2.0.0",
       "lifecycle": "active",
       "owner": "content",
-      "requiredTier": "pro"
+      "requiredTier": "pro",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "finance",
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "finance",
-      "requiredTier": "pro"
+      "requiredTier": "pro",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "cooking",
       "version": "1.1.0",
       "lifecycle": "active",
       "owner": "cooking",
-      "requiredTier": "pro"
+      "requiredTier": "pro",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "connections",
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "connections",
-      "requiredTier": "free"
+      "requiredTier": "free",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "notifications",
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "notifications",
-      "requiredTier": "free"
+      "requiredTier": "free",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     },
     {
       "id": "decision_center",
       "version": "1.0.0",
       "lifecycle": "active",
       "owner": "decision-center",
-      "requiredTier": "free"
+      "requiredTier": "free",
+      "schemas": {
+        "input": "nexus.chat-turn.input.v1",
+        "output": "nexus.chat-turn.output.v1"
+      }
     }
   ],
   "skills": [

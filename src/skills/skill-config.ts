@@ -11,6 +11,7 @@
  */
 
 import type { DomainName, DefaultDomainName } from '../domains/types';
+import { CAPABILITY_SKILL_METADATA } from '../generated/capability-skill-metadata';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -63,10 +64,8 @@ export interface SkillDefinition {
 // ── Default Skill Definitions ────────────────────────────────────
 
 const SECRETARY_SKILL: SkillDefinition = {
-  name: 'secretary',
+  ...CAPABILITY_SKILL_METADATA.secretary,
   description: 'Personal assistant — tasks, calendar, email, reminders, notes, briefings',
-  version: '2.0.0',
-  requiredTier: 'free',
   routing: {
     patternRoutes: [
       /^\/(sec|agenda|schedule|todo|todos|done|undone|remind|email|week|day|plan|review|move|cancel)\b/i,
@@ -144,10 +143,8 @@ const SECRETARY_SKILL: SkillDefinition = {
 };
 
 const TRIATHLON_SKILL: SkillDefinition = {
-  name: 'triathlon',
+  ...CAPABILITY_SKILL_METADATA.triathlon,
   description: 'Multisport coaching — gym, running, cycling, swimming, nutrition, recovery',
-  version: '3.0.0',
-  requiredTier: 'pro',
   routing: {
     patternRoutes: [
       /^\/(train|gym|run|bike|cycle|cycling|swim|checkin|meal|macros|deload|pain|running|recovery)\b/i,
@@ -277,9 +274,8 @@ const TRIATHLON_SKILL: SkillDefinition = {
 };
 
 const CONTENT_SKILL: SkillDefinition = {
-  name: 'content',
+  ...CAPABILITY_SKILL_METADATA.content,
   description: 'Content creation — YouTube, Reels, scripts, research, autonomous agents',
-  version: '2.0.0',
   routing: {
     patternRoutes: [
       /^\/(content|video|reel|script|caption|thumbnail|trend|ideas|discover|deepsearch|sources|hotnews)\b/i,
@@ -377,9 +373,8 @@ const CONTENT_SKILL: SkillDefinition = {
 };
 
 const FINANCE_SKILL: SkillDefinition = {
-  name: 'finance',
+  ...CAPABILITY_SKILL_METADATA.finance,
   description: 'Personal finance — expense tracking, Portugal IRS / IVA tax estimates',
-  version: '1.0.0',
   routing: {
     patternRoutes: [
       /^\/(finance|budget|expense|tax|darf|receipt|invoice)\b/i,
@@ -420,9 +415,8 @@ const FINANCE_SKILL: SkillDefinition = {
 };
 
 const COOKING_SKILL: SkillDefinition = {
-  name: 'cooking',
+  ...CAPABILITY_SKILL_METADATA.cooking,
   description: 'Adaptive cooking intelligence — meal planning, recipes, shopping, fueling, and schedule-aware prep',
-  version: '1.1.0',
   routing: {
     patternRoutes: [
       /^\/(cook|recipe|meal|mealplan|shopping|ingredients?)\b/i,
@@ -492,10 +486,8 @@ const COOKING_SKILL: SkillDefinition = {
 // matures.
 
 const CONNECTIONS_SKILL: SkillDefinition = {
-  name: 'connections',
+  ...CAPABILITY_SKILL_METADATA.connections,
   description: 'Provider integrations — Google, Microsoft, Apple, Garmin, Health — OAuth state, sync health, reconnection guidance',
-  version: '1.0.0',
-  requiredTier: 'free',
   routing: {
     patternRoutes: [
       /^\/(connections?|integrations?|sync|reconnect|providers?)\b/i,
@@ -534,10 +526,8 @@ const CONNECTIONS_SKILL: SkillDefinition = {
 };
 
 const NOTIFICATIONS_SKILL: SkillDefinition = {
-  name: 'notifications',
+  ...CAPABILITY_SKILL_METADATA.notifications,
   description: 'Push notifications — APNs token management, delivery, per-channel preferences, notification intents',
-  version: '1.0.0',
-  requiredTier: 'free',
   routing: {
     patternRoutes: [
       /^\/(notif(?:ication)?s?|alerts?|push|quiet)\b/i,
@@ -576,10 +566,8 @@ const NOTIFICATIONS_SKILL: SkillDefinition = {
 };
 
 const DECISION_CENTER_SKILL: SkillDefinition = {
-  name: 'decision_center',
+  ...CAPABILITY_SKILL_METADATA.decision_center,
   description: 'Decision Center — choices, dismissals, snoozes, follow-ups for high-stakes decisions surfaced by other skills',
-  version: '1.0.0',
-  requiredTier: 'free',
   routing: {
     patternRoutes: [
       /^\/(decis(?:ion)?s?|choices?|snooze|dismiss(?:ed)?|followup)\b/i,

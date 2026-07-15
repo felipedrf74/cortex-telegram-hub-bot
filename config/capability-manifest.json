@@ -1,6 +1,20 @@
 {
-  "schema": "nexus.capability-manifest.v1",
-  "version": "2026-07-15",
+  "schema": "nexus.capability-manifest.v2",
+  "version": "2026-07-15.1",
+  "schemaReferences": {
+    "nexus.chat-turn.input.v1": {
+      "format": "typescript",
+      "path": "src/services/chat-turn-contract.ts",
+      "symbol": "ChatTurnContractInput",
+      "scope": "chat-routing"
+    },
+    "nexus.chat-turn.output.v1": {
+      "format": "typescript",
+      "path": "src/services/chat-turn-contract.ts",
+      "symbol": "ChatTurnContract",
+      "scope": "chat-routing"
+    }
+  },
   "evaluationCoverage": {
     "allergy-safety": ["__tests__/services/cooking-allergen-vocabulary.test.ts"],
     "auditability": ["__tests__/services/audit-trail.test.ts"],
@@ -31,6 +45,7 @@
       "lifecycle": "active",
       "owner": "secretary",
       "runtimeRouting": { "domain": "secretary", "chatOwnerSkill": "secretary" },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
@@ -81,6 +96,7 @@
       "lifecycle": "active",
       "owner": "training",
       "runtimeRouting": { "domain": "triathlon", "chatOwnerSkill": "training" },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
@@ -135,6 +151,7 @@
       "lifecycle": "active",
       "owner": "content",
       "runtimeRouting": { "domain": "content", "chatOwnerSkill": "content" },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
@@ -171,6 +188,7 @@
       "lifecycle": "active",
       "owner": "finance",
       "runtimeRouting": { "domain": "finance", "chatOwnerSkill": "finance" },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
@@ -207,6 +225,7 @@
       "lifecycle": "active",
       "owner": "cooking",
       "runtimeRouting": { "domain": "cooking", "chatOwnerSkill": "cooking" },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "pro",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
@@ -243,6 +262,7 @@
       "lifecycle": "active",
       "owner": "connections",
       "runtimeRouting": { "domain": "connections", "chatOwnerSkill": null },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "routed",
@@ -279,6 +299,7 @@
       "lifecycle": "active",
       "owner": "notifications",
       "runtimeRouting": { "domain": "notifications", "chatOwnerSkill": null },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "deterministic-first",
@@ -315,6 +336,7 @@
       "lifecycle": "active",
       "owner": "decision-center",
       "runtimeRouting": { "domain": "decision_center", "chatOwnerSkill": null },
+      "schemas": { "input": "nexus.chat-turn.input.v1", "output": "nexus.chat-turn.output.v1" },
       "requiredTier": "free",
       "memoryScope": "tenant-user",
       "providerPolicy": "deterministic-first",

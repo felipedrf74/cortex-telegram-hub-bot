@@ -2,8 +2,29 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ChatTurnContract, ChatTurnContractInput } from './chat-turn-contract';
 
 export type CapabilityLifecycle = 'experimental' | 'shadow' | 'active' | 'deprecated' | 'removed';
+
+export interface CapabilitySchemaReference {
+  format: 'typescript';
+  path: string;
+  symbol: string;
+  scope: 'chat-routing';
+}
+
+/** Compile-time binding for every schema identifier accepted by CapabilityManifest. */
+export interface CapabilitySchemaTypeBindings {
+  'nexus.chat-turn.input.v1': ChatTurnContractInput;
+  'nexus.chat-turn.output.v1': ChatTurnContract;
+}
+
+export type CapabilitySchemaId = keyof CapabilitySchemaTypeBindings;
+
+export interface CapabilityContractSchemas {
+  input: CapabilitySchemaId;
+  output: CapabilitySchemaId;
+}
 
 export type CapabilityResponseShape =
   | 'recipe'
@@ -64,6 +85,8 @@ export interface CapabilityManifestEntry {
   owner: string;
   /** Existing runtime domain and its legacy Chat owner mapping. Null preserves no implicit route owner. */
   runtimeRouting: { domain: string; chatOwnerSkill: string | null };
+  /** Shared high-level routing contracts. Granular REST/action DTOs remain owned by their route registries. */
+  schemas: CapabilityContractSchemas;
   requiredTier: 'free' | 'pro' | 'max' | 'owner';
   memoryScope: string;
   providerPolicy: string;
@@ -84,8 +107,9 @@ export interface CapabilityManifestEntry {
 }
 
 export interface CapabilityManifest {
-  schema: 'nexus.capability-manifest.v1';
+  schema: 'nexus.capability-manifest.v2';
   version: string;
+  schemaReferences: Record<CapabilitySchemaId, CapabilitySchemaReference>;
   evaluationCoverage: Record<string, string[]>;
   chatResponsePolicyOrder: string[];
   chatUiSkillOrder: string[];
@@ -113,6 +137,28 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function validateSchemaReference(id: string, reference: CapabilitySchemaReference): void {
+  if (!isNonEmptyString(id)
+      || reference?.format !== 'typescript'
+      || !isNonEmptyString(reference.path)
+      || path.isAbsolute(reference.path)
+      || !isNonEmptyString(reference.symbol)
+      || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(reference.symbol)
+      || reference.scope !== 'chat-routing') {
+    throw new Error(`invalid capability schema reference: ${id}`);
+  }
+
+  const root = path.resolve(process.cwd());
+  const resolved = path.resolve(root, reference.path);
+  const relative = path.relative(root, resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`capability schema reference escapes repository: ${id}`);
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    throw new Error(`capability schema source is missing: ${id}/${reference.path}`);
+  }
 }
 
 function validateResponsePolicy(entryId: string, policy: CapabilityResponsePolicy): void {
@@ -164,7 +210,12 @@ export function loadCapabilityManifest(): CapabilityManifest {
   if (cached) return cached;
   const manifestPath = path.resolve(process.cwd(), 'config/capability-manifest.json');
   const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as CapabilityManifest;
-  if (parsed.schema !== 'nexus.capability-manifest.v1'
+  if (parsed.schema !== 'nexus.capability-manifest.v2'
+      || !isNonEmptyString(parsed.version)
+      || !parsed.schemaReferences
+      || typeof parsed.schemaReferences !== 'object'
+      || Array.isArray(parsed.schemaReferences)
+      || Object.keys(parsed.schemaReferences).length === 0
       || !Array.isArray(parsed.capabilities)
       || !parsed.evaluationCoverage
       || typeof parsed.evaluationCoverage !== 'object'
@@ -173,6 +224,9 @@ export function loadCapabilityManifest(): CapabilityManifest {
       || !isStringArray(parsed.chatUiSkillOrder)) {
     throw new Error('invalid CapabilityManifest schema');
   }
+  for (const [id, reference] of Object.entries(parsed.schemaReferences)) {
+    validateSchemaReference(id, reference);
+  }
   const ids = new Set<string>();
   const idsAndAliases = new Set<string>();
   const runtimeDomains = new Set<string>();
@@ -180,6 +234,7 @@ export function loadCapabilityManifest(): CapabilityManifest {
   const uiMetadataSkills = new Set<string>();
   const requiredEvaluations = new Set<string>();
   const onboardingQuestionnaires = new Set<string>();
+  const referencedSchemas = new Set<string>();
   for (const entry of parsed.capabilities) {
     if (!entry.id || ids.has(entry.id)) throw new Error(`invalid duplicate capability: ${entry.id}`);
     if (!entry.owner || !entry.version || entry.requiredEvaluations.length === 0
@@ -188,10 +243,17 @@ export function loadCapabilityManifest(): CapabilityManifest {
         || !entry.chatOwnerUiSkills || typeof entry.chatOwnerUiSkills !== 'object' || Array.isArray(entry.chatOwnerUiSkills)
         || !entry.runtimeRouting || !isNonEmptyString(entry.runtimeRouting.domain)
         || (entry.runtimeRouting.chatOwnerSkill !== null && !isNonEmptyString(entry.runtimeRouting.chatOwnerSkill))
+        || !entry.schemas || !isNonEmptyString(entry.schemas.input) || !isNonEmptyString(entry.schemas.output)
         || !Array.isArray(entry.responsePolicies) || !Array.isArray(entry.uiSkillMetadata)
         || typeof entry.restrictedPlanAccess?.free !== 'boolean'
         || typeof entry.restrictedPlanAccess?.beta !== 'boolean') {
       throw new Error(`incomplete capability governance: ${entry.id}`);
+    }
+    for (const schemaId of [entry.schemas.input, entry.schemas.output]) {
+      if (!parsed.schemaReferences[schemaId]) {
+        throw new Error(`capability schema reference is unresolved: ${entry.id}/${schemaId}`);
+      }
+      referencedSchemas.add(schemaId);
     }
     if (runtimeDomains.has(entry.runtimeRouting.domain)) {
       throw new Error(`duplicate capability runtime domain: ${entry.runtimeRouting.domain}`);
@@ -274,6 +336,11 @@ export function loadCapabilityManifest(): CapabilityManifest {
       throw new Error(`invalid or unused capability evaluation coverage: ${evaluation}`);
     }
   }
+  for (const schemaId of Object.keys(parsed.schemaReferences)) {
+    if (!referencedSchemas.has(schemaId)) {
+      throw new Error(`unused capability schema reference: ${schemaId}`);
+    }
+  }
   if (parsed.chatResponsePolicyOrder.length !== responsePolicySkills.size
       || new Set(parsed.chatResponsePolicyOrder).size !== responsePolicySkills.size
       || parsed.chatResponsePolicyOrder.some((skill) => !responsePolicySkills.has(skill))) {
@@ -292,6 +359,21 @@ export function getCapabilityManifestEntry(skillId: string): CapabilityManifestE
   return loadCapabilityManifest().capabilities.find(
     (entry) => entry.id === skillId || entry.aliases.includes(skillId),
   ) ?? null;
+}
+
+export function getCapabilityContractSchemaReferences(skillId: string): {
+  input: CapabilitySchemaReference & { id: string };
+  output: CapabilitySchemaReference & { id: string };
+} | null {
+  const manifest = loadCapabilityManifest();
+  const entry = manifest.capabilities.find(
+    (candidate) => candidate.id === skillId || candidate.aliases.includes(skillId),
+  );
+  if (!entry) return null;
+  return {
+    input: { id: entry.schemas.input, ...manifest.schemaReferences[entry.schemas.input] },
+    output: { id: entry.schemas.output, ...manifest.schemaReferences[entry.schemas.output] },
+  };
 }
 
 export function getRestrictedPlanCapabilityIds(plan: 'free' | 'beta'): ReadonlySet<string> {

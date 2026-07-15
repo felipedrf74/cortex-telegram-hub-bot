@@ -48,6 +48,8 @@
     "docs:audit": "node scripts/audit-docs.mjs --strict",
     "project:map": "node scripts/generate-project-map.mjs",
     "project:map:check": "node scripts/generate-project-map.mjs --check",
+    "capabilities:generate": "node scripts/generate-capability-skill-metadata.mjs",
+    "capabilities:check": "node scripts/generate-capability-skill-metadata.mjs --check",
     "manifests:validate": "node scripts/validate-runtime-manifests.mjs",
     "reward:check": "node scripts/reward-check.mjs",
     "reward:check:json": "node scripts/reward-check.mjs --json",

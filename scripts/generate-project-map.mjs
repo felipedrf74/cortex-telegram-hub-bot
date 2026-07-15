@@ -338,6 +338,7 @@ const capabilities = capabilityManifest.capabilities.map((entry) => ({
   lifecycle: entry.lifecycle,
   owner: entry.owner,
   requiredTier: entry.requiredTier,
+  schemas: entry.schemas,
 }));
 const skills = tracked.filter((file) => file.startsWith('.agents/skills/') && file.endsWith('/SKILL.md'))
   .map((file) => ({ name: file.split('/')[2], source: file, claude: `.claude/skills/${file.split('/')[2]}/SKILL.md` }))
