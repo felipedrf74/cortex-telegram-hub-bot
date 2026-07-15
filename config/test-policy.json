@@ -250,6 +250,59 @@
       "reason": "Removed compile-time method-existence assertions from the retained primary suite because every adapter method is exercised through its public behavior and TypeScript checks the MessageAdapter implementation."
     },
     {
+      "test": "__tests__/scripts/changed-area-classifier.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/changed-area-classifier.test.ts"
+      ],
+      "sources": [
+        "config/test-policy.json",
+        "scripts/cannot-skip-gate-dashboard.mjs",
+        "scripts/cannot-skip-gate-dashboard.sh",
+        "scripts/changed-area-classifier.mjs",
+        "scripts/changed-area-classifier.sh",
+        "scripts/lib/changed-area-classifier.mjs",
+        "scripts/resolve-ci-change-base.sh"
+      ],
+      "reason": "Consolidated repeated shell-process matrices into direct deterministic classifier behavior while retaining compatibility CLI, cannot-skip dashboard, pushed-range, and fail-closed base coverage."
+    },
+    {
+      "test": "__tests__/scripts/release-test-evidence.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-test-evidence.test.ts"
+      ],
+      "sources": [
+        "scripts/changed-area-classifier.mjs",
+        "scripts/lib/changed-area-classifier.mjs",
+        "scripts/lib/git-ref.mjs",
+        "scripts/release-test-evidence.mjs"
+      ],
+      "reason": "Updated the retained release-evidence suite to bind the Node classifier and exact Git identity dependencies without weakening artifact or tier evidence assertions."
+    },
+    {
+      "test": "__tests__/services/registry-multi-turn-state-injection.test.ts",
+      "replacementTests": [
+        "__tests__/services/registry-multi-turn-state-injection.test.ts"
+      ],
+      "sources": [
+        "src/services/chat-action-state.ts",
+        "src/services/chat/index.ts",
+        "src/testing/migrated-test-database.ts"
+      ],
+      "reason": "Replaced the local full migration replay with the governed migrated template while retaining the real pending-action persistence and multi-turn continuation behavior."
+    },
+    {
+      "test": "__tests__/services/science-policy-gate-wiring.test.ts",
+      "replacementTests": [
+        "__tests__/services/science-policy-gate-wiring.test.ts"
+      ],
+      "sources": [
+        "scripts/cannot-skip-gate-dashboard.mjs",
+        "scripts/ci/science-policy-version-check.mjs",
+        "src/services/coach-kernel/knowledge/entities/training-principles.json"
+      ],
+      "reason": "Converted source-substring checks into the typed cannot-skip dashboard contract while preserving science-policy file routing and enforcement behavior."
+    },
+    {
       "test": "__tests__/services/storage-provider-qa-validation.test.ts",
       "replacementTests": [
         "__tests__/services/storage-provider.test.ts"
