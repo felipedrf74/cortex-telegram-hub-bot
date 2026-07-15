@@ -771,7 +771,8 @@
         "enforcement": "report-schedule-ledger",
         "evidence": "tenant/local-date coach report claim prevents duplicate scheduled analysis",
         "tests": [
-          "__tests__/services/report-schedule-dispatcher.test.ts"
+          "__tests__/services/report-schedule-dispatcher.test.ts",
+          "__tests__/services/scheduler-user-scope.test.ts"
         ],
         "unchangedInputProviderCalls": 0
       },

@@ -114,6 +114,29 @@ const routingFixtures: RoutingFixture[] = [
     vitest: ['__tests__/services/scheduler-*.test.ts'],
   },
   {
+    name: 'governed agent jobs',
+    files: [
+      'src/services/agent-job-runner.ts',
+      'src/services/scheduled-agent-jobs.ts',
+      'src/services/chat-action-fixer-worker.ts',
+      'src/services/channel-learner.ts',
+      'src/services/garmin-coach.ts',
+      'src/agents/voice-evolution-agent.ts',
+    ],
+    flags: { scheduler: true },
+    gates: ['scheduler-tenant-scope-and-failure'],
+    vitest: [
+      '__tests__/services/scheduler-*.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+      '__tests__/services/scheduled-agent-job-governance.test.ts',
+      '__tests__/services/chat-action-fixer-worker.test.ts',
+      '__tests__/services/channel-learner-relearn-gate.test.ts',
+      '__tests__/services/garmin-coach-user-scope.test.ts',
+      '__tests__/agents/voice-evolution-multi-tenant.test.ts',
+      '__tests__/scripts/runtime-manifests.test.ts',
+    ],
+  },
+  {
     name: 'APNs and notification routes',
     files: ['src/services/apns-sender.ts', 'src/api/routes/notifications.ts'],
     flags: { notification: true },
@@ -274,6 +297,18 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
     expect(result.vitest.mode).toBe('changed-only');
+  });
+
+  it('does not mistake rollback DROP statements for an irreversible forward migration', () => {
+    const result = classify([
+      'migrations/233_agent_job_runner_audit.sql',
+      'migrations/down/233_agent_job_runner_audit.sql',
+    ]);
+
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(false);
+    expect(result.cannotSkip).toContain('migration-rollback-review');
+    expect(result.cannotSkip).not.toContain('irreversible-migration-manual-approval');
   });
 
   it('classifies runtime infrastructure as full with staging smoke', () => {

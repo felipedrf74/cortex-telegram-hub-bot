@@ -177,7 +177,10 @@ export const JOB_POLICIES = Object.freeze({
   garmin_coach: providerCapable('training', 'report-ledger-active-tenant', {
     enforcement: 'report-schedule-ledger',
     evidence: 'tenant/local-date coach report claim prevents duplicate scheduled analysis',
-    tests: ['__tests__/services/report-schedule-dispatcher.test.ts'],
+    tests: [
+      '__tests__/services/report-schedule-dispatcher.test.ts',
+      '__tests__/services/scheduler-user-scope.test.ts',
+    ],
   }, {
     retryPolicy: 'report-dispatch-next-tick-on-released-transient-claim',
     providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
