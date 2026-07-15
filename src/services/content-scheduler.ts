@@ -355,6 +355,7 @@ export function getUpcomingTopicCount(
 export async function getFilmingRecommendation(
   userId: number,
   topics: ContentTopic[] = getTopics(userId, { includeTerminal: false, limit: 100 }),
+  tenantId?: number,
 ): Promise<ContentFilmingRecommendation | null> {
   const zone = config.app.timezone;
   const today = DateTime.now().setZone(zone).startOf('day');
@@ -363,12 +364,12 @@ export async function getFilmingRecommendation(
 
   const [calendarResult, readinessResult] = await Promise.allSettled([
     getEvents(today.toUTC().toISO()!, rangeEnd.toUTC().toISO()!, userId),
-    readBestReadiness(userId),
+    readBestReadiness(userId, tenantId),
   ]);
 
   const calendarEvents = calendarResult.status === 'fulfilled' ? calendarResult.value : [];
   const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
-  const trainingContext = readTrainingContextAll({ userId });
+  const trainingContext = readTrainingContextAll({ userId, tenantId });
   const trainingSchedule = buildTrainingSchedule(userId, today, windowDays);
 
   const hasAnySignal =
@@ -448,10 +449,13 @@ export async function getFilmingRecommendation(
     hadTrainingData: trainingSchedule.size > 0 || trainingContext.signals.length > 0,
   });
 
-  const suggestedBlock = await getFocusBlockRecommendation(userId, {
-    durationMinutes: 120,
-    preferredDate: recommendation.date,
-  });
+  const suggestedBlock = tenantId == null
+    ? null
+    : await getFocusBlockRecommendation(userId, {
+      tenantId,
+      durationMinutes: 120,
+      preferredDate: recommendation.date,
+    });
 
   if (suggestedBlock?.date === recommendation.date) {
     recommendation.blockStart = suggestedBlock.start;
@@ -602,9 +606,9 @@ interface FilmingCandidate {
   calendarLoad: CalendarLoad;
 }
 
-async function readBestReadiness(userId: number): Promise<{ score: number | null } | null> {
+async function readBestReadiness(userId: number, tenantId?: number): Promise<{ score: number | null } | null> {
   try {
-    const readiness = await calculateReadiness(userId);
+    const readiness = await calculateReadiness(userId, { tenantId });
     return { score: readiness?.score ?? null };
   } catch (err) {
     logger.debug({ err, userId }, 'Content filming recommendation readiness lookup failed');

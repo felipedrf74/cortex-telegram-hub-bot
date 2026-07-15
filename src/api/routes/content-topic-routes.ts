@@ -125,7 +125,7 @@ export function registerContentTopicRoutes(
       // can render a "N this week" subtitle without a second request.
       const [upcomingCount, filmingRecommendation] = await Promise.all([
         Promise.resolve(getUpcomingTopicCount(userId, 14)),
-        getFilmingRecommendation(userId, topics),
+        getFilmingRecommendation(userId, topics, tenantId),
       ]);
       const language = resolveContentLanguage(req, userId);
 

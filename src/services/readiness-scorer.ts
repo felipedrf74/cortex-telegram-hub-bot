@@ -31,6 +31,7 @@ import {
 } from './wearable/energy-reserve';
 import { computeLoadModelForDimension } from './coach-kernel/load-model';
 import { appleHealthJsonSelectColumns, parseAppleHealthDataJson } from './apple-health-encryption';
+import { resolveCurrentTenantIdForUser } from './user-service';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -404,7 +405,7 @@ export function deriveBodyBatteryEquivalent(
  */
 async function calculateAppleHealthReadiness(
   userId: number,
-  opts: { publishSignals?: boolean } = {},
+  opts: { tenantId: number; publishSignals?: boolean },
 ): Promise<ReadinessResult | null> {
   const db = getDb();
   const today = new Date().toISOString().slice(0, 10);
@@ -549,13 +550,13 @@ async function calculateAppleHealthReadiness(
       // Publish signals (same as Garmin path)
       try {
         if (sleepScoreVal < 50 || totalSleepMin / 60 < 6) {
-          publishLowSleep({ userId, score: Math.round(sleepScoreVal), totalHours: totalSleepMin / 60 });
+          publishLowSleep({ userId, tenantId: opts.tenantId, score: Math.round(sleepScoreVal), totalHours: totalSleepMin / 60 });
         }
         if (hrvTrend === 'down' && hrvScoreVal < 50 && weeklyHrv > 0) {
-          publishLowHrv({ userId, hrv_ms: todayHrv, baseline_ms: weeklyHrv });
+          publishLowHrv({ userId, tenantId: opts.tenantId, hrv_ms: todayHrv, baseline_ms: weeklyHrv });
         }
         if (compositeScore < 40) {
-          publishLowReadiness({ userId, score: compositeScore, reason: reasoning });
+          publishLowReadiness({ userId, tenantId: opts.tenantId, score: compositeScore, reason: reasoning });
         }
       } catch (err) {
         logger.warn({ err, userId }, 'training-signals publish failed after Apple Health readiness');
@@ -579,7 +580,7 @@ async function calculateAppleHealthReadiness(
 // rate-limit sensitive, so results are reused for 30 minutes unless the
 // caller forces a refresh.
 const READINESS_MEMO_TTL_MS = 30 * 60 * 1000;
-const readinessMemo = new Map<number, { at: number; result: ReadinessResult }>();
+const readinessMemo = new Map<string, { at: number; result: ReadinessResult }>();
 
 export function _resetReadinessMemoForTests(): void {
   readinessMemo.clear();
@@ -587,23 +588,25 @@ export function _resetReadinessMemoForTests(): void {
 
 export async function calculateReadiness(
   userId: number,
-  opts: { garminSilent?: boolean; forceRefresh?: boolean } = {},
+  opts: { tenantId?: number; garminSilent?: boolean; forceRefresh?: boolean } = {},
 ): Promise<ReadinessResult> {
+  const tenantId = opts.tenantId ?? resolveCurrentTenantIdForUser(userId);
+  const memoKey = `${tenantId}:${userId}`;
   // Memo is inert under vitest (same pattern as chat-action-retry-policy):
   // tests assert distinct results per scenario for the same userId.
   const memoDisabled = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-  const memoized = readinessMemo.get(userId);
+  const memoized = readinessMemo.get(memoKey);
   if (!memoDisabled && !opts.forceRefresh && memoized && Date.now() - memoized.at < READINESS_MEMO_TTL_MS) {
     return memoized.result;
   }
-  const result = await calculateReadinessUncached(userId, opts);
-  if (!memoDisabled) readinessMemo.set(userId, { at: Date.now(), result });
+  const result = await calculateReadinessUncached(userId, { ...opts, tenantId });
+  if (!memoDisabled) readinessMemo.set(memoKey, { at: Date.now(), result });
   return result;
 }
 
 async function calculateReadinessUncached(
   userId: number,
-  opts: { garminSilent?: boolean } = {},
+  opts: { tenantId: number; garminSilent?: boolean },
 ): Promise<ReadinessResult> {
   // ── Provider priority: per-user Garmin → Apple Health → neutral ──
   // April 2026: Garmin is now a real per-user integration in iOS.
@@ -626,7 +629,7 @@ async function calculateReadinessUncached(
     }
 
     // Try Apple Health derived readiness
-    const appleResult = await calculateAppleHealthReadiness(userId);
+    const appleResult = await calculateAppleHealthReadiness(userId, { tenantId: opts.tenantId });
     if (appleResult) return appleResult;
 
     // No data from any provider — return neutral
@@ -688,7 +691,7 @@ async function calculateReadinessUncached(
     ? bbSnapshot.current
     : null;
   const appleHealthBodyBatteryFallback = garminBodyBatteryCurrent == null
-    ? await calculateAppleHealthReadiness(userId, { publishSignals: false })
+    ? await calculateAppleHealthReadiness(userId, { tenantId: opts.tenantId, publishSignals: false })
     : null;
   const appleHealthBattery = appleHealthBodyBatteryFallback?.factors.bodyBattery ?? null;
   const appleHealthCurrent = appleHealthBattery?.current != null && appleHealthBattery.current > 0
@@ -742,6 +745,7 @@ async function calculateReadinessUncached(
     if (hasSleepData && (sleepScore < 50 || sleepDuration < 6)) {
       publishLowSleep({
         userId,
+        tenantId: opts.tenantId,
         score: Math.round(sleepScore),
         totalHours: sleepDuration,
       });
@@ -750,6 +754,7 @@ async function calculateReadinessUncached(
     if (hrvTrend === 'down' && hrvScore < 50 && weeklyHrv > 0) {
       publishLowHrv({
         userId,
+        tenantId: opts.tenantId,
         hrv_ms: todayHrv,
         baseline_ms: weeklyHrv,
       });
@@ -758,6 +763,7 @@ async function calculateReadinessUncached(
     if (compositeScore < 40) {
       publishLowReadiness({
         userId,
+        tenantId: opts.tenantId,
         score: compositeScore,
         reason: reasoning,
       });

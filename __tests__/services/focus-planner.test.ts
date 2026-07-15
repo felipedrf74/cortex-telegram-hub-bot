@@ -131,7 +131,7 @@ describe('focus-planner', () => {
       },
     ]);
 
-    const recommendation = await getFocusBlockRecommendation(7, { durationMinutes: 90, horizonDays: 4 });
+    const recommendation = await getFocusBlockRecommendation(7, { tenantId: 70, durationMinutes: 90, horizonDays: 4 });
 
     expect(recommendation).toBeTruthy();
     expect(recommendation?.date).toBe(tomorrow.toISODate());
@@ -175,7 +175,7 @@ describe('focus-planner', () => {
       },
     ]);
 
-    const recommendation = await getFocusBlockRecommendation(7, { durationMinutes: 90, horizonDays: 4 });
+    const recommendation = await getFocusBlockRecommendation(7, { tenantId: 70, durationMinutes: 90, horizonDays: 4 });
 
     expect(recommendation).toBeTruthy();
     expect(recommendation?.date).toBe(dayAfter.toISODate());
@@ -196,6 +196,7 @@ describe('focus-planner', () => {
     ]);
 
     const recommendation = await getFocusBlockRecommendation(7, {
+      tenantId: 70,
       durationMinutes: 90,
       horizonDays: 2,
       preferredDate: target.toISODate()!,

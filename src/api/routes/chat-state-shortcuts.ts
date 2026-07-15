@@ -87,6 +87,7 @@ function localizeContentPatternCategory(category: string, language: ShortcutLang
     hook_effectiveness: { en: 'Hook performance', pt: 'Performance dos hooks' },
     pillar_performance: { en: 'Pillar performance', pt: 'Performance dos pilares' },
     learning_digest: { en: 'Weekly learning', pt: 'Aprendizagem semanal' },
+    creator_learning_digest: { en: 'Your weekly learning', pt: 'A tua aprendizagem semanal' },
     content_formula: { en: 'Winning format', pt: 'Formato vencedor' },
     retention_pattern: { en: 'Retention pattern', pt: 'Padrão de retenção' },
     voice_pattern: { en: 'Voice pattern', pt: 'Padrão de voz' },
@@ -123,6 +124,7 @@ export async function buildContentStateShortcutResponse(
   shortcut: ContentStateShortcut,
   userId: number,
   language: ShortcutLanguage,
+  tenantId?: number,
 ): Promise<{ text: string; metadata: Record<string, unknown> }> {
   switch (shortcut) {
     case 'desk': {
@@ -164,7 +166,10 @@ export async function buildContentStateShortcutResponse(
       };
     }
     case 'filming': {
-      const recommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+      const recommendation = localizeFilmingRecommendation(
+        await getFilmingRecommendation(userId, undefined, tenantId),
+        language,
+      );
       const upcomingCount = getUpcomingTopicCount(userId, 7);
       if (!recommendation) {
         return {
@@ -214,8 +219,9 @@ export async function buildContentStateShortcutResponse(
       const nextTopic = chooseNextContentPriority(topics);
       const deskItems = getContentDeskItems(userId, 3);
       const scriptReady = deskItems.find((item) => item.type === 'script_ready');
-      const rankedSignals = getRankedContentSignals(userId, 3);
+      const rankedSignals = getRankedContentSignals(userId, 3, tenantId);
       const nextExecution = await getNextContentExecutionHint(userId, {
+        tenantId,
         topics,
         deskItems,
         rankedSignals,

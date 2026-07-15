@@ -37,6 +37,8 @@ jobs:
           node-version: '22.23.1'
           cache: 'npm'
 
+      - run: npm ci
+
       - name: Run housekeeping (dry-run)
         run: |
           chmod +x scripts/release-pipeline-housekeeping.sh

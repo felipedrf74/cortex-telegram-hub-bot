@@ -595,12 +595,12 @@ export async function generateTrainingPlanForUser(
       secretaryContextResult,
       sharedContextResult,
     ] = await Promise.allSettled([
-      readTrainingMeshContext({ userId, weekStart: startStr }),
-      readCookingMeshContext({ userId, weekStart: startStr }),
-      readFinanceMeshContext({ userId, weekStart: startStr }),
-      readContentMeshContext({ userId, weekStart: startStr }),
-      readSecretaryMeshContext({ userId, weekStart: startStr }),
-      buildSharedDecisionContext('triathlon', userId),
+      readTrainingMeshContext({ userId, tenantId, weekStart: startStr }),
+      readCookingMeshContext({ userId, tenantId, weekStart: startStr }),
+      readFinanceMeshContext({ userId, tenantId, weekStart: startStr }),
+      readContentMeshContext({ userId, tenantId, weekStart: startStr }),
+      readSecretaryMeshContext({ userId, tenantId, weekStart: startStr }),
+      buildSharedDecisionContext('triathlon', userId, tenantId),
     ]);
 
     sharedDecisionContext = sharedContextResult.status === 'fulfilled' ? sharedContextResult.value : '';

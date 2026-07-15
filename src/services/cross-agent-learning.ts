@@ -24,7 +24,7 @@
 
 import { DateTime } from 'luxon';
 import {
-  readSignals, writeSignal, markConsumed,
+  readSignals, writeGovernedSignal, markConsumed,
   type SignalType, type AgentSignal, type MeshPriority, type SignalPriority,
 } from './intelligence-bus';
 import { config } from '../config';
@@ -96,6 +96,8 @@ import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from
 import { getUnreadMailSummaryForUser, type UserMailPressureSummary } from './unified-mail-pressure';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+
+const CROSS_AGENT_LEARNING_SIGNAL_PRODUCER_VERSION = 'cross-agent-learning.v2';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -549,17 +551,23 @@ export function formatContextForPrompt(ctx: AgentContext): string {
 // ── Learning Digest Writer ─────────────────────────────────────────
 
 /**
- * Produce a learning_digest signal that synthesizes insights from
- * multiple agents. Called weekly (after Performance Agent runs).
+ * Produce a weekly digest that synthesizes insights from multiple agents.
+ * Global-only synthesis writes learning_digest. Creator synthesis may include
+ * private voice patterns, so it writes creator_learning_digest with explicit
+ * tenant/user scope. This is a callable synthesis primitive; it is not wired
+ * to a scheduled runtime job while scoped performance inputs remain paused.
  */
 export function produceLearningDigest(userId?: number, tenantId?: number): number {
   const scopedTenantId = userId == null
     ? undefined
     : requireTenantIdParam(tenantId, 'produceLearningDigest');
-  const voiceSignals = readSignals('learning-digest', ['voice_pattern'], 10, userId, undefined, tenantId);
-  const pillarSignals = readSignals('learning-digest', ['pillar_performance'], 5, userId, undefined, tenantId);
-  const hookSignals = readSignals('learning-digest', ['hook_effectiveness'], 10, userId, undefined, tenantId);
-  const kwSignals = readSignals('learning-digest', ['keyword_opportunity'], 10, userId, undefined, tenantId);
+  const digestConsumer = userId == null
+    ? 'learning-digest'
+    : `learning-digest:t:${scopedTenantId}:u:${userId}`;
+  const voiceSignals = readSignals(digestConsumer, ['voice_pattern'], 10, userId, undefined, tenantId);
+  const pillarSignals = readSignals(digestConsumer, ['pillar_performance'], 5, userId, undefined, tenantId);
+  const hookSignals = readSignals(digestConsumer, ['hook_effectiveness'], 10, userId, undefined, tenantId);
+  const kwSignals = readSignals(digestConsumer, ['keyword_opportunity'], 10, userId, undefined, tenantId);
 
   if (voiceSignals.length === 0 && pillarSignals.length === 0) {
     return -1; // nothing to digest
@@ -591,16 +599,21 @@ export function produceLearningDigest(userId?: number, tenantId?: number): numbe
 
   // Mark all source signals as consumed by digest
   for (const s of [...voiceSignals, ...pillarSignals, ...hookSignals, ...kwSignals]) {
-    markConsumed(s.id, 'learning-digest');
+    markConsumed(s.id, digestConsumer);
   }
 
-  return writeSignal({
+  return writeGovernedSignal({
     source_agent: 'learning-digest',
-    signal_type: 'learning_digest',
-    user_id: userId,
+    signal_type: userId == null ? 'learning_digest' : 'creator_learning_digest',
     tenant_id: scopedTenantId,
+    user_id: userId,
     payload: digest,
     priority: 'normal',
+    provenance: {
+      producerVersion: CROSS_AGENT_LEARNING_SIGNAL_PRODUCER_VERSION,
+      source: 'runtime',
+      observedAt: new Date().toISOString(),
+    },
   });
 }
 
@@ -630,9 +643,14 @@ export function writeContentFormula(
     avgRetentionPct?: number;
   },
 ): number {
-  return writeSignal({
+  return writeGovernedSignal({
     source_agent: sourceAgent,
     signal_type: 'content_formula',
+    provenance: {
+      producerVersion: CROSS_AGENT_LEARNING_SIGNAL_PRODUCER_VERSION,
+      source: 'runtime',
+      observedAt: new Date().toISOString(),
+    },
     payload: {
       formula,
       pillar,
@@ -746,6 +764,7 @@ function emptyContext(): AgentContext {
 
 export async function readTrainingMeshContext(opts: {
   userId: number;
+  tenantId?: number;
   weekStart?: string;
 }): Promise<TrainingMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
@@ -754,7 +773,7 @@ export async function readTrainingMeshContext(opts: {
   }
 
   const window = resolveWeekWindow(opts.weekStart);
-  const trainingContext = readTrainingContextAll({ userId: opts.userId });
+  const trainingContext = readTrainingContextAll({ userId: opts.userId, tenantId: opts.tenantId });
   const coachBriefing = getLatestByType(opts.userId, 'coach_briefing');
   const activePlanMatch = findActivePlanForWeek(opts.userId, window.start);
 
@@ -989,7 +1008,9 @@ export async function readCookingMeshContext(opts: {
       [] as UnifiedCalendarEvent[],
     ),
     safelyAsync(
-      () => getFocusBlockRecommendation(opts.userId, { horizonDays: 7 }),
+      () => opts.tenantId == null
+        ? Promise.resolve(null)
+        : getFocusBlockRecommendation(opts.userId, { tenantId: opts.tenantId, horizonDays: 7 }),
       null as FocusBlockRecommendation | null,
     ),
   ]);
@@ -1247,6 +1268,7 @@ function normalizeShoppingAisle(value: string | null | undefined): string {
 
 export async function readContentMeshContext(opts: {
   userId: number;
+  tenantId?: number;
   weekStart?: string;
 }): Promise<ContentMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
@@ -1257,14 +1279,14 @@ export async function readContentMeshContext(opts: {
   const window = resolveWeekWindow(opts.weekStart);
 
   const [filmingResult] = await Promise.allSettled([
-    getFilmingRecommendation(opts.userId),
+    getFilmingRecommendation(opts.userId, undefined, opts.tenantId),
   ]);
 
   const filmingRecommendation = filmingResult.status === 'fulfilled' ? filmingResult.value : null;
   const unreadNotifications = safely(() => getUnreadNotifications(opts.userId, 10), []);
   const deskItems = safely(() => getContentDeskItems(opts.userId, 4), []);
   const monitoredPillars = safely(() => getActiveContentPillars(opts.userId), []);
-  const recentSignals = safely(() => getRankedContentSignals(opts.userId, 6), []);
+  const recentSignals = safely(() => getRankedContentSignals(opts.userId, 6, opts.tenantId), []);
   const upcomingTopicCount = safely(() => getUpcomingTopicCount(opts.userId, 14), 0);
   const topics = safely(
     () => getTopics(opts.userId, {
@@ -1288,6 +1310,7 @@ export async function readContentMeshContext(opts: {
   );
   const nextExecution = await safelyAsync(
     () => getNextContentExecutionHint(opts.userId, {
+      tenantId: opts.tenantId,
       topics,
       deskItems,
       rankedSignals: recentSignals,
@@ -1296,8 +1319,8 @@ export async function readContentMeshContext(opts: {
     }),
     null,
   );
-  const voiceDnaEntries = safely(() => getVoiceDna(undefined, opts.userId), []);
-  const knowledgeStats = safely(() => getKnowledgeStats(undefined, opts.userId), {
+  const voiceDnaEntries = safely(() => getVoiceDna(undefined, opts.userId, opts.tenantId), []);
+  const knowledgeStats = safely(() => getKnowledgeStats(undefined, opts.userId, opts.tenantId), {
     categories: [],
     referenceChannels: 0,
   });
@@ -1355,6 +1378,7 @@ export async function readContentMeshContext(opts: {
 
 export async function readSecretaryMeshContext(opts: {
   userId: number;
+  tenantId?: number;
   weekStart?: string;
 }): Promise<SecretaryMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
@@ -1365,7 +1389,9 @@ export async function readSecretaryMeshContext(opts: {
   const window = resolveWeekWindow(opts.weekStart);
   const [eventsResult, focusResult, mailPressureResult] = await Promise.allSettled([
     getEvents(window.start.toUTC().toISO()!, window.end.endOf('day').toUTC().toISO()!, opts.userId),
-    getFocusBlockRecommendation(opts.userId, { horizonDays: 7 }),
+    opts.tenantId == null
+      ? Promise.resolve(null)
+      : getFocusBlockRecommendation(opts.userId, { tenantId: opts.tenantId, horizonDays: 7 }),
     getUnreadMailSummaryForUser(opts.userId),
   ]);
 

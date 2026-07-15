@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from './database';
-import { writeSignal } from './intelligence-bus';
+import { writeGovernedSignal } from './intelligence-bus';
 import { cancelSecretaryAgendaItem } from './secretary-scheduling-arbitrator';
 import { markSkillMemoriesStaleForRelatedSkillVersion } from './skill-memory';
 import { logger } from '../utils/logger';
@@ -26,6 +26,7 @@ export interface TrainingCancellationCascadeResult {
 }
 
 const DOWNSTREAM_MEMORY_SKILLS = ['cooking', 'secretary', 'chat'] as const;
+const TRAINING_CANCELLATION_SIGNAL_PRODUCER_VERSION = 'training-plan-cancellation-cascade.v1';
 
 export function cancelTrainingPlanCrossSkillDependents(
   input: TrainingCancellationCascadeInput,
@@ -95,7 +96,7 @@ export function cancelTrainingPlanCrossSkillDependents(
 
   let signalId: number | null = null;
   try {
-    const id = writeSignal({
+    const id = writeGovernedSignal({
       source_agent: 'training.cancel',
       signal_type: 'training_plan_canceled',
       priority: 'urgent',
@@ -104,6 +105,11 @@ export function cancelTrainingPlanCrossSkillDependents(
       confidence: 1,
       evidence_count: Math.max(1, sessionIds.length),
       meshPriority: 1,
+      provenance: {
+        producerVersion: TRAINING_CANCELLATION_SIGNAL_PRODUCER_VERSION,
+        source: 'runtime',
+        observedAt: new Date().toISOString(),
+      },
       payload: {
         plan_id: input.planId,
         plan_version: planVersion,

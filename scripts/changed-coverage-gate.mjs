@@ -2,12 +2,69 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { isCriticalModule } from './mutation-gate.mjs';
+import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
 import { loadTestPolicy, root } from './lib/test-policy.mjs';
+
+export { resolveExactCommit } from './lib/git-ref.mjs';
+
+const MAX_COVERAGE_SHARDS = 4;
+const TESTS_PER_COVERAGE_SHARD = 200;
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, { cwd: root, encoding: 'utf8', ...options });
+}
+
+function runGit(args) {
+  return run('git', args, { env: cleanGitEnv() });
+}
+
+export function coverageShardCount(testCount) {
+  if (!Number.isSafeInteger(testCount) || testCount < 1) {
+    throw new Error('coverage sharding requires a positive integer test count');
+  }
+  return Math.min(MAX_COVERAGE_SHARDS, Math.ceil(testCount / TESTS_PER_COVERAGE_SHARD));
+}
+
+function processFailure(result, label) {
+  if (result.status === 0) return null;
+  if (result.signal) return `${label} terminated by ${result.signal}`;
+  return `${label} exited with status ${result.status ?? 'unknown'}`;
+}
+
+export function preserveCoverageShardFailure({
+  outputDir,
+  blobDir,
+  shard,
+  shardCount,
+  result,
+  reason,
+}) {
+  const failedBlobDir = path.join(outputDir, 'failed-shards', 'blobs');
+  fs.rmSync(path.dirname(failedBlobDir), { recursive: true, force: true });
+  fs.mkdirSync(failedBlobDir, { recursive: true });
+  const blobFiles = fs.existsSync(blobDir)
+    ? fs.readdirSync(blobDir).filter((file) => file.endsWith('.json')).sort()
+    : [];
+  for (const file of blobFiles) {
+    fs.copyFileSync(path.join(blobDir, file), path.join(failedBlobDir, file));
+  }
+  const failure = {
+    schema: 'nexus.changed-coverage-failure.v1',
+    shard,
+    shardCount,
+    status: result.status ?? null,
+    signal: result.signal ?? null,
+    reason,
+    blobFiles,
+  };
+  fs.writeFileSync(
+    path.join(outputDir, 'failure.json'),
+    `${JSON.stringify(failure, null, 2)}\n`,
+  );
+  return failure;
 }
 
 export function aggregateCoverage(records) {
@@ -47,9 +104,74 @@ export function validateCoverageException(exception, now = new Date()) {
 }
 
 function changedProductionFiles(base) {
-  const result = run('git', ['diff', '--name-only', '--diff-filter=ACMRT', base, 'HEAD', '--', 'src']);
+  const result = runGit(['diff', '--name-only', '--diff-filter=ACMRT', base, 'HEAD', '--', 'src']);
   if (result.status !== 0) throw new Error(result.stderr || `Unable to diff ${base}..HEAD`);
   return result.stdout.trim().split('\n').filter((file) => file.endsWith('.ts') && fs.existsSync(path.join(root, file))).sort();
+}
+
+export function parseAddedLines(diff) {
+  const lines = new Set();
+  for (const line of String(diff).split('\n')) {
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    for (let offset = 0; offset < count; offset += 1) lines.add(start + offset);
+  }
+  return lines;
+}
+
+function changedLinesForFile(base, file) {
+  const result = runGit(['diff', '--unified=0', '--no-color', base, 'HEAD', '--', file]);
+  if (result.status !== 0) throw new Error(result.stderr || `Unable to diff ${base}..HEAD for ${file}`);
+  return parseAddedLines(result.stdout);
+}
+
+function locationStartsOnChangedLine(location, changedLines) {
+  return Boolean(location?.start && changedLines.has(location.start.line));
+}
+
+export function changedExecutableCoverage(record, changedLines) {
+  const lineHits = new Map();
+  for (const [id, location] of Object.entries(record?.statementMap ?? {})) {
+    if (!location?.start || !location?.end) continue;
+    for (let line = location.start.line; line <= location.end.line; line += 1) {
+      if (!changedLines.has(line)) continue;
+      lineHits.set(line, Math.max(lineHits.get(line) ?? 0, Number(record?.s?.[id] ?? 0)));
+    }
+  }
+
+  const branchHits = [];
+  for (const [id, branch] of Object.entries(record?.branchMap ?? {})) {
+    const locations = Array.isArray(branch?.locations) ? branch.locations : [];
+    const hits = Array.isArray(record?.b?.[id]) ? record.b[id] : [];
+    if (locationStartsOnChangedLine(branch?.loc, changedLines)) {
+      branchHits.push(...hits);
+    } else {
+      locations.forEach((location, index) => {
+        if (locationStartsOnChangedLine(location, changedLines)) branchHits.push(hits[index] ?? 0);
+      });
+    }
+  }
+
+  const functionHits = [];
+  for (const [id, fn] of Object.entries(record?.fnMap ?? {})) {
+    if (locationStartsOnChangedLine(fn?.decl ?? fn?.loc, changedLines)) {
+      functionHits.push(Number(record?.f?.[id] ?? 0));
+    }
+  }
+
+  const lines = [...lineHits.values()];
+  const metric = (hits) => ({
+    total: hits.length,
+    covered: hits.filter((hitsForItem) => Number(hitsForItem) > 0).length,
+  });
+  return {
+    lines: metric(lines),
+    branches: metric(branchHits),
+    functions: metric(functionHits),
+    statements: metric(lines),
+  };
 }
 
 function main() {
@@ -61,21 +183,24 @@ function main() {
     console.error('Usage: changed-coverage-gate.mjs --base <sha> [--plan]');
     process.exit(64);
   }
-  if (run('git', ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
+  const exactBase = resolveExactCommit(root, base);
+  if (!exactBase) {
     console.error(`Coverage base does not resolve: ${base}`);
     process.exit(2);
   }
 
   const policy = loadTestPolicy();
-  const files = changedProductionFiles(base);
+  const files = changedProductionFiles(exactBase);
   const criticalFiles = files.filter((file) => isCriticalModule(file, policy.mutation.criticalModulePatterns));
   const outputDir = path.join(root, '.local/coverage/changed');
+  fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(outputDir, { recursive: true });
   const planPath = path.join(outputDir, 'plan.json');
   const plan = {
     schema: 'nexus.changed-coverage-plan.v1',
-    base,
-    head: run('git', ['rev-parse', 'HEAD']).stdout.trim(),
+    base: exactBase,
+    head: resolveExactCommit(root, 'HEAD'),
+    measurement: 'changed-executable-lines-and-branches',
     files,
     criticalFiles,
     thresholds: policy.coverage,
@@ -88,14 +213,15 @@ function main() {
   }
 
   const classifierPath = path.join(outputDir, 'classifier.json');
-  const classifier = run('bash', ['scripts/changed-area-classifier.sh', '--json', '--base', base]);
+  const classifier = run('bash', ['scripts/changed-area-classifier.sh', '--json', '--base', exactBase]);
   if (classifier.status !== 0) {
     process.stderr.write(classifier.stderr || classifier.stdout);
     process.exit(classifier.status ?? 1);
   }
   fs.writeFileSync(classifierPath, classifier.stdout);
   const selected = run(process.execPath, [
-    'scripts/select-vitest-files.mjs', '--base', base, '--classifier', classifierPath,
+    'scripts/select-vitest-files.mjs', '--base', exactBase, '--classifier', classifierPath,
+    '--coverage',
   ]);
   if (selected.status !== 0) {
     process.stderr.write(selected.stderr || selected.stdout);
@@ -108,29 +234,107 @@ function main() {
   }
 
   const vitest = path.join(root, 'node_modules/vitest/vitest.mjs');
-  const coverageArgs = [
+  const shardCount = coverageShardCount(tests.length);
+  const shardRoot = path.join(root, '.local/coverage/changed-shards');
+  const blobDir = path.join(shardRoot, 'blobs');
+  fs.rmSync(shardRoot, { recursive: true, force: true });
+  fs.mkdirSync(blobDir, { recursive: true });
+  const testSelection = {
+    schema: 'nexus.changed-coverage-selection.v1',
+    count: tests.length,
+    shardCount,
+    digest: createHash('sha256').update(JSON.stringify(tests)).digest('hex'),
+    tests,
+  };
+  const selectionPath = path.join(outputDir, 'selection.json');
+  fs.writeFileSync(selectionPath, `${JSON.stringify(testSelection, null, 2)}\n`);
+  console.log(JSON.stringify({
+    changedCoverageTests: tests.length,
+    shardCount,
+    selectionDigest: testSelection.digest,
+  }, null, 2));
+
+  const commonCoverageArgs = [
+    '--coverage',
+    '--coverage.reporter=json',
+    '--coverage.thresholds.lines=0',
+    '--coverage.thresholds.branches=0',
+    '--coverage.thresholds.functions=0',
+    '--coverage.thresholds.statements=0',
+    ...files.flatMap((file) => ['--coverage.include', file]),
+  ];
+  for (let shard = 1; shard <= shardCount; shard += 1) {
+    const shardCoverageDir = path.join(shardRoot, `coverage-${shard}`);
+    const shardRun = spawnSync(process.execPath, [
+      vitest,
+      'run',
+      '--reporter=blob',
+      `--outputFile=${path.join(blobDir, `blob-${shard}.json`)}`,
+      `--shard=${shard}/${shardCount}`,
+      `--coverage.reportsDirectory=${shardCoverageDir}`,
+      ...commonCoverageArgs,
+      ...tests,
+    ], {
+      cwd: root,
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    const failure = processFailure(shardRun, `Changed coverage shard ${shard}/${shardCount}`);
+    if (failure) {
+      preserveCoverageShardFailure({
+        outputDir,
+        blobDir,
+        shard,
+        shardCount,
+        result: shardRun,
+        reason: failure,
+      });
+      if (fs.readdirSync(blobDir).some((file) => file.endsWith('.json'))) {
+        console.error('Replaying completed shard blobs with the verbose reporter for diagnostics.');
+        spawnSync(process.execPath, [
+          vitest,
+          `--merge-reports=${blobDir}`,
+          '--reporter=verbose',
+        ], {
+          cwd: root,
+          stdio: 'inherit',
+          env: { ...process.env, NODE_ENV: 'test' },
+        });
+      }
+      console.error(failure);
+      process.exit(shardRun.status ?? 1);
+    }
+  }
+
+  const mergeRun = spawnSync(process.execPath, [
     vitest,
-    'run',
+    `--merge-reports=${blobDir}`,
     '--reporter=dot',
     '--coverage',
     '--coverage.reporter=json-summary',
+    '--coverage.reporter=json',
     `--coverage.reportsDirectory=${outputDir}`,
     '--coverage.thresholds.lines=0',
     '--coverage.thresholds.branches=0',
     '--coverage.thresholds.functions=0',
     '--coverage.thresholds.statements=0',
     ...files.flatMap((file) => ['--coverage.include', file]),
-    ...tests,
-  ];
-  const coverageRun = spawnSync(process.execPath, coverageArgs, {
+  ], {
     cwd: root,
     stdio: 'inherit',
     env: { ...process.env, NODE_ENV: 'test' },
   });
-  if (coverageRun.status !== 0) process.exit(coverageRun.status ?? 1);
   // V8 clears its reports directory before writing. Restore the separately
   // governed selection plan so the uploaded artifact remains self-contained.
   fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
+  fs.writeFileSync(classifierPath, classifier.stdout);
+  fs.writeFileSync(selectionPath, `${JSON.stringify(testSelection, null, 2)}\n`);
+  const mergeFailure = processFailure(mergeRun, 'Changed coverage report merge');
+  if (mergeFailure) {
+    console.error(mergeFailure);
+    process.exit(mergeRun.status ?? 1);
+  }
+  fs.rmSync(shardRoot, { recursive: true, force: true });
 
   const summaryPath = path.join(outputDir, 'coverage-summary.json');
   const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
@@ -138,13 +342,24 @@ function main() {
     .filter(([file]) => file !== 'total')
     .map(([file, record]) => [path.relative(root, file).split(path.sep).join('/'), record]));
   const missing = files.filter((file) => !byFile.has(file));
+  const detailedPath = path.join(outputDir, 'coverage-final.json');
+  const detailed = JSON.parse(fs.readFileSync(detailedPath, 'utf8'));
+  const detailedByFile = new Map(Object.entries(detailed)
+    .map(([file, record]) => [path.relative(root, file).split(path.sep).join('/'), record]));
+  const missingDetailed = files.filter((file) => !detailedByFile.has(file));
+  const changedLineSets = new Map(files.map((file) => [file, changedLinesForFile(exactBase, file)]));
   const exceptionErrors = policy.coverage.exceptions.flatMap((exception) => validateCoverageException(exception));
   const exceptionByFile = new Map(policy.coverage.exceptions.map((exception) => [exception.file, exception]));
   const usedExceptions = files.filter((file) => exceptionByFile.has(file));
   const governedFiles = files.filter((file) => !exceptionByFile.has(file));
   const governedCriticalFiles = criticalFiles.filter((file) => !exceptionByFile.has(file));
-  const changedCoverage = aggregateCoverage(governedFiles.map((file) => byFile.get(file)).filter(Boolean));
-  const criticalCoverage = aggregateCoverage(governedCriticalFiles.map((file) => byFile.get(file)).filter(Boolean));
+  const changedCoverageByFile = Object.fromEntries(governedFiles.map((file) => [
+    file,
+    changedExecutableCoverage(detailedByFile.get(file), changedLineSets.get(file)),
+  ]));
+  const changedCoverage = aggregateCoverage(Object.values(changedCoverageByFile));
+  const criticalCoverage = aggregateCoverage(governedCriticalFiles
+    .map((file) => changedCoverageByFile[file]));
   const exceptionRatchetFailures = usedExceptions.flatMap((file) => {
     const record = byFile.get(file);
     return record
@@ -154,6 +369,7 @@ function main() {
   const failures = [
     ...exceptionErrors,
     ...missing.map((file) => `Changed source missing from coverage output: ${file}`),
+    ...missingDetailed.map((file) => `Changed source missing from detailed coverage output: ${file}`),
     ...thresholdFailures('changed production code', changedCoverage, policy.coverage.changed),
     ...(governedCriticalFiles.length > 0
       ? thresholdFailures('critical changed modules', criticalCoverage, policy.coverage.critical)
@@ -161,15 +377,18 @@ function main() {
     ...exceptionRatchetFailures,
   ];
   const result = {
-    schema: 'nexus.changed-coverage-result.v1',
     ...plan,
+    schema: 'nexus.changed-coverage-result.v2',
     tests: tests.length,
+    shardCount,
+    testSelectionDigest: testSelection.digest,
     governedFiles,
     governedCriticalFiles,
     usedExceptions: usedExceptions.map((file) => exceptionByFile.get(file)),
+    changedCoverageByFile,
     changedCoverage,
     criticalCoverage: governedCriticalFiles.length > 0 ? criticalCoverage : null,
-    missing,
+    missing: [...new Set([...missing, ...missingDetailed])],
     failures,
     verdict: failures.length === 0 ? 'PASS' : 'FAIL',
   };

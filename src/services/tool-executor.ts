@@ -1127,7 +1127,8 @@ export async function executeToolCall(
 
             if (sport && rpe > 0) {
               trainingSignals.publishSessionLoad({
-                userId,
+                userId: scope.userId,
+                tenantId: scope.tenantId,
                 sport,
                 rpe,
                 duration_min: input.duration_minutes,
@@ -1137,7 +1138,8 @@ export async function executeToolCall(
               if (sport === 'gym' && rpe >= 8) {
                 if (isLegHeavySession(session.title, input.actual_exercises_json ?? session.exercises_json)) {
                   trainingSignals.publishHighLegLoad({
-                    userId,
+                    userId: scope.userId,
+                    tenantId: scope.tenantId,
                     source: 'gym',
                     rpe,
                     details: { notes: session.title },
@@ -1145,7 +1147,8 @@ export async function executeToolCall(
                 }
                 if (isShoulderHeavySession(session.title, input.actual_exercises_json ?? session.exercises_json)) {
                   trainingSignals.publishHighShoulderLoad({
-                    userId,
+                    userId: scope.userId,
+                    tenantId: scope.tenantId,
                     rpe,
                     details: { notes: session.title },
                   });
@@ -1157,7 +1160,8 @@ export async function executeToolCall(
               // cycling coach reduce lower-body volume tomorrow.
               if (sport === 'running' && rpe >= 8) {
                 trainingSignals.publishHighLegLoad({
-                  userId,
+                  userId: scope.userId,
+                  tenantId: scope.tenantId,
                   source: 'running',
                   rpe,
                   details: { mileage: undefined, notes: session.title },

@@ -83,7 +83,7 @@ vi.mock('../../src/services/video-study', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  writeSignal,
+  writeGovernedSignal: writeSignal,
 }));
 
 
@@ -170,6 +170,7 @@ describe('channel-learner: batched cloud synthesis', () => {
     isOllamaConfigured.mockReset();
     isOllamaConfigured.mockReturnValue(true);
     writeSignal.mockReset();
+    writeSignal.mockReturnValue(1);
     withAiBudgetReservation.mockClear();
     vi.mocked(logger.warn).mockClear();
     videosByChannel = {};

@@ -14,7 +14,7 @@
  * Agent gracefully degrades without it.
  */
 
-import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { readSignals, logAgentRun } from '../services/intelligence-bus';
 import { buildAgentContext, writeContentFormula, formatContextForPrompt } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';

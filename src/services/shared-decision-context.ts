@@ -130,7 +130,7 @@ async function buildSharedDecisionArtifacts(
     };
   }
 
-  const rawBundle = await readRelevantPeerContexts(domain, userId);
+  const rawBundle = await readRelevantPeerContexts(domain, userId, resolvedTenantId);
   const { bundle, staleSignals } = filterStaleBundle(rawBundle);
   const sections = buildSectionsForDomain(domain, bundle);
   const sourceLines = buildSourceAttributionLines(bundle);
@@ -170,7 +170,7 @@ async function buildSharedDecisionArtifacts(
   return { text, contracts };
 }
 
-async function readRelevantPeerContexts(domain: DomainName, userId: number): Promise<MeshBundle> {
+async function readRelevantPeerContexts(domain: DomainName, userId: number, tenantId: number): Promise<MeshBundle> {
   const needsTraining = domain !== 'triathlon';
   const needsCooking = domain === 'triathlon' || domain === 'secretary' || domain === 'content' || domain === 'finance';
   const needsFinance = domain === 'triathlon' || domain === 'secretary' || domain === 'cooking' || domain === 'content';
@@ -178,11 +178,11 @@ async function readRelevantPeerContexts(domain: DomainName, userId: number): Pro
   const needsSecretary = domain === 'triathlon' || domain === 'cooking' || domain === 'content';
 
   const [training, cooking, finance, content, secretary] = await Promise.allSettled([
-    needsTraining ? readTrainingMeshContext({ userId }) : Promise.resolve(null),
-    needsCooking ? readCookingMeshContext({ userId }) : Promise.resolve(null),
-    needsFinance ? readFinanceMeshContext({ userId }) : Promise.resolve(null),
-    needsContent ? readContentMeshContext({ userId }) : Promise.resolve(null),
-    needsSecretary ? readSecretaryMeshContext({ userId }) : Promise.resolve(null),
+    needsTraining ? readTrainingMeshContext({ userId, tenantId }) : Promise.resolve(null),
+    needsCooking ? readCookingMeshContext({ userId, tenantId }) : Promise.resolve(null),
+    needsFinance ? readFinanceMeshContext({ userId, tenantId }) : Promise.resolve(null),
+    needsContent ? readContentMeshContext({ userId, tenantId }) : Promise.resolve(null),
+    needsSecretary ? readSecretaryMeshContext({ userId, tenantId }) : Promise.resolve(null),
   ]);
 
   return {

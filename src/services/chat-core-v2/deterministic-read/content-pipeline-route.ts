@@ -45,7 +45,7 @@ export function buildContentPipelineSummaryRoute(
   const now = input.now ?? new Date();
   const topics = getTopics(input.userId, { includeTerminal: false, limit: CONTENT_TOPIC_SCAN_LIMIT });
   const deskItems = getContentDeskItems(input.userId, CONTENT_DESK_SCAN_LIMIT);
-  const signals = getRankedContentSignals(input.userId, CONTENT_SIGNAL_SCAN_LIMIT);
+  const signals = getRankedContentSignals(input.userId, CONTENT_SIGNAL_SCAN_LIMIT, input.tenantId);
   const shortcut = parseContentStateShortcut(input.normalizedText);
   const data = buildContentPipelineSummaryData(topics, deskItems, signals);
   const sourceEntityIds = data.topItems.map((item) => item.entityId);

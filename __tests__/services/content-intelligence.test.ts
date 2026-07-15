@@ -132,6 +132,17 @@ describe('content-intelligence', () => {
     );
   });
 
+  it('reads creator digests only through the explicit tenant scope', () => {
+    mockReadRankedSignals.mockReturnValue([]);
+
+    expect(getRankedContentSignals(7001, 6, 9001)).toEqual([]);
+    expect(mockReadRankedSignals).toHaveBeenCalledWith(
+      'content-intelligence',
+      expect.arrayContaining(['learning_digest', 'creator_learning_digest']),
+      expect.objectContaining({ userId: 7001, tenantId: 9001, limit: 6 }),
+    );
+  });
+
   it('prefers a ready scheduled topic for the next execution hint', async () => {
     const hint = await getNextContentExecutionHint(7001, {
       topics: [

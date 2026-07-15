@@ -566,6 +566,7 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     'scripts/select-vitest-files.mjs',
     'scripts/run-test-tier.mjs',
     'scripts/risk-gate.sh',
+    'scripts/lib/git-ref.mjs',
     'scripts/lib/test-policy.mjs',
     '.github/workflows/ci.yml',
     '__tests__/fixtures/shared-database.ts',

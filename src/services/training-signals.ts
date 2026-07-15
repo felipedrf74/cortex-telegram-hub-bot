@@ -33,14 +33,16 @@
  */
 
 import {
-  writeSignal,
+  writeGovernedSignal,
   readSignals,
   markConsumed,
   type SignalType,
   type AgentSignal,
   type SignalPriority,
+  type GovernedSignalWriteInput,
 } from './intelligence-bus';
 import { isTrainingCrossSkillSignalsEnabled } from './training-operational-switches';
+import { requireTenantIdParam } from './tenant-scope';
 import { logger } from '../utils/logger';
 
 // ─── Source identifiers ─────────────────────────────────────────────
@@ -60,7 +62,11 @@ export const TRAINING_SOURCE = {
 
 export type TrainingSource = (typeof TRAINING_SOURCE)[keyof typeof TRAINING_SOURCE];
 
-function writeTrainingSignal(signal: Parameters<typeof writeSignal>[0]): number {
+const TRAINING_SIGNAL_PRODUCER_VERSION = 'training-signals.v1';
+
+function writeTrainingSignal(
+  signal: Omit<GovernedSignalWriteInput, 'provenance'>,
+): number {
   if (!isTrainingCrossSkillSignalsEnabled()) {
     logger.warn(
       {
@@ -72,7 +78,14 @@ function writeTrainingSignal(signal: Parameters<typeof writeSignal>[0]): number 
     );
     return -1;
   }
-  return writeSignal(signal);
+  return writeGovernedSignal({
+    ...signal,
+    provenance: {
+      producerVersion: TRAINING_SIGNAL_PRODUCER_VERSION,
+      source: 'runtime',
+      observedAt: new Date().toISOString(),
+    },
+  });
 }
 
 // ─── Publisher helpers (write path) ─────────────────────────────────
@@ -84,6 +97,7 @@ function writeTrainingSignal(signal: Parameters<typeof writeSignal>[0]): number 
  */
 export function publishSessionLoad(opts: {
   userId: number;
+  tenantId?: number;
   sport: 'gym' | 'running' | 'cycling' | 'swim';
   rpe: number;                    // 1-10 perceived exertion
   duration_min?: number;
@@ -113,6 +127,7 @@ export function publishSessionLoad(opts: {
       notes: opts.notes,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'normal',
   });
 }
@@ -148,6 +163,7 @@ export function publishHighLegLoad(opts: {
  */
 export function publishHighShoulderLoad(opts: {
   userId: number;
+  tenantId?: number;
   rpe: number;
   details?: { lifts?: string[]; notes?: string };
 }): number {
@@ -157,6 +173,7 @@ export function publishHighShoulderLoad(opts: {
     signal_type: 'high_shoulder_load',
     payload: { rpe: opts.rpe, ...opts.details },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'urgent',
   });
 }
@@ -167,6 +184,7 @@ export function publishHighShoulderLoad(opts: {
  */
 export function publishLowSleep(opts: {
   userId: number;
+  tenantId: number;
   score: number;          // 0-100 Garmin sleep score (or 0-100 normalized)
   totalHours?: number;
   source?: string;        // defaults to WELLNESS_SYNC
@@ -176,6 +194,7 @@ export function publishLowSleep(opts: {
     signal_type: 'low_sleep',
     payload: { score: opts.score, total_hours: opts.totalHours },
     user_id: opts.userId,
+    tenant_id: requireTenantIdParam(opts.tenantId, 'publishLowSleep'),
     priority: 'urgent',
   });
 }
@@ -185,6 +204,7 @@ export function publishLowSleep(opts: {
  */
 export function publishLowHrv(opts: {
   userId: number;
+  tenantId: number;
   hrv_ms: number;
   baseline_ms: number;
   source?: string;
@@ -194,6 +214,7 @@ export function publishLowHrv(opts: {
     signal_type: 'low_hrv',
     payload: { hrv_ms: opts.hrv_ms, baseline_ms: opts.baseline_ms, delta_pct: ((opts.hrv_ms - opts.baseline_ms) / opts.baseline_ms) * 100 },
     user_id: opts.userId,
+    tenant_id: requireTenantIdParam(opts.tenantId, 'publishLowHrv'),
     priority: 'urgent',
   });
 }
@@ -203,6 +224,7 @@ export function publishLowHrv(opts: {
  */
 export function publishLowReadiness(opts: {
   userId: number;
+  tenantId: number;
   score: number;
   reason?: string;
   source?: string;
@@ -212,6 +234,7 @@ export function publishLowReadiness(opts: {
     signal_type: 'low_readiness',
     payload: { score: opts.score, reason: opts.reason },
     user_id: opts.userId,
+    tenant_id: requireTenantIdParam(opts.tenantId, 'publishLowReadiness'),
     priority: 'urgent',
   });
 }
@@ -256,6 +279,7 @@ function safetySignalCategory(triggerType: string): 'symptom' | 'illness' | 'inj
  */
 export function publishTrainingSessionScheduled(opts: {
   userId: number;
+  tenantId: number;
   sport: 'gym' | 'running' | 'cycling' | 'swim';
   sessionId: number | string;
   startTimeIso: string;
@@ -281,6 +305,7 @@ export function publishTrainingSessionScheduled(opts: {
       calendar_event_id: opts.calendarEventId,
     },
     user_id: opts.userId,
+    tenant_id: opts.tenantId,
     priority: 'normal',
     expires_at: opts.endTimeIso, // expire when session itself is over
   });
@@ -625,15 +650,17 @@ export interface TrainingContext {
  */
 export function readTrainingContext(opts: {
   userId: number;
+  tenantId: number;
   sport: 'gym' | 'running' | 'cycling' | 'swim';
 }): TrainingContext {
+  const tenantId = requireTenantIdParam(opts.tenantId, 'readTrainingContext');
   const consumer = `triathlon.${opts.sport}`;
   const signalTypes: SignalType[] = [
     ...UNIVERSAL_COACH_INPUTS,
     ...SPORT_SPECIFIC_INPUTS[opts.sport],
   ];
 
-  const signals = readSignals(consumer, signalTypes, 20, opts.userId);
+  const signals = readSignals(consumer, signalTypes, 20, opts.userId, undefined, tenantId);
 
   const flags = {
     lowSleep: signals.some((s) => s.signal_type === 'low_sleep'),
@@ -716,11 +743,20 @@ export function readTrainingContextAll(opts: { userId: number; tenantId?: number
  */
 export function readScheduledTrainingSessions(opts: {
   userId: number;
+  tenantId: number;
   windowStartIso: string;
   windowEndIso: string;
 }): AgentSignal[] {
+  const tenantId = requireTenantIdParam(opts.tenantId, 'readScheduledTrainingSessions');
   const consumer = TRAINING_SOURCE.SECRETARY_CALENDAR;
-  const sessions = readSignals(consumer, ['training_session_scheduled'], 100, opts.userId);
+  const sessions = readSignals(
+    consumer,
+    ['training_session_scheduled'],
+    100,
+    opts.userId,
+    undefined,
+    tenantId,
+  );
   const winStart = Date.parse(opts.windowStartIso);
   const winEnd = Date.parse(opts.windowEndIso);
   return sessions.filter((s) => {

@@ -66,6 +66,10 @@ function freshDb(): void {
   setDbProvider(() => testDb as any);
 }
 
+function futureIso(hoursFromNow: number): string {
+  return new Date(Date.now() + hoursFromNow * 60 * 60 * 1_000).toISOString();
+}
+
 function trainingHomeBaseInput(
   signals: TrainingHomeViewStateInput['signals'],
 ): TrainingHomeViewStateInput {
@@ -124,7 +128,7 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   afterEach(() => testDb?.close());
 
   it('formats low_sleep with score and hours in the summary', () => {
-    publishLowSleep({ userId: 2001, score: 42, totalHours: 5.2 });
+    publishLowSleep({ userId: 2001, tenantId: 2001, score: 42, totalHours: 5.2 });
     const res = buildActiveSignalsResponse(2001);
     expect(res.signals).toHaveLength(1);
     const s = res.signals[0];
@@ -136,7 +140,7 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   });
 
   it('overrides stale low_sleep hours with the latest readiness factors when available', () => {
-    publishLowSleep({ userId: 2010, score: 20, totalHours: 0 });
+    publishLowSleep({ userId: 2010, tenantId: 2010, score: 20, totalHours: 0 });
     testDb.prepare(`
       INSERT OR REPLACE INTO readiness_scores (user_id, date, score, factors, recommendation)
       VALUES (?, ?, ?, ?, ?)
@@ -161,7 +165,7 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   });
 
   it('formats low_hrv with delta percentage', () => {
-    publishLowHrv({ userId: 2002, hrv_ms: 30, baseline_ms: 45 });
+    publishLowHrv({ userId: 2002, tenantId: 2002, hrv_ms: 30, baseline_ms: 45 });
     const res = buildActiveSignalsResponse(2002);
     const s = res.signals.find((x) => x.type === 'low_hrv')!;
     expect(s.title).toBe('Low HRV');
@@ -169,7 +173,7 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   });
 
   it('formats low_readiness with score out of 100', () => {
-    publishLowReadiness({ userId: 2003, score: 28, reason: 'accumulated fatigue' });
+    publishLowReadiness({ userId: 2003, tenantId: 2003, score: 28, reason: 'accumulated fatigue' });
     const res = buildActiveSignalsResponse(2003);
     const s = res.signals.find((x) => x.type === 'low_readiness')!;
     expect(s.title).toBe('Low readiness');
@@ -237,10 +241,11 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   it('formats training_session_scheduled with sport and title', () => {
     publishTrainingSessionScheduled({
       userId: 2007,
+      tenantId: 2007,
       sport: 'cycling',
       sessionId: 'ride-abc',
-      startTimeIso: '2026-04-10T08:00:00Z',
-      endTimeIso: '2026-04-10T10:00:00Z',
+      startTimeIso: futureIso(2),
+      endTimeIso: futureIso(4),
       title: 'FTP test',
     });
     const res = buildActiveSignalsResponse(2007);
@@ -255,10 +260,11 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   it('formats calendar_conflict without exposing the private event title', () => {
     publishTrainingSessionScheduled({
       userId: 2008,
+      tenantId: 2008,
       sport: 'running',
       sessionId: 'run-1',
-      startTimeIso: '2026-04-15T17:00:00Z',
-      endTimeIso: '2026-04-15T18:00:00Z',
+      startTimeIso: futureIso(6),
+      endTimeIso: futureIso(8),
       title: 'Intervals',
     });
     publishCalendarConflict({
@@ -280,8 +286,8 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
   });
 
   it('every formatted signal has non-empty title and summary fields', () => {
-    publishLowSleep({ userId: 2009, score: 40 });
-    publishLowHrv({ userId: 2009, hrv_ms: 20, baseline_ms: 40 });
+    publishLowSleep({ userId: 2009, tenantId: 2009, score: 40 });
+    publishLowHrv({ userId: 2009, tenantId: 2009, hrv_ms: 20, baseline_ms: 40 });
     publishHighLegLoad({ userId: 2009, source: 'running', rpe: 8 });
     publishSessionLoad({ userId: 2009, sport: 'gym', rpe: 7 });
 
@@ -303,7 +309,7 @@ describe('buildActiveSignalsResponse — counts', () => {
   afterEach(() => testDb?.close());
 
   it('counts total and urgent separately', () => {
-    publishLowSleep({ userId: 3001, score: 40 });         // urgent
+    publishLowSleep({ userId: 3001, tenantId: 3001, score: 40 });         // urgent
     publishHighLegLoad({ userId: 3001, source: 'gym', rpe: 9 }); // urgent
     publishSessionLoad({ userId: 3001, sport: 'gym', rpe: 5 }); // normal
 
@@ -321,7 +327,7 @@ describe('buildActiveSignalsResponse — sort order', () => {
 
   it('sorts urgent priority before normal', () => {
     publishSessionLoad({ userId: 4001, sport: 'gym', rpe: 5 }); // normal
-    publishLowSleep({ userId: 4001, score: 40 });               // urgent
+    publishLowSleep({ userId: 4001, tenantId: 4001, score: 40 });               // urgent
 
     const res = buildActiveSignalsResponse(4001);
     expect(res.signals[0].priority).toBe('urgent');
@@ -329,7 +335,7 @@ describe('buildActiveSignalsResponse — sort order', () => {
   });
 
   it('preserves a stable order across calls (no random sort)', () => {
-    publishLowSleep({ userId: 4002, score: 40 });
+    publishLowSleep({ userId: 4002, tenantId: 4002, score: 40 });
     publishHighLegLoad({ userId: 4002, source: 'gym', rpe: 9 });
 
     const first = buildActiveSignalsResponse(4002).signals.map((s) => s.id);
@@ -345,7 +351,7 @@ describe('buildActiveSignalsResponse — user isolation', () => {
   afterEach(() => testDb?.close());
 
   it('returns only the requested user\'s signals', () => {
-    publishLowSleep({ userId: 5001, score: 30 });
+    publishLowSleep({ userId: 5001, tenantId: 5001, score: 30 });
     publishHighLegLoad({ userId: 5002, source: 'gym', rpe: 9 });
 
     const a = buildActiveSignalsResponse(5001);
@@ -365,8 +371,8 @@ describe('buildActiveSignalsResponse — flags', () => {
   afterEach(() => testDb?.close());
 
   it('mirrors the internal context flags exactly', () => {
-    publishLowSleep({ userId: 6001, score: 40 });
-    publishLowHrv({ userId: 6001, hrv_ms: 25, baseline_ms: 45 });
+    publishLowSleep({ userId: 6001, tenantId: 6001, score: 40 });
+    publishLowHrv({ userId: 6001, tenantId: 6001, hrv_ms: 25, baseline_ms: 45 });
     publishHighLegLoad({ userId: 6001, source: 'gym', rpe: 9 });
 
     const res = buildActiveSignalsResponse(6001);

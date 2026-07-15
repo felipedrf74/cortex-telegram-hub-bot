@@ -1,14 +1,24 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-07-14T00:00:00.000Z",
-  "docsHead": "cb3313c9423258ed2d5e2fe6062dcd821cddc74e",
+  "lastVerifiedAt": "2026-07-15T17:07:29.687Z",
+  "docsHead": "409274113471c9f679b50dc8459593739c4f2365",
   "backend": {
-    "version": "4.14.218",
-    "runtimeSha": "6a2811bcb65184ee2939f6db9de97cfb166c3433",
-    "artifactDigest": "503b2e5072b6e7e78eb7a9a614aa77726db4fff4e2ac08e4b3d85f19f62ec2ed",
+    "version": "4.14.220",
+    "runtimeSha": "23ff10062c9f0c5aa2cdc43a3f24779f41472fda",
+    "artifactDigest": "f5bb5bd2a54f5a5420fcb9abab8d0d261a19eefc3d8e3756a01bc7ba4f65f596",
+    "installedDigest": "749a051e25310b7c0959252053f6d21d05b16e2f6e669a60162d9b947ea67696",
     "health": "healthy",
     "database": "connected",
-    "pm2Processes": ["nexus-hub", "content-engine"]
+    "pm2Processes": ["nexus-hub", "content-engine"],
+    "releaseEvidence": {
+      "rcRun": "29434399413",
+      "signingRun": "29434920029",
+      "stagingRun": "29435069770",
+      "stagingRequestId": "f2ca4bd4-9257-4d6d-b111-8c626548cd04",
+      "productionCompletedAt": "2026-07-15T17:07:29.687Z",
+      "cutoverSeconds": 13,
+      "backup": "v4.14.219_before-v4.14.220_20260715_180720.tar.gz"
+    }
   },
   "trainingCatalog": {
     "compiledPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
@@ -18,11 +28,32 @@
   },
   "ios": {
     "version": "1.5.0",
-    "build": 55,
-    "sha": "58069db585ff5e69253ba33051dc779ce19703bf",
-    "testFlightState": "testing",
+    "build": 56,
+    "sha": "dc57440ee2943d2dc80c2922e631ef681b13dcae",
+    "refreshFixSha": "2fa5f47791b76f522d5c60eb398cee4a05bcf04a",
+    "prHeadSha": "859e134e2645cdf70ce1c93c1386695da26c5a21",
+    "mainSha": "af9de2883c298d7c9683983865a00f973fc00259",
+    "testFlightState": "accepted_for_processing",
     "physicalDeviceSmoke": "open",
-    "previousBuildToRetain": 54
+    "buildsToRetain": [54, 55]
+  },
+  "releaseProcess": {
+    "manifestSchema": "nexus.release-manifest.v2",
+    "exactArtifactPath": "proven",
+    "stagingRehearsals": 2,
+    "ownerAuthorizedProductionReleases": 2,
+    "legacyWrappers": "fallback_available_pending_dependency_cleanup",
+    "firstProofRelease": {
+      "version": "4.14.219",
+      "runtimeSha": "aeb5e9df57f6c9d72442093d6f93cc720694e9ee",
+      "artifactDigest": "5e476bc32187dfdc115a62b62be1e01255480e03be4d5a9c3851cdf1aac8133",
+      "rcRun": "29407618419",
+      "signingRun": "29408196559",
+      "attestation": "fa6b3f15-db1b-48b5-9c0b-74244194cc22",
+      "installedDigest": "2c4c36ff1bc81dd437b0864763608dc62104b92aa2299a578a9642b9a6f0e753",
+      "backup": "v4.14.218_before-v4.14.219_20260715_112842.tar.gz",
+      "cutoverSeconds": 13
+    }
   },
   "authorizationRequired": [
     "production_deploy",

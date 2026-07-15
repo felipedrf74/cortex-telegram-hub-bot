@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { missingCanonicalRegistryMarkdownPaths } from './lib/docs-audit-paths.mjs';
 
 const root = process.cwd();
 const strict = process.argv.includes('--strict');
@@ -45,12 +46,64 @@ for (const file of markdown) {
   }
 }
 
+// Markdown links are already checked above. Canonical indexes intentionally
+// use inline-code paths because they are compact boot registries, so validate
+// those focused registries too instead of letting deleted docs remain listed.
+for (const file of [
+  'docs/DOCS_INDEX.md',
+  'docs/engineering/ENGINEERING_STANDARDS_INDEX.md',
+]) {
+  const absolute = path.join(root, file);
+  if (!fs.existsSync(absolute)) {
+    add('canonical-path-registry-missing', file, 'Canonical path registry is missing.');
+    continue;
+  }
+  const source = fs.readFileSync(absolute, 'utf8');
+  for (const missing of missingCanonicalRegistryMarkdownPaths({
+    registryFile: file,
+    source,
+    repoRoot: root,
+  })) {
+    add('broken-canonical-registry-path', file, `Missing inline-code path ${missing.reference}`);
+  }
+}
+
 for (const required of ['docs/project-map.json', 'docs/release/release-state.json']) {
   if (!fs.existsSync(path.join(root, required))) add('generated-map-missing', required, 'Required machine-readable map is missing.');
 }
+if (fs.existsSync(path.join(root, 'docs/project-map.json'))) {
+  const projectMapCheck = spawnSync(
+    process.execPath,
+    ['scripts/generate-project-map.mjs', '--check'],
+    { cwd: root, encoding: 'utf8' },
+  );
+  if (projectMapCheck.status !== 0) {
+    const detail = (projectMapCheck.stderr || projectMapCheck.stdout || 'Project map freshness check failed.')
+      .trim().split('\n')[0];
+    add('project-map-drift', 'docs/project-map.json', detail);
+  }
+}
 const state = JSON.parse(fs.readFileSync(path.join(root, 'docs/release/release-state.json'), 'utf8'));
 const releaseSummary = fs.readFileSync(path.join(root, 'docs/release/CURRENT_RELEASE_STATE.md'), 'utf8');
-for (const value of [state.backend.version, state.backend.runtimeSha, state.backend.artifactDigest]) {
+const releaseSummaryValues = [
+  state.backend.version,
+  state.backend.runtimeSha,
+  state.backend.artifactDigest,
+  state.backend.installedDigest,
+  state.backend.releaseEvidence?.rcRun,
+  state.backend.releaseEvidence?.signingRun,
+  state.backend.releaseEvidence?.stagingRun,
+  state.backend.releaseEvidence?.stagingRequestId,
+  state.backend.releaseEvidence?.backup,
+  state.trainingCatalog?.compiledPackageHash,
+  state.trainingCatalog?.releaseSubjectHash,
+  state.ios?.version,
+  state.ios?.sha,
+  state.ios?.refreshFixSha,
+  state.ios?.prHeadSha,
+  state.ios?.mainSha,
+].filter((value) => typeof value === 'string' && value.length > 0);
+for (const value of releaseSummaryValues) {
   if (!releaseSummary.includes(value)) add('release-summary-drift', 'docs/release/CURRENT_RELEASE_STATE.md', `Missing release-state value ${value}`);
 }
 for (const skill of tracked.filter((file) => file.startsWith('.agents/skills/') && file.endsWith('/SKILL.md'))) {

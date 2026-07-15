@@ -73,7 +73,7 @@ vi.mock('../../src/services/video-study', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  writeSignal,
+  writeGovernedSignal: writeSignal,
 }));
 
 
@@ -162,6 +162,7 @@ describe('channel-learner: re-learn new-video gate + failure backoff (migration 
     testDb = createMigratedTestDatabase();
     completeOneShotWithFallback.mockReset();
     writeSignal.mockReset();
+    writeSignal.mockReturnValue(1);
     vi.mocked(logger.info).mockClear();
     vi.mocked(logger.warn).mockClear();
     videosByChannel = {};

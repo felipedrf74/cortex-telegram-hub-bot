@@ -39,12 +39,26 @@ workflow has no private-key access. A separate workflow dispatched on protected
 checks the exact RC run, jobs, head SHA, artifact identity, test outputs, and
 bundle bytes before signing with protected-main code. The same boundary signs
 staging attestations; candidate code is never executed with the key.
+
+A policy-selected RC is valid only when protected-main tooling also fetches and
+validates the referenced successful nightly run and immutable evidence
+artifact. The nightly must be an ancestor, no more than 36 hours old, use the
+same test-policy digest, and prove that every Vitest file at its SHA ran. The
+signer statically recomputes changed dependencies from inert candidate files
+and verifies the exact `changed ∪ critical ∪ cannot-skip` result. Missing or
+stale nightly evidence, test-infrastructure changes, or unresolved impact force
+the four-shard full suite. Removing or renaming a test also forces the current
+remaining full suite and binds the removed paths into signed selection evidence;
+no raw test-count floor can substitute for this identity proof.
+
 `release:staging` installs the signed bundle in a versioned directory while the
 current process remains online, then atomically selects it and records smoke
 against the exact digest.
 `release:promote` requires a matching staging proof and explicit owner
-authorization. Legacy deployment wrappers remain available only as the stated
-fallback until two staging rehearsals and two production releases pass.
+authorization. Two staging rehearsals and two owner-authorized production
+releases proved this contract on 2026-07-15. Legacy deployment wrappers remain
+available only as a separately invoked fallback while their workflow, test, and
+runbook dependents are migrated; they are not yet retired.
 
 Changed or irreversible migrations still require owner approval and backup
 proof. A release manifest does not make an unsafe down-migration safe.

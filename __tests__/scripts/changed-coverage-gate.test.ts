@@ -1,11 +1,124 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   aggregateCoverage,
+  changedExecutableCoverage,
+  coverageShardCount,
+  parseAddedLines,
+  preserveCoverageShardFailure,
+  resolveExactCommit,
   thresholdFailures,
   validateCoverageException,
 } from '../../scripts/changed-coverage-gate.mjs';
 
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 describe('changed-module coverage gate', () => {
+  it('bounds coverage memory by splitting large selections into at most four shards', () => {
+    expect(coverageShardCount(1)).toBe(1);
+    expect(coverageShardCount(200)).toBe(1);
+    expect(coverageShardCount(201)).toBe(2);
+    expect(coverageShardCount(727)).toBe(4);
+    expect(coverageShardCount(930)).toBe(4);
+    expect(() => coverageShardCount(0)).toThrow('positive integer');
+  });
+
+  it('preserves opaque shard failures and completed blobs for CI diagnosis', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'changed-coverage-failure-'));
+    temporaryDirectories.push(directory);
+    const outputDir = path.join(directory, 'output');
+    const blobDir = path.join(directory, 'blobs');
+    fs.mkdirSync(blobDir, { recursive: true });
+    fs.writeFileSync(path.join(blobDir, 'blob-1.json'), '{"complete":true}\n');
+
+    const failure = preserveCoverageShardFailure({
+      outputDir,
+      blobDir,
+      shard: 1,
+      shardCount: 4,
+      result: { status: 1, signal: null },
+      reason: 'Changed coverage shard 1/4 exited with status 1',
+    });
+
+    expect(failure).toMatchObject({
+      schema: 'nexus.changed-coverage-failure.v1',
+      shard: 1,
+      shardCount: 4,
+      status: 1,
+      signal: null,
+      blobFiles: ['blob-1.json'],
+    });
+    expect(fs.existsSync(path.join(outputDir, 'failed-shards/blobs/blob-1.json'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(outputDir, 'failure.json'), 'utf8'))).toEqual(failure);
+  });
+
+  it('extracts only added-side lines from zero-context git hunks', () => {
+    const lines = parseAddedLines([
+      '@@ -10,0 +11,3 @@',
+      '@@ -40,2 +43 @@',
+      '@@ -99 +101,0 @@',
+    ].join('\n'));
+    expect([...lines]).toEqual([11, 12, 13, 43]);
+  });
+
+  it('measures executable changed lines and their branch outcomes, not untouched legacy code', () => {
+    const coverage = changedExecutableCoverage({
+      statementMap: {
+        0: { start: { line: 10 }, end: { line: 10 } },
+        1: { start: { line: 20 }, end: { line: 20 } },
+        2: { start: { line: 20 }, end: { line: 21 } },
+      },
+      s: { 0: 0, 1: 2, 2: 0 },
+      branchMap: {
+        0: {
+          loc: { start: { line: 19 }, end: { line: 21 } },
+          locations: [
+            { start: { line: 20 }, end: { line: 20 } },
+            { start: { line: 20 }, end: { line: 20 } },
+          ],
+        },
+        1: {
+          loc: { start: { line: 19 }, end: { line: 40 } },
+          locations: [{ start: { line: 30 }, end: { line: 40 } }],
+        },
+      },
+      b: { 0: [3, 0], 1: [0] },
+      fnMap: {
+        0: { decl: { start: { line: 20 }, end: { line: 20 } } },
+        1: { decl: { start: { line: 30 }, end: { line: 30 } } },
+      },
+      f: { 0: 1, 1: 0 },
+    }, new Set([20, 21]));
+
+    expect(coverage).toEqual({
+      lines: { total: 2, covered: 1 },
+      branches: { total: 2, covered: 1 },
+      functions: { total: 1, covered: 1 },
+      statements: { total: 2, covered: 1 },
+    });
+  });
+
+  it('resolves a moving base ref to one immutable commit before planning', () => {
+    const sha = 'a'.repeat(40);
+    const calls: unknown[][] = [];
+    const resolved = resolveExactCommit('/tmp/repository', 'origin/main', (...args: unknown[]) => {
+      calls.push(args);
+      return `${sha}\n`;
+    });
+
+    expect(resolved).toBe(sha);
+    expect(calls[0]?.[1]).toEqual(['rev-parse', '--verify', 'origin/main^{commit}']);
+    expect(resolveExactCommit('/tmp/repository', 'origin/main', () => 'not-a-sha\n')).toBeNull();
+  });
+
   it('aggregates counters rather than averaging percentages', () => {
     const coverage = aggregateCoverage([
       {

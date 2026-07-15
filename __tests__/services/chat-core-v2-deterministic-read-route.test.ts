@@ -987,7 +987,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(result).not.toBeNull();
     expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20 });
     expect(getContentDeskItems).toHaveBeenCalledWith(42, 5);
-    expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5);
+    expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5, 84);
     expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();

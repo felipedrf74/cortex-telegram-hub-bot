@@ -35,14 +35,15 @@ describe('privileged GitHub workflow action pinning', () => {
     );
     const releaseEvidenceJob = workflow.match(/  release-evidence:\n(?<body>[\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|$)/)?.groups?.body || '';
 
-    expect(releaseEvidenceJob).toContain('needs: [vitest-full, python-full]');
+    expect(releaseEvidenceJob).toContain('needs: [test-plan, vitest-full, vitest-selected, python-full]');
     expect(releaseEvidenceJob).toContain('if: ${{ always() }}');
     expect(releaseEvidenceJob).toContain('mkdir -p .local/release/rc-test-results');
     expect(releaseEvidenceJob.match(/continue-on-error: true/g)?.length).toBeGreaterThanOrEqual(2);
-    expect(releaseEvidenceJob).toContain("fs.existsSync(resultDir)");
+    expect(releaseEvidenceJob).toContain('node scripts/release-test-evidence.mjs write-result');
     expect(releaseEvidenceJob).toContain('id: sandbox_smoke');
     expect(releaseEvidenceJob).toContain("NEXUS_RELEASE_VERDICT:");
-    expect(releaseEvidenceJob).toContain("needs.vitest-full.result == 'success'");
+    expect(releaseEvidenceJob).toContain("needs.test-plan.outputs.full_required == 'true' && needs.vitest-full.result != 'success'");
+    expect(releaseEvidenceJob).toContain("needs.test-plan.outputs.full_required == 'false' && needs.vitest-selected.result != 'success'");
     expect(releaseEvidenceJob).toContain("steps.sandbox_smoke.outcome == 'success'");
     expect(releaseEvidenceJob).toContain('node scripts/release-bundle.mjs');
     expect(releaseEvidenceJob).toContain('node scripts/release-manifest-v2.mjs write');

@@ -2,11 +2,11 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-06-24
+Last verified: 2026-07-15
 Update policy: update when test categories, evidence requirements, or
-risk-based test selection rules change. The risk-based gate matrix at
-`docs/release/risk-based-release-gate-matrix.md` is the runtime
-companion that maps changed-area to test selection.
+risk-based test selection rules change. `config/test-policy.json` is the
+machine-readable tier/disposition policy; `docs/release/README.md` describes
+how its conditional release result is bound to an exact artifact.
 
 This standard defines what "tested" means for Nexus Hub. It is grounded in
 the no-launch-only-validation rule that closed the v4.14.118 incident,
@@ -19,14 +19,14 @@ security standards.
 | Category | Where | What it proves |
 |---|---|---|
 | **Unit** | `__tests__/services/`, `__tests__/utils/`, iOS `*Tests/` | Pure functions, decoders, derivations, view-model logic |
-| **Integration** | `__tests__/api/`, `__tests__/portal/` | Route + service + repository wired together with `:memory:` SQLite |
+| **Integration** | `__tests__/api/`, `__tests__/portal/` | Route + service + repository wired to a copied, fully migrated SQLite test template |
 | **Security** | `__tests__/security/`, `__tests__/scope/` | Tenant/identity isolation, prompt cleanliness, audit log emission |
 | **Contract** | iOS `<DTO>DecoderTests.swift`, `__tests__/api/<route>.test.ts` | DTO shape, error envelope shape, idempotency semantics |
 | **Local smoke** | `scripts/*-smoke.{sh,ts}`, `npm run smoke:*` | Multi-route sequence against a local backend |
 | **Staging smoke** | `scripts/staging-smoke.sh` plus domain smokes | Production-shape checks against staging; count is release-dependent |
 | **iOS XCUITest** | `Nexus HubUITests/` | SwiftUI workflow on simulator/device |
 | **iOS interaction (manual)** | QA report walk-through | Physical-device tap/scroll/navigation responsiveness |
-| **Production health** | `deploy.sh` postdeploy block | `/api/health`, `/api/snapshot`, PM2 state |
+| **Production health** | exact-artifact promotion readiness | Node `/health`, content-engine `/health`, authenticated `/api/snapshot`, PM2 cwd/SHA, and `current` symlink identity |
 | **Drill** | `__tests__/**` + scripted on staging | Synthetic alerts, identity-scan strict, vi.mock completeness |
 
 ## 2. Test quality bar (must)
@@ -41,21 +41,26 @@ Every test must:
    folders.
 3. **Mock all external APIs.** Tests that hit real network fail CI by
    policy. Use the SDK wrapper mocks (`vi.mock('@google/...', ...)`).
-4. **Use `:memory:` SQLite for backend integration tests.** The
-   `setupDatabase()` helper builds a fresh schema per test file.
-5. **Reset module-scoped caches in `beforeEach`.** `oauth-store` LRU,
-   `provider-registry` cost counters, etc.
+4. **Start from one fully migrated SQLite template per worker.** Use
+   `createMigratedTestDatabase()` to copy its serialized bytes, or wrap a
+   compatible test in a transaction that rolls back. Only migration-rehearsal
+   tests may replay every migration from an empty database.
+5. **Prefer dependency injection and explicit fakes.** Reset only state owned
+   by the unit under test. Avoid `vi.resetModules`, partial module factories,
+   and global-registry resets when a scoped provider/fake can express the
+   dependency directly.
 6. **Be deterministic.** A test that "sometimes passes" is broken;
    investigate via `--repeat 30` before merging.
-7. **Be fast.** A unit test runs in <100 ms. An integration test runs in
-   <1 s. A test that exceeds these bounds gets a `slow:` tag and is
-   considered for refactoring.
+7. **Be fast.** A unit test normally runs in <100 ms; integration setup must not
+   replay the migration tree. No non-exempt deterministic test file may exceed
+   10 s. Shared-runner wall-clock benchmarks belong in `test:benchmark`, not a
+   correctness assertion.
 
 ## 3. `vi.mock` completeness (must)
 
-The `singleFork: true` mode in `vitest.config.ts` shares module cache
-across files in a fork. Partial mocks (mocking 1 of N exports) leak
-stale undefined exports to subsequent tests.
+Vitest uses a bounded four-worker fork pool. A partial module factory can still
+replace unlisted exports with `undefined`, hide a real dependency boundary, and
+make behavior depend on mock evaluation order.
 
 1. **Every `vi.mock(modulePath, factory)` factory returns ALL exports**
    of the mocked module. Use `vi.importActual` to get the real exports
@@ -63,33 +68,46 @@ stale undefined exports to subsequent tests.
 2. **Run `scripts/vi-mock-completeness-lint.mjs` before merge when the diff
    changes mocked module boundaries.**
    Strict mode runs nightly; advisory mode runs per-PR.
-3. **Top offenders today**: `logger.ts` (206 partial mocks across the
-   suite), `database.ts` (161), `user-service.ts` (46). These are
-   tracked in a follow-up reduction effort; new partial mocks land at
-   the bottom of the offender list.
+3. **Do not use module resets as routine isolation.** Inject database,
+   provider, clock, transport, or registry dependencies explicitly. Retain a
+   module-boundary mock only when the boundary itself is the behavior under
+   test.
 
 ## 4. Risk-based test selection (must)
 
-`scripts/changed-area-classifier.sh` is the single source of
-truth for "what tests must run on this diff". It outputs JSON or
-markdown, used by:
+`scripts/changed-area-classifier.sh` supplies changed-area risk and cannot-skip
+classification. `scripts/select-vitest-files.mjs` combines that result with an
+inert static source-to-test dependency graph and `config/test-policy.json`.
+Candidate code is parsed as data and never evaluated to select tests.
 
-- `.husky/pre-commit` (focused vs skip)
-- `.husky/pre-push` (focused on feature, full on RC)
-- `.github/workflows/ci.yml` (parallel matrix dispatch)
-- `scripts/promote-to-prod.sh` (smoke-evidence reuse window)
+The stable commands are:
+
+| Command | Contract |
+|---|---|
+| `npm run test:fast` | Deterministic unit, schema, policy, and release-tooling subset; target ≤90 s. |
+| `npm run test:changed -- --base <sha>` | Static changed dependencies ∪ critical ∪ cannot-skip/focused risks; unresolved production impact fails closed to all Vitest files. |
+| `npm run test:critical` | Auth, tenant, migration, billing, provider fallback, public contract, release-safety, and production-regression set. |
+| `npm run test:release -- --base <sha>` | Local release gate: Node/toolchain check, typecheck, build, migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. |
+| `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards. |
+| `npm run test:evaluate` | Persona, provider-quality, subjective product, and long-running evaluation corpus. |
+| `npm run test:profile` | Full machine-readable timings and inventory under ignored `.local/`. |
 
 The classifier maps changed files to:
 
-- Recommended tier (T0–T6)
-- Vitest mode (skip/focused/changed-only/full) and globs
+- Recommended risk tier (T0–T6)
+- Vitest mode and focused/cannot-skip globs
 - XCTest mode (skip/focused) and class names
 - Staging smoke domains (generic 17 + per-domain smokes)
 - Cannot-skip safety gates (tenant-auth-security, etc.)
 
-**Cannot-skip gates take precedence over classifier minimization.** A
-docs-only diff that touches a file under `prompts/` still triggers
-`prompt-injection-defense` cannot-skip → security tests run.
+**Cannot-skip gates take precedence over minimization.** The release-candidate
+workflow runs the exact `changed ∪ critical ∪ cannot-skip` selection only when
+a successful full nightly no more than 36 hours old is an ancestor of the
+candidate, used the same test-policy digest, and proves the complete Vitest
+file set. Missing/stale/mismatched nightly proof, test-infrastructure changes,
+removed tests, or unresolved production impact force the complete four-shard
+suite. The full suite is therefore nightly/manual/conditional, not a routine
+gate for every production artifact.
 
 ## 5. Two-user / two-tenant matrix (must)
 
@@ -198,8 +216,9 @@ wrapper changes:
 
 ## 10. Migration tests (must, when migrations touched)
 
-1. **Migration applies cleanly to a fresh DB.** `migrationRunner` test
-   asserts no SQL error.
+1. **The dedicated migration rehearsal applies every migration to a fresh
+   DB.** This is the one correctness lane that must start empty and execute the
+   complete production runner.
 2. **Migration applies cleanly to a fixture DB matching last
    production state.** Test fixtures under
    `__tests__/migrations/fixtures/` represent prior schemas.
@@ -210,6 +229,10 @@ wrapper changes:
    been self-healed at runtime.** If a migration adds columns later referenced
    defensively by startup code or tests, include fixtures for "column already
    exists" and "previous migration applied only" cases.
+7. **All other database tests copy the migrated template or roll back a
+   transaction.** `npm run test:migration-hook-lint` rejects full migration
+   execution from per-test hooks. Do not add a private migration replay helper
+   to bypass the guard.
 
 ## 11. iOS unit / contract tests (must, when iOS code touched)
 
@@ -362,9 +385,10 @@ device proof. The recommended additions to lock these in:
 1. **A perf-regression XCUITest** that asserts a critical interaction
    completes in under N ms on a known-good simulator. Today this is
    informal; promoting to an enforced matrix is a future improvement.
-2. **A backend latency assertion** on app-facing routes via the smoke
-   evidence JSON. Today the smoke records latency but does not assert
-   bounds; promoting to bounds-asserted is a future improvement.
+2. **Backend algorithmic performance uses the benchmark lane.** Warm up,
+   collect repeated samples, and compare p95 with a governed baseline. A raw
+   shared-runner assertion such as "50,000 events in <1 second" must not fail
+   correctness CI.
 
 ## 16. Stale or skipped tests
 
@@ -387,7 +411,8 @@ Tests added/modified: <count> in <files>
 Tests run locally:
   - typecheck: <pass | fail>
   - focused vitest: <count pass / count total>
-  - full vitest (if RC): <count pass / count total>
+  - release Vitest tier: <changed-critical-cannot-skip | full-sharded>
+  - selected/full vitest: <count pass / count total>
   - iOS xcodebuild: <pass | fail>
   - iOS focused XCTest: <count pass / count total>
   - iOS XCUITest: <count pass / count total>
@@ -410,6 +435,10 @@ A "tests passed" claim without this block is not actionable evidence.
 - ❌ Tests that assert against a literal `Date.now()` — use a frozen
    clock helper.
 - ❌ Tests that mock the function they claim to test.
+- ❌ Full migration execution in `beforeEach`/per-test setup; copy the migrated
+  template or use transaction rollback.
+- ❌ Routine `vi.resetModules` or global-registry resets where dependency
+  injection and an explicit fake can isolate the behavior.
 - ❌ XCUITest that taps a coordinate instead of an accessibility id.
 - ❌ Smoke scripts that pass when the backend is offline.
 
@@ -427,3 +456,6 @@ A "tests passed" claim without this block is not actionable evidence.
 - [ ] iOS DTO test added for new DTO fields.
 - [ ] iOS XCUITest added for new tappable workflows.
 - [ ] Evidence block present in PR description or QA report.
+- [ ] `npm run test:migration-hook-lint` passes after database-test changes.
+- [ ] Release evidence names the selected conditional tier and exact test-file
+      identity rather than relying on a raw test-count floor.

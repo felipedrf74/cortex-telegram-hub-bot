@@ -1082,7 +1082,7 @@ describe('Cooking API — shopping list item updates', () => {
     const user = getOrCreateUser(21010, { username: 'cook10' });
     const today = DateTime.now().setZone('Europe/Lisbon').toISODate()!;
     setMealPlan(user.id, today, 'lunch', 'Arroz com atum');
-    publishLowSleep({ userId: user.id, score: 44, totalHours: 5.2 });
+    publishLowSleep({ userId: user.id, tenantId: user.id, score: 44, totalHours: 5.2 });
 
     const res = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id);
 

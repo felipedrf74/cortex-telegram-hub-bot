@@ -188,6 +188,7 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   ],
   getActiveSignalCount: () => 3,
   writeSignal: vi.fn(),
+  writeGovernedSignal: vi.fn(() => 1),
 }));
 
 // Pipeline stats come from src/agents/pipeline-agent — it reads the DB
@@ -425,6 +426,10 @@ describe('content-dashboard route', () => {
     expect(pipelineNode?.totalRuns).toBe(12);
     const radarNode = data.agentGraph.nodes.find((n) => n.id === 'reaction_radar');
     expect(radarNode?.lastStatus).toBe('failed');
+    const autoresearchNode = data.agentGraph.nodes.find((n) => n.id === 'autoresearch');
+    expect(autoresearchNode?.emits).toEqual([]);
+    expect(autoresearchNode?.role).toContain('read-only evaluation');
+    expect(autoresearchNode?.role).toContain('never mutates prompts automatically');
 
     // Triggers — only content-domain jobs, sorted with failed first
     expect(data.triggers.length).toBe(3);

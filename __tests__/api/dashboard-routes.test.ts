@@ -1019,7 +1019,7 @@ describe('Dashboard API route', () => {
       getEvents: mockUnifiedCalendarEvents,
     });
 
-    expect(mockCalculateReadiness).toHaveBeenCalledWith(4);
+    expect(mockCalculateReadiness).toHaveBeenCalledWith(4, { tenantId: 4 });
     expect(result.readinessScore).toBe(68);
     expect(result.bodyBattery).toBe(64);
     expect(result.bodyBatteryStatus).toBe('ready');

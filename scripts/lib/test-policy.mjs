@@ -31,15 +31,15 @@ export function globToRegExp(glob) {
   return new RegExp(`^${source}$`);
 }
 
-export function walkTestFiles() {
+export function walkTestFiles(sourceRoot = root) {
   const files = [];
-  const start = path.join(root, '__tests__');
+  const start = path.join(sourceRoot, '__tests__');
   const walk = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) walk(absolute);
       else if (entry.isFile() && entry.name.endsWith('.test.ts')) {
-        files.push(path.relative(root, absolute).split(path.sep).join('/'));
+        files.push(path.relative(sourceRoot, absolute).split(path.sep).join('/'));
       }
     }
   };

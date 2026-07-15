@@ -220,15 +220,17 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
     6,
     userId,
     7,
+    tenantId,
   );
   const radarPreferences = getContentRadarPreferences(userId, tenantId);
   const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
   const optimizationSignals = readSignals(
     'ios-content-home',
-    ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+    ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'creator_learning_digest', 'content_formula'],
     6,
     userId,
     14,
+    tenantId,
   );
   const monitoredPillars = radarPreferences.topics.length > 0
     ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
@@ -236,7 +238,10 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
   const deskItems = getContentDeskItems(userId, 3);
   const voiceEntries = getVoiceDna(undefined, userId, tenantId);
   const knowledgeStats = getKnowledgeStats(undefined, userId, tenantId);
-  const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+  const filmingRecommendation = localizeFilmingRecommendation(
+    await getFilmingRecommendation(userId, undefined, tenantId),
+    language,
+  );
 
   return buildContentHomeViewState({
     pipeline,

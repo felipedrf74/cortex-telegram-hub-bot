@@ -10,7 +10,7 @@
  * Produces: keyword_rank_change, keyword_opportunity
  */
 
-import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { readSignals, logAgentRun } from '../services/intelligence-bus';
 import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';

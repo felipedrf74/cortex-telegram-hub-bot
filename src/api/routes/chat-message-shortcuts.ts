@@ -94,7 +94,7 @@ async function tryBuildContentShortcutResponse(input: {
   const contentStateShortcut = parseContentStateShortcut(normalizedText);
   if (contentStateShortcut) {
     const requestedLanguage = resolveContentShortcutLanguage(normalizedText, userLanguage);
-    const shortcut = await buildContentStateShortcutResponse(contentStateShortcut, userId, requestedLanguage);
+    const shortcut = await buildContentStateShortcutResponse(contentStateShortcut, userId, requestedLanguage, tenantId);
     return buildShortcutResponse({
       text: shortcut.text,
       domain: 'content',

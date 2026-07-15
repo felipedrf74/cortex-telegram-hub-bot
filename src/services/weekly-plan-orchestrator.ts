@@ -24,7 +24,7 @@ import { getDb } from './database';
 import {
   dismissSignal,
   readSignals,
-  writeSignal,
+  writeGovernedSignal,
   type AgentSignal,
   type MeshPriority,
   type SignalType,
@@ -43,6 +43,8 @@ import { checkSkillAccess } from './skill-tiers';
 import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './training-plans';
 import type { MealPlan } from './cooking-chef';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+
+const WEEKLY_PLAN_SIGNAL_PRODUCER_VERSION = 'weekly-plan-orchestrator.v1';
 
 export interface PlanDecision {
   summary: string;
@@ -286,14 +288,14 @@ export async function composeWeeklyPlan(opts: {
       label: 'training',
       userId: opts.userId,
       weekStart: window.weekStart,
-      loader: readTrainingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      loader: readTrainingMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
       fallback: createEmptyTrainingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
     }),
     loadMeshContextOrFallback({
       label: 'secretary',
       userId: opts.userId,
       weekStart: window.weekStart,
-      loader: readSecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      loader: readSecretaryMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
       fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
     }),
     gatedSkills.includes('cooking')
@@ -302,7 +304,7 @@ export async function composeWeeklyPlan(opts: {
           label: 'cooking',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readCookingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+          loader: readCookingMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
           fallback: null,
         }),
     gatedSkills.includes('content')
@@ -311,7 +313,7 @@ export async function composeWeeklyPlan(opts: {
           label: 'content',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readContentMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+          loader: readContentMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
           fallback: null,
         }),
     gatedSkills.includes('finance')
@@ -320,7 +322,7 @@ export async function composeWeeklyPlan(opts: {
           label: 'finance',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readFinanceMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+          loader: readFinanceMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
           fallback: null,
         }),
   ]);
@@ -529,7 +531,8 @@ function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft):
 
   dismissSupersededSignals(userId, tenantId, draft);
 
-  const signalId = writeSignal({
+  const observedAt = new Date().toISOString();
+  const signalId = writeGovernedSignal({
     source_agent: draft.sourceAgent,
     signal_type: draft.signalType,
     payload: draft.payload,
@@ -538,6 +541,11 @@ function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft):
     priority: draft.priority,
     expires_at: draft.expiresAt,
     meshPriority: draft.meshPriority,
+    provenance: {
+      producerVersion: WEEKLY_PLAN_SIGNAL_PRODUCER_VERSION,
+      source: 'runtime',
+      observedAt,
+    },
   });
 
   const inserted = readSignals('mesh.orchestrator', [draft.signalType], 20, userId, undefined, tenantId)

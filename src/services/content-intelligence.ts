@@ -143,7 +143,11 @@ export function getContentDeskItems(userId: number, limit: number): ContentDeskI
   }
 }
 
-export function getRankedContentSignals(userId: number, limit = 6): ContentSignalDigest[] {
+export function getRankedContentSignals(
+  userId: number,
+  limit = 6,
+  tenantId?: number,
+): ContentSignalDigest[] {
   if (!isValidTenantUserId(userId)) {
     reportInvalidContentIntelligenceScope('get_ranked_content_signals', userId, { limit });
     return [];
@@ -159,11 +163,13 @@ export function getRankedContentSignals(userId: number, limit = 6): ContentSigna
         'hook_effectiveness',
         'pillar_performance',
         'learning_digest',
+        'creator_learning_digest',
         'content_formula',
         'pipeline_bottleneck',
       ],
       {
         userId,
+        tenantId,
         limit,
         minConfidence: 0.2,
       },
@@ -176,7 +182,7 @@ export function getRankedContentSignals(userId: number, limit = 6): ContentSigna
       confidence: signal.confidence,
     }));
   } catch (err) {
-    logger.debug({ err, userId, limit }, 'Content intelligence: ranked signals query failed');
+    logger.debug({ err, userId, tenantId, limit }, 'Content intelligence: ranked signals query failed');
     return [];
   }
 }
@@ -184,6 +190,7 @@ export function getRankedContentSignals(userId: number, limit = 6): ContentSigna
 export async function getNextContentExecutionHint(
   userId: number,
   opts?: {
+    tenantId?: number;
     topics?: ContentTopic[];
     deskItems?: ContentDeskItem[];
     rankedSignals?: ContentSignalDigest[];
@@ -198,8 +205,8 @@ export async function getNextContentExecutionHint(
 
   const topics = opts?.topics ?? getTopics(userId, { includeTerminal: false, limit: 100 });
   const deskItems = opts?.deskItems ?? getContentDeskItems(userId, 4);
-  const rankedSignals = opts?.rankedSignals ?? getRankedContentSignals(userId, 4);
-  const filmingRecommendation = opts?.filmingRecommendation ?? await getFilmingRecommendation(userId, topics);
+  const rankedSignals = opts?.rankedSignals ?? getRankedContentSignals(userId, 4, opts?.tenantId);
+  const filmingRecommendation = opts?.filmingRecommendation ?? await getFilmingRecommendation(userId, topics, opts?.tenantId);
   const pillars = opts?.pillars ?? getActiveContentPillars(userId);
 
   const readyScheduled = topics.find((topic) => topic.status === 'ready' && topic.scheduled_date);
@@ -380,6 +387,7 @@ function describeContentSignalSummary(signal: {
     case 'pillar_performance':
       return 'One pillar is clearly outperforming the others.';
     case 'learning_digest':
+    case 'creator_learning_digest':
       return 'The learning loop already has a durable pattern worth reusing.';
     case 'content_formula':
       return 'A repeatable format is emerging from recent content results.';

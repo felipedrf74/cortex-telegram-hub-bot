@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
+import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
 import {
   globToRegExp,
   loadTestPolicy,
@@ -31,7 +32,13 @@ const DETECTED_MUTATION_STATUSES = new Set(['Killed', 'Timeout']);
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
 
 function git(args, options = {}) {
-  return spawnSync('git', args, { cwd: root, encoding: 'utf8', ...options });
+  const { env: overrides = {}, ...spawnOptions } = options;
+  return spawnSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    ...spawnOptions,
+    env: { ...cleanGitEnv(), ...overrides },
+  });
 }
 
 export function extractRelativeImports(source) {
@@ -59,6 +66,12 @@ export function isCriticalModule(file, patterns) {
 
 function canonicalNode(node, sourceFile) {
   return printer.printNode(ts.EmitHint.Unspecified, node, sourceFile).replace(/\s+/g, ' ').trim();
+}
+
+function normalizeEvidenceLiterals(value) {
+  return value
+    .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, '<string>')
+    .replace(/\b(?:0[xob][\da-f]+|\d+(?:\.\d+)?)\b/gi, '<number>');
 }
 
 function calleeIdentity(expression) {
@@ -102,6 +115,65 @@ function isAssertionExpression(expression) {
   if (!ts.isCallExpression(expression)) return false;
   const identity = calleeIdentity(expression.expression);
   return Boolean(identity && ASSERTION_FUNCTIONS.has(identity.root));
+}
+
+function assertionRootCall(expression) {
+  let current = expression;
+  while (
+    ts.isAwaitExpression(current)
+    || ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isNonNullExpression(current)
+  ) current = current.expression;
+  if (ts.isCallExpression(current)) {
+    const directAssertionCallee = (callee) => {
+      if (ts.isIdentifier(callee)) return ASSERTION_FUNCTIONS.has(callee.text);
+      if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) {
+        return directAssertionCallee(callee.expression);
+      }
+      return false;
+    };
+    if (directAssertionCallee(current.expression)) return current;
+    return assertionRootCall(current.expression);
+  }
+  if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    return assertionRootCall(current.expression);
+  }
+  return null;
+}
+
+function assertionFingerprint(expression, sourceFile) {
+  let current = expression;
+  while (
+    ts.isAwaitExpression(current)
+    || ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isNonNullExpression(current)
+  ) current = current.expression;
+  if (!ts.isCallExpression(current)) return canonicalNode(current, sourceFile);
+  const identity = calleeIdentity(current.expression);
+  const rootCall = assertionRootCall(current);
+  const root = identity?.root ?? '<assertion>';
+  const subjectArguments = rootCall?.arguments.slice(0, 1) ?? current.arguments.slice(0, 1);
+  const subject = subjectArguments.map((argument) => canonicalNode(argument, sourceFile)
+    .replace(/^[A-Za-z_$][\w$]*(?=\.|\[|$)/, '<subject>')).join(',');
+  return `${root}(${subject})::${identity?.modifiers.join('.') ?? ''}`;
+}
+
+function hasRemovedEvidence(previousEvidence, currentEvidence) {
+  const remaining = new Map();
+  for (const evidence of currentEvidence) remaining.set(evidence, (remaining.get(evidence) ?? 0) + 1);
+  for (const evidence of previousEvidence) {
+    const count = remaining.get(evidence) ?? 0;
+    if (count === 0) return true;
+    remaining.set(evidence, count - 1);
+  }
+  return false;
+}
+
+function hasEvidenceCardinalityDecrease(previousEvidence, currentEvidence) {
+  return previousEvidence.length > currentEvidence.length
+    || new Set(previousEvidence).size > new Set(currentEvidence).size;
 }
 
 function buildVariableInitializerIndex(sourceFile) {
@@ -191,32 +263,22 @@ function resolveEachRows(node, sourceFile, variableInitializers) {
   return [expressionFingerprint(resolved, sourceFile, variableInitializers)];
 }
 
-function hasRemovedEvidence(previousEvidence, currentEvidence) {
-  const remaining = new Map();
-  for (const evidence of currentEvidence) remaining.set(evidence, (remaining.get(evidence) ?? 0) + 1);
-  for (const evidence of previousEvidence) {
-    const count = remaining.get(evidence) ?? 0;
-    if (count === 0) return true;
-    remaining.set(evidence, count - 1);
-  }
-  return false;
-}
-
 function controlFlowFingerprint(node, sourceFile) {
-  if (ts.isIfStatement(node)) return `if:${canonicalNode(node.expression, sourceFile)}`;
-  if (ts.isConditionalExpression(node)) return `conditional:${canonicalNode(node.condition, sourceFile)}`;
-  if (ts.isWhileStatement(node)) return `while:${canonicalNode(node.expression, sourceFile)}`;
-  if (ts.isDoStatement(node)) return `do:${canonicalNode(node.expression, sourceFile)}`;
+  const structural = (expression) => normalizeEvidenceLiterals(canonicalNode(expression, sourceFile));
+  if (ts.isIfStatement(node)) return `if:${structural(node.expression)}`;
+  if (ts.isConditionalExpression(node)) return `conditional:${structural(node.condition)}`;
+  if (ts.isWhileStatement(node)) return `while:${structural(node.expression)}`;
+  if (ts.isDoStatement(node)) return `do:${structural(node.expression)}`;
   if (ts.isForStatement(node)) {
     return `for:${[node.initializer, node.condition, node.incrementor]
-      .map((part) => part ? canonicalNode(part, sourceFile) : '')
+      .map((part) => part ? structural(part) : '')
       .join(';')}`;
   }
   if (ts.isForInStatement(node) || ts.isForOfStatement(node)) {
-    return `for:${canonicalNode(node.initializer, sourceFile)}:${canonicalNode(node.expression, sourceFile)}`;
+    return `for:${structural(node.initializer)}:${structural(node.expression)}`;
   }
-  if (ts.isSwitchStatement(node)) return `switch:${canonicalNode(node.expression, sourceFile)}`;
-  if (ts.isCaseClause(node)) return `case:${canonicalNode(node.expression, sourceFile)}`;
+  if (ts.isSwitchStatement(node)) return `switch:${structural(node.expression)}`;
+  if (ts.isCaseClause(node)) return `case:${structural(node.expression)}`;
   return null;
 }
 
@@ -251,7 +313,7 @@ export function extractTestEvidence(source, fileName = 'mutation-gate-input.test
           ? node.body
         : null;
     if (assertionExpression && isAssertionExpression(assertionExpression)) {
-      assertions.push(canonicalNode(node, sourceFile));
+      assertions.push(assertionFingerprint(assertionExpression, sourceFile));
       return;
     }
     const flowFingerprint = insideTest ? controlFlowFingerprint(node, sourceFile) : null;
@@ -286,7 +348,7 @@ export function isTestCleanupChange(change, current, previous) {
     || previousEvidence.parseDiagnostics.length > 0
     || previousEvidence.declarationCount > currentEvidence.declarationCount
     || hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)
-    || hasRemovedEvidence(previousEvidence.eachRows, currentEvidence.eachRows)
+    || hasEvidenceCardinalityDecrease(previousEvidence.eachRows, currentEvidence.eachRows)
     || hasRemovedEvidence(previousEvidence.controlFlow, currentEvidence.controlFlow);
 }
 
@@ -795,14 +857,6 @@ export function buildMutationPlan({
   const deletedTestAudit = resolveDeletedTestCleanupMappings(changes, cleanupMappings, exists, readSource);
   const invalidCleanupMappings = [...deletedTestAudit.invalid];
   const mappingByTest = new Map(cleanupMappings.map((mapping) => [mapping.test, mapping]));
-  const mappingsByReplacementTest = new Map();
-  for (const mapping of cleanupMappings) {
-    for (const replacementTest of mapping.replacementTests ?? []) {
-      const owners = mappingsByReplacementTest.get(replacementTest) ?? [];
-      owners.push(mapping);
-      mappingsByReplacementTest.set(replacementTest, owners);
-    }
-  }
 
   for (const change of changes) {
     if (
@@ -837,13 +891,7 @@ export function buildMutationPlan({
     if (scope !== 'test-cleanup' || !protectsRemovedAssertions) continue;
 
     const exactMapping = mappingByTest.get(change.file) ?? mappingByTest.get(previousFile);
-    const replacementMappings = exactMapping
-      ? []
-      : [...new Set([
-        ...(mappingsByReplacementTest.get(change.file) ?? []),
-        ...(mappingsByReplacementTest.get(previousFile) ?? []),
-      ])];
-    const mappings = exactMapping ? [exactMapping] : replacementMappings;
+    const mappings = exactMapping ? [exactMapping] : [];
     if (mappings.length === 0) {
       if (!change.status.startsWith('D')) unmappedRetainedCleanupTests.push(change.file);
       continue;
@@ -970,7 +1018,7 @@ export function buildMutationPlan({
   return {
     schema: 'nexus.mutation-plan.v5',
     base,
-    head: git(['rev-parse', 'HEAD']).stdout.trim(),
+    head: resolveExactCommit(root, 'HEAD'),
     scope,
     cleanupTests: [...new Set(cleanupTests)].sort(),
     cleanupMappings: deletedTestAudit.resolved,
@@ -1017,15 +1065,16 @@ function main() {
     console.error(`Unsupported mutation scope: ${scope}`);
     process.exit(64);
   }
-  if (git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
+  const exactBase = resolveExactCommit(root, base);
+  if (!exactBase) {
     console.error(`Mutation base does not resolve: ${base}`);
     process.exit(2);
   }
 
   const policy = loadTestPolicy();
-  const changes = parseChangedFiles(base);
+  const changes = parseChangedFiles(exactBase);
   const plan = buildMutationPlan({
-    base,
+    base: exactBase,
     changes,
     patterns: policy.mutation.criticalModulePatterns,
     scope,

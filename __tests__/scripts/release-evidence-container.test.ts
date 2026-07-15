@@ -50,18 +50,20 @@ describe('release-evidence-container wrapper', () => {
     }
   });
 
-  it('fails fast before evidence writing when prerequisite full suites fail', () => {
+  it('fails fast before evidence writing when the governed selected tier fails', () => {
     const raw = workflow();
-    const stopIndex = raw.indexOf('Stop when full-suite prerequisites failed');
-    const countIndex = raw.indexOf('Count tests from shard artifacts');
+    const planIndex = raw.indexOf('🧭 Resolve release test tier');
+    const stopIndex = raw.indexOf('Stop when selected test prerequisites failed');
     const writeIndex = raw.indexOf('- name: Write exact release-test result');
     const unsignedIndex = raw.indexOf('- name: Write unsigned ReleaseManifestV2 candidate');
 
+    expect(planIndex).toBeGreaterThan(-1);
     expect(stopIndex).toBeGreaterThan(-1);
-    expect(countIndex).toBeGreaterThan(stopIndex);
     expect(writeIndex).toBeGreaterThan(stopIndex);
     expect(unsignedIndex).toBeGreaterThan(writeIndex);
-    expect(raw).toContain("needs.vitest-full.result != 'success' || needs.python-full.result != 'success'");
+    expect(raw).toContain("needs.test-plan.outputs.full_required == 'true' && needs.vitest-full.result != 'success'");
+    expect(raw).toContain("needs.test-plan.outputs.full_required == 'false' && needs.vitest-selected.result != 'success'");
+    expect(raw).toContain('release-test-selection-${{ github.run_id }}-${{ github.run_attempt }}');
     expect(raw).toContain('release-manifest-v2.mjs write');
     expect(raw).toContain('--allow-unsigned');
     expect(raw).toContain('.local/release/test-results.json');

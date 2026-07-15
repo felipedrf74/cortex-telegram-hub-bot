@@ -75,7 +75,10 @@ export function registerContentIntelligenceRoutes(
 
     const language = resolveContentLanguage(req, userId);
     const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence-detail', 6);
-    const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+    const filmingRecommendation = localizeFilmingRecommendation(
+      await getFilmingRecommendation(userId, undefined, tenantId),
+      language,
+    );
     const monitoredPillars = context.radarPreferences.topics.length > 0
       ? buildRadarTopicSummaries(context.radarPreferences.topics, context.discoverySignals)
       : getActiveContentPillars(userId);
@@ -140,7 +143,7 @@ function readContentIntelligenceContext(
   const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
   const optimizationSignals = readSignals(
     source,
-    ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+    ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'creator_learning_digest', 'content_formula'],
     signalLimit,
     userId,
     14,

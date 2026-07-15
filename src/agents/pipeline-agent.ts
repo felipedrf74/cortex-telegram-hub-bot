@@ -7,7 +7,7 @@
  * Schedule: Daily at 20:00
  */
 
-import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { writeGovernedSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
 import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
@@ -21,6 +21,7 @@ const STAGE_THRESHOLDS: Record<string, number> = {
 };
 
 const STAGE_ORDER = ['approved', 'scripted', 'filming', 'editing', 'published'];
+const PIPELINE_SIGNAL_PRODUCER_VERSION = 'pipeline-agent.v1';
 const PIPELINE_GLOBAL_SCOPE_SQL = `
   AND COALESCE(user_id, 0) = 0
   AND COALESCE(tenant_id, 0) = 0
@@ -311,9 +312,14 @@ export async function runPipelineAgent(): Promise<void> {
     const sprintMode = sprintSignals.length > 0;
 
     if (stats.bottleneck && !sprintMode) {
-      writeSignal({
+      const signalId = writeGovernedSignal({
         source_agent: 'pipeline-agent',
         signal_type: 'pipeline_bottleneck',
+        provenance: {
+          producerVersion: PIPELINE_SIGNAL_PRODUCER_VERSION,
+          source: 'runtime',
+          observedAt: new Date().toISOString(),
+        },
         payload: {
           bottleneck_stage: stats.bottleneck.stage,
           stuck_count: stats.bottleneck.count,
@@ -322,11 +328,16 @@ export async function runPipelineAgent(): Promise<void> {
           stats,
         },
       });
-      signalsProduced++;
+      if (signalId > 0) signalsProduced++;
     } else {
-      writeSignal({
+      const signalId = writeGovernedSignal({
         source_agent: 'pipeline-agent',
         signal_type: 'pipeline_capacity',
+        provenance: {
+          producerVersion: PIPELINE_SIGNAL_PRODUCER_VERSION,
+          source: 'runtime',
+          observedAt: new Date().toISOString(),
+        },
         payload: {
           active_items: stats.totalActive,
           published_this_week: stats.publishedThisWeek,
@@ -334,7 +345,7 @@ export async function runPipelineAgent(): Promise<void> {
           stats,
         },
       });
-      signalsProduced++;
+      if (signalId > 0) signalsProduced++;
     }
 
     logAgentRun('pipeline-agent', 'success', signalsProduced, signalsConsumed, Date.now() - start);

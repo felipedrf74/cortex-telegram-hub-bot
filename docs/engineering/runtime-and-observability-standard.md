@@ -2,17 +2,18 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-06-16
+Last verified: 2026-07-15
 Update policy: update when health-check shape changes, when alert
-producers change, when log/metric semantics change. The runbook companion
-at `docs/OBSERVABILITY-ONCALL.md` is preserved for alert lifecycle
-detail.
+producers change, when log/metric semantics change, or when the release
+process model changes. Incident response and recovery detail lives in
+`docs/security/security-operations-runbook.md`; exact-artifact deployment
+is governed by `docs/release/README.md`.
 
 This standard is the single source of truth for how Nexus Hub's backend
 runs, logs, traces, alerts, and recovers. It is grounded in the
 Twelve-Factor App principles and OpenTelemetry-style semantics, then
-translated into the realities of the single-VPS / PM2 / Cloudflare
-Tunnel deployment.
+translated into the realities of the single-VPS / two-process PM2 /
+Cloudflare Tunnel deployment and its immutable release directories.
 
 ## 1. Configuration (must)
 
@@ -32,34 +33,41 @@ Tunnel deployment.
 
 ## 2. Process model (must)
 
-1. **One backend process (`nexus-hub`) + one Python content-engine
-   subprocess (`content-engine`) under PM2.** The Python engine is
-   started as a child by the backend and restarted on crash.
-2. **Graceful shutdown handles `SIGTERM`.** The backend drains in-flight
-   HTTP requests up to 10 s, flushes pino buffers, closes the SQLite
-   connection, then exits. `pm2 reload` triggers this; `pm2 restart`
-   does not (kills immediately).
-3. **No long-running blocking work in the request thread.** Heavy
+1. **Two independent PM2 processes run in production.** `nexus-hub` owns the
+   Node API/portal on port 8200 and `content-engine` owns the Python service on
+   port 8100. Neither process starts or supervises the other; PM2 restarts each
+   independently from `ecosystem.release.config.js`.
+2. **The release directory is part of process identity.** Both PM2 entries must
+   be online, carry the same `NEXUS_RELEASE_SHA`, and use the expected exact
+   release cwd (`<release>` and `<release>/content-engine`). The production
+   `current` symlink must resolve to that same release before promotion,
+   backup, readiness success, or rollback success is accepted.
+3. **Graceful backend shutdown handles `SIGTERM`.** The Node process closes the
+   HTTP server, flushes Sentry best-effort, closes SQLite, and exits inside the
+   PM2 kill timeout. The Python process has its own PM2 lifecycle and health
+   probe; do not infer its state from Node health.
+4. **No long-running blocking work in the request thread.** Heavy
    generation/sync is enqueued through scheduler/worker patterns, not
    awaited in HTTP handlers.
-4. **No global mutable state survives a deploy.** Any cache that
+5. **No global mutable state survives a deploy.** Any cache that
    matters (oauth-store LRU, decrypted-token LRU, provider cost
    counters) is rebuildable from SQLite or external state on cold start.
 
 ## 3. Health endpoints (must)
 
-1. **`/api/health` returns 200 with `{ ok: true, version, commit }`** when
-   the backend is up and SQLite is reachable. No auth required.
-2. **`/api/health/deep` returns 200 with per-dependency state** for PM2
-   deploy gates. Includes: SQLite ok, content-engine subprocess ok,
-   provider connectivity ok (with last-success timestamps), cron
-   scheduler heartbeat, audit-trail writable.
-3. **`/api/snapshot` returns the running version** (commit + version
-   string from `package.json`). Used by `promote-to-prod.sh` post-deploy
-   to verify the new binary is live.
-4. **The PM2 `nexus-hub` and `content-engine` processes both expose
-   health.** A deploy that fails to start either process triggers
-   automatic rollback in `deploy.sh`.
+1. **`/health` is the public Node readiness endpoint.** It returns 200 only
+   when runtime and SQLite status are healthy; the payload includes server,
+   database-probe, uptime, memory, and timestamp state without secrets.
+2. **`/health/detailed` is the protected operational endpoint.** It adds cron,
+   integration, provider, PM2-supervisor, Sentry, cache, and recent-error
+   diagnostics. Outside local development it requires the health bearer token.
+3. **`/api/snapshot` is the authenticated running-version proof** used by exact
+   promotion to confirm the public endpoint serves the manifest package
+   version after cutover.
+4. **The Python content engine exposes its own `/health`.** Exact staging and
+   production readiness probe Node and Python separately, then validate both
+   PM2 cwd/SHA identities. Any failed candidate check invokes automatic exact
+   predecessor recovery.
 
 ## 4. Logging (must)
 
@@ -118,15 +126,14 @@ A future improvement is to ship these as proper Prometheus-style metrics
 with histograms instead of structured-log derivation. Until then, use
 pino-based dashboards.
 
-## 7. Alert lifecycle (must — see OBSERVABILITY-ONCALL.md)
+## 7. Alert lifecycle (must)
 
-The complete alert lifecycle (open → delivered → acknowledged → resolved
-→ recovered) is documented in `docs/OBSERVABILITY-ONCALL.md`.
-The standard-level rules are:
+The alert lifecycle is open → delivered → acknowledged → resolved → recovered.
+Live incident response uses `docs/security/security-operations-runbook.md`;
+the durable alert-contract rules are:
 
-1. **Every alert has a runbook URL.** The default is the
-   OBSERVABILITY-ONCALL.md doc; per-source overrides exist in
-   `error_monitor.ts`.
+1. **Every alert has a runbook URL.** The default is the security operations
+   runbook; per-source overrides exist in `error_monitor.ts`.
 2. **Alert sources are durable**, not ad-hoc. Adding a new alert source
    requires a runbook entry, dedupe key strategy, and severity
    classification (`info | warning | error | critical`).
@@ -141,38 +148,46 @@ The standard-level rules are:
 
 ## 8. Rollback runbook (must)
 
-Production rollback is **always available**. The contract:
+Production rollback is **always available**. The default release contract is:
 
-1. **`scripts/rollback.sh` is tested in dry-run mode** before
-   each deploy. The `--dry-run` flag prints the mutation surface
-   without applying.
-2. **Last-known-good production tag**: every deploy creates
-   `prod-<version>` and `prod-<version>-pre-rollback-target` tags. The
-   rollback script reads the target tag from `deploy-state.json`.
-3. **Database rollback is migration-driven.** A migration that has
-   landed cannot be rolled back without a down-migration; the inverse
-   migration approach in §9 of the API contract standard is the
-   foundation.
-4. **Worktree-safety**: the deploy/rollback scripts exclude
-   `worktrees/.git`, agent state, and local backup files so a branch
-   worktree deploy is safe.
+1. **Use the exact-artifact operator path:** `npm run release:status`,
+   `release:prepare`, `release:staging`, then owner-authorized
+   `release:promote`. The signed `ReleaseManifestV2`, staging attestation, and
+   installed-runtime digest must all bind the same runtime SHA and bundle.
+2. **Install before cutover.** Node/Python dependencies and native modules are
+   prepared in a versioned staging release while production stays online.
+   Promotion copies that already installed directory; it does not rebuild or
+   install dependencies while production is stopped.
+3. **Back up the exact predecessor.** Immutable runtime content is prepared
+   live. During the brief write drain, both independent PM2 apps stop, SQLite
+   is checkpointed and integrity-checked, and the database snapshot is added
+   to the verified release backup.
+4. **Rollback restores exact bytes and state.** If symlink, PM2 identity,
+   loopback health, public health, or snapshot-version readiness fails, restore
+   the exact backup and previous release directory automatically. A changed or
+   irreversible migration still requires explicit owner approval.
+5. **Legacy wrappers are emergency fallback only.** `scripts/rollback.sh` and
+   restore tooling remain available, but `deploy.sh`, `deploy-staging.sh`, and
+   `promote-to-prod.sh` are not the default production path.
 
 ## 9. Incident runbook (must)
 
 When production is degraded:
 
 1. **Open `/admin#alerts`** to read the active alert state.
-2. **Inspect `/api/health/deep`** to identify which dependency degraded.
+2. **Inspect authenticated `/health/detailed`** to identify which dependency
+   degraded, and probe the content engine's `/health` independently.
 3. **`pm2 logs nexus-hub --lines 200`** for raw stack traces if the
    alert payload is sanitized too aggressively.
-4. **`pm2 logs content-engine --lines 200`** if the content-engine
-   subprocess is the suspect.
-5. **`scripts/rollback.sh --dry-run` before applying.** Confirm
-   the mutation surface matches the operator's intent.
+4. **`pm2 logs content-engine --lines 200`** if the independent Python process
+   is the suspect.
+5. **Use exact release evidence first.** Run `npm run release:status` against
+   the manifest and inspect the current release/backup identity before invoking
+   emergency rollback tooling.
 6. **Update `docs/release/CURRENT_RELEASE_STATE.md`** with the incident
    timeline within 24 h.
-7. **Open OPEN_ITEMS entries for any defect surfaced** during the
-   incident.
+7. **Record durable follow-up in the canonical project tracker** for every
+   defect surfaced; do not create a one-off Markdown incident handoff.
 
 ## 10. Provider/model fallback safety (must)
 
@@ -203,8 +218,9 @@ When production is degraded:
 
 After every production promote, within 1 h:
 
-- [ ] `/api/health` returns 200 with the new version.
-- [ ] `/api/snapshot` returns the new version.
+- [ ] Node `/health` returns 200 and reports healthy SQLite state.
+- [ ] Authenticated `/api/snapshot` returns the new package version.
+- [ ] Content-engine `/health` returns 200 independently.
 - [ ] PM2 `nexus-hub` is online and uptime ≥ 5 min.
 - [ ] PM2 `content-engine` is online and uptime ≥ 5 min.
 - [ ] No new error-monitor alerts opened in the last 30 min.
@@ -212,15 +228,18 @@ After every production promote, within 1 h:
 - [ ] No new degraded-response alerts at unusual rate.
 - [ ] Status portal `/portal/health` is accessible.
 
-The 1-hour gate is automatic via `deploy.sh` postdeploy block; the
-operator confirms manually if the auto-gate is bypassed.
+The exact promotion command enforces immediate loopback/public readiness and
+automatic rollback. The operator completes the longer observation window and
+records evidence under ignored `.local/release/` paths or CI artifacts.
 
 ## 13. Data shape and disposability (must)
 
 1. **SQLite is the system of record.** It must be backed up before any
    migration and on a daily cadence.
-2. **Backups live at `data/backups/`** with timestamp. A 30-day
-   rolling window is preserved; older are pruned by the housekeeping job.
+2. **Release backups live under the governed remote backup directory**
+   (`/home/dominguez/backups/nexushub/` in the current single-VPS deployment)
+   with version/timestamp identity. Routine database backups retain their
+   separately governed lifecycle.
 3. **Cold-restart recovers all behavior** within 30 s. Caches are
    rebuilt; OAuth tokens decrypt on first use; cron scheduler picks up
    from last-run timestamps.
@@ -241,7 +260,7 @@ operator confirms manually if the auto-gate is bypassed.
 `weekly-housekeeping.yml`)
 
 - [ ] Smoke-evidence pruned (60-day retention).
-- [ ] Release identity refreshed.
+- [ ] Generated project map and current release-state consistency checked.
 - [ ] `npm run docs:audit` total recorded.
 
 ### Per-deploy
@@ -249,7 +268,8 @@ operator confirms manually if the auto-gate is bypassed.
 - [ ] Required staging smoke suite green; check count is release-dependent.
 - [ ] Production health-check green.
 - [ ] PM2 nexus-hub + content-engine online.
-- [ ] Smoke evidence JSON written.
+- [ ] Smoke, installed-tree, PM2-identity, staging-attestation, and production
+      evidence written under `.local/release/` or CI artifacts.
 - [ ] `docs/release/CURRENT_RELEASE_STATE.md` updated.
 
 ### Per-incident
@@ -277,7 +297,7 @@ operator confirms manually if the auto-gate is bypassed.
 
 - [ ] No new env-key without a default in `src/config.ts` AND a runbook
       entry in `docs/release/README.md`.
-- [ ] Health-check change has a corresponding `/api/health/deep`
+- [ ] Health-check change has a corresponding `/health` or `/health/detailed`
       assertion.
 - [ ] New alert source has a runbook entry and a dedupe strategy.
 - [ ] New log surface has a stable name and is documented in §4 above.

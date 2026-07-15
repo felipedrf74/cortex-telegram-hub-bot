@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-06-16
+Last verified: 2026-07-15
 Update policy: update when a new canonical engineering standard is
 added under `docs/engineering/`. Removing a standard requires
 owner approval and a documented replacement.
@@ -21,6 +21,9 @@ non-trivial changes.
 | **Runtime, observability, ops** | `runtime-and-observability-standard.md` | Any change to logging, alerts, health checks, deploy/rollback scripts, or PM2 process model. |
 | **Testing and QA harness** | `testing-and-qa-harness-standard.md` | Any test addition, classifier change, smoke script change, or evidence-claim review. |
 | **Offline-first Tasks architecture** | `offline-first-tasks-architecture.md` | Any backend or iOS change to Tasks identity, sync state, mutation replay, provider mappings, or offline storage. |
+| **GenAI migration plan** | `genai-migration-plan.md` | Any migration of provider calls, model routing, prompt ownership, or generated-content runtime behavior. |
+| **JWT rotation runbook** | `jwt-rotation-runbook.md` | Any JWT signing-key rotation or authentication incident. |
+| **Training exercise media operator runbook** | `training-exercise-media-v1-operator-runbook.md` | Any Training catalog package, approval, activation, media-origin, or rollback change. |
 | **Backend Verifiable Reward Protocol companion** | `../agents/VERIFIABLE_REWARD_PROTOCOL.md` | Any change to reward verdicts, reward-check orchestration, hooks, handoff summaries, or export behavior. |
 | **Security threat model** | `../security/nexus-security-threat-model.md` | Any security scan, new deployed surface, new provider, new trust boundary, or incident review. |
 | **Security control matrix** | `../security/security-control-matrix.md` | Any auth, API, iOS storage, WebSocket, provider, CI, infra, logging, backup, or incident-response hardening. |
@@ -31,14 +34,10 @@ non-trivial changes.
 
 | Doc | Path | Purpose |
 |---|---|---|
-| Risk-based release gate matrix | `../release/risk-based-release-gate-matrix.md` | Maps changed-area to required tests/smokes. |
-| Production promotion checklist | `../release/production-promotion-checklist-v2.md` | The deploy runbook. |
-| Closed-beta runbook | `../release/closed-beta-runbook.md` | Closed-beta operator runbook. |
-| Portal scope policy | `../release/portal-scope-policy.md` | Portal admin/user scope. |
-| Observability / on-call | `../OBSERVABILITY-ONCALL.md` | Alert lifecycle. |
-| Skill architecture | `../SKILL_ARCHITECTURE.md` | Skill catalog + sub-skill dependencies. |
-| iOS integration | `../IOS-INTEGRATION.md` | Backend ↔ iOS contract overview. |
-| Model review process | `../MODEL-REVIEW-PROCESS.md` | Model routing decisions. |
+| Project map | `../project-map.json` | Generated module, route, migration, capability, skill, test, asset, owner, and canonical-doc map. |
+| Release runbook | `../release/README.md` | Exact-artifact operator commands and production sequence. |
+| Current release summary | `../release/CURRENT_RELEASE_STATE.md` | Compact human pointer to the machine-readable runtime truth. |
+| Signed release evidence contract | `../release/release-evidence-contract.md` | Artifact-bound RC, signing, staging, promotion, and rollback evidence. |
 
 ## Related cross-repo standards
 

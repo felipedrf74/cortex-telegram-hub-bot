@@ -291,7 +291,7 @@ describe('content topic routes', () => {
       limit: 7,
     }));
     expect(getUpcomingTopicCount).toHaveBeenCalledWith(77, 14);
-    expect(getFilmingRecommendation).toHaveBeenCalledWith(77, expect.any(Array));
+    expect(getFilmingRecommendation).toHaveBeenCalledWith(77, expect.any(Array), 77);
     expect(response.body.data.upcomingCount).toBe(1);
     expect(response.body.data.filmingRecommendation.confidence).toBe('high');
   });

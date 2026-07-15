@@ -41,6 +41,7 @@ const PIN_PATH = resolve(
 );
 const CI_YAML = resolve(REPO_ROOT, '.github/workflows/ci.yml');
 const HUSKY_PRE_COMMIT = resolve(REPO_ROOT, '.husky/pre-commit');
+const RISK_GATE = resolve(REPO_ROOT, 'scripts/risk-gate.sh');
 const DASHBOARD = resolve(REPO_ROOT, 'scripts/cannot-skip-gate-dashboard.sh');
 
 // Snapshot the live JSON + pin so each test can mutate them safely.
@@ -145,6 +146,26 @@ describe('R4 P2 — CI workflow + pre-commit hook + cannot-skip dashboard regist
     expect(hook).toMatch(/science-policy-version-check\.mjs/);
     expect(hook).toMatch(/training-principles\.json/);
     expect(hook).toMatch(/science-policy-hash/);
+  });
+
+  it('.husky/pre-commit isolates nested test repositories from hook-local Git variables', () => {
+    const hook = readFileSync(HUSKY_PRE_COMMIT, 'utf8');
+    const riskGate = readFileSync(RISK_GATE, 'utf8');
+    for (const key of [
+      'GIT_DIR',
+      'GIT_WORK_TREE',
+      'GIT_INDEX_FILE',
+      'GIT_PREFIX',
+      'GIT_COMMON_DIR',
+      'GIT_OBJECT_DIRECTORY',
+      'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+      'GIT_NAMESPACE',
+    ]) {
+      expect(hook).toContain(`-u ${key}`);
+      expect(riskGate).toContain(`-u ${key}`);
+    }
+    expect(hook).toMatch(/env[\s\\]+(?:-u GIT_[A-Z_]+[\s\\]+)+scripts\/risk-gate\.sh/);
+    expect(riskGate).toContain('NEXUS_RISK_GATE_GIT_ENV_SANITIZED=1');
   });
 
   it('cannot-skip-gate dashboard registers the science-policy check', () => {
