@@ -13,10 +13,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
 // ═══════════════════════════════════════════════════════════════════
 // SECTION 1 — CLASSIFICATION REGRESSION (pure functions, no DB)
 // ═══════════════════════════════════════════════════════════════════
@@ -528,8 +526,6 @@ describe('REGRESSION: Three-tier cascade functions correctly', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 // For DB-dependent tests, we need a separate describe block with proper DB setup
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
@@ -537,21 +533,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 // We need to dynamically mock getDb for DB-dependent sections
 let testDb: Database.Database;
@@ -574,8 +555,7 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
   const userId = 1;
 
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {
@@ -720,8 +700,7 @@ describe('REGRESSION: Conversation history per-domain isolation', () => {
 
 describe('REGRESSION: Tool execution through skill interface', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {

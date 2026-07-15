@@ -11,9 +11,8 @@
  * the two accepted JSON shapes + edge cases.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import {
   computeLoadModelAndDeload,
   computeStrengthTonnageKg,
@@ -101,25 +100,6 @@ describe('R5 P2 — computeStrengthTonnageKg', () => {
  * fail-closed behavior, mirroring the tenant cases in
  * training-analytics-routes.test.ts.
  */
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`,
-  );
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        /* skip deps */
-      }
-    }
-  }
-}
-
 describe('tenant scoping — computeLoadModelAndDeload', () => {
   let db: Database.Database;
   const USER_ID = 12;
@@ -169,8 +149,7 @@ describe('tenant scoping — computeLoadModelAndDeload', () => {
   }
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
   });
 
   afterEach(() => {

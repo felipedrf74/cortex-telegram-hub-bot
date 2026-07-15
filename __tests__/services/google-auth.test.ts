@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -36,20 +32,6 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some migrations depend on optional tables; not needed here.
-      }
-    }
-  }
-}
 
 import { storeTokens, _resetDecryptCacheForTests } from '../../src/services/oauth-store';
 import { getOwnerGoogleRefreshToken } from '../../src/services/google-auth';
@@ -57,9 +39,7 @@ import { isMicrosoftConfigured } from '../../src/services/microsoft-auth';
 
 describe('owner integration bootstrap token resolution', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     vi.unstubAllEnvs();
     vi.stubEnv('OWNER_TELEGRAM_ID', '');
     process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';

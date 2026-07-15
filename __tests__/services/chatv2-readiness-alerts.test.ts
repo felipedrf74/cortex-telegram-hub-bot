@@ -50,7 +50,7 @@ describe('chatv2-readiness-alerts', () => {
       title: expect.stringContaining('Confirmed writes'),
       owner: 'ai-platform',
       suspectedArea: 'chat_v2_completion',
-      runbookUrl: 'docs/qa/work-orders/WO-chatv2-completion.md',
+      runbookUrl: 'docs/release/README.md',
     });
     expect(alerts[0].metadata).toMatchObject({
       phase: 'confirmedWrites',

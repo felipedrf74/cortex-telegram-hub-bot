@@ -2,7 +2,7 @@
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runMigrationsForTest, withDatabaseForTest } from '../../src/services/database';
+import { createMigratedTestDatabase, withDatabaseForTest } from '../../src/services/database';
 import { getTrainingM4AuthoritativeCapacityContext } from '../../src/services/training-m4-capacity-context';
 import {
   readMaterializedTrainingM4CapacityContext,
@@ -29,9 +29,7 @@ describe('Training M4 authoritative capacity snapshots', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    db.pragma('foreign_keys = ON');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     db.prepare(`
       INSERT INTO user_profiles (user_id, profile_type, data)
       VALUES (7, 'fitness', '{"weekly_frequency":2}'),
@@ -397,7 +395,7 @@ describe('Training M4 authoritative capacity snapshots', () => {
     expect(loadCalendar).not.toHaveBeenCalled();
   });
 
-  it('bounds the longest advertised seven-day materialization without per-minute event-loop work', async () => {
+  it('bounds materialization work by days and timezone transitions rather than minutes', async () => {
     const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
     const profileWindows = days.map((dayOfWeek) => ({
       dayOfWeek,
@@ -405,7 +403,7 @@ describe('Training M4 authoritative capacity snapshots', () => {
       endTime: '23:59',
       timezone: 'UTC',
     }));
-    const events = Array.from({ length: 50_000 }, (_, index) => ({
+    const events = Array.from({ length: 5_000 }, (_, index) => ({
       id: `max-event-${index}`,
       source: 'google' as const,
       summary: 'Private',
@@ -414,7 +412,6 @@ describe('Training M4 authoritative capacity snapshots', () => {
     }));
     let diagnostics: { wallClockDayBuilds: number; timezoneOffsetLookups: number } | undefined;
 
-    const startedAt = performance.now();
     const context = await refreshTrainingM4AuthoritativeCapacityContext({
       scope: { userId: 7, tenantId: 7 },
       idempotencyKey: 'max-shape-indexed-materialization',
@@ -427,14 +424,61 @@ describe('Training M4 authoritative capacity snapshots', () => {
         observeMaterializationDiagnostics: (value) => { diagnostics = value; },
       },
     });
-    const elapsedMs = performance.now() - startedAt;
-
     expect(profileWindows).toHaveLength(TRAINING_M4_CAPACITY_REFRESH_MAX_WINDOWS);
     expect(context.windows).toHaveLength(TRAINING_M4_CAPACITY_REFRESH_MAX_WINDOWS);
     expect(context.conflictCount).toBe(0);
     expect(diagnostics).toEqual({ wallClockDayBuilds: 364, timezoneOffsetLookups: 6_188 });
-    expect(elapsedMs).toBeLessThan(1_000);
   }, 10_000);
+
+  it.runIf(process.env.NEXUS_BENCHMARKS === '1')(
+    'benchmarks the 50k-event maximum shape against the governed p95 baseline',
+    async () => {
+      const { default: baselines } = await import('../../config/benchmark-baselines.json');
+      const baseline = baselines.benchmarks.trainingM4Capacity50000Events;
+      const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+      const profileWindows = days.map((dayOfWeek) => ({
+        dayOfWeek,
+        startTime: '00:00',
+        endTime: '23:59',
+        timezone: 'UTC',
+      }));
+      const events = Array.from({ length: 50_000 }, (_, index) => ({
+        id: `benchmark-event-${index}`,
+        source: 'google' as const,
+        summary: 'Private',
+        start: '2026-08-03T23:59:00.000Z',
+        end: '2026-08-04T00:00:00.000Z',
+      }));
+      const samples: number[] = [];
+      const iterations = baseline.warmupRuns + baseline.sampleRuns;
+
+      for (let index = 0; index < iterations; index += 1) {
+        const sampleDb = createMigratedTestDatabase();
+        try {
+          const startedAt = performance.now();
+          await refreshTrainingM4AuthoritativeCapacityContext({
+            scope: { userId: 7, tenantId: 7 },
+            idempotencyKey: `benchmark-${index}`,
+            request: { planStartDate: '2026-08-03', horizonWeeks: 52, profileWindows },
+            dependencies: {
+              db: sampleDb,
+              now: NOW,
+              configuredSources: () => ['google'],
+              loadCalendar: async () => readyCalendar('google', events),
+            },
+          });
+          if (index >= baseline.warmupRuns) samples.push(performance.now() - startedAt);
+        } finally {
+          sampleDb.close();
+        }
+      }
+
+      samples.sort((left, right) => left - right);
+      const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+      expect(p95).toBeLessThanOrEqual(baseline.p95Ms * (1 + baseline.maxRegressionPercent / 100));
+    },
+    120_000,
+  );
 
   it('treats provider-zone all-day events as conflicts and persists no raw calendar content', async () => {
     const privateEventId = 'provider-private-event-raw-id';

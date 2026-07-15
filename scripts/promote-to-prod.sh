@@ -114,7 +114,7 @@ PROD_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
 STAGING_EXISTS=$(ssh "$SERVER" "[ -d $STAGING_DIR ] && echo yes || echo no" 2>/dev/null || echo "no")
 if [ "$STAGING_EXISTS" != "yes" ]; then
   echo "   ❌ Staging directory not found at $STAGING_DIR"
-  echo "      First-time setup required. See STAGING.md."
+  echo "      First-time setup required. See docs/release/README.md."
   exit 1
 fi
 echo "   ✅ Staging install present"
@@ -165,7 +165,7 @@ fi
 # smoke run + ssh round-trips when the operator just ran staging-smoke.sh
 # manually before invoking promote-to-prod.sh (the documented workflow).
 # Disable with NEXUS_SMOKE_REUSE=0 to force a fresh smoke every time.
-EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+EVIDENCE_DIR="$LOCAL_DIR/.local/release/smoke-evidence"
 SMOKE_REUSE_MAX_AGE_S="${NEXUS_SMOKE_REUSE_MAX_AGE_S:-1800}"
 SMOKE_REUSE_ENABLED="${NEXUS_SMOKE_REUSE:-1}"
 

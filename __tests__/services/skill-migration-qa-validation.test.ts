@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -45,8 +46,7 @@ describe('Skill Database Migrations QA Validation', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
   });
 
   afterEach(() => {

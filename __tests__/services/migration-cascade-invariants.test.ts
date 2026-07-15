@@ -15,12 +15,8 @@
  * exercise SQLite's enforcement path, not the silent-no-op default.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -37,25 +33,9 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`,
-  );
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* dep-order skip */ }
-    }
-  }
-}
 
 beforeEach(() => {
-  testDb = new Database(':memory:');
-  testDb.pragma('foreign_keys = ON');
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
 });
 
 afterEach(() => {

@@ -25,6 +25,9 @@ export function parseArgs(argv) {
     handoff: null,
     output: null,
     changedFilesPath: null,
+    releaseManifest: null,
+    stagingAttestation: null,
+    requireStaging: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -37,6 +40,11 @@ export function parseArgs(argv) {
     else if (arg.startsWith('--output=')) parsed.output = arg.slice('--output='.length);
     else if (arg === '--changed-files') parsed.changedFilesPath = argv[++index] || null;
     else if (arg.startsWith('--changed-files=')) parsed.changedFilesPath = arg.slice('--changed-files='.length);
+    else if (arg === '--release-manifest') parsed.releaseManifest = argv[++index] || null;
+    else if (arg.startsWith('--release-manifest=')) parsed.releaseManifest = arg.slice('--release-manifest='.length);
+    else if (arg === '--staging-attestation') parsed.stagingAttestation = argv[++index] || null;
+    else if (arg.startsWith('--staging-attestation=')) parsed.stagingAttestation = arg.slice('--staging-attestation='.length);
+    else if (arg === '--require-staging') parsed.requireStaging = true;
     else if (arg === '--json') parsed.json = true;
     else if (arg === '--advisory') {
       parsed.advisory = true;
@@ -63,7 +71,7 @@ export function usage() {
   return `Usage:
   node scripts/reward-check.mjs --area auto --advisory
   node scripts/reward-check.mjs --area backend --json --output .local/reward-runs/run.json
-  node scripts/reward-check.mjs --area release --enforce --handoff docs/agents/handoffs/file.md
+  node scripts/reward-check.mjs --area release --enforce --release-manifest .local/release/manifests/<sha>.json
 
 Options:
   --area backend|ios|docs|release|research|auto
@@ -72,7 +80,10 @@ Options:
   --advisory
   --enforce
   --output <path>
-  --changed-files <path>`;
+  --changed-files <path>
+  --release-manifest <path>
+  --staging-attestation <path>
+  --require-staging`;
 }
 
 export function buildRewardRun(options = {}) {
@@ -102,6 +113,9 @@ export function buildRewardRun(options = {}) {
     handoff,
     classifier,
     redactions,
+    releaseManifest: options.releaseManifest || null,
+    stagingAttestation: options.stagingAttestation || null,
+    requireStaging: Boolean(options.requireStaging),
   };
 
   const mandatoryChecks = [];
@@ -343,7 +357,7 @@ function buildAreaChecks(context) {
   }
 
   if (area === 'release') {
-    checks.push(releaseEvidenceCheck(handoffText));
+    checks.push(releaseEvidenceCheck(context, handoffText));
   }
 
   if (area === 'research') {
@@ -470,7 +484,28 @@ function iosEvidenceCheck(handoffText) {
   });
 }
 
-function releaseEvidenceCheck(handoffText) {
+function releaseEvidenceCheck(context, handoffText) {
+  if (context.releaseManifest) {
+    const args = context.requireStaging ? [
+      path.join(context.cwd, 'scripts/release-staging-attestation.mjs'),
+      'validate',
+      '--attestation', context.stagingAttestation || '.local/release/staging/missing.signed.json',
+      '--manifest', context.releaseManifest,
+      '--validate-release-manifest',
+    ] : [
+      path.join(context.cwd, 'scripts/release-manifest-v2.mjs'),
+      'validate', '--manifest', context.releaseManifest,
+    ];
+    return runCommandCheck({
+      id: 'release-verification-evidence',
+      label: 'Artifact-bound release verification',
+      cwd: context.cwd,
+      command: process.execPath,
+      args,
+      mandatory: true,
+      verdictImpactOnFailure: 'fail',
+    });
+  }
   const required = [
     ['release identity', /\brelease[- ]identity|release identity|version|sha\b/i],
     ['staging smoke', /\bstaging smoke\b/i],
@@ -823,6 +858,9 @@ async function main() {
     area: args.area,
     handoff: args.handoff,
     changedFilesPath: args.changedFilesPath,
+    releaseManifest: args.releaseManifest,
+    stagingAttestation: args.stagingAttestation,
+    requireStaging: args.requireStaging,
   });
   const outputPath = writeRun(run, args.output);
 
@@ -833,7 +871,7 @@ async function main() {
     console.log(`Raw run: ${outputPath}`);
   }
 
-  if (args.enforce && run.verdict === 'FAIL') process.exit(1);
+  if (args.enforce && ['FAIL', 'MANUAL_REQUIRED'].includes(run.verdict)) process.exit(1);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

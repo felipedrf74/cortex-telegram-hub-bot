@@ -1,69 +1,51 @@
 # Nexus Hub Backend Agent Instructions
 
-Use these instructions for Codex and any coding agent working in the backend
-repo. This is a bootloader; keep it concise and defer detail to canonical
-docs.
+This file is the self-contained bootloader for Codex, Claude Code, and other
+coding agents. Load detail only when the task needs it.
 
-## Read First
+## Start
 
-1. Workspace docs index:
-   `/Users/felipedominguez/Desktop/Nexus Hub/docs/DOCS_INDEX.md`
-2. Workspace operating context:
-   `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/OPERATING_CONTEXT.md`
-3. Workspace agent process standard:
-   `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/AGENT_PROCESS_STANDARD.md`
-4. Nexus Verifiable Reward Loop:
-   `/Users/felipedominguez/Desktop/Nexus Hub/docs/agent/VERIFIABLE_REWARD_PROTOCOL.md`
-5. Backend docs index: `docs/DOCS_INDEX.md`
-6. Backend engineering standards index:
-   `docs/engineering/ENGINEERING_STANDARDS_INDEX.md`
-7. Backend Claude bootloader: `CLAUDE.md`
+1. Run `git status --short --branch`.
+2. Read `docs/project-map.json` to locate code, tests, owners, skills, and docs.
+3. Read `docs/DOCS_INDEX.md` only for the relevant domain.
+4. For release work, read `docs/release/release-state.json` and use the
+   `release-operator` skill.
 
-## Backend Rules
+## Safety
 
-- Start with `git status --short --branch`.
-- Do not clean, reset, discard, commit, push, deploy, archive, or delete user
-  work unless Felipe explicitly asks.
-- Do not use `--no-verify`, `git commit --amend`, force push, shared-branch
-  rebase, or destructive cleanup without explicit approval.
-- Keep operational reads/writes on REST/tool contracts. Do not fake
-  token-zero behavior through chat prompts.
-- Use provider routing abstractions; do not bypass them with direct provider
-  calls in runtime code.
-- Preserve tenant/user isolation, prompt-context scope, memory boundaries,
-  calendar boundaries, and provider fallback safety.
-- Do not create scattered final reports, audit reports, or open-item files
-  when a canonical/current doc exists.
-- Do not expose secrets, raw production logs, private user data, finance
-  values, calendar contents, OAuth tokens, or provider raw responses.
+- Preserve unrelated and user-owned changes. Do not clean, reset, discard,
+  commit, push, deploy, archive, or delete outside the authorized scope.
+- Never use `--no-verify`, amend, force push, shared-branch rebase, or broad
+  destructive cleanup without explicit approval.
+- Production mutation, remote branch deletion, and TestFlight expiry require
+  explicit owner authorization.
+- Keep operational reads/writes on REST/tool contracts and use provider routing
+  abstractions. Preserve tenant/user isolation, memory scope, calendar scope,
+  entitlement gates, provider fallback, and cost controls.
+- Never expose secrets, private logs, personal data, finance/calendar content,
+  OAuth tokens, or raw provider responses.
+
+## Implementation
+
+- Keep evidence, inventories, profiles, and handoffs under ignored `.local/`
+  paths or CI artifacts. Update a canonical current doc instead of creating a
+  Markdown report.
+- Treat the Training catalog as governed runtime data. Read its compact
+  `catalog/training/exercise-media/v1/summary.json` before large compiled files.
+- Use `.agents/skills` as the canonical project skill source. Claude skill
+  entries are symlinks to the same bodies.
 
 ## Verification
 
-- Use `scripts/changed-area-classifier.sh --json` and
-  `scripts/risk-gate.sh` to select local verification.
-- Use `npm run docs:audit` before creating release docs or copying verdicts,
-  commit hashes, or test counts.
-- Use `npm run verify` or the focused risk-gate commands required by the
-  changed area.
-- Release/deploy work follows the release docs and requires explicit owner
-  authorization.
+- Use `scripts/changed-area-classifier.sh --json` and `scripts/risk-gate.sh`.
+- Use `npm run test:migration-hook-lint` after database-test changes.
+- Use `npm run docs:audit` after documentation, agent, or skill changes.
+- Use `npm run verify` or the focused commands selected by the risk gate.
+- Before ending non-trivial work, run the `verifiable-reward-check` skill.
+  Verdict and hard failures outrank numeric score.
 
-## Verifiable Reward Loop
+## Review Priority
 
-- Before ending non-trivial work, run
-  `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` and the
-  `verifiable-reward-check` skill.
-- V1 is local, advisory, and verifier-driven. It is RLVR-inspired, but it is
-  not provider-side fine-tuning and does not train model weights.
-- Verdict and hard failures outrank numeric score.
-- Raw reward JSON belongs under ignored `.local/reward-runs/`. Handoffs carry
-  only curated summaries.
-
-## Review Guidelines
-
-- Flag P0/P1 risks where evidence is missing for auth, tenant isolation,
-  provider routing, migrations, release gates, deploy paths, secrets, or
-  production data safety.
-- Treat fabricated or unsupported verification claims as blocking findings.
-- Prefer comments grounded in exact file paths, commands, and observable
-  behavior.
+Flag missing evidence for auth, tenant isolation, providers, migrations,
+billing, release identity, backup/rollback, secrets, and production data as
+P0/P1. Ground findings in paths, commands, and observable behavior.

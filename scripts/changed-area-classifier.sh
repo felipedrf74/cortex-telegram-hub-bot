@@ -115,8 +115,8 @@ collect_changes() {
   fi
   {
     git -C "$LOCAL_DIR" diff --name-only "$resolved_base"...HEAD 2>/dev/null || true
-    git -C "$LOCAL_DIR" status --porcelain 2>/dev/null \
-      | sed -E 's/^[ MADRCU?!]{2} //' \
+    git -C "$LOCAL_DIR" status --porcelain --untracked-files=all 2>/dev/null \
+      | sed -E 's/^[ MTADRCU?!]{2} //' \
       | sed -E 's/^"//; s/"$//' || true
   } | sed '/^$/d' | sort -u
 }
@@ -228,18 +228,18 @@ HAS_REGISTRY_REAL_EVAL=false
 # AND HAS_TRAINING AND HAS_COACH_KERNEL. We need fan-out, not switch.
 match() {
   # match <regex> on $CHANGED (one path per line). Returns 0 if any match.
-  printf '%s\n' "$CHANGED" | grep -E -q "$1"
+  # A here-string avoids grep -q closing a large producer pipe early. With
+  # pipefail enabled that SIGPIPE previously made large diffs classify false.
+  grep -E -q "$1" <<<"$CHANGED"
 }
 
 # Non-doc detection: any file that's NOT (.md / docs/** / prompts/*.md / CHANGELOG.md)
-if printf '%s\n' "$CHANGED" \
-    | grep -vE '\.md$|^docs/|/docs/|^CHANGELOG\.md$|^prompts/.*\.md$' \
-    | grep -q .; then
+if [ -n "$(grep -vE '\.md$|^docs/|/docs/|^CHANGELOG\.md$|^prompts/.*\.md$' <<<"$CHANGED")" ]; then
   HAS_NON_DOC=true
   HAS_DOCS_ONLY=false
 fi
 
-match '^docs/release/CURRENT_RELEASE_STATE\.md$|^docs/release/OPEN_ITEMS\.md$|^engine/docs/release/CURRENT_RELEASE_STATE\.md$|^engine/docs/release/current-release-index\.md$|^docs/qa/QA_BACKEND_REPORT\.md$|^docs/release/release-pipeline-optimization-report\.md$' && HAS_CURRENT_VERDICT_DOC=true
+match '^docs/release/release-state\.json$|^docs/release/CURRENT_RELEASE_STATE\.md$|^engine/docs/release/release-state\.json$' && HAS_CURRENT_VERDICT_DOC=true
 
 match '^src/' && HAS_BACKEND_SRC=true
 match '^__tests__/' && HAS_BACKEND_TEST=true

@@ -1,7 +1,51 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
 
 describe('changed-area-classifier closed-beta content-agent routing', () => {
+  it('does not lose early matches when a large change set exceeds the pipe buffer', () => {
+    const files = [
+      '__tests__/services/product-learning.test.ts',
+      'src/services/product-learning.ts',
+      ...Array.from({ length: 2_000 }, (_, index) => `docs/generated-${index}.md`),
+    ];
+    const raw = execFileSync(
+      'bash',
+      ['scripts/changed-area-classifier.sh', '--json', '--files', files.join(',')],
+      { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
+    );
+    const result = JSON.parse(raw) as { flags: Record<string, boolean>; vitest: { mode: string } };
+
+    expect(result.flags.backendSrc).toBe(true);
+    expect(result.flags.backendTest).toBe(true);
+    expect(result.flags.docsOnly).toBe(false);
+    expect(result.vitest.mode).toBe('changed-only');
+  });
+
   it('routes src/agents changes into content-agent neutrality and cross-agent tests', () => {
     const raw = execFileSync(
       'bash',
@@ -594,5 +638,62 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
     expect(result.flags.docsOnly).toBe(false);
     expect(result.vitest.mode).toBe('full');
     expect(result.stagingSmoke.generic).toBe(true);
+  });
+});
+
+describe('changed-area-classifier push range identity', () => {
+  it('includes a runtime commit followed by a docs commit when the push base is used', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-push-range-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+
+    try {
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      copyFileSync('scripts/changed-area-classifier.sh', join(repo, 'scripts/changed-area-classifier.sh'));
+      chmodSync(join(repo, 'scripts/changed-area-classifier.sh'), 0o755);
+      writeFileSync(join(repo, 'README.md'), 'fixture\n');
+
+      git('init');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      const pushBefore = git('rev-parse', 'HEAD');
+
+      mkdirSync(join(repo, 'src'), { recursive: true });
+      writeFileSync(join(repo, 'src/runtime-feature.ts'), 'export const runtimeFeature = true;\n');
+      git('add', 'src/runtime-feature.ts');
+      git('commit', '-m', 'feat: runtime');
+
+      mkdirSync(join(repo, 'docs'), { recursive: true });
+      writeFileSync(join(repo, 'docs/release.md'), '# Release\n');
+      git('add', 'docs/release.md');
+      git('commit', '-m', 'docs: release');
+
+      const raw = execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--base', pushBefore],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      );
+      const result = JSON.parse(raw) as {
+        changedFiles: string[];
+        flags: Record<string, boolean>;
+        vitest: { mode: string };
+      };
+
+      expect(result.changedFiles).toEqual([
+        'docs/release.md',
+        'src/runtime-feature.ts',
+      ]);
+      expect(result.flags.docsOnly).toBe(false);
+      expect(result.flags.backendSrc).toBe(true);
+      expect(result.vitest.mode).not.toBe('skip');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

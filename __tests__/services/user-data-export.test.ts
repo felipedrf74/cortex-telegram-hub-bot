@@ -12,12 +12,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import { vi } from 'vitest';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -26,23 +23,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      name TEXT PRIMARY KEY,
-      applied_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (!applied) {
-      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-      db.exec(sql);
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 let testDb: Database.Database;
 
@@ -168,8 +148,7 @@ function seedUserData(db: Database.Database, userId: number) {
 
 describe('User finance data export', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -219,8 +198,7 @@ describe('User finance data export', () => {
 
 describe('User finance data deletion', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -259,8 +237,7 @@ describe('User finance data deletion', () => {
 
 describe('countUserFinanceData', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -285,8 +262,7 @@ describe('countUserFinanceData', () => {
 
 describe('exportAllUserData', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -552,8 +528,7 @@ describe('exportAllUserData', () => {
 
 describe('deleteAllUserData', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 
@@ -901,8 +876,7 @@ describe('deleteAllUserData', () => {
 
 describe('account deletion OAuth revocation', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -962,8 +936,7 @@ describe('account deletion OAuth revocation', () => {
 
 describe('GDPR compliance', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => { testDb.close(); });
 

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest } from '../../src/services/database';
 import { lookupTrainingExerciseMedia as rawLookupTrainingExerciseMedia } from '../../src/services/training-exercise-media';
@@ -23,8 +24,7 @@ describe('Training exercise media repository', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
   });
 
   afterEach(() => db.close());

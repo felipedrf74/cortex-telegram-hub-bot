@@ -18,12 +18,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { Request } from 'express';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 
@@ -45,20 +42,6 @@ function restoreEnv(key: keyof typeof originalEnv): void {
   process.env[key] = value;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Ignore migrations with runtime-only dependencies.
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -117,9 +100,7 @@ async function dispatchAuth(
 
 describe('POST /auth/logout (server-side session revocation)', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';
@@ -227,9 +208,7 @@ describe('POST /auth/logout (server-side session revocation)', () => {
 
 describe('POST /auth/logout-all (account-wide revocation)', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';

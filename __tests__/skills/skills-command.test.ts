@@ -9,12 +9,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 // ── Test helpers ───────────────────────────────────────────────────
 
 function createTestDb(): Database.Database {
@@ -24,25 +20,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 // ── Mock DB ──────────────────────────────────────────────────────
 
@@ -85,8 +62,7 @@ import type { DomainName } from '../../src/domains/types';
 // ── Setup / Teardown ────────────────────────────────────────────
 
 beforeEach(() => {
-  testDb = createTestDb();
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
   invalidateToolCache();
   seedDefaultSkills();
 });

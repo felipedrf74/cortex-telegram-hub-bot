@@ -9,12 +9,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
@@ -22,17 +18,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (!applied) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 let testDb: Database.Database;
 
@@ -63,7 +48,7 @@ import {
 import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 
 describe('Recipe CRUD', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('adds a recipe with structured ingredients', () => {
@@ -214,7 +199,7 @@ describe('Recipe CRUD', () => {
 });
 
 describe('Meal Planning', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('sets a meal plan entry', () => {
@@ -305,7 +290,7 @@ describe('Meal Planning', () => {
 // tests pin both the warning shape and the explicit non-warning case.
 // ─────────────────────────────────────────────────────────────────────────
 describe('Meal plan expired pantry warnings (C9)', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('surfaces a pantry_expired issue when a linked recipe references an expired pantry item', () => {
@@ -415,7 +400,7 @@ describe('Meal plan expired pantry warnings (C9)', () => {
 });
 
 describe('Cooking safety enforcement', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('blocks substitutions that would introduce a stored allergy', () => {
@@ -490,7 +475,7 @@ describe('Cooking safety enforcement', () => {
 });
 
 describe('Shopping List', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('generates shopping list from meal plan with linked recipes', () => {
@@ -598,7 +583,7 @@ describe('Shopping List', () => {
 });
 
 describe('Pantry', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('upserts and lists pantry items for the active tenant', () => {

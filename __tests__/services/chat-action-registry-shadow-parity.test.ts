@@ -224,7 +224,7 @@ describe('chat-action-registry shadow-mode parity (Phase 2.1)', () => {
 afterAll(() => {
   if (process.env.NEXUS_SKIP_SHADOW_PARITY_WRITE === '1') return;
   try {
-    const outDir = path.resolve(__dirname, '../../docs/release/eval-evidence');
+    const outDir = path.resolve(__dirname, '../../.local/release/eval-evidence');
     fs.mkdirSync(outDir, { recursive: true });
     // Use a stable filename so successive runs overwrite; the contents reflect
     // the most recent test execution. Felipe reviews this artifact before each

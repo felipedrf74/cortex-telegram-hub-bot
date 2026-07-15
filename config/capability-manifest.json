@@ -1,0 +1,14 @@
+{
+  "schema": "nexus.capability-manifest.v1",
+  "version": "2026-07-15",
+  "capabilities": [
+    { "id": "secretary", "version": "2.0.0", "lifecycle": "active", "owner": "secretary", "requiredTier": "free", "memoryScope": "tenant-user", "providerPolicy": "routed", "costBudget": "standard", "latencyBudgetMs": 180000, "supportedChannels": ["telegram", "rest", "ios"], "requiredEvaluations": ["routing", "tenant-isolation", "public-contract"] },
+    { "id": "triathlon", "version": "3.0.0", "lifecycle": "active", "owner": "training", "requiredTier": "pro", "memoryScope": "tenant-user", "providerPolicy": "routed", "costBudget": "standard", "latencyBudgetMs": 180000, "supportedChannels": ["telegram", "rest", "ios"], "requiredEvaluations": ["safety", "capacity", "media-contract", "device-smoke"] },
+    { "id": "content", "version": "2.0.0", "lifecycle": "active", "owner": "content", "requiredTier": "pro", "memoryScope": "tenant-user", "providerPolicy": "routed", "costBudget": "metered", "latencyBudgetMs": 180000, "supportedChannels": ["telegram", "rest", "ios", "portal"], "requiredEvaluations": ["quality", "provenance", "tenant-isolation"] },
+    { "id": "finance", "version": "1.0.0", "lifecycle": "active", "owner": "finance", "requiredTier": "pro", "memoryScope": "tenant-user", "providerPolicy": "routed", "costBudget": "restricted", "latencyBudgetMs": 180000, "supportedChannels": ["telegram", "rest", "ios"], "requiredEvaluations": ["precision", "tenant-isolation", "auditability"] },
+    { "id": "cooking", "version": "1.1.0", "lifecycle": "active", "owner": "cooking", "requiredTier": "pro", "memoryScope": "tenant-user", "providerPolicy": "routed", "costBudget": "standard", "latencyBudgetMs": 180000, "supportedChannels": ["telegram", "rest", "ios", "portal"], "requiredEvaluations": ["preferences", "allergy-safety", "routing"] },
+    { "id": "connections", "version": "1.0.0", "lifecycle": "active", "owner": "connections", "requiredTier": "free", "memoryScope": "tenant-user", "providerPolicy": "routed", "costBudget": "standard", "latencyBudgetMs": 180000, "supportedChannels": ["telegram", "rest", "ios"], "requiredEvaluations": ["consent", "tenant-isolation", "routing"] },
+    { "id": "notifications", "version": "1.0.0", "lifecycle": "active", "owner": "notifications", "requiredTier": "free", "memoryScope": "tenant-user", "providerPolicy": "deterministic-first", "costBudget": "minimal", "latencyBudgetMs": 30000, "supportedChannels": ["rest", "ios"], "requiredEvaluations": ["preferences", "quiet-hours", "delivery-contract"] },
+    { "id": "decision_center", "version": "1.0.0", "lifecycle": "active", "owner": "decision-center", "requiredTier": "free", "memoryScope": "tenant-user", "providerPolicy": "deterministic-first", "costBudget": "minimal", "latencyBudgetMs": 30000, "supportedChannels": ["telegram", "rest", "ios"], "requiredEvaluations": ["provenance", "expiry", "choice-contract"] }
+  ]
+}

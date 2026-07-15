@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -124,8 +125,7 @@ describe('Usage Metering Service', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
 
     // Mock getDb() to return our in-memory database
     vi.doMock('../../src/services/database', () => ({

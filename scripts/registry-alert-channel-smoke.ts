@@ -46,7 +46,7 @@
  * Use `--dry-run` to walk the channel set without actually invoking send.
  *
  * Intended to be run via a weekly cron (Sunday 08:00 UTC suggested) and the
- * report appended to docs/release/eval-evidence/alert-channel-smoke-runs/.
+ * report appended to .local/release/eval-evidence/alert-channel-smoke-runs/.
  *
  * Usage:
  *   npx tsx scripts/registry-alert-channel-smoke.ts [options]

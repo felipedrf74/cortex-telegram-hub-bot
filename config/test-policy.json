@@ -1,0 +1,109 @@
+{
+  "version": "2026-07-15",
+  "defaultTier": "full",
+  "tiers": {
+    "fast": {
+      "description": "Deterministic unit, schema, policy, and release-tooling checks.",
+      "targetSeconds": 90,
+      "include": [
+        "__tests__/utils/**/*.test.ts",
+        "__tests__/types/**/*.test.ts",
+        "__tests__/scripts/*.test.ts",
+        "__tests__/services/*policy*.test.ts",
+        "__tests__/services/*validation*.test.ts"
+      ]
+    },
+    "critical": {
+      "description": "Release-blocking security, migration, billing, routing, public contract, and rollback regressions.",
+      "targetSeconds": 240,
+      "include": [
+        "__tests__/security/**/*.test.ts",
+        "__tests__/scope/**/*.test.ts",
+        "__tests__/api/auth-*.test.ts",
+        "__tests__/api/*tenant*.test.ts",
+        "__tests__/api/billing*.test.ts",
+        "__tests__/migrations/**/*.test.ts",
+        "__tests__/services/provider-fallback*.test.ts",
+        "__tests__/services/cost-guardrail*.test.ts",
+        "__tests__/scripts/release-*.test.ts",
+        "__tests__/scripts/promote-*.test.ts",
+        "__tests__/scripts/rollback-*.test.ts",
+        "__tests__/scripts/deploy-*.test.ts",
+        "__tests__/scripts/changed-area-classifier.test.ts",
+        "__tests__/scripts/ci-required-test-sharding.test.ts",
+        "__tests__/services/training-exercise-media*.test.ts"
+      ]
+    },
+    "evaluate": {
+      "description": "Subjective quality, persona, provider, and long-running evaluation corpora.",
+      "include": [
+        "__tests__/**/*evaluation*.test.ts",
+        "__tests__/**/*eval*.test.ts",
+        "__tests__/personas/**/*.test.ts"
+      ]
+    }
+  },
+  "fullSuiteTriggers": [
+    "vitest.config.ts",
+    "__tests__/setup.ts",
+    "config/test-policy.json",
+    "scripts/changed-area-classifier.sh",
+    "scripts/select-vitest-files.mjs",
+    "scripts/run-test-tier.mjs",
+    "scripts/changed-coverage-gate.mjs",
+    "scripts/mutation-gate.mjs",
+    "config/stryker.config.mjs",
+    "src/services/database.ts",
+    "package.json",
+    "package-lock.json"
+  ],
+  "timingExceptions": [
+    {
+      "file": "__tests__/scripts/changed-area-classifier.test.ts",
+      "owner": "release",
+      "reason": "Creates isolated Git repositories and runs the complete cannot-skip dashboard; retained as release-infrastructure proof.",
+      "expires": "2026-09-15"
+    }
+  ],
+  "dispositionRules": [
+    { "pattern": "__tests__/**/*qa-validation.test.ts", "disposition": "keep", "reason": "Measured review found distinct contract and edge-case assertions rather than duplicate titles; retain correctness coverage and merge only during an owned module restructure." },
+    { "pattern": "__tests__/**/*source-contract.test.ts", "disposition": "convert", "reason": "Replace source-string assertions with typed, schema, AST, manifest, or generator checks." },
+    { "pattern": "__tests__/**/*evaluation*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
+    { "pattern": "__tests__/**/*eval*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
+    { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
+  ],
+  "coverage": {
+    "global": { "lines": 78, "branches": 68, "functions": 84, "statements": 75 },
+    "changed": { "lines": 80, "branches": 75 },
+    "critical": { "lines": 90, "branches": 85 },
+    "exceptions": [
+      {
+        "file": "src/services/database.ts",
+        "owner": "test-infrastructure",
+        "reason": "Legacy database facade baseline is 25.28% lines and 26.08% branches; the extracted migration runner is governed separately above 90/85 while facade coverage is ratcheted without blocking this delegation-only change.",
+        "expires": "2026-08-31",
+        "minimum": { "lines": 25, "branches": 26 }
+      }
+    ]
+  },
+  "mutation": {
+    "schedule": "weekly",
+    "scope": "changed-critical-modules",
+    "thresholds": { "high": 80, "low": 70, "break": 70 },
+    "criticalModulePatterns": [
+      "src/api/routes/auth*.ts",
+      "src/api/routes/*billing*.ts",
+      "src/api/routes/*tenant*.ts",
+      "src/middleware/auth*.ts",
+      "src/services/*auth*.ts",
+      "src/services/*billing*.ts",
+      "src/services/*tenant*.ts",
+      "src/services/*provider*.ts",
+      "src/services/database.ts",
+      "src/services/migration-runner.ts",
+      "src/services/cost-guardrail*.ts",
+      "src/services/training-exercise-media*.ts"
+    ],
+    "exceptions": []
+  }
+}

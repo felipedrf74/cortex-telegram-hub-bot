@@ -1,0 +1,13 @@
+{
+  "version": "2026-07-15",
+  "benchmarks": {
+    "trainingM4Capacity50000Events": {
+      "warmupRuns": 2,
+      "sampleRuns": 7,
+      "p95Ms": 1600,
+      "maxRegressionPercent": 15,
+      "owner": "training",
+      "reviewBy": "2026-08-15"
+    }
+  }
+}

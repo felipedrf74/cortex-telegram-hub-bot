@@ -16,7 +16,7 @@ describe('rollback-drill-check', () => {
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-rollback-drill-'));
-    evidencePath = path.join(tmp, 'docs/release/evidence/rollback-drill-latest.json');
+    evidencePath = path.join(tmp, '.local/release/rollback-drill-latest.json');
     fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     privateKeyPath = path.join(tmp, 'private.pem');

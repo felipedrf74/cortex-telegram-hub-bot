@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import { applyMigrations } from '../../helpers/apply-migrations';
 
@@ -144,8 +145,7 @@ function makeMockAdapter(opts: MockAdapterOptions = {}): TaskProviderAdapter & {
 }
 
 beforeEach(() => {
-  testDb = createTestDb();
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
   // Migration 042 added FK on unified_*.user_id; pre-seed users so tests
   // can insert with arbitrary user IDs without FK violations.
   const seedUser = testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');

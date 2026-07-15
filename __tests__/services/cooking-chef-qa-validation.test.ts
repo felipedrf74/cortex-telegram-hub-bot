@@ -14,11 +14,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -27,17 +26,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (!applied) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 let testDb: Database.Database;
 
@@ -69,7 +57,7 @@ import type { Ingredient } from '../../src/services/cooking-chef';
 // ── Migration schema integrity ────────────────────────────────────
 
 describe('QA: Cooking migration schema', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('migration 024 creates all three required tables', () => {
@@ -152,7 +140,7 @@ describe('QA: Cooking migration schema', () => {
 // ── Recipe edge cases ─────────────────────────────────────────────
 
 describe('QA: Recipe edge cases', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('handles recipe with empty ingredients array', () => {
@@ -261,7 +249,7 @@ describe('QA: Recipe edge cases', () => {
 // ── Meal planning edge cases ──────────────────────────────────────
 
 describe('QA: Meal planning edge cases', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('supports all four meal types', () => {
@@ -317,7 +305,7 @@ describe('QA: Meal planning edge cases', () => {
 // ── Shopping list edge cases ──────────────────────────────────────
 
 describe('QA: Shopping list edge cases', () => {
-  beforeEach(() => { testDb = createTestDb(); applyMigrations(testDb); });
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
   afterEach(() => { testDb.close(); });
 
   it('handles meals without linked recipes (no crash)', () => {

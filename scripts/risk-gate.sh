@@ -177,31 +177,22 @@ case "$VITEST_MODE" in
       run_cmd npx vitest run --reporter="$REPORTER"
     fi
     ;;
-  changed-only)
-    run_cmd npx vitest run --reporter="$REPORTER" --changed "$BASE_FOR_CHANGED"
-    ;;
-  focused)
-    RAW_GLOBS=()
-    while IFS= read -r glob; do
-      [ -n "$glob" ] && RAW_GLOBS+=("$glob")
-    done < <(json_get "vitest.globs")
-    if [ "${#RAW_GLOBS[@]}" -eq 0 ]; then
-      echo "⚠️  focused mode had no globs — escalating to full Vitest"
-      run_cmd npx vitest run --reporter="$REPORTER"
+  changed-only|focused)
+    if [ "$DRY_RUN" = "true" ]; then
+      echo "▶ node scripts/select-vitest-files.mjs --base $BASE_FOR_CHANGED --classifier <classifier-json>"
+      echo "▶ npx vitest run --reporter=$REPORTER <changed+focused+critical-union>"
     else
-      FILTERED_GLOBS=""
-      if [ "$DRY_RUN" = "true" ]; then
-        FILTERED_GLOBS="${RAW_GLOBS[*]}"
-      else
-        FILTERED_GLOBS="$(node "$ROOT/scripts/filter-existing-vitest-globs.mjs" "${RAW_GLOBS[@]}" 2>/dev/null || true)"
-      fi
-      if [ -z "$FILTERED_GLOBS" ]; then
-        echo "⚠️  focused globs matched no tests — escalating to full Vitest"
+      SELECTED_FILES=()
+      while IFS= read -r selected_file; do
+        [ -n "$selected_file" ] && SELECTED_FILES+=("$selected_file")
+      done < <(node scripts/select-vitest-files.mjs \
+        --base "$BASE_FOR_CHANGED" \
+        --classifier "$CLASSIFIER_JSON_FILE")
+      if [ "${#SELECTED_FILES[@]}" -eq 0 ]; then
+        echo "⚠️  changed/focused/critical union was empty — escalating to full Vitest"
         run_cmd npx vitest run --reporter="$REPORTER"
       else
-        # shellcheck disable=SC2086
-        run_cmd npx vitest run --reporter="$REPORTER" $FILTERED_GLOBS
-        run_cmd npx vitest run --reporter="$REPORTER" --changed "$BASE_FOR_CHANGED"
+        run_cmd npx vitest run --reporter="$REPORTER" "${SELECTED_FILES[@]}"
       fi
     fi
     ;;

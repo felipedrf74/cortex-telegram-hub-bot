@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import { bindTrainingPlanRevisionDecision } from '../../src/services/training-plan-revision-decision';
@@ -117,8 +118,7 @@ describe('training M4 single-Decision conflict and activation gates', () => {
     authoritativeCapacityVersion = '';
     calendarEvents = [];
     calendarStatus = 'ready';
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     db.prepare(`
       INSERT INTO user_profiles (user_id, profile_type, data)
       VALUES (7, 'fitness', '{"weekly_frequency":5}')

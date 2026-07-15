@@ -11,7 +11,7 @@ dotenv.config({ path: '.env.local', override: false, quiet: true });
 
 const dbPath = readArg('--db') ?? process.env.DATABASE_PATH ?? './data/bot.db';
 const inventoryPath = readArg('--inventory') ?? 'docs/ai/chatv2-route-exit-inventory.md';
-const outPath = readArg('--out') ?? 'docs/release/eval-evidence/chatv2-legacy-parity-review-latest.json';
+const outPath = readArg('--out') ?? '.local/release/eval-evidence/chatv2-legacy-parity-review-latest.json';
 
 const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 try {

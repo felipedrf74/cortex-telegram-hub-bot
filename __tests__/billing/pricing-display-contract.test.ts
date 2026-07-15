@@ -35,18 +35,9 @@ describe('owner-confirmed subscription price display contract', () => {
     expect(landing).toContain('also available in BRL at R$99.99/mo');
   });
 
-  it('keeps active quota and release docs aligned', () => {
+  it('keeps the canonical quota contract aligned', () => {
     expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
       `Pro at \`${CANONICAL.proUsd}\` and Max at \`${CANONICAL.maxUsd}\``,
-    );
-    expect(read('docs/release/nexus-points-usage-limits.md')).toContain(
-      `| Pro | ${CANONICAL.proUsd} | $0.04 | $1.20 | 30% of both windows |`,
-    );
-    expect(read('docs/release/nexus-points-usage-limits.md')).toContain(
-      `| Max | ${CANONICAL.maxUsd} | $0.06 | $1.80 | 30% of both windows |`,
-    );
-    expect(read('docs/release/CURRENT_RELEASE_STATE.md')).toContain(
-      'current Pro `$14.99/R$74.99` and Max `$19.99/R$99.99` prices',
     );
   });
 
@@ -55,10 +46,6 @@ describe('owner-confirmed subscription price display contract', () => {
       '.env.example',
       'src/portal/landing.html',
       'docs/TOKEN-QUOTA-CONTRACT.md',
-      'docs/release/nexus-points-usage-limits.md',
-      'docs/release/nexus-points-usage-limits-claude-qa-prompt.md',
-      'docs/release/nexus-points-usage-limits-claude-qa-prompt-pass2.md',
-      'docs/release/CURRENT_RELEASE_STATE.md',
     ];
 
     const staleAmounts = ['$24.99', 'R$69.99', 'R$69,99', 'R$119.99', 'R$119,99'];

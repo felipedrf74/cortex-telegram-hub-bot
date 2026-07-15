@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
 import path from 'path';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -34,19 +33,6 @@ import { runPerformanceAgent } from '../../src/agents/performance-agent';
 import { runReactionRadar } from '../../src/agents/reaction-radar-agent';
 import { buildEditorialCoordinationSignals } from '../../src/agents/editorial-coordinator-agent';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  for (const file of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith('.sql')).sort()) {
-    if (db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) continue;
-    try {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-    } catch {
-      // A few historical migrations are intentionally dependency-sensitive in
-      // isolated tests. Agents under test create or read the tables they need.
-    }
-  }
-}
 
 function latestAgentRun(agentName: string): any {
   return testDb.prepare(`
@@ -70,9 +56,7 @@ function activeSignals(type?: string): any[] {
 describe('Content operational agents direct health checks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    testDb = new Database(':memory:');
-    testDb.pragma('foreign_keys = ON');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     setDbProvider(() => testDb as any);
   });
 

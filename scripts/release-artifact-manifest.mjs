@@ -21,6 +21,7 @@ const runtimeRoots = [
   'catalog',
   'migrations',
   'prompts',
+  'config',
   'content-engine/models',
   'content-engine/routers',
   'content-engine/searchers',
@@ -32,11 +33,13 @@ const runtimeFiles = [
   'package-lock.json',
   'ecosystem.config.js',
   'ecosystem.staging.config.js',
+  'ecosystem.release.config.js',
   'content-engine/main.py',
   'content-engine/config.py',
   'content-engine/requirements.txt',
   'content-engine/requirements-dev.txt',
   'content-engine/pyproject.toml',
+  'scripts/release-installed-tree-attestation.mjs',
 ];
 
 function cleanGitEnv() {

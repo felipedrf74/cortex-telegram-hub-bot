@@ -4,7 +4,7 @@
 #
 # release-pipeline-risk-based-optimization (2026-05-03) — Round 3.
 #
-# Without this, docs/release/smoke-evidence/ grows unboundedly. The
+# Without this, .local/release/smoke-evidence/ grows unboundedly. The
 # evidence files are useful for ~60 days (verifying production decisions,
 # auditing drift); past that they're noise.
 #
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EVIDENCE_DIR="$LOCAL_DIR/docs/release/smoke-evidence"
+EVIDENCE_DIR="$LOCAL_DIR/.local/release/smoke-evidence"
 
 APPLY=false
 MAX_AGE_DAYS=60

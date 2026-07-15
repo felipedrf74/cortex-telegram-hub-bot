@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
@@ -23,8 +24,6 @@ import {
 } from '../../src/skills/skill-config';
 
 const ROOT = path.resolve(__dirname, '../..');
-const MIGRATIONS_DIR = path.resolve(ROOT, 'migrations');
-
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
@@ -32,21 +31,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 let testDb: Database.Database;
 
@@ -93,8 +77,7 @@ import {
 
 describe('Cron gating with parent skill disabled', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     seedDefaultSkills();
     invalidateToolCache();
   });
@@ -140,8 +123,7 @@ describe('Cron gating with parent skill disabled', () => {
 
 describe('registry.isSubmoduleEnabled edge cases', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     seedDefaultSkills();
   });
 
@@ -271,8 +253,7 @@ describe('Cron ↔ sub-skill complete coverage', () => {
 
 describe('All sub-skills disabled boundary', () => {
   beforeEach(() => {
-    testDb = createTestDb();
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     seedDefaultSkills();
     invalidateToolCache();
   });

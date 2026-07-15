@@ -27,28 +27,10 @@
  *     resolves to an actual row.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -118,10 +100,7 @@ function executeToolCall(toolName: string, input: Record<string, any>): Promise<
 }
 
 beforeEach(async () => {
-  testDb = new Database(':memory:');
-  testDb.pragma('journal_mode = WAL');
-  testDb.pragma('foreign_keys = ON');
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
   forceEmitThrow = false;
   // Seed a user row — `requireOwnedTrainingSessionForTool` looks up
   // through users/plans so we need a real owner before authorization.

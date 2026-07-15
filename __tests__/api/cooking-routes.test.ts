@@ -1,15 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { Request } from 'express';
 import { DateTime } from 'luxon';
 import {
   clearTenantScopeAnomaliesForTests,
   getTenantScopeAnomalies,
 } from '../../src/services/tenant-scope-observability';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 const mockCalendarCreateEvent = vi.fn();
@@ -123,42 +120,6 @@ import { addTransaction } from '../../src/services/finance-tracker';
 import { submitSecretarySchedulingIntent } from '../../src/services/secretary-scheduling-arbitrator';
 import { listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* skip incompatible migrations in unit tests */ }
-    }
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS agent_signals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_agent TEXT NOT NULL,
-      signal_type TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      priority TEXT NOT NULL DEFAULT 'normal',
-      status TEXT NOT NULL DEFAULT 'active',
-      expires_at TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      consumed_by TEXT NOT NULL DEFAULT '[]',
-      user_id INTEGER,
-      tenant_id INTEGER,
-      confidence REAL NOT NULL DEFAULT 0.5,
-      format_tag TEXT,
-      pillar_tag TEXT,
-      evidence_count INTEGER NOT NULL DEFAULT 1
-    )
-  `);
-  const signalColumns = db.prepare('PRAGMA table_info(agent_signals)').all() as Array<{ name: string }>;
-  if (!signalColumns.some((column) => column.name === 'tenant_id')) {
-    db.exec('ALTER TABLE agent_signals ADD COLUMN tenant_id INTEGER');
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -215,9 +176,7 @@ async function dispatch(
 
 describe('Cooking API — shopping list item updates', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     setDbProvider(() => testDb);
     clearTenantScopeAnomaliesForTests();
     mockCalendarCreateEvent.mockReset();

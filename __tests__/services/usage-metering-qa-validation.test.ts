@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -28,17 +29,6 @@ function createTestDb(): Database.Database {
   return db;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (!applied) {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8'));
-      db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-    }
-  }
-}
 
 describe('QA: AI background metering attribution source audit', () => {
   function readSource(relativePath: string): string {
@@ -135,7 +125,7 @@ describe('QA: AI background metering attribution source audit', () => {
 describe('QA: Usage metering migration schema', () => {
   let db: Database.Database;
 
-  beforeEach(() => { db = createTestDb(); applyMigrations(db); });
+  beforeEach(() => { db = createMigratedTestDatabase(); });
   afterEach(() => { db.close(); });
 
   it('usage_metering table has all expected columns', () => {
@@ -202,8 +192,7 @@ describe('QA: Usage metering service edge cases', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
     vi.doMock('../../src/services/database', () => ({ getDb: () => db }));
     vi.doMock('../../src/utils/logger', () => ({
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -309,8 +298,7 @@ describe('QA: Quota enforcement edge cases', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createTestDb();
-    applyMigrations(db);
+    db = createMigratedTestDatabase();
     vi.doMock('../../src/services/database', () => ({ getDb: () => db }));
     vi.doMock('../../src/utils/logger', () => ({
       logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },

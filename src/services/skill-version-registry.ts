@@ -2,6 +2,7 @@
 
 import { getDb } from './database';
 import { DEFAULT_SKILLS, type SkillDefinition } from '../skills/skill-config';
+import { getCapabilityManifestEntry, type CapabilityLifecycle } from './capability-manifest';
 
 export type SkillReleaseType = 'major' | 'minor' | 'patch' | 'hotfix' | 'experimental';
 export type SkillVersionStatus = 'draft' | 'candidate' | 'active' | 'deprecated' | 'rolled_back';
@@ -99,6 +100,35 @@ export interface SkillMetadata {
   qualityGateStatus: string | null;
   rolloutScope: SkillRolloutScope;
   rollbackNotes: string | null;
+  lifecycle: CapabilityLifecycle | null;
+  owner: string | null;
+  providerPolicy: string | null;
+  costBudget: string | null;
+  latencyBudgetMs: number | null;
+  supportedChannels: string[];
+  requiredEvaluations: string[];
+}
+
+function governanceMetadata(skillId: string): Pick<SkillMetadata,
+  'lifecycle' | 'owner' | 'providerPolicy' | 'costBudget' | 'latencyBudgetMs' | 'supportedChannels' | 'requiredEvaluations'> {
+  const entry = getCapabilityManifestEntry(skillId);
+  return entry ? {
+    lifecycle: entry.lifecycle,
+    owner: entry.owner,
+    providerPolicy: entry.providerPolicy,
+    costBudget: entry.costBudget,
+    latencyBudgetMs: entry.latencyBudgetMs,
+    supportedChannels: entry.supportedChannels,
+    requiredEvaluations: entry.requiredEvaluations,
+  } : {
+    lifecycle: null,
+    owner: null,
+    providerPolicy: null,
+    costBudget: null,
+    latencyBudgetMs: null,
+    supportedChannels: [],
+    requiredEvaluations: [],
+  };
 }
 
 interface SkillVersionRow {
@@ -565,6 +595,7 @@ function fallbackMetadata(skillId: string): SkillMetadata {
     qualityGateStatus: 'fallback',
     rolloutScope: 'global',
     rollbackNotes: null,
+    ...governanceMetadata(normalized),
   };
 }
 
@@ -595,6 +626,7 @@ export function getSkillMetadata(skillId: string, scope: SkillVersionScope = {})
     qualityGateStatus: active.qualityGateStatus,
     rolloutScope: active.rolloutScope,
     rollbackNotes: active.rollbackNotes,
+    ...governanceMetadata(active.skillId),
   };
 }
 

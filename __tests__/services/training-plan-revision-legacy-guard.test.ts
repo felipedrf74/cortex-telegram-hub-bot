@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTest } from '../../src/services/database';
 import {
@@ -17,8 +18,7 @@ describe('training revision legacy mutation guard', () => {
   let sessionId: number;
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     planId = Number(db.prepare(`
       INSERT INTO fitness_training_plans (
         user_id, tenant_id, name, duration_weeks, start_date, end_date, status

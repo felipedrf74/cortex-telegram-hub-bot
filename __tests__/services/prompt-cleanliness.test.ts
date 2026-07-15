@@ -158,12 +158,8 @@ describe('prompt-cleanliness: system descriptions are iOS-first', () => {
   });
 
   it('daily-content-discovery.md describes system as iOS-first', () => {
-    // This old feature prompt contains founder-specific design notes and
-    // must stay archived, not loaded as a live runtime prompt.
+    // Historical design notes belong in Git history, not a tracked archive.
     expect(fs.existsSync(path.join(PROMPTS_DIR, 'daily-content-discovery.md'))).toBe(false);
-    expect(
-      fs.existsSync(path.resolve(__dirname, '../../docs/archive/2026-05/content/daily-content-discovery.md')),
-    ).toBe(true);
   });
 });
 

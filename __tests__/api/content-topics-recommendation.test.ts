@@ -1,11 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { Request } from 'express';
 import { DateTime } from 'luxon';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 let mockCalendarEvents: any[] = [];
@@ -59,39 +56,6 @@ import { createPlan, createSession, createWeek } from '../../src/services/traini
 import { publishLowReadiness } from '../../src/services/training-signals';
 import { setDbProvider } from '../../src/services/intelligence-bus';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // ignore incompatible migrations in unit tests
-      }
-    }
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS agent_signals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_agent TEXT NOT NULL,
-      signal_type TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      priority TEXT NOT NULL DEFAULT 'normal',
-      status TEXT NOT NULL DEFAULT 'active',
-      expires_at TEXT NOT NULL DEFAULT (datetime('now', '+7 days')),
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      consumed_by TEXT NOT NULL DEFAULT '[]',
-      user_id INTEGER,
-      confidence REAL NOT NULL DEFAULT 0.5,
-      format_tag TEXT,
-      pillar_tag TEXT,
-      evidence_count INTEGER NOT NULL DEFAULT 1
-    )
-  `);
-}
 
 interface MockRes {
   statusCode: number;
@@ -142,9 +106,7 @@ async function dispatch(method: 'GET', url: string, userId: number): Promise<Moc
 
 describe('Content API — filming recommendation', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     setDbProvider(() => testDb);
     mockCalendarEvents = [];
     mockReadinessScore = 76;

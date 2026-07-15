@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTest } from '../../src/services/database';
 import { runLegacyActivePlanBackfill } from '../../src/services/training-plan-revision-legacy-backfill';
@@ -10,8 +11,7 @@ describe('training-plan-revision legacy active backfill', () => {
   const env = { TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: 'training-revision-test-encryption-key-0001' };
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     const plan = db.prepare(`
       INSERT INTO fitness_training_plans (
         user_id, tenant_id, name, sport, goal, duration_weeks, status,

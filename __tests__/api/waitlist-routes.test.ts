@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import express from 'express';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 const hoisted = vi.hoisted(() => ({
@@ -53,18 +49,6 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { _resetRateLimiterForTests, createWaitlistRouter } from '../../src/api/routes/waitlist';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec('CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime(\'now\')))');
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* unrelated migration dependency not needed here */ }
-    }
-  }
-}
 
 async function requestWaitlist(pathname: string, init: RequestInit = {}): Promise<{
   status: number;
@@ -93,8 +77,7 @@ describe('public waitlist routes', () => {
     vi.stubEnv('WAITLIST_SKIP_MX_CHECK', '1');
     vi.stubEnv('WAITLIST_IP_SALT', 'stable-test-salt');
     hoisted.sendBetaWaitlistConfirmation.mockResolvedValue(true);
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     _resetRateLimiterForTests();
     vi.clearAllMocks();
   });

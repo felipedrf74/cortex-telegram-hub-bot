@@ -1,0 +1,32 @@
+{
+  "schema": "nexus.release-state.v1",
+  "lastVerifiedAt": "2026-07-14T00:00:00.000Z",
+  "docsHead": "cb3313c9423258ed2d5e2fe6062dcd821cddc74e",
+  "backend": {
+    "version": "4.14.218",
+    "runtimeSha": "6a2811bcb65184ee2939f6db9de97cfb166c3433",
+    "artifactDigest": "503b2e5072b6e7e78eb7a9a614aa77726db4fff4e2ac08e4b3d85f19f62ec2ed",
+    "health": "healthy",
+    "database": "connected",
+    "pm2Processes": ["nexus-hub", "content-engine"]
+  },
+  "trainingCatalog": {
+    "compiledPackageHash": "51c1089cceb8a916abf200b5cb3688b19f5f7553990467ee0f8ef01c7c4f74bb",
+    "releaseSubjectHash": "27b97ebc96e1b3bb1ee3612e63c5609b5572c9d4b58e59b8ea3e77642fb1cea3",
+    "approvedOrigin": "https://media.nexushub.me",
+    "activationState": "active"
+  },
+  "ios": {
+    "version": "1.5.0",
+    "build": 55,
+    "sha": "58069db585ff5e69253ba33051dc779ce19703bf",
+    "testFlightState": "testing",
+    "physicalDeviceSmoke": "open",
+    "previousBuildToRetain": 54
+  },
+  "authorizationRequired": [
+    "production_deploy",
+    "remote_branch_deletion",
+    "testflight_build_expiry"
+  ]
+}

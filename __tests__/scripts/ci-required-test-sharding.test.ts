@@ -23,6 +23,15 @@ describe('required CI test sharding', () => {
     expect(workflow).toContain('scripts/risk-gate.sh \\');
   });
 
+  it('classifies the complete pushed range and propagates one exact base', () => {
+    expect(workflow).toContain('PUSH_BEFORE_SHA: ${{ github.event.before }}');
+    expect(workflow).toContain('BASE_REF="$PUSH_BEFORE_SHA"');
+    expect(workflow).toContain('base_sha: ${{ steps.classify.outputs.base_sha }}');
+    expect(workflow).toContain("BASE='${{ needs.classify.outputs.base_sha }}'");
+    expect(workflow).not.toContain('BASE_REF="HEAD~1"');
+    expect(workflow).not.toContain('BASE="HEAD~1"');
+  });
+
   it('preserves one required aggregate Tests context and fails closed by mode', () => {
     expect(workflow.match(/^\s{4}name: 🧪 Tests$/gm)).toHaveLength(1);
     expect(workflow).toContain('needs: [classify, test_full_shard, test_focused]');

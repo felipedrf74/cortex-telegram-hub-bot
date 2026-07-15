@@ -3,9 +3,9 @@ name: Weekly — Release pipeline housekeeping
 # release-pipeline-risk-based-optimization (2026-05-03) — Round 4.
 #
 # Once per week (Sundays 06:00 UTC) the housekeeping script runs:
-#   1. Prune smoke-evidence files older than 60 days
-#   2. Re-persist docs/release/release-identity.{json,md}
-#   3. Print docs:audit baseline (advisory)
+#   1. Prune ignored local smoke/evaluation evidence
+#   2. Regenerate and validate the project map
+#   3. Enforce the documentation policy
 #
 # This is the lazy operator's friend: stuff that needs to happen
 # periodically but doesn't otherwise have an explicit owner.
@@ -13,10 +13,7 @@ name: Weekly — Release pipeline housekeeping
 # Manual run:
 #   gh workflow run "Weekly — Release pipeline housekeeping"
 #
-# Note: this workflow does NOT push results back to git. It runs in a
-# clean checkout, prints the result, and exits. If the prune-and-persist
-# results matter for the canonical docs, the Mac-side cron (or Felipe's
-# pre-commit hook on the next current-verdict edit) is the actual writer.
+# This workflow does not push generated output back to Git.
 
 on:
   schedule:
@@ -28,13 +25,13 @@ jobs:
     name: 🧹 Housekeeping
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '20'
+          node-version: '22.23.1'
           cache: 'npm'
 
       - name: Run housekeeping (dry-run)

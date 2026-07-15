@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import { applyMigrations } from '../../helpers/apply-migrations';
 
@@ -60,8 +61,7 @@ import { recordTaskSyncIssue } from '../../../src/services/task-store/task-sync-
 const USER_ID = 42;
 
 beforeEach(() => {
-  testDb = createTestDb();
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
   testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)').run(42, 42);
   vi.clearAllMocks();
   mockResolveTaskProvider.mockReturnValue('nexus');

@@ -436,7 +436,7 @@ const REGRESSION_FIXTURES: PlannerFixture[] = [
 // once Phase 2.1 ships proper "log-don't-fail" shadow infrastructure (a
 // separate test suite that runs registry-derived fixtures through the same
 // planner harness but treats mismatches as warnings rather than failures).
-// Parity findings get logged to docs/release/eval-evidence/<ts>-parity.json
+// Parity findings get logged to .local/release/eval-evidence/<ts>-parity.json
 // per the eval plan; CI flips to registry-primary per action only after 7 days
 // of zero parity warnings.
 //

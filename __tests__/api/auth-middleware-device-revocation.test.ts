@@ -16,13 +16,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
 import path from 'path';
 import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
 const TEST_IOS_JWT_SECRET = 'test-ios-secret-000000000000000000000000000000';
@@ -45,21 +43,6 @@ function restoreEnv(key: keyof typeof originalEnv): void {
   process.env[key] = value;
 }
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        // Some migrations depend on runtime-only services; the middleware
-        // tests only need the user + ios_devices tables.
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -91,9 +74,7 @@ function mockReq(headers: Record<string, string>, method = 'GET', url = '/noop')
 
 describe('authMiddleware: device revocation', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
 
     process.env.STAGING = 'true';
     process.env.IOS_API_ENABLED = 'true';

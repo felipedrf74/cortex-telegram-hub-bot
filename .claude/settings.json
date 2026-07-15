@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$(git rev-parse --show-toplevel)/scripts/reward-check.mjs\" --area auto --advisory --json",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/reward-stop-hook.mjs\"",
             "timeout": 45
           }
         ]

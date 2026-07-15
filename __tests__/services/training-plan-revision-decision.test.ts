@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import type { TrainingPlanCandidateRequest } from '../../src/services/training-plan-revision-candidate-builder';
@@ -31,8 +32,7 @@ describe('training-plan-revision Decision Center binding', () => {
   const priorSnapshotKey = process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY;
 
   beforeEach(() => {
-    db = new Database(':memory:');
-    runMigrationsForTest(db);
+    db = createMigratedTestDatabase();
     process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
     process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'false';
     process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_7 = 'true';

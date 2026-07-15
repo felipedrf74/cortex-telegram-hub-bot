@@ -12,11 +12,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+import {
+  writeSignal,
+  readRankedSignals,
+  setDbProvider,
+  setPlanningInvalidator,
+} from '../../src/services/intelligence-bus';
+import { getPipelineOperationalMetrics } from '../../src/agents/pipeline-agent';
 
 let testDb: Database.Database;
 
@@ -47,18 +53,6 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-function applyMigrations(db: Database.Database): void {
-  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch { /* skip deps */ }
-    }
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Signal Schema Upgrade
@@ -66,9 +60,7 @@ function applyMigrations(db: Database.Database): void {
 
 describe('signal-ranking: schema upgrade', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
@@ -103,18 +95,9 @@ describe('signal-ranking: schema upgrade', () => {
 // 2. writeSignal with new fields
 // ═══════════════════════════════════════════════════════════════════
 
-import {
-  writeSignal,
-  readRankedSignals,
-  setDbProvider,
-  setPlanningInvalidator,
-} from '../../src/services/intelligence-bus';
-
 describe('signal-ranking: writeSignal with new fields', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     setDbProvider(() => testDb);
   });
   afterEach(() => testDb?.close());
@@ -176,9 +159,7 @@ describe('signal-ranking: writeSignal with new fields', () => {
 
 describe('signal-ranking: readRankedSignals', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     setDbProvider(() => testDb);
   });
   afterEach(() => testDb?.close());
@@ -295,9 +276,7 @@ describe('signal-ranking: readRankedSignals', () => {
 
 describe('signal-ranking: malformed signal handling', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     setDbProvider(() => testDb);
   });
   afterEach(() => testDb?.close());
@@ -338,13 +317,9 @@ describe('signal-ranking: malformed signal handling', () => {
 // 5. Pipeline Operational Metrics
 // ═══════════════════════════════════════════════════════════════════
 
-import { getPipelineOperationalMetrics } from '../../src/agents/pipeline-agent';
-
 describe('signal-ranking: pipeline metrics', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
@@ -406,9 +381,7 @@ describe('signal-ranking: pipeline metrics', () => {
 
 describe('signal-ranking: workflow scoping', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 

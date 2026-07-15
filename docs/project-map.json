@@ -1,0 +1,3424 @@
+{
+  "schema": "nexus.project-map.v1",
+  "reviewedAt": "2026-07-15",
+  "navigation": {
+    "agentBootloader": "AGENTS.md",
+    "docsIndex": "docs/DOCS_INDEX.md",
+    "releaseState": "docs/release/release-state.json",
+    "testPolicy": "config/test-policy.json",
+    "capabilityManifest": "config/capability-manifest.json",
+    "agentJobManifest": "config/agent-job-manifest.json"
+  },
+  "modules": [
+    {
+      "path": "src/adapters",
+      "owner": "backend",
+      "files": 4
+    },
+    {
+      "path": "src/agents",
+      "owner": "agents",
+      "files": 6
+    },
+    {
+      "path": "src/api",
+      "owner": "backend",
+      "files": 123
+    },
+    {
+      "path": "src/boot.ts",
+      "owner": "backend",
+      "files": 0
+    },
+    {
+      "path": "src/cli",
+      "owner": "backend",
+      "files": 1
+    },
+    {
+      "path": "src/commands",
+      "owner": "backend",
+      "files": 1
+    },
+    {
+      "path": "src/config.ts",
+      "owner": "backend",
+      "files": 0
+    },
+    {
+      "path": "src/domains",
+      "owner": "backend",
+      "files": 8
+    },
+    {
+      "path": "src/index.ts",
+      "owner": "backend",
+      "files": 0
+    },
+    {
+      "path": "src/portal",
+      "owner": "backend",
+      "files": 43
+    },
+    {
+      "path": "src/router",
+      "owner": "backend",
+      "files": 3
+    },
+    {
+      "path": "src/sdk",
+      "owner": "backend",
+      "files": 7
+    },
+    {
+      "path": "src/security",
+      "owner": "security",
+      "files": 1
+    },
+    {
+      "path": "src/services",
+      "owner": "backend",
+      "files": 690
+    },
+    {
+      "path": "src/skills",
+      "owner": "backend",
+      "files": 7
+    },
+    {
+      "path": "src/state",
+      "owner": "backend",
+      "files": 16
+    },
+    {
+      "path": "src/storage",
+      "owner": "backend",
+      "files": 1
+    },
+    {
+      "path": "src/testing",
+      "owner": "backend",
+      "files": 1
+    },
+    {
+      "path": "src/tools",
+      "owner": "backend",
+      "files": 22
+    },
+    {
+      "path": "src/utils",
+      "owner": "backend",
+      "files": 15
+    }
+  ],
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/router.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/connections.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/content-dashboard.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/dashboard.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/notes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/reminders.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/reports.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/summaries.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/api/routes/usage.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "source": "src/api/routes/client-errors.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "source": "src/api/routes/notes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "source": "src/api/routes/reminders.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "source": "src/api/routes/waitlist.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/:id",
+      "source": "src/api/routes/notes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/:id",
+      "source": "src/api/routes/reminders.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:id",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:id",
+      "source": "src/api/routes/reports.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id",
+      "source": "src/api/routes/notes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/actions",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/actions",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id/dismiss",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id/dismiss",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:id/history",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id/proposal",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id/read",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/read",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/read",
+      "source": "src/api/routes/reports.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/refresh",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/resolve",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:id/review",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id/snooze",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:id/viewed",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/:listId/:taskId",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:listId/:taskId",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:listId/:taskId",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:listId/:taskId/checklist",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/:listId/:taskId/checklist/:itemId",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:listId/:taskId/complete",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:listId/:taskId/move",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:listId/:taskId/sync/assign-provider",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:listId/:taskId/sync/retry",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/:provider",
+      "source": "src/api/routes/connections.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:questionnaireId",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:questionnaireId/answer",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/:questionnaireId/start",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:questionnaireId/status",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/:tokenId",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/:type",
+      "source": "src/api/routes/summaries.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/account",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/actions/:pendingActionId",
+      "source": "src/api/routes/chat-message-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/active",
+      "source": "src/api/routes/signals.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/activity/weekly",
+      "source": "src/api/routes/training-analytics-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/adaptations/:adaptationId",
+      "source": "src/api/routes/training-adaptation-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/adaptations/:adaptationId/request-review",
+      "source": "src/api/routes/training-adaptation-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/adaptations/:adaptationId/select-option",
+      "source": "src/api/routes/training-adaptation-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/adaptations/preview",
+      "source": "src/api/routes/training-adaptation-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/admin",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/agency/brief",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/agency/competitor-study",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/agency/package",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/agency/projects/:id",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/agency/projects/:id/handoff",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/agency/rules",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/agency/score",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/agency/transcript-study",
+      "source": "src/api/routes/content-agency-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/ai-complete",
+      "source": "src/api/routes/internal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/anthropic-enabled",
+      "source": "src/api/routes/internal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/action/:name",
+      "source": "src/portal/action-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/agents",
+      "source": "src/portal/intelligence-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/audit-trail",
+      "source": "src/portal/admin-data-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/billing/nexus-points/packages",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/books",
+      "source": "src/portal/content-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/api/books",
+      "source": "src/portal/content-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels",
+      "source": "src/portal/content-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/channels/:id",
+      "source": "src/portal/content-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/api/chat/diagnostics",
+      "source": "src/portal/chat-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/content-knowledge",
+      "source": "src/portal/content-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cost-by-domain",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/domain-routing",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/domain-routing/toggle",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/error-distribution",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/errors",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/founders",
+      "source": "src/portal/founder-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/founders",
+      "source": "src/portal/founder-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/founders/:email",
+      "source": "src/portal/founder-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/invite-codes",
+      "source": "src/portal/invite-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/invite-codes",
+      "source": "src/portal/invite-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/invite-codes/:code",
+      "source": "src/portal/invite-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/model-config",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model-config",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/model-config",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model-intelligence",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notification-preferences",
+      "source": "src/portal/document-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications",
+      "source": "src/portal/document-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/operator-alerts",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/operator-alerts/:id/ack",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/operator-alerts/:id/resolve",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/operator-alerts/:id/retry-delivery",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/override/sprint",
+      "source": "src/portal/content-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/api/pipeline",
+      "source": "src/portal/intelligence-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/pipeline/metrics",
+      "source": "src/portal/intelligence-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/plans",
+      "source": "src/portal/plan-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/plans/:planId",
+      "source": "src/portal/plan-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/portal/eval-history",
+      "source": "src/portal/eval-history-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/portal/eval-history",
+      "source": "src/portal/eval-history-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/provider-health",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/provider-stats",
+      "source": "src/portal/provider-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/quality-scores",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/reports",
+      "source": "src/portal/document-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/secretary-metrics",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/settings",
+      "source": "src/portal/settings-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings",
+      "source": "src/portal/settings-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/settings",
+      "source": "src/portal/settings-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/signals",
+      "source": "src/portal/intelligence-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/signals/:id/dismiss",
+      "source": "src/portal/intelligence-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/signals/ranked",
+      "source": "src/portal/intelligence-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills",
+      "source": "src/portal/skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/:name/disable",
+      "source": "src/portal/skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/:name/enable",
+      "source": "src/portal/skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/:name/subskills/:sub/disable",
+      "source": "src/portal/skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/:name/subskills/:sub/enable",
+      "source": "src/portal/skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/toggle",
+      "source": "src/portal/skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/snapshot",
+      "source": "src/portal/snapshot-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/spend-by-provider",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/task-metrics",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/training-generation-metrics",
+      "source": "src/portal/operations-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/usage/summary",
+      "source": "src/portal/snapshot-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/activate",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/ai-budget",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/billing/nexus-points/stripe-checkout",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/chat-diagnostics",
+      "source": "src/portal/chat-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/cooking/meal-plan/substitutions/apply",
+      "source": "src/portal/cooking-routes.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/cooking/pantry",
+      "source": "src/portal/cooking-routes.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/cooking/pantry",
+      "source": "src/portal/cooking-routes.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/users/:userId/cooking/pantry/:itemId",
+      "source": "src/portal/cooking-routes.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/cooking/preferences",
+      "source": "src/portal/cooking-routes.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/cooking/preferences",
+      "source": "src/portal/cooking-routes.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/data-summary",
+      "source": "src/portal/admin-data-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/decision-center/dashboard",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/decision-center/decisions",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/decision-center/decisions/:decisionId",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/decision-center/decisions/:decisionId/actions",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/decision-center/notification-reliability",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/decision-center/preferences",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/users/:userId/decision-center/preferences",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/decision-center/summary",
+      "source": "src/portal/decision-center-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/users/:userId/limits",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/:userId/skills",
+      "source": "src/portal/user-skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/users/:userId/skills",
+      "source": "src/portal/user-skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/skills/reset",
+      "source": "src/portal/user-skill-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/users/:userId/suspend",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/users/:userId/tier",
+      "source": "src/portal/user-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/waitlist",
+      "source": "src/portal/waitlist-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/waitlist/:id/approve",
+      "source": "src/portal/waitlist-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/waitlist/:id/invited",
+      "source": "src/portal/waitlist-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/waitlist/:id/reject",
+      "source": "src/portal/waitlist-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/:provider",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/events",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/events/:id/replay",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/stats",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/subscriptions",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/subscriptions",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/webhooks/subscriptions/:id",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/whatsapp",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/whatsapp",
+      "source": "src/portal/webhook-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/app",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/apple-verify",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/artifact-chain/:pipelineId",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/assets/nexus-mark.png",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/auth/forgot-password",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/auth/password-reset",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/billing/apple-notifications",
+      "source": "src/api/router.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/books",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/books",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/books",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/books/:id",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/books/:id",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "PATCH",
+      "path": "/books/:id/notes",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/books/:id/retry",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/bundle-now",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/callback",
+      "source": "src/api/routes/chat-callback-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/capabilities",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/changes",
+      "source": "src/api/routes/sync.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/changes",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/channels",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/channels",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/channels",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/channels/:id",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/channels/:id",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/channels/:id/reanalyze",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/channels/relearn",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/checkout",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/checkout",
+      "source": "src/api/routes/public-billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/claim-website-checkout",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/coach",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/coach/apply",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/coach/report",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/complete",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/confirm",
+      "source": "src/api/routes/waitlist.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/confirm-action",
+      "source": "src/api/routes/chat-message-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/connections",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/creator-profile",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/creator-profile",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "PUT",
+      "path": "/creator-profile",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/current",
+      "source": "src/api/routes/legal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/decision-center",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/decision-logs/:id",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/device-tokens",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/device-tokens/:tokenId",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/disconnect",
+      "source": "src/api/routes/garmin-auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/discover",
+      "source": "src/api/routes/content.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/events",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/events",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/events/:eventId",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/events/:eventId",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/events/:eventId/cancel",
+      "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/events/:eventId/replay",
+      "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/events/dead-letter",
+      "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/exercises",
+      "source": "src/api/routes/training-exercise-media-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/exercises/:exerciseId",
+      "source": "src/api/routes/training-exercise-media-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/export",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/exposures",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/extract",
+      "source": "src/api/routes/attachments.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/filtered",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/focus-blocks",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/focus-conflict-check",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/focus-recommendation",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/handled",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "source": "src/portal/health-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/health/detailed",
+      "source": "src/portal/health-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/historical-comparison",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/history",
+      "source": "src/api/routes/chat-history-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/history",
+      "source": "src/api/routes/chat-history-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/history",
+      "source": "src/api/routes/training-analytics-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/home",
+      "source": "src/api/routes/content.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/home",
+      "source": "src/api/routes/dashboard.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/home",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/ideas",
+      "source": "src/api/routes/content-pipeline-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/inbox",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/inbox/email",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/initiate",
+      "source": "src/api/routes/oauth-initiate.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/intelligence",
+      "source": "src/api/routes/content-intelligence-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/intelligence/detail",
+      "source": "src/api/routes/content-intelligence-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/intents",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/intents",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/intents/fixtures/:sourceSkill",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/intents/fixtures/:sourceSkill",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/invoices/:id/file",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/:jobId/cancel",
+      "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/jobs/:jobId/replay",
+      "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/dead-letter",
+      "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/landing-preview",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/language",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/latest",
+      "source": "src/api/routes/health-data.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/latest",
+      "source": "src/api/routes/reports.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/learned-patterns",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/lifecycle",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/lifecycle",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/links",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/links",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/links/:id",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/list/:listId",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/lists",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/lists",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/lists/:listId",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/load-snapshot",
+      "source": "src/api/routes/training-analytics-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/login",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/login",
+      "source": "src/api/routes/garmin-auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/login/email",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/logout",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/logout-all",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/me",
+      "source": "src/api/routes/audit-trail.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/me",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "DELETE",
+      "path": "/meal-plan",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/meal-plan",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/meal-plan",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/meal-plan/create-prep-event",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/meal-plan/substitutions/apply",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/meal-plan/substitutions/suggest",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/message",
+      "source": "src/api/routes/chat-message-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/monthly-summary",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/nexus-points/stripe-checkout",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/notifications/:id",
+      "source": "src/api/routes/content-notification-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/oauth/apple/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/fitbit/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/google/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/notion/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/outlook/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/strava/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/todoist/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/oauth/whoop/callback",
+      "source": "src/portal/oauth-routes.ts",
+      "owner": "security"
+    },
+    {
+      "method": "DELETE",
+      "path": "/override",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/override",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/overview",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/pantry",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/pantry/items",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "DELETE",
+      "path": "/pantry/items/:id",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/pantry/items/:id",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "PATCH",
+      "path": "/pantry/items/:id",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/parse-receipt",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/password-reset/confirm",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/password-reset/request",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/pending",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/performance",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/performance",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/performance",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/performance-summary",
+      "source": "src/api/routes/internal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/pillars",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/pillars",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/pillars/:id",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "PATCH",
+      "path": "/pillars/:id",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/pipeline",
+      "source": "src/api/routes/content-pipeline-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/pipeline/:id/advance",
+      "source": "src/api/routes/content-pipeline-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/plan/active-revision",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/cancel",
+      "source": "src/api/routes/training-plan-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/candidates",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/capacity-context/refresh",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/generate",
+      "source": "src/api/routes/training-plan-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/preview",
+      "source": "src/api/routes/training-plan-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/plan/revision-capabilities",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/plan/revisions/:revisionId",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/revisions/:revisionId/edit-preview",
+      "source": "src/api/routes/training-plan-revision-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/plan/sync-calendar",
+      "source": "src/api/routes/training-plan-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/plan/weeks",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/portal",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/portal",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/preferences",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/preferences",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/preferences",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/preferences",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "PUT",
+      "path": "/preferences",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/preferences",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/preferences/suppress-type",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/preferences/suppress-type",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/preferences/suppressions",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/privacy",
+      "source": "src/api/routes/legal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/profile",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "GET",
+      "path": "/profile",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/profile",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "PATCH",
+      "path": "/profile/:type/field",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/profile/detail",
+      "source": "src/api/routes/onboarding.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/progression/cardio",
+      "source": "src/api/routes/training-analytics-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/progression/strength",
+      "source": "src/api/routes/training-analytics-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/project",
+      "source": "src/api/routes/summaries.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/provenance",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/provenance/review-pack",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/provider-preferences",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PATCH",
+      "path": "/provider-preferences",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/providers",
+      "source": "src/api/routes/wearable.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/public-status",
+      "source": "src/portal/health-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/push-preferences",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/push-preferences",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/push-preferences",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "DELETE",
+      "path": "/push-token",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/push-token",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/radar-preferences",
+      "source": "src/api/routes/content-topic-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "PUT",
+      "path": "/radar-preferences",
+      "source": "src/api/routes/content-topic-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/radar/feedback",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/radar/feedback",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/radar/feedback",
+      "source": "src/api/routes/content-creator-profile-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/range",
+      "source": "src/api/routes/usage.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/read-all",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/readiness",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/readiness",
+      "source": "src/api/routes/wearable.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/reauth",
+      "source": "src/api/routes/garmin-auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/recipes",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/recipes",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "DELETE",
+      "path": "/recipes/:id",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "GET",
+      "path": "/recipes/:id",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "PATCH",
+      "path": "/recipes/:id",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/recompute",
+      "source": "src/api/routes/plan.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/refresh",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/apple",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/apple/finish",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/apple/start",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/email",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/google",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/google/finish",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/register/google/start",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/reliability-dashboard",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/reliability-events",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/report-usage",
+      "source": "src/api/routes/internal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/research-artifacts/:id",
+      "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/reuse-history",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/scan-now",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/scraper-mfa-reply",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/script",
+      "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/script/expand",
+      "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/script/research-refresh",
+      "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/script/rewrite",
+      "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/scripts/recent",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/send-verification",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/sessions/:id/reflow-confirm",
+      "source": "src/api/routes/training-plan-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/sessions/:id/reflow-preview",
+      "source": "src/api/routes/training-plan-routes.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/shopping-list",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/shopping-list/generate",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "PATCH",
+      "path": "/shopping-list/items/:index",
+      "source": "src/api/routes/cooking.ts",
+      "owner": "cooking"
+    },
+    {
+      "method": "POST",
+      "path": "/skip",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/sleep",
+      "source": "src/api/routes/wearable.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/snapshot",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/source-packages/:id",
+      "source": "src/api/routes/content-script-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "source": "src/api/routes/waitlist.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/status",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/status",
+      "source": "src/api/routes/garmin-auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/status",
+      "source": "src/api/routes/settings.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/stripe",
+      "source": "src/api/routes/webhooks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/summary",
+      "source": "src/api/routes/decisions.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/summary",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/summary",
+      "source": "src/api/routes/wearable.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/sync",
+      "source": "src/api/routes/health-data.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/sync/status",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/taste-profile",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/tax/annual-summary",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/tax/calculate",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "GET",
+      "path": "/tax/events",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/tax/events/:month/pay",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "GET",
+      "path": "/terms",
+      "source": "src/api/routes/legal.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/today",
+      "source": "src/api/routes/calendar.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/today",
+      "source": "src/api/routes/plan.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/today",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/today",
+      "source": "src/api/routes/usage.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/today/keep-original",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "POST",
+      "path": "/todoist",
+      "source": "src/api/routes/webhooks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/topics",
+      "source": "src/api/routes/content-topic-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/topics",
+      "source": "src/api/routes/content-topic-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/topics/:feedbackId/feedback",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "DELETE",
+      "path": "/topics/:id",
+      "source": "src/api/routes/content-topic-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "PATCH",
+      "path": "/topics/:id",
+      "source": "src/api/routes/content-topic-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/topics/generate",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/topics/pending",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/transactions",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/transactions",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "DELETE",
+      "path": "/transactions/:id",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "PATCH",
+      "path": "/transactions/:id",
+      "source": "src/api/routes/finance.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "GET",
+      "path": "/unread-count",
+      "source": "src/api/routes/notifications.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/usage",
+      "source": "src/api/routes/billing.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/user",
+      "source": "src/portal/static-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/variant-feedback",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/vendors",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/vendors",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "DELETE",
+      "path": "/vendors/:id",
+      "source": "src/api/routes/invoices.ts",
+      "owner": "finance"
+    },
+    {
+      "method": "POST",
+      "path": "/verify",
+      "source": "src/api/routes/garmin-auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "POST",
+      "path": "/verify-email",
+      "source": "src/api/routes/auth.ts",
+      "owner": "security"
+    },
+    {
+      "method": "GET",
+      "path": "/versions",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/versions",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/versions/:skillId",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/versions/:skillId/:version/activate",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/versions/:skillId/:version/status",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/versions/:skillId/history",
+      "source": "src/api/routes/skills.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/voice-dna",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/voice-dna",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/voice-dna",
+      "source": "src/api/routes/content-reference-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "PATCH",
+      "path": "/voice-dna/:id",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/voice-dna/synthesize",
+      "source": "src/api/routes/content-admin-write.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/week",
+      "source": "src/api/routes/plan.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/week",
+      "source": "src/api/routes/training.ts",
+      "owner": "training"
+    },
+    {
+      "method": "GET",
+      "path": "/week/explain",
+      "source": "src/api/routes/plan.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/weekly-package",
+      "source": "src/api/routes/content-learning-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/workflow/:id",
+      "source": "src/api/routes/content-editorial-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow/:id/actions",
+      "source": "src/api/routes/content-editorial-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow/:id/approval",
+      "source": "src/api/routes/content-editorial-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow/:id/repurpose",
+      "source": "src/api/routes/content-editorial-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "POST",
+      "path": "/workflow/:id/source-review",
+      "source": "src/api/routes/content-editorial-routes.ts",
+      "owner": "content"
+    },
+    {
+      "method": "GET",
+      "path": "/working-set",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    }
+  ],
+  "migrations": {
+    "count": 222,
+    "latest": "migrations/231_training_m4_capacity_snapshots.sql",
+    "digest": "14a1043695e5da02e291ecd08159e93a272111d4764f73cadb5f26ece246958a",
+    "files": [
+      "migrations/001_initial.sql",
+      "migrations/002_shared_memory.sql",
+      "migrations/003_saved_ideas.sql",
+      "migrations/004_invoice_filings.sql",
+      "migrations/005_indexes.sql",
+      "migrations/006_content_engine.sql",
+      "migrations/007_api_usage.sql",
+      "migrations/008_api_cache.sql",
+      "migrations/008_email_log.sql",
+      "migrations/009_api_usage_provider.sql",
+      "migrations/009_job_history.sql",
+      "migrations/010_invoice_queue.sql",
+      "migrations/011_content_references.sql",
+      "migrations/012_video_transcripts.sql",
+      "migrations/013_content_workflow.sql",
+      "migrations/014_missing_indexes.sql",
+      "migrations/015_agent_mesh.sql",
+      "migrations/016_unify_idea_storage.sql",
+      "migrations/017_pipeline_publish.sql",
+      "migrations/018_autoresearch.sql",
+      "migrations/019_installed_skills.sql",
+      "migrations/020_skill_tables.sql",
+      "migrations/021_error_log.sql",
+      "migrations/022_finance_tables.sql",
+      "migrations/022_webhook_events.sql",
+      "migrations/023_fitness_training_plans.sql",
+      "migrations/023_onboarding.sql",
+      "migrations/024_cooking_tables.sql",
+      "migrations/024_usage_metering.sql",
+      "migrations/025_finance_encryption.sql",
+      "migrations/026_task_execution_metrics.sql",
+      "migrations/027_quality_scores.sql",
+      "migrations/028_kv_store.sql",
+      "migrations/029_user_data_isolation.sql",
+      "migrations/030_users.sql",
+      "migrations/031_user_oauth.sql",
+      "migrations/032_user_skills.sql",
+      "migrations/033_audit_trail.sql",
+      "migrations/034_readiness_scores.sql",
+      "migrations/035_apple_health_data.sql",
+      "migrations/036_invite_skill_presets.sql",
+      "migrations/037_fix_data_isolation.sql",
+      "migrations/038_ios_devices.sql",
+      "migrations/039_unified_task_store.sql",
+      "migrations/040_waitlist.sql",
+      "migrations/041_client_errors.sql",
+      "migrations/042_unified_fks.sql",
+      "migrations/043_integration_health.sql",
+      "migrations/044_audit_trail_retention.sql",
+      "migrations/045_skill_tiers.sql",
+      "migrations/046_training_signals.sql",
+      "migrations/047_content_topics.sql",
+      "migrations/048_config_pillars.sql",
+      "migrations/049_apple_health_data.sql",
+      "migrations/050_subscriptions.sql",
+      "migrations/051_multi_auth_users.sql",
+      "migrations/052_email_verification.sql",
+      "migrations/053_native_tasks.sql",
+      "migrations/054_garmin_user_tokens.sql",
+      "migrations/055_config_seeds.sql",
+      "migrations/056_content_user_isolation.sql",
+      "migrations/057_full_user_isolation.sql",
+      "migrations/058_composite_unique_constraints.sql",
+      "migrations/059_content_learning_store.sql",
+      "migrations/060_signal_ranking.sql",
+      "migrations/061_content_notifications.sql",
+      "migrations/062_report_documents.sql",
+      "migrations/063_push_preferences.sql",
+      "migrations/064_founders.sql",
+      "migrations/065_chat_messages.sql",
+      "migrations/066_ephemeral_action_state.sql",
+      "migrations/067_fiscal_collection_profiles.sql",
+      "migrations/068_garmin_sessions.sql",
+      "migrations/069_plan_quota_rebalance.sql",
+      "migrations/070_mesh_priority.sql",
+      "migrations/071_content_radar_preferences.sql",
+      "migrations/072_recipe_nutrition.sql",
+      "migrations/073_content_owner_scope.sql",
+      "migrations/074_content_script_packaging_lineage.sql",
+      "migrations/075_plan_configs.sql",
+      "migrations/076_operator_alerts.sql",
+      "migrations/077_operator_alert_delivery.sql",
+      "migrations/078_content_topic_secretary_artifacts.sql",
+      "migrations/079_training_session_description.sql",
+      "migrations/080_training_session_preferred_time_unavailable.sql",
+      "migrations/081_training_agenda_event_ownership.sql",
+      "migrations/082_training_session_identity_shape_hash.sql",
+      "migrations/083_secretary_agenda_ledger.sql",
+      "migrations/084_chat_tenant_scope.sql",
+      "migrations/085_chat_message_lifecycle.sql",
+      "migrations/086_chat_callback_scope.sql",
+      "migrations/087_skill_version_registry.sql",
+      "migrations/088_skill_memory_foundation.sql",
+      "migrations/089_content_tenant_privacy_scope.sql",
+      "migrations/090_content_domain_ontology.sql",
+      "migrations/091_content_reference_provenance_integrity.sql",
+      "migrations/092_content_lifecycle_editorial_workflow.sql",
+      "migrations/093_content_radar_opportunity_engine.sql",
+      "migrations/094_content_duplicate_novelty_reuse.sql",
+      "migrations/095_content_creation_production_candidate_version.sql",
+      "migrations/096_content_eval_history.sql",
+      "migrations/097_reminders_agenda_item_link.sql",
+      "migrations/098_secretary_decision_explanation.sql",
+      "migrations/099_training_agenda_ownership_tenant_scope.sql",
+      "migrations/100_agent_signals_tenant_scope.sql",
+      "migrations/101_shared_memory_history.sql",
+      "migrations/102_cooking_tenant_scope_and_intelligence.sql",
+      "migrations/103_cooking_intelligence_candidate_version.sql",
+      "migrations/104_cooking_pantry_items.sql",
+      "migrations/105_cooking_preference_memory_candidate.sql",
+      "migrations/106_cooking_cross_skill_context_candidate.sql",
+      "migrations/107_apple_sign_in_nonce_replay_guard.sql",
+      "migrations/108_email_verification_attempt_cap.sql",
+      "migrations/109_password_reset_tokens.sql",
+      "migrations/110_auth_hardening_refresh_hash_and_lockout.sql",
+      "migrations/111_content_creator_profile.sql",
+      "migrations/112_content_radar_feedback.sql",
+      "migrations/113_secretary_notification_orchestrator.sql",
+      "migrations/114_event_backbone_readmodels_delta_sync.sql",
+      "migrations/115_event_outbox_canceled_status.sql",
+      "migrations/116_chat_reasoning_engine_v1.sql",
+      "migrations/117_api_cache_expires_key_index.sql",
+      "migrations/118_perf_indexes_daily_context_audit.sql",
+      "migrations/119_decision_center_facade.sql",
+      "migrations/120_decision_center_logic_v2.sql",
+      "migrations/121_decision_intent_context.sql",
+      "migrations/122_content_learned_patterns_tenant_unique.sql",
+      "migrations/123_decision_quality_gate_metrics.sql",
+      "migrations/124_tenant_scope_logging_tables.sql",
+      "migrations/125_notification_dedupe_unique.sql",
+      "migrations/126_secretary_reasoning_trail.sql",
+      "migrations/127_training_plan_generation_idempotency.sql",
+      "migrations/128_content_agency.sql",
+      "migrations/129_content_agency_pipeline_handoff.sql",
+      "migrations/130_chat_action_runs.sql",
+      "migrations/131_chat_pending_actions.sql",
+      "migrations/132_chat_action_telemetry.sql",
+      "migrations/133_chat_action_hybrid_hardening.sql",
+      "migrations/134_chat_action_shadow_prediction_hash.sql",
+      "migrations/135_alert_channel_smoke_runs.sql",
+      "migrations/136_finance_transaction_soft_delete.sql",
+      "migrations/137_home_orchestration_focus.sql",
+      "migrations/138_finance_tenant_id.sql",
+      "migrations/139_cooking_tenant_id_not_null.sql",
+      "migrations/140_training_tenant_id.sql",
+      "migrations/141_cooking_meal_plan_tenant_uniques.sql",
+      "migrations/144_finance_money_to_cents.sql",
+      "migrations/145_finance_tax_pt_invoice_code.sql",
+      "migrations/146_finance_eur_tenant_rebuild.sql",
+      "migrations/147_cost_guardrail_sqlite_locks.sql",
+      "migrations/148_beta_registry_stripe_checkout.sql",
+      "migrations/149_content_token_reduction_artifacts.sql",
+      "migrations/150_nexus_points_usage_limits.sql",
+      "migrations/151_nexus_points_settlement_hardening.sql",
+      "migrations/152_nexus_points_canonical_tx_id.sql",
+      "migrations/153_decision_center_explanations.sql",
+      "migrations/154_training_operation_locks.sql",
+      "migrations/155_chatv2_completion_evidence.sql",
+      "migrations/156_chatv2_completion_evidence_source.sql",
+      "migrations/157_chatv2_deterministic_read_evidence.sql",
+      "migrations/158_chatv2_write_evidence.sql",
+      "migrations/159_chatv2_cloud_allowlist_evidence.sql",
+      "migrations/160_chatv2_legacy_retirement_evidence.sql",
+      "migrations/161_chat_core_v2_trace_spans.sql",
+      "migrations/172_chat_v2_trace_spans_expires_at.sql",
+      "migrations/173_chat_v2_auto_revert_decisions.sql",
+      "migrations/174_chat_v2_gate_metrics.sql",
+      "migrations/177_chat_v2_autorevert_counters.sql",
+      "migrations/178_chat_core_v2_model_audit.sql",
+      "migrations/179_chat_v2_fallback_attribution_counter.sql",
+      "migrations/180_plan_adaptation_revision.sql",
+      "migrations/181_chat_eval_history.sql",
+      "migrations/182_chat_core_v2_memory.sql",
+      "migrations/183_chat_core_v2_command_events.sql",
+      "migrations/184_chat_core_v2_human_reviews.sql",
+      "migrations/185_chat_core_v2_online_eval_samples.sql",
+      "migrations/186_training_plan_adaptations.sql",
+      "migrations/187_completion_feedback_v2.sql",
+      "migrations/188_athlete_readiness_and_health_events.sql",
+      "migrations/189_coach_plan_policy.sql",
+      "migrations/190_athlete_session_preferences.sql",
+      "migrations/191_travel_windows_and_equipment_overrides.sql",
+      "migrations/192_local_request_units.sql",
+      "migrations/193_script_generation_runs.sql",
+      "migrations/194_classify_shadow_runs.sql",
+      "migrations/195_decision_lifecycle_events.sql",
+      "migrations/196_decision_metrics_daily.sql",
+      "migrations/197_decision_active_expiry_index.sql",
+      "migrations/198_decision_type_suppressions.sql",
+      "migrations/199_drop_stale_training_agenda_unique_index.sql",
+      "migrations/200_content_radar_phase0_rollout_guards.sql",
+      "migrations/201_content_reference_link_grounded_defaults.sql",
+      "migrations/202_user_legal_consents.sql",
+      "migrations/203_apple_health_encrypted_payload.sql",
+      "migrations/204_invoice_storage_and_fiscal_send_history.sql",
+      "migrations/205_secretary_reminder_schema_hardening.sql",
+      "migrations/206_chat_action_skill_tier_aliases.sql",
+      "migrations/207_training_tenant_scoped_idempotency_and_locks.sql",
+      "migrations/208_athlete_health_signals_tenant_scope.sql",
+      "migrations/209_training_catalog_foundation.sql",
+      "migrations/210_decision_recipe_suppressions.sql",
+      "migrations/211_notification_center_priority_score.sql",
+      "migrations/212_notification_reliability_events.sql",
+      "migrations/213_notification_center_terminal_dedupe_index.sql",
+      "migrations/214_travel_windows_tenant_scope.sql",
+      "migrations/215_training_agenda_ownership_sync_metadata.sql",
+      "migrations/216_offline_first_tasks.sql",
+      "migrations/217_task_changes_cursor_index.sql",
+      "migrations/218_task_changes_change_seq.sql",
+      "migrations/219_notification_center_actionability_badge.sql",
+      "migrations/220_secretary_agenda_provider_sync_failure_count.sql",
+      "migrations/221_reprice_unresolved_openai_snapshots.sql",
+      "migrations/222_channel_learner_relearn_cost_controls.sql",
+      "migrations/223_autoresearch_run_fingerprint.sql",
+      "migrations/224_secretary_agenda_sync_fingerprint.sql",
+      "migrations/225_per_user_report_schedule.sql",
+      "migrations/226_paid_ai_cost_controls.sql",
+      "migrations/227_decision_flow_v1.sql",
+      "migrations/228_training_plan_revision_v1.sql",
+      "migrations/229_training_exercise_media_v1.sql",
+      "migrations/230_training_adaptation_proposals_v1.sql",
+      "migrations/231_training_m4_capacity_snapshots.sql"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "secretary",
+      "version": "2.0.0",
+      "lifecycle": "active",
+      "owner": "secretary",
+      "requiredTier": "free"
+    },
+    {
+      "id": "triathlon",
+      "version": "3.0.0",
+      "lifecycle": "active",
+      "owner": "training",
+      "requiredTier": "pro"
+    },
+    {
+      "id": "content",
+      "version": "2.0.0",
+      "lifecycle": "active",
+      "owner": "content",
+      "requiredTier": "pro"
+    },
+    {
+      "id": "finance",
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "finance",
+      "requiredTier": "pro"
+    },
+    {
+      "id": "cooking",
+      "version": "1.1.0",
+      "lifecycle": "active",
+      "owner": "cooking",
+      "requiredTier": "pro"
+    },
+    {
+      "id": "connections",
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "connections",
+      "requiredTier": "free"
+    },
+    {
+      "id": "notifications",
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "notifications",
+      "requiredTier": "free"
+    },
+    {
+      "id": "decision_center",
+      "version": "1.0.0",
+      "lifecycle": "active",
+      "owner": "decision-center",
+      "requiredTier": "free"
+    }
+  ],
+  "skills": [
+    {
+      "name": "product-sentinel",
+      "source": ".agents/skills/product-sentinel/SKILL.md",
+      "claude": ".claude/skills/product-sentinel/SKILL.md"
+    },
+    {
+      "name": "release-operator",
+      "source": ".agents/skills/release-operator/SKILL.md",
+      "claude": ".claude/skills/release-operator/SKILL.md"
+    },
+    {
+      "name": "test-audit",
+      "source": ".agents/skills/test-audit/SKILL.md",
+      "claude": ".claude/skills/test-audit/SKILL.md"
+    },
+    {
+      "name": "verifiable-reward-check",
+      "source": ".agents/skills/verifiable-reward-check/SKILL.md",
+      "claude": ".claude/skills/verifiable-reward-check/SKILL.md"
+    }
+  ],
+  "tests": {
+    "files": 934,
+    "policy": "config/test-policy.json",
+    "inventoryArtifact": ".local/test-inventory/test-inventory.json",
+    "topLevelOwners": {
+      "adapters": 3,
+      "agents": 5,
+      "api": 135,
+      "billing": 1,
+      "brand": 4,
+      "cli": 1,
+      "domains": 4,
+      "integration": 2,
+      "lib": 1,
+      "migrations": 8,
+      "portal": 61,
+      "regression": 1,
+      "router": 3,
+      "scope": 1,
+      "scripts": 39,
+      "sdk": 1,
+      "security": 21,
+      "services": 589,
+      "skills": 15,
+      "state": 17,
+      "storage": 1,
+      "tools": 9,
+      "utils": 12
+    }
+  },
+  "documentation": {
+    "count": 65,
+    "files": [
+      ".agents/skills/product-sentinel/SKILL.md",
+      ".agents/skills/release-operator/SKILL.md",
+      ".agents/skills/test-audit/SKILL.md",
+      ".agents/skills/verifiable-reward-check/SKILL.md",
+      ".claude/skills/product-sentinel/SKILL.md",
+      ".claude/skills/release-operator/SKILL.md",
+      ".claude/skills/test-audit/SKILL.md",
+      ".claude/skills/verifiable-reward-check/SKILL.md",
+      "AGENTS.md",
+      "CHANGELOG.md",
+      "CLAUDE.md",
+      "README.md",
+      "content-engine/README.md",
+      "content-engine/SECURITY.md",
+      "docs/DOCS_INDEX.md",
+      "docs/TOKEN-QUOTA-CONTRACT.md",
+      "docs/agents/VERIFIABLE_REWARD_PROTOCOL.md",
+      "docs/engineering/ENGINEERING_STANDARDS_INDEX.md",
+      "docs/engineering/backend-api-contract-standard.md",
+      "docs/engineering/genai-migration-plan.md",
+      "docs/engineering/jwt-rotation-runbook.md",
+      "docs/engineering/offline-first-tasks-architecture.md",
+      "docs/engineering/runtime-and-observability-standard.md",
+      "docs/engineering/security-and-data-isolation-standard.md",
+      "docs/engineering/testing-and-qa-harness-standard.md",
+      "docs/engineering/training-exercise-media-v1-operator-runbook.md",
+      "docs/legal/data-retention.md",
+      "docs/legal/privacy-policy-draft.md",
+      "docs/legal/terms-of-service-draft.md",
+      "docs/local-dev/README.md",
+      "docs/notifications/notification-center-boundary.md",
+      "docs/release/CURRENT_RELEASE_STATE.md",
+      "docs/release/README.md",
+      "docs/release/release-evidence-contract.md",
+      "docs/security/nexus-security-threat-model.md",
+      "docs/security/security-control-matrix.md",
+      "docs/security/security-hardening-implementation-status.md",
+      "docs/security/security-operations-runbook.md",
+      "knowledge/skills/content-creation-SKILL.md",
+      "knowledge/skills/nexushub-adaptation-guide.md",
+      "knowledge/skills/secretary-SKILL.md",
+      "prompts/channel-learner.md",
+      "prompts/chat-action-fixer.md",
+      "prompts/classifier.md",
+      "prompts/content.md",
+      "prompts/cooking.md",
+      "prompts/creator-config.md",
+      "prompts/cross-skill-and-memory.md",
+      "prompts/finance.md",
+      "prompts/secretary.md",
+      "prompts/topic-generation.md",
+      "prompts/triathlon.md",
+      "prompts/triathlon/cycling.md",
+      "prompts/triathlon/gym.md",
+      "prompts/triathlon/running.md",
+      "prompts/triathlon/swim.md",
+      "scripts/cockpit/README.md",
+      "src/services/coach-kernel/knowledge/docs/hybrid-athlete-rules.md",
+      "src/services/coach-kernel/knowledge/docs/llm-tool-contract.md",
+      "src/services/coach-kernel/knowledge/docs/marathon-periodization.md",
+      "src/skills/content/prompts/system.md",
+      "src/skills/cooking/prompts/system.md",
+      "src/skills/finance/prompts/system.md",
+      "src/skills/secretary/prompts/system.md",
+      "src/skills/training/prompts/system.md"
+    ]
+  },
+  "largeAssets": [
+    {
+      "path": "catalog/training/exercise-media/v1/compiled-manifest.json",
+      "bytes": 2397956,
+      "generated": true
+    },
+    {
+      "path": "knowledge/1,000 Viral Hooks (PBL) (1).pdf",
+      "bytes": 2149703,
+      "generated": false
+    },
+    {
+      "path": "catalog/training/exercise-media/v1/review-bundle.draft.json",
+      "bytes": 1586519,
+      "generated": true
+    },
+    {
+      "path": "catalog/training/exercise-media/v1/approval-ledger.json",
+      "bytes": 1196154,
+      "generated": true
+    },
+    {
+      "path": "catalog/training/exercise-media/v1/instruction-scaffolds.draft.json",
+      "bytes": 667549,
+      "generated": true
+    },
+    {
+      "path": "catalog/training/exercise-media/v1/instructions.json",
+      "bytes": 510375,
+      "generated": false
+    },
+    {
+      "path": "src/services/decision-center.ts",
+      "bytes": 493522,
+      "generated": false
+    },
+    {
+      "path": "catalog/training/exercise-media/v1/accessibility-scaffolds.draft.json",
+      "bytes": 385997,
+      "generated": true
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 339725,
+      "generated": false
+    },
+    {
+      "path": "catalog/training/exercise-media/v1/media-localizations.json",
+      "bytes": 315882,
+      "generated": false
+    },
+    {
+      "path": "src/portal/portal.html",
+      "bytes": 312168,
+      "generated": false
+    },
+    {
+      "path": "__tests__/api/chat-routes.test.ts",
+      "bytes": 271364,
+      "generated": false
+    },
+    {
+      "path": "__tests__/services/decision-center.test.ts",
+      "bytes": 265572,
+      "generated": false
+    }
+  ]
+}

@@ -1,0 +1,1035 @@
+{
+  "schema": "nexus.agent-job-manifest.v1",
+  "version": "2026-07-15",
+  "jobs": [
+    {
+      "id": "amazon_collection",
+      "name": "Amazon Collection",
+      "schedule": "15 9 1 * *",
+      "domain": "invoices",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "autoresearch",
+      "name": "Autoresearch",
+      "schedule": "19 1 * * 0",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "channel_relearn",
+      "name": "Channel Re-Learn",
+      "schedule": "37 3 * * 0",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "chat_action_fixer_worker",
+      "name": "Chat Action Fixer Worker",
+      "schedule": "* * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "chat_action_plan_expiry",
+      "name": "Chat Action Plan Expiry",
+      "schedule": "15 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "chat_v2_auto_revert_eval",
+      "name": "Chat Core v2 Auto-Revert Eval",
+      "schedule": "*/5 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "chat_v2_gate_check",
+      "name": "Chat Core v2 Shadow Gate Check",
+      "schedule": "37 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "classify_shadow_prune",
+      "name": "Classify Shadow Retention Prune",
+      "schedule": "17 4 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "conflict_detection",
+      "name": "Conflict Detection",
+      "schedule": "30 19 * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "daily_briefing",
+      "name": "Morning Briefing",
+      "schedule": "*/5 * * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "db_backup",
+      "name": "Database Backup",
+      "schedule": "backupCron",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "db_restore_test",
+      "name": "Weekly Restore Test",
+      "schedule": "0 4 * * 0",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "decision_daily_attention",
+      "name": "Decision Daily Attention Materialization",
+      "schedule": "12 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "decision_expiry",
+      "name": "Decision Expiry Sweep",
+      "schedule": "*/10 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "decision_handled_history_backfill",
+      "name": "Decision Handled History Backfill",
+      "schedule": "22,52 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "decision_ledger_retention_prune",
+      "name": "Decision Ledger Retention Prune",
+      "schedule": "40 4 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "decision_metrics_rollup",
+      "name": "Decision Metrics Daily Rollup",
+      "schedule": "15 0 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "decision_source_supersession",
+      "name": "Decision Source Supersession",
+      "schedule": "*/15 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "end_of_day",
+      "name": "End-of-Day Summary",
+      "schedule": "*/5 * * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "event_backbone_cleanup",
+      "name": "Event Backbone Cleanup",
+      "schedule": "10 0 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "event_backbone_worker",
+      "name": "Event Backbone Worker",
+      "schedule": "* * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "expire_signals",
+      "name": "Signal Cleanup",
+      "schedule": "0 * * * *",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "fiscal_bundle",
+      "name": "Fiscal Bundle Delivery",
+      "schedule": "10 8 * * *",
+      "domain": "invoices",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "fossa_email",
+      "name": "Fossa Email",
+      "schedule": "30 7 * * 1",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "friday_weekly",
+      "name": "Friday Weekly Package",
+      "schedule": "41 18 * * 5",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "garmin_coach",
+      "name": "Garmin Coach",
+      "schedule": "*/5 * * * *",
+      "domain": "triathlon",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "garmin_keepalive",
+      "name": "Garmin Keep-Alive",
+      "schedule": "*/30 * * * *",
+      "domain": "triathlon",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "garmin_tenant_isolation_watcher",
+      "name": "Garmin Tenant Isolation Watcher",
+      "schedule": "45 6 * * *",
+      "domain": "triathlon",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "integration_health",
+      "name": "Integration Health Probes",
+      "schedule": "*/15 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "invoice_collection",
+      "name": "Invoice Collection",
+      "schedule": "0 9 1 * *",
+      "domain": "invoices",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "invoice_queue",
+      "name": "Invoice Queue Flush",
+      "schedule": "*/15 * * * *",
+      "domain": "invoices",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "midnight_cleanup",
+      "name": "Midnight Cleanup",
+      "schedule": "0 0 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "nexus_points_expiry",
+      "name": "Nexus Points Expiry Sweep",
+      "schedule": "0 4 * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "notification_release",
+      "name": "Notification delayed/digest release",
+      "schedule": "*/15 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "operator_alert_delivery",
+      "name": "Operator Alert Delivery",
+      "schedule": "* * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "performance_agent",
+      "name": "Performance Intel",
+      "schedule": "0 6 * * 0",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "pipeline_agent",
+      "name": "Pipeline Tracker",
+      "schedule": "0 20 * * *",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "reaction_radar",
+      "name": "Reaction Radar",
+      "schedule": "0 8,14,20 * * *",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "reminders",
+      "name": "Reminders",
+      "schedule": "* * * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "secretary_agenda_sync",
+      "name": "Secretary Agenda → Calendar Sync",
+      "schedule": "*/5 * * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "seo_agent",
+      "name": "SEO Tracking",
+      "schedule": "0 6 * * 1",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "shared_list",
+      "name": "Shared List Check",
+      "schedule": "*/5 * * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "task_sync",
+      "name": "Task Provider Sync",
+      "schedule": "*/15 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "thursday_youtube",
+      "name": "Thursday YT Topic",
+      "schedule": "23 9 * * 4",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "training_plan_adjust",
+      "name": "Training Plan Auto-Adjust",
+      "schedule": "0 19 * * 0",
+      "domain": "triathlon",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "tuesday_reels",
+      "name": "Tuesday Reel Topics",
+      "schedule": "17 9 * * 2",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "uber_collection",
+      "name": "Uber Collection",
+      "schedule": "30 9 1 * *",
+      "domain": "invoices",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "voice_evolution",
+      "name": "Voice Evolution",
+      "schedule": "0 4 1 * *",
+      "domain": "content",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    },
+    {
+      "id": "weekly_review",
+      "name": "Weekly Review",
+      "schedule": "*/5 * * * *",
+      "domain": "secretary",
+      "lifecycle": "active",
+      "tenantScope": "explicit",
+      "lockPolicy": "single-job-tenant",
+      "retryPolicy": "bounded-backoff",
+      "providerRouting": "shared-router",
+      "inputFingerprint": {
+        "unchangedInputProviderCalls": 0
+      },
+      "audit": {
+        "cost": true,
+        "inputs": "redacted",
+        "outcome": true
+      },
+      "outputValidation": "schema-and-scope",
+      "notifications": "policy-routed"
+    }
+  ]
+}

@@ -10,10 +10,8 @@
 # the operator otherwise has to remember:
 #
 #   1. Prune smoke-evidence files older than 60 days
-#   2. Refresh release-identity.{json,md} from the current tree
-#   3. Refresh workspace-docs mirror (engine/docs/_workspace-mirror)
-#   4. Cannot-skip gate dashboard (verifies every gate is wired)
-#   5. Print docs:audit baseline (advisory)
+#   2. Cannot-skip gate dashboard (verifies every gate is wired)
+#   3. Enforce documentation policy
 #
 # Usage:
 #   scripts/release-pipeline-housekeeping.sh                # dry-run (default)
@@ -65,40 +63,8 @@ else
 fi
 log ""
 
-# ── 2. Refresh release-identity ───────────────────────
-log "2. Refresh release-identity.{json,md}"
-if [ -x "$LOCAL_DIR/scripts/release-identity.sh" ]; then
-  if [ "$APPLY" = true ]; then
-    "$LOCAL_DIR/scripts/release-identity.sh" --persist --quiet \
-      && log "   ✅ persisted" \
-      || { log "   ❌ persist failed"; OVERALL_RC=1; }
-  else
-    log "   (dry-run) would re-persist docs/release/release-identity.{json,md}"
-  fi
-else
-  log "   ⚠️ scripts/release-identity.sh not found — skipping"
-fi
-log ""
-
-# ── 3. Workspace-docs mirror refresh ───────────────────
-log "3. Workspace-docs mirror refresh (ENG-EXC-O8)"
-if [ -x "$LOCAL_DIR/scripts/workspace-docs-mirror.sh" ]; then
-  if [ "$APPLY" = true ]; then
-    "$LOCAL_DIR/scripts/workspace-docs-mirror.sh" \
-      && log "   ✅ mirror refreshed" \
-      || { log "   ❌ mirror refresh failed"; OVERALL_RC=1; }
-  else
-    "$LOCAL_DIR/scripts/workspace-docs-mirror.sh" --check >/dev/null 2>&1 \
-      && log "   (dry-run) workspace-mirror in sync" \
-      || log "   (dry-run) workspace-mirror has DRIFT — apply to refresh"
-  fi
-else
-  log "   ⚠️ scripts/workspace-docs-mirror.sh not found — skipping"
-fi
-log ""
-
-# ── 4. Cannot-skip gate dashboard ─────────────────────
-log "4. Cannot-skip gate dashboard (ENG-EXC-O3)"
+# ── 2. Cannot-skip gate dashboard ─────────────────────
+log "2. Cannot-skip gate dashboard (ENG-EXC-O3)"
 if [ -x "$LOCAL_DIR/scripts/cannot-skip-gate-dashboard.sh" ]; then
   # Always emit JSON evidence (operator-recoverable). Dashboard verifies
   # every cannot-skip gate fires on its representative file.
@@ -113,21 +79,19 @@ else
 fi
 log ""
 
-# ── 5. docs:audit advisory ─────────────────────────────
-log "5. docs:audit (advisory; informational only)"
+# ── 3. docs:audit enforcement ──────────────────────────
+log "3. docs:audit (enforcing)"
 if [ -f "$LOCAL_DIR/scripts/audit-docs.mjs" ]; then
-  AUDIT_TOTAL=$(NODE_NO_WARNINGS=1 node "$LOCAL_DIR/scripts/audit-docs.mjs" --json 2>/dev/null \
+  AUDIT_TOTAL=$(NODE_NO_WARNINGS=1 node "$LOCAL_DIR/scripts/audit-docs.mjs" --strict --json 2>/dev/null \
     | NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(b).summary.issueCount))}catch(_){process.stdout.write('?')}})" \
-    || echo "?")
+    || { OVERALL_RC=1; echo "?"; })
   log "   docs:audit total: $AUDIT_TOTAL"
 else
   log "   ⚠️ scripts/audit-docs.mjs not found — skipping"
 fi
 log ""
 
-if [ "$APPLY" = false ]; then
-  log "Re-run with --apply to actually prune + persist."
-fi
+if [ "$APPLY" = false ]; then log "Re-run with --apply to prune local evidence."; fi
 log "═══════════════════════════════════════════════"
 log "  🧹 Housekeeping complete (exit $OVERALL_RC)"
 log "═══════════════════════════════════════════════"

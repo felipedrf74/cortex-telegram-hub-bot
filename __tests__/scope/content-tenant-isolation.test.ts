@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -58,21 +54,6 @@ import {
   isDuplicateIdea,
 } from '../../src/services/content-dedup';
 
-function applyMigrations(db: Database.Database): void {
-  db.exec('CREATE TABLE IF NOT EXISTS _migrations (filename TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime(\'now\')))');
-  for (const file of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith('.sql')).sort()) {
-    if (db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) continue;
-    try {
-      db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-    } catch {
-      // Some historical migrations depend on optional product tables. The
-      // content tables under test are created below by the successful content
-      // migrations plus ensureContentTenantScopeColumns().
-    }
-  }
-  ensureContentTenantScopeColumns(db);
-}
 
 function insertScopedContentBundle(userId: number, tenantId: number): { feedbackId: number; pipelineId: number } {
   const feedbackId = Number(testDb.prepare(`
@@ -120,8 +101,7 @@ function insertScopedContentBundle(userId: number, tenantId: number): { feedback
 
 describe('content tenant isolation sweep', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterEach(() => {

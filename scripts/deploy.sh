@@ -178,7 +178,7 @@ restore_deploy_generated_artifacts() {
     return
   fi
 
-  local shadow_parity_report="docs/release/eval-evidence/registry-shadow-parity-latest.json"
+  local shadow_parity_report=".local/release/eval-evidence/registry-shadow-parity-latest.json"
   local status
   if ! status="$(release_git_status_porcelain "$LOCAL_DIR" -- "$shadow_parity_report")"; then
     echo "❌ Could not read git status for generated artifacts. Refusing to deploy."

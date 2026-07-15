@@ -10,6 +10,7 @@ BACKUP_DIR="${2:?backup directory is required}"
 TARGET_VERSION="${3:?target version is required}"
 PM2_BIN="${4:?PM2 binary is required}"
 APP_NAMES_CSV="${5:?PM2 app names are required}"
+PREPARED_RUNTIME_DIR="${6:-}"
 CATALOG_REQUIRED_FROM_VERSION="4.14.217"
 
 catalog_required_for_version() {
@@ -84,6 +85,45 @@ fi
 if [[ ! "$APP_NAMES_CSV" =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]]; then
   echo "invalid PM2 app names" >&2
   exit 1
+fi
+
+if [ -n "$PREPARED_RUNTIME_DIR" ]; then
+  case "$PREPARED_RUNTIME_DIR" in
+    "$BACKUP_DIR"/.runtime-stage-*) ;;
+    *) echo "unsafe prepared runtime directory" >&2; exit 1 ;;
+  esac
+  [ -f "$PREPARED_RUNTIME_DIR/.nexus-runtime-prestage.json" ] || {
+    echo "prepared runtime manifest is missing" >&2
+    exit 1
+  }
+  cleanup_prepared_failure() {
+    local exit_code=$?
+    trap - EXIT
+    if [ "$exit_code" -ne 0 ]; then rm -rf "$PREPARED_RUNTIME_DIR"; fi
+    exit "$exit_code"
+  }
+  trap cleanup_prepared_failure EXIT
+  # Revalidate the live source after writes drain. The prepared runtime is
+  # accepted only if every copied byte still matches the stopped source.
+  "$NODE_BIN" - "$REMOTE_DIR" "$PREPARED_RUNTIME_DIR" <<'NODE'
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const [sourceRoot, preparedRoot] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(path.join(preparedRoot, '.nexus-runtime-prestage.json'), 'utf8'));
+if (manifest.schema !== 'nexus.runtime-backup-prestage.v1' || !Array.isArray(manifest.files)) {
+  throw new Error('prepared runtime manifest schema is invalid');
+}
+for (const entry of manifest.files) {
+  const sourceBody = fs.readFileSync(path.join(sourceRoot, entry.path));
+  const preparedBody = fs.readFileSync(path.join(preparedRoot, entry.path));
+  const digest = (body) => crypto.createHash('sha256').update(body).digest('hex');
+  if (sourceBody.length !== entry.size || preparedBody.length !== entry.size
+      || digest(sourceBody) !== entry.sha256 || digest(preparedBody) !== entry.sha256) {
+    throw new Error(`prepared runtime drift: ${entry.path}`);
+  }
+}
+NODE
 fi
 
 # Independently prove the known database-owning services remain stopped. The
@@ -185,6 +225,7 @@ LISTING="$META_DIR/archive.list"
 cleanup() {
   rm -f "$TMP_ARCHIVE"
   rm -rf "$META_DIR"
+  [ -z "$PREPARED_RUNTIME_DIR" ] || rm -rf "$PREPARED_RUNTIME_DIR"
 }
 trap cleanup EXIT
 
@@ -218,28 +259,40 @@ fi
 [ -d "$REMOTE_DIR/data/garmin-tokens" ] && includes+=("data/garmin-tokens/")
 
 rm -f "$TMP_ARCHIVE"
-tar czf "$TMP_ARCHIVE" \
-  --exclude='content-engine/.env' \
-  --exclude='content-engine/.env.*' \
-  --exclude='content-engine/.venv' \
-  --exclude='content-engine/.venv/*' \
-  --exclude='content-engine/.local' \
-  --exclude='content-engine/.local/*' \
-  --exclude='content-engine/logs' \
-  --exclude='content-engine/logs/*' \
-  --exclude='content-engine/data' \
-  --exclude='content-engine/data/*' \
-  --exclude='content-engine/*.db' \
-  --exclude='content-engine/.git' \
-  --exclude='content-engine/.git/*' \
-  --exclude='content-engine/.codex' \
-  --exclude='content-engine/.codex/*' \
-  --exclude='content-engine/.claude' \
-  --exclude='content-engine/.claude/*' \
-  --exclude='*/__pycache__' \
-  --exclude='*/__pycache__/*' \
-  -C "$REMOTE_DIR" "${includes[@]}" \
-  -C "$META_DIR" ".nexus-backup-manifest.json"
+if [ -n "$PREPARED_RUNTIME_DIR" ]; then
+  install -d -m 700 "$PREPARED_RUNTIME_DIR/data"
+  for database_path in "${database_paths[@]}"; do
+    cp -p "$REMOTE_DIR/$database_path" "$PREPARED_RUNTIME_DIR/$database_path"
+  done
+  if [ -d "$REMOTE_DIR/data/garmin-tokens" ]; then
+    cp -a "$REMOTE_DIR/data/garmin-tokens" "$PREPARED_RUNTIME_DIR/data/garmin-tokens"
+  fi
+  cp -p "$META_DIR/.nexus-backup-manifest.json" "$PREPARED_RUNTIME_DIR/.nexus-backup-manifest.json"
+  tar czf "$TMP_ARCHIVE" -C "$PREPARED_RUNTIME_DIR" "${includes[@]}" ".nexus-backup-manifest.json"
+else
+  tar czf "$TMP_ARCHIVE" \
+    --exclude='content-engine/.env' \
+    --exclude='content-engine/.env.*' \
+    --exclude='content-engine/.venv' \
+    --exclude='content-engine/.venv/*' \
+    --exclude='content-engine/.local' \
+    --exclude='content-engine/.local/*' \
+    --exclude='content-engine/logs' \
+    --exclude='content-engine/logs/*' \
+    --exclude='content-engine/data' \
+    --exclude='content-engine/data/*' \
+    --exclude='content-engine/*.db' \
+    --exclude='content-engine/.git' \
+    --exclude='content-engine/.git/*' \
+    --exclude='content-engine/.codex' \
+    --exclude='content-engine/.codex/*' \
+    --exclude='content-engine/.claude' \
+    --exclude='content-engine/.claude/*' \
+    --exclude='*/__pycache__' \
+    --exclude='*/__pycache__/*' \
+    -C "$REMOTE_DIR" "${includes[@]}" \
+    -C "$META_DIR" ".nexus-backup-manifest.json"
+fi
 chmod 600 "$TMP_ARCHIVE"
 tar tzf "$TMP_ARCHIVE" > "$LISTING"
 
@@ -293,6 +346,7 @@ NODE
 mv -f "$TMP_ARCHIVE" "$ARCHIVE"
 trap - EXIT
 rm -rf "$META_DIR"
+[ -z "$PREPARED_RUNTIME_DIR" ] || rm -rf "$PREPARED_RUNTIME_DIR"
 
 SIZE="$(du -h "$ARCHIVE" | cut -f1)"
 echo "   Backup created ($SIZE, archived version $ARCHIVED_VERSION, catalog: $catalog_present)"
