@@ -698,15 +698,19 @@ describe('changed-critical mutation gate', () => {
       };
     };
     const cases = [
-      { testFile: '__tests__/api/training-plan-generation.test.ts', expectedHistoricalOwners: 2 },
-      { testFile: '__tests__/brand/package-manifest.test.ts', expectedHistoricalOwners: 4 },
+      '__tests__/api/training-plan-generation.test.ts',
+      '__tests__/brand/package-manifest.test.ts',
     ];
+    const expectedHistoricalOwners = new Map([
+      ['__tests__/api/training-plan-generation.test.ts', 2],
+      ['__tests__/brand/package-manifest.test.ts', 4],
+    ]);
 
-    for (const { testFile, expectedHistoricalOwners } of cases) {
+    for (const testFile of cases) {
       const historicalOwners = policy.mutation.cleanupMappings.filter((mapping) => (
         (mapping.replacementTests as string[] | undefined)?.includes(testFile)
       ));
-      expect(historicalOwners, testFile).toHaveLength(expectedHistoricalOwners);
+      expect(historicalOwners, testFile).toHaveLength(expectedHistoricalOwners.get(testFile));
 
       const plan = buildMutationPlan({
         base: 'fixture-base',

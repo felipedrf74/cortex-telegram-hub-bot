@@ -134,6 +134,7 @@ describe('ConfigProvider', () => {
       });
 
       expect(provider.resolve(123456789).app.timezone).toBe('America/Sao_Paulo');
+      expect(provider.getOverrides(123456789)).not.toBeNull();
       expect(provider.resolve('123456789').app.timezone).toBe('America/Sao_Paulo');
       expect(provider.getOverrides('123456789')).not.toBeNull();
       expect(provider.clearOverrides('123456789')).toBe(true);
