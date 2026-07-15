@@ -25,6 +25,7 @@ import {
   analyzeChatContextIntent,
   buildChatPromptContext,
 } from '../../src/services/chat-context-engine';
+import { todayISO } from '../../src/utils/date-parser';
 
 function createTables(): void {
   testDb.exec(`
@@ -135,16 +136,10 @@ function insertMemory(input: {
 }
 
 function insertDailyContext(tenantId: number, userId: number, summary: string): void {
-  const localNow = new Date();
-  const localDate = [
-    localNow.getFullYear(),
-    String(localNow.getMonth() + 1).padStart(2, '0'),
-    String(localNow.getDate()).padStart(2, '0'),
-  ].join('-');
   testDb.prepare(`
     INSERT INTO daily_context_cache (tenant_id, user_id, scope_status, date, context_summary)
     VALUES (?, ?, 'active', ?, ?)
-  `).run(tenantId, userId, localDate, summary);
+  `).run(tenantId, userId, todayISO(), summary);
 }
 
 describe('chat-context-engine', () => {

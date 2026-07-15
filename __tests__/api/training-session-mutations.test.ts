@@ -5,6 +5,7 @@ import {
   resolveTrainingMutationSession,
   type TrainingSessionMutationDeps,
 } from '../../src/api/routes/training-session-mutations';
+import { resolveTrainingDay } from '../../src/services/training-date-utils';
 
 function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): TrainingSessionMutationDeps {
   return {
@@ -14,7 +15,7 @@ function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): Traini
       {
         id: 321,
         plan_id: 44,
-        day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }),
+        day_of_week: resolveTrainingDay().weekdayName,
         status: 'pending',
       },
     ]),
@@ -60,7 +61,7 @@ describe('training-session-mutations', () => {
   );
 
   it('resolves today session from the active week when sessionId is today', () => {
-    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const todayName = resolveTrainingDay().weekdayName;
     const deps = buildDeps({
       getSessionsForWeek: vi.fn(() => [
         { id: 111, plan_id: 44, day_of_week: todayName, status: 'completed' },
@@ -98,7 +99,7 @@ describe('training-session-mutations', () => {
   });
 
   it('treats skipped sessions as unavailable when excludeSkippedSessions is enabled', () => {
-    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const todayName = resolveTrainingDay().weekdayName;
     const deps = buildDeps({
       getSessionsForWeek: vi.fn(() => [
         { id: 111, plan_id: 44, day_of_week: todayName, status: 'completed' },
