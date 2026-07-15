@@ -108,6 +108,9 @@ restart_previous() {
   ssh "$SERVER" bash -s -- "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_RESTART'
 set -euo pipefail
 runtime="$1"; base_dir="$2"; pm2_bin="$3"
+for app in nexus-hub content-engine; do
+  if "$pm2_bin" describe "$app" >/dev/null 2>&1; then "$pm2_bin" delete "$app" >/dev/null; fi
+done
 if [ "$runtime" != "$base_dir" ] && [ -f "$runtime/ecosystem.release.config.js" ]; then
   rm -f "$base_dir/current.next"
   ln -s "$runtime" "$base_dir/current.next"
@@ -115,11 +118,11 @@ if [ "$runtime" != "$base_dir" ] && [ -f "$runtime/ecosystem.release.config.js" 
   previous_sha="$(node -e 'const fs=require("fs");const p=process.argv[1];try{process.stdout.write(JSON.parse(fs.readFileSync(p,"utf8")).runtimeSha||"rollback-unknown")}catch{process.stdout.write("rollback-unknown")}' "$runtime/.complete.json")"
   env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$runtime" NEXUS_RELEASE_BASE_DIR="$base_dir" \
     NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$previous_sha" \
-    "$pm2_bin" startOrReload "$runtime/ecosystem.release.config.js" --update-env
+    "$pm2_bin" start "$runtime/ecosystem.release.config.js" --update-env
 else
   rm -f "$base_dir/current"
   cd "$base_dir"
-  "$pm2_bin" startOrReload ecosystem.config.js --update-env
+  "$pm2_bin" start ecosystem.config.js --update-env
 fi
 REMOTE_RESTART
 }
@@ -168,9 +171,12 @@ release_dir="$1"; base_dir="$2"; pm2_bin="$3"; runtime_sha="$4"
 rm -f "$base_dir/current.next"
 ln -s "$release_dir" "$base_dir/current.next"
 mv -Tf "$base_dir/current.next" "$base_dir/current"
+for app in nexus-hub content-engine; do
+  if "$pm2_bin" describe "$app" >/dev/null 2>&1; then "$pm2_bin" delete "$app" >/dev/null; fi
+done
   env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$release_dir" NEXUS_RELEASE_BASE_DIR="$base_dir" \
   NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$runtime_sha" \
-  "$pm2_bin" startOrReload "$release_dir/ecosystem.release.config.js" --update-env
+  "$pm2_bin" start "$release_dir/ecosystem.release.config.js" --update-env
 backend_ok=false; content_ok=false
   for _ in $(seq 1 15); do
   curl --fail --silent http://127.0.0.1:8200/health >/dev/null && backend_ok=true || true
@@ -261,15 +267,18 @@ done
 rm -rf "$base_dir/data/garmin-tokens"
 [ ! -d "$stage/data/garmin-tokens" ] || cp -a "$stage/data/garmin-tokens" "$base_dir/data/garmin-tokens"
 rm -f "$base_dir/current.next" "$base_dir/current"
+for app in nexus-hub content-engine; do
+  if "$pm2_bin" describe "$app" >/dev/null 2>&1; then "$pm2_bin" delete "$app" >/dev/null; fi
+done
 if [ "$previous_runtime" != "$base_dir" ]; then
   ln -s "$previous_runtime" "$base_dir/current.next"
   mv -Tf "$base_dir/current.next" "$base_dir/current"
   env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$previous_runtime" NEXUS_RELEASE_BASE_DIR="$base_dir" \
     NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$previous_sha" \
-    "$pm2_bin" startOrReload "$previous_runtime/ecosystem.release.config.js" --update-env
+    "$pm2_bin" start "$previous_runtime/ecosystem.release.config.js" --update-env
 else
   cd "$base_dir"
-  "$pm2_bin" startOrReload "$base_dir/ecosystem.config.js" --update-env
+  "$pm2_bin" start "$base_dir/ecosystem.config.js" --update-env
 fi
 backend_ok=false; content_ok=false
 for _ in $(seq 1 15); do

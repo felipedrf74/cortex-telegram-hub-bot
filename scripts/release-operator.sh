@@ -121,14 +121,63 @@ node scripts/release-installed-tree-attestation.mjs write \
 # No link is mutated until PM2 and both installed dependency trees are proved.
 node scripts/release-installed-tree-attestation.mjs validate \
   --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" >/dev/null
+
+previous_runtime="$base_dir"
+if [ -L "$base_dir/current" ]; then
+  previous_runtime="$(readlink -f "$base_dir/current")"
+  case "$previous_runtime" in
+    "$base_dir"/releases/*) ;;
+    *) echo "unsafe previous staging runtime: $previous_runtime" >&2; exit 1 ;;
+  esac
+  [ -f "$previous_runtime/.complete.json" ] || { echo "previous staging marker is missing" >&2; exit 1; }
+fi
+
+delete_staging_apps() {
+  for app in nexus-hub-staging content-engine-staging; do
+    if "$pm2_bin" describe "$app" >/dev/null 2>&1; then
+      "$pm2_bin" delete "$app" >/dev/null
+    fi
+  done
+}
+
+restore_previous_staging() {
+  set +e
+  echo "staging candidate failed; restoring previous runtime $previous_runtime" >&2
+  delete_staging_apps
+  rm -f "$base_dir/current.next" "$base_dir/current"
+  if [ "$previous_runtime" != "$base_dir" ]; then
+    ln -s "$previous_runtime" "$base_dir/current.next"
+    mv -Tf "$base_dir/current.next" "$base_dir/current"
+    previous_sha="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.runtimeSha)' "$previous_runtime/.complete.json")"
+    env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$previous_runtime" NEXUS_RELEASE_BASE_DIR="$base_dir" \
+      NEXUS_RELEASE_ROLE=staging NEXUS_RELEASE_SHA="$previous_sha" \
+      "$pm2_bin" start "$previous_runtime/ecosystem.release.config.js" --update-env >/dev/null
+  else
+    cd "$base_dir"
+    "$pm2_bin" start "$base_dir/ecosystem.staging.config.js" --update-env >/dev/null
+  fi
+  "$pm2_bin" save >/dev/null
+}
+
+switched=false
+restore_on_failure() {
+  status=$?
+  trap - EXIT
+  if [ "$status" -ne 0 ] && [ "$switched" = true ]; then restore_previous_staging; fi
+  exit "$status"
+}
+trap restore_on_failure EXIT
+
 rm -f "$base_dir/current.next"
 ln -s "$release_dir" "$base_dir/current.next"
 mv -Tf "$base_dir/current.next" "$base_dir/current"
+switched=true
+delete_staging_apps
 env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$release_dir" NEXUS_RELEASE_BASE_DIR="$base_dir" \
   NEXUS_RELEASE_ROLE=staging NEXUS_RELEASE_SHA="$runtime_sha" \
-  "$pm2_bin" startOrReload "$release_dir/ecosystem.release.config.js" --update-env
-curl --fail --silent --show-error --retry 12 --retry-delay 2 http://127.0.0.1:8201/health >/dev/null
-curl --fail --silent --show-error --retry 12 --retry-delay 2 http://127.0.0.1:8101/health >/dev/null
+  "$pm2_bin" start "$release_dir/ecosystem.release.config.js" --update-env
+curl --fail --silent --show-error --retry 12 --retry-delay 2 --retry-connrefused --max-time 5 http://127.0.0.1:8201/health >/dev/null
+curl --fail --silent --show-error --retry 12 --retry-delay 2 --retry-connrefused --max-time 5 http://127.0.0.1:8101/health >/dev/null
 "$pm2_bin" jlist | node -e '
 const fs = require("fs");
 const [releaseDir, runtimeSha, output] = process.argv.slice(1);
@@ -154,6 +203,8 @@ process.stdin.on("end", () => {
   fs.writeFileSync(output, `${JSON.stringify({ schema: "nexus.pm2-release-identity.v1", services }, null, 2)}\n`, { mode: 0o600 });
 });
 ' "$release_dir" "$runtime_sha" "$release_dir/.nexus-pm2-identity.json"
+"$pm2_bin" save >/dev/null
+trap - EXIT
 REMOTE
 
     EVIDENCE_BASE="$ROOT/.local/release/staging/${RUNTIME_SHA}-${DIGEST}"

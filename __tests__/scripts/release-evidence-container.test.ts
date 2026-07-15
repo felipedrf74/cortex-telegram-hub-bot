@@ -71,10 +71,14 @@ describe('release-evidence-container wrapper', () => {
     expect(operator).toContain('release-installed-tree-attestation.mjs write');
     expect(operator).toContain('scripts/staging-smoke.sh');
     expect(operator).toContain('release-staging-attestation.mjs request');
+    expect(operator).toContain('--retry-connrefused');
+    expect(operator).toContain('delete_staging_apps');
+    expect(operator).not.toContain('startOrReload');
     expect(operator).not.toContain('--staging-evidence');
     expect(promote).toContain('--expect-aggregate-digest "$installed_digest"');
     expect(promote).toContain('production PM2 exact-release identity mismatch');
     expect(promote).toContain('previous versioned runtime marker is missing');
+    expect(promote).not.toContain('startOrReload');
     expect(promote).not.toContain('scripts/rollback.sh');
     expect(promote).not.toContain('npm ci');
     expect(promote).not.toContain('pip install');
