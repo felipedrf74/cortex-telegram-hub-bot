@@ -66,12 +66,13 @@ run_content_tests() {
     __tests__/services/content-radar-engine.test.ts \
     __tests__/services/content-generation-quality.test.ts \
     __tests__/services/content-novelty-reuse.test.ts \
-    __tests__/services/content-day-to-day-evaluation.test.ts \
-    __tests__/services/content-eval-history.test.ts \
     __tests__/services/provider-registry-fixture-mode.test.ts \
     __tests__/api/content-admin-write-auth.test.ts \
     __tests__/services/content-dashboard-service.test.ts \
     __tests__/api/content-dashboard.test.ts
+  npm run test:evaluate -- \
+    __tests__/services/content-day-to-day-evaluation.test.ts \
+    __tests__/services/content-eval-history.test.ts
 }
 
 run_eval() {

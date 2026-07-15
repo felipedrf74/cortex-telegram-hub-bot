@@ -1,29 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+import type Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database | null = null;
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
-function applyMigrations(db: Database.Database): void {
-  db.exec("CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))");
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
-  for (const file of files) {
-    const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
-    if (applied) continue;
-    db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-    db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
-  }
-}
 
 function seedFixtureUser(db: Database.Database): void {
   db.prepare(`
@@ -607,8 +586,7 @@ async function withRealPlannerExecution<T>(callback: () => Promise<T>): Promise<
     modelFixture: process.env.NEXUS_MODEL_FIXTURE_MODE,
   };
   const previousDb = testDb;
-  testDb = createTestDb();
-  applyMigrations(testDb);
+  testDb = createMigratedTestDatabase();
   seedFixtureUser(testDb);
   process.env.CHAT_HYBRID_PLANNER_ENABLED = 'active';
   delete process.env.CHAT_HYBRID_SHADOW_MODE;

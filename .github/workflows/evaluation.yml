@@ -1,0 +1,54 @@
+name: Evaluation — Governed product corpus
+
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22.23.1'
+
+jobs:
+  governed-evaluation-corpus:
+    name: 🧭 Governed evaluation corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run exactly the eval-disposition corpus
+        env:
+          NODE_ENV: test
+          TELEGRAM_BOT_TOKEN: test_token
+          TELEGRAM_ALLOWED_USER_IDS: '123456789'
+          ANTHROPIC_API_KEY: sk-ant-test-key
+          DATABASE_PATH: ':memory:'
+        run: |
+          npm run test:evaluate -- \
+            --reporter default \
+            --json-output .local/evaluation/vitest-results.json
+          node scripts/test-inventory.mjs \
+            --timings .local/evaluation/vitest-results.json \
+            --timing-scope evaluate \
+            --enforce-evidence
+
+      - name: Upload governed evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: governed-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .local/evaluation/vitest-results.json
+            .local/test-inventory/test-inventory.json
+          if-no-files-found: error
+          retention-days: 30

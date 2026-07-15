@@ -45,12 +45,14 @@ jobs:
           DATABASE_PATH: ':memory:'
         run: |
           mkdir -p .local/test-profile
-          npx vitest run \
-            --reporter=default \
-            --reporter=json \
-            --outputFile=.local/test-profile/vitest-results.json \
+          node scripts/run-test-tier.mjs deterministic \
+            --reporter default \
+            --json-output .local/test-profile/vitest-results.json \
             --coverage
-          node scripts/test-inventory.mjs --timings .local/test-profile/vitest-results.json
+          node scripts/test-inventory.mjs \
+            --timings .local/test-profile/vitest-results.json \
+            --timing-scope deterministic \
+            --enforce-evidence
 
       - name: Write qualifying nightly full-suite evidence
         env:

@@ -28,7 +28,7 @@ function makeEvent(
   summary: string,
   start: string,
   source: 'google' | 'outlook',
-  opts?: { description?: string; location?: string; id?: string },
+  opts?: { description?: string; location?: string; id?: string; htmlLink?: string },
 ): UnifiedCalendarEvent {
   const startDate = new Date(start);
   const endDate = new Date(startDate.getTime() + 3600_000); // +1 hour
@@ -39,6 +39,7 @@ function makeEvent(
     end: endDate.toISOString(),
     description: opts?.description,
     location: opts?.location,
+    htmlLink: opts?.htmlLink,
     source,
   };
 }
@@ -153,21 +154,38 @@ describe('deduplicateEvents', () => {
     expect(result.every((event) => event.syncedSources?.length === 1)).toBe(true);
   });
 
-  it('preserves richer event data during merge', () => {
-    const events = [
-      makeEvent('Meeting', '2024-06-15T09:00:00Z', 'google', {
-        description: 'Short note',
-      }),
-      makeEvent('Meeting', '2024-06-15T09:00:00Z', 'outlook', {
-        description: 'Detailed agenda with multiple topics to discuss. Including budget review.',
-        location: 'Conference Room B',
-      }),
-    ];
-    const result = deduplicateEvents(events);
+  it('preserves richer event data regardless of provider order', () => {
+    const sparse = makeEvent('Meeting', '2024-06-15T09:00:00Z', 'google', {
+      description: 'Short note',
+    });
+    const rich = makeEvent('Meeting', '2024-06-15T09:00:00Z', 'outlook', {
+      description: 'Detailed agenda with multiple topics to discuss. Including budget review.',
+      location: 'Conference Room B',
+    });
+
+    for (const events of [[sparse, rich], [rich, sparse]]) {
+      const result = deduplicateEvents(events);
+      expect(result).toHaveLength(1);
+      expect(result[0].location).toBe('Conference Room B');
+      expect(result[0].description).toContain('Detailed agenda');
+      expect(result[0].syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
+    }
+  });
+
+  it('prefers a provider event with a canonical link when other metadata is equal', () => {
+    const withoutLink = makeEvent('Meeting', '2024-06-15T09:00:00Z', 'google', { id: 'g' });
+    const withLink = makeEvent('Meeting', '2024-06-15T09:00:00Z', 'outlook', {
+      id: 'o',
+      htmlLink: 'https://outlook.office.com/calendar/item/o',
+    });
+
+    const result = deduplicateEvents([withoutLink, withLink]);
+
     expect(result).toHaveLength(1);
-    // Outlook event has richer data — should be kept
-    expect(result[0].location).toBe('Conference Room B');
-    expect(result[0].description).toContain('Detailed agenda');
+    expect(result[0]).toMatchObject({
+      id: 'o',
+      htmlLink: 'https://outlook.office.com/calendar/item/o',
+    });
   });
 
   it('unions duplicate provider intervals even when the richer event ends earlier', () => {

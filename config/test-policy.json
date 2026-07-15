@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-15",
+  "version": "2026-07-15.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -50,11 +50,7 @@
     },
     "evaluate": {
       "description": "Subjective quality, persona, provider, and long-running evaluation corpora.",
-      "include": [
-        "__tests__/**/*evaluation*.test.ts",
-        "__tests__/**/*eval*.test.ts",
-        "__tests__/personas/**/*.test.ts"
-      ]
+      "dispositions": ["eval"]
     }
   },
   "fullSuiteTriggers": [
@@ -65,6 +61,9 @@
     "__tests__/fixtures/**",
     "config/test-policy.json",
     "scripts/changed-area-classifier.sh",
+    "scripts/changed-area-classifier.mjs",
+    "scripts/lib/changed-area-classifier.mjs",
+    "scripts/cannot-skip-gate-dashboard.mjs",
     "scripts/resolve-ci-change-base.sh",
     "scripts/select-vitest-files.mjs",
     "scripts/release-test-evidence.mjs",
@@ -94,16 +93,11 @@
     ".env*.example",
     "content-engine/Dockerfile*",
     "content-engine/.env*.example",
+    "src/testing/migrated-test-database.ts",
     "package.json",
     "package-lock.json"
   ],
   "timingExceptions": [
-    {
-      "file": "__tests__/scripts/changed-area-classifier.test.ts",
-      "owner": "release",
-      "reason": "Creates isolated Git repositories and runs the complete cannot-skip dashboard; retained as release-infrastructure proof.",
-      "expires": "2026-09-15"
-    },
     {
       "file": "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts",
       "owner": "database",
@@ -111,14 +105,47 @@
       "expires": "2026-09-15"
     }
   ],
+  "inventoryEvidence": {
+    "disposition": {
+      "requiredResolvedPercent": 100,
+      "provenanceRequired": true,
+      "maximumPatternFallbackFiles": 926
+    },
+    "timing": {
+      "minimumScopePercent": 100,
+      "minimumSamplesForPercentiles": 5
+    },
+    "uniqueCoverage": {
+      "minimumPercent": 0,
+      "status": "not-collected; ratchet only after a reproducible collector exists"
+    },
+    "lastFailure": {
+      "minimumPercent": 0,
+      "status": "not-collected; ratchet only after a durable CI history source exists"
+    }
+  },
   "dispositionRules": [
+    { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
+    { "pattern": "__tests__/services/calendar-dedup-qa-validation.test.ts", "disposition": "delete", "reason": "The QA file repeated the primary fingerprint and merge matrix; its only distinct richness branch is now a public-behavior case in calendar-dedup.test.ts." },
+    { "pattern": "__tests__/services/calendar-dedup.test.ts", "disposition": "keep", "reason": "Primary calendar deduplication contract covers provider order, conservative interval union, all-day normalization, source preservation, and same-provider cleanup visibility." },
+    { "pattern": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts", "disposition": "delete", "reason": "Fragmented QA assertions repeated the same HTTP calls and compile-time export checks; unique MIME, API-version, and post-upload failure contracts were merged into the primary suite." },
+    { "pattern": "__tests__/adapters/whatsapp-adapter.test.ts", "disposition": "keep", "reason": "Primary adapter suite retains Cloud API request, error, media, template, platform-limit, and MIME behavior without method-existence or barrel-export assertions." },
+    { "pattern": "__tests__/services/storage-provider-qa-validation.test.ts", "disposition": "delete", "reason": "Delegated SQLite edge cases, export existence checks, singleton happy paths, and transaction repetitions duplicated the primary suite; the pragma policy contract was merged." },
+    { "pattern": "__tests__/services/storage-provider.test.ts", "disposition": "keep", "reason": "Primary storage suite owns initialization, prepared statements, atomic transactions, singleton lifecycle, safe pragma policy, and filesystem database creation." },
     { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "keep", "reason": "Duplicate happy paths and source-import assertions were removed; the remaining cases cover malformed signals, filtering boundaries, multi-agent consumption, and digest edge behavior absent from the primary suite." },
     { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "keep", "reason": "Retains skill schema, constraint, index, and cascade behavior while the redundant file-existence checks and empty-database full migration replay were deleted." },
     { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },
     { "pattern": "__tests__/**/*qa-validation.test.ts", "disposition": "keep", "reason": "Residual QA suites retain distinct boundary coverage after duplicate happy paths, source mirrors, and redundant migration setup were removed or consolidated into module-owned suites." },
     { "pattern": "__tests__/**/*source-contract.test.ts", "disposition": "convert", "reason": "Replace source-string assertions with typed, schema, AST, manifest, or generator checks." },
-    { "pattern": "__tests__/**/*evaluation*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
-    { "pattern": "__tests__/**/*eval*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
+    { "pattern": "__tests__/services/coach-kernel-evaluation.test.ts", "disposition": "eval", "reason": "Persona and rubric-based coach quality grading belongs in the governed evaluation lane." },
+    { "pattern": "__tests__/services/content-day-to-day-evaluation.test.ts", "disposition": "eval", "reason": "Persona and output-quality rubric grading belongs in the governed evaluation lane." },
+    { "pattern": "__tests__/services/decision-*evaluator*.test.ts", "disposition": "keep", "reason": "Decision evaluators enforce deterministic runtime conflict and policy behavior; they are correctness tests, not subjective output grading." },
+    { "pattern": "__tests__/services/decision-preexecution-revalidator.test.ts", "disposition": "keep", "reason": "Pre-execution revalidation is a deterministic runtime safety contract despite containing the substring eval." },
+    { "pattern": "__tests__/**/*eval-history*.test.ts", "disposition": "keep", "reason": "Eval history suites protect persistence, tenant scope, and API contracts and therefore remain correctness tests." },
+    { "pattern": "__tests__/services/registry-*eval*.test.ts", "disposition": "keep", "reason": "Registry eval gates are deterministic release-safety and routing contracts, not subjective grading." },
+    { "pattern": "__tests__/services/chat-core-v2-*eval*.test.ts", "disposition": "keep", "reason": "Chat Core eval services enforce deterministic corpus shape, safety, recall, persistence, and promotion contracts." },
+    { "pattern": "__tests__/**/*evaluation-harness.test.ts", "disposition": "keep", "reason": "Harness and CLI suites verify deterministic evaluation machinery and evidence contracts; they do not grade live provider output." },
+    { "pattern": "__tests__/services/creator-config-eval.test.ts", "disposition": "keep", "reason": "Creator configuration checks protect prompt neutrality, loading, and cross-runtime consistency." },
     { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
   ],
   "coverage": {
@@ -192,6 +219,109 @@
       "src/services/training-exercise-media*.ts"
     ],
   "cleanupMappings": [
+    {
+      "test": "__tests__/services/calendar-dedup-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/calendar-dedup.test.ts"
+      ],
+      "sources": [
+        "src/services/unified-calendar.ts"
+      ],
+      "reason": "Merged the QA fingerprint and deduplication matrix into the primary suite, retaining the canonical-link richness branch while removing repeated provider-order and happy-path assertions."
+    },
+    {
+      "test": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/adapters/whatsapp-adapter.test.ts"
+      ],
+      "sources": [
+        "src/adapters/whatsapp-adapter.ts"
+      ],
+      "reason": "Merged unique Graph API version, MIME mapping, post-upload delivery failure, and interactive failure behavior into the primary adapter suite and removed fragmented duplicates and export-existence checks."
+    },
+    {
+      "test": "__tests__/adapters/whatsapp-adapter.test.ts",
+      "replacementTests": [
+        "__tests__/adapters/whatsapp-adapter.test.ts"
+      ],
+      "sources": [
+        "src/adapters/whatsapp-adapter.ts"
+      ],
+      "reason": "Removed compile-time method-existence assertions from the retained primary suite because every adapter method is exercised through its public behavior and TypeScript checks the MessageAdapter implementation."
+    },
+    {
+      "test": "__tests__/scripts/changed-area-classifier.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/changed-area-classifier.test.ts"
+      ],
+      "sources": [
+        "config/test-policy.json",
+        "scripts/cannot-skip-gate-dashboard.mjs",
+        "scripts/cannot-skip-gate-dashboard.sh",
+        "scripts/changed-area-classifier.mjs",
+        "scripts/changed-area-classifier.sh",
+        "scripts/lib/changed-area-classifier.mjs",
+        "scripts/resolve-ci-change-base.sh"
+      ],
+      "reason": "Consolidated repeated shell-process matrices into direct deterministic classifier behavior while retaining compatibility CLI, cannot-skip dashboard, pushed-range, and fail-closed base coverage."
+    },
+    {
+      "test": "__tests__/scripts/release-test-evidence.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-test-evidence.test.ts"
+      ],
+      "sources": [
+        "scripts/changed-area-classifier.mjs",
+        "scripts/lib/changed-area-classifier.mjs",
+        "scripts/lib/git-ref.mjs",
+        "scripts/release-test-evidence.mjs"
+      ],
+      "reason": "Updated the retained release-evidence suite to bind the Node classifier and exact Git identity dependencies without weakening artifact or tier evidence assertions."
+    },
+    {
+      "test": "__tests__/services/registry-multi-turn-state-injection.test.ts",
+      "replacementTests": [
+        "__tests__/services/registry-multi-turn-state-injection.test.ts"
+      ],
+      "sources": [
+        "src/services/chat-action-state.ts",
+        "src/services/chat/index.ts",
+        "src/testing/migrated-test-database.ts"
+      ],
+      "reason": "Replaced the local full migration replay with the governed migrated template while retaining the real pending-action persistence and multi-turn continuation behavior."
+    },
+    {
+      "test": "__tests__/services/science-policy-gate-wiring.test.ts",
+      "replacementTests": [
+        "__tests__/services/science-policy-gate-wiring.test.ts"
+      ],
+      "sources": [
+        "scripts/cannot-skip-gate-dashboard.mjs",
+        "scripts/ci/science-policy-version-check.mjs",
+        "src/services/coach-kernel/knowledge/entities/training-principles.json"
+      ],
+      "reason": "Converted source-substring checks into the typed cannot-skip dashboard contract while preserving science-policy file routing and enforcement behavior."
+    },
+    {
+      "test": "__tests__/services/storage-provider-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/storage-provider.test.ts"
+      ],
+      "sources": [
+        "src/services/storage-provider.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/storage-provider.ts:189-189",
+          "anchor": "return parsed",
+          "behavior": "A finite non-negative SQLite mmap size is applied exactly as configured.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "SQLiteStorage pragma policy applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 6
+        }
+      ],
+      "reason": "Merged safe pragma policy and missing-parent filesystem behavior into the primary storage suite while removing repeated SQLite driver semantics, singleton happy paths, and export-existence assertions."
+    },
     {
       "test": "__tests__/scripts/trusted-release-signing.test.ts",
       "replacementTests": [

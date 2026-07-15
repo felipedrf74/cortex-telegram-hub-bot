@@ -1,9 +1,7 @@
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import type { Request } from 'express';
 import { vi } from 'vitest';
-import { listCanonicalMigrationFiles } from '../utils/migrations';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 const dbState = vi.hoisted(() => ({
   db: null as Database.Database | null,
@@ -133,8 +131,6 @@ vi.mock('../../src/utils/logger', () => ({
 import { trainingRoutes } from '../../src/api/routes/training';
 import { setDbProvider } from '../../src/services/intelligence-bus';
 
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
 interface MockRes {
   statusCode: number;
   body: any;
@@ -144,24 +140,6 @@ interface MockRes {
   setHeader(name: string, value: string): MockRes;
   getHeader(name: string): string | undefined;
   end(): MockRes;
-}
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-
-  const files = listCanonicalMigrationFiles(fs.readdirSync(MIGRATIONS_DIR));
-
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
 }
 
 function mockReq(
@@ -212,9 +190,7 @@ export interface TrainingE2EHarness {
 }
 
 export function createTrainingE2EHarness(): TrainingE2EHarness {
-  const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
-  applyMigrations(db);
+  const db = createMigratedTestDatabase();
   dbState.db = db;
   setDbProvider(() => db as any);
   resetCalendarMocks();

@@ -1,11 +1,8 @@
 import { Router } from 'express';
 import type { Request } from 'express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+import type Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 // Real in-memory DB for GET /history — its pagination/merge logic lives
 // in SQL + JS keyset code that mocking would render untested.
@@ -66,23 +63,6 @@ import {
   registerTrainingAnalyticsRoutes,
   type TrainingLanguageResolver,
 } from '../../src/api/routes/training-analytics-routes';
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(
-    `CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`,
-  );
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
-      try {
-        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
-        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-      } catch {
-        /* skip deps */
-      }
-    }
-  }
-}
 
 interface MockRes {
   statusCode: number;
@@ -238,8 +218,7 @@ describe('training analytics route registrar', () => {
 
 describe('GET /history', () => {
   beforeAll(() => {
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterAll(() => {
@@ -573,8 +552,7 @@ describe('GET /history', () => {
 
 describe('GET /load-snapshot', () => {
   beforeAll(() => {
-    testDb = new Database(':memory:');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
   });
 
   afterAll(() => {

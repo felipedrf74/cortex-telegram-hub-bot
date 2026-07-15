@@ -195,9 +195,9 @@ case "$VITEST_MODE" in
     ;;
   full)
     if [ -n "$VITEST_SHARD" ]; then
-      run_cmd npx vitest run --reporter="$REPORTER" --shard="$VITEST_SHARD"
+      run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER" --shard "$VITEST_SHARD"
     else
-      run_cmd npx vitest run --reporter="$REPORTER"
+      run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER"
     fi
     ;;
   changed-only|focused)
@@ -213,7 +213,7 @@ case "$VITEST_MODE" in
         --classifier "$CLASSIFIER_JSON_FILE")
       if [ "${#SELECTED_FILES[@]}" -eq 0 ]; then
         echo "⚠️  changed/focused/critical union was empty — escalating to full Vitest"
-        run_cmd npx vitest run --reporter="$REPORTER"
+        run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER"
       else
         run_cmd npx vitest run --reporter="$REPORTER" "${SELECTED_FILES[@]}"
       fi
@@ -221,7 +221,7 @@ case "$VITEST_MODE" in
     ;;
   *)
     echo "⚠️  unknown vitest mode '$VITEST_MODE' — escalating to full Vitest"
-    run_cmd npx vitest run --reporter="$REPORTER"
+    run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER"
     ;;
 esac
 

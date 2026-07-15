@@ -3,7 +3,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import {
   TRAINING_EXERCISE_MEDIA_REQUIRED_LOCALES,
@@ -18,7 +17,7 @@ import {
   computeStoredTrainingExerciseMediaFrozenPackageHash,
   seedCompiledTrainingExerciseMediaPackage,
 } from '../../src/services/training-exercise-media-seed';
-import { runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import {
   compileTrainingExerciseMediaPackage,
   findForbiddenMediaBinaries,
@@ -402,9 +401,8 @@ describe('Training exercise media manifest tooling', () => {
   });
 
   it('seeds the approved package idempotently without activating it', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const compiled = readCompiledTrainingExerciseMediaPackage();
       const first = seedCompiledTrainingExerciseMediaPackage(db, compiled);
       const replay = seedCompiledTrainingExerciseMediaPackage(db, compiled);
@@ -435,9 +433,8 @@ describe('Training exercise media manifest tooling', () => {
   });
 
   it('never lets a generated catalog sync erase durable approval references', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const compiled = readCompiledTrainingExerciseMediaPackage();
       seedCompiledTrainingExerciseMediaPackage(db, compiled);
       expect(() => seedCompiledTrainingExerciseMediaPackage(db, compiled)).not.toThrow();
@@ -466,9 +463,8 @@ describe('Training exercise media manifest tooling', () => {
   });
 
   it('prevents a checked-in draft row from drifting below its package attestation', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const compiled = readCompiledTrainingExerciseMediaPackage();
       seedCompiledTrainingExerciseMediaPackage(db, compiled);
       expect(() => db.prepare(`
@@ -483,9 +479,8 @@ describe('Training exercise media manifest tooling', () => {
   });
 
   it('does not label an activation-incomplete package as validation-passed STAGED content', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const sources = loadTrainingExerciseMediaPackageSources();
       const incomplete = buildCompiledTrainingExerciseMediaPackage({
         ...sources,
@@ -516,9 +511,8 @@ describe('Training exercise media manifest tooling', () => {
   });
 
   it('recomputes the full 158-exercise DB package before one-time staging and activation', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const compiled = buildActivationReadyPackage();
       const now = new Date('2026-07-12T12:00:00.000Z');
       expect(validateCompiledTrainingExerciseMediaPackage(compiled, { now }).activationReady).toBe(true);

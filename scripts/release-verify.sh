@@ -58,9 +58,9 @@ scripts/notification-release-gate.sh
 
 if [ "$RUN_VITEST" = true ]; then
   if [ -n "$SHARD" ]; then
-    npx vitest run --shard="$SHARD"
+    node scripts/run-test-tier.mjs deterministic --shard "$SHARD" --reporter default
   else
-    npx vitest run
+    node scripts/run-test-tier.mjs deterministic --reporter default
   fi
 fi
 

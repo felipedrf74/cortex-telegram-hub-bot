@@ -3,6 +3,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 const TABLES = [
   'training_profile_snapshots',
@@ -90,9 +91,8 @@ describe('migration 228 — Training plan revision v1', () => {
   });
 
   it('replays safely when one additive legacy column already exists', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase({ excludeFiles: ['228_training_plan_revision_v1.sql'] });
     try {
-      runMigrationsForTest(db, { excludeFiles: ['228_training_plan_revision_v1.sql'] });
       db.exec('ALTER TABLE fitness_training_plans ADD COLUMN source_revision_id TEXT');
       applyMigrationFileForTest(db, '228_training_plan_revision_v1.sql');
       expect(db.prepare('SELECT filename FROM _migrations WHERE filename = ?').get('228_training_plan_revision_v1.sql'))
@@ -107,9 +107,8 @@ describe('migration 228 — Training plan revision v1', () => {
   });
 
   it('enforces immutable snapshot and revision content while permitting lifecycle transitions', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       seedRevisionGraph(db);
 
       expect(() => db.prepare(`
@@ -135,9 +134,8 @@ describe('migration 228 — Training plan revision v1', () => {
   });
 
   it('keeps approval receipts immutable and active pointers CAS-versioned', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       db.pragma('foreign_keys = ON');
       seedRevisionGraph(db);
       db.prepare(`
@@ -178,9 +176,8 @@ describe('migration 228 — Training plan revision v1', () => {
   });
 
   it('enforces one coherent revision, family, snapshot and context graph for the current pointer', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       db.pragma('foreign_keys = ON');
       seedRevisionGraph(db);
       db.prepare(`
