@@ -9,7 +9,10 @@
  * - Transactions commit on success and rollback on error
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   SQLiteStorage,
   StorageProvider,
@@ -46,6 +49,19 @@ describe('SQLiteStorage', () => {
     it('opens an in-memory database', () => {
       storage.open(':memory:');
       expect(storage.initialized).toBe(true);
+    });
+
+    it('creates a missing parent directory for a file database', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-storage-parent-'));
+      const dbPath = path.join(root, 'nested', 'data', 'nexus.db');
+
+      try {
+        storage.open(dbPath);
+        expect(fs.existsSync(dbPath)).toBe(true);
+      } finally {
+        if (storage.initialized) storage.close();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it('throws on prepare() before open()', () => {
@@ -238,6 +254,39 @@ describe('SQLiteStorage', () => {
 // ═══════════════════════════════════════════════════════════════════
 // SINGLETON TESTS
 // ═══════════════════════════════════════════════════════════════════
+
+describe('SQLiteStorage pragma policy', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('applies allowlisted pragma overrides and rejects unsafe values', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-storage-pragmas-'));
+    const storage = new SQLiteStorage();
+
+    try {
+      vi.stubEnv('SQLITE_JOURNAL_MODE', 'DELETE');
+      vi.stubEnv('SQLITE_SYNCHRONOUS', 'FULL');
+      vi.stubEnv('SQLITE_MMAP_SIZE', '0');
+      storage.open(path.join(root, 'allowlisted.db'));
+      expect(JSON.stringify(storage.pragma('journal_mode')).toLowerCase()).toContain('delete');
+      expect(JSON.stringify(storage.pragma('synchronous'))).toContain('2');
+      expect(JSON.stringify(storage.pragma('mmap_size'))).toContain('0');
+      storage.close();
+
+      vi.stubEnv('SQLITE_JOURNAL_MODE', 'OFF');
+      vi.stubEnv('SQLITE_SYNCHRONOUS', 'OFF');
+      vi.stubEnv('SQLITE_MMAP_SIZE', '-1');
+      storage.open(path.join(root, 'rejected.db'));
+      expect(JSON.stringify(storage.pragma('journal_mode')).toLowerCase()).not.toContain('off');
+      expect(JSON.stringify(storage.pragma('synchronous'))).not.toContain('0');
+      expect(JSON.stringify(storage.pragma('mmap_size'))).toContain('268435456');
+    } finally {
+      if (storage.initialized) storage.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('StorageProvider singleton', () => {
   afterEach(() => {

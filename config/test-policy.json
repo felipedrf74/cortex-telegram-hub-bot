@@ -126,6 +126,12 @@
   },
   "dispositionRules": [
     { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
+    { "pattern": "__tests__/services/calendar-dedup-qa-validation.test.ts", "disposition": "delete", "reason": "The QA file repeated the primary fingerprint and merge matrix; its only distinct richness branch is now a public-behavior case in calendar-dedup.test.ts." },
+    { "pattern": "__tests__/services/calendar-dedup.test.ts", "disposition": "keep", "reason": "Primary calendar deduplication contract covers provider order, conservative interval union, all-day normalization, source preservation, and same-provider cleanup visibility." },
+    { "pattern": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts", "disposition": "delete", "reason": "Fragmented QA assertions repeated the same HTTP calls and compile-time export checks; unique MIME, API-version, and post-upload failure contracts were merged into the primary suite." },
+    { "pattern": "__tests__/adapters/whatsapp-adapter.test.ts", "disposition": "keep", "reason": "Primary adapter suite retains Cloud API request, error, media, template, platform-limit, and MIME behavior without method-existence or barrel-export assertions." },
+    { "pattern": "__tests__/services/storage-provider-qa-validation.test.ts", "disposition": "delete", "reason": "Delegated SQLite edge cases, export existence checks, singleton happy paths, and transaction repetitions duplicated the primary suite; the pragma policy contract was merged." },
+    { "pattern": "__tests__/services/storage-provider.test.ts", "disposition": "keep", "reason": "Primary storage suite owns initialization, prepared statements, atomic transactions, singleton lifecycle, safe pragma policy, and filesystem database creation." },
     { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "keep", "reason": "Duplicate happy paths and source-import assertions were removed; the remaining cases cover malformed signals, filtering boundaries, multi-agent consumption, and digest edge behavior absent from the primary suite." },
     { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "keep", "reason": "Retains skill schema, constraint, index, and cascade behavior while the redundant file-existence checks and empty-database full migration replay were deleted." },
     { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },
@@ -213,6 +219,86 @@
       "src/services/training-exercise-media*.ts"
     ],
   "cleanupMappings": [
+    {
+      "test": "__tests__/services/calendar-dedup-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/calendar-dedup.test.ts"
+      ],
+      "sources": [
+        "src/services/unified-calendar.ts"
+      ],
+      "reason": "Merged the QA fingerprint and deduplication matrix into the primary suite, retaining the canonical-link richness branch while removing repeated provider-order and happy-path assertions."
+    },
+    {
+      "test": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/adapters/whatsapp-adapter.test.ts"
+      ],
+      "sources": [
+        "src/adapters/whatsapp-adapter.ts"
+      ],
+      "reason": "Merged unique Graph API version, MIME mapping, post-upload delivery failure, and interactive failure behavior into the primary adapter suite and removed fragmented duplicates and export-existence checks."
+    },
+    {
+      "test": "__tests__/services/storage-provider-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/storage-provider.test.ts"
+      ],
+      "sources": [
+        "src/services/storage-provider.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/storage-provider.ts:167-167",
+          "anchor": "return normalized",
+          "behavior": "An allowlisted SQLite journal mode is applied instead of the production default.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/storage-provider.ts:172-172",
+          "anchor": "DEFAULT_SQLITE_PRAGMAS.journalMode",
+          "behavior": "An unsafe SQLite journal mode falls back to the safe production default.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/storage-provider.ts:178-178",
+          "anchor": "return normalized",
+          "behavior": "An allowlisted SQLite synchronous mode is applied instead of the production default.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/storage-provider.ts:183-183",
+          "anchor": "DEFAULT_SQLITE_PRAGMAS.synchronous",
+          "behavior": "An unsafe SQLite synchronous mode falls back to the safe production default.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/storage-provider.ts:189-189",
+          "anchor": "return parsed",
+          "behavior": "A finite non-negative SQLite mmap size is applied exactly as configured.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/storage-provider.ts:191-191",
+          "anchor": "DEFAULT_SQLITE_PRAGMAS.mmapSize",
+          "behavior": "A negative SQLite mmap size falls back to the safe production default.",
+          "replacementTest": "__tests__/services/storage-provider.test.ts",
+          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Merged safe pragma policy and missing-parent filesystem behavior into the primary storage suite while removing repeated SQLite driver semantics, singleton happy paths, and export-existence assertions."
+    },
     {
       "test": "__tests__/scripts/trusted-release-signing.test.ts",
       "replacementTests": [
