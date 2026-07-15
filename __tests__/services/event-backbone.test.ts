@@ -231,6 +231,58 @@ describe('event backbone foundation', () => {
     })]);
   });
 
+  it('keeps event effects on the exact processing database instead of ambient module state', async () => {
+    const processingDb = createMigratedTestDatabase();
+    try {
+      const event = emitDomainEvent({
+        tenantId: 44,
+        userId: 7,
+        sourceSkill: 'training',
+        eventType: 'training.plan_revision.activated.v1',
+        entityType: 'training_plan_revision',
+        entityId: 'revision-explicit-db',
+        schemaVersion: 'training-plan-revision-activation.v1',
+        payload: {
+          action: 'ADAPT',
+          contentHash: 'b'.repeat(64),
+        },
+        privacyClassification: 'health',
+        idempotencyKey: 'training.plan_revision.activated:revision-explicit-db',
+      }, processingDb);
+
+      expect(await processPendingEvents(defaultEventHandlers, {
+        db: processingDb,
+        limit: 5,
+        lockOwner: 'learning-projector-explicit-db',
+      })).toMatchObject({ processed: 1, failed: 0 });
+
+      expect(processingDb.prepare(`
+        SELECT tenant_id AS tenantId, user_id AS userId, redacted_input_json AS redactedInput
+          FROM product_learning_cases
+         WHERE tenant_id = 44 AND user_id = 7
+      `).all()).toEqual([{
+        tenantId: 44,
+        userId: 7,
+        redactedInput: JSON.stringify({
+          kind: 'adaptation_accepted',
+          outcomeCode: 'user_approved',
+          subjectFingerprint: 'b'.repeat(64),
+        }),
+      }]);
+      expect(processingDb.prepare(`
+        SELECT tenant_id AS tenantId, user_id AS userId, causation_event_id AS causationEventId
+          FROM background_jobs
+         WHERE job_type = 'project_read_models'
+      `).all()).toEqual([{
+        tenantId: 44,
+        userId: 7,
+        causationEventId: event.eventId,
+      }]);
+    } finally {
+      processingDb.close();
+    }
+  });
+
   it('projects authoritative Training capacity confirmation into one retry-safe learning case', async () => {
     testDb.close();
     testDb = createMigratedTestDatabase();

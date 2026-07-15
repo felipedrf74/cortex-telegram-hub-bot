@@ -73,7 +73,7 @@ function normalizeEventCreatedAtUtc(value: string): string {
 export const defaultEventHandlers: EventHandler[] = [
   {
     eventType: '*',
-    handle(event) {
+    handle(event, db) {
       if (!event.userId) return;
       if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[0].eventType
           && event.sourceSkill === 'training'
@@ -95,7 +95,7 @@ export const defaultEventHandlers: EventHandler[] = [
           confidence: 1,
           observedAt,
           subjectFingerprint: contentHash,
-        });
+        }, db);
       }
       if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[0].eventType
           && event.sourceSkill === 'training'
@@ -118,7 +118,7 @@ export const defaultEventHandlers: EventHandler[] = [
           confidence: 1,
           observedAt,
           subjectFingerprint: capacitySubjectFingerprint,
-        });
+        }, db);
       }
       if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[1].eventType
           && event.sourceSkill === 'training'
@@ -140,7 +140,7 @@ export const defaultEventHandlers: EventHandler[] = [
           confidence: 1,
           observedAt,
           subjectFingerprint: materialFingerprint,
-        });
+        }, db);
       }
       if (PROJECTABLE_EVENT_TYPES.has(event.eventType)) {
         enqueueJob({
@@ -156,7 +156,7 @@ export const defaultEventHandlers: EventHandler[] = [
           idempotencyKey: `project_read_models:${event.eventId}`,
           correlationId: event.correlationId,
           causationEventId: event.eventId,
-        });
+        }, db);
       }
       if (event.sourceSkill === 'content'
         && event.entityType === 'content_topic'
@@ -177,7 +177,7 @@ export const defaultEventHandlers: EventHandler[] = [
             idempotencyKey: `content_topic_secretary_sync:${event.tenantId}:${event.userId}:${event.entityId}:${event.eventId}`,
             correlationId: event.correlationId,
             causationEventId: event.eventId,
-          });
+          }, db);
         }
       }
     },
