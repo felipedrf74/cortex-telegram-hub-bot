@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { isCriticalModule } from './mutation-gate.mjs';
 import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
@@ -9,12 +10,28 @@ import { loadTestPolicy, root } from './lib/test-policy.mjs';
 
 export { resolveExactCommit } from './lib/git-ref.mjs';
 
+const MAX_COVERAGE_SHARDS = 4;
+const TESTS_PER_COVERAGE_SHARD = 200;
+
 function run(command, args, options = {}) {
   return spawnSync(command, args, { cwd: root, encoding: 'utf8', ...options });
 }
 
 function runGit(args) {
   return run('git', args, { env: cleanGitEnv() });
+}
+
+export function coverageShardCount(testCount) {
+  if (!Number.isSafeInteger(testCount) || testCount < 1) {
+    throw new Error('coverage sharding requires a positive integer test count');
+  }
+  return Math.min(MAX_COVERAGE_SHARDS, Math.ceil(testCount / TESTS_PER_COVERAGE_SHARD));
+}
+
+function processFailure(result, label) {
+  if (result.status === 0) return null;
+  if (result.signal) return `${label} terminated by ${result.signal}`;
+  return `${label} exited with status ${result.status ?? 'unknown'}`;
 }
 
 export function aggregateCoverage(records) {
@@ -183,9 +200,61 @@ function main() {
   }
 
   const vitest = path.join(root, 'node_modules/vitest/vitest.mjs');
-  const coverageArgs = [
+  const shardCount = coverageShardCount(tests.length);
+  const shardRoot = path.join(root, '.local/coverage/changed-shards');
+  const blobDir = path.join(shardRoot, 'blobs');
+  fs.rmSync(shardRoot, { recursive: true, force: true });
+  fs.mkdirSync(blobDir, { recursive: true });
+  const testSelection = {
+    schema: 'nexus.changed-coverage-selection.v1',
+    count: tests.length,
+    shardCount,
+    digest: createHash('sha256').update(JSON.stringify(tests)).digest('hex'),
+    tests,
+  };
+  const selectionPath = path.join(outputDir, 'selection.json');
+  fs.writeFileSync(selectionPath, `${JSON.stringify(testSelection, null, 2)}\n`);
+  console.log(JSON.stringify({
+    changedCoverageTests: tests.length,
+    shardCount,
+    selectionDigest: testSelection.digest,
+  }, null, 2));
+
+  const commonCoverageArgs = [
+    '--coverage',
+    '--coverage.reporter=json',
+    '--coverage.thresholds.lines=0',
+    '--coverage.thresholds.branches=0',
+    '--coverage.thresholds.functions=0',
+    '--coverage.thresholds.statements=0',
+    ...files.flatMap((file) => ['--coverage.include', file]),
+  ];
+  for (let shard = 1; shard <= shardCount; shard += 1) {
+    const shardCoverageDir = path.join(shardRoot, `coverage-${shard}`);
+    const shardRun = spawnSync(process.execPath, [
+      vitest,
+      'run',
+      '--reporter=blob',
+      `--outputFile=${path.join(blobDir, `blob-${shard}.json`)}`,
+      `--shard=${shard}/${shardCount}`,
+      `--coverage.reportsDirectory=${shardCoverageDir}`,
+      ...commonCoverageArgs,
+      ...tests,
+    ], {
+      cwd: root,
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    const failure = processFailure(shardRun, `Changed coverage shard ${shard}/${shardCount}`);
+    if (failure) {
+      console.error(failure);
+      process.exit(shardRun.status ?? 1);
+    }
+  }
+
+  const mergeRun = spawnSync(process.execPath, [
     vitest,
-    'run',
+    `--merge-reports=${blobDir}`,
     '--reporter=dot',
     '--coverage',
     '--coverage.reporter=json-summary',
@@ -196,18 +265,22 @@ function main() {
     '--coverage.thresholds.functions=0',
     '--coverage.thresholds.statements=0',
     ...files.flatMap((file) => ['--coverage.include', file]),
-    ...tests,
-  ];
-  const coverageRun = spawnSync(process.execPath, coverageArgs, {
+  ], {
     cwd: root,
     stdio: 'inherit',
     env: { ...process.env, NODE_ENV: 'test' },
   });
-  if (coverageRun.status !== 0) process.exit(coverageRun.status ?? 1);
   // V8 clears its reports directory before writing. Restore the separately
   // governed selection plan so the uploaded artifact remains self-contained.
   fs.writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`);
   fs.writeFileSync(classifierPath, classifier.stdout);
+  fs.writeFileSync(selectionPath, `${JSON.stringify(testSelection, null, 2)}\n`);
+  const mergeFailure = processFailure(mergeRun, 'Changed coverage report merge');
+  if (mergeFailure) {
+    console.error(mergeFailure);
+    process.exit(mergeRun.status ?? 1);
+  }
+  fs.rmSync(shardRoot, { recursive: true, force: true });
 
   const summaryPath = path.join(outputDir, 'coverage-summary.json');
   const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
@@ -253,6 +326,8 @@ function main() {
     ...plan,
     schema: 'nexus.changed-coverage-result.v2',
     tests: tests.length,
+    shardCount,
+    testSelectionDigest: testSelection.digest,
     governedFiles,
     governedCriticalFiles,
     usedExceptions: usedExceptions.map((file) => exceptionByFile.get(file)),

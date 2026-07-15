@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aggregateCoverage,
   changedExecutableCoverage,
+  coverageShardCount,
   parseAddedLines,
   resolveExactCommit,
   thresholdFailures,
@@ -9,6 +10,15 @@ import {
 } from '../../scripts/changed-coverage-gate.mjs';
 
 describe('changed-module coverage gate', () => {
+  it('bounds coverage memory by splitting large selections into at most four shards', () => {
+    expect(coverageShardCount(1)).toBe(1);
+    expect(coverageShardCount(200)).toBe(1);
+    expect(coverageShardCount(201)).toBe(2);
+    expect(coverageShardCount(727)).toBe(4);
+    expect(coverageShardCount(930)).toBe(4);
+    expect(() => coverageShardCount(0)).toThrow('positive integer');
+  });
+
   it('extracts only added-side lines from zero-context git hunks', () => {
     const lines = parseAddedLines([
       '@@ -10,0 +11,3 @@',
