@@ -13,18 +13,25 @@ let testDb: Database.Database;
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, number | string | readonly string[]>;
   status(code: number): MockRes;
   json(body: any): MockRes;
   send(body?: any): MockRes;
+  setHeader(name: string, value: number | string | readonly string[]): MockRes;
 }
 
 function mockRes(): MockRes {
   const res: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { res.statusCode = code; return res; },
     json(body: any) { res.body = body; return res; },
     send(body?: any) { res.body = body ?? null; return res; },
+    setHeader(name: string, value: number | string | readonly string[]) {
+      res.headers[name.toLowerCase()] = value;
+      return res;
+    },
   };
   return res;
 }
@@ -84,9 +91,12 @@ async function dispatchPushToken(userId: number, token: string, deviceId = 'test
   return res;
 }
 
-async function dispatchDeletePushToken(userId: number, deviceId = 'test-device-id'): Promise<MockRes> {
-  const { settingsRoutes } = await import('../../src/api/routes/settings');
-  const router = settingsRoutes();
+async function dispatchDeletePushToken(
+  userId: number,
+  deviceId = 'test-device-id',
+  routerOverride?: any,
+): Promise<MockRes> {
+  const router = routerOverride ?? (await import('../../src/api/routes/settings')).settingsRoutes();
   const req = mockReq(userId, {});
   (req as any).deviceId = deviceId;
   (req as any).method = 'DELETE';
@@ -287,6 +297,72 @@ describe('Settings language route', () => {
       'SELECT push_token FROM ios_devices WHERE user_id = ? AND device_id = ?',
     ).get(1, 'signout-device') as { push_token: string | null };
     expect(row.push_token).toBeNull();
+  });
+
+  it('rate-limits repeated push-token revocations before additional database work', async () => {
+    const { config } = await import('../../src/config');
+    const originalLimit = config.ios.rateLimit;
+    config.ios.rateLimit = 2;
+    testDb.prepare(`
+      INSERT INTO users (id, first_name, language, status, auth_provider)
+      VALUES (2, 'Other Tester', 'en-US', 'active', 'invite_code')
+    `).run();
+    await dispatchPushToken(1, 'abc123token', 'rate-limited-device');
+    await dispatchPushToken(2, 'other-token', 'other-device');
+    const { settingsRoutes } = await import('../../src/api/routes/settings');
+    const router = settingsRoutes();
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const allowed = await dispatchDeletePushToken(1, 'rate-limited-device', router);
+        expect(allowed.statusCode).toBe(204);
+      }
+
+      testDb.prepare(`
+        UPDATE ios_devices SET push_token = 'must-survive-rate-limit'
+        WHERE user_id = ? AND device_id = ?
+      `).run(1, 'rate-limited-device');
+
+      const blocked = await dispatchDeletePushToken(1, 'rate-limited-device', router);
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.body.error).toEqual({
+        code: 'RATE_LIMITED',
+        message: 'Too many requests. Slow down.',
+        retryAfter: 60,
+      });
+      expect(blocked.headers['retry-after']).toBe(60);
+
+      const otherUser = await dispatchDeletePushToken(2, 'other-device', router);
+      expect(otherUser.statusCode).toBe(204);
+
+      const rows = testDb.prepare(`
+        SELECT user_id, push_token FROM ios_devices WHERE device_id IN (?, ?) ORDER BY user_id
+      `).all('rate-limited-device', 'other-device') as Array<{ user_id: number; push_token: string | null }>;
+      expect(rows).toEqual([
+        { user_id: 1, push_token: 'must-survive-rate-limit' },
+        { user_id: 2, push_token: null },
+      ]);
+    } finally {
+      config.ios.rateLimit = originalLimit;
+    }
+  });
+
+  it('rejects invalid push-token revoke scope before touching another user device', async () => {
+    await dispatchPushToken(1, 'protected-token', 'protected-device');
+    const res = await dispatchDeletePushToken(0, 'protected-device');
+
+    expect(res.statusCode).toBe(401);
+    const row = testDb.prepare(`
+      SELECT push_token FROM ios_devices WHERE user_id = ? AND device_id = ?
+    `).get(1, 'protected-device') as { push_token: string | null };
+    expect(row.push_token).toBe('protected-token');
+
+    const { getTenantScopeAnomalies } = await getTenantScopeModule();
+    expect(getTenantScopeAnomalies()).toContainEqual(expect.objectContaining({
+      operation: 'settings_route_delete_push_token',
+      reason: 'invalid_user_scope',
+      userId: 0,
+    }));
   });
 
   it('audit-logs account export with table counts', async () => {

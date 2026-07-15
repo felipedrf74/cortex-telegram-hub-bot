@@ -11,12 +11,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mock OpenAI SDK ────────────────────────────────────────────────
 
 const mockCreate = vi.fn();
-const mockSettleNexusPointOverageForUser = vi.fn();
+const mockResponsesCreate = vi.fn();
+const mockSettleNexusPointOverageForUser = vi.fn().mockResolvedValue(undefined);
+const mockAssertAiBudgetReservationForProvider = vi.fn();
+const mockRecordUsage = vi.fn();
 
 vi.mock('openai', () => {
   return {
     default: class OpenAI {
       chat = { completions: { create: mockCreate } };
+      responses = { create: mockResponsesCreate };
     },
   };
 });
@@ -121,9 +125,17 @@ vi.mock('../../src/services/nexus-points', () => ({
   usdToPoints: vi.fn(() => 0),
 }));
 
+vi.mock('../../src/services/cost-guardrail', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cost-guardrail')>('../../src/services/cost-guardrail');
+  return {
+    ...actual,
+    assertAiBudgetReservationForProvider: (...args: unknown[]) => mockAssertAiBudgetReservationForProvider(...args),
+  };
+});
+
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { OpenAIProvider, _sleep, completeOneShot } from '../../src/services/openai-provider';
+import { OpenAIProvider, _sleep, completeOneShot, completeOneShotWithWebSearch } from '../../src/services/openai-provider';
 import { pushEvent } from '../../src/portal/telemetry';
 import { config } from '../../src/config';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
@@ -811,6 +823,108 @@ describe('OpenAIProvider', () => {
       const call = mockCreate.mock.calls[0][0];
       expect(call.max_completion_tokens).toBe(321);
       expect(call.max_tokens).toBeUndefined();
+    });
+
+    it('bounds hosted web search, reserves unbounded context, and meters actual provider tool usage', async () => {
+      const originalMaxCalls = process.env.OPENAI_WEB_SEARCH_MAX_CALLS;
+      const originalSearchFee = process.env.OPENAI_WEB_SEARCH_COST_USD_PER_CALL;
+      process.env.OPENAI_WEB_SEARCH_MAX_CALLS = '2';
+      process.env.OPENAI_WEB_SEARCH_COST_USD_PER_CALL = '0.012';
+      const nodeModule = require('node:module') as {
+        _load: (request: string, parent: unknown, isMain: boolean) => unknown;
+      };
+      const originalModuleLoad = nodeModule._load;
+      nodeModule._load = function loadWithUsageMeteringFake(
+        request: string,
+        parent: unknown,
+        isMain: boolean,
+      ): unknown {
+        if (request === './usage-metering') return { recordUsage: mockRecordUsage };
+        return originalModuleLoad.call(this, request, parent, isMain);
+      };
+      mockResponsesCreate.mockResolvedValue({
+        model: 'gpt-4o-mini',
+        output_text: 'Grounded response.',
+        output: [
+          { type: 'web_search_call', status: 'completed' },
+          {
+            type: 'message',
+            content: [{
+              type: 'output_text',
+              text: 'Grounded response.',
+              annotations: [{ type: 'url_citation', url: 'https://official.example/source' }],
+            }],
+          },
+        ],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          input_tokens_details: { cached_tokens: 0 },
+        },
+      });
+
+      try {
+        const result = await completeOneShotWithWebSearch(
+          'Use current public sources.',
+          'Find the official source.',
+          'content_discovery',
+          { userId: 42, tenantId: 77, maxTokens: 321 },
+        );
+
+        expect(result).toEqual({
+          text: 'Grounded response.',
+          sources: ['https://official.example/source'],
+        });
+        expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+        expect(mockResponsesCreate).toHaveBeenCalledWith({
+          model: 'gpt-4o-mini',
+          instructions: 'Use current public sources.',
+          input: 'Find the official source.',
+          tools: [{ type: 'web_search', search_context_size: 'low' }],
+          tool_choice: 'auto',
+          max_output_tokens: 321,
+          max_tool_calls: 2,
+        }, { maxRetries: 0 });
+        expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledTimes(1);
+        expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith({
+          userId: 42,
+          category: 'content_discovery',
+          hasUnboundedProviderInjectedContext: true,
+          maxCostUsd: expect.any(Number),
+        });
+        expect(mockAssertAiBudgetReservationForProvider.mock.calls[0][0].maxCostUsd).toBeGreaterThan(0.024);
+        expect(mockAssertAiBudgetReservationForProvider.mock.calls[0][0].maxCostUsd).toBeLessThan(0.03);
+        expect(mockDbRun).toHaveBeenCalledWith(
+          'content_discovery',
+          'gpt-4o-mini',
+          77,
+          42,
+          100,
+          50,
+          0,
+          expect.closeTo(0.012045, 8),
+          expect.any(Number),
+          'resolved',
+          'gpt-4o-mini',
+          'interactive',
+          null,
+          'content_discovery',
+          null,
+          0.012,
+          1,
+        );
+        expect(mockDbRun).toHaveBeenCalledTimes(1);
+        expect(mockRecordUsage).toHaveBeenCalledWith(42, 100, 50, expect.closeTo(0.012045, 8), false);
+        expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+        expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledTimes(1);
+        expect(mockSettleNexusPointOverageForUser).toHaveBeenCalledWith(42, 0);
+      } finally {
+        nodeModule._load = originalModuleLoad;
+        if (originalMaxCalls === undefined) delete process.env.OPENAI_WEB_SEARCH_MAX_CALLS;
+        else process.env.OPENAI_WEB_SEARCH_MAX_CALLS = originalMaxCalls;
+        if (originalSearchFee === undefined) delete process.env.OPENAI_WEB_SEARCH_COST_USD_PER_CALL;
+        else process.env.OPENAI_WEB_SEARCH_COST_USD_PER_CALL = originalSearchFee;
+      }
     });
   });
 

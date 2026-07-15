@@ -43,7 +43,7 @@ jobs:
           git rev-parse --verify "${BASE}^{commit}"
           echo "sha=$BASE" >> "$GITHUB_OUTPUT"
       - name: Run changed-critical mutation gate
-        run: npm run test:mutation -- --base '${{ steps.base.outputs.sha }}'
+        run: npm run test:mutation -- --base '${{ steps.base.outputs.sha }}' --scope changed-critical
       - name: Upload mutation plan and score
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

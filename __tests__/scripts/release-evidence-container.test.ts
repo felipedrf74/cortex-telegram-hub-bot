@@ -160,4 +160,93 @@ describe('release-evidence-container wrapper', () => {
     expect(request).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(request).toContain('gh workflow run "$SIGNING_WORKFLOW" --ref "$REF"');
   });
+
+  it.each([
+    {
+      label: 'release manifest',
+      script: 'request-release-manifest-signature.sh',
+      workflow: 'sign-release-manifest.yml',
+      args: (root: string, runtimeSha: string) => [runtimeSha, '123456', root],
+      prepare: (_root: string, _runtimeSha: string) => {},
+    },
+    {
+      label: 'staging attestation',
+      script: 'request-staging-attestation.sh',
+      workflow: 'sign-staging-attestation.yml',
+      args: (root: string, runtimeSha: string) => [
+        join(root, 'staging-request.json'),
+        join(root, 'release-manifest.json'),
+        join(root, 'staging-attestation.json'),
+      ],
+      prepare: (root: string, runtimeSha: string) => {
+        writeFileSync(join(root, 'staging-request.json'), JSON.stringify({
+          requestId: '11111111-1111-1111-1111-111111111111',
+          runtimeSha,
+        }));
+        writeFileSync(join(root, 'scripts/release-staging-attestation.mjs'), `
+          if (process.argv[2] !== 'validate-request') process.exit(70);
+        `);
+      },
+    },
+  ])('behaviorally probes the $label workflow YAML before dispatch', ({
+    script: scriptName,
+    workflow: workflowName,
+    args,
+    prepare,
+  }) => {
+    const root = mkdtempSync(join(tmpdir(), 'release-signing-probe-'));
+    const runtimeSha = 'a'.repeat(40);
+    const bin = join(root, 'bin');
+    const scripts = join(root, 'scripts');
+    const log = join(root, 'gh-argv.log');
+    try {
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(scripts, { recursive: true });
+      copyFileSync(join('scripts', scriptName), join(scripts, scriptName));
+      chmodSync(join(scripts, scriptName), 0o755);
+      prepare(root, runtimeSha);
+      writeFileSync(join(bin, 'gh'), `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  exit 0
+fi
+if [ "$1" = "workflow" ] && [ "$2" = "view" ]; then
+  case " $* " in
+    *" --ref "*" --yaml "*) exit 0 ;;
+    *) exit 72 ;;
+  esac
+fi
+if [ "$1" = "workflow" ] && [ "$2" = "run" ]; then
+  exit 73
+fi
+exit 74
+`);
+      chmodSync(join(bin, 'gh'), 0o755);
+
+      const result = spawnSync('bash', [
+        join('scripts', scriptName),
+        ...args(root, runtimeSha),
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanGitEnv({
+          FAKE_GH_LOG: log,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        }),
+      });
+
+      expect(result.status).toBe(73);
+      const calls = readFileSync(log, 'utf8').trim().split('\n');
+      const viewIndex = calls.findIndex((call) => call.startsWith(`workflow view ${workflowName} `));
+      const dispatchIndex = calls.findIndex((call) => call.startsWith(`workflow run ${workflowName} `));
+      expect(viewIndex).toBeGreaterThan(-1);
+      expect(calls[viewIndex]).toContain('--ref main --yaml');
+      expect(dispatchIndex).toBeGreaterThan(viewIndex);
+      expect(calls.some((call) => call.startsWith('run watch '))).toBe(false);
+      expect(calls.some((call) => call.startsWith('run download '))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

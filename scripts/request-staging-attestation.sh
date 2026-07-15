@@ -26,7 +26,7 @@ node scripts/release-staging-attestation.mjs validate-request \
 REF="main"
 REQUEST_B64="$(base64 < "$REQUEST" | tr -d '\r\n')"
 SIGNING_WORKFLOW="sign-staging-attestation.yml"
-gh workflow view "$SIGNING_WORKFLOW" --ref "$REF" >/dev/null 2>&1 || {
+gh workflow view "$SIGNING_WORKFLOW" --ref "$REF" --yaml >/dev/null 2>&1 || {
   echo "protected-main staging signing workflow is unavailable" >&2
   exit 1
 }

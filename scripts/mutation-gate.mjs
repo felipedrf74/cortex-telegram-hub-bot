@@ -3,9 +3,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { globToRegExp, loadTestPolicy, root } from './lib/test-policy.mjs';
+import ts from 'typescript';
+import {
+  globToRegExp,
+  loadTestPolicy,
+  root,
+} from './lib/test-policy.mjs';
 
 const SOURCE_EXTENSIONS = ['', '.ts', '.tsx', '.js', '.mjs', '/index.ts', '/index.tsx'];
+const MUTATION_SCOPES = new Set(['test-cleanup', 'changed-critical']);
+const STRYKER_MUTATION_TARGET = /^([^:]+):([1-9]\d*)-([1-9]\d*)$/;
+const MAX_MUTATION_RANGE_LINES = 12;
+const TEST_FUNCTIONS = new Set(['it', 'test']);
+const TEST_MODIFIERS = new Set([
+  'concurrent',
+  'each',
+  'fails',
+  'only',
+  'runIf',
+  'skip',
+  'skipIf',
+  'todo',
+]);
+const ASSERTION_FUNCTIONS = new Set(['assert', 'expect', 'expectTypeOf']);
+const MUTATION_STATUSES = new Set(['Killed', 'Survived', 'Timeout', 'NoCoverage']);
+const DETECTED_MUTATION_STATUSES = new Set(['Killed', 'Timeout']);
+const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
 
 function git(args, options = {}) {
   return spawnSync('git', args, { cwd: root, encoding: 'utf8', ...options });
@@ -34,13 +57,574 @@ export function isCriticalModule(file, patterns) {
   return patterns.some((pattern) => globToRegExp(pattern).test(file));
 }
 
-export function buildStrykerInvocation({ config, targets, thresholds }) {
+function canonicalNode(node, sourceFile) {
+  return printer.printNode(ts.EmitHint.Unspecified, node, sourceFile).replace(/\s+/g, ' ').trim();
+}
+
+function calleeIdentity(expression) {
+  if (ts.isIdentifier(expression)) return { root: expression.text, modifiers: [] };
+  if (ts.isPropertyAccessExpression(expression)) {
+    const parent = calleeIdentity(expression.expression);
+    return parent ? { root: parent.root, modifiers: [...parent.modifiers, expression.name.text] } : null;
+  }
+  if (ts.isElementAccessExpression(expression) && ts.isStringLiteral(expression.argumentExpression)) {
+    const parent = calleeIdentity(expression.expression);
+    return parent
+      ? { root: parent.root, modifiers: [...parent.modifiers, expression.argumentExpression.text] }
+      : null;
+  }
+  if (ts.isCallExpression(expression)) return calleeIdentity(expression.expression);
+  if (ts.isTaggedTemplateExpression(expression)) return calleeIdentity(expression.tag);
+  return null;
+}
+
+function isTestDeclarationCall(node) {
+  if (!ts.isCallExpression(node)) return false;
+  if (ts.isCallExpression(node.parent) && node.parent.expression === node) return false;
+  const identity = calleeIdentity(node.expression);
+  return Boolean(
+    identity
+    && TEST_FUNCTIONS.has(identity.root)
+    && identity.modifiers.every((modifier) => TEST_MODIFIERS.has(modifier)),
+  );
+}
+
+function isAssertionExpression(expression) {
+  if (!expression) return false;
+  if (
+    ts.isAwaitExpression(expression)
+    || ts.isParenthesizedExpression(expression)
+    || ts.isAsExpression(expression)
+    || ts.isNonNullExpression(expression)
+  ) {
+    return isAssertionExpression(expression.expression);
+  }
+  if (!ts.isCallExpression(expression)) return false;
+  const identity = calleeIdentity(expression.expression);
+  return Boolean(identity && ASSERTION_FUNCTIONS.has(identity.root));
+}
+
+function buildVariableInitializerIndex(sourceFile) {
+  const index = new Map();
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.initializer
+    ) {
+      const declarations = index.get(node.name.text) ?? [];
+      declarations.push({ position: node.pos, initializer: node.initializer });
+      index.set(node.name.text, declarations);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return index;
+}
+
+function initializerFor(identifier, variableInitializers) {
+  const declarations = variableInitializers.get(identifier.text) ?? [];
+  return [...declarations]
+    .filter(({ position }) => position < identifier.pos)
+    .sort((left, right) => right.position - left.position)[0]?.initializer ?? null;
+}
+
+function unwrapExpression(expression) {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isSatisfiesExpression(current)
+    || ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function expressionFingerprint(expression, sourceFile, variableInitializers, seen = new Set()) {
+  const current = unwrapExpression(expression);
+  const dependencies = [];
+  const visit = (node) => {
+    if (ts.isIdentifier(node) && !seen.has(node.text)) {
+      const initializer = initializerFor(node, variableInitializers);
+      if (initializer) {
+        dependencies.push(`${node.text}=(${expressionFingerprint(
+          initializer,
+          sourceFile,
+          variableInitializers,
+          new Set(seen).add(node.text),
+        )})`);
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(current);
+  return [canonicalNode(current, sourceFile), ...dependencies.sort()].join('|');
+}
+
+function resolveEachRows(node, sourceFile, variableInitializers) {
+  const expression = node.expression;
+  const identity = calleeIdentity(expression);
+  if (!identity?.modifiers.includes('each')) return [];
+
+  let table = null;
+  if (ts.isCallExpression(expression)) table = expression.arguments[0] ?? null;
+  else if (ts.isTaggedTemplateExpression(expression)) table = expression.template;
+  if (!table) return [];
+  let resolved = unwrapExpression(table);
+  const seen = new Set();
+  while (ts.isIdentifier(resolved) && !seen.has(resolved.text)) {
+    seen.add(resolved.text);
+    const initializer = initializerFor(resolved, variableInitializers);
+    if (!initializer) break;
+    resolved = unwrapExpression(initializer);
+  }
+  if (ts.isArrayLiteralExpression(resolved)) {
+    return resolved.elements.map((row) => expressionFingerprint(row, sourceFile, variableInitializers));
+  }
+  if (ts.isNoSubstitutionTemplateLiteral(resolved) || ts.isTemplateExpression(resolved)) {
+    return resolved.getText(sourceFile).slice(1, -1).split(/\r?\n/)
+      .map((row) => row.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  }
+  return [expressionFingerprint(resolved, sourceFile, variableInitializers)];
+}
+
+function hasRemovedEvidence(previousEvidence, currentEvidence) {
+  const remaining = new Map();
+  for (const evidence of currentEvidence) remaining.set(evidence, (remaining.get(evidence) ?? 0) + 1);
+  for (const evidence of previousEvidence) {
+    const count = remaining.get(evidence) ?? 0;
+    if (count === 0) return true;
+    remaining.set(evidence, count - 1);
+  }
+  return false;
+}
+
+function controlFlowFingerprint(node, sourceFile) {
+  if (ts.isIfStatement(node)) return `if:${canonicalNode(node.expression, sourceFile)}`;
+  if (ts.isConditionalExpression(node)) return `conditional:${canonicalNode(node.condition, sourceFile)}`;
+  if (ts.isWhileStatement(node)) return `while:${canonicalNode(node.expression, sourceFile)}`;
+  if (ts.isDoStatement(node)) return `do:${canonicalNode(node.expression, sourceFile)}`;
+  if (ts.isForStatement(node)) {
+    return `for:${[node.initializer, node.condition, node.incrementor]
+      .map((part) => part ? canonicalNode(part, sourceFile) : '')
+      .join(';')}`;
+  }
+  if (ts.isForInStatement(node) || ts.isForOfStatement(node)) {
+    return `for:${canonicalNode(node.initializer, sourceFile)}:${canonicalNode(node.expression, sourceFile)}`;
+  }
+  if (ts.isSwitchStatement(node)) return `switch:${canonicalNode(node.expression, sourceFile)}`;
+  if (ts.isCaseClause(node)) return `case:${canonicalNode(node.expression, sourceFile)}`;
+  return null;
+}
+
+export function extractTestEvidence(source, fileName = 'mutation-gate-input.test.ts') {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const variableInitializers = buildVariableInitializerIndex(sourceFile);
+
+  let declarationCount = 0;
+  const assertions = [];
+  const eachRows = [];
+  const controlFlow = [];
+  const visit = (node, insideTest = false) => {
+    const testDeclaration = isTestDeclarationCall(node);
+    if (testDeclaration) {
+      declarationCount += 1;
+      const title = node.arguments[0] ? canonicalNode(node.arguments[0], sourceFile) : '<anonymous>';
+      for (const row of resolveEachRows(node, sourceFile, variableInitializers)) {
+        eachRows.push(`${title}:${row}`);
+      }
+    }
+    const assertionExpression = ts.isExpressionStatement(node)
+      ? node.expression
+      : ts.isReturnStatement(node)
+        ? node.expression
+        : ts.isArrowFunction(node) && !ts.isBlock(node.body)
+          ? node.body
+        : null;
+    if (assertionExpression && isAssertionExpression(assertionExpression)) {
+      assertions.push(canonicalNode(node, sourceFile));
+      return;
+    }
+    const flowFingerprint = insideTest ? controlFlowFingerprint(node, sourceFile) : null;
+    if (flowFingerprint) controlFlow.push(flowFingerprint);
+    ts.forEachChild(node, (child) => visit(child, insideTest || testDeclaration));
+  };
+  visit(sourceFile);
+
+  return {
+    declarationCount,
+    assertions: assertions.sort(),
+    eachRows: eachRows.sort(),
+    controlFlow: controlFlow.sort(),
+    parseDiagnostics: sourceFile.parseDiagnostics.map((diagnostic) => ({
+      code: diagnostic.code,
+      start: diagnostic.start ?? null,
+      message: ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+    })),
+  };
+}
+
+export function countTestDeclarations(source) {
+  return extractTestEvidence(source).declarationCount;
+}
+
+export function isTestCleanupChange(change, current, previous) {
+  if (change.status.startsWith('D')) return true;
+  if (change.status.startsWith('A')) return false;
+  const currentEvidence = extractTestEvidence(current, change.file ?? 'current.test.ts');
+  const previousEvidence = extractTestEvidence(previous, change.previous ?? change.file ?? 'previous.test.ts');
+  return currentEvidence.parseDiagnostics.length > 0
+    || previousEvidence.parseDiagnostics.length > 0
+    || previousEvidence.declarationCount > currentEvidence.declarationCount
+    || hasRemovedEvidence(previousEvidence.assertions, currentEvidence.assertions)
+    || hasRemovedEvidence(previousEvidence.eachRows, currentEvidence.eachRows)
+    || hasRemovedEvidence(previousEvidence.controlFlow, currentEvidence.controlFlow);
+}
+
+export function parseMutationTarget(target) {
+  if (typeof target !== 'string') return null;
+  const match = STRYKER_MUTATION_TARGET.exec(target);
+  if (!match) return null;
+  const startLine = Number(match[2]);
+  const endLine = Number(match[3]);
+  if (startLine > endLine) return null;
+  return { file: match[1], startLine, endLine };
+}
+
+function mutationTargetPattern(target) {
+  return typeof target === 'object' && target !== null ? target.pattern : null;
+}
+
+function mutationRangesOverlap(left, right) {
+  return left.file === right.file
+    && left.startLine <= right.endLine
+    && right.startLine <= left.endLine;
+}
+
+function validateOwnerTestSelector(target) {
+  const hasExactName = typeof target.ownerTestName === 'string' && target.ownerTestName.trim().length > 0;
+  const hasNamePattern = typeof target.ownerTestNamePattern === 'string'
+    && target.ownerTestNamePattern.trim().length > 0;
+  if (hasExactName === hasNamePattern) {
+    return [`mutation target must declare exactly one ownerTestName or ownerTestNamePattern: ${target.pattern}`];
+  }
+  if (hasExactName && target.ownerTestName.trim().length < 20) {
+    return [`mutation target ownerTestName is insufficiently specific: ${target.pattern}`];
+  }
+  if (hasNamePattern) {
+    if (target.ownerTestNamePattern.trim().length < 12) {
+      return [`mutation target ownerTestNamePattern is insufficiently specific: ${target.pattern}`];
+    }
+    try {
+      new RegExp(target.ownerTestNamePattern);
+    } catch {
+      return [`mutation target ownerTestNamePattern is invalid: ${target.pattern}`];
+    }
+  }
+  return [];
+}
+
+function ownerTestNameMatches(testName, target) {
+  if (typeof target.ownerTestName === 'string') return testName === target.ownerTestName;
+  return new RegExp(target.ownerTestNamePattern).test(testName);
+}
+
+export function validateGovernedMutationTarget(
+  target,
+  mapping,
+  exists = fs.existsSync,
+  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+) {
+  if (!target || typeof target !== 'object' || Array.isArray(target)) {
+    return ['mutation target must be a structured ownership entry'];
+  }
+  const errors = [];
+  const parsed = parseMutationTarget(target.pattern);
+  if (!parsed) return [`invalid mutation target pattern: ${String(target.pattern)}`];
+  if (parsed.endLine - parsed.startLine + 1 > MAX_MUTATION_RANGE_LINES) {
+    errors.push(`mutation target range exceeds ${MAX_MUTATION_RANGE_LINES} lines: ${target.pattern}`);
+  }
+
+  const sources = new Set(Array.isArray(mapping.sources) ? mapping.sources : []);
+  const replacements = new Set(Array.isArray(mapping.replacementTests) ? mapping.replacementTests : []);
+  const absoluteSource = path.join(root, parsed.file);
+  if (!sources.has(parsed.file)) {
+    errors.push(`mutation target source is not governed by mapping.sources: ${parsed.file}`);
+  }
+  if (!exists(absoluteSource)) {
+    errors.push(`mutation target source does not exist: ${parsed.file}`);
+  } else {
+    const lines = readSource(absoluteSource).split(/\r?\n/);
+    if (parsed.endLine > lines.length) {
+      errors.push(`mutation target line range exceeds ${parsed.file} (${lines.length} lines): ${target.pattern}`);
+    } else if (typeof target.anchor !== 'string' || target.anchor.trim().length < 3) {
+      errors.push(`mutation target anchor is missing: ${target.pattern}`);
+    } else {
+      const selectedLines = lines.slice(parsed.startLine - 1, parsed.endLine).join('\n');
+      const anchorOccurrences = selectedLines.split(target.anchor).length - 1;
+      if (anchorOccurrences === 0) {
+        errors.push(`mutation target anchor is absent from selected lines: ${target.pattern}`);
+      } else if (anchorOccurrences !== 1) {
+        errors.push(`mutation target anchor must occur exactly once in selected lines: ${target.pattern}`);
+      }
+    }
+  }
+  if (typeof target.behavior !== 'string' || target.behavior.trim().length < 20) {
+    errors.push(`mutation target behavior is missing: ${target.pattern}`);
+  }
+  if (!Number.isInteger(target.minimumMutants) || target.minimumMutants < 1) {
+    errors.push(`mutation target minimumMutants must be a positive integer: ${target.pattern}`);
+  }
+  if (typeof target.replacementTest !== 'string' || !replacements.has(target.replacementTest)) {
+    errors.push(`mutation target replacementTest is not retained by the cleanup mapping: ${target.pattern}`);
+  } else if (!exists(path.join(root, target.replacementTest))) {
+    errors.push(`mutation target replacementTest does not exist: ${target.replacementTest}`);
+  }
+  errors.push(...validateOwnerTestSelector(target));
+  return errors;
+}
+
+export function validateMutationException(
+  exception,
+  exists = fs.existsSync,
+  now = Date.now(),
+  criticalModulePatterns = [],
+) {
+  if (!exception || typeof exception !== 'object' || Array.isArray(exception)) {
+    return ['mutation exception must be an object'];
+  }
+  const errors = [];
+  if (
+    typeof exception.file !== 'string'
+    || !exception.file.startsWith('src/')
+    || path.isAbsolute(exception.file)
+    || exception.file.includes('..')
+  ) {
+    errors.push(`invalid mutation exception file: ${String(exception.file)}`);
+  } else if (!exists(path.join(root, exception.file))) {
+    errors.push(`mutation exception file does not exist: ${exception.file}`);
+  } else if (!isCriticalModule(exception.file, criticalModulePatterns)) {
+    errors.push(`mutation exception file is outside governed critical module patterns: ${exception.file}`);
+  }
+  if (typeof exception.owner !== 'string' || exception.owner.trim().length < 3) {
+    errors.push(`mutation exception owner is missing: ${String(exception.file)}`);
+  }
+  if (typeof exception.reason !== 'string' || exception.reason.trim().length < 20) {
+    errors.push(`mutation exception reason is insufficient: ${String(exception.file)}`);
+  }
+  if (typeof exception.expires !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(exception.expires)) {
+    errors.push(`mutation exception expiry is invalid: ${String(exception.file)}`);
+  } else {
+    const expiresAt = Date.parse(`${exception.expires}T23:59:59.999Z`);
+    const normalized = Number.isFinite(expiresAt)
+      ? new Date(expiresAt).toISOString().slice(0, 10)
+      : null;
+    if (normalized !== exception.expires) {
+      errors.push(`mutation exception expiry is invalid: ${String(exception.file)}`);
+    } else if (expiresAt <= now) {
+      errors.push(`mutation exception expiry is not in the future: ${String(exception.file)}`);
+    }
+  }
+  return errors;
+}
+
+export function buildStrykerInvocation({ config, targets, thresholds, testFiles, scope = 'changed-critical' }) {
+  const env = {
+    NEXUS_MUTATE_FILES: JSON.stringify(targets),
+    NEXUS_MUTATION_THRESHOLDS: JSON.stringify(thresholds),
+    NEXUS_MUTATION_SCOPE: scope,
+  };
+  if (testFiles?.length > 0) {
+    env.NEXUS_MUTATION_TEST_FILES = JSON.stringify(testFiles);
+  }
   return {
     args: ['run', config],
-    env: {
-      NEXUS_MUTATE_FILES: JSON.stringify(targets),
-      NEXUS_MUTATION_THRESHOLDS: JSON.stringify(thresholds),
-    },
+    env,
+  };
+}
+
+function normalizedReportPath(file) {
+  const absolute = path.isAbsolute(file) ? file : path.resolve(root, file);
+  return path.relative(root, absolute).split(path.sep).join('/');
+}
+
+export function validateMutationReport(
+  report,
+  { governedSources, governedRanges = [], minimumScore = 70 },
+) {
+  const errors = [];
+  const summaries = [];
+  const rangeSummaries = [];
+  const files = report && typeof report === 'object' && report.files && typeof report.files === 'object'
+    ? report.files
+    : null;
+  if (!files) {
+    return {
+      valid: false,
+      totalMutants: 0,
+      minimumMutants: 0,
+      sources: [],
+      ranges: [],
+      errors: ['Stryker JSON report is missing its files map'],
+    };
+  }
+  const fileByPath = new Map(
+    Object.entries(files).map(([file, details]) => [normalizedReportPath(file), details]),
+  );
+  const testsByFile = new Map(
+    Object.entries(report.testFiles ?? {}).map(([file, details]) => [
+      normalizedReportPath(file),
+      Array.isArray(details?.tests)
+        ? details.tests.map((test) => ({ id: String(test.id), name: String(test.name ?? '') }))
+        : [],
+    ]),
+  );
+  let totalMutants = 0;
+
+  for (const source of [...new Set(governedSources)].sort()) {
+    const details = fileByPath.get(normalizedReportPath(source));
+    if (!details || !Array.isArray(details.mutants)) {
+      errors.push(`governed source is missing from Stryker report: ${source}`);
+      continue;
+    }
+    const unknownStatuses = [...new Set(details.mutants
+      .filter((mutant) => !MUTATION_STATUSES.has(mutant?.status))
+      .map((mutant) => String(mutant?.status ?? '<missing>')))]
+      .sort();
+    for (const status of unknownStatuses) {
+      errors.push(`governed source contains unscored mutation status ${status}: ${source}`);
+    }
+    const mutants = details.mutants.filter((mutant) => MUTATION_STATUSES.has(mutant?.status));
+    totalMutants += mutants.length;
+    const noCoverage = mutants.filter((mutant) => mutant.status === 'NoCoverage').length;
+    const detected = mutants.filter((mutant) => DETECTED_MUTATION_STATUSES.has(mutant.status)).length;
+    const score = mutants.length === 0 ? 0 : (detected / mutants.length) * 100;
+    summaries.push({ source, mutants: mutants.length, detected, noCoverage, score });
+    if (mutants.length === 0) errors.push(`governed source has no scored mutants: ${source}`);
+    if (noCoverage > 0) errors.push(`governed source contains ${noCoverage} NoCoverage mutant(s): ${source}`);
+    if (score < minimumScore) {
+      errors.push(`governed source mutation score ${score.toFixed(2)} is below ${minimumScore}: ${source}`);
+    }
+  }
+
+  const parsedRanges = [];
+  const seenRangePatterns = new Set();
+  for (const range of governedRanges) {
+    const parsed = parseMutationTarget(range.pattern);
+    if (!parsed || !Number.isInteger(range.minimumMutants) || range.minimumMutants < 1) {
+      errors.push(`invalid governed mutation range in report policy: ${String(range.pattern)}`);
+      continue;
+    }
+    if (seenRangePatterns.has(range.pattern)) {
+      errors.push(`duplicate governed mutation range in report policy: ${range.pattern}`);
+    }
+    seenRangePatterns.add(range.pattern);
+    if (parsed.endLine - parsed.startLine + 1 > MAX_MUTATION_RANGE_LINES) {
+      errors.push(`governed mutation range exceeds ${MAX_MUTATION_RANGE_LINES} lines: ${range.pattern}`);
+    }
+    errors.push(...validateOwnerTestSelector(range));
+    parsedRanges.push({ ...range, ...parsed });
+  }
+  for (let leftIndex = 0; leftIndex < parsedRanges.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < parsedRanges.length; rightIndex += 1) {
+      const left = parsedRanges[leftIndex];
+      const right = parsedRanges[rightIndex];
+      if (left.pattern !== right.pattern && mutationRangesOverlap(left, right)) {
+        errors.push(`governed mutation ranges overlap: ${left.pattern} and ${right.pattern}`);
+      }
+    }
+  }
+
+  for (const range of parsedRanges) {
+    const details = fileByPath.get(normalizedReportPath(range.file));
+    const ownerTests = testsByFile.get(normalizedReportPath(range.replacementTest));
+    if (!ownerTests || ownerTests.length === 0) {
+      errors.push(`governed replacement test is missing from Stryker report: ${range.replacementTest}`);
+    }
+    const ownerSelectorIsValid = validateOwnerTestSelector(range).length === 0;
+    const matchingOwnerTests = ownerSelectorIsValid
+      ? (ownerTests ?? []).filter((test) => ownerTestNameMatches(test.name, range))
+      : [];
+    if (ownerSelectorIsValid && matchingOwnerTests.length === 0) {
+      errors.push(`governed behavior owner test is missing from Stryker report: ${range.pattern}`);
+    } else if (matchingOwnerTests.length > 1) {
+      errors.push(`governed behavior owner test is ambiguous in Stryker report: ${range.pattern}`);
+    }
+    const ownerTestIds = new Set(matchingOwnerTests.map(({ id }) => id));
+    const mutants = Array.isArray(details?.mutants)
+      ? details.mutants.filter((mutant) => {
+        if (!MUTATION_STATUSES.has(mutant?.status)) return false;
+        const startLine = mutant?.location?.start?.line;
+        const endLine = mutant?.location?.end?.line;
+        return Number.isInteger(startLine)
+          && Number.isInteger(endLine)
+          && startLine >= range.startLine
+          && endLine <= range.endLine;
+      })
+      : [];
+    const noCoverage = mutants.filter((mutant) => mutant.status === 'NoCoverage').length;
+    const detected = mutants.filter((mutant) => DETECTED_MUTATION_STATUSES.has(mutant.status)).length;
+    const ownerKilled = mutants.filter((mutant) => (
+      mutant.status === 'Killed'
+      && Array.isArray(mutant.killedBy)
+      && mutant.killedBy.some((id) => ownerTestIds?.has(String(id)))
+    )).length;
+    const score = mutants.length === 0 ? 0 : (detected / mutants.length) * 100;
+    rangeSummaries.push({
+      pattern: range.pattern,
+      replacementTest: range.replacementTest,
+      ownerTestName: range.ownerTestName ?? null,
+      ownerTestNamePattern: range.ownerTestNamePattern ?? null,
+      matchedOwnerTestName: matchingOwnerTests[0]?.name ?? null,
+      minimumMutants: range.minimumMutants,
+      mutants: mutants.length,
+      detected,
+      ownerKilled,
+      noCoverage,
+      score,
+    });
+    if (mutants.length < range.minimumMutants) {
+      errors.push(
+        `governed range mutant total ${mutants.length} is below floor ${range.minimumMutants}: ${range.pattern}`,
+      );
+    }
+    if (noCoverage > 0) {
+      errors.push(`governed range contains ${noCoverage} NoCoverage mutant(s): ${range.pattern}`);
+    }
+    if (score < minimumScore) {
+      errors.push(`governed range mutation score ${score.toFixed(2)} is below ${minimumScore}: ${range.pattern}`);
+    }
+    if (ownerKilled < range.minimumMutants) {
+      errors.push(
+        `governed range owner-killed total ${ownerKilled} is below floor ${range.minimumMutants}: ${range.pattern}`,
+      );
+    }
+  }
+
+  const rangedSources = new Set(parsedRanges.map((range) => range.file));
+  const fullFileSources = [...new Set(governedSources)].filter((source) => !rangedSources.has(source));
+  const minimumMutants = parsedRanges.reduce((sum, range) => sum + range.minimumMutants, 0)
+    + fullFileSources.length;
+  if (minimumMutants < 1) errors.push('mutation plan-derived mutant floor must be at least one');
+  if (totalMutants < minimumMutants) {
+    errors.push(`governed mutant total ${totalMutants} is below plan-derived floor ${minimumMutants}`);
+  }
+  return {
+    valid: errors.length === 0,
+    totalMutants,
+    minimumMutants,
+    sources: summaries,
+    ranges: rangeSummaries,
+    errors,
   };
 }
 
@@ -69,7 +653,11 @@ export function resolveReferencedSourcePaths(testFile, source, exists = fs.exist
   return [...resolved].sort();
 }
 
-export function validateCleanupMapping(mapping, exists = fs.existsSync) {
+export function validateCleanupMapping(
+  mapping,
+  exists = fs.existsSync,
+  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+) {
   if (!mapping || typeof mapping !== 'object') return ['mapping is missing'];
   const errors = [];
   if (!Array.isArray(mapping.replacementTests) || mapping.replacementTests.length === 0) {
@@ -94,13 +682,42 @@ export function validateCleanupMapping(mapping, exists = fs.existsSync) {
       }
     }
   }
+  if (mapping.mutationTargets !== undefined) {
+    if (!Array.isArray(mapping.mutationTargets) || mapping.mutationTargets.length === 0) {
+      errors.push('mutationTargets must contain at least one governed ownership entry');
+    } else {
+      const parsedTargets = [];
+      const seenPatterns = new Set();
+      for (const target of mapping.mutationTargets) {
+        errors.push(...validateGovernedMutationTarget(target, mapping, exists, readSource));
+        const pattern = mutationTargetPattern(target);
+        const parsed = parseMutationTarget(pattern);
+        if (!parsed) continue;
+        if (seenPatterns.has(pattern)) {
+          errors.push(`duplicate governed mutation range: ${pattern}`);
+          continue;
+        }
+        seenPatterns.add(pattern);
+        const overlap = parsedTargets.find((prior) => mutationRangesOverlap(prior, parsed));
+        if (overlap) {
+          errors.push(`governed mutation ranges overlap: ${overlap.pattern} and ${pattern}`);
+        }
+        parsedTargets.push({ ...parsed, pattern });
+      }
+    }
+  }
   if (typeof mapping.reason !== 'string' || mapping.reason.trim().length < 12) {
     errors.push('reason must explain the conversion or merge');
   }
   return errors;
 }
 
-export function resolveDeletedTestCleanupMappings(changes, cleanupMappings, exists = fs.existsSync) {
+export function resolveDeletedTestCleanupMappings(
+  changes,
+  cleanupMappings,
+  exists = fs.existsSync,
+  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+) {
   const mappingByTest = new Map(cleanupMappings.map((mapping) => [mapping.test, mapping]));
   const resolved = [];
   const unmapped = [];
@@ -116,7 +733,7 @@ export function resolveDeletedTestCleanupMappings(changes, cleanupMappings, exis
       unmapped.push(change.file);
       continue;
     }
-    const errors = validateCleanupMapping(mapping, exists);
+    const errors = validateCleanupMapping(mapping, exists, readSource);
     if (errors.length > 0) invalid.push({ test: change.file, errors });
     else resolved.push(mapping);
   }
@@ -142,43 +759,245 @@ function parseChangedFiles(base) {
   });
 }
 
-export function buildMutationPlan({ base, changes, patterns, cleanupMappings = [] }) {
-  const targets = new Set();
-  const cleanupTests = [];
-  const deletedTestAudit = resolveDeletedTestCleanupMappings(changes, cleanupMappings);
-  const mappingByTest = new Map(cleanupMappings.map((mapping) => [mapping.test, mapping]));
-
-  for (const change of changes) {
-    if (change.file.startsWith('src/') && !change.status.startsWith('D') && isCriticalModule(change.file, patterns)) {
-      targets.add(change.file);
+export function buildMutationPlan({
+  base,
+  changes,
+  patterns,
+  scope = 'changed-critical',
+  cleanupMappings = [],
+  mutationExceptions = [],
+  exists = fs.existsSync,
+  readCurrent = (file) => (
+    exists(path.join(root, file)) ? fs.readFileSync(path.join(root, file), 'utf8') : ''
+  ),
+  readPrevious = readAtBase,
+  readSource = (candidate) => fs.readFileSync(candidate, 'utf8'),
+  now = Date.now(),
+}) {
+  if (!MUTATION_SCOPES.has(scope)) {
+    throw new Error(`Unsupported mutation scope: ${scope}`);
+  }
+  const candidateTargets = new Map();
+  const addCandidateTarget = (file, mutationTargets = []) => {
+    if (mutationTargets.length === 0) {
+      candidateTargets.set(file, null);
+      return;
     }
-    if (!change.file.startsWith('__tests__/') || !change.file.endsWith('.test.ts')) continue;
-
-    const current = fs.existsSync(path.join(root, change.file))
-      ? fs.readFileSync(path.join(root, change.file), 'utf8')
-      : '';
-    const previousFile = change.previous ?? change.file;
-    const previous = readAtBase(base, previousFile);
-    if (change.status.startsWith('D') || previous.length > current.length) cleanupTests.push(change.file);
-
-    const mapping = mappingByTest.get(change.file) ?? mappingByTest.get(previousFile);
-    const dependencies = new Set(resolveReferencedSourcePaths(change.file, `${current}\n${previous}`));
-    for (const source of mapping?.sources ?? []) dependencies.add(source);
-    for (const dependency of dependencies) {
-      if (isCriticalModule(dependency, patterns)) targets.add(dependency);
+    if (candidateTargets.get(file) === null) return;
+    const existingTargets = candidateTargets.get(file) ?? new Set();
+    for (const target of mutationTargets) existingTargets.add(target);
+    candidateTargets.set(file, existingTargets);
+  };
+  const cleanupTests = [];
+  const unmappedRetainedCleanupTests = [];
+  const testEvidenceParseDiagnostics = [];
+  const governedRangeByPattern = new Map();
+  const deletedTestAudit = resolveDeletedTestCleanupMappings(changes, cleanupMappings, exists, readSource);
+  const invalidCleanupMappings = [...deletedTestAudit.invalid];
+  const mappingByTest = new Map(cleanupMappings.map((mapping) => [mapping.test, mapping]));
+  const mappingsByReplacementTest = new Map();
+  for (const mapping of cleanupMappings) {
+    for (const replacementTest of mapping.replacementTests ?? []) {
+      const owners = mappingsByReplacementTest.get(replacementTest) ?? [];
+      owners.push(mapping);
+      mappingsByReplacementTest.set(replacementTest, owners);
     }
   }
 
+  for (const change of changes) {
+    if (
+      scope === 'changed-critical'
+      && change.file.startsWith('src/')
+      && !change.status.startsWith('D')
+      && isCriticalModule(change.file, patterns)
+    ) {
+      addCandidateTarget(change.file);
+    }
+    if (!change.file.startsWith('__tests__/') || !change.file.endsWith('.test.ts')) continue;
+
+    const current = readCurrent(change.file);
+    const previousFile = change.previous ?? change.file;
+    const previous = readPrevious(base, previousFile);
+    const currentDiagnostics = extractTestEvidence(current, change.file).parseDiagnostics;
+    const previousDiagnostics = extractTestEvidence(previous, previousFile).parseDiagnostics;
+    if (currentDiagnostics.length > 0 || previousDiagnostics.length > 0) {
+      testEvidenceParseDiagnostics.push({
+        test: change.file,
+        current: currentDiagnostics,
+        previous: previousDiagnostics,
+      });
+    }
+    const protectsRemovedAssertions = isTestCleanupChange(change, current, previous);
+    if (protectsRemovedAssertions) cleanupTests.push(change.file);
+
+    // Pull requests that remove assertions mutate only the critical source
+    // dependencies owned by those cleaned-up tests. Direct production edits
+    // belong to the weekly changed-critical lane and must not balloon this
+    // gate into a second full mutation run.
+    if (scope !== 'test-cleanup' || !protectsRemovedAssertions) continue;
+
+    const exactMapping = mappingByTest.get(change.file) ?? mappingByTest.get(previousFile);
+    const replacementMappings = exactMapping
+      ? []
+      : [...new Set([
+        ...(mappingsByReplacementTest.get(change.file) ?? []),
+        ...(mappingsByReplacementTest.get(previousFile) ?? []),
+      ])];
+    const mappings = exactMapping ? [exactMapping] : replacementMappings;
+    if (mappings.length === 0) {
+      if (!change.status.startsWith('D')) unmappedRetainedCleanupTests.push(change.file);
+      continue;
+    }
+    for (const mapping of mappings) {
+      const mappingErrors = validateCleanupMapping(mapping, exists, readSource);
+      if (mappingErrors.length > 0) {
+        invalidCleanupMappings.push({
+          test: change.file,
+          mapping: mapping.test,
+          errors: mappingErrors,
+        });
+        continue;
+      }
+      // A declared cleanup mapping is authoritative: mocked imports and source
+      // literals in deleted QA suites are fixtures, not behavior ownership.
+      const dependencies = new Set(mapping.sources);
+      for (const dependency of dependencies) {
+        if (!isCriticalModule(dependency, patterns)) continue;
+        const governedMutationTargets = (mapping.mutationTargets ?? [])
+          .filter((target) => parseMutationTarget(mutationTargetPattern(target))?.file === dependency);
+        if (governedMutationTargets.length === 0) {
+          invalidCleanupMappings.push({
+            test: change.file,
+            mapping: mapping.test,
+            errors: [`critical cleanup source requires a governed mutation range: ${dependency}`],
+          });
+          continue;
+        }
+        const acceptedTargetPatterns = [];
+        for (const target of governedMutationTargets) {
+          const priorOwner = governedRangeByPattern.get(target.pattern);
+          if (
+            priorOwner
+            && (
+              priorOwner.replacementTest !== target.replacementTest
+              || priorOwner.mappingTest !== mapping.test
+            )
+          ) {
+            invalidCleanupMappings.push({
+              test: change.file,
+              mapping: mapping.test,
+              errors: [`governed mutation range has conflicting owners: ${target.pattern}`],
+            });
+            continue;
+          }
+          const parsedTarget = parseMutationTarget(target.pattern);
+          const overlappingOwner = [...governedRangeByPattern.values()].find((candidate) => {
+            const parsedCandidate = parseMutationTarget(candidate.pattern);
+            return candidate.mappingTest !== mapping.test
+              && parsedCandidate
+              && parsedTarget
+              && mutationRangesOverlap(parsedCandidate, parsedTarget);
+          });
+          if (overlappingOwner) {
+            invalidCleanupMappings.push({
+              test: change.file,
+              mapping: mapping.test,
+              errors: [`governed mutation ranges overlap across mappings: ${overlappingOwner.pattern} and ${target.pattern}`],
+            });
+            continue;
+          }
+          governedRangeByPattern.set(target.pattern, { ...target, mappingTest: mapping.test });
+          acceptedTargetPatterns.push(target.pattern);
+        }
+        if (acceptedTargetPatterns.length > 0) addCandidateTarget(dependency, acceptedTargetPatterns);
+      }
+    }
+  }
+
+  const exceptionByFile = new Map();
+  const invalidMutationExemptions = [];
+  const expiredMutationExemptions = [];
+  for (const exception of mutationExceptions) {
+    const errors = validateMutationException(exception, exists, now, patterns);
+    if (exceptionByFile.has(exception?.file)) {
+      errors.push(`duplicate mutation exception for file: ${String(exception?.file)}`);
+    }
+    if (errors.length > 0) {
+      invalidMutationExemptions.push({ file: exception?.file ?? null, errors });
+      if (errors.some((error) => error.includes('expiry is not in the future'))) {
+        expiredMutationExemptions.push({ file: exception?.file ?? null, expires: exception?.expires ?? null });
+      }
+      continue;
+    }
+    exceptionByFile.set(exception.file, exception);
+  }
+  const excludedTargets = [];
+  const targets = [];
+  for (const [file, sourceTargets] of [...candidateTargets.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    if (!exists(path.join(root, file))) continue;
+    // Mutation exemptions are governed independently from coverage ratchets.
+    // Cleanup protection is never exempted, and weekly exemptions require
+    // their own explicit owner/reason/expiry in mutation.exceptions.
+    const exception = scope === 'changed-critical' ? exceptionByFile.get(file) : null;
+    if (!exception) {
+      targets.push(...(sourceTargets === null ? [file] : [...sourceTargets].sort()));
+      continue;
+    }
+    excludedTargets.push({
+      file,
+      owner: exception.owner,
+      reason: exception.reason,
+      expires: exception.expires,
+    });
+  }
+
+  const governedRanges = targets
+    .map((target) => governedRangeByPattern.get(target))
+    .filter(Boolean)
+    .sort((left, right) => left.pattern.localeCompare(right.pattern));
+  const testFiles = scope === 'test-cleanup'
+    ? [...new Set(governedRanges.map(({ replacementTest }) => replacementTest))]
+      .filter((file) => exists(path.join(root, file)))
+      .sort()
+    : [];
+  const governedSources = [...new Set(targets.map((target) => (
+    parseMutationTarget(target)?.file ?? target
+  )))].sort();
+  const rangedSources = new Set(governedRanges.map(({ pattern }) => parseMutationTarget(pattern)?.file));
+  const minimumMutants = governedRanges.reduce((sum, range) => sum + range.minimumMutants, 0)
+    + governedSources.filter((source) => !rangedSources.has(source)).length;
+
   return {
-    schema: 'nexus.mutation-plan.v2',
+    schema: 'nexus.mutation-plan.v5',
     base,
     head: git(['rev-parse', 'HEAD']).stdout.trim(),
+    scope,
     cleanupTests: [...new Set(cleanupTests)].sort(),
     cleanupMappings: deletedTestAudit.resolved,
     unmappedDeletedTests: deletedTestAudit.unmapped,
-    invalidCleanupMappings: deletedTestAudit.invalid,
-    targets: [...targets].filter((file) => fs.existsSync(path.join(root, file))).sort(),
+    unmappedRetainedCleanupTests: [...new Set(unmappedRetainedCleanupTests)].sort(),
+    testEvidenceParseDiagnostics,
+    invalidCleanupMappings,
+    excludedTargets,
+    invalidMutationExemptions,
+    expiredMutationExemptions,
+    targets,
+    governedSources,
+    governedRanges,
+    minimumMutants,
+    testFiles,
   };
+}
+
+export function mutationPlanExitCode(plan) {
+  return [
+    plan?.unmappedDeletedTests,
+    plan?.unmappedRetainedCleanupTests,
+    plan?.testEvidenceParseDiagnostics,
+    plan?.invalidCleanupMappings,
+    plan?.invalidMutationExemptions,
+    plan?.expiredMutationExemptions,
+  ].some((issues) => Array.isArray(issues) && issues.length > 0) ? 3 : 0;
 }
 
 function main() {
@@ -188,9 +1007,14 @@ function main() {
     return index === -1 ? null : args[index + 1];
   };
   const base = valueOf('--base');
+  const scope = valueOf('--scope') ?? 'changed-critical';
   const planOnly = args.includes('--plan');
   if (!base) {
-    console.error('Usage: mutation-gate.mjs --base <sha> [--plan]');
+    console.error('Usage: mutation-gate.mjs --base <sha> [--scope test-cleanup|changed-critical] [--plan]');
+    process.exit(64);
+  }
+  if (!MUTATION_SCOPES.has(scope)) {
+    console.error(`Unsupported mutation scope: ${scope}`);
     process.exit(64);
   }
   if (git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
@@ -204,16 +1028,19 @@ function main() {
     base,
     changes,
     patterns: policy.mutation.criticalModulePatterns,
+    scope,
     cleanupMappings: policy.mutation.cleanupMappings,
+    mutationExceptions: policy.mutation.exceptions,
   });
   const outputDir = path.join(root, '.local/mutation');
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(path.join(outputDir, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
   console.log(JSON.stringify(plan, null, 2));
 
-  if (plan.unmappedDeletedTests.length > 0 || plan.invalidCleanupMappings.length > 0) {
-    console.error('Deleted tests must have a valid source-to-replacement cleanup mapping.');
-    process.exit(3);
+  const planExitCode = mutationPlanExitCode(plan);
+  if (planExitCode !== 0) {
+    console.error('Mutation cleanup mappings and exceptions must be valid and fail-closed.');
+    process.exit(planExitCode);
   }
 
   if (planOnly || plan.targets.length === 0) {
@@ -223,7 +1050,15 @@ function main() {
 
   const thresholds = policy.mutation.thresholds;
   const config = path.join(root, 'config/stryker.config.mjs');
-  const invocation = buildStrykerInvocation({ config, targets: plan.targets, thresholds });
+  const reportPath = path.join(outputDir, 'mutation-report.json');
+  fs.rmSync(reportPath, { force: true });
+  const invocation = buildStrykerInvocation({
+    config,
+    targets: plan.targets,
+    thresholds,
+    testFiles: plan.testFiles,
+    scope,
+  });
   const result = spawnSync(
     path.join(root, 'node_modules/.bin/stryker'),
     invocation.args,
@@ -237,7 +1072,29 @@ function main() {
       },
     },
   );
-  process.exit(result.status ?? 1);
+  if (result.status !== 0) process.exit(result.status ?? 1);
+
+  let report;
+  try {
+    report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+  } catch (error) {
+    console.error(`Unable to read fresh Stryker JSON report: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(4);
+  }
+  const reportValidation = validateMutationReport(report, {
+    governedSources: plan.governedSources,
+    governedRanges: plan.governedRanges,
+    minimumScore: thresholds.break,
+  });
+  fs.writeFileSync(
+    path.join(outputDir, 'report-validation.json'),
+    `${JSON.stringify(reportValidation, null, 2)}\n`,
+  );
+  console.log(JSON.stringify(reportValidation, null, 2));
+  if (!reportValidation.valid) {
+    console.error('Stryker report failed governed-source integrity validation.');
+    process.exit(4);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

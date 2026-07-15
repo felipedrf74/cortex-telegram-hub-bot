@@ -15,7 +15,7 @@ command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is required to request relea
 gh auth status >/dev/null 2>&1 || { echo "GitHub CLI authentication is required" >&2; exit 1; }
 
 WORKFLOW="sign-release-manifest.yml"
-gh workflow view "$WORKFLOW" --ref main >/dev/null 2>&1 || {
+gh workflow view "$WORKFLOW" --ref main --yaml >/dev/null 2>&1 || {
   echo "protected-main release signing workflow is unavailable" >&2
   exit 1
 }

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, Response, type Request } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
@@ -42,6 +43,28 @@ function parseExportJson(value: unknown): unknown {
 
 export function settingsRoutes(): Router {
   const router = Router();
+  const pushTokenRevokeRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: config.ios?.rateLimit ?? 60,
+    keyGenerator: (req: Request) => {
+      const userId = (req as AuthenticatedRequest).userId;
+      if (typeof userId === 'number' && userId > 0) return `user:${userId}`;
+      return `ip:${ipKeyGenerator(req.ip || req.socket?.remoteAddress || '0.0.0.0')}`;
+    },
+    // The parent API router still owns the normal per-user rate-limit
+    // headers. This narrower limiter makes the database-mutating revoke
+    // handler independently safe when the settings router is mounted or
+    // tested on its own.
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.ceil(options.windowMs / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
   function ensureValidSettingsUserScope(
     res: Response,
@@ -212,7 +235,7 @@ export function settingsRoutes(): Router {
   });
 
   /** DELETE /api/v1/settings/push-token */
-  router.delete('/push-token', async (req, res: Response) => {
+  router.delete('/push-token', pushTokenRevokeRateLimitMiddleware, async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_push_token')) return;
     const deviceId = (req as AuthenticatedRequest).deviceId;
