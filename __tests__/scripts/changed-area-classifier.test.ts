@@ -360,7 +360,7 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
   });
 
-  it('routes exact release operator changes into a cannot-skip promotion rehearsal', () => {
+  it('routes exact release operator changes into the complete focused promotion rehearsal', () => {
     const raw = execFileSync(
       'bash',
       [
@@ -377,10 +377,37 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     const result = JSON.parse(raw) as {
       flags: Record<string, boolean>;
       cannotSkip: string[];
+      tiers: string[];
+      vitest: { mode: string; globs: string[] };
+      stagingSmoke: { generic: boolean };
     };
 
     expect(result.flags.releaseOperator).toBe(true);
     expect(result.cannotSkip).toContain('exact-release-promotion-rehearsal');
+    expect(result.tiers).toContain('T4');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.stagingSmoke.generic).toBe(true);
+    expect(result.vitest.globs).toEqual(expect.arrayContaining([
+      '__tests__/scripts/release-runtime-safeguards.test.ts',
+      '__tests__/scripts/exact-promotion-operational-safety.test.ts',
+      '__tests__/scripts/release-exact-attestations.test.ts',
+      '__tests__/scripts/release-backup-runtime-artifact.test.ts',
+      '__tests__/scripts/rollback-versioned-runtime.test.ts',
+      '__tests__/scripts/pm2-sanitized-start.test.ts',
+      '__tests__/scripts/release-evidence-container.test.ts',
+    ]));
+  });
+
+  it('escalates shared release-gate infrastructure to full verification', () => {
+    const raw = execFileSync(
+      'bash',
+      ['scripts/changed-area-classifier.sh', '--json', '--files', 'scripts/lib/release-gates.sh'],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as { vitest: { mode: string }; flags: Record<string, boolean> };
+
+    expect(result.flags.runtimeInfra).toBe(true);
+    expect(result.vitest.mode).toBe('full');
   });
 
   it('routes iOS navigation and view-model changes into responsiveness XCTest classes', () => {

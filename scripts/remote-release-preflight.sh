@@ -112,6 +112,10 @@ if [ "$ROLE" = "production" ]; then
 fi
 
 set +e
+owner_output="$(mktemp)"
+chmod 600 "$owner_output"
+cleanup_owner_output() { rm -f "$owner_output"; }
+trap cleanup_owner_output EXIT
 (
   cd "$RELEASE_DIR"
   DOTENV_CONFIG_PATH="$ENV_FILE" \
@@ -119,7 +123,7 @@ set +e
     STAGING="$staging_flag" \
     DATABASE_PATH="$BASE_DIR/data/bot.db" \
     "$NODE_BIN" -r dotenv/config dist/tools/owner-bootstrap-preflight.js "${owner_args[@]}"
-)
+) >"$owner_output" 2>&1
 owner_status=$?
 set -e
 if [ "$owner_status" -ne 0 ]; then
@@ -131,5 +135,8 @@ if [ "$owner_status" -ne 0 ]; then
   fi
 fi
 
-printf 'release_preflight_ok role=%s envMode=%s envOwner=%s ownerPolicy=%s\n' \
-  "$ROLE" "$env_mode" "$env_owner" "$([ "$ROLE" = production ] && printf strict || printf warning)"
+# The bootstrap tool may report database paths or private owner identifiers.
+# Its raw output stays in a private temporary file and is never forwarded by
+# release mode. Emit only stable, non-identifying validation categories.
+printf 'release_preflight_ok role=%s envPermissions=private envOwnership=validated ownerPolicy=%s\n' \
+  "$ROLE" "$([ "$ROLE" = production ] && printf strict || printf warning)"

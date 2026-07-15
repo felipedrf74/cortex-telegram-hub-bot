@@ -587,7 +587,8 @@ $HAS_PACKAGE_JSON && TIERS+=("T3-recommended")
 $HAS_FULL_SUITE_TRIGGER && TIERS+=("T3-required")
 
 # Tier 4 (staging smoke) if backend src or migration in scope
-if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG; then
+if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG || \
+   $HAS_RELEASE_OPERATOR; then
   TIERS+=("T4")
 fi
 
@@ -606,7 +607,7 @@ if $HAS_NON_DOC; then
     VITEST_MODE="full"
   elif $HAS_HIGH_FAN_IN; then
     VITEST_MODE="full"
-  elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST || $HAS_DEPLOY_CONFIG; then
+  elif $HAS_BACKEND_SRC || $HAS_BACKEND_TEST || $HAS_DEPLOY_CONFIG || $HAS_RELEASE_OPERATOR; then
     VITEST_MODE="focused"
     $HAS_TRAINING && VITEST_GLOBS+=("__tests__/services/training-*.test.ts" "__tests__/services/coach-kernel-*.test.ts" "__tests__/api/training-*.test.ts" "__tests__/integration/training-plan-create-cycle.test.ts")
     $HAS_TRAINING_ENTITLEMENT && VITEST_GLOBS+=("__tests__/security/training-routes-entitlement.test.ts")
@@ -648,6 +649,20 @@ if $HAS_NON_DOC; then
     $HAS_GARMIN_APPLEHEALTH_CASCADE && VITEST_GLOBS+=("__tests__/security/garmin-tenant-leak-and-apple-health-cascade.test.ts")
     $HAS_GOOGLE_DRIVE_TENANT_LEAK && VITEST_GLOBS+=("__tests__/security/google-drive-tenant-leak.test.ts")
     $HAS_REGISTRY_REAL_EVAL && VITEST_GLOBS+=("__tests__/services/registry-real-eval-gates.test.ts" "__tests__/services/chat-action-registry-shadow-parity.test.ts" "__tests__/services/chat-action-registry-completeness.test.ts" "__tests__/services/registry-driven-eval-scenarios.test.ts" "__tests__/services/registry-real-eval-scoring.test.ts")
+    # Exact-release entrypoints and their remote helpers are release-critical,
+    # but they do not need to turn every isolated helper edit into a 13k-test
+    # run. Force the complete focused release safety family here. Changes to
+    # shared test/classifier/release-gate infrastructure still escalate to the
+    # full suite through HAS_FULL_SUITE_TRIGGER/HAS_RUNTIME_INFRA below.
+    $HAS_RELEASE_OPERATOR && VITEST_GLOBS+=(
+      "__tests__/scripts/release-runtime-safeguards.test.ts"
+      "__tests__/scripts/exact-promotion-operational-safety.test.ts"
+      "__tests__/scripts/release-exact-attestations.test.ts"
+      "__tests__/scripts/release-backup-runtime-artifact.test.ts"
+      "__tests__/scripts/rollback-versioned-runtime.test.ts"
+      "__tests__/scripts/pm2-sanitized-start.test.ts"
+      "__tests__/scripts/release-evidence-container.test.ts"
+    )
     $HAS_CONTENT_PROMPT_CLEANLINESS && PYTEST_GLOBS+=("content-engine/tests/test_prompt_cleanliness.py")
     if [ "${#VITEST_GLOBS[@]}" -eq 0 ]; then
       # Backend src/test changed but no domain mapped — fall back to changed-files-only
@@ -715,7 +730,8 @@ fi
 # ── Staging smoke ──────────────────────────────────────
 SS_GENERIC=false
 SS_DOMAINS=()
-if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG || $HAS_RUNTIME_INFRA; then
+if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG || \
+   $HAS_RUNTIME_INFRA || $HAS_RELEASE_OPERATOR; then
   SS_GENERIC=true
 fi
 $HAS_TRAINING && { $HAS_CALENDAR || true; } && SS_DOMAINS+=("smoke:training-cross-skill:staging")

@@ -61,7 +61,8 @@ function releaseFixture(role: 'staging' | 'production') {
   symlinkSync(join(ROOT, 'node_modules'), join(release, 'node_modules'), 'dir');
   writeFileSync(join(release, 'dist', 'tools', 'owner-bootstrap-preflight.js'), `
 if (process.env.FAIL_OWNER_PREFLIGHT === '1') process.exit(9);
-console.log('fixture owner bootstrap ok');
+console.log('fixture owner=' + (process.env.OWNER_TELEGRAM_USER_IDS || 'private-owner'));
+console.log('fixture database=' + process.env.DATABASE_PATH);
 `);
   const db = new Database(join(data, 'bot.db'));
   db.exec('CREATE TABLE fixture (id INTEGER PRIMARY KEY)');
@@ -79,7 +80,8 @@ function runPreflight(fixture: ReturnType<typeof releaseFixture>, role: 'staging
   ], { cwd: ROOT, encoding: 'utf8', env: { ...env } });
 }
 
-function writeCurl(bin: string) {
+function writeCurl(bin: string, fixture: ReturnType<typeof releaseFixture>) {
+  const counter = join(fixture.root, 'curl-backend-counter');
   executable(bin, `#!/usr/bin/env bash
 set -euo pipefail
 output=''; url=''; header=''
@@ -95,6 +97,11 @@ done
 [ -n "$output" ] && [ -n "$url" ]
 case "$url" in
   *:8200/health|*:8201/health)
+    count=0
+    [ ! -f '${counter}' ] || count=$(cat '${counter}')
+    count=$((count + 1)); printf '%s' "$count" > '${counter}'
+    delay="\${CURL_DELAY_BACKEND_ATTEMPTS:-0}"
+    [ "$count" -gt "$delay" ] || exit 7
     printf '%s\n' '{"status":"healthy","server":{"status":"online"},"database":"connected"}' > "$output"
     ;;
   *:8100/ready|*:8101/ready)
@@ -118,10 +125,12 @@ count=0
 count=$((count + 1)); printf '%s' "$count" > '${counter}'
 restart=3
 if [ "\${PM2_MUTATE_RESTART:-0}" = 1 ] && [ "$count" -gt 1 ]; then restart=4; fi
+observed_sha='${runtimeSha}'
+if [ "\${PM2_WRONG_SHA:-0}" = 1 ]; then observed_sha='${'b'.repeat(40)}'; fi
 cat <<JSON
 [
-  {"name":"${backend}","pid":101,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}","NEXUS_RELEASE_SHA":"${runtimeSha}","restart_time":$restart,"unstable_restarts":0,"pm_uptime":1000}},
-  {"name":"${content}","pid":102,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}/content-engine","NEXUS_RELEASE_SHA":"${runtimeSha}","restart_time":2,"unstable_restarts":0,"pm_uptime":1000}}
+  {"name":"${backend}","pid":101,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}","NEXUS_RELEASE_SHA":"$observed_sha","restart_time":$restart,"unstable_restarts":0,"pm_uptime":1000}},
+  {"name":"${content}","pid":102,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}/content-engine","NEXUS_RELEASE_SHA":"$observed_sha","restart_time":2,"unstable_restarts":0,"pm_uptime":1000}}
 ]
 JSON
 `);
@@ -136,7 +145,7 @@ function runReadiness(
   mkdirSync(bin, { recursive: true });
   const curl = join(bin, 'curl');
   const pm2 = join(bin, 'pm2');
-  writeCurl(curl);
+  writeCurl(curl, fixture);
   writePm2(pm2, fixture, role);
   return spawnSync('bash', [
     READINESS,
@@ -148,6 +157,8 @@ function runReadiness(
     '--node-bin', process.execPath,
     '--curl-bin', curl,
     '--output', join(fixture.root, 'readiness.json'),
+    '--readiness-attempts', '4',
+    '--poll-seconds', '0',
     '--stability-seconds', '0',
   ], { cwd: ROOT, encoding: 'utf8', env: { ...env } });
 }
@@ -158,7 +169,10 @@ describe('exact release remote preflight', () => {
     const accepted = runPreflight(fixture, 'production');
     expect(accepted.status, accepted.stderr).toBe(0);
     expect(accepted.stdout).toContain('release_preflight_ok role=production');
+    expect(accepted.stdout).toContain('envOwnership=validated');
     expect(`${accepted.stdout}${accepted.stderr}`).not.toContain('do-not-print');
+    expect(`${accepted.stdout}${accepted.stderr}`).not.toContain('private-owner');
+    expect(`${accepted.stdout}${accepted.stderr}`).not.toContain(fixture.base);
 
     chmodSync(join(fixture.base, '.env'), 0o644);
     const unsafeMode = runPreflight(fixture, 'production');
@@ -221,6 +235,26 @@ describe('exact release extended readiness', () => {
     const result = runReadiness(fixture, 'production', { ...process.env, PM2_MUTATE_RESTART: '1' });
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toContain('PM2 restart stability failed: nexus-hub');
+  });
+
+  it('polls boundedly until delayed listening sockets are ready', () => {
+    const fixture = releaseFixture('staging');
+    const result = runReadiness(fixture, 'staging', {
+      ...process.env,
+      CURL_DELAY_BACKEND_ATTEMPTS: '2',
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const evidence = JSON.parse(readFileSync(join(fixture.root, 'readiness.json'), 'utf8'));
+    expect(evidence.readinessAttempts).toBe(3);
+    expect(result.stdout).toContain('readinessAttempts=3');
+  });
+
+  it('never accepts healthy endpoints when the bounded PM2 identity proof is wrong', () => {
+    const fixture = releaseFixture('production');
+    const result = runReadiness(fixture, 'production', { ...process.env, PM2_WRONG_SHA: '1' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('did not converge after 4 attempts');
+    expect(() => readFileSync(join(fixture.root, 'readiness.json'))).toThrow();
   });
 
   it('rejects database tampering before it can emit readiness evidence', () => {

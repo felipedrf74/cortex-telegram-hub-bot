@@ -74,7 +74,7 @@ GATES=(
   "provider-routing-fallback|src/services/provider-registry.ts|provider-"
   "migration-rollback-review|migrations/082_example.sql|MIGRATION"
   "irreversible-migration-manual-approval|migrations/200_content_radar_phase0_rollout_guards.sql|IRREVERSIBLE_MIGRATION"
-  "exact-release-promotion-rehearsal|scripts/promote-exact-release.sh|RELEASE"
+  "exact-release-promotion-rehearsal|scripts/promote-exact-release.sh|release-runtime-safeguards,exact-promotion-operational-safety,release-exact-attestations,release-backup-runtime-artifact,rollback-versioned-runtime,pm2-sanitized-start,release-evidence-container"
   "hook-validation-on-feature-branch|.husky/pre-commit|HOOK"
   "ci-workflow-validation-on-PR|.github/workflows/ci.yml|CI"
   "test-config-mock-completeness-audit|vitest.config.ts|TEST_CONFIG"
@@ -129,28 +129,31 @@ for entry in "${GATES[@]}"; do
   }
 
   # Use node for safe JSON parsing. Sentinels (MIGRATION /
-  # IRREVERSIBLE_MIGRATION / RELEASE / HOOK / CI / TEST_CONFIG) are policy-only gates with no specific test glob; we
-  # accept them if the cannotSkip name fires. Other gates must have at
-  # least one test route that contains the expected substring.
+  # IRREVERSIBLE_MIGRATION / HOOK / CI / TEST_CONFIG) are policy-only gates
+  # with no specific test glob; we accept them if the cannotSkip name fires.
+  # Other gates may provide a comma-separated set of required route tokens;
+  # every token must resolve so a label-only gate cannot report success.
   result=$(node -e "
     const data = JSON.parse(process.argv[1]);
     const gate = process.argv[2];
     const expected = process.argv[3];
-    const sentinels = new Set(['MIGRATION', 'IRREVERSIBLE_MIGRATION', 'RELEASE', 'HOOK', 'CI', 'TEST_CONFIG']);
+    const sentinels = new Set(['MIGRATION', 'IRREVERSIBLE_MIGRATION', 'HOOK', 'CI', 'TEST_CONFIG']);
     const cannotSkipHit = (data.cannotSkip || []).includes(gate);
     const allTestRoutes = [
       ...(data.vitest && data.vitest.globs ? data.vitest.globs : []),
       ...(data.pytest && data.pytest.globs ? data.pytest.globs : []),
       ...(data.xctest && data.xctest.classes ? data.xctest.classes : []),
     ];
+    const expectedRoutes = expected.split(',').map((route) => route.trim()).filter(Boolean);
     const expectedHit = sentinels.has(expected)
       ? true
-      : allTestRoutes.some(r => r.includes(expected));
+      : expectedRoutes.every((route) => allTestRoutes.some((candidate) => candidate.includes(route)));
     process.stdout.write(JSON.stringify({
       gate,
       representativeFile: process.argv[4],
       cannotSkipFires: cannotSkipHit,
       expectedTestRouteFires: expectedHit,
+      expectedTestRoutes: expectedRoutes,
       pass: cannotSkipHit && expectedHit,
       vitestGlobs: data.vitest ? data.vitest.globs || [] : [],
       xctestClasses: data.xctest ? data.xctest.classes || [] : [],

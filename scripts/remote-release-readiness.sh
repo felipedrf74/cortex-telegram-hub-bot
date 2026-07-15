@@ -13,9 +13,11 @@ NODE_BIN="/usr/bin/node"
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
 OUTPUT=""
 STABILITY_SECONDS=""
+READINESS_ATTEMPTS=""
+POLL_SECONDS=""
 
 usage() {
-  echo "Usage: remote-release-readiness.sh --role <staging|production> --base-dir <path> --release-dir <path> --runtime-sha <sha> --pm2-bin <path> --output <file> [--node-bin <path>] [--curl-bin <path>] [--stability-seconds <0-60>]"
+  echo "Usage: remote-release-readiness.sh --role <staging|production> --base-dir <path> --release-dir <path> --runtime-sha <sha> --pm2-bin <path> --output <file> [--node-bin <path>] [--curl-bin <path>] [--readiness-attempts <1-60>] [--poll-seconds <0-10>] [--stability-seconds <0-60>]"
 }
 
 while [ $# -gt 0 ]; do
@@ -28,6 +30,8 @@ while [ $# -gt 0 ]; do
     --node-bin) NODE_BIN="$2"; shift 2 ;;
     --curl-bin) CURL_BIN="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
+    --readiness-attempts) READINESS_ATTEMPTS="$2"; shift 2 ;;
+    --poll-seconds) POLL_SECONDS="$2"; shift 2 ;;
     --stability-seconds) STABILITY_SECONDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
@@ -46,6 +50,19 @@ case "$STABILITY_SECONDS" in
   *[!0-9]*) echo "invalid stability seconds" >&2; exit 64 ;;
 esac
 [ "$STABILITY_SECONDS" -le 60 ] || { echo "stability seconds must not exceed 60" >&2; exit 64; }
+case "$READINESS_ATTEMPTS" in
+  '') READINESS_ATTEMPTS=30 ;;
+  *[!0-9]*) echo "invalid readiness attempts" >&2; exit 64 ;;
+esac
+[ "$READINESS_ATTEMPTS" -ge 1 ] && [ "$READINESS_ATTEMPTS" -le 60 ] || {
+  echo "readiness attempts must be between 1 and 60" >&2
+  exit 64
+}
+case "$POLL_SECONDS" in
+  '') POLL_SECONDS=2 ;;
+  *[!0-9]*) echo "invalid readiness poll seconds" >&2; exit 64 ;;
+esac
+[ "$POLL_SECONDS" -le 10 ] || { echo "readiness poll seconds must not exceed 10" >&2; exit 64; }
 
 if [ "$ROLE" = staging ]; then
   BACKEND_NAME="nexus-hub-staging"; CONTENT_NAME="content-engine-staging"
@@ -64,12 +81,14 @@ content_ready="$tmp_dir/content-ready.json"
 content_header="$tmp_dir/content-header"
 baseline="$tmp_dir/pm2-baseline.json"
 final="$tmp_dir/pm2-final.json"
+probe_error="$tmp_dir/probe-error.log"
 : > "$backend_health"
 : > "$content_ready"
 : > "$content_header"
 : > "$baseline"
 : > "$final"
-chmod 600 "$backend_health" "$content_ready" "$content_header" "$baseline" "$final"
+: > "$probe_error"
+chmod 600 "$backend_health" "$content_ready" "$content_header" "$baseline" "$final" "$probe_error"
 
 # This both loads the native addon with the exact runtime Node and checks the
 # live database before release success can suppress automatic rollback.
@@ -136,17 +155,15 @@ fs.writeFileSync(output, `${JSON.stringify({ services }, null, 2)}\n`, { mode: 0
 NODE
 }
 
-snapshot_pm2 "$baseline"
-
-"$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
-  "http://127.0.0.1:$BACKEND_PORT/health" -o "$backend_health"
-"$NODE_BIN" - "$backend_health" <<'NODE'
+validate_backend_health() {
+  "$NODE_BIN" - "$backend_health" <<'NODE'
 const fs = require('fs');
 const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (body.status !== 'healthy' || body.server?.status !== 'online' || body.database !== 'connected') {
   throw new Error('backend readiness payload is not healthy');
 }
 NODE
+}
 
 internal_secret="$("$NODE_BIN" - "$BASE_DIR/.env" <<'NODE'
 const fs = require('fs');
@@ -164,22 +181,59 @@ NODE
 [ -n "$internal_secret" ] || { echo "content-engine readiness credential is missing" >&2; exit 1; }
 printf 'x-internal-secret: %s\n' "$internal_secret" > "$content_header"
 unset internal_secret
-"$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
-  -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" -o "$content_ready"
-"$NODE_BIN" - "$content_ready" <<'NODE'
+
+validate_content_ready() {
+  "$NODE_BIN" - "$content_ready" <<'NODE'
 const fs = require('fs');
 const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (body.status !== 'ready' || body.internalAuthConfigured !== true) {
   throw new Error('authenticated content-engine readiness failed');
 }
 NODE
+}
+
+probe_readiness() {
+  : > "$backend_health"
+  : > "$content_ready"
+  : > "$probe_error"
+  {
+    snapshot_pm2 "$baseline" \
+      && "$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+        "http://127.0.0.1:$BACKEND_PORT/health" -o "$backend_health" \
+      && validate_backend_health \
+      && "$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+        -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" -o "$content_ready" \
+      && validate_content_ready
+  } >"$probe_error" 2>&1
+}
+
+# PM2 may report the new process before either listening socket is ready. Poll
+# all three independent proofs together so endpoint readiness can never mask a
+# wrong process name, cwd, SHA, status, or duplicate PM2 row. The successful
+# poll becomes the stability baseline; failure remains bounded.
+ready=false
+ready_attempt=0
+for attempt in $(seq 1 "$READINESS_ATTEMPTS"); do
+  if probe_readiness; then
+    ready=true
+    ready_attempt="$attempt"
+    break
+  fi
+  if [ "$attempt" -lt "$READINESS_ATTEMPTS" ] && [ "$POLL_SECONDS" -gt 0 ]; then
+    sleep "$POLL_SECONDS"
+  fi
+done
+if [ "$ready" != true ]; then
+  echo "release readiness did not converge after $READINESS_ATTEMPTS attempts" >&2
+  exit 1
+fi
 
 [ "$STABILITY_SECONDS" -eq 0 ] || sleep "$STABILITY_SECONDS"
 snapshot_pm2 "$final"
 
-"$NODE_BIN" - "$baseline" "$final" "$OUTPUT" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" <<'NODE'
+"$NODE_BIN" - "$baseline" "$final" "$OUTPUT" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" <<'NODE'
 const fs = require('fs');
-const [baselinePath, finalPath, output, role, runtimeSha, stabilitySeconds] = process.argv.slice(2);
+const [baselinePath, finalPath, output, role, runtimeSha, stabilitySeconds, readinessAttempts] = process.argv.slice(2);
 const before = JSON.parse(fs.readFileSync(baselinePath, 'utf8')).services;
 const after = JSON.parse(fs.readFileSync(finalPath, 'utf8')).services;
 for (const initial of before) {
@@ -196,6 +250,7 @@ const evidence = {
   runtimeSha,
   checkedAt: new Date().toISOString(),
   stabilitySeconds: Number(stabilitySeconds),
+  readinessAttempts: Number(readinessAttempts),
   checks: {
     nativeBinding: true,
     sqliteIntegrity: true,
@@ -210,4 +265,5 @@ const evidence = {
 fs.writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
 NODE
 
-printf 'release_readiness_ok role=%s runtimeSha=%s stabilitySeconds=%s\n' "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS"
+printf 'release_readiness_ok role=%s runtimeSha=%s readinessAttempts=%s stabilitySeconds=%s\n' \
+  "$ROLE" "$RUNTIME_SHA" "$ready_attempt" "$STABILITY_SECONDS"
