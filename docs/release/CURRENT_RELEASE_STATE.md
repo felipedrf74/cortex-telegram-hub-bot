@@ -41,9 +41,7 @@ Machine-readable truth: `docs/release/release-state.json`.
 
 Two staging rehearsals and two owner-authorized production releases have now
 proved the signed `ReleaseManifestV2`, immutable staging install, exact-artifact
-promotion, atomic PM2 switch, and automatic exact rollback path. The first
-proof release was `4.14.219` at `aeb5e9df57f6c9d72442093d6f93cc720694e9ee`;
-the second is the current runtime above.
+promotion, atomic PM2 switch, and automatic exact rollback path.
 The exact-artifact test, manifest, versioned-release, and documentation path is
 the canonical release process. Its legacy repository-sync wrappers are now
 retired; emergency exact rollback and restore paths remain available.

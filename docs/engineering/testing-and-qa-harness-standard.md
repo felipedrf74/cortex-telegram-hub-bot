@@ -128,9 +128,9 @@ describe('<route> tenant isolation', () => {
 });
 ```
 
-The reference shape: `__tests__/security/p0-chat-identity-isolation.test.ts`
-(23 cases). Copy the seed/asUser helpers; do not invent a new test
-infrastructure.
+The reference shape is
+`__tests__/security/p0-chat-identity-isolation.test.ts`. Copy the seed/asUser
+helpers; do not invent a new test infrastructure.
 
 ## 6. Account / tenant cache (iOS) (must)
 
@@ -260,9 +260,9 @@ Per the iOS architecture standard §6 (DTO contract):
 4. **Test runs include simulator log capture on failure** (14-day
    artifact retention).
 
-The reference test file: `Nexus HubUITests/TrainingFixtureBypassUITests.swift`
-(11 cases). Fixture-bypass strategy avoids provider dependency; copy
-that pattern.
+The reference test file is
+`Nexus HubUITests/TrainingFixtureBypassUITests.swift`. Its fixture-bypass
+strategy avoids provider dependency; copy that pattern.
 
 ## 13. Isolated Training E2E lane (must, when Training plan generation, calendar sync, feedback, progression, or iOS Training surfaces are touched)
 
