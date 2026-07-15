@@ -38,14 +38,14 @@ import {
   publishLowSleep,
   publishLowHrv,
   publishLowReadiness,
-  publishTrainingSessionScheduled,
+  publishTrainingSessionScheduled as publishTrainingSessionScheduledScoped,
   publishCalendarConflict,
   publishTrainingScheduleStale,
   publishFuelingGapRisk,
   publishTrainingBudgetConstraint,
-  readTrainingContext,
+  readTrainingContext as readTrainingContextScoped,
   readTrainingContextAll,
-  readScheduledTrainingSessions,
+  readScheduledTrainingSessions as readScheduledTrainingSessionsScoped,
   consumeSignal,
   formatTrainingContextForPrompt,
   TRAINING_SOURCE,
@@ -65,6 +65,30 @@ beforeEach(() => {
 function freshDb(): void {
   testDb = createMigratedTestDatabase();
   setDbProvider(() => testDb as any);
+}
+
+function futureUtcIso(daysFromNow: number, hour: number, minute = 0, second = 0): string {
+  const value = new Date(Date.now() + daysFromNow * 24 * 60 * 60 * 1_000);
+  value.setUTCHours(hour, minute, second, 0);
+  return value.toISOString();
+}
+
+function readTrainingContext(
+  opts: Omit<Parameters<typeof readTrainingContextScoped>[0], 'tenantId'> & { tenantId?: number },
+) {
+  return readTrainingContextScoped({ ...opts, tenantId: opts.tenantId ?? opts.userId });
+}
+
+function publishTrainingSessionScheduled(
+  opts: Omit<Parameters<typeof publishTrainingSessionScheduledScoped>[0], 'tenantId'> & { tenantId?: number },
+) {
+  return publishTrainingSessionScheduledScoped({ ...opts, tenantId: opts.tenantId ?? opts.userId });
+}
+
+function readScheduledTrainingSessions(
+  opts: Omit<Parameters<typeof readScheduledTrainingSessionsScoped>[0], 'tenantId'> & { tenantId?: number },
+) {
+  return readScheduledTrainingSessionsScoped({ ...opts, tenantId: opts.tenantId ?? opts.userId });
 }
 
 // ─── Migration 046 shape ────────────────────────────────────────────
@@ -146,6 +170,13 @@ describe('per-user signal isolation', () => {
     expect(tenantB.flags.highLegLoad).toBe(true);
     expect(tenantB.signals).toHaveLength(1);
     expect(tenantB.signals[0].tenant_id).toBe(902);
+
+    const sportTenantA = readTrainingContext({ userId: 306, tenantId: 901, sport: 'running' });
+    const sportTenantB = readTrainingContext({ userId: 306, tenantId: 902, sport: 'running' });
+    expect(sportTenantA.signals).toHaveLength(1);
+    expect(sportTenantA.signals[0].tenant_id).toBe(901);
+    expect(sportTenantB.signals).toHaveLength(1);
+    expect(sportTenantB.signals[0].tenant_id).toBe(902);
   });
 });
 
@@ -198,7 +229,7 @@ describe('signal B — wellness signals fan out to all sports', () => {
   afterEach(() => testDb?.close());
 
   it('low_sleep is visible to all 4 sport coaches', () => {
-    publishLowSleep({ userId: 501, score: 45, totalHours: 5.2 });
+    publishLowSleep({ userId: 501, tenantId: 501, score: 45, totalHours: 5.2 });
 
     for (const sport of ['gym', 'running', 'cycling', 'swim'] as const) {
       const ctx = readTrainingContext({ userId: 501, sport });
@@ -207,7 +238,7 @@ describe('signal B — wellness signals fan out to all sports', () => {
   });
 
   it('low_hrv is visible to all 4 sport coaches', () => {
-    publishLowHrv({ userId: 502, hrv_ms: 28, baseline_ms: 45 });
+    publishLowHrv({ userId: 502, tenantId: 502, hrv_ms: 28, baseline_ms: 45 });
     for (const sport of ['gym', 'running', 'cycling', 'swim'] as const) {
       const ctx = readTrainingContext({ userId: 502, sport });
       expect(ctx.flags.lowHrv).toBe(true);
@@ -215,7 +246,7 @@ describe('signal B — wellness signals fan out to all sports', () => {
   });
 
   it('low_readiness propagates to all sports', () => {
-    publishLowReadiness({ userId: 503, score: 25, reason: 'accumulated fatigue' });
+    publishLowReadiness({ userId: 503, tenantId: 503, score: 25, reason: 'accumulated fatigue' });
     for (const sport of ['gym', 'running', 'cycling', 'swim'] as const) {
       const ctx = readTrainingContext({ userId: 503, sport });
       expect(ctx.flags.lowReadiness).toBe(true);
@@ -230,6 +261,18 @@ describe('signal B — wellness signals fan out to all sports', () => {
     expect(readTrainingContext({ userId: 504, sport: 'running' }).flags.highShoulderLoad).toBe(false);
     expect(readTrainingContext({ userId: 504, sport: 'cycling' }).flags.highShoulderLoad).toBe(false);
   });
+
+  it('keeps wellness safety signals inside the authenticated tenant when tenant and user differ', () => {
+    publishLowSleep({ userId: 510, tenantId: 9_101, score: 38, totalHours: 4.8 });
+    publishLowHrv({ userId: 510, tenantId: 9_101, hrv_ms: 24, baseline_ms: 46 });
+    publishLowReadiness({ userId: 510, tenantId: 9_102, score: 22, reason: 'tenant-b fatigue' });
+
+    const tenantA = readTrainingContext({ userId: 510, tenantId: 9_101, sport: 'running' });
+    const tenantB = readTrainingContext({ userId: 510, tenantId: 9_102, sport: 'running' });
+
+    expect(tenantA.flags).toMatchObject({ lowSleep: true, lowHrv: true, lowReadiness: false });
+    expect(tenantB.flags).toMatchObject({ lowSleep: false, lowHrv: false, lowReadiness: true });
+  });
 });
 
 // ─── Signal C: training ↔ secretary calendar coordination ───────────
@@ -239,19 +282,21 @@ describe('signal C — calendar conflict detection', () => {
   afterEach(() => testDb?.close());
 
   it('publishTrainingSessionScheduled is readable by secretary', () => {
+    const startTimeIso = futureUtcIso(2, 17);
+    const endTimeIso = futureUtcIso(2, 18);
     publishTrainingSessionScheduled({
       userId: 601,
       sport: 'running',
       sessionId: 'run-123',
-      startTimeIso: '2026-04-10T17:00:00Z',
-      endTimeIso: '2026-04-10T18:00:00Z',
+      startTimeIso,
+      endTimeIso,
       title: '🏃 Tempo Run',
     });
 
     const sessions = readScheduledTrainingSessions({
       userId: 601,
-      windowStartIso: '2026-04-10T00:00:00Z',
-      windowEndIso: '2026-04-10T23:59:59Z',
+      windowStartIso: futureUtcIso(2, 0),
+      windowEndIso: futureUtcIso(2, 23, 59, 59),
     });
     expect(sessions).toHaveLength(1);
     expect(sessions[0].payload.sport).toBe('running');
@@ -263,27 +308,66 @@ describe('signal C — calendar conflict detection', () => {
       userId: 602,
       sport: 'cycling',
       sessionId: 'ride-1',
-      startTimeIso: '2026-04-11T08:00:00Z',
-      endTimeIso: '2026-04-11T10:00:00Z',
+      startTimeIso: futureUtcIso(3, 8),
+      endTimeIso: futureUtcIso(3, 10),
       title: 'FTP test',
     });
     publishTrainingSessionScheduled({
       userId: 602,
       sport: 'gym',
       sessionId: 'gym-1',
-      startTimeIso: '2026-04-12T18:00:00Z',
-      endTimeIso: '2026-04-12T19:30:00Z',
+      startTimeIso: futureUtcIso(4, 18),
+      endTimeIso: futureUtcIso(4, 19, 30),
       title: 'Upper push',
     });
 
-    // Only the Apr 11 window
-    const apr11 = readScheduledTrainingSessions({
+    // Only the first scheduled day.
+    const firstDay = readScheduledTrainingSessions({
       userId: 602,
-      windowStartIso: '2026-04-11T00:00:00Z',
-      windowEndIso: '2026-04-11T23:59:59Z',
+      windowStartIso: futureUtcIso(3, 0),
+      windowEndIso: futureUtcIso(3, 23, 59, 59),
     });
-    expect(apr11).toHaveLength(1);
-    expect(apr11[0].payload.sport).toBe('cycling');
+    expect(firstDay).toHaveLength(1);
+    expect(firstDay[0].payload.sport).toBe('cycling');
+  });
+
+  it('isolates scheduled sessions for one user across tenants', () => {
+    const startTimeIso = futureUtcIso(6, 8);
+    const endTimeIso = futureUtcIso(6, 9);
+    publishTrainingSessionScheduled({
+      userId: 602,
+      tenantId: 9601,
+      sport: 'running',
+      sessionId: 'tenant-a-run',
+      startTimeIso,
+      endTimeIso,
+      title: 'Tenant A run',
+    });
+    publishTrainingSessionScheduled({
+      userId: 602,
+      tenantId: 9602,
+      sport: 'cycling',
+      sessionId: 'tenant-b-ride',
+      startTimeIso,
+      endTimeIso,
+      title: 'Tenant B ride',
+    });
+
+    const tenantA = readScheduledTrainingSessions({
+      userId: 602,
+      tenantId: 9601,
+      windowStartIso: futureUtcIso(6, 0),
+      windowEndIso: futureUtcIso(6, 23, 59, 59),
+    });
+    const tenantB = readScheduledTrainingSessions({
+      userId: 602,
+      tenantId: 9602,
+      windowStartIso: futureUtcIso(6, 0),
+      windowEndIso: futureUtcIso(6, 23, 59, 59),
+    });
+
+    expect(tenantA.map((signal) => signal.payload.session_id)).toEqual(['tenant-a-run']);
+    expect(tenantB.map((signal) => signal.payload.session_id)).toEqual(['tenant-b-ride']);
   });
 
   it('publishCalendarConflict is readable by the sport coaches via readTrainingContext', () => {
@@ -291,8 +375,8 @@ describe('signal C — calendar conflict detection', () => {
       userId: 603,
       sport: 'running',
       sessionId: 'run-x',
-      startTimeIso: '2026-04-15T17:00:00Z',
-      endTimeIso: '2026-04-15T18:00:00Z',
+      startTimeIso: futureUtcIso(5, 17),
+      endTimeIso: futureUtcIso(5, 18),
       title: 'Intervals',
     });
     const conflictId = publishCalendarConflict({
@@ -419,7 +503,7 @@ describe('formatTrainingContextForPrompt', () => {
   });
 
   it('renders scan-friendly tagged block when signals are active', () => {
-    publishLowSleep({ userId: 901, score: 40 });
+    publishLowSleep({ userId: 901, tenantId: 901, score: 40 });
     publishHighLegLoad({ userId: 901, source: 'gym', rpe: 9 });
     const ctx = readTrainingContext({ userId: 901, sport: 'running' });
     const block = formatTrainingContextForPrompt(ctx, 'running');

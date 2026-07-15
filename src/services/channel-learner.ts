@@ -38,7 +38,7 @@ import {
   type ContentRefChannel,
   type ContentReferencesAccess,
 } from '../state/content-references';
-import { writeSignal } from './intelligence-bus';
+import { writeGovernedSignal } from './intelligence-bus';
 import { getDb } from './database';
 import {
   buildCreatorPromptContext,
@@ -59,6 +59,7 @@ import {
 import { AiBudgetError, withAiBudgetReservation, type AiBudgetRequest } from './cost-guardrail';
 import { ApiUsagePersistenceError } from './api-usage-fallback';
 
+const CHANNEL_LEARNER_SIGNAL_PRODUCER_VERSION = 'channel-learner.v1';
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
@@ -1022,7 +1023,7 @@ async function synthesizeKnowledge(
  * Writes one signal per channel per pattern category to the intelligence bus.
  * Other agents (Script, Hooks, SEO, Performance) can read these independently.
  */
-function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number): void {
+function writeChannelDNASignals(channels: ContentRefChannel[]): void {
   let signalCount = 0;
 
   for (const channel of channels) {
@@ -1044,9 +1045,14 @@ function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number):
       }
 
       try {
-        writeSignal({
+        const signalId = writeGovernedSignal({
           source_agent: 'channel-learner',
           signal_type: 'channel_dna',
+          provenance: {
+            producerVersion: CHANNEL_LEARNER_SIGNAL_PRODUCER_VERSION,
+            source: 'runtime',
+            observedAt: new Date().toISOString(),
+          },
           payload: {
             channel_name: channel.channel_name || channel.channel_url,
             channel_id: channel.channel_id,
@@ -1056,9 +1062,12 @@ function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number):
             effectiveness_score: null, // filled by Performance Agent later
             extracted_at: new Date().toISOString(),
           },
-          user_id: userId != null && userId > 0 ? userId : undefined,
         });
-        signalCount++;
+        if (signalId > 0) {
+          signalCount++;
+        } else {
+          logger.warn({ channel: channel.channel_name, category }, 'Governed channel DNA signal write rejected');
+        }
       } catch (err) {
         logger.warn({ err, channel: channel.channel_name, category }, 'Failed to write channel DNA signal');
       }

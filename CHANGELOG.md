@@ -3,6 +3,46 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [Unreleased]
+
+### Release verification and learning governance
+
+- Replace raw full-suite count floors with an exact, protected-main-verified
+  selection of changed, critical, and cannot-skip tests. Missing, stale, or
+  incomplete nightly evidence, unresolved dependency impact, and removed or
+  renamed test files fail closed to the four-shard full suite.
+- Bind qualifying nightly evidence to its successful GitHub run, immutable
+  artifact, policy digest, ancestor SHA, and complete Vitest file set without
+  executing candidate code in the protected signer.
+- Generate and enforce the deterministic project map from the proposed source
+  tree, and require production intelligence signals to carry validated,
+  versioned provenance.
+
+## [4.14.220] — 2026-07-15
+
+### Release safety
+
+- Validate the exact downloaded release bundle, signed manifest, declared file
+  set, and installed-tree identity before staging or production mutation.
+- Harden protected signing for GitHub artifact layout and bind staging and
+  promotion to the reviewed runtime SHA and immutable artifact digest.
+- Complete the second staging rehearsal and owner-authorized production release
+  with a 13-second atomic cutover and exact rollback backup.
+
+## [4.14.219] — 2026-07-15
+
+### Release, tests, and documentation
+
+- Introduce tiered fast, changed, critical, release, full-sharded, evaluation,
+  profile, benchmark, coverage, and mutation verification policies.
+- Add signed `ReleaseManifestV2` evidence, immutable versioned staging installs,
+  exact-artifact production promotion, atomic PM2 switching, and automatic
+  exact-backup rollback.
+- Consolidate the project map, capability and agent-job manifests, canonical
+  Codex/Claude skills, and current release documentation.
+- Complete the first staging rehearsal and owner-authorized production release
+  with a 13-second cutover.
+
 ## [4.14.218] — 2026-07-14
 
 ### Features

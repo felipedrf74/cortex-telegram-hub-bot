@@ -6237,7 +6237,7 @@ describe('Chat API routes', () => {
       expect(JSON.stringify(messageRes.body.metadata)).not.toContain('calendar_private');
       expect(mockGetTopics).toHaveBeenCalledWith(7001, { includeTerminal: false, limit: 20 });
       expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 5);
-      expect(mockGetRankedContentSignals).toHaveBeenCalledWith(7001, 5);
+      expect(mockGetRankedContentSignals).toHaveBeenCalledWith(7001, 5, 7001);
       expect(messageRes.body.metadata).toMatchObject({
         type: 'chat_core_v2_deterministic_read',
         chatCoreV2: {

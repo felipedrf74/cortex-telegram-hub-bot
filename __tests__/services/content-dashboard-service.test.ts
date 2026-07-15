@@ -265,6 +265,16 @@ describe('content-dashboard-service: sprint mode', () => {
     expect(isSprintModeActive()).toBe(false);
   });
 
+  it('does not treat a tenant-scoped sprint signal as platform-global state', () => {
+    testDb.prepare(`
+      INSERT INTO agent_signals (
+        source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id
+      ) VALUES ('portal', 'content_sprint_mode', '{}', 'urgent', datetime('now', '+1 day'), 42, NULL)
+    `).run();
+
+    expect(isSprintModeActive()).toBe(false);
+  });
+
   it('toggleSprintMode enables then disables', () => {
     // Enable
     const on = toggleSprintMode();
@@ -276,6 +286,12 @@ describe('content-dashboard-service: sprint mode', () => {
     // Disable
     const off = toggleSprintMode();
     expect(off.sprint).toBe(false);
+    expect(isSprintModeActive()).toBe(false);
+    expect(testDb.prepare(`
+      SELECT status, tenant_id, user_id
+      FROM agent_signals
+      WHERE signal_type = 'content_sprint_mode'
+    `).get()).toEqual({ status: 'dismissed', tenant_id: null, user_id: null });
   });
 });
 

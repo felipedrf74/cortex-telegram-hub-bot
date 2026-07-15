@@ -43,7 +43,21 @@ if [ "${NEXUS_PRECOMMIT_FULL_VITEST:-0}" = "1" ]; then
   ARGS+=(--full)
 fi
 
-scripts/risk-gate.sh "${ARGS[@]}"
+# Git exports repository-local variables to hooks. They are correct for this
+# checkout, but unsafe for tests that intentionally create foreign temporary
+# repositories: an inherited GIT_DIR can redirect `git init` back into the
+# caller's repository. Let the risk gate rediscover this worktree from cwd and
+# keep every nested fixture isolated from the committing repository.
+env \
+  -u GIT_DIR \
+  -u GIT_WORK_TREE \
+  -u GIT_INDEX_FILE \
+  -u GIT_PREFIX \
+  -u GIT_COMMON_DIR \
+  -u GIT_OBJECT_DIRECTORY \
+  -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  -u GIT_NAMESPACE \
+  scripts/risk-gate.sh "${ARGS[@]}"
 
 if [ "${NEXUS_PRECOMMIT_SKIP_SANDBOX_NUDGE:-0}" != "1" ] \
    && [ -f "$ROOT/docker-compose.local.yml" ]; then

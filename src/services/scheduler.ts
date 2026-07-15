@@ -2398,7 +2398,7 @@ export function startScheduler(): void {
       let readinessRec = '';
       if (garminAvailable) {
         try {
-          const readiness = await calculateReadiness(userId, { garminSilent: true });
+          const readiness = await calculateReadiness(userId, { tenantId: userId, garminSilent: true });
           persistReadinessScore(userId, readiness);
           readinessScore = readiness.score;
           readinessRec = readiness.recommendation;
@@ -3180,7 +3180,10 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
         let readinessData: any = null;
         try {
           const { calculateReadiness } = require('./readiness-scorer');
-          readinessData = await calculateReadiness(target.tenantId, { garminSilent: true });
+          readinessData = await calculateReadiness(target.tenantId, {
+            tenantId: target.tenantId,
+            garminSilent: true,
+          });
         } catch { /* non-fatal */ }
 
         await storeAndPushReport({

@@ -182,7 +182,7 @@ describe('shared-decision-context', () => {
     expect(context).toContain('Content: 3 topic(s) are queued');
     expect(context).not.toContain('Training: recovery is strained');
     expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
-    expect(mockReadSecretaryMeshContext).toHaveBeenCalledWith({ userId: 42 });
+    expect(mockReadSecretaryMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
   });
 
   it('builds a secretary peer context block with training, cooking, finance, and content tradeoffs', async () => {
@@ -194,7 +194,7 @@ describe('shared-decision-context', () => {
     expect(context).toContain('Finance: projected budget remaining is 18% for 2026-04; budget mode is controlled; tax deadline lands on 2026-04-30');
     expect(context).toContain('Content: 3 topic(s) are queued; next publish target is "Race-week recap" on 2026-04-18; best filming window is 2026-04-18 14:00-16:00');
     expect(context).not.toContain('BRL');
-    expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42 });
+    expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
   });
 
   it('adds source attribution, skill ownership boundaries, and downstream update signals for Training -> Secretary', async () => {
@@ -308,8 +308,8 @@ describe('shared-decision-context', () => {
     expect(cookingContext).toContain('Content: next publish target is "Race-week recap" on 2026-04-18; best filming window is 2026-04-18 14:00-16:00');
     expect(contentContext).toContain('Secretary: calendar is busy on 2 day(s) with 9 events; travel is scheduled on 2026-04-19; focus protection is currently best on 2026-04-17; admin pressure shows 2 overdue and 1 due today');
     expect(contentContext).toContain('Training: recovery is strained; next session is Tempo Run on 2026-04-17; session immovability is high; story angle is coach_adjustment around "Tempo Run" on 2026-04-17');
-    expect(mockReadSecretaryMeshContext).toHaveBeenCalledWith({ userId: 42 });
-    expect(mockReadContentMeshContext).toHaveBeenCalledWith({ userId: 42 });
+    expect(mockReadSecretaryMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
+    expect(mockReadContentMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
   });
 
   it('returns an empty string when there is no meaningful peer context', async () => {

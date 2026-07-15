@@ -213,8 +213,8 @@ const AGENT_GRAPH_NODES: AgentNode[] = [
   {
     id: 'autoresearch',
     label: 'Autoresearch',
-    role: 'Automated prompt optimization — mutates prompts, scores them against an eval set, keeps wins.',
-    emits: ['learning_digest'],
+    role: 'Scheduled read-only evaluation — reuses unchanged input fingerprints and never mutates prompts automatically.',
+    emits: [],
     consumes: [],
     cron: 'autoresearch',
   },

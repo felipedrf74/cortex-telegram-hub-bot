@@ -10,7 +10,7 @@
  * Produces: trending_spike, competitor_upload, reaction_opportunity
  */
 
-import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { writeGovernedSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
 import { buildAgentContext, formatContextForPrompt } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
@@ -19,6 +19,7 @@ import { ensureContentTenantScopeColumns } from '../services/content-tenant-scop
 import { listUserScopedYoutubeChannelTargets } from '../services/youtube-channel-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
+const REACTION_RADAR_SIGNAL_PRODUCER_VERSION = 'reaction-radar-agent.v1';
 
 // ── Pillar keywords — now read from DB (config_pillars, migration 048) ──
 //
@@ -484,9 +485,14 @@ export async function runReactionRadar(): Promise<void> {
 
       const priority = finding.totalScore >= 40 ? 'urgent' : 'normal';
 
-      writeSignal({
+      const signalId = writeGovernedSignal({
         source_agent: 'reaction-radar',
         signal_type: 'reaction_opportunity',
+        provenance: {
+          producerVersion: REACTION_RADAR_SIGNAL_PRODUCER_VERSION,
+          source: 'runtime',
+          observedAt: new Date().toISOString(),
+        },
         payload: {
           title: finding.title,
           source_url: finding.url,
@@ -505,8 +511,10 @@ export async function runReactionRadar(): Promise<void> {
         },
         priority,
       });
-      signalsProduced++;
-      alertsSent++;
+      if (signalId > 0) {
+        signalsProduced++;
+        alertsSent++;
+      }
 
       if (alertsSent >= 5) break; // Max 5 signals per run
     }

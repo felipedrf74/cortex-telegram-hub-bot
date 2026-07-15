@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 const TEST_USER_ID = 42;
-const TEST_TENANT_ID = 42;
+const TEST_TENANT_ID = 4200;
 
 // ── Test helpers ───────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { setDbProvider, writeSignal } from '../../src/services/intelligence-bus';
+import { readSignals, setDbProvider, writeSignal } from '../../src/services/intelligence-bus';
 import {
   buildAgentContext,
   formatContextForPrompt,
@@ -264,8 +264,8 @@ describe('produceLearningDigest', () => {
     expect(id).toBe(-1);
   });
 
-  it('produces a digest signal from peer signals', () => {
-    writeSignal({
+  it('keeps a creator digest private within a shared tenant', () => {
+    const pillarSignalId = writeSignal({
       source_agent: 'performance-agent',
       signal_type: 'pillar_performance',
       payload: {
@@ -285,11 +285,53 @@ describe('produceLearningDigest', () => {
 
     // Verify the digest was written
     const row = testDb.prepare('SELECT * FROM agent_signals WHERE id = ?').get(id) as any;
-    expect(row.signal_type).toBe('learning_digest');
+    expect(row.signal_type).toBe('creator_learning_digest');
+    expect(row.tenant_id).toBe(TEST_TENANT_ID);
+    expect(row.user_id).toBe(TEST_USER_ID);
     const payload = JSON.parse(row.payload);
     expect(payload.topPillars).toHaveLength(1);
     expect(payload.voiceInsights).toHaveLength(1);
     expect(payload.summary).toContain('fitness');
+
+    expect(readSignals(
+      'digest-owner',
+      ['creator_learning_digest'],
+      10,
+      TEST_USER_ID,
+      undefined,
+      TEST_TENANT_ID,
+    )).toEqual([expect.objectContaining({ id })]);
+    expect(readSignals(
+      'digest-other-user',
+      ['creator_learning_digest'],
+      10,
+      TEST_USER_ID + 1,
+      undefined,
+      TEST_TENANT_ID,
+    )).toEqual([]);
+    expect(readSignals('digest-global-reader', ['learning_digest'], 10)).toEqual([]);
+
+    const otherUserId = TEST_USER_ID + 1;
+    const otherDigestId = produceLearningDigest(otherUserId, TEST_TENANT_ID);
+    expect(otherDigestId).toBeGreaterThan(0);
+    expect(testDb.prepare(`
+      SELECT signal_type, tenant_id, user_id
+      FROM agent_signals
+      WHERE id = ?
+    `).get(otherDigestId)).toMatchObject({
+      signal_type: 'creator_learning_digest',
+      tenant_id: TEST_TENANT_ID,
+      user_id: otherUserId,
+    });
+    const sourceSignal = testDb.prepare(`
+      SELECT consumed_by
+      FROM agent_signals
+      WHERE id = ?
+    `).get(pillarSignalId) as { consumed_by: string };
+    expect(JSON.parse(sourceSignal.consumed_by)).toEqual(expect.arrayContaining([
+      `learning-digest:t:${TEST_TENANT_ID}:u:${TEST_USER_ID}`,
+      `learning-digest:t:${TEST_TENANT_ID}:u:${otherUserId}`,
+    ]));
   });
 });
 

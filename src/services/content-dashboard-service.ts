@@ -15,6 +15,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { dismissSignal, writeGovernedSignal } from './intelligence-bus';
 import {
   contentScopeOrderExpr,
   contentScopeParams,
@@ -22,6 +23,8 @@ import {
   ensureContentTenantScopeColumns,
   platformOrSystemSeedContentScopePredicate,
 } from './content-tenant-scope';
+
+const CONTENT_DASHBOARD_SIGNAL_PRODUCER_VERSION = 'content-dashboard-service.v1';
 
 function db() {
   return getDb();
@@ -333,7 +336,12 @@ export function isSprintModeActive(): boolean {
   const d = db();
   try {
     const row = d.prepare(
-      "SELECT id FROM agent_signals WHERE signal_type = 'content_sprint_mode' AND status = 'active' LIMIT 1",
+      `SELECT id FROM agent_signals
+       WHERE signal_type = 'content_sprint_mode'
+         AND status = 'active'
+         AND tenant_id IS NULL
+         AND user_id IS NULL
+       LIMIT 1`,
     ).get();
     return !!row;
   } catch {
@@ -343,43 +351,38 @@ export function isSprintModeActive(): boolean {
 
 /**
  * Toggle sprint mode on/off. Returns new state.
- * Uses writeSignal/dismissSignal from intelligence-bus for writes.
+ * Uses governed intelligence-bus writes so sprint state keeps provenance.
  */
 export function toggleSprintMode(): { sprint: boolean; message: string } {
   const d = db();
   try {
     const existing = d.prepare(
-      "SELECT id FROM agent_signals WHERE signal_type = 'content_sprint_mode' AND status = 'active' LIMIT 1",
+      `SELECT id FROM agent_signals
+       WHERE signal_type = 'content_sprint_mode'
+         AND status = 'active'
+         AND tenant_id IS NULL
+         AND user_id IS NULL
+       LIMIT 1`,
     ).get() as { id: number } | undefined;
 
     if (existing) {
-      // Dismiss via the bus function (maintains consumed_by, status tracking)
-      try {
-        const { dismissSignal } = require('./intelligence-bus');
-        dismissSignal(existing.id);
-      } catch {
-        // Fallback: direct update if bus module unavailable
-        d.prepare("UPDATE agent_signals SET status = 'dismissed' WHERE id = ?").run(existing.id);
-      }
+      const dismissed = dismissSignal(existing.id);
+      if (dismissed !== 1) throw new Error('Sprint-mode signal dismissal did not affect exactly one global row');
       return { sprint: false, message: 'Sprint mode disabled' };
     }
 
-    // Write via the bus function (maintains TTL, priority, schema)
-    try {
-      const { writeSignal } = require('./intelligence-bus');
-      writeSignal({
-        source_agent: 'portal',
-        signal_type: 'content_sprint_mode',
-        payload: { enabled: true, activated_at: new Date().toISOString() },
-        priority: 'urgent',
-      });
-    } catch {
-      // Fallback: direct insert
-      d.prepare(`
-        INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, confidence)
-        VALUES ('portal', 'content_sprint_mode', ?, 'urgent', datetime('now', '+7 days'), 1.0)
-      `).run(JSON.stringify({ enabled: true, activated_at: new Date().toISOString() }));
-    }
+    const activatedAt = new Date().toISOString();
+    writeGovernedSignal({
+      source_agent: 'portal',
+      signal_type: 'content_sprint_mode',
+      payload: { enabled: true, activated_at: activatedAt },
+      priority: 'urgent',
+      provenance: {
+        producerVersion: CONTENT_DASHBOARD_SIGNAL_PRODUCER_VERSION,
+        source: 'runtime',
+        observedAt: activatedAt,
+      },
+    });
     return { sprint: true, message: 'Sprint mode enabled' };
   } catch (err) {
     logger.debug({ err }, 'toggleSprintMode failed');

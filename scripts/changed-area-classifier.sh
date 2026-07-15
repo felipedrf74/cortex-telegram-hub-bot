@@ -41,7 +41,10 @@
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 
-LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The protected-main signer runs this trusted script against an exact candidate
+# checkout while keeping the policy source in protected tooling. Ordinary calls
+# use the repository containing this script.
+LOCAL_DIR="${NEXUS_CLASSIFIER_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BASE_REF=""
 FORMAT="markdown"
 EXPLICIT_FILES=""
@@ -248,7 +251,7 @@ HAS_FULL_SUITE_TRIGGER=false
 if match '^config/test-policy\.json$|^scripts/changed-area-classifier\.sh$|^scripts/resolve-ci-change-base\.sh$|^scripts/lib/test-policy\.mjs$'; then
   HAS_FULL_SUITE_TRIGGER=true
 else
-  POLICY_PATH="$LOCAL_DIR/config/test-policy.json"
+  POLICY_PATH="${NEXUS_TEST_POLICY_PATH:-$LOCAL_DIR/config/test-policy.json}"
   if ! HAS_FULL_SUITE_TRIGGER="$(POLICY_PATH="$POLICY_PATH" node -e '
     const fs = require("fs");
     function globToRegExp(glob) {

@@ -47,6 +47,7 @@
     "fiscal:storage:backfill": "node dist/tools/invoice-object-storage-backfill.js",
     "docs:audit": "node scripts/audit-docs.mjs --strict",
     "project:map": "node scripts/generate-project-map.mjs",
+    "project:map:check": "node scripts/generate-project-map.mjs --check",
     "manifests:validate": "node scripts/validate-runtime-manifests.mjs",
     "reward:check": "node scripts/reward-check.mjs",
     "reward:check:json": "node scripts/reward-check.mjs --json",

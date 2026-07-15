@@ -414,7 +414,7 @@ export async function fetchTraining(
     : (async () => {
       const calculateReadiness = deps.calculateReadiness
         ?? require('../../services/readiness-scorer').calculateReadiness;
-      const readiness = await calculateReadiness(userId);
+      const readiness = await calculateReadiness(userId, { tenantId });
       return { source: 'fresh' as const, readiness };
     })();
   const eventsPromise = (async () => {

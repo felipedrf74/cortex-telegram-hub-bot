@@ -61,7 +61,7 @@ vi.mock('../../src/services/video-study', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  writeSignal,
+  writeGovernedSignal: writeSignal,
 }));
 
 vi.mock('../../src/services/ai-automation-policy', () => ({
@@ -94,6 +94,7 @@ describe('channel-learner: scoped synthesis', () => {
     testDb = createMigratedTestDatabase();
     completeOneShotWithFallback.mockReset();
     writeSignal.mockReset();
+    writeSignal.mockReturnValue(1);
 
     completeOneShotWithFallback.mockImplementation(async (_system, prompt, jobName) => {
       if (jobName === 'channel_analysis') {

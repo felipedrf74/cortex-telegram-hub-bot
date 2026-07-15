@@ -14,6 +14,10 @@ import {
   buildReleaseArtifactManifest,
   verifyReleaseBundle,
 } from './lib/release-artifact-manifest.mjs';
+import {
+  RELEASE_RESULTS_SCHEMA,
+  validateReleaseSelection,
+} from './release-test-evidence.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'validate';
@@ -51,8 +55,26 @@ function sha256(value) {
 function fileSha(relative) {
   return sha256(fs.readFileSync(path.join(root, relative)));
 }
+function cleanGitEnv() {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE',
+  ]) delete env[key];
+  return env;
+}
 function git(...gitArgs) {
-  return execFileSync('git', gitArgs, { cwd: root, encoding: 'utf8' }).trim();
+  return execFileSync('git', gitArgs, {
+    cwd: root,
+    encoding: 'utf8',
+    env: cleanGitEnv(),
+  }).trim();
 }
 function toolVersion(commandName, commandArgs) {
   try {
@@ -143,7 +165,10 @@ function releaseTestResultReasons(results, binding, options = {}) {
     verifyCiContext = false,
   } = options;
   const reasons = [];
-  if (!results || results.schema !== 'nexus.release-test-results.v1') {
+  const legacyLocal = results?.schema === 'nexus.release-test-results.v1'
+    && results?.ci === undefined
+    && results?.commands !== undefined;
+  if (!results || (results.schema !== RELEASE_RESULTS_SCHEMA && !legacyLocal)) {
     reasons.push('release_test_schema_invalid');
     return reasons;
   }
@@ -178,6 +203,19 @@ function releaseTestResultReasons(results, binding, options = {}) {
     if (!Number.isSafeInteger(results.counts?.pytest) || results.counts.pytest <= 0) {
       reasons.push('release_test_pytest_count_invalid');
     }
+    if (results.schema !== RELEASE_RESULTS_SCHEMA) reasons.push('release_test_ci_schema_invalid');
+    if (results.testPolicyDigest !== binding.testPolicyDigest) {
+      reasons.push('release_test_policy_digest_mismatch');
+    }
+    try {
+      const selection = validateReleaseSelection(results.selection, {
+        expectedHeadSha: binding.runtimeSha,
+        expectedPolicyDigest: binding.testPolicyDigest,
+      });
+      if (results.tier !== selection.tier) reasons.push('release_test_tier_mismatch');
+    } catch {
+      reasons.push('release_test_selection_invalid');
+    }
     if (verifyCiContext) {
       const currentRunId = process.env.GITHUB_RUN_ID?.trim() ?? '';
       const currentRunAttempt = process.env.GITHUB_RUN_ATTEMPT?.trim() ?? '';
@@ -199,7 +237,9 @@ function releaseTestResultReasons(results, binding, options = {}) {
   }
   if ((requireBinding || results.testPolicyDigest !== undefined)
       && results.testPolicyDigest !== binding.testPolicyDigest) {
-    reasons.push('release_test_policy_digest_mismatch');
+    if (!reasons.includes('release_test_policy_digest_mismatch')) {
+      reasons.push('release_test_policy_digest_mismatch');
+    }
   }
   return reasons;
 }

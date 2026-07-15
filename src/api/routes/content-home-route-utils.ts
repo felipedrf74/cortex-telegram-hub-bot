@@ -142,6 +142,7 @@ export function buildSignalTitle(signal: AgentSignal, language: Lang): string {
     hook_effectiveness: { en: 'Hook performance', pt: 'Performance dos hooks' },
     pillar_performance: { en: 'Pillar performance', pt: 'Performance do pilar' },
     learning_digest: { en: 'Weekly learning', pt: 'Aprendizagem semanal' },
+    creator_learning_digest: { en: 'Your weekly learning', pt: 'A tua aprendizagem semanal' },
     content_formula: { en: 'Winning format', pt: 'Formato vencedor' },
   };
   const fallback = fallbackTitles[signal.signal_type];
@@ -197,6 +198,7 @@ export function buildSignalSummary(signal: AgentSignal, language: Lang): string 
         'One of your pillars is outperforming the rest right now.',
       );
     case 'learning_digest':
+    case 'creator_learning_digest':
       return localizePortugueseVariant(
         language,
         'Há uma síntese recente do que está a funcionar e do que precisa de ajuste.',
@@ -324,6 +326,7 @@ function localizeSignalSummary(summary: string, signalType: string, payload: Rec
           .replace(/^Performance de\s+/i, 'Performance for ')
           .replace(/^Performance do\s+/i, 'Performance for ');
       case 'learning_digest':
+      case 'creator_learning_digest':
         return trimmed.replace(/^Aprendizagem recente:\s*/i, 'Recent learning: ');
       case 'content_formula':
         return trimmed.replace(/^Formato a repetir:\s*/i, 'Repeatable format: ');
@@ -347,6 +350,7 @@ function localizeSignalSummary(summary: string, signalType: string, payload: Rec
       return `Performance de ${localizedPillar}: ${trimmed}`;
     }
     case 'learning_digest':
+    case 'creator_learning_digest':
       return `Aprendizagem recente: ${trimmed}`;
     case 'content_formula':
       return `Formato a repetir: ${trimmed}`;

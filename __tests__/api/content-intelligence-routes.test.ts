@@ -235,7 +235,7 @@ describe('content intelligence routes', () => {
     );
     expect(readSignals).toHaveBeenCalledWith(
       'ios-content-intelligence',
-      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'creator_learning_digest', 'content_formula'],
       25,
       77,
       14,
@@ -279,7 +279,7 @@ describe('content intelligence routes', () => {
       7,
       8800,
     );
-    expect(getFilmingRecommendation).toHaveBeenCalledWith(88);
+    expect(getFilmingRecommendation).toHaveBeenCalledWith(88, undefined, 8800);
     expect(localizeFilmingRecommendation).toHaveBeenCalledWith(expect.any(Object), 'pt-BR');
     expect(buildRadarTopicSummaries).toHaveBeenCalledWith(['marathon'], expect.any(Array));
     expect(getContentDeskItems).toHaveBeenCalledWith(88, 3);

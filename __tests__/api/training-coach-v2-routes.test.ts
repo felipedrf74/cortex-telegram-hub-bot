@@ -50,6 +50,7 @@ vi.mock('../../src/config', () => ({
 
 import { mountCoachV2Routes } from '../../src/api/routes/training-coach-v2';
 import { _resetRateLimiterForTests } from '../../src/api/rate-limiter';
+import { setDbProvider } from '../../src/services/intelligence-bus';
 
 let server: http.Server;
 let baseUrl: string;
@@ -57,6 +58,7 @@ let baseUrl: string;
 beforeEach(async () => {
   _resetRateLimiterForTests();
   testDb = createMigratedTestDatabase();
+  setDbProvider(() => testDb);
   flagState = true;
   // Seed a plan + week.
   testDb.prepare(`
@@ -94,17 +96,37 @@ afterEach(async () => {
 
 async function req(
   method: string,
-  path: string,
+  requestPath: string,
   body?: unknown,
   headers: Record<string, string> = {},
 ): Promise<{ status: number; json: any }> {
-  const r = await fetch(`${baseUrl}${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+  const payload = body !== undefined ? JSON.stringify(body) : undefined;
+  return new Promise((resolve, reject) => {
+    const request = http.request(`${baseUrl}${requestPath}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(payload !== undefined ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...headers,
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let json: any = null;
+        try {
+          json = raw ? JSON.parse(raw) : null;
+        } catch {
+          json = null;
+        }
+        resolve({ status: response.statusCode ?? 0, json });
+      });
+    });
+    request.on('error', reject);
+    if (payload !== undefined) request.write(payload);
+    request.end();
   });
-  const json = await r.json().catch(() => null);
-  return { status: r.status, json };
 }
 
 describe('coach v2 routes — feature flag gate', () => {
@@ -503,16 +525,18 @@ describe('POST /week/:weekId/reflow (C6)', () => {
       "INSERT INTO training_weeks (id, plan_id, week_number, focus, intensity_pct, auto_adjusted, created_at) VALUES (3, 1, 3, 'base', 70, 0, datetime('now'))",
     ).run();
     // Apply on week 1 with key — succeeds, gets a real row.
-    await req('POST', '/api/v1/training/week/1/reflow', {
+    const initial = await req('POST', '/api/v1/training/week/1/reflow', {
       planId: 1, mode: 'apply', trigger: 'manual_reflow',
       idempotencyKey: 'rl-shared',
     });
+    expect(initial.status).toBe(200);
     // Prefill the daily limit so the next apply is rate-limited.
     for (let i = 0; i < 3; i++) {
-      await req('POST', '/api/v1/training/week/1/reflow', {
+      const prefill = await req('POST', '/api/v1/training/week/1/reflow', {
         planId: 1, mode: 'apply', trigger: 'manual_reflow',
         idempotencyKey: `rl-other-${i}`,
       });
+      expect(prefill.status).toBe(200);
     }
     // Now apply on week 3 with the original "rl-shared" key while rate-limited.
     // The existing row's weekId is 1, requested is 3 → must reject 409.
@@ -958,6 +982,11 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     ).get(result.json.data.id) as { source: string; tenant_id: number };
     expect(row.source).toBe('structured_intake');
     expect(row.tenant_id).toBe(100);
+    expect(testDb.prepare(`
+      SELECT tenant_id, user_id
+      FROM agent_signals
+      WHERE signal_type = 'safety_red_flag'
+    `).get()).toEqual({ tenant_id: 100, user_id: 100 });
   });
 
   it('fever/systemic illness via structured intake → coach-analysis emits pause_training', async () => {

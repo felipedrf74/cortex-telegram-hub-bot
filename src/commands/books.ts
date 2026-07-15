@@ -5,7 +5,7 @@
  */
 
 import { getDb } from '../services/database';
-import { writeSignal } from '../services/intelligence-bus';
+import { writeGovernedSignal } from '../services/intelligence-bus';
 import { escapeHtml } from '../utils/telegram-formatter';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
@@ -28,6 +28,7 @@ import {
 } from '../services/content-tenant-scope';
 
 const CONTENT_ENGINE_URL = contentEngineApiBaseUrl();
+const BOOKS_SIGNAL_PRODUCER_VERSION = 'books-command.v1';
 
 // ── Seed books (extracted on first deploy if table is empty) ────────
 
@@ -206,9 +207,14 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
     // tenant/user-scoped portal books into that bus until shared context has
     // tenant namespaces for content reference signals.
     if (!scope) {
-      writeSignal({
+      writeGovernedSignal({
         source_agent: 'book-extractor',
         signal_type: 'book_knowledge',
+        provenance: {
+          producerVersion: BOOKS_SIGNAL_PRODUCER_VERSION,
+          source: 'runtime',
+          observedAt: new Date().toISOString(),
+        },
         payload: {
           title: book.title,
           author: book.author,
@@ -421,21 +427,12 @@ export async function handleBookNote(ctx: Context): Promise<void> {
   db.prepare('UPDATE book_library SET personal_notes = ? WHERE id = ?')
     .run(JSON.stringify(notes), book.id);
 
-  // Write high-priority signal — personal notes are the most valuable
-  writeSignal({
-    source_agent: 'book-extractor',
-    signal_type: 'book_knowledge',
-    priority: 'urgent',
-    payload: {
-      title: book.title,
-      author: book.author,
-      note_type: 'personal',
-      note,
-    },
-  });
+  // This legacy Telegram command has no authenticated tenant boundary. Keep
+  // the note in the book record and never mirror private user-authored text to
+  // the platform-global book_knowledge signal mesh.
 
   await ctx.reply(
-    `📝 Note added to <b>${escapeHtml(book.title)}</b>:\n\n<i>${escapeHtml(note)}</i>\n\n✅ This note will be prioritized in future script generation.`,
+    `📝 Note added to <b>${escapeHtml(book.title)}</b>:\n\n<i>${escapeHtml(note)}</i>\n\n✅ Note saved to this book.`,
     { parse_mode: 'HTML' },
   );
 }

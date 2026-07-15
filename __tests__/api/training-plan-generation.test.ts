@@ -703,7 +703,7 @@ describe('generateTrainingPlanForUser', () => {
     });
     expect(String(result.data.message)).toContain('Plan created!');
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12, ['outlook']);
-    expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith('triathlon', 12);
+    expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith('triathlon', 12, 12);
     expect(mockBuildTrainingPlanCoordination).toHaveBeenLastCalledWith(expect.objectContaining({
       sessionsPerWeek: 7,
       strengthSessionsPerWeek: 3,

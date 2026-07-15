@@ -273,7 +273,7 @@ export async function getTodaySession(userId: number, tenantId: number) {
   }
 
   // Slice 1.C — best-effort readiness-aware adaptation. We call the cached
-  // `getReadiness(userId)` (5-min TTL) so this is cheap on the hot path.
+  // `getReadiness(userId, tenantId)` (5-min TTL) so this is cheap on the hot path.
   // If readiness is unavailable, adaptation is skipped and the session
   // renders as written.
   //
@@ -284,7 +284,7 @@ export async function getTodaySession(userId: number, tenantId: number) {
   let adaptation: SessionAdaptation | null = null;
   if (session && !isKeepOriginalSetForToday(userId)) {
     try {
-      const readinessSummary = await getReadiness(userId);
+      const readinessSummary = await getReadiness(userId, tenantId);
       const snapshot = readinessResultToSnapshot({
         score: typeof readinessSummary?.score === 'number' ? readinessSummary.score : undefined,
         sleepHours: typeof readinessSummary?.sleepDurationHours === 'number' && readinessSummary.sleepDurationHours > 0
@@ -780,13 +780,13 @@ function isInactiveTrainingReadModelStatus(status: unknown): boolean {
     || normalized === 'superseded';
 }
 
-export async function getReadiness(userId: number) {
-  const cacheKey = `readiness:${userId}`;
+export async function getReadiness(userId: number, tenantId = userId) {
+  const cacheKey = `readiness:${tenantId}:${userId}`;
   const cached = getCached<any>(cacheKey);
   if (cached) return cached;
 
   try {
-    const readiness = await calculateReadiness(userId);
+    const readiness = await calculateReadiness(userId, { tenantId });
     const score = readiness?.score || 0;
     const factors = {
       sleepScore: readiness?.factors?.sleep?.score ?? readiness?.factors?.sleep?.qualityScore ?? null,
@@ -829,7 +829,7 @@ export async function getReadiness(userId: number) {
 export async function fetchCurrentReadinessForPlan(userId: number, tenantId: number): Promise<CoachKernelReadinessInput | null> {
   const scopedTenantId = requireTenantIdParam(tenantId, 'fetchCurrentReadinessForPlan');
   try {
-    const readiness = await calculateReadiness(userId);
+    const readiness = await calculateReadiness(userId, { tenantId: scopedTenantId });
     if (!readiness || typeof readiness.score !== 'number' || readiness.score <= 0) return null;
 
     const hrvTrend = readiness.factors?.hrv?.trend;

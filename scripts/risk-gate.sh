@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Git hooks export repository-local GIT_* variables. Verification includes
+# fixtures that create independent repositories, so carrying those variables
+# into the test process can redirect fixture Git commands into this checkout.
+# Restart once with a clean Git environment; cwd-based discovery still resolves
+# the linked worktree and its index correctly.
+if [ "${NEXUS_RISK_GATE_GIT_ENV_SANITIZED:-0}" != "1" ]; then
+  exec env \
+    -u GIT_DIR \
+    -u GIT_WORK_TREE \
+    -u GIT_INDEX_FILE \
+    -u GIT_PREFIX \
+    -u GIT_COMMON_DIR \
+    -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+    -u GIT_NAMESPACE \
+    NEXUS_RISK_GATE_GIT_ENV_SANITIZED=1 \
+    "$0" "$@"
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/release-gates.sh"
 cd "$ROOT"

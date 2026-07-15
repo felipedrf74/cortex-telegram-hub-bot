@@ -1027,7 +1027,7 @@ describe('Training API routes', () => {
 
   it('surfaces wearable integration gaps honestly in the training home contract', async () => {
     mockGetCached.mockImplementation((key: string) => {
-      if (key === 'readiness:12') {
+      if (key === 'readiness:12:12') {
         return {
           score: 60,
           factors: {

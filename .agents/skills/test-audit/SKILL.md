@@ -1,6 +1,6 @@
 ---
 name: test-audit
-description: Profile, select, consolidate, or govern Nexus Hub backend tests. Use for slow CI, the 929-file or 13k-case suite, migration replay, flaky benchmarks, changed-test mapping, coverage, mutation checks, QA-suite duplication, or keep/merge/convert/eval/delete dispositions.
+description: Profile, select, consolidate, or govern Nexus Hub backend tests. Use for slow CI, large test-file or 13k-case suites, migration replay, flaky benchmarks, changed-test mapping, coverage, mutation checks, QA-suite duplication, or keep/merge/convert/eval/delete dispositions.
 ---
 
 # Nexus Test Audit

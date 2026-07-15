@@ -100,6 +100,7 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   getAgentStats: vi.fn(() => []),
   dismissSignal: vi.fn(),
   writeSignal: vi.fn(),
+  writeGovernedSignal: vi.fn(() => 1),
 }));
 vi.mock('../../src/agents/pipeline-agent', () => ({
   getPipelineStats: vi.fn(() => ({ total: 0, published: 0 })),

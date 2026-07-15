@@ -2,8 +2,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  canonicalRegistryMarkdownPaths,
   hasGitCheckoutMetadata,
   isWorkspaceArchitectureDecision,
+  missingCanonicalRegistryMarkdownPaths,
+  resolveCanonicalRegistryMarkdownPath,
 } from '../../scripts/lib/docs-audit-paths.mjs';
 
 describe('docs audit canonical taxonomy', () => {
@@ -49,5 +52,51 @@ describe('docs audit canonical taxonomy', () => {
 
   it('rejects a directory with no git metadata', () => {
     expect(hasGitCheckoutMetadata('/tmp/not-a-repo', () => false)).toBe(false);
+  });
+
+  it('extracts local inline-code Markdown paths from canonical registries', () => {
+    const source = [
+      '## Canonical standards',
+      '| Runtime | `runtime-and-observability-standard.md` |',
+      '| Reward | `../agents/VERIFIABLE_REWARD_PROTOCOL.md` |',
+      '## Related cross-repo standards',
+      '| iOS | `ios/docs/engineering/ios-standard.md` |',
+    ].join('\n');
+
+    expect(canonicalRegistryMarkdownPaths(
+      'docs/engineering/ENGINEERING_STANDARDS_INDEX.md',
+      source,
+    )).toEqual([
+      'runtime-and-observability-standard.md',
+      '../agents/VERIFIABLE_REWARD_PROTOCOL.md',
+    ]);
+  });
+
+  it('resolves repository-root and registry-relative Markdown paths', () => {
+    const repoRoot = '/tmp/backend';
+    expect(resolveCanonicalRegistryMarkdownPath(
+      'docs/DOCS_INDEX.md',
+      'docs/release/README.md',
+      repoRoot,
+    )).toBe('/tmp/backend/docs/release/README.md');
+    expect(resolveCanonicalRegistryMarkdownPath(
+      'docs/engineering/ENGINEERING_STANDARDS_INDEX.md',
+      '../release/README.md',
+      repoRoot,
+    )).toBe('/tmp/backend/docs/release/README.md');
+  });
+
+  it('reports a deleted inline-code path from a canonical registry', () => {
+    const missing = missingCanonicalRegistryMarkdownPaths({
+      registryFile: 'docs/DOCS_INDEX.md',
+      source: '| Release | `docs/release/deleted.md` |',
+      repoRoot: '/tmp/backend',
+      exists: () => false,
+    });
+
+    expect(missing).toEqual([{
+      reference: 'docs/release/deleted.md',
+      target: '/tmp/backend/docs/release/deleted.md',
+    }]);
   });
 });

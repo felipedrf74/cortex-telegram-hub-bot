@@ -13,7 +13,13 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'node:crypto';
-import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import {
+  writeGovernedSignal,
+  readSignals,
+  logAgentRun,
+  GovernedSignalWriteError,
+  type SignalProvenance,
+} from '../services/intelligence-bus';
 import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
@@ -31,10 +37,19 @@ import { AiBudgetError, withAiBudgetReservation } from '../services/cost-guardra
 
 const client = createLazyAnthropicClient({ maxRetries: 2 });
 const VOICE_EVOLUTION_FINGERPRINT_VERSION = 'voice-evolution-input-v1';
+const VOICE_EVOLUTION_SIGNAL_PRODUCER_VERSION = 'voice-evolution-agent.v1';
 const MAX_ANALYSIS_ITEMS = 20;
 const MAX_EXAMPLES_PER_ITEM = 10;
 const MAX_ANALYSIS_FIELD_LENGTH = 1_000;
 const MAX_VOICE_SUMMARY_LENGTH = 2_000;
+
+function voiceSignalProvenance(): SignalProvenance {
+  return {
+    producerVersion: VOICE_EVOLUTION_SIGNAL_PRODUCER_VERSION,
+    source: 'runtime',
+    observedAt: new Date().toISOString(),
+  };
+}
 
 class VoiceEvolutionFingerprintReadError extends Error {
   constructor(message: string) {
@@ -343,6 +358,13 @@ function requireSignalWrite(signalId: number, signalType: string): void {
   if (signalId < 0) {
     throw new Error(`Voice Evolution failed to persist ${signalType} output`);
   }
+}
+
+function voiceEvolutionPersistenceCause(error: unknown): unknown {
+  if (!(error instanceof GovernedSignalWriteError)) return error;
+  const wrapped = new Error(`Voice Evolution failed to persist ${error.signalType} output`);
+  (wrapped as Error & { cause?: unknown }).cause = error;
+  return wrapped;
 }
 
 const ANALYSIS_PROMPT = `You are analyzing the voice evolution of the authenticated content creator (resolved from the active user/tenant target).
@@ -659,11 +681,12 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
       db.transaction(() => {
       // Write voice_pattern signals
       if (analysis.additions.length > 0) {
-        requireSignalWrite(writeSignal({
+        requireSignalWrite(writeGovernedSignal({
           source_agent: 'voice-evolution',
           signal_type: 'voice_pattern',
           user_id: userId,
           tenant_id: tenantId,
+          provenance: voiceSignalProvenance(),
           payload: {
             observation: 'content_additions',
             description: `creator adds ${analysis.additions.length} types of content not in generated scripts`,
@@ -677,11 +700,12 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
       }
 
       if (analysis.removals.length > 0) {
-        requireSignalWrite(writeSignal({
+        requireSignalWrite(writeGovernedSignal({
           source_agent: 'voice-evolution',
           signal_type: 'voice_pattern',
           user_id: userId,
           tenant_id: tenantId,
+          provenance: voiceSignalProvenance(),
           payload: {
             observation: 'content_removals',
             description: `creator removes ${analysis.removals.length} types of content from generated scripts`,
@@ -695,11 +719,12 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
       }
 
       if (analysis.rephrasing.length > 0) {
-        requireSignalWrite(writeSignal({
+        requireSignalWrite(writeGovernedSignal({
           source_agent: 'voice-evolution',
           signal_type: 'voice_pattern',
           user_id: userId,
           tenant_id: tenantId,
+          provenance: voiceSignalProvenance(),
           payload: {
             observation: 'voice_rephrasing',
             description: 'How the creator rephrases AI-generated text to match their voice',
@@ -714,11 +739,12 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
 
       // Write recurring phrases as voice_phrase_trend
       for (const phrase of analysis.recurring_phrases.slice(0, 5)) {
-        requireSignalWrite(writeSignal({
+        requireSignalWrite(writeGovernedSignal({
           source_agent: 'voice-evolution',
           signal_type: 'voice_phrase_trend',
           user_id: userId,
           tenant_id: tenantId,
+          provenance: voiceSignalProvenance(),
           payload: {
             phrase: phrase.phrase,
             context: phrase.context,
@@ -733,11 +759,12 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
       if (analysis.book_influences.length > 0) {
         const integratedCount = analysis.book_influences
           .filter((influence) => influence.adoption_level === 'integrated').length;
-        requireSignalWrite(writeSignal({
+        requireSignalWrite(writeGovernedSignal({
           source_agent: 'voice-evolution',
           signal_type: 'voice_pattern',
           user_id: userId,
           tenant_id: tenantId,
+          provenance: voiceSignalProvenance(),
           payload: {
             observation: 'book_voice_influence',
             description: `${integratedCount} book concepts integrated into voice`,
@@ -750,11 +777,12 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
         signalsProduced++;
       }
 
-        requireSignalWrite(writeSignal({
+        requireSignalWrite(writeGovernedSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_pattern',
         user_id: userId,
         tenant_id: tenantId,
+        provenance: voiceSignalProvenance(),
         payload: {
           observation: 'monthly_voice_summary',
           description: analysis.voice_summary,
@@ -813,7 +841,7 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
         });
       }
 
-      requireSignalWrite(writeSignal({
+      requireSignalWrite(writeGovernedSignal({
         source_agent: 'voice-evolution',
         signal_type: 'voice_analysis_fingerprint',
         user_id: userId,
@@ -824,17 +852,13 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
           fingerprint: inputFingerprint,
           fingerprintVersion: VOICE_EVOLUTION_FINGERPRINT_VERSION,
         },
-        provenance: {
-          producerVersion: VOICE_EVOLUTION_FINGERPRINT_VERSION,
-          source: 'runtime',
-          observedAt: new Date().toISOString(),
-        },
+        provenance: voiceSignalProvenance(),
         }), 'voice_analysis_fingerprint');
       })();
     } catch (error) {
       throw new VoiceEvolutionPersistenceError(
         'Voice Evolution governed output transaction failed',
-        error,
+        voiceEvolutionPersistenceCause(error),
       );
     }
 

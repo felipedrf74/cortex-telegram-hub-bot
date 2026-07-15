@@ -98,6 +98,7 @@ function mockReq(url: string): Request {
     params: {},
     headers: {},
     userId: 12,
+    tenantId: 1200,
   } as any;
 }
 

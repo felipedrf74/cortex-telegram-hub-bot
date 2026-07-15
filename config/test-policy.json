@@ -2,11 +2,14 @@
   "version": "2026-07-15",
   "defaultTier": "full",
   "releaseEvidence": {
-    "minimumTestCounts": {
-      "vitest": 9000,
-      "pytest": 6
-    },
-    "basis": "Protected-main floors preserve the existing 10000/7 release baselines with the governed 10 percent tolerance while allowing intentional test consolidation."
+    "defaultTier": "changed-critical-cannot-skip",
+    "fullTier": "full-sharded",
+    "qualifyingNightly": {
+      "workflowPath": ".github/workflows/nightly.yml",
+      "workflowName": "Nightly — Full regression + coverage",
+      "artifactPrefix": "nightly-full-suite-evidence-",
+      "maxAgeHours": 36
+    }
   },
   "tiers": {
     "fast": {
@@ -64,15 +67,32 @@
     "scripts/changed-area-classifier.sh",
     "scripts/resolve-ci-change-base.sh",
     "scripts/select-vitest-files.mjs",
+    "scripts/release-test-evidence.mjs",
     "scripts/run-test-tier.mjs",
     "scripts/risk-gate.sh",
     "scripts/lib/test-policy.mjs",
+    "scripts/lib/static-test-dependency-map.mjs",
     "scripts/test-inventory.mjs",
     "scripts/test-migration-hook-lint.mjs",
     "scripts/changed-coverage-gate.mjs",
     "scripts/mutation-gate.mjs",
     "config/stryker.config.mjs",
     "src/services/database.ts",
+    "src/services/db.ts",
+    "src/services/tenant-scope.ts",
+    "src/api/router.ts",
+    "src/config.ts",
+    "src/index.ts",
+    "tsconfig.json",
+    "Dockerfile*",
+    "docker-compose*.yml",
+    "docker-compose*.yaml",
+    ".dockerignore",
+    ".nvmrc",
+    ".node-version",
+    ".env*.example",
+    "content-engine/Dockerfile*",
+    "content-engine/.env*.example",
     "package.json",
     "package-lock.json"
   ],

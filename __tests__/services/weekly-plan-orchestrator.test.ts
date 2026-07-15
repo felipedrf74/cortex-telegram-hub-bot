@@ -134,7 +134,7 @@ vi.mock('../../src/services/intelligence-bus', () => ({
         && (tenantId === undefined || signal.tenant_id === tenantId)
         && signalTypes.includes(String(signal.signal_type)))
       .map((signal) => ({ ...signal })),
-  writeSignal: (signal: Record<string, unknown>) => {
+  writeGovernedSignal: (signal: Record<string, unknown>) => {
     const id = writtenSignals.length + 1;
     writtenSignals.push({
       id,

@@ -75,7 +75,7 @@ function mockRes(): MockRes {
 }
 
 function mockReq(userId: number): Request {
-  return { userId } as any;
+  return { userId, tenantId: userId } as any;
 }
 
 async function dispatch(method: 'GET', url: string, userId: number): Promise<MockRes> {
@@ -224,7 +224,7 @@ describe('Content API — filming recommendation', () => {
     const user = getOrCreateUser(31002, { username: 'creator2' });
     const today = DateTime.now().setZone('Europe/Lisbon').startOf('day');
     mockReadinessScore = 41;
-    publishLowReadiness({ userId: user.id, score: 41, reason: 'Poor recovery' });
+    publishLowReadiness({ userId: user.id, tenantId: user.id, score: 41, reason: 'Poor recovery' });
 
     const response = await dispatch('GET', '/topics', user.id);
 

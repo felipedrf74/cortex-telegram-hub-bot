@@ -24,6 +24,12 @@ describe('required CI test sharding', () => {
     expect(workflow).toContain('scripts/risk-gate.sh \\');
   });
 
+  it('fails CI when the generated project map drifts', () => {
+    expect(workflow).toContain('name: Project map freshness');
+    expect(workflow).toContain('run: npm run project:map:check');
+    expect(workflow).toMatch(/docs_and_secrets:[\s\S]*?- run: npm ci[\s\S]*?audit-docs\.mjs --strict/);
+  });
+
   it('classifies the complete pushed range and propagates one exact base', () => {
     const classifyJob = workflow.match(/  classify:\n(?<body>[\s\S]*?)(?=\n  mutation_cleanup:)/)?.groups?.body ?? '';
     const setupNode = classifyJob.indexOf('actions/setup-node@');

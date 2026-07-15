@@ -31,6 +31,62 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
 
+function ciReleaseResults({
+  runtimeSha,
+  policyDigest,
+  completedAt = new Date().toISOString(),
+  counts = { vitest: 1, pytest: 1 },
+  runId = '12345',
+  runAttempt = '1',
+  artifactDigest,
+}: {
+  runtimeSha: string;
+  policyDigest: string;
+  completedAt?: string;
+  counts?: { vitest: number; pytest: number };
+  runId?: string;
+  runAttempt?: string;
+  artifactDigest?: string;
+}) {
+  const testFile = '__tests__/scripts/release-manifest-v2.test.ts';
+  const files = [testFile];
+  const selection = {
+    schema: 'nexus.release-test-selection.v1',
+    tier: 'changed-critical-cannot-skip',
+    headSha: runtimeSha,
+    baseSha: runtimeSha,
+    policyDigest,
+    fullRequired: false,
+    fullRequiredReason: null,
+    selected: {
+      changed: files,
+      critical: [],
+      cannotSkip: [],
+      removed: [],
+      removedDigest: createHash('sha256').update('[]').digest('hex'),
+      unresolved: [],
+      unresolvedDigest: createHash('sha256').update('[]').digest('hex'),
+      files,
+      filesDigest: createHash('sha256').update(JSON.stringify(files)).digest('hex'),
+    },
+    classifier: { impactResolved: true, fullSuiteTrigger: false, cannotSkip: [] },
+    nightlyEvidence: { headSha: runtimeSha, completedAt, runId: '777', runAttempt: '1' },
+  };
+  return {
+    schema: 'nexus.release-test-results.v2',
+    status: 'passed',
+    runtimeSha,
+    completedAt,
+    tier: selection.tier,
+    selection,
+    testPolicyDigest: policyDigest,
+    toolchain: { node: process.version, python: 'Python 3.12.0' },
+    counts,
+    ci: { runId, runAttempt },
+    ...(artifactDigest ? { artifactDigest } : {}),
+  };
+}
+
 afterEach(() => {
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -43,7 +99,18 @@ describe('ReleaseManifestV2', () => {
     const manifestPath = path.join(temp, 'manifest.json');
     const publicPath = path.join(temp, 'public.pem');
     const runtimeSha = 'a'.repeat(40);
-    const policyBody = '{"releaseEvidence":{"minimumTestCounts":{"vitest":9000,"pytest":6}}}\n';
+    const policyBody = `${JSON.stringify({
+      releaseEvidence: {
+        defaultTier: 'changed-critical-cannot-skip',
+        fullTier: 'full-sharded',
+        qualifyingNightly: {
+          workflowPath: '.github/workflows/nightly.yml',
+          workflowName: 'Nightly — Full regression + coverage',
+          artifactPrefix: 'nightly-full-suite-evidence-',
+          maxAgeHours: 36,
+        },
+      },
+    })}\n`;
     fs.mkdirSync(path.join(bundleRoot, 'config'), { recursive: true });
     fs.writeFileSync(path.join(bundleRoot, 'package.json'), '{"version":"4.14.220"}\n');
     fs.writeFileSync(path.join(bundleRoot, 'config/test-policy.json'), policyBody);
@@ -79,17 +146,13 @@ describe('ReleaseManifestV2', () => {
       },
       testPolicy: {
         digest: policyDigest,
-        results: {
-          schema: 'nexus.release-test-results.v1',
-          status: 'passed',
+        results: ciReleaseResults({
           runtimeSha,
+          policyDigest,
           completedAt: generatedAt,
-          toolchain: { node: process.version, python: 'Python 3.12.0' },
           counts: { vitest: 13_310, pytest: 208 },
-          ci: { runId: '12345', runAttempt: '1' },
           artifactDigest: artifact.digest,
-          testPolicyDigest: policyDigest,
-        },
+        }),
       },
     };
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -188,17 +251,14 @@ describe('ReleaseManifestV2', () => {
     const resultsPath = path.join(temp, 'results.json');
     const manifestPath = path.join(temp, 'manifest.json');
     const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const policyDigest = createHash('sha256').update(fs.readFileSync('config/test-policy.json')).digest('hex');
     fs.writeFileSync(privatePath, privateKey.export({ format: 'pem', type: 'pkcs8' }));
     fs.writeFileSync(publicPath, publicKey.export({ format: 'pem', type: 'spki' }));
-    fs.writeFileSync(resultsPath, JSON.stringify({
-      schema: 'nexus.release-test-results.v1',
-      status: 'passed',
+    fs.writeFileSync(resultsPath, JSON.stringify(ciReleaseResults({
       runtimeSha,
-      completedAt: new Date().toISOString(),
-      toolchain: { node: process.version, python: 'Python 3.12.0' },
+      policyDigest,
       counts: { vitest: 13_512, pytest: 194 },
-      ci: { runId: '12345', runAttempt: '1' },
-    }));
+    })));
 
     execFileSync(process.execPath, [script, 'write',
       '--manifest', manifestPath,
@@ -304,16 +364,16 @@ describe('ReleaseManifestV2', () => {
     const privatePath = path.join(temp, 'private.pem');
     const resultsPath = path.join(temp, 'results.json');
     const manifestPath = path.join(temp, 'manifest.json');
+    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const policyDigest = createHash('sha256').update(fs.readFileSync('config/test-policy.json')).digest('hex');
     fs.writeFileSync(privatePath, privateKey.export({ format: 'pem', type: 'pkcs8' }));
-    fs.writeFileSync(resultsPath, JSON.stringify({
-      schema: 'nexus.release-test-results.v1',
-      status: 'passed',
-      runtimeSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-      completedAt: new Date().toISOString(),
-      toolchain: { node: process.version, python: 'Python 3.12.0' },
+    fs.writeFileSync(resultsPath, JSON.stringify(ciReleaseResults({
+      runtimeSha,
+      policyDigest,
       counts: { vitest: 0, pytest: 0 },
-      ci: { runId: 'copied-run', runAttempt: '9' },
-    }));
+      runId: 'copied-run',
+      runAttempt: '9',
+    })));
 
     const result = spawnSync(process.execPath, [script, 'write',
       '--manifest', manifestPath,

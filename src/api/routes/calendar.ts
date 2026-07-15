@@ -615,7 +615,12 @@ export function calendarRoutes(): Router {
 
     try {
       const userId = (req as AuthenticatedRequest).userId;
+      const tenantId = requireTenantIdParam(
+        (req as AuthenticatedRequest).tenantId,
+        'calendar.focus-recommendation',
+      );
       const focusRecommendation = await getFocusBlockRecommendation(userId, {
+        tenantId,
         durationMinutes,
         horizonDays,
       });

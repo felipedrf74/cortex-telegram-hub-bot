@@ -222,7 +222,7 @@ async function buildDeterministicCoachFallback(
   const [todayResult, weekResult, readinessResult] = await Promise.allSettled([
     getTodaySession(userId, tenantId),
     getWeekPlan(userId, tenantId),
-    getReadiness(userId),
+    getReadiness(userId, tenantId),
   ]);
 
   const today = todayResult.status === 'fulfilled' ? todayResult.value?.session : null;
@@ -332,7 +332,7 @@ export function trainingRoutes(): Router {
     const [todayResult, weekResult, readinessResult] = await Promise.allSettled([
       getTodaySession(userId, tenantId),
       getWeekPlan(userId, tenantId),
-      getReadiness(userId),
+      getReadiness(userId, tenantId),
     ]);
 
     const payload = {
@@ -383,9 +383,9 @@ export function trainingRoutes(): Router {
 
   /** GET /api/v1/training/readiness */
   router.get('/readiness', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     try {
-      const readiness = await getReadiness(userId);
+      const readiness = await getReadiness(userId, tenantId);
       sendSuccess(res, readiness);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/readiness failed');

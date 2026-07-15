@@ -66,7 +66,8 @@ interface DatedFocusCandidate extends FocusCandidate {
 
 export async function getFocusBlockRecommendation(
   userId: number,
-  opts?: {
+  opts: {
+    tenantId: number;
     durationMinutes?: number;
     horizonDays?: number;
     preferredDate?: string;
@@ -86,14 +87,15 @@ export async function getFocusBlockRecommendation(
 
   const [calendarResult, readinessResult] = await Promise.allSettled([
     getEvents(startDate.toUTC().toISO()!, endDate.toUTC().toISO()!, userId),
-    calculateReadiness(userId),
+    calculateReadiness(userId, { tenantId: opts.tenantId }),
   ]);
 
   const events = calendarResult.status === 'fulfilled' ? calendarResult.value : [];
   const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
-  const trainingContext = readTrainingContextAll({ userId });
+  const trainingContext = readTrainingContextAll({ userId, tenantId: opts.tenantId });
   const scheduledTraining = readScheduledTrainingSessions({
     userId,
+    tenantId: opts.tenantId,
     windowStartIso: startDate.toUTC().toISO()!,
     windowEndIso: endDate.toUTC().toISO()!,
   });

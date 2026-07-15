@@ -20,6 +20,69 @@ export interface SignalProvenance {
   observedAt: string;
 }
 
+export interface SignalWriteInput {
+  source_agent: string;
+  signal_type: SignalType;
+  payload: Record<string, any>;
+  priority?: SignalPriority;
+  expires_at?: string;
+  /** Telegram user ID for per-user signals. Omit for global content signals. */
+  user_id?: number;
+  /**
+   * Tenant/workspace ID. Governed callers should pass this whenever the
+   * authenticated tenant is known. Omission deliberately falls back to
+   * user_id only for legacy single-user boundaries.
+   */
+  tenant_id?: number;
+  /** Strength/certainty metric (0.0–1.0). Default 0.5. */
+  confidence?: number;
+  /** Content format: 'reel', 'youtube', 'short', etc. */
+  format_tag?: string;
+  /** Content pillar: 'tech', 'fitness', 'politics', etc. */
+  pillar_tag?: string;
+  /** Number of observations backing this signal. Default 1. */
+  evidence_count?: number;
+  meshPriority?: MeshPriority;
+  /** Optional only for the deprecated compatibility writer. */
+  provenance?: SignalProvenance;
+}
+
+export type GovernedSignalWriteInput = Omit<SignalWriteInput, 'provenance'> & {
+  provenance: SignalProvenance;
+};
+
+export type GovernedSignalWriteErrorCode =
+  | 'invalid_provenance'
+  | 'invalid_confidence'
+  | 'invalid_tenant_scope'
+  | 'missing_user_scope'
+  | 'unexpected_user_scope'
+  | 'invalid_expiry'
+  | 'expired_signal'
+  | 'write_rejected';
+
+/**
+ * A governed write is a production contract, so rejection must be observable.
+ * The error intentionally carries only signal identity and a stable code; it
+ * never includes the payload or other potentially private signal data.
+ */
+export class GovernedSignalWriteError extends Error {
+  readonly code: GovernedSignalWriteErrorCode;
+  readonly signalType: SignalType;
+  readonly sourceAgent: string;
+
+  constructor(
+    code: GovernedSignalWriteErrorCode,
+    signal: Pick<SignalWriteInput, 'signal_type' | 'source_agent'>,
+  ) {
+    super(`Governed signal write rejected (${code}) for ${signal.source_agent}:${signal.signal_type}`);
+    this.name = 'GovernedSignalWriteError';
+    this.code = code;
+    this.signalType = signal.signal_type;
+    this.sourceAgent = signal.source_agent;
+  }
+}
+
 export type SignalType =
   // ─── Content mesh signals (GLOBAL — user_id IS NULL) ──────────────
   | 'hook_effectiveness'
@@ -43,7 +106,11 @@ export type SignalType =
   | 'reaction_opportunity'
   | 'content_published'
   // Cross-agent learning signals (v2)
+  // Platform-wide synthesis of global-only inputs. Creator-specific digests
+  // use creator_learning_digest so private voice data can never be persisted
+  // into a row visible to every user in a tenant.
   | 'learning_digest'
+  | 'creator_learning_digest'
   | 'content_formula'
   | 'audience_insight'
   // ─── Training signals (PER-USER — user_id REQUIRED) ───────────────
@@ -197,6 +264,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   content_published: 30 * 24,        // 30 days — for performance tracking
   // Cross-agent learning signals (v2)
   learning_digest: 7 * 24,           // 7 days — weekly digest cycle
+  creator_learning_digest: 7 * 24,   // 7 days — private creator digest cycle
   content_formula: 90 * 24,          // 90 days — validated formulas are durable
   audience_insight: 30 * 24,         // 30 days — audience behavior shifts
   // ─── Training signals — shorter, training context is hour-level ───
@@ -409,38 +477,122 @@ function reportScopeAnomaly(report: ScopeAnomalyReport): void {
   }
 }
 
+const SIGNAL_PROVENANCE_SOURCES = new Set<SignalProvenance['source']>([
+  'runtime',
+  'user-feedback',
+  'measured-outcome',
+  'trusted-external',
+  'human-approved',
+]);
+
+// Producer identities are deliberately independent of package versions. A
+// producer must advance this suffix whenever the meaning of its signal output
+// changes, for example `weekly-plan-orchestrator.v2`.
+const VERSIONED_SIGNAL_PRODUCER_PATTERN = /^[a-z0-9][a-z0-9._-]{0,119}[.-]v[1-9]\d*$/;
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function isValidIsoTimestamp(value: unknown): value is string {
+  return typeof value === 'string'
+    && ISO_TIMESTAMP_PATTERN.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
+function isValidSignalProvenance(value: unknown): value is SignalProvenance {
+  if (value == null || typeof value !== 'object') return false;
+  const provenance = value as Partial<SignalProvenance>;
+  return typeof provenance.producerVersion === 'string'
+    && VERSIONED_SIGNAL_PRODUCER_PATTERN.test(provenance.producerVersion)
+    && typeof provenance.source === 'string'
+    && SIGNAL_PROVENANCE_SOURCES.has(provenance.source as SignalProvenance['source'])
+    && isValidIsoTimestamp(provenance.observedAt);
+}
+
+function governedSignalInvariantFailure(
+  signal: GovernedSignalWriteInput,
+): GovernedSignalWriteErrorCode | null {
+  if (!isValidSignalProvenance(signal.provenance)) return 'invalid_provenance';
+
+  if (signal.confidence !== undefined
+    && (!Number.isFinite(signal.confidence) || signal.confidence < 0 || signal.confidence > 1)) {
+    return 'invalid_confidence';
+  }
+
+  if (signal.tenant_id !== undefined && !hasValidTenantId(signal.tenant_id)) {
+    return 'invalid_tenant_scope';
+  }
+
+  const requiresUserScope = signalRequiresUserScope(signal.signal_type);
+  if (requiresUserScope && !hasValidScopedUserId(signal.user_id)) return 'missing_user_scope';
+  if (!requiresUserScope && signal.user_id !== undefined) return 'unexpected_user_scope';
+
+  if (signal.expires_at !== undefined) {
+    if (!isValidIsoTimestamp(signal.expires_at)) return 'invalid_expiry';
+    const expiresAt = Date.parse(signal.expires_at);
+    const observedAt = Date.parse(signal.provenance.observedAt);
+    if (expiresAt <= observedAt || expiresAt <= Date.now()) return 'expired_signal';
+  }
+
+  return null;
+}
+
 // ─── Core Functions ─────────────────────────────────────────────────
 
 /**
- * Write a new signal to the bus.
+ * Write a new signal to the bus through the legacy compatibility path.
  * Returns the signal ID, or -1 on failure.
  *
  * Content mesh signals (channel-wide truths) leave `user_id` undefined
  * and write as GLOBAL rows. Training signals MUST pass a user_id so the
  * bus can isolate one user's training state from another's.
+ *
+ * @deprecated Legacy/test compatibility only. Production callers must use
+ * `writeGovernedSignal`, which requires and validates explicit provenance.
  */
-export function writeSignal(signal: {
-  source_agent: string;
-  signal_type: SignalType;
-  payload: Record<string, any>;
-  priority?: SignalPriority;
-  expires_at?: string;
-  /** Telegram user ID for per-user signals. Omit for global content signals. */
-  user_id?: number;
-  /** Tenant/workspace ID. Defaults to user_id for legacy single-user workspaces. */
-  tenant_id?: number;
-  /** Strength/certainty metric (0.0–1.0). Default 0.5. */
-  confidence?: number;
-  /** Content format: 'reel', 'youtube', 'short', etc. */
-  format_tag?: string;
-  /** Content pillar: 'tech', 'fitness', 'politics', etc. */
-  pillar_tag?: string;
-  /** Number of observations backing this signal. Default 1. */
-  evidence_count?: number;
-  meshPriority?: MeshPriority;
-  /** Versioned producer and evidence origin. Legacy callers receive an explicit legacy marker. */
-  provenance?: SignalProvenance;
-}): number {
+export function writeSignal(signal: SignalWriteInput): number {
+  return writeSignalInternal(signal);
+}
+
+/**
+ * Write a governed signal with explicit, versioned provenance.
+ *
+ * Invalid provenance, scope, confidence, or expiry data is rejected before
+ * persistence. Runtime producers must use `source: 'runtime'` unless they
+ * genuinely possess one of the stronger evidence classes.
+ */
+export function writeGovernedSignal(signal: GovernedSignalWriteInput): number {
+  const validationFailure = governedSignalInvariantFailure(signal);
+  if (validationFailure) {
+    if (
+      validationFailure === 'invalid_tenant_scope'
+      || validationFailure === 'missing_user_scope'
+      || validationFailure === 'unexpected_user_scope'
+    ) {
+      reportScopeAnomaly({
+        layer: 'intelligence_bus',
+        operation: 'write_signal',
+        reason: validationFailure === 'invalid_tenant_scope'
+          ? 'invalid_user_scope'
+          : validationFailure,
+        userId: signal.user_id ?? null,
+        signalType: signal.signal_type,
+        details: {
+          sourceAgent: signal.source_agent,
+          governedWrite: true,
+          validationFailure,
+        },
+      });
+    }
+    throw new GovernedSignalWriteError(validationFailure, signal);
+  }
+
+  const signalId = writeSignalInternal(signal);
+  if (signalId < 1) {
+    throw new GovernedSignalWriteError('write_rejected', signal);
+  }
+  return signalId;
+}
+
+function writeSignalInternal(signal: SignalWriteInput): number {
   const d = db();
   if (!d) return -1;
   try {
@@ -660,8 +812,30 @@ export function dismissSignal(signalId: number, userId?: number, tenantId?: numb
   try {
     const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
     if (hasTenantColumn) {
+      if (userId === undefined) {
+        if (tenantId === undefined) {
+          const result = d.prepare(`
+            UPDATE agent_signals
+            SET status = 'dismissed'
+            WHERE id = ?
+              AND tenant_id IS NULL
+              AND user_id IS NULL
+          `).run(signalId);
+          return (result as any).changes ?? 0;
+        }
+        if (!hasValidTenantId(tenantId)) return 0;
+        const result = d.prepare(`
+          UPDATE agent_signals
+          SET status = 'dismissed'
+          WHERE id = ?
+            AND tenant_id = ?
+            AND user_id IS NULL
+        `).run(signalId, tenantId);
+        return (result as any).changes ?? 0;
+      }
+      if (!hasValidScopedUserId(userId)) return 0;
       const scopedTenantId = resolveSignalTenantId(userId, tenantId);
-      if (scopedTenantId === undefined || userId === undefined) return 0;
+      if (scopedTenantId === undefined) return 0;
       const result = d.prepare(`
         UPDATE agent_signals
         SET status = 'dismissed'
