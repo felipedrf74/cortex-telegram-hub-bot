@@ -10,7 +10,10 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildReleaseArtifactManifest } from './lib/release-artifact-manifest.mjs';
+import {
+  buildReleaseArtifactManifest,
+  verifyReleaseBundle,
+} from './lib/release-artifact-manifest.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'validate';
@@ -24,6 +27,7 @@ const toolingRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const allowUnsigned = has('--allow-unsigned');
 const allowDirtyForTest = has('--allow-dirty') && process.env.NODE_ENV === 'test';
 const allowTestKey = has('--allow-test-key') && process.env.NODE_ENV === 'test';
+const verifyBundle = has('--verify-bundle');
 const CURRENT_SIGNING_KEY_ID = 'github-environment-release-signing-2026-07';
 const LEGACY_SIGNING_KEY_ID = 'github-actions-release-manifest-2026-07';
 const RELEASE_RESULT_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
@@ -57,7 +61,17 @@ function toolVersion(commandName, commandArgs) {
     return null;
   }
 }
-function artifactManifest() {
+function artifactManifest(expectedRuntimeSha = '') {
+  if (verifyBundle) {
+    if (!/^[0-9a-f]{40}$/.test(expectedRuntimeSha)) {
+      throw new Error('release bundle expected runtime SHA is invalid');
+    }
+    const verified = verifyReleaseBundle(root, expectedRuntimeSha);
+    if (expectedRuntimeSha && verified.manifest.git?.sha !== expectedRuntimeSha) {
+      throw new Error('release bundle source SHA mismatch');
+    }
+    return verified.manifest;
+  }
   return buildReleaseArtifactManifest(root);
 }
 function digestForPrefix(artifact, prefix) {
@@ -116,8 +130,11 @@ function matchesTrackedPublicKey(publicPem, relativePath) {
     return false;
   }
 }
-function manifestPath(runtimeSha = git('rev-parse', 'HEAD')) {
-  return path.resolve(root, valueOf('--manifest', `.local/release/manifests/${runtimeSha}.json`));
+function manifestPath(runtimeSha = '') {
+  const explicit = valueOf('--manifest', '');
+  if (explicit) return path.resolve(root, explicit);
+  const resolvedRuntimeSha = runtimeSha || git('rev-parse', 'HEAD');
+  return path.resolve(root, `.local/release/manifests/${resolvedRuntimeSha}.json`);
 }
 function releaseTestResultReasons(results, binding, options = {}) {
   const {
@@ -315,7 +332,11 @@ function validateManifest() {
     if (legacyKey) reasons.push('legacy_signing_key_non_reusable');
   }
 
-  const expectedRuntimeSha = valueOf('--expect-runtime-sha', git('rev-parse', 'HEAD'));
+  const expectedRuntimeSha = valueOf(
+    '--expect-runtime-sha',
+    verifyBundle ? payload.runtimeSha : git('rev-parse', 'HEAD'),
+  );
+  if (!/^[0-9a-f]{40}$/.test(expectedRuntimeSha ?? '')) reasons.push('runtime_sha_invalid');
   if (payload.runtimeSha !== expectedRuntimeSha) reasons.push('runtime_sha_mismatch');
   if (payload.source?.dirty && !allowDirtyForTest) reasons.push('source_worktree_dirty');
   const generatedAt = Date.parse(payload.generatedAt);
@@ -323,7 +344,7 @@ function validateManifest() {
   const expiry = Date.parse(payload.expiresAt);
   if (!Number.isFinite(expiry)) reasons.push('manifest_expiry_invalid');
   else if (expiry <= Date.now()) reasons.push('manifest_expired');
-  const artifact = artifactManifest();
+  const artifact = artifactManifest(expectedRuntimeSha);
   if (payload.artifact?.digest !== artifact.digest) reasons.push('artifact_digest_mismatch');
   if (payload.testPolicy?.digest !== fileSha('config/test-policy.json')) reasons.push('test_policy_digest_mismatch');
   const results = payload.testPolicy?.results;
@@ -352,6 +373,9 @@ function validateManifest() {
   process.exit(reasons.length === 0 ? 0 : 1);
 }
 
+if (verifyBundle && !['validate', 'status', 'validate-payload'].includes(command)) {
+  throw new Error('--verify-bundle is valid only for manifest validation');
+}
 if (command === 'write') writeManifest();
 else if (command === 'validate' || command === 'status' || command === 'validate-payload') validateManifest();
 else throw new Error(`Usage: release-manifest-v2.mjs <write|validate|validate-payload|status> [options]`);

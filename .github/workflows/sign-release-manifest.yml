@@ -73,7 +73,9 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-candidate-v2-${{ env.RUNTIME_SHA }}
-          path: candidate-artifact
+          # The RC archive strips its common `.local/release` source prefix.
+          # Restore that canonical boundary for the trusted signer.
+          path: candidate-artifact/.local/release
           run-id: ${{ env.CANDIDATE_RUN_ID }}
           github-token: ${{ github.token }}
 

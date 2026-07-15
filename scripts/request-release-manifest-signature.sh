@@ -50,6 +50,7 @@ BUNDLE="$(dirname "$BUNDLE")"
 node scripts/release-manifest-v2.mjs validate \
   --manifest "$MANIFEST" \
   --root "$BUNDLE" \
+  --verify-bundle \
   --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
   --expect-runtime-sha "$RUNTIME_SHA"
 
