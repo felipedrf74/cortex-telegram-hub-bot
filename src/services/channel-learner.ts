@@ -1352,18 +1352,20 @@ export async function analyzeChannel(
  *   this scope was skipped by the new-video gate (nothing failed, nothing
  *   analyzed) so the scope's synthesis LLM calls were skipped entirely.
  */
-export async function processAllChannels(
-  force = false,
-  userId?: number,
-  options: { requestSource?: 'interactive' | 'automation' | 'system'; jobName?: string; runId?: string | null } = {},
-): Promise<{
+export interface ChannelRelearnResult {
   analyzed: number;
   failed: number;
   skipped_no_new_videos: number;
   synthesized: boolean;
   synthesis_skipped_all_unchanged: boolean;
   synthesis_deferred: boolean;
-}> {
+}
+
+export async function processAllChannels(
+  force = false,
+  userId?: number,
+  options: { requestSource?: 'interactive' | 'automation' | 'system'; jobName?: string; runId?: string | null } = {},
+): Promise<ChannelRelearnResult> {
   let analyzed = 0;
   let failed = 0;
   let skippedNoNewVideos = 0;
@@ -1535,14 +1537,69 @@ export async function processAllChannels(
   };
 }
 
-export async function processAllChannelScopes(force = false): Promise<{
-  analyzed: number;
-  failed: number;
-  skipped_no_new_videos: number;
-  synthesized: boolean;
-  synthesis_skipped_all_unchanged: boolean;
-  synthesis_deferred: boolean;
-}> {
+export interface ChannelRelearnScopePlan {
+  scopes: Array<number | undefined>;
+  synthesisDeferred: boolean;
+}
+
+export function planChannelRelearnScopes(): ChannelRelearnScopePlan {
+  const eligibleUserIds = listEligibleContentAutomationUserIds();
+  if (eligibleUserIds.length === 0) {
+    logger.info('Channel re-learn skipped: no eligible paid Content automation consumer');
+    return { scopes: [], synthesisDeferred: false };
+  }
+
+  const eligibleSet = new Set(eligibleUserIds);
+  const sharedKnowledgeConsumerIds = eligibleUserIds.filter(hasSharedChannelKnowledgeConsumerEvidence);
+  let synthesisDeferred = false;
+  if (sharedKnowledgeConsumerIds.length === 0) {
+    recordSharedKnowledgeEvidenceDeferral();
+    synthesisDeferred = true;
+    logger.info(
+      'Channel re-learn platform scope skipped: no eligible user has recent shared-knowledge consumption evidence',
+    );
+  }
+  return {
+    scopes: [
+      ...(sharedKnowledgeConsumerIds.length > 0 ? [undefined] : []),
+      ...listContentChannelUserIds().filter((userId) => eligibleSet.has(userId)),
+    ],
+    synthesisDeferred,
+  };
+}
+
+export async function processChannelRelearnScope(
+  force: boolean,
+  scopeUserId: number | undefined,
+  options: { runId: string; systemScopeChanged: boolean },
+): Promise<ChannelRelearnResult> {
+  const scopeRequestSource = scopeUserId != null && scopeUserId > 0 ? 'automation' as const : 'system' as const;
+  const result = await processAllChannels(force, scopeUserId, {
+    requestSource: scopeRequestSource,
+    jobName: 'channel_relearn',
+    runId: options.runId,
+  });
+
+  if (scopeUserId == null) return result;
+
+  // If shared system channels were refreshed, resynthesize user-owned
+  // knowledge too so user prompts do not keep stale copies of the shared base.
+  const hasActiveUserChannels = getScopedChannelsForProcessing('active', scopeUserId).length > 0;
+  if (!options.systemScopeChanged || !hasActiveUserChannels || result.synthesized) return result;
+
+  const userSynthesisSucceeded = await synthesizeKnowledge(scopeUserId, {
+    requestSource: 'automation',
+    jobName: 'channel_relearn',
+    runId: options.runId,
+  });
+  return {
+    ...result,
+    synthesized: userSynthesisSucceeded,
+    synthesis_deferred: result.synthesis_deferred || !userSynthesisSucceeded,
+  };
+}
+
+export async function processAllChannelScopes(force = false): Promise<ChannelRelearnResult> {
   let analyzed = 0;
   let failed = 0;
   let skippedNoNewVideos = 0;
@@ -1552,40 +1609,14 @@ export async function processAllChannelScopes(force = false): Promise<{
   let synthesisSkippedAllUnchanged = false;
   let synthesisDeferred = false;
 
-  const eligibleUserIds = listEligibleContentAutomationUserIds();
-  if (eligibleUserIds.length === 0) {
-    logger.info('Channel re-learn skipped: no eligible paid Content automation consumer');
-    return {
-      analyzed: 0,
-      failed: 0,
-      skipped_no_new_videos: 0,
-      synthesized: false,
-      synthesis_skipped_all_unchanged: false,
-      synthesis_deferred: false,
-    };
-  }
-
-  const eligibleSet = new Set(eligibleUserIds);
-  const sharedKnowledgeConsumerIds = eligibleUserIds.filter(hasSharedChannelKnowledgeConsumerEvidence);
-  if (sharedKnowledgeConsumerIds.length === 0) {
-    recordSharedKnowledgeEvidenceDeferral();
-    synthesisDeferred = true;
-    logger.info(
-      'Channel re-learn platform scope skipped: no eligible user has recent shared-knowledge consumption evidence',
-    );
-  }
-  const scopes = [
-    ...(sharedKnowledgeConsumerIds.length > 0 ? [undefined] : []),
-    ...listContentChannelUserIds().filter((userId) => eligibleSet.has(userId)),
-  ];
+  const plan = planChannelRelearnScopes();
+  synthesisDeferred = plan.synthesisDeferred;
   let systemScopeChanged = false;
-  for (const scopeUserId of scopes) {
+  for (const scopeUserId of plan.scopes) {
     const scopeRunId = randomUUID();
-    const scopeRequestSource = scopeUserId != null && scopeUserId > 0 ? 'automation' as const : 'system' as const;
-    const result = await processAllChannels(force, scopeUserId, {
-      requestSource: scopeRequestSource,
-      jobName: 'channel_relearn',
+    const result = await processChannelRelearnScope(force, scopeUserId, {
       runId: scopeRunId,
+      systemScopeChanged,
     });
     analyzed += result.analyzed;
     failed += result.failed;
@@ -1593,23 +1624,7 @@ export async function processAllChannelScopes(force = false): Promise<{
     synthesized = synthesized || result.synthesized;
     synthesisSkippedAllUnchanged = synthesisSkippedAllUnchanged || result.synthesis_skipped_all_unchanged;
     synthesisDeferred = synthesisDeferred || result.synthesis_deferred;
-    if (scopeUserId == null) {
-      systemScopeChanged = result.synthesized;
-      continue;
-    }
-
-    // If shared system channels were refreshed, resynthesize user-owned
-    // knowledge too so user prompts do not keep stale copies of the shared base.
-    const hasActiveUserChannels = getScopedChannelsForProcessing('active', scopeUserId).length > 0;
-    if (systemScopeChanged && hasActiveUserChannels && !result.synthesized) {
-      const userSynthesisSucceeded = await synthesizeKnowledge(scopeUserId, {
-        requestSource: 'automation',
-        jobName: 'channel_relearn',
-        runId: scopeRunId,
-      });
-      synthesized = synthesized || userSynthesisSucceeded;
-      synthesisDeferred = synthesisDeferred || !userSynthesisSucceeded;
-    }
+    if (scopeUserId == null) systemScopeChanged = result.synthesized;
   }
 
   return {

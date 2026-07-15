@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import express from 'express';
 import Database from 'better-sqlite3';
+import type { Server } from 'node:http';
 let testDb: Database.Database;
+let server: Server;
+let waitlistBaseUrl: string;
 
 const hoisted = vi.hoisted(() => ({
   sendBetaWaitlistConfirmation: vi.fn(),
@@ -56,22 +59,33 @@ async function requestWaitlist(pathname: string, init: RequestInit = {}): Promis
   text: string;
   headers: Headers;
 }> {
-  const app = express();
-  app.use('/waitlist', createWaitlistRouter());
-  const server = app.listen(0);
-  const address = server.address() as { port: number };
-  try {
-    const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`, init);
-    const text = await response.text();
-    let body: any = null;
-    try { body = text ? JSON.parse(text) : null; } catch { body = null; }
-    return { status: response.status, body, text, headers: response.headers };
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+  const response = await fetch(`${waitlistBaseUrl}${pathname}`, init);
+  const text = await response.text();
+  let body: any = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+  return { status: response.status, body, text, headers: response.headers };
 }
 
 describe('public waitlist routes', () => {
+  beforeAll(async () => {
+    const app = express();
+    app.use('/waitlist', createWaitlistRouter());
+    await new Promise<void>((resolve, reject) => {
+      server = app.listen(0, '127.0.0.1', () => {
+        const address = server.address() as { port: number };
+        waitlistBaseUrl = `http://127.0.0.1:${address.port}`;
+        resolve();
+      });
+      server.once('error', reject);
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.stubEnv('WAITLIST_SKIP_MX_CHECK', '1');

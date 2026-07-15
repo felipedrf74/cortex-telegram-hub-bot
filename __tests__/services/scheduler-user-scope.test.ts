@@ -45,6 +45,12 @@ const mockGenerateWeeklyPackage = vi.hoisted(() => vi.fn());
 const mockGetMissingScheduledInventoryCount = vi.hoisted(() => vi.fn());
 const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()));
 const mockReleaseFreshReportScheduleClaim = vi.hoisted(() => vi.fn());
+const mockRunGovernedAgentJob = vi.hoisted(() => vi.fn());
+const mockComputePromptStateHash = vi.hoisted(() => vi.fn());
+const mockGetScheduledTarget = vi.hoisted(() => vi.fn());
+const mockRunAutoresearch = vi.hoisted(() => vi.fn());
+const mockGetEvalTarget = vi.hoisted(() => vi.fn());
+const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -154,11 +160,19 @@ vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPen
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
 vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));
-vi.mock('../../src/services/channel-learner', () => ({ processAllChannelScopes: vi.fn(), seedDefaultChannels: vi.fn() }));
+vi.mock('../../src/services/channel-learner', () => ({
+  seedDefaultChannels: vi.fn(),
+  planChannelRelearnScopes: vi.fn(() => ({ scopes: [], synthesisDeferred: false })),
+  processChannelRelearnScope: vi.fn(),
+}));
 vi.mock('../../src/services/content-workflow', () => ({
   generateAndStoreTopicCandidates: (...args: unknown[]) => mockGenerateAndStoreTopicCandidates(...args),
   generateWeeklyPackage: (...args: unknown[]) => mockGenerateWeeklyPackage(...args),
   getMissingScheduledInventoryCount: (...args: unknown[]) => mockGetMissingScheduledInventoryCount(...args),
+}));
+vi.mock('../../src/services/agent-job-runner', () => ({
+  AgentJobOutputValidationError: class AgentJobOutputValidationError extends Error {},
+  runGovernedAgentJob: (...args: unknown[]) => mockRunGovernedAgentJob(...args),
 }));
 vi.mock('../../src/services/ai-automation-policy', () => ({
   recordAiAutomationEligibilitySkip: vi.fn(),
@@ -181,10 +195,21 @@ vi.mock('../../src/agents/pipeline-agent', () => ({ runPipelineAgent: vi.fn() })
 vi.mock('../../src/agents/seo-agent', () => ({ runSEOAgent: vi.fn(), seedKeywordsIfEmpty: vi.fn() }));
 vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.fn() }));
 vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
-vi.mock('../../src/agents/voice-evolution-agent', () => ({ runVoiceEvolutionAgent: vi.fn() }));
+vi.mock('../../src/agents/voice-evolution-agent', () => ({ runScheduledVoiceEvolutionAgent: vi.fn() }));
 vi.mock('../../src/services/intelligence-bus', () => ({ expireStaleSignals: vi.fn() }));
 vi.mock('../../src/commands/books', () => ({ seedBooksIfEmpty: vi.fn() }));
-vi.mock('../../src/services/autoresearch', () => ({ runAutoresearch: vi.fn(), getScheduledTarget: vi.fn() }));
+vi.mock('../../src/services/autoresearch', () => ({
+  computePromptStateHash: (...args: unknown[]) => mockComputePromptStateHash(...args),
+  runAutoresearch: (...args: unknown[]) => mockRunAutoresearch(...args),
+  getScheduledTarget: (...args: unknown[]) => mockGetScheduledTarget(...args),
+}));
+vi.mock('../../src/services/eval-criteria', () => ({
+  getEvalTarget: (...args: unknown[]) => mockGetEvalTarget(...args),
+}));
+vi.mock('../../src/services/operator-alerts', () => ({
+  processDueOperatorAlertDeliveries: vi.fn(),
+  recordOperatorAlert: (...args: unknown[]) => mockRecordOperatorAlert(...args),
+}));
 vi.mock('../../src/services/backup', () => ({ runDatabaseBackup: vi.fn(), weeklyRestoreTest: vi.fn() }));
 vi.mock('../../src/state/fiscal-collection-profiles', () => ({ listActiveFiscalCollectionProfiles: vi.fn(() => []) }));
 vi.mock('../../src/utils/request-context', () => ({
@@ -304,14 +329,17 @@ import {
   buildWeeklyReviewPayloadForUser,
   decisionMetricsRollupDateForScheduler,
   getActiveUserIds,
+  getActiveTaskSyncScopes,
   getOwnerUserIds,
   runContentTopicCronForActiveUsers,
   runWeeklyContentPackageCronForActiveUsers,
   startScheduler,
   sendCoachBriefings,
   sendCoachBriefingForTarget,
+  runScheduledCoachBriefingForTarget,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
+import { runScheduledAutoresearch } from '../../src/services/scheduled-agent-jobs';
 import { setLastCoachState } from '../../src/domains/domain-handler';
 import { setLastActiveDomain } from '../../src/api/routes/chat-message-context';
 import { addToConversation } from '../../src/state/conversation';
@@ -401,6 +429,47 @@ describe('scheduler tenant scoping', () => {
     );
     mockGenerateAndStoreTopicCandidates.mockResolvedValue({ candidates: [] });
     mockGenerateWeeklyPackage.mockResolvedValue({ youtube: [], reels: [] });
+    mockRunGovernedAgentJob.mockImplementation(async (
+      adapter: any,
+      scope: { tenantId: number; userId: number },
+    ) => {
+      const prepared = await adapter.prepare(scope);
+      if (prepared.kind === 'skip') {
+        return {
+          jobId: adapter.jobId,
+          runId: 'scheduler-test-skip',
+          scope,
+          status: prepared.status,
+          providerCalls: 0,
+          costUsd: 0,
+        };
+      }
+      const output = await adapter.execute({
+        scope,
+        input: prepared.input,
+        runId: 'scheduler-test-run',
+        attempt: 1,
+      });
+      return {
+        jobId: adapter.jobId,
+        runId: 'scheduler-test-run',
+        scope,
+        status: 'success',
+        providerCalls: 1,
+        costUsd: 0,
+        output,
+      };
+    });
+    mockGetScheduledTarget.mockReturnValue('voice-evolution');
+    mockGetEvalTarget.mockReturnValue({ id: 'voice-evolution', prompt: 'stable prompt' });
+    mockComputePromptStateHash.mockReturnValue('prompt-state-hash');
+    mockRunAutoresearch.mockResolvedValue({
+      targetId: 'voice-evolution',
+      mode: 'evaluate_only',
+      rounds: [],
+      finalScore: 0.9,
+      totalDurationMs: 12,
+    });
     mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
     mockReleaseFreshReportScheduleClaim.mockReturnValue(true);
     mockGetActivePlan.mockReturnValue(null);
@@ -439,13 +508,18 @@ describe('scheduler tenant scoping', () => {
 
   it('pins the production autoresearch schedule to evaluate_only', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
+    const adapterSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/services/scheduled-agent-jobs.ts'),
+      'utf8',
+    );
     const cronStart = source.indexOf("cron.schedule('19 1 * * 0'");
     const cronEnd = source.indexOf('// ── Database Backup', cronStart);
     const scheduledBlock = source.slice(cronStart, cronEnd);
     expect(cronStart).toBeGreaterThan(-1);
-    expect(scheduledBlock).toContain("mode: 'evaluate_only'");
-    expect(scheduledBlock).not.toContain("mode: 'apply'");
-    expect(scheduledBlock).not.toContain("mode: 'propose'");
+    expect(scheduledBlock).toContain('runScheduledAutoresearch()');
+    expect(adapterSource).toContain("{ mode: 'evaluate_only', runId }");
+    expect(adapterSource).not.toContain("mode: 'apply'");
+    expect(adapterSource).not.toContain("mode: 'propose'");
   });
 
   it('continues processing later reminders when one reminder delivery fails', async () => {
@@ -1139,6 +1213,38 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 
+  it('builds task-sync scopes without importing providers across tenant boundaries', () => {
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => {
+          if (sql.includes('FROM task_mutations')) {
+            return [
+              { tenant_id: 11, user_id: 11 },
+              { tenant_id: 20, user_id: 30 },
+              { tenant_id: 'invalid', user_id: 30 },
+              { tenant_id: 0, user_id: 30 },
+              { tenant_id: 40, user_id: 'invalid' },
+              { tenant_id: 40, user_id: 0 },
+            ];
+          }
+          return [];
+        }),
+      })),
+    });
+
+    expect(getActiveTaskSyncScopes([11])).toEqual([
+      { tenantId: 11, userId: 11, importProviders: true },
+      { tenantId: 20, userId: 30, importProviders: false },
+    ]);
+
+    mockGetDb.mockImplementation(() => {
+      throw new Error('no such table: task_mutations');
+    });
+    expect(getActiveTaskSyncScopes([11])).toEqual([
+      { tenantId: 11, userId: 11, importProviders: true },
+    ]);
+  });
+
   it('pending chat action expiry is wired through the scheduler and skips no-op runs', async () => {
     startScheduler();
     const expiryJob = mockCronSchedule.mock.calls.find((call) => call[0] === '*/2 * * * *')?.[1] as (() => Promise<unknown>) | undefined;
@@ -1240,6 +1346,7 @@ describe('scheduler tenant scoping', () => {
     }, {
       requestSource: 'automation',
       jobName: 'friday_weekly',
+      runId: 'scheduler-test-run',
     });
   });
 
@@ -1300,6 +1407,139 @@ describe('scheduler tenant scoping', () => {
       1,
       expect.objectContaining({ requestSource: 'automation' }),
     );
+  });
+
+  it('validates every scheduled Content topic contract branch before accepting provider output', async () => {
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+
+    const adapter = mockRunGovernedAgentJob.mock.calls
+      .map((call) => call[0])
+      .find((candidate) => candidate.jobId === 'tuesday_reels');
+    expect(adapter).toBeDefined();
+
+    const input = { format: 'reel', sourceJob: 'tuesday_reels', missingCount: 1 };
+    const validCandidate = {
+      feedbackId: 1,
+      title: 'Title',
+      niche: 'Niche',
+      whyNow: 'Why now',
+      hookIdea: 'Hook',
+    };
+    const validOutput = {
+      format: 'reel',
+      sourceJob: 'tuesday_reels',
+      candidates: [validCandidate],
+    };
+    expect(() => adapter.validateOutput(validOutput, input)).not.toThrow();
+
+    const invalidOutputs = [
+      { ...validOutput, format: 'youtube' },
+      { ...validOutput, sourceJob: 'thursday_youtube' },
+      { ...validOutput, candidates: [] },
+      { ...validOutput, candidates: [validCandidate, { ...validCandidate, feedbackId: 2 }] },
+      ...[
+        { feedbackId: 1.5 },
+        { feedbackId: 0 },
+        { title: 42 },
+        { title: '   ' },
+        { niche: 42 },
+        { niche: '   ' },
+        { whyNow: 42 },
+        { whyNow: '   ' },
+        { hookIdea: 42 },
+        { hookIdea: '   ' },
+      ].map((change) => ({
+        ...validOutput,
+        candidates: [{ ...validCandidate, ...change }],
+      })),
+    ];
+    for (const output of invalidOutputs) {
+      expect(() => adapter.validateOutput(output, input)).toThrow('Scheduled Content topic output failed validation');
+    }
+  });
+
+  it('validates weekly Content counts and candidate contracts before accepting a package', async () => {
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    const adapter = mockRunGovernedAgentJob.mock.calls
+      .map((call) => call[0])
+      .find((candidate) => candidate.jobId === 'friday_weekly');
+    expect(adapter).toBeDefined();
+
+    const input = { missingReels: 1, missingYoutube: 1 };
+    const candidate = {
+      feedbackId: 1,
+      title: 'Title',
+      niche: 'Niche',
+      whyNow: 'Why now',
+      hookIdea: 'Hook',
+    };
+    const validOutput = { reels: [candidate], youtube: [candidate] };
+    expect(() => adapter.validateOutput(validOutput, input)).not.toThrow();
+    for (const output of [
+      { ...validOutput, reels: [] },
+      { ...validOutput, youtube: [] },
+      { ...validOutput, reels: [{ ...candidate, title: '' }] },
+      { ...validOutput, youtube: [{ ...candidate, hookIdea: '' }] },
+    ]) {
+      expect(() => adapter.validateOutput(output, input)).toThrow('Scheduled weekly Content output failed validation');
+    }
+  });
+
+  it('validates, classifies, and reports all scheduled autoresearch outcomes', async () => {
+    let progress: ((message: string) => Promise<void>) | undefined;
+    mockRunAutoresearch.mockImplementation(async (
+      _targetId: string,
+      _rounds: number,
+      _scheduled: boolean,
+      callback: (message: string) => Promise<void>,
+    ) => {
+      progress = callback;
+      return {
+        targetId: 'voice-evolution',
+        mode: 'evaluate_only',
+        rounds: [],
+        finalScore: 0.9,
+        totalDurationMs: 12,
+      };
+    });
+
+    await runScheduledAutoresearch();
+    const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
+    expect(adapter.jobId).toBe('autoresearch');
+    await progress?.('round complete');
+
+    const input = { targetId: 'voice-evolution' };
+    const validOutput = {
+      targetId: 'voice-evolution',
+      mode: 'evaluate_only',
+      rounds: [],
+      finalScore: 0.9,
+      totalDurationMs: 12,
+    };
+    expect(() => adapter.validateOutput(validOutput, input)).not.toThrow();
+    for (const output of [
+      { ...validOutput, targetId: 'other' },
+      { ...validOutput, mode: 'apply' },
+      { ...validOutput, rounds: null },
+      { ...validOutput, finalScore: Number.NaN },
+      { ...validOutput, finalScore: -0.1 },
+      { ...validOutput, finalScore: 1.1 },
+      { ...validOutput, totalDurationMs: Number.NaN },
+      { ...validOutput, totalDurationMs: -1 },
+    ]) {
+      expect(() => adapter.validateOutput(output, input)).toThrow('Scheduled autoresearch output failed validation');
+    }
+
+    expect(adapter.classifyOutput({ ...validOutput, skipped: 'skipped_unchanged' })).toBe('skipped_unchanged');
+    expect(adapter.classifyOutput(validOutput)).toBe('success');
+    await adapter.notify({ status: 'skipped_unchanged', providerCalls: 0, output: validOutput });
+    await adapter.notify({ status: 'success', providerCalls: 1, output: validOutput });
+    await adapter.notify({ status: 'success', providerCalls: 2 });
+    expect(mockRecordOperatorAlert).toHaveBeenCalledTimes(3);
+
+    mockGetEvalTarget.mockReturnValueOnce(undefined);
+    expect(() => adapter.prepare()).toThrow('UnknownScheduledAutoresearchTargetError');
   });
 
   it('releases a fresh Coach claim and uses operations copy on lock contention', async () => {
@@ -1424,6 +1664,39 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 22, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
+  });
+
+  it('propagates the governed run id into scheduled Coach provider metering', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 701,
+      user_id: 11,
+      tenant_id: 11,
+      name: 'Coach plan',
+      sport: 'gym',
+      status: 'active',
+    });
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'governed coach briefing',
+      recommendations: [],
+      errors: [],
+      dataCollectionMs: 11,
+      analysisMs: 22,
+    });
+
+    const outcome = await runScheduledCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+
+    expect(outcome).toMatchObject({
+      jobId: 'garmin_coach',
+      scope: { tenantId: 11, userId: 11 },
+      output: { status: 'generated', recommendations: 0, errors: 0 },
+    });
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, expect.objectContaining({
+      tenantId: 11,
+      meteringUserId: 11,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
+      budgetRunId: 'scheduler-test-run',
+    }));
   });
 
   it('sendCoachBriefings skips free-plan users before generating or pushing coach reports', async () => {

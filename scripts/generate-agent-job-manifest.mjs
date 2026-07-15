@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-15.4';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-07-15.6';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -46,6 +46,20 @@ const providerCapable = (policyOwner, tenantScope, inputFingerprint, overrides =
     unchangedInputProviderCalls: 0,
   },
   ...overrides,
+});
+
+const sharedGovernedRunner = (scope, overrides = {}) => ({
+  sharedRunner: {
+    implementation: 'governed-v1',
+    scope,
+    fingerprintGate: 'runner',
+    maxAttempts: 1,
+    retryBackoffMs: 0,
+    auditStore: 'agent_job_runs',
+    providerAttribution: 'api_usage-run-id',
+    outputValidation: 'adapter-required',
+    ...overrides,
+  },
 });
 
 const noProviderHandler = (policyOwner, tenantScope, overrides = {}) => ({
@@ -94,13 +108,24 @@ export const JOB_POLICIES = Object.freeze({
   autoresearch: providerCapable('ai-quality', 'platform-evaluation-target', {
     enforcement: 'runtime-fingerprint',
     evidence: 'prompt-config-eval fingerprint reuses prior valid score',
-    tests: ['__tests__/services/autoresearch-preflight.test.ts'],
-  }, { providerRouting: 'gemini-or-openai-primary-anthropic-fallback', costPolicy: 'evaluate-only-target-budget' }),
+    tests: [
+      '__tests__/services/autoresearch-preflight.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'gemini-or-openai-primary-anthropic-fallback',
+    costPolicy: 'evaluate-only-target-budget',
+    ...sharedGovernedRunner('platform'),
+  }),
   channel_relearn: providerCapable('content', 'eligible-content-tenant-and-reviewed-platform-scope', {
     enforcement: 'runtime-fingerprint',
     evidence: 'channel video fingerprint skips analysis and synthesis when unchanged',
     tests: ['__tests__/services/channel-learner-relearn-gate.test.ts'],
-  }, { providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE, costPolicy: 'content-automation-budget' }),
+  }, {
+    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('platform-or-tenant-user', { fingerprintGate: 'adapter' }),
+  }),
   chat_action_fixer_worker: providerCapable('chat-reliability', 'durable-queue-tenant-user', {
     enforcement: 'durable-job-idempotency',
     evidence: 'tenant/user/job-type/idempotency key and completed-state exclusion',
@@ -110,6 +135,7 @@ export const JOB_POLICIES = Object.freeze({
     providerRouting: 'anthropic-only-cost-guarded',
     costPolicy: 'ai-cost-guardrail:chat_action_fixer',
     latencyPolicy: 'provider-timeout-30000ms',
+    ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
   chat_action_plan_expiry: noProvider('chat-reliability', 'platform-tenant-scoped-rows'),
   chat_action_run_retention: noProvider('chat-reliability', 'platform-tenant-scoped-rows'),
@@ -138,16 +164,28 @@ export const JOB_POLICIES = Object.freeze({
   friday_weekly: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
-    tests: ['__tests__/services/scheduler-user-scope.test.ts', '__tests__/services/content-workflow-user-scope.test.ts'],
-  }, { providerRouting: 'grounded-provider-fallback-route', costPolicy: 'content-automation-budget' }),
+    tests: [
+      '__tests__/services/scheduler-user-scope.test.ts',
+      '__tests__/services/content-workflow-user-scope.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'grounded-provider-fallback-route',
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user'),
+  }),
   garmin_coach: providerCapable('training', 'report-ledger-active-tenant', {
     enforcement: 'report-schedule-ledger',
     evidence: 'tenant/local-date coach report claim prevents duplicate scheduled analysis',
-    tests: ['__tests__/services/report-schedule-dispatcher.test.ts'],
+    tests: [
+      '__tests__/services/report-schedule-dispatcher.test.ts',
+      '__tests__/services/scheduler-user-scope.test.ts',
+    ],
   }, {
     retryPolicy: 'report-dispatch-next-tick-on-released-transient-claim',
     providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
     costPolicy: 'ai-cost-guardrail:coach_analysis',
+    ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
   garmin_keepalive: noProvider('training', 'owner-garmin-identity', { retryPolicy: 'next-scheduled-run-with-auth-refresh' }),
   garmin_tenant_isolation_watcher: noProvider('training', 'configured-garmin-tenant'),
@@ -169,20 +207,40 @@ export const JOB_POLICIES = Object.freeze({
   thursday_youtube: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
-    tests: ['__tests__/services/scheduler-user-scope.test.ts', '__tests__/services/content-workflow-user-scope.test.ts'],
-  }, { providerRouting: 'grounded-provider-fallback-route', costPolicy: 'content-automation-budget' }),
+    tests: [
+      '__tests__/services/scheduler-user-scope.test.ts',
+      '__tests__/services/content-workflow-user-scope.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'grounded-provider-fallback-route',
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user'),
+  }),
   training_plan_adjust: noProvider('training', 'active-plan-tenant-loop', { outputPolicy: 'deterministic-threshold-adjustment' }),
   tuesday_reels: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
-    tests: ['__tests__/services/scheduler-user-scope.test.ts', '__tests__/services/content-workflow-user-scope.test.ts'],
-  }, { providerRouting: 'grounded-provider-fallback-route', costPolicy: 'content-automation-budget' }),
+    tests: [
+      '__tests__/services/scheduler-user-scope.test.ts',
+      '__tests__/services/content-workflow-user-scope.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'grounded-provider-fallback-route',
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user'),
+  }),
   uber_collection: noProvider('finance', 'owner-integration-profile', { retryPolicy: 'collector-bounded-retry' }),
   voice_evolution: providerCapable('content', 'eligible-content-tenant-loop', {
     enforcement: 'runtime-fingerprint',
     evidence: 'tenant-scoped analytics fingerprint is persisted only after validated output',
     tests: ['__tests__/agents/voice-evolution-multi-tenant.test.ts'],
-  }, { providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE, costPolicy: 'content-automation-budget' }),
+  }, {
+    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
+  }),
   weekly_review: noProvider('secretary', 'report-ledger-active-tenant', { retryPolicy: 'report-dispatch-next-tick' }),
 });
 

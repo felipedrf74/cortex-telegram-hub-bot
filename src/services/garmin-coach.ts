@@ -206,6 +206,8 @@ export interface CoachBriefingOptions {
   /** Classification for the provider-only reservation boundary. */
   budgetRequestSource?: AiRequestSource;
   budgetJobName?: string;
+  /** Immutable governed agent-job run id for provider usage attribution. */
+  budgetRunId?: string | null;
 }
 
 export interface CoachRecommendationApplyScope {
@@ -775,6 +777,7 @@ ${payloadStr}
       baseCategory: 'coach_analysis',
       jobName: opts.budgetJobName ?? (budgetRequestSource === 'automation' ? 'garmin_coach' : 'coach_refresh'),
       automationPriority: budgetRequestSource === 'automation' ? 'coach' : undefined,
+      runId: opts.budgetRunId ?? null,
     }, () => completeOneShotWithFallback(
         systemPrompt,
         userPrompt,

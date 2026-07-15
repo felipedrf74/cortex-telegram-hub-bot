@@ -373,6 +373,22 @@ describe('autoresearch pre-flight skip gate', () => {
     expect(promptState.writePrompt).not.toHaveBeenCalled();
   });
 
+  it('propagates a shared governed runner id through every provider budget reservation', async () => {
+    const runId = 'governed-autoresearch-run-1';
+    const result = await runAutoresearch('secretary', 1, true, undefined, {
+      mode: 'evaluate_only',
+      force: true,
+      runId,
+    });
+
+    expect(result.runId).toBe(runId);
+    const reservations = vi.mocked(withAiBudgetReservation).mock.calls.map(([request]) => request as {
+      runId?: string | null;
+    });
+    expect(reservations.length).toBeGreaterThan(0);
+    expect(new Set(reservations.map((request) => request.runId))).toEqual(new Set([runId]));
+  });
+
   it('fails the deterministic live-contract criterion when topic output uses stale field aliases', async () => {
     provider.staleTopicAliases = true;
 

@@ -125,6 +125,10 @@ function isIrreversibleMigration(files, root, fileExists, readText) {
     if (!/^migrations\/.*\.sql$/.test(file)) continue;
     const absolute = path.join(root, file);
     if (!fileExists(absolute)) return true;
+    // A rollback migration is expected to contain destructive SQL. Its
+    // contents must not make an additive forward migration irreversible; a
+    // deleted or renamed rollback still fails closed through the check above.
+    if (/^migrations\/down\//.test(file)) continue;
     const stripped = readText(absolute).replace(/--.*$/gm, ' ').replace(/\n/g, ' ');
     if (/\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bALTER\s+TABLE\b[^;]*\bRENAME\b|\bRENAME\s+TO\b/i.test(stripped)) {
       return true;
@@ -309,7 +313,9 @@ export function classifyChangedFiles({
   flags.modelRouting = has(/^src\/services\/domain-provider-router|^src\/portal\/provider-routes|^__tests__\/services\/domain-provider-router|^__tests__\/services\/model-routing-/);
   flags.personalizationScope = has(/^src\/services\/(?:cooking-preferences|finance-preferences|skill-memory)|^src\/state\/content-references|^__tests__\/services\/(?:cooking-preferences|finance-preferences|skill-memory|content-references)/);
   flags.logger = has(/^src\/utils\/(?:logger|redact|log-context)|^__tests__\/utils\/logger-|^__tests__\/api\/secret-guards/);
-  flags.scheduler = has(/^src\/services\/(?:scheduler|cron|job-)|^__tests__\/services\/scheduler-/);
+  flags.scheduler = has(
+    /^src\/services\/(?:scheduler|scheduled-agent-jobs|agent-job-(?:runner|targets|manifest)|background-job-queue|chat-action-fixer-worker|channel-learner|garmin-coach|cron|job-)|^src\/agents\/voice-evolution-agent\.ts$|^__tests__\/services\/(?:scheduler-|agent-job-runner|scheduled-agent-job-governance)/,
+  );
   flags.notification = has(/^src\/services\/(?:apns-|notification|decision-center|content-notification)|^src\/api\/routes\/(?:notifications|decisions|content-notification)|^__tests__\/(?:services\/apns-|services\/notification-|services\/decision-center|services\/content-notifications|api\/notifications-|api\/decisions-routes|api\/content-notification-|security\/notification-)/);
   flags.healthIntegration = has(/^src\/services\/(?:garmin|apple-health|wearable|readiness|body-battery)|^src\/api\/routes\/(?:wearable|health-data|garmin-auth)|^__tests__\/(?:services\/garmin-|services\/apple-health-|services\/integration-health-|api\/wearable-|api\/health-data-|api\/garmin-auth-|portal\/integration-health-)/);
   flags.rateLimit = has(/^src\/(?:api\/middleware\/rate-limit|services\/rate-limiter|api\/middleware\/auth-rate-limit)|^__tests__\/api\/rate-limiter/);
@@ -436,7 +442,17 @@ export function classifyChangedFiles({
       addVitest(flags.personalizationScope, '__tests__/services/cooking-preferences*.test.ts', '__tests__/services/finance-preferences*.test.ts', '__tests__/services/skill-memory*.test.ts', '__tests__/services/content-references*.test.ts', '__tests__/security/**/*.test.ts');
       addVitest(flags.contentAgent, '__tests__/security/content-agent-neutrality.test.ts', '__tests__/services/cross-agent-learning*.test.ts', '__tests__/portal/domain-status.test.ts');
       addVitest(flags.logger, '__tests__/utils/logger-*.test.ts', '__tests__/api/secret-guards.test.ts');
-      addVitest(flags.scheduler, '__tests__/services/scheduler-*.test.ts');
+      addVitest(
+        flags.scheduler,
+        '__tests__/services/scheduler-*.test.ts',
+        '__tests__/services/agent-job-runner.test.ts',
+        '__tests__/services/scheduled-agent-job-governance.test.ts',
+        '__tests__/services/chat-action-fixer-worker.test.ts',
+        '__tests__/services/channel-learner-relearn-gate.test.ts',
+        '__tests__/services/garmin-coach-user-scope.test.ts',
+        '__tests__/agents/voice-evolution-multi-tenant.test.ts',
+        '__tests__/scripts/runtime-manifests.test.ts',
+      );
       addVitest(flags.notification, '__tests__/services/apns-*.test.ts', '__tests__/services/notification-*.test.ts', '__tests__/services/decision-center.test.ts', '__tests__/services/decision-center-logic-v2.test.ts', '__tests__/services/content-notifications*.test.ts', '__tests__/api/notifications-*.test.ts', '__tests__/api/decisions-routes.test.ts', '__tests__/api/content-notification-*.test.ts', '__tests__/security/notification-*.test.ts', '__tests__/security/p0-chat-identity-isolation.test.ts');
       addVitest(flags.healthIntegration, '__tests__/services/garmin-*.test.ts', '__tests__/services/apple-health-*.test.ts', '__tests__/services/integration-health-*.test.ts', '__tests__/api/wearable-*.test.ts', '__tests__/api/health-data-*.test.ts', '__tests__/api/garmin-auth-*.test.ts', '__tests__/portal/integration-health-*.test.ts');
       addVitest(flags.rateLimit, '__tests__/api/rate-limiter.test.ts', '__tests__/security/**/*.test.ts');

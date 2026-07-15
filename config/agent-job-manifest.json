@@ -1,6 +1,6 @@
 {
   "schema": "nexus.agent-job-manifest.v3",
-  "version": "2026-07-15.4",
+  "version": "2026-07-15.6",
   "jobs": [
     {
       "id": "amazon_collection",
@@ -47,9 +47,20 @@
         "enforcement": "runtime-fingerprint",
         "evidence": "prompt-config-eval fingerprint reuses prior valid score",
         "tests": [
-          "__tests__/services/autoresearch-preflight.test.ts"
+          "__tests__/services/autoresearch-preflight.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "platform",
+        "fingerprintGate": "runner",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -76,6 +87,16 @@
           "__tests__/services/channel-learner-relearn-gate.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "platform-or-tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -102,6 +123,16 @@
           "__tests__/services/chat-action-fixer-worker.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -703,9 +734,20 @@
         "evidence": "rollout-independent seven-day pending inventory requests only missing output and skips when full",
         "tests": [
           "__tests__/services/scheduler-user-scope.test.ts",
-          "__tests__/services/content-workflow-user-scope.test.ts"
+          "__tests__/services/content-workflow-user-scope.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "runner",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -729,9 +771,20 @@
         "enforcement": "report-schedule-ledger",
         "evidence": "tenant/local-date coach report claim prevents duplicate scheduled analysis",
         "tests": [
-          "__tests__/services/report-schedule-dispatcher.test.ts"
+          "__tests__/services/report-schedule-dispatcher.test.ts",
+          "__tests__/services/scheduler-user-scope.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -1164,9 +1217,20 @@
         "evidence": "rollout-independent seven-day pending inventory requests only missing output and skips when full",
         "tests": [
           "__tests__/services/scheduler-user-scope.test.ts",
-          "__tests__/services/content-workflow-user-scope.test.ts"
+          "__tests__/services/content-workflow-user-scope.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "runner",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -1215,9 +1279,20 @@
         "evidence": "rollout-independent seven-day pending inventory requests only missing output and skips when full",
         "tests": [
           "__tests__/services/scheduler-user-scope.test.ts",
-          "__tests__/services/content-workflow-user-scope.test.ts"
+          "__tests__/services/content-workflow-user-scope.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "runner",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -1268,6 +1343,16 @@
           "__tests__/agents/voice-evolution-multi-tenant.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {

@@ -32,20 +32,28 @@ import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
-import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
+import { seedDefaultChannels } from './channel-learner';
 import {
-  generateAndStoreTopicCandidates,
-  generateWeeklyPackage,
-  getMissingScheduledInventoryCount,
-} from './content-workflow';
+  runContentTopicCronForActiveUsers,
+  runScheduledChannelRelearn,
+  runScheduledAutoresearch,
+  runWeeklyContentPackageCronForActiveUsers,
+} from './scheduled-agent-jobs';
+export {
+  runContentTopicCronForActiveUsers,
+  runWeeklyContentPackageCronForActiveUsers,
+} from './scheduled-agent-jobs';
+import {
+  listActiveAgentJobTenantTargets as getActiveUserTargets,
+  type AgentJobTenantTarget,
+} from './agent-job-targets';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
 import { runPerformanceAgent } from '../agents/performance-agent';
-import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
+import { runScheduledVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
-import { runAutoresearch, getScheduledTarget } from './autoresearch';
 import {
   releaseFreshReportScheduleClaim,
   resolveDueReportTargets,
@@ -63,8 +71,14 @@ import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
-import { processChatActionFixerJobs } from './chat-action-fixer-worker';
+import { runScheduledChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
+import {
+  AgentJobOutputValidationError,
+  runGovernedAgentJob,
+  type AgentJobOutcome,
+  type GovernedAgentJobAdapter,
+} from './agent-job-runner';
 import {
   runDecisionCenterSmokeCleanupJob,
   createDecisionIntent,
@@ -105,10 +119,7 @@ import {
 import { AiBudgetError } from './cost-guardrail';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 
-interface ActiveUserTarget {
-  tenantId: number;
-  telegramId: number | null;
-}
+type ActiveUserTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'telegramId'>;
 
 function registerJob(
   id: string,
@@ -181,7 +192,7 @@ function getActiveUserIds(): number[] {
 
 type TaskSyncScope = { tenantId: number; userId: number; importProviders: boolean };
 
-function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
+export function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
   const scopes = new Map<string, TaskSyncScope>();
   for (const userId of userIds) {
     scopes.set(`${userId}:${userId}`, { tenantId: userId, userId, importProviders: true });
@@ -229,230 +240,6 @@ export { getActiveUserIds, getOwnerUserIds };
 function getOwnerTenantIds(): number[] {
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.tenantId] : [];
-}
-
-function getActiveUserTargets(): ActiveUserTarget[] {
-  try {
-    const db = getDb();
-    const rows = db.prepare(
-      "SELECT id, telegram_id FROM users WHERE status = 'active'"
-    ).all() as { id: number; telegram_id: number | null }[];
-    if (rows.length > 0) {
-      return rows.map((row) => ({
-        tenantId: row.id,
-        telegramId: row.telegram_id ?? null,
-      }));
-    }
-  } catch (err) {
-    logUnexpectedTenantQueryError('getActiveUserTargets', err);
-  }
-
-  const ownerTarget = getOwnerBootstrapTarget();
-  return ownerTarget ? [ownerTarget] : [];
-}
-
-// Content topic generation only pays for itself when someone consumes the
-// output. Measured engagement includes a review, script generation, or
-// conversion in the last 30 days. First-time users (no candidates
-// ever) always get an initial batch. This is a deterministic consumption proxy;
-// downstream publishing/conversion instrumentation is still incomplete.
-// A local/test-only escape hatch supports fixtures and development. Production
-// always enforces the consumption gate so an environment typo cannot restore
-// unbounded candidate generation.
-function shouldGenerateContentTopicsForUser(
-  userId: number,
-  sourceJob: string,
-  initialTargets: ReadonlyArray<{ format: 'reel' | 'youtube'; targetCount: number }>,
-): boolean {
-  if (!isPaidAiCostControlsEnforcementEnabled()) return true;
-  const localBypass = process.env.CONTENT_CRON_ENGAGEMENT_GATE === 'off'
-    && ['development', 'test'].includes(process.env.NODE_ENV ?? '');
-  if (localBypass) return true;
-  try {
-    const db = getDb();
-    const engaged = db.prepare(`
-      SELECT (
-        EXISTS(
-          SELECT 1 FROM content_topic_feedback
-           WHERE user_id = ?
-             AND COALESCE(tenant_id, user_id) = ?
-             AND (
-               (sentiment != 'pending' AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days'))
-               OR (COALESCE(script_generated, 0) = 1 AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days'))
-               OR converted_at >= datetime('now', '-30 days')
-             )
-        )
-        OR EXISTS(
-          SELECT 1 FROM content_scripts
-           WHERE user_id = ?
-             AND COALESCE(tenant_id, user_id) = ?
-             AND COALESCE(scope_status, 'active') = 'active'
-             AND created_at >= datetime('now', '-30 days')
-        )
-      ) AS engaged
-    `).get(userId, userId, userId, userId) as { engaged: number };
-    if (engaged.engaged) return true;
-    const historicalCount = db.prepare(`
-      SELECT COUNT(*) AS count
-        FROM content_topic_feedback
-       WHERE user_id = ?
-         AND COALESCE(tenant_id, user_id) = ?
-         AND source_job = ?
-         AND format = ?
-    `);
-    const initialInventoryComplete = initialTargets.every((target) => {
-      const row = historicalCount.get(
-        userId,
-        userId,
-        sourceJob,
-        target.format,
-      ) as { count: number };
-      return Number(row.count || 0) >= target.targetCount;
-    });
-    if (!initialInventoryComplete) return true;
-    logger.info(
-      { userId, sourceJob },
-      '[scheduler] content topic generation skipped: no Content-surface engagement in 30 days',
-    );
-    return false;
-  } catch (err) {
-    logger.warn({ err, userId, sourceJob }, '[scheduler] content engagement gate failed closed');
-    return false;
-  }
-}
-
-export async function runContentTopicCronForActiveUsers(
-  format: 'reel' | 'youtube',
-  sourceJob: 'tuesday_reels' | 'thursday_youtube' | string,
-): Promise<void> {
-  for (const target of getActiveUserTargets()) {
-    const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
-    if (!eligibility.allowed) {
-      recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
-        jobName: sourceJob,
-        baseCategory: `content_workflow_${format}`,
-      });
-      logger.debug(
-        {
-          userId: target.tenantId,
-          sourceJob,
-          reason: eligibility.reason,
-          entitlementSource: eligibility.entitlement.source,
-        },
-        '[scheduler] content automation skipped: user is not eligible',
-      );
-      continue;
-    }
-    let missingCount: number;
-    try {
-      // Output idempotency is a provider-call invariant, not a billing-rollout
-      // behavior. Keep it active in both observe-only and enforcing modes.
-      missingCount = getMissingScheduledInventoryCount(target.tenantId, {
-        format,
-        sourceJob,
-        targetCount: 5,
-        windowDays: 7,
-      });
-    } catch (err) {
-      logger.warn(
-        { err, userId: target.tenantId, sourceJob, format },
-        '[scheduler] content topic generation skipped: inventory gate unavailable',
-      );
-      continue;
-    }
-    if (missingCount === 0) {
-      logger.info(
-        { userId: target.tenantId, sourceJob, format },
-        '[scheduler] content topic generation skipped: seven-day pending inventory is full',
-      );
-      continue;
-    }
-    if (!shouldGenerateContentTopicsForUser(target.tenantId, sourceJob, [{ format, targetCount: 5 }])) continue;
-    try {
-      await runWithContext({ source: `cron:${sourceJob}`, userId: target.tenantId }, async () => {
-        await generateAndStoreTopicCandidates(
-          target.tenantId,
-          format,
-          sourceJob,
-          target.tenantId,
-          missingCount,
-          { requestSource: 'automation', jobName: sourceJob },
-        );
-      });
-    } catch (err) {
-      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId, sourceJob, format }, 'Content topic cron failed');
-    }
-  }
-}
-
-export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
-  for (const target of getActiveUserTargets()) {
-    const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
-    if (!eligibility.allowed) {
-      recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
-        jobName: 'friday_weekly',
-        baseCategory: 'content_workflow_weekly',
-      });
-      logger.debug(
-        {
-          userId: target.tenantId,
-          sourceJob: 'friday_weekly',
-          reason: eligibility.reason,
-          entitlementSource: eligibility.entitlement.source,
-        },
-        '[scheduler] Friday package skipped: user is not eligible for Content automation',
-      );
-      continue;
-    }
-    let missingReels: number;
-    let missingYoutube: number;
-    try {
-      // This idempotency gate is unconditional so an unchanged scheduled input
-      // cannot spend provider tokens while paid-AI controls are observe-only.
-      missingReels = getMissingScheduledInventoryCount(target.tenantId, {
-        format: 'reel',
-        sourceJob: 'friday_weekly',
-        targetCount: 4,
-        windowDays: 7,
-      });
-      missingYoutube = getMissingScheduledInventoryCount(target.tenantId, {
-        format: 'youtube',
-        sourceJob: 'friday_weekly',
-        targetCount: 2,
-        windowDays: 7,
-      });
-    } catch (err) {
-      logger.warn(
-        { err, userId: target.tenantId, sourceJob: 'friday_weekly' },
-        '[scheduler] Friday package skipped: inventory gate unavailable',
-      );
-      continue;
-    }
-    if (missingReels === 0 && missingYoutube === 0) {
-      logger.info(
-        { userId: target.tenantId, sourceJob: 'friday_weekly' },
-        '[scheduler] Friday package skipped: seven-day pending inventory is full',
-      );
-      continue;
-    }
-    if (!shouldGenerateContentTopicsForUser(target.tenantId, 'friday_weekly', [
-      { format: 'reel', targetCount: 4 },
-      { format: 'youtube', targetCount: 2 },
-    ])) continue;
-    try {
-      await runWithContext({ source: 'cron:friday_weekly', userId: target.tenantId }, async () => {
-        await generateWeeklyPackage(target.tenantId, target.tenantId, {
-          reels: missingReels,
-          youtube: missingYoutube,
-        }, {
-          requestSource: 'automation',
-          jobName: 'friday_weekly',
-        });
-      });
-    } catch (err) {
-      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId }, 'Friday weekly content package failed');
-    }
-  }
 }
 
 /**
@@ -2313,7 +2100,6 @@ export function startScheduler(): void {
         eligible: (target) =>
           hasPaidCoachBriefingEntitlement(target.tenantId)
           && hasActiveCoachWorkoutPlan(target.tenantId)
-          && hasCoachableHealthDataForUser(target.tenantId)
           && hasCoachableHealthDataForUser(target.tenantId),
       });
       if (due.length === 0) return 'skipped';
@@ -2334,7 +2120,7 @@ export function startScheduler(): void {
       }
       for (const target of due) {
         try {
-          await sendCoachBriefingForTarget(target);
+          await runScheduledCoachBriefingForTarget(target);
         } catch (err) {
           logger.error({ err, userId: target.tenantId }, 'Coach briefing failed for user; continuing');
         }
@@ -2561,7 +2347,7 @@ export function startScheduler(): void {
   // OpenAI-fallback storm (2026-07-03 audit). Same for the content and
   // autoresearch crons below.
   cron.schedule('37 3 * * 0', wrapJob('channel_relearn', async () => {
-    const result = await processAllChannelScopes();
+    const result = await runScheduledChannelRelearn();
     if (result.analyzed > 0 || result.failed > 0) {
       const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
         `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
@@ -2612,7 +2398,7 @@ export function startScheduler(): void {
 
   // ── Voice Evolution Agent (1st of month, 04:00) ─────────────────
   cron.schedule('0 4 1 * *', wrapJob('voice_evolution', async () => {
-    await runVoiceEvolutionAgent();
+    await runScheduledVoiceEvolutionAgent();
   }), { timezone: tz });
 
   // ── Reaction Radar Agent (every 4 hours) ─────────────────────────
@@ -2629,33 +2415,7 @@ export function startScheduler(): void {
 
   // ── Autoresearch (Sunday 01:19 — rotates through targets) ────────
   cron.schedule('19 1 * * 0', wrapJob('autoresearch', async () => {
-    const targetId = getScheduledTarget();
-    // GAP-CAL-1 fix: progress lines go to structured logs; the run summary
-    // goes to the operator-alert channel (this is ops telemetry, not a
-    // user-facing product notification).
-    const onProgress = async (msg: string) => {
-      logger.info({ targetId, msg }, '[scheduler] autoresearch progress');
-    };
-    try {
-      const result = await runAutoresearch(targetId, 1, true, onProgress, {
-        mode: 'evaluate_only',
-      });
-      const kept = result.rounds.filter(r => r.decision === 'kept').length;
-      recordOperatorAlert({
-        severity: 'info',
-        source: 'autoresearch',
-        dedupeKey: `autoresearch:completed:${targetId}:${new Date().toISOString().slice(0, 10)}`,
-        title: `Autoresearch evaluated: ${targetId}`,
-        detail: result.skipped === 'skipped_unchanged'
-          ? `Skipped unchanged prompt/eval fingerprint with stored score ${(result.finalScore * 100).toFixed(1)}% (0 model calls).`
-          : `Score ${(result.finalScore * 100).toFixed(1)}% — evaluate-only mode made no prompt or Git writes in ${(result.totalDurationMs / 1000).toFixed(0)}s.`,
-        owner: 'ops',
-        suspectedArea: 'ai_quality',
-        userImpact: `None — scheduled evaluation telemetry${kept > 0 ? ` (${kept} unexpected kept mutations)` : ''}.`,
-      });
-    } catch (err) {
-      logger.error({ err, targetId }, 'Scheduled autoresearch failed');
-    }
+    await runScheduledAutoresearch();
   }), { timezone: tz });
 
   // ── Database Backup (daily, configurable — default 03:00) ─────────
@@ -2890,7 +2650,7 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('chat_action_fixer_worker', async () => {
-    const result = await processChatActionFixerJobs({
+    const result = await runScheduledChatActionFixerJobs({
       limit: intEnv('CHAT_ACTION_FIXER_JOB_BATCH_LIMIT', 5, 1, 25),
       lockOwner: `chat-action-fixer:${process.pid}`,
     });
@@ -3095,18 +2855,31 @@ function hasActiveCoachWorkoutPlan(userId: number): boolean {
   }
 }
 
-export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Promise<void> {
+export interface CoachBriefingDispatchResult {
+  status: 'generated' | 'skipped' | 'deferred' | 'failed';
+  recommendations: number;
+  errors: number;
+}
+
+export async function sendCoachBriefingForTarget(
+  target: ActiveUserTarget,
+  options: { runId?: string | null } = {},
+): Promise<CoachBriefingDispatchResult> {
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
   // calendar fetches). The serialized daily/monthly budget reservation wraps
   // the provider boundary below.
-  if (!hasPaidCoachBriefingEntitlement(target.tenantId)) return;
-  if (!hasActiveCoachWorkoutPlan(target.tenantId)) return;
+  if (!hasPaidCoachBriefingEntitlement(target.tenantId)) {
+    return { status: 'skipped', recommendations: 0, errors: 0 };
+  }
+  if (!hasActiveCoachWorkoutPlan(target.tenantId)) {
+    return { status: 'skipped', recommendations: 0, errors: 0 };
+  }
   if (!hasCoachableHealthDataForUser(target.tenantId)) {
     logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
-    return;
+    return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
+  return runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
         result = await generateCoachBriefing(target.tenantId, {
@@ -3115,6 +2888,7 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
           garminSilent: true,
           budgetRequestSource: 'automation',
           budgetJobName: 'garmin_coach',
+          ...(options.runId ? { budgetRunId: options.runId } : {}),
         });
       } catch (err) {
         if (err instanceof AiBudgetError) {
@@ -3156,10 +2930,10 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
             { userId: target.tenantId, code: err.decision.code, window: err.decision.window },
             'Coach briefing deferred by AI budget; latest valid report retained',
           );
-          return;
+          return { status: 'deferred', recommendations: 0, errors: 0 } as const;
         }
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
-        return;
+        return { status: 'failed', recommendations: 0, errors: 1 } as const;
       }
 
       if (result.errors.length > 0) {
@@ -3225,7 +2999,58 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
         },
         'Daily coach briefing completed'
       );
+      return {
+        status: 'generated',
+        recommendations: result.recommendations.length,
+        errors: result.errors.length,
+      } as const;
     });
+}
+
+class CoachBriefingDispatchError extends Error {
+  constructor(readonly result: CoachBriefingDispatchResult) {
+    super('Coach briefing generation failed before a valid report was produced');
+    this.name = 'CoachBriefingDispatchError';
+  }
+}
+
+function scheduledCoachBriefingAdapter(
+  target: ActiveUserTarget,
+): GovernedAgentJobAdapter<{ tenantId: number }, CoachBriefingDispatchResult> {
+  return {
+    jobId: 'garmin_coach',
+    providerRouting: 'gemini-primary-openai-fallback-anthropic-gated-last-resort',
+    prepare: () => ({
+      kind: 'ready',
+      input: { tenantId: target.tenantId },
+      fingerprintMaterial: { tenantId: target.tenantId, gate: 'report_schedule_ledger' },
+    }),
+    async execute({ runId }) {
+      const result = await sendCoachBriefingForTarget(target, { runId });
+      if (result.status === 'failed') throw new CoachBriefingDispatchError(result);
+      return result;
+    },
+    validateOutput(output, input) {
+      if (input.tenantId !== target.tenantId
+          || !['generated', 'skipped', 'deferred'].includes(output.status)
+          || !Number.isSafeInteger(output.recommendations)
+          || output.recommendations < 0
+          || !Number.isSafeInteger(output.errors)
+          || output.errors < 0) {
+        throw new AgentJobOutputValidationError('Coach briefing dispatch output failed validation');
+      }
+    },
+    classifyOutput: (output) => output.status === 'generated' ? 'success' : 'skipped_no_work',
+  };
+}
+
+export async function runScheduledCoachBriefingForTarget(
+  target: ActiveUserTarget,
+): Promise<AgentJobOutcome<CoachBriefingDispatchResult>> {
+  return runGovernedAgentJob(
+    scheduledCoachBriefingAdapter(target),
+    { tenantId: target.tenantId, userId: target.tenantId },
+  );
 }
 
 export async function sendCoachBriefings(): Promise<void> {

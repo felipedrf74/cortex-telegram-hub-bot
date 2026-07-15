@@ -34,6 +34,11 @@ import {
   resolveAiAutomationEligibility,
 } from '../services/ai-automation-policy';
 import { AiBudgetError, withAiBudgetReservation } from '../services/cost-guardrail';
+import {
+  AgentJobOutputValidationError,
+  runGovernedAgentJob,
+  type GovernedAgentJobAdapter,
+} from '../services/agent-job-runner';
 
 const client = createLazyAnthropicClient({ maxRetries: 2 });
 const VOICE_EVOLUTION_FINGERPRINT_VERSION = 'voice-evolution-input-v1';
@@ -51,14 +56,14 @@ function voiceSignalProvenance(): SignalProvenance {
   };
 }
 
-class VoiceEvolutionFingerprintReadError extends Error {
+export class VoiceEvolutionFingerprintReadError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'VoiceEvolutionFingerprintReadError';
   }
 }
 
-class VoiceEvolutionProviderSchemaError extends Error {
+export class VoiceEvolutionProviderSchemaError extends Error {
   readonly cause: unknown;
 
   constructor(message: string, cause?: unknown) {
@@ -68,7 +73,7 @@ class VoiceEvolutionProviderSchemaError extends Error {
   }
 }
 
-class VoiceEvolutionProviderCallError extends Error {
+export class VoiceEvolutionProviderCallError extends Error {
   readonly cause: unknown;
 
   constructor(message: string, cause: unknown) {
@@ -78,7 +83,7 @@ class VoiceEvolutionProviderCallError extends Error {
   }
 }
 
-class VoiceEvolutionPersistenceError extends Error {
+export class VoiceEvolutionPersistenceError extends Error {
   readonly cause: unknown;
 
   constructor(message: string, cause: unknown) {
@@ -513,7 +518,16 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
   }
 }
 
-async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signalsProduced: number; signalsConsumed: number }> {
+export interface VoiceEvolutionTargetResult {
+  signalsProduced: number;
+  signalsConsumed: number;
+  status: 'completed' | 'no_input' | 'unchanged' | 'deferred';
+}
+
+export async function runVoiceEvolutionForTarget(
+  target: UserTarget,
+  options: { runId?: string | null } = {},
+): Promise<VoiceEvolutionTargetResult> {
   const start = Date.now();
   let signalsProduced = 0;
   let signalsConsumed = 0;
@@ -570,7 +584,7 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
     // If we have neither scripts nor transcripts, graceful skip
     if (scripts.length === 0 && transcripts.length === 0) {
       logger.info({ userId, tenantId }, 'Voice Evolution: no scripts or transcripts from last 30 days. Skipping tenant.');
-      return { signalsProduced, signalsConsumed };
+      return { signalsProduced, signalsConsumed, status: 'no_input' };
     }
 
     // Build context for Claude analysis
@@ -615,7 +629,7 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
         { userId, tenantId, fingerprintVersion: VOICE_EVOLUTION_FINGERPRINT_VERSION },
         'Voice Evolution: unchanged tenant input; skipped before budget/provider work',
       );
-      return { signalsProduced, signalsConsumed };
+      return { signalsProduced, signalsConsumed, status: 'unchanged' };
     }
 
     // Gemini-first deep analysis with Sonnet fallback. This is a low-frequency
@@ -632,6 +646,7 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
         // delivery slots. Keep it below Coach and scheduled topic inventory so
         // it cannot consume the allowance those user-visible artifacts need.
         automationPriority: 'other',
+        runId: options.runId ?? null,
       }, () => completeOneShotWithFallback(
         '',  // no system prompt — instructions are in the user prompt
         prompt,
@@ -866,9 +881,125 @@ async function runVoiceEvolutionForTarget(target: UserTarget): Promise<{ signals
 
     const summary = `Voice Evolution: analyzed ${scripts.length} scripts + ${transcripts.length} transcripts + ${bookSignals.length} book insights. ${signalsProduced} voice patterns detected.`;
     logger.info({ userId, tenantId, durationMs: Date.now() - start }, summary);
-    return { signalsProduced, signalsConsumed };
+    return { signalsProduced, signalsConsumed, status: 'completed' };
   } catch (err: any) {
     logger.error({ err, userId, tenantId }, 'Voice Evolution tenant run failed');
     throw err;
+  }
+}
+
+const VOICE_EVOLUTION_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
+
+function scheduledVoiceEvolutionAdapter(
+  target: UserTarget,
+): GovernedAgentJobAdapter<{ tenantId: number }, VoiceEvolutionTargetResult> {
+  return {
+    jobId: 'voice_evolution',
+    providerRouting: VOICE_EVOLUTION_PROVIDER_ROUTE,
+    prepare: () => {
+      const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
+      if (!eligibility.allowed) {
+        recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
+          jobName: 'voice_evolution',
+          baseCategory: 'voice_evolution',
+        });
+        return {
+          kind: 'skip',
+          status: 'skipped_no_work',
+          reason: 'automation_ineligible',
+          fingerprintMaterial: { eligibility: eligibility.reason },
+        };
+      }
+      return {
+        kind: 'ready',
+        input: { tenantId: target.tenantId },
+        // Raw scripts/transcripts stay inside the domain fingerprint gate.
+        fingerprintMaterial: { target: target.tenantId, gate: VOICE_EVOLUTION_FINGERPRINT_VERSION },
+      };
+    },
+    async execute({ runId }) {
+      try {
+        return await withVoiceEvolutionTenantClaim(
+          target.tenantId,
+          () => runVoiceEvolutionForTarget(target, { runId }),
+        );
+      } catch (error) {
+        if (!(error instanceof AiBudgetError)) throw error;
+        logger.info(
+          { userId: target.tenantId, code: error.decision.code, window: error.decision.window },
+          'Voice Evolution deferred by the user automation budget',
+        );
+        return { signalsProduced: 0, signalsConsumed: 0, status: 'deferred' };
+      }
+    },
+    validateOutput(output, input) {
+      if (input.tenantId !== target.tenantId
+          || !Number.isSafeInteger(output.signalsProduced)
+          || output.signalsProduced < 0
+          || !Number.isSafeInteger(output.signalsConsumed)
+          || output.signalsConsumed < 0
+          || !['completed', 'no_input', 'unchanged', 'deferred'].includes(output.status)) {
+        throw new AgentJobOutputValidationError('Voice Evolution output failed validation');
+      }
+    },
+    classifyOutput(output) {
+      if (output.status === 'completed') return 'success';
+      if (output.status === 'unchanged') return 'skipped_unchanged';
+      return 'skipped_no_work';
+    },
+  };
+}
+
+/** Scheduled entrypoint: one tenant, one run id, one usage/cost scope. */
+export async function runScheduledVoiceEvolutionAgent(): Promise<void> {
+  const start = Date.now();
+  let signalsProduced = 0;
+  let signalsConsumed = 0;
+  const tenantFailures: Error[] = [];
+
+  try {
+    const targets = getActiveUserTargets();
+    if (targets.length === 0) {
+      logAgentRun('voice-evolution', 'skipped', 0, 0, Date.now() - start, 'No active users available');
+      logger.info('Voice Evolution: no active users available. Skipping.');
+      return;
+    }
+
+    for (const target of targets) {
+      try {
+        const outcome = await runGovernedAgentJob(
+          scheduledVoiceEvolutionAdapter(target),
+          { tenantId: target.tenantId, userId: target.tenantId },
+        );
+        if (outcome.output) {
+          signalsProduced += outcome.output.signalsProduced;
+          signalsConsumed += outcome.output.signalsConsumed;
+        }
+      } catch (error) {
+        if (error instanceof VoiceEvolutionFingerprintReadError
+            || error instanceof VoiceEvolutionPersistenceError) throw error;
+        if (!(error instanceof VoiceEvolutionProviderCallError)
+            && !(error instanceof VoiceEvolutionProviderSchemaError)) throw error;
+        tenantFailures.push(error);
+        logger.error(
+          { error, userId: target.tenantId, tenantId: target.tenantId },
+          'Voice Evolution tenant failed; continuing with remaining tenants',
+        );
+      }
+    }
+
+    if (tenantFailures.length > 0) {
+      throw new AggregateError(
+        tenantFailures,
+        `Voice Evolution partial failure after all targets were attempted (${tenantFailures.length}/${targets.length})`,
+      );
+    }
+    logAgentRun('voice-evolution', 'success', signalsProduced, signalsConsumed, Date.now() - start);
+    logger.info({ targetCount: targets.length, signalsProduced, signalsConsumed }, 'Voice Evolution complete for active tenants');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logAgentRun('voice-evolution', 'error', signalsProduced, signalsConsumed, Date.now() - start, message);
+    logger.error({ error }, 'Voice Evolution Agent failed');
+    throw error;
   }
 }

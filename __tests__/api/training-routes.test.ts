@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import Database from 'better-sqlite3';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 import { config } from '../../src/config';
+import { resolveTrainingDay } from '../../src/services/training-date-utils';
 
 let testDb: Database.Database;
 
@@ -2139,7 +2140,7 @@ describe('Training API routes', () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12 });
     mockGetCurrentWeek.mockReturnValue({ id: 78 });
     mockGetSessionsForWeek.mockReturnValue([
-      { id: 321, day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }), status: 'pending', plan_id: 44 },
+      { id: 321, day_of_week: resolveTrainingDay().weekdayName, status: 'pending', plan_id: 44 },
     ]);
     // Hardening 2026-04-21: ownership gate reads these.
     mockGetSessionById.mockReturnValue({ id: 321, plan_id: 44 });

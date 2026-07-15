@@ -109,7 +109,10 @@ vi.mock('../../src/agents/pipeline-agent', () => ({
 vi.mock('../../src/agents/seo-agent', () => ({ runSEOAgent: vi.fn() }));
 vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.fn() }));
 vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
-vi.mock('../../src/agents/voice-evolution-agent', () => ({ runVoiceEvolutionAgent: vi.fn() }));
+vi.mock('../../src/agents/voice-evolution-agent', () => ({
+  runVoiceEvolutionAgent: vi.fn(),
+  runScheduledVoiceEvolutionAgent: vi.fn(),
+}));
 vi.mock('../../src/skills/skill-manager', () => ({
   getAllSkillStatuses: vi.fn(() => []),
   enableSkill: vi.fn(),

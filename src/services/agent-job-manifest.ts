@@ -12,6 +12,17 @@ export type AgentJobInputEnforcement =
   | 'output-inventory-gate'
   | 'durable-job-idempotency';
 
+export interface SharedAgentJobRunnerPolicy {
+  implementation: 'governed-v1';
+  scope: 'platform' | 'tenant-user' | 'platform-or-tenant-user';
+  fingerprintGate: 'runner' | 'adapter';
+  maxAttempts: number;
+  retryBackoffMs: number;
+  auditStore: 'agent_job_runs';
+  providerAttribution: 'api_usage-run-id';
+  outputValidation: 'adapter-required';
+}
+
 export interface AgentJobManifestEntry {
   id: string;
   name: string;
@@ -36,6 +47,7 @@ export interface AgentJobManifestEntry {
     evidence: string;
     tests: string[];
   };
+  sharedRunner?: SharedAgentJobRunnerPolicy;
 }
 
 export interface AgentJobManifest {
@@ -127,6 +139,24 @@ function validateEntry(entry: AgentJobManifestEntry): void {
   if (entry.providerUsage === 'governed-provider-capable'
       && entry.inputFingerprint.tests.length === 0) {
     throw new Error(`provider-capable job lacks unchanged-input test evidence: ${entry.id}`);
+  }
+  if (entry.sharedRunner) {
+    const runner = entry.sharedRunner;
+    if (entry.providerUsage !== 'governed-provider-capable'
+        || runner.implementation !== 'governed-v1'
+        || !['platform', 'tenant-user', 'platform-or-tenant-user'].includes(runner.scope)
+        || !['runner', 'adapter'].includes(runner.fingerprintGate)
+        || !Number.isSafeInteger(runner.maxAttempts)
+        || runner.maxAttempts < 1
+        || runner.maxAttempts > 5
+        || !Number.isSafeInteger(runner.retryBackoffMs)
+        || runner.retryBackoffMs < 0
+        || runner.retryBackoffMs > 60_000
+        || runner.auditStore !== 'agent_job_runs'
+        || runner.providerAttribution !== 'api_usage-run-id'
+        || runner.outputValidation !== 'adapter-required') {
+      throw new Error(`invalid AgentJobManifest shared runner policy: ${entry.id}`);
+    }
   }
 }
 
@@ -228,6 +258,12 @@ export function loadAgentJobManifest(): AgentJobManifest {
   return parsed;
 }
 
+export function getAgentJobManifestEntry(jobId: string): AgentJobManifestEntry {
+  const entry = loadAgentJobManifest().jobs.find((job) => job.id === jobId);
+  if (!entry) throw new Error(`scheduled job is not governed by AgentJobManifest: ${jobId}`);
+  return entry;
+}
+
 export function assertAgentEventHandlerRuntimeParity(
   handlers: ReadonlyArray<{ eventType: string }>,
   runtimeGroup = 'event-backbone-default',
@@ -274,8 +310,7 @@ export function assertAgentJobRuntimeRegistration(input: {
   declaredSchedule: string;
   domain: JobDomain;
 }): AgentJobManifestEntry {
-  const entry = loadAgentJobManifest().jobs.find((job) => job.id === input.id);
-  if (!entry) throw new Error(`scheduled job is not governed by AgentJobManifest: ${input.id}`);
+  const entry = getAgentJobManifestEntry(input.id);
   const mismatches: string[] = [];
   if (entry.name !== input.name) mismatches.push(`name manifest=${entry.name} runtime=${input.name}`);
   if (entry.schedule !== input.declaredSchedule) {
