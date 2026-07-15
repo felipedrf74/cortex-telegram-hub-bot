@@ -30,6 +30,7 @@ export interface TrainingExerciseMediaRouteDependencies {
   lookup?: typeof lookupTrainingExerciseMedia;
   resolveEntitlement?: typeof getEffectiveEntitlement;
   recordLearning?: typeof recordTrainingMediaLookupObservations;
+  scheduleLearning?: (task: () => void) => void;
 }
 
 /**
@@ -65,6 +66,7 @@ export function registerTrainingExerciseMediaRoutes(
       resolveLocale(req),
       lookup,
       dependencies.recordLearning ?? recordTrainingMediaLookupObservations,
+      dependencies.scheduleLearning ?? scheduleWithImmediate,
     );
   });
 
@@ -86,6 +88,7 @@ export function registerTrainingExerciseMediaRoutes(
       resolveLocale(req),
       lookup,
       dependencies.recordLearning ?? recordTrainingMediaLookupObservations,
+      dependencies.scheduleLearning ?? scheduleWithImmediate,
       true,
     );
   });
@@ -140,6 +143,7 @@ function serveLookup(
   locale: TrainingExerciseMediaLocale,
   lookup: typeof lookupTrainingExerciseMedia,
   recordLearning: typeof recordTrainingMediaLookupObservations,
+  scheduleLearning: (task: () => void) => void,
   single = false,
 ): void {
   let result: TrainingExerciseMediaBatchDto | null;
@@ -158,20 +162,7 @@ function serveLookup(
     return;
   }
 
-  try {
-    recordLearning({
-      scope: { tenantId: Number(scope.tenantId), userId: Number(scope.userId) },
-      result,
-    });
-  } catch (error) {
-    // Learning telemetry must not turn an otherwise valid governed read into a
-    // failed product request. The producer is retry-safe and can be replayed
-    // from an equivalent later lookup.
-    logger.warn(
-      { err: error, userId: scope.userId, tenantId: scope.tenantId },
-      'Training exercise media learning observation failed',
-    );
-  }
+  scheduleMediaLearningObservation(scope, result, recordLearning, scheduleLearning);
 
   if (single) {
     const item = result.items[0];
@@ -206,6 +197,42 @@ function serveLookup(
   }
   const { eTag: _eTag, ...payload } = result;
   sendSuccess(res, payload);
+}
+
+function scheduleWithImmediate(task: () => void): void {
+  setImmediate(task);
+}
+
+function scheduleMediaLearningObservation(
+  scope: Required<RuntimeFlagScope>,
+  result: TrainingExerciseMediaBatchDto,
+  recordLearning: typeof recordTrainingMediaLookupObservations,
+  scheduleLearning: (task: () => void) => void,
+): void {
+  const task = (): void => {
+    try {
+      recordLearning({
+        scope: { tenantId: Number(scope.tenantId), userId: Number(scope.userId) },
+        result,
+      });
+    } catch (error) {
+      // Learning telemetry must not turn an otherwise valid governed read into
+      // a failed product request. The producer is retry-safe and can be
+      // replayed from an equivalent later lookup.
+      logger.warn(
+        { err: error, userId: scope.userId, tenantId: scope.tenantId },
+        'Training exercise media learning observation failed',
+      );
+    }
+  };
+  try {
+    scheduleLearning(task);
+  } catch (error) {
+    logger.warn(
+      { err: error, userId: scope.userId, tenantId: scope.tenantId },
+      'Training exercise media learning observation scheduling failed',
+    );
+  }
 }
 
 function parseBatchExerciseIds(raw: unknown):

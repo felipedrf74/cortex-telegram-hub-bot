@@ -73,6 +73,8 @@ describe('Training exercise media API contracts', () => {
   let env: NodeJS.ProcessEnv;
   let lookup: ReturnType<typeof vi.fn<typeof lookupTrainingExerciseMedia>>;
   let recordLearning: ReturnType<typeof vi.fn<typeof recordTrainingMediaLookupObservations>>;
+  let learningTasks: Array<() => void>;
+  let scheduleLearning: ReturnType<typeof vi.fn<(task: () => void) => void>>;
   let resolveEntitlement: ReturnType<typeof vi.fn<(userId: number) => UserEntitlement>>;
 
   beforeEach(async () => {
@@ -84,6 +86,8 @@ describe('Training exercise media API contracts', () => {
       { db, now: new Date('2026-07-12T12:00:00.000Z'), expectedExerciseIds: ['push_up'] },
     ));
     recordLearning = vi.fn((input) => recordTrainingMediaLookupObservations(input, db));
+    learningTasks = [];
+    scheduleLearning = vi.fn((task) => { learningTasks.push(task); });
     resolveEntitlement = vi.fn((userId: number) => (
       userId === 9 ? ineligibleEntitlement(userId) : entitlement(userId)
     ));
@@ -96,7 +100,9 @@ describe('Training exercise media API contracts', () => {
       next();
     });
     const router = Router();
-    registerTrainingExerciseMediaRoutes(router, { env, lookup, resolveEntitlement, recordLearning });
+    registerTrainingExerciseMediaRoutes(router, {
+      env, lookup, resolveEntitlement, recordLearning, scheduleLearning,
+    });
     app.use(router);
     server = await new Promise((resolve) => {
       const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
@@ -155,12 +161,12 @@ describe('Training exercise media API contracts', () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('returns honest locale fallback and records only bounded redacted learning outcomes', async () => {
+  it('returns honest locale fallback before asynchronously recording bounded redacted outcomes', async () => {
     const before = db.prepare('SELECT total_changes() AS count').get() as { count: number };
     const response = await fetch(`${baseUrl}/exercises?ids=push_up,press_up,future_modal_xyz`, {
       headers: { 'x-language': 'pt-PT' },
     });
-    const after = db.prepare('SELECT total_changes() AS count').get() as { count: number };
+    const afterRead = db.prepare('SELECT total_changes() AS count').get() as { count: number };
     expect(response.status).toBe(200);
     expect(response.headers.get('etag')).toMatch(/^W\/"[0-9a-f]{64}"$/);
     expect(response.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
@@ -183,7 +189,12 @@ describe('Training exercise media API contracts', () => {
     });
     const golden = goldenEnvelope('training-exercise-media-golden-batch.json');
     expect(normalizedTimestamp(body, golden)).toEqual(golden);
-    expect(after.count).toBeGreaterThan(before.count);
+    expect(afterRead).toEqual(before);
+    expect(scheduleLearning).toHaveBeenCalledOnce();
+    expect(recordLearning).not.toHaveBeenCalled();
+    for (const task of learningTasks.splice(0)) task();
+    const afterLearning = db.prepare('SELECT total_changes() AS count').get() as { count: number };
+    expect(afterLearning.count).toBeGreaterThan(before.count);
     expect(recordLearning).toHaveBeenCalledOnce();
     const learningCases = db.prepare(`
       SELECT redacted_input_json AS redactedInput,
