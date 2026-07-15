@@ -259,52 +259,12 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/services/storage-provider.ts:167-167",
-          "anchor": "return normalized",
-          "behavior": "An allowlisted SQLite journal mode is applied instead of the production default.",
-          "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/storage-provider.ts:172-172",
-          "anchor": "DEFAULT_SQLITE_PRAGMAS.journalMode",
-          "behavior": "An unsafe SQLite journal mode falls back to the safe production default.",
-          "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/storage-provider.ts:178-178",
-          "anchor": "return normalized",
-          "behavior": "An allowlisted SQLite synchronous mode is applied instead of the production default.",
-          "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/storage-provider.ts:183-183",
-          "anchor": "DEFAULT_SQLITE_PRAGMAS.synchronous",
-          "behavior": "An unsafe SQLite synchronous mode falls back to the safe production default.",
-          "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 1
-        },
-        {
           "pattern": "src/services/storage-provider.ts:189-189",
           "anchor": "return parsed",
           "behavior": "A finite non-negative SQLite mmap size is applied exactly as configured.",
           "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 1
-        },
-        {
-          "pattern": "src/services/storage-provider.ts:191-191",
-          "anchor": "DEFAULT_SQLITE_PRAGMAS.mmapSize",
-          "behavior": "A negative SQLite mmap size falls back to the safe production default.",
-          "replacementTest": "__tests__/services/storage-provider.test.ts",
-          "ownerTestName": "applies allowlisted pragma overrides and rejects unsafe values",
-          "minimumMutants": 1
+          "ownerTestName": "SQLiteStorage pragma policy applies allowlisted pragma overrides and rejects unsafe values",
+          "minimumMutants": 6
         }
       ],
       "reason": "Merged safe pragma policy and missing-parent filesystem behavior into the primary storage suite while removing repeated SQLite driver semantics, singleton happy paths, and export-existence assertions."
