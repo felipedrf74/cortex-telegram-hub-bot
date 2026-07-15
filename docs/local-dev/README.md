@@ -1,9 +1,9 @@
 # Nexus Hub — local Docker sandbox
 
 A one-command local-development environment for the Nexus Hub backend +
-Python content engine, with iOS Simulator wiring. Lives in parallel to
-the staging→prod chain; nothing here modifies `deploy.sh`, the PM2
-ecosystem, or the staging install on the remote Linux box.
+Python content engine, with iOS Simulator wiring. It is isolated from the
+exact-artifact staging→production chain; nothing here modifies PM2 or the
+staging install on the remote Linux host.
 
 This is the **default** local-dev path. If you need a native (non-Docker)
 runner — for example to attach a Node debugger or run with PM2 — the
@@ -251,8 +251,9 @@ new AI calls until UTC midnight. Raise the cap in your private
   replacement for `staging-smoke.sh`. Both exist; staging-smoke runs
   against the remote Linux box and has additional PM2 + remote-DB
   checks. The local smoke catches "does my change even boot."
-- `deploy.sh`, `deploy-staging.sh`, and `promote-to-prod.sh` are
-  untouched by this sandbox. They still gate prod deploys.
+- `release:prepare`, `release:staging`, and `release:promote` are untouched by
+  this sandbox. Signed evidence and exact-artifact readiness still gate
+  production promotion.
 - The pre-commit hook prints a soft warning if the sandbox is down.
   It doesn't block commits.
 

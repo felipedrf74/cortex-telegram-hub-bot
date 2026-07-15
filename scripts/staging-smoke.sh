@@ -8,7 +8,7 @@
 # expected shape. Exit code 0 = all tests passed (staging is safe to
 # promote to prod). Exit code 1 = at least one test failed.
 #
-# Used as a gate by promote-to-prod.sh — that script REFUSES to swap
+# Used as a gate by the exact release operator, which refuses to promote
 # staging into prod unless this smoke test exits 0.
 #
 # Tests run from the SERVER (via ssh) because that's the only place that
@@ -50,7 +50,7 @@ FAILED_TESTS=()
 # Every check result also goes into an in-memory array so we can emit a
 # single JSON evidence file at the end. The file is written under
 # .local/release/smoke-evidence/ (mkdir-p safe) and named with the deployed
-# SHA + UTC timestamp so promote-to-prod.sh and audits can read it
+# SHA + UTC timestamp so the exact release operator and audits can read it
 # instead of re-running this script. Disable with NEXUS_SMOKE_EVIDENCE=0.
 EVIDENCE_RESULTS=()
 EVIDENCE_ENABLED="${NEXUS_SMOKE_EVIDENCE:-1}"
@@ -783,7 +783,7 @@ fi
 
 # ── Smoke-evidence JSON ───────────────────────────────
 # Write a JSON file recording: branch, SHA, timestamps, per-check results.
-# Audits and `promote-to-prod.sh` can read this instead of re-running the
+# Audits and the exact release operator can read this instead of re-running the
 # 17-check suite. Failure to write the evidence file does not change the
 # smoke pass/fail outcome — pure side effect.
 write_evidence_file() {

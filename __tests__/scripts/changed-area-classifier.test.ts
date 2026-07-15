@@ -142,11 +142,27 @@ const routingFixtures: RoutingFixture[] = [
     vitest: ['__tests__/services/audit-trail.test.ts', '__tests__/api/authenticated-support-routes-scope.test.ts'],
   },
   {
-    name: 'deploy and PM2 config',
+    name: 'release and PM2 config',
     files: ['ecosystem.config.js'],
     flags: { deployConfig: true },
     gates: ['deploy-config-health-rehearsal'],
     vitest: ['__tests__/services/config-*.test.ts', '__tests__/scripts/*.test.ts'],
+  },
+  {
+    name: 'exact release operator',
+    files: ['scripts/promote-exact-release.sh', 'scripts/remote-release-readiness.sh'],
+    flags: { releaseOperator: true },
+    gates: ['exact-release-promotion-rehearsal'],
+    vitest: [
+      '__tests__/scripts/release-runtime-safeguards.test.ts',
+      '__tests__/scripts/exact-promotion-operational-safety.test.ts',
+      '__tests__/scripts/release-exact-attestations.test.ts',
+      '__tests__/scripts/release-backup-runtime-artifact.test.ts',
+      '__tests__/scripts/rollback-versioned-runtime.test.ts',
+      '__tests__/scripts/pm2-sanitized-start.test.ts',
+      '__tests__/scripts/release-evidence-container.test.ts',
+    ],
+    mode: 'focused',
   },
   {
     name: 'iOS navigation',
@@ -191,7 +207,7 @@ describe('changed-area-classifier pure routing fixtures', () => {
 
   it('keeps enrichment flags false on an unrelated backend change', () => {
     const result = classify('src/services/plain-helper.ts');
-    for (const flag of ['logger', 'scheduler', 'notification', 'healthIntegration', 'rateLimit', 'audit', 'deployConfig', 'iosNavigation', 'iosDto']) {
+    for (const flag of ['logger', 'scheduler', 'notification', 'healthIntegration', 'rateLimit', 'audit', 'deployConfig', 'releaseOperator', 'iosNavigation', 'iosDto']) {
       expect(result.flags[flag]).toBe(false);
     }
   });
@@ -275,6 +291,37 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     expect(result.flags.deployConfig).toBe(true);
     expect(result.vitest.mode).toBe('full');
     expect(result.stagingSmoke.generic).toBe(true);
+  });
+
+  it.each([
+    'scripts/release-operator.sh',
+    'scripts/promote-exact-release.sh',
+    'scripts/env-parity-check.sh',
+    'scripts/remote-release-preflight.sh',
+    'scripts/remote-release-readiness.sh',
+    'scripts/remote-prepare-release-backup.sh',
+    'scripts/remote-create-release-backup.sh',
+    'scripts/remote-start-sanitized-pm2.sh',
+    'scripts/rollback.sh',
+    'scripts/restore.sh',
+  ])('routes exact release entrypoint %s through the operator gate', (file) => {
+    const result = classify(file);
+    expect(result.flags.releaseOperator).toBe(true);
+    expect(result.cannotSkip).toContain('exact-release-promotion-rehearsal');
+    expect(result.tiers).toContain('T4');
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.stagingSmoke.generic).toBe(true);
+  });
+
+  it.each([
+    'scripts/deploy.sh',
+    'scripts/deploy-staging.sh',
+    'scripts/deploy-readiness-check.sh',
+    'scripts/promote-to-prod.sh',
+  ])('does not preserve retired repository-sync semantics for %s', (file) => {
+    const result = classify(file);
+    expect(result.flags.releaseOperator).toBe(false);
+    expect(result.cannotSkip).not.toContain('exact-release-promotion-rehearsal');
   });
 
   it('normalizes workspace-prefixed backend and migration paths', () => {

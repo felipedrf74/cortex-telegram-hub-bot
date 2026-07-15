@@ -18,7 +18,15 @@ export const cannotSkipGateFixtures = [
   ['provider-routing-fallback', 'src/services/provider-registry.ts', 'provider-'],
   ['migration-rollback-review', 'migrations/082_example.sql', 'MIGRATION'],
   ['irreversible-migration-manual-approval', 'migrations/200_content_radar_phase0_rollout_guards.sql', 'IRREVERSIBLE_MIGRATION'],
-  ['deploy-script-promotion-rehearsal', 'scripts/deploy.sh', 'DEPLOY'],
+  ['exact-release-promotion-rehearsal', 'scripts/promote-exact-release.sh', [
+    '__tests__/scripts/release-runtime-safeguards.test.ts',
+    '__tests__/scripts/exact-promotion-operational-safety.test.ts',
+    '__tests__/scripts/release-exact-attestations.test.ts',
+    '__tests__/scripts/release-backup-runtime-artifact.test.ts',
+    '__tests__/scripts/rollback-versioned-runtime.test.ts',
+    '__tests__/scripts/pm2-sanitized-start.test.ts',
+    '__tests__/scripts/release-evidence-container.test.ts',
+  ]],
   ['hook-validation-on-feature-branch', '.husky/pre-commit', 'HOOK'],
   ['ci-workflow-validation-on-PR', '.github/workflows/ci.yml', 'CI'],
   ['test-config-mock-completeness-audit', 'vitest.config.ts', 'TEST_CONFIG'],
@@ -55,7 +63,7 @@ export const cannotSkipGateFixtures = [
   ['science-policy-version-check', 'src/services/coach-kernel/knowledge/entities/training-principles.json', 'coach-kernel-'],
 ];
 
-const sentinels = new Set(['MIGRATION', 'IRREVERSIBLE_MIGRATION', 'DEPLOY', 'HOOK', 'CI', 'TEST_CONFIG']);
+const sentinels = new Set(['MIGRATION', 'IRREVERSIBLE_MIGRATION', 'HOOK', 'CI', 'TEST_CONFIG']);
 
 export function assertCannotSkipFixtureCoverage() {
   const registered = new Set(CANNOT_SKIP_GATE_NAMES);
@@ -108,15 +116,17 @@ export function buildCannotSkipDashboard({
     });
     const routes = [...data.vitest.globs, ...data.pytest.globs, ...data.xctest.classes];
     const cannotSkipFires = data.cannotSkip.includes(gate);
+    const expectedRoutes = Array.isArray(expected) ? expected : [expected];
     const expectedTestRouteFires = expected === 'FULL'
       ? data.vitest.mode === 'full'
       : sentinels.has(expected)
-      || routes.some((route) => route.includes(expected));
+      || expectedRoutes.every((expectedRoute) => routes.some((route) => route.includes(expectedRoute)));
     return {
       gate,
       representativeFile,
       cannotSkipFires,
       expectedTestRouteFires,
+      expectedTestRoutes: expectedRoutes,
       pass: cannotSkipFires && expectedTestRouteFires,
       vitestGlobs: data.vitest.globs,
       xctestClasses: data.xctest.classes,

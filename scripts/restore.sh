@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────
 # restore.sh — Restore a Nexus Hub backup tarball.
 #
-# Audit QW-10. Backups are created by deploy.sh into
+# Audit QW-10. Backups are created by exact promotion into
 # /home/dominguez/backups/nexushub/ and contain:
 #   dist/ catalog/ prompts/ migrations/ content-engine/ package.json package-lock.json
 #   ecosystem.config.js data/bot.db [data/bot.db-wal] [data/bot.db-shm]
@@ -23,7 +23,7 @@
 #   ./scripts/restore.sh /path/to/backup.tar.gz       # dry-run a specific one
 #   ./scripts/restore.sh --apply <path>               # apply (DESTRUCTIVE)
 #
-# Designed to run BOTH on the production server (where deploy.sh creates
+# Designed to run BOTH on the production server (where exact promotion creates
 # the backups) AND on a developer Mac (where you'd test it offline).
 # Detects environment via the BACKUP_DIR + REMOTE_DIR env vars.
 # ─────────────────────────────────────────────────────
@@ -233,7 +233,7 @@ if [ ! -f "$DB" ]; then
   echo ""
   echo "⚠️  This backup does NOT contain bot.db. Restoring it would lose"
   echo "    all user data (conversations, tasks, api_usage, etc)."
-  echo "    Backups taken before deploy.sh QW-10 fix have this problem."
+  echo "    Backups taken before the QW-10 backup-format fix have this problem."
   echo ""
   if [ "$APPLY" = true ]; then
     echo "❌ Refusing --apply on a code-only backup. Use this only for code rollbacks."

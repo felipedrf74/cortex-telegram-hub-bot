@@ -38,7 +38,8 @@ fi
   exit 1
 }
 
-# Serialize exact and legacy production paths through the same lock name.
+# Serialize exact promotion and emergency-recovery operator paths through the
+# same lock name.
 # The remote lock is the cross-worktree/cross-operator authority; the local
 # lock prevents accidental duplicate invocation from this checkout.
 trap release_cleanup_all_locks EXIT
@@ -46,6 +47,7 @@ release_acquire_local_lock "$ROOT" "prod-deploy"
 release_acquire_remote_lock "$SERVER" "$PROD_BASE" "prod-deploy"
 
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+"$ROOT/scripts/env-parity-check.sh" --server "$SERVER" --staging-dir "$STAGING_BASE" --prod-dir "$PROD_BASE"
 REMOTE_PM2="$("${SSH[@]}" "$SERVER" 'for p in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do if [ -n "$p" ] && [ -x "$p" ]; then printf "%s" "$p"; exit 0; fi; done; exit 1')"
 CURRENT_RUNTIME="$("${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" <<'REMOTE_CURRENT'
 set -euo pipefail
@@ -161,6 +163,12 @@ node "$release_dir/scripts/release-installed-tree-attestation.mjs" validate \
   --expect-runtime-sha "$runtime_sha" --expect-artifact-digest "$expected_digest" \
   --expect-aggregate-digest "$installed_digest" >/dev/null
 REMOTE_PREPARE
+
+# Run the candidate's owner-bootstrap and canonical environment preflight
+# against production data while the predecessor is still online. Failure here
+# cannot create downtime and never reaches the cutover recovery path.
+"${SSH[@]}" "$SERVER" bash "$PROD_RELEASE/scripts/remote-release-preflight.sh" \
+  --role production --base-dir "$PROD_BASE" --release-dir "$PROD_RELEASE" --node-bin /usr/bin/node
 
 # Prepare the immutable runtime portion of the rollback archive while the
 # current production services are still online. Only the quiescent SQLite
@@ -420,9 +428,10 @@ esac
 CANDIDATE_MUTATED=true
 set +e
 CUTOVER_OUTPUT="$("${SSH[@]}" "$SERVER" bash -s -- \
-  "$PROD_RELEASE" "$PROD_BASE" "$REMOTE_PM2" "$RUNTIME_SHA" "$TARGET_VERSION" "$PUBLIC_BASE_URL" <<'REMOTE_CUTOVER'
+  "$PROD_RELEASE" "$PROD_BASE" "$REMOTE_PM2" "$RUNTIME_SHA" "$TARGET_VERSION" "$PUBLIC_BASE_URL" \
+  "${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-10}" <<'REMOTE_CUTOVER'
 set -euo pipefail
-release_dir="$1"; base_dir="$2"; pm2_bin="$3"; runtime_sha="$4"; target_version="$5"; public_base_url="$6"
+release_dir="$1"; base_dir="$2"; pm2_bin="$3"; runtime_sha="$4"; target_version="$5"; public_base_url="$6"; stability_seconds="$7"
 rm -f "$base_dir/current.next"
 ln -s "$release_dir" "$base_dir/current.next"
 mv -Tf "$base_dir/current.next" "$base_dir/current"
@@ -432,6 +441,15 @@ done
 env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$release_dir" NEXUS_RELEASE_BASE_DIR="$base_dir" \
   NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$runtime_sha" \
   "$pm2_bin" start "$release_dir/ecosystem.release.config.js" --update-env
+
+# This is the authoritative post-start gate: native addon load, live SQLite
+# integrity, authenticated Content Engine /ready, exact PM2 identity, and two
+# restart-stability samples. The outer recovery trap remains armed throughout.
+bash "$release_dir/scripts/remote-release-readiness.sh" \
+  --role production --base-dir "$base_dir" --release-dir "$release_dir" \
+  --runtime-sha "$runtime_sha" --pm2-bin "$pm2_bin" --node-bin /usr/bin/node \
+  --output "$release_dir/.nexus-release-readiness-production.json" \
+  --stability-seconds "$stability_seconds"
 
 auth_header="$(mktemp)"; local_health="$(mktemp)"; public_health="$(mktemp)"; public_snapshot="$(mktemp)"
 cleanup_probe_files() { rm -f "$auth_header" "$local_health" "$public_health" "$public_snapshot"; }
@@ -487,7 +505,7 @@ for _ in $(seq 1 15); do
   if [ "$backend_ok" = true ] && [ "$content_ok" = true ] && [ "$identity_ok" = true ] \
       && [ "$public_health_ok" = true ] && [ "$public_snapshot_ok" = true ]; then
     "$pm2_bin" save >/dev/null
-    printf 'NEXUS_PRODUCTION_VERIFICATION={"loopbackBackend":true,"loopbackContent":true,"pm2AndCurrentIdentity":true,"publicHealth":true,"publicSnapshotVersion":true}\n'
+    printf 'NEXUS_PRODUCTION_VERIFICATION={"nativeBinding":true,"sqliteIntegrity":true,"sqliteForeignKeys":true,"loopbackBackend":true,"authenticatedContentEngine":true,"pm2AndCurrentIdentity":true,"pm2RestartStable":true,"publicHealth":true,"publicSnapshotVersion":true}\n'
     exit 0
   fi
   sleep 2
@@ -517,9 +535,13 @@ fs.writeFileSync(file, `${JSON.stringify({
   cutoverSeconds: Number(cutoverSeconds),
   packageVersion,
   verification: {
+    nativeBinding: true,
+    sqliteIntegrity: true,
+    sqliteForeignKeys: true,
     loopbackBackend: true,
-    loopbackContent: true,
+    authenticatedContentEngine: true,
     pm2AndCurrentIdentity: true,
+    pm2RestartStable: true,
     publicHealth: { baseUrl: publicBaseUrl, status: 'healthy', database: 'connected' },
     publicSnapshotVersion: packageVersion,
   },

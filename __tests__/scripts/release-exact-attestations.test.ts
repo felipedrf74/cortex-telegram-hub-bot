@@ -78,6 +78,7 @@ describe('detached staging attestation', () => {
       manifest: path.join(root, 'manifest.json'),
       installed: path.join(root, '.nexus-installed-runtime.json'),
       identity: path.join(root, 'identity.json'),
+      readiness: path.join(root, 'readiness.json'),
       smoke: path.join(root, 'smoke.log'),
       request: path.join(root, 'request.json'),
       signed: path.join(root, 'signed.json'),
@@ -96,6 +97,24 @@ describe('detached staging attestation', () => {
         { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
       ],
     }));
+    fs.writeFileSync(files.readiness, JSON.stringify({
+      schema: 'nexus.release-readiness.v1',
+      role: 'staging',
+      runtimeSha,
+      checks: {
+        nativeBinding: true,
+        sqliteIntegrity: true,
+        sqliteForeignKeys: true,
+        backendHealth: true,
+        authenticatedContentEngine: true,
+        pm2ExactIdentity: true,
+        pm2RestartStable: true,
+      },
+      services: [
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+      ],
+    }));
     fs.writeFileSync(files.smoke, 'all domain smoke checks passed\n');
     fs.writeFileSync(files.privateKey, privateKey.export({ format: 'pem', type: 'pkcs8' }));
     fs.writeFileSync(files.publicKey, publicKey.export({ format: 'pem', type: 'spki' }));
@@ -104,6 +123,7 @@ describe('detached staging attestation', () => {
       '--manifest', files.manifest,
       '--installed-attestation', files.installed,
       '--identity-evidence', files.identity,
+      '--readiness-evidence', files.readiness,
       '--smoke-log', files.smoke,
       '--release-dir', releaseDir,
       '--output', files.request,
@@ -152,5 +172,51 @@ describe('detached staging attestation', () => {
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toContain('not bound to the release manifest');
+  });
+
+  it('rejects staging readiness evidence with a failed restart-stability check', () => {
+    const root = runtimeFixture();
+    const installed = writeInstalled(root);
+    const releaseDir = `/home/dominguez/telegram-hub-bot-staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+    const files = {
+      manifest: path.join(root, 'manifest.json'),
+      installed: path.join(root, '.nexus-installed-runtime.json'),
+      identity: path.join(root, 'identity.json'),
+      readiness: path.join(root, 'readiness.json'),
+      smoke: path.join(root, 'smoke.log'),
+      request: path.join(root, 'request.json'),
+    };
+    fs.writeFileSync(files.manifest, JSON.stringify({
+      schema: 'nexus.release-manifest.v2', payload: { runtimeSha, artifact: { digest: artifactDigest } },
+    }));
+    fs.writeFileSync(files.identity, JSON.stringify({
+      services: [
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+      ],
+    }));
+    fs.writeFileSync(files.readiness, JSON.stringify({
+      schema: 'nexus.release-readiness.v1', role: 'staging', runtimeSha,
+      checks: {
+        nativeBinding: true, sqliteIntegrity: true, sqliteForeignKeys: true,
+        backendHealth: true, authenticatedContentEngine: true, pm2ExactIdentity: true,
+        pm2RestartStable: false,
+      },
+    }));
+    fs.writeFileSync(files.smoke, 'passed\n');
+
+    const result = spawnSync(process.execPath, [stagingScript, 'request',
+      '--root', root,
+      '--manifest', files.manifest,
+      '--installed-attestation', files.installed,
+      '--identity-evidence', files.identity,
+      '--readiness-evidence', files.readiness,
+      '--smoke-log', files.smoke,
+      '--release-dir', releaseDir,
+      '--output', files.request,
+    ], { encoding: 'utf8' });
+    expect(installed.aggregateDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain('staging readiness check failed: pm2RestartStable');
   });
 });

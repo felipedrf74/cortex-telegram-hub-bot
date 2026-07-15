@@ -20,7 +20,7 @@
 #   4. staging-smoke.sh
 #        Existing 17/17 staging-process smoke. Confirms /health,
 #        /api/snapshot, /api/cost-by-domain, etc. on the staging
-#        process. Required precondition for promote-to-prod.
+#        process. Required precondition for exact promotion.
 #   5. training-cross-skill-staging-smoke.sh
 #        Cross-skill training fixture smoke. Confirms training engine
 #        + agenda orchestration + secretary calendar lifecycle stay

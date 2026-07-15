@@ -133,6 +133,10 @@ case "$COMMAND" in
     printf '{"ok":true,"prepared":true,"promotable":false,"reason":"trusted_signer_required","unsignedManifest":"%s"}\n' "$UNSIGNED_MANIFEST"
     ;;
   staging)
+    if ! release_require_clean_tree "$ROOT"; then
+      echo "release:staging requires a clean checkout bound to the signed runtime SHA" >&2
+      exit 1
+    fi
     validate_manifest
     SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
     BASE_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
@@ -142,27 +146,53 @@ case "$COMMAND" in
       exit 0
     fi
 
+    # Use the same lock name as the retired staging path so a stale operator
+    # cannot race exact installation or the PM2/current switch.
+    trap release_cleanup_all_locks EXIT
+    release_acquire_local_lock "$ROOT" "staging-deploy"
+    release_acquire_remote_lock "$SERVER" "$BASE_DIR" "staging-deploy"
+
     # Resolve and prove the executable before creating or switching any link.
     REMOTE_PM2="$(resolve_remote_pm2 "$SERVER")"
     [ -n "$REMOTE_PM2" ] || { echo "remote PM2 binary is unavailable" >&2; exit 1; }
+    scripts/env-parity-check.sh --server "$SERVER" --staging-dir "$BASE_DIR" \
+      --prod-dir "${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
+    ACTIVE_STAGING="$(ssh "$SERVER" bash -s -- "$BASE_DIR" <<'REMOTE_ACTIVE_STAGING'
+set -euo pipefail
+base_dir="$1"
+if [ -L "$base_dir/current" ]; then readlink -f "$base_dir/current"; fi
+REMOTE_ACTIVE_STAGING
+)"
+    case "$ACTIVE_STAGING" in
+      ""|"$BASE_DIR"/releases/*) ;;
+      *) echo "unsafe active staging runtime: $ACTIVE_STAGING" >&2; exit 1 ;;
+    esac
+    if [ "$ACTIVE_STAGING" = "$RELEASE_DIR" ]; then
+      echo "exact staging release is already active; refusing to mutate it: $RELEASE_DIR" >&2
+      exit 75
+    fi
     ssh "$SERVER" "mkdir -p '$RELEASE_DIR' '$BASE_DIR/releases' '$BASE_DIR/data' '$BASE_DIR/logs'"
     rsync -az --delete --chmod=D700,Fu+rw,go-rwx "$BUNDLE/" "$SERVER:$RELEASE_DIR/"
-    ssh "$SERVER" bash -s -- "$RELEASE_DIR" "$BASE_DIR" "$RUNTIME_SHA" "$DIGEST" "$REMOTE_PM2" <<'REMOTE'
+    ssh "$SERVER" bash -s -- "$RELEASE_DIR" "$BASE_DIR" "$RUNTIME_SHA" "$DIGEST" "$REMOTE_PM2" \
+      "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-5}" <<'REMOTE'
 set -euo pipefail
-release_dir="$1"; base_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; pm2_bin="$5"
+release_dir="$1"; base_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; pm2_bin="$5"; stability_seconds="$6"
 [ -x "$pm2_bin" ] || { echo "resolved PM2 binary is no longer executable" >&2; exit 1; }
+[ -x /usr/bin/node ] && [ -x /usr/bin/npm ] || { echo "system Node/npm toolchain is unavailable" >&2; exit 1; }
 ln -sfn "$base_dir/.env" "$release_dir/.env"
 ln -sfn "$base_dir/data" "$release_dir/data"
 ln -sfn "$base_dir/logs" "$release_dir/logs"
 cd "$release_dir"
-npm ci --omit=dev
+PATH=/usr/bin:$PATH /usr/bin/npm ci --omit=dev
 python3.12 -m venv content-engine/.venv
 content-engine/.venv/bin/pip install -q --disable-pip-version-check -r content-engine/requirements.txt
-node scripts/release-installed-tree-attestation.mjs write \
+/usr/bin/node scripts/release-installed-tree-attestation.mjs write \
   --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" >/dev/null
 # No link is mutated until PM2 and both installed dependency trees are proved.
-node scripts/release-installed-tree-attestation.mjs validate \
+/usr/bin/node scripts/release-installed-tree-attestation.mjs validate \
   --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" >/dev/null
+bash "$release_dir/scripts/remote-release-preflight.sh" \
+  --role staging --base-dir "$base_dir" --release-dir "$release_dir" --node-bin /usr/bin/node
 
 previous_runtime="$base_dir"
 if [ -L "$base_dir/current" ]; then
@@ -218,6 +248,10 @@ delete_staging_apps
 env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$release_dir" NEXUS_RELEASE_BASE_DIR="$base_dir" \
   NEXUS_RELEASE_ROLE=staging NEXUS_RELEASE_SHA="$runtime_sha" \
   "$pm2_bin" start "$release_dir/ecosystem.release.config.js" --update-env
+bash "$release_dir/scripts/remote-release-readiness.sh" \
+  --role staging --base-dir "$base_dir" --release-dir "$release_dir" \
+  --runtime-sha "$runtime_sha" --pm2-bin "$pm2_bin" --node-bin /usr/bin/node \
+  --output "$release_dir/.nexus-release-readiness.json" --stability-seconds "$stability_seconds"
 curl --fail --silent --show-error --retry 12 --retry-delay 2 --retry-connrefused --max-time 5 http://127.0.0.1:8201/health >/dev/null
 curl --fail --silent --show-error --retry 12 --retry-delay 2 --retry-connrefused --max-time 5 http://127.0.0.1:8101/health >/dev/null
 "$pm2_bin" jlist | node -e '
@@ -252,11 +286,13 @@ REMOTE
     EVIDENCE_BASE="$ROOT/.local/release/staging/${RUNTIME_SHA}-${DIGEST}"
     mkdir -p "$(dirname "$EVIDENCE_BASE")"
     IDENTITY_EVIDENCE="$EVIDENCE_BASE.identity.json"
+    READINESS_EVIDENCE="$EVIDENCE_BASE.readiness.json"
     INSTALLED_EVIDENCE="$EVIDENCE_BASE.installed.json"
     SMOKE_LOG="$EVIDENCE_BASE.smoke.log"
     REQUEST="$EVIDENCE_BASE.request.json"
     SIGNED="$EVIDENCE_BASE.signed.json"
     ssh "$SERVER" "cat '$RELEASE_DIR/.nexus-pm2-identity.json'" > "$IDENTITY_EVIDENCE"
+    ssh "$SERVER" "cat '$RELEASE_DIR/.nexus-release-readiness.json'" > "$READINESS_EVIDENCE"
     ssh "$SERVER" "cat '$RELEASE_DIR/.nexus-installed-runtime.json'" > "$INSTALLED_EVIDENCE"
     if ! STAGING_PATH="$RELEASE_DIR" NEXUS_SMOKE_EVIDENCE=0 scripts/staging-smoke.sh > "$SMOKE_LOG" 2>&1; then
       sed -n '1,240p' "$SMOKE_LOG" >&2
@@ -267,6 +303,7 @@ REMOTE
       --manifest "$MANIFEST" \
       --installed-attestation "$INSTALLED_EVIDENCE" \
       --identity-evidence "$IDENTITY_EVIDENCE" \
+      --readiness-evidence "$READINESS_EVIDENCE" \
       --smoke-log "$SMOKE_LOG" \
       --release-dir "$RELEASE_DIR" \
       --output "$REQUEST"
@@ -292,14 +329,13 @@ REMOTE
       --release-manifest "$MANIFEST" --require-staging \
       --staging-attestation "$STAGING_ATTESTATION"
     if [ "$DRY_RUN" = true ]; then
-      printf '{"ok":true,"dryRun":true,"manifest":"%s","stagingAttestation":"%s","exactStagedArtifact":true,"legacyFallbackRetained":true}\n' "$MANIFEST" "$STAGING_ATTESTATION"
+      printf '{"ok":true,"dryRun":true,"manifest":"%s","stagingAttestation":"%s","exactStagedArtifact":true,"emergencyRecoveryRetained":true}\n' "$MANIFEST" "$STAGING_ATTESTATION"
       exit 0
     fi
     INSTALLED_DIGEST="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.payload.installedRuntimeDigest);' "$(absolute_path "$STAGING_ATTESTATION")")"
     SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
     STAGING_BASE="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
     PROD_BASE="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
-    # The legacy wrapper remains an explicit, separately invoked fallback only.
     scripts/promote-exact-release.sh \
       "$SERVER" "$STAGING_BASE" "$PROD_BASE" "$RUNTIME_SHA" "$DIGEST" "$VERSION" "$INSTALLED_DIGEST"
     ;;

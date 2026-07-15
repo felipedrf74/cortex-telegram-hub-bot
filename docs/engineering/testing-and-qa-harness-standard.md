@@ -26,7 +26,7 @@ security standards.
 | **Staging smoke** | `scripts/staging-smoke.sh` plus domain smokes | Production-shape checks against staging; count is release-dependent |
 | **iOS XCUITest** | `Nexus HubUITests/` | SwiftUI workflow on simulator/device |
 | **iOS interaction (manual)** | QA report walk-through | Physical-device tap/scroll/navigation responsiveness |
-| **Production health** | exact-artifact promotion readiness | Node `/health`, content-engine `/health`, authenticated `/api/snapshot`, PM2 cwd/SHA, and `current` symlink identity |
+| **Production health** | exact-artifact promotion readiness + smoke evidence | Node `/health`, authenticated `/api/snapshot`, authenticated Content Engine, native SQLite integrity, stable PM2 cwd/SHA, and `current` symlink identity |
 | **Drill** | `__tests__/**` + scripted on staging | Synthetic alerts, identity-scan strict, vi.mock completeness |
 
 ## 2. Test quality bar (must)
@@ -91,6 +91,9 @@ The stable commands are:
 | `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards; files with the `eval` disposition are excluded. |
 | `npm run test:evaluate` | Exactly the files with the `eval` disposition: persona, provider-quality, subjective product, and long-running evaluation corpora. Runs on the scheduled/manual `evaluation.yml` workflow, outside release correctness evidence. |
 | `npm run test:profile` | Full machine-readable timings and inventory under ignored `.local/`. |
+
+These governed selections feed the Git hooks, CI matrix dispatch, and signed
+exact-artifact evidence used by `scripts/release-operator.sh`.
 
 The classifier maps changed files to:
 

@@ -409,7 +409,7 @@ echo "   ✅ Dependencies installed"
 
 # ── 5. Rebuild native modules ───────────────────────
 # Must be rebuilt against system Node (the version PM2 spawns under).
-# Same pattern as deploy.sh — see the comment there for the full rationale.
+# Same guarded remote pattern as exact promotion.
 echo ""
 echo "🔧 Rebuilding native modules..."
 ssh "$SERVER" "

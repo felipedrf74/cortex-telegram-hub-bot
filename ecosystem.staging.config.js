@@ -14,8 +14,8 @@
 //       content-engine          (prod Python)    port 8100
 //       nexus-hub-staging       (staging TS)     port 8201
 //       content-engine-staging  (staging Python) port 8101
-//   - Tests, migrations, hotfixes get verified on staging FIRST. Once green
-//     for ~hour, deploy.sh promotes them to prod.
+//   - Tests, migrations, and hotfixes are verified on staging first. Exact
+//     promotion then copies the already prepared immutable release to prod.
 //
 // Telegram bot token caveat: Telegram allows only ONE long-polling consumer
 // per bot token. Staging needs its OWN bot token (create a second @BotFather
@@ -26,7 +26,7 @@
 //
 // Usage:
 //   pm2 start ecosystem.staging.config.js   # First-time start
-//   pm2 restart nexus-hub-staging           # After ./scripts/deploy-staging.sh
+//   npm run release:staging -- --manifest <path>  # Governed staging switch
 //   pm2 logs nexus-hub-staging              # Tail staging logs
 
 module.exports = {
@@ -36,7 +36,7 @@ module.exports = {
       script: 'dist/index.js',
       // CWD points at the staging install — keep this as a string (not
       // __dirname) because this file gets copied alongside the staging
-      // dist/ via deploy-staging.sh, and we want it to ALWAYS resolve
+      // release tree, and we want it to ALWAYS resolve
       // the staging path regardless of where pm2 was invoked from.
       cwd: '/home/dominguez/telegram-hub-bot-staging',
       exec_mode: 'fork',

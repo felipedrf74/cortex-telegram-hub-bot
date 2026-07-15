@@ -21,7 +21,7 @@ export const CANNOT_SKIP_GATE_NAMES = Object.freeze([
   'migration-rollback-review',
   'irreversible-migration-manual-approval',
   'science-policy-version-check',
-  'deploy-script-promotion-rehearsal',
+  'exact-release-promotion-rehearsal',
   'hook-validation-on-feature-branch',
   'ci-workflow-validation-on-PR',
   'test-config-mock-completeness-audit',
@@ -175,7 +175,7 @@ export function classifyChangedFiles({
     iosAuth: false,
     iosTest: false,
     iosUi: false,
-    deployScript: false,
+    releaseOperator: false,
     hook: false,
     ciWorkflow: false,
     testConfig: false,
@@ -290,7 +290,7 @@ export function classifyChangedFiles({
   googleDriveTenantLeak = has(/^src\/services\/(?:google-drive|google-auth)\.ts$|^__tests__\/security\/google-drive-tenant-leak\.test\.ts$|^scripts\/cleanup-tainted-google-drive-sessions\.mjs$/);
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
-  flags.deployScript = has(/^scripts\/(?:deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$/);
+  flags.releaseOperator = has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-start-sanitized-pm2|rollback|restore)\.sh$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
@@ -314,7 +314,7 @@ export function classifyChangedFiles({
   flags.healthIntegration = has(/^src\/services\/(?:garmin|apple-health|wearable|readiness|body-battery)|^src\/api\/routes\/(?:wearable|health-data|garmin-auth)|^__tests__\/(?:services\/garmin-|services\/apple-health-|services\/integration-health-|api\/wearable-|api\/health-data-|api\/garmin-auth-|portal\/integration-health-)/);
   flags.rateLimit = has(/^src\/(?:api\/middleware\/rate-limit|services\/rate-limiter|api\/middleware\/auth-rate-limit)|^__tests__\/api\/rate-limiter/);
   flags.audit = has(/^src\/(?:services\/audit-trail|api\/routes\/audit-trail|portal\/admin-audit|portal\/admin-data-routes)|^__tests__\/(?:services\/audit-trail|api\/authenticated-support-routes-scope|portal\/portal-admin-audit|portal\/portal-admin-data-routes|portal\/portal-admin-data-isolation)/);
-  flags.deployConfig ||= has(/(^|\/)ecosystem(?:\.staging)?\.config\.js$|^src\/config\.ts$|^__tests__\/config|^__tests__\/scripts\/deploy/);
+  flags.deployConfig ||= has(/(^|\/)ecosystem(?:\.staging)?\.config\.js$|^src\/config\.ts$|^__tests__\/config|^__tests__\/scripts\/(?:release-runtime-safeguards|exact-promotion-operational-safety)/);
   flags.eventBackbone = has(/^src\/services\/(?:event-outbox|background-job-queue|product-decision-log|app-summary-read-models|delta-sync|resource-budgets|event-backbone-worker)|^src\/api\/routes\/(?:summaries|sync)|^migrations\/[0-9]+_event_backbone|^__tests__\/(?:services\/event-backbone|api\/event-backbone)/);
   if (has(/^src\/services\/chat\/|^src\/services\/chat-reasoning|^src\/api\/routes\/chat-message-routes|^__tests__\/services\/chat-reasoning|^__tests__\/api\/chat-routes/)) {
     flags.chatReasoning = true;
@@ -365,7 +365,7 @@ export function classifyChangedFiles({
   addGate(flags.migration, 'migration-rollback-review');
   addGate(flags.irreversibleMigration, 'irreversible-migration-manual-approval');
   addGate(sciencePolicyJson, 'science-policy-version-check');
-  addGate(flags.deployScript, 'deploy-script-promotion-rehearsal');
+  addGate(flags.releaseOperator, 'exact-release-promotion-rehearsal');
   addGate(flags.hook, 'hook-validation-on-feature-branch');
   addGate(flags.ciWorkflow, 'ci-workflow-validation-on-PR');
   addGate(flags.testConfig, 'test-config-mock-completeness-audit');
@@ -406,7 +406,8 @@ export function classifyChangedFiles({
   if (flags.testConfig) tiers.push('T3-recommended');
   if (flags.packageJson) tiers.push('T3-recommended');
   if (flags.fullSuiteTrigger) tiers.push('T3-required');
-  if (flags.backendSrc || flags.migration || flags.pythonEngine || flags.deployConfig) tiers.push('T4');
+  if (flags.backendSrc || flags.migration || flags.pythonEngine || flags.deployConfig
+    || flags.releaseOperator) tiers.push('T4');
   tiers.push('T5-on-promote', 'T6-postdeploy');
 
   let vitestMode = 'skip';
@@ -416,7 +417,7 @@ export function classifyChangedFiles({
   if (nonDoc) {
     if (flags.testConfig || flags.packageJson || flags.highFanIn) {
       vitestMode = 'full';
-    } else if (flags.backendSrc || flags.backendTest || flags.deployConfig) {
+    } else if (flags.backendSrc || flags.backendTest || flags.deployConfig || flags.releaseOperator) {
       vitestMode = 'focused';
       addVitest(flags.training, '__tests__/services/training-*.test.ts', '__tests__/services/coach-kernel-*.test.ts', '__tests__/api/training-*.test.ts', '__tests__/integration/training-plan-create-cycle.test.ts');
       addVitest(flags.trainingEntitlement, '__tests__/security/training-routes-entitlement.test.ts');
@@ -456,6 +457,16 @@ export function classifyChangedFiles({
       addVitest(garminAppleHealthCascade, '__tests__/security/garmin-tenant-leak-and-apple-health-cascade.test.ts');
       addVitest(googleDriveTenantLeak, '__tests__/security/google-drive-tenant-leak.test.ts');
       addVitest(registryRealEval, '__tests__/services/registry-real-eval-gates.test.ts', '__tests__/services/chat-action-registry-shadow-parity.test.ts', '__tests__/services/chat-action-registry-completeness.test.ts', '__tests__/services/registry-driven-eval-scenarios.test.ts', '__tests__/services/registry-real-eval-scoring.test.ts');
+      addVitest(
+        flags.releaseOperator,
+        '__tests__/scripts/release-runtime-safeguards.test.ts',
+        '__tests__/scripts/exact-promotion-operational-safety.test.ts',
+        '__tests__/scripts/release-exact-attestations.test.ts',
+        '__tests__/scripts/release-backup-runtime-artifact.test.ts',
+        '__tests__/scripts/rollback-versioned-runtime.test.ts',
+        '__tests__/scripts/pm2-sanitized-start.test.ts',
+        '__tests__/scripts/release-evidence-container.test.ts',
+      );
       if (flags.contentPromptCleanliness) pytestGlobs.push('content-engine/tests/test_prompt_cleanliness.py');
       if (vitestGlobs.length === 0) vitestMode = 'changed-only';
     }
@@ -485,7 +496,8 @@ export function classifyChangedFiles({
   }
 
   const smokeDomains = [];
-  const stagingGeneric = flags.backendSrc || flags.migration || flags.pythonEngine || flags.deployConfig || flags.runtimeInfra;
+  const stagingGeneric = flags.backendSrc || flags.migration || flags.pythonEngine || flags.deployConfig
+    || flags.runtimeInfra || flags.releaseOperator;
   if (flags.training) smokeDomains.push('smoke:training-cross-skill:staging');
   if (flags.calendar) smokeDomains.push('smoke:training-calendar:staging');
   if (flags.cooking) smokeDomains.push('smoke:cooking:portal');
@@ -494,7 +506,7 @@ export function classifyChangedFiles({
   flags.docsOnly = docsOnly;
   const skipReason = vitestMode === 'skip'
     ? (docsOnly
-      ? 'docs-only diff; no source/test/config/hook/migration/deploy file in scope'
+      ? 'docs-only diff; no source/test/config/hook/migration/release-operator file in scope'
       : 'no Vitest-relevant files in scope')
     : null;
 

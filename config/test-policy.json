@@ -38,7 +38,6 @@
         "__tests__/scripts/release-*.test.ts",
         "__tests__/scripts/promote-*.test.ts",
         "__tests__/scripts/rollback-*.test.ts",
-        "__tests__/scripts/deploy-*.test.ts",
         "__tests__/scripts/changed-area-classifier.test.ts",
         "__tests__/scripts/ci-required-test-sharding.test.ts",
         "__tests__/scripts/runtime-manifests.test.ts",
@@ -358,18 +357,101 @@
       "reason": "Replaced the old aggregate dependency assertion with exact mutation, coverage, and pushed-range fail-closed contracts."
     },
     {
-      "test": "__tests__/scripts/promote-deploy-rollback.test.ts",
+      "test": "__tests__/scripts/exact-promotion-operational-safety.test.ts",
       "replacementTests": [
-        "__tests__/scripts/promote-deploy-rollback.test.ts"
+        "__tests__/scripts/exact-promotion-operational-safety.test.ts"
       ],
       "sources": [
-        "scripts/deploy.sh",
-        "scripts/deploy-staging.sh",
-        "scripts/promote-to-prod.sh",
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Removed assertions owned only by retired repository-sync wrappers while expanding the retained suite to prove staging and production locks, strict preflight, readiness evidence, and recovery ordering in the exact-artifact operator path."
+    },
+    {
+      "test": "__tests__/scripts/release-evidence-container.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-evidence-container.test.ts"
+      ],
+      "sources": [
+        ".github/workflows/release-candidate-evidence.yml",
+        "scripts/release-evidence-container.sh",
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Removed the obsolete promote-to-prod wrapper exclusion and transferred ownership to positive exact-artifact operator, environment parity, strict preflight, readiness, attestation, and rollback contracts in the retained evidence suite."
+    },
+    {
+      "test": "__tests__/scripts/deploy-shell-hardening.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-runtime-safeguards.test.ts",
+        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
+        "__tests__/scripts/release-artifact-manifest.test.ts"
+      ],
+      "sources": [
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Replaced broad source-string shell assertions with compact behavioral preflight, readiness, immutable artifact, and exact promotion tests."
+    },
+    {
+      "test": "__tests__/scripts/promote-deploy-rollback.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
+        "__tests__/scripts/release-backup-runtime-artifact.test.ts",
+        "__tests__/scripts/rollback-versioned-runtime.test.ts",
+        "__tests__/scripts/pm2-sanitized-start.test.ts"
+      ],
+      "sources": [
+        "scripts/promote-exact-release.sh",
+        "scripts/remote-prepare-release-backup.sh",
+        "scripts/remote-create-release-backup.sh",
         "scripts/rollback.sh",
+        "scripts/restore.sh",
         "scripts/remote-start-sanitized-pm2.sh"
       ],
-      "reason": "Replaced obsolete backup and PM2 copy assertions with exact immutable release, rollback, and sanitized-start behavior checks."
+      "reason": "Retired the wrapper-specific rollback suite after exact backup restoration, versioned rollback, and sanitized PM2 tests took ownership."
+    },
+    {
+      "test": "__tests__/scripts/release-deploy-dry-runs.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-runtime-safeguards.test.ts",
+        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
+        "__tests__/scripts/release-evidence-container.test.ts",
+        "__tests__/scripts/release-exact-attestations.test.ts"
+      ],
+      "sources": [
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/release-staging-attestation.mjs",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Replaced wrapper dry-run snapshots with exact operator, signed attestation, remote safeguard, and operational harness behavior."
+    },
+    {
+      "test": "__tests__/security/deploy-script-security.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-runtime-safeguards.test.ts",
+        "__tests__/scripts/exact-promotion-operational-safety.test.ts",
+        "__tests__/scripts/release-exact-attestations.test.ts"
+      ],
+      "sources": [
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Moved release security ownership from retired repository-sync wrappers to behavioral tamper, credential, identity, and signed-evidence checks."
     },
     {
       "test": "__tests__/scripts/risk-gate.test.ts",

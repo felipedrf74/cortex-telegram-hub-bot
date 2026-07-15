@@ -42,7 +42,7 @@
     "exactArtifactPath": "proven",
     "stagingRehearsals": 2,
     "ownerAuthorizedProductionReleases": 2,
-    "legacyWrappers": "fallback_available_pending_dependency_cleanup",
+    "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.219",
       "runtimeSha": "aeb5e9df57f6c9d72442093d6f93cc720694e9ee",
