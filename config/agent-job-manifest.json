@@ -1,6 +1,6 @@
 {
   "schema": "nexus.agent-job-manifest.v3",
-  "version": "2026-07-15.4",
+  "version": "2026-07-15.5",
   "jobs": [
     {
       "id": "amazon_collection",
@@ -47,9 +47,19 @@
         "enforcement": "runtime-fingerprint",
         "evidence": "prompt-config-eval fingerprint reuses prior valid score",
         "tests": [
-          "__tests__/services/autoresearch-preflight.test.ts"
+          "__tests__/services/autoresearch-preflight.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "platform",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -703,9 +713,19 @@
         "evidence": "rollout-independent seven-day pending inventory requests only missing output and skips when full",
         "tests": [
           "__tests__/services/scheduler-user-scope.test.ts",
-          "__tests__/services/content-workflow-user-scope.test.ts"
+          "__tests__/services/content-workflow-user-scope.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -1164,9 +1184,19 @@
         "evidence": "rollout-independent seven-day pending inventory requests only missing output and skips when full",
         "tests": [
           "__tests__/services/scheduler-user-scope.test.ts",
-          "__tests__/services/content-workflow-user-scope.test.ts"
+          "__tests__/services/content-workflow-user-scope.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -1215,9 +1245,19 @@
         "evidence": "rollout-independent seven-day pending inventory requests only missing output and skips when full",
         "tests": [
           "__tests__/services/scheduler-user-scope.test.ts",
-          "__tests__/services/content-workflow-user-scope.test.ts"
+          "__tests__/services/content-workflow-user-scope.test.ts",
+          "__tests__/services/agent-job-runner.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {

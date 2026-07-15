@@ -104,6 +104,12 @@ export interface AutoresearchRunOptions {
    * apply: evaluate mutations and write prompts; forbidden in production.
    */
   mode?: AutoresearchMode;
+  /**
+   * Shared governed runner correlation id. Scheduled callers pass this so
+   * every provider usage row is bound to the durable agent_job_runs audit row.
+   * Manual callers omit it and retain the existing generated id behavior.
+   */
+  runId?: string;
 }
 
 export type AutoresearchMode = 'evaluate_only' | 'propose' | 'apply';
@@ -116,7 +122,7 @@ type AutoresearchBudgetContext = {
 
 function createAutoresearchBudgetContext(
   target: EvalTarget,
-  runId = crypto.randomUUID(),
+  runId: string = crypto.randomUUID(),
 ): AutoresearchBudgetContext {
   const workload = `autoresearch_${target.id}`;
   return {
@@ -654,7 +660,10 @@ export async function runAutoresearch(
     throw new Error('AUTORESEARCH_APPLY_DISABLED_IN_PRODUCTION');
   }
 
-  const runId = crypto.randomUUID();
+  const runId = options?.runId?.trim() || crypto.randomUUID();
+  if (runId.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(runId)) {
+    throw new Error('INVALID_AUTORESEARCH_RUN_ID');
+  }
   const budgetContext = createAutoresearchBudgetContext(target, runId);
   const rounds: RoundResult[] = [];
   const startTime = Date.now();

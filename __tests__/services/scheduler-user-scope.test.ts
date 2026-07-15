@@ -160,6 +160,37 @@ vi.mock('../../src/services/content-workflow', () => ({
   generateWeeklyPackage: (...args: unknown[]) => mockGenerateWeeklyPackage(...args),
   getMissingScheduledInventoryCount: (...args: unknown[]) => mockGetMissingScheduledInventoryCount(...args),
 }));
+vi.mock('../../src/services/agent-job-runner', () => ({
+  AgentJobOutputValidationError: class AgentJobOutputValidationError extends Error {},
+  runGovernedAgentJob: vi.fn(async (adapter: any, scope: { tenantId: number; userId: number }) => {
+    const prepared = await adapter.prepare(scope);
+    if (prepared.kind === 'skip') {
+      return {
+        jobId: adapter.jobId,
+        runId: 'scheduler-test-skip',
+        scope,
+        status: prepared.status,
+        providerCalls: 0,
+        costUsd: 0,
+      };
+    }
+    const output = await adapter.execute({
+      scope,
+      input: prepared.input,
+      runId: 'scheduler-test-run',
+      attempt: 1,
+    });
+    return {
+      jobId: adapter.jobId,
+      runId: 'scheduler-test-run',
+      scope,
+      status: 'success',
+      providerCalls: 1,
+      costUsd: 0,
+      output,
+    };
+  }),
+}));
 vi.mock('../../src/services/ai-automation-policy', () => ({
   recordAiAutomationEligibilitySkip: vi.fn(),
   resolveAiAutomationEligibility: (...args: unknown[]) => mockResolveAiAutomationEligibility(...args),
@@ -439,13 +470,18 @@ describe('scheduler tenant scoping', () => {
 
   it('pins the production autoresearch schedule to evaluate_only', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
+    const adapterSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/services/scheduled-agent-jobs.ts'),
+      'utf8',
+    );
     const cronStart = source.indexOf("cron.schedule('19 1 * * 0'");
     const cronEnd = source.indexOf('// ── Database Backup', cronStart);
     const scheduledBlock = source.slice(cronStart, cronEnd);
     expect(cronStart).toBeGreaterThan(-1);
-    expect(scheduledBlock).toContain("mode: 'evaluate_only'");
-    expect(scheduledBlock).not.toContain("mode: 'apply'");
-    expect(scheduledBlock).not.toContain("mode: 'propose'");
+    expect(scheduledBlock).toContain('runScheduledAutoresearch()');
+    expect(adapterSource).toContain("{ mode: 'evaluate_only', runId }");
+    expect(adapterSource).not.toContain("mode: 'apply'");
+    expect(adapterSource).not.toContain("mode: 'propose'");
   });
 
   it('continues processing later reminders when one reminder delivery fails', async () => {
@@ -1240,6 +1276,7 @@ describe('scheduler tenant scoping', () => {
     }, {
       requestSource: 'automation',
       jobName: 'friday_weekly',
+      runId: 'scheduler-test-run',
     });
   });
 

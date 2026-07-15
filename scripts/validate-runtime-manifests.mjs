@@ -115,6 +115,27 @@ for (const job of jobManifest.jobs) {
       if (!fs.existsSync(path.join(root, testPath))) errors.push(`job test evidence is missing: ${job.id}/${testPath}`);
     }
   }
+  if (job.sharedRunner) {
+    if (job.providerUsage !== 'governed-provider-capable'
+        || job.sharedRunner.implementation !== 'governed-v1'
+        || !['platform', 'tenant-user'].includes(job.sharedRunner.scope)
+        || !Number.isSafeInteger(job.sharedRunner.maxAttempts)
+        || job.sharedRunner.maxAttempts < 1
+        || job.sharedRunner.maxAttempts > 5
+        || !Number.isSafeInteger(job.sharedRunner.retryBackoffMs)
+        || job.sharedRunner.retryBackoffMs < 0
+        || job.sharedRunner.retryBackoffMs > 60_000
+        || job.sharedRunner.auditStore !== 'agent_job_runs'
+        || job.sharedRunner.providerAttribution !== 'api_usage-run-id'
+        || job.sharedRunner.outputValidation !== 'adapter-required') {
+      errors.push(`job has invalid shared runner policy: ${job.id}`);
+    }
+  }
+}
+const sharedRunnerJobIds = jobManifest.jobs.filter((job) => job.sharedRunner).map((job) => job.id).sort();
+const expectedSharedRunnerJobIds = ['autoresearch', 'friday_weekly', 'thursday_youtube', 'tuesday_reels'];
+if (JSON.stringify(sharedRunnerJobIds) !== JSON.stringify(expectedSharedRunnerJobIds)) {
+  errors.push(`shared runner job migration drift: expected=${expectedSharedRunnerJobIds.join(',')} actual=${sharedRunnerJobIds.join(',')}`);
 }
 
 const handlerIdentity = (entry, kind) => kind === 'event' ? entry.eventType : `${entry.jobType}:${entry.idempotent}`;
@@ -206,6 +227,7 @@ console.log(JSON.stringify({
   jobs: runtimeJobIds.length,
   scheduledJobs: scheduledJobIds.length,
   providerCapableJobs: jobManifest.jobs.filter((job) => job.providerUsage === 'governed-provider-capable').length,
+  sharedRunnerJobs: sharedRunnerJobIds.length,
   eventHandlers: jobManifest.eventHandlers.length,
   directEventEffects: directEventEffects.length,
   queuedJobHandlers: jobManifest.queuedJobHandlers.length,

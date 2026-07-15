@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-15.4';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-07-15.5';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -46,6 +46,19 @@ const providerCapable = (policyOwner, tenantScope, inputFingerprint, overrides =
     unchangedInputProviderCalls: 0,
   },
   ...overrides,
+});
+
+const sharedGovernedRunner = (scope, overrides = {}) => ({
+  sharedRunner: {
+    implementation: 'governed-v1',
+    scope,
+    maxAttempts: 1,
+    retryBackoffMs: 0,
+    auditStore: 'agent_job_runs',
+    providerAttribution: 'api_usage-run-id',
+    outputValidation: 'adapter-required',
+    ...overrides,
+  },
 });
 
 const noProviderHandler = (policyOwner, tenantScope, overrides = {}) => ({
@@ -94,8 +107,15 @@ export const JOB_POLICIES = Object.freeze({
   autoresearch: providerCapable('ai-quality', 'platform-evaluation-target', {
     enforcement: 'runtime-fingerprint',
     evidence: 'prompt-config-eval fingerprint reuses prior valid score',
-    tests: ['__tests__/services/autoresearch-preflight.test.ts'],
-  }, { providerRouting: 'gemini-or-openai-primary-anthropic-fallback', costPolicy: 'evaluate-only-target-budget' }),
+    tests: [
+      '__tests__/services/autoresearch-preflight.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'gemini-or-openai-primary-anthropic-fallback',
+    costPolicy: 'evaluate-only-target-budget',
+    ...sharedGovernedRunner('platform'),
+  }),
   channel_relearn: providerCapable('content', 'eligible-content-tenant-and-reviewed-platform-scope', {
     enforcement: 'runtime-fingerprint',
     evidence: 'channel video fingerprint skips analysis and synthesis when unchanged',
@@ -138,8 +158,16 @@ export const JOB_POLICIES = Object.freeze({
   friday_weekly: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
-    tests: ['__tests__/services/scheduler-user-scope.test.ts', '__tests__/services/content-workflow-user-scope.test.ts'],
-  }, { providerRouting: 'grounded-provider-fallback-route', costPolicy: 'content-automation-budget' }),
+    tests: [
+      '__tests__/services/scheduler-user-scope.test.ts',
+      '__tests__/services/content-workflow-user-scope.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'grounded-provider-fallback-route',
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user'),
+  }),
   garmin_coach: providerCapable('training', 'report-ledger-active-tenant', {
     enforcement: 'report-schedule-ledger',
     evidence: 'tenant/local-date coach report claim prevents duplicate scheduled analysis',
@@ -169,14 +197,30 @@ export const JOB_POLICIES = Object.freeze({
   thursday_youtube: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
-    tests: ['__tests__/services/scheduler-user-scope.test.ts', '__tests__/services/content-workflow-user-scope.test.ts'],
-  }, { providerRouting: 'grounded-provider-fallback-route', costPolicy: 'content-automation-budget' }),
+    tests: [
+      '__tests__/services/scheduler-user-scope.test.ts',
+      '__tests__/services/content-workflow-user-scope.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'grounded-provider-fallback-route',
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user'),
+  }),
   training_plan_adjust: noProvider('training', 'active-plan-tenant-loop', { outputPolicy: 'deterministic-threshold-adjustment' }),
   tuesday_reels: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',
-    tests: ['__tests__/services/scheduler-user-scope.test.ts', '__tests__/services/content-workflow-user-scope.test.ts'],
-  }, { providerRouting: 'grounded-provider-fallback-route', costPolicy: 'content-automation-budget' }),
+    tests: [
+      '__tests__/services/scheduler-user-scope.test.ts',
+      '__tests__/services/content-workflow-user-scope.test.ts',
+      '__tests__/services/agent-job-runner.test.ts',
+    ],
+  }, {
+    providerRouting: 'grounded-provider-fallback-route',
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user'),
+  }),
   uber_collection: noProvider('finance', 'owner-integration-profile', { retryPolicy: 'collector-bounded-retry' }),
   voice_evolution: providerCapable('content', 'eligible-content-tenant-loop', {
     enforcement: 'runtime-fingerprint',

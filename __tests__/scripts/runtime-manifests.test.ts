@@ -30,6 +30,7 @@ describe('runtime manifests', () => {
       jobManifestSchema: 'nexus.agent-job-manifest.v3',
       generatedParity: true,
       providerCapableJobs: 8,
+      sharedRunnerJobs: 4,
       eventHandlers: 1,
       directEventEffects: 2,
       queuedJobHandlers: 7,
@@ -103,6 +104,31 @@ describe('runtime manifests', () => {
         'gemini-primary-openai-fallback-anthropic-gated-last-resort',
       );
     }
+    expect(manifest.jobs
+      .filter((job: any) => job.sharedRunner)
+      .map((job: any) => job.id)
+      .sort()).toEqual([
+      'autoresearch',
+      'friday_weekly',
+      'thursday_youtube',
+      'tuesday_reels',
+    ]);
+    for (const id of ['friday_weekly', 'thursday_youtube', 'tuesday_reels']) {
+      expect(jobsById[id].sharedRunner).toEqual({
+        implementation: 'governed-v1',
+        scope: 'tenant-user',
+        maxAttempts: 1,
+        retryBackoffMs: 0,
+        auditStore: 'agent_job_runs',
+        providerAttribution: 'api_usage-run-id',
+        outputValidation: 'adapter-required',
+      });
+    }
+    expect(jobsById.autoresearch.sharedRunner).toMatchObject({
+      implementation: 'governed-v1',
+      scope: 'platform',
+      maxAttempts: 1,
+    });
   });
 
   it('fails closed when runtime registration drifts from the exact manifest identity', () => {

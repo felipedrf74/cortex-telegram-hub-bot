@@ -34,10 +34,18 @@ import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
 import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
 import {
-  generateAndStoreTopicCandidates,
-  generateWeeklyPackage,
-  getMissingScheduledInventoryCount,
-} from './content-workflow';
+  runContentTopicCronForActiveUsers,
+  runScheduledAutoresearch,
+  runWeeklyContentPackageCronForActiveUsers,
+} from './scheduled-agent-jobs';
+export {
+  runContentTopicCronForActiveUsers,
+  runWeeklyContentPackageCronForActiveUsers,
+} from './scheduled-agent-jobs';
+import {
+  listActiveAgentJobTenantTargets as getActiveUserTargets,
+  type AgentJobTenantTarget,
+} from './agent-job-targets';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
@@ -45,7 +53,6 @@ import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
-import { runAutoresearch, getScheduledTarget } from './autoresearch';
 import {
   releaseFreshReportScheduleClaim,
   resolveDueReportTargets,
@@ -105,10 +112,7 @@ import {
 import { AiBudgetError } from './cost-guardrail';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 
-interface ActiveUserTarget {
-  tenantId: number;
-  telegramId: number | null;
-}
+type ActiveUserTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'telegramId'>;
 
 function registerJob(
   id: string,
@@ -229,230 +233,6 @@ export { getActiveUserIds, getOwnerUserIds };
 function getOwnerTenantIds(): number[] {
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.tenantId] : [];
-}
-
-function getActiveUserTargets(): ActiveUserTarget[] {
-  try {
-    const db = getDb();
-    const rows = db.prepare(
-      "SELECT id, telegram_id FROM users WHERE status = 'active'"
-    ).all() as { id: number; telegram_id: number | null }[];
-    if (rows.length > 0) {
-      return rows.map((row) => ({
-        tenantId: row.id,
-        telegramId: row.telegram_id ?? null,
-      }));
-    }
-  } catch (err) {
-    logUnexpectedTenantQueryError('getActiveUserTargets', err);
-  }
-
-  const ownerTarget = getOwnerBootstrapTarget();
-  return ownerTarget ? [ownerTarget] : [];
-}
-
-// Content topic generation only pays for itself when someone consumes the
-// output. Measured engagement includes a review, script generation, or
-// conversion in the last 30 days. First-time users (no candidates
-// ever) always get an initial batch. This is a deterministic consumption proxy;
-// downstream publishing/conversion instrumentation is still incomplete.
-// A local/test-only escape hatch supports fixtures and development. Production
-// always enforces the consumption gate so an environment typo cannot restore
-// unbounded candidate generation.
-function shouldGenerateContentTopicsForUser(
-  userId: number,
-  sourceJob: string,
-  initialTargets: ReadonlyArray<{ format: 'reel' | 'youtube'; targetCount: number }>,
-): boolean {
-  if (!isPaidAiCostControlsEnforcementEnabled()) return true;
-  const localBypass = process.env.CONTENT_CRON_ENGAGEMENT_GATE === 'off'
-    && ['development', 'test'].includes(process.env.NODE_ENV ?? '');
-  if (localBypass) return true;
-  try {
-    const db = getDb();
-    const engaged = db.prepare(`
-      SELECT (
-        EXISTS(
-          SELECT 1 FROM content_topic_feedback
-           WHERE user_id = ?
-             AND COALESCE(tenant_id, user_id) = ?
-             AND (
-               (sentiment != 'pending' AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days'))
-               OR (COALESCE(script_generated, 0) = 1 AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days'))
-               OR converted_at >= datetime('now', '-30 days')
-             )
-        )
-        OR EXISTS(
-          SELECT 1 FROM content_scripts
-           WHERE user_id = ?
-             AND COALESCE(tenant_id, user_id) = ?
-             AND COALESCE(scope_status, 'active') = 'active'
-             AND created_at >= datetime('now', '-30 days')
-        )
-      ) AS engaged
-    `).get(userId, userId, userId, userId) as { engaged: number };
-    if (engaged.engaged) return true;
-    const historicalCount = db.prepare(`
-      SELECT COUNT(*) AS count
-        FROM content_topic_feedback
-       WHERE user_id = ?
-         AND COALESCE(tenant_id, user_id) = ?
-         AND source_job = ?
-         AND format = ?
-    `);
-    const initialInventoryComplete = initialTargets.every((target) => {
-      const row = historicalCount.get(
-        userId,
-        userId,
-        sourceJob,
-        target.format,
-      ) as { count: number };
-      return Number(row.count || 0) >= target.targetCount;
-    });
-    if (!initialInventoryComplete) return true;
-    logger.info(
-      { userId, sourceJob },
-      '[scheduler] content topic generation skipped: no Content-surface engagement in 30 days',
-    );
-    return false;
-  } catch (err) {
-    logger.warn({ err, userId, sourceJob }, '[scheduler] content engagement gate failed closed');
-    return false;
-  }
-}
-
-export async function runContentTopicCronForActiveUsers(
-  format: 'reel' | 'youtube',
-  sourceJob: 'tuesday_reels' | 'thursday_youtube' | string,
-): Promise<void> {
-  for (const target of getActiveUserTargets()) {
-    const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
-    if (!eligibility.allowed) {
-      recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
-        jobName: sourceJob,
-        baseCategory: `content_workflow_${format}`,
-      });
-      logger.debug(
-        {
-          userId: target.tenantId,
-          sourceJob,
-          reason: eligibility.reason,
-          entitlementSource: eligibility.entitlement.source,
-        },
-        '[scheduler] content automation skipped: user is not eligible',
-      );
-      continue;
-    }
-    let missingCount: number;
-    try {
-      // Output idempotency is a provider-call invariant, not a billing-rollout
-      // behavior. Keep it active in both observe-only and enforcing modes.
-      missingCount = getMissingScheduledInventoryCount(target.tenantId, {
-        format,
-        sourceJob,
-        targetCount: 5,
-        windowDays: 7,
-      });
-    } catch (err) {
-      logger.warn(
-        { err, userId: target.tenantId, sourceJob, format },
-        '[scheduler] content topic generation skipped: inventory gate unavailable',
-      );
-      continue;
-    }
-    if (missingCount === 0) {
-      logger.info(
-        { userId: target.tenantId, sourceJob, format },
-        '[scheduler] content topic generation skipped: seven-day pending inventory is full',
-      );
-      continue;
-    }
-    if (!shouldGenerateContentTopicsForUser(target.tenantId, sourceJob, [{ format, targetCount: 5 }])) continue;
-    try {
-      await runWithContext({ source: `cron:${sourceJob}`, userId: target.tenantId }, async () => {
-        await generateAndStoreTopicCandidates(
-          target.tenantId,
-          format,
-          sourceJob,
-          target.tenantId,
-          missingCount,
-          { requestSource: 'automation', jobName: sourceJob },
-        );
-      });
-    } catch (err) {
-      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId, sourceJob, format }, 'Content topic cron failed');
-    }
-  }
-}
-
-export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
-  for (const target of getActiveUserTargets()) {
-    const eligibility = resolveAiAutomationEligibility(target.tenantId, 'content');
-    if (!eligibility.allowed) {
-      recordAiAutomationEligibilitySkip(target.tenantId, eligibility, {
-        jobName: 'friday_weekly',
-        baseCategory: 'content_workflow_weekly',
-      });
-      logger.debug(
-        {
-          userId: target.tenantId,
-          sourceJob: 'friday_weekly',
-          reason: eligibility.reason,
-          entitlementSource: eligibility.entitlement.source,
-        },
-        '[scheduler] Friday package skipped: user is not eligible for Content automation',
-      );
-      continue;
-    }
-    let missingReels: number;
-    let missingYoutube: number;
-    try {
-      // This idempotency gate is unconditional so an unchanged scheduled input
-      // cannot spend provider tokens while paid-AI controls are observe-only.
-      missingReels = getMissingScheduledInventoryCount(target.tenantId, {
-        format: 'reel',
-        sourceJob: 'friday_weekly',
-        targetCount: 4,
-        windowDays: 7,
-      });
-      missingYoutube = getMissingScheduledInventoryCount(target.tenantId, {
-        format: 'youtube',
-        sourceJob: 'friday_weekly',
-        targetCount: 2,
-        windowDays: 7,
-      });
-    } catch (err) {
-      logger.warn(
-        { err, userId: target.tenantId, sourceJob: 'friday_weekly' },
-        '[scheduler] Friday package skipped: inventory gate unavailable',
-      );
-      continue;
-    }
-    if (missingReels === 0 && missingYoutube === 0) {
-      logger.info(
-        { userId: target.tenantId, sourceJob: 'friday_weekly' },
-        '[scheduler] Friday package skipped: seven-day pending inventory is full',
-      );
-      continue;
-    }
-    if (!shouldGenerateContentTopicsForUser(target.tenantId, 'friday_weekly', [
-      { format: 'reel', targetCount: 4 },
-      { format: 'youtube', targetCount: 2 },
-    ])) continue;
-    try {
-      await runWithContext({ source: 'cron:friday_weekly', userId: target.tenantId }, async () => {
-        await generateWeeklyPackage(target.tenantId, target.tenantId, {
-          reels: missingReels,
-          youtube: missingYoutube,
-        }, {
-          requestSource: 'automation',
-          jobName: 'friday_weekly',
-        });
-      });
-    } catch (err) {
-      logger.error({ err, userId: target.tenantId, tenantId: target.tenantId }, 'Friday weekly content package failed');
-    }
-  }
 }
 
 /**
@@ -2629,33 +2409,7 @@ export function startScheduler(): void {
 
   // ── Autoresearch (Sunday 01:19 — rotates through targets) ────────
   cron.schedule('19 1 * * 0', wrapJob('autoresearch', async () => {
-    const targetId = getScheduledTarget();
-    // GAP-CAL-1 fix: progress lines go to structured logs; the run summary
-    // goes to the operator-alert channel (this is ops telemetry, not a
-    // user-facing product notification).
-    const onProgress = async (msg: string) => {
-      logger.info({ targetId, msg }, '[scheduler] autoresearch progress');
-    };
-    try {
-      const result = await runAutoresearch(targetId, 1, true, onProgress, {
-        mode: 'evaluate_only',
-      });
-      const kept = result.rounds.filter(r => r.decision === 'kept').length;
-      recordOperatorAlert({
-        severity: 'info',
-        source: 'autoresearch',
-        dedupeKey: `autoresearch:completed:${targetId}:${new Date().toISOString().slice(0, 10)}`,
-        title: `Autoresearch evaluated: ${targetId}`,
-        detail: result.skipped === 'skipped_unchanged'
-          ? `Skipped unchanged prompt/eval fingerprint with stored score ${(result.finalScore * 100).toFixed(1)}% (0 model calls).`
-          : `Score ${(result.finalScore * 100).toFixed(1)}% — evaluate-only mode made no prompt or Git writes in ${(result.totalDurationMs / 1000).toFixed(0)}s.`,
-        owner: 'ops',
-        suspectedArea: 'ai_quality',
-        userImpact: `None — scheduled evaluation telemetry${kept > 0 ? ` (${kept} unexpected kept mutations)` : ''}.`,
-      });
-    } catch (err) {
-      logger.error({ err, targetId }, 'Scheduled autoresearch failed');
-    }
+    await runScheduledAutoresearch();
   }), { timezone: tz });
 
   // ── Database Backup (daily, configurable — default 03:00) ─────────
