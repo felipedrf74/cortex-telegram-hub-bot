@@ -20,6 +20,9 @@ on:
     - cron: '0 6 * * 0'   # Sundays 06:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   housekeeping:
     name: 🧹 Housekeeping

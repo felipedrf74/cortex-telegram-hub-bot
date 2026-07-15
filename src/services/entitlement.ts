@@ -11,6 +11,7 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { isOwnerUserRef } from './user-service';
+import { getRestrictedPlanCapabilityIds } from './capability-manifest';
 import {
   type BillingPlan,
   getEffectiveDailyCostLimitUsd,
@@ -68,16 +69,9 @@ export interface UserEntitlement {
 }
 
 /** Token-zero Secretary access remains available on Free. */
-export const FREE_TIER_ALLOWED_SKILLS: ReadonlySet<string> = new Set(['secretary']);
+export const FREE_TIER_ALLOWED_SKILLS = getRestrictedPlanCapabilityIds('free');
 /** Product-only compatibility grant; it never implies model eligibility. */
-export const BETA_TIER_ALLOWED_SKILLS: ReadonlySet<string> = new Set([
-  'secretary',
-  'triathlon',
-  'training',
-  'content',
-  'cooking',
-  'finance',
-]);
+export const BETA_TIER_ALLOWED_SKILLS = getRestrictedPlanCapabilityIds('beta');
 
 function resolveAllowedSkillsForPlan(plan: BillingPlan): ReadonlySet<string> {
   const override = getPlanAllowedSkillsOverride(plan);

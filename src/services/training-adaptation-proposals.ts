@@ -51,6 +51,7 @@ import {
   type TrainingAdaptationTriggerKind,
 } from './training-adaptation-types';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
+import { emitDomainEvent } from './event-outbox';
 import {
   contractTrainingM4ScheduledWindow,
   trainingM4ConflictSetHashForDocument,
@@ -1386,9 +1387,30 @@ function syncProposalDecisionState(
       || (!!decision?.expires_at && Date.parse(decision.expires_at) <= Date.now())
       || Date.parse(row.expires_at) <= Date.now();
     if (decision?.decision_state === 'rejected' || decision?.status === 'dismissed') {
-      db.prepare(`UPDATE training_adaptation_proposals SET status = 'REJECTED', rejected_at = datetime('now') WHERE proposal_id = ? AND status IN ('PENDING_REVIEW', 'DEFERRED')`).run(row.proposal_id);
-      insertLifecycleEvent(db, scope, row.proposal_id, 'REJECTED', 'DECISION_REJECTED');
-      incrementTrainingGenerationCounter('adaptation_rejected_total');
+      const rejected = db.transaction(() => {
+        const update = db.prepare(`UPDATE training_adaptation_proposals SET status = 'REJECTED', rejected_at = datetime('now') WHERE proposal_id = ? AND status IN ('PENDING_REVIEW', 'DEFERRED')`).run(row.proposal_id);
+        if (update.changes !== 1) return false;
+        insertLifecycleEvent(db, scope, row.proposal_id, 'REJECTED', 'DECISION_REJECTED');
+        emitDomainEvent({
+          tenantId: scope.tenantId,
+          userId: scope.userId,
+          sourceSkill: 'training',
+          eventType: 'training.adaptation.rejected.v1',
+          entityType: 'training_adaptation_proposal',
+          entityId: row.proposal_id,
+          schemaVersion: 'training-adaptation-rejection.v1',
+          payload: {
+            action: 'REJECT',
+            proposalId: row.proposal_id,
+            materialFingerprint: row.material_fingerprint,
+          },
+          privacyClassification: 'health',
+          idempotencyKey: `training.adaptation.rejected:${row.proposal_id}`,
+          causationId: row.decision_id,
+        }, db);
+        return true;
+      })();
+      if (rejected) incrementTrainingGenerationCounter('adaptation_rejected_total');
     } else if (expired) {
       db.prepare(`UPDATE training_adaptation_proposals SET status = 'EXPIRED', expired_at = datetime('now') WHERE proposal_id = ? AND status IN ('PENDING_REVIEW', 'DEFERRED')`).run(row.proposal_id);
       insertLifecycleEvent(db, scope, row.proposal_id, 'EXPIRED', 'REVIEW_EXPIRED');

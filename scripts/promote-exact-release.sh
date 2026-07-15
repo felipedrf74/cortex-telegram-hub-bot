@@ -101,6 +101,15 @@ PROD_RELEASE="$PROD_BASE/releases/$RELEASE_NAME"
 BACKUP_DIR="/home/dominguez/backups/nexushub"
 PROMOTION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# A lost client response after a successful cutover must never turn a retry
+# into an rsync over the live immutable runtime (including temporary removal
+# of its .env/data/log symlinks). The active identity was proved immediately
+# above, so reject the already-active target before any release-tree mutation.
+if [ "$CURRENT_RUNTIME" = "$PROD_RELEASE" ]; then
+  echo "exact release is already active; refusing to mutate the live runtime: $PROD_RELEASE" >&2
+  exit 75
+fi
+
 # Copy the already prepared staging runtime while production is still online.
 # Verify every governed artifact byte before production is touched.
 "${SSH[@]}" "$SERVER" bash -s -- \

@@ -14,6 +14,41 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// Vitest hoists these factories. Keep them at module scope so future Vitest
+// versions do not reject mocks declared inside a suite.
+vi.mock('../../src/services/database', () => ({
+  getDb: () => ({
+    prepare: () => ({
+      run: vi.fn(),
+      get: vi.fn(),
+      all: vi.fn().mockReturnValue([]),
+    }),
+  }),
+  initDatabase: vi.fn(),
+  closeDatabase: vi.fn(),
+  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
+  applyMigrationFileForTest: vi.fn(),
+  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
+  runMigrationsForTest: vi.fn(),
+  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+}));
+
+vi.mock('../../src/config', () => ({
+  config: {
+    anthropic: { apiKey: 'test' },
+    app: { timezone: 'Europe/Lisbon' },
+    portal: { token: 'test' },
+  },
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  LOGGER_REDACTION_PATHS: [],
+}));
+
 // ═══════════════════════════════════════════════════════════════════
 // 1. Fake-userId Bug Regression
 // ═══════════════════════════════════════════════════════════════════
@@ -165,40 +200,6 @@ describe('script-pipeline: cache key hardening', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('script-pipeline: formatScriptToText', () => {
-  // Mock the modules that content-workflow imports
-  vi.mock('../../src/services/database', () => ({
-    getDb: () => ({
-      prepare: () => ({
-        run: vi.fn(),
-        get: vi.fn(),
-        all: vi.fn().mockReturnValue([]),
-      }),
-    }),
-    initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-  findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
-  applyMigrationFileForTest: vi.fn(),
-  assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
-  filterAlreadyAppliedAddColumnStatements: vi.fn((sql: string) => sql),
-  runMigrationsForTest: vi.fn(),
-  stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
-  withDatabaseForTest: vi.fn(),
-  withDatabaseForTestAsync: vi.fn(),
-}));
-
-  vi.mock('../../src/config', () => ({
-    config: {
-      anthropic: { apiKey: 'test' },
-      app: { timezone: 'Europe/Lisbon' },
-      portal: { token: 'test' },
-    },
-  }));
-
-  vi.mock('../../src/utils/logger', () => ({
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
-    LOGGER_REDACTION_PATHS: [],
-}));
-
   it('renders title options, hook, script, and sources', async () => {
     const { formatScriptToText } = await import('../../src/services/content-workflow');
 

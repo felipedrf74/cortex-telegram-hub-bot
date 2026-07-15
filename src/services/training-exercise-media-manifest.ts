@@ -7,9 +7,10 @@ import {
   assertTrainingExerciseIdentityCatalogIntegrity,
   buildTrainingExerciseIdentityCatalogSnapshot,
 } from './training-exercise-identity';
+import { getTrainingCapabilityMetadata } from './capability-manifest';
 
 export const TRAINING_EXERCISE_MEDIA_PACKAGE_SCHEMA_VERSION = 'training-exercise-media-package.v1' as const;
-export const TRAINING_EXERCISE_MEDIA_API_SCHEMA_VERSION = 'training_exercise_media_api.v1' as const;
+export const TRAINING_EXERCISE_MEDIA_API_SCHEMA_VERSION = getTrainingCapabilityMetadata().catalog.mediaApiSchemaVersion as 'training_exercise_media_api.v1';
 export const TRAINING_EXERCISE_MEDIA_VALIDATION_ATTESTATION_SCHEMA_VERSION =
   'training-exercise-media-validation-attestation.v1' as const;
 export const TRAINING_EXERCISE_MEDIA_APPROVAL_LEDGER_SCHEMA_VERSION =

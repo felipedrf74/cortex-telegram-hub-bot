@@ -46,13 +46,18 @@ import {
   TRAINING_M4_CAPACITY_TTL_MINUTES,
   type TrainingM4CapacityRefreshRequest,
 } from '../../services/training-m4-capacity-snapshots';
+import { getTrainingCapabilityMetadata } from '../../services/capability-manifest';
 
 interface RevisionApiMeta {
   schemaVersion: typeof TRAINING_PLAN_REVISION_API_SCHEMA;
   mode: 'active';
 }
 
-export const TRAINING_M4_CAPACITY_REFRESH_API_SCHEMA = 'training_m4_capacity_refresh.v1' as const;
+const TRAINING_CAPABILITY_METADATA = getTrainingCapabilityMetadata();
+export const TRAINING_REVISION_CAPABILITIES_PATH = TRAINING_CAPABILITY_METADATA.capacity.capabilitiesPath as '/plan/revision-capabilities';
+export const TRAINING_M4_CAPACITY_REFRESH_METHOD = TRAINING_CAPABILITY_METADATA.capacity.refreshMethod as 'POST';
+export const TRAINING_M4_CAPACITY_REFRESH_PATH = TRAINING_CAPABILITY_METADATA.capacity.refreshPath as '/plan/capacity-context/refresh';
+export const TRAINING_M4_CAPACITY_REFRESH_API_SCHEMA = TRAINING_CAPABILITY_METADATA.capacity.refreshApiSchema as 'training_m4_capacity_refresh.v1';
 export const TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT = 2;
 export const TRAINING_M4_CAPACITY_REFRESH_FIVE_MINUTE_LIMIT = 6;
 const TRAINING_M4_CAPACITY_REFRESH_BURST_WINDOW_MS = 60_000;
@@ -99,8 +104,8 @@ export interface RevisionCapabilitiesResource extends RevisionApiMeta {
     authoritativeClientModification: 'NARROW_ONLY';
     authoritativeRefresh: {
       supported: boolean;
-      method: 'POST';
-      path: '/plan/capacity-context/refresh';
+      method: typeof TRAINING_M4_CAPACITY_REFRESH_METHOD;
+      path: typeof TRAINING_M4_CAPACITY_REFRESH_PATH;
       requiresIdempotencyKey: true;
       requiresAllConnectedProviders: true;
       providerWriteEffects: false;
@@ -144,10 +149,10 @@ export function registerTrainingPlanRevisionRoutes(
     const data = trainingPlanRevisionCapabilitiesForScope(scope)!;
     sendSuccess(res, data);
   };
-  router.get('/plan/revision-capabilities', capabilities);
+  router.get(TRAINING_REVISION_CAPABILITIES_PATH, capabilities);
   router.get('/capabilities', capabilities);
 
-  router.post('/plan/capacity-context/refresh', async (req, res: Response) => {
+  router.post(TRAINING_M4_CAPACITY_REFRESH_PATH, async (req, res: Response) => {
     const scope = resolveScope(req as unknown as AuthenticatedRequest, res);
     if (!scope || !requireCapacityRefreshRoute(scope, res)) return;
     const scopeKey = `${scope.tenantId}:${scope.userId}`;
@@ -351,8 +356,8 @@ export function trainingPlanRevisionCapabilitiesForScope(
       authoritativeClientModification: 'NARROW_ONLY',
       authoritativeRefresh: {
         supported: m4AllowedPlanCombinations.length > 0,
-        method: 'POST',
-        path: '/plan/capacity-context/refresh',
+        method: TRAINING_M4_CAPACITY_REFRESH_METHOD,
+        path: TRAINING_M4_CAPACITY_REFRESH_PATH,
         requiresIdempotencyKey: true,
         requiresAllConnectedProviders: true,
         providerWriteEffects: false,

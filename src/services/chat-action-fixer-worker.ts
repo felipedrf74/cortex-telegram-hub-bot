@@ -16,6 +16,7 @@ import {
   resolveAiAutomationEligibility,
 } from './ai-automation-policy';
 import { AiBudgetError, withAiBudgetReservation } from './cost-guardrail';
+import { assertAgentQueuedJobHandlerRuntimeParity } from './agent-job-manifest';
 
 export const CHAT_ACTION_FIXER_JOB_TYPE = 'chat_action_fixer_review';
 
@@ -109,10 +110,12 @@ export async function processChatActionFixerJobs(options: {
   disabled?: boolean;
   proposeCorrection?: (payload: ChatActionFixerPayload) => Promise<ChatActionFixerProposal> | ChatActionFixerProposal;
 } = {}): Promise<{ completed: number; failed: number; deadLetter: number; skipped: number }> {
-  return processPendingJobs([buildChatActionFixerJobHandler({
+  const handlers = [buildChatActionFixerJobHandler({
     proposeCorrection: options.proposeCorrection,
     db: options.db,
-  })], {
+  })];
+  assertAgentQueuedJobHandlerRuntimeParity(handlers, 'chat-action-fixer');
+  return processPendingJobs(handlers, {
     limit: options.limit ?? 5,
     lockOwner: options.lockOwner ?? `chat-action-fixer:${process.pid}`,
     db: options.db,

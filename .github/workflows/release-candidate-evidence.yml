@@ -1,32 +1,11 @@
 name: RC — Release Evidence
-run-name: >-
-  ${{ inputs.operation == 'sign_staging'
-      && format('Sign staging attestation {0}', inputs.request_id)
-      || format('RC evidence {0}', github.sha) }}
+run-name: RC evidence ${{ github.sha }}
 
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      operation:
-        description: Release candidate or detached staging-signing operation
-        required: false
-        default: release_candidate
-        type: string
-      request_id:
-        description: Unique staging request identifier
-        required: false
-        type: string
-      runtime_sha:
-        description: Exact reviewed runtime SHA
-        required: false
-        type: string
-      request_b64:
-        description: Base64 encoded non-secret staging attestation request
-        required: false
-        type: string
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -43,7 +22,6 @@ env:
 jobs:
   vitest-full:
     name: 🧪 Full Vitest shard ${{ matrix.shard }}/4
-    if: ${{ inputs.operation != 'sign_staging' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -81,7 +59,6 @@ jobs:
 
   python-full:
     name: 🐍 Content Engine full pytest
-    if: ${{ inputs.operation != 'sign_staging' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -116,10 +93,10 @@ jobs:
           retention-days: 14
 
   release-evidence:
-    name: 📦 Write release evidence
+    name: 📦 Write unsigned release candidate
     runs-on: ubuntu-latest
     needs: [vitest-full, python-full]
-    if: ${{ always() && inputs.operation != 'sign_staging' }}
+    if: ${{ always() }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -256,105 +233,33 @@ jobs:
       - name: Build immutable runtime bundle
         run: node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
 
-      - name: Sign ReleaseManifestV2
+      - name: Write unsigned ReleaseManifestV2 candidate
         env:
-          NEXUS_RELEASE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
-          NEXUS_RELEASE_MANIFEST_KEY_ID: github-actions-release-manifest-2026-07
           NEXUS_RELEASE_PYTHON_VERSION: Python ${{ env.PYTHON_VERSION }}
         run: |
           node scripts/release-manifest-v2.mjs write \
-            --manifest ".local/release/manifests/${{ github.sha }}.json" \
+            --allow-unsigned \
+            --key-id unsigned-release-candidate \
+            --manifest ".local/release/manifests/${{ github.sha }}.unsigned.json" \
             --runtime-sha "${{ github.sha }}" \
             --docs-head "${{ github.sha }}"
 
-      - name: Validate signed ReleaseManifestV2
-        env:
-          NEXUS_RELEASE_MANIFEST_PUBLIC_KEY_PEM: ${{ vars.NEXUS_RELEASE_MANIFEST_PUBLIC_KEY_PEM }}
+      - name: Validate unsigned candidate payload
         run: |
-          node scripts/release-manifest-v2.mjs validate \
-            --manifest ".local/release/manifests/${{ github.sha }}.json" \
-            --public-key docs/release/evidence/release-evidence-public-key.pem \
+          node scripts/release-manifest-v2.mjs validate-payload \
+            --manifest ".local/release/manifests/${{ github.sha }}.unsigned.json" \
             --expect-runtime-sha "${{ github.sha }}"
 
-      - name: Artifact-bound reward verification
-        env:
-          NEXUS_RELEASE_MANIFEST_PUBLIC_KEY_PEM: ${{ vars.NEXUS_RELEASE_MANIFEST_PUBLIC_KEY_PEM }}
-        run: |
-          node scripts/reward-check.mjs --area release --advisory --json \
-            --release-manifest ".local/release/manifests/${{ github.sha }}.json" \
-            --output ".local/release/reward-${{ github.sha }}.json" \
-            > .local/release/reward-summary.json
-
-      - name: Upload immutable release bundle and evidence
+      - name: Upload unsigned release candidate and evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-manifest-v2-${{ github.sha }}
+          name: release-candidate-v2-${{ github.sha }}
           path: |
-            .local/release/manifests/${{ github.sha }}.json
+            .local/release/manifests/${{ github.sha }}.unsigned.json
             .local/release/bundles/${{ github.sha }}/**
             .local/release/bundles/${{ github.sha }}/**/.complete.json
             .local/release/test-results.json
-            .local/release/reward-${{ github.sha }}.json
-            .local/release/reward-summary.json
             .local/release/cannot-skip-dashboard.json
             .local/release/rc-test-results/*
           include-hidden-files: true
           retention-days: 30
-
-  sign-staging:
-    name: Sign detached staging attestation
-    if: ${{ inputs.operation == 'sign_staging' && github.actor == github.repository_owner }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: ${{ inputs.runtime_sha }}
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Decode and validate staging request
-        env:
-          REQUEST_B64: ${{ inputs.request_b64 }}
-          RUNTIME_SHA: ${{ inputs.runtime_sha }}
-          REQUEST_ID: ${{ inputs.request_id }}
-        run: |
-          install -d -m 700 .local/release/staging
-          node - <<'NODE'
-          const fs = require('fs');
-          const request = Buffer.from(process.env.REQUEST_B64, 'base64');
-          const parsed = JSON.parse(request);
-          if (parsed.requestId !== process.env.REQUEST_ID) throw new Error('request id mismatch');
-          fs.writeFileSync('.local/release/staging/request.json', request, { mode: 0o600 });
-          NODE
-          node scripts/release-staging-attestation.mjs validate-request \
-            --request .local/release/staging/request.json \
-            --expect-runtime-sha "$RUNTIME_SHA"
-
-      - name: Sign detached staging attestation
-        env:
-          NEXUS_RELEASE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
-          NEXUS_RELEASE_MANIFEST_KEY_ID: github-actions-release-manifest-2026-07
-          RUNTIME_SHA: ${{ inputs.runtime_sha }}
-        run: |
-          node scripts/release-staging-attestation.mjs sign \
-            --request .local/release/staging/request.json \
-            --output .local/release/staging/staging-attestation.json \
-            --expect-runtime-sha "$RUNTIME_SHA"
-
-      - name: Validate signed staging attestation
-        env:
-          RUNTIME_SHA: ${{ inputs.runtime_sha }}
-        run: |
-          node scripts/release-staging-attestation.mjs validate-request \
-            --request .local/release/staging/request.json \
-            --expect-runtime-sha "$RUNTIME_SHA"
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: staging-attestation-${{ inputs.request_id }}
-          path: .local/release/staging/staging-attestation.json
-          retention-days: 14
-          if-no-files-found: error

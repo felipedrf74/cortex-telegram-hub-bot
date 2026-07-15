@@ -35,6 +35,11 @@ function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' 
   return null;
 }
 
+function parseExportJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? null;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
 export function settingsRoutes(): Router {
   const router = Router();
 
@@ -304,6 +309,47 @@ export function settingsRoutes(): Router {
       userData.readinessScores = safeAll('SELECT * FROM readiness_scores WHERE user_id = ? ORDER BY date DESC LIMIT 365', userId);
       userData.trainingCompletions = safeAll('SELECT * FROM training_completions WHERE user_id = ?', userId);
       userData.fitnessTrainingPlans = safeAll('SELECT * FROM fitness_training_plans WHERE user_id = ?', userId);
+      userData.productLearningCases = safeAll(`
+        SELECT case_id AS caseId, tenant_id AS tenantId, user_id AS userId,
+               owner, lifecycle, privacy_class AS privacyClass,
+               redacted_input_json AS redactedInput,
+               expected_contract_json AS expectedContract,
+               evidence_references_json AS evidenceReferences,
+               producer_version AS producerVersion, confidence,
+               observed_at AS observedAt, reviewed_at AS reviewedAt,
+               reviewed_by AS reviewedBy,
+               review_approval_reference AS reviewApprovalReference,
+               expires_at AS expiresAt
+          FROM product_learning_cases
+         WHERE tenant_id = ? AND user_id = ?
+         ORDER BY observed_at, case_id
+      `, tenantId, userId).map((row: any) => ({
+        ...row,
+        redactedInput: parseExportJson(row.redactedInput),
+        expectedContract: parseExportJson(row.expectedContract),
+        evidenceReferences: parseExportJson(row.evidenceReferences),
+      }));
+      userData.productLearningCaseTransitions = safeAll(`
+        SELECT transition_id AS transitionId, tenant_id AS tenantId,
+               user_id AS userId, case_id AS caseId,
+               from_lifecycle AS fromLifecycle, to_lifecycle AS toLifecycle,
+               actor, approval_reference AS approvalReference,
+               transitioned_at AS transitionedAt
+          FROM product_learning_case_transitions
+         WHERE tenant_id = ? AND user_id = ?
+         ORDER BY transitioned_at, transition_id
+      `, tenantId, userId);
+      userData.productLearningCaseReviewApprovals = safeAll(`
+        SELECT approval_reference AS approvalReference, tenant_id AS tenantId,
+               user_id AS userId, case_id AS caseId,
+               action_execution_id AS actionExecutionId,
+               decision_id AS decisionId, action_id AS actionId,
+               reviewed_by AS reviewedBy, reviewed_at AS reviewedAt,
+               created_at AS createdAt
+          FROM product_learning_case_review_approvals
+         WHERE tenant_id = ? AND user_id = ?
+         ORDER BY reviewed_at, approval_reference
+      `, tenantId, userId);
 
       // ── Finance ──
       userData.financeTransactions = safeAll('SELECT * FROM finance_transactions WHERE user_id = ? ORDER BY date DESC', userId);

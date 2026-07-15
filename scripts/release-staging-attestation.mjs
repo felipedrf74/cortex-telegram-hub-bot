@@ -3,6 +3,7 @@ import { randomUUID, createHash, createPrivateKey, createPublicKey, sign, verify
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'validate';
@@ -12,6 +13,10 @@ const valueOf = (name, fallback = '') => {
 };
 const has = (name) => args.includes(name);
 const root = path.resolve(valueOf('--root', process.cwd()));
+const toolingRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const allowTestKey = has('--allow-test-key') && process.env.NODE_ENV === 'test';
+const CURRENT_SIGNING_KEY_ID = 'github-environment-release-signing-2026-07';
+const LEGACY_SIGNING_KEY_ID = 'github-actions-release-manifest-2026-07';
 
 function canonicalJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -37,6 +42,18 @@ function readPem(name, envName, fallback = '') {
     return fs.readFileSync(path.resolve(root, fallback), 'utf8');
   }
   return '';
+}
+
+function matchesTrackedPublicKey(publicPem, relativePath) {
+  try {
+    const supplied = createPublicKey(publicPem).export({ type: 'spki', format: 'der' });
+    const tracked = createPublicKey(
+      fs.readFileSync(path.join(toolingRoot, relativePath), 'utf8'),
+    ).export({ type: 'spki', format: 'der' });
+    return supplied.equals(tracked);
+  } catch {
+    return false;
+  }
 }
 
 function validateRequest(request, expectedRuntime = '') {
@@ -120,7 +137,7 @@ if (command === 'request') {
   if (!privatePem) throw new Error('CI staging-attestation signing key is required');
   const envelope = {
     schema: 'nexus.staging-attestation.v1',
-    keyId: valueOf('--key-id', process.env.NEXUS_RELEASE_MANIFEST_KEY_ID ?? 'unknown'),
+    keyId: valueOf('--key-id', process.env.NEXUS_RELEASE_MANIFEST_KEY_ID ?? CURRENT_SIGNING_KEY_ID),
     signatureAlgorithm: 'ed25519',
     payload: request,
     signature: sign(null, Buffer.from(canonicalJson(request)), createPrivateKey(privatePem)).toString('base64'),
@@ -128,26 +145,48 @@ if (command === 'request') {
   fs.mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
   fs.writeFileSync(output, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ ok: true, attestation: output, requestId: request.requestId }, null, 2)}\n`);
-} else if (command === 'validate') {
+} else if (command === 'validate-signed' || command === 'validate') {
   const attestationFile = resolveFile('--attestation');
-  const manifestFile = resolveFile('--manifest');
   const envelope = JSON.parse(fs.readFileSync(attestationFile, 'utf8'));
   if (envelope.schema !== 'nexus.staging-attestation.v1' || envelope.signatureAlgorithm !== 'ed25519') {
     throw new Error('signed staging attestation schema is invalid');
   }
   const request = validateRequest(envelope.payload ?? {}, valueOf('--expect-runtime-sha'));
+  const legacyKey = envelope.keyId === LEGACY_SIGNING_KEY_ID;
+  const trackedPublicKeyPath = legacyKey
+    ? 'docs/release/evidence/release-evidence-public-key-2026-06.pem'
+    : 'docs/release/evidence/release-evidence-public-key.pem';
+  if (envelope.keyId !== CURRENT_SIGNING_KEY_ID && !legacyKey && !allowTestKey) {
+    throw new Error('staging attestation signing key id is untrusted');
+  }
   const publicPem = readPem(
     '--public-key',
     'NEXUS_RELEASE_MANIFEST_PUBLIC_KEY_PEM',
-    'docs/release/evidence/release-evidence-public-key.pem',
+    trackedPublicKeyPath,
   );
   if (!publicPem) throw new Error('staging attestation public key is required');
+  if (!allowTestKey && !matchesTrackedPublicKey(publicPem, trackedPublicKeyPath)) {
+    throw new Error('staging attestation public key identity mismatch');
+  }
   if (!verify(
     null,
     Buffer.from(canonicalJson(request)),
     createPublicKey(publicPem),
     Buffer.from(envelope.signature ?? '', 'base64'),
   )) throw new Error('staging attestation signature is invalid');
+  if (legacyKey) throw new Error('staging attestation legacy signing key is readable but non-reusable');
+  if (command === 'validate-signed') {
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      promotable: false,
+      requestId: request.requestId,
+      runtimeSha: request.runtimeSha,
+      artifactDigest: request.artifactDigest,
+      reason: 'release_manifest_binding_not_checked',
+    }, null, 2)}\n`);
+    process.exit(0);
+  }
+  const manifestFile = resolveFile('--manifest');
   const manifestBody = fs.readFileSync(manifestFile);
   const manifest = JSON.parse(manifestBody);
   if (has('--validate-release-manifest')) {
@@ -175,5 +214,5 @@ if (command === 'request') {
     releaseDir: request.releaseDir,
   }, null, 2)}\n`);
 } else {
-  throw new Error('Usage: release-staging-attestation.mjs <request|validate-request|sign|validate>');
+  throw new Error('Usage: release-staging-attestation.mjs <request|validate-request|sign|validate-signed|validate>');
 }

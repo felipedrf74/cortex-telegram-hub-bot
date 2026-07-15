@@ -5,6 +5,9 @@ on:
   # every push created abandoned automation branches and obscured runtime CI.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   changelog:
     name: Generate Changelog

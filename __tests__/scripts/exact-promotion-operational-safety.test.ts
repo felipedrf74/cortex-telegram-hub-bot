@@ -202,6 +202,21 @@ describe('exact production promotion operational safety', () => {
     expect(successPath.slice(publicSnapshot)).toContain('JSON.parse');
   });
 
+  it('rejects an already-active exact release before rsync or symlink mutation', () => {
+    const raw = source(PROMOTE);
+    const identityProof = raw.indexOf('verify_active_runtime');
+    const activeGuard = raw.indexOf('if [ "$CURRENT_RUNTIME" = "$PROD_RELEASE" ]');
+    const remotePrepare = raw.indexOf("<<'REMOTE_PREPARE'");
+
+    expect(identityProof).toBeGreaterThan(-1);
+    expect(activeGuard).toBeGreaterThan(identityProof);
+    expect(remotePrepare).toBeGreaterThan(activeGuard);
+    expect(raw.slice(activeGuard, remotePrepare)).toContain('exit 75');
+    expect(raw.slice(activeGuard, remotePrepare)).toContain('refusing to mutate the live runtime');
+    expect(raw.slice(0, activeGuard)).not.toContain('rsync -a --delete');
+    expect(raw.slice(0, activeGuard)).not.toContain('rm -f "$release_dir/$link"');
+  });
+
   it('rejects a dirty exact-promotion checkout before the first SSH call', () => {
     const root = mkdtempSync(join(tmpdir(), 'exact-promotion-dirty-'));
     const binDir = join(root, 'bin');

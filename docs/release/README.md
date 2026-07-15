@@ -12,22 +12,28 @@ artifact, not a Markdown narrative.
 ```bash
 npm run release:status
 npm run release:prepare -- --base <sha>
+gh workflow run release-candidate-evidence.yml --ref <candidate-ref>
+scripts/request-release-manifest-signature.sh <sha> <rc-run-id>
 npm run release:staging -- --manifest .local/release/manifests/<sha>.json
 npm run release:promote -- --manifest .local/release/manifests/<sha>.json
 ```
 
 `release:prepare` runs the release gate, builds one governed runtime bundle,
-and writes `ReleaseManifestV2`. A changed artifact or test policy invalidates
-the result. A docs-only commit cannot replace the required check for a runtime
-SHA.
+and writes an unsigned candidate payload. The RC workflow also contains no
+signing secret. Only the protected-main signer, gated by the `release-signing`
+environment, may turn a successful exact-run artifact into a promotable
+`ReleaseManifestV2`. A changed artifact or test policy invalidates the result.
+A docs-only commit cannot replace the required check for a runtime SHA.
 
 ## Required Sequence
 
 1. Start from a clean reviewed runtime SHA.
 2. Run changed plus critical tests, build, migration rehearsal, artifact
    validation, and reward verification.
-3. Sign the manifest and upload the immutable bundle plus evidence as CI
-   artifacts.
+3. Run the unprivileged RC workflow, then have protected-main tooling verify
+   its exact run, head SHA, jobs, test outputs, bundle bytes, and artifact
+   identity before signing. Candidate scripts are data only in the signing
+   job and never receive the private key.
 4. Install and verify the bundle in a versioned staging directory while the
    current service remains online.
 5. Record staging smoke against the exact artifact digest.

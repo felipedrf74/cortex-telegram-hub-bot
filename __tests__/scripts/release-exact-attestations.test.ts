@@ -127,7 +127,8 @@ describe('detached staging attestation', () => {
       '--public-key', files.publicKey,
       '--expect-runtime-sha', runtimeSha,
       '--expect-installed-runtime-digest', installed.aggregateDigest,
-    ], { encoding: 'utf8' }));
+      '--allow-test-key',
+    ], { encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } }));
 
     expect(result).toMatchObject({
       ok: true,
@@ -146,7 +147,8 @@ describe('detached staging attestation', () => {
       '--attestation', files.signed,
       '--manifest', files.manifest,
       '--public-key', files.publicKey,
-    ], { encoding: 'utf8' });
+      '--allow-test-key',
+    ], { encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } });
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}${result.stderr}`).toContain('not bound to the release manifest');

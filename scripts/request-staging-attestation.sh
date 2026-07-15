@@ -23,26 +23,14 @@ RUNTIME_SHA="$(read_request_field runtimeSha)"
 node scripts/release-staging-attestation.mjs validate-request \
   --request "$REQUEST" --expect-runtime-sha "$RUNTIME_SHA" >/dev/null
 
-REF="${NEXUS_RELEASE_SIGNING_REF:-$(git branch --show-current)}"
-[ -n "$REF" ] || REF="main"
+REF="main"
 REQUEST_B64="$(base64 < "$REQUEST" | tr -d '\r\n')"
-SIGNING_WORKFLOW="${NEXUS_RELEASE_SIGNING_WORKFLOW:-}"
-WORKFLOW_ARGS=()
-if [ -z "$SIGNING_WORKFLOW" ]; then
-  if gh workflow view sign-staging-attestation.yml >/dev/null 2>&1; then
-    SIGNING_WORKFLOW="sign-staging-attestation.yml"
-  else
-    # A newly introduced workflow cannot be dispatched until its path exists
-    # on the default branch. Reuse the established RC workflow entry point so
-    # branch releases can still obtain the same owner-only detached signature.
-    SIGNING_WORKFLOW="release-candidate-evidence.yml"
-  fi
-fi
-if [ "$SIGNING_WORKFLOW" = "release-candidate-evidence.yml" ]; then
-  WORKFLOW_ARGS=(-f "operation=sign_staging")
-fi
+SIGNING_WORKFLOW="sign-staging-attestation.yml"
+gh workflow view "$SIGNING_WORKFLOW" --ref "$REF" >/dev/null 2>&1 || {
+  echo "protected-main staging signing workflow is unavailable" >&2
+  exit 1
+}
 gh workflow run "$SIGNING_WORKFLOW" --ref "$REF" \
-  "${WORKFLOW_ARGS[@]}" \
   -f "request_id=$REQUEST_ID" \
   -f "runtime_sha=$RUNTIME_SHA" \
   -f "request_b64=$REQUEST_B64"

@@ -29,6 +29,7 @@ export type SignalType =
   // creator's phrasing and edits are private behavioral data.
   | 'voice_pattern'
   | 'voice_phrase_trend'
+  | 'voice_analysis_fingerprint'
   | 'channel_dna'
   | 'book_knowledge'
   | 'book_reference_effective'
@@ -183,6 +184,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   retention_pattern: 60 * 24,
   voice_pattern: 90 * 24,           // 90 days
   voice_phrase_trend: 90 * 24,
+  voice_analysis_fingerprint: 370 * 24,
   channel_dna: 30 * 24,             // 30 days
   book_knowledge: 365 * 24 * 10,    // effectively never
   book_reference_effective: 60 * 24,

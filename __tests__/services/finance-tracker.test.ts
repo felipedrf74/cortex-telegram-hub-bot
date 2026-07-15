@@ -8,19 +8,9 @@
  * - Tax event persistence and marking as paid
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-// ── Test helpers ───────────────────────────────────────────────────
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
-
 // ── Mocks ────────────────────────────────────────────────────────
 
 let testDb: Database.Database;
@@ -81,7 +71,39 @@ import {
   parseReceiptAmount,
   normalizeFinanceCategory,
   convertPlanningEstimateFromBrl,
+  IRPF_BRACKETS,
 } from '../../src/services/finance-tracker';
+import { DEFAULT_SKILLS } from '../../src/skills/skill-config';
+
+const originalNodeEnv = process.env.NODE_ENV;
+
+beforeAll(() => {
+  testDb = createMigratedTestDatabase();
+});
+
+beforeEach(() => {
+  testDb.exec('SAVEPOINT finance_test_case');
+  mockConfig = {
+    financeEncryption: {
+      enabled: true,
+      masterKey: 'test-master-key-for-finance-tests!',
+    },
+    financePlanning: {
+      allowStaticFxEstimate: false,
+    },
+  };
+});
+
+afterEach(() => {
+  testDb.exec('ROLLBACK TO finance_test_case');
+  testDb.exec('RELEASE finance_test_case');
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = originalNodeEnv;
+});
+
+afterAll(() => {
+  testDb.close();
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // TAX CALCULATION TESTS (pure functions, no DB needed)
@@ -137,20 +159,6 @@ describe('calculatePortugueseMonthlyTax — Portugal IRS/IVA estimate', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Transaction CRUD', () => {
-  beforeEach(() => {
-    mockConfig = {
-      financeEncryption: {
-        enabled: true,
-        masterKey: 'test-master-key-for-finance-tests!',
-      },
-      financePlanning: {
-        allowStaticFxEstimate: false,
-      },
-    };
-    testDb = createMigratedTestDatabase();
-  });
-  afterEach(() => { testDb.close(); });
-
   it('adds a transaction and returns it', () => {
     const tx = addTransaction(1, '2024-06-15', 'income', 5000, {
       subcategory: 'freelance',
@@ -456,11 +464,6 @@ describe('Transaction CRUD', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('getMonthlySummary', () => {
-  beforeEach(() => {
-    testDb = createMigratedTestDatabase();
-  });
-  afterEach(() => { testDb.close(); });
-
   it('aggregates income, expenses, and deductions for a month', () => {
     addTransaction(1, '2024-06-01', 'income', 10000, { subcategory: 'freelance' });
     addTransaction(1, '2024-06-05', 'expense', 1500, { subcategory: 'rent' });
@@ -514,11 +517,6 @@ describe('getMonthlySummary', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Tax event persistence', () => {
-  beforeEach(() => {
-    testDb = createMigratedTestDatabase();
-  });
-  afterEach(() => { testDb.close(); });
-
   it('calculates and stores tax for a month', () => {
     addTransaction(1, '2024-06-01', 'income', 8000);
     addTransaction(1, '2024-06-10', 'deduction', 500);
@@ -606,11 +604,6 @@ describe('Tax event persistence', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('getAnnualTaxSummary', () => {
-  beforeEach(() => {
-    testDb = createMigratedTestDatabase();
-  });
-  afterEach(() => { testDb.close(); });
-
   it('aggregates all monthly tax events for a year', () => {
     addTransaction(1, '2024-01-15', 'income', 8000);
     calculateAndStoreTax(1, '2024-01');
@@ -684,12 +677,6 @@ describe('getAnnualTaxSummary', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('getMonthlyBudgetView', () => {
-  beforeEach(() => {
-    testDb = createMigratedTestDatabase();
-  });
-
-  afterEach(() => { testDb.close(); });
-
   it('marks mixed-currency months as provisional instead of inventing a fake budget ratio', () => {
     addTransaction(1, '2024-06-02', 'income', 3200, { currency: 'EUR' });
     addTransaction(1, '2024-06-05', 'expense', 187, { currency: 'EUR', description: 'Groceries' });
@@ -786,5 +773,110 @@ describe('parseReceiptAmount', () => {
 
   it('returns null for non-numeric string', () => {
     expect(parseReceiptAmount('abc')).toBeNull();
+  });
+});
+
+describe('Finance schema and Portugal boundary contracts', () => {
+  it('keeps finance columns and performance indexes complete', () => {
+    const transactionColumns = testDb.prepare("PRAGMA table_info('finance_transactions')").all() as Array<{ name: string }>;
+    expect(transactionColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'id', 'tenant_id', 'user_id', 'date', 'category', 'subcategory', 'amount',
+      'currency', 'description', 'receipt_ref', 'created_at', 'updated_at',
+    ]));
+    const taxColumns = testDb.prepare("PRAGMA table_info('finance_tax_events')").all() as Array<{ name: string }>;
+    expect(taxColumns.map((column) => column.name)).toContain('tenant_id');
+
+    const indexes = testDb.prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_finance%'",
+    ).all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+      'idx_finance_tx_user_date', 'idx_finance_tx_category', 'idx_finance_tax_user_month',
+    ]));
+  });
+
+  it('enforces tenant-unique tax months while allowing the same user/month in another tenant', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due
+      ) VALUES (?, 1, '2026-05', 1000, 0, 1000, 100, 0)
+    `);
+    insert.run(10);
+    insert.run(11);
+    expect(() => insert.run(10)).toThrow();
+  });
+
+  it('defaults transaction currency to EUR and tax status to pending', () => {
+    testDb.prepare(`
+      INSERT INTO finance_transactions (tenant_id, user_id, date, category, amount)
+      VALUES (1, 1, '2024-01-15', 'income', 5000)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due
+      ) VALUES (1, 1, '2024-01', 5000, 0, 5000, 500, 0)
+    `).run();
+    expect(testDb.prepare('SELECT currency FROM finance_transactions').get()).toMatchObject({ currency: 'EUR' });
+    expect(testDb.prepare('SELECT status FROM finance_tax_events').get()).toMatchObject({ status: 'pending' });
+  });
+
+  it('covers IVA, highest-bracket, and deduction-floor boundaries', () => {
+    const withIva = calculatePortugueseMonthlyTax(3000, 0, { ivaRate: 0.23 });
+    expect(withIva).toMatchObject({ taxableIncome: 3000, ivaDue: 690, inssDue: 0 });
+
+    const highest = calculatePortugueseMonthlyTax(20000);
+    expect(highest.bracket).toBe('48.0%');
+    expect(highest.taxDue).toBeGreaterThan(0);
+
+    const floored = calculatePortugueseMonthlyTax(1000, 5000);
+    expect(floored.taxableIncome).toBe(0);
+    expect(floored.taxDue).toBe(0);
+  });
+
+  it('quarantines Brazilian brackets and remains progressively taxed', () => {
+    expect(IRPF_BRACKETS).toHaveLength(5);
+    expect(IRPF_BRACKETS[0].rate).toBe(0);
+    expect(IRPF_BRACKETS.at(-1)?.upTo).toBe(Infinity);
+    expect(calculatePortugueseMonthlyTax(3000).bracket).not.toBe('7.5%');
+
+    const rates = [3000, 8000, 20000].map((income) => calculatePortugueseMonthlyTax(income).effectiveRate);
+    expect(rates[2]).toBeGreaterThan(rates[1]);
+    expect(rates[1]).toBeGreaterThan(rates[0]);
+  });
+
+  it('round-trips optional fields and enforces explicit/default list limits', () => {
+    const optional = addTransaction(1, '2024-03-15', 'expense', 150, {
+      subcategory: 'software',
+      description: 'GitHub subscription',
+      currency: 'USD',
+      receiptRef: 'photo_123',
+    });
+    expect(optional).toMatchObject({
+      subcategory: 'software',
+      description: 'GitHub subscription',
+      currency: 'USD',
+      receipt_ref: 'photo_123',
+    });
+
+    for (let index = 0; index < 55; index += 1) {
+      addTransaction(1, '2024-04-15', 'expense', index);
+    }
+    expect(getTransactions(1, { limit: 3 })).toHaveLength(3);
+    expect(getTransactions(1)).toHaveLength(50);
+  });
+
+  it('keeps December and January summaries isolated', () => {
+    addTransaction(1, '2024-12-15', 'income', 5000);
+    addTransaction(1, '2025-01-05', 'income', 6000);
+    expect(getMonthlySummary(1, '2024-12').totalIncome).toBe(5000);
+    expect(getMonthlySummary(1, '2025-01').totalIncome).toBe(6000);
+  });
+
+  it('keeps the finance skill routing and sub-skill contract complete', () => {
+    const finance = DEFAULT_SKILLS.finance;
+    expect(finance.name).toBe('finance');
+    expect(finance.subSkills.map((subSkill) => subSkill.name)).toEqual(expect.arrayContaining(['expenses', 'tax']));
+    expect(finance.routing.patternRoutes.length).toBeGreaterThan(0);
+    expect(finance.routing.keywordRoute).not.toBeNull();
+    expect(finance.routing.classificationHint.label).toBe('finance');
   });
 });

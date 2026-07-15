@@ -1,4 +1,56 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+function collectRuntimeDependencySpecifiers(source: string, file: string): string[] {
+  const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const specifiers = new Set<string>();
+  const record = (node: ts.Expression | undefined) => {
+    if (node && ts.isStringLiteralLike(node)) specifiers.add(node.text);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      record(node.moduleSpecifier);
+    } else if (ts.isImportEqualsDeclaration(node)
+      && ts.isExternalModuleReference(node.moduleReference)) {
+      record(node.moduleReference.expression);
+    } else if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      if (isDynamicImport || isRequire) record(node.arguments[0]);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return [...specifiers].sort();
+}
+
+function collectForbiddenProviderCalls(source: string, file: string): string[] {
+  const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const forbidden = new Set([
+    'acquireCostLock',
+    'callAI',
+    'enforceCostGuardrails',
+    'generateText',
+    'withAiBudgetReservation',
+  ]);
+  const calls = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      const name = ts.isIdentifier(expression)
+        ? expression.text
+        : ts.isPropertyAccessExpression(expression)
+          ? expression.name.text
+          : '';
+      if (forbidden.has(name)) calls.add(name);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return [...calls].sort();
+}
 
 const mockGetProfile = vi.fn();
 const mockGetMissingProfileFields = vi.fn();
@@ -250,6 +302,33 @@ function makePlanFromKernelInput(input: any, title = 'Coach Plan') {
 }
 
 describe('generateTrainingPlanForUser', () => {
+  it('keeps the operational generator free of direct model-provider dependencies', () => {
+    const files = [
+      'src/api/routes/training-plan-generation.ts',
+      'src/api/routes/training-plan-routes.ts',
+    ];
+    const forbidden = /anthropic|gemini|openai|ollama|ai-provider|domain-provider-router|provider-fallback|provider-registry|api-usage|usage-metering|cost-guardrail/i;
+
+    expect(collectRuntimeDependencySpecifiers(`
+      import '../../services/anthropic-provider';
+      const one = import('../../services/openai-provider');
+      const two = require('../../services/provider-fallback');
+      import legacy = require('../../services/ollama-provider');
+    `, 'synthetic-provider-boundary.ts')).toEqual([
+      '../../services/anthropic-provider',
+      '../../services/ollama-provider',
+      '../../services/openai-provider',
+      '../../services/provider-fallback',
+    ]);
+
+    for (const file of files) {
+      const source = readFileSync(path.resolve(file), 'utf8');
+      const dependencies = collectRuntimeDependencySpecifiers(source, file);
+      expect(dependencies.filter((specifier) => forbidden.test(specifier)), file).toEqual([]);
+      expect(collectForbiddenProviderCalls(source, file), file).toEqual([]);
+    }
+  });
+
   beforeEach(() => {
     vi.useRealTimers();
     mockGetProfile.mockReset();

@@ -11,6 +11,7 @@ import type {
 } from './chat-answer-contract';
 import { expectedShapeForRoute, getSkillResponsePolicy, type SkillResponsePolicy } from './skill-response-policy';
 import { isChatSkillResponsePolicyEnabled } from './runtime-flags';
+import { getCapabilityChatRoutingOwnerMap } from './capability-manifest';
 
 export interface ChatTurnContract {
   skill: NexusChatOwnerSkill;
@@ -32,13 +33,7 @@ export interface ChatTurnContractInput {
   involvedSkills?: string[];
 }
 
-const DOMAIN_SKILL: Partial<Record<DomainName, NexusChatOwnerSkill>> = {
-  secretary: 'secretary',
-  triathlon: 'training',
-  cooking: 'cooking',
-  finance: 'finance',
-  content: 'content',
-};
+const DOMAIN_SKILL = getCapabilityChatRoutingOwnerMap() as Partial<Record<DomainName, NexusChatOwnerSkill>>;
 
 export function inferChatTurnContract(input: ChatTurnContractInput): ChatTurnContract {
   const folded = fold(input.message);

@@ -89,6 +89,10 @@ function createRealEvidenceHarnessRepo() {
   copyFileSync(join(ROOT, 'scripts/lib/freshness.mjs'), join(root, 'scripts/lib/freshness.mjs'));
   copyExecutable(join(ROOT, 'scripts/release-evidence.mjs'), join(root, 'scripts/release-evidence.mjs'));
   copyExecutable(join(ROOT, 'scripts/release-artifact-manifest.mjs'), join(root, 'scripts/release-artifact-manifest.mjs'));
+  copyFileSync(
+    join(ROOT, 'scripts/lib/release-artifact-manifest.mjs'),
+    join(root, 'scripts/lib/release-artifact-manifest.mjs'),
+  );
   writeExecutable(
     join(root, 'scripts/rollback-drill-check.mjs'),
     `#!/usr/bin/env node

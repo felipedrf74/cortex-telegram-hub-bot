@@ -85,7 +85,18 @@ case "$COMMAND" in
     }
     scripts/release-test-gate.sh --base "$BASE"
     node scripts/release-bundle.mjs --runtime-sha "$SHA"
-    node scripts/release-manifest-v2.mjs write --manifest "$MANIFEST"
+    case "$MANIFEST" in
+      *.json) UNSIGNED_MANIFEST="${MANIFEST%.json}.unsigned.json" ;;
+      *) UNSIGNED_MANIFEST="$MANIFEST.unsigned.json" ;;
+    esac
+    node scripts/release-manifest-v2.mjs write \
+      --allow-unsigned \
+      --key-id unsigned-release-candidate \
+      --manifest "$UNSIGNED_MANIFEST"
+    node scripts/release-manifest-v2.mjs validate-payload \
+      --manifest "$UNSIGNED_MANIFEST" \
+      --expect-runtime-sha "$SHA" >/dev/null
+    printf '{"ok":true,"prepared":true,"promotable":false,"reason":"trusted_signer_required","unsignedManifest":"%s"}\n' "$UNSIGNED_MANIFEST"
     ;;
   staging)
     validate_manifest

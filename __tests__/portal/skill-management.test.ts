@@ -8,16 +8,9 @@
  * Uses in-memory SQLite + the actual skill-manager and registry modules.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
 
 // Mock getDb to return our in-memory database
 let testDb: Database.Database;
@@ -56,16 +49,26 @@ import {
   enableSubSkill,
   disableSubSkill,
   invalidateToolCache,
+  getSkillStatus,
 } from '../../src/skills/skill-manager';
 
 describe('Portal Skill Management', () => {
-  beforeEach(() => {
+  beforeAll(() => {
     testDb = createMigratedTestDatabase();
+  });
+
+  beforeEach(() => {
+    testDb.exec('SAVEPOINT portal_skill_management_test');
     seedDefaultSkills();
     invalidateToolCache();
   });
 
   afterEach(() => {
+    testDb.exec('ROLLBACK TO portal_skill_management_test');
+    testDb.exec('RELEASE portal_skill_management_test');
+  });
+
+  afterAll(() => {
     testDb.close();
   });
 
@@ -258,6 +261,97 @@ describe('Portal Skill Management', () => {
       const secTools = secretary.subSkills.reduce((s, sub) => s + sub.toolCount, 0);
       const conTools = content.subSkills.reduce((s, sub) => s + sub.toolCount, 0);
       expect(conTools).toBeLessThan(secTools);
+    });
+  });
+
+  describe('toggle and seed boundaries', () => {
+    it('treats repeated skill and sub-skill toggles as idempotent', () => {
+      expect(enableSkill('secretary')).toBe(true);
+      expect(enableSkill('secretary')).toBe(true);
+      expect(disableSkill('secretary')).toBe(true);
+      expect(disableSkill('secretary')).toBe(true);
+
+      expect(enableSubSkill('secretary', 'email')).toBe(true);
+      expect(enableSubSkill('secretary', 'email')).toBe(true);
+      expect(disableSubSkill('secretary', 'email')).toBe(true);
+      expect(disableSubSkill('secretary', 'email')).toBe(true);
+    });
+
+    it('reports the final state after rapid skill and sub-skill toggles', () => {
+      for (let iteration = 0; iteration < 10; iteration += 1) {
+        const toggle = iteration % 2 === 0 ? disableSkill : enableSkill;
+        expect(toggle('triathlon')).toBe(true);
+      }
+
+      disableSubSkill('secretary', 'calendar');
+      enableSubSkill('secretary', 'calendar');
+      disableSubSkill('secretary', 'calendar');
+
+      expect(getSkillStatus('triathlon').enabled).toBe(true);
+      expect(
+        getSkillStatus('secretary').subSkills.find(subSkill => subSkill.name === 'calendar')?.enabled,
+      ).toBe(false);
+    });
+
+    it('preserves explicitly disabled sub-skills across a parent toggle', () => {
+      disableSubSkill('secretary', 'email');
+      disableSubSkill('secretary', 'notes');
+      disableSkill('secretary');
+      enableSkill('secretary');
+
+      const enabledByName = new Map(
+        getSkillStatus('secretary').subSkills.map(subSkill => [subSkill.name, subSkill.enabled]),
+      );
+      expect(enabledByName.get('email')).toBe(false);
+      expect(enabledByName.get('notes')).toBe(false);
+      expect(enabledByName.get('tasks')).toBe(true);
+    });
+
+    it('can disable and restore every installed skill without cross-skill leakage', () => {
+      const names = getAllSkillStatuses().map(skill => skill.name);
+      for (const name of names) {
+        expect(disableSkill(name)).toBe(true);
+      }
+      expect(getAllSkillStatuses().every(skill => !skill.enabled)).toBe(true);
+
+      for (const name of names) {
+        expect(enableSkill(name)).toBe(true);
+      }
+      expect(getAllSkillStatuses().every(skill => skill.enabled)).toBe(true);
+    });
+
+    it('keeps the parent enabled when all sub-skills are disabled and restores only the selected sub-skill', () => {
+      const initial = getSkillStatus('secretary');
+      for (const subSkill of initial.subSkills) {
+        expect(disableSubSkill('secretary', subSkill.name)).toBe(true);
+      }
+
+      expect(enableSubSkill('secretary', 'tasks')).toBe(true);
+      const status = getSkillStatus('secretary');
+      expect(status.enabled).toBe(true);
+      expect(status.subSkills.find(subSkill => subSkill.name === 'tasks')?.enabled).toBe(true);
+      expect(
+        status.subSkills
+          .filter(subSkill => subSkill.name !== 'tasks')
+          .every(subSkill => !subSkill.enabled),
+      ).toBe(true);
+    });
+
+    it('keeps seed operations idempotent without resetting disabled state', () => {
+      disableSkill('content');
+      disableSubSkill('secretary', 'email');
+      const installedNamesBefore = registry.getAll().map(skill => skill.name).sort();
+
+      seedDefaultSkills();
+      seedDefaultSkills();
+
+      const installedNamesAfter = registry.getAll().map(skill => skill.name).sort();
+      expect(installedNamesAfter).toEqual(installedNamesBefore);
+      expect(new Set(installedNamesAfter).size).toBe(installedNamesAfter.length);
+      expect(getSkillStatus('content').enabled).toBe(false);
+      expect(
+        getSkillStatus('secretary').subSkills.find(subSkill => subSkill.name === 'email')?.enabled,
+      ).toBe(false);
     });
   });
 });

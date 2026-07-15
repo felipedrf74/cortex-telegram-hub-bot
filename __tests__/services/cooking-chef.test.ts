@@ -8,16 +8,11 @@
  * - Per-user isolation
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
+import fs from 'fs';
+import path from 'path';
 
 let testDb: Database.Database;
 
@@ -46,23 +41,54 @@ import {
   applyMealPlanSubstitution,
 } from '../../src/services/cooking-chef';
 import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
+import { cookingPrivateScopePredicate } from '../../src/services/cooking-tenant-scope';
+import type { Ingredient } from '../../src/services/cooking-chef';
+import { addToConversation, getConversationHistory } from '../../src/state/conversation';
+import { TOOLS } from '../../src/services/anthropic';
+
+beforeAll(() => {
+  testDb = createMigratedTestDatabase();
+});
+
+beforeEach(() => {
+  testDb.exec('SAVEPOINT cooking_test_case');
+});
+
+afterEach(() => {
+  testDb.exec('ROLLBACK TO cooking_test_case');
+  testDb.exec('RELEASE cooking_test_case');
+});
+
+afterAll(() => {
+  testDb.close();
+});
 
 describe('Recipe CRUD', () => {
-  beforeEach(() => { testDb = createMigratedTestDatabase(); });
-  afterEach(() => { testDb.close(); });
-
   it('adds a recipe with structured ingredients', () => {
     const recipe = addRecipe(1, 'Grilled Ribeye', [
       { name: 'Ribeye steak', quantity: '400', unit: 'g' },
       { name: 'Salt', quantity: '1', unit: 'tsp' },
       { name: 'Butter', quantity: '30', unit: 'g' },
-    ], { tags: 'carnivore,quick', prepTime: 5, cookTime: 15, servings: 2, protein: 32, fat: 18, carbs: 6, calories: 314 });
+    ], {
+      instructions: 'Grill at 200°C for 15 min',
+      tags: 'carnivore,quick',
+      source: 'https://example.com/recipe',
+      prepTime: 5,
+      cookTime: 15,
+      servings: 2,
+      protein: 32,
+      fat: 18,
+      carbs: 6,
+      calories: 314,
+    });
 
     expect(recipe.id).toBeDefined();
     expect(recipe.title).toBe('Grilled Ribeye');
     expect(recipe.ingredients).toHaveLength(3);
     expect(recipe.ingredients[0].name).toBe('Ribeye steak');
     expect(recipe.tags).toBe('carnivore,quick');
+    expect(recipe.instructions).toBe('Grill at 200°C for 15 min');
+    expect(recipe.source).toBe('https://example.com/recipe');
     expect(recipe.servings).toBe(2);
     expect(recipe.protein).toBe(32);
     expect(recipe.fat).toBe(18);
@@ -89,12 +115,13 @@ describe('Recipe CRUD', () => {
   });
 
   it('searches recipes by tag', () => {
-    addRecipe(1, 'Steak', [{ name: 'Beef', quantity: '500', unit: 'g' }], { tags: 'carnivore' });
+    addRecipe(1, 'Steak', [{ name: 'Beef', quantity: '500', unit: 'g' }], { tags: 'carnivore,quick' });
     addRecipe(1, 'Salad', [{ name: 'Lettuce', quantity: '200', unit: 'g' }], { tags: 'vegetarian' });
 
     const carnivore = getRecipes(1, { tags: 'carnivore' });
     expect(carnivore).toHaveLength(1);
     expect(carnivore[0].title).toBe('Steak');
+    expect(getRecipes(1, { tags: 'quick' }).map((recipe) => recipe.title)).toEqual(['Steak']);
   });
 
   it('searches recipes by ingredient keyword', () => {
@@ -104,6 +131,7 @@ describe('Recipe CRUD', () => {
     const results = getRecipes(1, { search: 'butter' });
     expect(results).toHaveLength(1);
     expect(results[0].title).toBe('Butter Steak');
+    expect(getRecipes(1, { search: 'BUTTER' })).toHaveLength(1);
   });
 
   it('deletes a recipe', () => {
@@ -199,14 +227,17 @@ describe('Recipe CRUD', () => {
 });
 
 describe('Meal Planning', () => {
-  beforeEach(() => { testDb = createMigratedTestDatabase(); });
-  afterEach(() => { testDb.close(); });
-
   it('sets a meal plan entry', () => {
-    const meal = setMealPlan(1, '2024-06-15', 'dinner', 'Grilled Ribeye with butter');
+    const recipe = addRecipe(1, 'Grilled Ribeye', [{ name: 'Ribeye', quantity: '400', unit: 'g' }]);
+    const meal = setMealPlan(1, '2024-06-15', 'dinner', 'Grilled Ribeye with butter', {
+      recipeId: recipe.id,
+      notes: 'Medium rare',
+    });
     expect(meal.date).toBe('2024-06-15');
     expect(meal.meal_type).toBe('dinner');
     expect(meal.title).toBe('Grilled Ribeye with butter');
+    expect(meal.recipe_id).toBe(recipe.id);
+    expect(meal.notes).toBe('Medium rare');
   });
 
   it('upserts on same date+meal_type', () => {
@@ -290,9 +321,6 @@ describe('Meal Planning', () => {
 // tests pin both the warning shape and the explicit non-warning case.
 // ─────────────────────────────────────────────────────────────────────────
 describe('Meal plan expired pantry warnings (C9)', () => {
-  beforeEach(() => { testDb = createMigratedTestDatabase(); });
-  afterEach(() => { testDb.close(); });
-
   it('surfaces a pantry_expired issue when a linked recipe references an expired pantry item', () => {
     upsertPantryItem(1, {
       name: 'Milk',
@@ -400,9 +428,6 @@ describe('Meal plan expired pantry warnings (C9)', () => {
 });
 
 describe('Cooking safety enforcement', () => {
-  beforeEach(() => { testDb = createMigratedTestDatabase(); });
-  afterEach(() => { testDb.close(); });
-
   it('blocks substitutions that would introduce a stored allergy', () => {
     const recipe = addRecipe(1, 'Peanut noodles', [
       { name: 'Peanuts', quantity: '30', unit: 'g' },
@@ -475,9 +500,6 @@ describe('Cooking safety enforcement', () => {
 });
 
 describe('Shopping List', () => {
-  beforeEach(() => { testDb = createMigratedTestDatabase(); });
-  afterEach(() => { testDb.close(); });
-
   it('generates shopping list from meal plan with linked recipes', () => {
     const recipe = addRecipe(1, 'Steak', [
       { name: 'Ribeye', quantity: '400', unit: 'g' },
@@ -489,21 +511,30 @@ describe('Shopping List', () => {
     expect(list.items).toHaveLength(2);
     expect(list.items.map(i => i.name)).toContain('Ribeye');
     expect(list.items.map(i => i.name)).toContain('Butter');
+    expect(list.items.every((item) => item.checked === false)).toBe(true);
   });
 
   it('aggregates ingredients across multiple meals', () => {
-    const recipe = addRecipe(1, 'Eggs & Butter', [
+    const breakfast = addRecipe(1, 'Eggs & Butter', [
       { name: 'Eggs', quantity: '3', unit: 'pcs' },
       { name: 'Butter', quantity: '20', unit: 'g' },
     ]);
-    setMealPlan(1, '2024-06-17', 'breakfast', 'Morning eggs', { recipeId: recipe.id });
-    setMealPlan(1, '2024-06-18', 'breakfast', 'Morning eggs', { recipeId: recipe.id });
+    const dinner = addRecipe(1, 'Buttered steak', [
+      { name: 'butter', quantity: '20', unit: 'g' },
+      { name: 'Steak', quantity: '400', unit: 'g' },
+    ]);
+    setMealPlan(1, '2024-06-17', 'breakfast', 'Morning eggs', { recipeId: breakfast.id });
+    setMealPlan(1, '2024-06-18', 'dinner', 'Buttered steak', { recipeId: dinner.id });
 
     const list = generateShoppingList(1, '2024-06-17');
-    expect(list.items).toHaveLength(2);
+    expect(list.items).toHaveLength(3);
     const eggs = list.items.find(i => i.name === 'Eggs')!;
-    expect(eggs.quantity).toBe('6');
+    expect(eggs.quantity).toBe('3');
     expect(eggs.unit).toBe('pcs');
+    const butter = list.items.filter((item) => item.name.toLowerCase() === 'butter');
+    expect(butter).toHaveLength(1);
+    expect(butter[0].quantity).toBe('40');
+    expect(butter[0].unit).toBe('g');
   });
 
   it('returns empty list for week with no meals', () => {
@@ -583,9 +614,6 @@ describe('Shopping List', () => {
 });
 
 describe('Pantry', () => {
-  beforeEach(() => { testDb = createMigratedTestDatabase(); });
-  afterEach(() => { testDb.close(); });
-
   it('upserts and lists pantry items for the active tenant', () => {
     const item = upsertPantryItem(1, {
       name: 'Greek yogurt',
@@ -638,6 +666,201 @@ describe('Pantry', () => {
     expect(getPantryItems(1, { tenantId: 101 })).toEqual([]);
     expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([
       expect.objectContaining({ name: 'Old milk', freshness_status: 'expired' }),
+    ]);
+  });
+});
+
+describe('Cooking schema and contract boundaries', () => {
+  it('keeps the recipe, meal-plan, and shopping-list schema complete', () => {
+    const tables = testDb.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('recipes','meal_plans','shopping_lists') ORDER BY name",
+    ).all() as Array<{ name: string }>;
+    expect(tables.map((table) => table.name)).toEqual(['meal_plans', 'recipes', 'shopping_lists']);
+
+    const recipeColumns = testDb.prepare("PRAGMA table_info('recipes')").all() as Array<{ name: string }>;
+    expect(recipeColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'id', 'tenant_id', 'owner_user_id', 'user_id', 'title', 'ingredients', 'instructions',
+      'prep_time_min', 'cook_time_min', 'servings', 'tags', 'source', 'protein_g',
+      'fat_g', 'carbs_g', 'calories_kcal', 'created_at', 'updated_at',
+    ]));
+  });
+
+  it('enforces tenant-aware uniqueness for meal and shopping slots', () => {
+    testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (10, 1, 1, '2024-06-15', 'dinner', 'A')").run();
+    expect(() => testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (10, 1, 1, '2024-06-15', 'dinner', 'B')").run()).toThrow();
+    expect(() => testDb.prepare("INSERT INTO meal_plans (tenant_id, owner_user_id, user_id, date, meal_type, title) VALUES (20, 1, 1, '2024-06-15', 'dinner', 'Tenant B')").run()).not.toThrow();
+
+    testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run();
+    expect(() => testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (10, 1, 1, '2024-06-17', '[]')").run()).toThrow();
+    expect(() => testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (20, 1, 1, '2024-06-17', '[]')").run()).not.toThrow();
+  });
+
+  it('requires explicit tenant and owner scope without user fallback', () => {
+    const predicate = cookingPrivateScopePredicate();
+    expect(predicate).toContain('tenant_id = ?');
+    expect(predicate).toContain('owner_user_id = ?');
+    expect(predicate).not.toMatch(/COALESCE\([^)]*tenant_id[^)]*user_id/i);
+  });
+
+  it('retains schema defaults and lookup indexes', () => {
+    testDb.prepare("INSERT INTO recipes (tenant_id, owner_user_id, user_id, title, ingredients) VALUES (1, 1, 1, 'Test', '[]')").run();
+    testDb.prepare("INSERT INTO shopping_lists (tenant_id, owner_user_id, user_id, week_start, items) VALUES (1, 1, 1, '2024-06-17', '[]')").run();
+    expect((testDb.prepare("SELECT servings FROM recipes WHERE title = 'Test'").get() as { servings: number }).servings).toBe(1);
+    expect((testDb.prepare("SELECT status FROM shopping_lists WHERE week_start = '2024-06-17'").get() as { status: string }).status).toBe('active');
+
+    const indexes = testDb.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{ name: string }>;
+    expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+      'idx_recipes_user', 'idx_recipes_tags', 'idx_meal_plans_user', 'idx_shopping_user',
+    ]));
+  });
+});
+
+describe('Cooking CRUD edge matrices', () => {
+  it('round-trips empty, special-character, Unicode, and large ingredient inputs', () => {
+    const inputs: Array<{ title: string; ingredients: Ingredient[]; expectedCount: number }> = [
+      { title: 'Mystery Dish', ingredients: [], expectedCount: 0 },
+      { title: "Grandma's Steak & Eggs (Family Recipe)", ingredients: [{ name: 'Steak', quantity: '500', unit: 'g' }], expectedCount: 1 },
+      { title: 'Brazilian Steak 🥩', ingredients: [{ name: 'Picanha 🥩', quantity: '1', unit: 'kg' }], expectedCount: 1 },
+      {
+        title: 'Complex Recipe',
+        ingredients: Array.from({ length: 50 }, (_, index) => ({
+          name: `Ingredient ${index + 1}`, quantity: `${index + 1}`, unit: 'g',
+        })),
+        expectedCount: 50,
+      },
+    ];
+
+    for (const input of inputs) {
+      const recipe = addRecipe(1, input.title, input.ingredients);
+      expect(recipe.title).toBe(input.title);
+      expect(recipe.ingredients).toHaveLength(input.expectedCount);
+      expect(recipe.servings).toBe(1);
+    }
+  });
+
+  it('returns safe empty and missing-record results', () => {
+    expect(getRecipes(999)).toEqual([]);
+    expect(deleteRecipe(1, 99999)).toBe(false);
+  });
+
+  it('enforces explicit and default recipe list limits', () => {
+    for (let index = 0; index < 25; index += 1) {
+      addRecipe(1, `Recipe ${index}`, [{ name: 'A', quantity: '1', unit: 'g' }]);
+    }
+    expect(getRecipes(1, { limit: 3 })).toHaveLength(3);
+    expect(getRecipes(1)).toHaveLength(20);
+  });
+
+  it('prevents cross-user recipe deletion', () => {
+    const recipe = addRecipe(1, 'User 1 Only', [{ name: 'A', quantity: '1', unit: 'g' }]);
+    expect(deleteRecipe(2, recipe.id)).toBe(false);
+    expect(getRecipes(1).map((item) => item.id)).toContain(recipe.id);
+  });
+});
+
+describe('Meal-plan boundary matrices', () => {
+  it('supports every meal type and returns deterministic date/type ordering', () => {
+    for (const mealType of ['breakfast', 'lunch', 'dinner', 'snack']) {
+      setMealPlan(1, '2024-06-15', mealType, `Meal: ${mealType}`);
+    }
+    setMealPlan(1, '2024-06-16', 'dinner', 'Later dinner');
+
+    const plan = getMealPlan(1, '2024-06-15', '2024-06-16');
+    expect(plan.slice(0, 4).map((meal) => meal.meal_type)).toEqual(['breakfast', 'dinner', 'lunch', 'snack']);
+    expect(plan.at(-1)?.date).toBe('2024-06-16');
+  });
+
+  it('returns safe empty and missing-delete results', () => {
+    expect(getMealPlan(1, '2024-06-15', '2024-06-21')).toEqual([]);
+    expect(deleteMealPlan(1, '2099-01-01', 'dinner')).toBe(false);
+  });
+
+  it('isolates same-date meal slots between users', () => {
+    setMealPlan(1, '2024-06-15', 'dinner', 'User 1 dinner');
+    setMealPlan(2, '2024-06-15', 'dinner', 'User 2 dinner');
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15').map((meal) => meal.title)).toEqual(['User 1 dinner']);
+    expect(getMealPlan(2, '2024-06-15', '2024-06-15').map((meal) => meal.title)).toEqual(['User 2 dinner']);
+  });
+});
+
+describe('Shopping-list boundary matrices', () => {
+  it('ignores meals without linked recipes without failing', () => {
+    setMealPlan(1, '2024-06-17', 'dinner', 'Eating out');
+    expect(generateShoppingList(1, '2024-06-17').items).toEqual([]);
+  });
+
+  it('covers exactly seven days from week start', () => {
+    const recipe = addRecipe(1, 'R', [{ name: 'A', quantity: '1', unit: 'g' }]);
+    setMealPlan(1, '2024-06-17', 'dinner', 'Day 1', { recipeId: recipe.id });
+    setMealPlan(1, '2024-06-23', 'dinner', 'Day 7', { recipeId: recipe.id });
+    setMealPlan(1, '2024-06-24', 'dinner', 'Day 8', { recipeId: recipe.id });
+    expect(generateShoppingList(1, '2024-06-17').items).toEqual([
+      expect.objectContaining({ name: 'A', quantity: '2', unit: 'g' }),
+    ]);
+  });
+
+  it('regenerates the existing shopping-list record', () => {
+    const firstRecipe = addRecipe(1, 'R', [{ name: 'A', quantity: '1', unit: 'g' }]);
+    setMealPlan(1, '2024-06-17', 'dinner', 'Dinner', { recipeId: firstRecipe.id });
+    const first = generateShoppingList(1, '2024-06-17');
+
+    const secondRecipe = addRecipe(1, 'R2', [{ name: 'B', quantity: '2', unit: 'g' }]);
+    setMealPlan(1, '2024-06-18', 'lunch', 'Lunch', { recipeId: secondRecipe.id });
+    const second = generateShoppingList(1, '2024-06-17');
+    expect(second.id).toBe(first.id);
+    expect(second.items).toHaveLength(2);
+  });
+
+  it('isolates generated shopping lists between users', () => {
+    const firstRecipe = addRecipe(1, 'User1', [{ name: 'A', quantity: '1', unit: 'g' }]);
+    const secondRecipe = addRecipe(2, 'User2', [{ name: 'B', quantity: '1', unit: 'g' }]);
+    setMealPlan(1, '2024-06-17', 'dinner', 'U1', { recipeId: firstRecipe.id });
+    setMealPlan(2, '2024-06-17', 'dinner', 'U2', { recipeId: secondRecipe.id });
+    expect(generateShoppingList(1, '2024-06-17').items.map((item) => item.name)).toEqual(['A']);
+    expect(generateShoppingList(2, '2024-06-17').items.map((item) => item.name)).toEqual(['B']);
+  });
+});
+
+describe('Cooking runtime assets and tool contract', () => {
+  it('bounds cooking history to the eight most recent messages', () => {
+    for (let index = 0; index < 10; index += 1) {
+      addToConversation(1, 'cooking', 'user', `message-${index}`, 1);
+    }
+    expect(getConversationHistory(1, 'cooking', 1).map((message) => message.content)).toEqual(
+      Array.from({ length: 8 }, (_, index) => `message-${index + 2}`),
+    );
+  });
+
+  it('keeps the cooking prompt substantial and transport agnostic', () => {
+    const promptPath = path.resolve(__dirname, '../../prompts/cooking.md');
+    expect(fs.existsSync(promptPath)).toBe(true);
+    const content = fs.readFileSync(promptPath, 'utf-8');
+    expect(content.length).toBeGreaterThan(100);
+    expect(content.toLowerCase()).toContain('carnivore');
+    expect(content.toLowerCase()).toContain('budget');
+    expect(content.toLowerCase()).toContain('calendar');
+    expect(content).toContain('Do NOT use HTML tags');
+    expect(content).not.toContain('Telegram HTML only');
+  });
+
+  it('exposes the exact cooking tool set', () => {
+    const cookingTools = TOOLS.filter((tool) => tool.name.startsWith('cooking_'));
+    expect(cookingTools.map((tool) => tool.name).sort()).toEqual([
+      'cooking_add_recipe', 'cooking_delete_meal', 'cooking_delete_pantry_item',
+      'cooking_delete_recipe', 'cooking_generate_shopping_list', 'cooking_get_meal_plan',
+      'cooking_get_pantry', 'cooking_get_preferences', 'cooking_get_recipes',
+      'cooking_get_shopping_list', 'cooking_set_meal', 'cooking_set_preference',
+      'cooking_upsert_pantry_item',
+    ]);
+  });
+
+  it('keeps cooking write-tool schemas strict', () => {
+    const addRecipeTool = TOOLS.find((tool) => tool.name === 'cooking_add_recipe');
+    const setMealTool = TOOLS.find((tool) => tool.name === 'cooking_set_meal');
+    expect(addRecipeTool?.input_schema.required).toEqual(expect.arrayContaining(['title', 'ingredients']));
+    expect(setMealTool?.input_schema.required).toEqual(expect.arrayContaining(['date', 'meal_type', 'title']));
+    expect((setMealTool?.input_schema.properties as any).meal_type.enum).toEqual([
+      'breakfast', 'lunch', 'dinner', 'snack',
     ]);
   });
 });

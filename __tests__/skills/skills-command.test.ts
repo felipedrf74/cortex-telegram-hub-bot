@@ -8,18 +8,10 @@
  * - Edge cases: empty skills, invalid skill name
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 // ── Test helpers ───────────────────────────────────────────────────
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
 
 // ── Mock DB ──────────────────────────────────────────────────────
 
@@ -61,13 +53,22 @@ import type { DomainName } from '../../src/domains/types';
 
 // ── Setup / Teardown ────────────────────────────────────────────
 
-beforeEach(() => {
+beforeAll(() => {
   testDb = createMigratedTestDatabase();
+});
+
+beforeEach(() => {
+  testDb.exec('SAVEPOINT skills_command_test');
   invalidateToolCache();
   seedDefaultSkills();
 });
 
 afterEach(() => {
+  testDb.exec('ROLLBACK TO skills_command_test');
+  testDb.exec('RELEASE skills_command_test');
+});
+
+afterAll(() => {
   testDb.close();
 });
 
@@ -154,6 +155,16 @@ describe('/skills command — getAllSkillStatuses()', () => {
 // ── /skill <name> command: getSkillStatus() ─────────────────────
 
 describe('/skill <name> command — getSkillStatus()', () => {
+  it('resolves every configured domain through the dynamic lookup path', () => {
+    for (const domain of Object.keys(DEFAULT_SKILLS) as DomainName[]) {
+      const status = getSkillStatus(domain);
+      expect(status.name).toBe(domain);
+      expect(status.subSkills.map(subSkill => subSkill.name).sort()).toEqual(
+        DEFAULT_SKILLS[domain].subSkills.map(subSkill => subSkill.name).sort(),
+      );
+    }
+  });
+
   it('returns correct detail for secretary', () => {
     const skill = getSkillStatus('secretary');
     expect(skill.name).toBe('secretary');

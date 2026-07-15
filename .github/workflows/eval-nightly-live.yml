@@ -5,6 +5,9 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: '22.23.1'
   CHAT_EVAL_MODE: real_provider

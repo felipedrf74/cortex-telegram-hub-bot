@@ -103,6 +103,14 @@ else
   resolved_base="$(resolve_base)"
 fi
 head_sha="$(git -C "$LOCAL_DIR" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+IMPACT_RESOLVED=true
+if [ -z "$EXPLICIT_FILES" ] \
+  && ! git -C "$LOCAL_DIR" merge-base --is-ancestor "$resolved_base" HEAD >/dev/null 2>&1; then
+  # A resolving SHA is not enough: force-pushes and recreated branches can
+  # leave github.event.before outside HEAD's ancestry. Triple-dot diff then
+  # has no merge base, so treating its empty output as docs-only is unsafe.
+  IMPACT_RESOLVED=false
+fi
 
 # Collect changed files. Two sources are merged:
 #   - committed diff against base (`git diff --name-only base...HEAD`)
@@ -233,10 +241,52 @@ match() {
   grep -E -q "$1" <<<"$CHANGED"
 }
 
+# The test policy is the governed source for full-suite escalation. Bootstrap
+# paths are hard-coded so a change that removes its own policy entry cannot
+# make itself skippable. Invalid/missing policy also fails closed to full.
+HAS_FULL_SUITE_TRIGGER=false
+if match '^config/test-policy\.json$|^scripts/changed-area-classifier\.sh$|^scripts/resolve-ci-change-base\.sh$|^scripts/lib/test-policy\.mjs$'; then
+  HAS_FULL_SUITE_TRIGGER=true
+else
+  POLICY_PATH="$LOCAL_DIR/config/test-policy.json"
+  if ! HAS_FULL_SUITE_TRIGGER="$(POLICY_PATH="$POLICY_PATH" node -e '
+    const fs = require("fs");
+    function globToRegExp(glob) {
+      let source = "";
+      for (let index = 0; index < glob.length; index += 1) {
+        const char = glob[index];
+        const next = glob[index + 1];
+        if (char === "*" && next === "*") {
+          if (glob[index + 2] === "/") { source += "(?:.*/)?"; index += 2; }
+          else { source += ".*"; index += 1; }
+        } else if (char === "*") source += "[^/]*";
+        else if (char === "?") source += "[^/]";
+        else source += char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+      }
+      return new RegExp(`^${source}$`);
+    }
+    const policy = JSON.parse(fs.readFileSync(process.env.POLICY_PATH, "utf8"));
+    if (!Array.isArray(policy.fullSuiteTriggers)) throw new Error("fullSuiteTriggers is missing");
+    const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean);
+    const matchers = policy.fullSuiteTriggers.map(globToRegExp);
+    process.stdout.write(String(files.some((file) => matchers.some((matcher) => matcher.test(file)))));
+  ' <<<"$CHANGED")"; then
+    echo "Test policy could not be evaluated; failing closed to full Vitest." >&2
+    HAS_FULL_SUITE_TRIGGER=true
+  fi
+fi
+
 # Non-doc detection: any file that's NOT (.md / docs/** / prompts/*.md / CHANGELOG.md)
 if [ -n "$(grep -vE '\.md$|^docs/|/docs/|^CHANGELOG\.md$|^prompts/.*\.md$' <<<"$CHANGED")" ]; then
   HAS_NON_DOC=true
   HAS_DOCS_ONLY=false
+fi
+if [ "$IMPACT_RESOLVED" != true ]; then
+  HAS_NON_DOC=true
+  HAS_DOCS_ONLY=false
+  # Unknown change impact must include the non-Vitest release lanes too.
+  HAS_MIGRATION=true
+  HAS_PYTHON_ENGINE=true
 fi
 
 match '^docs/release/release-state\.json$|^docs/release/CURRENT_RELEASE_STATE\.md$|^engine/docs/release/release-state\.json$' && HAS_CURRENT_VERDICT_DOC=true
@@ -479,6 +529,8 @@ $HAS_DEPLOY_SCRIPT && CANNOT_SKIP+=("deploy-script-promotion-rehearsal")
 $HAS_HOOK && CANNOT_SKIP+=("hook-validation-on-feature-branch")
 $HAS_CI_WORKFLOW && CANNOT_SKIP+=("ci-workflow-validation-on-PR")
 $HAS_TEST_CONFIG && CANNOT_SKIP+=("test-config-mock-completeness-audit")
+$HAS_FULL_SUITE_TRIGGER && CANNOT_SKIP+=("test-infrastructure-full-suite")
+[ "$IMPACT_RESOLVED" = true ] || CANNOT_SKIP+=("unresolved-change-impact-full-verification")
 # Closed-beta hardening (2026-05-03): three new cannot-skip gates.
 $HAS_ATTACHMENT && CANNOT_SKIP+=("attachment-tenant-isolation")
 $HAS_MODEL_ROUTING && CANNOT_SKIP+=("model-routing-cost-attribution")
@@ -529,6 +581,7 @@ fi
 # Tier 3 only if test config changed broadly (signals shared-behavior risk)
 $HAS_TEST_CONFIG && TIERS+=("T3-recommended")
 $HAS_PACKAGE_JSON && TIERS+=("T3-recommended")
+$HAS_FULL_SUITE_TRIGGER && TIERS+=("T3-required")
 
 # Tier 4 (staging smoke) if backend src or migration in scope
 if $HAS_BACKEND_SRC || $HAS_MIGRATION || $HAS_PYTHON_ENGINE || $HAS_DEPLOY_CONFIG; then
@@ -601,6 +654,11 @@ if $HAS_NON_DOC; then
 fi
 
 if $HAS_RUNTIME_INFRA; then
+  VITEST_MODE="full"
+  VITEST_GLOBS=()
+fi
+
+if $HAS_FULL_SUITE_TRIGGER || [ "$IMPACT_RESOLVED" != true ]; then
   VITEST_MODE="full"
   VITEST_GLOBS=()
 fi
@@ -723,6 +781,8 @@ emit_json() {
   export CLAS_TEST_CONFIG="$HAS_TEST_CONFIG"
   export CLAS_PACKAGE_JSON="$HAS_PACKAGE_JSON"
   export CLAS_HIGH_FAN_IN="$HAS_HIGH_FAN_IN"
+  export CLAS_FULL_SUITE_TRIGGER="$HAS_FULL_SUITE_TRIGGER"
+  export CLAS_IMPACT_RESOLVED="$IMPACT_RESOLVED"
   export CLAS_IRREVERSIBLE_MIGRATION="$HAS_IRREVERSIBLE_MIGRATION"
   export CLAS_CURRENT_VERDICT_DOC="$HAS_CURRENT_VERDICT_DOC"
   export CLAS_ATTACHMENT="$HAS_ATTACHMENT"
@@ -809,6 +869,8 @@ const payload = {
     testConfig: flag('CLAS_TEST_CONFIG'),
     packageJson: flag('CLAS_PACKAGE_JSON'),
     highFanIn: flag('CLAS_HIGH_FAN_IN'),
+    fullSuiteTrigger: flag('CLAS_FULL_SUITE_TRIGGER'),
+    impactResolved: flag('CLAS_IMPACT_RESOLVED'),
     irreversibleMigration: flag('CLAS_IRREVERSIBLE_MIGRATION'),
     currentVerdictDoc: flag('CLAS_CURRENT_VERDICT_DOC'),
     attachment: flag('CLAS_ATTACHMENT'),

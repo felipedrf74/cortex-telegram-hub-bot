@@ -22,13 +22,18 @@ permissions:
 
 jobs:
   sign:
-    if: github.actor == github.repository_owner
+    if: ${{ github.actor == github.repository_owner && github.ref == 'refs/heads/main' }}
+    environment: release-signing
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Check out protected main signing tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.runtime_sha }}
+          ref: refs/heads/main
+          path: trusted-tooling
+          fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -48,17 +53,19 @@ jobs:
           if (parsed.requestId !== process.env.REQUEST_ID) throw new Error('request id mismatch');
           fs.writeFileSync('.local/release/staging/request.json', request, { mode: 0o600 });
           NODE
-          node scripts/release-staging-attestation.mjs validate-request \
+          node trusted-tooling/scripts/release-staging-attestation.mjs validate-request \
+            --root "$GITHUB_WORKSPACE" \
             --request .local/release/staging/request.json \
             --expect-runtime-sha "$RUNTIME_SHA"
 
       - name: Sign detached staging attestation
         env:
           NEXUS_RELEASE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
-          NEXUS_RELEASE_MANIFEST_KEY_ID: github-actions-release-manifest-2026-07
+          NEXUS_RELEASE_MANIFEST_KEY_ID: github-environment-release-signing-2026-07
           RUNTIME_SHA: ${{ inputs.runtime_sha }}
         run: |
-          node scripts/release-staging-attestation.mjs sign \
+          node trusted-tooling/scripts/release-staging-attestation.mjs sign \
+            --root "$GITHUB_WORKSPACE" \
             --request .local/release/staging/request.json \
             --output .local/release/staging/staging-attestation.json \
             --expect-runtime-sha "$RUNTIME_SHA"
@@ -67,8 +74,10 @@ jobs:
         env:
           RUNTIME_SHA: ${{ inputs.runtime_sha }}
         run: |
-          node scripts/release-staging-attestation.mjs validate-request \
-            --request .local/release/staging/request.json \
+          node trusted-tooling/scripts/release-staging-attestation.mjs validate-signed \
+            --root "$GITHUB_WORKSPACE" \
+            --attestation .local/release/staging/staging-attestation.json \
+            --public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
             --expect-runtime-sha "$RUNTIME_SHA"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

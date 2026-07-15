@@ -15,8 +15,6 @@ export {
   findUnexpectedMigrationPrefixCollisions,
   stripWrappingTransactionStatements,
 } from './migration-runner';
-export { createMigratedTestDatabase } from '../testing/migrated-test-database';
-
 let db: Database.Database;
 let storage: SQLiteStorage | null = null;
 

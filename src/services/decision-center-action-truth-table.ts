@@ -177,6 +177,17 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     apnsActionAllowed: false,
     highRiskConfirmationRequired: true,
   },
+  approve_product_learning_case: {
+    executor: 'training',
+    verifier: 'product_learning_case_review_approvals',
+    implemented: true,
+    mutating: true,
+    expectedMutation: 'Create an immutable review receipt for the exact tenant-scoped product learning case.',
+    successUi: 'Learning case review approved.',
+    retryAvailable: true,
+    apnsActionAllowed: false,
+    highRiskConfirmationRequired: true,
+  },
   option_a: {
     executor: 'chat',
     verifier: 'chat_pending_confirmation_store',

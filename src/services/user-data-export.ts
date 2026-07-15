@@ -248,6 +248,9 @@ export interface FullUserExport {
     createdAt: string;
     updatedAt: string;
   }>;
+  productLearningCases: Array<Record<string, unknown>>;
+  productLearningCaseTransitions: Array<Record<string, unknown>>;
+  productLearningCaseReviewApprovals: Array<Record<string, unknown>>;
   trainingPlanRevisionV1: {
     capacitySnapshots: Array<Record<string, unknown>>;
     profileSnapshots: Array<Record<string, unknown>>;
@@ -547,6 +550,42 @@ export function exportAllUserData(userId: number): FullUserExport {
     ...row,
     metadata: parseExportJson(row.metadata),
   }));
+  const productLearningCases = safeAll(db, `
+    SELECT case_id AS caseId, tenant_id AS tenantId, user_id AS userId, owner, lifecycle,
+           privacy_class AS privacyClass, redacted_input_json AS redactedInput,
+           expected_contract_json AS expectedContract,
+           evidence_references_json AS evidenceReferences,
+           producer_version AS producerVersion, confidence,
+           observed_at AS observedAt, reviewed_at AS reviewedAt,
+           reviewed_by AS reviewedBy,
+           review_approval_reference AS reviewApprovalReference,
+           expires_at AS expiresAt, created_at AS createdAt, updated_at AS updatedAt
+      FROM product_learning_cases WHERE user_id = ?
+     ORDER BY tenant_id, observed_at, case_id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    redactedInput: parseExportJson(row.redactedInput),
+    expectedContract: parseExportJson(row.expectedContract),
+    evidenceReferences: parseExportJson(row.evidenceReferences),
+  }));
+  const productLearningCaseTransitions = safeAll(db, `
+    SELECT transition_id AS transitionId, tenant_id AS tenantId, user_id AS userId,
+           case_id AS caseId, from_lifecycle AS fromLifecycle,
+           to_lifecycle AS toLifecycle, actor,
+           approval_reference AS approvalReference,
+           transitioned_at AS transitionedAt
+      FROM product_learning_case_transitions WHERE user_id = ?
+     ORDER BY tenant_id, transitioned_at, transition_id
+  `, userId);
+  const productLearningCaseReviewApprovals = safeAll(db, `
+    SELECT approval_reference AS approvalReference, tenant_id AS tenantId, user_id AS userId,
+           case_id AS caseId, action_execution_id AS actionExecutionId,
+           decision_id AS decisionId, action_id AS actionId,
+           reviewed_by AS reviewedBy, reviewed_at AS reviewedAt,
+           created_at AS createdAt
+      FROM product_learning_case_review_approvals WHERE user_id = ?
+     ORDER BY tenant_id, reviewed_at, approval_reference
+  `, userId);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -577,6 +616,9 @@ export function exportAllUserData(userId: number): FullUserExport {
     skillMemories,
     trainingFeedbackDecisions,
     secretarySourceSkillFeedback,
+    productLearningCases,
+    productLearningCaseTransitions,
+    productLearningCaseReviewApprovals,
     trainingPlanRevisionV1: {
       capacitySnapshots: trainingCapacitySnapshots,
       profileSnapshots: trainingProfileSnapshots,
@@ -619,6 +661,9 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'training_completions', column: 'user_id' },
   { table: 'training_m4_capacity_prune_authorizations', column: 'user_id' },
   { table: 'training_m4_capacity_snapshots', column: 'user_id' },
+  { table: 'product_learning_case_review_approvals', column: 'user_id' },
+  { table: 'product_learning_case_transitions', column: 'user_id' },
+  { table: 'product_learning_cases', column: 'user_id' },
   {
     table: 'fitness_training_plans',
     column: 'user_id',
@@ -781,6 +826,9 @@ export function deleteAllUserData(userId: number): Record<string, number> {
         'training_adaptation_lifecycle_events',
         'training_m4_capacity_prune_authorizations',
         'training_m4_capacity_snapshots',
+        'product_learning_case_review_approvals',
+        'product_learning_case_transitions',
+        'product_learning_cases',
       ].filter((table) => tableExistsForDeletion(db, table)).reduce((total, table) => {
         const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = ?`).get(userId) as { count: number };
         return total + row.count;

@@ -876,6 +876,19 @@ describe('Secretary Notification Orchestrator', () => {
     });
 
     expect(resolveNotificationContract({
+      sourceSkill: 'training',
+      type: 'approval_required',
+      actionId: 'approve_product_learning_case',
+    })).toMatchObject({
+      apnsCategory: 'DECISION_CLARIFICATION',
+      iosDestination: 'decision_center',
+      privacySafeCopyPolicy: 'health',
+      supportedActions: ['activate_training_plan_revision', 'approve_product_learning_case', 'open_detail'],
+      actionId: 'approve_product_learning_case',
+      contributesToBadge: true,
+    });
+
+    expect(resolveNotificationContract({
       sourceSkill: 'finance',
       type: 'approval_required',
       actionId: 'open_detail',

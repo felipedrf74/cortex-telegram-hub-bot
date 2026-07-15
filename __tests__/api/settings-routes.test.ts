@@ -107,11 +107,11 @@ async function dispatchDeletePushToken(userId: number, deviceId = 'test-device-i
   return res;
 }
 
-async function dispatchAccountExport(userId: number): Promise<MockRes> {
+async function dispatchAccountExport(userId: number, tenantId = userId): Promise<MockRes> {
   const { settingsRoutes } = await import('../../src/api/routes/settings');
   const router = settingsRoutes();
   const req = mockReq(userId, {});
-  (req as any).tenantId = userId;
+  (req as any).tenantId = tenantId;
   (req as any).ip = '203.0.113.10';
   (req as any).method = 'POST';
   (req as any).url = '/export';
@@ -302,6 +302,43 @@ describe('Settings language route', () => {
     expect(audit).toBeTruthy();
     expect(audit.ip_address).toBe('203.0.113.10');
     expect(JSON.parse(audit.details).tableCounts).toBeDefined();
+  });
+
+  it('exports governed learning cases only from the authenticated tenant and user scope', async () => {
+    const insert = testDb.prepare(`
+      INSERT INTO product_learning_cases (
+        case_id, tenant_id, user_id, owner, lifecycle, privacy_class,
+        redacted_input_json, expected_contract_json, evidence_references_json,
+        producer_version, confidence, observed_at, expires_at
+      ) VALUES (?, ?, 1, 'training', 'observed', 'redacted-product', ?, ?, ?,
+        'training-learning.v1', 1, '2026-07-15T00:00:00.000Z', '2099-01-11T00:00:00.000Z')
+    `);
+    const input = JSON.stringify({ kind: 'capacity_conflict_accuracy', outcomeCode: 'confirmed' });
+    const contract = JSON.stringify({ contractId: 'training.capacity_conflict.v1' });
+    insert.run('case-tenant-44', 44, input, contract, JSON.stringify(['ci://run/44/case/1']));
+    insert.run('case-tenant-55', 55, input, contract, JSON.stringify(['ci://run/55/case/1']));
+
+    const res = await dispatchAccountExport(1, 44);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.productLearningCases).toEqual([
+      expect.objectContaining({
+        caseId: 'case-tenant-44',
+        tenantId: 44,
+        userId: 1,
+        redactedInput: { kind: 'capacity_conflict_accuracy', outcomeCode: 'confirmed' },
+        expectedContract: { contractId: 'training.capacity_conflict.v1' },
+      }),
+    ]);
+    expect(res.body.data.productLearningCaseTransitions).toEqual([
+      expect.objectContaining({
+        tenantId: 44,
+        userId: 1,
+        caseId: 'case-tenant-44',
+        fromLifecycle: null,
+        toLifecycle: 'observed',
+      }),
+    ]);
   });
 
   it('audit-logs account deletion after cascade so the row survives erasure', async () => {

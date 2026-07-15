@@ -13,6 +13,10 @@ import { logger } from '../utils/logger';
 import { getUserById, getUserByTelegramId } from './user-service';
 import { checkSkillAccess } from './skill-tiers';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
+import {
+  getCapabilityOnboardingMap,
+  getCapabilityQuestionnaireSkillMap,
+} from './capability-manifest';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1039,23 +1043,10 @@ function parseSession(row: any): OnboardingSession {
  * and skip the swim questions entirely. The old single-string form
  * is still accepted for domains that don't need multiple sheets.
  */
-export const SKILL_ONBOARDING_MAP: Record<string, string | string[] | null> = {
-  secretary: null,
-  triathlon: ['fitness', 'triathlon-gym', 'triathlon-running', 'triathlon-cycling', 'triathlon-swim'],
-  content: null,
-  cooking: 'diet',
-  finance: null,
-};
+export const SKILL_ONBOARDING_MAP = getCapabilityOnboardingMap();
 
 /** Reverse: which skill does this questionnaire serve? */
-export const QUESTIONNAIRE_SKILL_MAP: Record<string, string> = {
-  fitness: 'triathlon',
-  'triathlon-gym': 'triathlon',
-  'triathlon-running': 'triathlon',
-  'triathlon-cycling': 'triathlon',
-  'triathlon-swim': 'triathlon',
-  diet: 'cooking',
-};
+export const QUESTIONNAIRE_SKILL_MAP: Record<string, string> = getCapabilityQuestionnaireSkillMap();
 
 /** Normalize the polymorphic mapping value to an array of questionnaire IDs. */
 function questionnairesForSkill(skill: string): string[] {

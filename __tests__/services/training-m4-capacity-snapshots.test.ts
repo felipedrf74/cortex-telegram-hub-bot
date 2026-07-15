@@ -2,7 +2,8 @@
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMigratedTestDatabase, withDatabaseForTest } from '../../src/services/database';
+import { withDatabaseForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { getTrainingM4AuthoritativeCapacityContext } from '../../src/services/training-m4-capacity-context';
 import {
   readMaterializedTrainingM4CapacityContext,

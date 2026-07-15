@@ -23,7 +23,8 @@ import { createScraperMfaInteractiveCallbacks } from './scraper-mfa-reply';
 import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
-import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
+import { registerJob as registerTelemetryJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory, type JobDomain } from '../portal/telemetry';
+import { assertAgentJobRuntimeRegistration } from './agent-job-manifest';
 import { createNotificationIntent, releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
@@ -107,6 +108,17 @@ import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 interface ActiveUserTarget {
   tenantId: number;
   telegramId: number | null;
+}
+
+function registerJob(
+  id: string,
+  name: string,
+  runtimeSchedule: string,
+  domain: JobDomain = 'system',
+  declaredSchedule: string = runtimeSchedule,
+): void {
+  assertAgentJobRuntimeRegistration({ id, name, runtimeSchedule, declaredSchedule, domain });
+  registerTelemetryJob(id, name, runtimeSchedule, domain);
 }
 
 let remindersJobInFlight = false;
@@ -331,16 +343,24 @@ export async function runContentTopicCronForActiveUsers(
       );
       continue;
     }
-    const enforcementEnabled = isPaidAiCostControlsEnforcementEnabled();
-    const missingCount = enforcementEnabled
-      ? getMissingScheduledInventoryCount(target.tenantId, {
-          format,
-          sourceJob,
-          targetCount: 5,
-          windowDays: 7,
-        })
-      : 5;
-    if (enforcementEnabled && missingCount === 0) {
+    let missingCount: number;
+    try {
+      // Output idempotency is a provider-call invariant, not a billing-rollout
+      // behavior. Keep it active in both observe-only and enforcing modes.
+      missingCount = getMissingScheduledInventoryCount(target.tenantId, {
+        format,
+        sourceJob,
+        targetCount: 5,
+        windowDays: 7,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, userId: target.tenantId, sourceJob, format },
+        '[scheduler] content topic generation skipped: inventory gate unavailable',
+      );
+      continue;
+    }
+    if (missingCount === 0) {
       logger.info(
         { userId: target.tenantId, sourceJob, format },
         '[scheduler] content topic generation skipped: seven-day pending inventory is full',
@@ -384,24 +404,31 @@ export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void>
       );
       continue;
     }
-    const enforcementEnabled = isPaidAiCostControlsEnforcementEnabled();
-    const missingReels = enforcementEnabled
-      ? getMissingScheduledInventoryCount(target.tenantId, {
-          format: 'reel',
-          sourceJob: 'friday_weekly',
-          targetCount: 4,
-          windowDays: 7,
-        })
-      : 4;
-    const missingYoutube = enforcementEnabled
-      ? getMissingScheduledInventoryCount(target.tenantId, {
-          format: 'youtube',
-          sourceJob: 'friday_weekly',
-          targetCount: 2,
-          windowDays: 7,
-        })
-      : 2;
-    if (enforcementEnabled && missingReels === 0 && missingYoutube === 0) {
+    let missingReels: number;
+    let missingYoutube: number;
+    try {
+      // This idempotency gate is unconditional so an unchanged scheduled input
+      // cannot spend provider tokens while paid-AI controls are observe-only.
+      missingReels = getMissingScheduledInventoryCount(target.tenantId, {
+        format: 'reel',
+        sourceJob: 'friday_weekly',
+        targetCount: 4,
+        windowDays: 7,
+      });
+      missingYoutube = getMissingScheduledInventoryCount(target.tenantId, {
+        format: 'youtube',
+        sourceJob: 'friday_weekly',
+        targetCount: 2,
+        windowDays: 7,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, userId: target.tenantId, sourceJob: 'friday_weekly' },
+        '[scheduler] Friday package skipped: inventory gate unavailable',
+      );
+      continue;
+    }
+    if (missingReels === 0 && missingYoutube === 0) {
       logger.info(
         { userId: target.tenantId, sourceJob: 'friday_weekly' },
         '[scheduler] Friday package skipped: seven-day pending inventory is full',
@@ -1443,7 +1470,7 @@ export function startScheduler(): void {
   registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1',      'secretary');
   registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
   registerJob('secretary_agenda_sync', 'Secretary Agenda → Calendar Sync', '*/5 * * * *', 'secretary');
-  registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
+  registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '5,35 * * * *',    'triathlon');
   registerJob('garmin_coach',       'Garmin Coach',          '*/5 * * * *',     'triathlon');
   registerJob('garmin_tenant_isolation_watcher', 'Garmin Tenant Isolation Watcher', '45 6 * * *', 'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
@@ -1460,7 +1487,7 @@ export function startScheduler(): void {
   registerJob('integration_health', 'Integration Health Probes', '*/15 * * * *', 'system');
   registerJob('training_plan_adjust', 'Training Plan Auto-Adjust', '0 19 * * 0', 'triathlon');
   registerJob('autoresearch',     'Autoresearch',           '19 1 * * 0',       'system');
-  registerJob('db_backup',        'Database Backup',        backupCron,        'system');
+  registerJob('db_backup',        'Database Backup',        backupCron,        'system', 'backupCron');
   registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
@@ -1470,8 +1497,10 @@ export function startScheduler(): void {
   registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
   registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
   registerJob('decision_ledger_retention_prune', 'Decision Ledger Retention Prune', '40 4 * * *', 'system');
-  registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '15 * * * *', 'system');
+  registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '*/2 * * * *', 'system');
+  registerJob('chat_action_run_zombie_reaper', 'Chat Action Run Zombie Reaper', '*/5 * * * *', 'system');
   registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
+  registerJob('chat_action_run_retention', 'Chat Action Run Retention', '20 0 * * *', 'system');
   registerJob('event_backbone_worker', 'Event Backbone Worker', '* * * * *', 'system');
   registerJob('event_backbone_cleanup', 'Event Backbone Cleanup', '10 0 * * *', 'system');
   registerJob('nexus_points_expiry', 'Nexus Points Expiry Sweep', '0 4 * * *', 'system');
@@ -1482,6 +1511,9 @@ export function startScheduler(): void {
     registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
   }
   registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
+  registerJob('dst_watchdog', 'DST Watchdog', '2,17,32,47 * * * *', 'system');
+  registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
+  registerJob('decision_center_smoke_cleanup', 'Decision Center Smoke Cleanup', '7,37 * * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -2781,7 +2813,6 @@ export function startScheduler(): void {
     }
   }), { timezone: tz });
 
-  registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
   cron.schedule('*/15 * * * *', wrapJob('notification_release', async () => {
     const result = await releaseDueNotificationDeliveries();
     if (result.inspected > 0) {

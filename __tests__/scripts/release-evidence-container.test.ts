@@ -22,6 +22,7 @@ function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
 describe('release-evidence-container wrapper', () => {
   const script = () => readFileSync('scripts/release-evidence-container.sh', 'utf8');
   const workflow = () => readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
+  const releaseSigner = () => readFileSync('.github/workflows/sign-release-manifest.yml', 'utf8');
   const stagingSigner = () => readFileSync('.github/workflows/sign-staging-attestation.yml', 'utf8');
 
   it('marks the bind-mounted workspace as a safe git directory', () => {
@@ -54,14 +55,15 @@ describe('release-evidence-container wrapper', () => {
     const stopIndex = raw.indexOf('Stop when full-suite prerequisites failed');
     const countIndex = raw.indexOf('Count tests from shard artifacts');
     const writeIndex = raw.indexOf('- name: Write exact release-test result');
-    const signIndex = raw.indexOf('- name: Sign ReleaseManifestV2');
+    const unsignedIndex = raw.indexOf('- name: Write unsigned ReleaseManifestV2 candidate');
 
     expect(stopIndex).toBeGreaterThan(-1);
     expect(countIndex).toBeGreaterThan(stopIndex);
     expect(writeIndex).toBeGreaterThan(stopIndex);
-    expect(signIndex).toBeGreaterThan(writeIndex);
+    expect(unsignedIndex).toBeGreaterThan(writeIndex);
     expect(raw).toContain("needs.vitest-full.result != 'success' || needs.python-full.result != 'success'");
     expect(raw).toContain('release-manifest-v2.mjs write');
+    expect(raw).toContain('--allow-unsigned');
     expect(raw).toContain('.local/release/test-results.json');
     expect(raw).toContain('timeout-minutes: 30');
   });
@@ -135,22 +137,27 @@ describe('release-evidence-container wrapper', () => {
     }
   });
 
-  it('signs detached staging evidence only through the owner-gated CI secret path', () => {
+  it('signs release and staging evidence only through protected-main environment secret paths', () => {
     const raw = stagingSigner();
     const rc = workflow();
+    const release = releaseSigner();
     const request = readFileSync('scripts/request-staging-attestation.sh', 'utf8');
 
-    expect(raw).toContain('github.actor == github.repository_owner');
+    expect(raw).toContain('environment: release-signing');
+    expect(raw).toContain("github.ref == 'refs/heads/main'");
+    expect(raw).toContain('ref: refs/heads/main');
+    expect(raw).toContain('path: trusted-tooling');
     expect(raw).toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
-    expect(raw).toContain('release-staging-attestation.mjs validate-request');
-    expect(raw).toContain('release-staging-attestation.mjs sign');
+    expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs validate-request');
+    expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs sign');
     expect(raw).toContain('staging-attestation-${{ inputs.request_id }}');
     expect(raw).not.toContain('SERVER_SSH_KEY');
-    expect(rc).toContain("inputs.operation == 'sign_staging' && github.actor == github.repository_owner");
-    expect(rc).toContain('Sign detached staging attestation');
-    expect(rc).toContain('staging-attestation-${{ inputs.request_id }}');
-    expect(request).toContain('gh workflow view sign-staging-attestation.yml');
-    expect(request).toContain('SIGNING_WORKFLOW="release-candidate-evidence.yml"');
-    expect(request).toContain('WORKFLOW_ARGS=(-f "operation=sign_staging")');
+    expect(release).toContain('environment: release-signing');
+    expect(release).toContain('trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest');
+    expect(release).toContain('release-manifest-v2-${{ env.RUNTIME_SHA }}');
+    expect(rc).not.toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
+    expect(rc).not.toContain('sign_staging');
+    expect(request).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
+    expect(request).toContain('gh workflow run "$SIGNING_WORKFLOW" --ref "$REF"');
   });
 });

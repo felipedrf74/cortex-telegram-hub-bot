@@ -336,6 +336,14 @@ describe('GET /health', () => {
     expect(body.memory).toHaveProperty('heapTotal');
     expect(body.memory).toHaveProperty('external');
     expect(body.timestamp).toBeDefined();
+
+    // The public readiness endpoint is intentionally credential-free. Keep
+    // this as a response contract instead of a brittle source-substring scan.
+    expect(Object.keys(body.bot).sort()).toEqual(['lastMessageAt', 'polling', 'restarting']);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('test:token');
+    expect(serialized).not.toContain('test-health-secret');
+    expect(serialized).not.toMatch(/"(?:password|secret|token|botToken)"\s*:/i);
   });
 
   it('returns 200 and keeps server healthy when bot is not polling', async () => {

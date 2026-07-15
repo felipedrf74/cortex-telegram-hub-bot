@@ -35,6 +35,9 @@ on:
           - full
           - full+coverage
 
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: '22.23.1'
 
@@ -58,6 +61,10 @@ jobs:
         with:
           fetch-depth: 0   # need history to diff against base
 
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Run classifier
         id: classify
         env:
@@ -66,20 +73,16 @@ jobs:
           PR_BASE_REF: ${{ github.base_ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          ZERO_SHA="0000000000000000000000000000000000000000"
           BASE_REF=""
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            test -n "$PR_BASE_REF"
-            test -n "$PR_HEAD_SHA"
-            BASE_REF="$(git merge-base "origin/$PR_BASE_REF" "$PR_HEAD_SHA")"
-          elif [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "$ZERO_SHA" ] \
-            && git rev-parse --verify --quiet "${PUSH_BEFORE_SHA}^{commit}" >/dev/null; then
-            # github.event.before is the only push identity that covers every
-            # commit in a multi-commit delivery. HEAD~1 can silently classify
-            # "runtime commit + docs commit" as docs-only.
-            BASE_REF="$PUSH_BEFORE_SHA"
-          else
-            echo "Push base is missing or does not resolve; failing closed to full verification."
+          # github.event.before is the only push identity that covers every
+          # commit in a multi-commit delivery. The resolver also rejects zero,
+          # missing, unresolved, and non-ancestor identities; those all select
+          # the full lane below instead of attempting an unsafe partial diff.
+          if ! BASE_REF="$(bash scripts/resolve-ci-change-base.sh)"; then
+            BASE_REF=""
+          fi
+          if [ -z "$BASE_REF" ]; then
+            echo "Change base is missing or unsafe; failing closed to full verification."
           fi
           echo "base_sha=$BASE_REF" >> "$GITHUB_OUTPUT"
           TEST_CLEANUP=false
@@ -352,20 +355,41 @@ jobs:
   test:
     # Keep this aggregate check-run name stable because the main-branch
     # ruleset requires the exact `🧪 Tests` context. Full mode succeeds only
-    # after all four shards pass; focused and skip modes are checked explicitly.
+    # after all four shards pass. Pull requests also bind changed-module
+    # coverage and any applicable test-cleanup mutation gate into this one
+    # required context, so an optional-looking lane cannot fail independently
+    # while the branch-protection check remains green.
     name: 🧪 Tests
     runs-on: ubuntu-latest
-    needs: [classify, test_full_shard, test_focused]
+    needs: [classify, mutation_cleanup, changed_coverage, test_full_shard, test_focused]
     if: ${{ always() }}
     steps:
       - name: Verify selected test lane
         env:
+          EVENT_NAME: ${{ github.event_name }}
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           VITEST_MODE: ${{ needs.classify.outputs.vitest_mode }}
+          DOCS_ONLY: ${{ needs.classify.outputs.docs_only }}
+          TEST_CLEANUP: ${{ needs.classify.outputs.test_cleanup }}
+          MUTATION_RESULT: ${{ needs.mutation_cleanup.result }}
+          COVERAGE_RESULT: ${{ needs.changed_coverage.result }}
           FULL_RESULT: ${{ needs.test_full_shard.result }}
           FOCUSED_RESULT: ${{ needs.test_focused.result }}
         run: |
           test "$CLASSIFY_RESULT" = "success"
+
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$DOCS_ONLY" != "true" ]; then
+            test "$COVERAGE_RESULT" = "success"
+          else
+            test "$COVERAGE_RESULT" = "skipped"
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$TEST_CLEANUP" = "true" ]; then
+            test "$MUTATION_RESULT" = "success"
+          else
+            test "$MUTATION_RESULT" = "skipped"
+          fi
+
           case "$VITEST_MODE" in
             skip)
               test "$FULL_RESULT" = "skipped"

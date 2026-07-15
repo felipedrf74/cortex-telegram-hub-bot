@@ -10,7 +10,7 @@
  * 6. Briefings sub-skill added correctly
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import fs from 'fs';
 import path from 'path';
@@ -24,14 +24,6 @@ import {
 
 const ROOT = path.resolve(__dirname, '../..');
 // ── Test DB helpers ─────────────────────────────────────────────
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
 
 // ── Mocks ───────────────────────────────────────────────────────
 
@@ -202,11 +194,20 @@ describe('SkillConfig — cron job mappings', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('SkillManager — isCronJobEnabled', () => {
-  beforeEach(() => {
+  beforeAll(() => {
     testDb = createMigratedTestDatabase();
   });
 
+  beforeEach(() => {
+    testDb.exec('SAVEPOINT secretary_skill_package_test');
+  });
+
   afterEach(() => {
+    testDb.exec('ROLLBACK TO secretary_skill_package_test');
+    testDb.exec('RELEASE secretary_skill_package_test');
+  });
+
+  afterAll(() => {
     testDb.close();
   });
 
@@ -254,6 +255,47 @@ describe('SkillManager — isCronJobEnabled', () => {
     expect(isCronJobEnabled('fossa_email')).toBe(false);
     enableSubSkill('secretary', 'email');
     expect(isCronJobEnabled('fossa_email')).toBe(true);
+  });
+
+  it('continues to gate mapped jobs by sub-skill state when only the parent is disabled', async () => {
+    const { seedDefaultSkills, disableSkill, isCronJobEnabled } = await import('../../src/skills/skill-manager');
+    seedDefaultSkills();
+    disableSkill('secretary');
+
+    expect(isCronJobEnabled('end_of_day')).toBe(true);
+    expect(isCronJobEnabled('daily_briefing')).toBe(true);
+    expect(isCronJobEnabled('reminders')).toBe(true);
+  });
+
+  it('disables every mapped cron when all sub-skills are disabled and restores only one owner', async () => {
+    const {
+      seedDefaultSkills,
+      disableSubSkill,
+      enableSubSkill,
+      getSkillStatus,
+      isCronJobEnabled,
+    } = await import('../../src/skills/skill-manager');
+    seedDefaultSkills();
+
+    for (const subSkill of getSubSkillNames('secretary')) {
+      disableSubSkill('secretary', subSkill);
+    }
+
+    const allDisabledStatus = getSkillStatus('secretary');
+    expect(allDisabledStatus.enabled).toBe(true);
+    expect(allDisabledStatus.subSkills.every(subSkill => !subSkill.enabled)).toBe(true);
+    for (const [jobId, owner] of getAllCronJobMappings()) {
+      if (owner.domain === 'secretary') {
+        expect(isCronJobEnabled(jobId)).toBe(false);
+      }
+    }
+
+    enableSubSkill('secretary', 'briefings');
+    for (const [jobId, owner] of getAllCronJobMappings()) {
+      if (owner.domain === 'secretary') {
+        expect(isCronJobEnabled(jobId)).toBe(owner.subSkill === 'briefings');
+      }
+    }
   });
 });
 

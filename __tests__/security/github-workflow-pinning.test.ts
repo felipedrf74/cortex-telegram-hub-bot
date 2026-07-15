@@ -36,7 +36,7 @@ describe('privileged GitHub workflow action pinning', () => {
     const releaseEvidenceJob = workflow.match(/  release-evidence:\n(?<body>[\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|$)/)?.groups?.body || '';
 
     expect(releaseEvidenceJob).toContain('needs: [vitest-full, python-full]');
-    expect(releaseEvidenceJob).toContain("if: ${{ always() && inputs.operation != 'sign_staging' }}");
+    expect(releaseEvidenceJob).toContain('if: ${{ always() }}');
     expect(releaseEvidenceJob).toContain('mkdir -p .local/release/rc-test-results');
     expect(releaseEvidenceJob.match(/continue-on-error: true/g)?.length).toBeGreaterThanOrEqual(2);
     expect(releaseEvidenceJob).toContain("fs.existsSync(resultDir)");
@@ -46,8 +46,17 @@ describe('privileged GitHub workflow action pinning', () => {
     expect(releaseEvidenceJob).toContain("steps.sandbox_smoke.outcome == 'success'");
     expect(releaseEvidenceJob).toContain('node scripts/release-bundle.mjs');
     expect(releaseEvidenceJob).toContain('node scripts/release-manifest-v2.mjs write');
-    expect(releaseEvidenceJob).toContain('node scripts/release-manifest-v2.mjs validate');
-    expect(releaseEvidenceJob).toContain('release-manifest-v2-${{ github.sha }}');
-    expect(releaseEvidenceJob).toContain('--release-manifest ".local/release/manifests/${{ github.sha }}.json"');
+    expect(releaseEvidenceJob).toContain('node scripts/release-manifest-v2.mjs validate-payload');
+    expect(releaseEvidenceJob).toContain('release-candidate-v2-${{ github.sha }}');
+    expect(releaseEvidenceJob).not.toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
+
+    const signer = fs.readFileSync(
+      path.join(repoRoot, '.github/workflows/sign-release-manifest.yml'),
+      'utf8',
+    );
+    expect(signer).toContain('environment: release-signing');
+    expect(signer).toContain('ref: refs/heads/main');
+    expect(signer).toContain('node trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest');
+    expect(signer).toContain('release-manifest-v2-${{ env.RUNTIME_SHA }}');
   });
 });

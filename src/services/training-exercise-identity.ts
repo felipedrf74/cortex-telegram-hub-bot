@@ -13,9 +13,10 @@ import {
   type RuntimeFlagScope,
   type TrainingExerciseIdentityV1Mode,
 } from './runtime-flags';
+import { getTrainingCapabilityMetadata } from './capability-manifest';
 
 export const TRAINING_EXERCISE_IDENTITY_POLICY_VERSION = 'training-exercise-identity-policy.v1' as const;
-export const TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION = 'training-exercise-identity-catalog.v1' as const;
+export const TRAINING_EXERCISE_IDENTITY_CATALOG_VERSION = getTrainingCapabilityMetadata().catalog.catalogVersion as 'training-exercise-identity-catalog.v1';
 
 /**
  * Pin for the immutable v1 identity catalog. It is intentionally updated only
