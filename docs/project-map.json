@@ -6,8 +6,8 @@
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
     "sourceDigest": "c6db3f263f0c03ce31fd630dab7d02dc024cad71469fc927583d33c7d3720684",
-    "baseCommit": "dc0580797091bcd4eafe79c181e25937f36df9bd",
-    "baseCommitTimestamp": "2026-07-16T00:32:03+01:00",
+    "baseCommit": "bc76f41809f48d8763e3c1874b9691d891ba9438",
+    "baseCommitTimestamp": "2026-07-16T00:33:35+01:00",
     "trackedFiles": 2548,
     "sourceFiles": 959
   },
