@@ -208,6 +208,7 @@
       "src/services/shared-decision-context.ts",
       "src/services/training-signals.ts",
       "src/services/cross-agent-learning.ts",
+      "src/services/cross-agent-learning/*.ts",
       "src/services/readiness-scorer.ts",
       "src/services/focus-planner.ts",
       "src/services/content-intelligence.ts",

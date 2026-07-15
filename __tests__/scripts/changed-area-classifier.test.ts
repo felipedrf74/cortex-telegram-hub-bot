@@ -73,6 +73,17 @@ const routingFixtures: RoutingFixture[] = [
     vitest: ['__tests__/security/content-agent-neutrality.test.ts', '__tests__/services/cross-agent-learning*.test.ts'],
   },
   {
+    name: 'cross-agent domain adapters',
+    files: ['src/services/cross-agent-learning/training-mesh-context.ts'],
+    flags: { contentAgent: true },
+    gates: ['content-agent-neutrality'],
+    vitest: [
+      '__tests__/services/cross-agent-learning*.test.ts',
+      '__tests__/services/*mesh-context.test.ts',
+      '__tests__/services/mesh-context-scope.test.ts',
+    ],
+  },
+  {
     name: 'backend auth and OAuth',
     files: ['src/api/routes/auth.ts', 'src/services/google-sign-in.ts', 'src/services/apple-sign-in-nonce.ts', 'src/services/oauth-flow.ts', 'src/portal/oauth-routes.ts'],
     flags: { authOrTenant: true, portal: true },

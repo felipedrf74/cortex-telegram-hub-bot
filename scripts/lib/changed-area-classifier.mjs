@@ -273,7 +273,7 @@ export function classifyChangedFiles({
     || has(/^__tests__\/services\/content-/);
   flags.contentPromptCleanliness = has(/^content-engine\/(?:services\/|models\/|routers\/|tests\/test_prompt_cleanliness\.py$)/)
     || has(/^src\/services\/content-engine\.ts$|^src\/commands\/books\.ts$/);
-  flags.contentAgent = has(/^src\/agents\/|^__tests__\/services\/cross-agent-learning|^__tests__\/security\/content-agent-neutrality/);
+  flags.contentAgent = has(/^src\/agents\/|^src\/services\/cross-agent-learning(?:\.ts|\/)|^__tests__\/services\/cross-agent-learning|^__tests__\/security\/content-agent-neutrality/);
   voiceEvolutionMultiTenant = has(/^src\/agents\/voice-evolution-agent\.ts$|^__tests__\/agents\/voice-evolution-multi-tenant\.test\.ts$/);
   videoStudyPromptCleanliness = has(/^src\/services\/video-study\.ts$|^__tests__\/services\/video-study-prompt-cleanliness\.test\.ts$/);
   channelLearnerPromptCleanliness = has(/^src\/services\/channel-learner\.ts$|^__tests__\/services\/channel-learner-prompt-cleanliness\.test\.ts$/);
@@ -440,7 +440,14 @@ export function classifyChangedFiles({
       addVitest(flags.attachment, '__tests__/api/chat-attachments*.test.ts', '__tests__/api/chat-message-attachments*.test.ts', '__tests__/services/fiscal-bundle-attachments*.test.ts', '__tests__/security/**/*.test.ts');
       addVitest(flags.modelRouting, '__tests__/services/domain-provider-router*.test.ts', '__tests__/services/model-routing-*.test.ts');
       addVitest(flags.personalizationScope, '__tests__/services/cooking-preferences*.test.ts', '__tests__/services/finance-preferences*.test.ts', '__tests__/services/skill-memory*.test.ts', '__tests__/services/content-references*.test.ts', '__tests__/security/**/*.test.ts');
-      addVitest(flags.contentAgent, '__tests__/security/content-agent-neutrality.test.ts', '__tests__/services/cross-agent-learning*.test.ts', '__tests__/portal/domain-status.test.ts');
+      addVitest(
+        flags.contentAgent,
+        '__tests__/security/content-agent-neutrality.test.ts',
+        '__tests__/services/cross-agent-learning*.test.ts',
+        '__tests__/services/*mesh-context.test.ts',
+        '__tests__/services/mesh-context-scope.test.ts',
+        '__tests__/portal/domain-status.test.ts',
+      );
       addVitest(flags.logger, '__tests__/utils/logger-*.test.ts', '__tests__/api/secret-guards.test.ts');
       addVitest(
         flags.scheduler,

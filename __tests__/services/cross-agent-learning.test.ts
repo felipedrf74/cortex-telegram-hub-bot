@@ -60,6 +60,27 @@ import {
   produceLearningDigest,
   writeContentFormula,
 } from '../../src/services/cross-agent-learning';
+import * as crossAgentLearningFacade from '../../src/services/cross-agent-learning';
+import * as signalLearningAdapter from '../../src/services/cross-agent-learning/signal-learning';
+import * as trainingMeshAdapter from '../../src/services/cross-agent-learning/training-mesh-context';
+import * as cookingMeshAdapter from '../../src/services/cross-agent-learning/cooking-mesh-context';
+import * as contentMeshAdapter from '../../src/services/cross-agent-learning/content-mesh-context';
+import * as secretaryMeshAdapter from '../../src/services/cross-agent-learning/secretary-mesh-context';
+import * as financeMeshAdapter from '../../src/services/cross-agent-learning/finance-mesh-context';
+
+describe('cross-agent-learning compatibility facade', () => {
+  it('re-exports each deterministic adapter without wrapping or changing identity', () => {
+    expect(crossAgentLearningFacade.buildAgentContext).toBe(signalLearningAdapter.buildAgentContext);
+    expect(crossAgentLearningFacade.formatContextForPrompt).toBe(signalLearningAdapter.formatContextForPrompt);
+    expect(crossAgentLearningFacade.produceLearningDigest).toBe(signalLearningAdapter.produceLearningDigest);
+    expect(crossAgentLearningFacade.writeContentFormula).toBe(signalLearningAdapter.writeContentFormula);
+    expect(crossAgentLearningFacade.readTrainingMeshContext).toBe(trainingMeshAdapter.readTrainingMeshContext);
+    expect(crossAgentLearningFacade.readCookingMeshContext).toBe(cookingMeshAdapter.readCookingMeshContext);
+    expect(crossAgentLearningFacade.readContentMeshContext).toBe(contentMeshAdapter.readContentMeshContext);
+    expect(crossAgentLearningFacade.readSecretaryMeshContext).toBe(secretaryMeshAdapter.readSecretaryMeshContext);
+    expect(crossAgentLearningFacade.readFinanceMeshContext).toBe(financeMeshAdapter.readFinanceMeshContext);
+  });
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // BUILD AGENT CONTEXT
@@ -97,6 +118,29 @@ describe('buildAgentContext', () => {
     expect(ctx.voicePatterns[0].observation).toBe('Felipe uses anecdotes frequently');
     expect(ctx.voicePatterns[0].strength).toBe(0.85);
     expect(ctx.signalsConsumed).toBe(1);
+  });
+
+  it('does not aggregate peer signals from another tenant for the same user', () => {
+    writeSignal({
+      source_agent: 'voice-evolution',
+      signal_type: 'voice_pattern',
+      user_id: TEST_USER_ID,
+      tenant_id: TEST_TENANT_ID,
+      payload: { observation: 'owner tenant', patterns: [], strength: 0.9 },
+    });
+    writeSignal({
+      source_agent: 'voice-evolution',
+      signal_type: 'voice_pattern',
+      user_id: TEST_USER_ID,
+      tenant_id: TEST_TENANT_ID + 1,
+      payload: { observation: 'other tenant', patterns: [], strength: 0.9 },
+    });
+
+    const owner = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
+    expect(owner.voicePatterns.map((voice) => voice.observation)).toEqual(['owner tenant']);
+
+    const other = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID + 1);
+    expect(other.voicePatterns.map((voice) => voice.observation)).toEqual(['other tenant']);
   });
 
   it('consumes pillar_performance for seo-agent', () => {
@@ -373,5 +417,21 @@ describe('writeContentFormula', () => {
 
     expect(high.priority).toBe('normal');
     expect(low.priority).toBe('background');
+  });
+
+  it('persists versioned provenance, bounded confidence, and a future expiry', () => {
+    const id = writeContentFormula('performance-agent', 'governed', 'fitness', 0.85, 'measured evidence');
+    const [signal] = readSignals('formula-governance-reader', ['content_formula'], 10);
+
+    expect(signal).toMatchObject({
+      id,
+      confidence: 0.5,
+      provenance: {
+        producerVersion: 'cross-agent-learning.v2',
+        source: 'runtime',
+      },
+    });
+    expect(Date.parse(signal.provenance!.observedAt)).not.toBeNaN();
+    expect(Date.parse(signal.expires_at)).toBeGreaterThan(Date.parse(signal.created_at));
   });
 });
