@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database;
 
@@ -69,6 +70,7 @@ import {
   callAnthropicChatActionFixer,
   enqueueChatActionFixerReview,
   processChatActionFixerJobs,
+  runScheduledChatActionFixerJobs,
 } from '../../src/services/chat-action-fixer-worker';
 import {
   classifyChatActionRetry,
@@ -130,7 +132,7 @@ describe('chat action retry policy and fixer worker', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-23T10:00:00.000Z'));
-    testDb = new Database(':memory:');
+    testDb = createMigratedTestDatabase();
     process.env.NODE_ENV = 'test';
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureBackgroundJobTables(testDb);
@@ -267,6 +269,81 @@ describe('chat action retry policy and fixer worker', () => {
     expect(replay.status).toBe('completed');
     expect(await processChatActionFixerJobs({ db: testDb, proposeCorrection })).toMatchObject({ completed: 0 });
     expect(proposeCorrection).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds a scheduled durable queue attempt to one tenant/user run and never replays completed input', async () => {
+    const review = {
+      input,
+      plan,
+      step,
+      result: {
+        step,
+        status: 'partial_success' as const,
+        error: 'scheduled_verifier_mismatch',
+        result: { providerReadBack: { title: 'Wrong event' } },
+      },
+    };
+    enqueueChatActionFixerReview(review, testDb);
+    aiMocks.withAiBudgetReservation.mockImplementation(async (request: any, fn: () => Promise<unknown>) => {
+      const result = await fn();
+      testDb.prepare(`
+        INSERT INTO api_usage (
+          category, model, tenant_id, user_id, cost_usd, provider,
+          request_source, job_name, base_category, run_id
+        ) VALUES ('chat_action_fixer', 'test-model', ?, ?, 0.01, 'anthropic',
+                  'automation', 'chat_action_fixer', 'chat_action_fixer', ?)
+      `).run(input.tenantId, input.userId, request.runId);
+      return result;
+    });
+
+    const first = await runScheduledChatActionFixerJobs({ db: testDb, limit: 5 });
+    const second = await runScheduledChatActionFixerJobs({ db: testDb, limit: 5 });
+
+    expect(first).toMatchObject({ completed: 1, failed: 0, deadLetter: 0 });
+    expect(second).toMatchObject({ completed: 0, failed: 0, deadLetter: 0 });
+    expect(aiMocks.trackedCreate).toHaveBeenCalledTimes(1);
+    expect(aiMocks.withAiBudgetReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: expect.any(String) }),
+      expect.any(Function),
+    );
+    expect(testDb.prepare(`
+      SELECT status, tenant_id, user_id, provider_calls, cost_usd
+        FROM agent_job_runs
+       WHERE job_id = 'chat_action_fixer_worker'
+    `).all()).toEqual([{
+      status: 'success',
+      tenant_id: input.tenantId,
+      user_id: input.userId,
+      provider_calls: 1,
+      cost_usd: 0.01,
+    }]);
+  });
+
+  it('keeps durable queue retry semantics while auditing a scheduled provider failure', async () => {
+    enqueueChatActionFixerReview({
+      input: { ...input, messageId: 'msg-scheduled-provider-failure' },
+      plan: { ...plan, messageId: 'msg-scheduled-provider-failure' },
+      step,
+      result: { step, status: 'failed', error: 'scheduled_provider_failure' },
+    }, testDb);
+    aiMocks.trackedCreate.mockRejectedValueOnce(new Error('provider unavailable'));
+
+    const result = await runScheduledChatActionFixerJobs({ db: testDb, limit: 1 });
+
+    expect(result).toMatchObject({ completed: 0, failed: 1, deadLetter: 0 });
+    expect(testDb.prepare(`
+      SELECT status, provider_calls, error_code
+        FROM agent_job_runs
+       WHERE job_id = 'chat_action_fixer_worker'
+    `).get()).toEqual({
+      status: 'failed',
+      provider_calls: 0,
+      error_code: 'ChatActionFixerQueueFailure',
+    });
+    expect(testDb.prepare(`
+      SELECT status, attempts FROM background_jobs
+       WHERE job_type = ?
+    `).get(CHAT_ACTION_FIXER_JOB_TYPE)).toEqual({ status: 'failed', attempts: 1 });
   });
 
   it('refuses high-risk fixer proposals instead of creating executable Decision Center actions', async () => {

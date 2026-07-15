@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-15.5';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-07-15.6';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -52,6 +52,7 @@ const sharedGovernedRunner = (scope, overrides = {}) => ({
   sharedRunner: {
     implementation: 'governed-v1',
     scope,
+    fingerprintGate: 'runner',
     maxAttempts: 1,
     retryBackoffMs: 0,
     auditStore: 'agent_job_runs',
@@ -120,7 +121,11 @@ export const JOB_POLICIES = Object.freeze({
     enforcement: 'runtime-fingerprint',
     evidence: 'channel video fingerprint skips analysis and synthesis when unchanged',
     tests: ['__tests__/services/channel-learner-relearn-gate.test.ts'],
-  }, { providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE, costPolicy: 'content-automation-budget' }),
+  }, {
+    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('platform-or-tenant-user', { fingerprintGate: 'adapter' }),
+  }),
   chat_action_fixer_worker: providerCapable('chat-reliability', 'durable-queue-tenant-user', {
     enforcement: 'durable-job-idempotency',
     evidence: 'tenant/user/job-type/idempotency key and completed-state exclusion',
@@ -130,6 +135,7 @@ export const JOB_POLICIES = Object.freeze({
     providerRouting: 'anthropic-only-cost-guarded',
     costPolicy: 'ai-cost-guardrail:chat_action_fixer',
     latencyPolicy: 'provider-timeout-30000ms',
+    ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
   chat_action_plan_expiry: noProvider('chat-reliability', 'platform-tenant-scoped-rows'),
   chat_action_run_retention: noProvider('chat-reliability', 'platform-tenant-scoped-rows'),
@@ -176,6 +182,7 @@ export const JOB_POLICIES = Object.freeze({
     retryPolicy: 'report-dispatch-next-tick-on-released-transient-claim',
     providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
     costPolicy: 'ai-cost-guardrail:coach_analysis',
+    ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
   garmin_keepalive: noProvider('training', 'owner-garmin-identity', { retryPolicy: 'next-scheduled-run-with-auth-refresh' }),
   garmin_tenant_isolation_watcher: noProvider('training', 'configured-garmin-tenant'),
@@ -226,7 +233,11 @@ export const JOB_POLICIES = Object.freeze({
     enforcement: 'runtime-fingerprint',
     evidence: 'tenant-scoped analytics fingerprint is persisted only after validated output',
     tests: ['__tests__/agents/voice-evolution-multi-tenant.test.ts'],
-  }, { providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE, costPolicy: 'content-automation-budget' }),
+  }, {
+    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    costPolicy: 'content-automation-budget',
+    ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
+  }),
   weekly_review: noProvider('secretary', 'report-ledger-active-tenant', { retryPolicy: 'report-dispatch-next-tick' }),
 });
 

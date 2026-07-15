@@ -7,7 +7,13 @@ import type Database from 'better-sqlite3';
 import { config } from '../config';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { logger } from '../utils/logger';
-import { enqueueJob, processPendingJobs, type JobHandler, type JobRecord } from './background-job-queue';
+import {
+  enqueueJob,
+  listDueJobs,
+  processPendingJobs,
+  type JobHandler,
+  type JobRecord,
+} from './background-job-queue';
 import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import { createDecisionIntent } from './decision-center';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep, ChatStepExecutionResult } from './chat/types';
@@ -17,6 +23,11 @@ import {
 } from './ai-automation-policy';
 import { AiBudgetError, withAiBudgetReservation } from './cost-guardrail';
 import { assertAgentQueuedJobHandlerRuntimeParity } from './agent-job-manifest';
+import {
+  AgentJobOutputValidationError,
+  runGovernedAgentJob,
+  type GovernedAgentJobAdapter,
+} from './agent-job-runner';
 
 export const CHAT_ACTION_FIXER_JOB_TYPE = 'chat_action_fixer_review';
 
@@ -74,18 +85,29 @@ export function enqueueChatActionFixerReview(
 export function buildChatActionFixerJobHandler(options: {
   proposeCorrection?: (payload: ChatActionFixerPayload) => Promise<ChatActionFixerProposal> | ChatActionFixerProposal;
   db?: Database.Database;
+  runId?: string | null;
+  requireTenantUserScope?: boolean;
 } = {}): JobHandler {
   return {
     jobType: CHAT_ACTION_FIXER_JOB_TYPE,
     idempotent: true,
     async handle(job: JobRecord) {
       const payload = normalizeFixerPayload(job.payload, job);
+      if (options.requireTenantUserScope
+          && (!Number.isSafeInteger(job.userId)
+            || Number(job.userId) <= 0
+            || payload.userId !== job.userId
+            || payload.tenantId !== job.tenantId)) {
+        throw new ChatActionFixerQueueScopeError();
+      }
       const proposal = isFreshConfirmationRequired(payload)
         ? {
           proposed_step: null,
           reasoning: 'This action is destructive or high risk, so Nexus requires a fresh user confirmation before any retry.',
         }
-        : await (options.proposeCorrection ?? callAnthropicChatActionFixer)(payload);
+        : await (options.proposeCorrection
+          ? options.proposeCorrection(payload)
+          : callAnthropicChatActionFixer(payload, { runId: options.runId }));
       const safeProposal = sanitizeFixerProposal(payload, proposal);
       if (!safeProposal.proposed_step) {
         logger.info({
@@ -108,11 +130,16 @@ export async function processChatActionFixerJobs(options: {
   lockOwner?: string;
   db?: Database.Database;
   disabled?: boolean;
+  jobIds?: string[];
+  runId?: string | null;
+  requireTenantUserScope?: boolean;
   proposeCorrection?: (payload: ChatActionFixerPayload) => Promise<ChatActionFixerProposal> | ChatActionFixerProposal;
 } = {}): Promise<{ completed: number; failed: number; deadLetter: number; skipped: number }> {
   const handlers = [buildChatActionFixerJobHandler({
     proposeCorrection: options.proposeCorrection,
     db: options.db,
+    runId: options.runId,
+    requireTenantUserScope: options.requireTenantUserScope,
   })];
   assertAgentQueuedJobHandlerRuntimeParity(handlers, 'chat-action-fixer');
   return processPendingJobs(handlers, {
@@ -120,7 +147,131 @@ export async function processChatActionFixerJobs(options: {
     lockOwner: options.lockOwner ?? `chat-action-fixer:${process.pid}`,
     db: options.db,
     disabled: options.disabled || process.env.CHAT_ACTION_FIXER_WORKER_DISABLED === '1',
+    jobIds: options.jobIds,
   });
+}
+
+export function listDueChatActionFixerJobs(
+  limit = 5,
+  db?: Database.Database,
+): JobRecord[] {
+  return listDueJobs([CHAT_ACTION_FIXER_JOB_TYPE], limit, db);
+}
+
+export interface ChatActionFixerBatchResult {
+  completed: number;
+  failed: number;
+  deadLetter: number;
+  skipped: number;
+}
+
+class ChatActionFixerQueueFailure extends Error {
+  constructor(readonly result: ChatActionFixerBatchResult) {
+    super('Chat action fixer durable queue attempt failed');
+    this.name = 'ChatActionFixerQueueFailure';
+  }
+}
+
+class ChatActionFixerQueueScopeError extends Error {
+  constructor() {
+    super('Chat action fixer durable queue scope is invalid');
+    this.name = 'ChatActionFixerQueueScopeError';
+  }
+}
+
+function mergeBatchResult(total: ChatActionFixerBatchResult, result: ChatActionFixerBatchResult): void {
+  total.completed += result.completed;
+  total.failed += result.failed;
+  total.deadLetter += result.deadLetter;
+  total.skipped += result.skipped;
+}
+
+function scheduledChatActionFixerAdapter(
+  job: JobRecord,
+  options: {
+    lockOwner: string;
+    db?: Database.Database;
+    proposeCorrection?: (payload: ChatActionFixerPayload) => Promise<ChatActionFixerProposal> | ChatActionFixerProposal;
+  },
+): GovernedAgentJobAdapter<{ jobId: string }, ChatActionFixerBatchResult> {
+  return {
+    jobId: 'chat_action_fixer_worker',
+    providerRouting: 'anthropic-only-cost-guarded',
+    prepare: () => ({
+      kind: 'ready',
+      input: { jobId: job.jobId },
+      fingerprintMaterial: {
+        jobId: job.jobId,
+        attempts: job.attempts,
+        status: job.status,
+      },
+    }),
+    async execute({ input, runId }) {
+      const result = await processChatActionFixerJobs({
+        limit: 1,
+        lockOwner: options.lockOwner,
+        db: options.db,
+        jobIds: [input.jobId],
+        runId,
+        requireTenantUserScope: true,
+        proposeCorrection: options.proposeCorrection,
+      });
+      if (result.failed > 0 || result.deadLetter > 0) {
+        throw new ChatActionFixerQueueFailure(result);
+      }
+      return result;
+    },
+    validateOutput(output) {
+      const counts = [output.completed, output.failed, output.deadLetter, output.skipped];
+      if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0)
+          || output.completed > 1
+          || output.failed !== 0
+          || output.deadLetter !== 0
+          || output.skipped !== 0) {
+        throw new AgentJobOutputValidationError('Chat action fixer queue output failed validation');
+      }
+    },
+    classifyOutput: (_output, _input, usage) => usage.providerCalls > 0
+      ? 'success'
+      : 'skipped_no_work',
+  };
+}
+
+/** One durable queue lease remains one governed provider run and run id. */
+export async function runScheduledChatActionFixerJobs(options: {
+  limit?: number;
+  lockOwner?: string;
+  db?: Database.Database;
+  disabled?: boolean;
+  proposeCorrection?: (payload: ChatActionFixerPayload) => Promise<ChatActionFixerProposal> | ChatActionFixerProposal;
+} = {}): Promise<ChatActionFixerBatchResult> {
+  const total: ChatActionFixerBatchResult = { completed: 0, failed: 0, deadLetter: 0, skipped: 0 };
+  if (options.disabled || process.env.CHAT_ACTION_FIXER_WORKER_DISABLED === '1') {
+    total.skipped = 1;
+    return total;
+  }
+  const jobs = listDueChatActionFixerJobs(options.limit ?? 5, options.db);
+  const lockOwner = options.lockOwner ?? `chat-action-fixer:${process.pid}`;
+  for (const job of jobs) {
+    const payloadUserId = typeof job.payload.userId === 'number' ? job.payload.userId : null;
+    const scopeUserId = Number.isSafeInteger(job.userId) && Number(job.userId) > 0
+      ? job.userId!
+      : Number.isSafeInteger(payloadUserId) && Number(payloadUserId) > 0
+        ? payloadUserId!
+        : job.tenantId;
+    try {
+      const outcome = await runGovernedAgentJob(
+        scheduledChatActionFixerAdapter(job, { lockOwner, db: options.db, proposeCorrection: options.proposeCorrection }),
+        { tenantId: job.tenantId, userId: scopeUserId },
+        options.db ? { db: options.db } : {},
+      );
+      if (outcome.output) mergeBatchResult(total, outcome.output);
+    } catch (error) {
+      if (!(error instanceof ChatActionFixerQueueFailure)) throw error;
+      mergeBatchResult(total, error.result);
+    }
+  }
+  return total;
 }
 
 export function buildFixerPayload(review: EnqueueChatActionFixerReviewInput): ChatActionFixerPayload {
@@ -140,7 +291,10 @@ export function buildFixerPayload(review: EnqueueChatActionFixerReviewInput): Ch
   };
 }
 
-export async function callAnthropicChatActionFixer(payload: ChatActionFixerPayload): Promise<ChatActionFixerProposal> {
+export async function callAnthropicChatActionFixer(
+  payload: ChatActionFixerPayload,
+  options: { runId?: string | null } = {},
+): Promise<ChatActionFixerProposal> {
   const eligibility = resolveAiAutomationEligibility(payload.userId, payload.sourceSkill);
   if (!eligibility.allowed) {
     recordAiAutomationEligibilitySkip(payload.userId, eligibility, {
@@ -172,6 +326,7 @@ export async function callAnthropicChatActionFixer(payload: ChatActionFixerPaylo
       baseCategory: 'chat_action_fixer',
       jobName: 'chat_action_fixer',
       automationPriority: 'other',
+      runId: options.runId ?? null,
     }, () => trackedCreate(client.get(), {
       model: process.env.CHAT_ACTION_FIXER_MODEL || config.anthropic.model,
       max_tokens: 900,

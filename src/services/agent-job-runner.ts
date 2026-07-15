@@ -73,16 +73,23 @@ export interface GovernedAgentJobAdapter<Input, Output> {
   /** Throw a bounded typed error when provider output is not safe to accept. */
   validateOutput(output: Output, input: Input): void;
   /** Allows an existing domain idempotency gate to report a zero-call skip. */
-  classifyOutput?(output: Output, input: Input): 'success' | 'skipped_unchanged';
+  classifyOutput?(
+    output: Output,
+    input: Input,
+    usage: AgentJobUsageAttribution,
+  ): 'success' | 'skipped_unchanged' | 'skipped_no_work';
   /** Only typed, bounded outcome metadata is supplied; provider output stays local. */
   notify?(outcome: AgentJobOutcome<Output>): Promise<void>;
   /** Retries remain opt-in even when maxAttempts is greater than one. */
   isRetryable?(error: unknown): boolean;
 }
 
-interface AgentJobUsageSummary {
+export interface AgentJobUsageAttribution {
   providerCalls: number;
   costUsd: number;
+}
+
+interface AgentJobUsageSummary extends AgentJobUsageAttribution {
   scopeViolations: number;
 }
 
@@ -193,17 +200,18 @@ function assertPolicyAndScope(
     throw new AgentJobGovernanceError(`Agent job provider governance is incomplete: ${entry.id}`);
   }
 
+  const platformScope = scope.tenantId === 0 && scope.userId === 0;
   if (policy.scope === 'platform') {
     if (scope.tenantId !== 0 || scope.userId !== 0) {
       throw new AgentJobGovernanceError(`Platform agent job received tenant scope: ${entry.id}`);
     }
     return;
   }
+  if (policy.scope === 'platform-or-tenant-user' && platformScope) return;
   if (!Number.isSafeInteger(scope.tenantId)
       || !Number.isSafeInteger(scope.userId)
       || scope.tenantId <= 0
-      || scope.userId <= 0
-      || scope.tenantId !== scope.userId) {
+      || scope.userId <= 0) {
     throw new AgentJobGovernanceError(`Tenant agent job scope is invalid: ${entry.id}`);
   }
 }
@@ -536,7 +544,8 @@ export async function runGovernedAgentJob<Input, Output>(
       return outcome;
     }
 
-    if (entry.inputFingerprint.enforcement === 'runtime-fingerprint'
+    if (entry.sharedRunner!.fingerprintGate === 'runner'
+        && entry.inputFingerprint.enforcement === 'runtime-fingerprint'
         && hasReusableFingerprint(db, entry, scope, inputFingerprint)) {
       const runId = createRunId();
       const completedAt = now().toISOString();
@@ -594,13 +603,17 @@ export async function runGovernedAgentJob<Input, Output>(
           attempt,
         });
         adapter.validateOutput(output, preparation.input);
-        const status = adapter.classifyOutput?.(output, preparation.input) ?? 'success';
         const usage = collectUsage(db, runId, scope);
         if (usage.scopeViolations !== 0) throw new AgentJobUsageScopeError();
+        const status = adapter.classifyOutput?.(output, preparation.input, usage) ?? 'success';
+        if (!['success', 'skipped_unchanged', 'skipped_no_work'].includes(status)) {
+          throw new AgentJobGovernanceError('Agent job adapter returned an invalid completion status');
+        }
         if (status === 'success' && usage.providerCalls === 0) {
           throw new AgentJobProviderAttributionError();
         }
-        if (status === 'skipped_unchanged' && usage.providerCalls !== 0) {
+        if ((status === 'skipped_unchanged' || status === 'skipped_no_work')
+            && usage.providerCalls !== 0) {
           throw new AgentJobProviderAttributionError();
         }
         const outputFingerprint = fingerprint({
@@ -609,7 +622,11 @@ export async function runGovernedAgentJob<Input, Output>(
           output,
         });
         const durationMs = Math.max(0, Date.now() - startedMonotonic);
-        const skipReason = status === 'skipped_unchanged' ? 'domain_fingerprint_unchanged' : null;
+        const skipReason = status === 'skipped_unchanged'
+          ? 'domain_fingerprint_unchanged'
+          : status === 'skipped_no_work'
+            ? 'domain_no_provider_work'
+            : null;
         finishRun(db, {
           runId,
           status,

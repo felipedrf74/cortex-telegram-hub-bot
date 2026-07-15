@@ -14,7 +14,8 @@ export type AgentJobInputEnforcement =
 
 export interface SharedAgentJobRunnerPolicy {
   implementation: 'governed-v1';
-  scope: 'platform' | 'tenant-user';
+  scope: 'platform' | 'tenant-user' | 'platform-or-tenant-user';
+  fingerprintGate: 'runner' | 'adapter';
   maxAttempts: number;
   retryBackoffMs: number;
   auditStore: 'agent_job_runs';
@@ -143,7 +144,8 @@ function validateEntry(entry: AgentJobManifestEntry): void {
     const runner = entry.sharedRunner;
     if (entry.providerUsage !== 'governed-provider-capable'
         || runner.implementation !== 'governed-v1'
-        || !['platform', 'tenant-user'].includes(runner.scope)
+        || !['platform', 'tenant-user', 'platform-or-tenant-user'].includes(runner.scope)
+        || !['runner', 'adapter'].includes(runner.fingerprintGate)
         || !Number.isSafeInteger(runner.maxAttempts)
         || runner.maxAttempts < 1
         || runner.maxAttempts > 5

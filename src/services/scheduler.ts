@@ -32,9 +32,10 @@ import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
-import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
+import { seedDefaultChannels } from './channel-learner';
 import {
   runContentTopicCronForActiveUsers,
+  runScheduledChannelRelearn,
   runScheduledAutoresearch,
   runWeeklyContentPackageCronForActiveUsers,
 } from './scheduled-agent-jobs';
@@ -50,7 +51,7 @@ import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
 import { runReactionRadar } from '../agents/reaction-radar-agent';
 import { runPerformanceAgent } from '../agents/performance-agent';
-import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
+import { runScheduledVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import {
@@ -70,8 +71,14 @@ import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
 import { expireStalePendingChatActionsForJob } from './chat-action-state';
 import { pruneCompletedChatActionRuns, reapZombieChatActionRuns } from './chat-action-run-store';
-import { processChatActionFixerJobs } from './chat-action-fixer-worker';
+import { runScheduledChatActionFixerJobs } from './chat-action-fixer-worker';
 import { runGarminTenantIsolationWatcher } from './garmin-tenant-isolation-watcher';
+import {
+  AgentJobOutputValidationError,
+  runGovernedAgentJob,
+  type AgentJobOutcome,
+  type GovernedAgentJobAdapter,
+} from './agent-job-runner';
 import {
   runDecisionCenterSmokeCleanupJob,
   createDecisionIntent,
@@ -2093,7 +2100,6 @@ export function startScheduler(): void {
         eligible: (target) =>
           hasPaidCoachBriefingEntitlement(target.tenantId)
           && hasActiveCoachWorkoutPlan(target.tenantId)
-          && hasCoachableHealthDataForUser(target.tenantId)
           && hasCoachableHealthDataForUser(target.tenantId),
       });
       if (due.length === 0) return 'skipped';
@@ -2114,7 +2120,7 @@ export function startScheduler(): void {
       }
       for (const target of due) {
         try {
-          await sendCoachBriefingForTarget(target);
+          await runScheduledCoachBriefingForTarget(target);
         } catch (err) {
           logger.error({ err, userId: target.tenantId }, 'Coach briefing failed for user; continuing');
         }
@@ -2341,7 +2347,7 @@ export function startScheduler(): void {
   // OpenAI-fallback storm (2026-07-03 audit). Same for the content and
   // autoresearch crons below.
   cron.schedule('37 3 * * 0', wrapJob('channel_relearn', async () => {
-    const result = await processAllChannelScopes();
+    const result = await runScheduledChannelRelearn();
     if (result.analyzed > 0 || result.failed > 0) {
       const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
         `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
@@ -2392,7 +2398,7 @@ export function startScheduler(): void {
 
   // ── Voice Evolution Agent (1st of month, 04:00) ─────────────────
   cron.schedule('0 4 1 * *', wrapJob('voice_evolution', async () => {
-    await runVoiceEvolutionAgent();
+    await runScheduledVoiceEvolutionAgent();
   }), { timezone: tz });
 
   // ── Reaction Radar Agent (every 4 hours) ─────────────────────────
@@ -2644,7 +2650,7 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   cron.schedule('* * * * *', wrapJob('chat_action_fixer_worker', async () => {
-    const result = await processChatActionFixerJobs({
+    const result = await runScheduledChatActionFixerJobs({
       limit: intEnv('CHAT_ACTION_FIXER_JOB_BATCH_LIMIT', 5, 1, 25),
       lockOwner: `chat-action-fixer:${process.pid}`,
     });
@@ -2849,18 +2855,31 @@ function hasActiveCoachWorkoutPlan(userId: number): boolean {
   }
 }
 
-export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Promise<void> {
+export interface CoachBriefingDispatchResult {
+  status: 'generated' | 'skipped' | 'deferred' | 'failed';
+  recommendations: number;
+  errors: number;
+}
+
+export async function sendCoachBriefingForTarget(
+  target: ActiveUserTarget,
+  options: { runId?: string | null } = {},
+): Promise<CoachBriefingDispatchResult> {
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
   // calendar fetches). The serialized daily/monthly budget reservation wraps
   // the provider boundary below.
-  if (!hasPaidCoachBriefingEntitlement(target.tenantId)) return;
-  if (!hasActiveCoachWorkoutPlan(target.tenantId)) return;
+  if (!hasPaidCoachBriefingEntitlement(target.tenantId)) {
+    return { status: 'skipped', recommendations: 0, errors: 0 };
+  }
+  if (!hasActiveCoachWorkoutPlan(target.tenantId)) {
+    return { status: 'skipped', recommendations: 0, errors: 0 };
+  }
   if (!hasCoachableHealthDataForUser(target.tenantId)) {
     logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
-    return;
+    return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
+  return runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
       let result;
       try {
         result = await generateCoachBriefing(target.tenantId, {
@@ -2869,6 +2888,7 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
           garminSilent: true,
           budgetRequestSource: 'automation',
           budgetJobName: 'garmin_coach',
+          ...(options.runId ? { budgetRunId: options.runId } : {}),
         });
       } catch (err) {
         if (err instanceof AiBudgetError) {
@@ -2910,10 +2930,10 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
             { userId: target.tenantId, code: err.decision.code, window: err.decision.window },
             'Coach briefing deferred by AI budget; latest valid report retained',
           );
-          return;
+          return { status: 'deferred', recommendations: 0, errors: 0 } as const;
         }
         logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
-        return;
+        return { status: 'failed', recommendations: 0, errors: 1 } as const;
       }
 
       if (result.errors.length > 0) {
@@ -2979,7 +2999,58 @@ export async function sendCoachBriefingForTarget(target: ActiveUserTarget): Prom
         },
         'Daily coach briefing completed'
       );
+      return {
+        status: 'generated',
+        recommendations: result.recommendations.length,
+        errors: result.errors.length,
+      } as const;
     });
+}
+
+class CoachBriefingDispatchError extends Error {
+  constructor(readonly result: CoachBriefingDispatchResult) {
+    super('Coach briefing generation failed before a valid report was produced');
+    this.name = 'CoachBriefingDispatchError';
+  }
+}
+
+function scheduledCoachBriefingAdapter(
+  target: ActiveUserTarget,
+): GovernedAgentJobAdapter<{ tenantId: number }, CoachBriefingDispatchResult> {
+  return {
+    jobId: 'garmin_coach',
+    providerRouting: 'gemini-primary-openai-fallback-anthropic-gated-last-resort',
+    prepare: () => ({
+      kind: 'ready',
+      input: { tenantId: target.tenantId },
+      fingerprintMaterial: { tenantId: target.tenantId, gate: 'report_schedule_ledger' },
+    }),
+    async execute({ runId }) {
+      const result = await sendCoachBriefingForTarget(target, { runId });
+      if (result.status === 'failed') throw new CoachBriefingDispatchError(result);
+      return result;
+    },
+    validateOutput(output, input) {
+      if (input.tenantId !== target.tenantId
+          || !['generated', 'skipped', 'deferred'].includes(output.status)
+          || !Number.isSafeInteger(output.recommendations)
+          || output.recommendations < 0
+          || !Number.isSafeInteger(output.errors)
+          || output.errors < 0) {
+        throw new AgentJobOutputValidationError('Coach briefing dispatch output failed validation');
+      }
+    },
+    classifyOutput: (output) => output.status === 'generated' ? 'success' : 'skipped_no_work',
+  };
+}
+
+export async function runScheduledCoachBriefingForTarget(
+  target: ActiveUserTarget,
+): Promise<AgentJobOutcome<CoachBriefingDispatchResult>> {
+  return runGovernedAgentJob(
+    scheduledCoachBriefingAdapter(target),
+    { tenantId: target.tenantId, userId: target.tenantId },
+  );
 }
 
 export async function sendCoachBriefings(): Promise<void> {

@@ -135,6 +135,7 @@ export function claimPendingJobs(
   lockOwner = `worker-${process.pid}`,
   db: Database.Database = getDb(),
   jobTypes?: string[],
+  jobIds?: string[],
 ): JobRecord[] {
   ensureBackgroundJobTables(db);
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 50));
@@ -142,8 +143,15 @@ export function claimPendingJobs(
     ? Array.from(new Set(jobTypes.filter((jobType) => typeof jobType === 'string' && jobType.trim()).map((jobType) => jobType.trim())))
     : [];
   if (jobTypes && boundedJobTypes.length === 0) return [];
+  const boundedJobIds = jobIds
+    ? Array.from(new Set(jobIds.filter((jobId) => typeof jobId === 'string' && jobId.trim()).map((jobId) => jobId.trim())))
+    : [];
+  if (jobIds && boundedJobIds.length === 0) return [];
   const typePredicate = boundedJobTypes.length > 0
     ? `AND job_type IN (${boundedJobTypes.map(() => '?').join(', ')})`
+    : '';
+  const idPredicate = boundedJobIds.length > 0
+    ? `AND job_id IN (${boundedJobIds.map(() => '?').join(', ')})`
     : '';
   return (db.prepare(`
     UPDATE background_jobs
@@ -167,16 +175,57 @@ export function claimPendingJobs(
         )
       )
         ${typePredicate}
+        ${idPredicate}
       ORDER BY CASE WHEN status = 'processing' THEN 1 ELSE 0 END, priority ASC, created_at ASC
       LIMIT ?
     )
     RETURNING *
-  `).all(lockOwner, `-${STALE_JOB_LEASE_MINUTES} minutes`, ...boundedJobTypes, boundedLimit) as any[]).map(mapJob);
+  `).all(
+    lockOwner,
+    `-${STALE_JOB_LEASE_MINUTES} minutes`,
+    ...boundedJobTypes,
+    ...boundedJobIds,
+    boundedLimit,
+  ) as any[]).map(mapJob);
+}
+
+export function listDueJobs(
+  jobTypes: string[],
+  limit = 10,
+  db: Database.Database = getDb(),
+): JobRecord[] {
+  ensureBackgroundJobTables(db);
+  const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 50));
+  const boundedJobTypes = Array.from(new Set(
+    jobTypes.filter((jobType) => typeof jobType === 'string' && jobType.trim()).map((jobType) => jobType.trim()),
+  ));
+  if (boundedJobTypes.length === 0) return [];
+  return (db.prepare(`
+    SELECT *
+      FROM background_jobs
+     WHERE (
+       (status IN ('pending', 'failed') AND not_before <= datetime('now'))
+       OR (
+         status = 'processing'
+         AND locked_at IS NOT NULL
+         AND locked_at <= datetime('now', ?)
+       )
+     )
+       AND job_type IN (${boundedJobTypes.map(() => '?').join(', ')})
+     ORDER BY CASE WHEN status = 'processing' THEN 1 ELSE 0 END, priority ASC, created_at ASC
+     LIMIT ?
+  `).all(`-${STALE_JOB_LEASE_MINUTES} minutes`, ...boundedJobTypes, boundedLimit) as any[]).map(mapJob);
 }
 
 export async function processPendingJobs(
   handlers: JobHandler[],
-  opts: { limit?: number; lockOwner?: string; db?: Database.Database; disabled?: boolean } = {},
+  opts: {
+    limit?: number;
+    lockOwner?: string;
+    db?: Database.Database;
+    disabled?: boolean;
+    jobIds?: string[];
+  } = {},
 ): Promise<{ completed: number; failed: number; deadLetter: number; skipped: number }> {
   if (opts.disabled || process.env.EVENT_BACKBONE_JOBS_DISABLED === '1') {
     return { completed: 0, failed: 0, deadLetter: 0, skipped: 1 };
@@ -185,7 +234,13 @@ export async function processPendingJobs(
   const startedAt = Date.now();
   const handlersByType = new Map(handlers.map((handler) => [handler.jobType, handler]));
   const claimableJobTypes = handlersByType.has('*') ? undefined : Array.from(handlersByType.keys());
-  const claimed = claimPendingJobs(opts.limit ?? 10, opts.lockOwner ?? `worker-${process.pid}`, db, claimableJobTypes);
+  const claimed = claimPendingJobs(
+    opts.limit ?? 10,
+    opts.lockOwner ?? `worker-${process.pid}`,
+    db,
+    claimableJobTypes,
+    opts.jobIds,
+  );
   let completed = 0;
   let failed = 0;
   let deadLetter = 0;

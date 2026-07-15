@@ -1,6 +1,6 @@
 {
   "schema": "nexus.agent-job-manifest.v3",
-  "version": "2026-07-15.5",
+  "version": "2026-07-15.6",
   "jobs": [
     {
       "id": "amazon_collection",
@@ -55,6 +55,7 @@
       "sharedRunner": {
         "implementation": "governed-v1",
         "scope": "platform",
+        "fingerprintGate": "runner",
         "maxAttempts": 1,
         "retryBackoffMs": 0,
         "auditStore": "agent_job_runs",
@@ -86,6 +87,16 @@
           "__tests__/services/channel-learner-relearn-gate.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "platform-or-tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -112,6 +123,16 @@
           "__tests__/services/chat-action-fixer-worker.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -721,6 +742,7 @@
       "sharedRunner": {
         "implementation": "governed-v1",
         "scope": "tenant-user",
+        "fingerprintGate": "runner",
         "maxAttempts": 1,
         "retryBackoffMs": 0,
         "auditStore": "agent_job_runs",
@@ -752,6 +774,16 @@
           "__tests__/services/report-schedule-dispatcher.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {
@@ -1192,6 +1224,7 @@
       "sharedRunner": {
         "implementation": "governed-v1",
         "scope": "tenant-user",
+        "fingerprintGate": "runner",
         "maxAttempts": 1,
         "retryBackoffMs": 0,
         "auditStore": "agent_job_runs",
@@ -1253,6 +1286,7 @@
       "sharedRunner": {
         "implementation": "governed-v1",
         "scope": "tenant-user",
+        "fingerprintGate": "runner",
         "maxAttempts": 1,
         "retryBackoffMs": 0,
         "auditStore": "agent_job_runs",
@@ -1308,6 +1342,16 @@
           "__tests__/agents/voice-evolution-multi-tenant.test.ts"
         ],
         "unchangedInputProviderCalls": 0
+      },
+      "sharedRunner": {
+        "implementation": "governed-v1",
+        "scope": "tenant-user",
+        "fingerprintGate": "adapter",
+        "maxAttempts": 1,
+        "retryBackoffMs": 0,
+        "auditStore": "agent_job_runs",
+        "providerAttribution": "api_usage-run-id",
+        "outputValidation": "adapter-required"
       }
     },
     {

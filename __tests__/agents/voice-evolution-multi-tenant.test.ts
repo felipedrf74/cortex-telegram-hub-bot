@@ -579,4 +579,83 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       expect.any(Function),
     );
   });
+
+  it('audits scheduled usage by run id and makes zero calls for the unchanged tenant fingerprint', async () => {
+    const { runScheduledVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'scheduled-voice');
+    seedTranscript(25, 'scheduled-voice-video', 'stable scheduled voice transcript');
+    mockCompleteOneShotWithFallback.mockResolvedValue({
+      text: JSON.stringify(validVoiceAnalysis()),
+    });
+    mockWithAiBudgetReservation.mockImplementation(async (request: any, fn: () => Promise<unknown>) => {
+      const result = await fn();
+      testDb.prepare(`
+        INSERT INTO api_usage (
+          category, model, tenant_id, user_id, cost_usd, provider,
+          request_source, job_name, base_category, run_id
+        ) VALUES ('voice_evolution', 'test-model', 25, 25, 0.02, 'gemini',
+                  'automation', 'voice_evolution', 'voice_evolution', ?)
+      `).run(request.runId);
+      return result;
+    });
+
+    await runScheduledVoiceEvolutionAgent();
+    await runScheduledVoiceEvolutionAgent();
+
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: expect.any(String) }),
+      expect.any(Function),
+    );
+    expect(testDb.prepare(`
+      SELECT status, provider_calls, cost_usd, skip_reason
+        FROM agent_job_runs
+       WHERE job_id = 'voice_evolution'
+       ORDER BY id
+    `).all()).toEqual([
+      { status: 'success', provider_calls: 1, cost_usd: 0.02, skip_reason: null },
+      {
+        status: 'skipped_unchanged',
+        provider_calls: 0,
+        cost_usd: 0,
+        skip_reason: 'domain_fingerprint_unchanged',
+      },
+    ]);
+  });
+
+  it('audits a scheduled provider-schema failure and keeps it retryable', async () => {
+    const { runScheduledVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'scheduled-invalid-voice');
+    seedTranscript(25, 'scheduled-invalid-video', 'scheduled invalid schema transcript');
+    mockCompleteOneShotWithFallback.mockResolvedValue({ text: JSON.stringify({ voice_summary: 'incomplete' }) });
+    mockWithAiBudgetReservation.mockImplementation(async (request: any, fn: () => Promise<unknown>) => {
+      const result = await fn();
+      testDb.prepare(`
+        INSERT INTO api_usage (
+          category, model, tenant_id, user_id, cost_usd, provider,
+          request_source, job_name, base_category, run_id
+        ) VALUES ('voice_evolution', 'test-model', 25, 25, 0.02, 'gemini',
+                  'automation', 'voice_evolution', 'voice_evolution', ?)
+      `).run(request.runId);
+      return result;
+    });
+
+    await expect(runScheduledVoiceEvolutionAgent()).rejects.toBeInstanceOf(AggregateError);
+
+    expect(testDb.prepare(`
+      SELECT status, provider_calls, error_code, output_fingerprint
+        FROM agent_job_runs
+       WHERE job_id = 'voice_evolution'
+    `).get()).toEqual({
+      status: 'failed',
+      provider_calls: 1,
+      error_code: 'VoiceEvolutionProviderSchemaError',
+      output_fingerprint: null,
+    });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM agent_signals
+       WHERE source_agent = 'voice-evolution'
+         AND signal_type = 'voice_analysis_fingerprint'
+    `).get()).toEqual({ count: 0 });
+  });
 });

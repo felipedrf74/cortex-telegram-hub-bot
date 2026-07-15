@@ -33,6 +33,8 @@ for (const id of manifestById.keys()) if (!runtimeCapabilityIds.includes(id)) er
 const schedulerSource = fs.readFileSync(path.join(root, 'src/services/scheduler.ts'), 'utf8');
 const eventBackboneSource = fs.readFileSync(path.join(root, 'src/services/event-backbone-worker.ts'), 'utf8');
 const chatActionFixerSource = fs.readFileSync(path.join(root, 'src/services/chat-action-fixer-worker.ts'), 'utf8');
+const scheduledAgentJobsSource = fs.readFileSync(path.join(root, 'src/services/scheduled-agent-jobs.ts'), 'utf8');
+const voiceEvolutionSource = fs.readFileSync(path.join(root, 'src/agents/voice-evolution-agent.ts'), 'utf8');
 const generatedJobManifest = buildAgentJobManifest(schedulerSource, eventBackboneSource, chatActionFixerSource);
 const generatedJobManifestRaw = serializeAgentJobManifest(generatedJobManifest);
 if (jobManifest.schema !== AGENT_JOB_MANIFEST_SCHEMA) {
@@ -118,7 +120,8 @@ for (const job of jobManifest.jobs) {
   if (job.sharedRunner) {
     if (job.providerUsage !== 'governed-provider-capable'
         || job.sharedRunner.implementation !== 'governed-v1'
-        || !['platform', 'tenant-user'].includes(job.sharedRunner.scope)
+        || !['platform', 'tenant-user', 'platform-or-tenant-user'].includes(job.sharedRunner.scope)
+        || !['runner', 'adapter'].includes(job.sharedRunner.fingerprintGate)
         || !Number.isSafeInteger(job.sharedRunner.maxAttempts)
         || job.sharedRunner.maxAttempts < 1
         || job.sharedRunner.maxAttempts > 5
@@ -133,9 +136,30 @@ for (const job of jobManifest.jobs) {
   }
 }
 const sharedRunnerJobIds = jobManifest.jobs.filter((job) => job.sharedRunner).map((job) => job.id).sort();
-const expectedSharedRunnerJobIds = ['autoresearch', 'friday_weekly', 'thursday_youtube', 'tuesday_reels'];
+const expectedSharedRunnerJobIds = [
+  'autoresearch',
+  'channel_relearn',
+  'chat_action_fixer_worker',
+  'friday_weekly',
+  'garmin_coach',
+  'thursday_youtube',
+  'tuesday_reels',
+  'voice_evolution',
+];
 if (JSON.stringify(sharedRunnerJobIds) !== JSON.stringify(expectedSharedRunnerJobIds)) {
   errors.push(`shared runner job migration drift: expected=${expectedSharedRunnerJobIds.join(',')} actual=${sharedRunnerJobIds.join(',')}`);
+}
+for (const [jobId, source, token] of [
+  ['channel_relearn', scheduledAgentJobsSource, 'runScheduledChannelRelearn'],
+  ['chat_action_fixer_worker', chatActionFixerSource, 'runScheduledChatActionFixerJobs'],
+  ['garmin_coach', schedulerSource, 'runScheduledCoachBriefingForTarget'],
+  ['voice_evolution', voiceEvolutionSource, 'runScheduledVoiceEvolutionAgent'],
+]) {
+  if (!schedulerSource.includes(token)
+      || !source.includes(token)
+      || !source.includes('runGovernedAgentJob')) {
+    errors.push(`shared runner runtime wiring missing: ${jobId} (${token})`);
+  }
 }
 
 const handlerIdentity = (entry, kind) => kind === 'event' ? entry.eventType : `${entry.jobType}:${entry.idempotent}`;

@@ -30,15 +30,25 @@ import {
 } from './ai-automation-policy';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 import { recordOperatorAlert } from './operator-alerts';
+import {
+  planChannelRelearnScopes,
+  processChannelRelearnScope,
+  type ChannelRelearnResult,
+} from './channel-learner';
 
 const AUTORESEARCH_PROVIDER_ROUTE = 'gemini-or-openai-primary-anthropic-fallback';
 const CONTENT_PROVIDER_ROUTE = 'grounded-provider-fallback-route';
+const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
 export const SHARED_GOVERNED_AGENT_JOB_IDS = [
   'autoresearch',
+  'channel_relearn',
+  'chat_action_fixer_worker',
   'friday_weekly',
+  'garmin_coach',
   'thursday_youtube',
   'tuesday_reels',
+  'voice_evolution',
 ] as const;
 
 type ContentTopicJobId = 'tuesday_reels' | 'thursday_youtube';
@@ -51,6 +61,129 @@ type WeeklyContentInput = { missingReels: number; missingYoutube: number };
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : 'UnknownError';
+}
+
+function emptyChannelRelearnResult(synthesisDeferred = false): ChannelRelearnResult {
+  return {
+    analyzed: 0,
+    failed: 0,
+    skipped_no_new_videos: 0,
+    synthesized: false,
+    synthesis_skipped_all_unchanged: false,
+    synthesis_deferred: synthesisDeferred,
+  };
+}
+
+function mergeChannelRelearnResult(
+  total: ChannelRelearnResult,
+  result: ChannelRelearnResult,
+): void {
+  total.analyzed += result.analyzed;
+  total.failed += result.failed;
+  total.skipped_no_new_videos += result.skipped_no_new_videos;
+  total.synthesized = total.synthesized || result.synthesized;
+  total.synthesis_skipped_all_unchanged = total.synthesis_skipped_all_unchanged
+    || result.synthesis_skipped_all_unchanged;
+  total.synthesis_deferred = total.synthesis_deferred || result.synthesis_deferred;
+}
+
+class ChannelRelearnScopeExecutionError extends Error {
+  constructor(readonly result: ChannelRelearnResult) {
+    super('Channel re-learn scope contained failed channels');
+    this.name = 'ChannelRelearnScopeExecutionError';
+  }
+}
+
+function channelRelearnAdapter(input: {
+  force: boolean;
+  scopeUserId: number | undefined;
+  systemScopeChanged: boolean;
+}): GovernedAgentJobAdapter<typeof input, ChannelRelearnResult> {
+  return {
+    jobId: 'channel_relearn',
+    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    prepare: () => ({
+      kind: 'ready',
+      input,
+      fingerprintMaterial: {
+        force: input.force,
+        scope: input.scopeUserId == null ? 'platform' : 'tenant',
+        systemScopeChanged: input.systemScopeChanged,
+      },
+    }),
+    async execute({ input: prepared, runId }) {
+      const result = await processChannelRelearnScope(prepared.force, prepared.scopeUserId, {
+        runId,
+        systemScopeChanged: prepared.systemScopeChanged,
+      });
+      if (result.failed > 0) throw new ChannelRelearnScopeExecutionError(result);
+      return result;
+    },
+    validateOutput(output) {
+      const counts = [output.analyzed, output.failed, output.skipped_no_new_videos];
+      if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0)
+          || output.failed !== 0
+          || ![output.synthesized, output.synthesis_skipped_all_unchanged, output.synthesis_deferred]
+            .every((value) => typeof value === 'boolean')) {
+        throw new AgentJobOutputValidationError('Channel re-learn output failed validation');
+      }
+    },
+    classifyOutput(output, _prepared, usage) {
+      if (usage.providerCalls > 0) return 'success';
+      if (output.synthesis_skipped_all_unchanged || output.skipped_no_new_videos > 0) {
+        return 'skipped_unchanged';
+      }
+      return 'skipped_no_work';
+    },
+  };
+}
+
+/**
+ * Run each channel-learning scope under its own immutable run id. The existing
+ * per-channel video fingerprint remains the source of unchanged-input truth.
+ */
+export async function runScheduledChannelRelearn(force = false): Promise<ChannelRelearnResult> {
+  const plan = planChannelRelearnScopes();
+  const total = emptyChannelRelearnResult(plan.synthesisDeferred);
+  if (plan.scopes.length === 0) {
+    await runGovernedAgentJob({
+      ...channelRelearnAdapter({ force, scopeUserId: undefined, systemScopeChanged: false }),
+      prepare: () => ({
+        kind: 'skip',
+        status: 'skipped_no_work',
+        reason: 'no_eligible_channel_scopes',
+        fingerprintMaterial: { force, scopes: 0 },
+      }),
+    }, { tenantId: 0, userId: 0 });
+    return total;
+  }
+
+  let systemScopeChanged = false;
+  for (const scopeUserId of plan.scopes) {
+    try {
+      const outcome: AgentJobOutcome<ChannelRelearnResult> = await runGovernedAgentJob(channelRelearnAdapter({
+        force,
+        scopeUserId,
+        systemScopeChanged,
+      }), {
+        tenantId: scopeUserId ?? 0,
+        userId: scopeUserId ?? 0,
+      });
+      if (outcome.output) {
+        mergeChannelRelearnResult(total, outcome.output);
+        if (scopeUserId == null) systemScopeChanged = outcome.output.synthesized;
+      }
+    } catch (error) {
+      if (!(error instanceof ChannelRelearnScopeExecutionError)) throw error;
+      mergeChannelRelearnResult(total, error.result);
+      if (scopeUserId == null) systemScopeChanged = error.result.synthesized;
+      logger.warn(
+        { failed: error.result.failed, scopeUserId: scopeUserId ?? null },
+        'Channel re-learn governed scope completed with channel failures',
+      );
+    }
+  }
+  return total;
 }
 
 function isValidGeneratedCandidate(candidate: {

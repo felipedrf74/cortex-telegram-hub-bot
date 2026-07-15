@@ -154,7 +154,11 @@ vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPen
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
 vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));
-vi.mock('../../src/services/channel-learner', () => ({ processAllChannelScopes: vi.fn(), seedDefaultChannels: vi.fn() }));
+vi.mock('../../src/services/channel-learner', () => ({
+  seedDefaultChannels: vi.fn(),
+  planChannelRelearnScopes: vi.fn(() => ({ scopes: [], synthesisDeferred: false })),
+  processChannelRelearnScope: vi.fn(),
+}));
 vi.mock('../../src/services/content-workflow', () => ({
   generateAndStoreTopicCandidates: (...args: unknown[]) => mockGenerateAndStoreTopicCandidates(...args),
   generateWeeklyPackage: (...args: unknown[]) => mockGenerateWeeklyPackage(...args),
@@ -212,7 +216,7 @@ vi.mock('../../src/agents/pipeline-agent', () => ({ runPipelineAgent: vi.fn() })
 vi.mock('../../src/agents/seo-agent', () => ({ runSEOAgent: vi.fn(), seedKeywordsIfEmpty: vi.fn() }));
 vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.fn() }));
 vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
-vi.mock('../../src/agents/voice-evolution-agent', () => ({ runVoiceEvolutionAgent: vi.fn() }));
+vi.mock('../../src/agents/voice-evolution-agent', () => ({ runScheduledVoiceEvolutionAgent: vi.fn() }));
 vi.mock('../../src/services/intelligence-bus', () => ({ expireStaleSignals: vi.fn() }));
 vi.mock('../../src/commands/books', () => ({ seedBooksIfEmpty: vi.fn() }));
 vi.mock('../../src/services/autoresearch', () => ({ runAutoresearch: vi.fn(), getScheduledTarget: vi.fn() }));
@@ -341,6 +345,7 @@ import {
   startScheduler,
   sendCoachBriefings,
   sendCoachBriefingForTarget,
+  runScheduledCoachBriefingForTarget,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
 import { setLastCoachState } from '../../src/domains/domain-handler';
@@ -1461,6 +1466,39 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 22, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
+  });
+
+  it('propagates the governed run id into scheduled Coach provider metering', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 701,
+      user_id: 11,
+      tenant_id: 11,
+      name: 'Coach plan',
+      sport: 'gym',
+      status: 'active',
+    });
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'governed coach briefing',
+      recommendations: [],
+      errors: [],
+      dataCollectionMs: 11,
+      analysisMs: 22,
+    });
+
+    const outcome = await runScheduledCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+
+    expect(outcome).toMatchObject({
+      jobId: 'garmin_coach',
+      scope: { tenantId: 11, userId: 11 },
+      output: { status: 'generated', recommendations: 0, errors: 0 },
+    });
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(11, expect.objectContaining({
+      tenantId: 11,
+      meteringUserId: 11,
+      budgetRequestSource: 'automation',
+      budgetJobName: 'garmin_coach',
+      budgetRunId: 'scheduler-test-run',
+    }));
   });
 
   it('sendCoachBriefings skips free-plan users before generating or pushing coach reports', async () => {

@@ -181,7 +181,7 @@ describe('shared governed agent job runner', () => {
 
     await expect(runGovernedAgentJob(
       tenantAdapter,
-      { tenantId: 10, userId: 11 },
+      { tenantId: 0, userId: 11 },
       deterministicDependencies(db, 'scope'),
     )).rejects.toBeInstanceOf(AgentJobGovernanceError);
 
@@ -196,6 +196,48 @@ describe('shared governed agent job runner', () => {
       emptyDb.close();
     }
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('accepts distinct tenant and user scopes and audits a domain no-work result', async () => {
+    const scope = { tenantId: 850, userId: 9050 };
+    const execute = vi.fn(async () => ({ accepted: true, score: 0 }));
+    const adapter: GovernedAgentJobAdapter<TestInput, TestOutput> = {
+      jobId: 'chat_action_fixer_worker',
+      providerRouting: 'anthropic-only-cost-guarded',
+      prepare: () => ({
+        kind: 'ready',
+        input: { promptState: 'durable-queue-job-1' },
+        fingerprintMaterial: { jobId: 'job-1' },
+      }),
+      execute,
+      validateOutput: () => {},
+      classifyOutput: () => 'skipped_no_work',
+    };
+
+    const outcome = await runGovernedAgentJob(
+      adapter,
+      scope,
+      deterministicDependencies(db, 'distinct-scope-no-work'),
+    );
+
+    expect(outcome).toMatchObject({
+      scope,
+      status: 'skipped_no_work',
+      providerCalls: 0,
+      costUsd: 0,
+      skipReason: 'domain_no_provider_work',
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`
+      SELECT status, tenant_id, user_id, provider_calls, skip_reason
+        FROM agent_job_runs
+    `).get()).toEqual({
+      status: 'skipped_no_work',
+      tenant_id: 850,
+      user_id: 9050,
+      provider_calls: 0,
+      skip_reason: 'domain_no_provider_work',
+    });
   });
 
   it('audits a bounded preparation failure before any provider work', async () => {
