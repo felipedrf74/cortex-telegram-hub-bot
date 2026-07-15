@@ -309,6 +309,11 @@ describe('governed signal writer production contract', () => {
     for (const file of listTypeScriptFiles(sourceRoot)) {
       if (file === intelligenceBusPath) continue;
       const source = readFileSync(file, 'utf8');
+      // Parsing every production module made this contract exceed the shared
+      // runner timeout under coverage instrumentation. An identifier cannot
+      // exist in a file that lacks its spelling, so use the text check only as
+      // a lossless prefilter and keep the actual policy decision AST-based.
+      if (!source.includes('writeSignal')) continue;
       const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
       const visit = (node: ts.Node): void => {
         if (ts.isIdentifier(node) && node.text === 'writeSignal') {
