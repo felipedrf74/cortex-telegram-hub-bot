@@ -357,6 +357,36 @@
       "reason": "Replaced the old aggregate dependency assertion with exact mutation, coverage, and pushed-range fail-closed contracts."
     },
     {
+      "test": "__tests__/scripts/exact-promotion-operational-safety.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/exact-promotion-operational-safety.test.ts"
+      ],
+      "sources": [
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Removed assertions owned only by retired repository-sync wrappers while expanding the retained suite to prove staging and production locks, strict preflight, readiness evidence, and recovery ordering in the exact-artifact operator path."
+    },
+    {
+      "test": "__tests__/scripts/release-evidence-container.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-evidence-container.test.ts"
+      ],
+      "sources": [
+        ".github/workflows/release-candidate-evidence.yml",
+        "scripts/release-evidence-container.sh",
+        "scripts/release-operator.sh",
+        "scripts/promote-exact-release.sh",
+        "scripts/env-parity-check.sh",
+        "scripts/remote-release-preflight.sh",
+        "scripts/remote-release-readiness.sh"
+      ],
+      "reason": "Removed the obsolete promote-to-prod wrapper exclusion and transferred ownership to positive exact-artifact operator, environment parity, strict preflight, readiness, attestation, and rollback contracts in the retained evidence suite."
+    },
+    {
       "test": "__tests__/scripts/deploy-shell-hardening.test.ts",
       "replacementTests": [
         "__tests__/scripts/release-runtime-safeguards.test.ts",
