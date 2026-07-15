@@ -538,10 +538,10 @@
       "mutationTargets": [
         {
           "pattern": "src/agents/voice-evolution-agent.ts:596-596",
-          "anchor": "(t.full_text || '').slice(0, 2000)",
+          "anchor": "t.full_text.slice(0, 2000)",
           "behavior": "The agent places each scoped transcript full_text value into the provider prompt.",
           "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-          "ownerTestName": "builds voice signals from each active tenant’s own transcripts and scripts only",
+          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
           "minimumMutants": 1
         }
       ],
@@ -558,11 +558,11 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/agents/voice-evolution-agent.ts:564-564",
-          "anchor": "SELECT title, full_text FROM video_transcripts",
-          "behavior": "The actual agent reads the migrated full_text transcript column instead of a source-scanned alias.",
+          "pattern": "src/agents/voice-evolution-agent.ts:595-595",
+          "anchor": "const transcriptsBlock = transcripts.length > 0",
+          "behavior": "A migrated transcript query result selects the transcript-backed provider prompt path instead of the no-transcript fallback.",
           "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
-          "ownerTestName": "builds voice signals from each active tenant’s own transcripts and scripts only",
+          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
           "minimumMutants": 1
         }
       ],
@@ -601,27 +601,27 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/services/ai-provider.ts:423-423",
-          "anchor": "return this.fallback.classify(message, activeContext, options)",
-          "behavior": "Classification fallback preserves active context and scoped call options exactly.",
+          "pattern": "src/services/ai-provider.ts:422-422",
+          "anchor": "this.onFallback?.(err as Error, 'classify')",
+          "behavior": "Classification fallback reports the exact method and preserves active context and scoped call options.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
-          "ownerTestName": "classify preserves context and options when primary throws",
+          "ownerTestName": "FallbackProvider classify classify preserves context and options when primary throws",
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/ai-provider.ts:439-439",
-          "anchor": "return this.fallback.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens)",
-          "behavior": "Domain fallback preserves every routing, history, state, and options argument exactly.",
+          "pattern": "src/services/ai-provider.ts:438-438",
+          "anchor": "this.onFallback?.(err as Error, 'callDomain')",
+          "behavior": "Domain fallback reports the exact method and preserves every routing, history, state, and options argument.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
-          "ownerTestName": "callDomain preserves all arguments when primary throws",
+          "ownerTestName": "FallbackProvider callDomain callDomain preserves all arguments when primary throws",
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/ai-provider.ts:456-456",
-          "anchor": "return this.fallback.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options)",
-          "behavior": "Tool-result continuation fallback preserves the full conversation and scoped options exactly.",
+          "pattern": "src/services/ai-provider.ts:455-455",
+          "anchor": "this.onFallback?.(err as Error, 'continueWithToolResults')",
+          "behavior": "Tool-result continuation fallback reports the exact method and preserves the full conversation and scoped options.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
-          "ownerTestName": "continueWithToolResults preserves all arguments when primary throws",
+          "ownerTestName": "FallbackProvider continueWithToolResults continueWithToolResults preserves all arguments when primary throws",
           "minimumMutants": 1
         }
       ],
@@ -637,19 +637,19 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/services/config-provider.ts:52-52",
-          "anchor": "this.overrides.get(String(tenantId))",
-          "behavior": "Numeric and string forms of one tenant resolve the same stored override identity.",
+          "pattern": "src/services/config-provider.ts:47-47",
+          "anchor": "if (!tenantOverrides) return config",
+          "behavior": "Resolution returns the exact global config when no tenant override exists and the merged config when one does.",
           "replacementTest": "__tests__/services/config-provider.test.ts",
-          "ownerTestName": "numeric tenant IDs work (Telegram user IDs)",
+          "ownerTestName": "ConfigProvider EnvConfigProvider resolve() returns global config when no overrides set",
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/config-provider.ts:63-63",
-          "anchor": "this.overrides.delete(String(tenantId))",
-          "behavior": "Clearing an override accepts either numeric or string form of the same tenant identity.",
+          "pattern": "src/services/config-provider.ts:52-52",
+          "anchor": "this.overrides.get(String(tenantId))",
+          "behavior": "Override lookup returns null for an unknown tenant while canonical numeric and string identities share stored overrides.",
           "replacementTest": "__tests__/services/config-provider.test.ts",
-          "ownerTestName": "numeric tenant IDs work (Telegram user IDs)",
+          "ownerTestName": "ConfigProvider EnvConfigProvider getOverrides() returns null for unknown tenant",
           "minimumMutants": 1
         },
         {
@@ -657,7 +657,7 @@
           "anchor": "values && typeof values === 'object' && section in base",
           "behavior": "Unknown, null, and scalar override sections cannot enter the resolved application config.",
           "replacementTest": "__tests__/services/config-provider.test.ts",
-          "ownerTestName": "ignores unknown, null, and scalar override sections",
+          "ownerTestName": "ConfigProvider multi-section overrides ignores unknown, null, and scalar override sections",
           "minimumMutants": 1
         }
       ],

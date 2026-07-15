@@ -115,6 +115,7 @@ describe('Cross-Agent Learning public contracts', () => {
     }
     for (const payload of [
       { formula: 'Low confidence', pillar: 'AI', confidence: 0.4 },
+      { formula: 'Boundary confidence', pillar: 'AI', confidence: 0.6 },
       { formula: 'High confidence', pillar: 'AI', confidence: 0.9 },
     ]) {
       writeSignal({
@@ -128,6 +129,7 @@ describe('Cross-Agent Learning public contracts', () => {
     const prompt = formatContextForPrompt(buildAgentContext('pipeline-agent'));
     expect(prompt).toContain('Cross-Agent Learnings');
     expect(prompt).toContain('trending topic');
+    expect(prompt).toContain('Boundary confidence');
     expect(prompt).toContain('High confidence');
     expect(prompt).not.toContain('stable topic');
     expect(prompt).not.toContain('Low confidence');
@@ -143,6 +145,14 @@ describe('Cross-Agent Learning public contracts', () => {
       priority: 'normal',
     });
     writeSignal({
+      source_agent: 'voice-evolution',
+      signal_type: 'voice_pattern',
+      user_id: TEST_USER_ID,
+      tenant_id: TEST_TENANT_ID,
+      payload: { observation: 'Boundary', strength: 0.7 },
+      priority: 'normal',
+    });
+    writeSignal({
       source_agent: 'performance-agent',
       signal_type: 'pillar_performance',
       payload: {
@@ -151,10 +161,19 @@ describe('Cross-Agent Learning public contracts', () => {
       priority: 'normal',
     });
 
-    expect(produceLearningDigest()).toBeGreaterThan(0);
-    const digests = readSignals('digest-contract-reader', ['learning_digest'], 10);
+    expect(produceLearningDigest(TEST_USER_ID, TEST_TENANT_ID)).toBeGreaterThan(0);
+    const digests = readSignals(
+      'digest-contract-reader',
+      ['creator_learning_digest'],
+      10,
+      TEST_USER_ID,
+      undefined,
+      TEST_TENANT_ID,
+    );
     expect(digests).toHaveLength(1);
-    expect(digests[0].payload.voiceInsights).toEqual([]);
+    expect(digests[0].payload.voiceInsights).toEqual([
+      expect.objectContaining({ observation: 'Boundary', strength: 0.7 }),
+    ]);
   });
 
   it('tracks consumption independently for each peer agent', () => {

@@ -185,6 +185,18 @@ describe('FallbackProvider', () => {
 
       const result = await noCallbackProvider.classify('test');
       expect(result.domain).toBe('secretary');
+
+      const callResult: AICallResult = { text: 'fallback domain', toolCalls: [], stopReason: 'end_turn' };
+      primary.callDomain.mockRejectedValue(new Error('domain down'));
+      fallback.callDomain.mockResolvedValue(callResult);
+      await expect(noCallbackProvider.callDomain('secretary', [], 'test', ''))
+        .resolves.toEqual(callResult);
+
+      const continuationResult: AICallResult = { text: 'fallback continuation', toolCalls: [], stopReason: 'end_turn' };
+      primary.continueWithToolResults.mockRejectedValue(new Error('continuation down'));
+      fallback.continueWithToolResults.mockResolvedValue(continuationResult);
+      await expect(noCallbackProvider.continueWithToolResults('secretary', [], 'test', '', []))
+        .resolves.toEqual(continuationResult);
     });
   });
 });

@@ -158,6 +158,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
 
     seedUser(25, 'founder');
     seedUser(28, 'knitter');
+    seedUser(30, 'script-only');
 
     storeScript({
       userId: 25,
@@ -173,14 +174,29 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       format: 'reel',
       scriptText: 'knitter-only-script knitting phrasing',
     });
+    storeScript({
+      userId: 30,
+      tenantId: 30,
+      topic: 'Script-only topic',
+      format: 'reel',
+      scriptText: 'script-only-script without a transcript',
+    });
 
-    seedTranscript(25, 'founder-video', 'founder-only-transcript with marathon cadence');
+    seedTranscript(
+      25,
+      'founder-video',
+      `founder-only-transcript with marathon cadence ${'x'.repeat(2_100)} founder-truncation-tail`,
+    );
+    seedTranscript(25, 'founder-video-companion', 'founder-companion-transcript');
     seedTranscript(28, 'knitter-video', 'knitter-only-transcript with yarn cadence');
 
     mockCompleteOneShotWithFallback.mockImplementation(async (...args: unknown[]) => {
       const prompt = args.find((arg): arg is string => typeof arg === 'string' && arg.includes('AI-GENERATED SCRIPTS')) ?? '';
       if (prompt.includes('founder-only-transcript')) {
         expect(prompt).not.toContain('knitter-only-transcript');
+        expect(prompt).toContain('founder-companion-transcript');
+        expect(prompt).toContain('\n\n===');
+        expect(prompt).not.toContain('founder-truncation-tail');
         return {
           text: JSON.stringify({
             additions: [{ pattern: 'founder-signal', examples: ['marathon cadence'], frequency: 'often', category: 'argument' }],
@@ -205,28 +221,34 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
           }),
         };
       }
+      if (prompt.includes('script-only-script')) {
+        expect(prompt).toContain('No published transcripts available for this period.');
+        return {
+          text: JSON.stringify(validVoiceAnalysis({ voice_summary: 'script-only summary' })),
+        };
+      }
       throw new Error(`unexpected prompt: ${prompt}`);
     });
 
     await runVoiceEvolutionAgent();
     await runVoiceEvolutionAgent();
 
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(2);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
 
     seedTranscript(28, 'knitter-video-new', 'knitter-only-transcript with a newly changed stitch cadence');
     await runVoiceEvolutionAgent();
 
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).toContain('newly changed stitch cadence');
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).not.toContain('founder-only-transcript');
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(4);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(4);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[3][1])).toContain('newly changed stitch cadence');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[3][1])).not.toContain('founder-only-transcript');
 
     // A fourth unchanged run must observe the fingerprint written only after
     // the successful changed-input outputs and make zero additional calls.
     await runVoiceEvolutionAgent();
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(4);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(4);
 
     const fingerprints = testDb.prepare(`
       SELECT user_id, tenant_id, payload
@@ -234,11 +256,12 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       WHERE signal_type = 'voice_analysis_fingerprint'
       ORDER BY user_id, id
     `).all() as { user_id: number; tenant_id: number; payload: string }[];
-    expect(fingerprints).toHaveLength(3);
+    expect(fingerprints).toHaveLength(4);
     expect(fingerprints.map((row) => [row.user_id, row.tenant_id])).toEqual([
       [25, 25],
       [28, 28],
       [28, 28],
+      [30, 30],
     ]);
     expect(fingerprints.every((row) => !row.payload.includes('transcript'))).toBe(true);
 
