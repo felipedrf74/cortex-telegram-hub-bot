@@ -10,7 +10,7 @@ import {
   runTrainingPlanRevisionBackfillCli,
   TRAINING_PLAN_REVISION_BACKFILL_USAGE,
 } from '../../src/cli/training-plan-revision-v1-backfill';
-import { runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 describe('training plan revision v1 compiled backfill CLI', () => {
   const scratchDirectories: string[] = [];
@@ -77,8 +77,10 @@ describe('training plan revision v1 compiled backfill CLI', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'training-revision-backfill-cli-'));
     scratchDirectories.push(directory);
     const databasePath = path.join(directory, 'training.db');
+    const templateDb = createMigratedTestDatabase();
+    fs.writeFileSync(databasePath, templateDb.serialize());
+    templateDb.close();
     const setupDb = new Database(databasePath);
-    runMigrationsForTest(setupDb);
     setupDb.prepare(`
       INSERT INTO fitness_training_plans (
         user_id, tenant_id, name, sport, goal, duration_weeks, status,

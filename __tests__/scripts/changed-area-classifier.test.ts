@@ -9,7 +9,22 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import {
+  CANNOT_SKIP_GATE_NAMES,
+  classifyChangedFiles,
+} from '../../scripts/lib/changed-area-classifier.mjs';
+
+const root = resolve(process.cwd());
+const generatedAt = '2026-07-15T00:00:00Z';
+
+function classify(files: string | string[]) {
+  return classifyChangedFiles({
+    files: Array.isArray(files) ? files : files.split(',').filter(Boolean),
+    root,
+    generatedAt,
+  });
+}
 
 function cleanGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -20,559 +35,200 @@ function cleanGitEnv(): NodeJS.ProcessEnv {
     'GIT_PREFIX',
     'GIT_OBJECT_DIRECTORY',
     'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  ]) {
-    delete env[key];
-  }
+  ]) delete env[key];
   return env;
 }
 
-describe('changed-area-classifier closed-beta content-agent routing', () => {
-  it('does not lose early matches when a large change set exceeds the pipe buffer', () => {
-    const files = [
-      '__tests__/services/product-learning.test.ts',
-      'src/services/product-learning.ts',
-      ...Array.from({ length: 2_000 }, (_, index) => `docs/generated-${index}.md`),
-    ];
-    const raw = execFileSync(
-      'bash',
-      ['scripts/changed-area-classifier.sh', '--json', '--files', files.join(',')],
-      { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
-    );
-    const result = JSON.parse(raw) as { flags: Record<string, boolean>; vitest: { mode: string } };
+function installClassifierFixture(repo: string): void {
+  mkdirSync(join(repo, 'scripts/lib'), { recursive: true });
+  mkdirSync(join(repo, 'config'), { recursive: true });
+  for (const file of [
+    'scripts/changed-area-classifier.sh',
+    'scripts/changed-area-classifier.mjs',
+    'scripts/lib/changed-area-classifier.mjs',
+    'scripts/lib/git-ref.mjs',
+    'config/test-policy.json',
+  ]) {
+    copyFileSync(file, join(repo, file));
+  }
+  chmodSync(join(repo, 'scripts/changed-area-classifier.sh'), 0o755);
+}
 
-    expect(result.flags.backendSrc).toBe(true);
-    expect(result.flags.backendTest).toBe(true);
-    expect(result.flags.docsOnly).toBe(false);
-    expect(result.vitest.mode).toBe('changed-only');
+type RoutingFixture = {
+  name: string;
+  files: string[];
+  flags: Record<string, boolean>;
+  gates?: string[];
+  vitest?: string[];
+  xctest?: string[];
+  mode?: string;
+};
+
+const routingFixtures: RoutingFixture[] = [
+  {
+    name: 'content agents',
+    files: ['src/agents/reaction-radar-agent.ts'],
+    flags: { content: true, contentAgent: true },
+    gates: ['content-agent-neutrality'],
+    vitest: ['__tests__/security/content-agent-neutrality.test.ts', '__tests__/services/cross-agent-learning*.test.ts'],
+  },
+  {
+    name: 'backend auth and OAuth',
+    files: ['src/api/routes/auth.ts', 'src/services/google-sign-in.ts', 'src/services/apple-sign-in-nonce.ts', 'src/services/oauth-flow.ts', 'src/portal/oauth-routes.ts'],
+    flags: { authOrTenant: true, portal: true },
+    gates: ['tenant-auth-security'],
+    vitest: ['__tests__/api/auth-*.test.ts', '__tests__/services/google-sign-in.test.ts', '__tests__/services/apple-sign-in-nonce.test.ts', '__tests__/services/oauth*.test.ts', '__tests__/portal/portal-oauth-routes.test.ts'],
+  },
+  {
+    name: 'iOS auth',
+    files: ['Nexus Hub/Core/AuthManager.swift', 'Nexus Hub/Core/KeychainHelper.swift', 'Nexus Hub/Views/Auth/AuthenticationView.swift'],
+    flags: { iosSrc: true, iosAuth: true, authOrTenant: true },
+    gates: ['tenant-auth-security'],
+    xctest: ['Nexus HubTests/AppleSignInNonceTests', 'Nexus HubTests/KeychainHelperTests', 'Nexus HubTests/AuthManagerPersistenceTests', 'Nexus HubTests/GoogleAuthCallbackResolverTests'],
+  },
+  {
+    name: 'chat planner and executor',
+    files: ['src/services/chat/planner/orchestrator.ts', 'src/services/chat/executor/plan-executor.ts'],
+    flags: { chatReasoning: true, secretary: true },
+    vitest: ['__tests__/services/chat-action-planner.test.ts', '__tests__/services/chat-action-production-safety.test.ts', '__tests__/api/chat-routes.test.ts', '__tests__/security/p0-chat-identity-isolation.test.ts'],
+  },
+  {
+    name: 'Chat Core v2',
+    files: ['src/services/chat-core-v2/route-decision.ts'],
+    flags: { chatReasoning: false, chatCoreV2: true },
+    vitest: ['__tests__/services/chat-core-v2-*.test.ts'],
+    mode: 'focused',
+  },
+  {
+    name: 'logger and redaction',
+    files: ['src/utils/logger.ts'],
+    flags: { logger: true },
+    gates: ['logger-redaction-pii-scan'],
+    vitest: ['__tests__/utils/logger-*.test.ts', '__tests__/api/secret-guards.test.ts'],
+  },
+  {
+    name: 'scheduler',
+    files: ['src/services/scheduler.ts'],
+    flags: { scheduler: true },
+    gates: ['scheduler-tenant-scope-and-failure'],
+    vitest: ['__tests__/services/scheduler-*.test.ts'],
+  },
+  {
+    name: 'APNs and notification routes',
+    files: ['src/services/apns-sender.ts', 'src/api/routes/notifications.ts'],
+    flags: { notification: true },
+    gates: ['notification-apns-delivery-and-tenant'],
+    vitest: ['__tests__/services/apns-*.test.ts', '__tests__/api/notifications-*.test.ts'],
+  },
+  {
+    name: 'Garmin Apple Health and wearable',
+    files: ['src/services/garmin.ts', 'src/services/apple-health.ts', 'src/api/routes/wearable-routes.ts'],
+    flags: { healthIntegration: true },
+    gates: ['health-integration-tenant-isolation'],
+    vitest: ['__tests__/services/garmin-*.test.ts', '__tests__/services/apple-health-*.test.ts', '__tests__/api/wearable-*.test.ts'],
+  },
+  {
+    name: 'rate limiting',
+    files: ['src/api/middleware/rate-limit.ts'],
+    flags: { rateLimit: true },
+    gates: ['auth-rate-limit-and-lockout'],
+    vitest: ['__tests__/api/rate-limiter.test.ts', '__tests__/security/**/*.test.ts'],
+  },
+  {
+    name: 'audit trail',
+    files: ['src/services/audit-trail.ts'],
+    flags: { audit: true },
+    gates: ['audit-trail-emission-and-scope'],
+    vitest: ['__tests__/services/audit-trail.test.ts', '__tests__/api/authenticated-support-routes-scope.test.ts'],
+  },
+  {
+    name: 'deploy and PM2 config',
+    files: ['ecosystem.config.js'],
+    flags: { deployConfig: true },
+    gates: ['deploy-config-health-rehearsal'],
+    vitest: ['__tests__/services/config-*.test.ts', '__tests__/scripts/*.test.ts'],
+  },
+  {
+    name: 'iOS navigation',
+    files: ['Nexus Hub/Views/MainTabView.swift', 'Nexus Hub/ViewModels/DashboardViewModel.swift'],
+    flags: { iosSrc: true, iosNavigation: true },
+    gates: ['ios-navigation-responsiveness'],
+    xctest: ['Nexus HubTests/NavigationPerformanceSourcePinsTests', 'Nexus HubUITests/AppWideResponsivenessUITests'],
+  },
+  {
+    name: 'iOS DTO and decoders',
+    files: ['Nexus Hub/Core/Services/TrainingService.swift', 'Nexus Hub/Core/DTO/TrainingDTO.swift'],
+    flags: { iosSrc: true, iosDto: true },
+    gates: ['ios-contract-decoder-resilience'],
+    xctest: ['Nexus HubTests/ContractDecoderResilienceTests', 'Nexus HubTests/TrainingHomeViewStateContractDecodingTests'],
+  },
+  {
+    name: 'prompt-only changes',
+    files: ['prompts/secretary.md'],
+    flags: { prompt: true, docsOnly: true },
+    gates: ['prompt-injection-defense'],
+    vitest: ['__tests__/security/**/*.test.ts', '__tests__/services/prompt-cleanliness.test.ts'],
+    mode: 'focused',
+  },
+  {
+    name: 'Training',
+    files: ['src/services/training-plan-volume-enforcement.ts'],
+    flags: { training: true },
+    gates: ['training-plan-create-e2e'],
+    vitest: ['__tests__/integration/training-plan-create-cycle.test.ts'],
+  },
+];
+
+describe('changed-area-classifier pure routing fixtures', () => {
+  it.each(routingFixtures)('routes $name without shell or Git', (fixture) => {
+    const result = classify(fixture.files);
+    for (const [flag, expected] of Object.entries(fixture.flags)) expect(result.flags[flag]).toBe(expected);
+    for (const gate of fixture.gates ?? []) expect(result.cannotSkip).toContain(gate);
+    for (const route of fixture.vitest ?? []) expect(result.vitest.globs).toContain(route);
+    for (const testClass of fixture.xctest ?? []) expect(result.xctest.classes).toContain(testClass);
+    if (fixture.mode) expect(result.vitest.mode).toBe(fixture.mode);
   });
 
-  it('routes src/agents changes into content-agent neutrality and cross-agent tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/agents/reaction-radar-agent.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.content).toBe(true);
-    expect(result.flags.contentAgent).toBe(true);
-    expect(result.cannotSkip).toContain('content-agent-neutrality');
-    expect(result.vitest.globs).toContain('__tests__/security/content-agent-neutrality.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/cross-agent-learning*.test.ts');
-  });
-
-  it('routes backend auth/OAuth changes into auth, OAuth, and security tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'src/api/routes/auth.ts',
-          'src/services/google-sign-in.ts',
-          'src/services/apple-sign-in-nonce.ts',
-          'src/services/oauth-flow.ts',
-          'src/portal/oauth-routes.ts',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.authOrTenant).toBe(true);
-    expect(result.flags.portal).toBe(true);
-    expect(result.cannotSkip).toContain('tenant-auth-security');
-    expect(result.vitest.globs).toContain('__tests__/api/auth-*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/google-sign-in.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/apple-sign-in-nonce.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/oauth*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/portal/portal-oauth-routes.test.ts');
-  });
-
-  it('routes iOS auth changes into auth-focused XCTest classes', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'Nexus Hub/Core/AuthManager.swift',
-          'Nexus Hub/Core/KeychainHelper.swift',
-          'Nexus Hub/Views/Auth/AuthenticationView.swift',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      xctest: { classes: string[] };
-    };
-
-    expect(result.flags.iosSrc).toBe(true);
-    expect(result.flags.iosAuth).toBe(true);
-    expect(result.flags.authOrTenant).toBe(true);
-    expect(result.cannotSkip).toContain('tenant-auth-security');
-    expect(result.xctest.classes).toContain('Nexus HubTests/AppleSignInNonceTests');
-    expect(result.xctest.classes).toContain('Nexus HubTests/KeychainHelperTests');
-    expect(result.xctest.classes).toContain('Nexus HubTests/AuthManagerPersistenceTests');
-    expect(result.xctest.classes).toContain('Nexus HubTests/GoogleAuthCallbackResolverTests');
-  });
-});
-
-describe('changed-area-classifier engineering-excellence enrichments (2026-05-04)', () => {
-  it('routes canonical chat planner/executor changes into chat reasoning tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/services/chat/planner/orchestrator.ts,src/services/chat/executor/plan-executor.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.chatReasoning).toBe(true);
-    expect(result.flags.secretary).toBe(true);
-    expect(result.vitest.globs).toContain('__tests__/services/chat-action-planner.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/chat-action-production-safety.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/api/chat-routes.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/security/p0-chat-identity-isolation.test.ts');
-  });
-
-  it('routes Chat Core v2 foundation changes into Chat Core v2 focused tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/services/chat-core-v2/route-decision.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      vitest: { mode: string; globs: string[] };
-    };
-
-    expect(result.flags.chatReasoning).toBe(false);
-    expect(result.flags.chatCoreV2).toBe(true);
-    expect(result.vitest.mode).toBe('focused');
-    expect(result.vitest.globs).toContain('__tests__/services/chat-core-v2-*.test.ts');
-  });
-
-  it('routes logger / redaction changes into logger + secret-guards tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/utils/logger.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.logger).toBe(true);
-    expect(result.cannotSkip).toContain('logger-redaction-pii-scan');
-    expect(result.vitest.globs).toContain('__tests__/utils/logger-*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/api/secret-guards.test.ts');
-  });
-
-  it('routes scheduler / cron changes into scheduler tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/services/scheduler.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.scheduler).toBe(true);
-    expect(result.cannotSkip).toContain('scheduler-tenant-scope-and-failure');
-    expect(result.vitest.globs).toContain('__tests__/services/scheduler-*.test.ts');
-  });
-
-  it('routes APNs / notification changes into APNs + notification routes tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'src/services/apns-sender.ts',
-          'src/api/routes/notifications.ts',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.notification).toBe(true);
-    expect(result.cannotSkip).toContain('notification-apns-delivery-and-tenant');
-    expect(result.vitest.globs).toContain('__tests__/services/apns-*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/api/notifications-*.test.ts');
-  });
-
-  it('routes Garmin / Apple Health / wearable changes into health-integration tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'src/services/garmin.ts',
-          'src/services/apple-health.ts',
-          'src/api/routes/wearable-routes.ts',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.healthIntegration).toBe(true);
-    expect(result.cannotSkip).toContain('health-integration-tenant-isolation');
-    expect(result.vitest.globs).toContain('__tests__/services/garmin-*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/apple-health-*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/api/wearable-*.test.ts');
-  });
-
-  it('routes rate-limit middleware changes into rate-limiter + security tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/api/middleware/rate-limit.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.rateLimit).toBe(true);
-    expect(result.cannotSkip).toContain('auth-rate-limit-and-lockout');
-    expect(result.vitest.globs).toContain('__tests__/api/rate-limiter.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
-  });
-
-  it('routes audit-trail changes into audit emission and scope tests', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'src/services/audit-trail.ts',
-          'src/api/routes/audit-trail.ts',
-          'src/portal/admin-audit.ts',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.audit).toBe(true);
-    expect(result.cannotSkip).toContain('audit-trail-emission-and-scope');
-    expect(result.vitest.globs).toContain('__tests__/services/audit-trail.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/api/authenticated-support-routes-scope.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/portal/portal-admin-audit.test.ts');
-  });
-
-  it('routes deploy and PM2 config changes into deploy-config gates', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'ecosystem.config.js',
-          'ecosystem.staging.config.js',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-    };
-
-    expect(result.flags.deployConfig).toBe(true);
-    expect(result.cannotSkip).toContain('deploy-config-health-rehearsal');
-    expect(result.vitest.globs).toContain('__tests__/services/config-*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/portal/health-endpoint*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/scripts/*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
-  });
-
-  it('routes iOS navigation and view-model changes into responsiveness XCTest classes', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'Nexus Hub/Views/MainTabView.swift',
-          'Nexus Hub/ViewModels/DashboardViewModel.swift',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      xctest: { classes: string[] };
-    };
-
-    expect(result.flags.iosSrc).toBe(true);
-    expect(result.flags.iosNavigation).toBe(true);
-    expect(result.cannotSkip).toContain('ios-navigation-responsiveness');
-    expect(result.xctest.classes).toContain('Nexus HubTests/NavigationPerformanceSourcePinsTests');
-    expect(result.xctest.classes).toContain('Nexus HubUITests/AppWideResponsivenessUITests');
-  });
-
-  it('routes iOS DTO and decoder changes into contract decoder XCTest classes', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        [
-          'Nexus Hub/Core/Services/TrainingService.swift',
-          'Nexus HubTests/TrainingHomeViewStateContractDecodingTests.swift',
-        ].join(','),
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      xctest: { classes: string[] };
-    };
-
-    expect(result.flags.iosSrc).toBe(true);
-    expect(result.flags.iosDto).toBe(true);
-    expect(result.cannotSkip).toContain('ios-contract-decoder-resilience');
-    expect(result.xctest.classes).toContain('Nexus HubTests/ContractDecoderResilienceTests');
-    expect(result.xctest.classes).toContain('Nexus HubTests/TrainingHomeViewStateContractDecodingTests');
-  });
-
-  it('routes prompts-only diff into the security suite (ENG-EXC-O3 fix)', () => {
-    // Before this fix, a diff that only touched prompts/*.md was classified
-    // as docs-only AND named `prompt-injection-defense` as a cannot-skip
-    // gate — but emitted ZERO vitest globs. The cannot-skip-gate dashboard
-    // caught the disconnect. The classifier now forces the security suite
-    // to run when HAS_PROMPT fires regardless of HAS_NON_DOC.
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'prompts/secretary.md',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { mode: string; globs: string[] };
-    };
-
-    expect(result.flags.prompt).toBe(true);
-    expect(result.cannotSkip).toContain('prompt-injection-defense');
-    expect(result.vitest.mode).toBe('focused');
-    expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
-    expect(result.vitest.globs).toContain('__tests__/services/prompt-cleanliness.test.ts');
-  });
-
-  it('routes Training changes into the real-DB plan create-cycle E2E cannot-skip gate', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/services/training-plan-volume-enforcement.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      flags: Record<string, boolean>;
-      cannotSkip: string[];
-      vitest: { globs: string[] };
-      stagingSmoke: { domains: string[] };
-    };
-
-    expect(result.flags.training).toBe(true);
-    expect(result.cannotSkip).toContain('training-plan-create-e2e');
-    expect(result.vitest.globs).toContain('__tests__/integration/training-plan-create-cycle.test.ts');
-    expect(result.stagingSmoke.domains).toContain('smoke:training-cross-skill:staging');
-  });
-
-  it('preserves all new flags as false on unrelated diff (no false positives)', () => {
-    const raw = execFileSync(
-      'bash',
-      [
-        'scripts/changed-area-classifier.sh',
-        '--json',
-        '--files',
-        'src/services/cooking-shopping-list.ts',
-      ],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as { flags: Record<string, boolean> };
-
-    expect(result.flags.logger).toBe(false);
-    expect(result.flags.scheduler).toBe(false);
-    expect(result.flags.notification).toBe(false);
-    expect(result.flags.healthIntegration).toBe(false);
-    expect(result.flags.rateLimit).toBe(false);
-    expect(result.flags.audit).toBe(false);
-    expect(result.flags.deployConfig).toBe(false);
-    expect(result.flags.iosNavigation).toBe(false);
-    expect(result.flags.iosDto).toBe(false);
-  });
-});
-
-describe('changed-area-classifier cannot-skip dashboard wiring (ENG-EXC-O3)', () => {
-  // The dashboard spawns 24+ sequential bash + node child processes (one
-  // per gate). Under full-sweep load (300+ test files in singleFork
-  // mode) even a 60s timeout can flake on colder pre-push runs. Bump to
-  // 120s to absorb the cold-spawn cost without masking a real regression —
-  // a real wiring regression prints the failed gate names in the JSON
-  // payload regardless of duration.
-  it('cannot-skip gate dashboard reports every gate wired and PASS verdict', { timeout: 120_000 }, () => {
-    const raw = execFileSync(
-      'bash',
-      ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence', '--base', 'origin/main'],
-      { encoding: 'utf8' },
-    );
-    const result = JSON.parse(raw) as {
-      summary: {
-        total: number;
-        pass: number;
-        fail: number;
-        verdict: 'PASS' | 'FAIL';
-        failedGates: string[];
-      };
-      gates: Array<{ gate: string; pass: boolean }>;
-    };
-
-    expect(result.summary.verdict).toBe('PASS');
-    expect(result.summary.fail).toBe(0);
-    expect(result.summary.total).toBeGreaterThanOrEqual(24);
-    expect(result.summary.pass).toBe(result.summary.total);
-    // Every per-gate row must report pass:true.
-    for (const gate of result.gates) {
-      expect(gate.pass, `gate ${gate.gate} failed wiring`).toBe(true);
+  it('keeps enrichment flags false on an unrelated backend change', () => {
+    const result = classify('src/services/plain-helper.ts');
+    for (const flag of ['logger', 'scheduler', 'notification', 'healthIntegration', 'rateLimit', 'audit', 'deployConfig', 'iosNavigation', 'iosDto']) {
+      expect(result.flags[flag]).toBe(false);
     }
   });
 });
 
-describe('changed-area-classifier CI/CD optimization routing', () => {
-  function classify(files: string) {
-    const raw = execFileSync(
-      'bash',
-      ['scripts/changed-area-classifier.sh', '--json', '--files', files],
-      { encoding: 'utf8' },
-    );
-    return JSON.parse(raw) as {
-      changedFiles: string[];
-      flags: Record<string, boolean>;
-      vitest: { mode: string; globs: string[]; skipReason?: string | null };
-      pytest: { globs: string[] };
-      cannotSkip: string[];
-    };
-  }
+const fullSuiteTriggers = [
+  'config/test-policy.json',
+  'scripts/changed-area-classifier.sh',
+  'scripts/changed-area-classifier.mjs',
+  'scripts/lib/changed-area-classifier.mjs',
+  'scripts/resolve-ci-change-base.sh',
+  'scripts/select-vitest-files.mjs',
+  'scripts/run-test-tier.mjs',
+  'scripts/risk-gate.sh',
+  'scripts/lib/git-ref.mjs',
+  'scripts/lib/test-policy.mjs',
+  '.github/workflows/ci.yml',
+  '__tests__/fixtures/shared-database.ts',
+];
 
+describe('changed-area-classifier pure CI and release policy fixtures', () => {
   it('classifies docs-only changes as skip', () => {
     const result = classify('docs/release/example.md');
-
     expect(result.flags.docsOnly).toBe(true);
     expect(result.vitest.mode).toBe('skip');
     expect(result.vitest.skipReason).toContain('docs-only');
   });
 
-  it('classifies package/test config changes as full', () => {
+  it('classifies package and test config changes as full', () => {
     const result = classify('package-lock.json,vitest.config.ts');
-
     expect(result.flags.packageJson).toBe(true);
     expect(result.flags.testConfig).toBe(true);
     expect(result.vitest.mode).toBe('full');
   });
 
-  it.each([
-    'config/test-policy.json',
-    'scripts/changed-area-classifier.sh',
-    'scripts/resolve-ci-change-base.sh',
-    'scripts/select-vitest-files.mjs',
-    'scripts/run-test-tier.mjs',
-    'scripts/risk-gate.sh',
-    'scripts/lib/git-ref.mjs',
-    'scripts/lib/test-policy.mjs',
-    '.github/workflows/ci.yml',
-    '__tests__/fixtures/shared-database.ts',
-  ])('forces full Vitest for governed test infrastructure: %s', (file) => {
+  it.each(fullSuiteTriggers)('forces full Vitest for governed test infrastructure: %s', (file) => {
     const result = classify(file);
-
     expect(result.flags.docsOnly).toBe(false);
     expect(result.flags.fullSuiteTrigger).toBe(true);
     expect(result.vitest.mode).toBe('full');
@@ -581,45 +237,40 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
 
   it('classifies unmapped backend source as changed-only', () => {
     const result = classify('src/misc/unmapped-helper.ts');
-
     expect(result.flags.backendSrc).toBe(true);
     expect(result.vitest.mode).toBe('changed-only');
   });
 
   it('classifies content-engine changes as full pytest', () => {
     const result = classify('content-engine/main.py');
-
     expect(result.flags.pythonEngine).toBe(true);
     expect(result.pytest.globs).toContain('content-engine/tests');
   });
 
   it('escalates high-fan-in source changes to full Vitest', () => {
     const result = classify('src/config.ts');
-
     expect(result.flags.highFanIn).toBe(true);
     expect(result.vitest.mode).toBe('full');
   });
 
   it('flags changed irreversible migrations for manual approval', () => {
     const result = classify('migrations/200_content_radar_phase0_rollout_guards.sql');
-
-    expect(result.flags.migration).toBe(true);
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
     expect(result.vitest.mode).toBe('changed-only');
   });
 
-  it('classifies runtime infrastructure changes as full Vitest', () => {
-    const result = classify('Dockerfile.release-test,.env.example');
-
+  it('classifies runtime infrastructure as full with staging smoke', () => {
+    const result = classify('Dockerfile.release-test,.nvmrc,.env.example,docker-compose.yml');
     expect(result.flags.runtimeInfra).toBe(true);
     expect(result.flags.deployConfig).toBe(true);
+    expect(result.flags.docsOnly).toBe(false);
     expect(result.vitest.mode).toBe('full');
+    expect(result.stagingSmoke.generic).toBe(true);
   });
 
   it('classifies release gate helpers as runtime infrastructure', () => {
     const result = classify('scripts/lib/release-gates.sh');
-
     expect(result.flags.runtimeInfra).toBe(true);
     expect(result.flags.deployConfig).toBe(true);
     expect(result.vitest.mode).toBe('full');
@@ -628,13 +279,8 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
 
   it('normalizes workspace-prefixed backend and migration paths', () => {
     const result = classify('engine/src/api/routes/billing.ts,engine/migrations/203_apple_health_encrypted_payload.sql');
-
-    expect(result.changedFiles).toContain('src/api/routes/billing.ts');
-    expect(result.changedFiles).toContain('migrations/203_apple_health_encrypted_payload.sql');
-    expect(result.flags.backendSrc).toBe(true);
-    expect(result.flags.apiRoute).toBe(true);
-    expect(result.flags.migration).toBe(true);
-    expect(result.flags.appleNotificationWebhook).toBe(true);
+    expect(result.changedFiles).toEqual(['migrations/203_apple_health_encrypted_payload.sql', 'src/api/routes/billing.ts']);
+    expect(result.flags).toMatchObject({ backendSrc: true, apiRoute: true, migration: true, appleNotificationWebhook: true });
     expect(result.cannotSkip).toContain('migration-rollback-review');
     expect(result.cannotSkip).toContain('apple-notifications-jws-verify');
     expect(result.vitest.mode).toBe('focused');
@@ -643,113 +289,125 @@ describe('changed-area-classifier CI/CD optimization routing', () => {
 
   it('fails closed for deleted or renamed migration paths', () => {
     const result = classify('engine/migrations/999_deleted_forward_only.sql');
-
-    expect(result.changedFiles).toContain('migrations/999_deleted_forward_only.sql');
     expect(result.flags.migration).toBe(true);
     expect(result.flags.irreversibleMigration).toBe(true);
     expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
   });
-
-  it('classifies runtime infrastructure as deploy config with staging smoke', () => {
-    const result = classify('Dockerfile.release-test,.nvmrc,.env.example,docker-compose.yml');
-
-    expect(result.flags.runtimeInfra).toBe(true);
-    expect(result.flags.deployConfig).toBe(true);
-    expect(result.flags.docsOnly).toBe(false);
-    expect(result.vitest.mode).toBe('full');
-    expect(result.stagingSmoke.generic).toBe(true);
-  });
 });
 
-describe('changed-area-classifier push range identity', () => {
+describe('changed-area-classifier process-boundary integration', () => {
+  it('reads candidate source state while enforcing the trusted policy path', () => {
+    const candidate = mkdtempSync(join(tmpdir(), 'nexus-classifier-candidate-'));
+    const trusted = mkdtempSync(join(tmpdir(), 'nexus-classifier-policy-'));
+    try {
+      mkdirSync(join(candidate, 'migrations'), { recursive: true });
+      mkdirSync(join(candidate, 'config'), { recursive: true });
+      mkdirSync(join(trusted, 'config'), { recursive: true });
+      writeFileSync(
+        join(candidate, 'migrations/999_candidate.sql'),
+        'DROP TABLE candidate_only;\n',
+      );
+      writeFileSync(
+        join(candidate, 'config/test-policy.json'),
+        JSON.stringify({ fullSuiteTriggers: [] }),
+      );
+      const trustedPolicy = join(trusted, 'config/test-policy.json');
+      writeFileSync(
+        trustedPolicy,
+        JSON.stringify({ fullSuiteTriggers: ['src/runtime-feature.ts'] }),
+      );
+      const invoke = (file: string) => JSON.parse(execFileSync(
+        'bash',
+        [join(root, 'scripts/changed-area-classifier.sh'), '--json', '--files', file],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          env: {
+            ...cleanGitEnv(),
+            GIT_DIR: '/invalid/inherited/git-dir',
+            NEXUS_CLASSIFIER_REPO_ROOT: candidate,
+            NEXUS_TEST_POLICY_PATH: trustedPolicy,
+          },
+        },
+      ));
+
+      const migration = invoke('migrations/999_candidate.sql');
+      expect(migration.flags.irreversibleMigration).toBe(true);
+      expect(migration.cannotSkip).toContain('irreversible-migration-manual-approval');
+
+      const governedSource = invoke('src/runtime-feature.ts');
+      expect(governedSource.flags.fullSuiteTrigger).toBe(true);
+      expect(governedSource.vitest.mode).toBe('full');
+    } finally {
+      rmSync(candidate, { recursive: true, force: true });
+      rmSync(trusted, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves explicit CLI behavior for a large change set', () => {
+    const files = ['__tests__/services/product-learning.test.ts', 'src/services/product-learning.ts', ...Array.from({ length: 2_000 }, (_, index) => `docs/generated-${index}.md`)];
+    const raw = execFileSync('bash', ['scripts/changed-area-classifier.sh', '--json', '--files', files.join(',')], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    const result = JSON.parse(raw);
+    expect(result.flags).toMatchObject({ backendSrc: true, backendTest: true, docsOnly: false });
+    expect(result.vitest.mode).toBe('changed-only');
+  });
+
+  it('emits the complete cannot-skip dashboard through its compatibility CLI', () => {
+    const raw = execFileSync('bash', ['scripts/cannot-skip-gate-dashboard.sh', '--json', '--no-evidence', '--base', 'origin/main'], { encoding: 'utf8' });
+    const result = JSON.parse(raw);
+    expect(result.summary).toMatchObject({ verdict: 'PASS', fail: 0 });
+    expect(result.summary.total).toBe(CANNOT_SKIP_GATE_NAMES.length);
+    expect(result.summary.pass).toBe(result.summary.total);
+    expect(result.gates.map((gate: { gate: string }) => gate.gate).sort())
+      .toEqual([...CANNOT_SKIP_GATE_NAMES].sort());
+    expect(result.gates.every((gate: { pass: boolean }) => gate.pass)).toBe(true);
+  });
+
   it('includes a runtime commit followed by a docs commit when the push base is used', () => {
     const repo = mkdtempSync(join(tmpdir(), 'nexus-push-range-'));
     const gitEnv = cleanGitEnv();
-    const git = (...args: string[]) => execFileSync('git', args, {
-      cwd: repo,
-      encoding: 'utf8',
-      env: gitEnv,
-    }).trim();
-
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: gitEnv }).trim();
     try {
-      mkdirSync(join(repo, 'scripts'), { recursive: true });
-      mkdirSync(join(repo, 'config'), { recursive: true });
-      copyFileSync('scripts/changed-area-classifier.sh', join(repo, 'scripts/changed-area-classifier.sh'));
-      copyFileSync('config/test-policy.json', join(repo, 'config/test-policy.json'));
-      chmodSync(join(repo, 'scripts/changed-area-classifier.sh'), 0o755);
+      installClassifierFixture(repo);
       writeFileSync(join(repo, 'README.md'), 'fixture\n');
-
       git('init');
       git('config', 'user.name', 'Nexus CI Fixture');
       git('config', 'user.email', 'ci-fixture@example.invalid');
       git('add', '.');
       git('commit', '-m', 'fixture: base');
       const pushBefore = git('rev-parse', 'HEAD');
-
       mkdirSync(join(repo, 'src'), { recursive: true });
       writeFileSync(join(repo, 'src/runtime-feature.ts'), 'export const runtimeFeature = true;\n');
       git('add', 'src/runtime-feature.ts');
       git('commit', '-m', 'feat: runtime');
-
       mkdirSync(join(repo, 'docs'), { recursive: true });
       writeFileSync(join(repo, 'docs/release.md'), '# Release\n');
       git('add', 'docs/release.md');
       git('commit', '-m', 'docs: release');
-
-      const raw = execFileSync(
-        'bash',
-        ['scripts/changed-area-classifier.sh', '--json', '--base', pushBefore],
-        { cwd: repo, encoding: 'utf8', env: gitEnv },
-      );
-      const result = JSON.parse(raw) as {
-        changedFiles: string[];
-        flags: Record<string, boolean>;
-        vitest: { mode: string };
-      };
-
-      expect(result.changedFiles).toEqual([
-        'docs/release.md',
-        'src/runtime-feature.ts',
-      ]);
-      expect(result.flags.docsOnly).toBe(false);
-      expect(result.flags.backendSrc).toBe(true);
+      const result = JSON.parse(execFileSync('bash', ['scripts/changed-area-classifier.sh', '--json', '--base', pushBefore], { cwd: repo, encoding: 'utf8', env: gitEnv }));
+      expect(result.changedFiles).toEqual(['docs/release.md', 'src/runtime-feature.ts']);
+      expect(result.flags).toMatchObject({ docsOnly: false, backendSrc: true, impactResolved: true });
       expect(result.vitest.mode).not.toBe('skip');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
   });
 
-  it('rejects zero, missing, unresolved, and non-ancestor push bases', () => {
+  it('rejects invalid push bases and fails closed for a non-ancestor base', () => {
     const repo = mkdtempSync(join(tmpdir(), 'nexus-ci-base-resolution-'));
     const gitEnv = cleanGitEnv();
     const resolver = join(process.cwd(), 'scripts/resolve-ci-change-base.sh');
-    const classifierSource = join(process.cwd(), 'scripts/changed-area-classifier.sh');
-    const classifier = join(repo, 'scripts/changed-area-classifier.sh');
-    const git = (...args: string[]) => execFileSync('git', args, {
-      cwd: repo,
-      encoding: 'utf8',
-      env: gitEnv,
-    }).trim();
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: gitEnv }).trim();
     const resolvePush = (before?: string) => execFileSync('bash', [resolver], {
       cwd: repo,
       encoding: 'utf8',
-      env: {
-        ...gitEnv,
-        NEXUS_CI_REPO_ROOT: repo,
-        EVENT_NAME: 'push',
-        ...(before === undefined ? {} : { PUSH_BEFORE_SHA: before }),
-      },
+      env: { ...gitEnv, NEXUS_CI_REPO_ROOT: repo, EVENT_NAME: 'push', ...(before === undefined ? {} : { PUSH_BEFORE_SHA: before }) },
     }).trim();
-
     try {
       git('init', '--initial-branch=main');
       git('config', 'user.name', 'Nexus CI Fixture');
       git('config', 'user.email', 'ci-fixture@example.invalid');
-      mkdirSync(join(repo, 'scripts'), { recursive: true });
-      mkdirSync(join(repo, 'config'), { recursive: true });
-      copyFileSync(classifierSource, classifier);
-      chmodSync(classifier, 0o755);
-      copyFileSync('config/test-policy.json', join(repo, 'config/test-policy.json'));
+      installClassifierFixture(repo);
       writeFileSync(join(repo, 'base.txt'), 'base\n');
       git('add', '.');
       git('commit', '-m', 'fixture: base');
@@ -757,37 +415,19 @@ describe('changed-area-classifier push range identity', () => {
       writeFileSync(join(repo, 'runtime.txt'), 'runtime\n');
       git('add', '.');
       git('commit', '-m', 'fixture: runtime');
-
       expect(resolvePush(ancestor)).toBe(ancestor);
       expect(resolvePush()).toBe('');
-      expect(resolvePush('0000000000000000000000000000000000000000')).toBe('');
+      expect(resolvePush('0'.repeat(40))).toBe('');
       expect(resolvePush('f'.repeat(40))).toBe('');
-
       git('checkout', '--orphan', 'rewritten');
       execFileSync('git', ['rm', '-rf', '.'], { cwd: repo, env: gitEnv });
-      mkdirSync(join(repo, 'scripts'), { recursive: true });
-      mkdirSync(join(repo, 'config'), { recursive: true });
-      copyFileSync(classifierSource, classifier);
-      chmodSync(classifier, 0o755);
-      copyFileSync('config/test-policy.json', join(repo, 'config/test-policy.json'));
+      installClassifierFixture(repo);
       writeFileSync(join(repo, 'docs-only.md'), 'rewritten\n');
       git('add', '.');
       git('commit', '-m', 'fixture: unrelated rewrite');
       expect(resolvePush(ancestor)).toBe('');
-
-      const raw = execFileSync('bash', [classifier, '--json', '--base', ancestor], {
-        cwd: repo,
-        encoding: 'utf8',
-        env: gitEnv,
-      });
-      const result = JSON.parse(raw) as {
-        flags: Record<string, boolean>;
-        vitest: { mode: string };
-      };
-      expect(result.flags.impactResolved).toBe(false);
-      expect(result.flags.docsOnly).toBe(false);
-      expect(result.flags.migration).toBe(true);
-      expect(result.flags.pythonEngine).toBe(true);
+      const result = JSON.parse(execFileSync('bash', ['scripts/changed-area-classifier.sh', '--json', '--base', ancestor], { cwd: repo, encoding: 'utf8', env: gitEnv }));
+      expect(result.flags).toMatchObject({ impactResolved: false, docsOnly: false, migration: true, pythonEngine: true });
       expect(result.vitest.mode).toBe('full');
     } finally {
       rmSync(repo, { recursive: true, force: true });

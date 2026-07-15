@@ -7,40 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
-import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
-
-// ── Test helpers ───────────────────────────────────────────────────
-
-function createTestDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
-function applyMigrations(db: Database.Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL UNIQUE,
-      applied_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-
-  for (const file of files) {
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
-    db.exec(sql);
-    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
-  }
-}
+import type Database from 'better-sqlite3';
 
 // ── Mock getDb to return our in-memory db ──────────────────────────
 
@@ -94,11 +61,10 @@ import {
 describe('SkillRegistry Migration', () => {
   let db: Database.Database;
 
-  beforeEach(() => { db = createTestDb(); });
+  beforeEach(() => { db = createMigratedTestDatabase(); });
   afterEach(() => { db.close(); });
 
   it('creates installed_skills table', () => {
-    applyMigrations(db);
     const table = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='installed_skills'"
     ).get();
@@ -106,7 +72,6 @@ describe('SkillRegistry Migration', () => {
   });
 
   it('creates skill_submodules table', () => {
-    applyMigrations(db);
     const table = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='skill_submodules'"
     ).get();
@@ -114,7 +79,6 @@ describe('SkillRegistry Migration', () => {
   });
 
   it('creates indexes on installed_skills', () => {
-    applyMigrations(db);
     const indexes = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='installed_skills'"
     ).all().map((r: any) => r.name);
@@ -123,7 +87,6 @@ describe('SkillRegistry Migration', () => {
   });
 
   it('creates index on skill_submodules', () => {
-    applyMigrations(db);
     const indexes = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='skill_submodules'"
     ).all().map((r: any) => r.name);
@@ -131,7 +94,6 @@ describe('SkillRegistry Migration', () => {
   });
 
   it('enforces foreign key from skill_submodules to installed_skills', () => {
-    applyMigrations(db);
     expect(() => {
       db.prepare(
         'INSERT INTO skill_submodules (skill_id, module_name) VALUES (?, ?)'

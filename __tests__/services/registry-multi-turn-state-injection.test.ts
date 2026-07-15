@@ -16,6 +16,7 @@
 // direction fails the test.
 
 import { describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 vi.mock('../../src/services/chat-action-state', () => ({
   cancelPendingChatActions: vi.fn(() => 0),
@@ -256,10 +257,6 @@ describe('multi-turn pending continuation with real chat-action-state persistenc
     vi.resetModules();
     vi.doUnmock('../../src/services/chat-action-state');
 
-    const { default: Database } = await import('better-sqlite3');
-    const fs = await import('fs');
-    const path = await import('path');
-
     let integrationDb: any;
     vi.doMock('../../src/services/database', () => ({
       getDb: () => integrationDb,
@@ -268,15 +265,7 @@ describe('multi-turn pending continuation with real chat-action-state persistenc
       findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
     }));
 
-    integrationDb = new Database(':memory:');
-    integrationDb.pragma('journal_mode = WAL');
-    integrationDb.pragma('foreign_keys = ON');
-    integrationDb.exec('CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime(\'now\')))');
-    const migrationsDir = path.resolve(__dirname, '../../migrations');
-    for (const file of fs.readdirSync(migrationsDir).filter((entry) => entry.endsWith('.sql')).sort()) {
-      integrationDb.exec(fs.readFileSync(path.join(migrationsDir, file), 'utf8'));
-      integrationDb.prepare('INSERT OR IGNORE INTO _migrations (name) VALUES (?)').run(file);
-    }
+    integrationDb = createMigratedTestDatabase();
 
     const previousFlag = process.env.CHAT_HYBRID_PLANNER_ENABLED;
     process.env.CHAT_HYBRID_PLANNER_ENABLED = 'active';

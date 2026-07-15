@@ -51,8 +51,8 @@
     "evaluate": {
       "description": "Subjective quality, persona, provider, and long-running evaluation corpora.",
       "include": [
-        "__tests__/**/*evaluation*.test.ts",
-        "__tests__/**/*eval*.test.ts",
+        "__tests__/services/coach-kernel-evaluation.test.ts",
+        "__tests__/services/content-day-to-day-evaluation.test.ts",
         "__tests__/personas/**/*.test.ts"
       ]
     }
@@ -65,6 +65,9 @@
     "__tests__/fixtures/**",
     "config/test-policy.json",
     "scripts/changed-area-classifier.sh",
+    "scripts/changed-area-classifier.mjs",
+    "scripts/lib/changed-area-classifier.mjs",
+    "scripts/cannot-skip-gate-dashboard.mjs",
     "scripts/resolve-ci-change-base.sh",
     "scripts/select-vitest-files.mjs",
     "scripts/release-test-evidence.mjs",
@@ -94,16 +97,11 @@
     ".env*.example",
     "content-engine/Dockerfile*",
     "content-engine/.env*.example",
+    "src/testing/migrated-test-database.ts",
     "package.json",
     "package-lock.json"
   ],
   "timingExceptions": [
-    {
-      "file": "__tests__/scripts/changed-area-classifier.test.ts",
-      "owner": "release",
-      "reason": "Creates isolated Git repositories and runs the complete cannot-skip dashboard; retained as release-infrastructure proof.",
-      "expires": "2026-09-15"
-    },
     {
       "file": "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts",
       "owner": "database",
@@ -117,8 +115,15 @@
     { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },
     { "pattern": "__tests__/**/*qa-validation.test.ts", "disposition": "keep", "reason": "Residual QA suites retain distinct boundary coverage after duplicate happy paths, source mirrors, and redundant migration setup were removed or consolidated into module-owned suites." },
     { "pattern": "__tests__/**/*source-contract.test.ts", "disposition": "convert", "reason": "Replace source-string assertions with typed, schema, AST, manifest, or generator checks." },
-    { "pattern": "__tests__/**/*evaluation*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
-    { "pattern": "__tests__/**/*eval*.test.ts", "disposition": "eval", "reason": "Run subjective product-quality checks outside correctness CI." },
+    { "pattern": "__tests__/services/coach-kernel-evaluation.test.ts", "disposition": "eval", "reason": "Persona and rubric-based coach quality grading belongs in the governed evaluation lane." },
+    { "pattern": "__tests__/services/content-day-to-day-evaluation.test.ts", "disposition": "eval", "reason": "Persona and output-quality rubric grading belongs in the governed evaluation lane." },
+    { "pattern": "__tests__/services/decision-*evaluator*.test.ts", "disposition": "keep", "reason": "Decision evaluators enforce deterministic runtime conflict and policy behavior; they are correctness tests, not subjective output grading." },
+    { "pattern": "__tests__/services/decision-preexecution-revalidator.test.ts", "disposition": "keep", "reason": "Pre-execution revalidation is a deterministic runtime safety contract despite containing the substring eval." },
+    { "pattern": "__tests__/**/*eval-history*.test.ts", "disposition": "keep", "reason": "Eval history suites protect persistence, tenant scope, and API contracts and therefore remain correctness tests." },
+    { "pattern": "__tests__/services/registry-*eval*.test.ts", "disposition": "keep", "reason": "Registry eval gates are deterministic release-safety and routing contracts, not subjective grading." },
+    { "pattern": "__tests__/services/chat-core-v2-*eval*.test.ts", "disposition": "keep", "reason": "Chat Core eval services enforce deterministic corpus shape, safety, recall, persistence, and promotion contracts." },
+    { "pattern": "__tests__/**/*evaluation-harness.test.ts", "disposition": "keep", "reason": "Harness and CLI suites verify deterministic evaluation machinery and evidence contracts; they do not grade live provider output." },
+    { "pattern": "__tests__/services/creator-config-eval.test.ts", "disposition": "keep", "reason": "Creator configuration checks protect prompt neutrality, loading, and cross-runtime consistency." },
     { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
   ],
   "coverage": {

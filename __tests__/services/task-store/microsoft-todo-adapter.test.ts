@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import Database from 'better-sqlite3';
-import { applyMigrations } from '../../helpers/apply-migrations';
+import type Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../../src/testing/migrated-test-database';
 
 const mocks = vi.hoisted(() => ({
   getGraphClientForUser: vi.fn(),
@@ -327,9 +327,7 @@ describe('MicrosoftTodoAdapter', () => {
   });
 
   it('sync engine pull fetches the Microsoft To Do list catalogue exactly once', async () => {
-    testDb = new Database(':memory:');
-    testDb.pragma('foreign_keys = ON');
-    applyMigrations(testDb);
+    testDb = createMigratedTestDatabase();
     testDb.prepare('INSERT INTO users (id, telegram_id) VALUES (?, ?)').run(42, 42);
 
     mocks.isConnected.mockReturnValue(true);

@@ -5,6 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { seedApprovedExerciseMedia } from '../fixtures/training-exercise-media';
 
 const TABLES = [
@@ -42,9 +43,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('applies after the production-head schema and replays idempotently', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase({ excludeFiles: ['229_training_exercise_media_v1.sql'] });
     try {
-      runMigrationsForTest(db, { excludeFiles: ['229_training_exercise_media_v1.sql'] });
       expect(() => applyMigrationFileForTest(db, '229_training_exercise_media_v1.sql')).not.toThrow();
       expect(() => applyMigrationFileForTest(db, '229_training_exercise_media_v1.sql')).not.toThrow();
       expect(db.prepare(`
@@ -59,9 +59,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('requires seeding before activation and fails closed on incomplete coverage', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const hash = 'a'.repeat(64);
       expect(() => db.prepare(`
         INSERT INTO training_exercise_media_manifests (
@@ -113,9 +112,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('keeps activated metadata immutable while accepting append-only takedowns', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const fixture = seedApprovedExerciseMedia(db);
       expect(() => db.prepare(`
         UPDATE training_exercise_media_assets SET delivery_url = 'https://evil.test/replaced.png'
@@ -151,9 +149,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('freezes content inserts from STAGED while reviews and takedowns remain append-only', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const fixture = seedApprovedExerciseMedia(db, { activate: false, stage: false });
       expect(() => db.prepare(`
         INSERT INTO training_exercise_media_assets (
@@ -253,9 +250,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('does not let scheduled approvals or reinstatements satisfy the activation gate early', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const reviewFixture = seedApprovedExerciseMedia(db, {
         manifestId: 'scheduled-review',
         manifestVersion: 'scheduled-review.v1',
@@ -310,9 +306,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('blocks promotion when an approved asset already has an active takedown', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const fixture = seedApprovedExerciseMedia(db, {
         manifestId: 'takedown-before-active',
         manifestVersion: 'takedown-before-active.v1',
@@ -332,9 +327,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('rejects extra or substituted approved asset bindings before staging attestation', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const fixture = seedApprovedExerciseMedia(db, { activate: false, stage: false });
       db.prepare(`
         INSERT INTO training_exercise_media_assets (
@@ -363,9 +357,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('binds append-only governance events to the owning manifest and tenant scope', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const global = seedApprovedExerciseMedia(db, {
         manifestId: 'global-owner', manifestVersion: 'global-owner.v1', exerciseId: 'push_up',
       });
@@ -414,9 +407,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('resolves the actual asset owner when freezing provenance at STAGED', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const owner = seedApprovedExerciseMedia(db, {
         manifestId: 'staged-owner', manifestVersion: 'staged-owner.v1',
         activate: false, stage: false,
@@ -460,9 +452,8 @@ describe('migration 229 — Training exercise media v1', () => {
   });
 
   it('applies the destructive inverse only in a disposable rehearsal database', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const downPath = path.resolve(process.cwd(), 'migrations/down/229_training_exercise_media_v1.sql');
       expect(fs.readFileSync(downPath, 'utf8')).toMatch(/STAGING REHEARSAL ONLY/i);
       db.exec(fs.readFileSync(downPath, 'utf8'));
