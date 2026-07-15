@@ -308,6 +308,38 @@ describe('produceLearningDigest', () => {
     expect(id).toBe(-1);
   });
 
+  it('writes a global digest from global signals when no creator scope is requested', () => {
+    writeSignal({
+      source_agent: 'performance-agent',
+      signal_type: 'pillar_performance',
+      payload: {
+        rankings: [{ pillar: 'global-fitness', avg_views: 4_000, engagement_rate: 0.07, trend: 'rising' }],
+      },
+    });
+
+    const id = produceLearningDigest();
+    expect(id).toBeGreaterThan(0);
+
+    const row = testDb.prepare(`
+      SELECT signal_type, tenant_id, user_id, payload
+      FROM agent_signals
+      WHERE id = ?
+    `).get(id) as {
+      signal_type: string;
+      tenant_id: number | null;
+      user_id: number | null;
+      payload: string;
+    };
+    expect(row).toMatchObject({
+      signal_type: 'learning_digest',
+      tenant_id: null,
+      user_id: null,
+    });
+    expect(JSON.parse(row.payload).topPillars).toEqual([
+      expect.objectContaining({ pillar: 'global-fitness', engagementRate: 0.07 }),
+    ]);
+  });
+
   it('keeps a creator digest private within a shared tenant', () => {
     const pillarSignalId = writeSignal({
       source_agent: 'performance-agent',
