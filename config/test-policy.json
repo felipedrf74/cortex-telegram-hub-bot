@@ -187,6 +187,20 @@
         "reason": "The legacy scheduler remains at 53.64% lines and 38.79% branches while jobs migrate to AgentJobManifest adapters; ratchet the observed baseline and retire this exception as the monolith is split rather than adding duplicate scheduler happy paths.",
         "expires": "2026-09-30",
         "minimum": { "lines": 53.64, "branches": 38.79 }
+      },
+      {
+        "file": "src/services/cross-agent-learning/content-mesh-context.ts",
+        "owner": "agent-runtime",
+        "reason": "The extracted Content adapter is at the inherited full-file baseline of 80% lines and 22.72% branches (100% changed lines); ratchet it while distinct scheduling and fallback contracts replace duplicate happy-path coverage before expiry.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 80, "branches": 22.72 }
+      },
+      {
+        "file": "src/services/cross-agent-learning/signal-learning.ts",
+        "owner": "agent-runtime",
+        "reason": "The governed signal adapter is at the inherited full-file baseline of 88.23% lines and 63.96% branches (97.32% changed lines), with tenant, provenance, confidence, expiry, and facade parity coverage; ratchet remaining malformed-payload branches without restoring duplicate QA cases.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 88.23, "branches": 63.96 }
       }
     ]
   },
