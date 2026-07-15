@@ -64,10 +64,12 @@ Cloudflare Tunnel deployment and its immutable release directories.
 3. **`/api/snapshot` is the authenticated running-version proof** used by exact
    promotion to confirm the public endpoint serves the manifest package
    version after cutover.
-4. **The Python content engine exposes its own `/health`.** Exact staging and
-   production readiness probe Node and Python separately, then validate both
-   PM2 cwd/SHA identities. Any failed candidate check invokes automatic exact
-   predecessor recovery.
+4. **The PM2 `nexus-hub` and `content-engine` processes both expose
+   health.** Exact staging and production readiness probe Node and Python
+   separately, then validate authenticated Content Engine readiness, native
+   SQLite binding, live-database integrity, and two stable PM2 cwd/SHA identity
+   samples before disabling automatic rollback. Any failed candidate check
+   invokes automatic exact predecessor recovery.
 
 ## 4. Logging (must)
 

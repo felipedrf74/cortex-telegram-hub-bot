@@ -4,7 +4,7 @@
 # Ollama-specific staging smoke. Runs after install AND after the backend deploy
 # that ships the OllamaProvider. Gated on `OLLAMA_ENABLED=true` in .env.
 #
-# Exits non-zero if any check fails — used as a promote-to-prod gate when
+# Exits non-zero if any check fails — used as an exact-promotion gate when
 # `AI_CLASSIFY_PRIMARY=ollama` (or any other routing) is in the deployed .env.
 #
 # Hook into scripts/staging-smoke.sh as:

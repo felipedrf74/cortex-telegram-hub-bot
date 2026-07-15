@@ -82,7 +82,6 @@ describe('release-evidence-container wrapper', () => {
     const promote = readFileSync('scripts/promote-exact-release.sh', 'utf8');
 
     expect(operator).toContain('scripts/promote-exact-release.sh');
-    expect(operator).not.toContain('NEXUS_RELEASE_MANIFEST_PATH="$ROOT/$MANIFEST" scripts/promote-to-prod.sh');
     expect(operator).toContain('git status --porcelain=v1 --untracked-files=normal');
     expect(promote).toContain('rsync -a --delete');
     expect(promote).toContain('artifact aggregate digest mismatch');
@@ -92,6 +91,9 @@ describe('release-evidence-container wrapper', () => {
     expect(promote).toContain('promotion failed after production stop began; restarting the untouched predecessor');
     expect(operator.indexOf('resolve_remote_pm2')).toBeLessThan(operator.indexOf('mkdir -p'));
     expect(operator).toContain('release-installed-tree-attestation.mjs write');
+    expect(operator).toContain('remote-release-preflight.sh');
+    expect(operator).toContain('remote-release-readiness.sh');
+    expect(operator).toContain('--readiness-evidence');
     expect(operator).toContain('scripts/staging-smoke.sh');
     expect(operator).toContain('release-staging-attestation.mjs request');
     expect(operator).toContain('--retry-connrefused');
@@ -101,6 +103,7 @@ describe('release-evidence-container wrapper', () => {
     expect(promote).toContain('--expect-aggregate-digest "$installed_digest"');
     expect(promote).toContain('(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha');
     expect(promote).toContain('active PM2/current identity mismatch');
+    expect(promote).toContain('scripts/env-parity-check.sh');
     expect(promote).toContain('previous versioned runtime marker is missing');
     expect(promote).not.toContain('startOrReload');
     expect(promote).not.toContain('scripts/rollback.sh');

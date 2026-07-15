@@ -5,10 +5,10 @@
     "generatorVersion": 3,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "4f8a44546f5de7992069b336bf3c6f7fbc10de4d7952565cc784ebd7fb5144e7",
-    "baseCommit": "506f192e5df3885a1b53d4a8990ce0e23bc742c3",
-    "baseCommitTimestamp": "2026-07-15T22:14:46+01:00",
-    "trackedFiles": 2535,
+    "sourceDigest": "296664898321c52f8385de2299a8d546fe84abe57a295a89b86771d0eb3b6c81",
+    "baseCommit": "dee208280c7de0c6635eda8e4357df8d41ffbdda",
+    "baseCommitTimestamp": "2026-07-15T22:18:33+01:00",
+    "trackedFiles": 2537,
     "sourceFiles": 953
   },
   "navigation": {
@@ -4250,7 +4250,7 @@
     }
   ],
   "tests": {
-    "files": 930,
+    "files": 927,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4269,9 +4269,9 @@
       "regression": 1,
       "router": 3,
       "scope": 1,
-      "scripts": 47,
+      "scripts": 45,
       "sdk": 1,
-      "security": 21,
+      "security": 20,
       "services": 587,
       "skills": 12,
       "state": 17,
@@ -4281,7 +4281,7 @@
     }
   },
   "documentation": {
-    "count": 65,
+    "count": 73,
     "files": [
       ".agents/skills/product-sentinel/SKILL.md",
       ".agents/skills/release-operator/SKILL.md",
@@ -4306,7 +4306,11 @@
       "docs/engineering/jwt-rotation-runbook.md",
       "docs/engineering/offline-first-tasks-architecture.md",
       "docs/engineering/runtime-and-observability-standard.md",
+      "docs/engineering/runtime-and-observability-standard.md",
+      "docs/engineering/runtime-and-observability-standard.md",
       "docs/engineering/security-and-data-isolation-standard.md",
+      "docs/engineering/testing-and-qa-harness-standard.md",
+      "docs/engineering/testing-and-qa-harness-standard.md",
       "docs/engineering/testing-and-qa-harness-standard.md",
       "docs/engineering/training-exercise-media-v1-operator-runbook.md",
       "docs/legal/data-retention.md",
@@ -4316,6 +4320,10 @@
       "docs/notifications/notification-center-boundary.md",
       "docs/release/CURRENT_RELEASE_STATE.md",
       "docs/release/README.md",
+      "docs/release/README.md",
+      "docs/release/README.md",
+      "docs/release/release-evidence-contract.md",
+      "docs/release/release-evidence-contract.md",
       "docs/release/release-evidence-contract.md",
       "docs/security/nexus-security-threat-model.md",
       "docs/security/security-control-matrix.md",

@@ -86,6 +86,23 @@ function validateRequest(request, expectedRuntime = '') {
       throw new Error(`PM2 identity mismatch: ${name}`);
     }
   }
+  const readiness = request.remoteReadiness;
+  if (readiness?.schema !== 'nexus.release-readiness.v1'
+      || readiness.role !== 'staging'
+      || readiness.runtimeSha !== request.runtimeSha) {
+    throw new Error('staging readiness evidence identity is invalid');
+  }
+  for (const check of [
+    'nativeBinding',
+    'sqliteIntegrity',
+    'sqliteForeignKeys',
+    'backendHealth',
+    'authenticatedContentEngine',
+    'pm2ExactIdentity',
+    'pm2RestartStable',
+  ]) {
+    if (readiness.checks?.[check] !== true) throw new Error(`staging readiness check failed: ${check}`);
+  }
   return request;
 }
 
@@ -93,12 +110,14 @@ if (command === 'request') {
   const manifestFile = resolveFile('--manifest');
   const installedFile = resolveFile('--installed-attestation');
   const identityFile = resolveFile('--identity-evidence');
+  const readinessFile = resolveFile('--readiness-evidence');
   const smokeFile = resolveFile('--smoke-log');
   const output = resolveFile('--output');
   const manifestBody = fs.readFileSync(manifestFile);
   const manifest = JSON.parse(manifestBody);
   const installed = JSON.parse(fs.readFileSync(installedFile, 'utf8'));
   const remoteIdentity = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+  const remoteReadiness = JSON.parse(fs.readFileSync(readinessFile, 'utf8'));
   const smokeBody = fs.readFileSync(smokeFile);
   const now = new Date();
   const request = {
@@ -110,6 +129,7 @@ if (command === 'request') {
     installedRuntimeDigest: installed.aggregateDigest,
     releaseDir: valueOf('--release-dir'),
     remoteIdentity,
+    remoteReadiness,
     smoke: {
       status: 'passed',
       command: 'scripts/staging-smoke.sh',

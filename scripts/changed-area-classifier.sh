@@ -10,7 +10,7 @@
 #   - pre-commit hook (skip vitest entirely on docs-only diff)
 #   - pre-push hook (focused vs full)
 #   - CI matrix dispatch
-#   - promote-to-prod readiness check
+#   - exact release readiness check
 #
 # Inputs:
 #   --base <ref>       Base ref to diff against. Defaults to origin/main, then main.
@@ -183,7 +183,7 @@ HAS_IOS_UI=false
 HAS_IOS_TEST=false
 HAS_DOCS_ONLY=true
 HAS_CURRENT_VERDICT_DOC=false
-HAS_DEPLOY_SCRIPT=false
+HAS_RELEASE_OPERATOR=false
 HAS_HOOK=false
 HAS_CI_WORKFLOW=false
 HAS_TEST_CONFIG=false
@@ -360,7 +360,7 @@ match '^src/services/(google-drive|google-auth)\.ts$|^__tests__/security/google-
 # registry-real-eval-quality-gates cannot-skip gate.
 match '^src/services/chat/registry/|^src/services/registry-(driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src/services/build-llm-safe-prompt-slice\.ts$|^src/services/skills/|^__tests__/services/(chat-action-registry-|registry-(driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__/scripts/registry-feedback-report\.test\.ts$|^scripts/registry-feedback-report\.ts$' && HAS_REGISTRY_REAL_EVAL=true
 
-match '^scripts/(deploy|deploy-staging|promote-to-prod|rollback|restore)\.sh$' && HAS_DEPLOY_SCRIPT=true
+match '^scripts/(release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-start-sanitized-pm2|rollback|restore)\.sh$' && HAS_RELEASE_OPERATOR=true
 match '^scripts/lib/release-gates\.sh$' && { HAS_RUNTIME_INFRA=true; HAS_DEPLOY_CONFIG=true; }
 match '^Dockerfile(\..*)?$|^docker-compose(\..*)?\.ya?ml$|^\.dockerignore$|^\.nvmrc$|^\.node-version$|^\.env(\..*)?\.example$|^\.env\.example$|^content-engine/Dockerfile(\..*)?$|^content-engine/\.env(\..*)?\.example$' && { HAS_RUNTIME_INFRA=true; HAS_DEPLOY_CONFIG=true; }
 match '^\.husky/' && HAS_HOOK=true
@@ -459,10 +459,10 @@ match '^src/api/middleware/rate-limit|^src/services/rate-limiter|^src/api/middle
 # incident response and user-data accountability.
 match '^src/services/audit-trail|^src/api/routes/audit-trail|^src/portal/admin-audit|^src/portal/admin-data-routes|^__tests__/services/audit-trail|^__tests__/api/authenticated-support-routes-scope|^__tests__/portal/portal-admin-audit|^__tests__/portal/portal-admin-data-routes|^__tests__/portal/portal-admin-data-isolation' && HAS_AUDIT=true
 
-# Deploy / PM2 config — runtime process topology and environment shape.
-# These are not deploy scripts themselves, but they change what deploy scripts
-# start and health-check.
-match '(^|/)ecosystem(\.staging)?\.config\.js$|^src/config\.ts$|^__tests__/config|^__tests__/scripts/deploy' && HAS_DEPLOY_CONFIG=true
+# Release / PM2 config — runtime process topology and environment shape.
+# These are not release entrypoints themselves, but they change what the
+# release operator starts and health-checks.
+match '(^|/)ecosystem(\.staging)?\.config\.js$|^src/config\.ts$|^__tests__/config|^__tests__/scripts/(release-runtime-safeguards|exact-promotion-operational-safety)' && HAS_DEPLOY_CONFIG=true
 
 # Event backbone / jobs / read models / sync / budgets — SQLite-backed
 # projection and delta-sync foundation. These changes must fan out into
@@ -514,7 +514,7 @@ $HAS_IOS_NOTIFICATION && HAS_IOS_SRC=true
 # Tier 2 (local smoke): required when app-facing flow surface changed.
 # Tier 4 (staging smoke): required when backend src/migrations/python-engine changed AND release flow.
 # Cannot-skip: tenant/auth/security, prompts (chat-identity-class), calendar lifecycle,
-#              provider routing, migrations, deploy script changes.
+#              provider routing, migrations, exact release operator changes.
 
 TIERS=()
 TIERS+=("T0")
@@ -528,7 +528,7 @@ $HAS_PROVIDER_ROUTING && CANNOT_SKIP+=("provider-routing-fallback")
 $HAS_MIGRATION && CANNOT_SKIP+=("migration-rollback-review")
 $HAS_IRREVERSIBLE_MIGRATION && CANNOT_SKIP+=("irreversible-migration-manual-approval")
 $HAS_SCIENCE_POLICY_JSON && CANNOT_SKIP+=("science-policy-version-check")
-$HAS_DEPLOY_SCRIPT && CANNOT_SKIP+=("deploy-script-promotion-rehearsal")
+$HAS_RELEASE_OPERATOR && CANNOT_SKIP+=("exact-release-promotion-rehearsal")
 $HAS_HOOK && CANNOT_SKIP+=("hook-validation-on-feature-branch")
 $HAS_CI_WORKFLOW && CANNOT_SKIP+=("ci-workflow-validation-on-PR")
 $HAS_TEST_CONFIG && CANNOT_SKIP+=("test-config-mock-completeness-audit")
@@ -778,7 +778,7 @@ emit_json() {
   export CLAS_IOS_AUTH="$HAS_IOS_AUTH"
   export CLAS_IOS_TEST="$HAS_IOS_TEST"
   export CLAS_IOS_UI="$HAS_IOS_UI"
-  export CLAS_DEPLOY_SCRIPT="$HAS_DEPLOY_SCRIPT"
+  export CLAS_RELEASE_OPERATOR="$HAS_RELEASE_OPERATOR"
   export CLAS_HOOK="$HAS_HOOK"
   export CLAS_CI_WORKFLOW="$HAS_CI_WORKFLOW"
   export CLAS_TEST_CONFIG="$HAS_TEST_CONFIG"
@@ -866,7 +866,7 @@ const payload = {
     iosAuth: flag('CLAS_IOS_AUTH'),
     iosTest: flag('CLAS_IOS_TEST'),
     iosUi: flag('CLAS_IOS_UI'),
-    deployScript: flag('CLAS_DEPLOY_SCRIPT'),
+    releaseOperator: flag('CLAS_RELEASE_OPERATOR'),
     hook: flag('CLAS_HOOK'),
     ciWorkflow: flag('CLAS_CI_WORKFLOW'),
     testConfig: flag('CLAS_TEST_CONFIG'),

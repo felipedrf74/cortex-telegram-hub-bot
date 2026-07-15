@@ -211,7 +211,7 @@ reviewed package in the staging database:
 ```bash
 scripts/changed-area-classifier.sh --json
 scripts/risk-gate.sh
-./scripts/deploy-staging.sh
+npm run release:staging -- --manifest .local/release/manifests/<runtime-sha>.json
 
 ssh "${DEPLOY_SERVER:-dominguez@serverdominguez}" bash -s <<'REMOTE_STAGING_MEDIA'
   set -euo pipefail
@@ -251,13 +251,14 @@ the production flag remains off:
 TRAINING_EXERCISE_MEDIA_CATALOG_ROOT="$PHASE0_ROOT" \
   npm run --silent training:exercise-media:verify:activation
 ./scripts/staging-smoke.sh
-./scripts/promote-to-prod.sh --dry-run
+npm run release:promote -- --dry-run --manifest .local/release/manifests/<runtime-sha>.json
 ```
 
 Only the normal, explicit production-promotion approval may run:
 
 ```bash
-./scripts/promote-to-prod.sh
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:promote -- --manifest .local/release/manifests/<runtime-sha>.json
 ```
 
 Production metadata publication uses a distinct fail-closed authorization path.

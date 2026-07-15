@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = join(__dirname, '..', '..');
 const PROMOTE = join(ROOT, 'scripts', 'promote-exact-release.sh');
+const RELEASE_OPERATOR = join(ROOT, 'scripts', 'release-operator.sh');
 const RELEASE_GATES = join(ROOT, 'scripts', 'lib', 'release-gates.sh');
 
 function source(path: string) {
@@ -84,20 +85,32 @@ exec "$@"
 }
 
 describe('exact production promotion operational safety', () => {
-  it('acquires the shared production lock before any copy or PM2 mutation path', () => {
+  it('locks staging and rejects an already-active release before rsync', () => {
+    const operator = source(RELEASE_OPERATOR);
+    const staging = operator.indexOf('  staging)');
+    const lock = operator.indexOf(
+      'release_acquire_remote_lock "$SERVER" "$BASE_DIR" "staging-deploy"',
+      staging,
+    );
+    const activeGuard = operator.indexOf('if [ "$ACTIVE_STAGING" = "$RELEASE_DIR" ]', lock);
+    const rsync = operator.indexOf('rsync -az --delete', activeGuard);
+
+    expect(staging).toBeGreaterThan(-1);
+    expect(lock).toBeGreaterThan(staging);
+    expect(activeGuard).toBeGreaterThan(lock);
+    expect(rsync).toBeGreaterThan(activeGuard);
+    expect(operator.slice(activeGuard, rsync)).toContain('exit 75');
+    expect(operator.slice(activeGuard, rsync)).toContain('refusing to mutate it');
+  });
+
+  it('acquires the production lock before any copy or PM2 mutation path', () => {
     const exact = source(PROMOTE);
-    const legacy = source(join(ROOT, 'scripts', 'deploy.sh'));
     const exactLock = exact.indexOf(
       'release_acquire_remote_lock "$SERVER" "$PROD_BASE" "prod-deploy"',
     );
-    const legacyLock = legacy.indexOf(
-      'release_acquire_remote_lock "$SERVER" "$REMOTE_DIR" "prod-deploy"',
-    );
 
     expect(exactLock).toBeGreaterThan(-1);
-    expect(legacyLock).toBeGreaterThan(-1);
     expect(exact.indexOf('rsync -a --delete')).toBeGreaterThan(exactLock);
-    expect(legacy.indexOf('rsync -avz --delete')).toBeGreaterThan(legacyLock);
 
     for (const mutation of [
       '"$pm2_bin" stop "$app"',
@@ -106,7 +119,6 @@ describe('exact production promotion operational safety', () => {
     ]) {
       expect(exact.indexOf(mutation), mutation).toBeGreaterThan(exactLock);
     }
-    expect(legacy.indexOf('$PM2 delete telegram-hub-bot')).toBeGreaterThan(legacyLock);
   });
 
   it('does not reclaim a fresh remote lock after its acquisition process exits', () => {
@@ -182,6 +194,9 @@ describe('exact production promotion operational safety', () => {
     expect(evidence).toBeGreaterThan(cutover);
     expect(successPath).toContain('127.0.0.1:8200/health');
     expect(successPath).toContain('127.0.0.1:8100/health');
+    expect(successPath).toContain('remote-release-readiness.sh');
+    expect(successPath).toContain('--role production');
+    expect(successPath).toContain('.nexus-release-readiness-production.json');
     expect(successPath).toContain('["nexus-hub",root]');
     expect(successPath).toContain('["content-engine",`${root}/content-engine`]');
     expect(successPath).toContain('env.status!=="online"');
@@ -200,6 +215,21 @@ describe('exact production promotion operational safety', () => {
     expect(successPath.slice(publicSnapshot)).toContain('x.version!==process.argv[2]');
     expect(successPath.slice(publicSnapshot)).toContain('$target_version');
     expect(successPath.slice(publicSnapshot)).toContain('JSON.parse');
+    const readiness = raw.indexOf('remote-release-readiness.sh', cutover);
+    const recoveryComplete = raw.indexOf('RECOVERY_COMPLETE=true', cutover);
+    expect(readiness).toBeGreaterThan(cutover);
+    expect(recoveryComplete).toBeGreaterThan(readiness);
+  });
+
+  it('runs env parity and strict owner bootstrap before production stop', () => {
+    const raw = source(PROMOTE);
+    const parity = raw.indexOf('scripts/env-parity-check.sh');
+    const preflight = raw.indexOf('remote-release-preflight.sh');
+    const stop = raw.indexOf("<<'REMOTE_STOP'");
+    expect(parity).toBeGreaterThan(-1);
+    expect(preflight).toBeGreaterThan(parity);
+    expect(stop).toBeGreaterThan(preflight);
+    expect(raw.slice(preflight, stop)).toContain('--role production');
   });
 
   it('rejects an already-active exact release before rsync or symlink mutation', () => {

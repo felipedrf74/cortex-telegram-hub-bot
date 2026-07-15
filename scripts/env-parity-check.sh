@@ -39,10 +39,14 @@ STAGING_DIR="$1"
 PROD_DIR="$2"
 
 for env_file in "$STAGING_DIR/.env" "$PROD_DIR/.env"; do
-  if [ ! -f "$env_file" ]; then
+  if [ ! -f "$env_file" ] || [ -L "$env_file" ]; then
     echo "missing_env:$env_file"
     exit 1
   fi
+  mode="$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || true)"
+  case "$mode" in 400|600) ;; *) echo "unsafe_env_mode:$env_file"; exit 1 ;; esac
+  owner="$(stat -c '%U' "$env_file" 2>/dev/null || stat -f '%Su' "$env_file" 2>/dev/null || true)"
+  [ "$owner" = "$(id -un)" ] || { echo "unsafe_env_owner:$env_file"; exit 1; }
 done
 
 node - "$STAGING_DIR/.env" "$PROD_DIR/.env" <<'NODE'
@@ -99,6 +103,7 @@ const requiredBoth = [
 
 const productionRequired = [
   'BACKUP_ENCRYPT',
+  'BACKUP_KEY',
   'INTERNAL_API_SECRET',
   'OAUTH_ENCRYPTION_KEY',
 ];
@@ -145,11 +150,25 @@ function readEffectiveNodeEnv(envPath, target, envMap) {
   if (fromEnv) return { value: fromEnv, source: '.env' };
 
   const dir = path.dirname(envPath);
+  let currentDir = '';
+  try {
+    const current = path.join(dir, 'current');
+    if (fs.lstatSync(current).isSymbolicLink()) currentDir = fs.realpathSync(current);
+  } catch {
+    currentDir = '';
+  }
   const ecosystemCandidates = target === 'staging'
-    ? ['ecosystem.staging.config.js', 'ecosystem.config.js']
-    : ['ecosystem.config.js'];
+    ? [
+      ...(currentDir ? [path.join(currentDir, 'ecosystem.release.config.js')] : []),
+      path.join(dir, 'ecosystem.staging.config.js'),
+      path.join(dir, 'ecosystem.config.js'),
+    ]
+    : [
+      ...(currentDir ? [path.join(currentDir, 'ecosystem.release.config.js')] : []),
+      path.join(dir, 'ecosystem.config.js'),
+    ];
   for (const candidate of ecosystemCandidates) {
-    const fullPath = path.join(dir, candidate);
+    const fullPath = path.resolve(candidate);
     if (!fs.existsSync(fullPath)) continue;
     const body = fs.readFileSync(fullPath, 'utf8');
     const match = body.match(/NODE_ENV\s*:\s*['"]([^'"]+)['"]/);

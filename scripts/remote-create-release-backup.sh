@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create and verify the stopped-state production backup used by deploy.sh.
+# Create and verify the stopped-state production backup used by exact promotion.
 # This script is streamed to the server over SSH so the backup behavior is
 # independently testable and does not depend on the currently deployed copy.
 set -euo pipefail

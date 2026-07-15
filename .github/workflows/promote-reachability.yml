@@ -68,9 +68,19 @@ jobs:
           command -v ssh
           command -v rsync
           command -v npm
-          test -x scripts/deploy-staging.sh
-          test -x scripts/promote-to-prod.sh
-          test -x scripts/deploy.sh
+          for script in \
+            scripts/release-operator.sh \
+            scripts/promote-exact-release.sh \
+            scripts/env-parity-check.sh \
+            scripts/remote-release-preflight.sh \
+            scripts/remote-release-readiness.sh \
+            scripts/remote-prepare-release-backup.sh \
+            scripts/remote-create-release-backup.sh \
+            scripts/rollback.sh \
+            scripts/restore.sh; do
+            test -x "$script"
+            bash -n "$script"
+          done
 
       - name: Resolve SSH target
         shell: bash

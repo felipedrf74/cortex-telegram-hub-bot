@@ -21,7 +21,7 @@
 #
 # Why: today every audit pass rerun smokes to "prove" something. With this
 # tool, the audit reads the existing evidence and renders a single table
-# in <1 s. Combined with promote-to-prod.sh's smoke-evidence reuse, the
+# in <1 s. Combined with exact promotion's smoke-evidence reuse, the
 # old "rerun-to-verify" pattern is gone.
 # ─────────────────────────────────────────────────────
 set -euo pipefail

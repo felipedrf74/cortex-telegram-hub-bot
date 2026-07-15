@@ -45,23 +45,24 @@ gate.
    its exact run, head SHA, jobs, test outputs, bundle bytes, and artifact
    identity before signing. Candidate scripts are data only in the signing
    job and never receive the private key.
-4. Install and verify the bundle in a versioned staging directory while the
-   current service remains online.
-5. Record staging smoke against the exact artifact digest.
+4. Under the staging release lock, verify environment mode/owner/key parity,
+   install the bundle in a versioned directory while the current service stays
+   online, and refuse to rewrite an already-active release.
+5. Switch staging only after advisory owner bootstrap succeeds or warns, then
+   record native SQLite, database integrity, authenticated Content Engine,
+   stable PM2 identity, and domain-smoke evidence against the exact digest.
 6. Obtain explicit owner authorization.
-7. Copy and hash the immutable runtime backup while production is live; then
-   briefly drain writes, checkpoint SQLite, append and verify the database
-   snapshot, switch PM2 atomically, and run both process readiness checks.
+7. Run strict owner bootstrap while production is live; copy and hash the
+   immutable runtime backup, briefly drain writes, checkpoint SQLite, append
+   and verify the database snapshot, switch PM2 atomically, and require the
+   extended readiness evidence before declaring recovery complete.
 8. Restore the exact previous release automatically if readiness fails.
 
 Do not rebuild, rsync the repository, or install dependencies while production
 is stopped. Promotion copies the already prepared staging release and verifies
-every governed artifact byte; it never invokes the legacy deploy wrapper. Two
-staging rehearsals and two owner-authorized production releases proved this
-replacement path on 2026-07-15. Legacy wrappers remain a separately invoked
-fallback only because workflows, tests, and runbooks still depend on them; do
-not use them as the default path or claim they are retired until those
-dependencies are removed and verified.
+every governed artifact byte. Repository-sync deployment wrappers were retired
+after two staging rehearsals and two owner-authorized production releases.
+Emergency `rollback.sh` and `restore.sh` paths remain available.
 
 Backend and iOS are independently promotable unless a shared contract or native
 integration changed. Build 56 must pass availability and physical-device smoke

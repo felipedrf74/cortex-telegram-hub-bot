@@ -360,6 +360,29 @@ describe('changed-area-classifier engineering-excellence enrichments (2026-05-04
     expect(result.vitest.globs).toContain('__tests__/security/**/*.test.ts');
   });
 
+  it('routes exact release operator changes into a cannot-skip promotion rehearsal', () => {
+    const raw = execFileSync(
+      'bash',
+      [
+        'scripts/changed-area-classifier.sh',
+        '--json',
+        '--files',
+        [
+          'scripts/promote-exact-release.sh',
+          'scripts/remote-release-readiness.sh',
+        ].join(','),
+      ],
+      { encoding: 'utf8' },
+    );
+    const result = JSON.parse(raw) as {
+      flags: Record<string, boolean>;
+      cannotSkip: string[];
+    };
+
+    expect(result.flags.releaseOperator).toBe(true);
+    expect(result.cannotSkip).toContain('exact-release-promotion-rehearsal');
+  });
+
   it('routes iOS navigation and view-model changes into responsiveness XCTest classes', () => {
     const raw = execFileSync(
       'bash',
