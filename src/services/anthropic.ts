@@ -1361,7 +1361,7 @@ export async function callDomain(
   let trainingContextBlock = '';
   if (domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
     try {
-      const ctx = readTrainingContextAll({ userId: meteredUserId });
+      const ctx = readTrainingContextAll({ userId: meteredUserId, tenantId: opts.tenantId });
       if (ctx.signals.length > 0) {
         trainingContextBlock = `\n\n${formatTrainingContextForPrompt(ctx, 'multisport')}`;
       }
@@ -1466,7 +1466,7 @@ export async function continueWithToolResults(
   let trainingContextBlock = '';
   if (domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
     try {
-      const ctx = readTrainingContextAll({ userId: meteredUserId });
+      const ctx = readTrainingContextAll({ userId: meteredUserId, tenantId: opts.tenantId });
       if (ctx.signals.length > 0) {
         trainingContextBlock = `\n\n${formatTrainingContextForPrompt(ctx, 'multisport')}`;
       }

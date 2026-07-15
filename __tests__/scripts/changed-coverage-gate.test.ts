@@ -1,11 +1,73 @@
 import { describe, expect, it } from 'vitest';
 import {
   aggregateCoverage,
+  changedExecutableCoverage,
+  parseAddedLines,
+  resolveExactCommit,
   thresholdFailures,
   validateCoverageException,
 } from '../../scripts/changed-coverage-gate.mjs';
 
 describe('changed-module coverage gate', () => {
+  it('extracts only added-side lines from zero-context git hunks', () => {
+    const lines = parseAddedLines([
+      '@@ -10,0 +11,3 @@',
+      '@@ -40,2 +43 @@',
+      '@@ -99 +101,0 @@',
+    ].join('\n'));
+    expect([...lines]).toEqual([11, 12, 13, 43]);
+  });
+
+  it('measures executable changed lines and their branch outcomes, not untouched legacy code', () => {
+    const coverage = changedExecutableCoverage({
+      statementMap: {
+        0: { start: { line: 10 }, end: { line: 10 } },
+        1: { start: { line: 20 }, end: { line: 20 } },
+        2: { start: { line: 20 }, end: { line: 21 } },
+      },
+      s: { 0: 0, 1: 2, 2: 0 },
+      branchMap: {
+        0: {
+          loc: { start: { line: 19 }, end: { line: 21 } },
+          locations: [
+            { start: { line: 20 }, end: { line: 20 } },
+            { start: { line: 20 }, end: { line: 20 } },
+          ],
+        },
+        1: {
+          loc: { start: { line: 19 }, end: { line: 40 } },
+          locations: [{ start: { line: 30 }, end: { line: 40 } }],
+        },
+      },
+      b: { 0: [3, 0], 1: [0] },
+      fnMap: {
+        0: { decl: { start: { line: 20 }, end: { line: 20 } } },
+        1: { decl: { start: { line: 30 }, end: { line: 30 } } },
+      },
+      f: { 0: 1, 1: 0 },
+    }, new Set([20, 21]));
+
+    expect(coverage).toEqual({
+      lines: { total: 2, covered: 1 },
+      branches: { total: 2, covered: 1 },
+      functions: { total: 1, covered: 1 },
+      statements: { total: 2, covered: 1 },
+    });
+  });
+
+  it('resolves a moving base ref to one immutable commit before planning', () => {
+    const sha = 'a'.repeat(40);
+    const calls: unknown[][] = [];
+    const resolved = resolveExactCommit('/tmp/repository', 'origin/main', (...args: unknown[]) => {
+      calls.push(args);
+      return `${sha}\n`;
+    });
+
+    expect(resolved).toBe(sha);
+    expect(calls[0]?.[1]).toEqual(['rev-parse', '--verify', 'origin/main^{commit}']);
+    expect(resolveExactCommit('/tmp/repository', 'origin/main', () => 'not-a-sha\n')).toBeNull();
+  });
+
   it('aggregates counters rather than averaging percentages', () => {
     const coverage = aggregateCoverage([
       {

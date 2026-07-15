@@ -136,7 +136,7 @@ describe('changed-critical mutation gate', () => {
     expect(isCriticalModule('src/services/content-scheduler.ts', patterns)).toBe(false);
   });
 
-  it('detects removed and replaced AST assertions without flagging fixture-only shortening', () => {
+  it('detects net assertion removal without treating corrected expectations as cleanup', () => {
     expect(countTestDeclarations("it('a', () => {}); test.each([1])('b', () => {});")).toBe(2);
     expect(isTestCleanupChange({ status: 'D' }, '', "it('previous', () => {});")).toBe(true);
     expect(isTestCleanupChange(
@@ -148,12 +148,17 @@ describe('changed-critical mutation gate', () => {
       { status: 'M' },
       "it('remaining', () => { expect(result.status).toBe(201); });",
       "it('remaining', () => { expect(result.status).toBe(200); });",
-    )).toBe(true);
+    )).toBe(false);
     expect(isTestCleanupChange(
       { status: 'M' },
       "it('remaining', () => { expect(result.ok).toBe(true); expect(result.status).toBe(200); expect(result.timestamp).toBeDefined(); });",
       "it('remaining', () => { expect(result.ok).toBe(true); expect(result.owner).toBe('user'); });",
     )).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M' },
+      "it('remaining', () => { expect(write).toHaveBeenCalledWith({ userId: 1, tenantId: 7 }); });",
+      "it('remaining', () => { expect(write).toHaveBeenCalledWith({ userId: 1 }); });",
+    )).toBe(false);
     expect(isTestCleanupChange(
       { status: 'M' },
       "it('remaining', () => true);",
@@ -191,7 +196,7 @@ describe('changed-critical mutation gate', () => {
     expect(isTestCleanupChange({ status: 'M', file: '__tests__/matrix.test.ts' }, current, previous)).toBe(true);
   });
 
-  it('protects test control-flow predicates and loop bounds from silent weakening', () => {
+  it('protects structural control-flow removal while allowing corrected literals', () => {
     const previous = `
       it('guards tenant rows', () => {
         if (row.tenantId === tenantId) expect(row.allowed).toBe(true);
@@ -203,7 +208,7 @@ describe('changed-critical mutation gate', () => {
         expect(selected).toBeDefined();
       });
     `;
-    const current = previous.replace('row.tenantId === tenantId', 'true');
+    const current = previous.replace('if (row.tenantId === tenantId) expect(row.allowed).toBe(true);', 'expect(row.allowed).toBe(true);');
     const evidence = extractTestEvidence(previous);
 
     expect(evidence.controlFlow).toEqual(expect.arrayContaining([
@@ -220,6 +225,26 @@ describe('changed-critical mutation gate', () => {
       current,
       previous,
     )).toBe(true);
+    expect(isTestCleanupChange(
+      { status: 'M', file: '__tests__/cache-key.test.ts' },
+      "it('uses the tenant cache key', () => { if (key === 'readiness:12:12') consume(); });",
+      "it('uses the tenant cache key', () => { if (key === 'readiness:12') consume(); });",
+    )).toBe(false);
+    expect(isTestCleanupChange(
+      { status: 'M', file: '__tests__/threshold.test.ts' },
+      "it('uses corrected threshold', () => { if (score > 20) consume(); });",
+      "it('uses corrected threshold', () => { if (score > 10) consume(); });",
+    )).toBe(false);
+    expect(isTestCleanupChange(
+      { status: 'M', file: '__tests__/assert-message.test.ts' },
+      "it('uses corrected message', () => { assert(ok, 'new message'); });",
+      "it('uses corrected message', () => { assert(ok, 'old message'); });",
+    )).toBe(false);
+    expect(isTestCleanupChange(
+      { status: 'M', file: '__tests__/soft-expect.test.ts' },
+      "it('uses corrected status', () => { expect.soft(status).toBe(201); });",
+      "it('uses corrected status', () => { expect.soft(status).toBe(200); });",
+    )).toBe(false);
   });
 
   it('fails closed on TypeScript parse diagnostics even for a newly added test', () => {
@@ -249,7 +274,7 @@ describe('changed-critical mutation gate', () => {
       scope: 'test-cleanup',
       cleanupMappings: [],
       readCurrent: () => "it('kept', () => expect(result.status).toBe(201));",
-      readPrevious: () => "it('kept', () => expect(result.status).toBe(200));",
+      readPrevious: () => "it('kept', () => { expect(result.status).toBe(200); expect(result.owner).toBe('user'); });",
     });
 
     expect(plan.targets).toEqual([]);
@@ -277,7 +302,7 @@ describe('changed-critical mutation gate', () => {
     expect(extractTestEvidence(current).eachRows).toHaveLength(1);
     expect(extractTestEvidence(previous).eachRows).not.toEqual(extractTestEvidence(current).eachRows);
     expect(extractTestEvidence(previous).assertions).toHaveLength(1);
-    expect(isTestCleanupChange({ status: 'M', file: '__tests__/computed-matrix.test.ts' }, current, previous)).toBe(true);
+    expect(isTestCleanupChange({ status: 'M', file: '__tests__/computed-matrix.test.ts' }, current, previous)).toBe(false);
   });
 
   it('governs root API authentication and tenant-scope modules', () => {
@@ -287,6 +312,12 @@ describe('changed-critical mutation gate', () => {
 
     expect(isCriticalModule('src/api/auth-middleware.ts', policy.mutation.criticalModulePatterns)).toBe(true);
     expect(isCriticalModule('src/api/tenant-route-scope.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/intelligence-bus.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/training-signals.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/anthropic.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/services/tool-executor.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/api/routes/training.ts', policy.mutation.criticalModulePatterns)).toBe(true);
+    expect(isCriticalModule('src/api/routes/content-intelligence-routes.ts', policy.mutation.criticalModulePatterns)).toBe(true);
   });
 
   it('keeps exact observed coverage ratchets independent from mutation policy', () => {
@@ -618,7 +649,7 @@ describe('changed-critical mutation gate', () => {
     expect(weekly.testFiles).toEqual([]);
   });
 
-  it('selects only each governed range owner test for a modified replacement suite', () => {
+  it('does not let a historical replacement mapping authorize a later retained-test cleanup', () => {
     const changedTest = '__tests__/services/changed-provider.test.ts';
     const ownerTest = '__tests__/services/owner-provider.test.ts';
     const legacyTest = '__tests__/services/legacy-provider.test.ts';
@@ -647,19 +678,19 @@ describe('changed-critical mutation gate', () => {
       }],
       exists,
       readCurrent: () => "it('kept', () => expect(result.status).toBe(201));",
-      readPrevious: () => "it('kept', () => expect(result.status).toBe(200));",
+      readPrevious: () => "it('kept', () => { expect(result.status).toBe(200); expect(result.owner).toBe('user'); });",
       readSource: () => Array.from({ length: 20 }, (_, index) => (
         index === 9 ? 'ownedProviderBehavior' : `line ${index + 1}`
       )).join('\n'),
     });
 
-    expect(plan.unmappedRetainedCleanupTests).toEqual([]);
-    expect(plan.targets).toEqual([`${source}:10-10`]);
-    expect(plan.testFiles).toEqual([ownerTest]);
-    expect(mutationPlanExitCode(plan)).toBe(0);
+    expect(plan.unmappedRetainedCleanupTests).toEqual([changedTest]);
+    expect(plan.targets).toEqual([]);
+    expect(plan.testFiles).toEqual([]);
+    expect(mutationPlanExitCode(plan)).toBe(3);
   });
 
-  it('unions multiple historical mappings for modified shared replacement suites', () => {
+  it('does not union historical mappings for a modified shared replacement suite', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
       mutation: {
         criticalModulePatterns: string[];
@@ -684,14 +715,14 @@ describe('changed-critical mutation gate', () => {
         scope: 'test-cleanup',
         cleanupMappings: policy.mutation.cleanupMappings,
         readCurrent: () => "it('retained contract', () => expect(contract.version).toBe(2));",
-        readPrevious: () => "it('retained contract', () => expect(contract.version).toBe(1));",
+        readPrevious: () => "it('retained contract', () => { expect(contract.version).toBe(1); expect(contract.owner).toBe('user'); });",
       });
 
       expect(plan.cleanupTests).toEqual([testFile]);
-      expect(plan.unmappedRetainedCleanupTests).toEqual([]);
+      expect(plan.unmappedRetainedCleanupTests).toEqual([testFile]);
       expect(plan.invalidCleanupMappings).toEqual([]);
       expect(plan.targets).toEqual([]);
-      expect(mutationPlanExitCode(plan)).toBe(0);
+      expect(mutationPlanExitCode(plan)).toBe(3);
     }
   });
 

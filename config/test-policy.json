@@ -70,6 +70,7 @@
     "scripts/release-test-evidence.mjs",
     "scripts/run-test-tier.mjs",
     "scripts/risk-gate.sh",
+    "scripts/lib/git-ref.mjs",
     "scripts/lib/test-policy.mjs",
     "scripts/lib/static-test-dependency-map.mjs",
     "scripts/test-inventory.mjs",
@@ -169,13 +170,40 @@
       "src/services/*auth*.ts",
       "src/services/*billing*.ts",
       "src/services/*tenant*.ts",
+      "src/services/intelligence-bus.ts",
+      "src/services/shared-decision-context.ts",
+      "src/services/training-signals.ts",
+      "src/services/cross-agent-learning.ts",
+      "src/services/readiness-scorer.ts",
+      "src/services/focus-planner.ts",
+      "src/services/content-intelligence.ts",
+      "src/services/anthropic.ts",
+      "src/services/anthropic-lazy-client.ts",
+      "src/services/gemini-adapter.ts",
+      "src/services/tool-executor.ts",
       "src/services/*provider*.ts",
       "src/services/database.ts",
       "src/services/migration-runner.ts",
       "src/services/cost-guardrail*.ts",
+      "src/api/routes/training*.ts",
+      "src/api/routes/content*.ts",
+      "src/api/routes/calendar.ts",
+      "src/api/routes/dashboard-data-fetchers.ts",
       "src/services/training-exercise-media*.ts"
     ],
   "cleanupMappings": [
+    {
+      "test": "__tests__/scripts/trusted-release-signing.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/trusted-release-signing.test.ts"
+      ],
+      "sources": [
+        "scripts/trusted-release-signer.mjs",
+        ".github/workflows/release-candidate-evidence.yml",
+        ".github/workflows/sign-release-manifest.yml"
+      ],
+      "reason": "Replaced raw test-count floors and candidate-authored identity assumptions with recomputed selected-tier, nightly freshness, trusted timestamp, and immutable artifact identity proofs. This one-change mapping is removed after merge."
+    },
     {
       "test": "__tests__/billing/pricing-display-contract.test.ts",
       "replacementTests": [
