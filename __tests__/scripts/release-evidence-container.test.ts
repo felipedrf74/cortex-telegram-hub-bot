@@ -138,35 +138,35 @@ describe('release-evidence-container wrapper', () => {
   });
 
   it('validates operator status against the exact immutable bundle root', () => {
-    const root = mkdtempSync(join(tmpdir(), 'release-operator-bundle-'));
-    const bin = join(root, 'bin');
-    const nodeLog = join(root, 'node.log');
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'release-operator-bundle-'));
+    const bin = join(fixtureRoot, 'bin');
+    const nodeLog = join(fixtureRoot, 'node.log');
     try {
-      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+      mkdirSync(join(fixtureRoot, 'scripts/lib'), { recursive: true });
       mkdirSync(bin, { recursive: true });
-      copyFileSync('scripts/release-operator.sh', join(root, 'scripts/release-operator.sh'));
-      copyFileSync('scripts/lib/release-gates.sh', join(root, 'scripts/lib/release-gates.sh'));
-      chmodSync(join(root, 'scripts/release-operator.sh'), 0o755);
-      writeFileSync(join(root, 'package.json'), '{"version":"0.0.0"}\n');
-      const gitOptions = { cwd: root, env: cleanGitEnv() };
+      copyFileSync('scripts/release-operator.sh', join(fixtureRoot, 'scripts/release-operator.sh'));
+      copyFileSync('scripts/lib/release-gates.sh', join(fixtureRoot, 'scripts/lib/release-gates.sh'));
+      chmodSync(join(fixtureRoot, 'scripts/release-operator.sh'), 0o755);
+      writeFileSync(join(fixtureRoot, 'package.json'), '{"version":"0.0.0"}\n');
+      const gitOptions = { cwd: fixtureRoot, env: cleanGitEnv() };
       execFileSync('git', ['init', '--initial-branch=main'], gitOptions);
       execFileSync('git', ['config', 'user.name', 'Release Fixture'], gitOptions);
       execFileSync('git', ['config', 'user.email', 'release@example.invalid'], gitOptions);
       execFileSync('git', ['add', '.'], gitOptions);
       execFileSync('git', ['commit', '-m', 'fixture'], gitOptions);
-      const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: root,
+      const fixtureSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: fixtureRoot,
         encoding: 'utf8',
         env: cleanGitEnv(),
       }).trim();
       const digest = 'b'.repeat(64);
-      const manifest = join(root, '.local/release/manifests', `${runtimeSha}.json`);
-      const bundle = join(root, '.local/release/bundles', runtimeSha, digest);
+      const manifest = join(fixtureRoot, '.local/release/manifests', `${fixtureSha}.json`);
+      const bundle = join(fixtureRoot, '.local/release/bundles', fixtureSha, digest);
       mkdirSync(bundle, { recursive: true });
-      mkdirSync(join(root, '.local/release/manifests'), { recursive: true });
+      mkdirSync(join(fixtureRoot, '.local/release/manifests'), { recursive: true });
       writeFileSync(join(bundle, '.complete.json'), '{}\n');
       writeFileSync(manifest, JSON.stringify({
-        payload: { runtimeSha, artifact: { digest } },
+        payload: { runtimeSha: fixtureSha, artifact: { digest } },
       }));
       writeFileSync(join(bin, 'node'), `#!/usr/bin/env bash
 set -eu
@@ -184,27 +184,27 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
         'scripts/release-operator.sh',
         'status',
         '--manifest', manifest,
-      ], { cwd: root, encoding: 'utf8', env });
+      ], { cwd: fixtureRoot, encoding: 'utf8', env });
       expect(accepted.status).toBe(0);
       const invocation = readFileSync(nodeLog, 'utf8');
       expect(invocation).toContain(`--manifest ${manifest}`);
-      expect(invocation).toContain(`/.local/release/bundles/${runtimeSha}/${digest}`);
+      expect(invocation).toContain(`/.local/release/bundles/${fixtureSha}/${digest}`);
       expect(invocation).toContain('--verify-bundle');
-      expect(invocation).toContain(`--expect-runtime-sha ${runtimeSha}`);
+      expect(invocation).toContain(`--expect-runtime-sha ${fixtureSha}`);
 
       writeFileSync(manifest, JSON.stringify({
-        payload: { runtimeSha, artifact: { digest: '../outside' } },
+        payload: { runtimeSha: fixtureSha, artifact: { digest: '../outside' } },
       }));
       const traversal = spawnSync('bash', [
         'scripts/release-operator.sh',
         'status',
         '--manifest', manifest,
-      ], { cwd: root, encoding: 'utf8', env });
+      ], { cwd: fixtureRoot, encoding: 'utf8', env });
       expect(traversal.status).toBe(1);
       expect(traversal.stderr).toContain('release manifest artifact digest is invalid');
       expect(readFileSync(nodeLog, 'utf8')).toBe(invocation);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
 
