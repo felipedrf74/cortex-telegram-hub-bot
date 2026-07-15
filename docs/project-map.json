@@ -5,10 +5,10 @@
     "generatorVersion": 3,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "296664898321c52f8385de2299a8d546fe84abe57a295a89b86771d0eb3b6c81",
-    "baseCommit": "dee208280c7de0c6635eda8e4357df8d41ffbdda",
-    "baseCommitTimestamp": "2026-07-15T22:18:33+01:00",
-    "trackedFiles": 2537,
+    "sourceDigest": "d6bbc6ecd8131a4179c2fe3f49490683eafc2c5247d7ecb79da97c154f08ec78",
+    "baseCommit": "8cc63c9ac16be31d0493cedef4f6b894aeadbaa5",
+    "baseCommitTimestamp": "2026-07-15T22:36:54+01:00",
+    "trackedFiles": 2529,
     "sourceFiles": 953
   },
   "navigation": {
@@ -4281,7 +4281,7 @@
     }
   },
   "documentation": {
-    "count": 73,
+    "count": 65,
     "files": [
       ".agents/skills/product-sentinel/SKILL.md",
       ".agents/skills/release-operator/SKILL.md",
@@ -4306,11 +4306,7 @@
       "docs/engineering/jwt-rotation-runbook.md",
       "docs/engineering/offline-first-tasks-architecture.md",
       "docs/engineering/runtime-and-observability-standard.md",
-      "docs/engineering/runtime-and-observability-standard.md",
-      "docs/engineering/runtime-and-observability-standard.md",
       "docs/engineering/security-and-data-isolation-standard.md",
-      "docs/engineering/testing-and-qa-harness-standard.md",
-      "docs/engineering/testing-and-qa-harness-standard.md",
       "docs/engineering/testing-and-qa-harness-standard.md",
       "docs/engineering/training-exercise-media-v1-operator-runbook.md",
       "docs/legal/data-retention.md",
@@ -4320,10 +4316,6 @@
       "docs/notifications/notification-center-boundary.md",
       "docs/release/CURRENT_RELEASE_STATE.md",
       "docs/release/README.md",
-      "docs/release/README.md",
-      "docs/release/README.md",
-      "docs/release/release-evidence-contract.md",
-      "docs/release/release-evidence-contract.md",
       "docs/release/release-evidence-contract.md",
       "docs/security/nexus-security-threat-model.md",
       "docs/security/security-control-matrix.md",
