@@ -42,8 +42,42 @@ manifest_field() {
   node -e 'const e=require(process.argv[1]); const keys=process.argv[2].split("."); let v=e; for(const k of keys)v=v?.[k]; if(v==null)process.exit(2); process.stdout.write(String(v));' "$(absolute_path "$MANIFEST")" "$1"
 }
 
+resolve_manifest_bundle() {
+  RUNTIME_SHA="$(manifest_field payload.runtimeSha)" || {
+    echo "release manifest runtime SHA is missing" >&2
+    return 1
+  }
+  DIGEST="$(manifest_field payload.artifact.digest)" || {
+    echo "release manifest artifact digest is missing" >&2
+    return 1
+  }
+  [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "release manifest runtime SHA is invalid" >&2
+    return 1
+  }
+  [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "release manifest artifact digest is invalid" >&2
+    return 1
+  }
+  [ "$RUNTIME_SHA" = "$SHA" ] || {
+    echo "release manifest is not bound to the checked-out runtime SHA" >&2
+    return 1
+  }
+  BUNDLE="$ROOT/.local/release/bundles/$RUNTIME_SHA/$DIGEST"
+  [ -f "$BUNDLE/.complete.json" ] || {
+    echo "immutable bundle missing: $BUNDLE" >&2
+    return 1
+  }
+}
+
 validate_manifest() {
-  node scripts/release-manifest-v2.mjs validate --manifest "$MANIFEST"
+  resolve_manifest_bundle
+  node scripts/release-manifest-v2.mjs validate \
+    --manifest "$(absolute_path "$MANIFEST")" \
+    --root "$BUNDLE" \
+    --verify-bundle \
+    --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
+    --expect-runtime-sha "$RUNTIME_SHA"
 }
 
 resolve_staging_attestation() {
@@ -100,10 +134,6 @@ case "$COMMAND" in
     ;;
   staging)
     validate_manifest
-    DIGEST="$(manifest_field payload.artifact.digest)"
-    RUNTIME_SHA="$(manifest_field payload.runtimeSha)"
-    BUNDLE="$ROOT/.local/release/bundles/$RUNTIME_SHA/$DIGEST"
-    [ -f "$BUNDLE/.complete.json" ] || { echo "immutable bundle missing: $BUNDLE" >&2; exit 1; }
     SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
     BASE_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
     RELEASE_DIR="$BASE_DIR/releases/${RUNTIME_SHA}-${DIGEST:0:12}"
@@ -252,8 +282,6 @@ REMOTE
       exit 1
     fi
     validate_manifest
-    DIGEST="$(manifest_field payload.artifact.digest)"
-    RUNTIME_SHA="$(manifest_field payload.runtimeSha)"
     VERSION="$(manifest_field payload.packageVersion)"
     validate_staging_attestation "$RUNTIME_SHA" "$DIGEST" >/dev/null
     [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = "1" ] || {

@@ -190,9 +190,23 @@ if (command === 'request') {
   const manifestBody = fs.readFileSync(manifestFile);
   const manifest = JSON.parse(manifestBody);
   if (has('--validate-release-manifest')) {
+    const manifestsRoot = path.dirname(manifestFile);
+    if (path.basename(manifestsRoot) !== 'manifests') {
+      throw new Error('release manifest is outside the canonical release evidence tree');
+    }
+    const bundleRoot = path.join(
+      path.dirname(manifestsRoot),
+      'bundles',
+      request.runtimeSha,
+      request.artifactDigest,
+    );
     execFileSync(process.execPath, [
       path.join(root, 'scripts/release-manifest-v2.mjs'),
       'validate', '--manifest', manifestFile,
+      '--root', bundleRoot,
+      '--verify-bundle',
+      '--public-key', path.join(toolingRoot, 'docs/release/evidence/release-evidence-public-key.pem'),
+      '--expect-runtime-sha', request.runtimeSha,
     ], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] });
   }
   if (sha256(manifestBody) !== request.releaseManifestSha256

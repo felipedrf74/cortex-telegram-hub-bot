@@ -137,6 +137,77 @@ describe('release-evidence-container wrapper', () => {
     }
   });
 
+  it('validates operator status against the exact immutable bundle root', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'release-operator-bundle-'));
+    const bin = join(fixtureRoot, 'bin');
+    const nodeLog = join(fixtureRoot, 'node.log');
+    try {
+      mkdirSync(join(fixtureRoot, 'scripts/lib'), { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      copyFileSync('scripts/release-operator.sh', join(fixtureRoot, 'scripts/release-operator.sh'));
+      copyFileSync('scripts/lib/release-gates.sh', join(fixtureRoot, 'scripts/lib/release-gates.sh'));
+      chmodSync(join(fixtureRoot, 'scripts/release-operator.sh'), 0o755);
+      writeFileSync(join(fixtureRoot, 'package.json'), '{"version":"0.0.0"}\n');
+      const gitOptions = { cwd: fixtureRoot, env: cleanGitEnv() };
+      execFileSync('git', ['init', '--initial-branch=main'], gitOptions);
+      execFileSync('git', ['config', 'user.name', 'Release Fixture'], gitOptions);
+      execFileSync('git', ['config', 'user.email', 'release@example.invalid'], gitOptions);
+      execFileSync('git', ['add', '.'], gitOptions);
+      execFileSync('git', ['commit', '-m', 'fixture'], gitOptions);
+      const fixtureSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: fixtureRoot,
+        encoding: 'utf8',
+        env: cleanGitEnv(),
+      }).trim();
+      const digest = 'b'.repeat(64);
+      const manifest = join(fixtureRoot, '.local/release/manifests', `${fixtureSha}.json`);
+      const bundle = join(fixtureRoot, '.local/release/bundles', fixtureSha, digest);
+      mkdirSync(bundle, { recursive: true });
+      mkdirSync(join(fixtureRoot, '.local/release/manifests'), { recursive: true });
+      writeFileSync(join(bundle, '.complete.json'), '{}\n');
+      writeFileSync(manifest, JSON.stringify({
+        payload: { runtimeSha: fixtureSha, artifact: { digest } },
+      }));
+      writeFileSync(join(bin, 'node'), `#!/usr/bin/env bash
+set -eu
+if [ "\$1" = "-e" ]; then exec "\$REAL_NODE" "\$@"; fi
+printf '%s\\n' "\$*" >> "\$NODE_LOG"
+`);
+      chmodSync(join(bin, 'node'), 0o755);
+      const env = cleanGitEnv({
+        PATH: `${bin}:${process.env.PATH}`,
+        REAL_NODE: process.execPath,
+        NODE_LOG: nodeLog,
+      });
+
+      const accepted = spawnSync('bash', [
+        'scripts/release-operator.sh',
+        'status',
+        '--manifest', manifest,
+      ], { cwd: fixtureRoot, encoding: 'utf8', env });
+      expect(accepted.status).toBe(0);
+      const invocation = readFileSync(nodeLog, 'utf8');
+      expect(invocation).toContain(`--manifest ${manifest}`);
+      expect(invocation).toContain(`/.local/release/bundles/${fixtureSha}/${digest}`);
+      expect(invocation).toContain('--verify-bundle');
+      expect(invocation).toContain(`--expect-runtime-sha ${fixtureSha}`);
+
+      writeFileSync(manifest, JSON.stringify({
+        payload: { runtimeSha: fixtureSha, artifact: { digest: '../outside' } },
+      }));
+      const traversal = spawnSync('bash', [
+        'scripts/release-operator.sh',
+        'status',
+        '--manifest', manifest,
+      ], { cwd: fixtureRoot, encoding: 'utf8', env });
+      expect(traversal.status).toBe(1);
+      expect(traversal.stderr).toContain('release manifest artifact digest is invalid');
+      expect(readFileSync(nodeLog, 'utf8')).toBe(invocation);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('signs release and staging evidence only through protected-main environment secret paths', () => {
     const raw = stagingSigner();
     const rc = workflow();

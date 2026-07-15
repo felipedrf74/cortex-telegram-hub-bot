@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { buildReleaseArtifactManifest } from '../../scripts/lib/release-artifact-manifest.mjs';
 
 const roots: string[] = [];
 const script = path.resolve('scripts/release-manifest-v2.mjs');
@@ -35,6 +36,115 @@ afterEach(() => {
 });
 
 describe('ReleaseManifestV2', () => {
+  it('validates the sealed immutable bundle and rejects undeclared files', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-bundle-validation-'));
+    roots.push(temp);
+    const bundleRoot = path.join(temp, 'bundle');
+    const manifestPath = path.join(temp, 'manifest.json');
+    const publicPath = path.join(temp, 'public.pem');
+    const runtimeSha = 'a'.repeat(40);
+    const policyBody = '{"releaseEvidence":{"minimumTestCounts":{"vitest":9000,"pytest":6}}}\n';
+    fs.mkdirSync(path.join(bundleRoot, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(bundleRoot, 'package.json'), '{"version":"4.14.220"}\n');
+    fs.writeFileSync(path.join(bundleRoot, 'config/test-policy.json'), policyBody);
+
+    const artifact = buildReleaseArtifactManifest(bundleRoot);
+    artifact.git.sha = runtimeSha;
+    fs.writeFileSync(
+      path.join(bundleRoot, 'artifact-manifest.json'),
+      `${JSON.stringify(artifact, null, 2)}\n`,
+    );
+    fs.writeFileSync(path.join(bundleRoot, '.complete.json'), `${JSON.stringify({
+      schema: 'nexus.release-bundle.v1',
+      runtimeSha,
+      artifactDigest: artifact.digest,
+      fileCount: artifact.fileCount,
+    }, null, 2)}\n`);
+
+    const policyDigest = createHash('sha256').update(policyBody).digest('hex');
+    const generatedAt = new Date().toISOString();
+    const payload = {
+      schema: 'nexus.release-manifest-payload.v2',
+      runtimeSha,
+      docsHead: runtimeSha,
+      source: { dirty: false },
+      packageVersion: '4.14.220',
+      generatedAt,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+      artifact: {
+        schema: artifact.schema,
+        digest: artifact.digest,
+        fileCount: artifact.fileCount,
+        files: artifact.files,
+      },
+      testPolicy: {
+        digest: policyDigest,
+        results: {
+          schema: 'nexus.release-test-results.v1',
+          status: 'passed',
+          runtimeSha,
+          completedAt: generatedAt,
+          toolchain: { node: process.version, python: 'Python 3.12.0' },
+          counts: { vitest: 13_310, pytest: 208 },
+          ci: { runId: '12345', runAttempt: '1' },
+          artifactDigest: artifact.digest,
+          testPolicyDigest: policyDigest,
+        },
+      },
+    };
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    fs.writeFileSync(publicPath, publicKey.export({ format: 'pem', type: 'spki' }));
+    const envelope = {
+      schema: 'nexus.release-manifest.v2',
+      keyId: 'fixture-key',
+      signatureAlgorithm: 'ed25519',
+      payload,
+      signature: sign(null, Buffer.from(canonicalJson(payload)), privateKey).toString('base64'),
+    };
+    const manifestBody = `${JSON.stringify(envelope, null, 2)}\n`;
+    fs.writeFileSync(manifestPath, manifestBody);
+
+    const args = [script, 'validate',
+      '--manifest', manifestPath,
+      '--root', bundleRoot,
+      '--verify-bundle',
+      '--public-key', publicPath,
+      '--allow-test-key',
+      '--expect-runtime-sha', runtimeSha,
+    ];
+    const validated = JSON.parse(execFileSync(process.execPath, args, {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    }));
+    expect(validated).toMatchObject({ ok: true, promotable: true, artifactDigest: artifact.digest });
+
+    fs.writeFileSync(manifestPath, `${JSON.stringify({ ...envelope, signature: 'AA==' }, null, 2)}\n`);
+    const invalidSignature = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(invalidSignature.status).toBe(1);
+    expect(JSON.parse(invalidSignature.stdout).reasons).toContain('signature_invalid');
+    fs.writeFileSync(manifestPath, manifestBody);
+
+    fs.writeFileSync(path.join(bundleRoot, 'package.json'), '{"version":"tampered"}\n');
+    const changedByte = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(changedByte.status).toBe(1);
+    expect(changedByte.stderr).toContain('release bundle artifact byte identity mismatch');
+    fs.writeFileSync(path.join(bundleRoot, 'package.json'), '{"version":"4.14.220"}\n');
+
+    fs.writeFileSync(path.join(bundleRoot, '.npmrc'), 'ignore-scripts=false\n');
+    const injected = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(injected.status).toBe(1);
+    expect(injected.stderr).toContain('release bundle contains undeclared or missing files');
+  });
+
   it('writes and validates a non-promotable unsigned RC payload without a private key', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-manifest-unsigned-'));
     roots.push(temp);

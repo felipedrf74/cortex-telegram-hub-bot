@@ -159,6 +159,8 @@ describe('trusted release signing boundary', () => {
     expect(manifestSigner).toContain('--run-metadata trusted-input/run.json');
     expect(manifestSigner).toContain('--jobs-metadata trusted-input/jobs.json');
     expect(manifestSigner).toContain('--artifact-metadata trusted-input/artifacts.json');
+    expect(manifestSigner).toContain('path: candidate-artifact/.local/release');
+    expect(manifestSigner).not.toMatch(/^\s*path:\s*candidate-artifact\s*$/m);
     expect(stagingSigner).toContain('node trusted-tooling/scripts/release-staging-attestation.mjs');
     expect(stagingSigner).not.toContain('ref: ${{ inputs.runtime_sha }}');
   });
