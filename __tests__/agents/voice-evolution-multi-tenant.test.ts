@@ -235,6 +235,8 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
 
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
     expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).toContain('script-only-script');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).not.toContain('founder-only-transcript');
 
     seedTranscript(28, 'knitter-video-new', 'knitter-only-transcript with a newly changed stitch cadence');
     await runVoiceEvolutionAgent();
