@@ -1,14 +1,14 @@
 {
-  "schema": "nexus.project-map.v2",
+  "schema": "nexus.project-map.v3",
   "generatedFrom": {
     "generator": "scripts/generate-project-map.mjs",
-    "generatorVersion": 3,
+    "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "f7f17666a0850af8dcfce658aeb4cb691c56795d938712333a7264f8bf61ee36",
-    "baseCommit": "c063406a7aba0125b98e232ec73c4cd8d2d4104c",
-    "baseCommitTimestamp": "2026-07-16T02:31:56+01:00",
-    "trackedFiles": 2552,
+    "sourceDigest": "bcfe0a550497556eb53ffc1894226f6788f495e8a9c1f469120f50ddb8aa818f",
+    "baseCommit": "e0a06a10ff0bd89d591837785665494f34c91544",
+    "baseCommitTimestamp": "2026-07-16T03:08:12+01:00",
+    "trackedFiles": 2555,
     "sourceFiles": 968
   },
   "navigation": {
@@ -17,7 +17,8 @@
     "releaseState": "docs/release/release-state.json",
     "testPolicy": "config/test-policy.json",
     "capabilityManifest": "config/capability-manifest.json",
-    "agentJobManifest": "config/agent-job-manifest.json"
+    "agentJobManifest": "config/agent-job-manifest.json",
+    "documentationPolicy": "config/documentation-policy.json"
   },
   "modules": [
     {
@@ -4299,73 +4300,606 @@
     }
   },
   "documentation": {
+    "policy": "config/documentation-policy.json",
+    "policySchema": "nexus.documentation-policy.v1",
+    "policyVersion": "2026-07-15.1",
     "count": 65,
+    "active": 65,
+    "statusCounts": {
+      "canonical": 28,
+      "current": 2,
+      "draft": 2,
+      "generated": 1,
+      "mirror": 4,
+      "runtime": 26,
+      "supporting": 2
+    },
     "files": [
-      ".agents/skills/product-sentinel/SKILL.md",
-      ".agents/skills/release-operator/SKILL.md",
-      ".agents/skills/test-audit/SKILL.md",
-      ".agents/skills/verifiable-reward-check/SKILL.md",
-      ".claude/skills/product-sentinel/SKILL.md",
-      ".claude/skills/release-operator/SKILL.md",
-      ".claude/skills/test-audit/SKILL.md",
-      ".claude/skills/verifiable-reward-check/SKILL.md",
-      "AGENTS.md",
-      "CHANGELOG.md",
-      "CLAUDE.md",
-      "README.md",
-      "content-engine/README.md",
-      "content-engine/SECURITY.md",
-      "docs/DOCS_INDEX.md",
-      "docs/TOKEN-QUOTA-CONTRACT.md",
-      "docs/agents/VERIFIABLE_REWARD_PROTOCOL.md",
-      "docs/engineering/ENGINEERING_STANDARDS_INDEX.md",
-      "docs/engineering/backend-api-contract-standard.md",
-      "docs/engineering/genai-migration-plan.md",
-      "docs/engineering/jwt-rotation-runbook.md",
-      "docs/engineering/offline-first-tasks-architecture.md",
-      "docs/engineering/runtime-and-observability-standard.md",
-      "docs/engineering/security-and-data-isolation-standard.md",
-      "docs/engineering/testing-and-qa-harness-standard.md",
-      "docs/engineering/training-exercise-media-v1-operator-runbook.md",
-      "docs/legal/data-retention.md",
-      "docs/legal/privacy-policy-draft.md",
-      "docs/legal/terms-of-service-draft.md",
-      "docs/local-dev/README.md",
-      "docs/notifications/notification-center-boundary.md",
-      "docs/release/CURRENT_RELEASE_STATE.md",
-      "docs/release/README.md",
-      "docs/release/release-evidence-contract.md",
-      "docs/security/nexus-security-threat-model.md",
-      "docs/security/security-control-matrix.md",
-      "docs/security/security-hardening-implementation-status.md",
-      "docs/security/security-operations-runbook.md",
-      "knowledge/skills/content-creation-SKILL.md",
-      "knowledge/skills/nexushub-adaptation-guide.md",
-      "knowledge/skills/secretary-SKILL.md",
-      "prompts/channel-learner.md",
-      "prompts/chat-action-fixer.md",
-      "prompts/classifier.md",
-      "prompts/content.md",
-      "prompts/cooking.md",
-      "prompts/creator-config.md",
-      "prompts/cross-skill-and-memory.md",
-      "prompts/finance.md",
-      "prompts/secretary.md",
-      "prompts/topic-generation.md",
-      "prompts/triathlon.md",
-      "prompts/triathlon/cycling.md",
-      "prompts/triathlon/gym.md",
-      "prompts/triathlon/running.md",
-      "prompts/triathlon/swim.md",
-      "scripts/cockpit/README.md",
-      "src/services/coach-kernel/knowledge/docs/hybrid-athlete-rules.md",
-      "src/services/coach-kernel/knowledge/docs/llm-tool-contract.md",
-      "src/services/coach-kernel/knowledge/docs/marathon-periodization.md",
-      "src/skills/content/prompts/system.md",
-      "src/skills/cooking/prompts/system.md",
-      "src/skills/finance/prompts/system.md",
-      "src/skills/secretary/prompts/system.md",
-      "src/skills/training/prompts/system.md"
+      {
+        "path": ".agents/skills/product-sentinel/SKILL.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/product-sentinel/SKILL.md"
+      },
+      {
+        "path": ".agents/skills/release-operator/SKILL.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/release-operator/SKILL.md"
+      },
+      {
+        "path": ".agents/skills/test-audit/SKILL.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/test-audit/SKILL.md"
+      },
+      {
+        "path": ".agents/skills/verifiable-reward-check/SKILL.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/verifiable-reward-check/SKILL.md"
+      },
+      {
+        "path": ".claude/skills/product-sentinel/SKILL.md",
+        "status": "mirror",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/product-sentinel/SKILL.md"
+      },
+      {
+        "path": ".claude/skills/release-operator/SKILL.md",
+        "status": "mirror",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/release-operator/SKILL.md"
+      },
+      {
+        "path": ".claude/skills/test-audit/SKILL.md",
+        "status": "mirror",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/test-audit/SKILL.md"
+      },
+      {
+        "path": ".claude/skills/verifiable-reward-check/SKILL.md",
+        "status": "mirror",
+        "active": true,
+        "owner": "agent workflow lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": ".agents/skills/verifiable-reward-check/SKILL.md"
+      },
+      {
+        "path": "AGENTS.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "AGENTS.md"
+      },
+      {
+        "path": "CHANGELOG.md",
+        "status": "generated",
+        "active": true,
+        "owner": "release automation",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-08-14",
+        "canonicalPath": "CHANGELOG.md"
+      },
+      {
+        "path": "CLAUDE.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "CLAUDE.md"
+      },
+      {
+        "path": "README.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "README.md"
+      },
+      {
+        "path": "content-engine/README.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "content runtime lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "content-engine/README.md"
+      },
+      {
+        "path": "content-engine/SECURITY.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "content runtime lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "content-engine/SECURITY.md"
+      },
+      {
+        "path": "docs/DOCS_INDEX.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/DOCS_INDEX.md"
+      },
+      {
+        "path": "docs/TOKEN-QUOTA-CONTRACT.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/TOKEN-QUOTA-CONTRACT.md"
+      },
+      {
+        "path": "docs/agents/VERIFIABLE_REWARD_PROTOCOL.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/agents/VERIFIABLE_REWARD_PROTOCOL.md"
+      },
+      {
+        "path": "docs/engineering/ENGINEERING_STANDARDS_INDEX.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/ENGINEERING_STANDARDS_INDEX.md"
+      },
+      {
+        "path": "docs/engineering/backend-api-contract-standard.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/backend-api-contract-standard.md"
+      },
+      {
+        "path": "docs/engineering/genai-migration-plan.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/genai-migration-plan.md"
+      },
+      {
+        "path": "docs/engineering/jwt-rotation-runbook.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/jwt-rotation-runbook.md"
+      },
+      {
+        "path": "docs/engineering/offline-first-tasks-architecture.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/offline-first-tasks-architecture.md"
+      },
+      {
+        "path": "docs/engineering/runtime-and-observability-standard.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/runtime-and-observability-standard.md"
+      },
+      {
+        "path": "docs/engineering/security-and-data-isolation-standard.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/security-and-data-isolation-standard.md"
+      },
+      {
+        "path": "docs/engineering/testing-and-qa-harness-standard.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/testing-and-qa-harness-standard.md"
+      },
+      {
+        "path": "docs/engineering/training-exercise-media-v1-operator-runbook.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/engineering/training-exercise-media-v1-operator-runbook.md"
+      },
+      {
+        "path": "docs/legal/data-retention.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "legal and privacy owner",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-10-13",
+        "canonicalPath": "docs/legal/data-retention.md"
+      },
+      {
+        "path": "docs/legal/privacy-policy-draft.md",
+        "status": "draft",
+        "active": true,
+        "owner": "legal and privacy owner",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-08-14",
+        "canonicalPath": "docs/legal/privacy-policy-draft.md"
+      },
+      {
+        "path": "docs/legal/terms-of-service-draft.md",
+        "status": "draft",
+        "active": true,
+        "owner": "legal and privacy owner",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-08-14",
+        "canonicalPath": "docs/legal/terms-of-service-draft.md"
+      },
+      {
+        "path": "docs/local-dev/README.md",
+        "status": "supporting",
+        "active": true,
+        "owner": "developer experience lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/local-dev/README.md"
+      },
+      {
+        "path": "docs/notifications/notification-center-boundary.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "docs/notifications/notification-center-boundary.md"
+      },
+      {
+        "path": "docs/release/CURRENT_RELEASE_STATE.md",
+        "status": "current",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-08-14",
+        "canonicalPath": "docs/release/CURRENT_RELEASE_STATE.md"
+      },
+      {
+        "path": "docs/release/README.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-10-13",
+        "canonicalPath": "docs/release/README.md"
+      },
+      {
+        "path": "docs/release/release-evidence-contract.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-10-13",
+        "canonicalPath": "docs/release/release-evidence-contract.md"
+      },
+      {
+        "path": "docs/security/nexus-security-threat-model.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend security lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-10-13",
+        "canonicalPath": "docs/security/nexus-security-threat-model.md"
+      },
+      {
+        "path": "docs/security/security-control-matrix.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend security lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-10-13",
+        "canonicalPath": "docs/security/security-control-matrix.md"
+      },
+      {
+        "path": "docs/security/security-hardening-implementation-status.md",
+        "status": "current",
+        "active": true,
+        "owner": "backend security lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-08-14",
+        "canonicalPath": "docs/security/security-hardening-implementation-status.md"
+      },
+      {
+        "path": "docs/security/security-operations-runbook.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend security lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2026-10-13",
+        "canonicalPath": "docs/security/security-operations-runbook.md"
+      },
+      {
+        "path": "knowledge/skills/content-creation-SKILL.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent knowledge lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "knowledge/skills/content-creation-SKILL.md"
+      },
+      {
+        "path": "knowledge/skills/nexushub-adaptation-guide.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent knowledge lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "knowledge/skills/nexushub-adaptation-guide.md"
+      },
+      {
+        "path": "knowledge/skills/secretary-SKILL.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent knowledge lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "knowledge/skills/secretary-SKILL.md"
+      },
+      {
+        "path": "prompts/channel-learner.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent prompt lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/channel-learner.md"
+      },
+      {
+        "path": "prompts/chat-action-fixer.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent prompt lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/chat-action-fixer.md"
+      },
+      {
+        "path": "prompts/classifier.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent prompt lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/classifier.md"
+      },
+      {
+        "path": "prompts/content.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "content lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/content.md"
+      },
+      {
+        "path": "prompts/cooking.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "cooking lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/cooking.md"
+      },
+      {
+        "path": "prompts/creator-config.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent prompt lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/creator-config.md"
+      },
+      {
+        "path": "prompts/cross-skill-and-memory.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "agent prompt lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/cross-skill-and-memory.md"
+      },
+      {
+        "path": "prompts/finance.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "finance lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/finance.md"
+      },
+      {
+        "path": "prompts/secretary.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "secretary lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/secretary.md"
+      },
+      {
+        "path": "prompts/topic-generation.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "content lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/topic-generation.md"
+      },
+      {
+        "path": "prompts/triathlon.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/triathlon.md"
+      },
+      {
+        "path": "prompts/triathlon/cycling.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/triathlon/cycling.md"
+      },
+      {
+        "path": "prompts/triathlon/gym.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/triathlon/gym.md"
+      },
+      {
+        "path": "prompts/triathlon/running.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/triathlon/running.md"
+      },
+      {
+        "path": "prompts/triathlon/swim.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "prompts/triathlon/swim.md"
+      },
+      {
+        "path": "scripts/cockpit/README.md",
+        "status": "supporting",
+        "active": true,
+        "owner": "developer experience lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "scripts/cockpit/README.md"
+      },
+      {
+        "path": "src/services/coach-kernel/knowledge/docs/hybrid-athlete-rules.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/services/coach-kernel/knowledge/docs/hybrid-athlete-rules.md"
+      },
+      {
+        "path": "src/services/coach-kernel/knowledge/docs/llm-tool-contract.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/services/coach-kernel/knowledge/docs/llm-tool-contract.md"
+      },
+      {
+        "path": "src/services/coach-kernel/knowledge/docs/marathon-periodization.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/services/coach-kernel/knowledge/docs/marathon-periodization.md"
+      },
+      {
+        "path": "src/skills/content/prompts/system.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "content lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/skills/content/prompts/system.md"
+      },
+      {
+        "path": "src/skills/cooking/prompts/system.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "cooking lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/skills/cooking/prompts/system.md"
+      },
+      {
+        "path": "src/skills/finance/prompts/system.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "finance lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/skills/finance/prompts/system.md"
+      },
+      {
+        "path": "src/skills/secretary/prompts/system.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "secretary lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/skills/secretary/prompts/system.md"
+      },
+      {
+        "path": "src/skills/training/prompts/system.md",
+        "status": "runtime",
+        "active": true,
+        "owner": "training lead",
+        "reviewedOn": "2026-07-15",
+        "reviewDueOn": "2027-01-11",
+        "canonicalPath": "src/skills/training/prompts/system.md"
+      }
     ]
   },
   "largeAssets": [

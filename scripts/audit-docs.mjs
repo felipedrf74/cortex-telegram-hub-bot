@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  DOCUMENTATION_POLICY_PATH,
+  resolveDocumentationInventory,
+} from './lib/documentation-policy.mjs';
 import { missingCanonicalRegistryMarkdownPaths } from './lib/docs-audit-paths.mjs';
 
 const root = process.cwd();
@@ -44,6 +48,17 @@ for (const file of markdown) {
     const target = path.resolve(path.dirname(path.join(root, file)), match[1]);
     if (!fs.existsSync(target)) add('broken-active-reference', file, `Missing ${match[1]}`);
   }
+}
+
+try {
+  const governance = resolveDocumentationInventory({ repoRoot: root, files: markdown });
+  for (const issue of governance.issues) add(issue.type, issue.file, issue.message);
+} catch (error) {
+  add(
+    'documentation-policy-invalid',
+    DOCUMENTATION_POLICY_PATH,
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 // Markdown links are already checked above. Canonical indexes intentionally
