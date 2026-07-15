@@ -4,7 +4,12 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTestPolicy, root, walkTestFiles } from './lib/test-policy.mjs';
+import {
+  loadTestPolicy,
+  partitionTestFiles,
+  root,
+  walkTestFiles,
+} from './lib/test-policy.mjs';
 
 export const NIGHTLY_EVIDENCE_SCHEMA = 'nexus.nightly-full-suite-evidence.v1';
 export const RELEASE_SELECTION_SCHEMA = 'nexus.release-test-selection.v1';
@@ -410,7 +415,7 @@ function writePlan() {
   else if (selected?.impactResolved !== true) fullRequiredReason = 'unresolved_impact';
 
   const fullRequired = fullRequiredReason !== null;
-  const allFiles = walkTestFiles();
+  const allFiles = partitionTestFiles(walkTestFiles(), loadTestPolicy()).deterministic;
   const files = (fullRequired ? allFiles : selected.selected).sort();
   const boundNightlyEvidence = qualifying.evidence
     ?? (fullRequiredReason === 'qualifying_nightly_evidence_stale' ? qualifying.staleEvidence : null);
@@ -473,7 +478,7 @@ function writeNightly() {
   const report = readJson(resultsPath);
   const count = countVitestTests(report);
   if (report.success !== true || count <= 0) fail('nightly full-suite Vitest result is not passing');
-  const expectedTestFiles = walkTestFiles();
+  const expectedTestFiles = partitionTestFiles(walkTestFiles(), loadTestPolicy()).deterministic;
   const reportedTestFiles = vitestTestFiles(report);
   if (canonicalJson(reportedTestFiles) !== canonicalJson(expectedTestFiles)) {
     fail('nightly full-suite report does not cover every deterministic Vitest file exactly once');

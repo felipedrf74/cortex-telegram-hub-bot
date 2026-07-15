@@ -28,6 +28,7 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { resolve } from 'node:path';
+import { buildCannotSkipDashboard } from '../../scripts/cannot-skip-gate-dashboard.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../..');
 const SCRIPT = resolve(REPO_ROOT, 'scripts/ci/science-policy-version-check.mjs');
@@ -169,8 +170,16 @@ describe('R4 P2 — CI workflow + pre-commit hook + cannot-skip dashboard regist
   });
 
   it('cannot-skip-gate dashboard registers the science-policy check', () => {
-    const dashboard = readFileSync(DASHBOARD, 'utf8');
-    expect(dashboard).toMatch(/science-policy-version-check/);
-    expect(dashboard).toMatch(/training-principles\.json/);
+    const dashboard = buildCannotSkipDashboard({
+      baseRef: 'test',
+      now: new Date('2026-07-15T00:00:00.000Z'),
+    });
+    expect(dashboard.gates).toContainEqual(expect.objectContaining({
+      gate: 'science-policy-version-check',
+      representativeFile: 'src/services/coach-kernel/knowledge/entities/training-principles.json',
+      cannotSkipFires: true,
+      expectedTestRouteFires: true,
+      pass: true,
+    }));
   });
 });

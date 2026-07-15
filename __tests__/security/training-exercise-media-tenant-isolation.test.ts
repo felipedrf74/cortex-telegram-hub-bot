@@ -1,16 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrationsForTest } from '../../src/services/database';
 import { lookupTrainingExerciseMedia } from '../../src/services/training-exercise-media';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { seedApprovedExerciseMedia } from '../fixtures/training-exercise-media';
 
 describe('Training exercise media tenant isolation', () => {
   it('never merges a tenant override manifest into another authenticated scope', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       seedApprovedExerciseMedia(db, {
         manifestId: 'global-manifest',
         manifestVersion: 'global-manifest.v1',
@@ -53,9 +51,8 @@ describe('Training exercise media tenant isolation', () => {
   });
 
   it('rejects cross-scope review and takedown events before they can affect delivery', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       const global = seedApprovedExerciseMedia(db, {
         manifestId: 'global-manifest', manifestVersion: 'global-manifest.v1', exerciseId: 'push_up',
       });

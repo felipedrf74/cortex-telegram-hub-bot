@@ -86,6 +86,22 @@ describe('WhatsAppAdapter', () => {
         expect.anything(),
       );
     });
+
+    it('uses an explicitly configured Graph API version', async () => {
+      const customVersionFetch = createMockFetch();
+      const customVersionAdapter = new WhatsAppAdapter(
+        '+351912345678',
+        { ...defaultConfig, apiVersion: 'v22.0' },
+        customVersionFetch,
+      );
+
+      await customVersionAdapter.sendText('test');
+
+      expect(customVersionFetch).toHaveBeenCalledWith(
+        'https://graph.facebook.com/v22.0/123456/messages',
+        expect.anything(),
+      );
+    });
   });
 
   // ─── sendText ───────────────────────────────────────────────────────
@@ -155,6 +171,57 @@ describe('WhatsAppAdapter', () => {
       const errorAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, createErrorFetch(413));
       await expect(errorAdapter.sendFile('/tmp/big.zip')).rejects.toThrow('WhatsApp media upload error: 413');
     });
+
+    it('throws when document delivery fails after a successful upload', async () => {
+      const fetchSequence = vi.fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({ id: 'media-ok' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          json: vi.fn().mockResolvedValue({ error: { message: 'Unavailable' } }),
+        });
+      const fileAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+
+      await expect(fileAdapter.sendFile('/tmp/report.pdf')).rejects.toThrow(
+        'WhatsApp API error: 503',
+      );
+    });
+
+    it('maps supported file extensions and unknown files to their upload MIME contracts', async () => {
+      const mimeContracts = [
+        ['report.pdf', 'application/pdf'],
+        ['document.doc', 'application/msword'],
+        ['document.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        ['sheet.xls', 'application/vnd.ms-excel'],
+        ['sheet.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+        ['data.csv', 'text/csv'],
+        ['notes.txt', 'text/plain'],
+        ['image.png', 'image/png'],
+        ['photo.jpg', 'image/jpeg'],
+        ['photo.jpeg', 'image/jpeg'],
+        ['animation.gif', 'image/gif'],
+        ['image.webp', 'image/webp'],
+        ['video.mp4', 'video/mp4'],
+        ['audio.mp3', 'audio/mpeg'],
+        ['audio.ogg', 'audio/ogg'],
+        ['audio.amr', 'audio/amr'],
+        ['PHOTO.PNG', 'image/png'],
+        ['unknown.bin', 'application/octet-stream'],
+        ['no-extension', 'application/octet-stream'],
+      ] as const;
+
+      for (const [filename, expectedMime] of mimeContracts) {
+        const fetchSequence = createMediaThenMessageFetch();
+        const fileAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+        await fileAdapter.sendFile(`/tmp/${filename}`);
+        const uploadBody = JSON.parse(fetchSequence.mock.calls[0][1].body as string);
+        expect(uploadBody.type, filename).toBe(expectedMime);
+      }
+    });
   });
 
   // ─── sendInlineButtons ──────────────────────────────────────────────
@@ -215,6 +282,14 @@ describe('WhatsAppAdapter', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
       expect(body.interactive.action.buttons).toHaveLength(3);
+    });
+
+    it('propagates an API error for an interactive message', async () => {
+      const errorAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, createErrorFetch(400));
+      await expect(errorAdapter.sendInlineButtons(
+        'Choose:',
+        [[{ text: 'A', callbackData: 'a' }]],
+      )).rejects.toThrow('WhatsApp API error: 400');
     });
   });
 
@@ -375,20 +450,6 @@ describe('WhatsAppAdapter', () => {
   // ─── Interface compliance ───────────────────────────────────────────
 
   describe('MessageAdapter contract', () => {
-    it('implements all required methods', () => {
-      expect(typeof adapter.sendText).toBe('function');
-      expect(typeof adapter.sendFile).toBe('function');
-      expect(typeof adapter.sendInlineButtons).toBe('function');
-      expect(typeof adapter.editMessage).toBe('function');
-      expect(typeof adapter.deleteMessage).toBe('function');
-      expect(typeof adapter.sendPhoto).toBe('function');
-      expect(typeof adapter.sendVoice).toBe('function');
-    });
-
-    it('has WhatsApp-specific sendTemplate method', () => {
-      expect(typeof adapter.sendTemplate).toBe('function');
-    });
-
     it('has a platform property', () => {
       expect(adapter.platform).toBe('whatsapp');
     });

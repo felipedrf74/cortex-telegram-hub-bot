@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 describe('migration 231 — Training M4 capacity snapshots', () => {
   it('applies additively, replays idempotently, and enforces personal immutable scope', () => {
@@ -45,9 +46,8 @@ describe('migration 231 — Training M4 capacity snapshots', () => {
   });
 
   it('has a staging-only inverse that removes only M4 capacity snapshots', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       db.exec(readFileSync(resolve(process.cwd(), 'migrations/down/231_training_m4_capacity_snapshots.sql'), 'utf8'));
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'training_m4_capacity_snapshots'").get())
         .toBeUndefined();

@@ -114,7 +114,7 @@ describe('risk-gate dry run', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('classifier failed');
     expect(result.stdout).toContain('vitest mode: full');
-    expect(result.stdout).toContain('npx vitest run --reporter=dot');
+    expect(result.stdout).toContain('node scripts/run-test-tier.mjs deterministic --reporter dot');
     expect(result.stdout).not.toContain('--changed');
   });
 
@@ -137,7 +137,7 @@ describe('risk-gate dry run', () => {
     );
 
     expect(raw).toContain('vitest mode: full');
-    expect(raw).toContain('npx vitest run --reporter=dot --shard=2/4');
+    expect(raw).toContain('node scripts/run-test-tier.mjs deterministic --reporter dot --shard 2/4');
   });
 
   it('rejects malformed or out-of-range Vitest shards', () => {
@@ -217,6 +217,6 @@ describe('risk-gate dry run', () => {
     expect(result.stderr).toContain('classifier failed');
     expect(result.stdout).toContain('vitest mode: full');
     expect(result.stdout).toContain('vitest shard: 3/4');
-    expect(result.stdout).toContain('--shard=3/4');
+    expect(result.stdout).toContain('--shard 3/4');
   });
 });

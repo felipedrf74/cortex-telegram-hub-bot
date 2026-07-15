@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { applyMigrationFileForTest, runMigrationsForTest } from '../../src/services/database';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 describe('migration 230 — Training adaptation proposals v1', () => {
   it('applies additively, replays idempotently, and keeps the scoped graph valid', () => {
@@ -33,9 +34,8 @@ describe('migration 230 — Training adaptation proposals v1', () => {
   });
 
   it('enforces immutable content, scoped foreign keys, lifecycle transitions, and controlled erasure', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       db.pragma('foreign_keys = ON');
       seedRevisionGraph(db);
       seedAdaptation(db);
@@ -83,9 +83,8 @@ describe('migration 230 — Training adaptation proposals v1', () => {
   });
 
   it('has a staging-only inverse that removes only milestone 3 schema', () => {
-    const db = new Database(':memory:');
+    const db = createMigratedTestDatabase();
     try {
-      runMigrationsForTest(db);
       db.exec(readFileSync(resolve(process.cwd(), 'migrations/down/230_training_adaptation_proposals_v1.sql'), 'utf8'));
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'training_adaptation_%'").all()).toEqual([]);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'training_plan_revisions'").get())

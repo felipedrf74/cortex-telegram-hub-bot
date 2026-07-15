@@ -88,8 +88,8 @@ The stable commands are:
 | `npm run test:changed -- --base <sha>` | Static changed dependencies ∪ critical ∪ cannot-skip/focused risks; unresolved production impact fails closed to all Vitest files. |
 | `npm run test:critical` | Auth, tenant, migration, billing, provider fallback, public contract, release-safety, and production-regression set. |
 | `npm run test:release -- --base <sha>` | Local release gate: Node/toolchain check, typecheck, build, migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. |
-| `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards. |
-| `npm run test:evaluate` | Persona, provider-quality, subjective product, and long-running evaluation corpus. |
+| `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards; files with the `eval` disposition are excluded. |
+| `npm run test:evaluate` | Exactly the files with the `eval` disposition: persona, provider-quality, subjective product, and long-running evaluation corpora. Runs on the scheduled/manual `evaluation.yml` workflow, outside release correctness evidence. |
 | `npm run test:profile` | Full machine-readable timings and inventory under ignored `.local/`. |
 
 These governed selections feed the Git hooks, CI matrix dispatch, and signed

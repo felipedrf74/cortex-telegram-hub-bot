@@ -1,15 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrationsForTest, withDatabaseForTestAsync } from '../../src/services/database';
+import { withDatabaseForTestAsync } from '../../src/services/database';
 import { defaultEventHandlers } from '../../src/services/event-backbone-worker';
 import { emitDomainEvent, processPendingEvents } from '../../src/services/event-outbox';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 describe('training plan revision activation outbox handling', () => {
   it('queues one idempotent read-model projection and no provider work', async () => {
-    const db = new Database(':memory:');
-    runMigrationsForTest(db);
+    const db = createMigratedTestDatabase();
     await withDatabaseForTestAsync(db, async () => {
       const event = emitDomainEvent({
         tenantId: 7,
