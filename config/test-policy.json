@@ -240,6 +240,16 @@
       "reason": "Merged unique Graph API version, MIME mapping, post-upload delivery failure, and interactive failure behavior into the primary adapter suite and removed fragmented duplicates and export-existence checks."
     },
     {
+      "test": "__tests__/adapters/whatsapp-adapter.test.ts",
+      "replacementTests": [
+        "__tests__/adapters/whatsapp-adapter.test.ts"
+      ],
+      "sources": [
+        "src/adapters/whatsapp-adapter.ts"
+      ],
+      "reason": "Removed compile-time method-existence assertions from the retained primary suite because every adapter method is exercised through its public behavior and TypeScript checks the MessageAdapter implementation."
+    },
+    {
       "test": "__tests__/services/storage-provider-qa-validation.test.ts",
       "replacementTests": [
         "__tests__/services/storage-provider.test.ts"
