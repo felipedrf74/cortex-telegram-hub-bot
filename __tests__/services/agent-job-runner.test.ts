@@ -416,4 +416,155 @@ describe('shared governed agent job runner', () => {
       output_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
   });
+
+  it('canonicalizes supported fingerprint values and rejects unsafe material before provider work', async () => {
+    expect(new AgentJobOutputValidationError().message).toBe('Agent job output validation failed');
+
+    const supported = [
+      42n,
+      new Date('2026-07-15T00:00:00.000Z'),
+      [1, 'stable', true],
+      { keep: 'stable', omit: undefined },
+    ];
+    for (const [index, material] of supported.entries()) {
+      const adapter = autoresearchAdapter(db);
+      adapter.prepare = () => ({
+        kind: 'ready',
+        input: { promptState: `supported-${index}` },
+        fingerprintMaterial: material,
+      });
+      await expect(runGovernedAgentJob(
+        adapter,
+        { tenantId: 0, userId: 0 },
+        deterministicDependencies(db, `supported-${index}`),
+      )).resolves.toMatchObject({ status: 'success' });
+    }
+
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    for (const [index, material] of [Number.NaN, Symbol('unsafe'), cycle].entries()) {
+      const execute = vi.fn(async () => ({ accepted: true, score: 0.5 }));
+      const adapter = autoresearchAdapter(db, execute);
+      adapter.prepare = () => ({
+        kind: 'ready',
+        input: { promptState: `unsafe-${index}` },
+        fingerprintMaterial: material,
+      });
+      await expect(runGovernedAgentJob(
+        adapter,
+        { tenantId: 0, userId: 0 },
+        deterministicDependencies(db, `unsafe-${index}`),
+      )).rejects.toBeInstanceOf(AgentJobGovernanceError);
+      expect(execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rejects unbounded or unstable skip reasons before recording a reusable outcome', async () => {
+    for (const [index, reason] of ['', 'x'.repeat(81), 'contains private spaces'].entries()) {
+      const execute = vi.fn(async () => ({ accepted: true, score: 0.5 }));
+      const adapter = autoresearchAdapter(db, execute);
+      adapter.prepare = () => ({
+        kind: 'skip',
+        status: 'skipped_no_work',
+        reason,
+        fingerprintMaterial: { index },
+      });
+      await expect(runGovernedAgentJob(
+        adapter,
+        { tenantId: 0, userId: 0 },
+        deterministicDependencies(db, `invalid-reason-${index}`),
+      )).rejects.toBeInstanceOf(AgentJobGovernanceError);
+      expect(execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it('fails closed for every manifest parity and scope-policy mismatch', async () => {
+    const entry = getAgentJobManifestEntry('autoresearch');
+    const adapter = autoresearchAdapter(db);
+    const invalidEntries = [
+      { ...entry, sharedRunner: undefined },
+      { ...entry, sharedRunner: { ...entry.sharedRunner!, implementation: 'legacy' } },
+      { ...entry, providerUsage: 'no-model-provider' },
+      { ...entry, providerRouting: 'not-applicable-no-model-provider' },
+      { ...entry, costPolicy: 'no-model-provider-cost' },
+      { ...entry, inputFingerprint: { ...entry.inputFingerprint, enforcement: 'not-applicable-no-provider' } },
+    ];
+    for (const [index, manifestEntry] of invalidEntries.entries()) {
+      await expect(runGovernedAgentJob(
+        adapter,
+        { tenantId: 0, userId: 0 },
+        { ...deterministicDependencies(db, `invalid-policy-${index}`), manifestEntry: manifestEntry as any },
+      )).rejects.toBeInstanceOf(AgentJobGovernanceError);
+    }
+
+    await expect(runGovernedAgentJob(
+      adapter,
+      { tenantId: 7, userId: 7 },
+      deterministicDependencies(db, 'invalid-platform-scope'),
+    )).rejects.toBeInstanceOf(AgentJobGovernanceError);
+
+    const routeMismatch = autoresearchAdapter(db);
+    routeMismatch.providerRouting = 'grounded-provider-fallback-route';
+    await expect(runGovernedAgentJob(
+      routeMismatch,
+      { tenantId: 0, userId: 0 },
+      deterministicDependencies(db, 'route-mismatch'),
+    )).rejects.toBeInstanceOf(AgentJobGovernanceError);
+  });
+
+  it('rejects invalid completion states and records notification failure without replaying provider work', async () => {
+    const invalidStatus = autoresearchAdapter(db);
+    invalidStatus.classifyOutput = () => 'failed' as any;
+    await expect(runGovernedAgentJob(
+      invalidStatus,
+      { tenantId: 0, userId: 0 },
+      deterministicDependencies(db, 'invalid-status'),
+    )).rejects.toBeInstanceOf(AgentJobGovernanceError);
+
+    const providerBackedSkip = autoresearchAdapter(db);
+    providerBackedSkip.classifyOutput = () => 'skipped_no_work';
+    await expect(runGovernedAgentJob(
+      providerBackedSkip,
+      { tenantId: 0, userId: 0 },
+      deterministicDependencies(db, 'provider-backed-skip'),
+    )).rejects.toBeInstanceOf(AgentJobProviderAttributionError);
+
+    const notify = vi.fn(async () => {
+      throw new Error('notification transport unavailable');
+    });
+    const notificationFailure = autoresearchAdapter(db);
+    notificationFailure.notify = notify;
+    const outcome = await runGovernedAgentJob(
+      notificationFailure,
+      { tenantId: 0, userId: 0 },
+      deterministicDependencies(db, 'notification-failure'),
+    );
+    expect(outcome.status).toBe('success');
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`
+      SELECT notification_status FROM agent_job_runs WHERE run_id = ?
+    `).get(outcome.runId)).toEqual({ notification_status: 'failed' });
+  });
+
+  it('normalizes non-Error and unsafe error names without persisting messages', async () => {
+    const failures: unknown[] = ['private string failure', Object.assign(new Error('private'), { name: '!!!' })];
+    for (const [index, failure] of failures.entries()) {
+      const adapter = autoresearchAdapter(db);
+      adapter.prepare = () => {
+        throw failure;
+      };
+      await expect(runGovernedAgentJob(
+        adapter,
+        { tenantId: 0, userId: 0 },
+        deterministicDependencies(db, `normalized-error-${index}`),
+      )).rejects.toBe(failure);
+    }
+
+    const rows = db.prepare(`
+      SELECT error_code FROM agent_job_runs
+       WHERE run_id LIKE 'normalized-error-%'
+       ORDER BY id
+    `).all();
+    expect(rows).toEqual([{ error_code: 'UnknownError' }, { error_code: 'UnknownError' }]);
+  });
 });

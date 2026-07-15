@@ -45,6 +45,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { runScheduledChannelRelearn } from '../../src/services/scheduled-agent-jobs';
+import { AgentJobOutputValidationError } from '../../src/services/agent-job-runner';
 
 function channelResult(overrides: Record<string, unknown> = {}) {
   return {
@@ -138,6 +139,92 @@ describe('remaining scheduled agent-job governance', () => {
       tenant_id: 42,
       user_id: 42,
       provider_calls: 0,
+      error_code: 'ChannelRelearnScopeExecutionError',
+    });
+  });
+
+  it('audits a no-scope plan without entering channel processing', async () => {
+    channelMocks.plan.mockReturnValue({ scopes: [], synthesisDeferred: true });
+
+    await expect(runScheduledChannelRelearn(true)).resolves.toEqual(channelResult({
+      synthesis_deferred: true,
+    }));
+    expect(channelMocks.processScope).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT status, provider_calls, skip_reason
+        FROM agent_job_runs
+       WHERE job_id = 'channel_relearn'
+    `).get()).toEqual({
+      status: 'skipped_no_work',
+      provider_calls: 0,
+      skip_reason: 'no_eligible_channel_scopes',
+    });
+  });
+
+  it('classifies a valid zero-provider channel result as bounded no work', async () => {
+    channelMocks.plan.mockReturnValue({ scopes: [42], synthesisDeferred: false });
+    channelMocks.processScope.mockResolvedValue(channelResult());
+
+    await expect(runScheduledChannelRelearn()).resolves.toEqual(channelResult());
+    expect(testDb.prepare(`
+      SELECT status, provider_calls, skip_reason
+        FROM agent_job_runs
+       WHERE job_id = 'channel_relearn'
+    `).get()).toEqual({
+      status: 'skipped_no_work',
+      provider_calls: 0,
+      skip_reason: 'domain_no_provider_work',
+    });
+  });
+
+  it('retains the domain unchanged gate on a repeated channel fingerprint', async () => {
+    channelMocks.plan.mockReturnValue({ scopes: [42], synthesisDeferred: false });
+    channelMocks.processScope.mockResolvedValue(channelResult({
+      skipped_no_new_videos: 1,
+      synthesis_skipped_all_unchanged: true,
+    }));
+
+    await runScheduledChannelRelearn();
+    await expect(runScheduledChannelRelearn()).resolves.toEqual(channelResult({
+      skipped_no_new_videos: 1,
+      synthesis_skipped_all_unchanged: true,
+    }));
+    expect(channelMocks.processScope).toHaveBeenCalledTimes(2);
+    expect(testDb.prepare(`
+      SELECT status, provider_calls, skip_reason
+        FROM agent_job_runs
+       WHERE job_id = 'channel_relearn'
+       ORDER BY id DESC LIMIT 1
+    `).get()).toEqual({
+      status: 'skipped_unchanged',
+      provider_calls: 0,
+      skip_reason: 'domain_fingerprint_unchanged',
+    });
+  });
+
+  it('rejects malformed channel output and rethrows non-domain failures', async () => {
+    channelMocks.plan.mockReturnValue({ scopes: [42], synthesisDeferred: false });
+    channelMocks.processScope.mockResolvedValue(channelResult({ analyzed: -1 }));
+
+    await expect(runScheduledChannelRelearn()).rejects.toBeInstanceOf(AgentJobOutputValidationError);
+  });
+
+  it('merges a failed platform scope and preserves its synthesized state', async () => {
+    channelMocks.plan.mockReturnValue({ scopes: [undefined], synthesisDeferred: false });
+    channelMocks.processScope.mockResolvedValue(channelResult({ failed: 1, synthesized: true }));
+
+    await expect(runScheduledChannelRelearn()).resolves.toEqual(channelResult({
+      failed: 1,
+      synthesized: true,
+    }));
+    expect(testDb.prepare(`
+      SELECT tenant_id, user_id, status, error_code
+        FROM agent_job_runs
+       WHERE job_id = 'channel_relearn'
+    `).get()).toEqual({
+      tenant_id: 0,
+      user_id: 0,
+      status: 'failed',
       error_code: 'ChannelRelearnScopeExecutionError',
     });
   });

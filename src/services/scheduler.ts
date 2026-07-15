@@ -192,7 +192,7 @@ function getActiveUserIds(): number[] {
 
 type TaskSyncScope = { tenantId: number; userId: number; importProviders: boolean };
 
-function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
+export function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
   const scopes = new Map<string, TaskSyncScope>();
   for (const userId of userIds) {
     scopes.set(`${userId}:${userId}`, { tenantId: userId, userId, importProviders: true });
