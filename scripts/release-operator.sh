@@ -4,6 +4,7 @@ umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/release-gates.sh"
 COMMAND="${1:-status}"
 [ $# -gt 0 ] && shift
 usage() {
@@ -235,6 +236,10 @@ REMOTE
     fi
     ;;
   promote)
+    if ! release_require_clean_tree "$ROOT"; then
+      echo "release:promote requires a clean checkout bound to the signed runtime SHA" >&2
+      exit 1
+    fi
     validate_manifest
     DIGEST="$(manifest_field payload.artifact.digest)"
     RUNTIME_SHA="$(manifest_field payload.runtimeSha)"

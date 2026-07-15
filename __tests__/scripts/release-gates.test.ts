@@ -299,4 +299,64 @@ exec "$@"
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('does not reclaim a fresh remote lock when its acquisition shell has exited', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-gates-remote-active-'));
+    const binDir = join(root, 'bin');
+    const remoteDir = join(root, 'remote');
+    const lockDir = join(remoteDir, '.local/release/locks/prod-deploy.lock');
+    try {
+      execFileSync('mkdir', ['-p', binDir, lockDir]);
+      writeSshShim(binDir);
+      writeFileSync(join(lockDir, 'owner'), [
+        'token=existing',
+        'pid=999999999',
+        'host=fixture-host',
+        'script=first-promote.sh',
+        `createdAt=${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}`,
+        '',
+      ].join('\n'));
+
+      const output = runBash(`
+        set -euo pipefail
+        source "${RELEASE_GATES}"
+        set +e
+        PATH="${binDir}:$PATH" release_acquire_remote_lock fake-server "${remoteDir}" prod-deploy >/dev/null 2>&1
+        code="$?"
+        set -e
+        echo "$code"
+        grep -Fxq 'token=existing' "${lockDir}/owner"
+      `);
+
+      expect(Number(output.trim())).toBe(73);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let an expired owner cleanup delete a replacement remote lock', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-gates-remote-token-'));
+    const binDir = join(root, 'bin');
+    const remoteDir = join(root, 'remote');
+    try {
+      execFileSync('mkdir', ['-p', binDir, remoteDir]);
+      writeSshShim(binDir);
+      const output = runBash(`
+        set -euo pipefail
+        source "${RELEASE_GATES}"
+        PATH="${binDir}:$PATH" release_acquire_remote_lock fake-server "${remoteDir}" prod-deploy
+        lock_dir="${remoteDir}/.local/release/locks/prod-deploy.lock"
+        sed -E 's/^token=.*/token=replacement-owner/' "$lock_dir/owner" > "$lock_dir/owner.next"
+        mv "$lock_dir/owner.next" "$lock_dir/owner"
+        PATH="${binDir}:$PATH" release_cleanup_remote_locks
+        [ -d "$lock_dir" ]
+        grep -Fxq 'token=replacement-owner' "$lock_dir/owner"
+        echo retained
+      `);
+
+      expect(output.trim()).toBe('retained');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

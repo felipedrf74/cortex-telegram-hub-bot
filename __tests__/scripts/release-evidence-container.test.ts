@@ -1,5 +1,23 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+
+function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_PREFIX',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_NAMESPACE',
+  ]) delete env[key];
+  return { ...env, ...overrides };
+}
 
 describe('release-evidence-container wrapper', () => {
   const script = () => readFileSync('scripts/release-evidence-container.sh', 'utf8');
@@ -66,7 +84,8 @@ describe('release-evidence-container wrapper', () => {
     expect(promote).toContain('artifact aggregate digest mismatch');
     expect(promote).toContain('remote-create-release-backup.sh');
     expect(promote).toContain('remote-prepare-release-backup.sh');
-    expect(promote).toContain('candidate failed readiness; restoring exact backup');
+    expect(promote).toContain('promotion failed after candidate mutation; restoring exact backup');
+    expect(promote).toContain('promotion failed after production stop began; restarting the untouched predecessor');
     expect(operator.indexOf('resolve_remote_pm2')).toBeLessThan(operator.indexOf('mkdir -p'));
     expect(operator).toContain('release-installed-tree-attestation.mjs write');
     expect(operator).toContain('scripts/staging-smoke.sh');
@@ -76,12 +95,44 @@ describe('release-evidence-container wrapper', () => {
     expect(operator).not.toContain('startOrReload');
     expect(operator).not.toContain('--staging-evidence');
     expect(promote).toContain('--expect-aggregate-digest "$installed_digest"');
-    expect(promote).toContain('production PM2 exact-release identity mismatch');
+    expect(promote).toContain('(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha');
+    expect(promote).toContain('active PM2/current identity mismatch');
     expect(promote).toContain('previous versioned runtime marker is missing');
     expect(promote).not.toContain('startOrReload');
     expect(promote).not.toContain('scripts/rollback.sh');
     expect(promote).not.toContain('npm ci');
     expect(promote).not.toContain('pip install');
+  });
+
+  it('rejects a dirty promotion checkout before manifest validation or SSH', () => {
+    const root = mkdtempSync(join(tmpdir(), 'release-operator-dirty-'));
+    try {
+      mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+      copyFileSync('scripts/release-operator.sh', join(root, 'scripts/release-operator.sh'));
+      copyFileSync('scripts/lib/release-gates.sh', join(root, 'scripts/lib/release-gates.sh'));
+      chmodSync(join(root, 'scripts/release-operator.sh'), 0o755);
+      writeFileSync(join(root, 'package.json'), '{"version":"0.0.0"}\n');
+      const gitOptions = { cwd: root, env: cleanGitEnv() };
+      execFileSync('git', ['init', '--initial-branch=main'], gitOptions);
+      execFileSync('git', ['config', 'user.name', 'Release Fixture'], gitOptions);
+      execFileSync('git', ['config', 'user.email', 'release@example.invalid'], gitOptions);
+      execFileSync('git', ['add', '.'], gitOptions);
+      execFileSync('git', ['commit', '-m', 'fixture'], gitOptions);
+      writeFileSync(join(root, 'scripts/release-operator.sh'), '\n# dirty promotion helper\n', { flag: 'a' });
+
+      const result = spawnSync('bash', [
+        'scripts/release-operator.sh',
+        'promote',
+        '--manifest',
+        'missing.json',
+      ], { cwd: root, encoding: 'utf8', env: cleanGitEnv() });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('release:promote requires a clean checkout');
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain('missing.json');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('signs detached staging evidence only through the owner-gated CI secret path', () => {

@@ -217,7 +217,12 @@ fi
 
 install -d -m 700 "$BACKUP_DIR"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-ARCHIVE="$BACKUP_DIR/v${TARGET_VERSION}_${TIMESTAMP}.tar.gz"
+# Name the archive for the runtime it actually contains.  The release being
+# installed is a separate part of the identity: this backup is the archived
+# version taken immediately before that target.  Older archives named only for
+# TARGET_VERSION remain readable by rollback.sh through their package/manifest
+# metadata.
+ARCHIVE="$BACKUP_DIR/v${ARCHIVED_VERSION}_before-v${TARGET_VERSION}_${TIMESTAMP}.tar.gz"
 TMP_ARCHIVE="$ARCHIVE.tmp"
 META_DIR="$(mktemp -d "$BACKUP_DIR/.backup-meta-XXXXXX")"
 LISTING="$META_DIR/archive.list"

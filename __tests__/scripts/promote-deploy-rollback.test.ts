@@ -121,10 +121,16 @@ describe('deploy/promote rollback mutation marker', () => {
   it('rollback recreates both production processes without starting historical PM2 entries by name', () => {
     const rollback = readFileSync(ROLLBACK_SH, 'utf8');
 
-    expect(rollback).toContain('scp "$LOCAL_DIR/ecosystem.config.js"');
+    expect(rollback).toContain('ROLLBACK_RUNTIME_CONFIG="ecosystem.config.js"');
     expect(rollback).toContain('< "$LOCAL_DIR/scripts/remote-start-sanitized-pm2.sh"');
     expect(rollback).toContain('"rollback-unknown"');
     expect(rollback).toContain('"nexus-hub,content-engine"');
+    expect(rollback).toContain('PM2 cwd does not match active runtime');
+    expect(rollback).toContain('rm -f "$base_dir/current" "$base_dir/current.next"');
+    expect(rollback).toContain('http://127.0.0.1:8200/health');
+    expect(rollback).toContain('http://127.0.0.1:8100/health');
+    expect(rollback).toContain('restored package version mismatch');
+    expect(rollback).toContain('"$pm2_bin" save --force');
     expect(rollback).not.toContain('$PM2 start content-engine');
     expect(rollback).not.toContain('$PM2 start nexus-hub');
     expect(rollback).not.toContain('$PM2 save;');
@@ -174,6 +180,7 @@ describe('deploy/promote rollback mutation marker', () => {
 
     expect(rollback).toContain('--backup-file)');
     expect(rollback).toContain('"$BACKUP_DIR"/v*.tar.gz');
-    expect(rollback).toContain('grep -Fxq -- "$BACKUP_FILE_OVERRIDE"');
+    expect(rollback).toContain('if [ "$backup" = "$BACKUP_FILE_OVERRIDE" ]; then');
+    expect(rollback).toContain('Exact backup is not present on the server');
   });
 });

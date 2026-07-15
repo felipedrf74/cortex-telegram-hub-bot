@@ -74,7 +74,13 @@ function createRuntime(version: string, includeCatalog: boolean) {
   return { root, runtime, backups };
 }
 
-function runBackup(runtime: string, backups: string, env: NodeJS.ProcessEnv = {}, prepared = '') {
+function runBackup(
+  runtime: string,
+  backups: string,
+  env: NodeJS.ProcessEnv = {},
+  prepared = '',
+  targetVersion = '4.14.219',
+) {
   const bin = path.join(path.dirname(runtime), 'bin');
   return spawnSync(
     'bash',
@@ -82,7 +88,7 @@ function runBackup(runtime: string, backups: string, env: NodeJS.ProcessEnv = {}
       backupScript,
       runtime,
       backups,
-      '4.14.218',
+      targetVersion,
       path.join(bin, 'pm2'),
       'nexus-hub,content-engine',
       ...(prepared ? [prepared] : []),
@@ -189,11 +195,26 @@ describe('release backup runtime artifact boundary', () => {
     const result = runBackup(runtime, backups);
 
     expect(result.status).toBe(0);
-    const listing = execFileSync('tar', ['tzf', path.join(backups, archives(backups)[0])], {
+    const archiveName = archives(backups)[0];
+    expect(archiveName).toMatch(
+      /^v4\.14\.218_before-v4\.14\.219_[0-9]{8}_[0-9]{6}\.tar\.gz$/,
+    );
+    const archivePath = path.join(backups, archiveName);
+    const listing = execFileSync('tar', ['tzf', archivePath], {
       encoding: 'utf8',
     });
     expect(listing).toContain('catalog/training/catalog.json');
     expect(listing).toContain('data/bot.db');
+    const manifest = JSON.parse(
+      execFileSync('tar', ['xOzf', archivePath, '.nexus-backup-manifest.json'], {
+        encoding: 'utf8',
+      }),
+    );
+    expect(manifest).toMatchObject({
+      schema: 'nexus.release-backup.v1',
+      archivedVersion: '4.14.218',
+      targetVersion: '4.14.219',
+    });
   });
 
   it('leaves no final archive when tar fails', () => {

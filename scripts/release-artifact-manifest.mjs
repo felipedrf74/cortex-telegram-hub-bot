@@ -40,6 +40,18 @@ const runtimeFiles = [
   'content-engine/requirements-dev.txt',
   'content-engine/pyproject.toml',
   'scripts/release-installed-tree-attestation.mjs',
+  // Production control-plane code is release-critical too. Including these
+  // files binds promotion, backup, rollback, and lock behavior to the signed
+  // artifact digest instead of trusting whichever local helper happens to be
+  // present at operator time.
+  'scripts/lib/release-gates.sh',
+  'scripts/promote-exact-release.sh',
+  'scripts/release-operator.sh',
+  'scripts/remote-create-release-backup.sh',
+  'scripts/remote-prepare-release-backup.sh',
+  'scripts/remote-start-sanitized-pm2.sh',
+  'scripts/restore.sh',
+  'scripts/rollback.sh',
 ];
 
 function cleanGitEnv() {
