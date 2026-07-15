@@ -15,6 +15,13 @@ const governedLocalCommands = [
   'content-engine-pytest',
   'artifact-validation',
 ];
+const localFixtureEnv = {
+  ...process.env,
+  NODE_ENV: 'test',
+  GITHUB_ACTIONS: 'false',
+  GITHUB_RUN_ID: '',
+  GITHUB_RUN_ATTEMPT: '',
+};
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
@@ -49,7 +56,7 @@ describe('ReleaseManifestV2', () => {
       '--key-id', 'unsigned-release-candidate',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
-    ], { cwd: process.cwd(), env: { ...process.env, NODE_ENV: 'test' } });
+    ], { cwd: process.cwd(), env: localFixtureEnv });
     const validation = JSON.parse(execFileSync(process.execPath, [script, 'validate-payload',
       '--allow-dirty',
       '--manifest', manifestPath,
@@ -267,7 +274,7 @@ describe('ReleaseManifestV2', () => {
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,
-    ], { cwd: process.cwd() });
+    ], { cwd: process.cwd(), env: localFixtureEnv });
 
     const envelope = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     envelope.keyId = 'github-actions-release-manifest-2026-07';
