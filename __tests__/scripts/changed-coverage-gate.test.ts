@@ -1,13 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   aggregateCoverage,
   changedExecutableCoverage,
   coverageShardCount,
   parseAddedLines,
+  preserveCoverageShardFailure,
   resolveExactCommit,
   thresholdFailures,
   validateCoverageException,
 } from '../../scripts/changed-coverage-gate.mjs';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 describe('changed-module coverage gate', () => {
   it('bounds coverage memory by splitting large selections into at most four shards', () => {
@@ -17,6 +29,35 @@ describe('changed-module coverage gate', () => {
     expect(coverageShardCount(727)).toBe(4);
     expect(coverageShardCount(930)).toBe(4);
     expect(() => coverageShardCount(0)).toThrow('positive integer');
+  });
+
+  it('preserves opaque shard failures and completed blobs for CI diagnosis', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'changed-coverage-failure-'));
+    temporaryDirectories.push(directory);
+    const outputDir = path.join(directory, 'output');
+    const blobDir = path.join(directory, 'blobs');
+    fs.mkdirSync(blobDir, { recursive: true });
+    fs.writeFileSync(path.join(blobDir, 'blob-1.json'), '{"complete":true}\n');
+
+    const failure = preserveCoverageShardFailure({
+      outputDir,
+      blobDir,
+      shard: 1,
+      shardCount: 4,
+      result: { status: 1, signal: null },
+      reason: 'Changed coverage shard 1/4 exited with status 1',
+    });
+
+    expect(failure).toMatchObject({
+      schema: 'nexus.changed-coverage-failure.v1',
+      shard: 1,
+      shardCount: 4,
+      status: 1,
+      signal: null,
+      blobFiles: ['blob-1.json'],
+    });
+    expect(fs.existsSync(path.join(outputDir, 'failed-shards/blobs/blob-1.json'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(outputDir, 'failure.json'), 'utf8'))).toEqual(failure);
   });
 
   it('extracts only added-side lines from zero-context git hunks', () => {

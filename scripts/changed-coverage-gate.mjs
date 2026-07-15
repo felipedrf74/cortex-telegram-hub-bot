@@ -34,6 +34,39 @@ function processFailure(result, label) {
   return `${label} exited with status ${result.status ?? 'unknown'}`;
 }
 
+export function preserveCoverageShardFailure({
+  outputDir,
+  blobDir,
+  shard,
+  shardCount,
+  result,
+  reason,
+}) {
+  const failedBlobDir = path.join(outputDir, 'failed-shards', 'blobs');
+  fs.rmSync(path.dirname(failedBlobDir), { recursive: true, force: true });
+  fs.mkdirSync(failedBlobDir, { recursive: true });
+  const blobFiles = fs.existsSync(blobDir)
+    ? fs.readdirSync(blobDir).filter((file) => file.endsWith('.json')).sort()
+    : [];
+  for (const file of blobFiles) {
+    fs.copyFileSync(path.join(blobDir, file), path.join(failedBlobDir, file));
+  }
+  const failure = {
+    schema: 'nexus.changed-coverage-failure.v1',
+    shard,
+    shardCount,
+    status: result.status ?? null,
+    signal: result.signal ?? null,
+    reason,
+    blobFiles,
+  };
+  fs.writeFileSync(
+    path.join(outputDir, 'failure.json'),
+    `${JSON.stringify(failure, null, 2)}\n`,
+  );
+  return failure;
+}
+
 export function aggregateCoverage(records) {
   const result = {};
   for (const metric of ['lines', 'branches', 'functions', 'statements']) {
@@ -160,6 +193,7 @@ function main() {
   const files = changedProductionFiles(exactBase);
   const criticalFiles = files.filter((file) => isCriticalModule(file, policy.mutation.criticalModulePatterns));
   const outputDir = path.join(root, '.local/coverage/changed');
+  fs.rmSync(outputDir, { recursive: true, force: true });
   fs.mkdirSync(outputDir, { recursive: true });
   const planPath = path.join(outputDir, 'plan.json');
   const plan = {
@@ -247,6 +281,26 @@ function main() {
     });
     const failure = processFailure(shardRun, `Changed coverage shard ${shard}/${shardCount}`);
     if (failure) {
+      preserveCoverageShardFailure({
+        outputDir,
+        blobDir,
+        shard,
+        shardCount,
+        result: shardRun,
+        reason: failure,
+      });
+      if (fs.readdirSync(blobDir).some((file) => file.endsWith('.json'))) {
+        console.error('Replaying completed shard blobs with the verbose reporter for diagnostics.');
+        spawnSync(process.execPath, [
+          vitest,
+          `--merge-reports=${blobDir}`,
+          '--reporter=verbose',
+        ], {
+          cwd: root,
+          stdio: 'inherit',
+          env: { ...process.env, NODE_ENV: 'test' },
+        });
+      }
       console.error(failure);
       process.exit(shardRun.status ?? 1);
     }
