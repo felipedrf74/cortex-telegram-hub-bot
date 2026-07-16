@@ -158,6 +158,33 @@ describe('product learning admin routes', () => {
     expect(mocks.buildSummary).not.toHaveBeenCalled();
   });
 
+  it('rate-limits the exported router before admin authorization when mounted alone', async () => {
+    const app = express();
+    app.use('/api/v1/admin/product-learning', productLearningAdminRoutes({
+      buildSummary: mocks.buildSummary,
+      logAdminMutation: mocks.logAdminMutation,
+      recordPhysicalDevice: mocks.recordPhysicalDevice,
+    }));
+
+    const responses = [];
+    for (let requestIndex = 0; requestIndex <= 30; requestIndex += 1) {
+      responses.push(await fetchJson(
+        app,
+        'GET',
+        '/api/v1/admin/product-learning/summary',
+        undefined,
+        { authorization: 'Bearer invalid-admin-token' },
+      ));
+    }
+
+    expect(responses.slice(0, 30).every((response) => response.status === 401)).toBe(true);
+    expect(responses[30]?.status).toBe(429);
+    expect(responses[30]?.headers['retry-after']).toBe('60');
+    expect(responses[30]?.body.error.code).toBe('RATE_LIMITED');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(30);
+    expect(mocks.buildSummary).not.toHaveBeenCalled();
+  });
+
   it('returns aggregate-only metrics for an optional tenant scope', async () => {
     const response = await dispatch(request('GET', '/summary?tenantId=7', { query: { tenantId: '7' } }));
     expect(response.statusCode).toBe(200);

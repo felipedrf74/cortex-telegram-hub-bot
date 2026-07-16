@@ -1,6 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, type Request, type Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import {
+  PRODUCT_LEARNING_ADMIN_RATE_LIMIT,
+  PRODUCT_LEARNING_ADMIN_RATE_WINDOW_MS,
+} from '../admin-pre-body-guard';
 import { requirePortalAdminToken } from '../secret-guards';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import {
@@ -37,6 +42,30 @@ export function productLearningAdminRoutes(
   const buildSummary = dependencies.buildSummary ?? buildProductLearningObservabilityReadModel;
   const logAdminMutation = dependencies.logAdminMutation ?? logPortalAdminMutation;
   const recordPhysicalDevice = dependencies.recordPhysicalDevice ?? recordPhysicalDeviceLearningObservation;
+  const standaloneRateLimitMiddleware = rateLimit({
+    windowMs: PRODUCT_LEARNING_ADMIN_RATE_WINDOW_MS,
+    limit: PRODUCT_LEARNING_ADMIN_RATE_LIMIT,
+    keyGenerator: (req: Request) => (
+      `ip:${ipKeyGenerator(req.ip || req.socket?.remoteAddress || '0.0.0.0')}`
+    ),
+    // The parent pre-body guard remains authoritative for the production
+    // rate-limit headers and distributed accepted-work cap. This local guard
+    // keeps the exported router independently safe and CodeQL-legible.
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfterSeconds = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfterSeconds);
+      sendError(
+        res,
+        'RATE_LIMITED',
+        'Too many product-learning admin requests from this IP. Slow down.',
+        options.statusCode,
+        { retryAfterSeconds },
+      );
+    },
+  });
+  router.use(standaloneRateLimitMiddleware);
   router.use(requirePortalAdminToken);
 
   router.get('/summary', (req: Request, res: Response) => {
