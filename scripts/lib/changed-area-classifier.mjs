@@ -294,7 +294,9 @@ export function classifyChangedFiles({
   googleDriveTenantLeak = has(/^src\/services\/(?:google-drive|google-auth)\.ts$|^__tests__\/security\/google-drive-tenant-leak\.test\.ts$|^scripts\/cleanup-tainted-google-drive-sessions\.mjs$/);
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
-  flags.releaseOperator = has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-start-sanitized-pm2|rollback|restore)\.sh$/);
+  flags.releaseOperator = has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-start-sanitized-pm2|rollback|restore)\.sh$/)
+    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|trusted-release-signer)\.mjs$/)
+    || has(/^scripts\/lib\/release-artifact-manifest\.mjs$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
@@ -482,6 +484,9 @@ export function classifyChangedFiles({
       addVitest(registryRealEval, '__tests__/services/registry-real-eval-gates.test.ts', '__tests__/services/chat-action-registry-shadow-parity.test.ts', '__tests__/services/chat-action-registry-completeness.test.ts', '__tests__/services/registry-driven-eval-scenarios.test.ts', '__tests__/services/registry-real-eval-scoring.test.ts');
       addVitest(
         flags.releaseOperator,
+        '__tests__/scripts/release-artifact-manifest.test.ts',
+        '__tests__/scripts/release-manifest-v2.test.ts',
+        '__tests__/scripts/trusted-release-signing.test.ts',
         '__tests__/scripts/release-runtime-safeguards.test.ts',
         '__tests__/scripts/exact-promotion-operational-safety.test.ts',
         '__tests__/scripts/release-exact-attestations.test.ts',

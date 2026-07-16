@@ -99,6 +99,45 @@ function safeRelativePath(relativePath) {
     && relativePath !== '.';
 }
 
+function addCapabilitySchemaReferenceFiles(root, files) {
+  const manifestPath = path.join(root, 'config/capability-manifest.json');
+  if (!fs.existsSync(manifestPath)) return;
+
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`cannot read capability schema references: ${error.message}`);
+  }
+
+  const references = manifest?.schemaReferences;
+  if (!references || typeof references !== 'object' || Array.isArray(references)) {
+    throw new Error('capability manifest schema references are missing or invalid');
+  }
+
+  for (const [schemaId, reference] of Object.entries(references)) {
+    const relativePath = reference?.path;
+    if (!safeRelativePath(relativePath)) {
+      throw new Error(`unsafe capability schema reference path: ${schemaId}/${relativePath}`);
+    }
+    const fullPath = path.resolve(root, relativePath);
+    if (!fullPath.startsWith(`${root}${path.sep}`)) {
+      throw new Error(`capability schema reference escapes release root: ${schemaId}/${relativePath}`);
+    }
+
+    let stat;
+    try {
+      stat = fs.lstatSync(fullPath);
+    } catch {
+      throw new Error(`capability schema source is missing from release input: ${schemaId}/${relativePath}`);
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`capability schema source is not a regular file: ${schemaId}/${relativePath}`);
+    }
+    files.add(relativePath);
+  }
+}
+
 function walkRuntime(root, dir, files) {
   let entries = [];
   try {
@@ -138,6 +177,7 @@ export function buildReleaseArtifactManifest(rootInput = process.cwd()) {
     const fullPath = path.join(root, relativePath);
     if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) fileSet.add(relativePath);
   }
+  addCapabilitySchemaReferenceFiles(root, fileSet);
   for (const relativeDir of RELEASE_RUNTIME_ROOTS) {
     const fullPath = path.join(root, relativeDir);
     if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {

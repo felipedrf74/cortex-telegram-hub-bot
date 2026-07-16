@@ -32,6 +32,8 @@ describe('release-artifact-manifest', () => {
     fs.mkdirSync(path.join(tmp, 'catalog/training/exercise-media/v1'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'migrations'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'prompts'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'config'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'src/services'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'content-engine/services'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'scripts/lib'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'dist/index.js'), 'console.log("one");\n');
@@ -41,6 +43,19 @@ describe('release-artifact-manifest', () => {
     );
     fs.writeFileSync(path.join(tmp, 'migrations/001_init.sql'), 'CREATE TABLE x(id INTEGER);\n');
     fs.writeFileSync(path.join(tmp, 'prompts/content.md'), 'prompt one\n');
+    fs.writeFileSync(
+      path.join(tmp, 'config/capability-manifest.json'),
+      `${JSON.stringify({
+        schemaReferences: {
+          'nexus.chat-turn.input.v1': { path: 'src/services/chat-turn-contract.ts' },
+          'nexus.chat-turn.output.v1': { path: 'src/services/chat-turn-contract.ts' },
+        },
+      })}\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmp, 'src/services/chat-turn-contract.ts'),
+      'export interface ChatTurnContractInput { message: string }\n',
+    );
     fs.writeFileSync(path.join(tmp, 'package.json'), '{"version":"1.0.0"}\n');
     fs.writeFileSync(path.join(tmp, 'package-lock.json'), '{"lockfileVersion":3}\n');
     fs.writeFileSync(path.join(tmp, 'content-engine/requirements.txt'), 'fastapi\n');
@@ -63,6 +78,7 @@ describe('release-artifact-manifest', () => {
     ['python source', 'content-engine/services/orchestrator.py'],
     ['dist', 'dist/index.js'],
     ['runtime catalog', 'catalog/training/exercise-media/v1/compiled-manifest.json'],
+    ['capability schema source', 'src/services/chat-turn-contract.ts'],
     ['production promotion tooling', 'scripts/promote-exact-release.sh'],
   ])('changes digest when %s changes', (_label, relativePath) => {
     const before = digest();
@@ -70,6 +86,74 @@ describe('release-artifact-manifest', () => {
     const after = digest();
 
     expect(after).not.toBe(before);
+  });
+
+  it('includes every capability schema source required during runtime startup', () => {
+    const manifest = JSON.parse(execFileSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    ));
+
+    expect(manifest.files.map((entry: { path: string }) => entry.path)).toContain(
+      'src/services/chat-turn-contract.ts',
+    );
+  });
+
+  it('fails closed when a declared capability schema source is missing', () => {
+    fs.unlinkSync(path.join(tmp, 'src/services/chat-turn-contract.ts'));
+
+    const failed = spawnSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      'capability schema source is missing from release input: nexus.chat-turn.input.v1/src/services/chat-turn-contract.ts',
+    );
+  });
+
+  it('rejects capability schema sources that escape the release root', () => {
+    fs.writeFileSync(
+      path.join(tmp, 'config/capability-manifest.json'),
+      `${JSON.stringify({
+        schemaReferences: {
+          'nexus.chat-turn.input.v1': { path: '../outside.ts' },
+        },
+      })}\n`,
+    );
+
+    const failed = spawnSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      'unsafe capability schema reference path: nexus.chat-turn.input.v1/../outside.ts',
+    );
+  });
+
+  it('rejects symlinked capability schema sources', () => {
+    fs.unlinkSync(path.join(tmp, 'src/services/chat-turn-contract.ts'));
+    fs.symlinkSync(
+      path.join(tmp, 'prompts/content.md'),
+      path.join(tmp, 'src/services/chat-turn-contract.ts'),
+    );
+
+    const failed = spawnSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      'capability schema source is not a regular file: nexus.chat-turn.input.v1/src/services/chat-turn-contract.ts',
+    );
   });
 });
 

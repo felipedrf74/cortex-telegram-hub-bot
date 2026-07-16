@@ -188,6 +188,9 @@ const routingFixtures: RoutingFixture[] = [
     flags: { releaseOperator: true },
     gates: ['exact-release-promotion-rehearsal'],
     vitest: [
+      '__tests__/scripts/release-artifact-manifest.test.ts',
+      '__tests__/scripts/release-manifest-v2.test.ts',
+      '__tests__/scripts/trusted-release-signing.test.ts',
       '__tests__/scripts/release-runtime-safeguards.test.ts',
       '__tests__/scripts/exact-promotion-operational-safety.test.ts',
       '__tests__/scripts/release-exact-attestations.test.ts',
@@ -350,6 +353,11 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/remote-start-sanitized-pm2.sh',
     'scripts/rollback.sh',
     'scripts/restore.sh',
+    'scripts/release-artifact-manifest.mjs',
+    'scripts/release-bundle.mjs',
+    'scripts/release-manifest-v2.mjs',
+    'scripts/trusted-release-signer.mjs',
+    'scripts/lib/release-artifact-manifest.mjs',
   ])('routes exact release entrypoint %s through the operator gate', (file) => {
     const result = classify(file);
     expect(result.flags.releaseOperator).toBe(true);
