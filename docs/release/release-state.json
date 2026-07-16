@@ -1,23 +1,23 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-07-16T15:45:23.011Z",
-  "docsHead": "b56e1510e730e1fc1d7070a4ce05d1e7c4d05a65",
+  "lastVerifiedAt": "2026-07-16T19:53:48.202Z",
+  "docsHead": "4e09a4f7ddadcced7e1e928c6c6f0b9a2140a3f2",
   "backend": {
-    "version": "4.14.222",
-    "runtimeSha": "73c8ef18d39cf4d37f118fc0e5f0f5956b708fd6",
-    "artifactDigest": "cc3f282a34e8a0c581caf19b8b2253f436b2d5960f7666612251efd31bc89baf",
-    "installedDigest": "07493cacf290076d2640368392c59d82efda005484ee85dc84b0b2f30854d5b4",
+    "version": "4.14.223",
+    "runtimeSha": "0005595477f2b798b36d13f2b9b53fd71c9b89b0",
+    "artifactDigest": "acced4e5dc3f0421e6d9cbdb92259227ebbfcedbc22cb3f4b24ec23e221c89e6",
+    "installedDigest": "a24e79aa2b9b91ff94d6df5aceccf333fd019b0af6ddf43c42b3d95c5f326cf2",
     "health": "healthy",
     "database": "connected",
     "pm2Processes": ["nexus-hub", "content-engine"],
     "releaseEvidence": {
-      "rcRun": "29511246434",
-      "signingRun": "29511811545",
-      "stagingRun": "29512377896",
-      "stagingRequestId": "85cf19d7-7c7d-442e-a8a9-d847cb229b8b",
-      "productionCompletedAt": "2026-07-16T15:45:23.011Z",
-      "cutoverSeconds": 24,
-      "backup": "v4.14.220_before-v4.14.222_20260716_164502.tar.gz"
+      "rcRun": "29528861007",
+      "signingRun": "29529407372",
+      "stagingRun": "29529675073",
+      "stagingRequestId": "fc940429-81e8-4533-8250-a80c45d41dd7",
+      "productionCompletedAt": "2026-07-16T19:53:48.202Z",
+      "cutoverSeconds": 25,
+      "backup": "v4.14.222_before-v4.14.223_20260716_205327.tar.gz"
     }
   },
   "trainingCatalog": {
@@ -32,7 +32,7 @@
     "sha": "d2558f557a1852db92879303b57e86e07c72182a",
     "refreshFixSha": "8ad3cc32b541e61682a4da2198cf9fe5dbf61970",
     "prHeadSha": "1ef4c6f22ca10bfb7393d2b45e1f5745903736f6",
-    "mainSha": "d2558f557a1852db92879303b57e86e07c72182a",
+    "mainSha": "ebf836496e622f683bbea99efdb201ade5f04939",
     "testFlightState": "testing",
     "testFlightGroups": ["Nexus Hub Betinha", "Betinhas"],
     "ipaSha256": "e4dd6648b0c2254439284d0dac8e88cf11b490fcbc45ec3d35d8615f9cddd3d2",
@@ -43,8 +43,8 @@
   "releaseProcess": {
     "manifestSchema": "nexus.release-manifest.v2",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 3,
-    "ownerAuthorizedProductionReleases": 3,
+    "stagingRehearsals": 4,
+    "ownerAuthorizedProductionReleases": 4,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.219",
