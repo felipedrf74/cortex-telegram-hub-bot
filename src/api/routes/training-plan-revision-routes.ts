@@ -510,6 +510,15 @@ function sendRevisionError(res: Response, error: unknown, operation: string): vo
     sendError(res, error.code, error.message, error.statusCode);
     return;
   }
+  if (error instanceof Error && error.message === 'TRAINING_M4_INITIAL_SCHEDULE_STALE') {
+    sendError(
+      res,
+      error.message,
+      'One or more selected workout times have already passed. Choose a future plan start date or later availability window, refresh availability, and try again.',
+      409,
+    );
+    return;
+  }
   if (error instanceof Error
       && (error.message.startsWith('TRAINING_') || error.message.startsWith('MILESTONE_1_'))) {
     sendError(res, error.message, 'The Training candidate request is invalid.', 400);

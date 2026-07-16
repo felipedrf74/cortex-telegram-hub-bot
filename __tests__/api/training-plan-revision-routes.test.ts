@@ -638,6 +638,75 @@ describe('Training plan revision API contracts', () => {
     });
   });
 
+  it('returns an actionable conflict and writes nothing when a same-day workout time has passed', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';
+      process.env.DECISION_FLOW_V1_ENFORCE_ENABLED = 'true';
+      process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_7 = 'true';
+      process.env.TRAINING_PLAN_M4_ALLOWLIST_USER_7 = 'continuous:strength';
+      process.env.TRAINING_M4_EXPLICIT_USER_CAPACITY_ENABLED_USER_7 = 'true';
+      process.env.TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY = 'training-revision-test-encryption-key-0001';
+
+      const now = new Date();
+      const planStartDate = now.toISOString().slice(0, 10);
+      const dayNames = [
+        'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
+      ];
+      const availableDays = Array.from({ length: 4 }, (_, offset) =>
+        dayNames[(now.getUTCDay() + offset) % dayNames.length]);
+      const windows = availableDays.map((dayOfWeek) => ({
+        dayOfWeek,
+        startTime: '00:00',
+        endTime: '23:59',
+        timezone: 'UTC',
+        allowedDisciplines: ['strength'],
+      }));
+
+      const response = await fetch(`${baseUrl}/plan/candidates`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'same-day-elapsed-window' },
+        body: JSON.stringify({
+          planMode: 'continuous',
+          goal: 'general_fitness',
+          discipline: 'strength',
+          horizonWeeks: 8,
+          planStartDate,
+          resourceAccess: {
+            pool: false,
+            bicycle: false,
+            indoorTrainer: false,
+            safeRunEnvironment: false,
+            outdoorRideEnvironment: false,
+          },
+          capacity: { source: 'EXPLICIT_USER', windows },
+          goalPriority: { primaryDiscipline: 'strength', secondaryDisciplines: [] },
+          profile: {
+            experienceLevel: 'novice',
+            sessionsPerWeek: 4,
+            sessionDurationMinutes: 30,
+            availableDays,
+            equipmentIds: [],
+            location: 'home',
+            preferences: [],
+            exclusions: [],
+          },
+        }),
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        ok: false,
+        error: {
+          code: 'TRAINING_M4_INITIAL_SCHEDULE_STALE',
+          message: 'One or more selected workout times have already passed. Choose a future plan start date or later availability window, refresh availability, and try again.',
+        },
+      });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_profile_snapshots').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revision_operations').get()).toEqual({ count: 0 });
+    });
+  });
+
   it('serves explicit capabilities and versioned candidate/revision/edit envelopes in active mode', async () => {
     await withDatabaseForTestAsync(db, async () => {
       process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_7 = 'active';

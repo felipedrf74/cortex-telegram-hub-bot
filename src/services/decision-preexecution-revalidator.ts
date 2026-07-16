@@ -30,7 +30,7 @@ import {
   computeTrainingRevisionAuthoritativeContext,
   deriveTrainingRevisionCreationContextVersion,
 } from './training-plan-revisions';
-import { getTrainingM4AuthoritativeCapacityContext } from './training-m4-capacity-context';
+import { readLatestRetainedTrainingM4CapacityContextVersion } from './training-m4-capacity-snapshots';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
 
 export interface DecisionRevalidationScope {
@@ -254,10 +254,10 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
         storedVersion: string | null;
         source: string | null;
       } | undefined;
-      const live = getTrainingM4AuthoritativeCapacityContext(scope);
+      const retainedVersion = readLatestRetainedTrainingM4CapacityContextVersion({ scope });
       const currentVersion = row?.source === 'AUTHORITATIVE'
-        && row.storedVersion === live?.contextVersion
-        ? live.contextVersion
+        && row.storedVersion === retainedVersion
+        ? retainedVersion
         : null;
       return compareDomainRevision(precondition, currentVersion, 'training_capacity_context_changed');
     },

@@ -342,7 +342,11 @@ function buildWeekWorkouts(
       sessionType,
       workoutKey: `week-${weekNumber}-${day}-${sessionType}`,
       dayOfWeek: day,
-      durationMinutes: durationFor(sessionType, request.profile.sessionDurationMinutes),
+      durationMinutes: durationFor(
+        sessionType,
+        request.profile.sessionDurationMinutes,
+        m4Enabled,
+      ),
       phaseType,
       phaseKey,
     });
@@ -670,8 +674,13 @@ function recoveryFor(request: TrainingPlanCandidateRequest): TrainingPlanRevisio
   };
 }
 
-function durationFor(sessionType: SessionType, requested: number): number {
+function durationFor(sessionType: SessionType, requested: number, boundedByReviewedCapacity: boolean): number {
   if (sessionType === 'mobility') return Math.min(requested, 30);
+  // M4 capacity is reviewed against the explicit session-duration input. A
+  // hidden long-run multiplier would make a verified window insufficient only
+  // after candidate submission. Future variable-duration plans must expose
+  // that larger duration during input review instead of expanding it here.
+  if (boundedByReviewedCapacity) return requested;
   if (sessionType === 'long_run') return Math.max(requested, Math.min(180, Math.round(requested * 1.5)));
   return requested;
 }
