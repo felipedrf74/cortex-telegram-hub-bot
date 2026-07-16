@@ -4,6 +4,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import {
+  DOCUMENTATION_POLICY_PATH,
+  resolveDocumentationInventory,
+} from './lib/documentation-policy.mjs';
 import { projectMapFreshnessProjection } from './lib/project-map-freshness.mjs';
 import { projectMapSourceDigest } from './lib/project-map-source-digest.mjs';
 
@@ -334,12 +338,26 @@ const capabilities = capabilityManifest.capabilities.map((entry) => ({
   lifecycle: entry.lifecycle,
   owner: entry.owner,
   requiredTier: entry.requiredTier,
+  schemas: entry.schemas,
 }));
 const skills = tracked.filter((file) => file.startsWith('.agents/skills/') && file.endsWith('/SKILL.md'))
   .map((file) => ({ name: file.split('/')[2], source: file, claude: `.claude/skills/${file.split('/')[2]}/SKILL.md` }))
   .sort((left, right) => left.name.localeCompare(right.name));
 const tests = tracked.filter((file) => file.startsWith('__tests__/') && /\.test\.ts$/.test(file));
 const docs = tracked.filter((file) => file.endsWith('.md')).sort();
+const documentationInventory = resolveDocumentationInventory({ repoRoot: root, files: docs });
+if (documentationInventory.issues.length > 0) {
+  const issue = documentationInventory.issues[0];
+  throw new Error(`Documentation governance failed for ${issue.file}: ${issue.message}`);
+}
+const documentationStatusCounts = Object.fromEntries(
+  [...new Set(documentationInventory.records.map((record) => record.status))]
+    .sort()
+    .map((status) => [
+      status,
+      documentationInventory.records.filter((record) => record.status === status).length,
+    ]),
+);
 const largeAssets = tracked.map((file) => {
   try {
     const size = fs.statSync(path.join(root, file)).size;
@@ -350,10 +368,10 @@ const largeAssets = tracked.map((file) => {
 }).filter(Boolean).sort((left, right) => right.bytes - left.bytes);
 
 const projectMap = {
-  schema: 'nexus.project-map.v2',
+  schema: 'nexus.project-map.v3',
   generatedFrom: {
     generator: 'scripts/generate-project-map.mjs',
-    generatorVersion: 3,
+    generatorVersion: 4,
     authoritativeFreshness: 'sourceDigest',
     sourceDigestAlgorithm: 'sha256-path-git-mode-content-v2',
     sourceDigest: sourceDigest(tracked),
@@ -369,6 +387,7 @@ const projectMap = {
     testPolicy: 'config/test-policy.json',
     capabilityManifest: 'config/capability-manifest.json',
     agentJobManifest: 'config/agent-job-manifest.json',
+    documentationPolicy: DOCUMENTATION_POLICY_PATH,
   },
   modules,
   routes: routes.sort((left, right) => left.path.localeCompare(right.path)
@@ -384,7 +403,15 @@ const projectMap = {
       owner, tests.filter((file) => file.split('/')[1] === owner).length,
     ])),
   },
-  documentation: { count: docs.length, files: docs },
+  documentation: {
+    policy: DOCUMENTATION_POLICY_PATH,
+    policySchema: documentationInventory.policy.schema,
+    policyVersion: documentationInventory.policy.version,
+    count: documentationInventory.records.length,
+    active: documentationInventory.records.filter((record) => record.active).length,
+    statusCounts: documentationStatusCounts,
+    files: documentationInventory.records,
+  },
   largeAssets,
 };
 const serialized = `${JSON.stringify(projectMap, null, 2)}\n`;

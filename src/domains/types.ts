@@ -1,15 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-/** The built-in domains. Kept as a narrow type for domain handlers. */
-export type DefaultDomainName =
-  | 'secretary'
-  | 'triathlon'
-  | 'content'
-  | 'finance'
-  | 'cooking'
-  | 'connections'
-  | 'notifications'
-  | 'decision_center';
+import type { CapabilityDomainName } from '../generated/capability-skill-metadata';
+
+/** The built-in domains generated from CapabilityManifest. */
+export type DefaultDomainName = CapabilityDomainName;
 
 /**
  * Any domain/skill name — includes the three defaults plus any dynamically

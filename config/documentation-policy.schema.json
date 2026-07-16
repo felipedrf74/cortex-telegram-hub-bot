@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexushub.me/schemas/documentation-policy.v1.json",
+  "title": "Nexus Hub Documentation Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schema", "version", "statusDefinitions", "defaults", "rules", "exceptions"],
+  "properties": {
+    "$schema": { "const": "./documentation-policy.schema.json" },
+    "schema": { "const": "nexus.documentation-policy.v1" },
+    "version": { "type": "string", "minLength": 1 },
+    "statusDefinitions": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["active"],
+        "properties": { "active": { "type": "boolean" } }
+      }
+    },
+    "defaults": { "$ref": "#/$defs/metadata" },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "glob", "metadata"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "glob": { "type": "string", "pattern": "\\.md$" },
+          "metadata": { "$ref": "#/$defs/metadata" }
+        }
+      }
+    },
+    "exceptions": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/metadata" }
+    }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "pattern": "^[a-z][a-z-]*$" },
+        "owner": { "type": "string", "minLength": 1 },
+        "reviewedOn": { "type": "string", "format": "date" },
+        "reviewIntervalDays": { "type": "integer", "minimum": 1, "maximum": 730 }
+      }
+    }
+  }
+}

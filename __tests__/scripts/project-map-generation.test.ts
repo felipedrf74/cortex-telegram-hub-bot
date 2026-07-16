@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  resolveDocumentationInventory,
+  validateDocumentationPolicy,
+} from '../../scripts/lib/documentation-policy.mjs';
 import { projectMapFreshnessProjection } from '../../scripts/lib/project-map-freshness.mjs';
 import {
   normalizedGitMode,
@@ -29,6 +33,23 @@ type ProjectMap = {
   }>;
   migrations: { count: number; latest: string | null };
   tests: { files: number };
+  documentation: {
+    policy: string;
+    policySchema: string;
+    policyVersion: string;
+    count: number;
+    active: number;
+    statusCounts: Record<string, number>;
+    files: Array<{
+      path: string;
+      status: string;
+      active: boolean;
+      owner: string;
+      reviewedOn: string;
+      reviewDueOn: string;
+      canonicalPath: string;
+    }>;
+  };
 };
 
 const generator = 'scripts/generate-project-map.mjs';
@@ -57,7 +78,7 @@ describe('project map generation', () => {
     const second = generatedMap();
 
     expect(second.serialized).toBe(first.serialized);
-    expect(first.map.schema).toBe('nexus.project-map.v2');
+    expect(first.map.schema).toBe('nexus.project-map.v3');
     expect(first.map.generatedFrom.authoritativeFreshness).toBe('sourceDigest');
     expect(first.map.generatedFrom.sourceDigestAlgorithm).toBe('sha256-path-git-mode-content-v2');
     expect(first.map.generatedFrom.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
@@ -106,6 +127,82 @@ describe('project map generation', () => {
       count: migrations.length,
       latest: migrations.at(-1),
     });
+  });
+
+  it('maps every tracked Markdown file to active governance metadata', () => {
+    const { map } = generatedMap();
+    const markdown = proposedFiles().filter((file) => file.endsWith('.md'));
+
+    expect(map.documentation).toMatchObject({
+      policy: 'config/documentation-policy.json',
+      policySchema: 'nexus.documentation-policy.v1',
+      policyVersion: '2026-07-15.1',
+      count: markdown.length,
+      active: markdown.length,
+    });
+    expect(map.documentation.files.map((record) => record.path)).toEqual(markdown);
+    expect(Object.values(map.documentation.statusCounts).reduce((sum, count) => sum + count, 0))
+      .toBe(markdown.length);
+    expect(map.documentation.files.every((record) => (
+      record.owner.length > 0
+      && /^\d{4}-\d{2}-\d{2}$/.test(record.reviewedOn)
+      && /^\d{4}-\d{2}-\d{2}$/.test(record.reviewDueOn)
+      && record.canonicalPath.length > 0
+    ))).toBe(true);
+    expect(map.documentation.files.find((record) => (
+      record.path === '.claude/skills/test-audit/SKILL.md'
+    ))).toMatchObject({
+      status: 'mirror',
+      canonicalPath: '.agents/skills/test-audit/SKILL.md',
+    });
+  });
+
+  it('fails closed for unmatched, expired, and structurally invalid governance', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-documentation-policy-'));
+    fs.writeFileSync(path.join(directory, 'README.md'), '# Fixture\n');
+    fs.writeFileSync(path.join(directory, 'UNMAPPED.md'), '# Unmapped\n');
+    const policy = {
+      $schema: './documentation-policy.schema.json',
+      schema: 'nexus.documentation-policy.v1',
+      version: 'test',
+      statusDefinitions: { canonical: { active: true } },
+      defaults: { reviewedOn: '2026-01-01', reviewIntervalDays: 30 },
+      rules: [{
+        id: 'readme',
+        glob: 'README.md',
+        metadata: { status: 'canonical', owner: 'fixture owner' },
+      }],
+      exceptions: {},
+    };
+
+    try {
+      const resolved = resolveDocumentationInventory({
+        repoRoot: directory,
+        files: ['README.md', 'UNMAPPED.md'],
+        policy,
+        asOf: '2026-03-01',
+      });
+      expect(resolved.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'document-governance-expired', file: 'README.md' }),
+        expect.objectContaining({ type: 'document-governance-missing', file: 'UNMAPPED.md' }),
+      ]));
+      expect(() => validateDocumentationPolicy({ ...policy, schema: 'invalid' }))
+        .toThrow(/schema must be nexus\.documentation-policy\.v1/);
+      expect(resolveDocumentationInventory({
+        repoRoot: directory,
+        files: ['README.md'],
+        policy: {
+          ...policy,
+          defaults: { reviewedOn: '2026-04-01', reviewIntervalDays: 30 },
+        },
+        asOf: '2026-03-01',
+      }).issues).toContainEqual(expect.objectContaining({
+        type: 'document-governance-invalid',
+        file: 'README.md',
+      }));
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('resolves router-local roots to their public mounted paths', () => {
@@ -185,6 +282,9 @@ describe('project map generation', () => {
     );
     expect(audit).toContain("['scripts/generate-project-map.mjs', '--check']");
     expect(audit).toContain("add('project-map-drift'");
+    expect(audit).toContain('resolveDocumentationInventory');
+    expect(audit).toContain('gitHistoryOnlyDocumentationIssues');
+    expect(audit).toContain("'documentation-policy-invalid'");
     expect(workflow).toContain('name: Project map freshness');
     expect(workflow).toContain('run: npm run project:map:check');
     expect(workflow).toMatch(/docs_and_secrets:[\s\S]*?- run: npm ci[\s\S]*?audit-docs\.mjs --strict/);

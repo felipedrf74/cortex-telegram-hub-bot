@@ -8,6 +8,7 @@ import {
   missingCanonicalRegistryMarkdownPaths,
   resolveCanonicalRegistryMarkdownPath,
 } from '../../scripts/lib/docs-audit-paths.mjs';
+import { gitHistoryOnlyDocumentationIssues } from '../../scripts/lib/documentation-policy.mjs';
 
 describe('docs audit canonical taxonomy', () => {
   const workspaceRoot = path.resolve('/tmp/nexus-docs-audit-workspace');
@@ -98,5 +99,31 @@ describe('docs audit canonical taxonomy', () => {
       reference: 'docs/release/deleted.md',
       target: '/tmp/backend/docs/release/deleted.md',
     }]);
+  });
+
+  it('allows active documentation records in the docs-only audit lane', () => {
+    expect(gitHistoryOnlyDocumentationIssues([{
+      path: 'docs/current.md',
+      status: 'canonical',
+      active: true,
+    }])).toEqual([]);
+  });
+
+  it('rejects inactive historical and archive records in the docs-only audit lane', () => {
+    expect(gitHistoryOnlyDocumentationIssues([
+      { path: 'docs/history.md', status: 'historical', active: false },
+      { path: 'docs/archive/note.md', status: 'archive', active: false },
+    ])).toEqual([
+      {
+        type: 'inactive-document-prohibited',
+        file: 'docs/history.md',
+        message: 'Tracked Markdown cannot use inactive status historical; Git history is the archive.',
+      },
+      {
+        type: 'inactive-document-prohibited',
+        file: 'docs/archive/note.md',
+        message: 'Tracked Markdown cannot use inactive status archive; Git history is the archive.',
+      },
+    ]);
   });
 });

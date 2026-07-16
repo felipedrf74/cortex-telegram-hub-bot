@@ -235,6 +235,7 @@ describe('event backbone foundation', () => {
     const processingDb = createMigratedTestDatabase();
     try {
       const event = emitDomainEvent({
+        eventId: '98082612-9468-4e38-9775-adfb5eaca5fa',
         tenantId: 44,
         userId: 7,
         sourceSkill: 'training',

@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { CAPABILITY_SKILL_METADATA } from '../../src/generated/capability-skill-metadata';
 import { DEFAULT_SKILLS } from '../../src/skills/skill-config';
 import {
   getCapabilityChatRoutingOwnerMap,
+  getCapabilityContractSchemaReferences,
   getCapabilityEvaluationCoverage,
   getCapabilityOwnerUiSkillMap,
   getCapabilityResponsePolicies,
@@ -43,6 +45,11 @@ describe('CapabilityManifest high-level consolidation', () => {
       { name: 'notifications', version: '1.0.0', requiredTier: 'free' },
       { name: 'decision_center', version: '1.0.0', requiredTier: 'free' },
     ]);
+    expect(Object.values(DEFAULT_SKILLS).map((skill) => ({
+      name: skill.name,
+      version: skill.version,
+      requiredTier: skill.requiredTier ?? 'pro',
+    }))).toEqual(Object.values(CAPABILITY_SKILL_METADATA));
 
     const manifest = loadCapabilityManifest();
     expect(manifest.capabilities.map((entry) => ({
@@ -54,6 +61,43 @@ describe('CapabilityManifest high-level consolidation', () => {
       version: skill.version,
       requiredTier: skill.requiredTier ?? 'pro',
     })));
+  });
+
+  it('binds every capability to explicit compile-time checked input and output schema references', () => {
+    const manifest = loadCapabilityManifest();
+    expect(manifest.schema).toBe('nexus.capability-manifest.v2');
+    expect(manifest.schemaReferences).toEqual({
+      'nexus.chat-turn.input.v1': {
+        format: 'typescript',
+        path: 'src/services/chat-turn-contract.ts',
+        symbol: 'ChatTurnContractInput',
+        scope: 'chat-routing',
+      },
+      'nexus.chat-turn.output.v1': {
+        format: 'typescript',
+        path: 'src/services/chat-turn-contract.ts',
+        symbol: 'ChatTurnContract',
+        scope: 'chat-routing',
+      },
+    });
+
+    for (const entry of manifest.capabilities) {
+      expect(entry.schemas).toEqual({
+        input: 'nexus.chat-turn.input.v1',
+        output: 'nexus.chat-turn.output.v1',
+      });
+      const references = getCapabilityContractSchemaReferences(entry.id);
+      expect(references).toEqual({
+        input: { id: entry.schemas.input, ...manifest.schemaReferences[entry.schemas.input] },
+        output: { id: entry.schemas.output, ...manifest.schemaReferences[entry.schemas.output] },
+      });
+      expect(fs.existsSync(path.resolve(references!.input.path))).toBe(true);
+      expect(fs.existsSync(path.resolve(references!.output.path))).toBe(true);
+    }
+    expect(getCapabilityContractSchemaReferences('training')).toEqual(
+      getCapabilityContractSchemaReferences('triathlon'),
+    );
+    expect(getCapabilityContractSchemaReferences('unknown')).toBeNull();
   });
 
   it('preserves the existing implicit domain-to-Chat-owner routing boundary', () => {

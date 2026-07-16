@@ -1,0 +1,171 @@
+{
+  "$schema": "./documentation-policy.schema.json",
+  "schema": "nexus.documentation-policy.v1",
+  "version": "2026-07-15.1",
+  "statusDefinitions": {
+    "canonical": { "active": true },
+    "current": { "active": true },
+    "draft": { "active": true },
+    "generated": { "active": true },
+    "mirror": { "active": true },
+    "runtime": { "active": true },
+    "supporting": { "active": true },
+    "historical": { "active": false },
+    "archive": { "active": false }
+  },
+  "defaults": {
+    "reviewedOn": "2026-07-16",
+    "reviewIntervalDays": 180
+  },
+  "rules": [
+    {
+      "id": "root-boot-and-project-docs",
+      "glob": "*.md",
+      "metadata": { "status": "canonical", "owner": "backend architecture lead" }
+    },
+    {
+      "id": "canonical-agent-skills",
+      "glob": ".agents/skills/**/SKILL.md",
+      "metadata": { "status": "canonical", "owner": "agent workflow lead" }
+    },
+    {
+      "id": "claude-skill-mirrors",
+      "glob": ".claude/skills/**/SKILL.md",
+      "metadata": { "status": "mirror", "owner": "agent workflow lead" }
+    },
+    {
+      "id": "content-engine-docs",
+      "glob": "content-engine/*.md",
+      "metadata": { "status": "canonical", "owner": "content runtime lead" }
+    },
+    {
+      "id": "backend-docs",
+      "glob": "docs/**/*.md",
+      "metadata": { "status": "canonical", "owner": "backend architecture lead" }
+    },
+    {
+      "id": "legal-drafts",
+      "glob": "docs/legal/*.md",
+      "metadata": { "status": "draft", "owner": "legal and privacy owner", "reviewIntervalDays": 30 }
+    },
+    {
+      "id": "release-docs",
+      "glob": "docs/release/*.md",
+      "metadata": { "status": "canonical", "owner": "release owner", "reviewIntervalDays": 90 }
+    },
+    {
+      "id": "security-docs",
+      "glob": "docs/security/*.md",
+      "metadata": { "status": "canonical", "owner": "backend security lead", "reviewIntervalDays": 90 }
+    },
+    {
+      "id": "local-development-docs",
+      "glob": "docs/local-dev/*.md",
+      "metadata": { "status": "supporting", "owner": "developer experience lead" }
+    },
+    {
+      "id": "knowledge-runtime-docs",
+      "glob": "knowledge/**/*.md",
+      "metadata": { "status": "runtime", "owner": "agent knowledge lead" }
+    },
+    {
+      "id": "runtime-prompts",
+      "glob": "prompts/**/*.md",
+      "metadata": { "status": "runtime", "owner": "agent prompt lead" }
+    },
+    {
+      "id": "content-prompts",
+      "glob": "prompts/content.md",
+      "metadata": { "owner": "content lead" }
+    },
+    {
+      "id": "content-prompt-support",
+      "glob": "prompts/topic-generation.md",
+      "metadata": { "owner": "content lead" }
+    },
+    {
+      "id": "training-prompts",
+      "glob": "prompts/triathlon/**/*.md",
+      "metadata": { "owner": "training lead" }
+    },
+    {
+      "id": "training-root-prompt",
+      "glob": "prompts/triathlon.md",
+      "metadata": { "owner": "training lead" }
+    },
+    {
+      "id": "cooking-prompt",
+      "glob": "prompts/cooking.md",
+      "metadata": { "owner": "cooking lead" }
+    },
+    {
+      "id": "finance-prompt",
+      "glob": "prompts/finance.md",
+      "metadata": { "owner": "finance lead" }
+    },
+    {
+      "id": "secretary-prompt",
+      "glob": "prompts/secretary.md",
+      "metadata": { "owner": "secretary lead" }
+    },
+    {
+      "id": "cockpit-supporting-docs",
+      "glob": "scripts/**/README.md",
+      "metadata": { "status": "supporting", "owner": "developer experience lead" }
+    },
+    {
+      "id": "source-runtime-docs",
+      "glob": "src/**/*.md",
+      "metadata": { "status": "runtime", "owner": "domain runtime lead" }
+    },
+    {
+      "id": "source-training-docs",
+      "glob": "src/skills/training/**/*.md",
+      "metadata": { "owner": "training lead" }
+    },
+    {
+      "id": "coach-kernel-knowledge",
+      "glob": "src/services/coach-kernel/knowledge/**/*.md",
+      "metadata": { "owner": "training lead" }
+    },
+    {
+      "id": "source-content-docs",
+      "glob": "src/skills/content/**/*.md",
+      "metadata": { "owner": "content lead" }
+    },
+    {
+      "id": "source-cooking-docs",
+      "glob": "src/skills/cooking/**/*.md",
+      "metadata": { "owner": "cooking lead" }
+    },
+    {
+      "id": "source-finance-docs",
+      "glob": "src/skills/finance/**/*.md",
+      "metadata": { "owner": "finance lead" }
+    },
+    {
+      "id": "source-secretary-docs",
+      "glob": "src/skills/secretary/**/*.md",
+      "metadata": { "owner": "secretary lead" }
+    }
+  ],
+  "exceptions": {
+    "CHANGELOG.md": {
+      "status": "generated",
+      "owner": "release automation",
+      "reviewIntervalDays": 30
+    },
+    "docs/legal/data-retention.md": {
+      "status": "canonical",
+      "reviewIntervalDays": 90
+    },
+    "docs/release/CURRENT_RELEASE_STATE.md": {
+      "status": "current",
+      "reviewIntervalDays": 30
+    },
+    "docs/security/security-hardening-implementation-status.md": {
+      "status": "current",
+      "reviewIntervalDays": 30
+    }
+  }
+}

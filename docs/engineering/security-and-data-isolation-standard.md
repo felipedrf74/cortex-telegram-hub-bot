@@ -127,8 +127,8 @@ to hold to prevent all four classes from returning.
    user A and user B with non-empty data, calls the route as user A,
    and asserts user B's data is not in the response.
 
-The `__tests__/security/p0-chat-identity-isolation.test.ts` (23 cases)
-is the gold-standard pattern. Copy that shape.
+The `__tests__/security/p0-chat-identity-isolation.test.ts` suite is the
+gold-standard pattern. Copy that shape.
 
 ## 4. Prompt and memory scope (must)
 
@@ -147,9 +147,7 @@ is the gold-standard pattern. Copy that shape.
 4. **The `creator-config` prompt and every domain prompt under
    `prompts/` is a NEUTRAL TEMPLATE.** No name, no worldview, no
    audience, no political/religious/dietary defaults. The
-   prompt-cleanliness test
-   (`__tests__/services/prompt-cleanliness.test.ts`, 72 cases) pins
-   this.
+   `__tests__/services/prompt-cleanliness.test.ts` suite pins this.
 5. **The deterministic identity fast-path at
    `src/api/routes/chat-message-local-responses.ts`** answers 16 PT/EN
    identity questions BEFORE any AI call, using the JWT-derived
@@ -252,7 +250,7 @@ removal requires owner approval and a documented replacement.
 | `closed-beta-identity-scan-strict` | `.github/workflows/nightly.yml` | nightly | identity-leak strict gate |
 | `__tests__/security/p0-chat-identity-isolation.test.ts` | Vitest | every PR (auth/prompt diff) | chat identity contamination |
 | `__tests__/security/creator-config-neutrality.test.ts` | Vitest | every PR | prompt neutrality |
-| `__tests__/services/prompt-cleanliness.test.ts` (72 cases) | Vitest | every PR (prompt diff) | prompt static cleanliness |
+| `__tests__/services/prompt-cleanliness.test.ts` | Vitest | every PR (prompt diff) | prompt static cleanliness |
 | `vi.mock` completeness lint | `scripts/vi-mock-completeness-lint.mjs` | nightly strict | partial-mock leakage |
 | `release-doc-drift-check.sh` | nightly strict | nightly | release-state drift |
 | Two-user matrix test | `__tests__/security/<domain>-tenant-isolation.test.ts` | every PR (per-domain diff) | cross-tenant read leak |

@@ -133,6 +133,7 @@ const PRIVATE_STRING = /(?:\bBearer\s+[A-Za-z0-9._~-]+|-----BEGIN [A-Z ]+PRIVATE
 const SAFE_CODE = /^[a-z0-9][a-z0-9_.:-]{0,79}$/;
 const SAFE_CASE_ID = /^[a-z0-9][a-z0-9_.:-]{0,159}$/;
 const SAFE_EVIDENCE_REFERENCE = /^(?:ci|metric|outcome|approval|release|testflight|external|event):\/\/[A-Za-z0-9][A-Za-z0-9._~:/?#=%-]{0,399}$/;
+const OPAQUE_UUID_REFERENCE_TOKEN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -163,6 +164,13 @@ function containsPrivateMaterial(value: unknown): boolean {
   if (typeof value === 'string') return value.length > 2_000 || PRIVATE_STRING.test(value);
   if (!isRecord(value)) return false;
   return Object.entries(value).some(([key, nested]) => FORBIDDEN_KEYS.test(key) || containsPrivateMaterial(nested));
+}
+
+function containsPrivateEvidenceMaterial(reference: string): boolean {
+  // Event IDs are opaque UUIDs. Digit-heavy UUID prefixes can otherwise look
+  // like phone numbers to the conservative PII detector (for example,
+  // 98082612-9468), causing valid event-backed observations to retry.
+  return PRIVATE_STRING.test(reference.replace(OPAQUE_UUID_REFERENCE_TOKEN, '[opaque-uuid]'));
 }
 
 function isIsoTimestamp(value: string | undefined): boolean {
@@ -444,7 +452,7 @@ export function validateLearningCase(candidate: LearningCase): string[] {
   if (!validTrainingPayload(candidate)) errors.push('training_taxonomy_invalid');
   if (!Array.isArray(candidate.evidenceReferences)
       || candidate.evidenceReferences.some((reference) => typeof reference !== 'string'
-        || !SAFE_EVIDENCE_REFERENCE.test(reference) || PRIVATE_STRING.test(reference))) {
+        || !SAFE_EVIDENCE_REFERENCE.test(reference) || containsPrivateEvidenceMaterial(reference))) {
     errors.push('evidence_reference_invalid');
   }
   if (!SAFE_CODE.test(candidate.producerVersion)) errors.push('producer_version_required');
