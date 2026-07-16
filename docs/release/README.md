@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe
-Last verified: 2026-07-15
+Last verified: 2026-07-16
 
 Current runtime truth is `release-state.json`. Release evidence is an ignored
 artifact, not a Markdown narrative.
@@ -65,5 +65,5 @@ after two staging rehearsals and two owner-authorized production releases.
 Emergency `rollback.sh` and `restore.sh` paths remain available.
 
 Backend and iOS are independently promotable unless a shared contract or native
-integration changed. Build 56 must pass availability and physical-device smoke
-before builds 54 or 55 are expired.
+integration changed. Build 57 is available to both TestFlight groups; its
+physical-device smoke remains open, and builds 54 through 56 remain active.
