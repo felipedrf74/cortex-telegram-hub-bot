@@ -31,7 +31,11 @@ import { TRAINING_EXERCISE_MEDIA_API_SCHEMA_VERSION } from '../../src/services/t
 
 describe('CapabilityManifest high-level consolidation', () => {
   it('preserves the iOS-facing parent skill catalog identifiers, versions, and tiers', () => {
-    const expectedCatalog = [
+    expect(Object.values(DEFAULT_SKILLS).map((skill) => ({
+      name: skill.name,
+      version: skill.version,
+      requiredTier: skill.requiredTier ?? 'pro',
+    }))).toEqual([
       { name: 'secretary', version: '2.0.0', requiredTier: 'free' },
       { name: 'triathlon', version: '3.0.0', requiredTier: 'pro' },
       { name: 'content', version: '2.0.0', requiredTier: 'pro' },
@@ -40,14 +44,12 @@ describe('CapabilityManifest high-level consolidation', () => {
       { name: 'connections', version: '1.0.0', requiredTier: 'free' },
       { name: 'notifications', version: '1.0.0', requiredTier: 'free' },
       { name: 'decision_center', version: '1.0.0', requiredTier: 'free' },
-    ];
-    const runtimeCatalog = Object.values(DEFAULT_SKILLS).map((skill) => ({
+    ]);
+    expect(Object.values(DEFAULT_SKILLS).map((skill) => ({
       name: skill.name,
       version: skill.version,
       requiredTier: skill.requiredTier ?? 'pro',
-    }));
-    expect(runtimeCatalog).toEqual(expectedCatalog);
-    expect(runtimeCatalog).toEqual(Object.values(CAPABILITY_SKILL_METADATA));
+    }))).toEqual(Object.values(CAPABILITY_SKILL_METADATA));
 
     const manifest = loadCapabilityManifest();
     expect(manifest.capabilities.map((entry) => ({
