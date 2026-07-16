@@ -506,19 +506,32 @@ describe('Training plan revision API contracts', () => {
     });
   });
 
-  it('enforces the six-per-five-minute refresh budget after allowing three-request JIT bursts', () => {
+  it('allows the three-request JIT burst and rejects the next request in that minute', () => {
     const scope = { userId: 7, tenantId: 7 };
     const start = Date.parse('2026-07-14T10:00:00.000Z');
-    for (const offsetMinutes of [0, 1]) {
-      for (let request = 0; request < 3; request += 1) {
-        expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
-          scope,
-          start + offsetMinutes * 60_000,
-        )).toEqual({ allowed: true });
-      }
+    for (let request = 0; request < 3; request += 1) {
+      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start))
+        .toEqual({ allowed: true });
     }
-    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 2 * 60_000))
-      .toEqual({ allowed: false, retryAfterSeconds: 180 });
+    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start))
+      .toEqual({ allowed: false, retryAfterSeconds: 60 });
+  });
+
+  it('enforces the six-per-five-minute refresh budget across separate minutes', () => {
+    const scope = { userId: 7, tenantId: 7 };
+    const start = Date.parse('2026-07-14T10:00:00.000Z');
+    for (const offsetMinutes of [0, 1, 2]) {
+      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
+        scope,
+        start + offsetMinutes * 60_000,
+      )).toEqual({ allowed: true });
+      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
+        scope,
+        start + offsetMinutes * 60_000,
+      )).toEqual({ allowed: true });
+    }
+    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 3 * 60_000))
+      .toEqual({ allowed: false, retryAfterSeconds: 120 });
     expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 5 * 60_000))
       .toEqual({ allowed: true });
   });
