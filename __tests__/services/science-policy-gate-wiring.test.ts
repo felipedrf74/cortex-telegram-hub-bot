@@ -19,24 +19,28 @@
  *     gate-status dashboard surfaces it.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   readFileSync,
   writeFileSync,
   existsSync,
   copyFileSync,
   unlinkSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { buildCannotSkipDashboard } from '../../scripts/cannot-skip-gate-dashboard.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../..');
-const SCRIPT = resolve(REPO_ROOT, 'scripts/ci/science-policy-version-check.mjs');
-const JSON_PATH = resolve(
+const SOURCE_SCRIPT = resolve(REPO_ROOT, 'scripts/ci/science-policy-version-check.mjs');
+const SOURCE_JSON_PATH = resolve(
   REPO_ROOT,
   'src/services/coach-kernel/knowledge/entities/training-principles.json',
 );
-const PIN_PATH = resolve(
+const SOURCE_PIN_PATH = resolve(
   REPO_ROOT,
   'src/services/coach-kernel/knowledge/entities/.science-policy-hash',
 );
@@ -45,31 +49,39 @@ const HUSKY_PRE_COMMIT = resolve(REPO_ROOT, '.husky/pre-commit');
 const RISK_GATE = resolve(REPO_ROOT, 'scripts/risk-gate.sh');
 const DASHBOARD = resolve(REPO_ROOT, 'scripts/cannot-skip-gate-dashboard.sh');
 
-// Snapshot the live JSON + pin so each test can mutate them safely.
+let fixtureRoot = '';
+let fixtureScript = '';
+let JSON_PATH = '';
+let PIN_PATH = '';
 let jsonBackup: string | null = null;
 let pinBackup: string | null = null;
 
 beforeEach(() => {
-  jsonBackup = readFileSync(JSON_PATH, 'utf8');
-  pinBackup = existsSync(PIN_PATH) ? readFileSync(PIN_PATH, 'utf8') : null;
+  fixtureRoot = mkdtempSync(resolve(tmpdir(), 'nexus-science-policy-'));
+  const fixtureScriptDirectory = resolve(fixtureRoot, 'scripts/ci');
+  const fixtureDirectory = resolve(
+    fixtureRoot,
+    'src/services/coach-kernel/knowledge/entities',
+  );
+  mkdirSync(fixtureScriptDirectory, { recursive: true });
+  mkdirSync(fixtureDirectory, { recursive: true });
+  fixtureScript = resolve(fixtureScriptDirectory, 'science-policy-version-check.mjs');
+  JSON_PATH = resolve(fixtureDirectory, 'training-principles.json');
+  PIN_PATH = resolve(fixtureDirectory, '.science-policy-hash');
+  copyFileSync(SOURCE_SCRIPT, fixtureScript);
+  copyFileSync(SOURCE_JSON_PATH, JSON_PATH);
+  copyFileSync(SOURCE_PIN_PATH, PIN_PATH);
+  jsonBackup = readFileSync(SOURCE_JSON_PATH, 'utf8');
+  pinBackup = readFileSync(SOURCE_PIN_PATH, 'utf8');
 });
 
 afterEach(() => {
-  if (jsonBackup !== null) writeFileSync(JSON_PATH, jsonBackup);
-  if (pinBackup !== null) writeFileSync(PIN_PATH, pinBackup);
-  // Defensive — if a test deleted the pin, restore from backup. If
-  // there was no original pin file (unlikely on this repo), leave it
-  // absent so we don't fabricate state.
-  if (pinBackup === null && existsSync(PIN_PATH)) {
-    try {
-      unlinkSync(PIN_PATH);
-    } catch { /* ignore */ }
-  }
+  if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
 function runGate(args: string[] = []): { exitCode: number; stdout: string; stderr: string } {
-  const result = spawnSync('node', [SCRIPT, ...args], {
-    cwd: REPO_ROOT,
+  const result = spawnSync(process.execPath, [fixtureScript, ...args], {
+    cwd: fixtureRoot,
     encoding: 'utf8',
   });
   return {
@@ -128,6 +140,8 @@ describe('R4 P2 — science-policy gate wiring', () => {
     const { exitCode, stdout } = runGate(['--update']);
     expect(exitCode).toBe(0);
     expect(stdout).toMatch(/pinned hash updated/);
+    expect(readFileSync(SOURCE_JSON_PATH, 'utf8')).toBe(jsonBackup);
+    expect(readFileSync(SOURCE_PIN_PATH, 'utf8')).toBe(pinBackup);
   });
 });
 
