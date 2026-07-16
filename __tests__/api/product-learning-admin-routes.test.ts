@@ -268,13 +268,13 @@ describe('product learning admin routes', () => {
     expect(mocks.recordPhysicalDevice).not.toHaveBeenCalled();
   });
 
-  it('caps tracked IP cardinality with a shared overflow bucket and prunes stale entries', async () => {
+  it('bounds distributed invalid-credential audits with a global pre-auth bucket', async () => {
     let now = Date.parse('2026-07-16T12:00:00.000Z');
     const app = guardedProductLearningApp({
-      maxRequests: 1,
+      globalMaxRequests: 2,
+      maxRequests: 10,
       maxTrackedIps: 1,
       now: () => now,
-      pruneEveryRequests: 1,
       windowMs: 1_000,
     });
     const invalidHeaders = (ip: string) => ({
@@ -289,6 +289,74 @@ describe('product learning admin routes', () => {
       undefined,
       invalidHeaders('198.51.100.1'),
     );
+    const overflow = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.2'),
+    );
+    now += 500;
+    const globallyBlocked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.3'),
+    );
+    const replayBlocked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.4'),
+    );
+    now += 501;
+    const recovered = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.5'),
+    );
+
+    expect([tracked.status, overflow.status, globallyBlocked.status, replayBlocked.status, recovered.status])
+      .toEqual([401, 401, 429, 429, 401]);
+    expect(tracked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(overflow.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-overflow');
+    expect(globallyBlocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-global');
+    expect(replayBlocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-global');
+    expect(recovered.headers['x-ratelimit-bucket']).not.toBe('test-product-learning-admin-ip-global');
+    expect(globallyBlocked.headers['retry-after']).toBe('1');
+    expect(replayBlocked.headers['retry-after']).toBe('1');
+    expect(globallyBlocked.body.error.code).toBe('RATE_LIMITED');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(3);
+    expect(mocks.buildSummary).not.toHaveBeenCalled();
+  });
+
+  it('keeps map-full clients on bounded overflow until the fixed periodic prune', async () => {
+    let now = Date.parse('2026-07-16T12:00:00.000Z');
+    const app = guardedProductLearningApp({
+      globalMaxRequests: 10,
+      maxRequests: 1,
+      maxTrackedIps: 1,
+      now: () => now,
+      pruneEveryRequests: 4,
+      windowMs: 1_000,
+    });
+    const invalidHeaders = (ip: string) => ({
+      authorization: 'Bearer invalid-admin-token',
+      'cf-connecting-ip': ip,
+    });
+
+    const tracked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.1'),
+    );
+    now += 1_001;
     const overflowAllowed = await fetchJson(
       app,
       'GET',
@@ -310,13 +378,12 @@ describe('product learning admin routes', () => {
     expect(overflowBlocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-overflow');
     expect(mocks.logAudit).toHaveBeenCalledTimes(2);
 
-    now += 1_001;
     const reusedSlot = await fetchJson(
       app,
       'GET',
       '/api/v1/admin/product-learning/summary',
       undefined,
-      invalidHeaders('198.51.100.2'),
+      invalidHeaders('198.51.100.4'),
     );
     expect(reusedSlot.status).toBe(401);
     expect(reusedSlot.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
