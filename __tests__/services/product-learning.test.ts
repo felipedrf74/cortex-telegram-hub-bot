@@ -136,6 +136,14 @@ describe('governed product learning', () => {
     } })).toContain('training_taxonomy_invalid');
     expect(validateLearningCase({ ...observed(), evidenceReferences: ['external://person@example.com/case'] }))
       .toContain('evidence_reference_invalid');
+    expect(validateLearningCase({
+      ...observed(),
+      evidenceReferences: ['event://training/adaptation/98082612-9468-4e38-9775-adfb5eaca5fa'],
+    })).not.toContain('evidence_reference_invalid');
+    expect(validateLearningCase({
+      ...observed(),
+      evidenceReferences: ['event://training/adaptation/98082612-9468'],
+    })).toContain('evidence_reference_invalid');
   });
 
   it('requires ordered review and evidence before golden promotion', () => {
