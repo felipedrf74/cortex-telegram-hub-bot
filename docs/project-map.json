@@ -5,11 +5,11 @@
     "generatorVersion": 3,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "d9b0891880bb07de8ba6be40218326c1b75b3d1d45e9d94bdc65594fb181bf7b",
-    "baseCommit": "ec3142dc5e208f7a88d31db6021e0895a0ae3f5d",
-    "baseCommitTimestamp": "2026-07-16T02:07:38+01:00",
-    "trackedFiles": 2549,
-    "sourceFiles": 960
+    "sourceDigest": "f7f17666a0850af8dcfce658aeb4cb691c56795d938712333a7264f8bf61ee36",
+    "baseCommit": "c063406a7aba0125b98e232ec73c4cd8d2d4104c",
+    "baseCommitTimestamp": "2026-07-16T02:31:56+01:00",
+    "trackedFiles": 2552,
+    "sourceFiles": 968
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -88,7 +88,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 696
+      "files": 704
     },
     {
       "path": "src/skills",
@@ -4267,15 +4267,15 @@
     }
   ],
   "tests": {
-    "files": 934,
+    "files": 928,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
-      "agents": 5,
+      "agents": 4,
       "api": 135,
       "billing": 1,
-      "brand": 2,
+      "brand": 1,
       "cli": 1,
       "commands": 1,
       "domains": 4,
@@ -4289,8 +4289,8 @@
       "scripts": 48,
       "sdk": 1,
       "security": 21,
-      "services": 588,
-      "skills": 12,
+      "services": 585,
+      "skills": 11,
       "state": 17,
       "storage": 1,
       "testing": 1,

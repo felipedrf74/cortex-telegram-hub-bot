@@ -57,15 +57,22 @@ describe('FallbackProvider', () => {
       expect(onFallback).not.toHaveBeenCalled();
     });
 
-    it('falls back when primary throws', async () => {
+    it('classify preserves context and options when primary throws', async () => {
       const error = new Error('API rate limit');
       primary.classify.mockRejectedValue(error);
       const expected: ClassificationResult = { domain: 'secretary', confidence: 0.7 };
       fallback.classify.mockResolvedValue(expected);
 
-      const result = await provider.classify('help me');
+      const activeContext = {
+        domain: 'triathlon' as const,
+        lastAssistantMessage: 'Your pace was 5:30/km',
+      };
+      const options = { userId: 42, tenantId: 7, source: 'shadow' as const };
+
+      const result = await provider.classify('help me', activeContext, options);
       expect(result).toEqual(expected);
       expect(onFallback).toHaveBeenCalledWith(error, 'classify');
+      expect(fallback.classify).toHaveBeenCalledWith('help me', activeContext, options);
     });
 
     it('propagates if both fail', async () => {
@@ -91,13 +98,18 @@ describe('FallbackProvider', () => {
       expect(fallback.callDomain).not.toHaveBeenCalled();
     });
 
-    it('falls back when primary throws', async () => {
+    it('callDomain preserves all arguments when primary throws', async () => {
       primary.callDomain.mockRejectedValue(new Error('timeout'));
       fallback.callDomain.mockResolvedValue(mockResult);
 
-      const result = await provider.callDomain('secretary', [], 'hi', '');
+      const history = [{ role: 'user' as const, content: 'Hi' }];
+      const options = { maxTokensOverride: 4096, userId: 42, tenantId: 7 };
+      const result = await provider.callDomain('secretary', history, 'hi', 'state', options);
       expect(result).toEqual(mockResult);
       expect(onFallback).toHaveBeenCalledWith(expect.any(Error), 'callDomain');
+      expect(fallback.callDomain).toHaveBeenCalledWith(
+        'secretary', history, 'hi', 'state', options,
+      );
     });
   });
 
@@ -115,14 +127,54 @@ describe('FallbackProvider', () => {
       expect(result).toEqual(mockResult);
     });
 
-    it('falls back when primary throws', async () => {
+    it('continueWithToolResults preserves all arguments when primary throws', async () => {
       primary.continueWithToolResults.mockRejectedValue(new Error('500'));
       fallback.continueWithToolResults.mockResolvedValue(mockResult);
 
-      const result = await provider.continueWithToolResults('secretary', [], 'hi', '', []);
+      const history = [{ role: 'user' as const, content: 'Set a reminder' }];
+      const toolConversation = [{
+        role: 'assistant' as const,
+        content: [{ type: 'tool_result' as const, tool_use_id: 'tc_1', content: '{"ok":true}' }],
+      }];
+      const options = { userId: 42, tenantId: 7 };
+      const result = await provider.continueWithToolResults(
+        'secretary', history, 'Set reminder', 'state', toolConversation, options,
+      );
       expect(result).toEqual(mockResult);
       expect(onFallback).toHaveBeenCalledWith(expect.any(Error), 'continueWithToolResults');
+      expect(fallback.continueWithToolResults).toHaveBeenCalledWith(
+        'secretary', history, 'Set reminder', 'state', toolConversation, options,
+      );
     });
+  });
+
+  it('propagates terminal fallback failures for domain and continuation calls', async () => {
+    primary.callDomain.mockRejectedValue(new Error('primary domain failure'));
+    fallback.callDomain.mockRejectedValue(new Error('fallback domain failure'));
+    await expect(provider.callDomain('secretary', [], 'hi', ''))
+      .rejects.toThrow('fallback domain failure');
+
+    primary.continueWithToolResults.mockRejectedValue(new Error('primary continuation failure'));
+    fallback.continueWithToolResults.mockRejectedValue(new Error('fallback continuation failure'));
+    await expect(provider.continueWithToolResults('secretary', [], 'hi', '', []))
+      .rejects.toThrow('fallback continuation failure');
+  });
+
+  it('supports nested fallback chains and stops at the first successful provider', async () => {
+    const providerA = createMockProvider('a');
+    const providerB = createMockProvider('b');
+    const providerC = createMockProvider('c');
+    const chain = new FallbackProvider(providerA, new FallbackProvider(providerB, providerC));
+
+    providerA.classify.mockRejectedValue(new Error('a unavailable'));
+    providerB.classify.mockResolvedValue({ domain: 'content', confidence: 0.8 });
+
+    await expect(chain.classify('write a script')).resolves.toEqual({
+      domain: 'content',
+      confidence: 0.8,
+    });
+    expect(chain.name).toBe('a→b→c');
+    expect(providerC.classify).not.toHaveBeenCalled();
   });
 
   describe('without onFallback callback', () => {
@@ -133,6 +185,18 @@ describe('FallbackProvider', () => {
 
       const result = await noCallbackProvider.classify('test');
       expect(result.domain).toBe('secretary');
+
+      const callResult: AICallResult = { text: 'fallback domain', toolCalls: [], stopReason: 'end_turn' };
+      primary.callDomain.mockRejectedValue(new Error('domain down'));
+      fallback.callDomain.mockResolvedValue(callResult);
+      await expect(noCallbackProvider.callDomain('secretary', [], 'test', ''))
+        .resolves.toEqual(callResult);
+
+      const continuationResult: AICallResult = { text: 'fallback continuation', toolCalls: [], stopReason: 'end_turn' };
+      primary.continueWithToolResults.mockRejectedValue(new Error('continuation down'));
+      fallback.continueWithToolResults.mockResolvedValue(continuationResult);
+      await expect(noCallbackProvider.continueWithToolResults('secretary', [], 'test', '', []))
+        .resolves.toEqual(continuationResult);
     });
   });
 });

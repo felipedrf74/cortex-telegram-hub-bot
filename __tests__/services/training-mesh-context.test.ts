@@ -148,4 +148,49 @@ describe('readTrainingMeshContext', () => {
     expect(context.derivedSignals.some((signal) => signal.signalType === 'fueling_requirements')).toBe(false);
     expect(context.derivedSignals.some((signal) => signal.signalType === 'content_capture_opportunity')).toBe(false);
   });
+
+  it('publishes steady support and a block-focus capture for a moderate stable session', async () => {
+    mockReadTrainingContextAll.mockReturnValueOnce({
+      signals: [],
+      flags: {
+        lowSleep: false,
+        lowHrv: false,
+        lowReadiness: false,
+        highAdherence: false,
+      },
+    });
+    mockGetWeeklyAdherence.mockReturnValueOnce({ adherenceRate: 70 });
+    mockGetSessionsForWeek.mockReturnValueOnce([
+      {
+        id: 103,
+        week_id: 11,
+        plan_id: 1,
+        day_of_week: 'Thursday',
+        session_type: 'cycling',
+        title: 'Steady endurance ride',
+        description: 'Aerobic progression',
+        duration_minutes: 75,
+        intensity_text: 'Moderate',
+      },
+    ]);
+
+    const context = await readTrainingMeshContext({ userId: 42, weekStart: '2026-04-13' });
+    const recovery = context.derivedSignals.find((signal) => signal.signalType === 'recovery_state');
+    const immovability = context.derivedSignals.find((signal) => signal.signalType === 'session_immovability');
+    const fueling = context.derivedSignals.find((signal) => signal.signalType === 'fueling_requirements');
+    const story = context.derivedSignals.find((signal) => signal.signalType === 'content_capture_opportunity');
+
+    expect(recovery?.payload.state).toBe('stable');
+    expect(immovability?.payload).toMatchObject({ level: 'medium', load: 'moderate' });
+    expect(fueling?.payload).toMatchObject({
+      supportLevel: 'steady',
+      carbFocus: 'moderate',
+      hydrationFocus: 'steady',
+    });
+    expect(story?.payload).toMatchObject({
+      angle: 'block_focus',
+      recoveryState: 'stable',
+      focus: 'Threshold',
+    });
+  });
 });

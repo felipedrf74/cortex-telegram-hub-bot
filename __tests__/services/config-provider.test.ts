@@ -135,6 +135,10 @@ describe('ConfigProvider', () => {
 
       expect(provider.resolve(123456789).app.timezone).toBe('America/Sao_Paulo');
       expect(provider.getOverrides(123456789)).not.toBeNull();
+      expect(provider.resolve('123456789').app.timezone).toBe('America/Sao_Paulo');
+      expect(provider.getOverrides('123456789')).not.toBeNull();
+      expect(provider.clearOverrides('123456789')).toBe(true);
+      expect(provider.resolve(123456789)).toBe(config);
     });
   });
 
@@ -172,6 +176,23 @@ describe('ConfigProvider', () => {
       expect(resolved.rateLimit.maxMessagesPerMinute).toBe(10);
       // Unchanged sections stay the same
       expect(resolved.aiSafety).toEqual(config.aiSafety);
+    });
+
+    it('ignores unknown, null, and scalar override sections', () => {
+      const malformedOverrides = [
+        { unknownSection: { enabled: true } },
+        { app: null },
+        { app: 'not-an-object' },
+      ];
+
+      malformedOverrides.forEach((overrides, index) => {
+        const tenantId = `malformed-${index}`;
+        provider.setOverrides(tenantId, overrides as any);
+        const resolved = provider.resolve(tenantId);
+        expect(Object.keys(resolved).sort()).toEqual(Object.keys(config).sort());
+        expect(resolved.app).toEqual(config.app);
+        expect((resolved as any).unknownSection).toBeUndefined();
+      });
     });
   });
 

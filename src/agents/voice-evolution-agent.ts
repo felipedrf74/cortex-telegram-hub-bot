@@ -593,7 +593,7 @@ export async function runVoiceEvolutionForTarget(
       : 'No generated scripts available for this period.';
 
     const transcriptsBlock = transcripts.length > 0
-      ? transcripts.map((t: any) => `=== ${t.title} ===\n${(t.full_text || '').slice(0, 2000)}`).join('\n\n')
+      ? transcripts.map((t: any) => `=== ${t.title} ===\n${t.full_text.slice(0, 2000)}`).join('\n\n')
       : 'No published transcripts available for this period. Analyze scripts against the creator profile instead.';
 
     // Build book knowledge context

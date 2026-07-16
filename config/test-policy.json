@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-15.1",
+  "version": "2026-07-15.2",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -116,7 +116,7 @@
     "disposition": {
       "requiredResolvedPercent": 100,
       "provenanceRequired": true,
-      "maximumPatternFallbackFiles": 926
+      "maximumPatternFallbackFiles": 911
     },
     "timing": {
       "minimumScopePercent": 100,
@@ -139,10 +139,20 @@
     { "pattern": "__tests__/adapters/whatsapp-adapter.test.ts", "disposition": "keep", "reason": "Primary adapter suite retains Cloud API request, error, media, template, platform-limit, and MIME behavior without method-existence or barrel-export assertions." },
     { "pattern": "__tests__/services/storage-provider-qa-validation.test.ts", "disposition": "delete", "reason": "Delegated SQLite edge cases, export existence checks, singleton happy paths, and transaction repetitions duplicated the primary suite; the pragma policy contract was merged." },
     { "pattern": "__tests__/services/storage-provider.test.ts", "disposition": "keep", "reason": "Primary storage suite owns initialization, prepared statements, atomic transactions, singleton lifecycle, safe pragma policy, and filesystem database creation." },
-    { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "keep", "reason": "Duplicate happy paths and source-import assertions were removed; the remaining cases cover malformed signals, filtering boundaries, multi-agent consumption, and digest edge behavior absent from the primary suite." },
-    { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "keep", "reason": "Retains skill schema, constraint, index, and cascade behavior while the redundant file-existence checks and empty-database full migration replay were deleted." },
+    { "pattern": "__tests__/agents/voice-evolution-qa-validation.test.ts", "disposition": "merge", "reason": "The actual multi-tenant agent run and migrated-schema suite own transcript query compatibility; hand-built SQLite tables, source scans, bug-reproduction SQL, and duplicated logging checks were removed." },
+    { "pattern": "__tests__/agents/voice-evolution-agent.test.ts", "disposition": "keep", "reason": "The canonical migrated-schema regression suite retains transcript column and query behavior without reading production source text." },
+    { "pattern": "__tests__/brand/copyright-headers-qa-validation.test.ts", "disposition": "convert", "reason": "Per-source first-line scans and arbitrary file-count floors were replaced by the actual MIT license artifact and package publication manifest contract." },
+    { "pattern": "__tests__/brand/package-rename-qa-validation.test.ts", "disposition": "convert", "reason": "Eleven fragmented rename and source-substring checks were converted into one canonical package, lockfile, and license manifest suite." },
+    { "pattern": "__tests__/brand/package-manifest.test.ts", "disposition": "keep", "reason": "Canonical publication contract binds package identity, version, author, license, lockfile root, and the shipped MIT license artifact." },
+    { "pattern": "__tests__/services/ai-provider-qa-validation.test.ts", "disposition": "merge", "reason": "Distinct fallback argument, terminal-error, and nested-chain behavior moved into ai-provider.test.ts; duplicate passthrough, interface-existence, response-shape, and routing happy paths were removed." },
+    { "pattern": "__tests__/services/ai-provider.test.ts", "disposition": "keep", "reason": "Primary provider suite owns fallback isolation, exact argument forwarding, terminal failure, nested chains, adapters, and model routing." },
+    { "pattern": "__tests__/services/config-provider-qa-validation.test.ts", "disposition": "merge", "reason": "String-number tenant identity and malformed override boundaries moved into config-provider.test.ts; reference-identity, interface-existence, singleton, and repeated merge checks were removed." },
+    { "pattern": "__tests__/services/config-provider.test.ts", "disposition": "keep", "reason": "Primary configuration suite owns tenant isolation, canonical tenant IDs, safe merge boundaries, override lifecycle, and singleton behavior." },
+    { "pattern": "__tests__/services/cross-agent-learning-qa-validation.test.ts", "disposition": "convert", "reason": "Unique malformed-signal, filtering, digest, and independent-consumer behavior moved to a portable public-contract suite that remains valid across the service split." },
+    { "pattern": "__tests__/services/cross-agent-learning-contract.test.ts", "disposition": "keep", "reason": "Portable public-contract suite owns normalization, actionable prompt filters, digest strength, and independent consumer behavior without assuming a monolithic implementation." },
+    { "pattern": "__tests__/services/skill-migration-qa-validation.test.ts", "disposition": "delete", "reason": "Registry, skill-security, and migration-rehearsal suites already cover every table, index, default, uniqueness, foreign-key, cascade, credential, and skill-migration behavior." },
+    { "pattern": "__tests__/skills/content-skill-refactor-qa-validation.test.ts", "disposition": "merge", "reason": "Manifest parity moved into skill-config.test.ts; sub-skill, cron, routing, and classification assertions duplicated primary skill and router suites, while the portal substring check proved no behavior." },
     { "pattern": "__tests__/services/usage-metering.test.ts", "disposition": "keep", "reason": "Primary migrated-template suite consolidates the unique schema, aggregation, isolation, quota-boundary, and typed portal contracts; the duplicate QA and cross-module source-string assertions were removed." },
-    { "pattern": "__tests__/**/*qa-validation.test.ts", "disposition": "keep", "reason": "Residual QA suites retain distinct boundary coverage after duplicate happy paths, source mirrors, and redundant migration setup were removed or consolidated into module-owned suites." },
     { "pattern": "__tests__/**/*source-contract.test.ts", "disposition": "convert", "reason": "Replace source-string assertions with typed, schema, AST, manifest, or generator checks." },
     { "pattern": "__tests__/services/coach-kernel-evaluation.test.ts", "disposition": "eval", "reason": "Persona and rubric-based coach quality grading belongs in the governed evaluation lane." },
     { "pattern": "__tests__/services/content-day-to-day-evaluation.test.ts", "disposition": "eval", "reason": "Persona and output-quality rubric grading belongs in the governed evaluation lane." },
@@ -153,6 +163,9 @@
     { "pattern": "__tests__/services/chat-core-v2-*eval*.test.ts", "disposition": "keep", "reason": "Chat Core eval services enforce deterministic corpus shape, safety, recall, persistence, and promotion contracts." },
     { "pattern": "__tests__/**/*evaluation-harness.test.ts", "disposition": "keep", "reason": "Harness and CLI suites verify deterministic evaluation machinery and evidence contracts; they do not grade live provider output." },
     { "pattern": "__tests__/services/creator-config-eval.test.ts", "disposition": "keep", "reason": "Creator configuration checks protect prompt neutrality, loading, and cross-runtime consistency." },
+    { "pattern": "__tests__/api/product-learning-admin-routes.test.ts", "disposition": "keep", "reason": "Admin product-learning contracts cover authorization, bounded request handling, tunnel-aware rate limiting, aggregation, and audit behavior." },
+    { "pattern": "__tests__/security/product-learning-observability-tenant-isolation.test.ts", "disposition": "keep", "reason": "Security coverage proves product-learning observations and aggregate read models remain tenant isolated." },
+    { "pattern": "__tests__/services/training-learning-producers.test.ts", "disposition": "keep", "reason": "Training producer contracts enforce redaction, provenance, lifecycle, expiry, idempotency, and governed promotion behavior." },
     { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
   ],
   "coverage": {
@@ -187,6 +200,20 @@
         "reason": "The legacy scheduler remains at 53.64% lines and 38.79% branches while jobs migrate to AgentJobManifest adapters; ratchet the observed baseline and retire this exception as the monolith is split rather than adding duplicate scheduler happy paths.",
         "expires": "2026-09-30",
         "minimum": { "lines": 53.64, "branches": 38.79 }
+      },
+      {
+        "file": "src/services/cross-agent-learning/content-mesh-context.ts",
+        "owner": "agent-runtime",
+        "reason": "The extracted Content adapter is at the inherited full-file baseline of 80% lines and 22.72% branches (100% changed lines); ratchet it while distinct scheduling and fallback contracts replace duplicate happy-path coverage before expiry.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 80, "branches": 22.72 }
+      },
+      {
+        "file": "src/services/cross-agent-learning/signal-learning.ts",
+        "owner": "agent-runtime",
+        "reason": "The governed signal adapter is at the inherited full-file baseline of 88.23% lines and 63.96% branches (97.32% changed lines), with tenant, provenance, confidence, expiry, and facade parity coverage; ratchet remaining malformed-payload branches without restoring duplicate QA cases.",
+        "expires": "2026-09-30",
+        "minimum": { "lines": 88.23, "branches": 63.96 }
       }
     ]
   },
@@ -208,6 +235,7 @@
       "src/services/shared-decision-context.ts",
       "src/services/training-signals.ts",
       "src/services/cross-agent-learning.ts",
+      "src/services/cross-agent-learning/*.ts",
       "src/services/readiness-scorer.ts",
       "src/services/focus-planner.ts",
       "src/services/content-intelligence.ts",
@@ -501,15 +529,191 @@
       "reason": "Updated the stale work-order runbook assertion to the consolidated canonical release runbook while preserving alert behavior."
     },
     {
-      "test": "__tests__/services/cross-agent-learning-qa-validation.test.ts",
+      "test": "__tests__/agents/voice-evolution-qa-validation.test.ts",
       "replacementTests": [
-        "__tests__/services/cross-agent-learning-qa-validation.test.ts"
+        "__tests__/agents/voice-evolution-agent.test.ts",
+        "__tests__/agents/voice-evolution-multi-tenant.test.ts"
       ],
       "sources": [
-        "src/services/cross-agent-learning.ts",
-        "src/services/intelligence-bus.ts"
+        "migrations/012_video_transcripts.sql",
+        "src/agents/voice-evolution-agent.ts"
       ],
-      "reason": "Merged repeated source scans and happy-path signal assertions into compact behavior, tenant-boundary, and prompt-format coverage."
+      "mutationTargets": [
+        {
+          "pattern": "src/agents/voice-evolution-agent.ts:596-596",
+          "anchor": "t.full_text.slice(0, 2000)",
+          "behavior": "The agent places each scoped transcript full_text value into the provider prompt.",
+          "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
+          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Merged the real transcript contract into migrated-schema and full multi-tenant agent behavior while deleting hand-built SQLite tables, bug-reproduction SQL, source scans, and duplicated logging checks."
+    },
+    {
+      "test": "__tests__/agents/voice-evolution-agent.test.ts",
+      "replacementTests": [
+        "__tests__/agents/voice-evolution-agent.test.ts",
+        "__tests__/agents/voice-evolution-multi-tenant.test.ts"
+      ],
+      "sources": [
+        "src/agents/voice-evolution-agent.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/agents/voice-evolution-agent.ts:595-595",
+          "anchor": "const transcriptsBlock = transcripts.length > 0",
+          "behavior": "A migrated transcript query result selects the transcript-backed provider prompt path instead of the no-transcript fallback.",
+          "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
+          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Removed the retained suite's regex source scan because the multi-tenant agent execution proves the production query against the migrated schema."
+    },
+    {
+      "test": "__tests__/brand/copyright-headers-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/brand/package-manifest.test.ts"
+      ],
+      "sources": [
+        "LICENSE",
+        "package.json"
+      ],
+      "reason": "Converted arbitrary source-file counts and first-line string scans into the actual MIT license artifact and package publication metadata contract."
+    },
+    {
+      "test": "__tests__/brand/package-rename-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/brand/package-manifest.test.ts"
+      ],
+      "sources": [
+        "LICENSE",
+        "package-lock.json",
+        "package.json"
+      ],
+      "reason": "Converted fragmented rename assertions into one package publication manifest that binds identity, semantic version, lockfile root, author, and license."
+    },
+    {
+      "test": "__tests__/services/ai-provider-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/ai-provider.test.ts"
+      ],
+      "sources": [
+        "src/services/ai-provider.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/ai-provider.ts:422-422",
+          "anchor": "this.onFallback?.(err as Error, 'classify')",
+          "behavior": "Classification fallback reports the exact method and preserves active context and scoped call options.",
+          "replacementTest": "__tests__/services/ai-provider.test.ts",
+          "ownerTestName": "FallbackProvider classify classify preserves context and options when primary throws",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/ai-provider.ts:438-438",
+          "anchor": "this.onFallback?.(err as Error, 'callDomain')",
+          "behavior": "Domain fallback reports the exact method and preserves every routing, history, state, and options argument.",
+          "replacementTest": "__tests__/services/ai-provider.test.ts",
+          "ownerTestName": "FallbackProvider callDomain callDomain preserves all arguments when primary throws",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/ai-provider.ts:455-455",
+          "anchor": "this.onFallback?.(err as Error, 'continueWithToolResults')",
+          "behavior": "Tool-result continuation fallback reports the exact method and preserves the full conversation and scoped options.",
+          "replacementTest": "__tests__/services/ai-provider.test.ts",
+          "ownerTestName": "FallbackProvider continueWithToolResults continueWithToolResults preserves all arguments when primary throws",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Merged distinct argument, terminal-error, and nested-chain behavior into the primary provider suite while removing duplicate passthrough, interface, response-shape, and routing cases."
+    },
+    {
+      "test": "__tests__/services/config-provider-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/config-provider.test.ts"
+      ],
+      "sources": [
+        "src/services/config-provider.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/config-provider.ts:47-47",
+          "anchor": "if (!tenantOverrides) return config",
+          "behavior": "Resolution returns the exact global config when no tenant override exists and the merged config when one does.",
+          "replacementTest": "__tests__/services/config-provider.test.ts",
+          "ownerTestName": "ConfigProvider EnvConfigProvider resolve() returns global config when no overrides set",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/config-provider.ts:52-52",
+          "anchor": "this.overrides.get(String(tenantId))",
+          "behavior": "Override lookup returns null for an unknown tenant while canonical numeric and string identities share stored overrides.",
+          "replacementTest": "__tests__/services/config-provider.test.ts",
+          "ownerTestName": "ConfigProvider EnvConfigProvider getOverrides() returns null for unknown tenant",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/config-provider.ts:363-364",
+          "anchor": "values && typeof values === 'object' && section in base",
+          "behavior": "Unknown, null, and scalar override sections cannot enter the resolved application config.",
+          "replacementTest": "__tests__/services/config-provider.test.ts",
+          "ownerTestName": "ConfigProvider multi-section overrides ignores unknown, null, and scalar override sections",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Merged canonical tenant ID and malformed override boundaries into the primary suite while removing implementation-reference, interface-existence, singleton, and repeated merge cases."
+    },
+    {
+      "test": "__tests__/skills/content-skill-refactor-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/router/dynamic-routing.test.ts",
+        "__tests__/skills/skill-config.test.ts"
+      ],
+      "sources": [
+        "src/skills/content/manifest.json",
+        "src/skills/skill-config.ts"
+      ],
+      "reason": "Merged typed manifest parity into the primary skill configuration suite; existing skill and router matrices already own sub-skills, cron jobs, classification, routes, and negative domain matches."
+    },
+    {
+      "test": "__tests__/services/cross-agent-learning-qa-validation.test.ts",
+      "replacementTests": [
+        "__tests__/services/cross-agent-learning-contract.test.ts",
+        "__tests__/services/cross-agent-learning.test.ts"
+      ],
+      "sources": [
+        "src/services/cross-agent-learning/signal-learning.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/cross-agent-learning/signal-learning.ts:124-124",
+          "anchor": ".filter(k => k.direction !== 'stable')",
+          "behavior": "Prompt context excludes stable keyword observations while retaining actionable movements.",
+          "replacementTest": "__tests__/services/cross-agent-learning-contract.test.ts",
+          "ownerTestName": "Cross-Agent Learning public contracts formats only actionable keywords and sufficiently confident content formulas",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/cross-agent-learning/signal-learning.ts:134-134",
+          "anchor": ".filter(f => f.confidence >= 0.6)",
+          "behavior": "Prompt context excludes content formulas below the governed confidence boundary.",
+          "replacementTest": "__tests__/services/cross-agent-learning-contract.test.ts",
+          "ownerTestName": "Cross-Agent Learning public contracts formats only actionable keywords and sufficiently confident content formulas",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/services/cross-agent-learning/signal-learning.ts:178-178",
+          "anchor": ".filter(v => v.strength >= 0.7)",
+          "behavior": "Learning digests exclude creator voice evidence below the governed strength boundary.",
+          "replacementTest": "__tests__/services/cross-agent-learning-contract.test.ts",
+          "ownerTestName": "Cross-Agent Learning public contracts excludes weak creator voice evidence from a learning digest",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Converted the remaining malformed-signal, filtering, digest, and independent-consumer behavior into a portable public-contract suite while primary happy paths remain module-owned."
     },
     {
       "test": "__tests__/services/prompt-cleanliness.test.ts",
@@ -534,14 +738,15 @@
     {
       "test": "__tests__/services/skill-migration-qa-validation.test.ts",
       "replacementTests": [
-        "__tests__/services/skill-migration-qa-validation.test.ts"
+        "__tests__/services/database.test.ts",
+        "__tests__/skills/registry.test.ts",
+        "__tests__/skills/skill-security.test.ts"
       ],
       "sources": [
-        "src/testing/migrated-test-database.ts",
         "migrations/019_installed_skills.sql",
         "migrations/020_skill_tables.sql"
       ],
-      "reason": "Replaced redundant migration file and full-replay checks with one migrated template plus direct schema and constraint contracts."
+      "reason": "Deleted a fully redundant schema suite: the migration rehearsal owns table existence and idempotency, registry owns defaults and indexes, and skill-security owns foreign keys, uniqueness, credentials, and cascades."
     },
     {
       "test": "__tests__/services/skill-version-registry.test.ts",
@@ -572,15 +777,15 @@
       },
       {
         "test": "__tests__/brand/package-name.test.ts",
-        "replacementTests": ["__tests__/brand/package-rename-qa-validation.test.ts"],
-        "sources": ["package.json"],
-        "reason": "Merged the duplicate package identity and license assertions into the retained brand contract suite."
+        "replacementTests": ["__tests__/brand/package-manifest.test.ts"],
+        "sources": ["package.json", "package-lock.json", "LICENSE"],
+        "reason": "Merged the duplicate package identity and license assertions into the canonical publication manifest contract."
       },
       {
         "test": "__tests__/brand/rename-qa-validation.test.ts",
-        "replacementTests": ["__tests__/brand/package-rename-qa-validation.test.ts"],
-        "sources": ["package.json", "src/portal/server.ts"],
-        "reason": "Merged unique runtime-brand assertions into the retained package rename contract and removed repeated source scans."
+        "replacementTests": ["__tests__/brand/package-manifest.test.ts"],
+        "sources": ["package.json", "package-lock.json", "LICENSE"],
+        "reason": "Converted durable package identity into the publication manifest contract and removed repeated runtime source scans."
       },
       {
         "test": "__tests__/portal/domain-status-qa-validation.test.ts",
