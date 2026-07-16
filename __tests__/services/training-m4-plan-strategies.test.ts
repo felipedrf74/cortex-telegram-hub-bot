@@ -465,7 +465,67 @@ describe('training M4 deterministic strategies and conflict foundation', () => {
       .toThrow(/TRAINING_M4_STRATEGY_AND_CONFLICT_IDENTITY/);
   });
 
-  it('fails closed when every initial M4 session is already in the past', () => {
+  it('keeps M4 long runs within the reviewed session duration and capacity window', () => {
+    const baseRequest: TrainingPlanCandidateRequest = {
+      planMode: 'continuous',
+      goal: 'general_fitness',
+      discipline: 'running',
+      horizonWeeks: 6,
+      profile: {
+        experienceLevel: 'intermediate',
+        sessionsPerWeek: 3,
+        sessionDurationMinutes: 60,
+        availableDays: ['monday', 'wednesday', 'friday'],
+        equipmentIds: [],
+        location: 'home',
+        preferences: [],
+        exclusions: [],
+      },
+    };
+    const capacityWindows = baseRequest.profile.availableDays.map((dayOfWeek) => ({
+      dayOfWeek,
+      startTime: '06:00',
+      endTime: '07:00',
+      timezone: 'Europe/Lisbon',
+      allowedDisciplines: ['running' as const],
+    }));
+    const m4Candidate = buildTrainingPlanRevisionCandidate({
+      ...baseRequest,
+      planStartDate: '2026-08-03',
+      resourceAccess: {
+        pool: false,
+        bicycle: false,
+        indoorTrainer: false,
+        safeRunEnvironment: true,
+        outdoorRideEnvironment: false,
+      },
+      capacity: { source: 'EXPLICIT_USER', windows: capacityWindows },
+      goalPriority: { primaryDiscipline: 'running', secondaryDisciplines: [] },
+    }, {
+      typedWorkoutValidationEnabled: true,
+      m4StrategyEnabled: true,
+    });
+    const m4ActiveWorkouts = m4Candidate.document.weeks
+      .flatMap((week) => week.workouts)
+      .filter((workout) => workout.sessionType !== 'rest');
+    const m4LongRun = m4ActiveWorkouts.find((workout) => workout.sessionType === 'long_run');
+
+    expect(m4LongRun).toMatchObject({ plannedDurationMinutes: 60 });
+    expect(m4ActiveWorkouts.every((workout) => workout.plannedDurationMinutes <= 60)).toBe(true);
+    expect(Date.parse(m4LongRun!.scheduledEndAt!) - Date.parse(m4LongRun!.scheduledStartAt!))
+      .toBe(60 * 60_000);
+
+    const nonM4Candidate = buildTrainingPlanRevisionCandidate(baseRequest, {
+      typedWorkoutValidationEnabled: true,
+      m4StrategyEnabled: false,
+    });
+    const nonM4LongRun = nonM4Candidate.document.weeks
+      .flatMap((week) => week.workouts)
+      .find((workout) => workout.sessionType === 'long_run');
+    expect(nonM4LongRun).toMatchObject({ plannedDurationMinutes: 90 });
+  });
+
+  it('fails closed when any initial M4 session is already in the past', () => {
     expect(() => buildTrainingPlanRevisionCandidate({
       ...eventRequest,
       planStartDate: '2020-01-06',

@@ -372,6 +372,40 @@ export function readMaterializedTrainingM4CapacityContext(input: {
 }
 
 /**
+ * Return the identity of the newest retained authoritative capacity snapshot.
+ *
+ * The five-minute snapshot TTL controls whether cached calendar material may
+ * be reused for candidate generation. It must not invalidate an immutable
+ * Decision review whose execution path will freshly reread every connected
+ * provider before applying anything. Retained rows still pass the same
+ * structural, profile-source, and connected-provider integrity checks; only
+ * cache freshness is intentionally ignored here.
+ */
+export function readLatestRetainedTrainingM4CapacityContextVersion(input: {
+  scope: { userId: number; tenantId: number };
+  db?: Database.Database;
+  now?: Date;
+  configuredSources?: CalendarSource[];
+}): string | null {
+  if (input.scope.userId !== input.scope.tenantId) return null;
+  const db = input.db ?? getDb();
+  if (!tableExists(db, 'training_m4_capacity_snapshots')) return null;
+  const now = input.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) return null;
+  const row = db.prepare(`
+    SELECT * FROM training_m4_capacity_snapshots
+     WHERE tenant_id = ? AND user_id = ?
+     ORDER BY observed_at DESC, rowid DESC
+     LIMIT 1
+  `).get(input.scope.tenantId, input.scope.userId) as SnapshotRow | undefined;
+  if (!row) return null;
+  const sources = input.configuredSources
+    ?? runtimeCalendarReader?.configuredSources?.(input.scope.userId)
+    ?? getConfiguredCalendarSourcesForUser(input.scope.userId);
+  return contextFromRow(row, input.scope, db, now, sources, { allowExpired: true })?.contextVersion ?? null;
+}
+
+/**
  * Re-fetch every connected provider immediately before Decision execution.
  * The expected snapshot supplies the immutable profile windows and horizon;
  * caller data cannot expand either input during approval.
@@ -454,6 +488,7 @@ function contextFromRow(
   db: Database.Database,
   now: Date,
   configuredSources: CalendarSource[],
+  options: { allowExpired?: boolean } = {},
 ): TrainingM4AuthoritativeCapacityContext | null {
   try {
     const observedMs = Date.parse(row.observed_at);
@@ -466,7 +501,7 @@ function contextFromRow(
         || !/^[a-f0-9]{64}$/.test(row.calendar_event_set_hash)
         || ![observedMs, expiresMs, rangeStartMs, rangeEndMs].every(Number.isFinite)
         || observedMs > now.getTime()
-        || expiresMs <= now.getTime()
+        || (!options.allowExpired && expiresMs <= now.getTime())
         || expiresMs <= observedMs
         || rangeEndMs <= rangeStartMs
         || row.horizon_weeks < 1 || row.horizon_weeks > 52

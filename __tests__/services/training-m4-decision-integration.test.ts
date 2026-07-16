@@ -327,6 +327,92 @@ describe('training M4 single-Decision conflict and activation gates', () => {
     });
   });
 
+  it('reviews after the five-minute capacity cache TTL and activates after an unchanged provider reread', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'm4-expired-cache-candidate',
+        request,
+      });
+      const bound = await bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 },
+        revisionId: created.candidates[0].revisionId,
+      });
+
+      vi.setSystemTime(new Date(FIXED_NOW.getTime() + 13 * 60_000));
+      const stored = db.prepare(`
+        SELECT record_version AS recordVersion
+          FROM notification_center_items WHERE item_id = ?
+      `).get(bound.decisionId) as { recordVersion: number };
+      const approved = reviewDecision(bound.decisionId!, 7, 7, {
+        outcome: 'approve',
+        expectedVersion: stored.recordVersion,
+        idempotencyKey: 'm4-expired-cache-approve',
+        strongConfirmationText: 'CONFIRM',
+      });
+      expect(approved.decisionState).toBe('approved');
+
+      const result = await performDecisionAction(
+        bound.decisionId!, 'activate_training_plan_revision', 7, 7,
+        {
+          idempotencyKey: 'm4-expired-cache-activate',
+          expectedVersion: approved.recordVersion,
+          contextVersion: approved.contextVersion,
+        },
+      );
+      expect(result.status).toBe('succeeded');
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 1 });
+      expect(db.prepare(`
+        SELECT COUNT(DISTINCT context_version) AS count
+          FROM training_m4_capacity_snapshots
+      `).get()).toEqual({ count: 1 });
+    });
+  });
+
+  it('blocks review when a newer retained capacity snapshot has a different version', async () => {
+    await withDatabaseForTestAsync(db, async () => {
+      const created = createTrainingPlanCandidateRevision({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'm4-newer-retained-capacity-candidate',
+        request,
+      });
+      const bound = await bindTrainingPlanRevisionDecision({
+        scope: { userId: 7, tenantId: 7 },
+        revisionId: created.candidates[0].revisionId,
+      });
+
+      vi.setSystemTime(new Date(FIXED_NOW.getTime() + 6 * 60_000));
+      calendarEvents = [{
+        id: 'newer-retained-drift', source: 'google', summary: 'Private',
+        start: '2026-08-17T05:30:00.000Z', end: '2026-08-17T05:45:00.000Z',
+      }];
+      const newer = await refreshTrainingM4AuthoritativeCapacityContext({
+        scope: { userId: 7, tenantId: 7 },
+        idempotencyKey: 'm4-newer-retained-capacity-refresh',
+        request: {
+          planStartDate: request.planStartDate!,
+          horizonWeeks: request.horizonWeeks!,
+          profileWindows: request.capacity!.windows,
+        },
+        dependencies: { db, now: new Date() },
+      });
+      expect(newer.contextVersion).not.toBe(authoritativeCapacityVersion);
+      vi.setSystemTime(new Date(FIXED_NOW.getTime() + 13 * 60_000));
+
+      const stored = db.prepare(`
+        SELECT record_version AS recordVersion
+          FROM notification_center_items WHERE item_id = ?
+      `).get(bound.decisionId) as { recordVersion: number };
+      expect(() => reviewDecision(bound.decisionId!, 7, 7, {
+        outcome: 'approve',
+        expectedVersion: stored.recordVersion,
+        idempotencyKey: 'm4-newer-retained-capacity-approve',
+        strongConfirmationText: 'CONFIRM',
+      })).toThrowError(expect.objectContaining({ code: 'DECISION_CONTEXT_CHANGED' }));
+      expect(db.prepare('SELECT COUNT(*) AS count FROM fitness_training_plans').get()).toEqual({ count: 0 });
+    });
+  });
+
   it('blocks activation when a provider event changes after review', async () => {
     await withDatabaseForTestAsync(db, async () => {
       const { bound, approved } = await createApprovedDecision('m4-provider-event-drift');
