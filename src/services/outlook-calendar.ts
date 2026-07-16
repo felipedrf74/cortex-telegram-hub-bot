@@ -227,7 +227,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         endDateTime: new Date(endDate).toISOString(),
         $orderby: 'start/dateTime',
         $top: 100,
-        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,bodyPreview,body,location,webLink,categories',
+        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,showAs,bodyPreview,body,location,webLink,categories',
       })
       .header('Prefer', outlookCalendarViewPreferHeader())
       .get(), OUTLOOK_API_TIMEOUT_MS);
@@ -266,6 +266,11 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         ),
         isAllDay: !!event.isAllDay,
         timeZone: event.start?.timeZone || event.end?.timeZone,
+        // Graph's schedule contract groups `free` and `workingElsewhere` as
+        // availabilityView 0. Tentative, busy, OOF, unknown, and missing
+        // values remain conservatively blocking.
+        blocksTime: !['free', 'workingelsewhere']
+          .includes(String(event.showAs ?? '').trim().toLowerCase()),
       }));
   } catch (err) {
     logger.error({ err }, 'Failed to fetch Outlook calendar events');

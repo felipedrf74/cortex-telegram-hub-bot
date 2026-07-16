@@ -101,6 +101,8 @@ export interface CalendarEvent {
   isAllDay?: boolean;
   /** IANA zone supplied by the provider or the configured calendar default. */
   timeZone?: string;
+  /** Explicit provider free/busy intent. Undefined remains conservatively busy. */
+  blocksTime?: boolean;
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
@@ -144,6 +146,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         htmlLink: event.htmlLink || undefined,
         isAllDay: !event.start?.dateTime && !!event.start?.date,
         timeZone: event.start?.timeZone || event.end?.timeZone || calendarTimeZone,
+        blocksTime: event.transparency !== 'transparent',
       }));
   } catch (err) {
     throw logAndWrapGoogleCalendarError(err, 'Failed to fetch calendar events');

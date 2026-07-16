@@ -633,12 +633,14 @@ interface NormalizedCalendarEvent {
   endMs: number;
   isAllDay: boolean;
   timeZone: string;
+  blocksTime: boolean;
   syncedSources: CalendarSource[];
 }
 
 function mergeCalendarBusyIntervals(events: NormalizedCalendarEvent[]): InstantRange[] {
   const merged: InstantRange[] = [];
   for (const event of events) {
+    if (!event.blocksTime) continue;
     const previous = merged.at(-1);
     if (!previous || event.startMs > previous.endMs) {
       merged.push({ startMs: event.startMs, endMs: event.endMs });
@@ -717,6 +719,7 @@ function countConflictingEvents(
   const identities = new Set<string>();
   let rangeIndex = 0;
   for (const event of events) {
+    if (!event.blocksTime) continue;
     while (rangeIndex < occurrenceRanges.length
         && occurrenceRanges[rangeIndex].endMs <= event.startMs) rangeIndex += 1;
     const range = occurrenceRanges[rangeIndex];
@@ -734,6 +737,9 @@ function validateAndNormalizeEvents(
   }
   const instantCache = new Map<string, number>();
   return events.map((event) => {
+    if (event.blocksTime !== undefined && typeof event.blocksTime !== 'boolean') {
+      throw capacityError('TRAINING_M4_CAPACITY_EVENT_SET_INVALID', 'Calendar event coverage is invalid.', 503);
+    }
     if (event.timeZone !== undefined && !validTimeZone(event.timeZone)) {
       throw capacityError('TRAINING_M4_CAPACITY_EVENT_SET_INVALID', 'Calendar event coverage is invalid.', 503);
     }
@@ -769,6 +775,7 @@ function validateAndNormalizeEvents(
       endMs,
       isAllDay,
       timeZone,
+      blocksTime: event.blocksTime !== false,
       syncedSources,
     };
   }).sort((left, right) => left.startMs - right.startMs
