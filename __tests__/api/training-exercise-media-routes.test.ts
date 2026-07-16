@@ -215,6 +215,51 @@ describe('Training exercise media API contracts', () => {
     expect(JSON.stringify(learningCases)).not.toContain('future_modal_xyz');
   });
 
+  it('uses the production learning defaults when callers omit either override', async () => {
+    const callWithLearningDependencies = async (learningDependencies: {
+      recordLearning?: typeof recordTrainingMediaLookupObservations;
+      scheduleLearning?: (task: () => void) => void;
+    }): Promise<void> => {
+      const app = express();
+      app.use((req, _res, next) => {
+        (req as any).userId = 7;
+        (req as any).tenantId = 7;
+        (req as any).entitlement = entitlement(7);
+        next();
+      });
+      const router = Router();
+      registerTrainingExerciseMediaRoutes(router, {
+        env,
+        lookup,
+        resolveEntitlement,
+        ...learningDependencies,
+      });
+      app.use(router);
+      const extraServer = await new Promise<http.Server>((resolve) => {
+        const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+      });
+      try {
+        const address = extraServer.address();
+        if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+        const response = await fetch(`http://127.0.0.1:${address.port}/exercises?ids=push_up`);
+        expect(response.status).toBe(200);
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          extraServer.close((error) => error ? reject(error) : resolve());
+        });
+      }
+    };
+
+    const recordWithDefaultScheduler = vi.fn<typeof recordTrainingMediaLookupObservations>(() => []);
+    await callWithLearningDependencies({ recordLearning: recordWithDefaultScheduler });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(recordWithDefaultScheduler).toHaveBeenCalledOnce();
+
+    const scheduleWithDefaultRecorder = vi.fn<(task: () => void) => void>();
+    await callWithLearningDependencies({ scheduleLearning: scheduleWithDefaultRecorder });
+    expect(scheduleWithDefaultRecorder).toHaveBeenCalledOnce();
+  });
+
   it('supports single-item 404 and conditional ETag revalidation', async () => {
     const unknown = await fetch(`${baseUrl}/exercises/future_modal_xyz`);
     expect(unknown.status).toBe(404);

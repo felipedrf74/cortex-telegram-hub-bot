@@ -47,6 +47,8 @@ export function registerTrainingExerciseMediaRoutes(
   dependencies: TrainingExerciseMediaRouteDependencies = {},
 ): void {
   const lookup = dependencies.lookup ?? lookupTrainingExerciseMedia;
+  const recordLearning = dependencies.recordLearning ?? recordTrainingMediaLookupObservations;
+  const scheduleLearning = dependencies.scheduleLearning ?? scheduleWithImmediate;
 
   router.get('/exercises', (req: Request, res: Response) => {
     const scope = requireMediaRouteScope(
@@ -65,8 +67,8 @@ export function registerTrainingExerciseMediaRoutes(
       parsed.exerciseIds,
       resolveLocale(req),
       lookup,
-      dependencies.recordLearning ?? recordTrainingMediaLookupObservations,
-      dependencies.scheduleLearning ?? scheduleWithImmediate,
+      recordLearning,
+      scheduleLearning,
     );
   });
 
@@ -87,8 +89,8 @@ export function registerTrainingExerciseMediaRoutes(
       [rawExerciseId],
       resolveLocale(req),
       lookup,
-      dependencies.recordLearning ?? recordTrainingMediaLookupObservations,
-      dependencies.scheduleLearning ?? scheduleWithImmediate,
+      recordLearning,
+      scheduleLearning,
       true,
     );
   });
