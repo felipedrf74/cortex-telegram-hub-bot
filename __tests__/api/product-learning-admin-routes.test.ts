@@ -269,6 +269,50 @@ describe('product learning admin routes', () => {
     expect(mocks.buildSummary).not.toHaveBeenCalled();
   });
 
+  it('keeps parent and child limiter buckets independent behind the trusted tunnel peer', async () => {
+    const app = guardedProductLearningApp({
+      globalMaxRequests: 40,
+      maxRequests: 30,
+      maxTrackedIps: 10,
+    });
+    const invalidHeaders = (ip: string) => ({
+      authorization: 'Bearer invalid-admin-token',
+      'cf-connecting-ip': ip,
+    });
+
+    const firstClientResponses = [];
+    for (let requestIndex = 0; requestIndex < 30; requestIndex += 1) {
+      firstClientResponses.push(await fetchJson(
+        app,
+        'GET',
+        '/api/v1/admin/product-learning/summary',
+        undefined,
+        invalidHeaders('198.51.100.20'),
+      ));
+    }
+    const firstClientBlocked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.20'),
+    );
+    const freshClient = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.21'),
+    );
+
+    expect(firstClientResponses.every((response) => response.status === 401)).toBe(true);
+    expect(firstClientBlocked.status).toBe(429);
+    expect(firstClientBlocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(freshClient.status).toBe(401);
+    expect(freshClient.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(31);
+  });
+
   it('rejects an oversized product-learning body before auth while leaving sibling admin routes untouched', async () => {
     const app = guardedProductLearningApp({ maxRequests: 3 });
 

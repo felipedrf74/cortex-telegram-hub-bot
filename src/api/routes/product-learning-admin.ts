@@ -6,6 +6,7 @@ import {
   PRODUCT_LEARNING_ADMIN_RATE_LIMIT,
   PRODUCT_LEARNING_ADMIN_RATE_WINDOW_MS,
 } from '../admin-pre-body-guard';
+import { extractClientIp } from '../rate-limiter';
 import { requirePortalAdminToken } from '../secret-guards';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import {
@@ -45,9 +46,7 @@ export function productLearningAdminRoutes(
   const standaloneRateLimitMiddleware = rateLimit({
     windowMs: PRODUCT_LEARNING_ADMIN_RATE_WINDOW_MS,
     limit: PRODUCT_LEARNING_ADMIN_RATE_LIMIT,
-    keyGenerator: (req: Request) => (
-      `ip:${ipKeyGenerator(req.ip || req.socket?.remoteAddress || '0.0.0.0')}`
-    ),
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
     // The parent pre-body guard remains authoritative for the production
     // rate-limit headers and distributed accepted-work cap. This local guard
     // keeps the exported router independently safe and CodeQL-legible.
