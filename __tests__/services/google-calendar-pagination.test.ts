@@ -70,6 +70,39 @@ describe('google calendar pagination', () => {
     }));
   });
 
+  it('preserves Google transparency as explicit free/busy intent', async () => {
+    mocks.list.mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: 'evt-free', summary: 'Available', transparency: 'transparent',
+            start: { dateTime: '2026-06-22T12:00:00+01:00' },
+            end: { dateTime: '2026-06-22T12:45:00+01:00' },
+          },
+          {
+            id: 'evt-busy', summary: 'Busy', transparency: 'opaque',
+            start: { dateTime: '2026-06-22T13:00:00+01:00' },
+            end: { dateTime: '2026-06-22T13:45:00+01:00' },
+          },
+          {
+            id: 'evt-unknown', summary: 'Unknown',
+            start: { dateTime: '2026-06-22T14:00:00+01:00' },
+            end: { dateTime: '2026-06-22T14:45:00+01:00' },
+          },
+        ],
+      },
+    });
+
+    const { getEvents } = await import('../../src/services/google-calendar');
+    const events = await getEvents('2026-06-22', '2026-06-24', 42);
+
+    expect(events.map((event) => [event.id, event.blocksTime])).toEqual([
+      ['evt-free', false],
+      ['evt-busy', true],
+      ['evt-unknown', true],
+    ]);
+  });
+
   it('stops if Google Calendar pagination keeps returning a next page token', async () => {
     mocks.list.mockResolvedValue({
       data: {

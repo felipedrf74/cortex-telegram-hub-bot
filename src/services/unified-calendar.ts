@@ -406,6 +406,9 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
       end: conservativeBoundary(existing.end, event.end, 'latest'),
       isAllDay: Boolean(existing.isAllDay || event.isAllDay),
       timeZone: richer.timeZone ?? existing.timeZone ?? event.timeZone,
+      // A provider copy that is busy must win over a duplicate marked free.
+      // Missing intent is treated as busy for backwards-compatible safety.
+      blocksTime: (existing.blocksTime ?? true) || (event.blocksTime ?? true),
       syncedSources: [...sources],
     };
   }

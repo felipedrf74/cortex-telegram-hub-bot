@@ -62,7 +62,10 @@ export const TRAINING_REVISION_CAPABILITIES_PATH = TRAINING_CAPABILITY_METADATA.
 export const TRAINING_M4_CAPACITY_REFRESH_METHOD = TRAINING_CAPABILITY_METADATA.capacity.refreshMethod as 'POST';
 export const TRAINING_M4_CAPACITY_REFRESH_PATH = TRAINING_CAPABILITY_METADATA.capacity.refreshPath as '/plan/capacity-context/refresh';
 export const TRAINING_M4_CAPACITY_REFRESH_API_SCHEMA = TRAINING_CAPABILITY_METADATA.capacity.refreshApiSchema as 'training_m4_capacity_refresh.v1';
-export const TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT = 2;
+// One reviewed recovery can require: initial refresh, explicitly narrowed
+// confirmation, then the submit-time JIT refresh. The five-minute ceiling
+// remains the outer abuse bound.
+export const TRAINING_M4_CAPACITY_REFRESH_BURST_LIMIT = 3;
 export const TRAINING_M4_CAPACITY_REFRESH_FIVE_MINUTE_LIMIT = 6;
 const TRAINING_M4_CAPACITY_REFRESH_BURST_WINDOW_MS = 60_000;
 const TRAINING_M4_CAPACITY_REFRESH_TOTAL_WINDOW_MS = 5 * 60_000;

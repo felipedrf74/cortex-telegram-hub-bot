@@ -140,6 +140,47 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     });
   });
 
+  it('maps Outlook free and workingElsewhere as non-blocking while unknown values fail closed', async () => {
+    mocks.userRequest.get
+      .mockResolvedValueOnce({
+        value: [
+          {
+            id: 'evt-free', subject: 'Available', showAs: 'free',
+            start: { dateTime: '2026-04-16T09:00:00.000Z' },
+            end: { dateTime: '2026-04-16T10:00:00.000Z' },
+          },
+          {
+            id: 'evt-tentative', subject: 'Tentative', showAs: 'tentative',
+            start: { dateTime: '2026-04-16T10:00:00.000Z' },
+            end: { dateTime: '2026-04-16T11:00:00.000Z' },
+          },
+          {
+            id: 'evt-elsewhere', subject: 'Elsewhere', showAs: 'workingElsewhere',
+            start: { dateTime: '2026-04-16T11:00:00.000Z' },
+            end: { dateTime: '2026-04-16T12:00:00.000Z' },
+          },
+          {
+            id: 'evt-unknown', subject: 'Unknown',
+            start: { dateTime: '2026-04-16T12:00:00.000Z' },
+            end: { dateTime: '2026-04-16T13:00:00.000Z' },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ value: [] });
+
+    const events = await getEvents('2026-04-16', '2026-04-17', 77);
+
+    expect(mocks.userRequest.query).toHaveBeenCalledWith(expect.objectContaining({
+      $select: expect.stringContaining('showAs'),
+    }));
+    expect(events.map((event) => [event.id, event.blocksTime])).toEqual([
+      ['evt-free', false],
+      ['evt-tentative', true],
+      ['evt-elsewhere', false],
+      ['evt-unknown', true],
+    ]);
+  });
+
   it('follows Outlook calendarView nextLink pages', async () => {
     mocks.userRequest.get
       .mockResolvedValueOnce({

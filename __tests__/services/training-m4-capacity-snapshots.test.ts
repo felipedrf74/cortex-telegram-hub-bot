@@ -88,6 +88,27 @@ describe('Training M4 authoritative capacity snapshots', () => {
     })).toBeNull();
   });
 
+  it('does not treat provider-declared free events as capacity conflicts', async () => {
+    const context = await refreshTrainingM4AuthoritativeCapacityContext({
+      scope: { userId: 7, tenantId: 7 },
+      idempotencyKey: 'provider-declared-free',
+      request,
+      dependencies: {
+        db,
+        now: NOW,
+        configuredSources: () => ['google'],
+        loadCalendar: async () => readyCalendar('google', [{
+          id: 'free-hold', source: 'google', summary: 'Private',
+          start: '2026-08-03T05:00:00.000Z', end: '2026-08-03T07:00:00.000Z',
+          blocksTime: false,
+        }]),
+      },
+    });
+
+    expect(context.conflictCount).toBe(0);
+    expect(context.windows).toEqual(request.profileWindows);
+  });
+
   it('is idempotent and fails closed after expiry, profile drift, or provider disconnect', async () => {
     const loader = vi.fn(async () => readyCalendar('google', []));
     const dependencies = {

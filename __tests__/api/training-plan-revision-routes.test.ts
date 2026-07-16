@@ -325,7 +325,7 @@ describe('Training plan revision API contracts', () => {
             singleTimezone: true,
           },
           rateLimit: {
-            burstMaxRequests: 2,
+            burstMaxRequests: 3,
             burstWindowSeconds: 60,
             totalMaxRequests: 6,
             totalWindowSeconds: 300,
@@ -452,7 +452,7 @@ describe('Training plan revision API contracts', () => {
         profileWindows: expected.windows,
       });
 
-      for (let index = 0; index < 2; index += 1) {
+      for (let index = 0; index < 3; index += 1) {
         const response = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'idempotency-key': `capacity-limit-${index}` },
@@ -462,7 +462,7 @@ describe('Training plan revision API contracts', () => {
       }
       const limited = await fetch(`${baseUrl}/plan/capacity-context/refresh`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'idempotency-key': 'capacity-limit-2' },
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'capacity-limit-3' },
         body,
       });
       expect(limited.status).toBe(429);
@@ -471,7 +471,7 @@ describe('Training plan revision API contracts', () => {
         ok: false,
         error: { code: 'TRAINING_M4_CAPACITY_REFRESH_RATE_LIMITED' },
       });
-      expect(calls).toBe(2);
+      expect(calls).toBe(3);
 
       process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_8 = 'active';
       process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8 = 'true';
@@ -488,7 +488,7 @@ describe('Training plan revision API contracts', () => {
           body,
         });
         expect(isolated.status).toBe(201);
-        expect(calls).toBe(3);
+        expect(calls).toBe(4);
       } finally {
         delete process.env.TRAINING_PLAN_REVISION_V1_MODE_USER_8;
         delete process.env.TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_8;
@@ -502,25 +502,23 @@ describe('Training plan revision API contracts', () => {
         body,
       });
       expect(afterReset.status).toBe(201);
-      expect(calls).toBe(4);
+      expect(calls).toBe(5);
     });
   });
 
-  it('enforces the six-per-five-minute refresh budget after allowing two-request JIT bursts', () => {
+  it('enforces the six-per-five-minute refresh budget after allowing three-request JIT bursts', () => {
     const scope = { userId: 7, tenantId: 7 };
     const start = Date.parse('2026-07-14T10:00:00.000Z');
-    for (const offsetMinutes of [0, 1, 2]) {
-      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
-        scope,
-        start + offsetMinutes * 60_000,
-      )).toEqual({ allowed: true });
-      expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
-        scope,
-        start + offsetMinutes * 60_000,
-      )).toEqual({ allowed: true });
+    for (const offsetMinutes of [0, 1]) {
+      for (let request = 0; request < 3; request += 1) {
+        expect(consumeTrainingM4CapacityRefreshRateLimitForTests(
+          scope,
+          start + offsetMinutes * 60_000,
+        )).toEqual({ allowed: true });
+      }
     }
-    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 3 * 60_000))
-      .toEqual({ allowed: false, retryAfterSeconds: 120 });
+    expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 2 * 60_000))
+      .toEqual({ allowed: false, retryAfterSeconds: 180 });
     expect(consumeTrainingM4CapacityRefreshRateLimitForTests(scope, start + 5 * 60_000))
       .toEqual({ allowed: true });
   });

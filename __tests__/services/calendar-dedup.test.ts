@@ -212,6 +212,18 @@ describe('deduplicateEvents', () => {
     });
   });
 
+  it('keeps cross-provider duplicates busy unless every copy is explicitly free', () => {
+    const google = makeEvent('Shared hold', '2024-06-15T09:00:00Z', 'google');
+    const outlook = makeEvent('Shared hold', '2024-06-15T09:00:00Z', 'outlook');
+
+    google.blocksTime = false;
+    outlook.blocksTime = true;
+    expect(deduplicateEvents([google, outlook])[0].blocksTime).toBe(true);
+
+    outlook.blocksTime = false;
+    expect(deduplicateEvents([google, outlook])[0].blocksTime).toBe(false);
+  });
+
   it('handles mixed duplicate and unique events', () => {
     const events = [
       makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'google'),
