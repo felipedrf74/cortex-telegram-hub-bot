@@ -1,10 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import express from 'express';
+import http from 'node:http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
 const mocks = vi.hoisted(() => ({
   buildSummary: vi.fn(),
+  logAdminMutation: vi.fn(),
+  logAudit: vi.fn(),
   recordPhysicalDevice: vi.fn(),
 }));
 
@@ -20,7 +24,8 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/audit-trail', () => ({ getAuditTrail: vi.fn(() => []), logAudit: vi.fn() }));
+vi.mock('../../src/services/audit-trail', () => ({ getAuditTrail: vi.fn(() => []), logAudit: mocks.logAudit }));
+vi.mock('../../src/services/user-service', () => ({ getOwnerBootstrapTarget: vi.fn(() => ({ tenantId: 1 })) }));
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(),
@@ -30,6 +35,11 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { productLearningAdminRoutes } from '../../src/api/routes/product-learning-admin';
+import {
+  createAdminPreBodyGuard,
+  PRODUCT_LEARNING_ADMIN_BODY_LIMIT_BYTES,
+  type AdminPreBodyGuardOptions,
+} from '../../src/api/admin-pre-body-guard';
 
 interface MockResponse {
   statusCode: number;
@@ -79,6 +89,7 @@ async function dispatch(req: Request): Promise<MockResponse> {
   };
   productLearningAdminRoutes({
     buildSummary: mocks.buildSummary,
+    logAdminMutation: mocks.logAdminMutation,
     recordPhysicalDevice: mocks.recordPhysicalDevice,
   }).handle(req, res, done);
   await completed;
@@ -92,13 +103,37 @@ describe('product learning admin routes', () => {
       generatedAt: '2026-07-15T12:00:00.000Z',
       schemaAvailable: true,
       scope: { tenantId: 7 },
-      totals: { cases: 3, staleCases: 1, exportEligibleGoldenCases: 0, promotions: 1 },
+      totals: {
+        cases: 3,
+        activeCases: 2,
+        historicalCases: 1,
+        retiredCases: 0,
+        staleCases: 1,
+        exportEligibleGoldenCases: 0,
+        promotions: 1,
+      },
       lifecycleCounts: { observed: 2, candidate: 1, reviewed: 0, golden: 0, retired: 0 },
       transitionCounts: { observed_to_candidate: 1 },
       feedback: { adaptationAccepted: 1, adaptationDismissed: 1, acceptanceRate: 0.5 },
       coverage: { observedCategories: 3, totalCategories: 8, missingCategories: [] },
+      activity: {
+        active: {
+          cases: 2,
+          lifecycleCounts: { observed: 2, candidate: 0, reviewed: 0, golden: 0, retired: 0 },
+          feedback: { adaptationAccepted: 1, adaptationDismissed: 0, acceptanceRate: 1 },
+          coverage: { observedCategories: 2, totalCategories: 8, missingCategories: [] },
+        },
+        historical: {
+          cases: 1,
+          lifecycleCounts: { observed: 0, candidate: 1, reviewed: 0, golden: 0, retired: 0 },
+          feedback: { adaptationAccepted: 0, adaptationDismissed: 1, acceptanceRate: 0 },
+          coverage: { observedCategories: 1, totalCategories: 8, missingCategories: [] },
+        },
+      },
       categories: [],
     });
+    mocks.logAdminMutation.mockReset();
+    mocks.logAudit.mockReset();
     mocks.recordPhysicalDevice.mockReset().mockReturnValue({
       id: 'training-physical-device-observation-opaque',
       tenantId: 7,
@@ -109,7 +144,7 @@ describe('product learning admin routes', () => {
       redactedInput: { kind: 'physical_device_observation', outcomeCode: 'failed', subjectFingerprint: 'a'.repeat(64) },
       expectedContract: { contractId: 'training.physical_device.v1' },
       evidenceReferences: ['testflight://build/56/review-availability'],
-      producerVersion: 'training-learning-producers.v1',
+      producerVersion: 'training-learning-producers.v2',
       confidence: 1,
       observedAt: '2026-07-15T12:30:00.000Z',
       expiresAt: '2027-01-11T12:30:00.000Z',
@@ -129,7 +164,8 @@ describe('product learning admin routes', () => {
     expect(mocks.buildSummary).toHaveBeenCalledWith({ tenantId: 7 });
     expect(response.body.data).toMatchObject({
       scope: { tenantId: 7 },
-      totals: { cases: 3, staleCases: 1, promotions: 1 },
+      totals: { cases: 3, activeCases: 2, historicalCases: 1, staleCases: 1, promotions: 1 },
+      activity: { active: { cases: 2 }, historical: { cases: 1 } },
     });
     expect(JSON.stringify(response.body)).not.toContain('userId');
   });
@@ -160,5 +196,206 @@ describe('product learning admin routes', () => {
       outcomeCode: 'failed',
     }));
     expect(JSON.stringify(accepted.body)).not.toContain('notes');
+
+    expect(mocks.logAdminMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      'product_learning.physical_device_observation.accepted',
+      {
+        tenantId: 7,
+        caseId: 'training-physical-device-observation-opaque',
+        buildNumber: '56',
+        checkCode: 'review_availability',
+        lifecycle: 'observed',
+        outcomeCode: 'failed',
+      },
+    );
+    const auditMetadata = mocks.logAdminMutation.mock.calls[0]?.[3];
+    expect(JSON.stringify(auditMetadata)).not.toContain(body.observationId);
+    expect(JSON.stringify(auditMetadata)).not.toContain(body.evidenceReference);
+  });
+
+  it('returns 429 before auth and bounds invalid-credential audit inserts', async () => {
+    const app = guardedProductLearningApp({ maxRequests: 2 });
+
+    const first = await fetchJson(app, 'GET', '/api/v1/admin/product-learning/summary', undefined, {
+      authorization: 'Bearer invalid-admin-token',
+    });
+    const second = await fetchJson(app, 'GET', '/api/v1/admin/product-learning/summary', undefined, {
+      authorization: 'Bearer invalid-admin-token',
+    });
+    const blocked = await fetchJson(app, 'GET', '/api/v1/admin/product-learning/summary', undefined, {
+      authorization: 'Bearer invalid-admin-token',
+    });
+
+    expect([first.status, second.status, blocked.status]).toEqual([401, 401, 429]);
+    expect(blocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(blocked.headers['retry-after']).toBe('60');
+    expect(blocked.body.error.code).toBe('RATE_LIMITED');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(2);
+    expect(mocks.logAudit.mock.calls.every(([entry]) => (
+      entry.resource === 'portal.auth'
+      && entry.details.outcome === 'failure'
+      && entry.details.reason === 'invalid_token'
+    ))).toBe(true);
+    expect(mocks.logAdminMutation).not.toHaveBeenCalled();
+    expect(mocks.buildSummary).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized product-learning body before auth while leaving sibling admin routes untouched', async () => {
+    const app = guardedProductLearningApp({ maxRequests: 3 });
+
+    for (let requestIndex = 0; requestIndex < 4; requestIndex += 1) {
+      const sibling = await fetchJson(app, 'GET', '/api/v1/admin/sibling');
+      expect(sibling.status).toBe(200);
+      expect(sibling.body).toEqual({ ok: true });
+    }
+
+    const oversized = await fetchJson(
+      app,
+      'POST',
+      '/api/v1/admin/product-learning/physical-device-observations',
+      { padding: 'x'.repeat(PRODUCT_LEARNING_ADMIN_BODY_LIMIT_BYTES) },
+      {
+        authorization: 'Bearer product-learning-admin-token',
+        'transfer-encoding': 'chunked',
+      },
+    );
+
+    expect(oversized.status).toBe(413);
+    expect(oversized.body.error.code).toBe('PAYLOAD_TOO_LARGE');
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+    expect(mocks.recordPhysicalDevice).not.toHaveBeenCalled();
+  });
+
+  it('caps tracked IP cardinality with a shared overflow bucket and prunes stale entries', async () => {
+    let now = Date.parse('2026-07-16T12:00:00.000Z');
+    const app = guardedProductLearningApp({
+      maxRequests: 1,
+      maxTrackedIps: 1,
+      now: () => now,
+      pruneEveryRequests: 1,
+      windowMs: 1_000,
+    });
+    const invalidHeaders = (ip: string) => ({
+      authorization: 'Bearer invalid-admin-token',
+      'cf-connecting-ip': ip,
+    });
+
+    const tracked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.1'),
+    );
+    const overflowAllowed = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.2'),
+    );
+    const overflowBlocked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.3'),
+    );
+
+    expect([tracked.status, overflowAllowed.status, overflowBlocked.status]).toEqual([401, 401, 429]);
+    expect(tracked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(overflowAllowed.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-overflow');
+    expect(overflowBlocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-overflow');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(2);
+
+    now += 1_001;
+    const reusedSlot = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.2'),
+    );
+    expect(reusedSlot.status).toBe(401);
+    expect(reusedSlot.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(3);
   });
 });
+
+function guardedProductLearningApp(options: AdminPreBodyGuardOptions) {
+  const app = express();
+  app.use('/api/v1/admin/product-learning', createAdminPreBodyGuard({
+    ...options,
+    bucketName: 'test-product-learning-admin-ip',
+    now: options.now ?? (() => Date.parse('2026-07-16T12:00:00.000Z')),
+  }));
+
+  const api = express.Router();
+  api.use('/admin/product-learning', productLearningAdminRoutes({
+    buildSummary: mocks.buildSummary,
+    logAdminMutation: mocks.logAdminMutation,
+    recordPhysicalDevice: mocks.recordPhysicalDevice,
+  }));
+  api.get('/admin/sibling', (_req, res) => res.json({ ok: true }));
+  app.use('/api/v1', express.json({ limit: '8mb' }), api);
+  return app;
+}
+
+async function fetchJson(
+  app: express.Express,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: any; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(app);
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('failed to start product-learning admin test server'));
+        return;
+      }
+
+      const payload = body === undefined ? undefined : JSON.stringify(body);
+      const useChunkedEncoding = headers['transfer-encoding']?.toLowerCase() === 'chunked';
+      const request = http.request({
+        host: '127.0.0.1',
+        port: address.port,
+        method,
+        path,
+        headers: {
+          ...(payload === undefined ? {} : {
+            'content-type': 'application/json',
+            ...(useChunkedEncoding ? {} : {
+              'content-length': String(Buffer.byteLength(payload)),
+            }),
+          }),
+          ...headers,
+        },
+      }, (response) => {
+        let responseBody = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => { responseBody += chunk; });
+        response.on('end', () => {
+          server.close(() => {
+            resolve({
+              status: response.statusCode ?? 0,
+              body: responseBody ? JSON.parse(responseBody) : null,
+              headers: response.headers,
+            });
+          });
+        });
+      });
+      request.once('error', (error) => {
+        server.close(() => reject(error));
+      });
+      if (payload !== undefined) request.write(payload);
+      request.end();
+    });
+  });
+}

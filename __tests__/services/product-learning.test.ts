@@ -512,6 +512,10 @@ describe('governed product learning', () => {
       outcomeCode: 'felipe_private_note',
       expectedContractId: 'training.fake.v1',
     })).toThrow(/closed taxonomy/);
+    expect(() => createTrainingLearningCase({
+      ...observation,
+      observedAt: new Date(Date.now() + 10 * 60 * 1_000).toISOString(),
+    })).toThrow(/observed_at_future/);
   });
 
   it('rejects direct reviewed or golden insertion at service and database boundaries', () => {

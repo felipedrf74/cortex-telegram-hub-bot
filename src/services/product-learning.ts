@@ -110,6 +110,7 @@ const TRAINING_LEARNING_KIND_SET = new Set<string>(TRAINING_LEARNING_KIND_VALUES
 const TRAINING_INPUT_KEYS = new Set(['kind', 'outcomeCode', 'subjectFingerprint']);
 const TRAINING_CONTRACT_KEYS = new Set(['contractId']);
 const DEFAULT_LEARNING_EXPIRY_DAYS = 180;
+const MAX_LEARNING_OBSERVED_AT_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const PRODUCT_LEARNING_REVIEW_ACTION_ID = 'approve_product_learning_case' as const;
 
 export function trainingLearningExpectedContract(
@@ -451,6 +452,10 @@ export function validateLearningCase(candidate: LearningCase): string[] {
     errors.push('confidence_invalid');
   }
   if (!isIsoTimestamp(candidate.observedAt)) errors.push('observed_at_invalid');
+  if (isIsoTimestamp(candidate.observedAt)
+      && Date.parse(candidate.observedAt) > Date.now() + MAX_LEARNING_OBSERVED_AT_FUTURE_SKEW_MS) {
+    errors.push('observed_at_future');
+  }
   if (candidate.reviewedAt && !isIsoTimestamp(candidate.reviewedAt)) errors.push('reviewed_at_invalid');
   if (candidate.reviewedAt && isIsoTimestamp(candidate.reviewedAt)
       && Date.parse(candidate.reviewedAt) > Date.now()) {

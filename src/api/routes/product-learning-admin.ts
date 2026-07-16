@@ -10,10 +10,12 @@ import {
   recordPhysicalDeviceLearningObservation,
   type PhysicalDeviceLearningObservation,
 } from '../../services/training-learning-producers';
+import { logPortalAdminMutation } from '../../portal/admin-audit';
 import { logger } from '../../utils/logger';
 
 export interface ProductLearningAdminRouteDependencies {
   buildSummary?: typeof buildProductLearningObservabilityReadModel;
+  logAdminMutation?: typeof logPortalAdminMutation;
   recordPhysicalDevice?: typeof recordPhysicalDeviceLearningObservation;
 }
 
@@ -33,6 +35,7 @@ export function productLearningAdminRoutes(
 ): Router {
   const router = Router();
   const buildSummary = dependencies.buildSummary ?? buildProductLearningObservabilityReadModel;
+  const logAdminMutation = dependencies.logAdminMutation ?? logPortalAdminMutation;
   const recordPhysicalDevice = dependencies.recordPhysicalDevice ?? recordPhysicalDeviceLearningObservation;
   router.use(requirePortalAdminToken);
 
@@ -63,6 +66,28 @@ export function productLearningAdminRoutes(
     }
     try {
       const learningCase = recordPhysicalDevice(observation);
+      try {
+        logAdminMutation(
+          req,
+          learningCase.userId,
+          'product_learning.physical_device_observation.accepted',
+          {
+            tenantId: learningCase.tenantId,
+            caseId: learningCase.id,
+            buildNumber: observation.buildNumber,
+            checkCode: observation.checkCode,
+            lifecycle: learningCase.lifecycle,
+            outcomeCode: learningCase.redactedInput.outcomeCode,
+          },
+        );
+      } catch (auditError) {
+        // The canonical helper already fails open, but injected/test helpers
+        // must not turn an accepted, persisted observation into a false 400.
+        logger.warn(
+          { err: auditError, caseId: learningCase.id },
+          'Physical-device learning observation audit failed',
+        );
+      }
       sendSuccess(res, {
         observation: {
           caseId: learningCase.id,

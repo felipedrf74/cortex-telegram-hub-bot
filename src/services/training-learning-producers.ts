@@ -11,7 +11,7 @@ import {
   type TrainingLearningKind,
 } from './product-learning';
 
-export const TRAINING_LEARNING_PRODUCER_VERSION = 'training-learning-producers.v1' as const;
+export const TRAINING_LEARNING_PRODUCER_VERSION = 'training-learning-producers.v2' as const;
 
 export interface TrainingLearningScope {
   tenantId: number;

@@ -36,8 +36,10 @@ describe('governed Training learning producers', () => {
       observedAt: '2026-07-15T12:00:00.000Z',
     };
 
-    expect(recordTrainingPlanCorrectionObservations(input, db).map((entry) => entry.redactedInput.kind))
+    const recorded = recordTrainingPlanCorrectionObservations(input, db);
+    expect(recorded.map((entry) => entry.redactedInput.kind))
       .toEqual(['plan_correction', 'capacity_conflict_accuracy']);
+    expect(recorded.every((entry) => entry.producerVersion === 'training-learning-producers.v2')).toBe(true);
     expect(recordTrainingPlanCorrectionObservations(input, db)).toHaveLength(2);
 
     const rows = db.prepare(`
