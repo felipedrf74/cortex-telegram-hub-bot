@@ -82,7 +82,6 @@ export function createAdminPreBodyGuard(
       sendError(res, 'RATE_LIMITED', globalMessage, 429, { retryAfterSeconds });
       return;
     }
-    globalRequestLog.push(currentTime);
 
     const clientIp = extractClientIp(req);
     requestsUntilPrune -= 1;
@@ -130,6 +129,10 @@ export function createAdminPreBodyGuard(
     } else {
       requestLog.set(clientIp, inWindow);
     }
+    // Spend global capacity only for requests admitted by the IP/overflow
+    // limiter. A noisy client cannot exhaust the operator-wide budget with
+    // requests that were already rejected locally.
+    globalRequestLog.push(currentTime);
     res.setHeader('X-RateLimit-Remaining', Math.max(0, maxRequests - inWindow.length));
     next();
   });

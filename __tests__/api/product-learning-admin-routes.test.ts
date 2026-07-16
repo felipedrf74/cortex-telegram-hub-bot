@@ -334,6 +334,61 @@ describe('product learning admin routes', () => {
     expect(mocks.buildSummary).not.toHaveBeenCalled();
   });
 
+  it('does not let one per-IP-blocked client poison the global operator budget', async () => {
+    const app = guardedProductLearningApp({
+      globalMaxRequests: 2,
+      maxRequests: 1,
+      maxTrackedIps: 10,
+    });
+    const invalidHeaders = (ip: string) => ({
+      authorization: 'Bearer invalid-admin-token',
+      'cf-connecting-ip': ip,
+    });
+
+    const first = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.10'),
+    );
+    const noisyReplays = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      noisyReplays.push(await fetchJson(
+        app,
+        'GET',
+        '/api/v1/admin/product-learning/summary',
+        undefined,
+        invalidHeaders('198.51.100.10'),
+      ));
+    }
+    const freshOperator = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.11'),
+    );
+    const globallyBlocked = await fetchJson(
+      app,
+      'GET',
+      '/api/v1/admin/product-learning/summary',
+      undefined,
+      invalidHeaders('198.51.100.12'),
+    );
+
+    expect(first.status).toBe(401);
+    expect(noisyReplays.map((response) => response.status)).toEqual([429, 429, 429, 429]);
+    expect(noisyReplays.every((response) => (
+      response.headers['x-ratelimit-bucket'] === 'test-product-learning-admin-ip'
+    ))).toBe(true);
+    expect(freshOperator.status).toBe(401);
+    expect(freshOperator.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip');
+    expect(globallyBlocked.status).toBe(429);
+    expect(globallyBlocked.headers['x-ratelimit-bucket']).toBe('test-product-learning-admin-ip-global');
+    expect(mocks.logAudit).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps map-full clients on bounded overflow until the fixed periodic prune', async () => {
     let now = Date.parse('2026-07-16T12:00:00.000Z');
     const app = guardedProductLearningApp({
