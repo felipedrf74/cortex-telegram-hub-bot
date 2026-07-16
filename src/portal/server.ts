@@ -24,6 +24,7 @@ import { logger } from '../utils/logger';
 import { generateRequestId, runWithContext } from '../utils/request-context';
 import { requirePortalTokenByMethod } from '../api/secret-guards';
 import { rateLimitMiddleware } from '../api/rate-limiter';
+import { createAdminPreBodyGuard } from '../api/admin-pre-body-guard';
 import {
   getConfiguredPortalCredentials,
   validatePortalAdminBetaReadiness,
@@ -204,6 +205,14 @@ export function createPortalServer(): http.Server {
     }
 
     const { createApiRouter } = require('../api/router');
+    // Product-learning admin requests are authenticated inside createApiRouter,
+    // before the shared JWT limiter is mounted. Apply a narrow IP guard before
+    // any body parsing so invalid credentials cannot grow portal.auth audit
+    // rows without bound, and keep this tiny contract off the 8 MB upload cap.
+    app.use(
+      '/api/v1/admin/product-learning',
+      createAdminPreBodyGuard({ bucketName: 'admin-product-learning-ip' }),
+    );
     app.use('/api/v1/billing/nexus-points/stripe-checkout', (req: Request, res: Response, next: NextFunction) => {
       const rawLength = req.headers['content-length'];
       const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength || 0);

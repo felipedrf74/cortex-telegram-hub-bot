@@ -50,6 +50,8 @@
         "__tests__/services/capability-manifest-consolidation.test.ts",
         "__tests__/services/event-backbone.test.ts",
         "__tests__/services/product-learning.test.ts",
+        "__tests__/services/training-learning-producers.test.ts",
+        "__tests__/api/product-learning*.test.ts",
         "__tests__/services/training-exercise-media*.test.ts"
       ]
     },

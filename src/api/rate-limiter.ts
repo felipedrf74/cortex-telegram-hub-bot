@@ -120,7 +120,7 @@ function isTrustedImmediatePeer(rawIp: string | undefined): boolean {
     || lower.startsWith('fe80:');
 }
 
-function extractClientIp(req: Request): string {
+export function extractClientIp(req: Request): string {
   // Cloudflare Tunnel connects from a local/private peer, so the immediate
   // socket address alone would collapse all visitors into one rate-limit
   // bucket. Trust CF-Connecting-IP only when the direct peer is local/private;

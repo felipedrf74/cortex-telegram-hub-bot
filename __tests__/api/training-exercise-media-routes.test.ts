@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerTrainingExerciseMediaRoutes } from '../../src/api/routes/training-exercise-media-routes';
 import { lookupTrainingExerciseMedia } from '../../src/services/training-exercise-media';
+import { recordTrainingMediaLookupObservations } from '../../src/services/training-learning-producers';
 import type { UserEntitlement } from '../../src/services/entitlement';
 import { runMigrationsForTest } from '../../src/services/database';
 import { seedApprovedExerciseMedia } from '../fixtures/training-exercise-media';
@@ -71,6 +72,9 @@ describe('Training exercise media API contracts', () => {
   let baseUrl: string;
   let env: NodeJS.ProcessEnv;
   let lookup: ReturnType<typeof vi.fn<typeof lookupTrainingExerciseMedia>>;
+  let recordLearning: ReturnType<typeof vi.fn<typeof recordTrainingMediaLookupObservations>>;
+  let learningTasks: Array<() => void>;
+  let scheduleLearning: ReturnType<typeof vi.fn<(task: () => void) => void>>;
   let resolveEntitlement: ReturnType<typeof vi.fn<(userId: number) => UserEntitlement>>;
 
   beforeEach(async () => {
@@ -81,6 +85,9 @@ describe('Training exercise media API contracts', () => {
       tenantId, userId, ids, locale,
       { db, now: new Date('2026-07-12T12:00:00.000Z'), expectedExerciseIds: ['push_up'] },
     ));
+    recordLearning = vi.fn((input) => recordTrainingMediaLookupObservations(input, db));
+    learningTasks = [];
+    scheduleLearning = vi.fn((task) => { learningTasks.push(task); });
     resolveEntitlement = vi.fn((userId: number) => (
       userId === 9 ? ineligibleEntitlement(userId) : entitlement(userId)
     ));
@@ -93,7 +100,9 @@ describe('Training exercise media API contracts', () => {
       next();
     });
     const router = Router();
-    registerTrainingExerciseMediaRoutes(router, { env, lookup, resolveEntitlement });
+    registerTrainingExerciseMediaRoutes(router, {
+      env, lookup, resolveEntitlement, recordLearning, scheduleLearning,
+    });
     app.use(router);
     server = await new Promise((resolve) => {
       const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
@@ -152,12 +161,12 @@ describe('Training exercise media API contracts', () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('returns ordered available/unknown results with honest locale fallback and no GET writes', async () => {
+  it('returns honest locale fallback before asynchronously recording bounded redacted outcomes', async () => {
     const before = db.prepare('SELECT total_changes() AS count').get() as { count: number };
     const response = await fetch(`${baseUrl}/exercises?ids=push_up,press_up,future_modal_xyz`, {
       headers: { 'x-language': 'pt-PT' },
     });
-    const after = db.prepare('SELECT total_changes() AS count').get() as { count: number };
+    const afterRead = db.prepare('SELECT total_changes() AS count').get() as { count: number };
     expect(response.status).toBe(200);
     expect(response.headers.get('etag')).toMatch(/^W\/"[0-9a-f]{64}"$/);
     expect(response.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
@@ -180,7 +189,75 @@ describe('Training exercise media API contracts', () => {
     });
     const golden = goldenEnvelope('training-exercise-media-golden-batch.json');
     expect(normalizedTimestamp(body, golden)).toEqual(golden);
-    expect(after).toEqual(before);
+    expect(afterRead).toEqual(before);
+    expect(scheduleLearning).toHaveBeenCalledOnce();
+    expect(recordLearning).not.toHaveBeenCalled();
+    for (const task of learningTasks.splice(0)) task();
+    const afterLearning = db.prepare('SELECT total_changes() AS count').get() as { count: number };
+    expect(afterLearning.count).toBeGreaterThan(before.count);
+    expect(recordLearning).toHaveBeenCalledOnce();
+    const learningCases = db.prepare(`
+      SELECT redacted_input_json AS redactedInput,
+             evidence_references_json AS evidenceReferences,
+             lifecycle
+        FROM product_learning_cases
+       WHERE tenant_id = 7 AND user_id = 7
+       ORDER BY redacted_input_json
+    `).all() as Array<{ redactedInput: string; evidenceReferences: string; lifecycle: string }>;
+    expect(learningCases).toHaveLength(2);
+    expect(learningCases.map((row) => JSON.parse(row.redactedInput))).toEqual([
+      expect.objectContaining({ kind: 'media_fallback', outcomeCode: 'fallback_used' }),
+      expect.objectContaining({ kind: 'media_missing_mapping', outcomeCode: 'mapping_missing' }),
+    ]);
+    expect(learningCases.every((row) => row.lifecycle === 'observed')).toBe(true);
+    expect(JSON.stringify(learningCases)).not.toContain('push_up');
+    expect(JSON.stringify(learningCases)).not.toContain('press_up');
+    expect(JSON.stringify(learningCases)).not.toContain('future_modal_xyz');
+  });
+
+  it('uses the production learning defaults when callers omit either override', async () => {
+    const callWithLearningDependencies = async (learningDependencies: {
+      recordLearning?: typeof recordTrainingMediaLookupObservations;
+      scheduleLearning?: (task: () => void) => void;
+    }): Promise<void> => {
+      const app = express();
+      app.use((req, _res, next) => {
+        (req as any).userId = 7;
+        (req as any).tenantId = 7;
+        (req as any).entitlement = entitlement(7);
+        next();
+      });
+      const router = Router();
+      registerTrainingExerciseMediaRoutes(router, {
+        env,
+        lookup,
+        resolveEntitlement,
+        ...learningDependencies,
+      });
+      app.use(router);
+      const extraServer = await new Promise<http.Server>((resolve) => {
+        const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+      });
+      try {
+        const address = extraServer.address();
+        if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+        const response = await fetch(`http://127.0.0.1:${address.port}/exercises?ids=push_up`);
+        expect(response.status).toBe(200);
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          extraServer.close((error) => error ? reject(error) : resolve());
+        });
+      }
+    };
+
+    const recordWithDefaultScheduler = vi.fn<typeof recordTrainingMediaLookupObservations>(() => []);
+    await callWithLearningDependencies({ recordLearning: recordWithDefaultScheduler });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(recordWithDefaultScheduler).toHaveBeenCalledOnce();
+
+    const scheduleWithDefaultRecorder = vi.fn<(task: () => void) => void>();
+    await callWithLearningDependencies({ scheduleLearning: scheduleWithDefaultRecorder });
+    expect(scheduleWithDefaultRecorder).toHaveBeenCalledOnce();
   });
 
   it('supports single-item 404 and conditional ETag revalidation', async () => {

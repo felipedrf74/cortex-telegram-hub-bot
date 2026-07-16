@@ -50,15 +50,18 @@ export interface LearningReviewApprovalInput {
   actionExecutionId: string;
 }
 
-export type TrainingLearningKind =
-  | 'plan_correction'
-  | 'adaptation_accepted'
-  | 'adaptation_rejected'
-  | 'capacity_conflict_accuracy'
-  | 'media_fallback'
-  | 'media_missing_mapping'
-  | 'compatibility_regression'
-  | 'physical_device_observation';
+export const TRAINING_LEARNING_KIND_VALUES = [
+  'plan_correction',
+  'adaptation_accepted',
+  'adaptation_rejected',
+  'capacity_conflict_accuracy',
+  'media_fallback',
+  'media_missing_mapping',
+  'compatibility_regression',
+  'physical_device_observation',
+] as const;
+
+export type TrainingLearningKind = typeof TRAINING_LEARNING_KIND_VALUES[number];
 
 export interface TrainingLearningObservation {
   id: string;
@@ -103,11 +106,19 @@ const TRAINING_LEARNING_TAXONOMY: Record<
     failed: 'training.physical_device.v1',
   },
 };
-const TRAINING_LEARNING_KINDS = new Set(Object.keys(TRAINING_LEARNING_TAXONOMY));
+const TRAINING_LEARNING_KIND_SET = new Set<string>(TRAINING_LEARNING_KIND_VALUES);
 const TRAINING_INPUT_KEYS = new Set(['kind', 'outcomeCode', 'subjectFingerprint']);
 const TRAINING_CONTRACT_KEYS = new Set(['contractId']);
 const DEFAULT_LEARNING_EXPIRY_DAYS = 180;
+const MAX_LEARNING_OBSERVED_AT_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const PRODUCT_LEARNING_REVIEW_ACTION_ID = 'approve_product_learning_case' as const;
+
+export function trainingLearningExpectedContract(
+  kind: TrainingLearningKind,
+  outcomeCode: string,
+): string | null {
+  return TRAINING_LEARNING_TAXONOMY[kind]?.[outcomeCode] ?? null;
+}
 
 const LIFECYCLE_TRANSITIONS: Record<LearningCaseLifecycle, readonly LearningCaseLifecycle[]> = {
   observed: ['candidate', 'retired'],
@@ -410,9 +421,9 @@ function validTrainingPayload(candidate: LearningCase): boolean {
   const kind = candidate.redactedInput.kind;
   const outcomeCode = candidate.redactedInput.outcomeCode;
   const contractId = candidate.expectedContract.contractId;
-  if (typeof kind !== 'string' || !TRAINING_LEARNING_KINDS.has(kind)
+  if (typeof kind !== 'string' || !TRAINING_LEARNING_KIND_SET.has(kind)
       || typeof outcomeCode !== 'string' || typeof contractId !== 'string') return false;
-  const expectedContract = TRAINING_LEARNING_TAXONOMY[kind as TrainingLearningKind]?.[outcomeCode];
+  const expectedContract = trainingLearningExpectedContract(kind as TrainingLearningKind, outcomeCode);
   if (expectedContract !== contractId) return false;
   const fingerprint = candidate.redactedInput.subjectFingerprint;
   return fingerprint === undefined || (typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint));
@@ -441,6 +452,10 @@ export function validateLearningCase(candidate: LearningCase): string[] {
     errors.push('confidence_invalid');
   }
   if (!isIsoTimestamp(candidate.observedAt)) errors.push('observed_at_invalid');
+  if (isIsoTimestamp(candidate.observedAt)
+      && Date.parse(candidate.observedAt) > Date.now() + MAX_LEARNING_OBSERVED_AT_FUTURE_SKEW_MS) {
+    errors.push('observed_at_future');
+  }
   if (candidate.reviewedAt && !isIsoTimestamp(candidate.reviewedAt)) errors.push('reviewed_at_invalid');
   if (candidate.reviewedAt && isIsoTimestamp(candidate.reviewedAt)
       && Date.parse(candidate.reviewedAt) > Date.now()) {
@@ -634,8 +649,8 @@ export function transitionStoredLearningCase(
 }
 
 export function createTrainingLearningCase(observation: TrainingLearningObservation): LearningCase {
-  const expectedContract = TRAINING_LEARNING_TAXONOMY[observation.kind]?.[observation.outcomeCode];
-  if (!TRAINING_LEARNING_KINDS.has(observation.kind)
+  const expectedContract = trainingLearningExpectedContract(observation.kind, observation.outcomeCode);
+  if (!TRAINING_LEARNING_KIND_SET.has(observation.kind)
       || !SAFE_CODE.test(observation.outcomeCode)
       || expectedContract !== observation.expectedContractId) {
     throw new Error('training learning observation must use closed taxonomy codes');

@@ -231,6 +231,107 @@ describe('event backbone foundation', () => {
     })]);
   });
 
+  it('keeps event effects on the exact processing database instead of ambient module state', async () => {
+    const processingDb = createMigratedTestDatabase();
+    try {
+      const event = emitDomainEvent({
+        tenantId: 44,
+        userId: 7,
+        sourceSkill: 'training',
+        eventType: 'training.plan_revision.activated.v1',
+        entityType: 'training_plan_revision',
+        entityId: 'revision-explicit-db',
+        schemaVersion: 'training-plan-revision-activation.v1',
+        payload: {
+          action: 'ADAPT',
+          contentHash: 'b'.repeat(64),
+        },
+        privacyClassification: 'health',
+        idempotencyKey: 'training.plan_revision.activated:revision-explicit-db',
+      }, processingDb);
+
+      expect(await processPendingEvents(defaultEventHandlers, {
+        db: processingDb,
+        limit: 5,
+        lockOwner: 'learning-projector-explicit-db',
+      })).toMatchObject({ processed: 1, failed: 0 });
+
+      expect(processingDb.prepare(`
+        SELECT tenant_id AS tenantId, user_id AS userId, redacted_input_json AS redactedInput
+          FROM product_learning_cases
+         WHERE tenant_id = 44 AND user_id = 7
+      `).all()).toEqual([{
+        tenantId: 44,
+        userId: 7,
+        redactedInput: JSON.stringify({
+          kind: 'adaptation_accepted',
+          outcomeCode: 'user_approved',
+          subjectFingerprint: 'b'.repeat(64),
+        }),
+      }]);
+      expect(processingDb.prepare(`
+        SELECT tenant_id AS tenantId, user_id AS userId, causation_event_id AS causationEventId
+          FROM background_jobs
+         WHERE job_type = 'project_read_models'
+      `).all()).toEqual([{
+        tenantId: 44,
+        userId: 7,
+        causationEventId: event.eventId,
+      }]);
+    } finally {
+      processingDb.close();
+    }
+  });
+
+  it('projects authoritative Training capacity confirmation into one retry-safe learning case', async () => {
+    testDb.close();
+    testDb = createMigratedTestDatabase();
+    const event = emitDomainEvent({
+      tenantId: 44,
+      userId: 7,
+      sourceSkill: 'training',
+      eventType: 'training.plan_revision.activated.v1',
+      entityType: 'training_plan_revision',
+      entityId: 'revision-capacity-1',
+      schemaVersion: 'training-plan-revision-activation.v1',
+      payload: {
+        action: 'ACTIVATE',
+        contentHash: 'a'.repeat(64),
+        capacityCoverage: 'AUTHORITATIVE',
+        capacitySubjectFingerprint: 'c'.repeat(64),
+      },
+      privacyClassification: 'health',
+      idempotencyKey: 'training.plan_revision.activated:revision-capacity-1',
+    });
+
+    expect(await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'capacity-projector-1' }))
+      .toMatchObject({ processed: 1, failed: 0 });
+    testDb.prepare(`
+      UPDATE event_outbox
+         SET status = 'pending', processed_at = NULL, not_before = datetime('now')
+       WHERE event_id = ?
+    `).run(event.eventId);
+    expect(await processPendingEvents(defaultEventHandlers, { limit: 5, lockOwner: 'capacity-projector-2' }))
+      .toMatchObject({ processed: 1, failed: 0 });
+
+    expect(testDb.prepare(`
+      SELECT lifecycle, redacted_input_json AS redactedInput,
+             expected_contract_json AS expectedContract,
+             evidence_references_json AS evidenceReferences
+        FROM product_learning_cases
+       WHERE tenant_id = 44 AND user_id = 7
+    `).all()).toEqual([{
+      lifecycle: 'observed',
+      redactedInput: JSON.stringify({
+        kind: 'capacity_conflict_accuracy',
+        outcomeCode: 'confirmed',
+        subjectFingerprint: 'c'.repeat(64),
+      }),
+      expectedContract: JSON.stringify({ contractId: 'training.capacity_conflict.v1' }),
+      evidenceReferences: JSON.stringify([`event://training/capacity/${event.eventId}`]),
+    }]);
+  });
+
   it('projects a rejected Training adaptation into one retry-safe learning case', async () => {
     testDb.close();
     testDb = createMigratedTestDatabase();

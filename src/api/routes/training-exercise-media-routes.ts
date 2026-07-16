@@ -17,6 +17,7 @@ import {
   type RuntimeFlagScope,
 } from '../../services/runtime-flags';
 import type { TrainingExerciseMediaLocale } from '../../services/training-exercise-media-manifest';
+import { recordTrainingMediaLookupObservations } from '../../services/training-learning-producers';
 import { logger } from '../../utils/logger';
 
 const MAX_EXERCISE_IDS = 50;
@@ -28,6 +29,8 @@ export interface TrainingExerciseMediaRouteDependencies {
   env?: NodeJS.ProcessEnv;
   lookup?: typeof lookupTrainingExerciseMedia;
   resolveEntitlement?: typeof getEffectiveEntitlement;
+  recordLearning?: typeof recordTrainingMediaLookupObservations;
+  scheduleLearning?: (task: () => void) => void;
 }
 
 /**
@@ -44,6 +47,8 @@ export function registerTrainingExerciseMediaRoutes(
   dependencies: TrainingExerciseMediaRouteDependencies = {},
 ): void {
   const lookup = dependencies.lookup ?? lookupTrainingExerciseMedia;
+  const recordLearning = dependencies.recordLearning ?? recordTrainingMediaLookupObservations;
+  const scheduleLearning = dependencies.scheduleLearning ?? scheduleWithImmediate;
 
   router.get('/exercises', (req: Request, res: Response) => {
     const scope = requireMediaRouteScope(
@@ -55,7 +60,16 @@ export function registerTrainingExerciseMediaRoutes(
       sendError(res, parsed.code, parsed.message, 400, parsed.details);
       return;
     }
-    serveLookup(req as MediaRequest, res, scope, parsed.exerciseIds, resolveLocale(req), lookup);
+    serveLookup(
+      req as MediaRequest,
+      res,
+      scope,
+      parsed.exerciseIds,
+      resolveLocale(req),
+      lookup,
+      recordLearning,
+      scheduleLearning,
+    );
   });
 
   router.get('/exercises/:exerciseId', (req: Request, res: Response) => {
@@ -68,7 +82,17 @@ export function registerTrainingExerciseMediaRoutes(
       sendError(res, 'INVALID_EXERCISE_ID', 'Exercise identifier is invalid.', 400);
       return;
     }
-    serveLookup(req as MediaRequest, res, scope, [rawExerciseId], resolveLocale(req), lookup, true);
+    serveLookup(
+      req as MediaRequest,
+      res,
+      scope,
+      [rawExerciseId],
+      resolveLocale(req),
+      lookup,
+      recordLearning,
+      scheduleLearning,
+      true,
+    );
   });
 }
 
@@ -120,6 +144,8 @@ function serveLookup(
   exerciseIds: string[],
   locale: TrainingExerciseMediaLocale,
   lookup: typeof lookupTrainingExerciseMedia,
+  recordLearning: typeof recordTrainingMediaLookupObservations,
+  scheduleLearning: (task: () => void) => void,
   single = false,
 ): void {
   let result: TrainingExerciseMediaBatchDto | null;
@@ -137,6 +163,8 @@ function serveLookup(
     hiddenNotFound(res);
     return;
   }
+
+  scheduleMediaLearningObservation(scope, result, recordLearning, scheduleLearning);
 
   if (single) {
     const item = result.items[0];
@@ -171,6 +199,42 @@ function serveLookup(
   }
   const { eTag: _eTag, ...payload } = result;
   sendSuccess(res, payload);
+}
+
+function scheduleWithImmediate(task: () => void): void {
+  setImmediate(task);
+}
+
+function scheduleMediaLearningObservation(
+  scope: Required<RuntimeFlagScope>,
+  result: TrainingExerciseMediaBatchDto,
+  recordLearning: typeof recordTrainingMediaLookupObservations,
+  scheduleLearning: (task: () => void) => void,
+): void {
+  const task = (): void => {
+    try {
+      recordLearning({
+        scope: { tenantId: Number(scope.tenantId), userId: Number(scope.userId) },
+        result,
+      });
+    } catch (error) {
+      // Learning telemetry must not turn an otherwise valid governed read into
+      // a failed product request. The producer is retry-safe and can be
+      // replayed from an equivalent later lookup.
+      logger.warn(
+        { err: error, userId: scope.userId, tenantId: scope.tenantId },
+        'Training exercise media learning observation failed',
+      );
+    }
+  };
+  try {
+    scheduleLearning(task);
+  } catch (error) {
+    logger.warn(
+      { err: error, userId: scope.userId, tenantId: scope.tenantId },
+      'Training exercise media learning observation scheduling failed',
+    );
+  }
 }
 
 function parseBatchExerciseIds(raw: unknown):

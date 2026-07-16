@@ -5,11 +5,11 @@
     "generatorVersion": 3,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "172930df15d6d782a1151dc3253ed5c65b12927a1330d6a8d5ea2b33f8de3e40",
-    "baseCommit": "6b66f5b4d0ebbf27142d73460beaff751d5c5467",
-    "baseCommitTimestamp": "2026-07-16T00:01:22+01:00",
-    "trackedFiles": 2542,
-    "sourceFiles": 956
+    "sourceDigest": "d9b0891880bb07de8ba6be40218326c1b75b3d1d45e9d94bdc65594fb181bf7b",
+    "baseCommit": "ec3142dc5e208f7a88d31db6021e0895a0ae3f5d",
+    "baseCommitTimestamp": "2026-07-16T02:07:38+01:00",
+    "trackedFiles": 2549,
+    "sourceFiles": 960
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -33,7 +33,7 @@
     {
       "path": "src/api",
       "owner": "backend",
-      "files": 123
+      "files": 125
     },
     {
       "path": "src/boot.ts",
@@ -88,7 +88,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 694
+      "files": 696
     },
     {
       "path": "src/skills",
@@ -1080,6 +1080,22 @@
       "localPath": "/jobs/dead-letter",
       "mountPath": "/api/v1/admin/event-backbone",
       "source": "src/api/routes/event-backbone-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/product-learning/physical-device-observations",
+      "localPath": "/physical-device-observations",
+      "mountPath": "/api/v1/admin/product-learning",
+      "source": "src/api/routes/product-learning-admin.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/product-learning/summary",
+      "localPath": "/summary",
+      "mountPath": "/api/v1/admin/product-learning",
+      "source": "src/api/routes/product-learning-admin.ts",
       "owner": "backend"
     },
     {
@@ -4251,13 +4267,13 @@
     }
   ],
   "tests": {
-    "files": 931,
+    "files": 934,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 5,
-      "api": 134,
+      "api": 135,
       "billing": 1,
       "brand": 2,
       "cli": 1,
@@ -4272,8 +4288,8 @@
       "scope": 1,
       "scripts": 48,
       "sdk": 1,
-      "security": 20,
-      "services": 587,
+      "security": 21,
+      "services": 588,
       "skills": 12,
       "state": 17,
       "storage": 1,

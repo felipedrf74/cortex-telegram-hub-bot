@@ -79,7 +79,7 @@ export interface EventOutboxRecord {
 
 export interface EventHandler {
   eventType: string;
-  handle(event: EventOutboxRecord): Promise<void> | void;
+  handle(event: EventOutboxRecord, db: Database.Database): Promise<void> | void;
 }
 
 const MAX_EVENT_ATTEMPTS = 3;
@@ -224,7 +224,7 @@ export async function processPendingEvents(
   for (const event of claimed) {
     const handler = handlersByType.get(event.eventType) ?? handlersByType.get('*');
     try {
-      if (handler) await handler.handle(event);
+      if (handler) await handler.handle(event, db);
       markEventProcessed(event.eventId, db);
       processed += 1;
     } catch (err) {

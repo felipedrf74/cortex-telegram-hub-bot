@@ -755,6 +755,21 @@ describe('Training plan revision API contracts', () => {
         .toBe(editPayload.data.editPreview.proposedRevision.revisionId);
       expect(db.prepare('SELECT COUNT(*) AS count FROM training_plan_revisions').get()).toEqual({ count: 2 });
       expect(db.prepare('SELECT COUNT(*) AS count FROM notification_center_items').get()).toEqual({ count: 2 });
+      const correctionCases = db.prepare(`
+        SELECT lifecycle, redacted_input_json AS redactedInput,
+               evidence_references_json AS evidenceReferences
+          FROM product_learning_cases
+         WHERE tenant_id = 7 AND user_id = 7
+         ORDER BY redacted_input_json
+      `).all() as Array<{ lifecycle: string; redactedInput: string; evidenceReferences: string }>;
+      expect(correctionCases).toHaveLength(2);
+      expect(correctionCases.map((row) => JSON.parse(row.redactedInput))).toEqual([
+        expect.objectContaining({ kind: 'capacity_conflict_accuracy', outcomeCode: 'corrected' }),
+        expect.objectContaining({ kind: 'plan_correction', outcomeCode: 'user_corrected' }),
+      ]);
+      expect(correctionCases.every((row) => row.lifecycle === 'observed')).toBe(true);
+      expect(JSON.stringify(correctionCases)).not.toContain('Availability changed.');
+      expect(JSON.stringify(correctionCases)).not.toContain('sessionDurationMinutes');
 
       const missingExpected = await fetch(`${baseUrl}/plan/revisions/${revision.revisionId}/edit-preview`, {
         method: 'POST',

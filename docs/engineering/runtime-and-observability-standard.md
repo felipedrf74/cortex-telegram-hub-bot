@@ -123,6 +123,30 @@ The current metric surfaces are:
    surfaced in `/admin#ai`.
 6. **iOS account-switching events**: `event=account_switching` lines
    from `/auth/logout` and `/auth/logout-all`.
+7. **Governed product learning**: the portal-admin-only
+   `/api/v1/admin/product-learning/summary` read model exposes aggregate
+   lifecycle, staleness, promotion, adaptation accept/dismiss, and Training
+   category-coverage counts. Active/unexpired and historical/retired metrics
+   are reported separately; only active, unexpired `golden` cases are counted
+   as export eligible. It never returns case payloads or user ids.
+
+Training learning producers persist closed outcome codes plus tenant-scoped
+SHA-256 fingerprints only. They must not persist raw plan edits, exercise ids,
+calendar content, device details, or free-form feedback. Every case enters as
+`observed`; only the existing Decision Center review receipt may advance it
+through `candidate -> reviewed -> golden`. The backend cannot infer physical
+device outcomes: an operator records those through the portal-admin-only
+`POST /api/v1/admin/product-learning/physical-device-observations` contract,
+which accepts an exact TestFlight build/check/result tuple and no free-form
+field. The product-learning admin surface has a dedicated 16 KiB JSON limit,
+a 30-request/minute per-IP pre-body throttle, and a 300-request/minute
+per-process global throttle before authentication. Its tracked-IP state is
+cardinality-bounded and excess unique IPs share one bounded overflow bucket,
+so invalid credentials cannot create unbounded distributed audit bursts.
+Accepted device observations emit
+only case-specific, redacted operator audit metadata. Producers reject
+observation clocks more than five minutes in the future. Product learning
+never mutates prompts or starts provider-side training.
 
 A future improvement is to ship these as proper Prometheus-style metrics
 with histograms instead of structured-log derivation. Until then, use

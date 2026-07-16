@@ -255,6 +255,7 @@ export const EVENT_HANDLER_POLICIES = Object.freeze({
 
 export const DIRECT_EVENT_EFFECT_POLICIES = Object.freeze({
   record_training_learning_observation: noProviderHandler('product-learning', 'durable-event-tenant-user', {
+    handlerVersion: '2.0.0',
     runtimeGroup: 'event-backbone-default',
     retryPolicy: 'event-outbox-max-3-with-backoff',
     outputPolicy: 'validated-redacted-learning-observation-upsert',
