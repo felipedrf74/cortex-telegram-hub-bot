@@ -753,6 +753,7 @@ function rowToDto(
   row: UnifiedTaskRow,
   listNameById: Map<number, string>,
   issueMap?: Map<string, TaskSyncWarning[]>,
+  linkProviderMap?: Map<string, string>,
 ): OfflineTaskDto {
   const providerData = safeJsonParse<Record<string, unknown>>(row.provider_data, {});
   const syncState = row.sync_state || (row.provider === 'nexus' ? 'local_only' : 'synced');
@@ -764,6 +765,11 @@ function rowToDto(
   const visibleIssueWarnings = completed
     ? openIssueWarnings.filter((warning) => warning.code !== 'provider_task_missing')
     : openIssueWarnings;
+  // syncProvider is the task's sync TARGET, not its origin: deployed clients
+  // gate sync copy and checklist editing on it. A Nexus-created task that
+  // syncs to Microsoft must report ms_todo from the moment its link exists —
+  // the row's provider column stays origin metadata under canonical links.
+  const syncProvider = linkProviderMap?.get(taskId) || row.provider || 'nexus';
   return {
     id: taskId,
     title: row.title || '(Untitled)',
@@ -776,7 +782,7 @@ function rowToDto(
     listName,
     checklistItems: normalizeChecklistItems(providerData.checklistItems),
     createdDateTime: row.created_at || null,
-    syncProvider: row.provider || 'nexus',
+    syncProvider,
     syncState,
     syncWarnings: [
       ...(completed && syncState === 'provider_missing' ? [] : warningForState(syncState, row.provider)),
@@ -787,14 +793,33 @@ function rowToDto(
   };
 }
 
+function getLinkProviderMap(tenantId: number, userId: number, taskIds: string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  if (taskIds.length === 0) return map;
+  const placeholders = taskIds.map(() => '?').join(', ');
+  const rows = getDb().prepare(
+    `SELECT task_id, provider
+     FROM task_provider_links
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+       AND provider != 'nexus_local'
+       AND link_state NOT IN ('orphaned')
+       AND task_id IN (${placeholders})
+     ORDER BY updated_at ASC`,
+  ).all(userId, tenantId, ...taskIds) as Array<{ task_id: string; provider: string }>;
+  for (const row of rows) map.set(row.task_id, row.provider);
+  return map;
+}
+
 function rowsToDtos(
   tenantId: number,
   userId: number,
   rows: UnifiedTaskRow[],
   listNameById: Map<number, string>,
 ): OfflineTaskDto[] {
-  const issueMap = getOpenTaskSyncWarningsForTasks(tenantId, userId, rows.map(rowTaskId));
-  return rows.map((row) => rowToDto(row, listNameById, issueMap));
+  const taskIds = rows.map(rowTaskId);
+  const issueMap = getOpenTaskSyncWarningsForTasks(tenantId, userId, taskIds);
+  const linkProviderMap = getLinkProviderMap(tenantId, userId, taskIds);
+  return rows.map((row) => rowToDto(row, listNameById, issueMap, linkProviderMap));
 }
 
 function getProjectNameMap(tenantId: number, userId: number): Map<number, string> {
@@ -834,7 +859,19 @@ function getTaskRowByAnyTaskId(tenantId: number, userId: number, taskId: string)
        t.updated_at DESC
      LIMIT 1`,
   ).get(tenantId, userId, taskId, taskId, taskId, taskId) as UnifiedTaskRow | undefined;
-  return row || null;
+  if (!row) return null;
+  // Twin-repair alias hop: a merged tombstone records its canonical task in
+  // provider_data.merged_into, so stale references to the retired twin id
+  // resolve to the survivor. Single hop, no recursion — the repair only ever
+  // points merged_into at a live canonical task.
+  if (row.is_deleted === 1) {
+    const mergedInto = safeJsonParse<Record<string, unknown>>(row.provider_data, {}).merged_into;
+    if (typeof mergedInto === 'string' && mergedInto && mergedInto !== row.nexus_task_id) {
+      const survivor = getTaskRowByNexusId(tenantId, userId, mergedInto);
+      if (survivor) return survivor;
+    }
+  }
+  return row;
 }
 
 function getProviderLinkForTask(

@@ -418,9 +418,12 @@ function markSynced(mutation: TaskMutationRow, task: UnifiedTaskRow | null, link
     }
 
     if (link) {
+      // Orphaned links (delete pushed) surrender their provider id: a
+      // retained id would keep occupying the legacy UNIQUE slot and block
+      // any future re-link of that provider task to a live row.
       db.prepare(
         `UPDATE task_provider_links
-	         SET provider_task_id = COALESCE(?, provider_task_id),
+	         SET provider_task_id = CASE WHEN ? = 'task.delete' THEN NULL ELSE COALESCE(?, provider_task_id) END,
 	             provider_version = COALESCE(?, provider_version),
 	             provider_updated_at = COALESCE(?, provider_updated_at),
 	             link_state = CASE WHEN ? = 'task.delete' THEN 'orphaned' ELSE 'linked' END,
@@ -429,6 +432,7 @@ function markSynced(mutation: TaskMutationRow, task: UnifiedTaskRow | null, link
              updated_at = ?
          WHERE id = ?`,
       ).run(
+        mutation.operation,
         input.providerTaskId || null,
         input.providerVersion || null,
         input.providerUpdatedAt || null,

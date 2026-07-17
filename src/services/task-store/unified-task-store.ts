@@ -233,6 +233,26 @@ function providerContainerId(task: NormalizedTask): string | null {
   ]) || (task.projectId != null ? String(task.projectId) : null);
 }
 
+/**
+ * Extract the Nexus correlation marker from a provider payload. The push
+ * worker stamps every Nexus-created Microsoft task with a linkedResources
+ * entry whose externalId is the canonical nexus task id; reading it back at
+ * import is what lets a pull recognize its own pushed task even when the
+ * Graph id changed (Microsoft has no move API — the official clients
+ * delete + recreate on cross-list moves).
+ */
+function extractNexusMarkerTaskId(task: NormalizedTask): string | null {
+  const raw = (task.providerData as Record<string, unknown> | undefined)?.linkedResources;
+  if (!Array.isArray(raw)) return null;
+  for (const entry of raw) {
+    const externalId = typeof (entry as { externalId?: unknown })?.externalId === 'string'
+      ? (entry as { externalId: string }).externalId
+      : null;
+    if (externalId && /^task_[A-Za-z0-9_-]+$/.test(externalId)) return externalId;
+  }
+  return null;
+}
+
 function ensureProviderLinkForTask(tenantId: number, userId: number, task: NormalizedTask, nexusTaskId: string): void {
   const provider = providerLinkProvider(task.provider);
   if (!provider) return;
@@ -247,7 +267,17 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'linked')
      ON CONFLICT(tenant_id, user_id, provider, provider_account_id, provider_task_id)
      DO UPDATE SET
-       task_id = excluded.task_id,
+       task_id = CASE
+         WHEN task_provider_links.task_id != excluded.task_id
+          AND EXISTS (
+            SELECT 1 FROM unified_tasks live
+            WHERE live.nexus_task_id = task_provider_links.task_id
+              AND live.user_id = task_provider_links.user_id
+              AND live.is_deleted = 0
+          )
+         THEN task_provider_links.task_id
+         ELSE excluded.task_id
+       END,
        provider_list_id = COALESCE(excluded.provider_list_id, task_provider_links.provider_list_id),
        provider_project_id = COALESCE(excluded.provider_project_id, task_provider_links.provider_project_id),
        provider_version = COALESCE(excluded.provider_version, task_provider_links.provider_version),
@@ -255,7 +285,7 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
        last_synced_at = datetime('now'),
        last_verified_at = datetime('now'),
        link_state = CASE
-         WHEN task_provider_links.link_state = 'conflict' THEN task_provider_links.link_state
+         WHEN task_provider_links.link_state IN ('conflict', 'orphaned') THEN task_provider_links.link_state
          ELSE 'linked'
        END,
        updated_at = datetime('now')`,
@@ -393,18 +423,142 @@ export type UpsertResult = 'inserted' | 'updated' | 'unchanged';
  * It does ONE SELECT and zero writes, which is what makes 96 sync runs/day
  * across all providers fast enough to hide behind the existing scheduler.
  */
+type ExistingTaskRow = {
+  id: number;
+  content_hash: string;
+  sync_state: string | null;
+  nexus_task_id: string | null;
+  is_deleted?: number;
+  provider_data?: string | null;
+};
+
+/**
+ * Canonical-links pull routing: an ACTIVE provider link owns the incoming
+ * provider task id — its target row (the canonical Nexus task, whatever its
+ * origin identity says) is authoritative, so a pushed Nexus task can never
+ * be re-imported as a twin (NEX-02) and a soft-deleted twin can never
+ * recapture its link on the next pull.
+ */
+function findRowByActiveLink(
+  db: ReturnType<typeof getDb>,
+  tenantId: number,
+  userId: number,
+  task: NormalizedTask,
+): ExistingTaskRow | undefined {
+  const provider = providerLinkProvider(task.provider);
+  if (!provider || provider === 'nexus_local' || !task.externalId) return undefined;
+  return db.prepare(
+    `SELECT t.id, t.content_hash, t.sync_state, t.nexus_task_id, t.is_deleted, t.provider_data
+     FROM task_provider_links l
+     JOIN unified_tasks t
+       ON t.nexus_task_id = l.task_id
+      AND t.user_id = l.user_id
+      AND COALESCE(t.tenant_id, t.user_id) = COALESCE(l.tenant_id, l.user_id)
+     WHERE l.user_id = ? AND COALESCE(l.tenant_id, l.user_id) = ?
+       AND l.provider = ? AND l.provider_account_id = ? AND l.provider_task_id = ?
+       AND l.link_state NOT IN ('orphaned')
+     LIMIT 1`,
+  ).get(userId, tenantId, provider, `${provider}:${userId}`, task.externalId) as ExistingTaskRow | undefined;
+}
+
+/**
+ * Marker adoption: the incoming provider task carries the Nexus
+ * linkedResources marker but no active link matches its (new) provider id —
+ * the Microsoft-move case (delete + recreate under a fresh Graph id). Adopt
+ * the new id onto the marked task's link instead of importing a twin.
+ */
+function adoptRowByNexusMarker(
+  db: ReturnType<typeof getDb>,
+  tenantId: number,
+  userId: number,
+  task: NormalizedTask,
+): ExistingTaskRow | undefined {
+  const provider = providerLinkProvider(task.provider);
+  if (!provider || provider === 'nexus_local') return undefined;
+  const markerTaskId = extractNexusMarkerTaskId(task);
+  if (!markerTaskId) return undefined;
+
+  const linked = db.prepare(
+    `SELECT t.id, t.content_hash, t.sync_state, t.nexus_task_id, t.is_deleted, t.provider_data,
+            l.id AS link_id
+     FROM unified_tasks t
+     JOIN task_provider_links l
+       ON l.task_id = t.nexus_task_id
+      AND l.user_id = t.user_id
+      AND COALESCE(l.tenant_id, l.user_id) = COALESCE(t.tenant_id, t.user_id)
+      AND l.provider = ? AND l.provider_account_id = ?
+      AND l.link_state NOT IN ('orphaned')
+     WHERE t.user_id = ? AND COALESCE(t.tenant_id, t.user_id) = ?
+       AND t.nexus_task_id = ? AND t.is_deleted = 0
+     LIMIT 1`,
+  ).get(provider, `${provider}:${userId}`, userId, tenantId, markerTaskId) as
+    | (ExistingTaskRow & { link_id: string })
+    | undefined;
+  if (!linked) return undefined;
+
+  // Pre-migration-234-shaped data can still hold the incoming provider id on
+  // an orphaned link, which occupies the legacy UNIQUE slot — retire it so
+  // the adoption UPDATE cannot collide.
+  db.prepare(
+    `UPDATE task_provider_links
+     SET provider_task_id = NULL, updated_at = datetime('now')
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+       AND provider = ? AND provider_account_id = ? AND provider_task_id = ?
+       AND link_state = 'orphaned'`,
+  ).run(userId, tenantId, provider, `${provider}:${userId}`, task.externalId);
+
+  db.prepare(
+    `UPDATE task_provider_links
+     SET provider_task_id = ?,
+         provider_list_id = CASE WHEN ? = 'ms_todo' THEN COALESCE(?, provider_list_id) ELSE provider_list_id END,
+         provider_project_id = CASE WHEN ? = 'todoist' THEN COALESCE(?, provider_project_id) ELSE provider_project_id END,
+         provider_version = COALESCE(?, provider_version),
+         last_synced_at = datetime('now'),
+         updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(
+    task.externalId,
+    provider,
+    providerContainerId(task),
+    provider,
+    providerContainerId(task),
+    stringProviderDataValue(task, ['etag', '@odata.etag', 'revision', 'sync_id']),
+    linked.link_id,
+  );
+  return linked;
+}
+
+function isMergedTombstone(row: ExistingTaskRow | undefined): boolean {
+  if (!row || row.is_deleted !== 1) return false;
+  return typeof row.provider_data === 'string' && row.provider_data.includes('"merged_into"');
+}
+
 export function upsertTask(userId: number, task: NormalizedTask, tenantId = userId): UpsertResult {
   const db = getDb();
   const hash = computeContentHash(task);
   const nexusTaskId = stableNexusTaskId(tenantId, userId, task);
 
-  const existing = db.prepare(
-    `SELECT id, content_hash, sync_state, nexus_task_id
-     FROM unified_tasks
-     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?`,
-  ).get(userId, tenantId, task.provider, task.externalId) as
-    | { id: number; content_hash: string; sync_state: string | null; nexus_task_id: string | null }
-    | undefined;
+  // 1. Links-first: an active link for this provider task id is authoritative.
+  let existing: ExistingTaskRow | undefined = findRowByActiveLink(db, tenantId, userId, task);
+
+  if (!existing) {
+    // 2. Origin-identity match (legacy/unlinked rows keep working).
+    existing = db.prepare(
+      `SELECT id, content_hash, sync_state, nexus_task_id, is_deleted, provider_data
+       FROM unified_tasks
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?`,
+    ).get(userId, tenantId, task.provider, task.externalId) as ExistingTaskRow | undefined;
+
+    // A twin merged into a canonical row must never resurrect or recapture
+    // its link — its retired identity is only reachable when the canonical
+    // link is gone, and even then it stays a tombstone.
+    if (isMergedTombstone(existing)) return 'unchanged';
+
+    // 3. Marker adoption (Microsoft move: new Graph id, same Nexus task).
+    if (!existing) {
+      existing = adoptRowByNexusMarker(db, tenantId, userId, task);
+    }
+  }
 
   if (!existing) {
     db.prepare(
@@ -596,12 +750,41 @@ export function softDeleteMissing(
     sync_state: string | null;
   }>;
 
+  // Canonical-links membership: pushed Nexus-origin tasks live in the
+  // provider only through their link (row provider stays 'nexus'), so a
+  // provider-column scan alone can never detect their remote deletion.
+  const linkProvider = providerLinkProvider(provider);
+  const linkedRows = linkProvider && linkProvider !== 'nexus_local'
+    ? db.prepare(
+      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state
+       FROM task_provider_links l
+       JOIN unified_tasks t
+         ON t.nexus_task_id = l.task_id
+        AND t.user_id = l.user_id
+        AND COALESCE(t.tenant_id, t.user_id) = COALESCE(l.tenant_id, l.user_id)
+       WHERE l.user_id = ? AND COALESCE(l.tenant_id, l.user_id) = ?
+         AND l.provider = ? AND l.provider_task_id IS NOT NULL
+         AND l.link_state NOT IN ('orphaned')
+         AND t.is_deleted = 0
+         AND t.provider != ?`,
+    ).all(userId, tenantId, linkProvider, provider) as Array<{
+      id: number;
+      external_id: string;
+      nexus_task_id: string | null;
+      sync_state: string | null;
+    }>
+    : [];
+
   const seen = new Set(currentExternalIds);
+  const candidates = [...allRows, ...linkedRows];
+  const seenRowIds = new Set<number>();
   const stale = currentExternalIds.length === 0
-    ? allRows
-    : allRows.filter((r) => !seen.has(r.external_id));
+    ? candidates
+    : candidates.filter((r) => !seen.has(r.external_id));
 
   for (const row of stale) {
+    if (seenRowIds.has(row.id)) continue;
+    seenRowIds.add(row.id);
     markProviderMissingTask({
       tenantId,
       userId,

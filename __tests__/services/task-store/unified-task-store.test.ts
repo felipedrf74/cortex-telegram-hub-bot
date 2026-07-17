@@ -745,3 +745,382 @@ describe('getTaskStats', () => {
     expect(stats.byProvider.ms_todo).toBe(1);
   });
 });
+
+// ── Canonical links (M4) ───────────────────────────────────────────
+
+describe('canonical links (M4)', () => {
+  const MS_ACCOUNT = `ms_todo:${USER_ID}`;
+
+  /**
+   * Seed a pushed Nexus-origin task the way the offline-first create path
+   * plus the sync worker's markSynced leave it after a successful push:
+   * the unified_tasks row keeps its nexus origin identity (provider 'nexus',
+   * external_id = nexus task id) while the task_provider_links row carries
+   * the provider-side identity (provider_task_id = Graph id, link_state
+   * 'linked', ownership 'nexus_created').
+   */
+  function seedPushedNexusTask(opts: {
+    nexusTaskId: string;
+    providerTaskId: string | null;
+    title?: string;
+    syncState?: string;
+    isDeleted?: number;
+    linkState?: string;
+    linkId?: string;
+    providerListId?: string | null;
+  }): { linkId: string } {
+    const title = opts.title ?? 'Pushed task';
+    const contentHash = computeContentHash({
+      provider: 'nexus',
+      externalId: opts.nexusTaskId,
+      title,
+      status: 'pending',
+      priority: 2,
+    });
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status, priority,
+         tags, provider_data, content_hash, is_deleted, synced_at,
+         nexus_task_id, local_version, sync_state, source_of_truth
+       ) VALUES (?, ?, 'nexus', ?, ?, 'pending', 2, '[]', '{}', ?, ?, datetime('now'), ?, 1, ?, 'nexus')`,
+    ).run(
+      USER_ID,
+      USER_ID,
+      opts.nexusTaskId,
+      title,
+      contentHash,
+      opts.isDeleted ?? 0,
+      opts.nexusTaskId,
+      opts.syncState ?? 'synced',
+    );
+    const linkId = opts.linkId ?? `link_${opts.nexusTaskId}`;
+    testDb.prepare(
+      `INSERT INTO task_provider_links (
+         id, task_id, tenant_id, user_id, provider, provider_account_id,
+         provider_task_id, provider_list_id, ownership, link_state,
+         last_synced_at, last_verified_at
+       ) VALUES (?, ?, ?, ?, 'ms_todo', ?, ?, ?, 'nexus_created', ?, datetime('now'), datetime('now'))`,
+    ).run(
+      linkId,
+      opts.nexusTaskId,
+      USER_ID,
+      USER_ID,
+      MS_ACCOUNT,
+      opts.providerTaskId,
+      opts.providerListId ?? 'ms-list-work',
+      opts.linkState ?? 'linked',
+    );
+    return { linkId };
+  }
+
+  function msPayload(overrides: Partial<NormalizedTask> = {}): NormalizedTask {
+    return {
+      provider: 'ms_todo',
+      externalId: 'MS-G1',
+      title: 'Pushed task',
+      status: 'pending',
+      priority: 2,
+      ...overrides,
+    };
+  }
+
+  function taskRows(): Array<{
+    provider: string;
+    external_id: string;
+    nexus_task_id: string | null;
+    title: string;
+    sync_state: string | null;
+    is_deleted: number;
+  }> {
+    return testDb.prepare(
+      `SELECT provider, external_id, nexus_task_id, title, sync_state, is_deleted
+       FROM unified_tasks
+       WHERE user_id = ?
+       ORDER BY id`,
+    ).all(USER_ID) as Array<{
+      provider: string;
+      external_id: string;
+      nexus_task_id: string | null;
+      title: string;
+      sync_state: string | null;
+      is_deleted: number;
+    }>;
+  }
+
+  it('routes a pull through the active link so a pushed nexus task is not re-imported as a twin (NEX-02)', () => {
+    seedPushedNexusTask({ nexusTaskId: 'task_nex02_pushed', providerTaskId: 'MS-G1' });
+
+    const result = upsertTask(USER_ID, msPayload());
+
+    expect(result).toBe('unchanged');
+    expect(taskRows()).toEqual([
+      expect.objectContaining({
+        provider: 'nexus',
+        external_id: 'task_nex02_pushed',
+        nexus_task_id: 'task_nex02_pushed',
+        sync_state: 'synced',
+        is_deleted: 0,
+      }),
+    ]);
+    const links = testDb.prepare(
+      `SELECT task_id, ownership, link_state
+       FROM task_provider_links
+       WHERE tenant_id = ? AND user_id = ? AND provider = 'ms_todo' AND provider_task_id = 'MS-G1'`,
+    ).all(USER_ID, USER_ID) as Array<Record<string, unknown>>;
+    expect(links).toEqual([
+      expect.objectContaining({
+        task_id: 'task_nex02_pushed',
+        ownership: 'nexus_created',
+        link_state: 'linked',
+      }),
+    ]);
+  });
+
+  it('applies provider content changes onto the canonical row through the link without rewriting its identity', () => {
+    seedPushedNexusTask({ nexusTaskId: 'task_nex02_update', providerTaskId: 'MS-G1' });
+
+    const result = upsertTask(USER_ID, msPayload({ title: 'Retitled at Microsoft' }));
+
+    expect(result).toBe('updated');
+    expect(taskRows()).toEqual([
+      expect.objectContaining({
+        provider: 'nexus',
+        external_id: 'task_nex02_update',
+        title: 'Retitled at Microsoft',
+        sync_state: 'synced',
+      }),
+    ]);
+  });
+
+  it('flags conflict instead of overwriting when the linked canonical row has pending local changes', () => {
+    seedPushedNexusTask({
+      nexusTaskId: 'task_nex02_pending',
+      providerTaskId: 'MS-G1',
+      title: 'Local edited title',
+      syncState: 'queued',
+    });
+
+    const result = upsertTask(USER_ID, msPayload({ title: 'Provider edited title' }));
+
+    expect(result).toBe('unchanged');
+    expect(taskRows()).toEqual([
+      expect.objectContaining({
+        provider: 'nexus',
+        title: 'Local edited title',
+        sync_state: 'conflict',
+      }),
+    ]);
+  });
+
+  it('adopts a recreated provider id onto the marked task link instead of importing a twin (Microsoft move)', () => {
+    const { linkId } = seedPushedNexusTask({
+      nexusTaskId: 'task_moved_1',
+      providerTaskId: 'MS-OLD',
+      providerListId: 'ms-list-old',
+    });
+
+    const result = upsertTask(USER_ID, msPayload({
+      externalId: 'MS-NEW',
+      providerData: {
+        listId: 'ms-list-new',
+        linkedResources: [{ externalId: 'task_moved_1', applicationName: 'Nexus Hub' }],
+      },
+    }));
+
+    expect(result).toBe('unchanged');
+    expect(taskRows()).toEqual([
+      expect.objectContaining({ provider: 'nexus', external_id: 'task_moved_1' }),
+    ]);
+    const link = testDb.prepare(
+      `SELECT task_id, provider_task_id, provider_list_id FROM task_provider_links WHERE id = ?`,
+    ).get(linkId) as Record<string, unknown>;
+    expect(link).toEqual({
+      task_id: 'task_moved_1',
+      provider_task_id: 'MS-NEW',
+      provider_list_id: 'ms-list-new',
+    });
+    const linkCount = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_provider_links WHERE user_id = ? AND provider = 'ms_todo'`,
+    ).get(USER_ID) as { count: number };
+    expect(linkCount.count).toBe(1);
+  });
+
+  it('imports a fresh row when the marker does not resolve to a task with an active same-provider link', () => {
+    // A live nexus task whose only link is the local one: the marker matches
+    // the task id but there is no active ms_todo link to adopt onto.
+    const contentHash = computeContentHash({
+      provider: 'nexus', externalId: 'task_local_only', title: 'Local only', status: 'pending', priority: 2,
+    });
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status, priority,
+         tags, provider_data, content_hash, synced_at, nexus_task_id, local_version, sync_state, source_of_truth
+       ) VALUES (?, ?, 'nexus', 'task_local_only', 'Local only', 'pending', 2, '[]', '{}', ?, datetime('now'), 'task_local_only', 1, 'local_only', 'nexus')`,
+    ).run(USER_ID, USER_ID, contentHash);
+    testDb.prepare(
+      `INSERT INTO task_provider_links (
+         id, task_id, tenant_id, user_id, provider, provider_account_id,
+         provider_task_id, ownership, link_state
+       ) VALUES ('link_local_only', 'task_local_only', ?, ?, 'nexus_local', ?, 'task_local_only', 'linked', 'linked')`,
+    ).run(USER_ID, USER_ID, `nexus_local:${USER_ID}`);
+
+    const result = upsertTask(USER_ID, msPayload({
+      externalId: 'MS-FRESH',
+      title: 'Provider task with stray marker',
+      providerData: { linkedResources: [{ externalId: 'task_local_only' }] },
+    }));
+
+    expect(result).toBe('inserted');
+    expect(taskRows()).toEqual([
+      expect.objectContaining({ provider: 'nexus', external_id: 'task_local_only', title: 'Local only' }),
+      expect.objectContaining({ provider: 'ms_todo', external_id: 'MS-FRESH' }),
+    ]);
+  });
+
+  it('returns unchanged for a merged tombstone without resurrecting it or creating links', () => {
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status, priority,
+         tags, provider_data, content_hash, is_deleted, deleted_at, synced_at,
+         nexus_task_id, local_version, sync_state, source_of_truth
+       ) VALUES (?, ?, 'ms_todo', 'MS-TOMB', 'Merged twin', 'pending', 2, '[]',
+         '{"merged_into":"task_canonical_1"}', 'stalehash0000000', 1, datetime('now'), datetime('now'),
+         'task_twin_1', 1, 'synced', 'nexus')`,
+    ).run(USER_ID, USER_ID);
+
+    const result = upsertTask(USER_ID, msPayload({
+      externalId: 'MS-TOMB',
+      title: 'Provider still sends the twin',
+    }));
+
+    expect(result).toBe('unchanged');
+    expect(taskRows()).toEqual([
+      expect.objectContaining({
+        provider: 'ms_todo',
+        external_id: 'MS-TOMB',
+        title: 'Merged twin',
+        is_deleted: 1,
+        sync_state: 'synced',
+      }),
+    ]);
+    const linkCount = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_provider_links WHERE user_id = ? AND provider_task_id = 'MS-TOMB'`,
+    ).get(USER_ID) as { count: number };
+    expect(linkCount.count).toBe(0);
+  });
+
+  it('does not let an insert-path upsert re-point a link away from a live row', () => {
+    // An orphaned duplicate link (e.g. parked by migration 234 cleanup) still
+    // occupies the (provider, account, provider_task_id) unique slot while
+    // pointing at the live canonical row. Importing that provider id inserts
+    // a fresh row (orphaned links are invisible to links-first routing) and
+    // ensureProviderLinkForTask collides with the parked slot — the collision
+    // must NOT steal the link away from the live row.
+    seedPushedNexusTask({
+      nexusTaskId: 'task_guard_live',
+      providerTaskId: 'MS-G1',
+      linkState: 'orphaned',
+      linkId: 'link_guard_live',
+    });
+
+    const result = upsertTask(USER_ID, msPayload({ title: 'Imported twin' }));
+
+    expect(result).toBe('inserted');
+    const link = testDb.prepare(
+      `SELECT task_id FROM task_provider_links WHERE id = 'link_guard_live'`,
+    ).get() as { task_id: string };
+    expect(link.task_id).toBe('task_guard_live');
+    const twin = testDb.prepare(
+      `SELECT nexus_task_id FROM unified_tasks WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'MS-G1'`,
+    ).get(USER_ID) as { nexus_task_id: string };
+    expect(twin.nexus_task_id).not.toBe('task_guard_live');
+  });
+
+  it('still re-points a conflicting link away from a soft-deleted row', () => {
+    seedPushedNexusTask({
+      nexusTaskId: 'task_guard_dead',
+      providerTaskId: 'MS-G1',
+      isDeleted: 1,
+      linkState: 'orphaned',
+      linkId: 'link_guard_dead',
+    });
+
+    const result = upsertTask(USER_ID, msPayload({ title: 'Re-imported after delete' }));
+
+    expect(result).toBe('inserted');
+    const inserted = testDb.prepare(
+      `SELECT nexus_task_id FROM unified_tasks WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'MS-G1'`,
+    ).get(USER_ID) as { nexus_task_id: string };
+    const link = testDb.prepare(
+      `SELECT task_id FROM task_provider_links WHERE id = 'link_guard_dead'`,
+    ).get() as { task_id: string };
+    expect(link.task_id).toBe(inserted.nexus_task_id);
+  });
+
+  describe('softDeleteMissing via canonical links', () => {
+    it('marks pushed nexus tasks missing through their provider link on a full pull', () => {
+      seedPushedNexusTask({ nexusTaskId: 'task_push_gone', providerTaskId: 'MS-P1', linkId: 'link_push_gone' });
+      seedPushedNexusTask({ nexusTaskId: 'task_push_kept', providerTaskId: 'MS-P2', linkId: 'link_push_kept' });
+      upsertTask(USER_ID, makeTask({ provider: 'ms_todo', externalId: 'MS-M1' }));
+
+      const marked = softDeleteMissing(USER_ID, 'ms_todo', ['MS-P2']);
+
+      const rows = testDb.prepare(
+        `SELECT external_id, sync_state, is_deleted FROM unified_tasks WHERE user_id = ? ORDER BY external_id`,
+      ).all(USER_ID) as Array<{ external_id: string; sync_state: string; is_deleted: number }>;
+      const linkStates = testDb.prepare(
+        `SELECT id, link_state FROM task_provider_links WHERE user_id = ? AND id IN ('link_push_gone', 'link_push_kept')
+         ORDER BY id`,
+      ).all(USER_ID) as Array<{ id: string; link_state: string }>;
+
+      expect(marked).toBe(2);
+      expect(rows).toEqual([
+        { external_id: 'MS-M1', sync_state: 'provider_missing', is_deleted: 0 },
+        { external_id: 'task_push_gone', sync_state: 'provider_missing', is_deleted: 0 },
+        { external_id: 'task_push_kept', sync_state: 'synced', is_deleted: 0 },
+      ]);
+      expect(linkStates).toEqual([
+        { id: 'link_push_gone', link_state: 'provider_missing' },
+        { id: 'link_push_kept', link_state: 'linked' },
+      ]);
+    });
+
+    it('marks a pushed task with pending local changes as conflict when its provider id is missing', () => {
+      seedPushedNexusTask({
+        nexusTaskId: 'task_push_queued',
+        providerTaskId: 'MS-P3',
+        syncState: 'queued',
+      });
+
+      const marked = softDeleteMissing(USER_ID, 'ms_todo', ['MS-OTHER']);
+
+      const row = testDb.prepare(
+        `SELECT sync_state, is_deleted FROM unified_tasks WHERE user_id = ? AND nexus_task_id = 'task_push_queued'`,
+      ).get(USER_ID) as { sync_state: string; is_deleted: number };
+      expect(marked).toBe(1);
+      expect(row).toEqual({ sync_state: 'conflict', is_deleted: 0 });
+    });
+
+    it('ignores pending-create links that never received a provider id', () => {
+      seedPushedNexusTask({
+        nexusTaskId: 'task_pending_create',
+        providerTaskId: null,
+        syncState: 'queued',
+        linkState: 'pending_create',
+        linkId: 'link_pending_create',
+      });
+
+      const marked = softDeleteMissing(USER_ID, 'ms_todo', []);
+
+      const row = testDb.prepare(
+        `SELECT sync_state FROM unified_tasks WHERE user_id = ? AND nexus_task_id = 'task_pending_create'`,
+      ).get(USER_ID) as { sync_state: string };
+      const link = testDb.prepare(
+        `SELECT link_state FROM task_provider_links WHERE id = 'link_pending_create'`,
+      ).get() as { link_state: string };
+      expect(marked).toBe(0);
+      expect(row.sync_state).toBe('queued');
+      expect(link.link_state).toBe('pending_create');
+    });
+  });
+});
