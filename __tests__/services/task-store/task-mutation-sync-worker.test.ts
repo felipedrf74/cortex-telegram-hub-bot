@@ -506,6 +506,28 @@ describe('task mutation sync worker write-back safety', () => {
     });
   });
 
+  it('keeps the prior snapshot when a task.delete lands — the link is being orphaned (M2B)', async () => {
+    const { taskId } = seedLinkedMutation({
+      taskId: 'task-snapshot-delete-keeps',
+      providerTaskId: 'ms-task-delete-1',
+      operation: 'task.delete',
+    });
+    testDb.prepare(
+      `UPDATE task_provider_links SET last_synced_snapshot = ? WHERE task_id = ?`,
+    ).run('{"title":"Agreed base before delete"}', taskId);
+
+    await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(providerApi.deleteTask).toHaveBeenCalledWith('ms-list-1', 'ms-task-delete-1');
+    const link = testDb.prepare(
+      `SELECT last_synced_snapshot, provider_task_id
+       FROM task_provider_links WHERE task_id = ?`,
+    ).get(taskId) as { last_synced_snapshot: string | null; provider_task_id: string | null };
+    // Snapshot untouched; the delete surrendered the provider id (M4 rule).
+    expect(link.last_synced_snapshot).toBe('{"title":"Agreed base before delete"}');
+    expect(link.provider_task_id).toBeNull();
+  });
+
   it('never selects superseded mutations and never dead-letters them past the retry cap (M2B)', async () => {
     // A superseded row shaped like a former conflict AND one past the
     // dead-letter retry cap: the batch must ignore both entirely.

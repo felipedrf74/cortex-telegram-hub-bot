@@ -51,6 +51,7 @@ const mockGetScheduledTarget = vi.hoisted(() => vi.fn());
 const mockRunAutoresearch = vi.hoisted(() => vi.fn());
 const mockGetEvalTarget = vi.hoisted(() => vi.fn());
 const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
+const mockRunTaskLedgerRetentionJob = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -155,6 +156,9 @@ vi.mock('../../src/portal/telemetry', () => ({
   seedJobLastRunFromHistory: vi.fn(),
 }));
 vi.mock('../../src/services/apns-sender', () => ({ sendPushNotification: vi.fn() }));
+vi.mock('../../src/services/task-store/task-ledger-retention', () => ({
+  runTaskLedgerRetentionJob: (...args: unknown[]) => mockRunTaskLedgerRetentionJob(...args),
+}));
 vi.mock('../../src/skills/skill-manager', () => ({ isCronJobEnabled: vi.fn(() => true) }));
 vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPendingCount: vi.fn(() => 0) }));
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
@@ -1253,6 +1257,35 @@ describe('scheduler tenant scoping', () => {
     const result = await expiryJob!();
 
     expect(result).toBe('skipped');
+  });
+
+  it('task ledger retention is wired through the scheduler with the tuned batch policy (M2B)', async () => {
+    startScheduler();
+    const retentionJob = mockCronSchedule.mock.calls.find((call) => call[0] === '50 4 * * *')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(retentionJob).toBeTypeOf('function');
+    expect((retentionJob as unknown as { jobName: string }).jobName).toBe('task_ledger_retention');
+
+    mockRunTaskLedgerRetentionJob.mockReturnValue({
+      mutationsPruned: 0,
+      resolvedIssuesPruned: 0,
+      observabilityEventsPruned: 0,
+    });
+    await expect(retentionJob!()).resolves.toBe('skipped');
+    expect(mockRunTaskLedgerRetentionJob).toHaveBeenCalledWith({ batchSize: 500, maxBatches: 200 });
+
+    mockRunTaskLedgerRetentionJob.mockReturnValue({
+      mutationsPruned: 3,
+      resolvedIssuesPruned: 0,
+      observabilityEventsPruned: 0,
+    });
+    await expect(retentionJob!()).resolves.toBeUndefined();
+
+    mockRunTaskLedgerRetentionJob.mockReturnValue({
+      mutationsPruned: 0,
+      resolvedIssuesPruned: 2,
+      observabilityEventsPruned: 1,
+    });
+    await expect(retentionJob!()).resolves.toBeUndefined();
   });
 
   it('sendDailyBriefing stores report documents under canonical tenant ids', async () => {

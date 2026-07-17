@@ -1116,4 +1116,14 @@ describe('offline-first task service', () => {
       expect(getOfflineTaskLists(USER_ID, USER_ID).pendingMutationCount).toBe(1);
     });
   });
+
+  describe('recordLocalTaskMutation guards', () => {
+    it('throws NOT_FOUND for a task id the store has never seen', () => {
+      expect(() => recordLocalTaskMutation(USER_ID, USER_ID, {
+        taskId: 'task-ghost-mutation-target',
+        operation: 'task.complete',
+        patch: { status: 'completed' },
+      })).toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+    });
+  });
 });

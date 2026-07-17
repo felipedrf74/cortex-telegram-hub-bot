@@ -1403,4 +1403,116 @@ describe('optional client OCC on task mutations (NEX-24)', () => {
     expect(row.is_deleted).toBe(0);
     expect(row.project_id).not.toBe(targetList.id);
   });
+
+  it('accepts a non-numeric baseLocalVersion as absent instead of erroring', async () => {
+    const task = await createBaseTask('non-numeric');
+
+    const res = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'Non-numeric base is ignored',
+        baseLocalVersion: 'not-a-version',
+        clientMutationId: 'ios-occ-nonnumeric-1',
+        idempotencyKey: 'idem-occ-nonnumeric-1',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task.title).toBe('Non-numeric base is ignored');
+  });
+
+  it('treats a falsy stored local_version as version 1 for the OCC comparison', async () => {
+    const task = await createBaseTask('null-version');
+    // local_version is NOT NULL — 0 is the falsy value the || 1 fallback
+    // defends against.
+    testDb.prepare(
+      `UPDATE unified_tasks SET local_version = 0 WHERE nexus_task_id = ?`,
+    ).run(task.id);
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/complete`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        baseLocalVersion: 1,
+        clientMutationId: 'ios-occ-nullver-1',
+        idempotencyKey: 'idem-occ-nullver-1',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task.status).toBe('completed');
+  });
+
+  it('maps non-OCC errors on the move route to a 500, not a 409', async () => {
+    const task = await createBaseTask('move-bad-target');
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/move`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        targetListId: '999999',
+        clientMutationId: 'ios-occ-move-badtarget',
+        idempotencyKey: 'idem-occ-move-badtarget',
+      },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error.code).not.toBe('VERSION_CONFLICT');
+  });
+});
+
+describe('conflict route error mapping (M2B)', () => {
+  it('preview 404s NOT_FOUND for an unknown task id', async () => {
+    const res = await dispatch('GET', '/list-1/task-does-not-exist/sync/conflict', {
+      params: { listId: 'list-1', taskId: 'task-does-not-exist' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('resolve 404s NOT_FOUND for an unknown task id', async () => {
+    const res = await dispatch('POST', '/list-1/task-does-not-exist/sync/resolve', {
+      params: { listId: 'list-1', taskId: 'task-does-not-exist' },
+      body: { strategy: 'keep_local' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('resolve 404s CONFLICT_NOT_FOUND for a healthy task', async () => {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: 'Healthy resolve target',
+        listName: 'Tasks',
+        clientMutationId: 'ios-resolve-healthy',
+        idempotencyKey: 'idem-resolve-healthy',
+      },
+    });
+    const taskId = created.body.data.task.id;
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_provider' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('CONFLICT_NOT_FOUND');
+  });
+
+  it('resolve 503s PROVIDER_UNAVAILABLE when the live provider re-fetch fails', async () => {
+    const { taskId } = seedConflictTask({ taskId: 'task-resolve-provider-down' });
+    providerApi.getTask.mockRejectedValue(new Error('graph unreachable'));
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_local', expectedProviderVersion: 'etag-v1' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('PROVIDER_UNAVAILABLE');
+    const mutation = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = ?`,
+    ).get('mutation-task-resolve-provider-down') as { status: string };
+    expect(mutation.status).toBe('conflict');
+  });
 });
