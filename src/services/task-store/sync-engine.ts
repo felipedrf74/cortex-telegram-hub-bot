@@ -208,10 +208,13 @@ export async function syncProvider(
       ? syncState.sync_cursor
       : undefined;
 
-    const { tasks, nextCursor } = await adapter.getTasks(userId, {
+    const { tasks, nextCursor, incomplete, errors: taskPullErrors } = await adapter.getTasks(userId, {
       sinceCursor: cursor || undefined,
       knownProjects,
     });
+    if (taskPullErrors?.length) {
+      errors.push(...taskPullErrors.map((message) => `tasks: ${message}`));
+    }
 
     const seenExternalIds: string[] = [];
     for (const task of tasks) {
@@ -228,8 +231,13 @@ export async function syncProvider(
     // If we used a cursor, the response is a delta and we DON'T know what
     // wasn't returned — could be unchanged, could be deleted. Only the full
     // pull is authoritative on "this is the complete set."
-    if (!cursor) {
+    if (!cursor && !incomplete) {
       tasksDeleted = softDeleteMissing(userId, provider, seenExternalIds);
+    } else if (!cursor && incomplete) {
+      logger.warn(
+        { userId, provider, taskCount: tasks.length, errorCount: taskPullErrors?.length || 0 },
+        'Task full-pull reconciliation skipped because provider task pull was incomplete',
+      );
     }
 
     saveSyncState(userId, provider, {

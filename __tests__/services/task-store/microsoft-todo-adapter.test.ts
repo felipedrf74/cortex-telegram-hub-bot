@@ -80,15 +80,22 @@ function makeGraphClient(responses: Record<string, any>): MockGraphClient {
     calls,
     getCounts,
     api(path: string) {
+      let currentQuery: Record<string, string> | undefined;
       const request = {
         query(query: Record<string, string>) {
+          currentQuery = query;
           calls.push({ path, query });
           return request;
         },
         async get() {
           getCounts[path] = (getCounts[path] || 0) + 1;
           if (!calls.some((call) => call.path === path)) calls.push({ path });
-          const response = responses[path];
+          // Query-specific responses (keyed "<path> <json-query>") let tests
+          // distinguish the expanded fetch from its basic-fetch fallback.
+          const queryKey = currentQuery ? `${path} ${JSON.stringify(currentQuery)}` : path;
+          const response = Object.prototype.hasOwnProperty.call(responses, queryKey)
+            ? responses[queryKey]
+            : responses[path];
           if (response instanceof Error) throw response;
           return response ?? { value: [] };
         },
@@ -250,6 +257,86 @@ describe('MicrosoftTodoAdapter', () => {
         }),
       }),
     ]));
+  });
+
+  it('reports an incomplete pull when one Microsoft To Do list fetch fails', async () => {
+    const client = makeGraphClient({
+      '/me/todo/lists': {
+        value: [
+          { id: 'list-good', displayName: 'Rotina Matinal' },
+          { id: 'list-failing', displayName: 'Work' },
+        ],
+      },
+      '/me/todo/lists/list-good/tasks': {
+        value: [{ id: 'task-supplement', title: 'Suplemento Matinal', status: 'notStarted' }],
+      },
+      '/me/todo/lists/list-failing/tasks': Object.assign(new Error('Graph timeout'), { statusCode: 503 }),
+    });
+    mocks.getGraphClientForUser.mockReturnValue(client);
+
+    const adapter = new MicrosoftTodoAdapter();
+    const result = await adapter.getTasks(42);
+
+    expect(result.tasks).toEqual([
+      expect.objectContaining({
+        externalId: 'task-supplement',
+        title: 'Suplemento Matinal',
+        projectName: 'Rotina Matinal',
+      }),
+    ]);
+    expect(result.incomplete).toBe(true);
+    expect(result.errors).toEqual(['Microsoft To Do failed to fetch 1 list']);
+    expect(mocks.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 42, listId: 'list-failing' }),
+      'Microsoft To Do adapter failed to fetch list tasks',
+    );
+  });
+
+  it('falls back to a basic task pull when expanded Microsoft To Do list fetch fails', async () => {
+    const path = '/me/todo/lists/list-routine/tasks';
+    const expandedKey = `${path} ${JSON.stringify({
+      $top: '100',
+      $orderby: 'createdDateTime DESC',
+      $expand: 'checklistItems,linkedResources',
+    })}`;
+    const basicKey = `${path} ${JSON.stringify({
+      $top: '100',
+      $orderby: 'createdDateTime DESC',
+    })}`;
+    const client = makeGraphClient({
+      '/me/todo/lists': {
+        value: [{ id: 'list-routine', displayName: 'Rotina Matinal' }],
+      },
+      [expandedKey]: Object.assign(new Error('Expand failed'), { statusCode: 503 }),
+      [basicKey]: {
+        value: [{
+          id: 'task-supplement',
+          title: 'Suplemento Matinal',
+          status: 'notStarted',
+          dueDateTime: { dateTime: '2026-06-23T09:00:00.0000000', timeZone: 'UTC' },
+        }],
+      },
+    });
+    mocks.getGraphClientForUser.mockReturnValue(client);
+
+    const adapter = new MicrosoftTodoAdapter();
+    const result = await adapter.getTasks(42);
+
+    expect(result.incomplete).toBe(false);
+    expect(result.errors).toBeUndefined();
+    expect(result.tasks).toEqual([
+      expect.objectContaining({
+        externalId: 'task-supplement',
+        title: 'Suplemento Matinal',
+        projectName: 'Rotina Matinal',
+        dueDate: '2026-06-23T09:00:00Z',
+      }),
+    ]);
+    expect(client.getCounts[path]).toBe(3);
+    expect(mocks.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 42, listId: 'list-routine' }),
+      'Microsoft To Do adapter expanded list fetch failed — retrying basic task fetch',
+    );
   });
 
   it('normalizes Graph timestamps without seven-digit fractions', () => {

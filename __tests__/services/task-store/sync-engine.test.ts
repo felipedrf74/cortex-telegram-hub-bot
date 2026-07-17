@@ -96,6 +96,8 @@ interface MockAdapterOptions {
   projects?: NormalizedProject[];
   cursorByCall?: (string | undefined)[];
   throwOnGetTasks?: boolean;
+  incompleteByCall?: boolean[];
+  errorsByCall?: string[][];
 }
 
 function makeMockAdapter(opts: MockAdapterOptions = {}): TaskProviderAdapter & {
@@ -106,6 +108,8 @@ function makeMockAdapter(opts: MockAdapterOptions = {}): TaskProviderAdapter & {
   const provider = opts.provider ?? 'todoist';
   const tasksByCall = opts.tasksByCall ?? [[]];
   const cursorByCall = opts.cursorByCall ?? [];
+  const incompleteByCall = opts.incompleteByCall ?? [];
+  const errorsByCall = opts.errorsByCall ?? [];
   let callIndex = 0;
 
   const adapter: any = {
@@ -134,8 +138,10 @@ function makeMockAdapter(opts: MockAdapterOptions = {}): TaskProviderAdapter & {
       const idx = Math.min(callIndex, tasksByCall.length - 1);
       const tasks = tasksByCall[idx] || [];
       const cursor = cursorByCall[idx];
+      const incomplete = incompleteByCall[idx];
+      const errors = errorsByCall[idx];
       callIndex++;
-      return { tasks, nextCursor: cursor };
+      return { tasks, nextCursor: cursor, incomplete, errors };
     },
     createTask: async (_userId: number, task: any) => ({ ...task, provider, externalId: `mock_${Date.now()}` }),
     completeTask: async () => undefined,
@@ -282,6 +288,45 @@ describe('syncProvider', () => {
       state: 'open',
       message: 'Provider no longer has this task. Nexus kept the local copy.',
     });
+  });
+
+  it('does not mark omitted tasks missing when a full provider pull is incomplete', async () => {
+    const adapter = makeMockAdapter({
+      provider: 'ms_todo',
+      hasIncrementalSync: false,
+      tasksByCall: [
+        [
+          { provider: 'ms_todo', externalId: 'a', title: 'A', status: 'pending', priority: 0 },
+          { provider: 'ms_todo', externalId: 'b', title: 'B', status: 'pending', priority: 0 },
+        ],
+        [{ provider: 'ms_todo', externalId: 'a', title: 'A', status: 'pending', priority: 0 }],
+      ],
+      incompleteByCall: [false, true],
+      errorsByCall: [[], ['Microsoft To Do failed to fetch 1 list']],
+    });
+    registerAdapter(adapter);
+
+    await syncProvider(USER_ID, 'ms_todo');
+    const partial = await syncProvider(USER_ID, 'ms_todo');
+
+    const omittedRow = testDb.prepare(
+      `SELECT sync_state, is_deleted
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'b'`,
+    ).get(USER_ID) as { sync_state: string; is_deleted: number };
+    const missingIssueCount = testDb.prepare(
+      `SELECT COUNT(*) AS count
+       FROM task_sync_issues
+       WHERE user_id = ? AND provider = 'ms_todo' AND code = 'provider_task_missing'`,
+    ).get(USER_ID) as { count: number };
+    const syncState = getSyncState(USER_ID, 'ms_todo');
+
+    expect(partial.tasksDeleted).toBe(0);
+    expect(partial.errors).toEqual(['tasks: Microsoft To Do failed to fetch 1 list']);
+    expect(omittedRow).toEqual({ sync_state: 'synced', is_deleted: 0 });
+    expect(missingIssueCount.count).toBe(0);
+    expect(syncState?.status).toBe('error');
+    expect(syncState?.error_message).toBe('tasks: Microsoft To Do failed to fetch 1 list');
   });
 
   it('clears provider_missing when a later full sync returns the provider task again', async () => {
