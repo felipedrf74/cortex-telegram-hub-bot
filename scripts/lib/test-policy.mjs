@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 export function loadTestPolicy() {
   return JSON.parse(fs.readFileSync(path.join(root, 'config/test-policy.json'), 'utf8'));
