@@ -1,10 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import crypto from 'crypto';
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
 import { runWithContext } from '../../utils/request-context';
 import { isConnected } from '../oauth-store';
 import { getTaskProviderForUser } from './task-router';
+import { upsertProject } from './unified-task-store';
 import { projectTaskForProvider } from './task-provider-capabilities';
 import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
 import { assertTransition } from './task-sync-transitions';
@@ -1008,10 +1010,154 @@ async function writeProviderMutation(mutation: TaskMutationRow, task: UnifiedTas
   };
 }
 
+function listMutationPatch(mutation: TaskMutationRow): {
+  listId: string;
+  name: string;
+  provider: 'ms_todo' | 'nexus_local';
+  providerContainerId: string | null;
+} {
+  const patch = parseJson<Record<string, unknown>>(mutation.patch_json, {});
+  return {
+    listId: String(patch.listId || ''),
+    name: String(patch.name || ''),
+    provider: patch.provider === 'ms_todo' ? 'ms_todo' : 'nexus_local',
+    providerContainerId: patch.providerContainerId != null && String(patch.providerContainerId).trim()
+      ? String(patch.providerContainerId)
+      : null,
+  };
+}
+
+function markListMutationSynced(mutation: TaskMutationRow): void {
+  // markSynced with no task/link rows: list mutations have task_id NULL, so
+  // only the mutation row itself transitions.
+  markSynced(mutation, null, null, {});
+}
+
+/**
+ * M5B: dispatch `list.create` / `list.delete` mutation rows (task_id NULL)
+ * journaled by createOfflineFirstTaskList / deleteOfflineFirstTaskList.
+ *
+ * list.create push: create the provider list, mirror it as the visible
+ * unified_projects row (upsertProject also writes the provider-keyed
+ * container mapping), and map the LOCAL nexus row to the provider container
+ * so getOfflineTaskLists hides the local mirror — the pushed list must appear
+ * exactly once.
+ *
+ * list.delete push: call providerApi.deleteList with the PROVIDER container
+ * id captured in the patch at journal time — never the local numeric row id
+ * (that was the NEX-10 delete bug).
+ */
+async function processListMutation(mutation: TaskMutationRow): Promise<'synced' | 'failed_retryable' | 'failed_permanent' | 'provider_disconnected' | 'conflict' | 'dead_letter'> {
+  const patch = listMutationPatch(mutation);
+  if (patch.provider !== 'ms_todo') {
+    markListMutationSynced(mutation);
+    return 'synced';
+  }
+
+  try {
+    if (!isTaskProviderConnected(mutation.user_id, 'ms_todo')) {
+      throw new Error('ms_todo_not_connected');
+    }
+    const providerApi = getTaskProviderForUser(mutation.user_id, 'ms_todo');
+
+    if (mutation.operation === 'list.create') {
+      if (!patch.name) {
+        markDeadLetter(mutation, 'manual_resolution_required', 'list.create mutation has no list name.');
+        return 'dead_letter';
+      }
+      const created = await withTimeout(
+        Promise.resolve(providerApi.createList(patch.name)),
+        PROVIDER_WRITE_TIMEOUT_MS,
+        'task_provider_list_create',
+      );
+      ensureProviderSuccess(created, 'task_provider_list_create_failed');
+      const providerListId = extractProviderTaskId(created);
+      if (!providerListId) throw new Error('provider_list_create_missing_id');
+
+      // Provider row becomes the visible list (M3 model); upsertProject also
+      // records the provider-keyed container mapping.
+      upsertProject(mutation.user_id, {
+        provider: 'ms_todo',
+        externalId: providerListId,
+        name: patch.name,
+        isDefault: false,
+        taskCount: 0,
+      }, mutation.tenant_id);
+
+      // Map the LOCAL nexus row to the provider container so the local
+      // mirror is hidden from GET /lists (exactly-once visibility) and
+      // queued creates into this list can resolve a sync target.
+      if (patch.listId) {
+        getDb().prepare(
+          `INSERT INTO task_container_mappings (
+             id, tenant_id, user_id, nexus_list_id, provider,
+             provider_container_type, provider_container_id, sync_direction
+           ) VALUES (?, ?, ?, ?, 'ms_todo', 'todo_list', ?, 'bidirectional')
+           ON CONFLICT(tenant_id, user_id, nexus_list_id, provider)
+           DO UPDATE SET
+             provider_container_type = excluded.provider_container_type,
+             provider_container_id = excluded.provider_container_id,
+             updated_at = datetime('now')`,
+        ).run(
+          `task_container_mapping_${crypto.randomBytes(12).toString('hex')}`,
+          mutation.tenant_id,
+          mutation.user_id,
+          patch.listId,
+          providerListId,
+        );
+      }
+
+      markListMutationSynced(mutation);
+      return 'synced';
+    }
+
+    if (mutation.operation === 'list.delete') {
+      if (!patch.providerContainerId) {
+        markListMutationSynced(mutation);
+        return 'synced';
+      }
+      const deleted = await withTimeout(
+        Promise.resolve(providerApi.deleteList(patch.providerContainerId)),
+        PROVIDER_WRITE_TIMEOUT_MS,
+        'task_provider_list_delete',
+      );
+      ensureProviderSuccess(deleted, 'task_provider_list_delete_failed');
+      markListMutationSynced(mutation);
+      return 'synced';
+    }
+
+    markDeadLetter(mutation, 'manual_resolution_required', `Unknown list mutation operation ${mutation.operation}.`);
+    return 'dead_letter';
+  } catch (err) {
+    const failure = classifyProviderError(err);
+    if (mutation.operation === 'list.delete' && failure.code === 'provider_task_missing') {
+      // Provider list already gone — the delete converged.
+      markListMutationSynced(mutation);
+      return 'synced';
+    }
+    markFailure(mutation, null, null, failure);
+    if (failure.syncState === 'provider_disconnected') return 'provider_disconnected';
+    if (failure.syncState === 'conflict') return 'conflict';
+    return failure.retryable ? 'failed_retryable' : 'failed_permanent';
+  }
+}
+
 async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'failed_retryable' | 'failed_permanent' | 'provider_disconnected' | 'conflict' | 'dead_letter'> {
   if (mutation.status === 'failed' && mutation.retry_count >= MAX_RETRY_COUNT_BEFORE_DEAD_LETTER) {
     markDeadLetter(mutation, 'manual_resolution_required', 'Task provider sync exceeded the retry limit and needs user-visible repair.');
     return 'dead_letter';
+  }
+
+  if (mutation.operation === 'list.create' || mutation.operation === 'list.delete') {
+    markMutationSyncing(mutation, `list:${mutation.user_id}:${mutation.operation}:${mutation.mutation_id}`);
+    return runWithContext(
+      {
+        source: 'cron:task_mutation_sync',
+        userId: mutation.user_id,
+        tenantId: mutation.tenant_id,
+      },
+      () => processListMutation(mutation),
+    );
   }
 
   const task = getTaskForMutation(mutation);
@@ -1121,11 +1267,18 @@ export function requeueAuthParkedMutations(scope: {
   let requeued = 0;
   let deadLettered = 0;
   for (const mutation of rows) {
-    const link = mutation.task_id
-      ? getProviderLink(mutation)
-      : null;
-    if (!link || link.provider === 'nexus_local') continue;
-    if (!isTaskProviderConnected(mutation.user_id, link.provider)) continue;
+    // M5B list mutations have task_id NULL and carry their push provider in
+    // the patch; they must re-arm on reconnect like task mutations do.
+    const isListMutation = mutation.operation === 'list.create' || mutation.operation === 'list.delete';
+    let provider: LinkProvider | null = null;
+    if (isListMutation) {
+      provider = listMutationPatch(mutation).provider === 'ms_todo' ? 'ms_todo' : null;
+    } else {
+      const link = mutation.task_id ? getProviderLink(mutation) : null;
+      provider = link && link.provider !== 'nexus_local' ? link.provider : null;
+    }
+    if (!provider) continue;
+    if (!isTaskProviderConnected(mutation.user_id, provider)) continue;
 
     const createdAt = Date.parse(`${mutation.created_at || ''}`);
     const ageDays = Number.isFinite(createdAt)

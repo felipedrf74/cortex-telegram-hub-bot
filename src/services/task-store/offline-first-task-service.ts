@@ -163,6 +163,7 @@ type ProjectRow = {
   provider: string;
   external_id: string;
   name: string;
+  is_default?: number | null;
   task_count: number | null;
 };
 
@@ -845,7 +846,7 @@ function getTaskRowByNexusId(tenantId: number, userId: number, taskId: string): 
 }
 
 function getTaskRowByAnyTaskId(tenantId: number, userId: number, taskId: string): UnifiedTaskRow | null {
-  const row = getDb().prepare(
+  let row = getDb().prepare(
     `SELECT t.*
      FROM unified_tasks t
      LEFT JOIN task_provider_links l
@@ -863,6 +864,18 @@ function getTaskRowByAnyTaskId(tenantId: number, userId: number, taskId: string)
        t.updated_at DESC
      LIMIT 1`,
   ).get(tenantId, userId, taskId, taskId, taskId, taskId) as UnifiedTaskRow | undefined;
+  // M5 single-write-path bridge: chat-core-v2 command payloads address
+  // unified tasks by their numeric local row id (the deterministic task
+  // reads expose exactly that id). Numeric ids resolve AFTER the
+  // nexus/external/provider-link matches above so numeric provider external
+  // ids (Todoist) keep their existing precedence over row ids.
+  if (!row && /^\d+$/.test(taskId)) {
+    row = getDb().prepare(
+      `SELECT * FROM unified_tasks
+       WHERE tenant_id = ? AND user_id = ? AND id = ?
+       LIMIT 1`,
+    ).get(tenantId, userId, Number(taskId)) as UnifiedTaskRow | undefined;
+  }
   if (!row) return null;
   // Twin-repair alias hop: a merged tombstone records its canonical task in
   // provider_data.merged_into, so stale references to the retired twin id
@@ -2585,6 +2598,367 @@ export function recordLocalTaskMutation(
   return {
     task: getTaskByNexusId(tenantId, userId, input.taskId) || existingTask,
     mutationId: result.mutationId,
+    idempotentReplay: false,
+  };
+}
+
+// ─── M5 single write path: list operations through the ledger ───────────────
+
+export interface TaskListMutationInput {
+  name: string;
+  idempotencyKey?: string;
+  clientMutationId?: string;
+}
+
+export interface TaskListDeleteMutationInput {
+  listId: string;
+  idempotencyKey?: string;
+  clientMutationId?: string;
+}
+
+/**
+ * Project rows the app actually shows as lists: every unified_projects row
+ * except nexus mirrors hidden behind an ms_todo container mapping whose
+ * provider row exists (same visibility rule as getOfflineTaskLists).
+ */
+function visibleProjectRows(tenantId: number, userId: number): ProjectRow[] {
+  const rows = getDb().prepare(
+    `SELECT * FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+     ORDER BY is_default DESC, name ASC`,
+  ).all(userId, tenantId) as ProjectRow[];
+  const hiddenMirrorListIds = mappedNexusMirrorListIdsWithProviderRows(tenantId, userId);
+  return rows.filter((row) => !(row.provider === 'nexus' && hiddenMirrorListIds.has(String(row.id))));
+}
+
+function getProjectRowForListRef(tenantId: number, userId: number, listRef: string): ProjectRow | null {
+  const raw = String(listRef || '').trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const byId = getDb().prepare(
+      `SELECT * FROM unified_projects
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND id = ?
+       LIMIT 1`,
+    ).get(userId, tenantId, Number(raw)) as ProjectRow | undefined;
+    if (byId) return byId;
+  }
+  const byExternalId = getDb().prepare(
+    `SELECT * FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND external_id = ?
+     ORDER BY is_default DESC, id ASC
+     LIMIT 1`,
+  ).get(userId, tenantId, raw) as ProjectRow | undefined;
+  return byExternalId || null;
+}
+
+/**
+ * Resolve a chat/callback list reference (local row id, provider external id,
+ * or display name) to the LOCAL list identity the ledger speaks. Chat reads
+ * still run on the provider path, so their list ids are provider container
+ * ids — this is the list-side twin of resolveOfflineNexusTaskId.
+ */
+export function resolveOfflineTaskListRef(
+  tenantId: number,
+  userId: number,
+  listRef?: string | null,
+  listName?: string | null,
+): { id: string; name: string } | null {
+  assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
+  const byRef = listRef ? getProjectRowForListRef(tenantId, userId, String(listRef)) : null;
+  if (byRef) return { id: String(byRef.id), name: byRef.name };
+  const wanted = normalizedListName(listName || listRef);
+  if (!wanted) return null;
+  const byName = visibleProjectRows(tenantId, userId).find((row) => normalizedListName(row.name) === wanted);
+  return byName ? { id: String(byName.id), name: byName.name } : null;
+}
+
+/**
+ * Resolve the list NAME a ledger-routed chat create should target.
+ *
+ * - An explicit name that matches a visible list resolves to that list's
+ *   canonical name (case/diacritic-insensitive).
+ * - An explicit unknown, non-alias name is kept as-is: offline-first capture
+ *   semantics create the local list (same contract as the iOS REST create)
+ *   instead of failing like the legacy provider-read resolution did.
+ * - No name (or a capture alias) picks the default visible list: alias match
+ *   first, then the is_default row, then the first visible list; undefined
+ *   lets the ledger fall back to its Inbox default.
+ */
+export function resolveOfflineCaptureListName(
+  tenantId: number,
+  userId: number,
+  preferredName?: string | null,
+): string | undefined {
+  assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
+  const rows = visibleProjectRows(tenantId, userId);
+  const trimmed = String(preferredName || '').trim();
+  const isCaptureAlias = /^(inbox|tasks|tarefas)$/i.test(
+    trimmed.normalize('NFD').replace(/\p{Diacritic}/gu, ''),
+  );
+  if (trimmed) {
+    const match = rows.find((row) => normalizedListName(row.name) === normalizedListName(trimmed));
+    if (match) return match.name;
+    if (!isCaptureAlias) return trimmed;
+  }
+  const alias = rows.find((row) => /^(inbox|tasks|tarefas)$/i.test(String(row.name || '').trim()));
+  if (alias) return alias.name;
+  const defaultRow = rows.find((row) => !!row.is_default);
+  if (defaultRow) return defaultRow.name;
+  return rows[0]?.name;
+}
+
+/**
+ * Create a task list through the ledger (NEX-10 create fix): the LOCAL
+ * unified_projects row exists immediately — GET /lists shows it instantly —
+ * and a `list.create` mutation row (task_id NULL) journals the provider push
+ * for the sync worker. Provider routing follows the create-task path:
+ * ms_todo pushes on the worker cron; todoist (list creation unsupported from
+ * Nexus) and nexus-local short-circuit to synced exactly like local task
+ * creates.
+ */
+export function createOfflineFirstTaskList(tenantId: number, userId: number, input: TaskListMutationInput) {
+  assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
+  const name = String(input.name || '').trim();
+  if (!name) {
+    const err = new Error('name is required');
+    (err as any).code = 'BAD_REQUEST';
+    throw err;
+  }
+
+  const operation = 'list.create';
+  const { clientMutationId, idempotencyKey } = mutationKeys(tenantId, userId, operation, input);
+  const existingMutation = findExistingMutation(tenantId, userId, operation, clientMutationId, idempotencyKey);
+  if (existingMutation) {
+    const patch = safeJsonParse<Record<string, unknown>>(existingMutation.patch_json, {});
+    recordDuplicatePreventionHit(tenantId, userId, existingMutation);
+    return {
+      list: { id: String(patch.listId || ''), name: String(patch.name || name) },
+      mutationId: existingMutation.mutation_id,
+      clientMutationId: existingMutation.client_mutation_id,
+      idempotencyKey: existingMutation.idempotency_key,
+      idempotentReplay: true,
+    };
+  }
+
+  // Name-level idempotency: the local list model is keyed by normalized name
+  // (stableListExternalId), so a visible list with this name IS this list.
+  // Returning it (instead of journaling a duplicate mutation) keeps repeated
+  // "create list X" chat turns and REST retries convergent.
+  const existingVisible = visibleProjectRows(tenantId, userId)
+    .find((row) => normalizedListName(row.name) === normalizedListName(name));
+  if (existingVisible) {
+    return {
+      list: { id: String(existingVisible.id), name: existingVisible.name },
+      mutationId: null,
+      clientMutationId,
+      idempotencyKey,
+      idempotentReplay: true,
+    };
+  }
+
+  const provider = resolveTaskProvider(userId);
+  const pushProvider: 'ms_todo' | 'nexus_local' = provider === 'ms_todo' ? 'ms_todo' : 'nexus_local';
+  const db = getDb();
+  const created = db.transaction(() => {
+    const project = getOrCreateProject(tenantId, userId, name);
+    const mutationId = randomId('task_mutation');
+    db.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, submitted_at, status
+       ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+    ).run(
+      mutationId,
+      clientMutationId,
+      idempotencyKey,
+      tenantId,
+      userId,
+      operation,
+      JSON.stringify({ listId: String(project.id), name: project.name, provider: pushProvider }),
+      nowIso(),
+      pushProvider === 'ms_todo' ? 'queued' : 'synced',
+    );
+    return { project, mutationId };
+  })();
+
+  return {
+    list: { id: String(created.project.id), name: created.project.name },
+    mutationId: created.mutationId,
+    clientMutationId,
+    idempotencyKey,
+    idempotentReplay: false,
+  };
+}
+
+/**
+ * Provider deletion identity for a local list row. The worker must call
+ * providerApi.deleteList with the PROVIDER container id — passing the local
+ * numeric row id to Microsoft Graph was the NEX-10 delete bug — so the
+ * identity is captured here, before the local rows are removed.
+ */
+function listDeletionScope(tenantId: number, userId: number, row: ProjectRow): {
+  projectIds: number[];
+  pushProvider: 'ms_todo' | 'todoist' | null;
+  providerContainerId: string | null;
+} {
+  const db = getDb();
+  const projectIds = new Set<number>([row.id]);
+  let pushProvider: 'ms_todo' | 'todoist' | null = null;
+  let providerContainerId: string | null = null;
+
+  if (row.provider === 'ms_todo' || row.provider === 'todoist') {
+    pushProvider = row.provider;
+    providerContainerId = row.external_id;
+    // Hidden nexus mirror mapped to this provider container.
+    const mirrors = db.prepare(
+      `SELECT CAST(nexus_list_id AS INTEGER) AS mirror_id
+       FROM task_container_mappings
+       WHERE tenant_id = ? AND user_id = ? AND provider = ? AND provider_container_id = ?`,
+    ).all(tenantId, userId, row.provider, row.external_id) as Array<{ mirror_id: number | null }>;
+    for (const mirror of mirrors) {
+      const mirrorId = Number(mirror.mirror_id);
+      if (!Number.isFinite(mirrorId)) continue;
+      const mirrorRow = db.prepare(
+        `SELECT id FROM unified_projects
+         WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND id = ? AND provider = 'nexus'
+         LIMIT 1`,
+      ).get(userId, tenantId, mirrorId) as { id: number } | undefined;
+      if (mirrorRow) projectIds.add(mirrorRow.id);
+    }
+  } else {
+    const mapping = db.prepare(
+      `SELECT provider, provider_container_id
+       FROM task_container_mappings
+       WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ?
+         AND provider IN ('ms_todo', 'todoist')
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    ).get(tenantId, userId, String(row.id)) as { provider: 'ms_todo' | 'todoist'; provider_container_id: string } | undefined;
+    if (mapping) {
+      pushProvider = mapping.provider;
+      providerContainerId = mapping.provider_container_id;
+      const providerRow = db.prepare(
+        `SELECT id FROM unified_projects
+         WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?
+         LIMIT 1`,
+      ).get(userId, tenantId, mapping.provider, mapping.provider_container_id) as { id: number } | undefined;
+      if (providerRow) projectIds.add(providerRow.id);
+    }
+  }
+
+  return { projectIds: [...projectIds], pushProvider, providerContainerId };
+}
+
+/**
+ * Delete a task list through the ledger (NEX-10 delete fix): the local row
+ * (and its mapped twin, mappings, and contained tasks) disappears from
+ * GET /lists immediately, and a `list.delete` mutation carrying the PROVIDER
+ * container id journals the provider push. Todoist list deletion is not
+ * supported from Nexus, so todoist-backed rows delete locally only (synced
+ * short-circuit) — the reconciliation pull remains the arbiter there.
+ */
+export function deleteOfflineFirstTaskList(tenantId: number, userId: number, input: TaskListDeleteMutationInput) {
+  assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
+  const operation = 'list.delete';
+  const { clientMutationId, idempotencyKey } = mutationKeys(tenantId, userId, operation, input);
+  const existingMutation = findExistingMutation(tenantId, userId, operation, clientMutationId, idempotencyKey);
+  if (existingMutation) {
+    recordDuplicatePreventionHit(tenantId, userId, existingMutation);
+    return {
+      deleted: true,
+      mutationId: existingMutation.mutation_id,
+      clientMutationId: existingMutation.client_mutation_id,
+      idempotencyKey: existingMutation.idempotency_key,
+      idempotentReplay: true,
+    };
+  }
+
+  const row = getProjectRowForListRef(tenantId, userId, input.listId);
+  if (!row) {
+    const err = new Error('List not found');
+    (err as any).code = 'NOT_FOUND';
+    throw err;
+  }
+  if (row.is_default) {
+    const err = new Error('Cannot delete the default list');
+    (err as any).code = 'BAD_REQUEST';
+    throw err;
+  }
+
+  const scope = listDeletionScope(tenantId, userId, row);
+  const willPush = scope.pushProvider === 'ms_todo' && !!scope.providerContainerId;
+  const db = getDb();
+  const result = db.transaction(() => {
+    const mutationId = randomId('task_mutation');
+    const deletedAt = nowIso();
+    const idPlaceholders = scope.projectIds.map(() => '?').join(', ');
+    // Contained tasks are removed with the list (the provider's deleteList
+    // cascades the same way); no per-task mutations — the list.delete push
+    // covers them.
+    db.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = ?, updated_at = ?
+       WHERE tenant_id = ? AND user_id = ? AND is_deleted = 0
+         AND project_id IN (${idPlaceholders})`,
+    ).run(deletedAt, deletedAt, tenantId, userId, ...scope.projectIds);
+    db.prepare(
+      `DELETE FROM task_container_mappings
+       WHERE tenant_id = ? AND user_id = ?
+         AND (nexus_list_id IN (${scope.projectIds.map(() => '?').join(', ')})
+              OR provider_container_id = COALESCE(?, ''))`,
+    ).run(tenantId, userId, ...scope.projectIds.map(String), scope.providerContainerId);
+    db.prepare(
+      `DELETE FROM unified_projects
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND id IN (${idPlaceholders})`,
+    ).run(userId, tenantId, ...scope.projectIds);
+
+    // Legacy native mirror: the backfill re-creates any native_task_lists row
+    // on the next read, so the native list (and its tasks) must go with the
+    // unified row — same hard-delete the legacy native deleteList performed.
+    if (row.provider === 'nexus' && legacyNativeTaskTablesAvailable()) {
+      const nativeLists = db.prepare(
+        `SELECT id FROM native_task_lists
+         WHERE user_id = ? AND lower(name) = lower(?)`,
+      ).all(userId, row.name) as Array<{ id: number }>;
+      for (const nativeList of nativeLists) {
+        db.prepare('DELETE FROM native_tasks WHERE list_id = ? AND user_id = ?').run(nativeList.id, userId);
+        db.prepare('DELETE FROM native_task_lists WHERE id = ? AND user_id = ?').run(nativeList.id, userId);
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, submitted_at, status
+       ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+    ).run(
+      mutationId,
+      clientMutationId,
+      idempotencyKey,
+      tenantId,
+      userId,
+      operation,
+      JSON.stringify({
+        listId: String(row.id),
+        name: row.name,
+        provider: willPush ? 'ms_todo' : 'nexus_local',
+        providerContainerId: willPush ? scope.providerContainerId : null,
+      }),
+      nowIso(),
+      willPush ? 'queued' : 'synced',
+    );
+    return { mutationId };
+  })();
+
+  return {
+    deleted: true,
+    mutationId: result.mutationId,
+    clientMutationId,
+    idempotencyKey,
     idempotentReplay: false,
   };
 }

@@ -12,6 +12,8 @@ const providerApi = {
   completeTask: vi.fn(),
   uncompleteTask: vi.fn(),
   deleteTask: vi.fn(),
+  createList: vi.fn(),
+  deleteList: vi.fn(),
   getChecklistItems: vi.fn(),
   addChecklistItem: vi.fn(),
   updateChecklistItem: vi.fn(),
@@ -46,11 +48,16 @@ vi.mock('../../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../../src/services/user-service', () => ({
+  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
+}));
+
 import {
   getTaskSyncOperationalMetrics,
   requeueAuthParkedMutations,
   runTaskMutationSyncBatch,
 } from '../../../src/services/task-store/task-mutation-sync-worker';
+import { getOfflineTaskLists } from '../../../src/services/task-store/offline-first-task-service';
 import { isConnected } from '../../../src/services/oauth-store';
 
 const USER_ID = 42;
@@ -133,6 +140,43 @@ function createTestDb(): Database.Database {
       provider_idempotency_key TEXT,
       last_error_code TEXT,
       last_error_message TEXT
+    );
+
+    CREATE TABLE unified_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER,
+      provider TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT,
+      is_default INTEGER DEFAULT 0,
+      task_count INTEGER DEFAULT 0,
+      synced_at TEXT,
+      UNIQUE(user_id, provider, external_id)
+    );
+
+    CREATE TABLE task_container_mappings (
+      id TEXT PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      nexus_list_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_container_type TEXT NOT NULL,
+      provider_container_id TEXT NOT NULL,
+      sync_direction TEXT NOT NULL DEFAULT 'bidirectional',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, user_id, nexus_list_id, provider)
+    );
+
+    CREATE TABLE task_sync_state (
+      user_id INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      last_sync_at TEXT,
+      status TEXT,
+      error_message TEXT,
+      PRIMARY KEY (user_id, provider)
     );
 
     CREATE TABLE task_sync_issues (
@@ -788,5 +832,181 @@ describe('getTaskSyncOperationalMetrics user scoping', () => {
     expect(backlogTotal(tenantWide)).toBe(2);
     expect(scoped.taskCounts.providerDisconnected).toBe(1);
     expect(tenantWide.taskCounts.providerDisconnected).toBe(2);
+  });
+});
+
+describe('M5B list.* mutation dispatch', () => {
+  function seedListMutation(input: {
+    mutationId?: string;
+    operation: 'list.create' | 'list.delete';
+    patch: Record<string, unknown>;
+    status?: string;
+  }): string {
+    const mutationId = input.mutationId || `mutation-${input.operation}-${Math.random().toString(16).slice(2)}`;
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, status, retry_count
+       ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 0)`,
+    ).run(
+      mutationId,
+      `client-${mutationId}`,
+      `idem-${mutationId}`,
+      USER_ID,
+      USER_ID,
+      input.operation,
+      JSON.stringify(input.patch),
+      input.status || 'queued',
+    );
+    return mutationId;
+  }
+
+  function mutationStatus(mutationId: string): string {
+    return (testDb.prepare('SELECT status FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { status: string }).status;
+  }
+
+  function seedLocalNexusList(name: string): string {
+    const result = testDb.prepare(
+      `INSERT INTO unified_projects (user_id, tenant_id, provider, external_id, name, is_default, task_count)
+       VALUES (?, ?, 'nexus', ?, ?, 0, 0)`,
+    ).run(USER_ID, USER_ID, `nexus_list_${name.toLowerCase()}`, name);
+    return String(result.lastInsertRowid);
+  }
+
+  it('pushes list.create, records the provider row + mapping, and the created list appears EXACTLY ONCE', async () => {
+    const localListId = seedLocalNexusList('Groceries');
+    providerApi.createList.mockResolvedValue({ success: true, data: { id: 'ms-list-groceries', displayName: 'Groceries' } });
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: localListId, name: 'Groceries', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.synced).toBe(1);
+    expect(providerApi.createList).toHaveBeenCalledWith('Groceries');
+    expect(mutationStatus(mutationId)).toBe('synced');
+
+    const providerRow = testDb.prepare(
+      `SELECT id FROM unified_projects WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'ms-list-groceries'`,
+    ).get(USER_ID) as { id: number } | undefined;
+    expect(providerRow).toBeTruthy();
+
+    const mirrorMapping = testDb.prepare(
+      `SELECT provider_container_id FROM task_container_mappings
+       WHERE tenant_id = ? AND user_id = ? AND nexus_list_id = ? AND provider = 'ms_todo'`,
+    ).get(USER_ID, USER_ID, localListId) as { provider_container_id: string } | undefined;
+    expect(mirrorMapping?.provider_container_id).toBe('ms-list-groceries');
+
+    // Exactly-once regression: the provider row is the visible list; the
+    // local nexus mirror is hidden behind the mapping.
+    const lists = getOfflineTaskLists(USER_ID, USER_ID).lists.filter((list: any) => list.name === 'Groceries');
+    expect(lists).toHaveLength(1);
+    expect(lists[0].id).toBe(String(providerRow!.id));
+  });
+
+  it('short-circuits nexus_local list mutations to synced without any provider call', async () => {
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '12', name: 'Local Only', provider: 'nexus_local' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.synced).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('synced');
+    expect(providerApi.createList).not.toHaveBeenCalled();
+    expect(providerApi.deleteList).not.toHaveBeenCalled();
+  });
+
+  it('pushes list.delete with the PROVIDER container id from the patch — never the local numeric row id (NEX-10 pin)', async () => {
+    providerApi.deleteList.mockResolvedValue({ success: true, data: undefined });
+    const mutationId = seedListMutation({
+      operation: 'list.delete',
+      patch: { listId: '55', name: 'Groceries', provider: 'ms_todo', providerContainerId: 'ms-list-groceries' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.synced).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('synced');
+    expect(providerApi.deleteList).toHaveBeenCalledTimes(1);
+    expect(providerApi.deleteList).toHaveBeenCalledWith('ms-list-groceries');
+    expect(providerApi.deleteList).not.toHaveBeenCalledWith('55');
+  });
+
+  it('treats a provider 404 on list.delete as converged', async () => {
+    providerApi.deleteList.mockRejectedValue(Object.assign(new Error('not found'), { statusCode: 404 }));
+    const mutationId = seedListMutation({
+      operation: 'list.delete',
+      patch: { listId: '55', name: 'Gone', provider: 'ms_todo', providerContainerId: 'ms-list-gone' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.synced).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('synced');
+  });
+
+  it('marks list.delete synced without a provider call when no provider container id was captured', async () => {
+    const mutationId = seedListMutation({
+      operation: 'list.delete',
+      patch: { listId: '55', name: 'Local only', provider: 'ms_todo', providerContainerId: null },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.synced).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('synced');
+    expect(providerApi.deleteList).not.toHaveBeenCalled();
+  });
+
+  it('dead-letters list.create mutations that carry no list name', async () => {
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '55', name: '', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.deadLettered).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('dead_letter');
+    expect(providerApi.createList).not.toHaveBeenCalled();
+  });
+
+  it('retries list mutations when the provider is disconnected (same taxonomy as task mutations)', async () => {
+    vi.mocked(isConnected).mockReturnValue(false);
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '77', name: 'Waiting', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.failedRetryable).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('failed');
+    const row = testDb.prepare('SELECT next_retry_at FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { next_retry_at: string | null };
+    expect(row.next_retry_at).toBeTruthy();
+    expect(providerApi.createList).not.toHaveBeenCalled();
+  });
+
+  it('parks list mutations on provider 401 and re-arms them on reconnect', async () => {
+    providerApi.createList.mockRejectedValue(Object.assign(new Error('unauthorized'), { statusCode: 401 }));
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '78', name: 'Parked', provider: 'ms_todo' },
+    });
+
+    const parked = await runTaskMutationSyncBatch({ userId: USER_ID });
+    expect(parked.providerDisconnected).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('failed');
+    const parkedRow = testDb.prepare('SELECT next_retry_at, last_error_code FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { next_retry_at: string | null; last_error_code: string };
+    expect(parkedRow.next_retry_at).toBeNull();
+    expect(parkedRow.last_error_code).toBe('provider_auth_expired');
+
+    const requeue = requeueAuthParkedMutations({ userId: USER_ID });
+    expect(requeue.requeued).toBe(1);
+    const rearmed = testDb.prepare('SELECT next_retry_at FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { next_retry_at: string | null };
+    expect(rearmed.next_retry_at).toBeTruthy();
   });
 });

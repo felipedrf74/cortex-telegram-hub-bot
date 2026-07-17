@@ -16,6 +16,14 @@ import { getTopicById, updateTopic, type ContentTopic } from './content-schedule
 import { invalidateTaskCaches } from './cache-coherence-registry';
 import { resolveTaskCreationList } from './task-store/task-list-resolution';
 import { getTaskProviderForUser } from './task-store/task-router';
+import { isSingleWritePathEnabled } from './task-store/single-write-path';
+import {
+  createOfflineFirstTask,
+  recordLocalTaskMutation,
+  resolveOfflineCaptureListName,
+  resolveOfflineNexusTaskId,
+  updateOfflineFirstTask,
+} from './task-store/offline-first-task-service';
 import {
   createEvent,
   deleteEvent,
@@ -115,20 +123,49 @@ export async function cleanupContentTopicSecretaryArtifacts(
   let taskDeleted = false;
   let calendarDeleted = false;
 
-  if (topic.secretary_task_external_id && topic.secretary_task_list_id) {
-    const todo = getTaskProviderForUser(userId);
-    if (typeof todo.deleteTask === 'function') {
+  if (topic.secretary_task_external_id && (isSingleWritePathEnabled() || topic.secretary_task_list_id)) {
+    if (isSingleWritePathEnabled()) {
+      // M5 ledger path: journal task.delete against the resolved nexus task.
+      // secretary_task_external_id stores the nexus task id for ledger-created
+      // rows; legacy rows stored provider ids, which the resolver bridges via
+      // task_provider_links. An unresolvable id means the task is already
+      // gone locally — treat the cleanup as converged.
+      const tenantId = userId;
       try {
-        const result = await todo.deleteTask(String(topic.secretary_task_list_id), String(topic.secretary_task_external_id));
-        if (result?.success === false) throw new Error(result.error || 'task_delete_failed');
+        const nexusTaskId = resolveOfflineNexusTaskId(tenantId, userId, String(topic.secretary_task_external_id));
+        if (nexusTaskId) {
+          recordLocalTaskMutation(tenantId, userId, {
+            taskId: nexusTaskId,
+            operation: 'task.delete',
+            patch: { source: 'content_topic_secretary_sync' },
+          });
+        }
         taskDeleted = true;
-        invalidateTaskCaches({ userId, listIds: [String(topic.secretary_task_list_id)], includeDerivedSurfaces: true });
+        invalidateTaskCaches({
+          userId,
+          listIds: topic.secretary_task_list_id ? [String(topic.secretary_task_list_id)] : [],
+          includeDerivedSurfaces: true,
+        });
       } catch (err) {
         logger.warn({ err, userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
         errors.push('task_cleanup_failed');
       }
     } else {
-      errors.push('task_delete_unsupported');
+      // Legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0).
+      const todo = getTaskProviderForUser(userId);
+      if (typeof todo.deleteTask === 'function') {
+        try {
+          const result = await todo.deleteTask(String(topic.secretary_task_list_id), String(topic.secretary_task_external_id));
+          if (result?.success === false) throw new Error(result.error || 'task_delete_failed');
+          taskDeleted = true;
+          invalidateTaskCaches({ userId, listIds: [String(topic.secretary_task_list_id)], includeDerivedSurfaces: true });
+        } catch (err) {
+          logger.warn({ err, userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
+          errors.push('task_cleanup_failed');
+        }
+      } else {
+        errors.push('task_delete_unsupported');
+      }
     }
   }
 
@@ -147,6 +184,66 @@ export async function cleanupContentTopicSecretaryArtifacts(
 }
 
 async function upsertSecretaryTask(
+  userId: number,
+  topic: ContentTopic,
+  data: { title: string; body: string; dueDateTime: string },
+): Promise<{ listId: string; listName: string; taskId: string }> {
+  return isSingleWritePathEnabled()
+    ? upsertSecretaryTaskViaLedger(userId, topic, data)
+    : upsertSecretaryTaskViaProvider(userId, topic, data);
+}
+
+/**
+ * M5 ledger upsert. Identity contract for `secretary_task_external_id`:
+ * ledger-created rows store the created task's NEXUS id (task.id from the
+ * ledger DTO — the id the REST read model speaks). Rows written before M5
+ * stored the PROVIDER task id; resolveOfflineNexusTaskId bridges those via
+ * task_provider_links, so both generations resolve here. The stored
+ * listId/listName likewise move to the local project row identity.
+ */
+async function upsertSecretaryTaskViaLedger(
+  userId: number,
+  topic: ContentTopic,
+  data: { title: string; body: string; dueDateTime: string },
+): Promise<{ listId: string; listName: string; taskId: string }> {
+  // Content-topic sync runs in single-user scope; tenant == user, matching
+  // the tenantId = userId default used across the task store.
+  const tenantId = userId;
+  const existingTaskId = topic.secretary_task_external_id
+    ? resolveOfflineNexusTaskId(tenantId, userId, String(topic.secretary_task_external_id))
+    : null;
+
+  if (existingTaskId) {
+    const updated = updateOfflineFirstTask(tenantId, userId, {
+      taskId: existingTaskId,
+      title: data.title,
+      body: data.body,
+      importance: 'normal',
+      dueDateTime: data.dueDateTime,
+    });
+    return {
+      listId: updated.task.listId != null ? String(updated.task.listId) : String(topic.secretary_task_list_id || ''),
+      listName: updated.task.listName || topic.secretary_task_list_name || 'Inbox',
+      taskId: updated.task.id,
+    };
+  }
+
+  const created = createOfflineFirstTask(tenantId, userId, {
+    title: data.title,
+    body: data.body,
+    importance: 'normal',
+    dueDateTime: data.dueDateTime,
+    listName: resolveOfflineCaptureListName(tenantId, userId, topic.secretary_task_list_name || 'Tarefas'),
+  });
+  return {
+    listId: created.task.listId != null ? String(created.task.listId) : '',
+    listName: created.task.listName || 'Tarefas',
+    taskId: created.task.id,
+  };
+}
+
+/** Legacy direct-provider upsert (TASK_SINGLE_WRITE_PATH=0 revert lever). */
+async function upsertSecretaryTaskViaProvider(
   userId: number,
   topic: ContentTopic,
   data: { title: string; body: string; dueDateTime: string },

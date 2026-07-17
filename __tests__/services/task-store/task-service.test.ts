@@ -1,9 +1,10 @@
 /**
  * Tests for src/services/task-store/task-service.ts
  *
- * Validates the high-level write API: createTask falls back to a local
- * 'nexus' task when no provider is registered, completeTask routes through
- * the adapter for non-local rows, and listTasks proxies to the store.
+ * M5 single write path: createTask/deleteTask were deleted (no consumers —
+ * writes flow through the offline-first ledger). This suite covers the
+ * retained surface: completeTask (legacy flag-off branch of the chat-core-v2
+ * command executor) and the read helpers listTasks/listTasksForUser/getTask.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -62,9 +63,7 @@ vi.mock('../../../src/services/cache-coherence-registry', () => ({
 }));
 
 import {
-  createTask,
   completeTask,
-  deleteTask,
   listTasks,
   listTasksForUser,
   getTask,
@@ -122,69 +121,31 @@ beforeEach(() => {
   mockInvalidateTaskCaches.mockReset();
 });
 
-// ── createTask ─────────────────────────────────────────────────────
-
-describe('createTask', () => {
-  it('falls back to local nexus task when no adapter registered', async () => {
-    const task = await createTask(USER_ID, { title: 'Local task', priority: 1 });
-
-    expect(task.provider).toBe('nexus');
-    expect(task.externalId).toMatch(/^nexus_/);
-    expect(task.title).toBe('Local task');
-
-    const stored = listTasks(USER_ID);
-    expect(stored).toHaveLength(1);
-    expect(stored[0].provider).toBe('nexus');
-    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
-      userId: USER_ID,
-      listIds: expect.any(Array),
-      includeDerivedSurfaces: true,
-    });
-  });
-
-  it('writes to the registered default provider when available', async () => {
-    setDefaultProvider(USER_ID, 'todoist');
-    const adapter = makeAdapter('todoist');
-    registerAdapter(adapter);
-
-    const task = await createTask(USER_ID, { title: 'Cloud task', priority: 3 });
-
-    expect(adapter.spies.createTask).toHaveBeenCalledOnce();
-    expect(task.provider).toBe('todoist');
-    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
-      userId: USER_ID,
-      listIds: expect.any(Array),
-      includeDerivedSurfaces: true,
-    });
-  });
-
-  it('falls back to local when adapter is registered but disconnected', async () => {
-    setDefaultProvider(USER_ID, 'todoist');
-    registerAdapter(makeAdapter('todoist', false));
-
-    const task = await createTask(USER_ID, { title: 'Offline fallback' });
-    expect(task.provider).toBe('nexus');
-  });
-
-  it('falls back to local when adapter throws', async () => {
-    setDefaultProvider(USER_ID, 'todoist');
-    const adapter = makeAdapter('todoist');
-    adapter.createTask = async () => { throw new Error('API down'); };
-    registerAdapter(adapter);
-
-    const task = await createTask(USER_ID, { title: 'Resilient' });
-    expect(task.provider).toBe('nexus');
-  });
-});
+/** Seed a unified_tasks row directly — task-service no longer writes creates. */
+function seedUnifiedTask(input: {
+  userId?: number;
+  provider?: 'nexus' | 'todoist' | 'ms_todo';
+  externalId?: string;
+  title: string;
+  status?: string;
+}): { id: number; externalId: string } {
+  const provider = input.provider ?? 'nexus';
+  const externalId = input.externalId ?? `${provider}_seed_${Math.random().toString(16).slice(2)}`;
+  const result = testDb.prepare(`
+    INSERT INTO unified_tasks (user_id, provider, external_id, title, status, priority, project_name)
+    VALUES (?, ?, ?, ?, ?, 0, 'Inbox')
+  `).run(input.userId ?? USER_ID, provider, externalId, input.title, input.status ?? 'pending');
+  return { id: Number(result.lastInsertRowid), externalId };
+}
 
 // ── completeTask ───────────────────────────────────────────────────
 
 describe('completeTask', () => {
   it('marks a local task complete without calling any adapter', async () => {
-    const task = await createTask(USER_ID, { title: 'Local' });
-    await completeTask(USER_ID, task.id!);
+    const task = seedUnifiedTask({ title: 'Local' });
+    await completeTask(USER_ID, task.id);
 
-    const fresh = getTask(task.id!)!;
+    const fresh = getTask(task.id)!;
     expect(fresh.status).toBe('completed');
     expect(fresh.completedAt).toBeTruthy();
     expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
@@ -199,11 +160,11 @@ describe('completeTask', () => {
     const adapter = makeAdapter('todoist');
     registerAdapter(adapter);
 
-    const task = await createTask(USER_ID, { title: 'Cloud' });
-    await completeTask(USER_ID, task.id!);
+    const task = seedUnifiedTask({ provider: 'todoist', title: 'Cloud' });
+    await completeTask(USER_ID, task.id);
 
     expect(adapter.spies.completeTask).toHaveBeenCalledWith(USER_ID, task.externalId);
-    expect(getTask(task.id!)!.status).toBe('completed');
+    expect(getTask(task.id)!.status).toBe('completed');
   });
 
   it('marks complete locally even when adapter throws (best-effort)', async () => {
@@ -212,10 +173,10 @@ describe('completeTask', () => {
     adapter.completeTask = async () => { throw new Error('rate limited'); };
     registerAdapter(adapter);
 
-    const task = await createTask(USER_ID, { title: 'Resilient complete' });
-    await completeTask(USER_ID, task.id!);
+    const task = seedUnifiedTask({ provider: 'todoist', title: 'Resilient complete' });
+    await completeTask(USER_ID, task.id);
 
-    expect(getTask(task.id!)!.status).toBe('completed');
+    expect(getTask(task.id)!.status).toBe('completed');
   });
 
   it('throws when task does not exist', async () => {
@@ -223,36 +184,8 @@ describe('completeTask', () => {
   });
 
   it('throws when task belongs to a different user', async () => {
-    const task = await createTask(USER_ID, { title: 'Mine' });
-    await expect(completeTask(USER_ID + 1, task.id!)).rejects.toThrow(/does not belong/);
-  });
-});
-
-// ── deleteTask ─────────────────────────────────────────────────────
-
-describe('deleteTask', () => {
-  it('soft-deletes a local task', async () => {
-    const task = await createTask(USER_ID, { title: 'Doomed' });
-    await deleteTask(USER_ID, task.id!);
-
-    const remaining = listTasks(USER_ID);
-    expect(remaining).toHaveLength(0);
-    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
-      userId: USER_ID,
-      listIds: expect.any(Array),
-      includeDerivedSurfaces: true,
-    });
-  });
-
-  it('routes through the adapter for provider tasks', async () => {
-    setDefaultProvider(USER_ID, 'ms_todo');
-    const adapter = makeAdapter('ms_todo');
-    registerAdapter(adapter);
-
-    const task = await createTask(USER_ID, { title: 'Cloud doomed' });
-    await deleteTask(USER_ID, task.id!);
-
-    expect(adapter.spies.deleteTask).toHaveBeenCalledWith(USER_ID, task.externalId);
+    const task = seedUnifiedTask({ title: 'Mine' });
+    await expect(completeTask(USER_ID + 1, task.id)).rejects.toThrow(/does not belong/);
   });
 });
 
@@ -260,13 +193,8 @@ describe('deleteTask', () => {
 
 describe('listTasks', () => {
   it('returns tasks from all providers', async () => {
-    setDefaultProvider(USER_ID, 'todoist');
-    registerAdapter(makeAdapter('todoist'));
-
-    await createTask(USER_ID, { title: 'Cloud 1' });
-
-    setDefaultProvider(USER_ID, 'nexus');
-    await createTask(USER_ID, { title: 'Local 1' });
+    seedUnifiedTask({ provider: 'todoist', title: 'Cloud 1' });
+    seedUnifiedTask({ provider: 'nexus', title: 'Local 1' });
 
     const all = listTasks(USER_ID);
     expect(all).toHaveLength(2);
@@ -275,8 +203,8 @@ describe('listTasks', () => {
   });
 
   it('respects status filter', async () => {
-    const task = await createTask(USER_ID, { title: 'Filterable' });
-    await completeTask(USER_ID, task.id!);
+    const task = seedUnifiedTask({ title: 'Filterable' });
+    await completeTask(USER_ID, task.id);
 
     expect(listTasks(USER_ID, { status: 'pending' })).toHaveLength(0);
     expect(listTasks(USER_ID, { status: 'completed' })).toHaveLength(1);

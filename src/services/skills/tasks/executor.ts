@@ -5,10 +5,463 @@ import { rememberRecentChatEntity } from '../../chat-action-state';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep, ChatStepExecutionResult } from '../../chat/types';
 import { getTaskProviderForUser } from '../../task-store/task-router';
 import { resolveTaskCreationList } from '../../task-store/task-list-resolution';
+import { isSingleWritePathEnabled } from '../../task-store/single-write-path';
+import {
+  addOfflineTaskChecklistItem,
+  createOfflineFirstTask,
+  getOfflineTaskById,
+  getOfflineTaskSnapshot,
+  recordLocalTaskMutation,
+  resolveOfflineCaptureListName,
+  resolveOfflineNexusTaskId,
+  updateOfflineFirstTask,
+  type OfflineTaskDto,
+} from '../../task-store/offline-first-task-service';
 import { claimActionRunForStepExecution, parseStoredRunResult, reconciliationPendingResult, replayDuplicateClaimedActionRun, updateClaimedActionRun, withProviderWriteTimeout } from '../../chat/executor/helpers';
 import { normalizeTaskComparable, verifyTaskWithSubtasks } from '../../chat/verification/task-with-subtasks';
 
+// M5 single write path: the exported executors dispatch on the flag. Ledger
+// variants write to the offline-first ledger (instant local visibility,
+// async provider push via the mutation worker — NEX-08/NEX-09); the
+// `...Legacy` variants preserve the pre-M5 direct-provider behavior and are
+// reachable only with TASK_SINGLE_WRITE_PATH=0 (operational revert lever).
+// Ledger results carry NEXUS task ids — the id the REST read model and
+// follow-up chat actions speak; provider ids only exist after the push.
+
 export async function executeTaskCreateStep(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  taskProviderForUser: typeof getTaskProviderForUser,
+  persistRuns: boolean,
+): Promise<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> {
+  return isSingleWritePathEnabled()
+    ? executeTaskCreateStepViaLedger(step, plan, input, persistRuns)
+    : executeTaskCreateStepLegacy(step, plan, input, taskProviderForUser, persistRuns);
+}
+
+export async function executeTaskWithSubtasksStep(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  taskProviderForUser: typeof getTaskProviderForUser,
+  persistRuns: boolean,
+): Promise<ChatStepExecutionResult> {
+  return isSingleWritePathEnabled()
+    ? executeTaskWithSubtasksStepViaLedger(step, plan, input, persistRuns)
+    : executeTaskWithSubtasksStepLegacy(step, plan, input, taskProviderForUser, persistRuns);
+}
+
+export async function executeAddSubtasksToTaskStep(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  taskProviderForUser: typeof getTaskProviderForUser,
+  persistRuns: boolean,
+): Promise<ChatStepExecutionResult> {
+  return isSingleWritePathEnabled()
+    ? executeAddSubtasksToTaskStepViaLedger(step, plan, input, persistRuns)
+    : executeAddSubtasksToTaskStepLegacy(step, plan, input, taskProviderForUser, persistRuns);
+}
+
+export async function executeTaskMutationStep(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  taskProviderForUser: typeof getTaskProviderForUser,
+  persistRuns: boolean,
+): Promise<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> {
+  return isSingleWritePathEnabled()
+    ? executeTaskMutationStepViaLedger(step, plan, input, persistRuns)
+    : executeTaskMutationStepLegacy(step, plan, input, taskProviderForUser, persistRuns);
+}
+
+// ─── Ledger (single-write-path) executors ───────────────────────────────────
+
+/** Chat-facing task shape for ledger results (msTodo-shape compatible keys). */
+function ledgerTaskShape(dto: OfflineTaskDto): Record<string, unknown> {
+  return {
+    id: dto.id,
+    listId: dto.listId != null ? String(dto.listId) : '',
+    listName: dto.listName || '',
+    title: dto.title,
+    body: dto.body,
+    importance: dto.importance,
+    status: dto.status,
+    dueDateTime: dto.dueDateTime,
+    checklistItems: dto.checklistItems,
+    createdDateTime: dto.createdDateTime,
+    syncState: dto.syncState,
+  };
+}
+
+/**
+ * Resolve the task a chat mutation targets against the LOCAL read model.
+ * Explicit ids go through the resolveOfflineNexusTaskId bridge (nexus ids,
+ * provider ids from older chat context, and numeric unified row ids all
+ * resolve); title targeting matches exactly one active local task or blocks.
+ */
+function resolveLedgerTaskMutationTarget(
+  tenantId: number,
+  userId: number,
+  args: Record<string, unknown>,
+): { taskId: string; listId: string; listName?: string } | null {
+  const explicitTaskId = typeof args.taskId === 'string' ? args.taskId.trim() : '';
+  if (explicitTaskId) {
+    const nexusTaskId = resolveOfflineNexusTaskId(tenantId, userId, explicitTaskId);
+    if (nexusTaskId) {
+      const dto = getOfflineTaskById(tenantId, userId, nexusTaskId);
+      return {
+        taskId: nexusTaskId,
+        listId: dto?.listId != null ? String(dto.listId) : '',
+        listName: dto?.listName || undefined,
+      };
+    }
+  }
+  const wanted = typeof args.title === 'string' ? normalizeTaskComparable(args.title) : '';
+  if (!wanted) return null;
+  const tasks = getOfflineTaskSnapshot(tenantId, userId, { pageSize: 200 }).tasks as OfflineTaskDto[];
+  const matches = tasks.filter((task) => normalizeTaskComparable(task.title) === wanted);
+  if (matches.length !== 1) return null;
+  const match = matches[0];
+  return {
+    taskId: match.id,
+    listId: match.listId != null ? String(match.listId) : '',
+    listName: match.listName || undefined,
+  };
+}
+
+function ledgerChecklistTitles(dto: OfflineTaskDto | null): string[] {
+  return (dto?.checklistItems || []).map((item) => item.displayName);
+}
+
+function ledgerSubtasksPresent(dto: OfflineTaskDto | null, expected: string[]): boolean {
+  const present = new Set(ledgerChecklistTitles(dto).map((title) => normalizeTaskComparable(title)));
+  return expected.every((subtask) => present.has(normalizeTaskComparable(subtask)));
+}
+
+async function executeTaskCreateStepViaLedger(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): Promise<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> {
+  const args = step.args as any;
+  const claim = persistRuns
+    ? claimChatActionRunForExecution({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      messageId: input.messageId,
+      normalizedActionHash: step.idempotencyKey,
+      provider: 'nexus',
+      actionType: step.action,
+      risk: step.risk,
+      request: step.args,
+      nowIso: plan.createdAt,
+    })
+    : null;
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
+  try {
+    const created = createOfflineFirstTask(input.tenantId, input.userId, {
+      title: String(args.title),
+      body: typeof args.notes === 'string' ? args.notes : undefined,
+      dueDateTime: typeof args.dueDateTime === 'string' ? args.dueDateTime : undefined,
+      listName: resolveOfflineCaptureListName(
+        input.tenantId,
+        input.userId,
+        typeof args.list === 'string' ? args.list : null,
+      ),
+      idempotencyKey: step.idempotencyKey,
+    });
+    const readBack = getOfflineTaskById(input.tenantId, input.userId, created.task.id) || created.task;
+    const verified = String(readBack.title || '').trim() === String(args.title).trim();
+    const result = { task: ledgerTaskShape(readBack), verified };
+    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    if (!updateClaimedActionRun(claim, status, {
+      result,
+      providerObjectId: created.task.id,
+      verification: { verified, expected: step.verification.expectedFields },
+    })) return reconciliationPendingResult(step, status);
+    if (verified) {
+      const now = new Date().toISOString();
+      rememberRecentChatEntity({
+        userId: input.userId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        node: {
+          entityId: created.task.id,
+          entityType: 'task',
+          provider: 'nexus',
+          surface: 'chat',
+          userVisibleLabel: String(args.title),
+          createdOrViewedAt: now,
+          lastVerifiedAt: now,
+          allowedFollowupActions: ['complete_task', 'update_task', 'delete_task'],
+          confidence: 0.96,
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+          sourceTurnId: input.messageId,
+          metadata: {
+            listId: readBack.listId != null ? String(readBack.listId) : '',
+            listName: readBack.listName || 'Tasks',
+          },
+        },
+      });
+    }
+    return { step, status, result };
+  } catch (err) {
+    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    return { step, status: 'failed', error: 'task_create_failed' };
+  }
+}
+
+async function executeTaskWithSubtasksStepViaLedger(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): Promise<ChatStepExecutionResult> {
+  const args = normalizeTaskWithSubtasksArgs(step.args);
+  if (!args.title || args.subtasks.length === 0) return { step, status: 'blocked', error: 'task_with_subtasks_missing_fields' };
+
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
+  // Ledger writes are local, synchronous, and idempotent (per-mutation
+  // idempotency keys), so the provider-read recovery flow of the legacy path
+  // is unnecessary: duplicate claims replay the stored result.
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
+
+  try {
+    const created = createOfflineFirstTask(input.tenantId, input.userId, {
+      title: args.title,
+      body: args.notes || undefined,
+      importance: args.priority || undefined,
+      dueDateTime: args.dueAt || undefined,
+      listName: resolveOfflineCaptureListName(input.tenantId, input.userId, args.list),
+      idempotencyKey: step.idempotencyKey,
+    });
+    const taskId = created.task.id;
+    const listId = created.task.listId != null ? String(created.task.listId) : '';
+    if (claim) {
+      updateChatActionRun(claim.row.id, 'verifying', {
+        result: {
+          task: ledgerTaskShape(created.task),
+          listId,
+          checklistItems: [],
+          failedSubtasks: [],
+          warnings: [],
+          verificationStatus: 'pending',
+        },
+        providerObjectId: taskId,
+      });
+    }
+
+    const failedSubtasks: string[] = [];
+    for (const [index, subtask] of args.subtasks.entries()) {
+      try {
+        addOfflineTaskChecklistItem(input.tenantId, input.userId, {
+          taskId,
+          displayName: subtask,
+          idempotencyKey: `${step.idempotencyKey}:sub:${index}`,
+        });
+      } catch {
+        failedSubtasks.push(subtask);
+      }
+    }
+
+    const readBack = getOfflineTaskById(input.tenantId, input.userId, taskId);
+    const checklistItems = readBack?.checklistItems || [];
+    const verified = failedSubtasks.length === 0
+      && !!readBack
+      && ledgerSubtasksPresent(readBack, args.subtasks);
+    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    const result = buildTaskSubtasksResult({
+      task: ledgerTaskShape(readBack || created.task),
+      listId,
+      checklistItems,
+      failedSubtasks,
+      warnings: [],
+      verificationStatus: verified ? 'verified' : 'partial_failure',
+      responseType: 'task_created',
+    });
+    if (!updateClaimedActionRun(claim, status, {
+      result,
+      providerObjectId: taskId,
+      verification: { verified, expected: step.verification.expectedFields },
+    })) return reconciliationPendingResult(step, status);
+    rememberTaskForFollowup(input, taskId, listId, args.title, readBack?.listName || created.task.listName || 'Tasks', plan.createdAt);
+    return { step, status, result, error: verified ? undefined : 'task_subtasks_partial_verification' };
+  } catch (err) {
+    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    return { step, status: 'failed', error: 'task_with_subtasks_failed' };
+  }
+}
+
+async function executeAddSubtasksToTaskStepViaLedger(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): Promise<ChatStepExecutionResult> {
+  const args = normalizeTaskWithSubtasksArgs(step.args);
+  if (!args.title || args.subtasks.length === 0) return { step, status: 'blocked', error: 'task_with_subtasks_missing_fields' };
+
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
+
+  try {
+    const target = resolveLedgerTaskMutationTarget(input.tenantId, input.userId, { title: args.title });
+    if (!target) {
+      const wanted = normalizeTaskComparable(args.title);
+      const tasks = getOfflineTaskSnapshot(input.tenantId, input.userId, { pageSize: 200 }).tasks as OfflineTaskDto[];
+      const matchCount = tasks.filter((task) => normalizeTaskComparable(task.title) === wanted).length;
+      const error = matchCount > 1 ? 'multiple_task_matches' : 'no_task_match';
+      if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: error } });
+      return { step, status: 'blocked', error };
+    }
+
+    const failedSubtasks: string[] = [];
+    for (const [index, subtask] of args.subtasks.entries()) {
+      try {
+        addOfflineTaskChecklistItem(input.tenantId, input.userId, {
+          taskId: target.taskId,
+          displayName: subtask,
+          idempotencyKey: `${step.idempotencyKey}:sub:${index}`,
+        });
+      } catch {
+        failedSubtasks.push(subtask);
+      }
+    }
+
+    const readBack = getOfflineTaskById(input.tenantId, input.userId, target.taskId);
+    const checklistItems = readBack?.checklistItems || [];
+    const verified = failedSubtasks.length === 0
+      && !!readBack
+      && ledgerSubtasksPresent(readBack, args.subtasks);
+    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    const result = buildTaskSubtasksResult({
+      task: ledgerTaskShape(readBack || ({ id: target.taskId, title: args.title } as any)),
+      listId: target.listId,
+      checklistItems,
+      failedSubtasks,
+      warnings: [],
+      verificationStatus: verified ? 'verified' : 'partial_failure',
+      responseType: 'task_subtasks_added',
+    });
+    if (!updateClaimedActionRun(claim, status, {
+      result,
+      providerObjectId: target.taskId,
+      verification: { verified, expected: step.verification.expectedFields },
+    })) return reconciliationPendingResult(step, status);
+    return { step, status, result, error: verified ? undefined : 'task_subtasks_partial_verification' };
+  } catch (err) {
+    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    return { step, status: 'failed', error: 'task_subtasks_add_failed' };
+  }
+}
+
+async function executeTaskMutationStepViaLedger(
+  step: ChatPlanStep,
+  plan: ChatActionPlan,
+  input: ChatPlannerInput,
+  persistRuns: boolean,
+): Promise<{ step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string }> {
+  const args = step.args as any;
+  const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
+  const duplicate = replayDuplicateClaimedActionRun(claim, step);
+  if (duplicate) return duplicate;
+  try {
+    if (step.action === 'create_checklist') {
+      const created = createOfflineFirstTask(input.tenantId, input.userId, {
+        title: String(args.title),
+        body: typeof args.notes === 'string' ? args.notes : undefined,
+        listName: resolveOfflineCaptureListName(
+          input.tenantId,
+          input.userId,
+          typeof args.list === 'string' ? args.list : null,
+        ),
+        idempotencyKey: step.idempotencyKey,
+      });
+      const items = Array.isArray(args.items) ? args.items.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+      const added: unknown[] = [];
+      for (const [index, item] of items.entries()) {
+        const addedItem = addOfflineTaskChecklistItem(input.tenantId, input.userId, {
+          taskId: created.task.id,
+          displayName: item,
+          idempotencyKey: `${step.idempotencyKey}:item:${index}`,
+        });
+        added.push(addedItem.item);
+      }
+      const readBack = getOfflineTaskById(input.tenantId, input.userId, created.task.id) || created.task;
+      const verified = items.length === 0 || added.length === items.length;
+      const result = { task: ledgerTaskShape(readBack), checklistItems: added, verified };
+      const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+      if (!updateClaimedActionRun(claim, status, { result, providerObjectId: created.task.id, verification: { verified } })) {
+        return reconciliationPendingResult(step, status);
+      }
+      return { step, status, result, error: verified ? undefined : 'checklist_provider_partial' };
+    }
+
+    const target = resolveLedgerTaskMutationTarget(input.tenantId, input.userId, args);
+    if (!target) return { step, status: 'blocked', error: 'task_target_not_found_or_ambiguous' };
+    if (step.action === 'complete_task') {
+      recordLocalTaskMutation(input.tenantId, input.userId, {
+        taskId: target.taskId,
+        operation: 'task.complete',
+        patch: { source: 'chat_planner' },
+      });
+    } else if (step.action === 'delete_task') {
+      recordLocalTaskMutation(input.tenantId, input.userId, {
+        taskId: target.taskId,
+        operation: 'task.delete',
+        patch: { source: 'chat_planner' },
+      });
+    } else {
+      const changed = typeof args.changedFields === 'object' && args.changedFields ? args.changedFields as Record<string, unknown> : {};
+      const patch: Record<string, unknown> = { taskId: target.taskId };
+      const title = typeof args.title === 'string' ? args.title : changed.title;
+      const body = typeof args.notes === 'string' ? args.notes : changed.body;
+      const dueDateTime = typeof args.reminderAt === 'string'
+        ? args.reminderAt
+        : typeof args.dueDateTime === 'string'
+          ? args.dueDateTime
+          : changed.dueDateTime;
+      if (title !== undefined) patch.title = title;
+      if (body !== undefined) patch.body = body;
+      if (dueDateTime !== undefined) patch.dueDateTime = dueDateTime;
+      if (changed.importance !== undefined) patch.importance = changed.importance;
+      if (changed.status !== undefined) patch.status = changed.status;
+      updateOfflineFirstTask(input.tenantId, input.userId, patch as any);
+    }
+
+    const readBack = getOfflineTaskById(input.tenantId, input.userId, target.taskId);
+    const verified = step.action === 'delete_task'
+      ? !readBack || readBack.status === 'cancelled' || !!readBack.deletedAt
+      : !!readBack;
+    const result = {
+      taskId: target.taskId,
+      listId: target.listId,
+      verified,
+      task: readBack && step.action !== 'delete_task' ? ledgerTaskShape(readBack) : null,
+    };
+    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    if (!updateClaimedActionRun(claim, status, {
+      result,
+      providerObjectId: target.taskId,
+      verification: { verified, expected: step.verification.expectedFields },
+    })) return reconciliationPendingResult(step, status);
+    return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
+  } catch (err) {
+    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    return { step, status: 'failed', error: 'task_mutation_failed' };
+  }
+}
+
+// ─── Legacy direct-provider executors (TASK_SINGLE_WRITE_PATH=0) ────────────
+
+async function executeTaskCreateStepLegacy(
   step: ChatPlanStep,
   plan: ChatActionPlan,
   input: ChatPlannerInput,
@@ -86,7 +539,7 @@ export async function executeTaskCreateStep(
   }
 }
 
-export async function executeTaskWithSubtasksStep(
+async function executeTaskWithSubtasksStepLegacy(
   step: ChatPlanStep,
   plan: ChatActionPlan,
   input: ChatPlannerInput,
@@ -182,7 +635,7 @@ export async function executeTaskWithSubtasksStep(
   }
 }
 
-export async function executeAddSubtasksToTaskStep(
+async function executeAddSubtasksToTaskStepLegacy(
   step: ChatPlanStep,
   plan: ChatActionPlan,
   input: ChatPlannerInput,
@@ -264,7 +717,7 @@ export async function executeAddSubtasksToTaskStep(
   }
 }
 
-export async function executeTaskMutationStep(
+async function executeTaskMutationStepLegacy(
   step: ChatPlanStep,
   plan: ChatActionPlan,
   input: ChatPlannerInput,

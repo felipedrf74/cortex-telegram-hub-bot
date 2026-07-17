@@ -1193,8 +1193,12 @@ describe('Chat API routes', () => {
         },
       },
     });
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+    // M5 single write path: the create lands in the offline-first ledger
+    // (unified_tasks + task_mutations), not native_tasks.
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0')
       .get(7001, 'ChatCoreV2 confirmation bridge')).toMatchObject({ count: 1 });
+    expect(testDb.prepare("SELECT COUNT(*) AS count FROM task_mutations WHERE user_id = ? AND operation = 'task.create'")
+      .get(7001)).toMatchObject({ count: 1 });
 
     const replay = await dispatch('POST', '/confirm-action', 7001, {
       confirmation_token: token,
@@ -1207,7 +1211,7 @@ describe('Chat API routes', () => {
       idempotentReplay: true,
       confirmationReplay: true,
     });
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0')
       .get(7001, 'ChatCoreV2 confirmation bridge')).toMatchObject({ count: 1 });
 
     const evidenceRows = testDb.prepare("SELECT * FROM chat_v2_write_evidence WHERE phase = 'confirmed_writes'").all() as any[];
@@ -1473,7 +1477,7 @@ describe('Chat API routes', () => {
       intentClass: 'task_create',
       confirmationToken: first.body.metadata.pendingConfirmation.confirmation_token,
     });
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND is_deleted = 0').get(7001)).toMatchObject({ count: 0 });
 
     const confirmationBody = {
       confirmation_token: first.body.metadata.pendingConfirmation.confirmation_token,
@@ -1490,7 +1494,8 @@ describe('Chat API routes', () => {
         intent_class: 'task_create',
       },
     });
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 1 });
+    // M5 single write path: the confirmed create lands in the ledger.
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND is_deleted = 0').get(7001)).toMatchObject({ count: 1 });
     const evidenceRows = testDb.prepare('SELECT * FROM chat_v2_write_evidence').all() as any[];
     expect(evidenceRows).toHaveLength(1);
     expect(evidenceRows[0]).toMatchObject({
@@ -1519,7 +1524,7 @@ describe('Chat API routes', () => {
       idempotentReplay: true,
       confirmationReplay: true,
     });
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND is_deleted = 0').get(7001)).toMatchObject({ count: 1 });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_write_evidence').get()).toMatchObject({ count: 1 });
   });
 
@@ -1551,7 +1556,7 @@ describe('Chat API routes', () => {
       intent_class: 'task_create',
     });
     expect(stale.statusCode).toBe(401);
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ?').get(7001)).toMatchObject({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND is_deleted = 0').get(7001)).toMatchObject({ count: 0 });
   });
 
   it('routes task-with-subtasks messages through the action planner confirmation path', async () => {
@@ -1576,7 +1581,7 @@ describe('Chat API routes', () => {
     });
     expect(mockRouteMessage).not.toHaveBeenCalled();
     expect(mockHandleSecretary).not.toHaveBeenCalled();
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0')
       .get(7001, 'Prozis')).toMatchObject({ count: 0 });
 
     const confirmed = await dispatch('POST', '/confirm-action', 7001, {
@@ -1606,15 +1611,12 @@ describe('Chat API routes', () => {
     });
     expect(confirmed.body.text).toContain('Created task “Prozis” with 3 subtasks');
 
-    const task = testDb.prepare('SELECT id, title, user_id FROM native_tasks WHERE user_id = ? AND title = ?')
+    // M5 single write path: the task and its checklist live in the ledger
+    // (unified_tasks row keyed by nexus id; checklist in provider_data).
+    const task = testDb.prepare('SELECT nexus_task_id, title, user_id, provider_data FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0')
       .get(7001, 'Prozis') as any;
     expect(task).toMatchObject({ title: 'Prozis', user_id: 7001 });
-    const subtasks = testDb.prepare(`
-      SELECT display_name
-      FROM native_task_checklist_items
-      WHERE user_id = ? AND task_id = ?
-      ORDER BY position ASC, id ASC
-    `).all(7001, task.id).map((row: any) => row.display_name);
+    const subtasks = (JSON.parse(task.provider_data || '{}').checklistItems || []).map((item: any) => item.displayName);
     expect(subtasks).toEqual(['creatine', 'K2', 'D3']);
     const run = testDb.prepare(`
       SELECT status, action_type, provider_object_id
@@ -1624,7 +1626,7 @@ describe('Chat API routes', () => {
     expect(run).toMatchObject({
       status: 'verified_success',
       action_type: 'create_task_with_subtasks',
-      provider_object_id: String(task.id),
+      provider_object_id: task.nexus_task_id,
     });
   });
 
@@ -1647,16 +1649,10 @@ describe('Chat API routes', () => {
     expect(second.statusCode).toBe(200);
     expect(second.body.metadata).toMatchObject({ idempotentReplay: true });
 
-    const taskCount = (testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?')
-      .get(7001, 'Prozis') as any).count;
-    const checklistCount = (testDb.prepare(`
-      SELECT COUNT(*) AS count
-      FROM native_task_checklist_items ci
-      JOIN native_tasks t ON t.id = ci.task_id
-      WHERE t.user_id = ? AND t.title = ?
-    `).get(7001, 'Prozis') as any).count;
-    expect(taskCount).toBe(1);
-    expect(checklistCount).toBe(3);
+    const taskRows = testDb.prepare('SELECT provider_data FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0')
+      .all(7001, 'Prozis') as any[];
+    expect(taskRows).toHaveLength(1);
+    expect((JSON.parse(taskRows[0].provider_data || '{}').checklistItems || [])).toHaveLength(3);
   });
 
   it('rejects chat access when the authenticated tenant scope does not match the canonical user tenant', async () => {
@@ -3601,7 +3597,7 @@ describe('Chat API routes', () => {
         dueAt: null,
         listName: null,
       }]);
-      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
       const metadataJson = JSON.stringify(confirmed.body.metadata);
       expect(metadataJson).not.toContain('actorUserId');
       expect(metadataJson).not.toContain('delegatedScopes');
@@ -3614,7 +3610,7 @@ describe('Chat API routes', () => {
         idempotentReplay: true,
         confirmationReplay: true,
       });
-      expect(testDb.prepare('SELECT COUNT(*) AS count FROM native_tasks WHERE user_id = ? AND title = ?').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = ? AND is_deleted = 0').get(7001, 'Buy milk')).toMatchObject({ count: 1 });
       expect(mockRouteMessage).not.toHaveBeenCalled();
       expect(mockHandleSecretary).not.toHaveBeenCalled();
     } finally {

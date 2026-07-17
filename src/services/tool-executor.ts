@@ -25,6 +25,19 @@ import { invalidateFinanceDerivedCaches } from './cache-coherence-registry';
 import { invalidateOnboardingDerivedCaches } from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
+import { isSingleWritePathEnabled } from './task-store/single-write-path';
+import {
+  addOfflineTaskChecklistItem,
+  createOfflineFirstTask,
+  createOfflineFirstTaskList,
+  deleteOfflineFirstTaskList,
+  moveOfflineFirstTask,
+  recordLocalTaskMutation,
+  resolveOfflineCaptureListName,
+  resolveOfflineNexusTaskId,
+  resolveOfflineTaskListRef,
+  updateOfflineFirstTask,
+} from './task-store/offline-first-task-service';
 import { getUserTimezoneById, resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
@@ -351,12 +364,13 @@ export async function executeToolCall(
       return {
         ok: true as const,
         userId: scope.userId,
+        tenantId: scope.tenantId,
         provider: getTaskProviderForUser(scope.userId),
       };
     };
 
     switch (toolName) {
-      // ── Task tools (per-user routed) ──
+      // ── Task tools (per-user routed; M5: writes flow through the ledger) ──
       case 'ms_todo_get_lists': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
@@ -366,16 +380,17 @@ export async function executeToolCall(
       case 'ms_todo_create_list': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
-        return await taskCtx.provider.createList(input.name);
+        return isSingleWritePathEnabled()
+          ? ledgerCreateTaskListTool(taskCtx, input)
+          : legacyProviderCreateTaskListTool(taskCtx, input);
       }
 
       case 'ms_todo_delete_list': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
-        if (typeof taskCtx.provider.deleteList !== 'function') {
-          return { error: 'The active task provider does not support deleting lists.' };
-        }
-        return await taskCtx.provider.deleteList(input.list_id);
+        return isSingleWritePathEnabled()
+          ? ledgerDeleteTaskListTool(taskCtx, input)
+          : legacyProviderDeleteTaskListTool(taskCtx, input);
       }
 
       case 'ms_todo_get_tasks': {
@@ -390,34 +405,9 @@ export async function executeToolCall(
       case 'ms_todo_create_task': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
-        // Auto-resolve default list when AI doesn't specify one
-        let listId = input.list_id;
-        let listName = input.list_name || 'Inbox';
-        if (!listId) {
-          try {
-            const resolvedList = await resolveTaskCreationList(taskCtx.provider, input.list_name);
-            if (resolvedList) {
-              listId = resolvedList.id;
-              listName = resolvedList.displayName || resolvedList.name || listName;
-            } else {
-              const defaultList = await resolvePreferredCaptureList(taskCtx.provider);
-              if (defaultList) {
-                listId = defaultList.id;
-                listName = defaultList.displayName || defaultList.name || listName;
-              }
-            }
-          } catch { /* use whatever the provider defaults to */ }
-        }
-        const createRes = await taskCtx.provider.createTask(listId, listName, {
-          title: input.title,
-          body: input.body,
-          importance: input.importance,
-          dueDateTime: input.due_date_time,
-          reminderDateTime: input.reminder_date_time,
-        });
-        return createRes.success
-          ? { success: true, id: createRes.data?.id, title: createRes.data?.title }
-          : { success: false, error: createRes.error };
+        return isSingleWritePathEnabled()
+          ? ledgerCreateTaskTool(taskCtx, input)
+          : legacyProviderCreateTaskTool(taskCtx, input);
       }
 
       case 'ms_todo_update_task': {
@@ -426,17 +416,9 @@ export async function executeToolCall(
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot update a task without its ID.' };
         }
-        const updateRes = await taskCtx.provider.updateTask(input.list_id, input.task_id, {
-          title: input.title,
-          body: input.body,
-          importance: input.importance,
-          status: input.status,
-          dueDateTime: input.due_date_time,
-          reminderDateTime: input.reminder_date_time,
-        }, input.list_name);
-        return updateRes.success
-          ? { success: true, title: updateRes.data?.title || 'updated' }
-          : { success: false, error: updateRes.error };
+        return isSingleWritePathEnabled()
+          ? ledgerUpdateTaskTool(taskCtx, input)
+          : legacyProviderUpdateTaskTool(taskCtx, input);
       }
 
       case 'ms_todo_complete_task': {
@@ -445,10 +427,9 @@ export async function executeToolCall(
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot complete a task without its ID.' };
         }
-        const completeRes = await taskCtx.provider.completeTask(input.list_id, input.task_id, input.list_name);
-        return completeRes.success
-          ? { success: true, title: completeRes.data?.title || 'done' }
-          : { success: false, error: completeRes.error };
+        return isSingleWritePathEnabled()
+          ? ledgerTaskStatusTool(taskCtx, input, 'task.complete')
+          : legacyProviderCompleteTaskTool(taskCtx, input);
       }
 
       case 'ms_todo_uncomplete_task': {
@@ -457,13 +438,13 @@ export async function executeToolCall(
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot uncomplete a task without its ID.' };
         }
+        if (isSingleWritePathEnabled()) {
+          return ledgerTaskStatusTool(taskCtx, input, 'task.reopen');
+        }
         if (typeof taskCtx.provider.uncompleteTask !== 'function') {
           return { error: 'The active task provider does not support reopening completed tasks.' };
         }
-        const uncompleteRes = await taskCtx.provider.uncompleteTask(input.list_id, input.task_id, input.list_name);
-        return uncompleteRes.success
-          ? { success: true, title: uncompleteRes.data?.title || 'reopened' }
-          : { success: false, error: uncompleteRes.error };
+        return legacyProviderUncompleteTaskTool(taskCtx, input);
       }
 
       case 'ms_todo_delete_task': {
@@ -472,10 +453,9 @@ export async function executeToolCall(
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot delete a task without its ID.' };
         }
-        const deleteRes = await taskCtx.provider.deleteTask(input.list_id, input.task_id);
-        return deleteRes.success
-          ? { success: true }
-          : { success: false, error: deleteRes.error };
+        return isSingleWritePathEnabled()
+          ? ledgerTaskStatusTool(taskCtx, input, 'task.delete')
+          : legacyProviderDeleteTaskTool(taskCtx, input);
       }
 
       case 'ms_todo_search_tasks': {
@@ -499,10 +479,13 @@ export async function executeToolCall(
       case 'ms_todo_move_task': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
+        if (isSingleWritePathEnabled()) {
+          return ledgerMoveTaskTool(taskCtx, input);
+        }
         if (typeof taskCtx.provider.moveTask !== 'function') {
           return { error: 'The active task provider does not support moving tasks between lists.' };
         }
-        return await taskCtx.provider.moveTask(input.list_id, input.task_id, input.target_list_id, input.target_list_name);
+        return legacyProviderMoveTaskTool(taskCtx, input);
       }
 
       case 'ms_todo_get_checklist': {
@@ -517,10 +500,13 @@ export async function executeToolCall(
       case 'ms_todo_add_checklist_item': {
         const taskCtx = getTaskProviderContext();
         if (!taskCtx.ok) return { error: taskCtx.error };
+        if (isSingleWritePathEnabled()) {
+          return ledgerAddChecklistItemTool(taskCtx, input);
+        }
         if (typeof taskCtx.provider.addChecklistItem !== 'function') {
           return { error: 'The active task provider does not support checklist items.' };
         }
-        return await taskCtx.provider.addChecklistItem(input.list_id, input.task_id, input.title);
+        return legacyProviderAddChecklistItemTool(taskCtx, input);
       }
 
       // ── Calendar tools (unified: Google + Outlook) ──
@@ -1481,4 +1467,231 @@ function detectCalendarSource(eventId: string): unifiedCal.CalendarSource {
     return 'outlook';
   }
   return 'google';
+}
+
+// ─── M5 single write path: task tool write helpers ──────────────────────────
+//
+// Ledger helpers write to the offline-first ledger
+// (offline-first-task-service) so chat-created work is instantly visible in
+// the Tasks tab and provider sync happens asynchronously via the mutation
+// worker (NEX-08/NEX-09/NEX-10). Ids returned from ledger helpers are NEXUS
+// task ids — the REST read model and follow-up chat actions speak nexus ids;
+// provider ids only exist after the async push.
+//
+// The legacy* helpers preserve the pre-M5 direct-provider behavior and are
+// reachable only with TASK_SINGLE_WRITE_PATH=0 (operational revert lever);
+// they are removed after the staging soak.
+
+type TaskToolScope = { userId: number; tenantId: number; provider: any };
+
+function taskToolError(err: unknown): { success: false; error: string } {
+  const message = err instanceof Error ? err.message : String(err || 'task_write_failed');
+  return { success: false, error: message };
+}
+
+function ledgerCreateTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  try {
+    // Note: input.reminder_date_time is intentionally not mapped — the ledger
+    // schema (and the offline REST create contract) has no reminder field and
+    // the provider projection would drop it anyway. The legacy flag-off path
+    // still forwards it for parity with pre-M5 behavior.
+    const created = createOfflineFirstTask(taskCtx.tenantId, taskCtx.userId, {
+      title: input.title,
+      body: input.body,
+      importance: input.importance,
+      dueDateTime: input.due_date_time,
+      listName: resolveOfflineCaptureListName(taskCtx.tenantId, taskCtx.userId, input.list_name),
+    });
+    return {
+      success: true,
+      id: created.task.id,
+      title: created.task.title,
+      syncState: created.task.syncState,
+    };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+function ledgerUpdateTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  try {
+    const nexusTaskId = resolveOfflineNexusTaskId(taskCtx.tenantId, taskCtx.userId, String(input.task_id));
+    if (!nexusTaskId) return { success: false, error: 'Task not found in the local task store.' };
+    const patch: Record<string, unknown> = { taskId: nexusTaskId };
+    if (input.title !== undefined) patch.title = input.title;
+    if (input.body !== undefined) patch.body = input.body;
+    if (input.importance !== undefined) patch.importance = input.importance;
+    if (input.status !== undefined) patch.status = input.status;
+    if (input.due_date_time !== undefined) patch.dueDateTime = input.due_date_time;
+    const updated = updateOfflineFirstTask(taskCtx.tenantId, taskCtx.userId, patch as any);
+    return { success: true, title: updated.task.title || 'updated' };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+function ledgerTaskStatusTool(
+  taskCtx: TaskToolScope,
+  input: Record<string, any>,
+  operation: 'task.complete' | 'task.reopen' | 'task.delete',
+) {
+  try {
+    const nexusTaskId = resolveOfflineNexusTaskId(taskCtx.tenantId, taskCtx.userId, String(input.task_id));
+    if (!nexusTaskId) return { success: false, error: 'Task not found in the local task store.' };
+    const result = recordLocalTaskMutation(taskCtx.tenantId, taskCtx.userId, {
+      taskId: nexusTaskId,
+      operation,
+      patch: { source: 'chat_tool' },
+    });
+    if (operation === 'task.delete') return { success: true };
+    return {
+      success: true,
+      title: result.task.title || (operation === 'task.complete' ? 'done' : 'reopened'),
+    };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+function ledgerMoveTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  try {
+    const nexusTaskId = resolveOfflineNexusTaskId(taskCtx.tenantId, taskCtx.userId, String(input.task_id));
+    if (!nexusTaskId) return { success: false, error: 'Task not found in the local task store.' };
+    const targetList = resolveOfflineTaskListRef(
+      taskCtx.tenantId,
+      taskCtx.userId,
+      input.target_list_id,
+      input.target_list_name,
+    );
+    if (!targetList) return { success: false, error: 'Target list not found in the local task store.' };
+    const moved = moveOfflineFirstTask(taskCtx.tenantId, taskCtx.userId, {
+      taskId: nexusTaskId,
+      targetListId: targetList.id,
+    });
+    return {
+      success: true,
+      data: { id: moved.task.id, listId: targetList.id, listName: targetList.name },
+    };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+function ledgerAddChecklistItemTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  try {
+    const nexusTaskId = resolveOfflineNexusTaskId(taskCtx.tenantId, taskCtx.userId, String(input.task_id));
+    if (!nexusTaskId) return { success: false, error: 'Task not found in the local task store.' };
+    const added = addOfflineTaskChecklistItem(taskCtx.tenantId, taskCtx.userId, {
+      taskId: nexusTaskId,
+      displayName: input.title,
+    });
+    return { success: true, data: added.item };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+function ledgerCreateTaskListTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  try {
+    const created = createOfflineFirstTaskList(taskCtx.tenantId, taskCtx.userId, { name: input.name });
+    return { success: true, data: { id: created.list.id, displayName: created.list.name } };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+function ledgerDeleteTaskListTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  try {
+    deleteOfflineFirstTaskList(taskCtx.tenantId, taskCtx.userId, { listId: String(input.list_id) });
+    return { success: true, data: undefined };
+  } catch (err) {
+    return taskToolError(err);
+  }
+}
+
+// ── Legacy direct-provider task tool paths (TASK_SINGLE_WRITE_PATH=0) ──
+
+async function legacyProviderCreateTaskListTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  return taskCtx.provider.createList(input.name);
+}
+
+async function legacyProviderDeleteTaskListTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  if (typeof taskCtx.provider.deleteList !== 'function') {
+    return { error: 'The active task provider does not support deleting lists.' };
+  }
+  return taskCtx.provider.deleteList(input.list_id);
+}
+
+async function legacyProviderCreateTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  // Auto-resolve default list when AI doesn't specify one
+  let listId = input.list_id;
+  let listName = input.list_name || 'Inbox';
+  if (!listId) {
+    try {
+      const resolvedList = await resolveTaskCreationList(taskCtx.provider, input.list_name);
+      if (resolvedList) {
+        listId = resolvedList.id;
+        listName = resolvedList.displayName || resolvedList.name || listName;
+      } else {
+        const defaultList = await resolvePreferredCaptureList(taskCtx.provider);
+        if (defaultList) {
+          listId = defaultList.id;
+          listName = defaultList.displayName || defaultList.name || listName;
+        }
+      }
+    } catch { /* use whatever the provider defaults to */ }
+  }
+  const createRes = await taskCtx.provider.createTask(listId, listName, {
+    title: input.title,
+    body: input.body,
+    importance: input.importance,
+    dueDateTime: input.due_date_time,
+    reminderDateTime: input.reminder_date_time,
+  });
+  return createRes.success
+    ? { success: true, id: createRes.data?.id, title: createRes.data?.title }
+    : { success: false, error: createRes.error };
+}
+
+async function legacyProviderUpdateTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  const updateRes = await taskCtx.provider.updateTask(input.list_id, input.task_id, {
+    title: input.title,
+    body: input.body,
+    importance: input.importance,
+    status: input.status,
+    dueDateTime: input.due_date_time,
+    reminderDateTime: input.reminder_date_time,
+  }, input.list_name);
+  return updateRes.success
+    ? { success: true, title: updateRes.data?.title || 'updated' }
+    : { success: false, error: updateRes.error };
+}
+
+async function legacyProviderCompleteTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  const completeRes = await taskCtx.provider.completeTask(input.list_id, input.task_id, input.list_name);
+  return completeRes.success
+    ? { success: true, title: completeRes.data?.title || 'done' }
+    : { success: false, error: completeRes.error };
+}
+
+async function legacyProviderUncompleteTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  const uncompleteRes = await taskCtx.provider.uncompleteTask(input.list_id, input.task_id, input.list_name);
+  return uncompleteRes.success
+    ? { success: true, title: uncompleteRes.data?.title || 'reopened' }
+    : { success: false, error: uncompleteRes.error };
+}
+
+async function legacyProviderDeleteTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  const deleteRes = await taskCtx.provider.deleteTask(input.list_id, input.task_id);
+  return deleteRes.success
+    ? { success: true }
+    : { success: false, error: deleteRes.error };
+}
+
+async function legacyProviderMoveTaskTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  return taskCtx.provider.moveTask(input.list_id, input.task_id, input.target_list_id, input.target_list_name);
+}
+
+async function legacyProviderAddChecklistItemTool(taskCtx: TaskToolScope, input: Record<string, any>) {
+  return taskCtx.provider.addChecklistItem(input.list_id, input.task_id, input.title);
 }

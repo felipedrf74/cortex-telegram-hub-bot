@@ -19,10 +19,13 @@ import {
 } from '../../services/task-working-set-policy';
 import { buildNexusAnswerContract } from '../../services/chat-answer-contract';
 import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
+import { isSingleWritePathEnabled } from '../../services/task-store/single-write-path';
 import {
   addOfflineTaskChecklistItem,
   assignOfflineTaskProvider,
   createOfflineFirstTask,
+  createOfflineFirstTaskList,
+  deleteOfflineFirstTaskList,
   getOfflineFilteredTasks,
   getOfflineTaskById,
   getOfflineTaskChanges,
@@ -159,6 +162,9 @@ function recordTasksFilteredApiReadEvidence(input: {
  * Get the task provider for the current request's user.
  * If the user has MS To-Do connected → microsoft-todo module.
  * If not → native SQLite task adapter (same interface).
+ *
+ * M5: only the legacy (TASK_SINGLE_WRITE_PATH=0) branches of the two list
+ * routes still call this; it goes away with the flag after the soak.
  */
 function getTodo(req?: any) {
   if (req?.userId) {
@@ -260,7 +266,9 @@ export function taskRoutes(): Router {
   /**
    * POST /api/v1/tasks/lists — create a new task list.
    * Body: { name: string }
-   * Routes to MS To-Do createList or native adapter based on user.
+   * M5: writes the offline-first ledger (instant local visibility, async
+   * provider push); the legacy provider route survives behind
+   * TASK_SINGLE_WRITE_PATH=0.
    */
   router.post('/lists', async (req, res: Response) => {
     try {
@@ -270,6 +278,24 @@ export function taskRoutes(): Router {
         sendError(res, 'VALIDATION', 'name is required', 400);
         return;
       }
+      if (isSingleWritePathEnabled()) {
+        // M5 ledger path (NEX-10): the local unified_projects row exists
+        // immediately, so GET /lists shows the new list instantly; the
+        // provider push is journaled for the mutation worker.
+        const { userId: scopedUserId, tenantId } = assertTenantScope(req as any, 'tasks_lists_create_local_mutation');
+        const result = createOfflineFirstTaskList(tenantId, scopedUserId, {
+          name: name.trim(),
+          idempotencyKey: req.body?.idempotencyKey,
+          clientMutationId: req.body?.clientMutationId,
+        });
+        invalidateTaskCaches({ userId: scopedUserId, includeDerivedSurfaces: false });
+        // CONTRACT PIN: deployed iOS decodes `id` and `displayName` as
+        // NON-OPTIONAL strings and uses `id` for subsequent reads, so `id`
+        // MUST be the local project row id that GET /lists returns.
+        sendSuccess(res, { id: result.list.id, displayName: result.list.name }, { status: 201 });
+        return;
+      }
+      // Legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0).
       const todo = getTodo(req);
       const result = await todo.createList(name.trim());
       if (!result?.success) {
@@ -279,6 +305,10 @@ export function taskRoutes(): Router {
       invalidateTaskCaches({ userId, includeDerivedSurfaces: false });
       sendSuccess(res, result.data, { status: 201 });
     } catch (err: any) {
+      if (err?.code === 'BAD_REQUEST') {
+        sendError(res, 'VALIDATION', err.message || 'Invalid list create request', 400);
+        return;
+      }
       logger.error({ err }, 'iOS tasks/lists POST failed');
       sendInternalError(res, 'Failed to create list');
     }
@@ -773,8 +803,25 @@ export function taskRoutes(): Router {
   /** DELETE /api/v1/tasks/lists/:listId — delete a task list/project when supported. */
   router.delete('/lists/:listId', async (req, res: Response) => {
     try {
-      const todo = getTodo(req);
       const { listId } = req.params;
+      if (isSingleWritePathEnabled()) {
+        // M5 ledger path (NEX-10): the local row disappears from GET /lists
+        // immediately; the provider push (with the PROVIDER container id
+        // captured at journal time, never the local numeric row id) runs on
+        // the mutation worker.
+        const { userId, tenantId } = assertTenantScope(req as any, 'tasks_lists_delete_local_mutation');
+        deleteOfflineFirstTaskList(tenantId, userId, {
+          listId,
+          idempotencyKey: req.body?.idempotencyKey || (req.query?.idempotencyKey as string | undefined),
+          clientMutationId: req.body?.clientMutationId || (req.query?.clientMutationId as string | undefined),
+        });
+        invalidateTaskCaches({ userId, listIds: [listId], includeDerivedSurfaces: true });
+        sendSuccess(res, { deleted: true });
+        return;
+      }
+
+      // Legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0).
+      const todo = getTodo(req);
       if (typeof todo.deleteList !== 'function') {
         sendError(res, 'UNSUPPORTED', 'Task list deletion is not supported by the active task provider', 400);
         return;
@@ -789,6 +836,14 @@ export function taskRoutes(): Router {
       invalidateTaskCaches({ userId: (req as any).userId, listIds: [listId], includeDerivedSurfaces: true });
       sendSuccess(res, { deleted: true });
     } catch (err: any) {
+      if (err?.code === 'NOT_FOUND') {
+        sendError(res, 'NOT_FOUND', err.message || 'List not found', 404);
+        return;
+      }
+      if (err?.code === 'BAD_REQUEST') {
+        sendError(res, 'VALIDATION', err.message || 'Invalid list delete request', 400);
+        return;
+      }
       logger.error({ err }, 'iOS tasks list delete failed');
       sendInternalError(res, 'Failed to delete task list');
     }

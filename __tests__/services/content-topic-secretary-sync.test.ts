@@ -22,6 +22,22 @@ vi.mock('../../src/services/task-store/task-list-resolution', () => ({
   resolveTaskCreationList: vi.fn(async () => listResult),
 }));
 
+// M5 single write path: secretary task sync writes the offline-first ledger
+// by default; the direct provider path survives behind TASK_SINGLE_WRITE_PATH=0.
+const mockCreateOfflineFirstTask = vi.fn();
+const mockUpdateOfflineFirstTask = vi.fn();
+const mockRecordLocalTaskMutation = vi.fn();
+const mockResolveOfflineNexusTaskId = vi.fn();
+const mockResolveOfflineCaptureListName = vi.fn();
+
+vi.mock('../../src/services/task-store/offline-first-task-service', () => ({
+  createOfflineFirstTask: (...args: unknown[]) => mockCreateOfflineFirstTask(...args),
+  updateOfflineFirstTask: (...args: unknown[]) => mockUpdateOfflineFirstTask(...args),
+  recordLocalTaskMutation: (...args: unknown[]) => mockRecordLocalTaskMutation(...args),
+  resolveOfflineNexusTaskId: (...args: unknown[]) => mockResolveOfflineNexusTaskId(...args),
+  resolveOfflineCaptureListName: (...args: unknown[]) => mockResolveOfflineCaptureListName(...args),
+}));
+
 vi.mock('../../src/services/cache-coherence-registry', () => ({
   ...{
     CacheCoherenceEvents: {},
@@ -102,26 +118,72 @@ describe('content topic Secretary sync', () => {
       updateTask: vi.fn(async () => ({ success: true, data: { id: 'task-existing' } })),
       deleteTask: vi.fn(async () => ({ success: true })),
     };
+    vi.unstubAllEnvs();
+    mockCreateOfflineFirstTask.mockReset();
+    mockUpdateOfflineFirstTask.mockReset();
+    mockRecordLocalTaskMutation.mockReset();
+    mockResolveOfflineNexusTaskId.mockReset();
+    mockResolveOfflineCaptureListName.mockReset();
+    mockCreateOfflineFirstTask.mockReturnValue({
+      task: { id: 'task_nexus_topic', title: 'Conteúdo: Topic test', listId: '88', listName: 'Tarefas', status: 'notStarted', syncState: 'local_only' },
+      mutationId: 'mutation-topic-create',
+      idempotentReplay: false,
+      warnings: [],
+    });
+    mockUpdateOfflineFirstTask.mockReturnValue({
+      task: { id: 'task_nexus_existing', title: 'Content: Topic test', listId: '90', listName: 'Content', status: 'notStarted', syncState: 'queued' },
+      mutationId: 'mutation-topic-update',
+      idempotentReplay: false,
+    });
+    mockRecordLocalTaskMutation.mockReturnValue({
+      task: { id: 'task_nexus_existing', status: 'cancelled' },
+      mutationId: 'mutation-topic-delete',
+      idempotentReplay: false,
+    });
+    mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_existing');
+    mockResolveOfflineCaptureListName.mockImplementation((_tenantId: unknown, _userId: unknown, name: unknown) => (name as string) || 'Tarefas');
   });
 
-  it('creates a Secretary task for a date-only topic and does not create a calendar event', async () => {
+  it('creates a ledger Secretary task for a date-only topic and does not create a calendar event', async () => {
+    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR' });
+
+    expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(77, 77, expect.objectContaining({
+      title: 'Conteúdo: Topic test',
+      dueDateTime: '2026-04-26T23:59:00',
+      importance: 'normal',
+      listName: 'Tarefas',
+    }));
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+    // secretary_task_external_id now stores the NEXUS task id (see the
+    // identity-contract comment in upsertSecretaryTaskViaLedger).
+    expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
+      secretary_task_list_id: '88',
+      secretary_task_list_name: 'Tarefas',
+      secretary_task_external_id: 'task_nexus_topic',
+      secretary_sync_status: 'task_synced',
+    }));
+    expect(invalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 77,
+      listIds: ['88'],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('legacy flag-off path creates the Secretary task through the provider', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR' });
 
     expect(taskProvider.createTask).toHaveBeenCalledWith('list-1', 'Tarefas', expect.objectContaining({
       title: 'Conteúdo: Topic test',
       dueDateTime: '2026-04-26T23:59:00',
     }));
-    expect(createEvent).not.toHaveBeenCalled();
+    expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
       secretary_task_list_id: 'list-1',
       secretary_task_external_id: 'task-1',
       secretary_sync_status: 'task_synced',
     }));
-    expect(invalidateTaskCaches).toHaveBeenCalledWith({
-      userId: 77,
-      listIds: ['list-1'],
-      includeDerivedSurfaces: true,
-    });
   });
 
   it('creates a calendar agenda when the topic includes date and time', async () => {
@@ -129,7 +191,7 @@ describe('content topic Secretary sync', () => {
       scheduled_at: '2026-04-26T09:30:00',
     }), { language: 'pt-BR' });
 
-    expect(taskProvider.createTask).toHaveBeenCalled();
+    expect(mockCreateOfflineFirstTask).toHaveBeenCalled();
     expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Conteúdo: Topic test',
       start: '2026-04-26T09:30:00+01:00',
@@ -154,9 +216,13 @@ describe('content topic Secretary sync', () => {
       calendar_source: 'outlook',
     }), { language: 'en' });
 
-    expect(taskProvider.updateTask).toHaveBeenCalledWith('list-old', 'task-existing', expect.objectContaining({
+    expect(mockResolveOfflineNexusTaskId).toHaveBeenCalledWith(77, 77, 'task-existing');
+    expect(mockUpdateOfflineFirstTask).toHaveBeenCalledWith(77, 77, expect.objectContaining({
+      taskId: 'task_nexus_existing',
       title: 'Content: Topic test',
-    }), 'Content');
+    }));
+    expect(taskProvider.updateTask).not.toHaveBeenCalled();
+    expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
     expect(taskProvider.createTask).not.toHaveBeenCalled();
     expect(updateEvent).toHaveBeenCalledWith(expect.objectContaining({
       event_id: 'evt-existing',
@@ -173,7 +239,7 @@ describe('content topic Secretary sync', () => {
     }), { language: 'pt-BR' });
 
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
-      secretary_task_external_id: 'task-1',
+      secretary_task_external_id: 'task_nexus_topic',
       secretary_sync_status: 'task_synced_calendar_unavailable',
       secretary_sync_error: 'calendar_not_connected',
     }));
@@ -189,7 +255,13 @@ describe('content topic Secretary sync', () => {
     }));
 
     expect(result).toEqual({ taskDeleted: true, calendarDeleted: true, errors: [] });
-    expect(taskProvider.deleteTask).toHaveBeenCalledWith('list-old', 'task-existing');
+    expect(mockResolveOfflineNexusTaskId).toHaveBeenCalledWith(77, 77, 'task-existing');
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(77, 77, {
+      taskId: 'task_nexus_existing',
+      operation: 'task.delete',
+      patch: { source: 'content_topic_secretary_sync' },
+    });
+    expect(taskProvider.deleteTask).not.toHaveBeenCalled();
     expect(deleteEvent).toHaveBeenCalledWith('evt-existing', 'outlook', 77);
     expect(invalidateTaskCaches).toHaveBeenCalledWith({
       userId: 77,
@@ -197,5 +269,32 @@ describe('content topic Secretary sync', () => {
       includeDerivedSurfaces: true,
     });
     expect(invalidateCalendarCaches).toHaveBeenCalledWith(77);
+  });
+
+  it('treats cleanup of a task the ledger no longer knows as converged', async () => {
+    mockResolveOfflineNexusTaskId.mockReturnValue(null);
+
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_external_id: 'task-gone',
+    }));
+
+    expect(result.taskDeleted).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+  });
+
+  it('legacy flag-off path cleans up through the provider', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_list_name: 'Content',
+      secretary_task_external_id: 'task-existing',
+    }));
+
+    expect(result.taskDeleted).toBe(true);
+    expect(taskProvider.deleteTask).toHaveBeenCalledWith('list-old', 'task-existing');
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
   });
 });

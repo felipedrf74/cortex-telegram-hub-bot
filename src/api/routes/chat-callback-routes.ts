@@ -8,6 +8,13 @@ import { tryDeterministicChatCommand } from './chat-fastpath';
 import { consumeCallbackForScope, getCallbackForScope } from '../../utils/callback-store';
 import { applyCoachRecommendations } from '../../services/garmin-coach';
 import { getTaskProviderForUser } from '../../services/task-store/task-router';
+import { isSingleWritePathEnabled } from '../../services/task-store/single-write-path';
+import {
+  deleteOfflineFirstTaskList,
+  recordLocalTaskMutation,
+  resolveOfflineNexusTaskId,
+  resolveOfflineTaskListRef,
+} from '../../services/task-store/offline-first-task-service';
 import { labelsForLanguage } from './chat-inline-buttons';
 import { buildNexusAnswerContract, type NexusChatOwnerSkill } from '../../services/chat-answer-contract';
 import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
@@ -246,13 +253,39 @@ export function registerChatCallbackRoutes(
             expireMalformedTaskCallback();
             return;
           }
-          if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
-            res.status(410).json({
-              error: buildCallbackExpiredError(language),
+          if (isSingleWritePathEnabled()) {
+            // M5 ledger path: the callback carries a provider-era task id;
+            // bridge it to the nexus id and journal task.complete. The local
+            // row flips immediately and the provider push runs on the
+            // mutation worker (NEX-09). Unresolvable ids expire the callback
+            // BEFORE the one-shot ref is consumed.
+            const scopedTenantId = typeof tenantId === 'number' && tenantId > 0 ? tenantId : userId;
+            const nexusTaskId = resolveOfflineNexusTaskId(scopedTenantId, userId, String(cbData.taskId));
+            if (!nexusTaskId) {
+              expireMalformedTaskCallback();
+              return;
+            }
+            if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+              res.status(410).json({
+                error: buildCallbackExpiredError(language),
+              });
+              return;
+            }
+            recordLocalTaskMutation(scopedTenantId, userId, {
+              taskId: nexusTaskId,
+              operation: 'task.complete',
+              patch: { source: 'chat_callback' },
             });
-            return;
+          } else {
+            // Legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0).
+            if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+              res.status(410).json({
+                error: buildCallbackExpiredError(language),
+              });
+              return;
+            }
+            await taskProvider.completeTask(cbData.listId, cbData.taskId);
           }
-          await taskProvider.completeTask(cbData.listId, cbData.taskId);
           const payload = buildTaskCompletedPayload(language, cbData.title);
           responseText = payload.text;
           editOriginal = payload.editOriginal;
@@ -260,13 +293,34 @@ export function registerChatCallbackRoutes(
         }
         case 'td:dy': {
           if (cbData?.listId && cbData?.taskId) {
-            if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
-              res.status(410).json({
-                error: buildCallbackExpiredError(language),
+            if (isSingleWritePathEnabled()) {
+              const scopedTenantId = typeof tenantId === 'number' && tenantId > 0 ? tenantId : userId;
+              const nexusTaskId = resolveOfflineNexusTaskId(scopedTenantId, userId, String(cbData.taskId));
+              if (!nexusTaskId) {
+                expireMalformedTaskCallback();
+                return;
+              }
+              if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+                res.status(410).json({
+                  error: buildCallbackExpiredError(language),
+                });
+                return;
+              }
+              recordLocalTaskMutation(scopedTenantId, userId, {
+                taskId: nexusTaskId,
+                operation: 'task.delete',
+                patch: { source: 'chat_callback' },
               });
-              return;
+            } else {
+              // Legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0).
+              if (ref && !consumeCallbackForScope(ref, { tenantId, userId })) {
+                res.status(410).json({
+                  error: buildCallbackExpiredError(language),
+                });
+                return;
+              }
+              await taskProvider.deleteTask(cbData.listId, cbData.taskId);
             }
-            await taskProvider.deleteTask(cbData.listId, cbData.taskId);
             const payload = buildTaskDeletedPayload(language, cbData.title);
             responseText = payload.text;
             editOriginal = payload.editOriginal;
@@ -277,7 +331,20 @@ export function registerChatCallbackRoutes(
               });
               return;
             }
-            await taskProvider.deleteList(cbData.listId);
+            if (isSingleWritePathEnabled()) {
+              // M5 ledger path (NEX-10): resolve the callback's provider-era
+              // list id to the local row, remove it locally, and journal the
+              // provider push. An unresolvable list is already gone —
+              // deletion converged.
+              const scopedTenantId = typeof tenantId === 'number' && tenantId > 0 ? tenantId : userId;
+              const localList = resolveOfflineTaskListRef(scopedTenantId, userId, String(cbData.listId), cbData.listName);
+              if (localList) {
+                deleteOfflineFirstTaskList(scopedTenantId, userId, { listId: localList.id });
+              }
+            } else {
+              // Legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0).
+              await taskProvider.deleteList(cbData.listId);
+            }
             const payload = buildListDeletedPayload(language, cbData.listName);
             responseText = payload.text;
             editOriginal = payload.editOriginal;

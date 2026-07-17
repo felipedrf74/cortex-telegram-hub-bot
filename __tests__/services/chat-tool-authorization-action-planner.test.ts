@@ -180,6 +180,10 @@ describe('chat tool authorization AsyncLocalStorage scoping', () => {
       ],
       routingSignals: ['auth-reentry:test'],
     };
+    // The observable under test is the PROVIDER call seeing the auth context,
+    // so pin the legacy direct-provider path (TASK_SINGLE_WRITE_PATH=0); the
+    // ledger path never re-enters a provider write here.
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     let providerContext: ReturnType<typeof getCurrentChatToolAuthorizationContext>;
     const taskProvider = {
       getLists: vi.fn(async () => ({ success: true, data: [{ id: 'tasks', displayName: 'Tasks' }] })),
@@ -213,5 +217,6 @@ describe('chat tool authorization AsyncLocalStorage scoping', () => {
       confirmedDestructiveAction: true,
       confirmationSource: 'explicit_current_turn',
     });
+    vi.unstubAllEnvs();
   });
 });

@@ -334,6 +334,18 @@ export const config = {
     defaultList: process.env.TODO_DEFAULT_LIST || 'Tasks',
     digestEnabled: (process.env.TODO_DIGEST_ENABLED || 'true') === 'true',
     digestTime: process.env.TODO_DIGEST_TIME || '06:00',
+    // M5 single write path: ALL task/list writes (chat tools, chat-core-v2
+    // commands, planner skills, callbacks, content-topic sync, list REST)
+    // flow through the offline-first ledger instead of writing providers
+    // directly. Default ON; operations can revert to the legacy direct
+    // provider path without a deploy via TASK_SINGLE_WRITE_PATH=0 (or
+    // 'false'). Call sites consult isSingleWritePathEnabled() from
+    // src/services/task-store/single-write-path.ts, which re-reads the env
+    // at call time (this boot-parsed value is the unset default) so tests
+    // can exercise both states without module re-imports.
+    singleWritePath:
+      (process.env.TASK_SINGLE_WRITE_PATH ?? '1') !== '0'
+      && (process.env.TASK_SINGLE_WRITE_PATH ?? 'true') !== 'false',
   },
   // ── Invoice/Receipt Filing (legacy SSH fields retained for backfill metadata) ─────
   invoices: {
