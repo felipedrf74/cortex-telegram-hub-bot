@@ -261,6 +261,38 @@ async function graphGetPaged<T>(client: Client, path: string, query?: Record<str
   return rows;
 }
 
+async function graphGetTodoTasksForList(
+  client: Client,
+  userId: number,
+  listId: string,
+): Promise<GraphTodoTask[]> {
+  const path = `/me/todo/lists/${encodeURIComponent(listId)}/tasks`;
+  try {
+    return await graphGetPaged<GraphTodoTask>(
+      client,
+      path,
+      {
+        $top: String(MS_GRAPH_PAGE_SIZE),
+        $orderby: 'createdDateTime DESC',
+        $expand: 'checklistItems,linkedResources',
+      },
+    );
+  } catch (err) {
+    logger.warn(
+      { err, userId, listId },
+      'Microsoft To Do adapter expanded list fetch failed — retrying basic task fetch',
+    );
+    return graphGetPaged<GraphTodoTask>(
+      client,
+      path,
+      {
+        $top: String(MS_GRAPH_PAGE_SIZE),
+        $orderby: 'createdDateTime DESC',
+      },
+    );
+  }
+}
+
 export class MicrosoftTodoAdapter implements TaskProviderAdapter {
   readonly provider = 'ms_todo' as const;
 
@@ -289,7 +321,7 @@ export class MicrosoftTodoAdapter implements TaskProviderAdapter {
   async getTasks(
     userId: number,
     options?: { projectId?: string; knownProjects?: NormalizedProject[] },
-  ): Promise<{ tasks: NormalizedTask[]; nextCursor?: string }> {
+  ): Promise<{ tasks: NormalizedTask[]; nextCursor?: string; incomplete?: boolean; errors?: string[] }> {
     // Reuse the caller's already-fetched list set when provided (the sync
     // engine pulls lists via getProjects immediately before calling us) —
     // otherwise every sync fetched all lists from Graph a second time.
@@ -299,29 +331,30 @@ export class MicrosoftTodoAdapter implements TaskProviderAdapter {
       : allProjects;
     const client = getGraphClientForUser(userId);
     const tasks: NormalizedTask[] = [];
+    const errors: string[] = [];
 
     for (const project of projects) {
       try {
-        const rawTasks = await graphGetPaged<GraphTodoTask>(
-          client,
-          `/me/todo/lists/${encodeURIComponent(project.externalId)}/tasks`,
-          {
-            $top: String(MS_GRAPH_PAGE_SIZE),
-            $orderby: 'createdDateTime DESC',
-            $expand: 'checklistItems,linkedResources',
-          },
-        );
+        const rawTasks = await graphGetTodoTasksForList(client, userId, project.externalId);
         tasks.push(
           ...rawTasks
             .filter((task) => String(task.id || '').trim())
             .map((task) => taskFromGraphTask(task, project)),
         );
-      } catch (err) {
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        errors.push(`list ${project.externalId}: ${message}`);
         logger.warn({ err, userId, listId: project.externalId }, 'Microsoft To Do adapter failed to fetch list tasks');
       }
     }
 
-    return { tasks };
+    return {
+      tasks,
+      incomplete: errors.length > 0,
+      errors: errors.length > 0
+        ? [`Microsoft To Do failed to fetch ${errors.length} list${errors.length === 1 ? '' : 's'}`]
+        : undefined,
+    };
   }
 
   async createTask(
