@@ -175,6 +175,10 @@
     { "pattern": "__tests__/services/task-store/task-ledger-retention.test.ts", "disposition": "keep", "reason": "Pins the M2B task ledger retention job's negative space: only terminal actionless classes (synced/dead_letter/superseded mutations, resolved issues, aged observability events) age out, while conflict/failed/queued mutations and open issues survive at any age; also pins bounded batching and the declared 90/90/30-day horizons." },
     { "pattern": "__tests__/services/task-store/task-conflict-resolution.test.ts", "disposition": "keep", "reason": "Pins the M2B conflict-resolution unit surface: defensive provider-shape normalization (status/importance/due/body variants), provider-missing probe classification, PROVIDER_UNAVAILABLE error taxonomy, version-fallback and conflictId determinism, idempotent keep_local replay, no-link/NULL-hardening resolution paths, and keep_provider status/importance/due application onto the canonical row." },
     { "pattern": "__tests__/services/task-store/task-sync-snapshot.test.ts", "disposition": "keep", "reason": "Pins the M2B agreed-base snapshot codec: build-side coercion defaults (title/status/priority/due/notes), SQLite integer-boolean acceptance, parse-side null/corrupt/non-object rejection, missing-field defaults, and build-parse round-trip stability relied on by conflict resolution and future 3-way merge." },
+    { "pattern": "__tests__/services/task-store/single-write-path-prohibition.test.ts", "disposition": "keep", "reason": "M5 Gate R1 static ratchet: provider task/list write calls may exist only in ledger-internal sync machinery and flag-gated legacy branches; pins the alphabetized allowlist, the isSingleWritePathEnabled wiring of every retained legacy site, and stale-entry hygiene." },
+    { "pattern": "__tests__/services/task-store/single-write-path.test.ts", "disposition": "keep", "reason": "M5 acceptance against a real migrated database: chat tool and chat-core-v2 writes journal task_mutations, become instantly readable through the offline read model (NEX-08/NEX-09), list create/delete update GET /lists truth (NEX-10), no provider write mock fires, and TASK_SINGLE_WRITE_PATH=0 restores the legacy direct-provider path." },
+    { "pattern": "__tests__/services/skills-tasks-executor.test.ts", "disposition": "keep", "reason": "M5 direct unit contract for the chat planner task executors against a real migrated database: ledger create/subtasks/mutation targets resolve on the local read model, chat_action_runs claims replay idempotently, reconciliation-pending and terminal-late-update guards hold, partial checklist failures degrade instead of lying, and the flag-off legacy dispatch stays blocked without provider capabilities." },
+    { "pattern": "__tests__/api/chat-core-v2-command-confirmation-response.test.ts", "disposition": "keep", "reason": "Pins the confirmation shortcut task-card identity contract: created-task cards prefer the NEXUS id the REST read model speaks, keep the numeric row id only as the legacy flag-off shape, and stay renderable with no id at all — deployed iOS uses card taskId for follow-up reads." },
     { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
   ],
   "coverage": {
@@ -299,6 +303,111 @@
         "src/adapters/whatsapp-adapter.ts"
       ],
       "reason": "Removed compile-time method-existence assertions from the retained primary suite because every adapter method is exercised through its public behavior and TypeScript checks the MessageAdapter implementation."
+    },
+    {
+      "test": "__tests__/services/task-store/task-service.test.ts",
+      "replacementTests": [
+        "__tests__/services/task-store/task-service.test.ts",
+        "__tests__/services/task-store/single-write-path.test.ts"
+      ],
+      "sources": [
+        "src/services/task-store/task-service.ts"
+      ],
+      "reason": "M5 deleted task-service createTask/deleteTask (dead code — writes flow through the offline-first ledger), so their describes were removed; the retained suite still covers completeTask (the flag-off legacy branch) and the read helpers, and ledger-side create/delete behavior is asserted end-to-end in the single-write-path acceptance suite."
+    },
+    {
+      "test": "__tests__/services/tool-executor.test.ts",
+      "replacementTests": [
+        "__tests__/services/tool-executor.test.ts",
+        "__tests__/services/task-store/single-write-path.test.ts"
+      ],
+      "sources": [
+        "src/services/tool-executor.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/tool-executor.ts:1505-1510",
+          "anchor": "syncState: created.task.syncState",
+          "behavior": "ms_todo_create_task returns the ledger-created task's nexus id, title, and honest syncState with success true — chat callers receive ledger truth, never a provider echo.",
+          "replacementTest": "__tests__/services/tool-executor.test.ts",
+          "ownerTestNamePattern": "writes the ledger and returns the NEXUS id and title",
+          "minimumMutants": 2
+        }
+      ],
+      "reason": "M5 rewrote the ms_todo_* write-tool tests from provider-delegation assertions to offline-first ledger assertions and re-pinned the direct-provider behavior as explicit TASK_SINGLE_WRITE_PATH=0 legacy tests in the same file; real-database acceptance lives in the single-write-path suite."
+    },
+    {
+      "test": "__tests__/api/app-facing-happy-path-smoke.test.ts",
+      "replacementTests": [
+        "__tests__/api/app-facing-happy-path-smoke.test.ts",
+        "__tests__/api/tasks-routes.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/tasks.ts"
+      ],
+      "reason": "M5 re-pinned the POST /lists smoke assertions to the ledger contract: the 201 body carries the LOCAL project row id (the id GET /lists serves) instead of a provider echo, with the provider push journaled for the mutation worker."
+    },
+    {
+      "test": "__tests__/api/chat-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/chat-routes.test.ts",
+        "__tests__/services/task-store/single-write-path.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 moved chat-route planner task-write expectations from provider-delegation assertions to offline-first ledger assertions (no inline provider writes; local read-back), matching the converted skills executors."
+    },
+    {
+      "test": "__tests__/services/chat-action-planner-multi-step.test.ts",
+      "replacementTests": [
+        "__tests__/services/chat-action-planner-multi-step.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 re-pinned multi-step planner task writes to the ledger: creates land exactly once in unified_tasks with zero provider-mock writes, replacing the previous provider-call-count assertions."
+    },
+    {
+      "test": "__tests__/services/chat-action-production-safety.test.ts",
+      "replacementTests": [
+        "__tests__/services/chat-action-production-safety.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 pinned the malformed-provider-response scenario to the TASK_SINGLE_WRITE_PATH=0 legacy path (the ledger path performs no inline provider write to malform) while keeping the calendar verifier-failure half unchanged."
+    },
+    {
+      "test": "__tests__/services/chat-core-v2-command-executor.test.ts",
+      "replacementTests": [
+        "__tests__/services/chat-core-v2-command-executor.test.ts",
+        "__tests__/services/task-store/single-write-path.test.ts"
+      ],
+      "sources": [
+        "src/services/chat-core-v2/command-executor.ts"
+      ],
+      "reason": "M5 re-pinned the provider-path task-create tests as TASK_SINGLE_WRITE_PATH=0 legacy contracts and added ledger-path create/verification tests; the unified complete command's ledger journal is asserted against a real migrated database in the single-write-path suite."
+    },
+    {
+      "test": "__tests__/services/content-topic-secretary-sync.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-topic-secretary-sync.test.ts"
+      ],
+      "sources": [
+        "src/services/content-topic-secretary-sync.ts"
+      ],
+      "reason": "M5 renamed and re-scoped the upsert/cleanup tests to the ledger write path (nexus-id identity contract for secretary_task_external_id) and re-pinned the direct-provider behavior as explicit TASK_SINGLE_WRITE_PATH=0 legacy tests in the same file."
+    },
+    {
+      "test": "__tests__/services/chat-action-planner.test.ts",
+      "replacementTests": [
+        "__tests__/services/chat-action-planner.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 moved planner task-step write expectations to the offline-first ledger (no provider writes; local read-back), split the subtask partial-claim scenario into a TASK_SINGLE_WRITE_PATH=0 legacy half, and renamed the provider-read duplicate-recovery test as an explicit legacy flag-off contract."
     },
     {
       "test": "__tests__/services/task-store/task-sync-transitions.test.ts",

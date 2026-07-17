@@ -24,6 +24,8 @@ const { providerApi } = vi.hoisted(() => ({
     updateTask: vi.fn(),
     completeTask: vi.fn(),
     deleteTask: vi.fn(),
+    createList: vi.fn(),
+    deleteList: vi.fn(),
   },
 }));
 
@@ -372,6 +374,7 @@ function expectNoProviderReads(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   clearTenantScopeAnomaliesForTests();
   vi.spyOn(global, 'setTimeout').mockImplementation((() => 0) as any);
   testDb = createTestDb();
@@ -1514,5 +1517,118 @@ describe('conflict route error mapping (M2B)', () => {
       `SELECT status FROM task_mutations WHERE mutation_id = ?`,
     ).get('mutation-task-resolve-provider-down') as { status: string };
     expect(mutation.status).toBe('conflict');
+  });
+});
+
+describe('M5B ledger list routes (single write path)', () => {
+  it('POST /lists creates the list in the ledger and pins the deployed-iOS 201 contract', async () => {
+    const res = await dispatch('POST', '/lists', { body: { name: 'Compras' } });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(201);
+    // CONTRACT PIN: deployed iOS decodes `id` and `displayName` as
+    // NON-OPTIONAL strings and uses `id` for subsequent reads.
+    expect(typeof res.body.data.id).toBe('string');
+    expect(res.body.data.id.length).toBeGreaterThan(0);
+    expect(res.body.data.displayName).toBe('Compras');
+
+    // The returned id must be exactly what GET /lists serves.
+    const lists = await dispatch('GET', '/lists');
+    expect(lists.body.data.lists).toContainEqual(
+      expect.objectContaining({ id: res.body.data.id, name: 'Compras' }),
+    );
+
+    // Ledger truth: a list.create mutation row with task_id NULL.
+    const mutation = testDb.prepare(
+      `SELECT task_id, status, patch_json FROM task_mutations WHERE operation = 'list.create'`,
+    ).get() as { task_id: string | null; status: string; patch_json: string };
+    expect(mutation.task_id).toBeNull();
+    expect(JSON.parse(mutation.patch_json)).toMatchObject({ listId: res.body.data.id, name: 'Compras' });
+
+    // No provider write on the single write path (NEX-10 fix).
+    expect(providerApi.createList).not.toHaveBeenCalled();
+  });
+
+  it('POST /lists validates the name', async () => {
+    const res = await dispatch('POST', '/lists', { body: { name: '   ' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION');
+  });
+
+  it('DELETE /lists/:listId removes the list from local truth and journals the provider push', async () => {
+    const created = await dispatch('POST', '/lists', { body: { name: 'Temporária' } });
+    const listId = created.body.data.id;
+
+    const res = await dispatch('DELETE', `/lists/${listId}`, { params: { listId } });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toEqual({ deleted: true });
+    const lists = await dispatch('GET', '/lists');
+    expect(lists.body.data.lists.map((list: any) => list.name)).not.toContain('Temporária');
+    const mutation = testDb.prepare(
+      `SELECT task_id, status FROM task_mutations WHERE operation = 'list.delete'`,
+    ).get() as { task_id: string | null; status: string };
+    expect(mutation.task_id).toBeNull();
+    expect(providerApi.deleteList).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /lists/:listId returns 404 for unknown lists', async () => {
+    const res = await dispatch('DELETE', '/lists/987654', { params: { listId: '987654' } });
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('legacy flag-off POST /lists delegates to the provider createList', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    providerApi.createList.mockResolvedValue({ success: true, data: { id: 'provider-list-7', displayName: 'Legacy' } });
+
+    const res = await dispatch('POST', '/lists', { body: { name: 'Legacy' } });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.data).toEqual({ id: 'provider-list-7', displayName: 'Legacy' });
+    expect(providerApi.createList).toHaveBeenCalledWith('Legacy');
+    const mutationCount = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'list.create'`,
+    ).get() as { count: number };
+    expect(mutationCount.count).toBe(0);
+  });
+
+  it('legacy flag-off DELETE /lists/:listId delegates to the provider deleteList', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    providerApi.deleteList.mockResolvedValue({ success: true, data: undefined });
+
+    const res = await dispatch('DELETE', '/lists/provider-list-7', { params: { listId: 'provider-list-7' } });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(providerApi.deleteList).toHaveBeenCalledWith('provider-list-7');
+  });
+
+  it('DELETE /lists/:listId refuses to delete the default list with a 400 validation error', async () => {
+    // Create a list, promote it to default, then try to delete it.
+    const created = await dispatch('POST', '/lists', { body: { name: 'Principal' } });
+    const listId = created.body.data.id;
+    testDb.prepare('UPDATE unified_projects SET is_default = 1 WHERE id = ?').run(Number(listId));
+
+    const res = await dispatch('DELETE', `/lists/${listId}`, { params: { listId } });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION');
+    expect(res.body.error.message).toBe('Cannot delete the default list');
+    // The refused delete journals nothing.
+    expect(testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'list.delete'`,
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it('POST /lists surfaces a tenant-scope failure as an internal error, not a silent write', async () => {
+    const res = await dispatch('POST', '/lists', {
+      body: { name: 'Escopo inválido' },
+      userId: 12,
+      tenantId: -1,
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(500);
+    expect(testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'list.create'`,
+    ).get()).toEqual({ count: 0 });
   });
 });

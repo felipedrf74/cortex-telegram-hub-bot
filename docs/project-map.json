@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "d258b392259118d928885256a175601947b8d82279645cbca868fb939b5ce161",
-    "baseCommit": "57ba45b0b5dd22c4316d7c33843819a7c2d52709",
-    "baseCommitTimestamp": "2026-07-17T18:51:42+01:00",
-    "trackedFiles": 2574,
-    "sourceFiles": 973
+    "sourceDigest": "3dea64f4803726d445a44a97752a51b174ba5ca64318da101c57ffb598dfd1d0",
+    "baseCommit": "23ed58406c595a91b3b1742cf5fd66353c936e1d",
+    "baseCommitTimestamp": "2026-07-17T22:04:46+01:00",
+    "trackedFiles": 2579,
+    "sourceFiles": 974
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -94,7 +94,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 708
+      "files": 709
     },
     {
       "path": "src/skills",
@@ -4323,13 +4323,13 @@
     }
   ],
   "tests": {
-    "files": 937,
+    "files": 941,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 4,
-      "api": 135,
+      "api": 136,
       "billing": 1,
       "brand": 1,
       "cli": 1,
@@ -4345,7 +4345,7 @@
       "scripts": 50,
       "sdk": 1,
       "security": 21,
-      "services": 592,
+      "services": 595,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -5015,7 +5015,7 @@
     },
     {
       "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 271370,
+      "bytes": 275883,
       "generated": false
     },
     {

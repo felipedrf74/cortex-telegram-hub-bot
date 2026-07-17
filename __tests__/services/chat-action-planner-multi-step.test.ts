@@ -62,6 +62,8 @@ describe('ChatActionPlanner multi-step DAG', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     testDb = createMigratedTestDatabase();
+    // M5: ledger task writes hit unified_* tables, which enforce the users FK.
+    testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)').run(42, 42);
   });
 
   afterEach(() => {
@@ -176,7 +178,14 @@ describe('ChatActionPlanner multi-step DAG', () => {
     } as never, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('verified_success');
-    expect(completeTask).toHaveBeenCalledWith('list-1', 'task-1');
+    // M5 single write path: both the create and the pronoun-resolved complete
+    // land in the offline-first ledger; the provider mock stays untouched and
+    // the $ref carries the created task's NEXUS id into the mutation step.
+    expect(completeTask).not.toHaveBeenCalled();
+    const completeMutation = testDb.prepare(
+      "SELECT COUNT(*) AS count FROM task_mutations WHERE user_id = 42 AND operation = 'task.complete'",
+    ).get() as { count: number };
+    expect(completeMutation.count).toBe(1);
     expect(response.metadata.multiStepSummary).toMatchObject({ totalSteps: 2, succeeded: 2 });
   });
 

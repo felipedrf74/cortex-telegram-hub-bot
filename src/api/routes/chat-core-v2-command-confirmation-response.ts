@@ -99,7 +99,10 @@ function buildResultCards(
     const payload = pending.command.payload;
     return [{
       kind: 'taskCard',
-      taskId: typeof execution.createdTaskId === 'number' ? String(execution.createdTaskId) : null,
+      // M5 single write path: prefer the NEXUS id — the id the REST read
+      // model speaks. The numeric row id remains the legacy flag-off shape.
+      taskId: execution.createdTaskNexusId
+        ?? (typeof execution.createdTaskId === 'number' ? String(execution.createdTaskId) : null),
       title: typeof payload.title === 'string' ? payload.title : 'Task',
       status: execution.status === 'verified' ? 'created' : 'pending',
       dueAt: typeof payload.dueDateTime === 'string' ? payload.dueDateTime : null,

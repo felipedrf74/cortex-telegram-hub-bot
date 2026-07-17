@@ -120,6 +120,31 @@ vi.mock('../../src/services/task-store/task-router', () => ({
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
+// M5 single write path: task writes land in the offline-first ledger.
+const mockCreateOfflineFirstTask = vi.fn();
+const mockUpdateOfflineFirstTask = vi.fn();
+const mockRecordLocalTaskMutation = vi.fn();
+const mockMoveOfflineFirstTask = vi.fn();
+const mockAddOfflineTaskChecklistItem = vi.fn();
+const mockCreateOfflineFirstTaskList = vi.fn();
+const mockDeleteOfflineFirstTaskList = vi.fn();
+const mockResolveOfflineNexusTaskId = vi.fn();
+const mockResolveOfflineTaskListRef = vi.fn();
+const mockResolveOfflineCaptureListName = vi.fn();
+
+vi.mock('../../src/services/task-store/offline-first-task-service', () => ({
+  createOfflineFirstTask: (...args: unknown[]) => mockCreateOfflineFirstTask(...args),
+  updateOfflineFirstTask: (...args: unknown[]) => mockUpdateOfflineFirstTask(...args),
+  recordLocalTaskMutation: (...args: unknown[]) => mockRecordLocalTaskMutation(...args),
+  moveOfflineFirstTask: (...args: unknown[]) => mockMoveOfflineFirstTask(...args),
+  addOfflineTaskChecklistItem: (...args: unknown[]) => mockAddOfflineTaskChecklistItem(...args),
+  createOfflineFirstTaskList: (...args: unknown[]) => mockCreateOfflineFirstTaskList(...args),
+  deleteOfflineFirstTaskList: (...args: unknown[]) => mockDeleteOfflineFirstTaskList(...args),
+  resolveOfflineNexusTaskId: (...args: unknown[]) => mockResolveOfflineNexusTaskId(...args),
+  resolveOfflineTaskListRef: (...args: unknown[]) => mockResolveOfflineTaskListRef(...args),
+  resolveOfflineCaptureListName: (...args: unknown[]) => mockResolveOfflineCaptureListName(...args),
+}));
+
 vi.mock('../../src/services/user-service', () => ({
   resolveCanonicalUserId: (...args: unknown[]) => mockResolveCanonicalUserId(...args),
   getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
@@ -177,6 +202,27 @@ const executeToolCall = (
   }, () => executeToolCallWithoutContext(tool, input, userId, tenantId));
 };
 const execAsUser = (tool: string, input: Record<string, any> = {}) => executeToolCall(tool, input, AUTH_USER_ID);
+
+/** Minimal ledger DTO for mocked offline-first results. */
+const ledgerTask = (overrides: Record<string, unknown> = {}) => ({
+  id: 'task_nexus_1',
+  title: 'Ledger task',
+  body: null,
+  importance: 'normal',
+  status: 'notStarted',
+  dueDateTime: null,
+  recurrence: null,
+  listId: '7',
+  listName: 'Tasks',
+  checklistItems: [],
+  createdDateTime: '2026-07-17T09:00:00.000Z',
+  syncProvider: 'nexus',
+  syncState: 'queued',
+  syncWarnings: [],
+  localVersion: 1,
+  deletedAt: null,
+  ...overrides,
+});
 const execAsTenantUser = (tool: string, input: Record<string, any> = {}, tenantId = 1001) =>
   executeToolCall(tool, input, AUTH_USER_ID, tenantId);
 
@@ -191,6 +237,31 @@ beforeEach(() => {
   mockInvalidateFinanceDerivedCaches.mockReset();
   mockInvalidateCookingDerivedCaches.mockReset();
   vi.mocked(setReminder).mockReset();
+  vi.unstubAllEnvs();
+  mockCreateOfflineFirstTask.mockReset();
+  mockUpdateOfflineFirstTask.mockReset();
+  mockRecordLocalTaskMutation.mockReset();
+  mockMoveOfflineFirstTask.mockReset();
+  mockAddOfflineTaskChecklistItem.mockReset();
+  mockCreateOfflineFirstTaskList.mockReset();
+  mockDeleteOfflineFirstTaskList.mockReset();
+  mockResolveOfflineNexusTaskId.mockReset();
+  mockResolveOfflineTaskListRef.mockReset();
+  mockResolveOfflineCaptureListName.mockReset();
+  mockCreateOfflineFirstTask.mockReturnValue({
+    task: ledgerTask(), mutationId: 'mutation-create', idempotentReplay: false, warnings: [],
+  });
+  mockUpdateOfflineFirstTask.mockReturnValue({ task: ledgerTask(), mutationId: 'mutation-update', idempotentReplay: false });
+  mockRecordLocalTaskMutation.mockReturnValue({ task: ledgerTask(), mutationId: 'mutation-status', idempotentReplay: false });
+  mockMoveOfflineFirstTask.mockReturnValue({ task: ledgerTask(), mutationId: 'mutation-move', idempotentReplay: false });
+  mockAddOfflineTaskChecklistItem.mockReturnValue({
+    item: { id: 'ci-1', displayName: 'Item', isChecked: false }, task: ledgerTask(), mutationId: 'mutation-checklist', idempotentReplay: false,
+  });
+  mockCreateOfflineFirstTaskList.mockReturnValue({ list: { id: '31', name: 'List' }, mutationId: 'mutation-list-create', idempotentReplay: false });
+  mockDeleteOfflineFirstTaskList.mockReturnValue({ deleted: true, mutationId: 'mutation-list-delete', idempotentReplay: false });
+  mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_1');
+  mockResolveOfflineTaskListRef.mockReturnValue({ id: '9', name: 'Archive' });
+  mockResolveOfflineCaptureListName.mockImplementation((_tenantId: unknown, _userId: unknown, name: unknown) => (name as string) || 'Tasks');
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -224,18 +295,38 @@ describe('executeToolCall — Microsoft To Do', () => {
       expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(AUTH_USER_ID);
     });
 
-    it('ms_todo_create_list — delegates with list name', async () => {
+    it('ms_todo_create_list — writes the ledger and returns the local list identity (single write path)', async () => {
+      mockCreateOfflineFirstTaskList.mockReturnValue({ list: { id: '31', name: 'Personal' }, mutationId: 'm-l1', idempotentReplay: false });
+
+      const result = await execAsUser('ms_todo_create_list', { name: 'Personal' });
+      expect(result).toEqual({ success: true, data: { id: '31', displayName: 'Personal' } });
+      expect(mockCreateOfflineFirstTaskList).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, { name: 'Personal' });
+      expect(mockTodo.createList).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_create_list — legacy flag-off path delegates to the provider', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
       mockTodo.createList.mockResolvedValue({ success: true, data: { id: 'list2', displayName: 'Personal' } as any });
 
       await execAsUser('ms_todo_create_list', { name: 'Personal' });
       expect(mockTodo.createList).toHaveBeenCalledWith('Personal');
+      expect(mockCreateOfflineFirstTaskList).not.toHaveBeenCalled();
     });
 
-    it('ms_todo_delete_list — delegates with list_id', async () => {
+    it('ms_todo_delete_list — routes the delete through the ledger', async () => {
+      const result = await execAsUser('ms_todo_delete_list', { list_id: 'list1' });
+      expect(result).toEqual({ success: true, data: undefined });
+      expect(mockDeleteOfflineFirstTaskList).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, { listId: 'list1' });
+      expect(mockTodo.deleteList).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_delete_list — legacy flag-off path delegates with list_id', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
       mockTodo.deleteList.mockResolvedValue({ success: true, data: undefined });
 
       await execAsUser('ms_todo_delete_list', { list_id: 'list1' });
       expect(mockTodo.deleteList).toHaveBeenCalledWith('list1');
+      expect(mockDeleteOfflineFirstTaskList).not.toHaveBeenCalled();
     });
 
     it('ms_todo_get_tasks — passes list_id, list_name and status filter', async () => {
@@ -250,10 +341,12 @@ describe('executeToolCall — Microsoft To Do', () => {
     });
 
     describe('ms_todo_create_task', () => {
-      it('returns slim success response on success', async () => {
-        mockTodo.createTask.mockResolvedValue({
-          success: true,
-          data: { id: 'task123', title: 'Deploy app' } as any,
+      it('writes the ledger and returns the NEXUS id and title (NEX-08 single write path)', async () => {
+        mockCreateOfflineFirstTask.mockReturnValue({
+          task: ledgerTask({ id: 'task_nexus_123', title: 'Deploy app', syncState: 'queued' }),
+          mutationId: 'mutation-create-1',
+          idempotentReplay: false,
+          warnings: [],
         });
 
         const result = await execAsUser('ms_todo_create_task', {
@@ -261,27 +354,30 @@ describe('executeToolCall — Microsoft To Do', () => {
           list_name: 'Work',
           title: 'Deploy app',
         });
-        expect(result).toEqual({ success: true, id: 'task123', title: 'Deploy app' });
+        expect(result).toEqual({ success: true, id: 'task_nexus_123', title: 'Deploy app', syncState: 'queued' });
+        expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, expect.objectContaining({
+          title: 'Deploy app',
+          listName: 'Work',
+        }));
+        expect(mockTodo.createTask).not.toHaveBeenCalled();
       });
 
-      it('returns error response on failure', async () => {
-        mockTodo.createTask.mockResolvedValue({
-          success: false,
-          data: null,
-          error: 'List not found',
+      it('returns error response when the ledger rejects the create', async () => {
+        mockCreateOfflineFirstTask.mockImplementation(() => {
+          const err: any = new Error('title is required');
+          err.code = 'BAD_REQUEST';
+          throw err;
         });
 
         const result = await execAsUser('ms_todo_create_task', {
           list_id: 'bad-id',
           list_name: 'Missing',
-          title: 'Task',
+          title: '',
         });
-        expect(result).toEqual({ success: false, error: 'List not found' });
+        expect(result).toEqual({ success: false, error: 'title is required' });
       });
 
-      it('passes all optional fields to createTask', async () => {
-        mockTodo.createTask.mockResolvedValue({ success: true, data: { id: 't1', title: 'Review' } as any });
-
+      it('passes all optional fields through to the ledger create', async () => {
         await execAsUser('ms_todo_create_task', {
           list_id: 'list1',
           list_name: 'Work',
@@ -291,29 +387,48 @@ describe('executeToolCall — Microsoft To Do', () => {
           due_date_time: '2026-04-01T09:00:00',
           reminder_date_time: '2026-03-31T08:00:00',
         });
-        expect(mockTodo.createTask).toHaveBeenCalledWith('list1', 'Work', {
+        expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, {
           title: 'Review',
           body: 'Detailed notes',
           importance: 'high',
           dueDateTime: '2026-04-01T09:00:00',
-          reminderDateTime: '2026-03-31T08:00:00',
+          listName: 'Work',
         });
+      });
+
+      it('legacy flag-off path delegates to the provider with reminder support', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+        mockTodo.createTask.mockResolvedValue({
+          success: true,
+          data: { id: 'task123', title: 'Deploy app' } as any,
+        });
+
+        const result = await execAsUser('ms_todo_create_task', {
+          list_id: 'list1',
+          list_name: 'Work',
+          title: 'Deploy app',
+          reminder_date_time: '2026-03-31T08:00:00',
+        });
+        expect(result).toEqual({ success: true, id: 'task123', title: 'Deploy app' });
+        expect(mockTodo.createTask).toHaveBeenCalledWith('list1', 'Work', expect.objectContaining({
+          reminderDateTime: '2026-03-31T08:00:00',
+        }));
+        expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
       });
     });
 
     describe('per-user native task routing', () => {
-      it('falls back to the user default list when the model sends an invalid list_id', async () => {
+      it('routes ledger writes through the canonical resolved user scope', async () => {
         mockResolveCanonicalUserId.mockImplementation((userRef: unknown) => {
           if (userRef === 99) return 1001;
           return typeof userRef === 'number' && userRef > 0 ? userRef : null;
         });
-        const mockProvider = {
-          createTask: vi.fn(async (_listId: string, listName: string, payload: Record<string, unknown>) => ({
-            success: true,
-            data: { id: 'task-native-1', title: payload.title, listName } as any,
-          })),
-        };
-        mockGetTaskProviderForUser.mockReturnValue(mockProvider);
+        mockCreateOfflineFirstTask.mockReturnValue({
+          task: ledgerTask({ id: 'task_nexus_9', title: 'Review deck', syncState: 'local_only' }),
+          mutationId: 'mutation-canonical',
+          idempotentReplay: false,
+          warnings: [],
+        });
 
         const result = await executeToolCall('ms_todo_create_task', {
           list_id: '12345',
@@ -321,46 +436,36 @@ describe('executeToolCall — Microsoft To Do', () => {
           title: 'Review deck',
         }, 99);
 
-        expect(result).toEqual({ success: true, id: 'task-native-1', title: 'Review deck' });
+        expect(result).toEqual({ success: true, id: 'task_nexus_9', title: 'Review deck', syncState: 'local_only' });
+        // Canonical user resolution (99 → 1001) governs BOTH the ledger scope
+        // and the provider context.
         expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(1001);
-        expect(mockProvider.createTask).toHaveBeenCalledWith('12345', 'Inbox', expect.objectContaining({
+        expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(99, 1001, expect.objectContaining({
           title: 'Review deck',
         }));
       });
 
-      it('prefers the real capture list when the model sends a generic inbox label without a list id', async () => {
-        const mockProvider = {
-          getLists: vi.fn(async () => ({
-            success: true,
-            data: [
-              { id: 'tasks-1', displayName: 'Tasks', wellknownListName: 'defaultList' },
-              { id: 'ec-1', displayName: 'European Commision' },
-            ],
-          })),
-          findListByName: vi.fn(async (name: string) => {
-            if (name === 'Inbox') return null;
-            if (name === 'Tasks') return { id: 'tasks-1', displayName: 'Tasks' };
-            return null;
-          }),
-          getDefaultList: vi.fn(async () => ({ id: 'ec-1', displayName: 'European Commision' })),
-          createTask: vi.fn(async (_listId: string, listName: string, payload: Record<string, unknown>) => ({
-            success: true,
-            data: { id: 'task-native-2', title: payload.title, listName } as any,
-          })),
-        };
-        mockGetTaskProviderForUser.mockReturnValue(mockProvider);
+      it('resolves capture-alias list labels through the LOCAL read model, not provider reads', async () => {
+        mockResolveCanonicalUserId.mockImplementation((userRef: unknown) => {
+          if (userRef === 99) return 1001;
+          return typeof userRef === 'number' && userRef > 0 ? userRef : null;
+        });
+        mockResolveOfflineCaptureListName.mockReturnValue('Tasks');
+        mockCreateOfflineFirstTask.mockReturnValue({
+          task: ledgerTask({ id: 'task_nexus_2', title: 'pay via verde', listName: 'Tasks', syncState: 'queued' }),
+          mutationId: 'mutation-capture',
+          idempotentReplay: false,
+          warnings: [],
+        });
 
         const result = await executeToolCall('ms_todo_create_task', {
           list_name: 'Inbox',
           title: 'pay via verde',
         }, 99);
 
-        expect(result).toEqual({ success: true, id: 'task-native-2', title: 'pay via verde' });
-        expect(mockProvider.createTask).toHaveBeenCalledWith(
-          'tasks-1',
-          'Tasks',
-          expect.objectContaining({ title: 'pay via verde' }),
-        );
+        expect(result).toEqual({ success: true, id: 'task_nexus_2', title: 'pay via verde', syncState: 'queued' });
+        expect(mockResolveOfflineCaptureListName).toHaveBeenCalledWith(99, 1001, 'Inbox');
+        expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(99, 1001, expect.objectContaining({ listName: 'Tasks' }));
       });
 
       it('uses the active task provider for due-task lookups when a user context exists', async () => {
@@ -420,8 +525,9 @@ describe('executeToolCall — Microsoft To Do', () => {
         expect(mockTodo.updateTask).not.toHaveBeenCalled();
       });
 
-      it('returns slim success response on success', async () => {
-        mockTodo.updateTask.mockResolvedValue({ success: true, data: { title: 'Updated' } as any });
+      it('updates through the ledger with the resolved nexus id', async () => {
+        mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_7');
+        mockUpdateOfflineFirstTask.mockReturnValue({ task: ledgerTask({ title: 'Updated' }), mutationId: 'm-u1', idempotentReplay: false });
 
         const result = await execAsUser('ms_todo_update_task', {
           list_id: 'list1',
@@ -430,9 +536,86 @@ describe('executeToolCall — Microsoft To Do', () => {
           list_name: 'Work',
         });
         expect(result).toEqual({ success: true, title: 'Updated' });
+        expect(mockResolveOfflineNexusTaskId).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, 'task1');
+        expect(mockUpdateOfflineFirstTask).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, { taskId: 'task_nexus_7', title: 'Updated' });
+        expect(mockTodo.updateTask).not.toHaveBeenCalled();
       });
 
-      it('uses fallback title "updated" when data has no title', async () => {
+      it('uses fallback title "updated" when the ledger task has no title', async () => {
+        mockUpdateOfflineFirstTask.mockReturnValue({ task: ledgerTask({ title: '' }), mutationId: 'm-u2', idempotentReplay: false });
+
+        const result = await execAsUser('ms_todo_update_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: true, title: 'updated' });
+      });
+
+      it('returns error response when the task is unknown to the local store', async () => {
+        mockResolveOfflineNexusTaskId.mockReturnValue(null);
+
+        const result = await execAsUser('ms_todo_update_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: false, error: 'Task not found in the local task store.' });
+        expect(mockUpdateOfflineFirstTask).not.toHaveBeenCalled();
+      });
+
+      it('passes every optional patch field through the ledger update', async () => {
+        mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_7');
+        mockUpdateOfflineFirstTask.mockReturnValue({ task: ledgerTask({ title: 'Full patch' }), mutationId: 'm-u3', idempotentReplay: false });
+
+        const result = await execAsUser('ms_todo_update_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+          title: 'Full patch',
+          body: 'New notes',
+          importance: 'high',
+          status: 'completed',
+          due_date_time: '2026-08-01T10:00:00',
+        });
+        expect(result).toEqual({ success: true, title: 'Full patch' });
+        expect(mockUpdateOfflineFirstTask).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, {
+          taskId: 'task_nexus_7',
+          title: 'Full patch',
+          body: 'New notes',
+          importance: 'high',
+          status: 'completed',
+          dueDateTime: '2026-08-01T10:00:00',
+        });
+      });
+
+      it('returns the ledger error when the update write throws', async () => {
+        mockUpdateOfflineFirstTask.mockImplementation(() => { throw new Error('due date invalid'); });
+
+        const result = await execAsUser('ms_todo_update_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+          title: 'Broken',
+        });
+        expect(result).toEqual({ success: false, error: 'due date invalid' });
+      });
+
+      it('legacy flag-off path delegates updateTask to the provider', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+        mockTodo.updateTask.mockResolvedValue({ success: true, data: { title: 'Provider updated' } as any });
+
+        const result = await execAsUser('ms_todo_update_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+          title: 'Provider updated',
+          list_name: 'Work',
+        });
+        expect(result).toEqual({ success: true, title: 'Provider updated' });
+        expect(mockTodo.updateTask).toHaveBeenCalledWith('list1', 'task1', expect.objectContaining({
+          title: 'Provider updated',
+        }), 'Work');
+        expect(mockUpdateOfflineFirstTask).not.toHaveBeenCalled();
+      });
+
+      it('legacy flag-off path falls back to title "updated" when the provider returns no title', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
         mockTodo.updateTask.mockResolvedValue({ success: true, data: {} as any });
 
         const result = await execAsUser('ms_todo_update_task', {
@@ -442,14 +625,15 @@ describe('executeToolCall — Microsoft To Do', () => {
         expect(result).toEqual({ success: true, title: 'updated' });
       });
 
-      it('returns error response on failure', async () => {
-        mockTodo.updateTask.mockResolvedValue({ success: false, data: null, error: 'Not found' });
+      it('legacy flag-off path surfaces the provider update failure', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+        mockTodo.updateTask.mockResolvedValue({ success: false, error: 'Task not found' });
 
         const result = await execAsUser('ms_todo_update_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
-        expect(result).toEqual({ success: false, error: 'Not found' });
+        expect(result).toEqual({ success: false, error: 'Task not found' });
       });
     });
 
@@ -462,7 +646,36 @@ describe('executeToolCall — Microsoft To Do', () => {
         });
       });
 
-      it('returns slim success with title on success', async () => {
+      it('journals task.complete in the ledger and returns the title (NEX-09)', async () => {
+        mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_5');
+        mockRecordLocalTaskMutation.mockReturnValue({ task: ledgerTask({ title: 'Buy groceries' }), mutationId: 'm-c1', idempotentReplay: false });
+
+        const result = await execAsUser('ms_todo_complete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+          list_name: 'Personal',
+        });
+        expect(result).toEqual({ success: true, title: 'Buy groceries' });
+        expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, {
+          taskId: 'task_nexus_5',
+          operation: 'task.complete',
+          patch: { source: 'chat_tool' },
+        });
+        expect(mockTodo.completeTask).not.toHaveBeenCalled();
+      });
+
+      it('uses fallback title "done" when the ledger task has no title', async () => {
+        mockRecordLocalTaskMutation.mockReturnValue({ task: ledgerTask({ title: '' }), mutationId: 'm-c2', idempotentReplay: false });
+
+        const result = await execAsUser('ms_todo_complete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: true, title: 'done' });
+      });
+
+      it('legacy flag-off path delegates completeTask to the provider', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
         mockTodo.completeTask.mockResolvedValue({ success: true, data: { title: 'Buy groceries' } as any });
 
         const result = await execAsUser('ms_todo_complete_task', {
@@ -472,9 +685,21 @@ describe('executeToolCall — Microsoft To Do', () => {
         });
         expect(result).toEqual({ success: true, title: 'Buy groceries' });
         expect(mockTodo.completeTask).toHaveBeenCalledWith('list1', 'task1', 'Personal');
+        expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
       });
 
-      it('uses fallback title "done" when data has no title', async () => {
+      it('returns the ledger error when the status write throws', async () => {
+        mockRecordLocalTaskMutation.mockImplementation(() => { throw new Error('mutation journal unavailable'); });
+
+        const result = await execAsUser('ms_todo_complete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: false, error: 'mutation journal unavailable' });
+      });
+
+      it('legacy flag-off path falls back to title "done" when the provider returns no title', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
         mockTodo.completeTask.mockResolvedValue({ success: true, data: {} as any });
 
         const result = await execAsUser('ms_todo_complete_task', {
@@ -482,6 +707,17 @@ describe('executeToolCall — Microsoft To Do', () => {
           task_id: 'task1',
         });
         expect(result).toEqual({ success: true, title: 'done' });
+      });
+
+      it('legacy flag-off path surfaces the provider complete failure', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+        mockTodo.completeTask.mockResolvedValue({ success: false, error: 'Task already gone' });
+
+        const result = await execAsUser('ms_todo_complete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: false, error: 'Task already gone' });
       });
     });
 
@@ -494,7 +730,38 @@ describe('executeToolCall — Microsoft To Do', () => {
         });
       });
 
-      it('returns slim success with fallback title "reopened"', async () => {
+      it('journals task.reopen with fallback title "reopened"', async () => {
+        mockRecordLocalTaskMutation.mockReturnValue({ task: ledgerTask({ title: '' }), mutationId: 'm-r1', idempotentReplay: false });
+
+        const result = await execAsUser('ms_todo_uncomplete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: true, title: 'reopened' });
+        expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, expect.objectContaining({
+          operation: 'task.reopen',
+        }));
+        expect(mockTodo.uncompleteTask).not.toHaveBeenCalled();
+      });
+
+      it('legacy flag-off path (TASK_SINGLE_WRITE_PATH=false) delegates uncompleteTask to the provider', async () => {
+        // 'false' exercises the same operational lever spelling documented in
+        // single-write-path.ts, not just the numeric '0'.
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', 'false');
+        mockTodo.uncompleteTask.mockResolvedValue({ success: true, data: { title: 'Buy groceries' } as any });
+
+        const result = await execAsUser('ms_todo_uncomplete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+          list_name: 'Personal',
+        });
+        expect(result).toEqual({ success: true, title: 'Buy groceries' });
+        expect(mockTodo.uncompleteTask).toHaveBeenCalledWith('list1', 'task1', 'Personal');
+        expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+      });
+
+      it('legacy flag-off path falls back to title "reopened" when the provider returns no title', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
         mockTodo.uncompleteTask.mockResolvedValue({ success: true, data: {} as any });
 
         const result = await execAsUser('ms_todo_uncomplete_task', {
@@ -502,6 +769,17 @@ describe('executeToolCall — Microsoft To Do', () => {
           task_id: 'task1',
         });
         expect(result).toEqual({ success: true, title: 'reopened' });
+      });
+
+      it('legacy flag-off path surfaces the provider uncomplete failure', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+        mockTodo.uncompleteTask.mockResolvedValue({ success: false, error: 'Cannot reopen' });
+
+        const result = await execAsUser('ms_todo_uncomplete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: false, error: 'Cannot reopen' });
       });
     });
 
@@ -514,7 +792,34 @@ describe('executeToolCall — Microsoft To Do', () => {
         });
       });
 
-      it('returns { success: true } on success', async () => {
+      it('journals task.delete in the ledger and returns { success: true }', async () => {
+        mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_6');
+
+        const result = await execAsUser('ms_todo_delete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: true });
+        expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, expect.objectContaining({
+          taskId: 'task_nexus_6',
+          operation: 'task.delete',
+        }));
+        expect(mockTodo.deleteTask).not.toHaveBeenCalled();
+      });
+
+      it('returns { success: false, error } when the task is unknown to the local store', async () => {
+        mockResolveOfflineNexusTaskId.mockReturnValue(null);
+
+        const result = await execAsUser('ms_todo_delete_task', {
+          list_id: 'list1',
+          task_id: 'task1',
+        });
+        expect(result).toEqual({ success: false, error: 'Task not found in the local task store.' });
+        expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+      });
+
+      it('legacy flag-off path delegates deleteTask to the provider', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
         mockTodo.deleteTask.mockResolvedValue({ success: true, data: undefined });
 
         const result = await execAsUser('ms_todo_delete_task', {
@@ -523,16 +828,18 @@ describe('executeToolCall — Microsoft To Do', () => {
         });
         expect(result).toEqual({ success: true });
         expect(mockTodo.deleteTask).toHaveBeenCalledWith('list1', 'task1');
+        expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
       });
 
-      it('returns { success: false, error } on failure', async () => {
-        mockTodo.deleteTask.mockResolvedValue({ success: false, data: undefined, error: 'Not found' });
+      it('legacy flag-off path surfaces the provider delete failure', async () => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+        mockTodo.deleteTask.mockResolvedValue({ success: false, error: 'Delete rejected' });
 
         const result = await execAsUser('ms_todo_delete_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
-        expect(result).toEqual({ success: false, error: 'Not found' });
+        expect(result).toEqual({ success: false, error: 'Delete rejected' });
       });
     });
 
@@ -555,7 +862,61 @@ describe('executeToolCall — Microsoft To Do', () => {
       expect(mockTodo.getTasksDueInRange).toHaveBeenCalledWith('2026-03-30', '2026-04-06');
     });
 
-    it('ms_todo_move_task — delegates all four IDs', async () => {
+    it('ms_todo_move_task — moves through the ledger with locally resolved ids', async () => {
+      mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_8');
+      mockResolveOfflineTaskListRef.mockReturnValue({ id: '9', name: 'Archive' });
+      mockMoveOfflineFirstTask.mockReturnValue({ task: ledgerTask({ id: 'task_nexus_8' }), mutationId: 'm-m1', idempotentReplay: false });
+
+      const result = await execAsUser('ms_todo_move_task', {
+        list_id: 'src-list',
+        task_id: 'task1',
+        target_list_id: 'tgt-list',
+        target_list_name: 'Archive',
+      });
+      expect(result).toEqual({ success: true, data: { id: 'task_nexus_8', listId: '9', listName: 'Archive' } });
+      expect(mockResolveOfflineTaskListRef).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, 'tgt-list', 'Archive');
+      expect(mockMoveOfflineFirstTask).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, { taskId: 'task_nexus_8', targetListId: '9' });
+      expect(mockTodo.moveTask).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_move_task — returns an error when the target list is unknown locally', async () => {
+      mockResolveOfflineTaskListRef.mockReturnValue(null);
+
+      const result = await execAsUser('ms_todo_move_task', {
+        list_id: 'src-list',
+        task_id: 'task1',
+        target_list_id: 'nope',
+      });
+      expect(result).toEqual({ success: false, error: 'Target list not found in the local task store.' });
+      expect(mockMoveOfflineFirstTask).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_move_task — returns an error when the task is unknown locally', async () => {
+      mockResolveOfflineNexusTaskId.mockReturnValue(null);
+
+      const result = await execAsUser('ms_todo_move_task', {
+        list_id: 'src-list',
+        task_id: 'task1',
+        target_list_id: 'tgt-list',
+      });
+      expect(result).toEqual({ success: false, error: 'Task not found in the local task store.' });
+      expect(mockResolveOfflineTaskListRef).not.toHaveBeenCalled();
+      expect(mockMoveOfflineFirstTask).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_move_task — returns the ledger error when the move write throws', async () => {
+      mockMoveOfflineFirstTask.mockImplementation(() => { throw new Error('cross-list move rejected'); });
+
+      const result = await execAsUser('ms_todo_move_task', {
+        list_id: 'src-list',
+        task_id: 'task1',
+        target_list_id: 'tgt-list',
+      });
+      expect(result).toEqual({ success: false, error: 'cross-list move rejected' });
+    });
+
+    it('ms_todo_move_task — legacy flag-off path delegates all four IDs', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
       mockTodo.moveTask.mockResolvedValue({ success: true, data: {} as any });
 
       await execAsUser('ms_todo_move_task', {
@@ -565,6 +926,7 @@ describe('executeToolCall — Microsoft To Do', () => {
         target_list_name: 'Archive',
       });
       expect(mockTodo.moveTask).toHaveBeenCalledWith('src-list', 'task1', 'tgt-list', 'Archive');
+      expect(mockMoveOfflineFirstTask).not.toHaveBeenCalled();
     });
 
     it('ms_todo_get_checklist — delegates list_id and task_id', async () => {
@@ -574,15 +936,173 @@ describe('executeToolCall — Microsoft To Do', () => {
       expect(mockTodo.getChecklistItems).toHaveBeenCalledWith('list1', 'task1');
     });
 
-    it('ms_todo_add_checklist_item — delegates list_id, task_id, title', async () => {
-      mockTodo.addChecklistItem.mockResolvedValue({ success: true, data: {} as any });
+    it('ms_todo_add_checklist_item — adds through the ledger', async () => {
+      mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_4');
+      mockAddOfflineTaskChecklistItem.mockReturnValue({
+        item: { id: 'ci-1', displayName: 'Step one', isChecked: false },
+        task: ledgerTask(),
+        mutationId: 'm-cl1',
+        idempotentReplay: false,
+      });
 
-      await execAsUser('ms_todo_add_checklist_item', {
+      const result = await execAsUser('ms_todo_add_checklist_item', {
         list_id: 'list1',
         task_id: 'task1',
         title: 'Step one',
       });
+      expect(result).toEqual({ success: true, data: { id: 'ci-1', displayName: 'Step one', isChecked: false } });
+      expect(mockAddOfflineTaskChecklistItem).toHaveBeenCalledWith(AUTH_USER_ID, AUTH_USER_ID, {
+        taskId: 'task_nexus_4',
+        displayName: 'Step one',
+      });
+      expect(mockTodo.addChecklistItem).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_add_checklist_item — returns an error when the task is unknown locally', async () => {
+      mockResolveOfflineNexusTaskId.mockReturnValue(null);
+
+      const result = await execAsUser('ms_todo_add_checklist_item', {
+        list_id: 'list1',
+        task_id: 'task1',
+        title: 'Step one',
+      });
+      expect(result).toEqual({ success: false, error: 'Task not found in the local task store.' });
+      expect(mockAddOfflineTaskChecklistItem).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_add_checklist_item — returns the ledger error when the checklist write throws', async () => {
+      mockAddOfflineTaskChecklistItem.mockImplementation(() => { throw new Error('checklist item too long'); });
+
+      const result = await execAsUser('ms_todo_add_checklist_item', {
+        list_id: 'list1',
+        task_id: 'task1',
+        title: 'Step one',
+      });
+      expect(result).toEqual({ success: false, error: 'checklist item too long' });
+    });
+
+    it('ms_todo_add_checklist_item — legacy flag-off path delegates to the provider', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      mockTodo.addChecklistItem.mockResolvedValue({ success: true, data: { id: 'ci-9', displayName: 'Step one', isChecked: false } as any });
+
+      const result = await execAsUser('ms_todo_add_checklist_item', {
+        list_id: 'list1',
+        task_id: 'task1',
+        title: 'Step one',
+      });
+      expect(result).toEqual({ success: true, data: { id: 'ci-9', displayName: 'Step one', isChecked: false } });
       expect(mockTodo.addChecklistItem).toHaveBeenCalledWith('list1', 'task1', 'Step one');
+      expect(mockAddOfflineTaskChecklistItem).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_delete_list — maps a non-Error ledger throw into the error response', async () => {
+      mockDeleteOfflineFirstTaskList.mockImplementation(() => { throw 'ledger_offline'; });
+
+      const result = await execAsUser('ms_todo_delete_list', { list_id: 'list1' });
+      expect(result).toEqual({ success: false, error: 'ledger_offline' });
+    });
+
+    it('ms_todo_delete_list — legacy flag-off path reports providers without list deletion', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      mockGetTaskProviderForUser.mockReturnValue({ isOutlookTodoConfigured: () => true });
+
+      const result = await execAsUser('ms_todo_delete_list', { list_id: 'list1' });
+      expect(result).toEqual({ error: 'The active task provider does not support deleting lists.' });
+      expect(mockDeleteOfflineFirstTaskList).not.toHaveBeenCalled();
+    });
+
+    it('ms_todo_create_list — falls back to the generic write error on a null ledger throw', async () => {
+      mockCreateOfflineFirstTaskList.mockImplementation(() => { throw null; });
+
+      const result = await execAsUser('ms_todo_create_list', { name: 'Personal' });
+      expect(result).toEqual({ success: false, error: 'task_write_failed' });
+    });
+
+    describe('ms_todo_create_task — legacy flag-off list resolution', () => {
+      beforeEach(() => {
+        vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      });
+
+      const legacyProvider = (overrides: Record<string, any> = {}) => {
+        const provider = {
+          createTask: vi.fn(async () => ({ success: true, data: { id: 'task-legacy-1', title: 'Deploy app' } })),
+          ...overrides,
+        };
+        mockGetTaskProviderForUser.mockReturnValue(provider);
+        return provider;
+      };
+
+      it('resolves the requested list by displayName when list_id is missing', async () => {
+        const provider = legacyProvider({
+          getLists: vi.fn(async () => ({ success: true, data: [{ id: 'l-work', displayName: 'Work' }] })),
+        });
+
+        const result = await execAsUser('ms_todo_create_task', { list_name: 'Work', title: 'Deploy app' });
+        expect(result).toEqual({ success: true, id: 'task-legacy-1', title: 'Deploy app' });
+        expect(provider.createTask).toHaveBeenCalledWith('l-work', 'Work', expect.objectContaining({ title: 'Deploy app' }));
+      });
+
+      it('uses the resolved list name when the provider list only exposes name', async () => {
+        const provider = legacyProvider({
+          getLists: vi.fn(async () => ({ success: true, data: [{ id: 'l-chores', name: 'Chores' }] })),
+        });
+
+        await execAsUser('ms_todo_create_task', { list_name: 'Chores', title: 'Deploy app' });
+        expect(provider.createTask).toHaveBeenCalledWith('l-chores', 'Chores', expect.anything());
+      });
+
+      it('keeps the requested capture alias label when the default list is nameless', async () => {
+        const provider = legacyProvider({
+          getLists: vi.fn(async () => ({ success: true, data: [] })),
+          getDefaultList: vi.fn(async () => ({ id: 'd-9' })),
+        });
+
+        await execAsUser('ms_todo_create_task', { list_name: 'Inbox', title: 'Deploy app' });
+        expect(provider.createTask).toHaveBeenCalledWith('d-9', 'Inbox', expect.anything());
+      });
+
+      it('falls back to the preferred capture list when no list is specified at all', async () => {
+        const provider = legacyProvider({
+          getLists: vi.fn(async () => ({ success: true, data: [] })),
+          getDefaultList: vi.fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValue({ id: 'd-1', displayName: 'My Day' }),
+        });
+
+        await execAsUser('ms_todo_create_task', { title: 'Deploy app' });
+        expect(provider.createTask).toHaveBeenCalledWith('d-1', 'My Day', expect.anything());
+      });
+
+      it('uses the default list name when the fallback list only exposes name', async () => {
+        const provider = legacyProvider({
+          getLists: vi.fn(async () => ({ success: true, data: [] })),
+          getDefaultList: vi.fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValue({ id: 'd-2', name: 'Padrão' }),
+        });
+
+        await execAsUser('ms_todo_create_task', { title: 'Deploy app' });
+        expect(provider.createTask).toHaveBeenCalledWith('d-2', 'Padrão', expect.anything());
+      });
+
+      it('defaults to the Inbox label when no list can be resolved anywhere', async () => {
+        const provider = legacyProvider({
+          getLists: vi.fn(async () => ({ success: true, data: [] })),
+        });
+
+        await execAsUser('ms_todo_create_task', { title: 'Deploy app' });
+        expect(provider.createTask).toHaveBeenCalledWith(undefined, 'Inbox', expect.anything());
+      });
+
+      it('surfaces the provider create failure', async () => {
+        legacyProvider({
+          createTask: vi.fn(async () => ({ success: false, error: 'quota exceeded' })),
+          getLists: vi.fn(async () => ({ success: true, data: [] })),
+        });
+
+        const result = await execAsUser('ms_todo_create_task', { title: 'Deploy app' });
+        expect(result).toEqual({ success: false, error: 'quota exceeded' });
+      });
     });
   });
 });

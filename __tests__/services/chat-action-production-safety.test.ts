@@ -168,6 +168,10 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
     vi.clearAllMocks();
     resetChatActionStateForTests();
     testDb = createMigratedTestDatabase();
+    // M5: ledger task writes hit unified_* tables, which enforce the users FK.
+    for (const seededUserId of [userA, userB]) {
+      testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)').run(seededUserId, seededUserId);
+    }
     previousReadBackTimeout = process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS;
   });
 
@@ -341,8 +345,14 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       expect(taskFirst.metadata.actionStatus).toBe('verified_success');
       expect(taskSecond.metadata.actionStatus).toBe('verified_success');
       expect(taskSecond.text).toMatch(/already handled|did not create a duplicate/i);
-      expect(taskDeps.deps.taskProviderForUser().createTask).toHaveBeenCalledTimes(1);
-      expect(taskDeps.tasks.size).toBe(1);
+      // M5 single write path: the create lands EXACTLY ONCE in the ledger and
+      // the provider mock is never written to.
+      expect(taskDeps.deps.taskProviderForUser().createTask).not.toHaveBeenCalled();
+      expect(taskDeps.tasks.size).toBe(0);
+      const ledgerCreates = testDb.prepare(
+        "SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND title = 'Release checklist' AND is_deleted = 0",
+      ).get(userA) as { count: number };
+      expect(ledgerCreates.count).toBe(1);
     });
 
     it('does not duplicate provider writes after provider success plus verifier failure or timeout', async () => {
@@ -503,6 +513,10 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
     });
 
     it('handles malformed provider responses and verifier failures without silent success or raw error leakage', async () => {
+      // Malformed PROVIDER responses are a legacy direct-provider contract —
+      // the M5 ledger path never performs an inline provider write. Pin the
+      // task half to TASK_SINGLE_WRITE_PATH=0.
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
       const malformedTask = makeTaskDeps({
         createTask: vi.fn(async () => ({ success: true, data: {} })),
       });
@@ -524,6 +538,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       expect(taskResponse.text).toMatch(/could not complete|nothing was confirmed/i);
       expectNoSecretLeak(taskResponse);
       expect(listChatActionTelemetryForScope({ userId: userA, tenantId: tenantA, messageId: 'msg-malformed-task' })[0]?.failureReason).toBe('task_create_failed');
+      vi.unstubAllEnvs();
 
       const verifierFailure = makeCalendarDeps({
         getEventsForSources: vi.fn(async () => []),

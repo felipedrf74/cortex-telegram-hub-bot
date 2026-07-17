@@ -762,6 +762,24 @@ describe('app-facing happy path smoke', () => {
       if (sql.includes('SELECT 1 as ok')) return { ok: 1 };
       if (sql.includes('FROM task_mutations')) return undefined;
       if (sql.includes('FROM unified_projects')) {
+        // M5 ledger list create: the by-name lookup for the new 'Recibos'
+        // list must MISS (so the route creates it), and the post-insert
+        // re-read by stable external id must return the created row.
+        const stringArgs = args.map((value) => String(value));
+        const externalIdArg = stringArgs.find((value) => value.startsWith('nexus_list_'));
+        if (externalIdArg) {
+          return {
+            id: 2,
+            user_id: 7001,
+            tenant_id: 7001,
+            provider: 'nexus',
+            external_id: externalIdArg,
+            name: 'Recibos',
+            is_default: 0,
+            task_count: 0,
+          };
+        }
+        if (stringArgs.some((value) => value.toLowerCase() === 'recibos')) return undefined;
         return {
           id: 1,
           user_id: 7001,
@@ -1027,11 +1045,14 @@ describe('app-facing happy path smoke', () => {
         body: { name: 'Recibos' },
         expectedStatus: 201,
         assert: (body) => {
+          // M5 single write path: the 201 body carries the LOCAL project row
+          // id (the id GET /lists serves); the provider push is journaled for
+          // the mutation worker instead of hitting createList inline.
           expect(body.data).toMatchObject({
-            id: 'list-new',
+            id: '2',
             displayName: 'Recibos',
           });
-          expect(mockTaskProvider.createList).toHaveBeenCalledWith('Recibos');
+          expect(mockTaskProvider.createList).not.toHaveBeenCalled();
         },
       },
       {

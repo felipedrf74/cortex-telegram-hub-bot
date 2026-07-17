@@ -87,7 +87,17 @@ import { getTopics } from '../../src/services/content-scheduler';
 import { addRecipe, generateShoppingList, getMealPlan, getRecipeById, getShoppingList, setMealPlan } from '../../src/services/cooking-chef';
 import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } from '../../src/services/finance-tracker';
 import { confirmTrainingSessionReflow, previewTrainingSessionReflow } from '../../src/api/routes/training-plan-calendar-sync';
-import { executeTaskWithSubtasksStep } from '../../src/services/skills/tasks/executor';
+import {
+  executeAddSubtasksToTaskStep,
+  executeTaskCreateStep,
+  executeTaskMutationStep,
+  executeTaskWithSubtasksStep,
+} from '../../src/services/skills/tasks/executor';
+import {
+  createOfflineFirstTask,
+  getOfflineTaskById,
+  getOfflineTaskSnapshot,
+} from '../../src/services/task-store/offline-first-task-service';
 import { executeContentAgencyStep } from '../../src/services/skills/content/executor';
 import { replayDuplicateClaimedActionRun } from '../../src/services/chat/executor/helpers';
 
@@ -557,7 +567,12 @@ describe('ChatActionPlanner', () => {
     const response = await executeChatActionPlan(preview!.plan, { ...input, persistRuns: false }, deps, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('verified_success');
-    expect(taskProvider.createTask).toHaveBeenCalledWith('tasks', 'Tasks', expect.objectContaining({ title: 'levar a bíblia' }));
+    // M5 single write path: the follow-up task lands in the offline-first
+    // ledger (instantly visible in the Tasks-tab read model); the provider
+    // push belongs to the mutation worker.
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+    const followUpTasks = getOfflineTaskSnapshot(input.userId, input.userId, { pageSize: 75 }).tasks;
+    expect(followUpTasks.map((task: any) => task.title)).toContain('levar a bíblia');
     expect(response.metadata.type).toBe('chat_action_multi_step_result');
     expect(response.metadata.multiStepSummary).toMatchObject({
       totalSteps: 2,
@@ -743,8 +758,10 @@ describe('ChatActionPlanner', () => {
       false,
     );
 
-    expect(provider.createTask).toHaveBeenCalledWith('list-1', 'Inbox', expect.objectContaining({ title: 'Prozis' }));
-    expect(provider.addChecklistItem).toHaveBeenCalledTimes(3);
+    // M5 single write path: the parent task and its checklist land in the
+    // offline-first ledger; the provider mocks stay untouched.
+    expect(provider.createTask).not.toHaveBeenCalled();
+    expect(provider.addChecklistItem).not.toHaveBeenCalled();
     expect(result.status).toBe('verified_success');
     expect(result.result).toMatchObject({
       type: 'task_created',
@@ -756,7 +773,11 @@ describe('ChatActionPlanner', () => {
         { title: 'D3' },
       ],
     });
+    const ledgerTaskId = String((result.result as any).taskId);
+    expect(getOfflineTaskById(input.userId, input.userId, ledgerTaskId)?.checklistItems).toHaveLength(3);
 
+    // Legacy flag-off half: unverified provider subtasks are not claimed.
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     const partialProvider = {
       getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
       getDefaultList: vi.fn(async () => ({ id: 'list-1', displayName: 'Inbox' })),
@@ -780,9 +801,13 @@ describe('ChatActionPlanner', () => {
       verificationStatus: 'partial_failure',
       warnings: expect.arrayContaining(['created_subtasks_missing']),
     });
+    vi.unstubAllEnvs();
   });
 
-  it('recovers duplicate task-with-subtasks runs without recreating the parent task', async () => {
+  it('recovers duplicate task-with-subtasks runs without recreating the parent task (legacy flag-off)', async () => {
+    // Provider-read recovery is a legacy-path contract; the ledger path is
+    // locally idempotent and replays the stored claim instead.
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     const input = {
       ...baseInput,
       text: 'Create task Prozis with subtasks creatine K2 D3',
@@ -843,6 +868,7 @@ describe('ChatActionPlanner', () => {
         'Duplicate request detected; returned the existing task instead of creating another one.',
       ]),
     });
+    vi.unstubAllEnvs();
   });
 
   it('extracts task title and due date without polluting the title with timing syntax', async () => {
@@ -953,8 +979,13 @@ describe('ChatActionPlanner', () => {
       requiredArgsPresent: true,
     });
     expect(completed.metadata.actionStatus).toBe('verified_success');
-    expect(taskProvider.completeTask).toHaveBeenCalledTimes(1);
-    expect(taskProvider.completeTask).toHaveBeenCalledWith('tasks', 'task-recent-1');
+    // M5 single write path: the completion is journaled in the ledger; the
+    // provider mock stays untouched.
+    expect(taskProvider.completeTask).not.toHaveBeenCalled();
+    const completeMutations = testDb.prepare(
+      "SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'task.complete'",
+    ).get() as { count: number };
+    expect(completeMutations.count).toBe(1);
   });
 
   it('asks a clarification instead of completing a task when "this task" has multiple recent candidates', async () => {
@@ -2402,7 +2433,11 @@ describe('ChatActionPlanner', () => {
   });
 
   it('resumes confirmed task mutations through the deterministic task executor and read-back', async () => {
-    const args = { taskId: 'task-1', listId: 'list-1', title: 'Comprar creatina' };
+    const seeded = createOfflineFirstTask(baseInput.userId, baseInput.userId, {
+      title: 'Comprar creatina',
+      listName: 'Inbox',
+    });
+    const args = { taskId: seeded.task.id, listId: String(seeded.task.listId || ''), title: 'Comprar creatina' };
     const plan = parseLlmPlannerJson(JSON.stringify({
       confidence: 0.9,
       steps: [{
@@ -2429,8 +2464,11 @@ describe('ChatActionPlanner', () => {
     }, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('verified_success');
-    expect(provider.completeTask).toHaveBeenCalledWith('list-1', 'task-1');
-    expect(provider.getTask).toHaveBeenCalledWith('list-1', 'task-1', undefined);
+    // M5 single write path: the completion lands in the ledger and the
+    // read-back is the local store, not the provider.
+    expect(provider.completeTask).not.toHaveBeenCalled();
+    expect(provider.getTask).not.toHaveBeenCalled();
+    expect(getOfflineTaskById(baseInput.userId, baseInput.userId, seeded.task.id)?.status).toBe('completed');
     expect(response.text).toContain('Feito');
   });
 
@@ -3065,5 +3103,92 @@ describe('ChatActionPlanner', () => {
       actionStatus: 'blocked',
     });
     expect(JSON.stringify(response.metadata)).not.toMatch(/verified_success|Feito — concluí/i);
+  });
+});
+
+describe('M5 skills/tasks executor ledger and legacy dispatch', () => {
+  const executorInput = {
+    ...baseInput,
+    locale: 'en-US',
+    persistRuns: false,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetChatActionStateForTests();
+    testDb = createMigratedTestDatabase();
+    seedPlannerUser(baseInput.userId);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    testDb?.close();
+  });
+
+  it('adds subtasks to an existing ledger task through the local read model', async () => {
+    createOfflineFirstTask(baseInput.userId, baseInput.userId, { title: 'Prozis', listName: 'Inbox' });
+    const input = { ...executorInput, text: 'Add subtasks creatine K2 to task Prozis', messageId: 'msg-add-subtasks-ledger' };
+    const plan = buildDeterministicChatActionPlan({ ...input, text: 'Create task Prozis with subtasks creatine K2' })!;
+    const step = { ...plan.steps[0]!, action: 'add_subtasks_to_task' };
+    const providerSpy = { searchTasks: vi.fn(), addChecklistItem: vi.fn() };
+
+    const result = await executeAddSubtasksToTaskStep(step, plan, input, vi.fn(() => providerSpy as any) as any, false);
+
+    expect(result.status).toBe('verified_success');
+    expect(providerSpy.searchTasks).not.toHaveBeenCalled();
+    expect(providerSpy.addChecklistItem).not.toHaveBeenCalled();
+    const ledgerTaskId = String((result.result as any).taskId);
+    expect(getOfflineTaskById(baseInput.userId, baseInput.userId, ledgerTaskId)?.checklistItems?.map((item) => item.displayName))
+      .toEqual(['creatine', 'K2']);
+  });
+
+  it('blocks ledger add-subtasks when no local task matches the title', async () => {
+    const input = { ...executorInput, messageId: 'msg-add-subtasks-none' };
+    const plan = buildDeterministicChatActionPlan({ ...input, text: 'Create task Ghost with subtasks one two' })!;
+    const step = { ...plan.steps[0]!, action: 'add_subtasks_to_task' };
+
+    const result = await executeAddSubtasksToTaskStep(step, plan, input, vi.fn(() => ({}) as any) as any, false);
+
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('no_task_match');
+  });
+
+  it('legacy flag-off create step delegates to the provider write path', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    const input = { ...executorInput, messageId: 'msg-legacy-create-step' };
+    const plan = buildDeterministicChatActionPlan({ ...input, text: 'Create a task called Legacy path check' })!;
+    const provider = {
+      getLists: vi.fn(async () => ({ success: true, data: [{ id: 'list-1', displayName: 'Inbox', wellknownListName: 'defaultList' }] })),
+      getDefaultList: vi.fn(async () => ({ id: 'list-1', displayName: 'Inbox' })),
+      createTask: vi.fn(async () => ({ success: true, data: { id: 'legacy-task-1', listId: 'list-1', title: 'Legacy path check' } })),
+      getTask: vi.fn(async () => ({ success: true, data: { id: 'legacy-task-1', title: 'Legacy path check' } })),
+    };
+
+    const result = await executeTaskCreateStep(plan.steps[0]!, plan, input, vi.fn(() => provider as any) as any, false);
+
+    expect(result.status).toBe('verified_success');
+    expect(provider.createTask).toHaveBeenCalledWith('list-1', 'Inbox', expect.objectContaining({ title: 'Legacy path check' }));
+    vi.unstubAllEnvs();
+  });
+
+  it('legacy flag-off mutation step delegates completes to the provider write path', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    const input = { ...executorInput, messageId: 'msg-legacy-mutation-step' };
+    const plan = buildDeterministicChatActionPlan({ ...input, text: 'Create a task called placeholder' })!;
+    const step = {
+      ...plan.steps[0]!,
+      action: 'complete_task',
+      args: { taskId: 'legacy-task-9', listId: 'list-1', title: 'Comprar creatina' },
+    };
+    const provider = {
+      completeTask: vi.fn(async () => ({ success: true, data: { id: 'legacy-task-9', status: 'completed' } })),
+      getTask: vi.fn(async () => ({ success: true, data: { id: 'legacy-task-9', status: 'completed' } })),
+    };
+
+    const result = await executeTaskMutationStep(step, plan, input, vi.fn(() => provider as any) as any, false);
+
+    expect(result.status).toBe('verified_success');
+    expect(provider.completeTask).toHaveBeenCalledWith('list-1', 'legacy-task-9');
+    vi.unstubAllEnvs();
   });
 });

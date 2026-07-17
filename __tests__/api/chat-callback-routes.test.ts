@@ -56,6 +56,21 @@ vi.mock('../../src/services/task-store/task-router', () => ({
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
+// M5 single write path: callback task/list writes land in the offline-first
+// ledger by default; the direct provider path survives behind
+// TASK_SINGLE_WRITE_PATH=0.
+const mockRecordLocalTaskMutation = vi.fn();
+const mockResolveOfflineNexusTaskId = vi.fn();
+const mockDeleteOfflineFirstTaskList = vi.fn();
+const mockResolveOfflineTaskListRef = vi.fn();
+
+vi.mock('../../src/services/task-store/offline-first-task-service', () => ({
+  recordLocalTaskMutation: (...args: unknown[]) => mockRecordLocalTaskMutation(...args),
+  resolveOfflineNexusTaskId: (...args: unknown[]) => mockResolveOfflineNexusTaskId(...args),
+  deleteOfflineFirstTaskList: (...args: unknown[]) => mockDeleteOfflineFirstTaskList(...args),
+  resolveOfflineTaskListRef: (...args: unknown[]) => mockResolveOfflineTaskListRef(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     error: vi.fn(),
@@ -153,6 +168,19 @@ describe('chat callback route registrar', () => {
       deleteTask: mockDeleteTask,
       deleteList: mockDeleteList,
     });
+    vi.unstubAllEnvs();
+    mockRecordLocalTaskMutation.mockReset();
+    mockResolveOfflineNexusTaskId.mockReset();
+    mockDeleteOfflineFirstTaskList.mockReset();
+    mockResolveOfflineTaskListRef.mockReset();
+    mockRecordLocalTaskMutation.mockReturnValue({
+      task: { id: 'task_nexus_cb', title: 'Callback task', status: 'completed' },
+      mutationId: 'mutation-callback',
+      idempotentReplay: false,
+    });
+    mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_cb');
+    mockDeleteOfflineFirstTaskList.mockReturnValue({ deleted: true, mutationId: 'mutation-list-delete', idempotentReplay: false });
+    mockResolveOfflineTaskListRef.mockReturnValue({ id: '61', name: 'Inbox' });
   });
 
   it('handles deterministic command callbacks and persists the edited assistant message', async () => {
@@ -229,10 +257,16 @@ describe('chat callback route registrar', () => {
       newButtons: null,
     });
     expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
-    expect(mockCompleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockResolveOfflineNexusTaskId).toHaveBeenCalledWith(7001, 7001, 'task-1');
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(7001, 7001, {
+      taskId: 'task_nexus_cb',
+      operation: 'task.complete',
+      patch: { source: 'chat_callback' },
+    });
+    expect(mockCompleteTask).not.toHaveBeenCalled();
     expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
     expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
-      .toBeLessThan(mockCompleteTask.mock.invocationCallOrder[0]);
+      .toBeLessThan(mockRecordLocalTaskMutation.mock.invocationCallOrder[0]);
     expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7001,
       messageId: 'msg-2',
@@ -262,15 +296,58 @@ describe('chat callback route registrar', () => {
     });
     expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-delete-task', { tenantId: 7001, userId: 7001 });
     expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-delete-task', { tenantId: 7001, userId: 7001 });
-    expect(mockDeleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(7001, 7001, {
+      taskId: 'task_nexus_cb',
+      operation: 'task.delete',
+      patch: { source: 'chat_callback' },
+    });
+    expect(mockDeleteTask).not.toHaveBeenCalled();
     expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
-      .toBeLessThan(mockDeleteTask.mock.invocationCallOrder[0]);
+      .toBeLessThan(mockRecordLocalTaskMutation.mock.invocationCallOrder[0]);
     expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7001,
       messageId: 'msg-delete-task',
       text: '🗑️ Deleted: Old task',
       domain: 'secretary',
     }));
+  });
+
+  it('legacy flag-off path deletes tasks through the provider after consuming the callback', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      taskId: 'task-1',
+      title: 'Old task',
+      type: 'task',
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:dy:ref-delete-task-legacy',
+      messageId: 'msg-delete-task-legacy',
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(mockDeleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+  });
+
+  it('expires unresolvable task callbacks before consuming the one-shot ref', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      taskId: 'task-unknown',
+      title: 'Ghost task',
+    });
+    mockResolveOfflineNexusTaskId.mockReturnValue(null);
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:tc:ref-ghost',
+      messageId: 'msg-ghost',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+    expect(mockCompleteTask).not.toHaveBeenCalled();
   });
 
   it('uses tenant-scoped stored todo callback data to delete lists after consuming the callback', async () => {
@@ -293,9 +370,11 @@ describe('chat callback route registrar', () => {
     });
     expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-delete-list', { tenantId: 7001, userId: 7001 });
     expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-delete-list', { tenantId: 7001, userId: 7001 });
-    expect(mockDeleteList).toHaveBeenCalledWith('list-1');
+    expect(mockResolveOfflineTaskListRef).toHaveBeenCalledWith(7001, 7001, 'list-1', 'Inbox');
+    expect(mockDeleteOfflineFirstTaskList).toHaveBeenCalledWith(7001, 7001, { listId: '61' });
+    expect(mockDeleteList).not.toHaveBeenCalled();
     expect(mockConsumeCallbackForScope.mock.invocationCallOrder[0])
-      .toBeLessThan(mockDeleteList.mock.invocationCallOrder[0]);
+      .toBeLessThan(mockDeleteOfflineFirstTaskList.mock.invocationCallOrder[0]);
     expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7001,
       messageId: 'msg-delete-list',
@@ -326,8 +405,11 @@ describe('chat callback route registrar', () => {
     expect(first.statusCode, JSON.stringify(first.body)).toBe(200);
     expect(second.statusCode).toBe(410);
     expect(second.body.error.code).toBe('CALLBACK_EXPIRED');
-    expect(mockCompleteTask).toHaveBeenCalledTimes(1);
-    expect(mockCompleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledTimes(1);
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(7001, 7001, expect.objectContaining({
+      operation: 'task.complete',
+    }));
+    expect(mockCompleteTask).not.toHaveBeenCalled();
     expect(mockConsumeCallbackForScope).toHaveBeenCalledTimes(2);
   });
 
@@ -354,8 +436,11 @@ describe('chat callback route registrar', () => {
     expect(first.statusCode, JSON.stringify(first.body)).toBe(200);
     expect(second.statusCode).toBe(410);
     expect(second.body.error.code).toBe('CALLBACK_EXPIRED');
-    expect(mockDeleteTask).toHaveBeenCalledTimes(1);
-    expect(mockDeleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledTimes(1);
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(7001, 7001, expect.objectContaining({
+      operation: 'task.delete',
+    }));
+    expect(mockDeleteTask).not.toHaveBeenCalled();
     expect(mockConsumeCallbackForScope).toHaveBeenCalledTimes(2);
   });
 
@@ -389,6 +474,7 @@ describe('chat callback route registrar', () => {
     expect(res.statusCode).toBe(410);
     expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
     expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
     expect(mockCompleteTask).not.toHaveBeenCalled();
   });
 

@@ -36,6 +36,15 @@ import {
 } from '../task-store/task-service';
 import { getTaskProviderForUser } from '../task-store/task-router';
 import { resolveTaskCreationList } from '../task-store/task-list-resolution';
+import { isSingleWritePathEnabled } from '../task-store/single-write-path';
+import {
+  addOfflineTaskChecklistItem,
+  createOfflineFirstTask,
+  getOfflineTaskById,
+  recordLocalTaskMutation,
+  resolveOfflineCaptureListName,
+  resolveOfflineNexusTaskId,
+} from '../task-store/offline-first-task-service';
 import { invalidateTaskCaches } from '../cache-coherence-registry';
 import { computeContentHash } from '../task-store/unified-task-store';
 import {
@@ -78,6 +87,12 @@ export interface ChatCoreV2CommandExecutionResult {
   status: CommandStatus;
   reason?: ChatCoreV2CommandExecutionRejection;
   createdTaskId?: number;
+  /**
+   * M5 single write path: the created task's NEXUS id (ledger identity — the
+   * id the REST read model and follow-up actions speak). createdTaskId keeps
+   * its legacy numeric-row-id semantics for the flag-off path.
+   */
+  createdTaskNexusId?: string;
   completedTaskId?: number;
   completedTaskIds?: number[];
   snoozedNotificationId?: string;
@@ -626,7 +641,13 @@ async function executeTaskComplete(input: {
     if (input.command.payload.taskStore === 'native_tasks') {
       return executeNativeTaskComplete(input, taskId);
     }
-    await completeTask(input.userId, taskId);
+    if (isSingleWritePathEnabled()) {
+      completeUnifiedTaskViaLedger(input.tenantId, input.userId, taskId);
+    } else {
+      // Legacy direct path (TASK_SINGLE_WRITE_PATH=0): task-service resolves
+      // the row to its provider and writes the provider synchronously.
+      await completeTask(input.userId, taskId);
+    }
     const readBack = getTaskForUser(input.userId, taskId);
     const verified = Boolean(readBack && readBack.status === 'completed');
     const status: CommandStatus = verified ? 'verified' : 'verification_failed';
@@ -711,7 +732,12 @@ async function executeTaskCompleteBatch(
           completedIds.push(target.taskId);
         }
       } else {
-        await completeTask(input.userId, target.taskId);
+        if (isSingleWritePathEnabled()) {
+          completeUnifiedTaskViaLedger(input.tenantId, input.userId, target.taskId);
+        } else {
+          // Legacy direct path (TASK_SINGLE_WRITE_PATH=0).
+          await completeTask(input.userId, target.taskId);
+        }
         completedIds.push(target.taskId);
       }
     }
@@ -781,6 +807,118 @@ async function executeTaskCompleteBatch(
 }
 
 async function executeTaskCreate(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  capability: CapabilityDefinition;
+  userId: number;
+  tenantId: number;
+  locale?: string | null;
+  now: Date;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): Promise<ChatCoreV2CommandExecutionResult> {
+  return isSingleWritePathEnabled()
+    ? executeTaskCreateViaLedger(input)
+    : executeTaskCreateLegacy(input);
+}
+
+/**
+ * M5 ledger create: the task is written to the offline-first ledger (instant
+ * Tasks-tab visibility — NEX-08) and the provider push runs asynchronously on
+ * the mutation worker. Verification is a deterministic local read-back.
+ * Reported ids are NEXUS task ids — what the REST read model and follow-up
+ * chat actions speak; the provider id only exists after the async push.
+ */
+async function executeTaskCreateViaLedger(input: {
+  command: AICommandEnvelope<Record<string, unknown>>;
+  capabilityId: string;
+  capability: CapabilityDefinition;
+  userId: number;
+  tenantId: number;
+  locale?: string | null;
+  now: Date;
+  gateVerdict: ChatCoreV2CommandGateVerdict;
+}): Promise<ChatCoreV2CommandExecutionResult> {
+  try {
+    const payload = taskCreatePayload(input.command.payload);
+    const created = createOfflineFirstTask(input.tenantId, input.userId, {
+      title: payload.title,
+      body: payload.notes,
+      dueDateTime: payload.dueDate,
+      listName: resolveOfflineCaptureListName(input.tenantId, input.userId, payload.projectName),
+    });
+    const nexusTaskId = created.task.id;
+    const addedSubtasks: string[] = [];
+    for (const subtask of payload.subtasks) {
+      addOfflineTaskChecklistItem(input.tenantId, input.userId, {
+        taskId: nexusTaskId,
+        displayName: subtask,
+      });
+      addedSubtasks.push(subtask);
+    }
+    const readBack = getOfflineTaskById(input.tenantId, input.userId, nexusTaskId);
+    const listId = String(readBack?.listId ?? created.task.listId ?? '');
+    const verifiedSubtasks = payload.subtasks.length === 0
+      || subtasksContainAll((readBack?.checklistItems || []).map((item) => item.displayName), payload.subtasks);
+    const verified = !!readBack
+      && readBack.title === payload.title
+      && readBack.status !== 'completed'
+      && verifiedSubtasks;
+    const status: CommandStatus = verified ? 'verified' : 'verification_failed';
+    const response = buildTaskCreateResultResponse({
+      capability: input.capability,
+      command: input.command,
+      title: payload.title,
+      // Nexus task ids are not numeric row ids, so createdTaskId stays
+      // undefined — same as the provider-id behavior of the legacy MS path.
+      taskId: undefined,
+      subtasks: payload.subtasks,
+      status,
+      locale: input.locale,
+    });
+
+    recordCommandEvent(input.command, input.capabilityId, 'execution_completed', 'executed', undefined, input.now, {
+      taskId: nexusTaskId,
+      listId,
+      subtaskCount: addedSubtasks.length,
+    });
+    recordCommandEvent(
+      input.command,
+      input.capabilityId,
+      verified ? 'verification_completed' : 'verification_failed',
+      status,
+      verified ? undefined : 'verification_failed',
+      input.now,
+      { taskId: nexusTaskId, listId, subtaskCount: addedSubtasks.length },
+    );
+    invalidateTaskCaches({
+      userId: input.userId,
+      listIds: listId ? [listId] : [],
+      includeDerivedSurfaces: true,
+    });
+
+    return {
+      ok: verified,
+      executorVersion: CHAT_CORE_V2_COMMAND_EXECUTOR_VERSION,
+      commandId: input.command.commandId,
+      capabilityId: input.capabilityId,
+      gateVerdict: input.gateVerdict,
+      response,
+      status,
+      reason: verified ? undefined : 'verification_failed',
+      createdTaskId: undefined,
+      createdTaskNexusId: nexusTaskId,
+    };
+  } catch {
+    recordCommandEvent(input.command, input.capabilityId, 'command_failed', 'failed', 'execution_failed', input.now);
+    return emptyExecutionFailure(input);
+  }
+}
+
+/**
+ * Legacy direct-provider create (TASK_SINGLE_WRITE_PATH=0 revert lever):
+ * writes the provider synchronously and verifies via provider read-back.
+ */
+async function executeTaskCreateLegacy(input: {
   command: AICommandEnvelope<Record<string, unknown>>;
   capabilityId: string;
   capability: CapabilityDefinition;
@@ -1358,6 +1496,23 @@ async function executeDecisionChatFixerAcceptance(input: {
     });
     return emptyExecutionFailure(input);
   }
+}
+
+/**
+ * M5 ledger complete for unified-store tasks: journal `task.complete` against
+ * the nexus task resolved from the command's numeric row id. The local row
+ * flips to completed immediately (so getTaskForUser read-back verification
+ * still holds) and the provider write happens asynchronously on the mutation
+ * worker — the next pull can no longer revert the completion (NEX-09).
+ */
+function completeUnifiedTaskViaLedger(tenantId: number, userId: number, taskId: number): void {
+  const nexusTaskId = resolveOfflineNexusTaskId(tenantId, userId, String(taskId));
+  if (!nexusTaskId) throw new Error(`Task ${taskId} not found in local task store`);
+  recordLocalTaskMutation(tenantId, userId, {
+    taskId: nexusTaskId,
+    operation: 'task.complete',
+    patch: { source: 'chat_core_v2_command' },
+  });
 }
 
 function taskCreatePayload(payload: Record<string, unknown>): {

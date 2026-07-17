@@ -44,6 +44,45 @@ vi.mock('../../src/services/task-store/task-list-resolution', () => ({
   resolveTaskCreationList: (...args: unknown[]) => mockResolveTaskCreationList(...args),
 }));
 
+// M5 single write path: chat-core-v2 task writes land in the offline-first
+// ledger by default; the direct-provider path survives behind
+// TASK_SINGLE_WRITE_PATH=0.
+const mockCreateOfflineFirstTask = vi.hoisted(() => vi.fn());
+const mockAddOfflineTaskChecklistItem = vi.hoisted(() => vi.fn());
+const mockGetOfflineTaskById = vi.hoisted(() => vi.fn());
+const mockRecordLocalTaskMutation = vi.hoisted(() => vi.fn());
+const mockResolveOfflineNexusTaskId = vi.hoisted(() => vi.fn());
+const mockResolveOfflineCaptureListName = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/services/task-store/offline-first-task-service', () => ({
+  createOfflineFirstTask: (...args: unknown[]) => mockCreateOfflineFirstTask(...args),
+  addOfflineTaskChecklistItem: (...args: unknown[]) => mockAddOfflineTaskChecklistItem(...args),
+  getOfflineTaskById: (...args: unknown[]) => mockGetOfflineTaskById(...args),
+  recordLocalTaskMutation: (...args: unknown[]) => mockRecordLocalTaskMutation(...args),
+  resolveOfflineNexusTaskId: (...args: unknown[]) => mockResolveOfflineNexusTaskId(...args),
+  resolveOfflineCaptureListName: (...args: unknown[]) => mockResolveOfflineCaptureListName(...args),
+}));
+
+const offlineLedgerTask = (overrides: Record<string, unknown> = {}) => ({
+  id: 'task_nexus_404',
+  title: 'comprar suplementos CODX',
+  body: null,
+  importance: 'normal',
+  status: 'notStarted',
+  dueDateTime: null,
+  recurrence: null,
+  listId: '4',
+  listName: 'Inbox',
+  checklistItems: [],
+  createdDateTime: '2026-05-27T16:00:00.000Z',
+  syncProvider: 'nexus',
+  syncState: 'queued',
+  syncWarnings: [],
+  localVersion: 1,
+  deletedAt: null,
+  ...overrides,
+});
+
 vi.mock('../../src/services/decision-center', () => ({
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
   dismissDecision: (...args: unknown[]) => mockDismissDecision(...args),
@@ -311,6 +350,20 @@ describe('Chat Core v2 command executor', () => {
     mockGetDecisionItem.mockReset();
     mockDismissDecision.mockReset();
     mockSnoozeDecision.mockReset();
+    vi.unstubAllEnvs();
+    mockCreateOfflineFirstTask.mockReset();
+    mockAddOfflineTaskChecklistItem.mockReset();
+    mockGetOfflineTaskById.mockReset();
+    mockRecordLocalTaskMutation.mockReset();
+    mockResolveOfflineNexusTaskId.mockReset();
+    mockResolveOfflineCaptureListName.mockReset();
+    mockCreateOfflineFirstTask.mockReturnValue({
+      task: offlineLedgerTask(), mutationId: 'mutation-create', idempotentReplay: false, warnings: [],
+    });
+    mockGetOfflineTaskById.mockReturnValue(offlineLedgerTask());
+    mockRecordLocalTaskMutation.mockReturnValue({ task: offlineLedgerTask({ status: 'completed' }), mutationId: 'mutation-complete', idempotentReplay: false });
+    mockResolveOfflineNexusTaskId.mockReturnValue('task_nexus_404');
+    mockResolveOfflineCaptureListName.mockImplementation((_tenantId: unknown, _userId: unknown, name: unknown) => (name as string) || 'Inbox');
   });
 
   it('rejects a stale permission contract using the server-recomputed execution snapshot', async () => {
@@ -337,7 +390,152 @@ describe('Chat Core v2 command executor', () => {
     expect(mockTaskProvider.createTask).not.toHaveBeenCalled();
   });
 
-  it('creates chat tasks through the iOS-visible task provider path', async () => {
+  it('creates chat tasks through the offline-first ledger with a local read-back (NEX-08)', async () => {
+    const result = await executeChatCoreV2Command({
+      command: nativeCreateCommand(),
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'pt-PT',
+      now: NOW,
+    });
+
+    expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(5, 5, {
+      title: 'comprar suplementos CODX',
+      body: undefined,
+      dueDateTime: undefined,
+      listName: 'Inbox',
+    });
+    expect(mockGetOfflineTaskById).toHaveBeenCalledWith(5, 5, 'task_nexus_404');
+    // NO provider write on the single write path — the mutation worker owns
+    // the async provider push.
+    expect(mockTaskProvider.createTask).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: true,
+      capabilityId: 'tasks.create',
+      status: 'verified',
+      // Nexus ids are not numeric row ids, so createdTaskId stays undefined
+      // (same contract as the legacy MS Graph path).
+      createdTaskId: undefined,
+    });
+    expect(result.response?.text).toBe('Feito — criei a tarefa "comprar suplementos CODX".');
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: ['4'],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('fails verification when the ledger read-back does not match the requested title', async () => {
+    mockGetOfflineTaskById.mockReturnValue(offlineLedgerTask({ title: 'algo diferente' }));
+
+    const result = await executeChatCoreV2Command({
+      command: nativeCreateCommand(),
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 'verification_failed',
+      reason: 'verification_failed',
+    });
+    expect(result.response?.text).not.toContain('Done — I created');
+  });
+
+  it('creates ledger tasks with subtasks and verifies the checklist from the local read-back', async () => {
+    const command = nativeCreateCommand();
+    command.payload.subtasks = ['Cortar b-roll', 'Exportar em 4k'];
+    mockGetOfflineTaskById.mockReturnValue(offlineLedgerTask({
+      checklistItems: [
+        { id: 'ci-1', displayName: 'Cortar b-roll', isChecked: false },
+        { id: 'ci-2', displayName: 'Exportar em 4k', isChecked: false },
+      ],
+    }));
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'verified',
+      createdTaskId: undefined,
+      createdTaskNexusId: 'task_nexus_404',
+    });
+    expect(mockAddOfflineTaskChecklistItem).toHaveBeenCalledTimes(2);
+    expect(mockAddOfflineTaskChecklistItem).toHaveBeenCalledWith(5, 5, {
+      taskId: 'task_nexus_404',
+      displayName: 'Cortar b-roll',
+    });
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: ['4'],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('fails subtask verification when the ledger read-back disappears, falling back to the created row list', async () => {
+    const command = nativeCreateCommand();
+    command.payload.subtasks = ['Única subtarefa'];
+    mockGetOfflineTaskById.mockReturnValue(null);
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 'verification_failed', reason: 'verification_failed' });
+    // The invalidation scope comes from the created row when the read-back is gone.
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: ['4'],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('invalidates without list scope when neither the read-back nor the created row has a list', async () => {
+    const command = nativeCreateCommand();
+    command.payload.subtasks = ['Sem lista'];
+    mockCreateOfflineFirstTask.mockReturnValue({
+      task: offlineLedgerTask({ listId: null, listName: null }),
+      mutationId: 'mutation-create-listless',
+      idempotentReplay: false,
+      warnings: [],
+    });
+    mockGetOfflineTaskById.mockReturnValue(null);
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 'verification_failed' });
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: [],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('legacy flag-off path creates chat tasks through the iOS-visible task provider path', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     mockTaskProvider.createTask.mockResolvedValue({
       success: true,
       data: {
@@ -373,6 +571,7 @@ describe('Chat Core v2 command executor', () => {
       dueDateTime: undefined,
     });
     expect(mockTaskProvider.getTask).toHaveBeenCalledWith('4', '404', 'Inbox');
+    expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       ok: true,
       capabilityId: 'tasks.create',
@@ -387,7 +586,8 @@ describe('Chat Core v2 command executor', () => {
     });
   });
 
-  it('does not claim task creation when the provider cannot independently read back the created task', async () => {
+  it('does not claim task creation when the provider cannot independently read back the created task (legacy flag-off)', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     mockTaskProvider.createTask.mockResolvedValue({
       success: true,
       data: {
@@ -430,7 +630,8 @@ describe('Chat Core v2 command executor', () => {
     }
   });
 
-  it('does not verify task creation from an empty provider readback payload', async () => {
+  it('does not verify task creation from an empty provider readback payload (legacy flag-off)', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     mockTaskProvider.createTask.mockResolvedValue({
       success: true,
       data: {
@@ -465,7 +666,8 @@ describe('Chat Core v2 command executor', () => {
     expect(result.response?.text).not.toContain('Done — I created');
   });
 
-  it('does not verify task creation when provider readback returns a different task id', async () => {
+  it('does not verify task creation when provider readback returns a different task id (legacy flag-off)', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     mockTaskProvider.createTask.mockResolvedValue({
       success: true,
       data: {
