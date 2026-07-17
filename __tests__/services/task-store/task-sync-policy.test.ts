@@ -1,11 +1,12 @@
 /**
  * SAFETY-NET tests for src/services/task-store/task-sync-policy.ts
  *
- * These tests PIN the current behavior of the task sync policy before the
- * M2/M3 task-sync milestones change it. They are deliberately behavioral
- * snapshots — including one known bug (NEX-05, see the dedicated test at the
- * bottom). Do not "fix" a red test here by editing production code without
- * first checking whether the pinned behavior was changed intentionally.
+ * These tests PIN the behavior of the task sync policy through the M2/M3
+ * task-sync milestones. They are deliberately behavioral snapshots —
+ * including the NEX-05 mirror-id miss, which M3 confirmed as intentional
+ * resolver design (see the dedicated test at the bottom). Do not "fix" a red
+ * test here by editing production code without first checking whether the
+ * pinned behavior was changed intentionally.
  *
  * Public surface under test (the module's full export list):
  *   - resolveTaskSyncTarget(input)      — main consumer entry point
@@ -478,31 +479,35 @@ describe('getTaskContainerMapping', () => {
 });
 
 describe('NEX-05 — provider-keyed mapping vs nexus-mirror consumer', () => {
-  it('documents NEX-05: mapping written under provider row id is invisible to the nexus-mirror consumer', () => {
-    // ── PINNED CURRENT BEHAVIOR — KNOWN BUG, DO NOT "FIX" HERE ──────────
+  it('mirror-keyed lookups miss by design; create path feeds provider row ids since M3', () => {
+    // ── PINNED DESIGN (M3) — the mirror-id miss is INTENTIONAL ──────────
     //
-    // The only production writer of task_container_mappings is
+    // In the provider-rows-are-visible-lists model (post-de22b1a2), the
+    // provider's own unified_projects rows ARE the lists the app shows, and
+    // the only production writer of task_container_mappings —
     // ensureTaskContainerMappingForProviderProject (unified-task-store.ts,
-    // called from upsertProject during provider pulls). It keys
-    // nexus_list_id by the id of the PROVIDER (ms_todo) unified_projects
-    // row.
+    // called from upsertProject during provider pulls) — keys nexus_list_id
+    // by that PROVIDER (ms_todo) row's id.
     //
-    // The consumer path is createOfflineFirstTask → getOrCreateProject
-    // (offline-first-task-service.ts), which only ever matches/creates
-    // provider='nexus' mirror rows, then calls resolveTaskSyncTarget with
-    // THAT row's id. The two ids never coincide for a synced list, so:
+    // A hidden nexus mirror row id is therefore NOT a valid mapping key, and
+    // the resolver treats it as such on purpose:
     //
-    //   1. getTaskContainerMapping misses (mapping keyed under the ms_todo
-    //      row id, lookup uses the nexus mirror row id), and
-    //   2. getDirectProviderProjectMapping misses (the nexus mirror row has
+    //   1. getTaskContainerMapping misses (mappings are keyed under the
+    //      ms_todo row id, this lookup uses the nexus mirror row id), and
+    //   2. getDirectProviderProjectMapping misses (the mirror row has
     //      provider='nexus', not 'ms_todo'),
     //
-    // so a task created into an MS-mapped list resolves to
-    // syncState='failed_permanent' with a 'provider_list_missing' warning
-    // even though the provider list exists and is mapped bidirectionally.
+    // so a mirror-id resolution reports failed/missing while the same
+    // mapping resolves queued when addressed by the provider row id.
     //
-    // Milestone M3 will re-key or bridge this mapping; update this test
-    // (and the fallback pins above) when that lands.
+    // This is no longer a live create-path defect: since M3,
+    // resolveCreateTargetProject (offline-first-task-service.ts) resolves an
+    // incoming listName to the visible provider row for ms_todo/todoist
+    // users, so createOfflineFirstTask feeds provider row ids into this
+    // resolver (covered in offline-first-task-service.test.ts). The pre-M3
+    // backlog parked by mirror-id resolution is repaired one-shot by
+    // scripts/task-mapping-repair.mjs (covered in
+    // __tests__/scripts/task-mapping-repair.test.ts).
     // ────────────────────────────────────────────────────────────────────
 
     // Provider pull ingests the MS To Do list via the real writer path.
@@ -526,7 +531,7 @@ describe('NEX-05 — provider-keyed mapping vs nexus-mirror consumer', () => {
       sync_direction: 'bidirectional',
     });
 
-    // Task creation resolves through the NEXUS mirror list, a different row.
+    // A hidden nexus mirror list is a different row with a different id.
     const nexusMirrorListId = seedNexusList('Groceries');
     expect(nexusMirrorListId).not.toBe(String(msRow.id));
 
@@ -537,12 +542,11 @@ describe('NEX-05 — provider-keyed mapping vs nexus-mirror consumer', () => {
       preferredProvider: 'ms_todo',
     });
 
-    // The bug: a perfectly mapped list resolves as failed/missing.
+    // By design: mirror row ids are not mapping keys, so they miss.
     expect(consumerTarget).toEqual(MS_TODO_FAILED_TARGET);
 
-    // Sanity check that the mapping itself is resolvable — but only when
-    // addressed by the provider row id the writer used, which the consumer
-    // path never produces.
+    // The same mapping resolves queued when addressed by the provider row
+    // id the writer used — which is what the M3 create path now produces.
     const providerKeyedTarget = resolveTaskSyncTarget({
       tenantId: TENANT_ID,
       userId: USER_ID,
