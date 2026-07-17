@@ -33,6 +33,9 @@ import {
   upsertTask,
   upsertProject,
   softDeleteMissing,
+  softDeleteMissingForLists,
+  markProviderTaskRemoved,
+  removeProviderProject,
   getSyncState,
   saveSyncState,
   updateSyncStatus,
@@ -208,7 +211,14 @@ export async function syncProvider(
       ? syncState.sync_cursor
       : undefined;
 
-    const { tasks, nextCursor, incomplete, errors: taskPullErrors } = await adapter.getTasks(userId, {
+    const {
+      tasks,
+      nextCursor,
+      incomplete,
+      errors: taskPullErrors,
+      removals,
+      resyncedListIds,
+    } = await adapter.getTasks(userId, {
       sinceCursor: cursor || undefined,
       knownProjects,
     });
@@ -227,12 +237,42 @@ export async function syncProvider(
       }
     }
 
+    // ── Explicit incremental removals (M6 delta) ──
+    // Delta `@removed` entries are per-item provider deletions. They flow
+    // through the canonical-links tombstone path — active link match →
+    // provider_missing/conflict semantics — never full-set reconciliation.
+    for (const removal of removals ?? []) {
+      try {
+        if (removal.kind === 'project') {
+          const outcome = removeProviderProject(userId, provider, removal.externalId);
+          tasksDeleted += outcome.tasksMarked;
+        } else if (markProviderTaskRemoved(userId, provider, removal.externalId)) {
+          tasksDeleted += 1;
+        }
+      } catch (err: any) {
+        errors.push(`removal ${removal.kind}:${removal.externalId}: ${err?.message || String(err)}`);
+      }
+    }
+
+    // ── List-scoped resync reconciliation (M6 delta) ──
+    // A 410/expired-token resync rebuilt those lists from scratch, so their
+    // returned rows ARE the complete set: absence marking runs scoped to the
+    // resynced containers only. Without this, deletions during the token gap
+    // would be lost forever (delta mode never runs the full-pull sweep).
+    if (resyncedListIds?.length) {
+      try {
+        tasksDeleted += softDeleteMissingForLists(userId, provider, resyncedListIds, seenExternalIds);
+      } catch (err: any) {
+        errors.push(`resync reconcile: ${err?.message || String(err)}`);
+      }
+    }
+
     // ── Soft-delete only on full sync ──
     // If we used a cursor, the response is a delta and we DON'T know what
     // wasn't returned — could be unchanged, could be deleted. Only the full
     // pull is authoritative on "this is the complete set."
     if (!cursor && !incomplete) {
-      tasksDeleted = softDeleteMissing(userId, provider, seenExternalIds);
+      tasksDeleted += softDeleteMissing(userId, provider, seenExternalIds);
     } else if (!cursor && incomplete) {
       logger.warn(
         { userId, provider, taskCount: tasks.length, errorCount: taskPullErrors?.length || 0 },
@@ -240,9 +280,13 @@ export async function syncProvider(
       );
     }
 
+    // Cursor preservation (M6 fix): an adapter that did not advance its
+    // cursor this pull (partial failure, no incremental support this run)
+    // must NOT wipe the stored one — losing a deltaLink/sync token silently
+    // downgrades the next pull to a full resync.
     saveSyncState(userId, provider, {
       lastSyncAt: new Date().toISOString(),
-      syncCursor: nextCursor ?? null,
+      syncCursor: nextCursor !== undefined ? nextCursor : (syncState?.sync_cursor ?? null),
       status: errors.length > 0 ? 'error' : 'idle',
       tasksSynced: tasks.length,
       durationMs: Date.now() - start,
@@ -261,8 +305,12 @@ export async function syncProvider(
     const message = err?.message || String(err);
     errors.push(message);
     logger.error({ err, userId, provider }, 'syncProvider failed');
+    // Cursor-wipe fix (M6): the catch path previously omitted syncCursor and
+    // saveSyncState coerced undefined → null, nuking the stored deltaLink /
+    // sync token on ANY transient error. Preserve the pre-run cursor.
     saveSyncState(userId, provider, {
       lastSyncAt: new Date().toISOString(),
+      syncCursor: syncState?.sync_cursor ?? null,
       status: 'error',
       durationMs: Date.now() - start,
       errorMessage: message,

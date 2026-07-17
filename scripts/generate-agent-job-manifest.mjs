@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-17.1';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-07-17.2';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -98,7 +98,7 @@ const providerCapableHandler = (policyOwner, tenantScope, inputFingerprint, over
   ...overrides,
 });
 
-// This is intentionally an explicit 54-job audit, not a domain-wide default.
+// This is intentionally an explicit 55-job audit, not a domain-wide default.
 // Adding a scheduler registration without a reviewed policy makes generation
 // fail. Provider usage means model-provider capability; calendar, mail, task,
 // Garmin, and invoice integrations remain described by their job policies but
@@ -205,6 +205,7 @@ export const JOB_POLICIES = Object.freeze({
   shared_list: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'notification-dedupe-key' }),
   task_ledger_retention: noProvider('tasks', 'platform-retention'),
   task_sync: noProvider('tasks', 'active-and-pending-task-tenant-user', { retryPolicy: 'provider-mutation-ledger-bounded-retry', outputPolicy: 'content-hash-and-provider-link-idempotency' }),
+  task_sync_delta: noProvider('tasks', 'active-and-pending-task-tenant-user', { overlapPolicy: 'task-sync-coordinator-single-flight', outputPolicy: 'flag-gated-delta-pull-content-hash-idempotency' }),
   thursday_youtube: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',

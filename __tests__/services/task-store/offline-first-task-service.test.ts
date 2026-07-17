@@ -1419,3 +1419,122 @@ describe('M5B list operations through the ledger', () => {
     expect(patch).toMatchObject({ provider: 'ms_todo', providerContainerId: 'AAMk-orphan-9' });
   });
 });
+
+// ── M6: push-kick wiring + task.delete availability holdback ─────────
+
+import {
+  registerTaskMutationKick,
+  _resetTaskMutationKickRegistryForTests,
+} from '../../../src/services/task-store/task-mutation-kick';
+
+describe('M6 push-kick wiring and delete holdback', () => {
+  const kick = vi.fn(() => true);
+
+  beforeEach(() => {
+    kick.mockClear();
+    registerTaskMutationKick(kick);
+  });
+
+  afterEach(() => {
+    _resetTaskMutationKickRegistryForTests();
+  });
+
+  it('kicks provider-bound writes, never local-only writes, never deletes', () => {
+    // Local-only create (nexus target) journals status 'synced' → no kick.
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Kick wiring task',
+      listName: 'Tasks',
+      clientMutationId: 'ios-kick-create',
+      idempotencyKey: 'idem-kick-create',
+    });
+    expect(kick).not.toHaveBeenCalled();
+
+    // Simulate a provider-linked row: subsequent writes journal 'queued'.
+    testDb.prepare(
+      `UPDATE unified_tasks SET sync_state = 'synced'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run(USER_ID, USER_ID, created.task.id);
+
+    updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      title: 'Kick wiring task (edited)',
+      clientMutationId: 'ios-kick-update',
+      idempotencyKey: 'idem-kick-update',
+    });
+    expect(kick).toHaveBeenCalledTimes(1);
+    expect(kick).toHaveBeenCalledWith(USER_ID, USER_ID);
+
+    recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      operation: 'task.complete',
+      clientMutationId: 'ios-kick-complete',
+      idempotencyKey: 'idem-kick-complete',
+      patch: { status: 'completed' },
+    });
+    expect(kick).toHaveBeenCalledTimes(2);
+
+    // task.delete journals WITHOUT a kick — the undo holdback owns delivery.
+    const before = Date.now();
+    const deleted = recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      operation: 'task.delete',
+      clientMutationId: 'ios-kick-delete',
+      idempotencyKey: 'idem-kick-delete',
+      patch: { deleted: true },
+    });
+    expect(kick).toHaveBeenCalledTimes(2);
+
+    const mutation = testDb.prepare(
+      `SELECT status, available_at FROM task_mutations WHERE mutation_id = ?`,
+    ).get(deleted.mutationId) as { status: string; available_at: string | null };
+    expect(mutation.status).toBe('queued');
+    // 10s undo holdback (± scheduling slack).
+    const availableAtMs = Date.parse(String(mutation.available_at));
+    expect(availableAtMs).toBeGreaterThanOrEqual(before + 9_000);
+    expect(availableAtMs).toBeLessThanOrEqual(Date.now() + 11_000);
+    const row = testDb.prepare(
+      `SELECT sync_state, is_deleted FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(created.task.id) as { sync_state: string; is_deleted: number };
+    expect(row).toEqual({ sync_state: 'deleted_pending_sync', is_deleted: 1 });
+  });
+
+  it('leaves local-only deletes immediately available (no holdback, no kick)', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Local-only delete',
+      listName: 'Tasks',
+      clientMutationId: 'ios-local-delete-create',
+      idempotencyKey: 'idem-local-delete-create',
+    });
+    const deleted = recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      operation: 'task.delete',
+      clientMutationId: 'ios-local-delete',
+      idempotencyKey: 'idem-local-delete',
+      patch: { deleted: true },
+    });
+
+    const mutation = testDb.prepare(
+      `SELECT status, available_at FROM task_mutations WHERE mutation_id = ?`,
+    ).get(deleted.mutationId) as { status: string; available_at: string | null };
+    // local_only short-circuit: nothing to push, nothing to hold back.
+    expect(mutation).toEqual({ status: 'synced', available_at: null });
+    expect(kick).not.toHaveBeenCalled();
+  });
+
+  it('kicks provider-bound list creates through the ledger', () => {
+    mockResolveTaskProvider.mockReturnValue('ms_todo');
+
+    const result = createOfflineFirstTaskList(USER_ID, USER_ID, {
+      name: 'Kicked list',
+      clientMutationId: 'ios-kick-list-create',
+      idempotencyKey: 'idem-kick-list-create',
+    });
+
+    expect(result.mutationId).not.toBeNull();
+    expect(kick).toHaveBeenCalledTimes(1);
+    const mutation = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = ?`,
+    ).get(result.mutationId) as { status: string };
+    expect(mutation.status).toBe('queued');
+  });
+});

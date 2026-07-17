@@ -1940,3 +1940,118 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 });
+
+// ── M6: task_sync through the coordinator + the */5 delta tick ─────────
+
+const mockRequestTaskSync = vi.hoisted(() => vi.fn());
+vi.mock('../../src/services/task-store/task-sync-coordinator', () => ({
+  requestTaskSync: (...args: unknown[]) => mockRequestTaskSync(...args),
+}));
+
+function taskSyncSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    syncRequestId: 'run-test',
+    reasons: ['cron'],
+    startedAt: '2026-07-18T08:00:00.000Z',
+    finishedAt: '2026-07-18T08:00:01.000Z',
+    push: { processed: 1, synced: 1, failedRetryable: 0, failedPermanent: 0, providerDisconnected: 0, conflicts: 0, deadLettered: 0 },
+    pull: [{ provider: 'ms_todo', tasksUpserted: 2, tasksDeleted: 0, projectsUpserted: 0, durationMs: 3, errors: [] }],
+    reconciledLinks: 1,
+    errors: [],
+    ...overrides,
+  };
+}
+
+describe('M6 scheduler task sync wiring', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetSchedulerTenantStateForTesting();
+    mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
+    // users → one primary import scope; ledger rows → one non-import scope.
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => {
+          if (sql.includes('FROM users')) return [{ id: 11 }];
+          if (sql.includes('FROM task_mutations')) return [{ tenant_id: 20, user_id: 30 }];
+          return [];
+        }),
+        get: vi.fn(() => ({})),
+      })),
+    });
+    mockRequestTaskSync.mockImplementation((scope: { userId: number }) => ({
+      status: 'started',
+      syncRequestId: `run-${scope.userId}`,
+      completion: Promise.resolve(taskSyncSummary()),
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('routes every task_sync cron scope through the coordinator with cron options', async () => {
+    startScheduler();
+    const job = mockCronSchedule.mock.calls
+      .find((call) => (call[1] as { jobName?: string }).jobName === 'task_sync')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(job).toBeTypeOf('function');
+
+    await job!();
+
+    expect(mockRequestTaskSync).toHaveBeenCalledTimes(2);
+    // Primary scope imports providers; step order (push → pull → reconcile)
+    // and the 25-row batch stay pinned to the pre-M6 cron behavior.
+    expect(mockRequestTaskSync).toHaveBeenCalledWith(
+      { tenantId: 11, userId: 11 },
+      'cron',
+      { push: true, pull: 'all', reconcile: true, mutationLimit: 25 },
+    );
+    // Cross-tenant member scope pushes/reconciles but never imports providers.
+    expect(mockRequestTaskSync).toHaveBeenCalledWith(
+      { tenantId: 20, userId: 30 },
+      'cron',
+      { push: true, pull: 'none', reconcile: true, mutationLimit: 25 },
+    );
+  });
+
+  it('task delta tick skips without touching the coordinator while TASK_MS_DELTA_SYNC is off', async () => {
+    startScheduler();
+    const job = mockCronSchedule.mock.calls
+      .find((call) => (call[1] as { jobName?: string }).jobName === 'task_sync_delta')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(job).toBeTypeOf('function');
+
+    await expect(job!()).resolves.toBe('skipped');
+    expect(mockRequestTaskSync).not.toHaveBeenCalled();
+  });
+
+  it('task delta tick pulls delta-capable providers for import scopes only when flagged on', async () => {
+    vi.stubEnv('TASK_MS_DELTA_SYNC', '1');
+    startScheduler();
+    const job = mockCronSchedule.mock.calls
+      .find((call) => (call[1] as { jobName?: string }).jobName === 'task_sync_delta')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(job).toBeTypeOf('function');
+
+    const result = await job!();
+
+    expect(result).toBeUndefined();
+    expect(mockRequestTaskSync).toHaveBeenCalledTimes(1);
+    expect(mockRequestTaskSync).toHaveBeenCalledWith(
+      { tenantId: 11, userId: 11 },
+      'delta_tick',
+      { push: false, pull: 'all', deltaOnly: true },
+    );
+  });
+
+  it('task delta tick reports skipped when no delta-capable provider produced a pull', async () => {
+    vi.stubEnv('TASK_MS_DELTA_SYNC', '1');
+    mockRequestTaskSync.mockImplementation(() => ({
+      status: 'started',
+      syncRequestId: 'run-empty',
+      completion: Promise.resolve(taskSyncSummary({ pull: [], push: null })),
+    }));
+    startScheduler();
+    const job = mockCronSchedule.mock.calls
+      .find((call) => (call[1] as { jobName?: string }).jobName === 'task_sync_delta')?.[1] as (() => Promise<unknown>) | undefined;
+
+    await expect(job!()).resolves.toBe('skipped');
+  });
+});

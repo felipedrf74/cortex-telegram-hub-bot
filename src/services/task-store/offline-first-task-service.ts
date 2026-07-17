@@ -6,6 +6,7 @@ import { getUserTimezoneById } from '../user-service';
 import { resolveTaskProvider, type TaskProviderType } from './task-router';
 import { getOpenTaskSyncWarningsForTasks, recordTaskSyncIssue } from './task-sync-issues';
 import { resolveTaskSyncTarget } from './task-sync-policy';
+import { triggerTaskMutationKick } from './task-mutation-kick';
 
 export type TaskSyncState =
   | 'local_only'
@@ -32,7 +33,10 @@ export type TaskSyncWarningCode =
   | 'provider_list_missing'
   | 'provider_project_missing'
   | 'retry_scheduled'
-  | 'manual_resolution_required';
+  | 'manual_resolution_required'
+  // M6 create-retry guard: multiple provider tasks carry one Nexus marker —
+  // the push is parked so no runner can mint a third twin.
+  | 'suspected_duplicate';
 
 export interface TaskSyncWarning {
   code: TaskSyncWarningCode;
@@ -235,6 +239,31 @@ type NativeChecklistRow = {
   display_name: string;
   is_checked: number | null;
 };
+
+/**
+ * M6 task.delete undo holdback: deletes are journaled with
+ * available_at = now + 10s (≥ the 5s client undo window) so an undo can
+ * retire the mutation before ANY runner — cron, kick, or force-sync — ships
+ * the provider hard-delete. The gate lives in the worker's readyMutations SQL.
+ */
+const TASK_DELETE_HOLDBACK_MS = 10_000;
+
+function taskDeleteAvailableAt(): string {
+  return new Date(Date.now() + TASK_DELETE_HOLDBACK_MS).toISOString();
+}
+
+/**
+ * M6 push-kick: best-effort debounced provider push after a ledger write.
+ * Only fires when the journaled mutation actually targets a provider
+ * (status 'queued'); task.delete producers never call this — deletes ride
+ * the available_at holdback instead. Goes through the zero-dependency kick
+ * registry (the worker registers itself at load), so this module's import
+ * graph stays untouched and un-journaled providers cost nothing.
+ */
+function kickAfterJournal(tenantId: number, userId: number, mutationStatus: string | null | undefined): void {
+  if (mutationStatus !== 'queued') return;
+  triggerTaskMutationKick(tenantId, userId);
+}
 
 function assertScope(tenantId: number, userId: number): void {
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0) {
@@ -1618,6 +1647,8 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
     });
   }
 
+  kickAfterJournal(tenantId, userId, created.syncTarget.mutationStatus);
+
   const task = getTaskByNexusId(tenantId, userId, created.taskId);
   if (!task) throw new Error('Failed to create local task');
   return {
@@ -1730,6 +1761,8 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
     return { mutationId };
   })();
 
+  kickAfterJournal(tenantId, userId, mutationStatus);
+
   return {
     task: getTaskByNexusId(tenantId, userId, input.taskId) || existingTask,
     mutationId: result.mutationId,
@@ -1809,6 +1842,7 @@ export function moveOfflineFirstTask(tenantId: number, userId: number, input: Ta
       : providerTargetWarning
         ? 'failed_permanent'
         : 'queued';
+    const mutationStatus = newSyncState === 'local_only' ? 'synced' : providerTargetWarning ? 'failed' : 'queued';
     db.prepare(
       `UPDATE unified_tasks SET
          project_id = ?,
@@ -1878,10 +1912,12 @@ export function moveOfflineFirstTask(tenantId: number, userId: number, input: Ta
         ])),
       }),
       updatedAt,
-      newSyncState === 'local_only' ? 'synced' : providerTargetWarning ? 'failed' : 'queued',
+      mutationStatus,
     );
-    return { mutationId };
+    return { mutationId, mutationStatus };
   })();
+
+  kickAfterJournal(tenantId, userId, result.mutationStatus);
 
   if (providerTargetWarning) {
     recordTaskSyncIssue({
@@ -2086,8 +2122,22 @@ export function assignOfflineTaskProvider(tenantId: number, userId: number, inpu
 	      );
 	    }
 
-	    return { mutationId, warning: target.warning, provider: target.provider };
+	    return {
+	      mutationId,
+	      warning: target.warning,
+	      provider: target.provider,
+	      mutationStatus: target.mutationStatus,
+	      cleanupCount: oldLinkedProviderRows.length,
+	    };
 	  })();
+
+  // Cleanup task.delete rows for reassigned-away providers are internal
+  // (no undo semantics, no holdback) — they ride the same kick.
+  kickAfterJournal(
+    tenantId,
+    userId,
+    result.mutationStatus === 'queued' || result.cleanupCount > 0 ? 'queued' : result.mutationStatus,
+  );
 
   if (result.warning) {
     recordTaskSyncIssue({
@@ -2219,12 +2269,15 @@ export function retryOfflineTaskSync(tenantId: number, userId: number, input: Ta
 
     return {
       mutationId,
+      mutationStatus,
       issueCode: conflictRetry
         ? 'provider_conflict' as TaskSyncWarningCode
         : missingContainerCode,
       provider: link?.provider || null,
     };
   })();
+
+  kickAfterJournal(tenantId, userId, result.mutationStatus);
 
   if (result.issueCode) {
     recordTaskSyncIssue({
@@ -2395,6 +2448,8 @@ export function addOfflineTaskChecklistItem(tenantId: number, userId: number, in
     return { mutationId, item };
   })();
 
+  kickAfterJournal(tenantId, userId, existingTask.syncState === 'local_only' ? 'synced' : 'queued');
+
   return {
     item: result.item,
     task: getTaskByNexusId(tenantId, userId, input.taskId) || existingTask,
@@ -2490,6 +2545,8 @@ export function toggleOfflineTaskChecklistItem(tenantId: number, userId: number,
     return { mutationId, item };
   })();
 
+  kickAfterJournal(tenantId, userId, existingTask.syncState === 'local_only' ? 'synced' : 'queued');
+
   return {
     item: result.item,
     task: getTaskByNexusId(tenantId, userId, input.taskId) || existingTask,
@@ -2574,11 +2631,18 @@ export function recordLocalTaskMutation(
       userId,
       input.taskId,
     );
+    // M6: provider-bound deletes are journaled with a 10s availability
+    // holdback so the client undo window can retire them before any runner
+    // ships the provider hard-delete. Everything else is available at once.
+    const availableAt = input.operation === 'task.delete' && mutationStatus === 'queued'
+      ? taskDeleteAvailableAt()
+      : null;
     db.prepare(
       `INSERT INTO task_mutations (
          mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
-         task_id, operation, base_local_version, patch_json, submitted_at, status
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         task_id, operation, base_local_version, patch_json, submitted_at, status,
+         available_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       mutationId,
       clientMutationId,
@@ -2591,9 +2655,16 @@ export function recordLocalTaskMutation(
       JSON.stringify(input.patch || {}),
       nowIso(),
       mutationStatus,
+      availableAt,
     );
-    return { mutationId };
+    return { mutationId, mutationStatus };
   })();
+
+  // Deletes are deliberately NOT kicked — the holdback plus the next
+  // cron/kick/force-sync ships them once the undo window has passed.
+  if (input.operation !== 'task.delete') {
+    kickAfterJournal(tenantId, userId, result.mutationStatus);
+  }
 
   return {
     task: getTaskByNexusId(tenantId, userId, input.taskId) || existingTask,
@@ -2784,6 +2855,8 @@ export function createOfflineFirstTaskList(tenantId: number, userId: number, inp
     return { project, mutationId };
   })();
 
+  kickAfterJournal(tenantId, userId, pushProvider === 'ms_todo' ? 'queued' : 'synced');
+
   return {
     list: { id: String(created.project.id), name: created.project.name },
     mutationId: created.mutationId,
@@ -2953,6 +3026,8 @@ export function deleteOfflineFirstTaskList(tenantId: number, userId: number, inp
     );
     return { mutationId };
   })();
+
+  kickAfterJournal(tenantId, userId, willPush ? 'queued' : 'synced');
 
   return {
     deleted: true,

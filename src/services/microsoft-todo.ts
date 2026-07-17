@@ -3,6 +3,8 @@
 import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { graphRetryDelayMs, recordGraphRateLimitHit } from './graph-request-policy';
+import { toGraphDateTimeTimeZone } from './microsoft-graph-datetime';
 import {
   expandRecurringTaskOccurrencesForRange,
   realignMicrosoftRecurrenceForDueDate,
@@ -75,11 +77,14 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
       return await fn();
     } catch (err: any) {
       const status = err?.statusCode || err?.code;
+      if (status === 429) recordGraphRateLimitHit('microsoft-todo');
       const isRetryable = status === 429 || status === 503;
 
       if (!isRetryable || attempt === maxRetries) throw err;
 
-      const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+      // M6: honor the provider's Retry-After budget when present; the legacy
+      // exponential backoff is the header-less fallback.
+      const delay = graphRetryDelayMs(err, attempt);
       logger.warn({ attempt, delay, status }, 'Retrying Microsoft To Do API call');
       await new Promise((r) => setTimeout(r, delay));
     }
@@ -524,12 +529,16 @@ export async function createTask(
       taskBody.body = { content: data.body, contentType: 'text' };
     }
 
+    // NEX-29: Graph expects ZONE-NAIVE wall-clock dateTime strings inside
+    // dateTimeTimeZone payloads — never a 'Z'/offset designator alongside a
+    // named timeZone. toGraphDateTimeTimeZone converts instants to wall-clock
+    // in the named zone and pins date-only dues to T00:00:00 UTC.
     if (data.dueDateTime) {
-      taskBody.dueDateTime = { dateTime: data.dueDateTime, timeZone: tz };
+      taskBody.dueDateTime = toGraphDateTimeTimeZone(data.dueDateTime, tz);
     }
 
     if (data.reminderDateTime) {
-      taskBody.reminderDateTime = { dateTime: data.reminderDateTime, timeZone: tz };
+      taskBody.reminderDateTime = toGraphDateTimeTimeZone(data.reminderDateTime, tz);
       taskBody.isReminderOn = true;
     }
 
@@ -587,8 +596,9 @@ export async function updateTask(
     if (data.status) patch.status = data.status;
 
     if (data.dueDateTime !== undefined) {
+      // NEX-29: zone-naive wall-clock serialization (see createTask).
       patch.dueDateTime = data.dueDateTime
-        ? { dateTime: data.dueDateTime, timeZone: tz }
+        ? toGraphDateTimeTimeZone(data.dueDateTime, tz)
         : null;
       if (data.dueDateTime) {
         const alignedRecurrence = await recurrenceForMovedDueDate(client, listId, taskId, data.dueDateTime, tz);
@@ -607,7 +617,7 @@ export async function updateTask(
 
     if (data.reminderDateTime !== undefined) {
       if (data.reminderDateTime) {
-        patch.reminderDateTime = { dateTime: data.reminderDateTime, timeZone: tz };
+        patch.reminderDateTime = toGraphDateTimeTimeZone(data.reminderDateTime, tz);
         patch.isReminderOn = true;
       } else {
         patch.reminderDateTime = null;

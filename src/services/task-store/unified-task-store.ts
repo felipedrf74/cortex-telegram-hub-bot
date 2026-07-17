@@ -823,6 +823,184 @@ export function softDeleteMissing(
   return totalMarked;
 }
 
+/**
+ * M6 delta removals: handle a single explicit provider-side deletion (delta
+ * `@removed` entry) as a per-task tombstone through the canonical-links path.
+ * Row resolution is links-first (an ACTIVE link owns the provider task id),
+ * then origin identity — the same routing the pull upsert uses — and the
+ * outcome is the exact provider_missing/conflict semantics of the links-based
+ * full-pull reconciliation (markProviderMissingTask). Returns true when a
+ * live row was marked.
+ */
+export function markProviderTaskRemoved(
+  userId: number,
+  provider: TaskProvider,
+  externalId: string,
+  tenantId = userId,
+): boolean {
+  if (!externalId) return false;
+  const db = getDb();
+  const probe = { provider, externalId } as NormalizedTask;
+  let row: ExistingTaskRow | undefined = findRowByActiveLink(db, tenantId, userId, probe);
+  if (!row) {
+    row = db.prepare(
+      `SELECT id, content_hash, sync_state, nexus_task_id, is_deleted, provider_data
+       FROM unified_tasks
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?`,
+    ).get(userId, tenantId, provider, externalId) as ExistingTaskRow | undefined;
+  }
+  if (!row || row.is_deleted === 1) return false;
+  markProviderMissingTask({
+    tenantId,
+    userId,
+    provider,
+    row: { id: row.id, nexus_task_id: row.nexus_task_id, sync_state: row.sync_state },
+  });
+  return true;
+}
+
+/**
+ * M6 list-scoped absence reconciliation. After a delta 410/token-expiry
+ * resync, the returned rows are the COMPLETE current set for the resynced
+ * lists only — so absence marking must be scoped to those containers, never
+ * account-global. Candidate membership mirrors softDeleteMissing (provider
+ * column rows plus canonical-link rows) restricted to the given provider
+ * list/container ids via provider_data.listId and links.provider_list_id.
+ */
+export function softDeleteMissingForLists(
+  userId: number,
+  provider: TaskProvider,
+  listIds: string[],
+  currentExternalIds: string[],
+  tenantId = userId,
+): number {
+  if (listIds.length === 0) return 0;
+  const db = getDb();
+  const listPlaceholders = listIds.map(() => '?').join(', ');
+
+  const providerRows = db.prepare(
+    `SELECT id, external_id, nexus_task_id, sync_state
+     FROM unified_tasks
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND is_deleted = 0
+       AND json_extract(provider_data, '$.listId') IN (${listPlaceholders})`,
+  ).all(userId, tenantId, provider, ...listIds) as Array<{
+    id: number;
+    external_id: string;
+    nexus_task_id: string | null;
+    sync_state: string | null;
+  }>;
+
+  const linkProvider = providerLinkProvider(provider);
+  const linkedRows = linkProvider && linkProvider !== 'nexus_local'
+    ? db.prepare(
+      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state
+       FROM task_provider_links l
+       JOIN unified_tasks t
+         ON t.nexus_task_id = l.task_id
+        AND t.user_id = l.user_id
+        AND COALESCE(t.tenant_id, t.user_id) = COALESCE(l.tenant_id, l.user_id)
+       WHERE l.user_id = ? AND COALESCE(l.tenant_id, l.user_id) = ?
+         AND l.provider = ? AND l.provider_task_id IS NOT NULL
+         AND l.link_state NOT IN ('orphaned')
+         AND l.provider_list_id IN (${listPlaceholders})
+         AND t.is_deleted = 0`,
+    ).all(userId, tenantId, linkProvider, ...listIds) as Array<{
+      id: number;
+      external_id: string;
+      nexus_task_id: string | null;
+      sync_state: string | null;
+    }>
+    : [];
+
+  const seen = new Set(currentExternalIds);
+  const seenRowIds = new Set<number>();
+  let totalMarked = 0;
+  for (const row of [...providerRows, ...linkedRows]) {
+    if (seenRowIds.has(row.id)) continue;
+    seenRowIds.add(row.id);
+    if (seen.has(row.external_id)) continue;
+    markProviderMissingTask({ tenantId, userId, provider, row });
+    totalMarked += 1;
+  }
+  return totalMarked;
+}
+
+/**
+ * M6 list `@removed` soft-handling: the provider deleted an entire list. The
+ * local project row (and its container mappings) is removed so GET /lists
+ * stops showing it, while its tasks are kept locally and flagged through the
+ * same per-task provider_missing/conflict tombstone path the full pull uses —
+ * "Nexus kept the local copy" semantics, consistent with softDeleteMissing.
+ */
+export function removeProviderProject(
+  userId: number,
+  provider: TaskProvider,
+  externalId: string,
+  tenantId = userId,
+): { projectRemoved: boolean; tasksMarked: number } {
+  if (!externalId) return { projectRemoved: false, tasksMarked: 0 };
+  const db = getDb();
+  const projectRow = db.prepare(
+    `SELECT id FROM unified_projects
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?
+     LIMIT 1`,
+  ).get(userId, tenantId, provider, externalId) as { id: number } | undefined;
+
+  const candidateRows = db.prepare(
+    `SELECT id, external_id, nexus_task_id, sync_state
+     FROM unified_tasks
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND is_deleted = 0
+       AND (
+         (provider = ? AND json_extract(provider_data, '$.listId') = ?)
+         OR (? IS NOT NULL AND project_id = ?)
+       )`,
+  ).all(userId, tenantId, provider, externalId, projectRow?.id ?? null, projectRow?.id ?? null) as Array<{
+    id: number;
+    external_id: string;
+    nexus_task_id: string | null;
+    sync_state: string | null;
+  }>;
+
+  const linkProvider = providerLinkProvider(provider);
+  const linkedRows = linkProvider && linkProvider !== 'nexus_local'
+    ? db.prepare(
+      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state
+       FROM task_provider_links l
+       JOIN unified_tasks t
+         ON t.nexus_task_id = l.task_id
+        AND t.user_id = l.user_id
+        AND COALESCE(t.tenant_id, t.user_id) = COALESCE(l.tenant_id, l.user_id)
+       WHERE l.user_id = ? AND COALESCE(l.tenant_id, l.user_id) = ?
+         AND l.provider = ? AND l.provider_list_id = ?
+         AND l.link_state NOT IN ('orphaned')
+         AND t.is_deleted = 0`,
+    ).all(userId, tenantId, linkProvider, externalId) as Array<{
+      id: number;
+      external_id: string;
+      nexus_task_id: string | null;
+      sync_state: string | null;
+    }>
+    : [];
+
+  const seenRowIds = new Set<number>();
+  let tasksMarked = 0;
+  for (const row of [...candidateRows, ...linkedRows]) {
+    if (seenRowIds.has(row.id)) continue;
+    seenRowIds.add(row.id);
+    markProviderMissingTask({ tenantId, userId, provider, row });
+    tasksMarked += 1;
+  }
+
+  db.prepare(
+    `DELETE FROM task_container_mappings
+     WHERE tenant_id = ? AND user_id = ? AND provider = ? AND provider_container_id = ?`,
+  ).run(tenantId, userId, provider === 'nexus' ? 'nexus_local' : provider, externalId);
+  if (projectRow) {
+    db.prepare('DELETE FROM unified_projects WHERE id = ?').run(projectRow.id);
+  }
+  return { projectRemoved: !!projectRow, tasksMarked };
+}
+
 // ─── Reads ─────────────────────────────────────────────────────────────
 
 export function getTaskById(taskId: number): NormalizedTask | null {

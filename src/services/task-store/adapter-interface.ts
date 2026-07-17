@@ -17,6 +17,20 @@ import {
   SyncResult,
 } from './types';
 
+/**
+ * Explicit provider-side deletion observed during an incremental pull
+ * (Microsoft Graph delta `@removed` entries). `kind: 'task'` names a single
+ * provider task id; `kind: 'project'` names a removed list/container. The
+ * sync engine handles these as per-item tombstones through the
+ * canonical-links path — never as full-set reconciliation.
+ */
+export interface TaskPullRemoval {
+  kind: 'task' | 'project';
+  externalId: string;
+  /** Provider container the removal was observed in, when known. */
+  listId?: string;
+}
+
 export interface TaskProviderAdapter {
   /** Stable provider identifier — must match the `TaskProvider` union. */
   readonly provider: TaskProvider;
@@ -72,6 +86,21 @@ export interface TaskProviderAdapter {
     incomplete?: boolean;
     /** Bounded, operator-readable errors for the sync state. */
     errors?: string[];
+    /**
+     * Explicit provider-side deletions observed in an incremental pull
+     * (delta `@removed` entries). Incremental responses never justify
+     * full-set reconciliation, so deletions must arrive on this channel.
+     */
+    removals?: TaskPullRemoval[];
+    /**
+     * Provider list/container ids whose delta state was rebuilt from scratch
+     * this pull (HTTP 410 resync or an expired sync token). For these lists
+     * the returned tasks ARE the complete current set, so the engine may run
+     * LIST-SCOPED absence reconciliation for them — deletions that happened
+     * during the token gap would otherwise be lost forever, because delta
+     * mode never runs the account-global full-pull reconciliation.
+     */
+    resyncedListIds?: string[];
   }>;
 
   /**

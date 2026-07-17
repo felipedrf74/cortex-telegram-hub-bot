@@ -679,3 +679,180 @@ describe('project reuse between getProjects and getTasks', () => {
     expect(adapter.lastGetTasksOptions?.knownProjects).toBeUndefined();
   });
 });
+
+// ── M6: cursor preservation, delta removals, list-scoped resync ─────
+
+import {
+  saveSyncState,
+  upsertTask,
+  upsertProject,
+} from '../../../src/services/task-store/unified-task-store';
+
+function makeDeltaAdapter(
+  provider: TaskProvider,
+  pullResult: Partial<Awaited<ReturnType<TaskProviderAdapter['getTasks']>>>,
+): TaskProviderAdapter {
+  return {
+    provider,
+    capabilities: {
+      canCreate: true,
+      canComplete: true,
+      canDelete: true,
+      canUpdate: true,
+      canAssignDue: true,
+      hasWebhooks: false,
+      hasIncrementalSync: true,
+    },
+    isConnected: () => true,
+    getProjects: async () => [],
+    getTasks: async () => ({ tasks: [], ...pullResult }),
+    createTask: async (userId, task) => ({ ...task, provider, externalId: 'created' } as NormalizedTask),
+    completeTask: async () => undefined,
+    deleteTask: async () => undefined,
+  };
+}
+
+function seedMsTask(externalId: string, listId: string, title = `Task ${externalId}`): void {
+  upsertTask(USER_ID, {
+    provider: 'ms_todo',
+    externalId,
+    title,
+    status: 'pending',
+    priority: 0,
+    providerData: { id: externalId, title, status: 'notStarted', listId },
+  });
+}
+
+describe('M6 cursor preservation and delta removals', () => {
+  it('preserves the stored cursor when the pull throws (catch path no longer wipes deltaLinks)', async () => {
+    saveSyncState(USER_ID, 'todoist', {
+      lastSyncAt: new Date().toISOString(),
+      syncCursor: 'cursor_abc',
+      status: 'idle',
+    });
+    const adapter = makeMockAdapter({ provider: 'todoist', hasIncrementalSync: true, throwOnGetTasks: true });
+    registerAdapter(adapter);
+
+    const result = await syncProvider(USER_ID, 'todoist');
+
+    expect(result.errors).toEqual(['mock failure']);
+    const state = getSyncState(USER_ID, 'todoist');
+    expect(state?.status).toBe('error');
+    expect(state?.sync_cursor).toBe('cursor_abc');
+  });
+
+  it('preserves the stored cursor when a partial pull returns no advanced cursor', async () => {
+    saveSyncState(USER_ID, 'todoist', {
+      lastSyncAt: new Date().toISOString(),
+      syncCursor: 'cursor_abc',
+      status: 'idle',
+    });
+    const adapter = makeMockAdapter({
+      provider: 'todoist',
+      hasIncrementalSync: true,
+      tasksByCall: [[]],
+      cursorByCall: [undefined],
+      incompleteByCall: [true],
+      errorsByCall: [['project 9 fetch failed']],
+    });
+    registerAdapter(adapter);
+
+    const result = await syncProvider(USER_ID, 'todoist');
+
+    expect(result.errors).toEqual(['tasks: project 9 fetch failed']);
+    const state = getSyncState(USER_ID, 'todoist');
+    expect(state?.status).toBe('error');
+    expect(state?.sync_cursor).toBe('cursor_abc');
+  });
+
+  it('applies task removals as per-task tombstones through the canonical-links path', async () => {
+    seedMsTask('ms-removed-1', 'list-a');
+    saveSyncState(USER_ID, 'ms_todo', {
+      lastSyncAt: new Date().toISOString(),
+      syncCursor: '{"list-a":"delta-1"}',
+      status: 'idle',
+    });
+    registerAdapter(makeDeltaAdapter('ms_todo', {
+      nextCursor: '{"list-a":"delta-2"}',
+      removals: [{ kind: 'task', externalId: 'ms-removed-1', listId: 'list-a' }],
+    }));
+
+    const result = await syncProvider(USER_ID, 'ms_todo');
+
+    expect(result.errors).toEqual([]);
+    expect(result.tasksDeleted).toBe(1);
+    const row = testDb.prepare(
+      `SELECT sync_state, is_deleted FROM unified_tasks WHERE user_id = ? AND external_id = 'ms-removed-1'`,
+    ).get(USER_ID) as { sync_state: string; is_deleted: number };
+    // provider_missing semantics — Nexus keeps the local copy, flagged.
+    expect(row).toEqual({ sync_state: 'provider_missing', is_deleted: 0 });
+    const link = testDb.prepare(
+      `SELECT link_state FROM task_provider_links WHERE user_id = ? AND provider_task_id = 'ms-removed-1'`,
+    ).get(USER_ID) as { link_state: string };
+    expect(link.link_state).toBe('provider_missing');
+    expect(getSyncState(USER_ID, 'ms_todo')?.sync_cursor).toBe('{"list-a":"delta-2"}');
+  });
+
+  it('soft-handles removed provider lists: local list row goes away, its tasks are flagged', async () => {
+    upsertProject(USER_ID, { provider: 'ms_todo', externalId: 'list-b', name: 'Beta' });
+    seedMsTask('ms-b1', 'list-b');
+    saveSyncState(USER_ID, 'ms_todo', {
+      lastSyncAt: new Date().toISOString(),
+      syncCursor: '{"list-b":"delta-1"}',
+      status: 'idle',
+    });
+    registerAdapter(makeDeltaAdapter('ms_todo', {
+      nextCursor: '{}',
+      removals: [{ kind: 'project', externalId: 'list-b' }],
+    }));
+
+    const result = await syncProvider(USER_ID, 'ms_todo');
+
+    expect(result.tasksDeleted).toBe(1);
+    expect(getProjects(USER_ID).some((project) => project.externalId === 'list-b')).toBe(false);
+    const row = testDb.prepare(
+      `SELECT sync_state FROM unified_tasks WHERE user_id = ? AND external_id = 'ms-b1'`,
+    ).get(USER_ID) as { sync_state: string };
+    expect(row.sync_state).toBe('provider_missing');
+    const mapping = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_container_mappings WHERE user_id = ? AND provider_container_id = 'list-b'`,
+    ).get(USER_ID) as { count: number };
+    expect(mapping.count).toBe(0);
+  });
+
+  it('reconciles absences ONLY inside resynced lists after a 410 rebuild', async () => {
+    seedMsTask('ms-a1', 'list-a');
+    seedMsTask('ms-a2', 'list-a');
+    seedMsTask('ms-b1', 'list-b');
+    saveSyncState(USER_ID, 'ms_todo', {
+      lastSyncAt: new Date().toISOString(),
+      syncCursor: '{"list-a":"expired","list-b":"delta-1"}',
+      status: 'idle',
+    });
+    registerAdapter(makeDeltaAdapter('ms_todo', {
+      tasks: [{
+        provider: 'ms_todo',
+        externalId: 'ms-a1',
+        title: 'Task ms-a1',
+        status: 'pending',
+        priority: 0,
+        providerData: { id: 'ms-a1', title: 'Task ms-a1', status: 'notStarted', listId: 'list-a' },
+      }],
+      nextCursor: '{"list-a":"fresh","list-b":"delta-1"}',
+      resyncedListIds: ['list-a'],
+    }));
+
+    const result = await syncProvider(USER_ID, 'ms_todo');
+
+    expect(result.tasksDeleted).toBe(1);
+    const states = Object.fromEntries((testDb.prepare(
+      `SELECT external_id, sync_state FROM unified_tasks WHERE user_id = ? AND provider = 'ms_todo'`,
+    ).all(USER_ID) as Array<{ external_id: string; sync_state: string }>)
+      .map((row) => [row.external_id, row.sync_state]));
+    // ms-a2 was absent from the resynced complete set for list-a → flagged;
+    // ms-b1 lives in a NON-resynced list → untouched by the sweep.
+    expect(states['ms-a1']).toBe('synced');
+    expect(states['ms-a2']).toBe('provider_missing');
+    expect(states['ms-b1']).toBe('synced');
+  });
+});
