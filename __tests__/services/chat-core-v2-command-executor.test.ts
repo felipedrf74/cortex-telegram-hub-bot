@@ -446,6 +446,94 @@ describe('Chat Core v2 command executor', () => {
     expect(result.response?.text).not.toContain('Done — I created');
   });
 
+  it('creates ledger tasks with subtasks and verifies the checklist from the local read-back', async () => {
+    const command = nativeCreateCommand();
+    command.payload.subtasks = ['Cortar b-roll', 'Exportar em 4k'];
+    mockGetOfflineTaskById.mockReturnValue(offlineLedgerTask({
+      checklistItems: [
+        { id: 'ci-1', displayName: 'Cortar b-roll', isChecked: false },
+        { id: 'ci-2', displayName: 'Exportar em 4k', isChecked: false },
+      ],
+    }));
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'verified',
+      createdTaskId: undefined,
+      createdTaskNexusId: 'task_nexus_404',
+    });
+    expect(mockAddOfflineTaskChecklistItem).toHaveBeenCalledTimes(2);
+    expect(mockAddOfflineTaskChecklistItem).toHaveBeenCalledWith(5, 5, {
+      taskId: 'task_nexus_404',
+      displayName: 'Cortar b-roll',
+    });
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: ['4'],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('fails subtask verification when the ledger read-back disappears, falling back to the created row list', async () => {
+    const command = nativeCreateCommand();
+    command.payload.subtasks = ['Única subtarefa'];
+    mockGetOfflineTaskById.mockReturnValue(null);
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 'verification_failed', reason: 'verification_failed' });
+    // The invalidation scope comes from the created row when the read-back is gone.
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: ['4'],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('invalidates without list scope when neither the read-back nor the created row has a list', async () => {
+    const command = nativeCreateCommand();
+    command.payload.subtasks = ['Sem lista'];
+    mockCreateOfflineFirstTask.mockReturnValue({
+      task: offlineLedgerTask({ listId: null, listName: null }),
+      mutationId: 'mutation-create-listless',
+      idempotentReplay: false,
+      warnings: [],
+    });
+    mockGetOfflineTaskById.mockReturnValue(null);
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.create',
+      userId: 5,
+      tenantId: 5,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 'verification_failed' });
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 5,
+      listIds: [],
+      includeDerivedSurfaces: true,
+    });
+  });
+
   it('legacy flag-off path creates chat tasks through the iOS-visible task provider path', async () => {
     vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
     mockTaskProvider.createTask.mockResolvedValue({

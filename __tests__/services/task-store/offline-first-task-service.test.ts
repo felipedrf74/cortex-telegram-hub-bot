@@ -1280,4 +1280,142 @@ describe('M5B list operations through the ledger', () => {
     expect(resolveOfflineTaskListRef(USER_ID, USER_ID, null, 'groceries')?.name).toBe('Groceries');
     expect(resolveOfflineTaskListRef(USER_ID, USER_ID, 'nope', 'missing')).toBeNull();
   });
+
+  it('resolveOfflineTaskListRef falls back to name matching on the ref and to null without any reference', () => {
+    createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Groceries' });
+
+    // A ref that is neither a row id nor an external id still resolves as a name.
+    expect(resolveOfflineTaskListRef(USER_ID, USER_ID, 'groceries')?.name).toBe('Groceries');
+    // No usable reference at all resolves to null instead of guessing.
+    expect(resolveOfflineTaskListRef(USER_ID, USER_ID, null, null)).toBeNull();
+  });
+
+  it('resolveOfflineCaptureListName falls back to the default list when no capture alias exists', () => {
+    createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Personal' });
+    createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Work' });
+    testDb.prepare(
+      `UPDATE unified_projects SET is_default = 1 WHERE user_id = ? AND name = 'Work'`,
+    ).run(USER_ID);
+
+    expect(resolveOfflineCaptureListName(USER_ID, USER_ID, null)).toBe('Work');
+  });
+
+  it('rejects a list delete without a usable list reference', () => {
+    expect(() => deleteOfflineFirstTaskList(USER_ID, USER_ID, { listId: '' }))
+      .toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+  });
+
+  it('rejects a list create without a name payload', () => {
+    expect(() => createOfflineFirstTaskList(USER_ID, USER_ID, {} as any))
+      .toThrowError(expect.objectContaining({ code: 'BAD_REQUEST' }));
+  });
+
+  it('replays list.delete idempotently without journaling a second mutation', () => {
+    const created = createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Delete twice' });
+
+    const first = deleteOfflineFirstTaskList(USER_ID, USER_ID, { listId: created.list.id, idempotencyKey: 'i-list-del-idem' });
+    const replay = deleteOfflineFirstTaskList(USER_ID, USER_ID, { listId: created.list.id, idempotencyKey: 'i-list-del-idem' });
+
+    expect(first.idempotentReplay).toBe(false);
+    expect(replay).toMatchObject({
+      deleted: true,
+      idempotentReplay: true,
+      mutationId: first.mutationId,
+      idempotencyKey: 'i-list-del-idem',
+    });
+    expect(listMutations('list.delete')).toHaveLength(1);
+  });
+
+  it('replays a list.create whose journaled patch lost its identity with empty-string fallbacks', () => {
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, submitted_at, status
+       ) VALUES ('m-legacy-create', 'c-legacy-create', 'i-legacy-create', ?, ?, NULL, 'list.create', '{}', datetime('now'), 'synced')`,
+    ).run(USER_ID, USER_ID);
+
+    const replay = createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Recovered', idempotencyKey: 'i-legacy-create' });
+
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.list).toEqual({ id: '', name: 'Recovered' });
+  });
+
+  it('cascades an ms_todo list delete onto its hidden nexus mirror via the container mapping', () => {
+    testDb.prepare(
+      `INSERT INTO unified_projects (user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at)
+       VALUES (?, ?, 'ms_todo', 'AAMk-mirrored-list', 'Mirrored', 0, 0, datetime('now'))`,
+    ).run(USER_ID, USER_ID);
+    const providerRowId = String((testDb.prepare(
+      `SELECT id FROM unified_projects WHERE user_id = ? AND external_id = 'AAMk-mirrored-list'`,
+    ).get(USER_ID) as { id: number }).id);
+    testDb.prepare(
+      `INSERT INTO unified_projects (user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at)
+       VALUES (?, ?, 'nexus', 'nexus_list_mirrored', 'Mirrored', 0, 0, datetime('now'))`,
+    ).run(USER_ID, USER_ID);
+    const mirrorRowId = String((testDb.prepare(
+      `SELECT id FROM unified_projects WHERE user_id = ? AND external_id = 'nexus_list_mirrored'`,
+    ).get(USER_ID) as { id: number }).id);
+    testDb.prepare(
+      `INSERT INTO task_container_mappings (
+         id, tenant_id, user_id, nexus_list_id, provider,
+         provider_container_type, provider_container_id, sync_direction
+       ) VALUES ('map-mirror-1', ?, ?, ?, 'ms_todo', 'todo_list', 'AAMk-mirrored-list', 'bidirectional')`,
+    ).run(USER_ID, USER_ID, mirrorRowId);
+    // A stale mapping onto a row that no longer exists must not break the delete.
+    testDb.prepare(
+      `INSERT INTO task_container_mappings (
+         id, tenant_id, user_id, nexus_list_id, provider,
+         provider_container_type, provider_container_id, sync_direction
+       ) VALUES ('map-mirror-2', ?, ?, '987654', 'ms_todo', 'todo_list', 'AAMk-mirrored-list', 'bidirectional')`,
+    ).run(USER_ID, USER_ID);
+
+    const result = deleteOfflineFirstTaskList(USER_ID, USER_ID, { listId: providerRowId });
+
+    expect(result.deleted).toBe(true);
+    const remaining = testDb.prepare(
+      `SELECT id FROM unified_projects WHERE user_id = ? AND id IN (?, ?)`,
+    ).all(USER_ID, Number(providerRowId), Number(mirrorRowId));
+    expect(remaining).toEqual([]);
+    const patch = JSON.parse(listMutations('list.delete')[0].patch_json);
+    expect(patch.providerContainerId).toBe('AAMk-mirrored-list');
+  });
+
+  it('deletes a nexus list through its ms_todo mapping and removes the mapped provider row', () => {
+    const created = createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Mapped local' });
+    testDb.prepare(
+      `INSERT INTO unified_projects (user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at)
+       VALUES (?, ?, 'ms_todo', 'AAMk-mapped-7', 'Mapped local', 0, 0, datetime('now'))`,
+    ).run(USER_ID, USER_ID);
+    testDb.prepare(
+      `INSERT INTO task_container_mappings (
+         id, tenant_id, user_id, nexus_list_id, provider,
+         provider_container_type, provider_container_id, sync_direction
+       ) VALUES ('map-local-1', ?, ?, ?, 'ms_todo', 'todo_list', 'AAMk-mapped-7', 'bidirectional')`,
+    ).run(USER_ID, USER_ID, created.list.id);
+
+    const result = deleteOfflineFirstTaskList(USER_ID, USER_ID, { listId: created.list.id });
+
+    expect(result.deleted).toBe(true);
+    expect(testDb.prepare(
+      `SELECT COUNT(*) AS count FROM unified_projects WHERE user_id = ? AND external_id = 'AAMk-mapped-7'`,
+    ).get(USER_ID)).toEqual({ count: 0 });
+    const patch = JSON.parse(listMutations('list.delete')[0].patch_json);
+    expect(patch).toMatchObject({ provider: 'ms_todo', providerContainerId: 'AAMk-mapped-7' });
+  });
+
+  it('deletes a nexus list whose ms_todo mapping has no surviving provider row', () => {
+    const created = createOfflineFirstTaskList(USER_ID, USER_ID, { name: 'Orphan mapped' });
+    testDb.prepare(
+      `INSERT INTO task_container_mappings (
+         id, tenant_id, user_id, nexus_list_id, provider,
+         provider_container_type, provider_container_id, sync_direction
+       ) VALUES ('map-orphan-1', ?, ?, ?, 'ms_todo', 'todo_list', 'AAMk-orphan-9', 'bidirectional')`,
+    ).run(USER_ID, USER_ID, created.list.id);
+
+    const result = deleteOfflineFirstTaskList(USER_ID, USER_ID, { listId: created.list.id });
+
+    expect(result.deleted).toBe(true);
+    const patch = JSON.parse(listMutations('list.delete')[0].patch_json);
+    expect(patch).toMatchObject({ provider: 'ms_todo', providerContainerId: 'AAMk-orphan-9' });
+  });
 });

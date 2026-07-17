@@ -1601,4 +1601,34 @@ describe('M5B ledger list routes (single write path)', () => {
     expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
     expect(providerApi.deleteList).toHaveBeenCalledWith('provider-list-7');
   });
+
+  it('DELETE /lists/:listId refuses to delete the default list with a 400 validation error', async () => {
+    // Create a list, promote it to default, then try to delete it.
+    const created = await dispatch('POST', '/lists', { body: { name: 'Principal' } });
+    const listId = created.body.data.id;
+    testDb.prepare('UPDATE unified_projects SET is_default = 1 WHERE id = ?').run(Number(listId));
+
+    const res = await dispatch('DELETE', `/lists/${listId}`, { params: { listId } });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION');
+    expect(res.body.error.message).toBe('Cannot delete the default list');
+    // The refused delete journals nothing.
+    expect(testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'list.delete'`,
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it('POST /lists surfaces a tenant-scope failure as an internal error, not a silent write', async () => {
+    const res = await dispatch('POST', '/lists', {
+      body: { name: 'Escopo inválido' },
+      userId: 12,
+      tenantId: -1,
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(500);
+    expect(testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'list.create'`,
+    ).get()).toEqual({ count: 0 });
+  });
 });

@@ -275,4 +275,139 @@ describe('M5 single write path acceptance', () => {
     expect(providerWriteSpies.createList).toHaveBeenCalledWith('Legacy List');
     expect(taskMutations('list.create')).toHaveLength(0);
   });
+
+  async function seedUnifiedRow(title: string): Promise<{ nexusId: string; rowId: number; entityVersion: string }> {
+    const created = await runTool('ms_todo_create_task', { title, list_name: 'Inbox' });
+    const rowId = (testDb.prepare(
+      'SELECT id FROM unified_tasks WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?',
+    ).get(USER_ID, USER_ID, created.id) as { id: number }).id;
+    const current = getTaskForUser(USER_ID, rowId);
+    expect(current?.status).toBe('pending');
+    return { nexusId: created.id, rowId, entityVersion: computeContentHash(current!) };
+  }
+
+  function unifiedBatchCompleteCommand(
+    targets: Array<{ rowId: number; entityVersion: string }>,
+    title: string,
+  ): AICommandEnvelope<Record<string, unknown>> {
+    const entityVersions = Object.fromEntries(
+      targets.map((target) => [`task:${target.rowId}`, target.entityVersion]),
+    );
+    return {
+      ...unifiedCompleteCommand(targets[0].rowId, title, targets[0].entityVersion),
+      commandId: `cmd_batch_${targets.map((target) => target.rowId).join('_')}`,
+      payload: {
+        operation: 'complete',
+        title,
+        currentStatus: 'pending',
+        targetStatus: 'completed',
+        duplicateTasks: targets.map((target) => ({
+          taskStore: 'unified_tasks',
+          taskId: target.rowId,
+          title,
+        })),
+      },
+      basedOn: {
+        entityIds: Object.keys(entityVersions),
+        entityVersions,
+        contextHash: 'ctx-batch',
+        createdAt: NOW.toISOString(),
+      },
+      preconditions: {
+        requiredEntityVersions: entityVersions,
+        requiredPermissionsVersion: `chat-v2-permissions:${USER_ID}:${USER_ID}:tasks:v1`,
+        invariants: [{
+          type: 'task_status',
+          description: 'Every duplicate must still be pending when the preview is confirmed.',
+          check: 'task_is_pending',
+        }],
+      },
+      idempotencyKey: `chat-v2:${USER_ID}:${USER_ID}:tasks.complete:batch:${targets.map((target) => target.rowId).join('-')}`,
+    };
+  }
+
+  it('NEX-09 (chat-core-v2 batch): duplicate-title completes journal one task.complete per unified row', async () => {
+    const first = await seedUnifiedRow('Pay water bill');
+    const second = await seedUnifiedRow('Pay water bill');
+
+    const result = await executeChatCoreV2Command({
+      command: unifiedBatchCompleteCommand([first, second], 'Pay water bill'),
+      capabilityId: 'tasks.complete',
+      userId: USER_ID,
+      tenantId: USER_ID,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'verified' });
+    expect(taskMutations('task.complete')).toHaveLength(2);
+    expect(getOfflineTaskById(USER_ID, USER_ID, first.nexusId)?.status).toBe('completed');
+    expect(getOfflineTaskById(USER_ID, USER_ID, second.nexusId)?.status).toBe('completed');
+    expectNoProviderWrites();
+  });
+
+  it('flag off routes chat-core-v2 batch completes through the legacy synchronous task-service path', async () => {
+    const first = await seedUnifiedRow('Duplicated legacy');
+    const second = await seedUnifiedRow('Duplicated legacy');
+    testDb.prepare('DELETE FROM task_mutations WHERE operation = ?').run('task.create');
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+
+    const result = await executeChatCoreV2Command({
+      command: unifiedBatchCompleteCommand([first, second], 'Duplicated legacy'),
+      capabilityId: 'tasks.complete',
+      userId: USER_ID,
+      tenantId: USER_ID,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'verified' });
+    // Legacy path completes synchronously without journaling ledger mutations.
+    expect(taskMutations('task.complete')).toHaveLength(0);
+    expect(getTaskForUser(USER_ID, first.rowId)?.status).toBe('completed');
+    expect(getTaskForUser(USER_ID, second.rowId)?.status).toBe('completed');
+  });
+
+  it('flag off routes the single chat-core-v2 unified complete through the legacy synchronous path', async () => {
+    const seeded = await seedUnifiedRow('Legacy single complete');
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+
+    const result = await executeChatCoreV2Command({
+      command: unifiedCompleteCommand(seeded.rowId, 'Legacy single complete', seeded.entityVersion),
+      capabilityId: 'tasks.complete',
+      userId: USER_ID,
+      tenantId: USER_ID,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    expect(result).toMatchObject({ ok: true, status: 'verified', completedTaskId: seeded.rowId });
+    expect(taskMutations('task.complete')).toHaveLength(0);
+    expect(getTaskForUser(USER_ID, seeded.rowId)?.status).toBe('completed');
+  });
+
+  it('fails the unified complete when the row cannot be resolved to a nexus task in the command scope', async () => {
+    const seeded = await seedUnifiedRow('Unresolvable scope');
+    const foreignTenant = 9999;
+    const command = unifiedCompleteCommand(seeded.rowId, 'Unresolvable scope', seeded.entityVersion);
+    command.tenantId = String(foreignTenant);
+    command.authorization.tenantId = String(foreignTenant);
+    command.preconditions.requiredPermissionsVersion = `chat-v2-permissions:${foreignTenant}:${USER_ID}:tasks:v1`;
+    command.authorization.permissionSnapshotVersion = `chat-v2-permissions:${foreignTenant}:${USER_ID}:tasks:v1`;
+
+    const result = await executeChatCoreV2Command({
+      command,
+      capabilityId: 'tasks.complete',
+      userId: USER_ID,
+      tenantId: foreignTenant,
+      locale: 'en-US',
+      now: NOW,
+    });
+
+    // The tenant-scoped ledger bridge cannot see the row, so the write fails
+    // loudly instead of journaling into the wrong tenant.
+    expect(result).toMatchObject({ ok: false, status: 'failed', reason: 'execution_failed' });
+    expect(taskMutations('task.complete')).toHaveLength(0);
+    expect(getTaskForUser(USER_ID, seeded.rowId)?.status).toBe('pending');
+  });
 });

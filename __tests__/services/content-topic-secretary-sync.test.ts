@@ -297,4 +297,118 @@ describe('content topic Secretary sync', () => {
     expect(taskProvider.deleteTask).toHaveBeenCalledWith('list-old', 'task-existing');
     expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
   });
+
+  it('skips task cleanup entirely when the topic never had a Secretary task', async () => {
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic());
+
+    expect(result).toEqual({ taskDeleted: false, calendarDeleted: false, errors: [] });
+    expect(mockResolveOfflineNexusTaskId).not.toHaveBeenCalled();
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+    expect(taskProvider.deleteTask).not.toHaveBeenCalled();
+  });
+
+  it('invalidates without list scope when the topic kept no Secretary list id', async () => {
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_external_id: 'task-existing',
+    }));
+
+    expect(result.taskDeleted).toBe(true);
+    expect(invalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 77,
+      listIds: [],
+      includeDerivedSurfaces: true,
+    });
+  });
+
+  it('legacy flag-off cleanup records the failure when the provider rejects the delete', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    taskProvider.deleteTask = vi.fn(async () => ({ success: false, error: 'graph timeout' }));
+
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_external_id: 'task-existing',
+    }));
+
+    expect(result.taskDeleted).toBe(false);
+    expect(result.errors).toEqual(['task_cleanup_failed']);
+  });
+
+  it('legacy flag-off cleanup maps a reasonless provider rejection to the generic delete failure', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    taskProvider.deleteTask = vi.fn(async () => ({ success: false }));
+
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_external_id: 'task-existing',
+    }));
+
+    expect(result.taskDeleted).toBe(false);
+    expect(result.errors).toEqual(['task_cleanup_failed']);
+  });
+
+  it('legacy flag-off cleanup reports providers without task deletion support', async () => {
+    vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+    delete taskProvider.deleteTask;
+
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_external_id: 'task-existing',
+    }));
+
+    expect(result.taskDeleted).toBe(false);
+    expect(result.errors).toEqual(['task_delete_unsupported']);
+  });
+
+  it('ledger update falls back to the stored topic list identity when the local row has none', async () => {
+    mockUpdateOfflineFirstTask.mockReturnValue({
+      task: { id: 'task_nexus_existing', title: 'Content: Topic test', listId: null, listName: null, status: 'notStarted', syncState: 'queued' },
+      mutationId: 'mutation-topic-update',
+      idempotentReplay: false,
+    });
+
+    await syncContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_list_id: 'list-old',
+      secretary_task_list_name: 'Content',
+      secretary_task_external_id: 'task-existing',
+    }), { language: 'en' });
+
+    expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
+      secretary_task_list_id: 'list-old',
+      secretary_task_list_name: 'Content',
+    }));
+  });
+
+  it('ledger update defaults to the Inbox label when neither the row nor the topic has a list', async () => {
+    mockUpdateOfflineFirstTask.mockReturnValue({
+      task: { id: 'task_nexus_existing', title: 'Content: Topic test', listId: null, listName: null, status: 'notStarted', syncState: 'queued' },
+      mutationId: 'mutation-topic-update',
+      idempotentReplay: false,
+    });
+
+    await syncContentTopicSecretaryArtifacts(77, topic({
+      secretary_task_external_id: 'task-existing',
+    }), { language: 'en' });
+
+    expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
+      secretary_task_list_id: '',
+      secretary_task_list_name: 'Inbox',
+    }));
+  });
+
+  it('ledger create defaults to the Tarefas label when the created row carries no list identity', async () => {
+    mockCreateOfflineFirstTask.mockReturnValue({
+      task: { id: 'task_nexus_topic', title: 'Conteúdo: Topic test', listId: null, listName: null, status: 'notStarted', syncState: 'local_only' },
+      mutationId: 'mutation-topic-create',
+      idempotentReplay: false,
+      warnings: [],
+    });
+
+    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR' });
+
+    expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
+      secretary_task_list_id: '',
+      secretary_task_list_name: 'Tarefas',
+      secretary_task_external_id: 'task_nexus_topic',
+    }));
+  });
 });

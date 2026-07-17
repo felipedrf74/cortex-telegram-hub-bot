@@ -7063,4 +7063,92 @@ describe('Chat API routes', () => {
     expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('res.status(400)'));
     expect(routeSource.indexOf("res.setHeader('Cache-Control'")).toBeLessThan(routeSource.indexOf('res.status(404)'));
   });
+
+  describe('M5 task callback edges (ledger and legacy flag-off)', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('td:tc legacy flag-off completes through the task provider path', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      mockGetCallbackForScope.mockReturnValue({ listId: 'list-11', taskId: '22', title: 'Legacy complete' });
+      mockConsumeCallbackForScope.mockReturnValue(true);
+
+      const res = await dispatch('POST', '/callback', 7001, { callbackData: 'td:tc:cb-ref-1' });
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        text: '✅ Completed: Legacy complete',
+        editOriginal: true,
+      });
+      // The ledger journal stays untouched on the legacy path.
+      expect(testDb.prepare(
+        "SELECT COUNT(*) AS count FROM task_mutations WHERE user_id = 7001 AND operation = 'task.complete'",
+      ).get()).toMatchObject({ count: 0 });
+    });
+
+    it('td:tc legacy flag-off returns 410 when the one-shot ref was already consumed', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      mockGetCallbackForScope.mockReturnValue({ listId: 'list-11', taskId: '22', title: 'Expired complete' });
+      mockConsumeCallbackForScope.mockReturnValue(false);
+
+      const res = await dispatch('POST', '/callback', 7001, { callbackData: 'td:tc:cb-ref-2' });
+
+      expect(res.statusCode).toBe(410);
+      expect(res.body.error).toBeTruthy();
+    });
+
+    it('td:dy expires the callback when the task id cannot be resolved locally (ledger)', async () => {
+      mockGetCallbackForScope.mockReturnValue({ listId: 'list-11', taskId: 'provider-task-gone', title: 'Ghost' });
+
+      const res = await dispatch('POST', '/callback', 7001, { callbackData: 'td:dy:cb-ref-3' });
+
+      expect(res.statusCode).toBe(410);
+      // The malformed-callback expiry consumes the one-shot ref.
+      expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('cb-ref-3', { tenantId: 7001, userId: 7001 });
+      expect(testDb.prepare(
+        "SELECT COUNT(*) AS count FROM task_mutations WHERE user_id = 7001 AND operation = 'task.delete'",
+      ).get()).toMatchObject({ count: 0 });
+    });
+
+    it('td:dy legacy flag-off deletes through the task provider path', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      mockGetCallbackForScope.mockReturnValue({ listId: 'list-11', taskId: '22', title: 'Legacy delete' });
+      mockConsumeCallbackForScope.mockReturnValue(true);
+
+      const res = await dispatch('POST', '/callback', 7001, { callbackData: 'td:dy:cb-ref-4' });
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        text: '🗑️ Deleted: Legacy delete',
+        editOriginal: true,
+      });
+    });
+
+    it('td:dy legacy flag-off returns 410 when the one-shot ref was already consumed', async () => {
+      vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
+      mockGetCallbackForScope.mockReturnValue({ listId: 'list-11', taskId: '22', title: 'Expired delete' });
+      mockConsumeCallbackForScope.mockReturnValue(false);
+
+      const res = await dispatch('POST', '/callback', 7001, { callbackData: 'td:dy:cb-ref-5' });
+
+      expect(res.statusCode).toBe(410);
+    });
+
+    it('td:dy list delete converges without a write when the list is already gone locally (ledger)', async () => {
+      mockGetCallbackForScope.mockReturnValue({ listId: 'provider-list-gone', listName: 'Ghost list', type: 'list' });
+      mockConsumeCallbackForScope.mockReturnValue(true);
+
+      const res = await dispatch('POST', '/callback', 7001, { callbackData: 'td:dy:cb-ref-6' });
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        text: '🗑️ Deleted list: Ghost list',
+        editOriginal: true,
+      });
+      expect(testDb.prepare(
+        "SELECT COUNT(*) AS count FROM task_mutations WHERE user_id = 7001 AND operation = 'list.delete'",
+      ).get()).toMatchObject({ count: 0 });
+    });
+  });
 });

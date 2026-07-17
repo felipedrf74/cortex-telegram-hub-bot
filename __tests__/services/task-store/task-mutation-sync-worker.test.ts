@@ -1009,4 +1009,105 @@ describe('M5B list.* mutation dispatch', () => {
     const rearmed = testDb.prepare('SELECT next_retry_at FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { next_retry_at: string | null };
     expect(rearmed.next_retry_at).toBeTruthy();
   });
+
+  it('pushes list.create without a local listId and skips the mirror mapping', async () => {
+    providerApi.createList.mockResolvedValue({ success: true, data: { id: 'ms-list-unmapped', displayName: 'Unmapped' } });
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { name: 'Unmapped', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.synced).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('synced');
+    expect(providerApi.createList).toHaveBeenCalledWith('Unmapped');
+    // Without a local row id there is no LOCAL mirror to hide behind a
+    // mapping: the only mapping row is the provider-keyed one that
+    // upsertProject records for the provider row itself.
+    const providerRow = testDb.prepare(
+      `SELECT id FROM unified_projects WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'ms-list-unmapped'`,
+    ).get(USER_ID) as { id: number };
+    const mappings = testDb.prepare(
+      `SELECT nexus_list_id FROM task_container_mappings WHERE user_id = ?`,
+    ).all(USER_ID) as Array<{ nexus_list_id: string }>;
+    expect(mappings).toEqual([{ nexus_list_id: String(providerRow.id) }]);
+  });
+
+  it('fails a list.create whose provider response carries no created list id', async () => {
+    providerApi.createList.mockResolvedValue({ success: true, data: {} });
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '61', name: 'No id back', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.failedRetryable).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('failed');
+    const row = testDb.prepare('SELECT last_error_message FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { last_error_message: string };
+    expect(row.last_error_message).toContain('provider_list_create_missing_id');
+  });
+
+  it('classifies a provider 409 on list mutations as a conflict', async () => {
+    providerApi.createList.mockRejectedValue(Object.assign(new Error('precondition failed'), { statusCode: 409 }));
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '62', name: 'Conflicted', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.conflicts).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('conflict');
+    const row = testDb.prepare('SELECT last_error_code FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { last_error_code: string };
+    expect(row.last_error_code).toBe('provider_conflict');
+  });
+
+  it('marks a provider 400 on list mutations as permanently failed', async () => {
+    providerApi.createList.mockRejectedValue(Object.assign(new Error('bad request'), { statusCode: 400 }));
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '63', name: 'Rejected', provider: 'ms_todo' },
+    });
+
+    const result = await runTaskMutationSyncBatch({ userId: USER_ID });
+
+    expect(result.failedPermanent).toBe(1);
+    expect(mutationStatus(mutationId)).toBe('failed');
+  });
+
+  it('does not re-arm parked nexus_local list mutations — there is no provider to push to', () => {
+    const mutationId = seedListMutation({
+      operation: 'list.create',
+      patch: { listId: '64', name: 'Local parked', provider: 'nexus_local' },
+      status: 'failed',
+    });
+    testDb.prepare(
+      `UPDATE task_mutations SET next_retry_at = NULL, last_error_code = 'provider_auth_expired' WHERE mutation_id = ?`,
+    ).run(mutationId);
+
+    const result = requeueAuthParkedMutations({ userId: USER_ID });
+
+    expect(result).toEqual({ requeued: 0, deadLettered: 0 });
+    const row = testDb.prepare('SELECT next_retry_at FROM task_mutations WHERE mutation_id = ?').get(mutationId) as { next_retry_at: string | null };
+    expect(row.next_retry_at).toBeNull();
+  });
+
+  it('does not re-arm parked task mutations that lost their task identity', () => {
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, status, retry_count, next_retry_at, last_error_code
+       ) VALUES ('mutation-orphan-task', 'client-orphan', 'idem-orphan', ?, ?, NULL, 'task.update', '{}', 'failed', 0, NULL, 'provider_auth_expired')`,
+    ).run(USER_ID, USER_ID);
+
+    const result = requeueAuthParkedMutations({ userId: USER_ID });
+
+    expect(result).toEqual({ requeued: 0, deadLettered: 0 });
+    const row = testDb.prepare(
+      "SELECT next_retry_at FROM task_mutations WHERE mutation_id = 'mutation-orphan-task'",
+    ).get() as { next_retry_at: string | null };
+    expect(row.next_retry_at).toBeNull();
+  });
 });
