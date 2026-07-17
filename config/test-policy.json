@@ -322,7 +322,59 @@
       "sources": [
         "src/services/tool-executor.ts"
       ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/tool-executor.ts:1505-1510",
+          "anchor": "syncState: created.task.syncState",
+          "behavior": "ms_todo_create_task returns the ledger-created task's nexus id, title, and honest syncState with success true — chat callers receive ledger truth, never a provider echo.",
+          "replacementTest": "__tests__/services/tool-executor.test.ts",
+          "ownerTestNamePattern": "writes the ledger and returns the NEXUS id and title",
+          "minimumMutants": 2
+        }
+      ],
       "reason": "M5 rewrote the ms_todo_* write-tool tests from provider-delegation assertions to offline-first ledger assertions and re-pinned the direct-provider behavior as explicit TASK_SINGLE_WRITE_PATH=0 legacy tests in the same file; real-database acceptance lives in the single-write-path suite."
+    },
+    {
+      "test": "__tests__/api/app-facing-happy-path-smoke.test.ts",
+      "replacementTests": [
+        "__tests__/api/app-facing-happy-path-smoke.test.ts",
+        "__tests__/api/tasks-routes.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/tasks.ts"
+      ],
+      "reason": "M5 re-pinned the POST /lists smoke assertions to the ledger contract: the 201 body carries the LOCAL project row id (the id GET /lists serves) instead of a provider echo, with the provider push journaled for the mutation worker."
+    },
+    {
+      "test": "__tests__/api/chat-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/chat-routes.test.ts",
+        "__tests__/services/task-store/single-write-path.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 moved chat-route planner task-write expectations from provider-delegation assertions to offline-first ledger assertions (no inline provider writes; local read-back), matching the converted skills executors."
+    },
+    {
+      "test": "__tests__/services/chat-action-planner-multi-step.test.ts",
+      "replacementTests": [
+        "__tests__/services/chat-action-planner-multi-step.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 re-pinned multi-step planner task writes to the ledger: creates land exactly once in unified_tasks with zero provider-mock writes, replacing the previous provider-call-count assertions."
+    },
+    {
+      "test": "__tests__/services/chat-action-production-safety.test.ts",
+      "replacementTests": [
+        "__tests__/services/chat-action-production-safety.test.ts"
+      ],
+      "sources": [
+        "src/services/skills/tasks/executor.ts"
+      ],
+      "reason": "M5 pinned the malformed-provider-response scenario to the TASK_SINGLE_WRITE_PATH=0 legacy path (the ledger path performs no inline provider write to malform) while keeping the calendar verifier-failure half unchanged."
     },
     {
       "test": "__tests__/services/chat-core-v2-command-executor.test.ts",

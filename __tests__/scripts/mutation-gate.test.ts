@@ -344,7 +344,7 @@ describe('changed-critical mutation gate', () => {
     expect(policy.mutation.minimumMutants).toBeUndefined();
     expect(policy.mutation.cleanupMappings.flatMap(
       ({ mutationTargets = [] }) => mutationTargets,
-    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(29);
+    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(31);
   });
 
   it('maps deleted-test source text back to repository source dependencies', () => {
