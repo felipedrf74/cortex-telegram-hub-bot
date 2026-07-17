@@ -432,6 +432,84 @@ describe('upsertTask', () => {
   });
 });
 
+// ── last_synced_snapshot capture on pulls (M2B) ────────────────────
+
+describe('pull-side last_synced_snapshot capture (M2B)', () => {
+  function readSnapshot(externalId: string): Record<string, unknown> | null {
+    const row = testDb.prepare(
+      `SELECT l.last_synced_snapshot AS snapshot
+       FROM task_provider_links l
+       INNER JOIN unified_tasks t
+         ON t.nexus_task_id = l.task_id AND t.user_id = l.user_id
+       WHERE t.user_id = ? AND t.external_id = ?`,
+    ).get(USER_ID, externalId) as { snapshot: string | null } | undefined;
+    return row?.snapshot ? JSON.parse(row.snapshot) : null;
+  }
+
+  it('captures the imported provider content as the agreed base on insert', () => {
+    upsertTask(USER_ID, makeTask({
+      provider: 'ms_todo',
+      externalId: 'ms-snap-insert',
+      title: 'Imported title',
+      dueDate: '2026-07-20T09:00:00Z',
+      dueIsDatetime: true,
+      notes: 'imported note',
+      providerData: { listId: 'ms-list-1', '@odata.etag': 'etag-v1' },
+    }));
+
+    expect(readSnapshot('ms-snap-insert')).toEqual({
+      title: 'Imported title',
+      status: 'pending',
+      priority: 2,
+      dueDate: '2026-07-20T09:00:00Z',
+      dueIsDatetime: true,
+      notes: 'imported note',
+    });
+  });
+
+  it('advances the snapshot on the pull overwrite path and on hash-equal sightings', () => {
+    const task = makeTask({
+      provider: 'ms_todo',
+      externalId: 'ms-snap-overwrite',
+      title: 'First',
+      providerData: { listId: 'ms-list-1', '@odata.etag': 'etag-v1' },
+    });
+    upsertTask(USER_ID, task);
+
+    // Overwrite (hash changed, no pending local mutation) refreshes the base.
+    upsertTask(USER_ID, { ...task, title: 'Second' });
+    expect(readSnapshot('ms-snap-overwrite')).toMatchObject({ title: 'Second' });
+
+    // Hash-equal sighting keeps capturing (rides the existing link upsert —
+    // no extra read in markProviderTaskSeen).
+    upsertTask(USER_ID, { ...task, title: 'Second' });
+    expect(readSnapshot('ms-snap-overwrite')).toMatchObject({ title: 'Second' });
+  });
+
+  it('does NOT advance the snapshot when a divergent pull conflicts a pending-local row', () => {
+    const task = makeTask({
+      provider: 'ms_todo',
+      externalId: 'ms-snap-conflict',
+      title: 'Agreed base',
+      providerData: { listId: 'ms-list-1', '@odata.etag': 'etag-v1' },
+    });
+    upsertTask(USER_ID, task);
+    testDb.prepare(
+      "UPDATE unified_tasks SET sync_state = 'queued' WHERE user_id = ? AND external_id = 'ms-snap-conflict'",
+    ).run(USER_ID);
+
+    upsertTask(USER_ID, { ...task, title: 'Provider-side divergence' });
+
+    const row = testDb.prepare(
+      "SELECT sync_state FROM unified_tasks WHERE user_id = ? AND external_id = 'ms-snap-conflict'",
+    ).get(USER_ID) as { sync_state: string };
+    expect(row.sync_state).toBe('conflict');
+    // The provider's divergent copy is one SIDE of the conflict, not a base:
+    // the snapshot must keep pointing at the last agreed content.
+    expect(readSnapshot('ms-snap-conflict')).toMatchObject({ title: 'Agreed base' });
+  });
+});
+
 // ── softDeleteMissing ──────────────────────────────────────────────
 
 describe('softDeleteMissing', () => {

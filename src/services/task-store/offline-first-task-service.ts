@@ -93,6 +93,8 @@ export interface TaskUpdateMutationInput {
   recurrence?: unknown;
   idempotencyKey?: string;
   clientMutationId?: string;
+  /** Optional client OCC (NEX-24): the local_version the client last saw. */
+  baseLocalVersion?: number;
 }
 
 export interface TaskMoveMutationInput {
@@ -100,6 +102,8 @@ export interface TaskMoveMutationInput {
   targetListId: string;
   idempotencyKey?: string;
   clientMutationId?: string;
+  /** Optional client OCC (NEX-24): the local_version the client last saw. */
+  baseLocalVersion?: number;
 }
 
 export interface TaskChecklistMutationInput {
@@ -1643,6 +1647,8 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
     };
   }
 
+  assertBaseLocalVersionCurrent(existingRow, existingTask, input.baseLocalVersion);
+
   const providerData = safeJsonParse<Record<string, unknown>>(existingRow.provider_data, {});
   if (Object.prototype.hasOwnProperty.call(input, 'recurrence')) {
     providerData.recurrence = input.recurrence || null;
@@ -1779,6 +1785,8 @@ export function moveOfflineFirstTask(tenantId: number, userId: number, input: Ta
       idempotentReplay: true,
     };
   }
+
+  assertBaseLocalVersionCurrent(existingRow, existingTask, input.baseLocalVersion);
 
   const result = db.transaction(() => {
     const mutationId = randomId('task_mutation');
@@ -2227,6 +2235,33 @@ export function retryOfflineTaskSync(tenantId: number, userId: number, input: Ta
   };
 }
 
+/**
+ * Optional client OCC (NEX-24). Strictly additive: when the client sends no
+ * baseLocalVersion (or an unparseable one — defensive, treated as absent),
+ * behavior is exactly the pre-OCC last-write-wins ledger. When present and
+ * BEHIND the row's current local_version, the write is rejected with
+ * VERSION_CONFLICT carrying the current task DTO so the client can rebase.
+ * Runs AFTER the idempotent-replay short-circuit on purpose: a retried
+ * mutation whose first attempt already bumped local_version must replay, not
+ * 409 against its own effect.
+ */
+function assertBaseLocalVersionCurrent(
+  existingRow: UnifiedTaskRow,
+  currentTask: OfflineTaskDto,
+  baseLocalVersion: number | undefined,
+): void {
+  if (baseLocalVersion == null) return;
+  const base = Number(baseLocalVersion);
+  if (!Number.isFinite(base)) return;
+  const current = existingRow.local_version || 1;
+  if (base < current) {
+    const err = new Error('Task changed since the client base version. Refresh and retry.');
+    (err as any).code = 'VERSION_CONFLICT';
+    (err as any).currentTask = currentTask;
+    throw err;
+  }
+}
+
 function mutationKeys(
   tenantId: number,
   userId: number,
@@ -2461,12 +2496,15 @@ export function recordLocalTaskMutation(
     clientMutationId?: string;
     idempotencyKey?: string;
     patch?: Record<string, unknown>;
+    /** Optional client OCC (NEX-24): the local_version the client last saw. */
+    baseLocalVersion?: number;
   },
 ) {
   assertScope(tenantId, userId);
   const db = getDb();
+  const existingRow = getTaskRowByNexusId(tenantId, userId, input.taskId);
   const existingTask = getTaskByNexusId(tenantId, userId, input.taskId);
-  if (!existingTask) {
+  if (!existingRow || !existingTask) {
     const err = new Error('Task not found');
     (err as any).code = 'NOT_FOUND';
     throw err;
@@ -2487,6 +2525,8 @@ export function recordLocalTaskMutation(
       idempotentReplay: true,
     };
   }
+
+  assertBaseLocalVersionCurrent(existingRow, existingTask, input.baseLocalVersion);
 
   const result = db.transaction(() => {
     const mutationId = randomId('task_mutation');

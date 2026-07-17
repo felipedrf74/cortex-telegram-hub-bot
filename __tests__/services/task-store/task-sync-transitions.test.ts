@@ -30,6 +30,7 @@ describe('task-sync-transitions', () => {
         'dead_letter',
         'failed',
         'queued',
+        'superseded',
         'synced',
         'syncing',
       ]);
@@ -88,27 +89,43 @@ describe('task-sync-transitions', () => {
     });
   });
 
-  describe('documented absorbing states (current defects pinned on purpose)', () => {
-    it('mutation conflict is terminal today (NEX-06) — adding an exit must edit the table', () => {
-      expect(_transitionTableForTests('mutation_status').conflict).toEqual([]);
+  describe('documented absorbing states (designed exits pinned on purpose)', () => {
+    // M2B conflict resolution closed NEX-06: mutation 'conflict' is NO LONGER
+    // terminal — resolveTaskConflict retires conflicted rows as 'superseded'
+    // (task-conflict-resolution.ts). 'superseded' is the internal-only
+    // terminal state that replaced the absorbing defect.
+    it('mutation conflict exits only to superseded (M2B conflict resolution)', () => {
+      expect(_transitionTableForTests('mutation_status').conflict).toEqual(['superseded']);
     });
 
-    it('mutation dead_letter and synced are terminal', () => {
+    it('mutation dead_letter, synced, and superseded are terminal', () => {
       expect(_transitionTableForTests('mutation_status').dead_letter).toEqual([]);
       expect(_transitionTableForTests('mutation_status').synced).toEqual([]);
+      expect(_transitionTableForTests('mutation_status').superseded).toEqual([]);
     });
 
-    it('task sync_state conflict has no healing exit — only self-record and tombstone', () => {
+    it('superseded is never a legal insert-time status — it only exists as a resolution exit', () => {
+      expect(INITIAL_STATES.mutation_status).not.toContain('superseded');
+    });
+
+    it('task sync_state conflict exits: self-record, tombstone, and the M2B resolution paths', () => {
+      // M2B: keep_local re-queues the local copy; keep_provider applies the
+      // provider copy (or accepts the remote deletion as a synced tombstone).
       expect([..._transitionTableForTests('task_sync_state').conflict].sort()).toEqual([
         'conflict',
         'deleted_pending_sync',
+        'queued',
+        'synced',
       ]);
     });
 
-    it('link conflict has no healer; orphaned is terminal', () => {
+    it('link conflict heals only through M2B resolution; orphaned is terminal', () => {
       expect([..._transitionTableForTests('link_state').conflict].sort()).toEqual([
         'conflict',
+        'linked',
         'orphaned',
+        'pending_create',
+        'pending_update',
       ]);
       expect(_transitionTableForTests('link_state').orphaned).toEqual([]);
     });
@@ -165,6 +182,25 @@ describe('task-sync-transitions', () => {
     it('deleted_pending_sync completes to synced only via the delete push (NEX-19 resurrect closed)', () => {
       expect(isTransitionAllowed('task_sync_state', 'deleted_pending_sync', 'synced')).toBe(true);
       expect(isTransitionAllowed('task_sync_state', 'deleted_pending_sync', 'conflict')).toBe(true);
+    });
+
+    it('M2B supersede sources: every still-pending ledger status can retire, delivered work cannot', () => {
+      // keep_provider retires queued/accepted_local/failed/conflict rows so a
+      // later push can never clobber the accepted provider copy; synced,
+      // dead_letter, and in-flight syncing rows are not superseded.
+      for (const from of ['queued', 'accepted_local', 'failed', 'conflict']) {
+        expect(isTransitionAllowed('mutation_status', from, 'superseded'), from).toBe(true);
+      }
+      for (const from of ['synced', 'dead_letter', 'syncing', 'superseded']) {
+        expect(isTransitionAllowed('mutation_status', from, 'superseded'), from).toBe(false);
+      }
+    });
+
+    it('M2B resolution link exits: provider_missing keep_local can re-arm a create', () => {
+      expect(isTransitionAllowed('link_state', 'provider_missing', 'pending_create')).toBe(true);
+      expect(isTransitionAllowed('link_state', 'conflict', 'pending_create')).toBe(true);
+      expect(isTransitionAllowed('link_state', 'conflict', 'pending_update')).toBe(true);
+      expect(isTransitionAllowed('link_state', 'conflict', 'linked')).toBe(true);
     });
   });
 

@@ -45,23 +45,34 @@ type TransitionTable = Readonly<Record<string, readonly string[]>>;
 const MUTATION_STATUS_TRANSITIONS: TransitionTable = {
   // worker claim: readyMutations selects queued/accepted_local/due-failed/
   // stale-'syncing' rows; markMutationSyncing sets 'syncing'
-  // (task-mutation-sync-worker.ts:299-326, :373-381)
-  queued: ['syncing'],
-  accepted_local: ['syncing'],
+  // (task-mutation-sync-worker.ts:299-326, :373-381).
+  // 'superseded' exits (M2B conflict resolution): resolveTaskConflict
+  // keep_provider retires every still-pending ledger row so the accepted
+  // provider copy can never be clobbered by a later push
+  // (task-conflict-resolution.ts).
+  queued: ['syncing', 'superseded'],
+  accepted_local: ['syncing', 'superseded'],
   // failed rows are only re-claimable when next_retry_at is due
   // (worker:302); dead-letter applies to failed rows at the retry cap
-  // (worker markDeadLetter:522-529, cap check :981)
-  failed: ['syncing', 'dead_letter'],
+  // (worker markDeadLetter:522-529, cap check :981); conflict resolution
+  // supersedes them under both strategies (M2B).
+  failed: ['syncing', 'dead_letter', 'superseded'],
   // stale-lease re-claim keeps status 'syncing' (worker:303-307);
   // markSynced → 'synced' (:396); markFailure → 'failed' or 'conflict'
   // (:474-482)
   syncing: ['syncing', 'synced', 'failed', 'conflict'],
-  // Terminal today. 'conflict' having no exit is the documented
-  // absorbing-state defect (NEX-06); the conflict-resolution work adds
-  // exits by editing THIS table alongside the code.
   synced: [],
-  conflict: [],
+  // NEX-06 closed by M2B: 'conflict' is no longer absorbing — conflict
+  // resolution (keep_local/keep_provider) retires the row as 'superseded'
+  // and, for keep_local, enqueues a fresh full-content task.update.
+  conflict: ['superseded'],
   dead_letter: [],
+  // Internal-only terminal state (never surfaced to clients): the mutation
+  // was retired by conflict resolution. readyMutations never selects it,
+  // countPendingMutations never counts it, and the dead-letter sweep only
+  // sees rows readyMutations produced — superseded rows are inert history
+  // until the task_ledger_retention job prunes them.
+  superseded: [],
 };
 
 /**
@@ -196,10 +207,12 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
     'conflict',
     'deleted_pending_sync',
   ],
-  // Absorbing today (NEX-06): retry re-records conflict
-  // (offline-first-task-service.ts:2024-2032); pulls preserve it (pending
-  // guard) — the only current exit is the tombstone via local delete.
-  conflict: ['conflict', 'deleted_pending_sync'],
+  // Retry re-records conflict (offline-first-task-service.ts:2024-2032);
+  // pulls preserve it (pending guard); local delete tombstones. M2B closes
+  // the NEX-06 absorbing state: conflict resolution exits to 'queued'
+  // (keep_local re-push) or 'synced' (keep_provider apply / accepted remote
+  // deletion tombstone) — task-conflict-resolution.ts.
+  conflict: ['conflict', 'deleted_pending_sync', 'queued', 'synced'],
   // worker pushes the provider delete then marks synced (markSynced after
   // task.delete). Pull-overwrite resurrection (NEX-19) is closed: the state
   // is pending-guarded, so a divergent pull marks conflict instead.
@@ -253,11 +266,15 @@ const LINK_STATE_TRANSITIONS: TransitionTable = {
   ],
   stale: ['linked', 'pending_update', 'pending_delete', 'disconnected', 'provider_missing', 'conflict', 'orphaned'],
   disconnected: ['linked', 'stale', 'provider_missing', 'conflict', 'orphaned', 'pending_update', 'pending_delete'],
-  provider_missing: ['linked', 'stale', 'disconnected', 'conflict', 'orphaned', 'pending_update', 'pending_delete'],
+  // 'pending_create' exit (M2B): keep_local on a provider-missing conflict
+  // clears provider_task_id and re-arms a create-recovery push.
+  provider_missing: ['linked', 'stale', 'disconnected', 'conflict', 'orphaned', 'pending_update', 'pending_delete', 'pending_create'],
   // Duplicate-scan conflict is preserved by the upsert ON CONFLICT branch
-  // (unified-task-store.ts:255-262); no current healer clears it (NEX-06
-  // family). Orphaned is terminal.
-  conflict: ['conflict', 'orphaned'],
+  // (unified-task-store.ts:255-262). M2B adds the resolution healers:
+  // keep_local → pending_update (re-push) or pending_create (provider copy
+  // gone, re-create), keep_provider → linked (provider copy applied).
+  // Orphaned stays terminal.
+  conflict: ['conflict', 'orphaned', 'pending_update', 'pending_create', 'linked'],
   orphaned: [],
 };
 

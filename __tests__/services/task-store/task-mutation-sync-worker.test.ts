@@ -107,6 +107,7 @@ function createTestDb(): Database.Database {
       last_verified_at TEXT,
       ownership TEXT NOT NULL,
       link_state TEXT NOT NULL,
+      last_synced_snapshot TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -482,6 +483,53 @@ describe('task mutation sync worker write-back safety', () => {
     ).get(taskId) as { count: number };
     expect(task.sync_state).toBe('synced');
     expect(issueCount.count).toBe(0);
+  });
+
+  it('captures the pushed local content as the link last_synced_snapshot on markSynced (M2B)', async () => {
+    const { taskId } = seedLinkedMutation({ taskId: 'task-snapshot-capture' });
+
+    await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    const link = testDb.prepare(
+      `SELECT last_synced_snapshot
+       FROM task_provider_links
+       WHERE task_id = ?`,
+    ).get(taskId) as { last_synced_snapshot: string | null };
+    expect(link.last_synced_snapshot).not.toBeNull();
+    expect(JSON.parse(link.last_synced_snapshot as string)).toEqual({
+      title: 'Worker Task',
+      status: 'pending',
+      priority: 2,
+      dueDate: null,
+      dueIsDatetime: false,
+      notes: null,
+    });
+  });
+
+  it('never selects superseded mutations and never dead-letters them past the retry cap (M2B)', async () => {
+    // A superseded row shaped like a former conflict AND one past the
+    // dead-letter retry cap: the batch must ignore both entirely.
+    seedLinkedMutation({
+      taskId: 'task-superseded-ignored',
+      providerTaskId: 'ms-task-superseded',
+      operation: 'task.update',
+      mutationStatus: 'superseded',
+    });
+    testDb.prepare(
+      `UPDATE task_mutations
+       SET retry_count = 9, last_error_code = 'conflict_resolved_keep_local'
+       WHERE task_id = 'task-superseded-ignored'`,
+    ).run();
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(result.processed).toBe(0);
+    expect(result.deadLettered).toBe(0);
+    expect(providerApi.updateTask).not.toHaveBeenCalled();
+    const row = testDb.prepare(
+      `SELECT status, retry_count FROM task_mutations WHERE task_id = 'task-superseded-ignored'`,
+    ).get() as { status: string; retry_count: number };
+    expect(row).toEqual({ status: 'superseded', retry_count: 9 });
   });
 
   it('reconciles Microsoft checklist add, update, and delete branches', async () => {

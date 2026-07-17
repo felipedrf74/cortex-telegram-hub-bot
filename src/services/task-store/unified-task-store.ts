@@ -24,6 +24,7 @@ import {
   SyncStateRow,
 } from './types';
 import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
+import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
 
 // ─── Row mapping ────────────────────────────────────────────────────────
 
@@ -253,9 +254,31 @@ function extractNexusMarkerTaskId(task: NormalizedTask): string | null {
   return null;
 }
 
-function ensureProviderLinkForTask(tenantId: number, userId: number, task: NormalizedTask, nexusTaskId: string): void {
+function ensureProviderLinkForTask(
+  tenantId: number,
+  userId: number,
+  task: NormalizedTask,
+  nexusTaskId: string,
+  options: { captureSyncedSnapshot?: boolean } = {},
+): void {
   const provider = providerLinkProvider(task.provider);
   if (!provider) return;
+
+  // M2B snapshot capture rides the link upsert that already happens on every
+  // pull path (import, hash-equal sighting, overwrite) — no extra read. The
+  // divergent-pull conflict path passes captureSyncedSnapshot:false because
+  // the provider copy it saw is NOT an agreed base; the snapshot must keep
+  // pointing at the last content both sides shared.
+  const syncedSnapshot = options.captureSyncedSnapshot === false
+    ? null
+    : buildTaskSyncedSnapshot({
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      dueDate: task.dueDate ?? null,
+      dueIsDatetime: task.dueIsDatetime ?? false,
+      notes: task.notes ?? null,
+    });
 
   const containerId = providerContainerId(task);
   getDb().prepare(
@@ -263,8 +286,8 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
        id, task_id, tenant_id, user_id, provider, provider_account_id,
        provider_task_id, provider_list_id, provider_project_id,
        provider_version, provider_updated_at, last_synced_at, last_verified_at,
-       ownership, link_state
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'linked')
+       ownership, link_state, last_synced_snapshot
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?, 'linked', ?)
      ON CONFLICT(tenant_id, user_id, provider, provider_account_id, provider_task_id)
      DO UPDATE SET
        task_id = CASE
@@ -282,6 +305,7 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
        provider_project_id = COALESCE(excluded.provider_project_id, task_provider_links.provider_project_id),
        provider_version = COALESCE(excluded.provider_version, task_provider_links.provider_version),
        provider_updated_at = COALESCE(excluded.provider_updated_at, task_provider_links.provider_updated_at),
+       last_synced_snapshot = COALESCE(excluded.last_synced_snapshot, task_provider_links.last_synced_snapshot),
        last_synced_at = datetime('now'),
        last_verified_at = datetime('now'),
        link_state = CASE
@@ -302,6 +326,7 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
     stringProviderDataValue(task, ['etag', '@odata.etag', 'revision', 'sync_id']),
     stringProviderDataValue(task, ['updated_at', 'lastModifiedDateTime', 'modified_at']),
     provider === 'nexus_local' ? 'linked' : 'provider_imported',
+    syncedSnapshot,
   );
 }
 
@@ -610,7 +635,9 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
   }
 
   if (hasPendingLocalMutation(existing.sync_state)) {
-    ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId);
+    // Divergent pull on a pending-local row: do NOT advance the synced
+    // snapshot — the provider copy is one side of the conflict, not a base.
+    ensureProviderLinkForTask(tenantId, userId, task, existingNexusTaskId, { captureSyncedSnapshot: false });
     db.prepare(
       `UPDATE unified_tasks SET
          sync_state = 'conflict',

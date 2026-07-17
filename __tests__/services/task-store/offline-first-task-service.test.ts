@@ -45,6 +45,7 @@ vi.mock('../../../src/services/task-store/task-router', () => ({
 import {
   addOfflineTaskChecklistItem,
   assignOfflineTaskProvider,
+  countPendingMutations,
   createOfflineFirstTask,
   getOfflineTaskById,
   getOfflineFilteredTasks,
@@ -1089,6 +1090,30 @@ describe('offline-first task service', () => {
         lastSyncedAt: '2026-07-01T10:00:00Z',
       });
       expect(readProviderState('todoist')).toEqual({ provider: 'todoist', state: 'disconnected' });
+    });
+  });
+
+  describe('superseded mutation status (M2B, internal-only)', () => {
+    it('countPendingMutations never counts superseded rows — they are retired history', () => {
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Superseded rows are not pending',
+        listName: 'Tasks',
+        clientMutationId: 'ios-superseded-count',
+        idempotencyKey: 'idem-ios-superseded-count',
+      });
+      const insertMutation = testDb.prepare(
+        `INSERT INTO task_mutations (
+           mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+           task_id, operation, patch_json, status
+         ) VALUES (?, ?, ?, ?, ?, ?, 'task.update', '{}', ?)`,
+      );
+      insertMutation.run('m-superseded-1', 'c-superseded-1', 'i-superseded-1', USER_ID, USER_ID, created.task.id, 'superseded');
+      insertMutation.run('m-conflict-1', 'c-conflict-1', 'i-conflict-1', USER_ID, USER_ID, created.task.id, 'conflict');
+
+      // The local-only create short-circuits to 'synced', so exactly the
+      // conflict row is pending: superseded contributes nothing.
+      expect(countPendingMutations(USER_ID, USER_ID)).toBe(1);
+      expect(getOfflineTaskLists(USER_ID, USER_ID).pendingMutationCount).toBe(1);
     });
   });
 });
