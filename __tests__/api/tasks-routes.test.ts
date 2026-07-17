@@ -199,6 +199,7 @@ function createTestDb(): Database.Database {
       last_verified_at TEXT,
       ownership TEXT NOT NULL,
       link_state TEXT NOT NULL,
+      last_synced_snapshot TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(tenant_id, user_id, provider, provider_account_id, provider_task_id)
@@ -893,5 +894,625 @@ describe('offline-first task routes', () => {
     expect(providerApi.deleteTask).not.toHaveBeenCalled();
     expect(providerApi.createTask).not.toHaveBeenCalled();
     expectNoProviderReads();
+  });
+});
+
+// ── Conflict resolution routes (M2B) ─────────────────────────────────
+
+function seedConflictTask(input: {
+  taskId?: string;
+  syncState?: string;
+  linkState?: string;
+  providerVersion?: string | null;
+} = {}) {
+  const taskId = input.taskId || 'task-conflicted-1';
+  testDb.prepare(
+    `INSERT INTO unified_tasks (
+       user_id, tenant_id, provider, external_id, project_id, project_name,
+       title, status, priority, due_date, due_is_datetime, notes,
+       nexus_task_id, local_version, sync_state, source_of_truth
+     ) VALUES (12, 12, 'nexus', ?, NULL, 'Work', 'Local conflicted title', 'pending', 2,
+       '2026-07-18T10:00:00Z', 1, 'local note', ?, 3, ?, 'nexus')`,
+  ).run(taskId, taskId, input.syncState || 'conflict');
+  testDb.prepare(
+    `INSERT INTO task_provider_links (
+       id, task_id, tenant_id, user_id, provider, provider_account_id,
+       provider_task_id, provider_list_id, provider_version, ownership, link_state
+     ) VALUES (?, ?, 12, 12, 'ms_todo', 'ms_todo:12', 'ms-task-1', 'ms-list-1', ?, 'nexus_created', ?)`,
+  ).run(`link-${taskId}`, taskId, input.providerVersion === undefined ? 'etag-v1' : input.providerVersion, input.linkState || 'conflict');
+  testDb.prepare(
+    `INSERT INTO task_mutations (
+       mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+       task_id, operation, patch_json, status, last_error_code
+     ) VALUES (?, ?, ?, 12, 12, ?, 'task.update', '{}', 'conflict', 'provider_conflict')`,
+  ).run(`mutation-${taskId}`, `client-${taskId}`, `idem-${taskId}`, taskId);
+  testDb.prepare(
+    `INSERT INTO task_sync_issues (
+       id, task_id, tenant_id, user_id, provider, code, state
+     ) VALUES (?, ?, 12, 12, 'ms_todo', 'provider_conflict', 'open')`,
+  ).run(`issue-${taskId}`, taskId);
+  return { taskId };
+}
+
+const freshProviderCopy = {
+  success: true,
+  data: {
+    id: 'ms-task-1',
+    title: 'Provider edited title',
+    status: 'completed',
+    importance: 'high',
+    body: { content: 'provider body', contentType: 'text' },
+    dueDateTime: { dateTime: '2026-07-21T09:00:00Z', timeZone: 'UTC' },
+    '@odata.etag': 'etag-v2',
+  },
+};
+
+describe('task sync conflict routes (M2B)', () => {
+  it('previews a conflict with a LIVE provider re-fetch: mine, theirs, fresh version', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue(freshProviderCopy);
+
+    const res = await dispatch('GET', `/list-1/${taskId}/sync/conflict`, {
+      params: { listId: 'list-1', taskId },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(providerApi.getTask).toHaveBeenCalledWith('ms-list-1', 'ms-task-1', 'Work');
+    expect(res.body.data).toMatchObject({
+      conflictId: `conflict_${taskId}_etag-v1`,
+      providerVersion: 'etag-v2',
+      providerMissing: false,
+      mine: expect.objectContaining({
+        id: taskId,
+        title: 'Local conflicted title',
+        syncState: 'conflict',
+        localVersion: 3,
+      }),
+      theirs: {
+        title: 'Provider edited title',
+        status: 'completed',
+        dueDateTime: '2026-07-21T09:00:00Z',
+        importance: 'high',
+        body: 'provider body',
+      },
+    });
+    expect(typeof res.body.data.fetchedAt).toBe('string');
+  });
+
+  it('returns 404 CONFLICT_NOT_FOUND for a task without an unresolved conflict', async () => {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: 'Healthy task',
+        listName: 'Tasks',
+        clientMutationId: 'ios-conflict-healthy',
+        idempotencyKey: 'idem-conflict-healthy',
+      },
+    });
+    const taskId = created.body.data.task.id;
+
+    const res = await dispatch('GET', `/list-1/${taskId}/sync/conflict`, {
+      params: { listId: 'list-1', taskId },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('CONFLICT_NOT_FOUND');
+    expectNoProviderReads();
+  });
+
+  it('returns 503 PROVIDER_UNAVAILABLE when the live provider read fails', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockRejectedValue(new Error('graph unreachable'));
+
+    const res = await dispatch('GET', `/list-1/${taskId}/sync/conflict`, {
+      params: { listId: 'list-1', taskId },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('PROVIDER_UNAVAILABLE');
+  });
+
+  it('previews providerMissing with theirs:null when the provider says the task is gone', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue({ success: false, error: 'Not Found', statusCode: 404 });
+
+    const res = await dispatch('GET', `/list-1/${taskId}/sync/conflict`, {
+      params: { listId: 'list-1', taskId },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data).toMatchObject({
+      theirs: null,
+      providerMissing: true,
+      providerVersion: null,
+    });
+  });
+
+  it('keep_local: supersedes conflicted mutations, requeues one full re-push with the fresh etag', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue(freshProviderCopy);
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: {
+        strategy: 'keep_local',
+        expectedProviderVersion: 'etag-v2',
+        clientMutationId: 'ios-resolve-keep-local-1',
+        idempotencyKey: 'idem-resolve-keep-local-1',
+      },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ resolved: true, strategy: 'keep_local' });
+    expect(res.body.data.task.syncState).toBe('queued');
+
+    const superseded = testDb.prepare(
+      `SELECT status, last_error_code, locked_at, next_retry_at
+       FROM task_mutations WHERE mutation_id = ?`,
+    ).get(`mutation-${taskId}`) as Record<string, unknown>;
+    expect(superseded).toEqual({
+      status: 'superseded',
+      last_error_code: 'conflict_resolved_keep_local',
+      locked_at: null,
+      next_retry_at: null,
+    });
+
+    const requeued = testDb.prepare(
+      `SELECT operation, status, patch_json
+       FROM task_mutations
+       WHERE task_id = ? AND client_mutation_id = 'ios-resolve-keep-local-1'`,
+    ).get(taskId) as { operation: string; status: string; patch_json: string };
+    expect(requeued.operation).toBe('task.update');
+    expect(requeued.status).toBe('queued');
+    expect(JSON.parse(requeued.patch_json)).toMatchObject({
+      resolution: 'keep_local',
+      providerLinkProvider: 'ms_todo',
+      title: 'Local conflicted title',
+    });
+
+    const link = testDb.prepare(
+      `SELECT provider_version, link_state, provider_task_id FROM task_provider_links WHERE id = ?`,
+    ).get(`link-${taskId}`) as Record<string, unknown>;
+    expect(link).toEqual({
+      provider_version: 'etag-v2',
+      link_state: 'pending_update',
+      provider_task_id: 'ms-task-1',
+    });
+
+    const task = testDb.prepare(
+      `SELECT sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { sync_state: string };
+    expect(task.sync_state).toBe('queued');
+
+    const issue = testDb.prepare(
+      `SELECT state FROM task_sync_issues WHERE id = ?`,
+    ).get(`issue-${taskId}`) as { state: string };
+    expect(issue.state).toBe('resolved');
+  });
+
+  it('keep_provider: applies provider content, recomputes the hash, and retires pending mutations', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue(freshProviderCopy);
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_provider', expectedProviderVersion: 'etag-v2' },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ resolved: true, strategy: 'keep_provider' });
+    expect(res.body.data.task).toMatchObject({ title: 'Provider edited title', status: 'completed', syncState: 'synced' });
+
+    const row = testDb.prepare(
+      `SELECT title, status, priority, due_date, notes, sync_state, content_hash, local_version, provider, external_id
+       FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as Record<string, unknown>;
+    expect(row).toMatchObject({
+      title: 'Provider edited title',
+      status: 'completed',
+      priority: 3,
+      due_date: '2026-07-21T09:00:00Z',
+      notes: 'provider body',
+      sync_state: 'synced',
+      local_version: 4,
+      // Canonical-links rule: origin identity untouched.
+      provider: 'nexus',
+      external_id: taskId,
+    });
+    expect(row.content_hash).toEqual(expect.any(String));
+
+    const superseded = testDb.prepare(
+      `SELECT status, last_error_code FROM task_mutations WHERE mutation_id = ?`,
+    ).get(`mutation-${taskId}`) as Record<string, unknown>;
+    expect(superseded).toEqual({ status: 'superseded', last_error_code: 'conflict_resolved_keep_provider' });
+
+    const link = testDb.prepare(
+      `SELECT provider_version, link_state, last_synced_snapshot FROM task_provider_links WHERE id = ?`,
+    ).get(`link-${taskId}`) as { provider_version: string; link_state: string; last_synced_snapshot: string };
+    expect(link.provider_version).toBe('etag-v2');
+    expect(link.link_state).toBe('linked');
+    expect(JSON.parse(link.last_synced_snapshot)).toMatchObject({
+      title: 'Provider edited title',
+      status: 'completed',
+      priority: 3,
+      notes: 'provider body',
+    });
+  });
+
+  it('rejects a stale expectedProviderVersion with 409 CONFLICT_STALE and a refreshed preview', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue(freshProviderCopy);
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_local', expectedProviderVersion: 'etag-v1' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('CONFLICT_STALE');
+    expect(res.body.error.details.preview).toMatchObject({
+      providerVersion: 'etag-v2',
+      providerMissing: false,
+      theirs: expect.objectContaining({ title: 'Provider edited title' }),
+    });
+    // Nothing changed: the conflict is still unresolved.
+    const mutation = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = ?`,
+    ).get(`mutation-${taskId}`) as { status: string };
+    const task = testDb.prepare(
+      `SELECT sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { sync_state: string };
+    expect(mutation.status).toBe('conflict');
+    expect(task.sync_state).toBe('conflict');
+  });
+
+  it('keep_provider with the provider copy gone tombstones the row (accepted remote deletion)', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue({ success: false, error: 'Not Found', statusCode: 404 });
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_provider' },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.task.status).toBe('cancelled');
+    const row = testDb.prepare(
+      `SELECT is_deleted, deleted_at, sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { is_deleted: number; deleted_at: string | null; sync_state: string };
+    expect(row.is_deleted).toBe(1);
+    expect(row.deleted_at).toEqual(expect.any(String));
+    expect(row.sync_state).toBe('synced');
+
+    const link = testDb.prepare(
+      `SELECT link_state, provider_task_id FROM task_provider_links WHERE id = ?`,
+    ).get(`link-${taskId}`) as { link_state: string; provider_task_id: string | null };
+    expect(link).toEqual({ link_state: 'orphaned', provider_task_id: null });
+
+    const superseded = testDb.prepare(
+      `SELECT status, last_error_code FROM task_mutations WHERE mutation_id = ?`,
+    ).get(`mutation-${taskId}`) as Record<string, unknown>;
+    expect(superseded).toEqual({ status: 'superseded', last_error_code: 'conflict_resolved_keep_provider' });
+  });
+
+  it('keep_local with the provider copy gone re-arms the create-recovery push', async () => {
+    const { taskId } = seedConflictTask();
+    providerApi.getTask.mockResolvedValue({ success: false, error: 'Not Found', statusCode: 404 });
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_local' },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.task.syncState).toBe('queued');
+    const link = testDb.prepare(
+      `SELECT link_state, provider_task_id, provider_version FROM task_provider_links WHERE id = ?`,
+    ).get(`link-${taskId}`) as Record<string, unknown>;
+    // provider_task_id cleared → the worker's existing create-recovery branch
+    // (search by Nexus marker, then createTask) re-creates the provider copy.
+    expect(link).toEqual({ link_state: 'pending_create', provider_task_id: null, provider_version: null });
+  });
+
+  it('validates the strategy before any provider read', async () => {
+    const { taskId } = seedConflictTask();
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'merge_magically' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION');
+    expectNoProviderReads();
+  });
+});
+
+// ── Optional client OCC (NEX-24) ─────────────────────────────────────
+
+describe('optional client OCC on task mutations (NEX-24)', () => {
+  async function createBaseTask(suffix: string) {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: `OCC base task ${suffix}`,
+        listName: 'Tasks',
+        clientMutationId: `ios-occ-create-${suffix}`,
+        idempotencyKey: `idem-occ-create-${suffix}`,
+      },
+    });
+    return created.body.data.task as { id: string; listId: string; localVersion: number };
+  }
+
+  it('PATCH without baseLocalVersion keeps the exact pre-OCC behavior', async () => {
+    const task = await createBaseTask('absent');
+
+    const res = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'Updated without OCC',
+        clientMutationId: 'ios-occ-absent-1',
+        idempotencyKey: 'idem-occ-absent-1',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task.title).toBe('Updated without OCC');
+    expect(res.body.data.task.localVersion).toBe(2);
+  });
+
+  it('PATCH with a stale baseLocalVersion returns 409 VERSION_CONFLICT carrying the current task', async () => {
+    const task = await createBaseTask('stale-patch');
+    await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'Bumps version to 2',
+        clientMutationId: 'ios-occ-bump-1',
+        idempotencyKey: 'idem-occ-bump-1',
+      },
+    });
+
+    const stale = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'From a stale client',
+        baseLocalVersion: 1,
+        clientMutationId: 'ios-occ-stale-1',
+        idempotencyKey: 'idem-occ-stale-1',
+      },
+    });
+
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body.error.code).toBe('VERSION_CONFLICT');
+    expect(stale.body.error.details.currentTask).toMatchObject({
+      id: task.id,
+      title: 'Bumps version to 2',
+      localVersion: 2,
+    });
+    const row = testDb.prepare(
+      `SELECT title, local_version FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(task.id) as { title: string; local_version: number };
+    expect(row).toEqual({ title: 'Bumps version to 2', local_version: 2 });
+    const staleMutation = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE client_mutation_id = 'ios-occ-stale-1'`,
+    ).get() as { count: number };
+    expect(staleMutation.count).toBe(0);
+  });
+
+  it('PATCH with the current baseLocalVersion is applied', async () => {
+    const task = await createBaseTask('current-patch');
+
+    const res = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'Applied with matching base',
+        baseLocalVersion: 1,
+        clientMutationId: 'ios-occ-current-1',
+        idempotencyKey: 'idem-occ-current-1',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task.title).toBe('Applied with matching base');
+    expect(res.body.data.task.localVersion).toBe(2);
+  });
+
+  it('complete route: absent base unchanged, stale base 409, current base applied', async () => {
+    const task = await createBaseTask('complete');
+    // Bump to version 2 first.
+    await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'Complete OCC bump',
+        clientMutationId: 'ios-occ-complete-bump',
+        idempotencyKey: 'idem-occ-complete-bump',
+      },
+    });
+
+    const stale = await dispatch('POST', `/${task.listId}/${task.id}/complete`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        baseLocalVersion: 1,
+        clientMutationId: 'ios-occ-complete-stale',
+        idempotencyKey: 'idem-occ-complete-stale',
+      },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body.error.code).toBe('VERSION_CONFLICT');
+    expect(stale.body.error.details.currentTask).toMatchObject({ id: task.id, localVersion: 2 });
+
+    const current = await dispatch('POST', `/${task.listId}/${task.id}/complete`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        baseLocalVersion: 2,
+        clientMutationId: 'ios-occ-complete-current',
+        idempotencyKey: 'idem-occ-complete-current',
+      },
+    });
+    expect(current.statusCode).toBe(200);
+    expect(current.body.data.task.status).toBe('completed');
+
+    const absent = await dispatch('POST', `/${task.listId}/${task.id}/complete`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        clientMutationId: 'ios-occ-complete-absent',
+        idempotencyKey: 'idem-occ-complete-absent',
+      },
+    });
+    expect(absent.statusCode).toBe(200);
+  });
+
+  it('move and delete routes thread baseLocalVersion and 409 on stale bases', async () => {
+    const task = await createBaseTask('move-delete');
+    await dispatch('POST', '/', {
+      body: {
+        title: 'OCC move target list seed',
+        listName: 'Work',
+        clientMutationId: 'ios-occ-move-target',
+        idempotencyKey: 'idem-occ-move-target',
+      },
+    });
+    const targetList = testDb.prepare(
+      `SELECT id FROM unified_projects WHERE tenant_id = 12 AND user_id = 12 AND name = 'Work' LIMIT 1`,
+    ).get() as { id: number };
+
+    const staleMove = await dispatch('POST', `/${task.listId}/${task.id}/move`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        targetListId: String(targetList.id),
+        baseLocalVersion: 0,
+        clientMutationId: 'ios-occ-move-stale',
+        idempotencyKey: 'idem-occ-move-stale',
+      },
+    });
+    expect(staleMove.statusCode).toBe(409);
+    expect(staleMove.body.error.code).toBe('VERSION_CONFLICT');
+
+    const staleDelete = await dispatch('DELETE', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        baseLocalVersion: 0,
+        clientMutationId: 'ios-occ-delete-stale',
+        idempotencyKey: 'idem-occ-delete-stale',
+      },
+    });
+    expect(staleDelete.statusCode).toBe(409);
+    expect(staleDelete.body.error.code).toBe('VERSION_CONFLICT');
+
+    const row = testDb.prepare(
+      `SELECT is_deleted, project_id FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(task.id) as { is_deleted: number; project_id: number | null };
+    expect(row.is_deleted).toBe(0);
+    expect(row.project_id).not.toBe(targetList.id);
+  });
+
+  it('accepts a non-numeric baseLocalVersion as absent instead of erroring', async () => {
+    const task = await createBaseTask('non-numeric');
+
+    const res = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        title: 'Non-numeric base is ignored',
+        baseLocalVersion: 'not-a-version',
+        clientMutationId: 'ios-occ-nonnumeric-1',
+        idempotencyKey: 'idem-occ-nonnumeric-1',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task.title).toBe('Non-numeric base is ignored');
+  });
+
+  it('treats a falsy stored local_version as version 1 for the OCC comparison', async () => {
+    const task = await createBaseTask('null-version');
+    // local_version is NOT NULL — 0 is the falsy value the || 1 fallback
+    // defends against.
+    testDb.prepare(
+      `UPDATE unified_tasks SET local_version = 0 WHERE nexus_task_id = ?`,
+    ).run(task.id);
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/complete`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        baseLocalVersion: 1,
+        clientMutationId: 'ios-occ-nullver-1',
+        idempotencyKey: 'idem-occ-nullver-1',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task.status).toBe('completed');
+  });
+
+  it('maps non-OCC errors on the move route to a 500, not a 409', async () => {
+    const task = await createBaseTask('move-bad-target');
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/move`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        targetListId: '999999',
+        clientMutationId: 'ios-occ-move-badtarget',
+        idempotencyKey: 'idem-occ-move-badtarget',
+      },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error.code).not.toBe('VERSION_CONFLICT');
+  });
+});
+
+describe('conflict route error mapping (M2B)', () => {
+  it('preview 404s NOT_FOUND for an unknown task id', async () => {
+    const res = await dispatch('GET', '/list-1/task-does-not-exist/sync/conflict', {
+      params: { listId: 'list-1', taskId: 'task-does-not-exist' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('resolve 404s NOT_FOUND for an unknown task id', async () => {
+    const res = await dispatch('POST', '/list-1/task-does-not-exist/sync/resolve', {
+      params: { listId: 'list-1', taskId: 'task-does-not-exist' },
+      body: { strategy: 'keep_local' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('resolve 404s CONFLICT_NOT_FOUND for a healthy task', async () => {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: 'Healthy resolve target',
+        listName: 'Tasks',
+        clientMutationId: 'ios-resolve-healthy',
+        idempotencyKey: 'idem-resolve-healthy',
+      },
+    });
+    const taskId = created.body.data.task.id;
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_provider' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('CONFLICT_NOT_FOUND');
+  });
+
+  it('resolve 503s PROVIDER_UNAVAILABLE when the live provider re-fetch fails', async () => {
+    const { taskId } = seedConflictTask({ taskId: 'task-resolve-provider-down' });
+    providerApi.getTask.mockRejectedValue(new Error('graph unreachable'));
+
+    const res = await dispatch('POST', `/list-1/${taskId}/sync/resolve`, {
+      params: { listId: 'list-1', taskId },
+      body: { strategy: 'keep_local', expectedProviderVersion: 'etag-v1' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error.code).toBe('PROVIDER_UNAVAILABLE');
+    const mutation = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = ?`,
+    ).get('mutation-task-resolve-provider-down') as { status: string };
+    expect(mutation.status).toBe('conflict');
   });
 });

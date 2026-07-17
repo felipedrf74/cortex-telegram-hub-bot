@@ -37,6 +37,10 @@ import {
   updateOfflineFirstTask,
 } from '../../services/task-store/offline-first-task-service';
 import { getTaskSyncOperationalMetrics } from '../../services/task-store/task-mutation-sync-worker';
+import {
+  getTaskConflictPreview,
+  resolveTaskConflict,
+} from '../../services/task-store/task-conflict-resolution';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -75,10 +79,23 @@ function normalizedTaskStatus(value: unknown): string {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]/g, '');
 }
 
-function isTaskStatusOnlyPatch(body: unknown): body is { status?: unknown; idempotencyKey?: unknown; clientMutationId?: unknown } {
+function isTaskStatusOnlyPatch(body: unknown): body is { status?: unknown; idempotencyKey?: unknown; clientMutationId?: unknown; baseLocalVersion?: unknown } {
   if (!body || typeof body !== 'object') return false;
   const keys = Object.keys(body as Record<string, unknown>);
-  return keys.length > 0 && keys.every((key) => ['status', 'idempotencyKey', 'clientMutationId'].includes(key));
+  return keys.length > 0 && keys.every((key) => ['status', 'idempotencyKey', 'clientMutationId', 'baseLocalVersion'].includes(key));
+}
+
+/**
+ * Map a VERSION_CONFLICT (optional client OCC, NEX-24) to the 409 contract:
+ * the current task DTO rides in error.details so the client can rebase
+ * without a second read. Returns true when the error was handled.
+ */
+function sendVersionConflict(res: Response, err: any): boolean {
+  if (err?.code !== 'VERSION_CONFLICT') return false;
+  sendError(res, 'VERSION_CONFLICT', err.message || 'Task changed since the client base version', 409, {
+    currentTask: err.currentTask || null,
+  });
+  return true;
 }
 
 function isCompletedLikeTask(task: any): boolean {
@@ -385,6 +402,7 @@ export function taskRoutes(): Router {
               idempotencyKey: req.body?.idempotencyKey,
               clientMutationId: req.body?.clientMutationId,
               patch: { status: 'completed' },
+              baseLocalVersion: req.body?.baseLocalVersion,
             });
             invalidateTaskRouteCaches(listId, scopedUserId);
             sendSuccess(res, result);
@@ -397,6 +415,7 @@ export function taskRoutes(): Router {
               idempotencyKey: req.body?.idempotencyKey,
               clientMutationId: req.body?.clientMutationId,
               patch: { status: req.body?.status || 'notStarted' },
+              baseLocalVersion: req.body?.baseLocalVersion,
             });
             invalidateTaskRouteCaches(listId, scopedUserId);
             sendSuccess(res, result);
@@ -412,6 +431,7 @@ export function taskRoutes(): Router {
             recurrence: req.body?.recurrence,
             idempotencyKey: req.body?.idempotencyKey,
             clientMutationId: req.body?.clientMutationId,
+            baseLocalVersion: req.body?.baseLocalVersion,
           });
           invalidateTaskRouteCaches(listId, scopedUserId);
           sendSuccess(res, result);
@@ -421,6 +441,7 @@ export function taskRoutes(): Router {
 
       sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
     } catch (err: any) {
+      if (sendVersionConflict(res as Response, err)) return;
       logger.error({ err }, 'iOS tasks update failed');
       sendInternalError(res, 'Failed to update task');
     }
@@ -440,6 +461,7 @@ export function taskRoutes(): Router {
             idempotencyKey: req.body?.idempotencyKey,
             clientMutationId: req.body?.clientMutationId,
             patch: { status: 'completed' },
+            baseLocalVersion: req.body?.baseLocalVersion,
           });
           invalidateTaskRouteCaches(listId, scopedUserId);
           sendSuccess(res, {
@@ -453,6 +475,7 @@ export function taskRoutes(): Router {
 
       sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
     } catch (err: any) {
+      if (sendVersionConflict(res as Response, err)) return;
       logger.error({ err }, 'iOS tasks complete failed');
       sendInternalError(res, 'Failed to complete task');
     }
@@ -576,6 +599,7 @@ export function taskRoutes(): Router {
             targetListId,
             idempotencyKey: req.body?.idempotencyKey,
             clientMutationId: req.body?.clientMutationId,
+            baseLocalVersion: req.body?.baseLocalVersion,
           });
           invalidateTaskRouteCaches(listId, userId);
           invalidateTaskRouteCaches(targetListId, userId);
@@ -586,6 +610,7 @@ export function taskRoutes(): Router {
 
       sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
     } catch (err: any) {
+      if (sendVersionConflict(res as Response, err)) return;
       logger.error({ err }, 'iOS task move failed');
       sendInternalError(res, 'Failed to move task');
     }
@@ -627,6 +652,93 @@ export function taskRoutes(): Router {
       }
       logger.error({ err }, 'iOS task assign provider failed');
       sendInternalError(res, 'Failed to assign task provider');
+    }
+  });
+
+  /**
+   * GET /api/v1/tasks/:listId/:taskId/sync/conflict — conflict resolve preview.
+   *
+   * Live re-fetches the provider copy (reconciliation-style getTask probe,
+   * 10s timeout) so the user decides against the provider's CURRENT content:
+   * { conflictId, mine, theirs|null, providerVersion, providerMissing,
+   * fetchedAt }. 404 CONFLICT_NOT_FOUND when the task has no unresolved
+   * conflict; 503 PROVIDER_UNAVAILABLE when the provider cannot be reached.
+   */
+  router.get('/:listId/:taskId/sync/conflict', async (req, res: Response) => {
+    try {
+      const { taskId } = req.params;
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_conflict_preview_read');
+      const preview = await getTaskConflictPreview(tenantId, userId, taskId);
+      sendSuccess(res, preview);
+    } catch (err: any) {
+      if (err?.code === 'NOT_FOUND') {
+        sendError(res, 'NOT_FOUND', err.message || 'Task not found in local task store', 404);
+        return;
+      }
+      if (err?.code === 'CONFLICT_NOT_FOUND') {
+        sendError(res, 'CONFLICT_NOT_FOUND', err.message || 'Task has no unresolved sync conflict', 404);
+        return;
+      }
+      if (err?.code === 'PROVIDER_UNAVAILABLE') {
+        sendError(res, 'PROVIDER_UNAVAILABLE', err.message || 'Provider is unreachable. Try again shortly.', 503);
+        return;
+      }
+      logger.error({ err }, 'iOS task conflict preview failed');
+      sendInternalError(res, 'Failed to load task conflict preview');
+    }
+  });
+
+  /**
+   * POST /api/v1/tasks/:listId/:taskId/sync/resolve — resolve a sync conflict.
+   * Body: { strategy: 'keep_local'|'keep_provider', expectedProviderVersion?,
+   * idempotencyKey?, clientMutationId? }. A provided expectedProviderVersion
+   * that no longer matches the live provider copy returns 409 CONFLICT_STALE
+   * with a refreshed preview in error.details.preview.
+   */
+  router.post('/:listId/:taskId/sync/resolve', async (req, res: Response) => {
+    try {
+      const { listId, taskId } = req.params;
+      const strategy = req.body?.strategy;
+      if (strategy !== 'keep_local' && strategy !== 'keep_provider') {
+        sendError(res, 'VALIDATION', "strategy must be 'keep_local' or 'keep_provider'", 400);
+        return;
+      }
+
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_conflict_resolve_local_mutation');
+      const result = await resolveTaskConflict(tenantId, userId, {
+        taskId,
+        strategy,
+        expectedProviderVersion: req.body?.expectedProviderVersion,
+        idempotencyKey: req.body?.idempotencyKey,
+        clientMutationId: req.body?.clientMutationId,
+      });
+      invalidateTaskRouteCaches(listId, userId);
+      sendSuccess(res, result);
+    } catch (err: any) {
+      if (err?.code === 'BAD_REQUEST') {
+        sendError(res, 'VALIDATION', err.message || 'Invalid conflict resolution request', 400);
+        return;
+      }
+      if (err?.code === 'NOT_FOUND') {
+        sendError(res, 'NOT_FOUND', err.message || 'Task not found in local task store', 404);
+        return;
+      }
+      if (err?.code === 'CONFLICT_NOT_FOUND') {
+        sendError(res, 'CONFLICT_NOT_FOUND', err.message || 'Task has no unresolved sync conflict', 404);
+        return;
+      }
+      if (err?.code === 'CONFLICT_STALE') {
+        sendError(res, 'CONFLICT_STALE', err.message || 'Provider copy changed since the conflict preview', 409, {
+          preview: err.preview || null,
+        });
+        return;
+      }
+      if (err?.code === 'PROVIDER_UNAVAILABLE') {
+        sendError(res, 'PROVIDER_UNAVAILABLE', err.message || 'Provider is unreachable. Try again shortly.', 503);
+        return;
+      }
+      logger.error({ err }, 'iOS task conflict resolve failed');
+      sendInternalError(res, 'Failed to resolve task conflict');
     }
   });
 
@@ -696,6 +808,7 @@ export function taskRoutes(): Router {
             idempotencyKey: req.body?.idempotencyKey || req.query?.idempotencyKey,
             clientMutationId: req.body?.clientMutationId || req.query?.clientMutationId,
             patch: { deleted: true },
+            baseLocalVersion: req.body?.baseLocalVersion ?? (req.query?.baseLocalVersion as number | undefined),
           });
           invalidateTaskRouteCaches(listId, userId);
           sendSuccess(res, { deleted: true, ...result });
@@ -705,6 +818,7 @@ export function taskRoutes(): Router {
 
       sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
     } catch (err: any) {
+      if (sendVersionConflict(res as Response, err)) return;
       logger.error({ err }, 'iOS tasks delete failed');
       sendInternalError(res, 'Failed to delete task');
     }

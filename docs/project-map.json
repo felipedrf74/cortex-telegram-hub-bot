@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "59d5c73ca0907df3f318457931a7a7264383b83637faaadc2db029cab77f5643",
-    "baseCommit": "dd0782d9e8d1c66d85a7c267f3ed1a6db14b51b0",
-    "baseCommitTimestamp": "2026-07-17T17:23:41+01:00",
-    "trackedFiles": 2567,
-    "sourceFiles": 970
+    "sourceDigest": "d258b392259118d928885256a175601947b8d82279645cbca868fb939b5ce161",
+    "baseCommit": "57ba45b0b5dd22c4316d7c33843819a7c2d52709",
+    "baseCommitTimestamp": "2026-07-17T18:51:42+01:00",
+    "trackedFiles": 2574,
+    "sourceFiles": 973
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -94,7 +94,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 705
+      "files": 708
     },
     {
       "path": "src/skills",
@@ -3233,6 +3233,22 @@
       "owner": "backend"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/tasks/:listId/:taskId/sync/conflict",
+      "localPath": "/:listId/:taskId/sync/conflict",
+      "mountPath": "/api/v1/tasks",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tasks/:listId/:taskId/sync/resolve",
+      "localPath": "/:listId/:taskId/sync/resolve",
+      "mountPath": "/api/v1/tasks",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/tasks/:listId/:taskId/sync/retry",
       "localPath": "/:listId/:taskId/sync/retry",
@@ -3962,9 +3978,9 @@
     }
   ],
   "migrations": {
-    "count": 225,
-    "latest": "migrations/234_task_link_active_slot_unique.sql",
-    "digest": "b570b04ae8cdd1237e9ad7fe637054b148decbd3274dcb2fc54a5823fad2a398",
+    "count": 226,
+    "latest": "migrations/235_task_link_synced_snapshot.sql",
+    "digest": "4127a6264407e7a6ab8edb353dd7f4872d012a1994becda473363a60980c530f",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4190,7 +4206,8 @@
       "migrations/231_training_m4_capacity_snapshots.sql",
       "migrations/232_product_learning_cases.sql",
       "migrations/233_agent_job_runner_audit.sql",
-      "migrations/234_task_link_active_slot_unique.sql"
+      "migrations/234_task_link_active_slot_unique.sql",
+      "migrations/235_task_link_synced_snapshot.sql"
     ]
   },
   "capabilities": [
@@ -4306,7 +4323,7 @@
     }
   ],
   "tests": {
-    "files": 934,
+    "files": 937,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4328,7 +4345,7 @@
       "scripts": 50,
       "sdk": 1,
       "security": 21,
-      "services": 589,
+      "services": 592,
       "skills": 11,
       "state": 17,
       "storage": 1,

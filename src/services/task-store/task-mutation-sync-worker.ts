@@ -8,6 +8,7 @@ import { getTaskProviderForUser } from './task-router';
 import { projectTaskForProvider } from './task-provider-capabilities';
 import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
 import { assertTransition } from './task-sync-transitions';
+import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
 import { computeTaskContentFingerprint } from './todoist-correlation';
 import type { OfflineTaskDto, TaskSyncState, TaskSyncWarningCode } from './offline-first-task-service';
 
@@ -418,6 +419,19 @@ function markSynced(mutation: TaskMutationRow, task: UnifiedTaskRow | null, link
     }
 
     if (link) {
+      // M2B snapshot capture: record the local content this push delivered as
+      // the link's last agreed sync base (merge base for conflict resolution).
+      // Deletes keep the prior snapshot — the link is being orphaned anyway.
+      const syncedSnapshot = task && mutation.operation !== 'task.delete'
+        ? buildTaskSyncedSnapshot({
+          title: task.title,
+          status: task.status,
+          priority: task.priority,
+          dueDate: task.due_date,
+          dueIsDatetime: task.due_is_datetime,
+          notes: task.notes ?? task.description,
+        })
+        : null;
       // Orphaned links (delete pushed) surrender their provider id: a
       // retained id would keep occupying the legacy UNIQUE slot and block
       // any future re-link of that provider task to a live row.
@@ -427,6 +441,7 @@ function markSynced(mutation: TaskMutationRow, task: UnifiedTaskRow | null, link
 	             provider_version = COALESCE(?, provider_version),
 	             provider_updated_at = COALESCE(?, provider_updated_at),
 	             link_state = CASE WHEN ? = 'task.delete' THEN 'orphaned' ELSE 'linked' END,
+	             last_synced_snapshot = COALESCE(?, last_synced_snapshot),
 	             last_synced_at = ?,
              last_verified_at = ?,
              updated_at = ?
@@ -437,6 +452,7 @@ function markSynced(mutation: TaskMutationRow, task: UnifiedTaskRow | null, link
         input.providerVersion || null,
         input.providerUpdatedAt || null,
         mutation.operation,
+        syncedSnapshot,
         completedAt,
         completedAt,
         completedAt,
@@ -613,7 +629,12 @@ function todoistProviderFingerprint(value: any): string | null {
   return computeTaskContentFingerprint(data);
 }
 
-function extractLinkProviderVersion(link: TaskProviderLinkRow, value: any): string | null {
+/**
+ * Provider-version (etag/fingerprint) extraction, shared with the conflict
+ * resolution flow (task-conflict-resolution.ts): Todoist has no etag, so the
+ * link stores a content fingerprint; every other provider stores its etag.
+ */
+export function extractLinkProviderVersion(link: { provider: string }, value: any): string | null {
   if (link.provider === 'todoist') {
     return todoistProviderFingerprint(value);
   }

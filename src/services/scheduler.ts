@@ -88,6 +88,7 @@ import {
   runDecisionMetricsRollupJob,
   runDecisionSourceStateSupersessionJob,
 } from './decision-center';
+import { runTaskLedgerRetentionJob } from './task-store/task-ledger-retention';
 import { findCalendarConflictPairs, conflictPairKey, type CalendarConflictPair } from './calendar-conflict-analysis';
 import { listSecretaryAgendaItems, type SecretaryAgendaItem } from './secretary-scheduling-arbitrator';
 import { buildNormalizedDecisionAction } from './decision-action-contract';
@@ -1284,6 +1285,7 @@ export function startScheduler(): void {
   registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
   registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
   registerJob('decision_ledger_retention_prune', 'Decision Ledger Retention Prune', '40 4 * * *', 'system');
+  registerJob('task_ledger_retention', 'Task Ledger Retention Prune', '50 4 * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '*/2 * * * *', 'system');
   registerJob('chat_action_run_zombie_reaper', 'Chat Action Run Zombie Reaper', '*/5 * * * *', 'system');
   registerJob('chat_action_fixer_worker', 'Chat Action Fixer Worker', '* * * * *', 'system');
@@ -2635,6 +2637,14 @@ export function startScheduler(): void {
         && result.conflictEvaluationsPruned === 0
         && result.terminalExclusivityClaimsPruned === 0) return 'skipped';
     logger.info(result, 'Decision ledger retention prune completed');
+  }), { timezone: tz });
+
+  cron.schedule('50 4 * * *', wrapJob('task_ledger_retention', async () => {
+    const result = runTaskLedgerRetentionJob({ batchSize: 500, maxBatches: 200 });
+    if (result.mutationsPruned === 0
+        && result.resolvedIssuesPruned === 0
+        && result.observabilityEventsPruned === 0) return 'skipped';
+    logger.info(result, 'Task ledger retention prune completed');
   }), { timezone: tz });
 
   cron.schedule('*/2 * * * *', wrapJob('chat_action_plan_expiry', async () => {
