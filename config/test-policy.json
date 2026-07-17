@@ -295,6 +295,16 @@
       "reason": "Removed compile-time method-existence assertions from the retained primary suite because every adapter method is exercised through its public behavior and TypeScript checks the MessageAdapter implementation."
     },
     {
+      "test": "__tests__/services/task-store/task-sync-transitions.test.ts",
+      "replacementTests": [
+        "__tests__/services/task-store/task-sync-transitions.test.ts"
+      ],
+      "sources": [
+        "src/services/task-store/task-sync-transitions.ts"
+      ],
+      "reason": "Renamed and re-scoped two fixture tests in the retained suite to encode the designed M2A transition changes (provider_disconnected left the sighting-heal set and joined the pull-protected pending set; deleted_pending_sync resurrect closed) — the allowed-transition graph is still fully asserted by the same file."
+    },
+    {
       "test": "__tests__/scripts/changed-area-classifier.test.ts",
       "replacementTests": [
         "__tests__/scripts/changed-area-classifier.test.ts"
