@@ -139,7 +139,8 @@ function createTestDb(): Database.Database {
       worker_id TEXT,
       provider_idempotency_key TEXT,
       last_error_code TEXT,
-      last_error_message TEXT
+      last_error_message TEXT,
+      available_at TEXT
     );
 
     CREATE TABLE unified_projects (
@@ -1109,5 +1110,235 @@ describe('M5B list.* mutation dispatch', () => {
       "SELECT next_retry_at FROM task_mutations WHERE mutation_id = 'mutation-orphan-task'",
     ).get() as { next_retry_at: string | null };
     expect(row.next_retry_at).toBeNull();
+  });
+});
+
+// ── M6: availability holdback, atomic claim, create-retry guard, kick ──
+
+import { afterEach } from 'vitest';
+import {
+  scheduleTaskMutationKick,
+  _resetTaskMutationKicksForTests,
+} from '../../../src/services/task-store/task-mutation-sync-worker';
+import { _resetTaskSyncCoordinatorForTests } from '../../../src/services/task-store/task-sync-coordinator';
+
+describe('M6 latency hardening', () => {
+  beforeEach(() => {
+    _resetTaskMutationKicksForTests();
+    _resetTaskSyncCoordinatorForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('holds back task.delete mutations until available_at passes — force-sync included', async () => {
+    seedLinkedMutation({
+      taskId: 'task-held-delete',
+      operation: 'task.delete',
+      providerTaskId: 'ms-held-1',
+    });
+    testDb.prepare(
+      `UPDATE task_mutations SET available_at = ? WHERE mutation_id = 'mutation-worker-1'`,
+    ).run(new Date(Date.now() + 10_000).toISOString());
+
+    // Any runner — cron, kick, or the force-sync batch — flows through the
+    // same readyMutations gate, so the held-back delete stays invisible.
+    const held = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(held.processed).toBe(0);
+    expect(providerApi.deleteTask).not.toHaveBeenCalled();
+    const heldRow = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = 'mutation-worker-1'`,
+    ).get() as { status: string };
+    expect(heldRow.status).toBe('queued');
+
+    testDb.prepare(
+      `UPDATE task_mutations SET available_at = ? WHERE mutation_id = 'mutation-worker-1'`,
+    ).run(new Date(Date.now() - 1_000).toISOString());
+    const released = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(released.processed).toBe(1);
+    expect(released.synced).toBe(1);
+    expect(providerApi.deleteTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlapping runners send exactly one provider write per mutation (atomic claim)', async () => {
+    seedLinkedMutation({
+      taskId: 'task-race-1',
+      mutationId: 'mutation-race-1',
+      operation: 'task.update',
+      providerTaskId: 'ms-race-1',
+    });
+    seedLinkedMutation({
+      taskId: 'task-race-2',
+      mutationId: 'mutation-race-2',
+      operation: 'task.update',
+      providerTaskId: 'ms-race-2',
+    });
+
+    let releaseFirstWrite!: (value: unknown) => void;
+    const firstWriteGate = new Promise((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    providerApi.updateTask
+      .mockImplementationOnce(() => firstWriteGate)
+      .mockResolvedValueOnce({ success: true, data: { id: 'ms-race-2', providerVersion: 'etag-2' } });
+
+    // Runner A selects BOTH rows, claims race-1, and parks on the provider write.
+    const batchA = runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Runner B overlaps: race-1 carries a fresh lease, so B claims race-2.
+    const resultB = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    releaseFirstWrite({ success: true, data: { id: 'ms-race-1', providerVersion: 'etag-1' } });
+    const resultA = await batchA;
+
+    // Exactly ONE provider write per mutation across both runners: A's claim
+    // on race-2 fails (B already synced it) and the row is skipped, not resent.
+    expect(providerApi.updateTask).toHaveBeenCalledTimes(2);
+    expect(resultB.processed).toBe(1);
+    expect(resultB.synced).toBe(1);
+    expect(resultA.processed).toBe(1);
+    expect(resultA.synced).toBe(1);
+    const statuses = testDb.prepare(
+      `SELECT mutation_id, status FROM task_mutations ORDER BY mutation_id`,
+    ).all() as Array<{ mutation_id: string; status: string }>;
+    expect(statuses).toEqual([
+      { mutation_id: 'mutation-race-1', status: 'synced' },
+      { mutation_id: 'mutation-race-2', status: 'synced' },
+    ]);
+  });
+
+  it('treats create-recovery scan failures as retryable instead of POSTing a possible duplicate', async () => {
+    seedLinkedMutation({ taskId: 'task-scan-fail' });
+    providerApi.getTasks.mockReset();
+    providerApi.getTasks.mockResolvedValue({ success: false, data: [], error: 'scan blew up', statusCode: 503 });
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+    expect(result.failedRetryable).toBe(1);
+    const row = testDb.prepare(
+      `SELECT status, last_error_code, next_retry_at FROM task_mutations WHERE mutation_id = 'mutation-worker-1'`,
+    ).get() as { status: string; last_error_code: string; next_retry_at: string | null };
+    expect(row.status).toBe('failed');
+    expect(row.next_retry_at).not.toBeNull();
+  });
+
+  it('parks the mutation as manual_resolution_required when multiple provider tasks carry the Nexus marker', async () => {
+    const { taskId } = seedLinkedMutation({ taskId: 'task-twin-guard' });
+    providerApi.getTasks.mockReset();
+    providerApi.getTasks.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'ms-twin-1', listId: 'ms-list-1', linkedResources: [{ applicationName: 'NexusHub', externalId: taskId }] },
+        { id: 'ms-twin-2', listId: 'ms-list-1', linkedResources: [{ applicationName: 'NexusHub', externalId: taskId }] },
+      ],
+    });
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    // Never create a third twin.
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+    expect(result.failedPermanent).toBe(1);
+    const row = testDb.prepare(
+      `SELECT status, last_error_code, next_retry_at FROM task_mutations WHERE mutation_id = 'mutation-worker-1'`,
+    ).get() as { status: string; last_error_code: string; next_retry_at: string | null };
+    // Auth-park precedent: failed + NULL next_retry_at + explanatory code.
+    expect(row).toEqual({
+      status: 'failed',
+      last_error_code: 'manual_resolution_required',
+      next_retry_at: null,
+    });
+    const issueCodes = (testDb.prepare(
+      `SELECT code FROM task_sync_issues WHERE task_id = ? AND state = 'open'`,
+    ).all(taskId) as Array<{ code: string }>).map((issue) => issue.code);
+    expect(issueCodes).toContain('suspected_duplicate');
+    const task = testDb.prepare(
+      `SELECT sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { sync_state: string };
+    expect(task.sync_state).toBe('failed_permanent');
+  });
+
+  it('re-arms parked provider_list_missing creates after the list.create push lands', async () => {
+    const listRowId = Number(testDb.prepare(
+      `INSERT INTO unified_projects (user_id, tenant_id, provider, external_id, name)
+       VALUES (?, ?, 'nexus', 'nexus-list-x', 'New List')`,
+    ).run(USER_ID, USER_ID).lastInsertRowid);
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, project_id, project_name,
+         title, status, priority, provider_data, nexus_task_id, local_version, sync_state, source_of_truth
+       ) VALUES (?, ?, 'nexus', 'task-parked-1', ?, 'New List', 'Parked create', 'pending', 0, '{}', 'task-parked-1', 1, 'failed_permanent', 'nexus')`,
+    ).run(USER_ID, USER_ID, listRowId);
+    testDb.prepare(
+      `INSERT INTO task_provider_links (
+         id, task_id, tenant_id, user_id, provider, provider_account_id,
+         provider_task_id, provider_list_id, ownership, link_state
+       ) VALUES ('link-parked-1', 'task-parked-1', ?, ?, 'ms_todo', 'ms_todo:42', NULL, NULL, 'nexus_created', 'stale')`,
+    ).run(USER_ID, USER_ID);
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, status, last_error_code, next_retry_at
+       ) VALUES ('mutation-parked-create', 'client-parked', 'idem-parked', ?, ?, 'task-parked-1', 'task.create', ?, 'failed', 'provider_list_missing', NULL)`,
+    ).run(USER_ID, USER_ID, JSON.stringify({ providerLinkProvider: 'ms_todo' }));
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, status
+       ) VALUES ('mutation-list-create', 'client-list-create', 'idem-list-create', ?, ?, NULL, 'list.create', ?, 'queued')`,
+    ).run(USER_ID, USER_ID, JSON.stringify({ listId: String(listRowId), name: 'New List', provider: 'ms_todo' }));
+    providerApi.createList.mockResolvedValue({ success: true, data: { id: 'ms-new-list' } });
+
+    const first = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(first.synced).toBe(1);
+    const requeued = testDb.prepare(
+      `SELECT status, next_retry_at FROM task_mutations WHERE mutation_id = 'mutation-parked-create'`,
+    ).get() as { status: string; next_retry_at: string | null };
+    expect(requeued.status).toBe('failed');
+    expect(requeued.next_retry_at).not.toBeNull();
+    const link = testDb.prepare(
+      `SELECT provider_list_id FROM task_provider_links WHERE id = 'link-parked-1'`,
+    ).get() as { provider_list_id: string | null };
+    expect(link.provider_list_id).toBe('ms-new-list');
+    const task = testDb.prepare(
+      `SELECT sync_state FROM unified_tasks WHERE nexus_task_id = 'task-parked-1'`,
+    ).get() as { sync_state: string };
+    expect(task.sync_state).toBe('queued');
+
+    // The next batch delivers the re-armed create into the NEW provider list.
+    const second = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(second.synced).toBe(1);
+    expect(providerApi.createTask).toHaveBeenCalledTimes(1);
+    expect(providerApi.createTask.mock.calls[0][0]).toBe('ms-new-list');
+  });
+
+  it('debounces push-kicks per scope into one coordinator-run batch', async () => {
+    vi.stubEnv('TASK_SYNC_PUSH_KICK', '1');
+    seedLinkedMutation({ taskId: 'task-kick-1' });
+    vi.useFakeTimers();
+
+    expect(scheduleTaskMutationKick(USER_ID, USER_ID)).toBe(true);
+    expect(scheduleTaskMutationKick(USER_ID, USER_ID)).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    vi.useRealTimers();
+    await vi.waitFor(() => {
+      expect(providerApi.createTask).toHaveBeenCalledTimes(1);
+    });
+
+    const row = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = 'mutation-worker-1'`,
+    ).get() as { status: string };
+    expect(row.status).toBe('synced');
+  });
+
+  it('push-kick is a no-op while TASK_SYNC_PUSH_KICK is off', () => {
+    vi.useFakeTimers();
+    expect(scheduleTaskMutationKick(USER_ID, USER_ID)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -40,6 +40,8 @@ import {
   updateOfflineFirstTask,
 } from '../../services/task-store/offline-first-task-service';
 import { getTaskSyncOperationalMetrics } from '../../services/task-store/task-mutation-sync-worker';
+import { requestTaskSync } from '../../services/task-store/task-sync-coordinator';
+import { getDb } from '../../services/database';
 import {
   getTaskConflictPreview,
   resolveTaskConflict,
@@ -54,6 +56,73 @@ const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
 // instant responses; the next request gets the refreshed data.
 const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
 const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
+
+// ── POST /sync/now policy (M6) ─────────────────────────────────────────
+// Bounded-wait hybrid: run-and-await up to the wait budget (env-overridable
+// for tests, mirroring the task-store flag helpers) → 200 with a fresh
+// /sync/status-shaped summary; already-active/coalesced, initial-import, or
+// timeout → 202 { syncRequestId, status: 'queued' }. Per-user fixed-window
+// rate limit mirrors the worker's provider-write bucket pattern.
+const SYNC_NOW_DEFAULT_WAIT_MS = 8_000;
+const SYNC_NOW_RATE_LIMIT = 6;
+const SYNC_NOW_RATE_WINDOW_MS = 60_000;
+const syncNowRateBuckets = new Map<number, { windowStart: number; count: number }>();
+
+function syncNowWaitMs(): number {
+  const parsed = Number(process.env.TASK_SYNC_NOW_WAIT_MS || '');
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  return SYNC_NOW_DEFAULT_WAIT_MS;
+}
+
+function allowSyncNow(userId: number): boolean {
+  const now = Date.now();
+  const bucket = syncNowRateBuckets.get(userId);
+  if (!bucket || now - bucket.windowStart >= SYNC_NOW_RATE_WINDOW_MS) {
+    syncNowRateBuckets.set(userId, { windowStart: now, count: 1 });
+    return true;
+  }
+  if (bucket.count >= SYNC_NOW_RATE_LIMIT) return false;
+  bucket.count += 1;
+  return true;
+}
+
+/** Test-only: clear the per-user force-sync rate limiter. */
+export function _resetTaskSyncNowRateLimiterForTests(): void {
+  syncNowRateBuckets.clear();
+}
+
+/**
+ * A provider whose very first import has not completed yet (status 'syncing'
+ * with no successful sync recorded) — force-sync answers 202 while that
+ * initial import (or a delta 410 resync riding the active run) is in flight.
+ */
+function isInitialTaskImportInProgress(userId: number): boolean {
+  try {
+    const row = getDb().prepare(
+      `SELECT 1 FROM task_sync_state
+       WHERE user_id = ? AND status = 'syncing' AND last_sync_at IS NULL
+       LIMIT 1`,
+    ).get(userId);
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+async function awaitSyncCompletion<T>(completion: Promise<T>, waitMs: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      completion,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), waitMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export function dateKeyInAppTimezone(
   value: Date | string,
@@ -236,6 +305,62 @@ export function taskRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/sync/status failed');
       sendInternalError(res, 'Failed to fetch task sync status');
+    }
+  });
+
+  /**
+   * POST /api/v1/tasks/sync/now — real force-sync (M6, token-zero surface).
+   *
+   * Runs push + forced pull through the task-sync coordinator (single-flight
+   * per scope — providers are only ever reached through it, and delta mode
+   * only when TASK_MS_DELTA_SYNC is on). Bounded-wait hybrid:
+   *   - run finished within the wait budget → 200 with the run summary plus
+   *     a fresh /sync/status-shaped payload;
+   *   - a sync was already active (request coalesced), an initial import or
+   *     410 resync is in flight, or the wait budget elapsed → 202
+   *     { syncRequestId, status: 'queued' } — the run keeps going.
+   * Rate-limited per user (fixed window) → 429 RATE_LIMITED.
+   */
+  router.post('/sync/now', async (req, res: Response) => {
+    try {
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_sync_now_mutation');
+      if (!allowSyncNow(userId)) {
+        sendError(res, 'RATE_LIMITED', 'Too many sync requests. Try again shortly.', 429);
+        return;
+      }
+
+      const request = requestTaskSync({ tenantId, userId }, 'force_sync', {
+        push: true,
+        pull: 'all',
+        pullForce: true,
+      });
+
+      if (request.status === 'coalesced' || isInitialTaskImportInProgress(userId)) {
+        sendSuccess(res, { syncRequestId: request.syncRequestId, status: 'queued' }, { status: 202 });
+        return;
+      }
+
+      const summary = await awaitSyncCompletion(request.completion, syncNowWaitMs());
+      if (!summary) {
+        sendSuccess(res, { syncRequestId: request.syncRequestId, status: 'queued' }, { status: 202 });
+        return;
+      }
+
+      sendSuccess(res, {
+        syncRequestId: request.syncRequestId,
+        status: 'completed',
+        sync: {
+          startedAt: summary.startedAt,
+          finishedAt: summary.finishedAt,
+          push: summary.push,
+          pull: summary.pull,
+          errors: summary.errors,
+        },
+        ...getTaskSyncOperationalMetrics(tenantId, userId),
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/sync/now failed');
+      sendInternalError(res, 'Failed to run task sync');
     }
   });
 

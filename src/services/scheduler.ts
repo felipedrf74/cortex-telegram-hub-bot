@@ -25,6 +25,8 @@ import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob as registerTelemetryJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory, type JobDomain } from '../portal/telemetry';
 import { assertAgentJobRuntimeRegistration } from './agent-job-manifest';
+import { requestTaskSync } from './task-store/task-sync-coordinator';
+import { isTaskMsDeltaSyncEnabled } from './task-store/task-sync-flags';
 import { createNotificationIntent, releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
@@ -1278,6 +1280,7 @@ export function startScheduler(): void {
   registerJob('db_backup',        'Database Backup',        backupCron,        'system', 'backupCron');
   registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
+  registerJob('task_sync_delta',  'Task Provider Delta Sync', '*/5 * * * *',   'system');
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_daily_attention', 'Decision Daily Attention Materialization', '12 * * * *', 'system');
@@ -1583,9 +1586,6 @@ export function startScheduler(): void {
   // so this is safe even when most users have zero providers connected.
   cron.schedule('*/15 * * * *', wrapJob('task_sync', async () => {
     try {
-      const { syncAllProviders } = require('./task-store/sync-engine');
-      const { runTaskMutationSyncBatch } = require('./task-store/task-mutation-sync-worker');
-      const { runTaskProviderLinkReconciliation } = require('./task-store/task-reconciliation-job');
       const users = getActiveUserIds();
       const taskSyncScopes = getActiveTaskSyncScopes(users);
       if (taskSyncScopes.length === 0) return 'skipped';
@@ -1599,6 +1599,12 @@ export function startScheduler(): void {
       // that pure Promise.all would produce. Each user's failure is
       // isolated by the inner try/catch — allSettled confirms none of
       // them throw out of the settled result. Audit Month 2 #2.
+      //
+      // M6: each per-scope run flows through the task-sync coordinator so
+      // the cron can never interleave with an OAuth-connect pull, a push
+      // kick, or a force-sync for the same scope (single-flight + coalesce).
+      // Step order is unchanged: mutation push → provider pull →
+      // link reconciliation.
       const CONCURRENCY = 5;
       let upsertedTotal = 0;
       let mutationProcessedTotal = 0;
@@ -1608,25 +1614,25 @@ export function startScheduler(): void {
         const settled = await Promise.allSettled(
           batch.map(async (scope) => {
             try {
-              const mutationResult = await runTaskMutationSyncBatch({
-                tenantId: scope.tenantId,
-                userId: scope.userId,
-                limit: 25,
-              });
-              const results = scope.importProviders ? await syncAllProviders(scope.userId) : [];
-              const reconciliationResult = await runTaskProviderLinkReconciliation({
-                tenantId: scope.tenantId,
-                userId: scope.userId,
-                limit: 50,
-              });
-              const upserted = results.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0);
+              const request = requestTaskSync(
+                { tenantId: scope.tenantId, userId: scope.userId },
+                'cron',
+                {
+                  push: true,
+                  pull: scope.importProviders ? 'all' : 'none',
+                  reconcile: true,
+                  mutationLimit: 25,
+                },
+              );
+              const summary = await request.completion;
+              const upserted = summary.pull.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0);
               return {
                 userId: scope.userId,
                 tenantId: scope.tenantId,
                 upserted,
-                providers: results.length,
-                mutationsProcessed: mutationResult.processed,
-                reconciledLinks: reconciliationResult.scannedLinks,
+                providers: summary.pull.length,
+                mutationsProcessed: summary.push?.processed || 0,
+                reconciledLinks: summary.reconciledLinks,
               };
             } catch (err) {
               logger.warn({ err, userId: scope.userId, tenantId: scope.tenantId }, 'Task sync failed for user scope');
@@ -1655,6 +1661,61 @@ export function startScheduler(): void {
       }
     } catch (err) {
       logger.warn({ err }, 'Task sync cron failed (sync engine may not be loaded yet)');
+    }
+  }), { timezone: tz });
+
+  // ── Unified task store: delta pull tick (every 5 min, M6) ──────────
+  // Pulls ONLY delta-capable providers (adapter.capabilities.hasIncrementalSync)
+  // for active import scopes while TASK_MS_DELTA_SYNC is on — this is what
+  // drops inbound latency from the 45–60-min full-pull cadence to ≤5 min.
+  // The */15 task_sync cron keeps the mutation batch, reconciliation, and
+  // full-pull providers unchanged. Skips (no job_history noise) when the
+  // flag is off or there are no scopes; runs go through the coordinator so
+  // a tick can never overlap the cron/full pull for the same scope.
+  cron.schedule('*/5 * * * *', wrapJob('task_sync_delta', async () => {
+    try {
+      if (!isTaskMsDeltaSyncEnabled()) return 'skipped';
+      const users = getActiveUserIds();
+      const deltaScopes = getActiveTaskSyncScopes(users).filter((scope) => scope.importProviders);
+      if (deltaScopes.length === 0) return 'skipped';
+
+      const CONCURRENCY = 5;
+      let providersPulled = 0;
+      let upsertedTotal = 0;
+      for (let i = 0; i < deltaScopes.length; i += CONCURRENCY) {
+        const batch = deltaScopes.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map(async (scope) => {
+            try {
+              const request = requestTaskSync(
+                { tenantId: scope.tenantId, userId: scope.userId },
+                'delta_tick',
+                { push: false, pull: 'all', deltaOnly: true },
+              );
+              const summary = await request.completion;
+              return {
+                providers: summary.pull.length,
+                upserted: summary.pull.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0),
+              };
+            } catch (err) {
+              logger.warn({ err, userId: scope.userId, tenantId: scope.tenantId }, 'Task delta tick failed for user scope');
+              return { providers: 0, upserted: 0 };
+            }
+          }),
+        );
+        for (const s of settled) {
+          if (s.status === 'fulfilled') {
+            providersPulled += s.value.providers;
+            upsertedTotal += s.value.upserted;
+          } else {
+            logger.warn({ reason: s.reason }, 'Task delta tick batch rejection');
+          }
+        }
+      }
+      if (providersPulled === 0) return 'skipped';
+      logger.info({ providersPulled, upsertedTotal }, 'Task delta tick completed');
+    } catch (err) {
+      logger.warn({ err }, 'Task delta tick failed (sync engine may not be loaded yet)');
     }
   }), { timezone: tz });
 

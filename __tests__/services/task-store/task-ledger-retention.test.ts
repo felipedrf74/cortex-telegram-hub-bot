@@ -57,7 +57,8 @@ function createTestDb(): Database.Database {
       next_retry_at TEXT,
       locked_at TEXT,
       last_error_code TEXT,
-      last_error_message TEXT
+      last_error_message TEXT,
+      available_at TEXT
     );
 
     CREATE TABLE task_sync_issues (

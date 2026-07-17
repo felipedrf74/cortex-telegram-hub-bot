@@ -228,6 +228,7 @@ function createTestDb(): Database.Database {
       provider_idempotency_key TEXT,
       last_error_code TEXT,
       last_error_message TEXT,
+      available_at TEXT,
       UNIQUE(tenant_id, user_id, client_mutation_id, operation),
       UNIQUE(tenant_id, user_id, idempotency_key, operation)
     );
@@ -1630,5 +1631,117 @@ describe('M5B ledger list routes (single write path)', () => {
     expect(testDb.prepare(
       `SELECT COUNT(*) AS count FROM task_mutations WHERE operation = 'list.create'`,
     ).get()).toEqual({ count: 0 });
+  });
+});
+
+// ── M6: POST /sync/now (bounded-wait force-sync through the coordinator) ──
+
+const mockRequestTaskSync = vi.hoisted(() => vi.fn());
+vi.mock('../../src/services/task-store/task-sync-coordinator', () => ({
+  requestTaskSync: (...args: unknown[]) => mockRequestTaskSync(...args),
+}));
+
+import { _resetTaskSyncNowRateLimiterForTests } from '../../src/api/routes/tasks';
+
+const SYNC_SUMMARY = {
+  syncRequestId: 'run-1',
+  reasons: ['force_sync'],
+  startedAt: '2026-07-18T10:00:00.000Z',
+  finishedAt: '2026-07-18T10:00:02.000Z',
+  push: { processed: 1, synced: 1, failedRetryable: 0, failedPermanent: 0, providerDisconnected: 0, conflicts: 0, deadLettered: 0 },
+  pull: [{ provider: 'ms_todo', tasksUpserted: 3, tasksDeleted: 0, projectsUpserted: 0, durationMs: 20, errors: [] }],
+  reconciledLinks: 0,
+  errors: [],
+};
+
+describe('M6 force-sync route (POST /sync/now)', () => {
+  beforeEach(() => {
+    _resetTaskSyncNowRateLimiterForTests();
+    vi.stubEnv('TASK_SYNC_NOW_WAIT_MS', '25');
+    mockRequestTaskSync.mockReturnValue({
+      status: 'started',
+      syncRequestId: 'run-1',
+      completion: Promise.resolve(SYNC_SUMMARY),
+    });
+  });
+
+  it('runs push + forced pull through the coordinator and answers 200 with a sync-status-shaped summary', async () => {
+    const res = await dispatch('POST', '/sync/now');
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(mockRequestTaskSync).toHaveBeenCalledWith(
+      { tenantId: 12, userId: 12 },
+      'force_sync',
+      { push: true, pull: 'all', pullForce: true },
+    );
+    expect(res.body.data).toMatchObject({
+      syncRequestId: 'run-1',
+      status: 'completed',
+      sync: {
+        startedAt: SYNC_SUMMARY.startedAt,
+        finishedAt: SYNC_SUMMARY.finishedAt,
+        push: expect.objectContaining({ processed: 1, synced: 1 }),
+        pull: [expect.objectContaining({ provider: 'ms_todo', tasksUpserted: 3 })],
+        errors: [],
+      },
+    });
+    // Fresh /sync/status-shaped payload rides along.
+    expect(res.body.data.mutationBacklog).toBeDefined();
+    expect(res.body.data.taskCounts).toBeDefined();
+  });
+
+  it('answers 202 queued when the request coalesced into an active run', async () => {
+    mockRequestTaskSync.mockReturnValue({
+      status: 'coalesced',
+      syncRequestId: 'run-2',
+      completion: new Promise(() => undefined),
+    });
+
+    const res = await dispatch('POST', '/sync/now');
+
+    expect(res.statusCode).toBe(202);
+    expect(res.body.data).toEqual({ syncRequestId: 'run-2', status: 'queued' });
+  });
+
+  it('answers 202 queued when the wait budget elapses before the run finishes', async () => {
+    // Restore the real setTimeout so the bounded wait can actually elapse.
+    (global.setTimeout as any).mockRestore();
+    mockRequestTaskSync.mockReturnValue({
+      status: 'started',
+      syncRequestId: 'run-3',
+      completion: new Promise(() => undefined),
+    });
+
+    const res = await dispatch('POST', '/sync/now');
+
+    expect(res.statusCode).toBe(202);
+    expect(res.body.data).toEqual({ syncRequestId: 'run-3', status: 'queued' });
+  });
+
+  it('answers 202 queued while an initial provider import is still in flight', async () => {
+    testDb.prepare(
+      `INSERT INTO task_sync_state (user_id, provider, last_sync_at, status, error_message)
+       VALUES (12, 'ms_todo', NULL, 'syncing', NULL)`,
+    ).run();
+
+    const res = await dispatch('POST', '/sync/now');
+
+    expect(res.statusCode).toBe(202);
+    expect(res.body.data).toEqual({ syncRequestId: 'run-1', status: 'queued' });
+  });
+
+  it('rate-limits per user with 429 RATE_LIMITED', async () => {
+    for (let i = 0; i < 6; i += 1) {
+      const ok = await dispatch('POST', '/sync/now');
+      expect(ok.statusCode, JSON.stringify(ok.body)).toBe(200);
+    }
+
+    const limited = await dispatch('POST', '/sync/now');
+    expect(limited.statusCode).toBe(429);
+    expect(limited.body.ok).toBe(false);
+    expect(limited.body.error.code).toBe('RATE_LIMITED');
+    // The limit is per user — another user still gets through.
+    const otherUser = await dispatch('POST', '/sync/now', { userId: 99 });
+    expect(otherUser.statusCode).toBe(200);
   });
 });

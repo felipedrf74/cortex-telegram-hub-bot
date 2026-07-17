@@ -34,6 +34,8 @@ function defaultIssueMessage(code: TaskSyncWarningCode, provider?: string | null
       return 'Provider sync failed. Retry scheduled.';
     case 'manual_resolution_required':
       return 'Provider sync needs user action.';
+    case 'suspected_duplicate':
+      return `Multiple ${providerName} tasks look like copies of this task. Review before sync resumes.`;
     default:
       return 'Task sync issue needs attention.';
   }

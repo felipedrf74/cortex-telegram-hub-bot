@@ -12,6 +12,13 @@ import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
 import { assertTransition } from './task-sync-transitions';
 import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
 import { computeTaskContentFingerprint } from './todoist-correlation';
+import { isTaskSyncPushKickEnabled } from './task-sync-flags';
+import { registerTaskMutationKick } from './task-mutation-kick';
+// Deliberate, benign cycle: the coordinator's runner calls back into this
+// module's runTaskMutationSyncBatch. Both sides only dereference each other's
+// bindings at call time (kick timer / run execution), never at module init.
+import { requestTaskSync } from './task-sync-coordinator';
+import { getGraphRateLimitCounters } from '../graph-request-policy';
 import type { OfflineTaskDto, TaskSyncState, TaskSyncWarningCode } from './offline-first-task-service';
 
 type LinkProvider = 'ms_todo' | 'todoist' | 'nexus_local';
@@ -314,8 +321,13 @@ function readyMutations(limit: number, scope: { tenantId?: number; userId?: numb
         AND locked_at IS NOT NULL
         AND julianday('now') - julianday(locked_at) > ? / 1440.0
       ))`,
+    // M6 availability holdback (migration 236): a mutation journaled with a
+    // future available_at is invisible to EVERY runner — cron, push-kick, and
+    // force-sync all flow through this gate, which is what makes the
+    // task.delete undo window durable.
+    '(available_at IS NULL OR available_at <= ?)',
   ];
-  const args: Array<string | number> = [nowIso(), STALE_TASK_LEASE_MINUTES];
+  const args: Array<string | number> = [nowIso(), STALE_TASK_LEASE_MINUTES, nowIso()];
   if (scope.tenantId != null) {
     where.push('tenant_id = ?');
     args.push(scope.tenantId);
@@ -379,15 +391,32 @@ function getProviderLink(mutation: TaskMutationRow): TaskProviderLinkRow | null 
   return row || null;
 }
 
-function markMutationSyncing(mutation: TaskMutationRow, providerIdempotencyKey: string): void {
-  getDb().prepare(
+/**
+ * Atomic claim (M6 hardening). Overlapping runners — the cron batch and a
+ * push-kick, or two force-syncs — must never both send one mutation to the
+ * provider (Graph createTask has no real idempotency). The claim covers the
+ * FULL ready-status set (queued/accepted_local/failed retries/stale-lease
+ * 'syncing' re-claims — restricting to 'queued' would deadlock legitimate
+ * failed-retry re-claims) and succeeds only when no fresh lease exists.
+ * Returns false when another runner won the row.
+ */
+function markMutationSyncing(mutation: TaskMutationRow, providerIdempotencyKey: string): boolean {
+  const result = getDb().prepare(
     `UPDATE task_mutations
      SET status = 'syncing',
          locked_at = ?,
          worker_id = ?,
          provider_idempotency_key = COALESCE(provider_idempotency_key, ?)
-	     WHERE mutation_id = ? AND status IN ('queued', 'accepted_local', 'failed', 'syncing')`,
-  ).run(nowIso(), `task-worker:${process.pid}`, providerIdempotencyKey, mutation.mutation_id);
+     WHERE mutation_id = ? AND status IN ('queued', 'accepted_local', 'failed', 'syncing')
+       AND (locked_at IS NULL OR julianday('now') - julianday(locked_at) > ? / 1440.0)`,
+  ).run(
+    nowIso(),
+    `task-worker:${process.pid}`,
+    providerIdempotencyKey,
+    mutation.mutation_id,
+    STALE_TASK_LEASE_MINUTES,
+  );
+  return result.changes > 0;
 }
 
 function markSynced(mutation: TaskMutationRow, task: UnifiedTaskRow | null, link: TaskProviderLinkRow | null, input: {
@@ -708,6 +737,11 @@ async function recoverProviderTaskFromSearch(providerApi: any, task: UnifiedTask
   } else {
     return null;
   }
+  // M6 create-retry reconcile guard: a FAILED scan used to fall through as
+  // "not found" (ServiceResult failures carry success:false, not a throw) and
+  // the caller POSTed a fresh create — duplicate risk on every flaky scan.
+  // A failed scan now throws (classified retryable → no POST this round).
+  ensureProviderSuccess(result, 'task_provider_recovery_scan_failed');
   const resultAny = result as any;
   const rows = Array.isArray(resultAny?.data) ? resultAny.data : Array.isArray(resultAny) ? resultAny : [];
   const matches = rows.filter((candidate: any) => {
@@ -715,6 +749,14 @@ async function recoverProviderTaskFromSearch(providerApi: any, task: UnifiedTask
     const candidateListId = String(candidate?.listId || candidate?.parentFolderId || candidate?.project_id || candidate?.projectId || '');
     return externalIds.includes(task.nexus_task_id) && (!containerId || !candidateListId || candidateListId === containerId);
   });
+  if (matches.length > 1) {
+    // Two provider tasks already carry this task's Nexus marker: creating a
+    // third twin is the one outcome that can never be repaired mechanically.
+    // Park for manual review instead.
+    const err = new Error(`suspected_duplicate: ${matches.length} provider tasks carry the Nexus marker for ${task.nexus_task_id}`);
+    (err as any).code = 'suspected_duplicate';
+    throw err;
+  }
   if (matches.length !== 1) return null;
   const providerTaskId = extractProviderTaskId(matches[0]);
   if (!providerTaskId) return null;
@@ -1108,6 +1150,17 @@ async function processListMutation(mutation: TaskMutationRow): Promise<'synced' 
       }
 
       markListMutationSynced(mutation);
+      // M5 accepted-window closure: tasks created into this list while it was
+      // still unpushed parked as provider_list_missing — the successful
+      // list.create push is the moment their container exists, so re-arm them.
+      try {
+        requeueParkedListMissingCreates(mutation, patch.listId, providerListId);
+      } catch (err) {
+        logger.warn(
+          { err, mutationId: mutation.mutation_id, listId: patch.listId },
+          'Parked provider_list_missing requeue failed after list.create push (non-fatal)',
+        );
+      }
       return 'synced';
     }
 
@@ -1142,14 +1195,89 @@ async function processListMutation(mutation: TaskMutationRow): Promise<'synced' 
   }
 }
 
-async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'failed_retryable' | 'failed_permanent' | 'provider_disconnected' | 'conflict' | 'dead_letter'> {
+/**
+ * M5 accepted-window closure: after a successful list.create push, re-arm
+ * task.create mutations that parked with a missing provider container while
+ * this list was still unpushed. Two parked shapes exist:
+ *   - push-time failures — status 'failed', last_error_code
+ *     'provider_list_missing', next_retry_at NULL;
+ *   - insert-time parks — resolveTaskSyncTarget found no mapping, so the
+ *     ledger journaled status 'failed' with a NULL last_error_code (the
+ *     warning went to task_sync_issues instead).
+ * Both target task rows in the just-pushed list; their ms_todo links also
+ * get the fresh provider container id so the retried push can resolve it.
+ */
+function requeueParkedListMissingCreates(
+  mutation: TaskMutationRow,
+  nexusListId: string,
+  providerListId: string,
+): number {
+  const db = getDb();
+  const localListId = Number(nexusListId);
+  if (!Number.isFinite(localListId) || !providerListId) return 0;
+
+  const parked = db.prepare(
+    `SELECT m.mutation_id, m.task_id
+     FROM task_mutations m
+     JOIN unified_tasks t
+       ON t.nexus_task_id = m.task_id
+      AND t.tenant_id = m.tenant_id
+      AND t.user_id = m.user_id
+     WHERE m.tenant_id = ? AND m.user_id = ?
+       AND m.status = 'failed'
+       AND m.operation = 'task.create'
+       AND (m.last_error_code = 'provider_list_missing' OR m.last_error_code IS NULL)
+       AND t.project_id = ?
+       AND t.is_deleted = 0`,
+  ).all(mutation.tenant_id, mutation.user_id, localListId) as Array<{ mutation_id: string; task_id: string | null }>;
+
+  let requeued = 0;
+  const requeueAt = nowIso();
+  for (const row of parked) {
+    if (!row.task_id) continue;
+    db.prepare(
+      `UPDATE task_provider_links
+       SET provider_list_id = COALESCE(provider_list_id, ?), updated_at = ?
+       WHERE tenant_id = ? AND user_id = ? AND task_id = ? AND provider = 'ms_todo'`,
+    ).run(providerListId, requeueAt, mutation.tenant_id, mutation.user_id, row.task_id);
+    db.prepare(
+      `UPDATE task_mutations
+       SET next_retry_at = ?, locked_at = NULL
+       WHERE mutation_id = ? AND status = 'failed'`,
+    ).run(requeueAt, row.mutation_id);
+    db.prepare(
+      `UPDATE unified_tasks
+       SET sync_state = 'queued', updated_at = ?
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ? AND sync_state = 'failed_permanent'`,
+    ).run(requeueAt, mutation.tenant_id, mutation.user_id, row.task_id);
+    resolveTaskSyncIssue({
+      tenantId: mutation.tenant_id,
+      userId: mutation.user_id,
+      taskId: row.task_id,
+      provider: 'ms_todo',
+      code: 'provider_list_missing',
+    });
+    requeued += 1;
+  }
+  if (requeued > 0) {
+    logger.info(
+      { requeued, listId: nexusListId, providerListId, userId: mutation.user_id },
+      'Re-armed parked provider_list_missing creates after list.create push',
+    );
+  }
+  return requeued;
+}
+
+async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'failed_retryable' | 'failed_permanent' | 'provider_disconnected' | 'conflict' | 'dead_letter' | 'skipped'> {
   if (mutation.status === 'failed' && mutation.retry_count >= MAX_RETRY_COUNT_BEFORE_DEAD_LETTER) {
     markDeadLetter(mutation, 'manual_resolution_required', 'Task provider sync exceeded the retry limit and needs user-visible repair.');
     return 'dead_letter';
   }
 
   if (mutation.operation === 'list.create' || mutation.operation === 'list.delete') {
-    markMutationSyncing(mutation, `list:${mutation.user_id}:${mutation.operation}:${mutation.mutation_id}`);
+    if (!markMutationSyncing(mutation, `list:${mutation.user_id}:${mutation.operation}:${mutation.mutation_id}`)) {
+      return 'skipped';
+    }
     return runWithContext(
       {
         source: 'cron:task_mutation_sync',
@@ -1165,7 +1293,11 @@ async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'f
   const providerIdempotencyKey = link
     ? `${link.provider}:${link.provider_account_id}:${mutation.task_id || 'unknown'}:${mutation.operation}:${mutation.mutation_id}`
     : `nexus_local:${mutation.user_id}:${mutation.task_id || 'unknown'}:${mutation.operation}:${mutation.mutation_id}`;
-  markMutationSyncing(mutation, providerIdempotencyKey);
+  // Atomic claim: an overlapping runner (kick + cron) that lost the race
+  // skips the row entirely — exactly-once provider writes.
+  if (!markMutationSyncing(mutation, providerIdempotencyKey)) {
+    return 'skipped';
+  }
 
   if (!task) {
     markDeadLetter(mutation, 'manual_resolution_required', 'Task mutation has no matching Nexus task row.');
@@ -1220,6 +1352,27 @@ async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'f
       failure.syncState = 'failed_permanent';
       failure.retryable = false;
       failure.linkState = 'stale';
+    }
+    if ((err as any)?.code === 'suspected_duplicate') {
+      // M6 create-retry guard: >1 provider tasks already carry this task's
+      // Nexus marker. Park the mutation (failed + next_retry_at NULL — the
+      // auth-park precedent) so no runner ever creates a third twin, and
+      // record the dedicated suspected_duplicate issue for user-visible repair.
+      failure.code = 'manual_resolution_required';
+      failure.syncState = 'failed_permanent';
+      failure.retryable = false;
+      failure.linkState = 'conflict';
+      if (mutation.task_id) {
+        recordTaskSyncIssue({
+          tenantId: mutation.tenant_id,
+          userId: mutation.user_id,
+          taskId: mutation.task_id,
+          provider: link.provider,
+          code: 'suspected_duplicate',
+          message: failure.message,
+          details: { reason: 'create_recovery_multiple_marker_matches' },
+        });
+      }
     }
     markFailure(mutation, task, link, failure);
     if (failure.syncState === 'provider_disconnected') return 'provider_disconnected';
@@ -1336,9 +1489,11 @@ export async function runTaskMutationSyncBatch(options: {
   };
 
   for (const mutation of mutations) {
-    result.processed += 1;
     try {
       const status = await processMutation(mutation);
+      // Claim lost to an overlapping runner — the row is being handled there.
+      if (status === 'skipped') continue;
+      result.processed += 1;
       if (status === 'synced') result.synced += 1;
       else if (status === 'failed_retryable') result.failedRetryable += 1;
       else if (status === 'failed_permanent') result.failedPermanent += 1;
@@ -1346,6 +1501,7 @@ export async function runTaskMutationSyncBatch(options: {
       else if (status === 'conflict') result.conflicts += 1;
       else result.deadLettered += 1;
     } catch (err) {
+      result.processed += 1;
       result.deadLettered += 1;
       logger.error({ err, mutationId: mutation.mutation_id }, 'Task mutation sync worker failed unexpectedly');
       markDeadLetter(
@@ -1357,6 +1513,47 @@ export async function runTaskMutationSyncBatch(options: {
   }
 
   return result;
+}
+
+// ─── Push-kick (M6, flag TASK_SYNC_PUSH_KICK) ──────────────────────────
+
+const TASK_MUTATION_KICK_DEBOUNCE_MS = 4_000;
+const kickTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Debounced post-mutation push: every ledger mutation writer calls this
+ * (task.delete excepted — deletes are held back behind available_at so undo
+ * can beat the provider hard-delete) and ~4s later ONE mutation batch runs
+ * through the task-sync coordinator, respecting the existing budgets and
+ * circuit breaker inside runTaskMutationSyncBatch. Repeat kicks inside the
+ * debounce window coalesce into that same run. No-op while the flag is off —
+ * unflagged behavior stays byte-identical to the pre-M6 cron-only cadence.
+ */
+export function scheduleTaskMutationKick(tenantId: number, userId: number): boolean {
+  if (!isTaskSyncPushKickEnabled()) return false;
+  const key = `${tenantId}:${userId}`;
+  if (kickTimers.has(key)) return true;
+  const timer = setTimeout(() => {
+    kickTimers.delete(key);
+    try {
+      requestTaskSync({ tenantId, userId }, 'kick', { push: true, pull: 'none' });
+    } catch (err) {
+      logger.warn({ err, tenantId, userId }, 'Task mutation push-kick failed to start');
+    }
+  }, TASK_MUTATION_KICK_DEBOUNCE_MS);
+  timer.unref?.();
+  kickTimers.set(key, timer);
+  return true;
+}
+
+// Ledger writers reach the kick through the zero-dependency registry so
+// offline-first-task-service never has to import this module graph.
+registerTaskMutationKick(scheduleTaskMutationKick);
+
+/** Test-only: cancel pending kick timers between vitest runs. */
+export function _resetTaskMutationKicksForTests(): void {
+  for (const timer of kickTimers.values()) clearTimeout(timer);
+  kickTimers.clear();
 }
 
 export function getTaskSyncOperationalMetrics(tenantId?: number, userId?: number) {
@@ -1470,6 +1667,9 @@ export function getTaskSyncOperationalMetrics(tenantId?: number, userId?: number
     providerFailureCounters: {
       providerTimeout: providerTimeoutCount,
       providerRateLimited: providerRateLimitCount,
+      // M6: pull/write-side Graph 429 observations (in-memory, per source),
+      // recorded by the Retry-After-aware withRetry helpers.
+      graphRateLimit429: getGraphRateLimitCounters(),
     },
     duplicateProviderLinks: duplicateLinkRows.map((row) => ({
       provider: row.provider,

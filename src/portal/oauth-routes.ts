@@ -46,6 +46,13 @@ interface PortalOAuthServices {
   resetMicrosoftClients?: () => void;
   syncProvider?: (userId: number, provider: string) => Promise<unknown>;
   runTaskMutationSyncBatch?: (options?: { userId?: number }) => Promise<unknown>;
+  /**
+   * M6: coordinator-mediated connect sync (push then pull as ONE serialized
+   * run). Preferred over the raw syncProvider/runTaskMutationSyncBatch pair —
+   * routing through the coordinator is what stops the connect pull from
+   * interleaving with the task_sync cron (the provider_missing false-mark race).
+   */
+  requestTaskProviderConnectSync?: (userId: number, provider: string) => Promise<unknown>;
   invalidateIntegrationDerivedCaches?: (userId: number, provider: string) => void;
 }
 
@@ -101,6 +108,17 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     runTaskMutationSyncBatch = require('../services/task-store/task-mutation-sync-worker').runTaskMutationSyncBatch;
   } catch { /* optional mutation worker */ }
 
+  let requestTaskProviderConnectSync: ((userId: number, provider: string) => Promise<unknown>) | undefined;
+  try {
+    const { requestTaskSync } = require('../services/task-store/task-sync-coordinator');
+    requestTaskProviderConnectSync = (userId: number, provider: string) =>
+      requestTaskSync(
+        { tenantId: userId, userId },
+        'connect',
+        { push: true, pull: [provider] },
+      ).completion;
+  } catch { /* optional sync coordinator */ }
+
   let invalidateIntegrationDerivedCaches: ((userId: number, provider: string) => void) | undefined;
   try {
     invalidateIntegrationDerivedCaches = require('../services/cache-coherence-registry').invalidateIntegrationDerivedCaches;
@@ -134,6 +152,7 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     resetMicrosoftClients,
     syncProvider,
     runTaskMutationSyncBatch,
+    requestTaskProviderConnectSync,
     invalidateIntegrationDerivedCaches,
   };
 }
@@ -255,6 +274,21 @@ function startInitialTaskProviderSync(
   services: PortalOAuthServices,
   logger: PortalOAuthLogger,
 ): void {
+  // M6: prefer the coordinator-mediated connect sync — ONE single-flight run
+  // (push before pull, preserving the NEX-03 ordering) that can never
+  // interleave with the task_sync cron or a force-sync for this user.
+  if (typeof services.requestTaskProviderConnectSync === 'function') {
+    try {
+      Promise.resolve(services.requestTaskProviderConnectSync(userId, provider)).catch((err: unknown) =>
+        logger.warn({ err, userId }, `Initial ${providerLabel} coordinated sync failed (non-fatal)`),
+      );
+      return;
+    } catch (err) {
+      logger.warn({ err, userId }, `Initial ${providerLabel} coordinated sync failed to start; using legacy path`);
+    }
+  }
+
+  // Legacy path (stubbed service providers in tests / partial deployments).
   // Push BEFORE the initial pull: the mutation batch re-arms auth-parked
   // mutations for the freshly reconnected provider and delivers them, so the
   // pull that follows sees the pushed state instead of overwriting or

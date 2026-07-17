@@ -182,7 +182,9 @@ describe('MS Graph dueDateTime normalization', () => {
       path: '/me/todo/lists/list-1/tasks/task-1',
     }));
     expect(patchCall?.body).toEqual(expect.objectContaining({
-      dueDateTime: { dateTime: '2026-05-12T09:00:00.000Z', timeZone: 'UTC' },
+      // NEX-29: same instant, but the dateTime member is zone-naive
+      // wall-clock in the named timeZone — never a 'Z'-suffixed string.
+      dueDateTime: { dateTime: '2026-05-12T09:00:00', timeZone: 'UTC' },
       recurrence: {
         pattern: { type: 'weekly', interval: 1, daysOfWeek: ['tuesday'] },
         range: { type: 'noEnd', startDate: '2026-05-12' },
@@ -393,3 +395,104 @@ function createMoveRollbackMockClient(calls: Array<{ method: string; path: strin
     },
   };
 }
+
+// ── M6: NEX-29 outbound payloads + Retry-After honored ────────────────
+
+describe('MS Graph outbound dateTimeTimeZone payloads (NEX-29)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('creates tasks with zone-naive wall-clock due/reminder members', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    const mockClient = {
+      api: (path: string) => ({
+        post: async (body: any) => {
+          calls.push({ method: 'POST', path, body });
+          return { id: 'task-created', title: body.title };
+        },
+      }),
+    };
+    (getGraphClient as any).mockReturnValue(mockClient);
+
+    const { createTask } = await import('../../src/services/microsoft-todo');
+    const result = await createTask('list-1', 'Family', {
+      title: 'Zoned create',
+      dueDateTime: '2026-07-19T15:00:00Z',
+      reminderDateTime: '2026-07-19T14:30:00Z',
+      timeZone: 'UTC',
+    });
+
+    expect(result.success).toBe(true);
+    expect(calls[0].body.dueDateTime).toEqual({ dateTime: '2026-07-19T15:00:00', timeZone: 'UTC' });
+    expect(calls[0].body.reminderDateTime).toEqual({ dateTime: '2026-07-19T14:30:00', timeZone: 'UTC' });
+    expect(calls[0].body.isReminderOn).toBe(true);
+  });
+
+  it('pins date-only dues to T00:00:00 UTC regardless of the user timezone', async () => {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    const mockClient = {
+      api: (path: string) => ({
+        post: async (body: any) => {
+          calls.push({ method: 'POST', path, body });
+          return { id: 'task-created', title: body.title };
+        },
+      }),
+    };
+    (getGraphClient as any).mockReturnValue(mockClient);
+
+    const { createTask } = await import('../../src/services/microsoft-todo');
+    await createTask('list-1', 'Family', {
+      title: 'Date-only due',
+      dueDateTime: '2026-07-19',
+      timeZone: 'Europe/Lisbon',
+    });
+
+    expect(calls[0].body.dueDateTime).toEqual({ dateTime: '2026-07-19T00:00:00', timeZone: 'UTC' });
+  });
+});
+
+describe('MS Graph Retry-After (M6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('waits the provider-advertised Retry-After before retrying a 429 read', async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const err: any = new Error('throttled');
+      err.statusCode = 429;
+      err.headers = { 'retry-after': '3' };
+      const mockClient = {
+        api: () => ({
+          query: function query() { return this; },
+          get: async () => {
+            attempts += 1;
+            if (attempts === 1) throw err;
+            return { value: [{ id: 'list-1', displayName: 'Family' }] };
+          },
+        }),
+      };
+      (getGraphClient as any).mockReturnValue(mockClient);
+
+      const { getLists, invalidateListCache } = await import('../../src/services/microsoft-todo');
+      invalidateListCache();
+      const pending = getLists();
+
+      // The first attempt failed; the retry is parked on the 3s Retry-After —
+      // the legacy 1s exponential step must NOT fire it early.
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_600);
+      const result = await pending;
+
+      expect(attempts).toBe(2);
+      expect(result.success).toBe(true);
+      expect(result.data).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
