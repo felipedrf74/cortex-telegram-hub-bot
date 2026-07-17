@@ -168,15 +168,32 @@ describe('upsertTask', () => {
     expect(getPendingTasks(USER_ID)).toHaveLength(2);
   });
 
-  it('un-deletes a task on re-upsert (resurrection after sync)', () => {
+  it('does not resurrect a pending-delete on divergent re-upsert; flags conflict instead (NEX-19)', () => {
     const task = makeTask({ externalId: 'res1' });
     upsertTask(USER_ID, task);
     const tasks = getAllTasks(USER_ID);
     markTaskDeleted(tasks[0].id!);
     expect(getPendingTasks(USER_ID)).toHaveLength(0);
 
-    // Re-upsert with new title (forces hash change → UPDATE path)
+    // Re-upsert with new title (hash change). The row is
+    // 'deleted_pending_sync' — it carries an un-pushed local delete — so the
+    // pull must NOT overwrite/resurrect it; the divergence is surfaced as a
+    // conflict and the tombstone stays.
     upsertTask(USER_ID, { ...task, title: 'Resurrected' });
+    expect(getPendingTasks(USER_ID)).toHaveLength(0);
+    const row = testDb.prepare(
+      "SELECT sync_state, is_deleted, title FROM unified_tasks WHERE user_id = ? AND external_id = 'res1'",
+    ).get(USER_ID) as { sync_state: string; is_deleted: number; title: string };
+    expect(row.sync_state).toBe('conflict');
+    expect(row.is_deleted).toBe(1);
+    expect(row.title).toBe(task.title);
+
+    // A delete that already pushed leaves the row 'synced'; if the provider
+    // later re-creates the task, resurrection is legitimate and still works.
+    testDb.prepare(
+      "UPDATE unified_tasks SET sync_state = 'synced' WHERE user_id = ? AND external_id = 'res1'",
+    ).run(USER_ID);
+    upsertTask(USER_ID, { ...task, title: 'Recreated later' });
     expect(getPendingTasks(USER_ID)).toHaveLength(1);
   });
 
@@ -339,6 +356,79 @@ describe('upsertTask', () => {
 
     expect(result).toBe('unchanged');
     expect(row).toEqual({ title: 'Local edited title', sync_state: 'conflict' });
+  });
+
+  it('does not flip a provider_disconnected row to synced on a hash-equal provider sighting (NEX-03)', () => {
+    // 'provider_disconnected' is only written when a local mutation was parked
+    // by an auth failure. A pull that sees the provider's (stale) copy of the
+    // same content must NOT mark the row healthy — the parked edit has not
+    // been delivered yet. Only the worker's markSynced heals this state.
+    const task = makeTask({ externalId: 'disc-mask-1', title: 'Edited while disconnected' });
+    upsertTask(USER_ID, task);
+    testDb.prepare(
+      `UPDATE unified_tasks SET sync_state = 'provider_disconnected'
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'disc-mask-1'`,
+    ).run(USER_ID);
+
+    const result = upsertTask(USER_ID, task);
+    const row = testDb.prepare(
+      `SELECT sync_state, title
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'disc-mask-1'`,
+    ).get(USER_ID) as { sync_state: string; title: string };
+
+    expect(result).toBe('unchanged');
+    expect(row).toEqual({ sync_state: 'provider_disconnected', title: 'Edited while disconnected' });
+  });
+
+  it('marks conflict without overwriting when provider content diverges from a provider_disconnected row (NEX-03)', () => {
+    const task = makeTask({ externalId: 'disc-conflict-1', title: 'Local disconnected edit' });
+    upsertTask(USER_ID, task);
+    testDb.prepare(
+      `UPDATE unified_tasks SET sync_state = 'provider_disconnected'
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'disc-conflict-1'`,
+    ).run(USER_ID);
+
+    const result = upsertTask(USER_ID, { ...task, title: 'Provider edited title' });
+    const row = testDb.prepare(
+      `SELECT sync_state, title
+       FROM unified_tasks
+       WHERE user_id = ? AND provider = 'todoist' AND external_id = 'disc-conflict-1'`,
+    ).get(USER_ID) as { sync_state: string; title: string };
+
+    expect(result).toBe('unchanged');
+    expect(row).toEqual({ sync_state: 'conflict', title: 'Local disconnected edit' });
+  });
+
+  it('still heals provider_missing, stale, and failed_retryable rows on a hash-equal sighting', () => {
+    // Regression guard for the reduced recoverable-absence set: dropping
+    // 'provider_disconnected' from it must not break healing for the states
+    // that legitimately recover when the provider shows the task again.
+    const states = ['provider_missing', 'stale', 'failed_retryable'] as const;
+
+    const observed = states.map((state) => {
+      const externalId = `heal-${state}`;
+      const task = makeTask({ externalId });
+      upsertTask(USER_ID, task);
+      testDb.prepare(
+        `UPDATE unified_tasks SET sync_state = ?
+         WHERE user_id = ? AND provider = 'todoist' AND external_id = ?`,
+      ).run(state, USER_ID, externalId);
+
+      const result = upsertTask(USER_ID, task);
+      const row = testDb.prepare(
+        `SELECT sync_state
+         FROM unified_tasks
+         WHERE user_id = ? AND provider = 'todoist' AND external_id = ?`,
+      ).get(USER_ID, externalId) as { sync_state: string };
+      return { state, result, syncState: row.sync_state };
+    });
+
+    expect(observed).toEqual([
+      { state: 'provider_missing', result: 'unchanged', syncState: 'synced' },
+      { state: 'stale', result: 'unchanged', syncState: 'synced' },
+      { state: 'failed_retryable', result: 'unchanged', syncState: 'synced' },
+    ]);
   });
 });
 

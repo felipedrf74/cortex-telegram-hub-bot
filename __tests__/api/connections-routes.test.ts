@@ -1,10 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import Database from 'better-sqlite3';
 
 const mockGetUserConnections = vi.fn();
 const mockDbGet = vi.fn();
 const mockDbAll = vi.fn(() => []);
 const mockDbRun = vi.fn();
+const mockDisconnectProvider = vi.fn();
+const mockLoggerWarn = vi.fn();
+const mockLoggerError = vi.fn();
+const mockRevokeThirdPartyOAuthTokenForProvider = vi.fn(async () => ({
+  attempted: false,
+  revoked: false,
+  reason: 'not_connected',
+}));
+// When set, the mocked database service returns this real sqlite handle
+// instead of the prepare/get/run stubs. vi.doMock factories are only honored
+// once per module path in this suite, so routing through mutable state is the
+// reliable way to swap DB behavior per describe block.
+let taskSyncDb: Database.Database | null = null;
 
 interface MockRes {
   statusCode: number;
@@ -35,6 +49,38 @@ function mockReq(userId: number): Request {
     headers: {},
     header() { return undefined; },
   } as any;
+}
+
+async function dispatchDisconnect(userId: number, provider: string): Promise<MockRes> {
+  const { connectionRoutes } = await import('../../src/api/routes/connections');
+  const router = connectionRoutes();
+  const req = mockReq(userId);
+  (req as any).method = 'DELETE';
+  (req as any).url = `/${provider}`;
+  (req as any).originalUrl = `/${provider}`;
+  (req as any).baseUrl = '';
+  (req as any).path = `/${provider}`;
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    const originalJson = res.json.bind(res);
+    res.json = (body: any) => {
+      const result = originalJson(body);
+      done();
+      return result;
+    };
+    (router as any).handle(req, res, () => done());
+    setTimeout(done, 250);
+  });
+
+  return res;
 }
 
 async function dispatchConnections(userId: number): Promise<MockRes> {
@@ -83,11 +129,13 @@ describe('Connections routes', () => {
     process.env.WHOOP_CLIENT_SECRET = '';
     const observability = await import('../../src/services/tenant-scope-observability');
     observability.clearTenantScopeAnomaliesForTests();
+    mockLoggerWarn.mockClear();
+    mockLoggerError.mockClear();
     vi.doMock('../../src/utils/logger', () => ({
       logger: {
         info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
+        warn: (...args: unknown[]) => mockLoggerWarn(...(args as [])),
+        error: (...args: unknown[]) => mockLoggerError(...(args as [])),
         debug: vi.fn(),
         trace: vi.fn(),
         child: vi.fn().mockReturnThis(),
@@ -109,11 +157,17 @@ describe('Connections routes', () => {
     mockDbGet.mockReturnValue(undefined);
     mockDbAll.mockClear();
     mockDbRun.mockClear();
+    taskSyncDb = null;
     vi.doMock('../../src/services/oauth-store', () => ({
       getUserConnections: (...args: unknown[]) => mockGetUserConnections(...args),
+      disconnectProvider: (...args: unknown[]) => mockDisconnectProvider(...args),
+    }));
+    vi.doMock('../../src/services/user-data-export', () => ({
+      revokeThirdPartyOAuthTokenForProvider:
+        (...args: unknown[]) => mockRevokeThirdPartyOAuthTokenForProvider(...(args as [])),
     }));
     vi.doMock('../../src/services/database', () => ({
-      getDb: vi.fn(() => ({
+      getDb: vi.fn(() => taskSyncDb ?? ({
         prepare: vi.fn(() => ({
           get: (...args: unknown[]) => mockDbGet(...args),
           all: (...args: unknown[]) => mockDbAll(...args),
@@ -327,5 +381,108 @@ describe('Connections routes', () => {
     // (OUTLOOK_CLIENT_ID = ''), so the canonical state is not_configured.
     expect(outlook.state).toBe('not_configured');
     expect(outlook.reasonCode).toBe('NOT_CONFIGURED');
+  });
+
+  describe('DELETE /connections/:provider task sync-state cleanup', () => {
+    let syncDb: Database.Database;
+
+    function seedTaskSyncRows(): void {
+      syncDb.exec(`
+        CREATE TABLE task_sync_state (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          last_sync_at TEXT,
+          sync_cursor TEXT,
+          status TEXT DEFAULT 'idle',
+          error_message TEXT,
+          tasks_synced INTEGER DEFAULT 0,
+          sync_duration_ms INTEGER,
+          UNIQUE(user_id, provider)
+        );
+        CREATE TABLE user_oauth_tokens (
+          user_id INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          PRIMARY KEY (user_id, provider)
+        );
+      `);
+      const insert = syncDb.prepare(
+        `INSERT INTO task_sync_state (user_id, provider, last_sync_at, status)
+         VALUES (?, ?, '2026-07-01T10:00:00Z', 'idle')`,
+      );
+      insert.run(42, 'ms_todo');
+      insert.run(42, 'todoist');
+      insert.run(77, 'ms_todo');
+    }
+
+    function remainingSyncRows(): Array<{ user_id: number; provider: string }> {
+      return syncDb.prepare(
+        'SELECT user_id, provider FROM task_sync_state ORDER BY user_id, provider',
+      ).all() as Array<{ user_id: number; provider: string }>;
+    }
+
+    beforeEach(() => {
+      syncDb = new Database(':memory:');
+      seedTaskSyncRows();
+      taskSyncDb = syncDb;
+      mockDisconnectProvider.mockReset();
+      mockRevokeThirdPartyOAuthTokenForProvider.mockClear();
+    });
+
+    afterEach(() => {
+      taskSyncDb = null;
+      syncDb.close();
+    });
+
+    it('removes only the disconnecting user Microsoft To Do sync-state row on outlook disconnect', async () => {
+      const res = await dispatchDisconnect(42, 'outlook');
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.data).toEqual(expect.objectContaining({ provider: 'outlook', disconnected: true }));
+      expect(mockDisconnectProvider).toHaveBeenCalledWith(42, 'outlook');
+      expect(remainingSyncRows()).toEqual([
+        { user_id: 42, provider: 'todoist' },
+        { user_id: 77, provider: 'ms_todo' },
+      ]);
+    });
+
+    it('removes only the disconnecting user todoist sync-state row on todoist disconnect', async () => {
+      const res = await dispatchDisconnect(42, 'todoist');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toEqual(expect.objectContaining({ provider: 'todoist', disconnected: true }));
+      expect(remainingSyncRows()).toEqual([
+        { user_id: 42, provider: 'ms_todo' },
+        { user_id: 77, provider: 'ms_todo' },
+      ]);
+    });
+
+    it('leaves task sync-state untouched when disconnecting a non-task provider', async () => {
+      const res = await dispatchDisconnect(42, 'google');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toEqual(expect.objectContaining({ provider: 'google', disconnected: true }));
+      expect(mockDisconnectProvider).toHaveBeenCalledWith(42, 'google');
+      expect(remainingSyncRows()).toEqual([
+        { user_id: 42, provider: 'ms_todo' },
+        { user_id: 42, provider: 'todoist' },
+        { user_id: 77, provider: 'ms_todo' },
+      ]);
+    });
+
+    it('keeps disconnect successful when the sync-state cleanup fails (non-fatal)', async () => {
+      syncDb.exec('DROP TABLE task_sync_state');
+
+      const res = await dispatchDisconnect(42, 'outlook');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.data).toEqual(expect.objectContaining({ provider: 'outlook', disconnected: true }));
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 42, provider: 'outlook' }),
+        expect.stringContaining('Task sync-state cleanup on disconnect failed'),
+      );
+    });
   });
 });

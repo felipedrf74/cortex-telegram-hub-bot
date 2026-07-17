@@ -7,6 +7,7 @@ import { isConnected } from '../oauth-store';
 import { getTaskProviderForUser } from './task-router';
 import { projectTaskForProvider } from './task-provider-capabilities';
 import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
+import { assertTransition } from './task-sync-transitions';
 import { computeTaskContentFingerprint } from './todoist-correlation';
 import type { OfflineTaskDto, TaskSyncState, TaskSyncWarningCode } from './offline-first-task-service';
 
@@ -25,6 +26,7 @@ type TaskMutationRow = {
   status: string;
   retry_count: number;
   provider_idempotency_key: string | null;
+  created_at?: string | null;
 };
 
 type TaskProviderLinkRow = {
@@ -81,6 +83,10 @@ const DEFAULT_LIMIT = 25;
 const PROVIDER_WRITE_TIMEOUT_MS = 12_000;
 const STALE_TASK_LEASE_MINUTES = 10;
 const MAX_RETRY_COUNT_BEFORE_DEAD_LETTER = 8;
+// Auth-parked rows (401/403/not-connected → next_retry_at NULL) are re-armed
+// once their provider is connected again; rows older than this are
+// dead-lettered with an issue instead of retried against a long-gone grant.
+const AUTH_PARK_REQUEUE_MAX_AGE_DAYS = 30;
 const RATE_WINDOW_MS = 60_000;
 const PROVIDER_WRITE_LIMITS = {
   global: 500,
@@ -1051,12 +1057,94 @@ async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'f
   }
 }
 
+/**
+ * Re-arm mutations parked by an auth failure (`provider_auth_expired` →
+ * status 'failed' with next_retry_at NULL, which readyMutations never
+ * re-selects) once their provider is connected again. Reconnect used to be
+ * pull-only, so these rows were stranded forever and the next pull silently
+ * masked the divergence (NEX-03). Runs at every batch start, so both the
+ * OAuth-reconnect kick and the cron pick the rows up in the same tick.
+ *
+ * Scoping: only auth-parked rows. Permanent failures with other codes
+ * (provider_list_missing, manual_resolution_required) and rows with no
+ * error code stay parked — re-arming them would just burn the dead-letter
+ * retry budget until their root cause is repaired.
+ */
+export function requeueAuthParkedMutations(scope: {
+  tenantId?: number;
+  userId?: number;
+} = {}): { requeued: number; deadLettered: number } {
+  const db = getDb();
+  const where: string[] = [
+    "status = 'failed'",
+    'next_retry_at IS NULL',
+    "last_error_code = 'provider_auth_expired'",
+  ];
+  const args: unknown[] = [];
+  if (scope.tenantId != null) {
+    where.push('COALESCE(tenant_id, user_id) = ?');
+    args.push(scope.tenantId);
+  }
+  if (scope.userId != null) {
+    where.push('user_id = ?');
+    args.push(scope.userId);
+  }
+  const rows = db.prepare(
+    `SELECT * FROM task_mutations WHERE ${where.join(' AND ')}`,
+  ).all(...args) as TaskMutationRow[];
+
+  let requeued = 0;
+  let deadLettered = 0;
+  for (const mutation of rows) {
+    const link = mutation.task_id
+      ? getProviderLink(mutation)
+      : null;
+    if (!link || link.provider === 'nexus_local') continue;
+    if (!isTaskProviderConnected(mutation.user_id, link.provider)) continue;
+
+    const createdAt = Date.parse(`${mutation.created_at || ''}`);
+    const ageDays = Number.isFinite(createdAt)
+      ? (Date.now() - createdAt) / 86_400_000
+      : 0;
+    if (ageDays > AUTH_PARK_REQUEUE_MAX_AGE_DAYS) {
+      assertTransition('mutation_status', 'failed', 'dead_letter', { mutationId: mutation.mutation_id });
+      markDeadLetter(
+        mutation,
+        'provider_auth_expired',
+        `Mutation parked for ${Math.floor(ageDays)} days while the provider was disconnected; exceeded the ${AUTH_PARK_REQUEUE_MAX_AGE_DAYS}-day requeue window and needs manual review.`,
+      );
+      deadLettered += 1;
+      continue;
+    }
+
+    db.prepare(
+      `UPDATE task_mutations
+       SET next_retry_at = ?, locked_at = NULL
+       WHERE mutation_id = ? AND status = 'failed' AND next_retry_at IS NULL`,
+    ).run(nowIso(), mutation.mutation_id);
+    requeued += 1;
+  }
+
+  if (requeued > 0 || deadLettered > 0) {
+    logger.info(
+      { requeued, deadLettered, tenantId: scope.tenantId, userId: scope.userId },
+      'Re-armed auth-parked task mutations after provider reconnect',
+    );
+  }
+  return { requeued, deadLettered };
+}
+
 export async function runTaskMutationSyncBatch(options: {
   limit?: number;
   tenantId?: number;
   userId?: number;
 } = {}): Promise<TaskMutationSyncBatchResult> {
   const limit = Math.min(Math.max(Number(options.limit || DEFAULT_LIMIT), 1), 100);
+  try {
+    requeueAuthParkedMutations({ tenantId: options.tenantId, userId: options.userId });
+  } catch (err) {
+    logger.warn({ err }, 'Auth-parked mutation requeue failed (non-fatal)');
+  }
   const mutations = readyMutations(limit, { tenantId: options.tenantId, userId: options.userId });
 
   const result: TaskMutationSyncBatchResult = {
@@ -1093,9 +1181,21 @@ export async function runTaskMutationSyncBatch(options: {
   return result;
 }
 
-export function getTaskSyncOperationalMetrics(tenantId?: number) {
-  const tenantWhere = tenantId != null ? 'WHERE tenant_id = ?' : '';
-  const args = tenantId != null ? [tenantId] : [];
+export function getTaskSyncOperationalMetrics(tenantId?: number, userId?: number) {
+  // Scoped to the requesting user when provided — the tenant-wide aggregate
+  // leaked other members' backlog counts in multi-user tenants (NEX-26).
+  const conditions: string[] = [];
+  const scopeArgs: Array<number> = [];
+  if (tenantId != null) {
+    conditions.push('tenant_id = ?');
+    scopeArgs.push(tenantId);
+  }
+  if (userId != null) {
+    conditions.push('user_id = ?');
+    scopeArgs.push(userId);
+  }
+  const tenantWhere = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const args = scopeArgs;
   const db = getDb();
   const mutationRows = db.prepare(
     `SELECT status, COALESCE(last_error_code, '') AS error_code, COUNT(*) AS count,

@@ -276,9 +276,14 @@ function ensureProviderLinkForTask(tenantId: number, userId: number, task: Norma
 }
 
 function hasRecoverableProviderAbsenceState(syncState: string | null | undefined): boolean {
+  // 'provider_disconnected' is deliberately NOT recoverable-by-sighting: that
+  // state is only written when a local mutation was parked by an auth failure,
+  // and flipping the row to 'synced' just because a pull saw the provider's
+  // (stale) copy masked the un-delivered edit (NEX-03). Disconnected rows heal
+  // through actual delivery — the worker re-arms parked mutations once the
+  // provider reconnects and markSynced flips the state after the push lands.
   return [
     'provider_missing',
-    'provider_disconnected',
     'stale',
     'failed_retryable',
   ].includes(String(syncState || ''));
@@ -302,7 +307,7 @@ function markProviderTaskSeen(input: {
          synced_at = datetime('now'),
          updated_at = datetime('now')
      WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?
-       AND sync_state IN ('provider_missing', 'provider_disconnected', 'stale', 'failed_retryable')`,
+       AND sync_state IN ('provider_missing', 'stale', 'failed_retryable')`,
   ).run(input.tenantId, input.userId, input.nexusTaskId);
   db.prepare(
     `UPDATE task_provider_links
@@ -324,11 +329,18 @@ function markProviderTaskSeen(input: {
 }
 
 function hasPendingLocalMutation(syncState: string | null | undefined): boolean {
+  // 'provider_disconnected' rows carry a parked local mutation (that state is
+  // only written by the worker's failure path), and 'deleted_pending_sync'
+  // rows carry an un-pushed delete — both must be protected from the pull
+  // overwrite path, which previously reverted disconnected-era edits (NEX-03)
+  // and resurrected pending deletes (NEX-19).
   return [
     'queued',
     'syncing',
     'failed_retryable',
     'conflict',
+    'provider_disconnected',
+    'deleted_pending_sync',
   ].includes(String(syncState || ''));
 }
 

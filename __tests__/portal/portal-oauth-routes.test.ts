@@ -68,6 +68,7 @@ function createRes() {
 function captureRoutes(
   services = createServices(),
   loadServices: () => unknown = () => services,
+  logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> } = { warn: vi.fn(), error: vi.fn() },
 ): CapturedRoute[] {
   const routes: CapturedRoute[] = [];
   const app = {
@@ -80,10 +81,15 @@ function captureRoutes(
   };
   registerPortalOAuthRoutes(app as any, {
     loadServices: loadServices as any,
-    logger: { warn: vi.fn(), error: vi.fn() },
+    logger,
     env: { OAUTH_REDIRECT_BASE: 'https://api.test' },
   });
   return routes;
+}
+
+/** Flush the microtask/immediate chain behind fire-and-forget push-then-pull work. */
+async function flushAsyncWork(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function findRoute(routes: CapturedRoute[], path: string, method?: CapturedRoute['method']): CapturedRoute {
@@ -224,6 +230,70 @@ describe('portal oauth routes', () => {
     expect(services.resetMicrosoftClients).toHaveBeenCalled();
     expect(services.syncProvider).toHaveBeenCalledWith(7, 'ms_todo');
     expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
+  });
+
+  it('pushes queued task mutations for the reconnected user before the initial Microsoft To Do pull', async () => {
+    const runTaskMutationSyncBatch = vi.fn(async () => ({ processed: 1, synced: 1 }));
+    const syncProvider = vi.fn(async () => undefined);
+    const services = createServices({ runTaskMutationSyncBatch, syncProvider });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/outlook/callback'), {
+      query: { code: 'code-2', state: 'ios:7:nonce-2' },
+    });
+    await flushAsyncWork();
+
+    expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
+    expect(runTaskMutationSyncBatch).toHaveBeenCalledTimes(1);
+    expect(runTaskMutationSyncBatch).toHaveBeenCalledWith({ userId: 7 });
+    expect(syncProvider).toHaveBeenCalledWith(7, 'ms_todo');
+    // Push-then-pull ordering: the mutation batch must run BEFORE the pull so
+    // offline edits reach the provider before the pull re-reads its state.
+    expect(runTaskMutationSyncBatch.mock.invocationCallOrder[0])
+      .toBeLessThan(syncProvider.mock.invocationCallOrder[0]);
+  });
+
+  it('still runs the initial pull when the reconnect mutation push rejects', async () => {
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const runTaskMutationSyncBatch = vi.fn(async () => {
+      throw new Error('push exploded');
+    });
+    const syncProvider = vi.fn(async () => undefined);
+    const services = createServices({ runTaskMutationSyncBatch, syncProvider });
+    const routes = captureRoutes(services, () => services, logger);
+
+    const res = await invoke(findRoute(routes, '/oauth/outlook/callback'), {
+      query: { code: 'code-2', state: 'ios:7:nonce-2' },
+    });
+    await flushAsyncWork();
+
+    expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 7 }),
+      'Post-reconnect Microsoft To Do mutation push failed (non-fatal)',
+    );
+    expect(syncProvider).toHaveBeenCalledWith(7, 'ms_todo');
+  });
+
+  it('still runs the initial pull when the mutation worker is absent or returns a non-promise', async () => {
+    // Absent worker: createServices() intentionally omits runTaskMutationSyncBatch.
+    const absentServices = createServices();
+    expect('runTaskMutationSyncBatch' in absentServices).toBe(false);
+    const absentRoutes = captureRoutes(absentServices);
+    await invoke(findRoute(absentRoutes, '/oauth/outlook/callback'), {
+      query: { code: 'code-2', state: 'ios:7:nonce-2' },
+    });
+    expect(absentServices.syncProvider).toHaveBeenCalledWith(7, 'ms_todo');
+
+    // Non-promise worker return: the push guard must fall through to the pull.
+    const nonPromiseWorker = vi.fn(() => undefined);
+    const nonPromiseServices = createServices({ runTaskMutationSyncBatch: nonPromiseWorker });
+    const nonPromiseRoutes = captureRoutes(nonPromiseServices);
+    await invoke(findRoute(nonPromiseRoutes, '/oauth/outlook/callback'), {
+      query: { code: 'code-2', state: 'ios:7:nonce-2' },
+    });
+    expect(nonPromiseWorker).toHaveBeenCalledWith({ userId: 7 });
+    expect(nonPromiseServices.syncProvider).toHaveBeenCalledWith(7, 'ms_todo');
   });
 
   it.each(['google', 'outlook', 'strava', 'whoop'] as const)(

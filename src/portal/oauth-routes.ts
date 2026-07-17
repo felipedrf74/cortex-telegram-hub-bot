@@ -45,6 +45,7 @@ interface PortalOAuthServices {
   resetGoogleClients?: () => void;
   resetMicrosoftClients?: () => void;
   syncProvider?: (userId: number, provider: string) => Promise<unknown>;
+  runTaskMutationSyncBatch?: (options?: { userId?: number }) => Promise<unknown>;
   invalidateIntegrationDerivedCaches?: (userId: number, provider: string) => void;
 }
 
@@ -95,6 +96,11 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     syncProvider = require('../services/task-store/sync-engine').syncProvider;
   } catch { /* optional sync engine */ }
 
+  let runTaskMutationSyncBatch: ((options?: { userId?: number }) => Promise<unknown>) | undefined;
+  try {
+    runTaskMutationSyncBatch = require('../services/task-store/task-mutation-sync-worker').runTaskMutationSyncBatch;
+  } catch { /* optional mutation worker */ }
+
   let invalidateIntegrationDerivedCaches: ((userId: number, provider: string) => void) | undefined;
   try {
     invalidateIntegrationDerivedCaches = require('../services/cache-coherence-registry').invalidateIntegrationDerivedCaches;
@@ -127,6 +133,7 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     resetGoogleClients,
     resetMicrosoftClients,
     syncProvider,
+    runTaskMutationSyncBatch,
     invalidateIntegrationDerivedCaches,
   };
 }
@@ -248,11 +255,29 @@ function startInitialTaskProviderSync(
   services: PortalOAuthServices,
   logger: PortalOAuthLogger,
 ): void {
+  // Push BEFORE the initial pull: the mutation batch re-arms auth-parked
+  // mutations for the freshly reconnected provider and delivers them, so the
+  // pull that follows sees the pushed state instead of overwriting or
+  // masking edits made while the provider was disconnected (NEX-03).
+  const pull = () => {
+    try {
+      services.syncProvider?.(userId, provider).catch((err: unknown) =>
+        logger.warn({ err, userId }, `Initial ${providerLabel} sync failed (non-fatal)`),
+      );
+    } catch { /* sync engine optional */ }
+  };
   try {
-    services.syncProvider?.(userId, provider).catch((err: unknown) =>
-      logger.warn({ err, userId }, `Initial ${providerLabel} sync failed (non-fatal)`),
-    );
-  } catch { /* sync engine optional */ }
+    const push = services.runTaskMutationSyncBatch?.({ userId });
+    if (push && typeof (push as Promise<unknown>).then === 'function') {
+      (push as Promise<unknown>)
+        .catch((err: unknown) =>
+          logger.warn({ err, userId }, `Post-reconnect ${providerLabel} mutation push failed (non-fatal)`),
+        )
+        .finally(pull);
+      return;
+    }
+  } catch { /* mutation worker optional */ }
+  pull();
 }
 
 async function handleIOSAwareOAuthCallback(
