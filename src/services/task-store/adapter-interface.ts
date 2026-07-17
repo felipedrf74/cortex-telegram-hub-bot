@@ -61,7 +61,18 @@ export interface TaskProviderAdapter {
        */
       knownProjects?: NormalizedProject[];
     },
-  ): Promise<{ tasks: NormalizedTask[]; nextCursor?: string }>;
+  ): Promise<{
+    tasks: NormalizedTask[];
+    nextCursor?: string;
+    /**
+     * True when the adapter returned a partial task set because one or more
+     * provider containers/pages failed. Full-pull reconciliation must not
+     * treat omitted tasks as deleted when this is set.
+     */
+    incomplete?: boolean;
+    /** Bounded, operator-readable errors for the sync state. */
+    errors?: string[];
+  }>;
 
   /**
    * Create a task in the upstream provider. Returns the fully normalized
