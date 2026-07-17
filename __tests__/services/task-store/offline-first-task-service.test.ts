@@ -936,6 +936,65 @@ describe('offline-first task service', () => {
     });
   });
 
+  describe('canonical link syncProvider (M4)', () => {
+    it('reports the active provider link target as syncProvider for a nexus-origin task', () => {
+      const providerRowId = Number(testDb.prepare(
+        `INSERT INTO unified_projects (
+           user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at
+         ) VALUES (?, ?, 'ms_todo', 'AAMk-groceries', 'Groceries', 1, 0, datetime('now'))`,
+      ).run(USER_ID, USER_ID).lastInsertRowid);
+      testDb.prepare(
+        `INSERT INTO task_container_mappings (
+           id, tenant_id, user_id, nexus_list_id, provider, provider_container_type,
+           provider_container_id, sync_direction
+         ) VALUES ('mapping-sync-provider-m4', ?, ?, ?, 'ms_todo', 'todo_list', 'AAMk-groceries', 'bidirectional')`,
+      ).run(USER_ID, USER_ID, String(providerRowId));
+      mockResolveTaskProvider.mockReturnValue('ms_todo');
+
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Buy milk',
+        listName: 'Groceries',
+        clientMutationId: 'ios-create-sync-provider-link',
+        idempotencyKey: 'idem-create-sync-provider-link',
+      });
+      const fetched = getOfflineTaskById(USER_ID, USER_ID, created.task.id);
+      const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+      const snapshotTask = snapshot.tasks.find((task: any) => task.id === created.task.id);
+      const row = testDb.prepare(
+        `SELECT provider FROM unified_tasks WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+      ).get(USER_ID, USER_ID, created.task.id) as { provider: string };
+      const link = testDb.prepare(
+        `SELECT provider, provider_task_id FROM task_provider_links WHERE task_id = ?`,
+      ).get(created.task.id) as { provider: string; provider_task_id: string | null };
+
+      // The row keeps its nexus origin identity; the DTO reports the sync
+      // TARGET from the active link even before the push assigns a provider
+      // task id.
+      expect(row.provider).toBe('nexus');
+      expect(link).toEqual({ provider: 'ms_todo', provider_task_id: null });
+      expect(created.task.syncProvider).toBe('ms_todo');
+      expect(fetched?.syncProvider).toBe('ms_todo');
+      expect(snapshotTask?.syncProvider).toBe('ms_todo');
+    });
+
+    it('keeps syncProvider nexus for local-only tasks without provider links (regression)', () => {
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Local only sync provider',
+        listName: 'Tasks',
+        clientMutationId: 'ios-create-sync-provider-local',
+        idempotencyKey: 'idem-create-sync-provider-local',
+      });
+      const fetched = getOfflineTaskById(USER_ID, USER_ID, created.task.id);
+      const link = testDb.prepare(
+        `SELECT provider FROM task_provider_links WHERE task_id = ?`,
+      ).get(created.task.id) as { provider: string };
+
+      expect(link.provider).toBe('nexus_local');
+      expect(created.task.syncProvider).toBe('nexus');
+      expect(fetched?.syncProvider).toBe('nexus');
+    });
+  });
+
   describe('freshness.providerStates connectivity truth', () => {
     // `providerStates()` checks OAuth connectivity through a lazy CJS
     // `require('../oauth-store')`. Under Vitest that call is a NATIVE require
