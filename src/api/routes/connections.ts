@@ -226,6 +226,7 @@ export function connectionRoutes(): Router {
       if (provider !== 'garmin') {
         disconnectProvider(userId, provider);
       }
+      clearTaskSyncStateForConnection(userId, provider);
       sendSuccess(res, {
         provider,
         disconnected: true,
@@ -239,4 +240,22 @@ export function connectionRoutes(): Router {
   }));
 
   return router;
+}
+
+/**
+ * Drop the task-provider sync-state row when its OAuth connection goes away,
+ * so freshness/providerStates never report a stale 'connected' for a
+ * disconnected provider. Task rows, links, and the mutation ledger are
+ * intentionally untouched (keep-local disconnect policy).
+ */
+function clearTaskSyncStateForConnection(userId: number, provider: string): void {
+  const taskProvider = provider === 'outlook' ? 'ms_todo' : provider === 'todoist' ? 'todoist' : null;
+  if (!taskProvider) return;
+  try {
+    getDb().prepare(
+      'DELETE FROM task_sync_state WHERE user_id = ? AND provider = ?',
+    ).run(userId, taskProvider);
+  } catch (err) {
+    logger.warn({ err, userId, provider }, 'Task sync-state cleanup on disconnect failed (non-fatal)');
+  }
 }

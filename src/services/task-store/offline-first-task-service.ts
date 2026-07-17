@@ -1018,6 +1018,26 @@ function activeRows(tenantId: number, userId: number): UnifiedTaskRow[] {
   ).all(tenantId, userId) as UnifiedTaskRow[];
 }
 
+function isTaskProviderOAuthConnected(userId: number, provider: 'ms_todo' | 'todoist'): boolean {
+  try {
+    const { isConnected } = require('../oauth-store') as { isConnected: (userId: number, provider: string) => boolean };
+    return isConnected(userId, provider === 'ms_todo' ? 'outlook' : 'todoist');
+  } catch {
+    // oauth-store unavailable (isolated tests) — fall back to sync-state rows.
+    return true;
+  }
+}
+
+function providerErrorCode(errorMessage: string | null): string | undefined {
+  if (!errorMessage) return undefined;
+  // Auth failures deserve a distinct code so clients can render an
+  // actionable "reconnect" affordance instead of a generic sync error.
+  if (/not connected|unauthorized|forbidden|invalid_grant|auth|expired|401|403/i.test(errorMessage)) {
+    return 'provider_auth_expired';
+  }
+  return 'provider_sync_error';
+}
+
 function providerStates(userId: number): TaskFreshness['providerStates'] {
   const rows = getDb().prepare(
     `SELECT provider, last_sync_at, status, error_message
@@ -1027,6 +1047,17 @@ function providerStates(userId: number): TaskFreshness['providerStates'] {
   const byProvider = new Map(rows.map((row) => [row.provider, row]));
   return (['ms_todo', 'todoist'] as const).map((provider) => {
     const row = byProvider.get(provider);
+    // A stale sync_state row must never report 'connected' after the user
+    // disconnected or the grant died — OAuth connection state is the truth
+    // for connectivity; the row only contributes sync freshness/errors.
+    if (!isTaskProviderOAuthConnected(userId, provider)) {
+      return {
+        provider,
+        state: 'disconnected' as const,
+        lastSyncedAt: row?.last_sync_at || undefined,
+        lastErrorCode: row?.error_message ? providerErrorCode(row.error_message) : undefined,
+      };
+    }
     if (!row) return { provider, state: 'disconnected' as const };
     if (row.status === 'syncing') return { provider, state: 'syncing' as const, lastSyncedAt: row.last_sync_at || undefined };
     if (row.status === 'error') {
@@ -1034,7 +1065,7 @@ function providerStates(userId: number): TaskFreshness['providerStates'] {
         provider,
         state: 'failed' as const,
         lastSyncedAt: row.last_sync_at || undefined,
-        lastErrorCode: row.error_message ? 'provider_sync_error' : undefined,
+        lastErrorCode: providerErrorCode(row.error_message),
       };
     }
     return { provider, state: 'connected' as const, lastSyncedAt: row.last_sync_at || undefined };

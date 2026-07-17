@@ -126,14 +126,22 @@ describe('task-sync-transitions', () => {
       expect(isTransitionAllowed('mutation_status', 'queued', 'dead_letter')).toBe(false);
     });
 
-    it('provider reappearance heals the recoverable-absence set to synced', () => {
-      for (const from of ['provider_missing', 'provider_disconnected', 'stale', 'failed_retryable']) {
+    it('provider reappearance heals sighting-recoverable states; disconnected heals only by delivery', () => {
+      // markProviderTaskSeen's sighting-heal set — provider_disconnected was
+      // removed by the failure-lifecycle work because sighting the provider
+      // copy must not mask a parked local mutation (NEX-03).
+      for (const from of ['provider_missing', 'stale', 'failed_retryable']) {
         expect(isTransitionAllowed('task_sync_state', from, 'synced'), from).toBe(true);
       }
+      // provider_disconnected -> synced stays legal, but only via actual
+      // delivery (markSynced after the re-armed push) or markVerified.
+      expect(isTransitionAllowed('task_sync_state', 'provider_disconnected', 'synced')).toBe(true);
     });
 
     it('pull hash-diff marks pending-local states conflicted, and only those', () => {
-      for (const from of ['queued', 'syncing', 'failed_retryable']) {
+      // Pending-guard set after the failure-lifecycle work: parked
+      // disconnected edits and un-pushed deletes are protected too.
+      for (const from of ['queued', 'syncing', 'failed_retryable', 'provider_disconnected', 'deleted_pending_sync']) {
         expect(isTransitionAllowed('task_sync_state', from, 'conflict'), from).toBe(true);
       }
       // Non-pending states are overwritten by pulls, not conflicted, except
@@ -154,8 +162,9 @@ describe('task-sync-transitions', () => {
       }
     });
 
-    it('deleted_pending_sync resurrect-by-pull is pinned (NEX-19 current behavior, not endorsed)', () => {
+    it('deleted_pending_sync completes to synced only via the delete push (NEX-19 resurrect closed)', () => {
       expect(isTransitionAllowed('task_sync_state', 'deleted_pending_sync', 'synced')).toBe(true);
+      expect(isTransitionAllowed('task_sync_state', 'deleted_pending_sync', 'conflict')).toBe(true);
     });
   });
 

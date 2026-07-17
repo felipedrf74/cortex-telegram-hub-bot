@@ -519,6 +519,66 @@ describe('offline-first task routes', () => {
     expectNoProviderReads();
   });
 
+  it('maps auth-flavored provider sync errors to provider_auth_expired in freshness', async () => {
+    testDb.prepare(
+      `INSERT INTO task_sync_state (user_id, provider, last_sync_at, status, error_message)
+       VALUES (?, 'ms_todo', ?, 'error', ?)`,
+    ).run(12, '2026-06-23T08:30:00Z', 'Microsoft Graph rejected the token: 401 unauthorized');
+
+    const res = await dispatch('GET', '/working-set');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.freshness.providerStates).toContainEqual(
+      expect.objectContaining({
+        provider: 'ms_todo',
+        state: 'failed',
+        lastErrorCode: 'provider_auth_expired',
+      }),
+    );
+    expectNoProviderReads();
+  });
+
+  it('scopes sync/status metrics to the requesting user and tenant (NEX-26)', async () => {
+    const insertMutation = testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id, task_id, operation, status
+       ) VALUES (?, ?, ?, ?, ?, ?, 'task.update', 'queued')`,
+    );
+    // Requesting user (tenant 12, user 12): 2 pending mutations.
+    insertMutation.run('m-u12-1', 'c-u12-1', 'i-u12-1', 12, 12, 'task-a');
+    insertMutation.run('m-u12-2', 'c-u12-2', 'i-u12-2', 12, 12, 'task-b');
+    // Other user in the SAME tenant: 3 pending mutations that must be excluded.
+    insertMutation.run('m-u99-1', 'c-u99-1', 'i-u99-1', 12, 99, 'task-c');
+    insertMutation.run('m-u99-2', 'c-u99-2', 'i-u99-2', 12, 99, 'task-d');
+    insertMutation.run('m-u99-3', 'c-u99-3', 'i-u99-3', 12, 99, 'task-e');
+    // Same user in ANOTHER tenant: proves tenantId is still applied alongside userId.
+    insertMutation.run('m-t999-1', 'c-t999-1', 'i-t999-1', 999, 12, 'task-f');
+    const insertTask = testDb.prepare(
+      `INSERT INTO unified_tasks (user_id, tenant_id, provider, external_id, title, sync_state, nexus_task_id)
+       VALUES (?, ?, 'nexus', ?, ?, 'local_only', ?)`,
+    );
+    insertTask.run(12, 12, 'ext-mine', 'Requesting user local-only task', 'nexus-mine');
+    insertTask.run(99, 12, 'ext-other', 'Other tenant member local-only task', 'nexus-other');
+    testDb.prepare(
+      `INSERT INTO task_sync_observability_events (id, tenant_id, user_id, event_type, operation)
+       VALUES ('evt-u99-dup', 12, 99, 'duplicate_prevention_hit', 'task.create')`,
+    ).run();
+
+    const res = await dispatch('GET', '/sync/status', { userId: 12, tenantId: 12 });
+
+    expect(res.statusCode).toBe(200);
+    const queuedBacklog = res.body.data.mutationBacklog.filter((row: any) => row.status === 'queued');
+    expect(queuedBacklog).toEqual([
+      expect.objectContaining({ status: 'queued', count: 2 }),
+    ]);
+    expect(res.body.data.taskCounts.localOnly).toBe(1);
+    expect(res.body.data.taskSyncStates).toEqual([
+      { syncState: 'local_only', count: 1 },
+    ]);
+    expect(res.body.data.duplicatePreventionHits).toBe(0);
+    expectNoProviderReads();
+  });
+
   it('saves provider-targeted creates locally with typed warnings when container mapping is missing', async () => {
     mockResolveTaskProvider.mockReturnValue('ms_todo');
 

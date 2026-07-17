@@ -143,9 +143,15 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
     'stale',
     'deleted_pending_sync',
   ],
+  // provider_disconnected implies a parked local mutation, so since the
+  // failure-lifecycle work it is pull-PROTECTED (pending guard): pulls can
+  // conflict it on divergence but never overwrite it, and sighting the
+  // provider copy no longer flips it to synced — only actual delivery
+  // (markSynced after the re-armed push) or reconciliation markVerified do.
   provider_disconnected: [
     'queued',
-    'synced', // markProviderTaskSeen / markVerified / pull overwrite
+    'synced', // markSynced after requeued push / reconciliation markVerified
+    'conflict', // pull divergence while carrying a parked mutation
     'provider_missing',
     'stale',
     'failed_permanent',
@@ -195,8 +201,8 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
   // guard) — the only current exit is the tombstone via local delete.
   conflict: ['conflict', 'deleted_pending_sync'],
   // worker pushes the provider delete then marks synced (markSynced after
-  // task.delete); pull overwrite can also resurrect (NEX-19 — pinned as
-  // current behavior, not endorsed)
+  // task.delete). Pull-overwrite resurrection (NEX-19) is closed: the state
+  // is pending-guarded, so a divergent pull marks conflict instead.
   deleted_pending_sync: ['synced', 'conflict'],
 };
 

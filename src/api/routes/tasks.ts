@@ -208,8 +208,8 @@ export function taskRoutes(): Router {
 
   router.get('/sync/status', async (req, res: Response) => {
     try {
-      const { tenantId } = assertTenantScope(req as any, 'tasks_sync_status_local_read');
-      sendSuccess(res, getTaskSyncOperationalMetrics(tenantId));
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_sync_status_local_read');
+      sendSuccess(res, getTaskSyncOperationalMetrics(tenantId, userId));
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/sync/status failed');
       sendInternalError(res, 'Failed to fetch task sync status');

@@ -46,7 +46,12 @@ vi.mock('../../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { runTaskMutationSyncBatch } from '../../../src/services/task-store/task-mutation-sync-worker';
+import {
+  getTaskSyncOperationalMetrics,
+  requeueAuthParkedMutations,
+  runTaskMutationSyncBatch,
+} from '../../../src/services/task-store/task-mutation-sync-worker';
+import { isConnected } from '../../../src/services/oauth-store';
 
 const USER_ID = 42;
 
@@ -215,6 +220,7 @@ function seedLinkedMutation(input: {
 beforeEach(() => {
   testDb = createTestDb();
   vi.clearAllMocks();
+  vi.mocked(isConnected).mockReturnValue(true);
   providerApi.getTasks.mockResolvedValue({ success: true, data: [] });
   providerApi.createTask.mockResolvedValue({ success: true, data: { id: 'provider-created-1', providerVersion: 'etag-created' } });
   providerApi.updateTask.mockResolvedValue({ success: true, data: { id: 'provider-updated-1', providerVersion: 'etag-updated' } });
@@ -504,5 +510,213 @@ describe('task mutation sync worker write-back safety', () => {
     expect(providerApi.addChecklistItem).toHaveBeenCalledWith('ms-list-1', 'provider-existing-checklist', 'Charge watch');
     expect(providerApi.updateChecklistItem).toHaveBeenCalledWith('ms-list-1', 'provider-existing-checklist', 'provider-pack', true);
     expect(providerApi.deleteChecklistItem).toHaveBeenCalledWith('ms-list-1', 'provider-existing-checklist', 'provider-extra');
+  });
+});
+
+// Seeds the exact shape markFailure leaves behind after a 401/403: mutation
+// status 'failed' with next_retry_at NULL (parked), task 'provider_disconnected',
+// link 'disconnected'.
+function seedAuthParkedMutation(input: {
+  taskId: string;
+  mutationId?: string;
+  userId?: number;
+  tenantId?: number;
+  provider?: 'ms_todo' | 'todoist';
+  lastErrorCode?: string | null;
+  createdAt?: string;
+  operation?: string;
+}) {
+  const userId = input.userId ?? USER_ID;
+  const tenantId = input.tenantId ?? userId;
+  const provider = input.provider || 'ms_todo';
+  const taskId = input.taskId;
+  const mutationId = input.mutationId || `mutation-${taskId}`;
+  const operation = input.operation || 'task.create';
+  const containerId = provider === 'ms_todo' ? 'ms-list-1' : 'todoist-project-1';
+  const createdAt = input.createdAt || new Date().toISOString();
+  const lastErrorCode = input.lastErrorCode === undefined ? 'provider_auth_expired' : input.lastErrorCode;
+  testDb.prepare(
+    `INSERT INTO unified_tasks (
+       user_id, tenant_id, provider, external_id, project_id, project_name,
+       title, description, status, priority, provider_data, created_at, updated_at,
+       nexus_task_id, local_version, sync_state, source_of_truth
+     ) VALUES (?, ?, 'nexus', ?, 1, 'Work', 'Parked Task', '', 'pending', 2, '{}', ?, ?, ?, 2, 'provider_disconnected', 'nexus')`,
+  ).run(userId, tenantId, taskId, createdAt, createdAt, taskId);
+  testDb.prepare(
+    `INSERT INTO task_provider_links (
+       id, task_id, tenant_id, user_id, provider, provider_account_id,
+       provider_task_id, provider_list_id, provider_project_id,
+       ownership, link_state
+     ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'nexus_created', 'disconnected')`,
+  ).run(
+    `link-${taskId}-${provider}`,
+    taskId,
+    tenantId,
+    userId,
+    provider,
+    `${provider}:${userId}`,
+    provider === 'ms_todo' ? containerId : null,
+    provider === 'todoist' ? containerId : null,
+  );
+  testDb.prepare(
+    `INSERT INTO task_mutations (
+       mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+       task_id, operation, base_local_version, patch_json, created_at, status,
+       retry_count, next_retry_at, last_error_code, last_error_message
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'failed', 1, NULL, ?, 'ms_todo_not_connected')`,
+  ).run(
+    mutationId,
+    `client-${mutationId}`,
+    `idem-${mutationId}`,
+    tenantId,
+    userId,
+    taskId,
+    operation,
+    JSON.stringify({ providerLinkProvider: provider }),
+    createdAt,
+    lastErrorCode,
+  );
+  return { taskId, mutationId, userId, tenantId };
+}
+
+function getMutationRow(mutationId: string): { status: string; next_retry_at: string | null; last_error_code: string | null } {
+  return testDb.prepare(
+    `SELECT status, next_retry_at, last_error_code
+     FROM task_mutations
+     WHERE mutation_id = ?`,
+  ).get(mutationId) as { status: string; next_retry_at: string | null; last_error_code: string | null };
+}
+
+describe('requeueAuthParkedMutations', () => {
+  it('re-arms an auth-parked mutation once its provider is connected again', () => {
+    const { mutationId } = seedAuthParkedMutation({ taskId: 'task-auth-requeue' });
+
+    const result = requeueAuthParkedMutations({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(result).toEqual({ requeued: 1, deadLettered: 0 });
+    const row = getMutationRow(mutationId);
+    expect(row.status).toBe('failed');
+    expect(row.next_retry_at).not.toBeNull();
+  });
+
+  it('processes a re-armed auth-parked mutation in the same runTaskMutationSyncBatch call', async () => {
+    const { mutationId, taskId } = seedAuthParkedMutation({ taskId: 'task-auth-same-batch' });
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(result.processed).toBe(1);
+    expect(result.synced).toBe(1);
+    expect(providerApi.createTask).toHaveBeenCalledTimes(1);
+    expect(getMutationRow(mutationId).status).toBe('synced');
+    const task = testDb.prepare(
+      `SELECT sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { sync_state: string };
+    expect(task.sync_state).toBe('synced');
+  });
+
+  it('keeps auth-parked mutations parked while the provider stays disconnected', async () => {
+    vi.mocked(isConnected).mockReturnValue(false);
+    const { mutationId } = seedAuthParkedMutation({ taskId: 'task-auth-still-disconnected' });
+
+    const direct = requeueAuthParkedMutations({ tenantId: USER_ID, userId: USER_ID });
+    const batch = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(direct).toEqual({ requeued: 0, deadLettered: 0 });
+    expect(batch.processed).toBe(0);
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+    const row = getMutationRow(mutationId);
+    expect(row.status).toBe('failed');
+    expect(row.next_retry_at).toBeNull();
+  });
+
+  it('dead-letters auth-parked mutations older than the 30-day requeue window instead of retrying', async () => {
+    const { mutationId, taskId } = seedAuthParkedMutation({
+      taskId: 'task-auth-expired-window',
+      createdAt: new Date(Date.now() - 31 * 86_400_000).toISOString(),
+    });
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(result.processed).toBe(0);
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+    const row = getMutationRow(mutationId);
+    expect(row.status).toBe('dead_letter');
+    expect(row.last_error_code).toBe('provider_auth_expired');
+    expect(row.next_retry_at).toBeNull();
+    const issue = testDb.prepare(
+      `SELECT code, state, details_json
+       FROM task_sync_issues
+       WHERE task_id = ? AND code = 'provider_auth_expired'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    ).get(taskId) as { code: string; state: string; details_json: string };
+    expect(issue.state).toBe('open');
+    expect(JSON.parse(issue.details_json)).toMatchObject({ reason: 'dead_letter' });
+  });
+
+  it('never re-arms failed mutations without an auth-expired error code', async () => {
+    seedAuthParkedMutation({ taskId: 'task-park-null-code', lastErrorCode: null });
+    seedAuthParkedMutation({ taskId: 'task-park-list-missing', lastErrorCode: 'provider_list_missing' });
+    seedAuthParkedMutation({ taskId: 'task-park-manual', lastErrorCode: 'manual_resolution_required' });
+
+    const direct = requeueAuthParkedMutations({ tenantId: USER_ID, userId: USER_ID });
+    const batch = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(direct).toEqual({ requeued: 0, deadLettered: 0 });
+    expect(batch.processed).toBe(0);
+    const rows = testDb.prepare(
+      `SELECT status, next_retry_at FROM task_mutations ORDER BY mutation_id`,
+    ).all() as Array<{ status: string; next_retry_at: string | null }>;
+    expect(rows).toEqual([
+      { status: 'failed', next_retry_at: null },
+      { status: 'failed', next_retry_at: null },
+      { status: 'failed', next_retry_at: null },
+    ]);
+  });
+
+  it('restricts the sweep to the requested user and tenant scope', () => {
+    const { mutationId: mineId } = seedAuthParkedMutation({ taskId: 'task-scope-mine' });
+    const { mutationId: otherId } = seedAuthParkedMutation({ taskId: 'task-scope-other', userId: 7, tenantId: 7 });
+
+    const scopedToUser = requeueAuthParkedMutations({ userId: USER_ID });
+
+    expect(scopedToUser).toEqual({ requeued: 1, deadLettered: 0 });
+    expect(getMutationRow(mineId).next_retry_at).not.toBeNull();
+    expect(getMutationRow(otherId).next_retry_at).toBeNull();
+
+    const scopedToTenant = requeueAuthParkedMutations({ tenantId: 7 });
+
+    expect(scopedToTenant).toEqual({ requeued: 1, deadLettered: 0 });
+    expect(getMutationRow(otherId).next_retry_at).not.toBeNull();
+  });
+
+  it('is idempotent — a second sweep re-arms nothing new', () => {
+    const { mutationId } = seedAuthParkedMutation({ taskId: 'task-idem-requeue' });
+
+    const first = requeueAuthParkedMutations({ tenantId: USER_ID, userId: USER_ID });
+    const armedAt = getMutationRow(mutationId).next_retry_at;
+    const second = requeueAuthParkedMutations({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(first).toEqual({ requeued: 1, deadLettered: 0 });
+    expect(second).toEqual({ requeued: 0, deadLettered: 0 });
+    expect(armedAt).not.toBeNull();
+    expect(getMutationRow(mutationId).next_retry_at).toBe(armedAt);
+  });
+});
+
+describe('getTaskSyncOperationalMetrics user scoping', () => {
+  it('filters mutation backlog and task counts to the requesting user (NEX-26)', () => {
+    seedAuthParkedMutation({ taskId: 'task-metrics-mine' });
+    seedAuthParkedMutation({ taskId: 'task-metrics-teammate', userId: 7, tenantId: USER_ID });
+
+    const scoped = getTaskSyncOperationalMetrics(USER_ID, USER_ID);
+    const tenantWide = getTaskSyncOperationalMetrics(USER_ID);
+
+    const backlogTotal = (metrics: { mutationBacklog: Array<{ count: number }> }) =>
+      metrics.mutationBacklog.reduce((sum, row) => sum + row.count, 0);
+    expect(backlogTotal(scoped)).toBe(1);
+    expect(backlogTotal(tenantWide)).toBe(2);
+    expect(scoped.taskCounts.providerDisconnected).toBe(1);
+    expect(tenantWide.taskCounts.providerDisconnected).toBe(2);
   });
 });

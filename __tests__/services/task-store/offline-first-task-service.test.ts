@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Module from 'node:module';
 import { createMigratedTestDatabase } from '../../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import { applyMigrations } from '../../helpers/apply-migrations';
@@ -795,5 +796,102 @@ describe('offline-first task service', () => {
       providerLinkProvider: 'ms_todo',
       providerTaskId: 'ms-task-1',
     }));
+  });
+
+  describe('freshness.providerStates connectivity truth', () => {
+    // `providerStates()` checks OAuth connectivity through a lazy CJS
+    // `require('../oauth-store')`. Under Vitest that call is a NATIVE require
+    // (vite-node's wrapper), so `vi.mock` cannot intercept it — patching
+    // `Module._load` is the only deterministic seam. The patch is scoped to
+    // this describe block and restored after every test.
+    const mockOAuthIsConnected = vi.fn((_userId: number, _provider: string) => true);
+    const originalModuleLoad = (Module as any)._load;
+
+    beforeEach(() => {
+      mockOAuthIsConnected.mockImplementation(() => true);
+      (Module as any)._load = function patchedLoad(request: string, ...rest: unknown[]) {
+        if (typeof request === 'string' && /(^|\/)oauth-store$/.test(request)) {
+          return {
+            isConnected: (userId: number, provider: string) => mockOAuthIsConnected(userId, provider),
+          };
+        }
+        return originalModuleLoad.call(this, request, ...rest);
+      };
+    });
+
+    afterEach(() => {
+      (Module as any)._load = originalModuleLoad;
+    });
+
+    function seedSyncState(provider: string, status: string, errorMessage: string | null = null): void {
+      testDb.prepare(
+        `INSERT INTO task_sync_state (user_id, provider, last_sync_at, status, error_message)
+         VALUES (?, ?, '2026-07-01T10:00:00Z', ?, ?)`,
+      ).run(USER_ID, provider, status, errorMessage);
+    }
+
+    function readProviderState(provider: string) {
+      const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 10 });
+      return snapshot.freshness.providerStates.find((state: any) => state.provider === provider);
+    }
+
+    it('reports disconnected when OAuth is gone even if a stale idle sync-state row survives', () => {
+      seedSyncState('ms_todo', 'idle');
+      mockOAuthIsConnected.mockImplementation((_userId, provider) => provider !== 'outlook');
+
+      const msTodo = readProviderState('ms_todo');
+
+      expect(mockOAuthIsConnected).toHaveBeenCalledWith(USER_ID, 'outlook');
+      expect(mockOAuthIsConnected).toHaveBeenCalledWith(USER_ID, 'todoist');
+      expect(msTodo).toEqual({
+        provider: 'ms_todo',
+        state: 'disconnected',
+        lastSyncedAt: '2026-07-01T10:00:00Z',
+        lastErrorCode: undefined,
+      });
+    });
+
+    it('keeps the mapped auth error code on the disconnected state when an error row remains', () => {
+      seedSyncState('ms_todo', 'error', 'Microsoft Graph rejected the request: 401 unauthorized');
+      mockOAuthIsConnected.mockImplementation(() => false);
+
+      expect(readProviderState('ms_todo')).toEqual(expect.objectContaining({
+        provider: 'ms_todo',
+        state: 'disconnected',
+        lastErrorCode: 'provider_auth_expired',
+      }));
+    });
+
+    it('maps auth-flavored sync errors to provider_auth_expired while OAuth is still connected', () => {
+      seedSyncState('ms_todo', 'error', 'Token refresh failed: invalid_grant (AADSTS700082 token expired)');
+
+      expect(readProviderState('ms_todo')).toEqual(expect.objectContaining({
+        provider: 'ms_todo',
+        state: 'failed',
+        lastSyncedAt: '2026-07-01T10:00:00Z',
+        lastErrorCode: 'provider_auth_expired',
+      }));
+    });
+
+    it('keeps generic sync errors on provider_sync_error', () => {
+      seedSyncState('todoist', 'error', 'graph timeout after 30000ms');
+
+      expect(readProviderState('todoist')).toEqual(expect.objectContaining({
+        provider: 'todoist',
+        state: 'failed',
+        lastErrorCode: 'provider_sync_error',
+      }));
+    });
+
+    it('still reports connected for an idle row when OAuth is connected (regression)', () => {
+      seedSyncState('ms_todo', 'idle');
+
+      expect(readProviderState('ms_todo')).toEqual({
+        provider: 'ms_todo',
+        state: 'connected',
+        lastSyncedAt: '2026-07-01T10:00:00Z',
+      });
+      expect(readProviderState('todoist')).toEqual({ provider: 'todoist', state: 'disconnected' });
+    });
   });
 });
