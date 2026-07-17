@@ -798,6 +798,144 @@ describe('offline-first task service', () => {
     }));
   });
 
+  describe('resolveCreateTargetProject via createOfflineFirstTask', () => {
+    function seedProviderProjectRow(
+      provider: 'ms_todo' | 'todoist',
+      externalId: string,
+      name: string,
+      isDefault = 0,
+    ): number {
+      return Number(testDb.prepare(
+        `INSERT INTO unified_projects (
+           user_id, tenant_id, provider, external_id, name, is_default, task_count, synced_at
+         ) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))`,
+      ).run(USER_ID, USER_ID, provider, externalId, name, isDefault).lastInsertRowid);
+    }
+
+    /**
+     * Mirrors how ensureTaskContainerMappingForProviderProject
+     * (unified-task-store.ts) writes container mappings post-de22b1a2: keyed
+     * by the PROVIDER unified_projects row id, not the nexus mirror row id.
+     */
+    function seedProviderKeyedMapping(providerRowId: number, containerId: string): void {
+      testDb.prepare(
+        `INSERT INTO task_container_mappings (
+           id, tenant_id, user_id, nexus_list_id, provider, provider_container_type,
+           provider_container_id, sync_direction
+         ) VALUES (?, ?, ?, ?, 'ms_todo', 'todo_list', ?, 'bidirectional')`,
+      ).run(`mapping-provider-row-${providerRowId}`, USER_ID, USER_ID, String(providerRowId), containerId);
+    }
+
+    it('creates into the visible provider list so a mapped create queues instead of parking (NEX-05 fixed)', () => {
+      const providerRowId = seedProviderProjectRow('ms_todo', 'AAMk-groceries', 'Groceries', 1);
+      seedProviderKeyedMapping(providerRowId, 'AAMk-groceries');
+      mockResolveTaskProvider.mockReturnValue('ms_todo');
+
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Buy milk',
+        listName: 'Groceries',
+        clientMutationId: 'ios-create-nex05-fixed',
+        idempotencyKey: 'idem-create-nex05-fixed',
+      });
+      const link = testDb.prepare(
+        `SELECT provider, provider_list_id, link_state
+         FROM task_provider_links
+         WHERE task_id = ? AND provider = 'ms_todo'`,
+      ).get(created.task.id) as { provider: string; provider_list_id: string | null; link_state: string };
+      const mutation = testDb.prepare(
+        `SELECT status FROM task_mutations WHERE client_mutation_id = ?`,
+      ).get('ios-create-nex05-fixed') as { status: string };
+      const issueCount = testDb.prepare(
+        `SELECT COUNT(*) AS count FROM task_sync_issues WHERE task_id = ?`,
+      ).get(created.task.id) as { count: number };
+
+      expect(created.task.listId).toBe(String(providerRowId));
+      expect(created.task.listName).toBe('Groceries');
+      expect(created.task.syncState).toBe('queued');
+      expect(link).toEqual({
+        provider: 'ms_todo',
+        provider_list_id: 'AAMk-groceries',
+        link_state: 'pending_create',
+      });
+      expect(mutation.status).toBe('queued');
+      expect(issueCount.count).toBe(0);
+    });
+
+    it('matches the provider list name case-insensitively without minting a nexus mirror', () => {
+      const providerRowId = seedProviderProjectRow('ms_todo', 'AAMk-groceries', 'Groceries');
+      mockResolveTaskProvider.mockReturnValue('ms_todo');
+
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Buy oat milk',
+        listName: 'gROCERIES',
+        clientMutationId: 'ios-create-case-insensitive',
+        idempotencyKey: 'idem-create-case-insensitive',
+      });
+      const nexusMirrorCount = testDb.prepare(
+        `SELECT COUNT(*) AS count FROM unified_projects WHERE user_id = ? AND provider = 'nexus'`,
+      ).get(USER_ID) as { count: number };
+
+      expect(created.task.listId).toBe(String(providerRowId));
+      expect(created.task.listName).toBe('Groceries');
+      expect(created.task.syncState).toBe('queued');
+      expect(nexusMirrorCount.count).toBe(0);
+    });
+
+    it('falls back to a nexus list and parks exactly as before when no provider list matches the name', () => {
+      seedProviderProjectRow('ms_todo', 'AAMk-groceries', 'Groceries');
+      mockResolveTaskProvider.mockReturnValue('ms_todo');
+
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Unmatched list falls back',
+        listName: 'Personal',
+        clientMutationId: 'ios-create-unmatched-name',
+        idempotencyKey: 'idem-create-unmatched-name',
+      });
+      const nexusRow = testDb.prepare(
+        `SELECT id FROM unified_projects WHERE user_id = ? AND provider = 'nexus' AND name = 'Personal'`,
+      ).get(USER_ID) as { id: number };
+      const mutation = testDb.prepare(
+        `SELECT status FROM task_mutations WHERE client_mutation_id = ?`,
+      ).get('ios-create-unmatched-name') as { status: string };
+      const issue = testDb.prepare(
+        `SELECT code, provider, state FROM task_sync_issues WHERE task_id = ?`,
+      ).get(created.task.id) as { code: string; provider: string; state: string };
+
+      expect(created.task.listId).toBe(String(nexusRow.id));
+      expect(created.task.syncState).toBe('failed_permanent');
+      expect(created.task.syncWarnings.map((warning) => warning.code)).toContain('provider_list_missing');
+      expect(mutation.status).toBe('failed');
+      expect(issue).toEqual({ code: 'provider_list_missing', provider: 'ms_todo', state: 'open' });
+    });
+
+    it('ignores provider rows for local-only users and stays local_only in a nexus list', () => {
+      const providerRowId = seedProviderProjectRow('ms_todo', 'AAMk-groceries', 'Groceries', 1);
+      // Default mockResolveTaskProvider return value is 'nexus' (local-only).
+
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Local-only stays local',
+        listName: 'Groceries',
+        clientMutationId: 'ios-create-local-only-name-clash',
+        idempotencyKey: 'idem-create-local-only-name-clash',
+      });
+      const project = testDb.prepare(
+        `SELECT provider FROM unified_projects WHERE id = ?`,
+      ).get(Number(created.task.listId)) as { provider: string };
+      const mutation = testDb.prepare(
+        `SELECT status FROM task_mutations WHERE client_mutation_id = ?`,
+      ).get('ios-create-local-only-name-clash') as { status: string };
+      const link = testDb.prepare(
+        `SELECT provider FROM task_provider_links WHERE task_id = ?`,
+      ).get(created.task.id) as { provider: string };
+
+      expect(created.task.listId).not.toBe(String(providerRowId));
+      expect(project.provider).toBe('nexus');
+      expect(created.task.syncState).toBe('local_only');
+      expect(mutation.status).toBe('synced');
+      expect(link.provider).toBe('nexus_local');
+    });
+  });
+
   describe('freshness.providerStates connectivity truth', () => {
     // `providerStates()` checks OAuth connectivity through a lazy CJS
     // `require('../oauth-store')`. Under Vitest that call is a NATIVE require

@@ -999,6 +999,41 @@ function getOrCreateProject(tenantId: number, userId: number, listName?: string)
   ).get(userId, tenantId, externalId) as ProjectRow;
 }
 
+/**
+ * Resolve the project a NEW task should live in.
+ *
+ * Post-de22b1a2 list model: the provider's own project rows are the lists the
+ * app shows (mapped nexus mirrors are hidden from /lists), container mappings
+ * are keyed by the provider row id, and resolveTaskSyncTarget resolves
+ * provider row ids. iOS sends only a listName on create, so resolving that
+ * name to the hidden nexus mirror (as getOrCreateProject does) produced a
+ * project id no mapping could match — every create into a Microsoft-backed
+ * list parked as failed_permanent/provider_list_missing (NEX-05).
+ *
+ * Prefer the visible provider list matching the name for the user's active
+ * sync provider; fall back to the nexus-local list otherwise (local-only
+ * users and genuinely local lists are unchanged).
+ */
+function resolveCreateTargetProject(
+  tenantId: number,
+  userId: number,
+  listName: string | undefined,
+  provider: TaskProviderType,
+): ProjectRow {
+  if (provider === 'ms_todo' || provider === 'todoist') {
+    const normalizedName = String(listName || '').trim() || 'Inbox';
+    const providerRow = getDb().prepare(
+      `SELECT * FROM unified_projects
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ?
+         AND lower(name) = lower(?)
+       ORDER BY is_default DESC, id ASC
+       LIMIT 1`,
+    ).get(userId, tenantId, provider, normalizedName) as ProjectRow | undefined;
+    if (providerRow) return providerRow;
+  }
+  return getOrCreateProject(tenantId, userId, listName);
+}
+
 function getProjectById(tenantId: number, userId: number, listId: string): ProjectRow | null {
   const numericListId = Number(listId);
   if (!Number.isFinite(numericListId)) return null;
@@ -1437,7 +1472,7 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
 
   const created = db.transaction(() => {
     const provider = resolveTaskProvider(userId);
-    const project = getOrCreateProject(tenantId, userId, input.listName);
+    const project = resolveCreateTargetProject(tenantId, userId, input.listName, provider);
     const syncTarget = resolveTaskSyncTarget({
       tenantId,
       userId,

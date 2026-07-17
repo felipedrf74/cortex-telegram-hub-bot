@@ -169,6 +169,7 @@
     { "pattern": "__tests__/services/task-store/task-reconciliation-job.test.ts", "disposition": "keep", "reason": "First coverage of the reconciliation job: duplicate-link conflict scan, candidate caps and staleness gate, per-link provider-state mapping, verify healing, timeout, and idempotency — safety net ahead of the task failure-lifecycle work." },
     { "pattern": "__tests__/services/task-store/task-sync-policy.test.ts", "disposition": "keep", "reason": "Pins resolveTaskSyncTarget and getTaskContainerMapping: per-provider mapping hits, sync_direction gating, direct provider-project fallback, and the documented NEX-05 writer/consumer key mismatch the mapping-repair milestone will flip." },
     { "pattern": "__tests__/services/task-store/task-sync-transitions.test.ts", "disposition": "keep", "reason": "Fixture pinning the task-sync state machines (mutation status, task sync_state, link_state) as an allowed-transition table with documented absorbing states; state-space changes must edit table and fixture together." },
+    { "pattern": "__tests__/scripts/task-mapping-repair.test.ts", "disposition": "keep", "reason": "Pins the one-shot NEX-05 backlog repair: deterministic-else-issue resolution (legacy mirror-keyed mapping, unique name match, open issue on ambiguity), dry-run rollback, and requeue semantics." },
     { "pattern": "__tests__/**/*.test.ts", "disposition": "keep", "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion." }
   ],
   "coverage": {
