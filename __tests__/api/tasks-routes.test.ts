@@ -1745,3 +1745,143 @@ describe('M6 force-sync route (POST /sync/now)', () => {
     expect(otherUser.statusCode).toBe(200);
   });
 });
+
+// ── M9: task restore route (undo delete) ─────────────────────────────
+
+describe('M9 task restore route (POST /:listId/:taskId/restore)', () => {
+  async function createTask(suffix: string) {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: `Restore route task ${suffix}`,
+        listName: 'Tasks',
+        clientMutationId: `ios-restore-route-create-${suffix}`,
+        idempotencyKey: `idem-restore-route-create-${suffix}`,
+      },
+    });
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    return created.body.data.task as { id: string; listId: string };
+  }
+
+  /** Rewrite the create's nexus_local link into a linked ms_todo identity. */
+  function linkToProvider(taskId: string, suffix: string): void {
+    testDb.prepare(
+      `UPDATE task_provider_links
+       SET provider = 'ms_todo',
+           provider_account_id = 'ms_todo:12',
+           provider_task_id = ?,
+           provider_list_id = 'ms-list-1',
+           link_state = 'linked'
+       WHERE task_id = ?`,
+    ).run(`ms-task-route-${suffix}`, taskId);
+    testDb.prepare(
+      `UPDATE unified_tasks SET sync_state = 'synced' WHERE nexus_task_id = ?`,
+    ).run(taskId);
+  }
+
+  it('404s NOT_FOUND for an unknown task id', async () => {
+    const res = await dispatch('POST', '/list-1/task-route-unknown/restore', {
+      params: { listId: 'list-1', taskId: 'task-route-unknown' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('409s NOT_DELETED for a live task', async () => {
+    const task = await createTask('live');
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/restore`, {
+      params: { listId: task.listId, taskId: task.id },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('NOT_DELETED');
+  });
+
+  it('restores a deleted local-only task (path undeleted) and invalidates task caches', async () => {
+    const task = await createTask('local');
+    const deleted = await dispatch('DELETE', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        clientMutationId: 'ios-restore-route-delete-local',
+        idempotencyKey: 'idem-restore-route-delete-local',
+      },
+    });
+    expect(deleted.statusCode).toBe(200);
+    mockInvalidateTaskCaches.mockClear();
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/restore`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        clientMutationId: 'ios-restore-route-local',
+        idempotencyKey: 'idem-restore-route-local',
+      },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toEqual(expect.objectContaining({
+      restored: true,
+      path: 'undeleted',
+      idempotentReplay: false,
+    }));
+    expect(res.body.data.task).toEqual(expect.objectContaining({
+      id: task.id,
+      status: 'notStarted',
+      syncState: 'local_only',
+      deletedAt: null,
+    }));
+    expect(mockInvalidateTaskCaches).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      listIds: [task.listId],
+    }));
+    // The restored task is readable again through the token-zero detail read.
+    const detail = await dispatch('GET', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.body.data.task.status).toBe('notStarted');
+  });
+
+  it('supersedes a held provider delete (path superseded_delete) without any provider call', async () => {
+    const task = await createTask('held');
+    linkToProvider(task.id, 'held');
+    const deleted = await dispatch('DELETE', `/${task.listId}/${task.id}`, {
+      params: { listId: task.listId, taskId: task.id },
+      body: {
+        clientMutationId: 'ios-restore-route-delete-held',
+        idempotencyKey: 'idem-restore-route-delete-held',
+      },
+    });
+    expect(deleted.statusCode).toBe(200);
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/restore`, {
+      params: { listId: task.listId, taskId: task.id },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.path).toBe('superseded_delete');
+    expect(res.body.data.task.deletedAt).toBeNull();
+    const heldDelete = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE task_id = ? AND operation = 'task.delete'`,
+    ).get(task.id) as { status: string };
+    expect(heldDelete.status).toBe('superseded');
+    expect(providerApi.deleteTask).not.toHaveBeenCalled();
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+  });
+
+  it('409s NOT_RESTORABLE for a merged twin-repair tombstone', async () => {
+    const task = await createTask('merged');
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = datetime('now'), provider_data = ?
+       WHERE nexus_task_id = ?`,
+    ).run(JSON.stringify({ merged_into: 'task_route_survivor' }), task.id);
+
+    const res = await dispatch('POST', `/${task.listId}/${task.id}/restore`, {
+      params: { listId: task.listId, taskId: task.id },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('NOT_RESTORABLE');
+  });
+});

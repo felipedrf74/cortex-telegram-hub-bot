@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "ff4fdd5e3f21210baa4169c0cd7f341873ec6af6fd37ea8cc4c1aac84bcdcb2c",
-    "baseCommit": "d823d4072d4b18d682060b620d3ac4511fa01d6a",
-    "baseCommitTimestamp": "2026-07-17T23:18:59+01:00",
+    "sourceDigest": "dfa8a1a17e9e5b8747db7d65b6070c00a646de5f1c0ceb1fd31f3fb2b4cf107f",
+    "baseCommit": "132c17b48888361c94125c977cb2c45900cc578f",
+    "baseCommitTimestamp": "2026-07-18T00:35:01+01:00",
     "trackedFiles": 2589,
     "sourceFiles": 979
   },
@@ -3220,6 +3220,14 @@
       "method": "POST",
       "path": "/api/v1/tasks/:listId/:taskId/move",
       "localPath": "/:listId/:taskId/move",
+      "mountPath": "/api/v1/tasks",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tasks/:listId/:taskId/restore",
+      "localPath": "/:listId/:taskId/restore",
       "mountPath": "/api/v1/tasks",
       "source": "src/api/routes/tasks.ts",
       "owner": "backend"

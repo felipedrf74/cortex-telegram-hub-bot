@@ -130,7 +130,10 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
   ],
   // retry cycle keeps the worker exits; recoverable-absence membership also
   // allows markProviderTaskSeen healing → synced (:287-306); reconciliation
-  // markVerified → synced (task-reconciliation-job.ts:125-139)
+  // markVerified → synced (task-reconciliation-job.ts:125-139).
+  // 'queued' exit (M9 restore): restoring a tombstoned row (e.g. a task
+  // tombstoned by a list delete while a retry was pending) re-queues the
+  // canonical-links re-push (restoreOfflineFirstTask path b).
   failed_retryable: [
     'synced',
     'partially_synced',
@@ -140,6 +143,7 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
     'provider_missing',
     'conflict',
     'deleted_pending_sync',
+    'queued',
   ],
   // retryOfflineTaskSync re-queues when the target resolves
   // (offline-first-task-service.ts:2024-2042); pull overwrite → synced;
@@ -216,7 +220,12 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
   // worker pushes the provider delete then marks synced (markSynced after
   // task.delete). Pull-overwrite resurrection (NEX-19) is closed: the state
   // is pending-guarded, so a divergent pull marks conflict instead.
-  deleted_pending_sync: ['synced', 'conflict'],
+  // 'queued'/'local_only' exits (M9 restore): restoreOfflineFirstTask path a
+  // supersedes the held task.delete and returns the untombstoned row to
+  // 'queued' (other mutations still pending), 'synced' (steady provider
+  // link), or 'local_only' (no provider link) — the ONLY designed exits that
+  // do not ride the delete push.
+  deleted_pending_sync: ['synced', 'conflict', 'queued', 'local_only'],
 };
 
 /**
@@ -225,6 +234,14 @@ const TASK_SYNC_STATE_TRANSITIONS: TransitionTable = {
  * Insert-time states: 'pending_create' (nexus create with a resolved sync
  * target), 'linked' (pull import / nexus_local,
  * unified-task-store.ts:241-275).
+ *
+ * 'pending_create' exits everywhere (M9 restore): restoring a tombstoned
+ * task (restoreOfflineFirstTask path b) re-arms its link — NULL
+ * provider_task_id/provider_version + 'pending_create' — so the worker's
+ * marker-search-then-create recovery either adopts a surviving provider copy
+ * or creates a fresh one. The restore writer can encounter the link in any
+ * state (pushed deletes orphan it; list-delete tombstones leave it as-is),
+ * so every state carries the exit.
  */
 const LINK_STATE_TRANSITIONS: TransitionTable = {
   pending_create: [
@@ -245,6 +262,7 @@ const LINK_STATE_TRANSITIONS: TransitionTable = {
     'disconnected',
     'conflict',
     'provider_missing',
+    'pending_create', // M9 restore re-arm
   ],
   pending_delete: [
     'orphaned', // delete pushed
@@ -253,6 +271,7 @@ const LINK_STATE_TRANSITIONS: TransitionTable = {
     'disconnected',
     'conflict',
     'provider_missing',
+    'pending_create', // M9 restore re-arm
   ],
   linked: [
     'linked', // markVerified refresh (task-reconciliation-job.ts:125)
@@ -263,9 +282,10 @@ const LINK_STATE_TRANSITIONS: TransitionTable = {
     'disconnected', // reconciliation (:278) / auth failures
     'provider_missing', // full-pull absence (unified-task-store.ts:352)
     'conflict', // duplicate scan (task-reconciliation-job.ts:188)
+    'pending_create', // M9 restore re-arm (list-delete tombstone restore)
   ],
-  stale: ['linked', 'pending_update', 'pending_delete', 'disconnected', 'provider_missing', 'conflict', 'orphaned'],
-  disconnected: ['linked', 'stale', 'provider_missing', 'conflict', 'orphaned', 'pending_update', 'pending_delete'],
+  stale: ['linked', 'pending_update', 'pending_delete', 'disconnected', 'provider_missing', 'conflict', 'orphaned', 'pending_create'],
+  disconnected: ['linked', 'stale', 'provider_missing', 'conflict', 'orphaned', 'pending_update', 'pending_delete', 'pending_create'],
   // 'pending_create' exit (M2B): keep_local on a provider-missing conflict
   // clears provider_task_id and re-arms a create-recovery push.
   provider_missing: ['linked', 'stale', 'disconnected', 'conflict', 'orphaned', 'pending_update', 'pending_delete', 'pending_create'],
@@ -273,9 +293,12 @@ const LINK_STATE_TRANSITIONS: TransitionTable = {
   // (unified-task-store.ts:255-262). M2B adds the resolution healers:
   // keep_local → pending_update (re-push) or pending_create (provider copy
   // gone, re-create), keep_provider → linked (provider copy applied).
-  // Orphaned stays terminal.
   conflict: ['conflict', 'orphaned', 'pending_update', 'pending_create', 'linked'],
-  orphaned: [],
+  // Terminal EXCEPT the M9 restore revival: restoring a task whose delete
+  // already pushed re-activates its most recent orphan as 'pending_create'
+  // (only when no active link occupies the slot — the restore writer prefers
+  // active links, so migration 234's active-slot UNIQUE stays satisfiable).
+  orphaned: ['pending_create'],
 };
 
 const TABLES: Readonly<Record<TaskSyncTransitionKind, TransitionTable>> = {

@@ -34,6 +34,7 @@ import {
   getOfflineTaskSnapshot,
   moveOfflineFirstTask,
   recordLocalTaskMutation,
+  restoreOfflineFirstTask,
   retryOfflineTaskSync,
   resolveOfflineNexusTaskId,
   toggleOfflineTaskChecklistItem,
@@ -1001,6 +1002,57 @@ export function taskRoutes(): Router {
       if (sendVersionConflict(res as Response, err)) return;
       logger.error({ err }, 'iOS tasks delete failed');
       sendInternalError(res, 'Failed to delete task');
+    }
+  });
+
+  /**
+   * POST /api/v1/tasks/:listId/:taskId/restore — undo a task delete (M9).
+   *
+   * Contract (pinned for the iOS undo toast):
+   *   200 { restored: true, path: 'superseded_delete' | 'undeleted', task }
+   *   404 NOT_FOUND      — unknown task id
+   *   409 NOT_DELETED    — task is not deleted (an idempotent replay of a
+   *                        restore that already succeeded returns 200 with
+   *                        idempotentReplay: true instead)
+   *   409 NOT_RESTORABLE — merged twin-repair tombstone
+   *
+   * 'superseded_delete': the journaled task.delete was still held (M6
+   * available_at holdback) and is retired without any provider write.
+   * 'undeleted': the delete already reached the provider — the tombstone is
+   * cleared and a canonical-links re-push (pending_create link + one queued
+   * task.update) is journaled for the sync worker.
+   */
+  router.post('/:listId/:taskId/restore', async (req, res: Response) => {
+    try {
+      const { listId, taskId } = req.params;
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_restore_local_mutation');
+      const nexusTaskId = resolveOfflineNexusTaskId(tenantId, userId, taskId);
+      if (!nexusTaskId) {
+        sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
+        return;
+      }
+      const result = restoreOfflineFirstTask(tenantId, userId, {
+        taskId: nexusTaskId,
+        idempotencyKey: req.body?.idempotencyKey,
+        clientMutationId: req.body?.clientMutationId,
+      });
+      invalidateTaskRouteCaches(listId, userId);
+      sendSuccess(res, result);
+    } catch (err: any) {
+      if (err?.code === 'NOT_FOUND') {
+        sendError(res, 'NOT_FOUND', err.message || 'Task not found in local task store', 404);
+        return;
+      }
+      if (err?.code === 'NOT_DELETED') {
+        sendError(res, 'NOT_DELETED', err.message || 'Task is not deleted', 409);
+        return;
+      }
+      if (err?.code === 'NOT_RESTORABLE') {
+        sendError(res, 'NOT_RESTORABLE', err.message || 'Task cannot be restored', 409);
+        return;
+      }
+      logger.error({ err }, 'iOS task restore failed');
+      sendInternalError(res, 'Failed to restore task');
     }
   });
 
