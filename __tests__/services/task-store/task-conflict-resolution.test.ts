@@ -468,7 +468,9 @@ describe('resolveTaskConflict edges', () => {
     ).get(taskId) as Record<string, unknown>;
     expect(row).toEqual({
       title: 'Provider low',
-      priority: 1,
+      // M10 (NEX-17): stored P2 ('high' bucket) vs provider 'low' is a REAL
+      // provider-side change → accept the inbound table value (low→4).
+      priority: 4,
       due_date: '2026-07-20',
       due_is_datetime: 0,
       notes: null,
@@ -482,7 +484,7 @@ describe('resolveTaskConflict edges', () => {
     expect(link.provider_version).toBe('e-low');
     expect(JSON.parse(link.last_synced_snapshot)).toMatchObject({
       title: 'Provider low',
-      priority: 1,
+      priority: 4,
       dueDate: '2026-07-20',
       dueIsDatetime: false,
     });
@@ -502,7 +504,9 @@ describe('resolveTaskConflict edges', () => {
        FROM unified_tasks WHERE nexus_task_id = ?`,
     ).get(taskId) as Record<string, unknown>;
     expect(row).toEqual({
-      priority: 0,
+      // M10 (NEX-17): unknown importance normalizes to 'normal' → inbound
+      // table gives P3 (stored P2 is in the 'high' bucket, so no preserve).
+      priority: 3,
       due_date: null,
       due_is_datetime: 0,
       sync_state: 'synced',

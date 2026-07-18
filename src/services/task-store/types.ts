@@ -33,7 +33,12 @@ export interface NormalizedTask {
   title: string;
   description?: string;
   status: NormalizedStatus;
-  /** 0=none, 1=low, 2=medium, 3=high, 4=urgent. */
+  /**
+   * M10 P-scale (NEX-17): 0=none, 1=P1 (highest) … 4=P4 (lowest). See
+   * task-priority.ts for the pinned importance mapping tables.
+   * NOTE: the Todoist adapter's TODOIST_PRIORITY_* tables still speak the
+   * pre-M10 scale (0=none…4=urgent) and need their own migration milestone.
+   */
   priority: number;
   /** ISO 8601 date or datetime. Combine with dueIsDatetime to know which. */
   dueDate?: string;

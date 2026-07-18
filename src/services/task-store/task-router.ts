@@ -20,6 +20,7 @@ import { isConnected } from '../oauth-store';
 import { NativeTaskAdapter } from './native-adapter';
 import { TodoistAdapter } from './todoist-adapter';
 import { getUserTimezone } from '../user-service';
+import { importanceToPriority as sharedImportanceToPriority, priorityToImportance } from './task-priority';
 import { expandRecurringTaskOccurrencesForRange } from '../recurrence-utils';
 
 // Singleton native adapter
@@ -193,7 +194,7 @@ function createTodoistWrapper(userId: number) {
         title: data.title || '(Untitled)',
         description: data.body || undefined,
         status: 'pending',
-        priority: importanceToPriority(data.importance),
+        priority: todoistLegacyImportanceToPriority(data.importance),
         dueDate,
         dueIsDatetime: !!dueDate && dueDate.includes('T'),
         projectName: listName,
@@ -218,7 +219,7 @@ function createTodoistWrapper(userId: number) {
       await todoistAdapter.updateTask(userId, taskId, {
         title: data.title,
         description: data.body,
-        priority: data.importance ? importanceToPriority(data.importance) : undefined,
+        priority: data.importance ? todoistLegacyImportanceToPriority(data.importance) : undefined,
         dueDate: data.dueDateTime || undefined,
         dueIsDatetime: typeof data.dueDateTime === 'string' && data.dueDateTime.includes('T'),
         recurrence: Object.prototype.hasOwnProperty.call(data, 'recurrence') ? data.recurrence : undefined,
@@ -422,7 +423,8 @@ function createNativeWrapper(userId: number) {
         title: data.title || '(Untitled)',
         description: data.body || undefined,
         status: 'pending',
-        priority: data.importance === 'high' ? 3 : data.importance === 'low' ? 1 : 2,
+        // M10 P-scale (NEX-17): shared inbound table (high→2, normal→3, low→4).
+        priority: sharedImportanceToPriority(data.importance),
         dueDate: data.dueDateTime || undefined,
         recurrence: data.recurrence || undefined,
         projectId: fallbackProject ? parseInt(fallbackProject.externalId, 10) : undefined,
@@ -442,7 +444,7 @@ function createNativeWrapper(userId: number) {
       const updates: any = {};
       if (data.title) updates.title = data.title;
       if (data.body !== undefined) updates.description = data.body;
-      if (data.importance) updates.priority = data.importance === 'high' ? 3 : data.importance === 'low' ? 1 : 2;
+      if (data.importance) updates.priority = sharedImportanceToPriority(data.importance);
       if (data.status) updates.status = data.status === 'completed' ? 'completed' : 'pending';
       if (data.dueDateTime !== undefined) updates.dueDate = data.dueDateTime || undefined;
       if (Object.prototype.hasOwnProperty.call(data, 'recurrence')) updates.recurrence = data.recurrence;
@@ -622,7 +624,8 @@ function taskToMsTodoShape(t: any, listId: string, listName: string) {
     listName,
     title: t.title,
     body: t.description || t.notes || null,
-    importance: t.priority >= 3 ? 'high' : t.priority >= 2 ? 'normal' : 'low',
+    // M10 P-scale (NEX-17): shared table (P1/P2→high, P3→normal, P4→low).
+    importance: priorityToImportance(t.priority),
     status: t.status === 'completed' ? 'completed' : t.status === 'in_progress' ? 'inProgress' : 'notStarted',
     dueDateTime: t.dueDate || null,
     reminderDateTime: null,
@@ -649,7 +652,13 @@ async function readTodoistTask(userId: number, projectId: string, taskId: string
   return result.tasks.find((candidate) => String(candidate.externalId) === String(taskId)) || null;
 }
 
-function importanceToPriority(importance: unknown): number {
+/**
+ * Todoist legacy scale ONLY. The Todoist adapter's TODOIST_PRIORITY_* tables
+ * still speak the pre-M10 numeric scale (0=none…4=urgent), so its write path
+ * keeps this mapping until the Todoist adapter gets its own P-scale
+ * migration milestone. Everything else uses task-priority.ts.
+ */
+function todoistLegacyImportanceToPriority(importance: unknown): number {
   if (importance === 'high') return 3;
   if (importance === 'low') return 1;
   return 2;

@@ -1135,6 +1135,109 @@ describe('canonical links (M4)', () => {
     expect(link.task_id).toBe(inserted.nexus_task_id);
   });
 
+  describe('M10 priority echo stability (NEX-17)', () => {
+    function seedWithPriority(nexusTaskId: string, providerTaskId: string, priority: number, title = 'Pushed task'): void {
+      seedPushedNexusTask({ nexusTaskId, providerTaskId, title, linkId: `link_${nexusTaskId}` });
+      const hash = computeContentHash({
+        provider: 'nexus',
+        externalId: nexusTaskId,
+        title,
+        status: 'pending',
+        priority,
+      } as NormalizedTask);
+      testDb.prepare(
+        'UPDATE unified_tasks SET priority = ?, content_hash = ? WHERE nexus_task_id = ?',
+      ).run(priority, hash, nexusTaskId);
+    }
+
+    function storedRow(nexusTaskId: string): { priority: number; local_version: number; title: string } {
+      return testDb.prepare(
+        'SELECT priority, local_version, title FROM unified_tasks WHERE nexus_task_id = ?',
+      ).get(nexusTaskId) as { priority: number; local_version: number; title: string };
+    }
+
+    it('keeps a stored P1 when its own push echoes back as high (importance→2)', () => {
+      seedWithPriority('task_echo_p1', 'MS-E1', 1);
+
+      // P1 pushed as 'high'; the pull imports 'high' as priority 2.
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-E1', priority: 2 }));
+
+      expect(result).toBe('unchanged');
+      // Kept value + kept-value hash → no phantom change recorded.
+      expect(storedRow('task_echo_p1')).toMatchObject({ priority: 1, local_version: 1 });
+    });
+
+    it('keeps a stored P4 across its low echo', () => {
+      seedWithPriority('task_echo_p4', 'MS-E4', 4);
+
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-E4', priority: 4 }));
+
+      expect(result).toBe('unchanged');
+      expect(storedRow('task_echo_p4')).toMatchObject({ priority: 4, local_version: 1 });
+    });
+
+    it('keeps a stored none (0) when the provider echoes normal (importance→3)', () => {
+      seedWithPriority('task_echo_none', 'MS-E0', 0);
+
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-E0', priority: 3 }));
+
+      expect(result).toBe('unchanged');
+      expect(storedRow('task_echo_none')).toMatchObject({ priority: 0, local_version: 1 });
+    });
+
+    it('accepts a real provider-side importance change (high bucket → low) as the incoming priority', () => {
+      seedWithPriority('task_echo_change', 'MS-EC', 1);
+
+      // The user set the task to 'low' in Outlook — different bucket, real change.
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-EC', priority: 4 }));
+
+      expect(result).toBe('updated');
+      expect(storedRow('task_echo_change').priority).toBe(4);
+    });
+
+    it('preserves the stored fine-grained priority through a real overwrite of other fields', () => {
+      seedWithPriority('task_echo_mixed', 'MS-EM', 1, 'Old provider title');
+
+      // Title changed provider-side; importance is still the P1 echo ('high'→2).
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-EM', title: 'New provider title', priority: 2 }));
+
+      expect(result).toBe('updated');
+      expect(storedRow('task_echo_mixed')).toMatchObject({ priority: 1, title: 'New provider title' });
+    });
+
+    it('takes the incoming priority as-is when the stored priority is NULL (legacy row)', () => {
+      seedWithPriority('task_echo_null', 'MS-EN', 0);
+      testDb.prepare('UPDATE unified_tasks SET priority = NULL WHERE nexus_task_id = ?').run('task_echo_null');
+
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-EN', priority: 3 }));
+
+      expect(result).toBe('updated');
+      expect(storedRow('task_echo_null').priority).toBe(3);
+    });
+
+    it('takes the incoming priority as-is for an unlinked import', () => {
+      const result = upsertTask(USER_ID, msPayload({ externalId: 'MS-FRESH', priority: 2 }));
+
+      expect(result).toBe('inserted');
+      const row = testDb.prepare(
+        `SELECT priority FROM unified_tasks WHERE user_id = ? AND provider = 'ms_todo' AND external_id = 'MS-FRESH'`,
+      ).get(USER_ID) as { priority: number };
+      expect(row.priority).toBe(2);
+    });
+
+    it('does not apply the ms_todo echo rule to other providers', () => {
+      upsertTask(USER_ID, makeTask({ provider: 'todoist', externalId: 'TD-1', priority: 2 }));
+
+      const result = upsertTask(USER_ID, makeTask({ provider: 'todoist', externalId: 'TD-1', priority: 1 }));
+
+      expect(result).toBe('updated');
+      const row = testDb.prepare(
+        `SELECT priority FROM unified_tasks WHERE user_id = ? AND provider = 'todoist' AND external_id = 'TD-1'`,
+      ).get(USER_ID) as { priority: number };
+      expect(row.priority).toBe(1);
+    });
+  });
+
   describe('softDeleteMissing via canonical links', () => {
     it('marks pushed nexus tasks missing through their provider link on a full pull', () => {
       seedPushedNexusTask({ nexusTaskId: 'task_push_gone', providerTaskId: 'MS-P1', linkId: 'link_push_gone' });
@@ -1200,5 +1303,63 @@ describe('canonical links (M4)', () => {
       expect(row.sync_state).toBe('queued');
       expect(link.link_state).toBe('pending_create');
     });
+  });
+});
+
+// ─── M10 shared priority tables (NEX-17) ─────────────────────────────────────
+
+describe('task-priority shared tables (M10)', () => {
+  it('pins the outbound priority→importance table value-by-value', async () => {
+    const { priorityToImportance } = await import('../../../src/services/task-store/task-priority');
+    expect(priorityToImportance(1)).toBe('high');
+    expect(priorityToImportance(2)).toBe('high');
+    expect(priorityToImportance(3)).toBe('normal');
+    expect(priorityToImportance(4)).toBe('low');
+    expect(priorityToImportance(0)).toBe('normal');
+    // Out-of-scale/garbage values project to the none bucket.
+    expect(priorityToImportance(9)).toBe('normal');
+    expect(priorityToImportance('not-a-number')).toBe('normal');
+  });
+
+  it('pins the inbound importance→priority table including client synonyms', async () => {
+    const { importanceToPriority } = await import('../../../src/services/task-store/task-priority');
+    expect(importanceToPriority('urgent')).toBe(1);
+    expect(importanceToPriority('high')).toBe(2);
+    expect(importanceToPriority('important')).toBe(2);
+    expect(importanceToPriority('normal')).toBe(3);
+    expect(importanceToPriority('medium')).toBe(3);
+    expect(importanceToPriority('low')).toBe(4);
+    expect(importanceToPriority('HIGH ')).toBe(2);
+    expect(importanceToPriority('')).toBe(0);
+    expect(importanceToPriority(undefined)).toBe(0);
+    expect(importanceToPriority('somethingOdd')).toBe(0);
+  });
+
+  it('validates wire priorities strictly (integers 0–4 only)', async () => {
+    const { isValidTaskPriorityInput, normalizeStoredTaskPriority } = await import('../../../src/services/task-store/task-priority');
+    for (const valid of [0, 1, 2, 3, 4]) expect(isValidTaskPriorityInput(valid), String(valid)).toBe(true);
+    for (const invalid of [-1, 5, 1.5, Number.NaN, '2', null, undefined, true]) {
+      expect(isValidTaskPriorityInput(invalid), JSON.stringify(invalid)).toBe(false);
+    }
+    expect(normalizeStoredTaskPriority(3)).toBe(3);
+    expect(normalizeStoredTaskPriority(9)).toBe(0);
+    expect(normalizeStoredTaskPriority(-2)).toBe(0);
+    expect(normalizeStoredTaskPriority(2.5)).toBe(0);
+    expect(normalizeStoredTaskPriority(null)).toBe(0);
+  });
+
+  it('buckets and ranks consistently with the outbound table', async () => {
+    const { sameImportanceBucket, taskPriorityRankSql } = await import('../../../src/services/task-store/task-priority');
+    expect(sameImportanceBucket(1, 2)).toBe(true);
+    expect(sameImportanceBucket(0, 3)).toBe(true);
+    expect(sameImportanceBucket(2, 4)).toBe(false);
+    expect(sameImportanceBucket(1, 4)).toBe(false);
+    const ranks = testDb.prepare(
+      `SELECT ${taskPriorityRankSql('value')} AS rank FROM (
+         SELECT 1 AS value UNION ALL SELECT 4 UNION ALL SELECT 0 UNION ALL SELECT NULL UNION ALL SELECT 9
+       ) ORDER BY value NULLS FIRST`,
+    ).all() as Array<{ rank: number }>;
+    // NULL, 0, 1, 4, 9 → none/garbage rank 5 (last), P-values rank as themselves.
+    expect(ranks.map((row) => row.rank)).toEqual([5, 5, 1, 4, 5]);
   });
 });

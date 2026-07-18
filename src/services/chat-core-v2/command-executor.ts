@@ -37,6 +37,7 @@ import {
 import { getTaskProviderForUser } from '../task-store/task-router';
 import { resolveTaskCreationList } from '../task-store/task-list-resolution';
 import { isSingleWritePathEnabled } from '../task-store/single-write-path';
+import { importanceToPriority } from '../task-store/task-priority';
 import {
   addOfflineTaskChecklistItem,
   createOfflineFirstTask,
@@ -436,7 +437,8 @@ function getNativeTaskForExecution(userId: number, taskId: number): {
       title: row.title,
       description: row.body ?? undefined,
       status: row.status === 'completed' ? 'completed' : row.status === 'inProgress' ? 'in_progress' : 'pending',
-      priority: row.importance === 'high' ? 3 : row.importance === 'normal' ? 2 : 1,
+      // M10 P-scale (NEX-17): shared inbound table (high→2, normal→3, low→4).
+      priority: importanceToPriority(row.importance),
       dueDate: row.due_date_time ?? undefined,
       dueIsDatetime: !!row.due_date_time?.includes('T'),
       tags: parseJsonStringArray(row.tags),

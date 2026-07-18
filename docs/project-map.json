@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "dfa8a1a17e9e5b8747db7d65b6070c00a646de5f1c0ceb1fd31f3fb2b4cf107f",
-    "baseCommit": "132c17b48888361c94125c977cb2c45900cc578f",
-    "baseCommitTimestamp": "2026-07-18T00:35:01+01:00",
-    "trackedFiles": 2589,
-    "sourceFiles": 979
+    "sourceDigest": "e0f0cc49d7f8d5d471ecc477e576cd421ca17d441092ec779e3382ecdc8a70af",
+    "baseCommit": "3f3d1ba9359afebf3f1b56e0dfcef9b8fb14845a",
+    "baseCommitTimestamp": "2026-07-18T01:13:18+01:00",
+    "trackedFiles": 2590,
+    "sourceFiles": 980
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -94,7 +94,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 714
+      "files": 715
     },
     {
       "path": "src/skills",
@@ -5007,7 +5007,7 @@
     },
     {
       "path": "src/services/decision-center.ts",
-      "bytes": 496272,
+      "bytes": 496434,
       "generated": false
     },
     {

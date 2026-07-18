@@ -25,6 +25,7 @@ import {
 } from './types';
 import { recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
 import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
+import { normalizeStoredTaskPriority, sameImportanceBucket, taskPriorityRankSql } from './task-priority';
 
 // ─── Row mapping ────────────────────────────────────────────────────────
 
@@ -455,6 +456,7 @@ type ExistingTaskRow = {
   nexus_task_id: string | null;
   is_deleted?: number;
   provider_data?: string | null;
+  priority?: number | null;
 };
 
 /**
@@ -473,7 +475,7 @@ function findRowByActiveLink(
   const provider = providerLinkProvider(task.provider);
   if (!provider || provider === 'nexus_local' || !task.externalId) return undefined;
   return db.prepare(
-    `SELECT t.id, t.content_hash, t.sync_state, t.nexus_task_id, t.is_deleted, t.provider_data
+    `SELECT t.id, t.content_hash, t.sync_state, t.nexus_task_id, t.is_deleted, t.provider_data, t.priority
      FROM task_provider_links l
      JOIN unified_tasks t
        ON t.nexus_task_id = l.task_id
@@ -504,7 +506,7 @@ function adoptRowByNexusMarker(
   if (!markerTaskId) return undefined;
 
   const linked = db.prepare(
-    `SELECT t.id, t.content_hash, t.sync_state, t.nexus_task_id, t.is_deleted, t.provider_data,
+    `SELECT t.id, t.content_hash, t.sync_state, t.nexus_task_id, t.is_deleted, t.provider_data, t.priority,
             l.id AS link_id
      FROM unified_tasks t
      JOIN task_provider_links l
@@ -558,9 +560,29 @@ function isMergedTombstone(row: ExistingTaskRow | undefined): boolean {
   return typeof row.provider_data === 'string' && row.provider_data.includes('"merged_into"');
 }
 
+/**
+ * M10 echo-stability (NEX-17): Microsoft only stores coarse importance, so a
+ * pushed P1 ('high') pulls back as importance 'high' → importanceToPriority
+ * gives 2 — without this rule the echo would flip the content hash and
+ * clobber the stored fine-grained priority (P1→2). When the stored and
+ * incoming priorities land in the SAME importance bucket, the stored value
+ * wins and the content hash is computed with the KEPT value so the echo is a
+ * no-op instead of a phantom change. A DIFFERENT bucket is a real
+ * provider-side change and the incoming value is accepted. Scoped to ms_todo
+ * (the coarse-importance provider); unlinked imports (INSERT path) always
+ * take the incoming value as-is.
+ */
+function withEchoStablePriority(task: NormalizedTask, existing: ExistingTaskRow | undefined): NormalizedTask {
+  if (!existing || task.provider !== 'ms_todo') return task;
+  if (existing.priority == null || !Number.isFinite(Number(existing.priority))) return task;
+  const storedPriority = normalizeStoredTaskPriority(existing.priority);
+  if (storedPriority === normalizeStoredTaskPriority(task.priority)) return task;
+  if (!sameImportanceBucket(storedPriority, task.priority)) return task;
+  return { ...task, priority: storedPriority };
+}
+
 export function upsertTask(userId: number, task: NormalizedTask, tenantId = userId): UpsertResult {
   const db = getDb();
-  const hash = computeContentHash(task);
   const nexusTaskId = stableNexusTaskId(tenantId, userId, task);
 
   // 1. Links-first: an active link for this provider task id is authoritative.
@@ -569,7 +591,7 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
   if (!existing) {
     // 2. Origin-identity match (legacy/unlinked rows keep working).
     existing = db.prepare(
-      `SELECT id, content_hash, sync_state, nexus_task_id, is_deleted, provider_data
+      `SELECT id, content_hash, sync_state, nexus_task_id, is_deleted, provider_data, priority
        FROM unified_tasks
        WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND external_id = ?`,
     ).get(userId, tenantId, task.provider, task.externalId) as ExistingTaskRow | undefined;
@@ -584,6 +606,11 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
       existing = adoptRowByNexusMarker(db, tenantId, userId, task);
     }
   }
+
+  // M10: preserve the stored fine-grained priority on coarse-importance
+  // echoes BEFORE hashing, so an echo hashes identically to the stored row.
+  task = withEchoStablePriority(task, existing);
+  const hash = computeContentHash(task);
 
   if (!existing) {
     db.prepare(
@@ -1040,7 +1067,7 @@ export function getPendingTasks(userId: number, tenantId = userId): NormalizedTa
   const rows = db.prepare(
     `SELECT * FROM unified_tasks
      WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND status = 'pending' AND is_deleted = 0
-     ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC`,
+     ORDER BY ${taskPriorityRankSql('priority')} ASC, due_date ASC NULLS LAST, updated_at DESC`,
   ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
@@ -1069,7 +1096,7 @@ export function getTasksDueToday(userId: number, tenantId = userId): NormalizedT
        AND status = 'pending'
        AND is_deleted = 0
        AND date(due_date) = date('now')
-     ORDER BY priority DESC, due_date ASC`,
+     ORDER BY ${taskPriorityRankSql('priority')} ASC, due_date ASC`,
   ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
@@ -1087,7 +1114,7 @@ export function getTasksDueThisWeek(userId: number, tenantId = userId): Normaliz
        AND due_date IS NOT NULL
        AND date(due_date) >= date('now')
        AND date(due_date) <= date('now', '+7 days')
-     ORDER BY due_date ASC, priority DESC`,
+     ORDER BY due_date ASC, ${taskPriorityRankSql('priority')} ASC`,
   ).all(userId, tenantId) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }
@@ -1121,7 +1148,7 @@ export function getAllTasks(userId: number, filters?: TaskFilters, tenantId = us
 
   const rows = db.prepare(
     `SELECT * FROM unified_tasks WHERE ${where.join(' AND ')}
-     ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC`,
+     ORDER BY ${taskPriorityRankSql('priority')} ASC, due_date ASC NULLS LAST, updated_at DESC`,
   ).all(...args) as UnifiedTaskRow[];
   return rows.map(rowToTask);
 }

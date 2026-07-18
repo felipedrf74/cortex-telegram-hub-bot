@@ -20,6 +20,7 @@ import {
 import { buildNexusAnswerContract } from '../../services/chat-answer-contract';
 import { safeRecordChatV2DeterministicReadEvidence } from '../../services/chat-deterministic-read-evidence';
 import { isSingleWritePathEnabled } from '../../services/task-store/single-write-path';
+import { isValidTaskPriorityInput } from '../../services/task-store/task-priority';
 import {
   addOfflineTaskChecklistItem,
   assignOfflineTaskProvider,
@@ -150,6 +151,17 @@ export function taskDueDateKey(
 
 function normalizedTaskStatus(value: unknown): string {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+}
+
+/**
+ * M10 (NEX-17): validate an optional wire `priority`. Absent (undefined or
+ * null) is fine — anything else must be an integer 0–4 (0 = none, 1 = P1
+ * highest … 4 = P4 lowest) or the route answers 400 VALIDATION.
+ */
+function sendInvalidTaskPriority(res: Response, value: unknown): boolean {
+  if (value == null || isValidTaskPriorityInput(value)) return false;
+  sendError(res, 'VALIDATION', 'priority must be an integer between 0 and 4 (0 = none, 1 = P1 highest, 4 = P4 lowest)', 400);
+  return true;
 }
 
 function isTaskStatusOnlyPatch(body: unknown): body is { status?: unknown; idempotencyKey?: unknown; clientMutationId?: unknown; baseLocalVersion?: unknown } {
@@ -512,18 +524,20 @@ export function taskRoutes(): Router {
   router.post('/', async (req, res: Response) => {
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'tasks_create_local_mutation');
-      const { title, listName, dueDateTime, importance, body, recurrence, idempotencyKey, clientMutationId } = req.body;
+      const { title, listName, dueDateTime, importance, priority, body, recurrence, idempotencyKey, clientMutationId } = req.body;
 
       if (!title) {
         sendError(res, 'BAD_REQUEST', 'title is required');
         return;
       }
+      if (sendInvalidTaskPriority(res, priority)) return;
 
       const result = createOfflineFirstTask(tenantId, userId, {
         title,
         listName,
         dueDateTime,
         importance,
+        priority: priority ?? undefined,
         body,
         recurrence,
         idempotencyKey,
@@ -546,6 +560,7 @@ export function taskRoutes(): Router {
     try {
       {
         const { listId, taskId } = req.params;
+        if (sendInvalidTaskPriority(res, req.body?.priority)) return;
         const { userId: scopedUserId, tenantId: scopedTenantId } = assertTenantScope(req as any, 'tasks_update_local_mutation');
         const nexusTaskId = resolveOfflineNexusTaskId(scopedTenantId, scopedUserId, taskId);
         if (nexusTaskId) {
@@ -582,6 +597,7 @@ export function taskRoutes(): Router {
             title: req.body?.title,
             body: req.body?.body,
             importance: req.body?.importance,
+            priority: req.body?.priority ?? undefined,
             status: req.body?.status,
             dueDateTime: req.body?.dueDateTime,
             recurrence: req.body?.recurrence,

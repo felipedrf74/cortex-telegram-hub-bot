@@ -395,7 +395,8 @@ describe('partial delta rows', () => {
       externalId: 'ms-a1',
       title: 'Known Title',
       status: 'completed',
-      priority: 3,
+      // M10 inbound table: the merged known importance 'high' imports as P2.
+      priority: 2,
     });
   });
 

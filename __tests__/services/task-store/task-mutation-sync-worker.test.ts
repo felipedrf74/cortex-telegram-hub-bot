@@ -120,7 +120,10 @@ function createTestDb(): Database.Database {
       link_state TEXT NOT NULL,
       last_synced_snapshot TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      -- Mirrors the production UNIQUE provider slot so the pull-merge upsert
+      -- (ensureProviderLinkForTask ON CONFLICT) works against this schema.
+      UNIQUE (tenant_id, user_id, provider, provider_account_id, provider_task_id)
     );
 
     CREATE TABLE task_mutations (
@@ -1502,5 +1505,86 @@ describe('M9 restore end-to-end with the mutation worker', () => {
       `SELECT provider_task_id, link_state FROM task_provider_links WHERE task_id = ?`,
     ).get(taskId) as { provider_task_id: string; link_state: string };
     expect(link).toEqual({ provider_task_id: 'ms-survivor-1', link_state: 'linked' });
+  });
+});
+
+// ─── M10 priority-to-server contract (NEX-17) ────────────────────────────────
+
+describe('M10 priority push mapping and echo stability', () => {
+  it('pins the push-path priority→importance table on real provider payloads (all five values)', async () => {
+    const table: Array<[number, 'low' | 'normal' | 'high']> = [
+      [0, 'normal'],
+      [1, 'high'],
+      [2, 'high'],
+      [3, 'normal'],
+      [4, 'low'],
+    ];
+    providerApi.createTask.mockImplementation(async (_containerId, _listName, _payload, opts) => ({
+      success: true,
+      data: { id: `provider-${opts?.nexusTaskId}`, providerVersion: 'etag-created' },
+    }));
+    for (const [priority] of table) {
+      seedLinkedMutation({
+        taskId: `task-push-p${priority}`,
+        mutationId: `mutation-push-p${priority}`,
+        operation: 'task.create',
+      });
+      testDb.prepare('UPDATE unified_tasks SET priority = ? WHERE nexus_task_id = ?')
+        .run(priority, `task-push-p${priority}`);
+    }
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(result.synced).toBe(table.length);
+
+    const importanceByTaskId = new Map<string, string>(
+      providerApi.createTask.mock.calls.map((call) => [call[3]?.nexusTaskId, call[2]?.importance]),
+    );
+    for (const [priority, importance] of table) {
+      expect(importanceByTaskId.get(`task-push-p${priority}`), `priority ${priority}`).toBe(importance);
+    }
+  });
+
+  it('round-trips every P-level through push → pull echo without clobbering the stored priority', async () => {
+    const { importanceToPriority } = await import('../../../src/services/task-store/task-priority');
+    const { upsertTask } = await import('../../../src/services/task-store/unified-task-store');
+
+    for (const priority of [1, 2, 3, 4]) {
+      seedLinkedMutation({
+        taskId: `task-echo-p${priority}`,
+        mutationId: `mutation-echo-p${priority}`,
+        operation: 'task.update',
+        providerTaskId: `ms-task-p${priority}`,
+        linkState: 'pending_update',
+      });
+      testDb.prepare('UPDATE unified_tasks SET priority = ? WHERE nexus_task_id = ?')
+        .run(priority, `task-echo-p${priority}`);
+    }
+
+    const batch = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(batch.synced).toBe(4);
+
+    // The provider only stored the coarse importance; the next pull hands the
+    // adapter's inbound value (high→2, normal→3, low→4) back to the upsert.
+    for (const priority of [1, 2, 3, 4]) {
+      const pushedImportance = providerApi.updateTask.mock.calls
+        .find((call) => call[4]?.nexusTaskId === `task-echo-p${priority}`)?.[2]?.importance;
+      expect(pushedImportance, `push importance for P${priority}`).toBeDefined();
+      upsertTask(USER_ID, {
+        provider: 'ms_todo',
+        externalId: `ms-task-p${priority}`,
+        projectName: 'Work',
+        title: 'Worker Task',
+        status: 'pending',
+        priority: importanceToPriority(pushedImportance),
+        tags: [],
+        providerData: { listId: 'ms-list-1' },
+      }, USER_ID);
+      const row = testDb.prepare(
+        'SELECT priority FROM unified_tasks WHERE nexus_task_id = ?',
+      ).get(`task-echo-p${priority}`) as { priority: number };
+      // P1 pushes 'high' and echoes back as 2 — the same-bucket preserve rule
+      // must keep the stored 1. P2/P3/P4 echo onto themselves.
+      expect(row.priority, `stored priority after echo for P${priority}`).toBe(priority);
+    }
   });
 });

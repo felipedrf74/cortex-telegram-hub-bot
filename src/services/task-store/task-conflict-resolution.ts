@@ -38,6 +38,7 @@ import { assertTransition } from './task-sync-transitions';
 import { resolveTaskSyncIssue } from './task-sync-issues';
 import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
 import { computeContentHash } from './unified-task-store';
+import { importanceToPriority, normalizeStoredTaskPriority, sameImportanceBucket } from './task-priority';
 import { extractLinkProviderVersion } from './task-mutation-sync-worker';
 import {
   getOfflineTaskById,
@@ -397,9 +398,8 @@ function statusDbValue(theirs: TaskConflictTheirs): string {
 }
 
 function importanceDbPriority(importance: 'low' | 'normal' | 'high'): number {
-  if (importance === 'high') return 3;
-  if (importance === 'low') return 1;
-  return 0;
+  // M10 (NEX-17): shared inbound table (high→2, normal→3, low→4).
+  return importanceToPriority(importance);
 }
 
 export async function resolveTaskConflict(
@@ -574,7 +574,15 @@ export async function resolveTaskConflict(
   } else {
     const theirs = normalizeTheirs(probe.providerTask);
     const nextStatus = statusDbValue(theirs);
-    const nextPriority = importanceDbPriority(theirs.importance);
+    // M10 echo-stability (NEX-17): the provider only speaks coarse
+    // importance, so keep_provider preserves the stored fine-grained P1–P4
+    // when the provider's bucket agrees with it — 'high' must not demote a
+    // stored P1 to P2. A different bucket is a real provider-side change and
+    // wins (same rule as the pull merge in unified-task-store.upsertTask).
+    const theirsPriority = importanceDbPriority(theirs.importance);
+    const nextPriority = sameImportanceBucket(row.priority, theirsPriority)
+      ? normalizeStoredTaskPriority(row.priority)
+      : theirsPriority;
     const nextDue = theirs.dueDateTime;
     const nextNotes = theirs.body;
     let tags: string[] = [];

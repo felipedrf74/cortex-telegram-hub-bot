@@ -29,6 +29,7 @@ import { now } from '../utils/date-parser';
 import { config } from '../config';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
+import { taskPriorityRankSql } from './task-store/task-priority';
 
 export type DailyContextReadStatus = 'available' | 'empty' | 'failed';
 
@@ -284,7 +285,7 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
       const dueToday = db.prepare(
         `SELECT title FROM unified_tasks
          WHERE user_id = ? AND status = 'pending' AND is_deleted = 0 AND date(due_date) = date('now')
-         ORDER BY priority DESC LIMIT 5`,
+         ORDER BY ${taskPriorityRankSql('priority')} ASC LIMIT 5`,
       ).all(userId) as { title: string }[];
 
       if (dueToday.length > 0) {

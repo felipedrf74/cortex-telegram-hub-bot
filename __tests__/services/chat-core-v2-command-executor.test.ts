@@ -100,7 +100,8 @@ const NATIVE_TASK_FOR_HASH = {
   title: 'comprar suplementos',
   description: undefined,
   status: 'pending',
-  priority: 2,
+  // M10 P-scale (NEX-17): native importance 'normal' maps to P3.
+  priority: 3,
   dueDate: undefined,
   dueIsDatetime: false,
   tags: undefined,

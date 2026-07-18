@@ -3,6 +3,7 @@
 import type { ServiceResult, TodoTask } from '../microsoft-todo';
 import { NativeTaskAdapter } from './native-adapter';
 import { getAllTasks } from './unified-task-store';
+import { normalizeStoredTaskPriority, priorityToImportance } from './task-priority';
 import type { NormalizedTask } from './types';
 
 const nativeAdapter = new NativeTaskAdapter();
@@ -84,8 +85,15 @@ function compareTasksForRead(left: NormalizedTask, right: NormalizedTask): numbe
   const leftDue = left.dueDate ?? '9999-12-31';
   const rightDue = right.dueDate ?? '9999-12-31';
   if (leftDue !== rightDue) return leftDue.localeCompare(rightDue);
-  if (left.priority !== right.priority) return right.priority - left.priority;
+  // M10 P-scale (NEX-17): P1 (1) first, then 2,3,4; none (0) last.
+  const priorityDelta = taskPriorityRank(left.priority) - taskPriorityRank(right.priority);
+  if (priorityDelta !== 0) return priorityDelta;
   return left.title.localeCompare(right.title);
+}
+
+function taskPriorityRank(value: number): number {
+  const priority = normalizeStoredTaskPriority(value);
+  return priority === 0 ? 5 : priority;
 }
 
 function toTodoTask(task: NormalizedTask): TodoTask {
@@ -95,7 +103,8 @@ function toTodoTask(task: NormalizedTask): TodoTask {
     listName: task.projectName || providerLabel(task.provider),
     title: task.title,
     body: task.description || task.notes,
-    importance: task.priority >= 3 ? 'high' : task.priority <= 1 ? 'low' : 'normal',
+    // M10 (NEX-17): shared P-scale table (P1/P2→high, P3→normal, P4→low).
+    importance: priorityToImportance(task.priority),
     status: task.status === 'completed'
       ? 'completed'
       : task.status === 'in_progress'

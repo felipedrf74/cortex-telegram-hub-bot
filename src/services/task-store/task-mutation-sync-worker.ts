@@ -14,6 +14,7 @@ import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
 import { computeTaskContentFingerprint } from './todoist-correlation';
 import { isTaskSyncPushKickEnabled } from './task-sync-flags';
 import { registerTaskMutationKick } from './task-mutation-kick';
+import { normalizeStoredTaskPriority, priorityToImportance } from './task-priority';
 // Deliberate, benign cycle: the coordinator's runner calls back into this
 // module's runTaskMutationSyncBatch. Both sides only dereference each other's
 // bindings at call time (kick timer / run execution), never at module init.
@@ -123,12 +124,9 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
-function priorityToImportance(value: unknown): 'low' | 'normal' | 'high' {
-  const priority = typeof value === 'number' ? value : Number(value || 0);
-  if (priority >= 3) return 'high';
-  if (priority === 1) return 'low';
-  return 'normal';
-}
+// M10 (NEX-17): the push-path priority→importance table lives in
+// task-priority.ts (P1/P2→high, P3→normal, P4→low, none→normal) so the
+// worker, the read-model DTO, and the MS adapter can never drift apart.
 
 function normalizeChecklistItems(value: unknown): Array<{ id: string; displayName: string; isChecked: boolean }> {
   if (!Array.isArray(value)) return [];
@@ -155,6 +153,7 @@ function rowToOfflineTask(row: UnifiedTaskRow): OfflineTaskDto {
     title: row.title || '(Untitled)',
     body: row.notes || row.description || null,
     importance: priorityToImportance(row.priority),
+    priority: normalizeStoredTaskPriority(row.priority),
     status: row.is_deleted ? 'cancelled' : row.status,
     dueDateTime: row.due_date || null,
     recurrence: providerData.recurrence || null,

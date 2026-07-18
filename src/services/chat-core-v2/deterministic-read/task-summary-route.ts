@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { listTasksForUser } from '../../task-store/task-service';
+import { normalizeStoredTaskPriority, priorityToImportance } from '../../task-store/task-priority';
 import type { NormalizedTask } from '../../task-store/types';
 import {
   buildChatCoreV2ReadContextPack,
@@ -93,7 +94,8 @@ function summarizeTasks(tasks: NormalizedTask[], timezone: string, now: Date): C
   items.sort((a, b) => {
     const bucketRank = bucketSortRank(a.bucket) - bucketSortRank(b.bucket);
     if (bucketRank !== 0) return bucketRank;
-    const priorityRank = b.priority - a.priority;
+    // M10 P-scale (NEX-17): P1 (1) first, unprioritized (0) last.
+    const priorityRank = prioritySortRank(a.priority) - prioritySortRank(b.priority);
     if (priorityRank !== 0) return priorityRank;
     return a.title.localeCompare(b.title);
   });
@@ -102,7 +104,8 @@ function summarizeTasks(tasks: NormalizedTask[], timezone: string, now: Date): C
     pendingCount: tasks.length,
     dueTodayCount: items.filter((task) => task.bucket === 'today').length,
     overdueCount: items.filter((task) => task.bucket === 'overdue').length,
-    highPriorityCount: tasks.filter((task) => task.priority >= 3).length,
+    // M10 P-scale (NEX-17): "high priority" is the P1/P2 importance bucket.
+    highPriorityCount: tasks.filter((task) => priorityToImportance(task.priority) === 'high').length,
     timezone,
     topTasks: items.slice(0, MAX_VISIBLE_TASKS),
   };
@@ -202,6 +205,11 @@ function bucketSortRank(bucket: ChatCoreV2TaskSummaryItem['bucket']): number {
   if (bucket === 'today') return 1;
   if (bucket === 'upcoming') return 2;
   return 3;
+}
+
+function prioritySortRank(value: number): number {
+  const priority = normalizeStoredTaskPriority(value);
+  return priority === 0 ? 5 : priority;
 }
 
 function dateKey(value: string, timezone: string, dateOnly: boolean): string | null {
