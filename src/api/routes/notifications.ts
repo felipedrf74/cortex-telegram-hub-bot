@@ -30,6 +30,7 @@ import { secureSecretMatches } from '../secret-guards';
 import { AITimeoutError, withTimeout } from '../../utils/timeout';
 import { isValidTenantUserId } from '../../services/tenant-scope-observability';
 import { listTasks } from '../../services/task-store/task-service';
+import { priorityToImportance } from '../../services/task-store/task-priority';
 import type { NormalizedTask } from '../../services/task-store/types';
 import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
@@ -410,8 +411,11 @@ function toHumanDateTime(input: unknown): string | null {
 }
 
 function inboxTaskPriority(task: NormalizedTask): InboxPriority {
-  if (task.priority >= 3) return 'high';
-  if (task.priority === 2) return 'medium';
+  // M10 P-scale (NEX-17): P1/P2 are the high bucket, P3 (normal) maps to
+  // medium, P4/none to low — see task-priority.ts.
+  const importance = priorityToImportance(task.priority);
+  if (importance === 'high') return 'high';
+  if (importance === 'normal' && task.priority === 3) return 'medium';
   return 'low';
 }
 
@@ -595,7 +599,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
                 dueDateTime: dueIso,
                 listId: task.projectId,
                 listName: task.projectName || null,
-                importance: task.priority >= 3 ? 'high' : task.priority === 1 ? 'low' : 'normal',
+                importance: priorityToImportance(task.priority),
               }),
             };
           })

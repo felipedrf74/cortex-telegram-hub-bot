@@ -911,6 +911,29 @@ describe('Notification inbox routes', () => {
     expect(mockListTasks).toHaveBeenCalledWith(7, { status: 'pending' });
   });
 
+  it('maps M10 P-scale priorities onto inbox urgency and importance (NEX-17)', async () => {
+    const nextWeek = new Date(Date.now() + 7 * 24 * 3_600_000).toISOString();
+    mockListTasks.mockReturnValue([
+      { id: 1, externalId: 't-p1', provider: 'ms_todo', title: 'P1 pending', status: 'pending', priority: 1, dueDate: nextWeek, projectId: 11, projectName: 'Admin' },
+      { id: 2, externalId: 't-p3', provider: 'ms_todo', title: 'P3 pending', status: 'pending', priority: 3, dueDate: nextWeek, projectId: 11, projectName: 'Admin' },
+      { id: 3, externalId: 't-p4', provider: 'ms_todo', title: 'P4 pending', status: 'pending', priority: 4, dueDate: nextWeek, projectId: 11, projectName: 'Admin' },
+      { id: 4, externalId: 't-p0', provider: 'ms_todo', title: 'Unprioritized pending', status: 'pending', priority: 0, dueDate: nextWeek, projectId: 11, projectName: 'Admin' },
+    ]);
+
+    const res = await dispatch('GET', '/inbox', { limit: '10' });
+
+    expect(res.statusCode).toBe(200);
+    const byTitle = new Map(res.body.data.items
+      .filter((item: any) => item.kind === 'task')
+      .map((item: any) => [item.title, item]));
+    // M10 (NEX-17): P1/P2 → high, P3 → medium, P4/none → low; metadata
+    // importance follows the shared coarse table.
+    expect(byTitle.get('P1 pending')).toMatchObject({ priority: 'high', metadata: expect.objectContaining({ importance: 'high' }) });
+    expect(byTitle.get('P3 pending')).toMatchObject({ priority: 'medium', metadata: expect.objectContaining({ importance: 'normal' }) });
+    expect(byTitle.get('P4 pending')).toMatchObject({ priority: 'low', metadata: expect.objectContaining({ importance: 'low' }) });
+    expect(byTitle.get('Unprioritized pending')).toMatchObject({ priority: 'low', metadata: expect.objectContaining({ importance: 'normal' }) });
+  });
+
   it('bounds slow inbox sources so a cold Home-to-Inbox load returns degraded data quickly', async () => {
     process.env.UNIFIED_INBOX_SOURCE_TIMEOUT_MS = '5';
 

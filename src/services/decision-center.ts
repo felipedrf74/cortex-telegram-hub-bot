@@ -54,6 +54,7 @@ import {
   markTaxPaid,
 } from './finance-tracker';
 import { listTasksForUser } from './task-store/task-service';
+import { priorityToImportance } from './task-store/task-priority';
 import type { NormalizedTask } from './task-store/types';
 import {
   clearPendingChatConfirmation,
@@ -10816,7 +10817,8 @@ function secretaryDailyTaskAttentionSupersessionReason(record: DecisionRecord): 
 
 function secretaryTaskStillNeedsAttention(task: NormalizedTask, localDate: string): boolean {
   if (task.status !== 'pending') return false;
-  if (task.priority >= 3) return true;
+  // M10 P-scale (NEX-17): high-importance means the P1/P2 bucket.
+  if (priorityToImportance(task.priority) === 'high') return true;
   const dueKey = secretaryTaskDueDateKey(task);
   return Boolean(dueKey && dueKey <= localDate);
 }

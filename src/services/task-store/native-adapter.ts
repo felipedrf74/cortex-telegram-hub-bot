@@ -17,6 +17,7 @@
 
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
+import { importanceToPriority, priorityToImportance } from './task-priority';
 import type { TaskProviderAdapter } from './adapter-interface';
 import type {
   NormalizedChecklistItem,
@@ -331,9 +332,9 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
   }
 
   private priorityToImportance(priority: number): string {
-    if (priority >= 3) return 'high';
-    if (priority >= 2) return 'normal';
-    return 'low';
+    // M10 (NEX-17): shared P-scale table (P1/P2→high, P3→normal, P4→low,
+    // none→normal) — see task-priority.ts.
+    return priorityToImportance(priority);
   }
 }
 
@@ -352,7 +353,8 @@ function mapNativeTaskRow(row: any): NormalizedTask {
     title: row.title,
     description: row.body || undefined,
     status: row.status === 'completed' ? 'completed' : row.status === 'inProgress' ? 'in_progress' : 'pending',
-    priority: row.importance === 'high' ? 3 : row.importance === 'normal' ? 2 : 1,
+    // M10 (NEX-17): shared inbound table (high→2, normal→3, low→4, none→0).
+    priority: importanceToPriority(row.importance),
     dueDate: row.due_date_time || undefined,
     dueIsDatetime: !!row.due_date_time?.includes('T'),
     tags: row.tags ? JSON.parse(row.tags) : undefined,

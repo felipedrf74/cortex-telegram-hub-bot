@@ -17,6 +17,7 @@ import { config } from '../../config';
 import { graphRetryDelayMs, recordGraphRateLimitHit } from '../graph-request-policy';
 import { toGraphDateTimeTimeZone } from '../microsoft-graph-datetime';
 import { isTaskMsDeltaSyncEnabled } from './task-sync-flags';
+import { importanceToPriority, priorityToImportance } from './task-priority';
 import type { TaskProviderAdapter, TaskPullRemoval } from './adapter-interface';
 import type { NormalizedChecklistItem, NormalizedProject, NormalizedStatus, NormalizedTask, TaskProviderCapabilities } from './types';
 
@@ -121,26 +122,25 @@ function nexusStatusToGraph(value: unknown): string | undefined {
   }
 }
 
+/**
+ * M10 (NEX-17) inbound Graph importance → P-scale priority: high→2,
+ * normal→3, low→4, unknown→0. 'high' deliberately imports as P2, never P1 —
+ * P1 stays user-assigned only (see task-priority.ts for the full table and
+ * the echo-stability rule that protects a stored P1 against its own echo).
+ */
 function graphImportanceToPriority(value: unknown): number {
-  switch (String(value || '').trim().toLowerCase()) {
-    case 'high':
-      return 3;
-    case 'low':
-      return 1;
-    case 'normal':
-      return 2;
-    default:
-      return 0;
-  }
+  return importanceToPriority(value);
 }
 
+/**
+ * M10 (NEX-17) outbound P-scale priority → Graph importance (the SHIPPED
+ * table: P1/P2→high, P3→normal, P4→low, none→normal). `undefined` only when
+ * the field itself is absent from the partial update, so the Graph body
+ * omits `importance` instead of resetting it.
+ */
 function priorityToGraphImportance(value: unknown): 'low' | 'normal' | 'high' | undefined {
-  const priority = Number(value);
-  if (!Number.isFinite(priority)) return undefined;
-  if (priority >= 3) return 'high';
-  if (priority === 1) return 'low';
-  if (priority === 2) return 'normal';
-  return undefined;
+  if (value == null || !Number.isFinite(Number(value))) return undefined;
+  return priorityToImportance(value);
 }
 
 function normalizeChecklistItems(value: GraphTodoTask['checklistItems']): NormalizedChecklistItem[] | undefined {
@@ -768,6 +768,8 @@ export class MicrosoftTodoAdapter implements TaskProviderAdapter {
 
 export const __testing = {
   graphImportanceToPriority,
+  priorityToGraphImportance,
+  graphTaskBodyFromNormalized,
   graphStatusToNexus,
   normalizeMsGraphDateTime,
   projectFromGraphList,

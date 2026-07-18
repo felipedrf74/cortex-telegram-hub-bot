@@ -1113,7 +1113,9 @@ describe('task sync conflict routes (M2B)', () => {
     expect(row).toMatchObject({
       title: 'Provider edited title',
       status: 'completed',
-      priority: 3,
+      // M10 (NEX-17): provider importance 'high' shares the 'high' bucket
+      // with the stored priority (2), so the stored fine-grained P2 is kept.
+      priority: 2,
       due_date: '2026-07-21T09:00:00Z',
       notes: 'provider body',
       sync_state: 'synced',
@@ -1137,7 +1139,8 @@ describe('task sync conflict routes (M2B)', () => {
     expect(JSON.parse(link.last_synced_snapshot)).toMatchObject({
       title: 'Provider edited title',
       status: 'completed',
-      priority: 3,
+      // M10: same-bucket echo preserves the stored fine-grained P2.
+      priority: 2,
       notes: 'provider body',
     });
   });
@@ -1883,5 +1886,89 @@ describe('M9 task restore route (POST /:listId/:taskId/restore)', () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.body.error.code).toBe('NOT_RESTORABLE');
+  });
+});
+
+// ─── M10 priority-to-server contract (NEX-17) ────────────────────────────────
+
+describe('M10 priority REST contract', () => {
+  it('creates a task with a wire priority and echoes it in the DTO', async () => {
+    const res = await dispatch('POST', '/', {
+      body: {
+        title: 'Wire priority create',
+        listName: 'Tasks',
+        priority: 2,
+        clientMutationId: 'ios-m10-create-1',
+        idempotencyKey: 'idem-m10-create-1',
+      },
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.data.task.priority).toBe(2);
+    expect(res.body.data.task.importance).toBe('high');
+  });
+
+  it('rejects invalid create priorities with 400 VALIDATION and journals nothing', async () => {
+    for (const priority of [5, -1, 2.5, '2', 'high']) {
+      const res = await dispatch('POST', '/', {
+        body: {
+          title: 'Invalid wire priority',
+          priority,
+          clientMutationId: `ios-m10-invalid-${String(priority)}`,
+        },
+      });
+      expect(res.statusCode, `priority ${JSON.stringify(priority)}`).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION');
+    }
+    const taskCount = testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks').get() as { count: number };
+    const mutationCount = testDb.prepare('SELECT COUNT(*) AS count FROM task_mutations').get() as { count: number };
+    expect(taskCount.count).toBe(0);
+    expect(mutationCount.count).toBe(0);
+  });
+
+  it('updates priority through PATCH and validates the range', async () => {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: 'Wire priority patch target',
+        listName: 'Tasks',
+        priority: 3,
+        clientMutationId: 'ios-m10-patch-target',
+      },
+    });
+    const task = created.body.data.task;
+
+    const patched = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: String(task.listId), taskId: task.id },
+      body: { priority: 1, clientMutationId: 'ios-m10-patch-1' },
+    });
+    expect(patched.statusCode, JSON.stringify(patched.body)).toBe(200);
+    expect(patched.body.data.task.priority).toBe(1);
+    expect(patched.body.data.task.importance).toBe('high');
+
+    const invalid = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+      params: { listId: String(task.listId), taskId: task.id },
+      body: { priority: 7, clientMutationId: 'ios-m10-patch-invalid' },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.error.code).toBe('VALIDATION');
+  });
+
+  it('advertises capabilities.priority on /working-set (the iOS M-D migration gate)', async () => {
+    await dispatch('POST', '/', {
+      body: {
+        title: 'Working set carries priority',
+        listName: 'Tasks',
+        priority: 4,
+        clientMutationId: 'ios-m10-working-set',
+      },
+    });
+
+    const res = await dispatch('GET', '/working-set');
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.capabilities).toMatchObject({ priority: true });
+    const task = res.body.data.tasks.find((entry: any) => entry.title === 'Working set carries priority');
+    expect(task?.priority).toBe(4);
+    expect(task?.importance).toBe('low');
   });
 });

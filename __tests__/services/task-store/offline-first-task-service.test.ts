@@ -1919,3 +1919,211 @@ describe('M9 restoreOfflineFirstTask', () => {
       .toThrowError(expect.objectContaining({ code: 'NOT_DELETED' }));
   });
 });
+
+// ─── M10 priority-to-server contract (NEX-17) ────────────────────────────────
+
+describe('M10 REST priority contract', () => {
+  it('stores and echoes an explicit priority on create (DTO carries priority + coarse importance)', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Priority create',
+      priority: 2,
+      clientMutationId: 'ios-priority-create-1',
+    });
+
+    expect(created.task.priority).toBe(2);
+    expect(created.task.importance).toBe('high');
+    const fetched = getOfflineTaskById(USER_ID, USER_ID, created.task.id);
+    expect(fetched?.priority).toBe(2);
+  });
+
+  it('prefers explicit priority over the legacy importance string on create', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Priority beats importance',
+      priority: 4,
+      importance: 'high',
+      clientMutationId: 'ios-priority-create-2',
+    });
+
+    expect(created.task.priority).toBe(4);
+    expect(created.task.importance).toBe('low');
+  });
+
+  it('rejects out-of-range or non-integer priorities on create with BAD_REQUEST', () => {
+    for (const priority of [5, -1, 1.5, Number.NaN]) {
+      expect(() => createOfflineFirstTask(USER_ID, USER_ID, {
+        title: 'Invalid priority',
+        priority,
+        clientMutationId: `ios-priority-invalid-${priority}`,
+      })).toThrowError(expect.objectContaining({ code: 'BAD_REQUEST' }));
+    }
+  });
+
+  it('pins the client importance→priority inbound table on create (urgent→1, high→2, normal/medium→3, low→4, absent→0)', () => {
+    const table: Array<[string | undefined, number]> = [
+      ['urgent', 1],
+      ['high', 2],
+      ['normal', 3],
+      ['medium', 3],
+      ['low', 4],
+      [undefined, 0],
+    ];
+    for (const [importance, expected] of table) {
+      const created = createOfflineFirstTask(USER_ID, USER_ID, {
+        title: `Importance ${importance ?? 'absent'}`,
+        importance,
+        clientMutationId: `ios-importance-${importance ?? 'absent'}`,
+      });
+      expect(created.task.priority, `importance ${importance}`).toBe(expected);
+    }
+  });
+
+  it('updates and clears priority through task.update (0 = none)', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Priority update target',
+      priority: 2,
+      clientMutationId: 'ios-priority-update-target',
+    });
+
+    const bumped = updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      priority: 1,
+      clientMutationId: 'ios-priority-update-1',
+    });
+    expect(bumped.task.priority).toBe(1);
+    expect(bumped.task.importance).toBe('high');
+
+    const cleared = updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      priority: 0,
+      clientMutationId: 'ios-priority-update-2',
+    });
+    expect(cleared.task.priority).toBe(0);
+    expect(cleared.task.importance).toBe('normal');
+  });
+
+  it('rejects invalid priorities on update with BAD_REQUEST', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Priority update validation',
+      clientMutationId: 'ios-priority-update-validation',
+    });
+
+    expect(() => updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      priority: 9,
+      clientMutationId: 'ios-priority-update-invalid',
+    })).toThrowError(expect.objectContaining({ code: 'BAD_REQUEST' }));
+  });
+
+  it('preserves fine-grained priority when an importance-only update lands in the same bucket', () => {
+    // Deployed pre-M-D iOS builds and chat only speak coarse importance: an
+    // edit that sends importance 'high' back at a P1 task must not demote it
+    // to P2 (mirror of the pull echo-stability rule).
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'P1 with coarse client',
+      priority: 1,
+      clientMutationId: 'ios-priority-coarse-preserve',
+    });
+
+    const patched = updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      title: 'P1 with coarse client (edited)',
+      importance: 'high',
+      clientMutationId: 'ios-priority-coarse-preserve-edit',
+    });
+
+    expect(patched.task.title).toBe('P1 with coarse client (edited)');
+    expect(patched.task.priority).toBe(1);
+  });
+
+  it('re-maps priority when an importance-only update changes bucket', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'P1 demoted by coarse client',
+      priority: 1,
+      clientMutationId: 'ios-priority-coarse-demote',
+    });
+
+    const patched = updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      importance: 'low',
+      clientMutationId: 'ios-priority-coarse-demote-edit',
+    });
+
+    expect(patched.task.priority).toBe(4);
+    expect(patched.task.importance).toBe('low');
+  });
+
+  it('keeps the stored priority when neither priority nor importance is provided', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Title-only patch',
+      priority: 3,
+      clientMutationId: 'ios-priority-title-only',
+    });
+
+    // The PATCH route always defines these keys (possibly undefined) — the
+    // service must treat undefined as "not provided", never as a reset.
+    const patched = updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      title: 'Title-only patch (edited)',
+      importance: undefined,
+      priority: undefined,
+      clientMutationId: 'ios-priority-title-only-edit',
+    });
+
+    expect(patched.task.priority).toBe(3);
+  });
+
+  it('keeps priority across complete/reopen local mutations (they never carry priority)', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Complete keeps priority',
+      priority: 2,
+      clientMutationId: 'ios-priority-complete',
+    });
+
+    recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      operation: 'task.complete',
+      clientMutationId: 'ios-priority-complete-op',
+    });
+    recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      operation: 'task.reopen',
+      clientMutationId: 'ios-priority-reopen-op',
+    });
+
+    expect(getOfflineTaskById(USER_ID, USER_ID, created.task.id)?.priority).toBe(2);
+  });
+
+  it('advertises the priority capability on the working-set snapshot payload', () => {
+    const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    expect(snapshot.capabilities.priority).toBe(true);
+  });
+
+  it('sorts the read model by priority (1 best, none last), then due date, then title', () => {
+    const seed = (title: string, priority: number, dueDateTime?: string) => createOfflineFirstTask(USER_ID, USER_ID, {
+      title,
+      priority,
+      dueDateTime,
+      listName: 'Inbox',
+      clientMutationId: `ios-sort-${title}`,
+    }).task.id;
+
+    const noneTask = seed('A unprioritized', 0);
+    const p3Task = seed('B p3', 3);
+    const p1NoDue = seed('C p1 undated', 1);
+    const p1Later = seed('A p1 later', 1, '2026-07-20T09:00:00Z');
+    const p1Sooner = seed('Z p1 sooner', 1, '2026-07-19T09:00:00Z');
+
+    const snapshot = getOfflineTaskSnapshot(USER_ID, USER_ID, { pageSize: 75 });
+    const orderedIds = snapshot.tasks.map((task: any) => task.id);
+
+    expect(orderedIds).toEqual([
+      // P1 first: due dates ascending, undated last.
+      p1Sooner,
+      p1Later,
+      p1NoDue,
+      // Then P3, then unprioritized (0) last.
+      p3Task,
+      noneTask,
+    ]);
+  });
+});

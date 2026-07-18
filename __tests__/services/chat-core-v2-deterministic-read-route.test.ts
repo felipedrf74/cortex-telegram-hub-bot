@@ -1217,7 +1217,8 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(listTasksForUser).mockReturnValue([
       task({ id: 1, title: 'Review proposal', dueDate: '2026-05-24', priority: 3 }),
       task({ id: 2, title: 'Send invoice', dueDate: '2026-05-23', priority: 2 }),
-      task({ id: 3, title: 'Buy groceries', dueDate: '2026-05-26', priority: 1 }),
+      // M10 P-scale (NEX-17): only 'Send invoice' (P2) is in the high bucket.
+      task({ id: 3, title: 'Buy groceries', dueDate: '2026-05-26', priority: 4 }),
     ]);
 
     const result = tryBuildChatCoreV2DeterministicReadRoute({

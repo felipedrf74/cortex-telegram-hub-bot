@@ -222,7 +222,9 @@ describe('MicrosoftTodoAdapter', () => {
         title: 'Prepare plan',
         description: 'Draft notes',
         status: 'in_progress',
-        priority: 3,
+        // M10 inbound table: importance 'high' imports as P2 (P1 stays
+        // user-assigned only — see task-priority.ts).
+        priority: 2,
         dueDate: '2026-06-24T09:00:00Z',
         dueIsDatetime: true,
         checklistItems: [{ id: 'check-1', displayName: 'Outline', isChecked: true }],
@@ -237,7 +239,8 @@ describe('MicrosoftTodoAdapter', () => {
         externalId: 'task-2',
         projectName: 'Work',
         status: 'completed',
-        priority: 1,
+        // M10 inbound table: importance 'low' imports as P4.
+        priority: 4,
         completedAt: '2026-06-23T10:00:00Z',
       }),
     ]);
@@ -337,6 +340,35 @@ describe('MicrosoftTodoAdapter', () => {
       expect.objectContaining({ userId: 42, listId: 'list-routine' }),
       'Microsoft To Do adapter expanded list fetch failed — retrying basic task fetch',
     );
+  });
+
+  // M10 (NEX-17): both direction tables pinned value-by-value. The outbound
+  // table is the SHIPPED mapping — P2 MUST stay 'high' (a P2→normal change
+  // would visibly demote every P2 task in Outlook). The inbound table is its
+  // deliberate asymmetric inverse — 'high' imports as P2, never P1, so P1
+  // stays user-assigned only (the upsert echo-stability rule protects a
+  // stored P1 against its own 'high' echo).
+  it('pins the outbound priority→Graph importance table (P1/P2→high, P3→normal, P4→low, none→normal)', () => {
+    expect(__testing.priorityToGraphImportance(1)).toBe('high');
+    expect(__testing.priorityToGraphImportance(2)).toBe('high');
+    expect(__testing.priorityToGraphImportance(3)).toBe('normal');
+    expect(__testing.priorityToGraphImportance(4)).toBe('low');
+    expect(__testing.priorityToGraphImportance(0)).toBe('normal');
+    // Absent field → omit importance from the Graph body entirely.
+    expect(__testing.priorityToGraphImportance(undefined)).toBeUndefined();
+    expect(__testing.priorityToGraphImportance(null)).toBeUndefined();
+    expect(__testing.graphTaskBodyFromNormalized({ title: 'No priority change' })).not.toHaveProperty('importance');
+    expect(__testing.graphTaskBodyFromNormalized({ priority: 0 })).toMatchObject({ importance: 'normal' });
+    expect(__testing.graphTaskBodyFromNormalized({ priority: 1 })).toMatchObject({ importance: 'high' });
+  });
+
+  it('pins the inbound Graph importance→priority table (high→2, normal→3, low→4, unknown→0)', () => {
+    expect(__testing.graphImportanceToPriority('high')).toBe(2);
+    expect(__testing.graphImportanceToPriority('normal')).toBe(3);
+    expect(__testing.graphImportanceToPriority('low')).toBe(4);
+    expect(__testing.graphImportanceToPriority('')).toBe(0);
+    expect(__testing.graphImportanceToPriority(undefined)).toBe(0);
+    expect(__testing.graphImportanceToPriority('somethingOdd')).toBe(0);
   });
 
   it('normalizes Graph timestamps without seven-digit fractions', () => {

@@ -9,6 +9,14 @@ import { getOpenTaskSyncWarningsForTasks, recordTaskSyncIssue, resolveTaskSyncIs
 import { resolveTaskSyncTarget } from './task-sync-policy';
 import { triggerTaskMutationKick } from './task-mutation-kick';
 import { assertTransition } from './task-sync-transitions';
+import {
+  importanceToPriority,
+  isValidTaskPriorityInput,
+  normalizeStoredTaskPriority,
+  priorityToImportance,
+  sameImportanceBucket,
+  taskPriorityRankSql,
+} from './task-priority';
 
 export type TaskSyncState =
   | 'local_only'
@@ -52,6 +60,8 @@ export interface OfflineTaskDto {
   title: string;
   body: string | null;
   importance: 'low' | 'normal' | 'high';
+  /** M10 (NEX-17): 0 = none, 1 = P1 (highest) … 4 = P4 (lowest). Additive — old clients ignore it. */
+  priority: number;
   status: string;
   dueDateTime: string | null;
   recurrence: unknown | null;
@@ -83,6 +93,8 @@ export interface TaskMutationInput {
   listName?: string;
   dueDateTime?: string;
   importance?: string;
+  /** M10 (NEX-17): optional P-scale priority (integer 0–4). Wins over `importance` when both are sent. */
+  priority?: number;
   body?: string;
   recurrence?: unknown;
   idempotencyKey?: string;
@@ -94,6 +106,8 @@ export interface TaskUpdateMutationInput {
   title?: string;
   dueDateTime?: string | null;
   importance?: string;
+  /** M10 (NEX-17): optional P-scale priority (integer 0–4). Wins over `importance` when both are sent. */
+  priority?: number;
   body?: string | null;
   status?: string;
   recurrence?: unknown;
@@ -400,20 +414,30 @@ function providerLinkProvider(provider: TaskProviderType): TaskProviderLinkProvi
   return provider === 'nexus' ? 'nexus_local' : provider;
 }
 
-function priorityToDb(value: unknown): number {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'urgent') return 4;
-  if (normalized === 'high') return 3;
-  if (normalized === 'medium') return 2;
-  if (normalized === 'low') return 1;
-  return 0;
+/**
+ * M10 (NEX-17): defensive priority-input guard for non-route callers. Routes
+ * already 400 invalid values; anything else reaching here throws BAD_REQUEST
+ * instead of silently storing garbage. `undefined`/`null` mean "not provided".
+ */
+function assertValidPriorityInput(value: unknown): asserts value is number {
+  if (!isValidTaskPriorityInput(value)) {
+    const err = new Error('priority must be an integer between 0 and 4');
+    (err as any).code = 'BAD_REQUEST';
+    throw err;
+  }
 }
 
-function priorityToImportance(value: unknown): 'low' | 'normal' | 'high' {
-  const priority = typeof value === 'number' ? value : Number(value || 0);
-  if (priority >= 3) return 'high';
-  if (priority === 1) return 'low';
-  return 'normal';
+/**
+ * Resolve the priority a create should store: explicit `priority` wins,
+ * otherwise the legacy `importance` string maps through the shared inbound
+ * table (urgent→1, high→2, normal/medium→3, low→4, absent→0).
+ */
+function createPriorityValue(input: Pick<TaskMutationInput, 'priority' | 'importance'>): number {
+  if (input.priority != null) {
+    assertValidPriorityInput(input.priority);
+    return input.priority;
+  }
+  return importanceToPriority(input.importance);
 }
 
 function dtoStatus(value: string | null | undefined): string {
@@ -551,18 +575,9 @@ function nativeStatusToDb(value: string | null | undefined): string {
 }
 
 function nativePriorityToDb(value: string | null | undefined): number {
-  switch (String(value || '').trim().toLowerCase()) {
-    case 'high':
-    case 'important':
-      return 3;
-    case 'normal':
-    case 'medium':
-      return 2;
-    case 'low':
-      return 1;
-    default:
-      return 0;
-  }
+  // Legacy native_tasks importance strings ride the shared M10 inbound table
+  // so backfilled rows land on the same P-scale as everything else.
+  return importanceToPriority(value);
 }
 
 function nativeChecklistItemsForTasks(userId: number, taskIds: number[]): Map<number, ChecklistItemDto[]> {
@@ -820,6 +835,7 @@ function rowToDto(
     title: row.title || '(Untitled)',
     body: row.notes || row.description || null,
     importance: priorityToImportance(row.priority),
+    priority: normalizeStoredTaskPriority(row.priority),
     status,
     dueDateTime: row.due_date || null,
     recurrence: providerData.recurrence || null,
@@ -1139,11 +1155,19 @@ function getProjectById(tenantId: number, userId: number, listId: string): Proje
   return row || null;
 }
 
+/**
+ * M10 read-model ordering (pinned): P1 first (1,2,3,4), unprioritized (0)
+ * last, then due date (undated last), then title. `updated_at DESC` stays as
+ * a final deterministic tiebreaker only.
+ */
+const OFFLINE_TASK_ORDER_BY =
+  `${taskPriorityRankSql('priority')} ASC, due_date ASC NULLS LAST, title COLLATE NOCASE ASC, updated_at DESC`;
+
 function activeRows(tenantId: number, userId: number): UnifiedTaskRow[] {
   return getDb().prepare(
     `SELECT * FROM unified_tasks
      WHERE tenant_id = ? AND user_id = ? AND is_deleted = 0
-     ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC`,
+     ORDER BY ${OFFLINE_TASK_ORDER_BY}`,
   ).all(tenantId, userId) as UnifiedTaskRow[];
 }
 
@@ -1304,6 +1328,7 @@ function isCompletedTaskRow(row: UnifiedTaskRow): boolean {
     title: row.title,
     body: null,
     importance: 'normal',
+    priority: 0,
     status: dtoStatus(row.status),
     dueDateTime: null,
     recurrence: null,
@@ -1393,6 +1418,9 @@ export function getOfflineTaskSnapshot(
       supportsCursorPagination: true,
       supportsProviderSideListCounts: false,
       maxPageSize: 200,
+      // M10 (NEX-17): the iOS M-D overlay migration gate — it must never run
+      // against a backend that doesn't persist P1–P4 server-side.
+      priority: true,
     },
     lists,
     activeCountsByList: Object.fromEntries(lists.map((list) => [list.id, list.taskCount])),
@@ -1443,7 +1471,7 @@ export function getOfflineTasksForList(
   let rows = getDb().prepare(
     `SELECT * FROM unified_tasks
      WHERE tenant_id = ? AND user_id = ? AND is_deleted = 0
-     ORDER BY priority DESC, due_date ASC NULLS LAST, updated_at DESC`,
+     ORDER BY ${OFFLINE_TASK_ORDER_BY}`,
   ).all(tenantId, userId) as UnifiedTaskRow[];
   rows = rows.filter((row) => taskRowMatchesList(row, relatedProjectIds, canonicalListName, knownProjectIds));
   if (normalizedStatus === 'active') {
@@ -1537,6 +1565,8 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
     (err as any).code = 'BAD_REQUEST';
     throw err;
   }
+  // Validate before any idempotency/ledger work so bad input never journals.
+  const priorityValue = createPriorityValue(input);
 
   const operation = 'task.create';
   const clientMutationId = String(input.clientMutationId || input.idempotencyKey || randomId('client_task_mutation')).slice(0, 180);
@@ -1596,7 +1626,7 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
       project.name,
       title,
       input.body || null,
-      priorityToDb(input.importance),
+      priorityValue,
       input.dueDateTime || null,
       input.dueDateTime && input.dueDateTime.includes('T') ? 1 : 0,
       input.body || null,
@@ -1674,6 +1704,7 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
 
 export function updateOfflineFirstTask(tenantId: number, userId: number, input: TaskUpdateMutationInput) {
   assertScope(tenantId, userId);
+  if (input.priority != null) assertValidPriorityInput(input.priority);
   const operation = 'task.update';
   const existingRow = getTaskRowByNexusId(tenantId, userId, input.taskId);
   if (!existingRow) {
@@ -1716,9 +1747,23 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
     const nextTitle = input.title != null ? String(input.title).trim() || existingRow.title : existingRow.title;
     const nextNotes = Object.prototype.hasOwnProperty.call(input, 'body') ? input.body || null : existingRow.notes;
     const nextDue = Object.prototype.hasOwnProperty.call(input, 'dueDateTime') ? input.dueDateTime || null : existingRow.due_date;
-    const nextPriority = Object.prototype.hasOwnProperty.call(input, 'importance')
-      ? priorityToDb(input.importance)
-      : existingRow.priority || 0;
+    // M10 priority resolution (NEX-17):
+    //   1. explicit `priority` (0–4) wins;
+    //   2. a coarse `importance` string only re-maps the stored priority when
+    //      it lands in a DIFFERENT importance bucket — an importance-only
+    //      client (deployed iOS pre-M-D, chat) echoing 'high' back at a P1
+    //      task must not demote it to P2 (mirror of the pull echo-stability
+    //      rule in unified-task-store.upsertTask);
+    //   3. otherwise the stored priority is kept. `undefined`/`null` mean
+    //      "not provided" — the routes always define these keys.
+    const incomingImportancePriority = input.importance != null && String(input.importance).trim() !== ''
+      ? importanceToPriority(input.importance)
+      : null;
+    const nextPriority = input.priority != null
+      ? input.priority
+      : incomingImportancePriority != null && !sameImportanceBucket(existingRow.priority, incomingImportancePriority)
+        ? incomingImportancePriority
+        : normalizeStoredTaskPriority(existingRow.priority);
     const nextStatus = Object.prototype.hasOwnProperty.call(input, 'status')
       ? dbStatusForValue(input.status, existingRow.status)
       : existingRow.status;
