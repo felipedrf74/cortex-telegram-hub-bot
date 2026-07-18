@@ -77,6 +77,7 @@ type UnifiedTaskRow = {
   priority: number | null;
   due_date: string | null;
   due_is_datetime: number | null;
+  reminder_at: string | null;
   provider_data: string | null;
   created_at: string;
   updated_at: string;
@@ -163,6 +164,8 @@ function rowToOfflineTask(row: UnifiedTaskRow): OfflineTaskDto {
     priority: normalizeStoredTaskPriority(row.priority),
     status: row.is_deleted ? 'cancelled' : row.status,
     dueDateTime: row.due_date || null,
+    dueIsDatetime: row.due_is_datetime === 1,
+    reminderAt: row.reminder_at || null,
     recurrence: providerData.recurrence || null,
     listId: row.project_id != null ? String(row.project_id) : null,
     listName: row.project_name || null,

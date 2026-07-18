@@ -64,6 +64,18 @@ export interface OfflineTaskDto {
   priority: number;
   status: string;
   dueDateTime: string | null;
+  /**
+   * M13 (R19): true when `dueDateTime` carries a wall-clock time, false when it
+   * is a bare 'YYYY-MM-DD'. iOS needs this to parse date-only dues correctly —
+   * a bare date sent without this flag parses to nil on iOS and silently drops
+   * the task from Today/Overdue membership. Additive; old clients ignore it.
+   */
+  dueIsDatetime: boolean;
+  /**
+   * M13: ISO 8601 reminder instant iOS schedules a local notification from, or
+   * null when the task has no reminder. Additive; old clients ignore it.
+   */
+  reminderAt: string | null;
   recurrence: unknown | null;
   listId: string | null;
   listName: string | null;
@@ -92,6 +104,8 @@ export interface TaskMutationInput {
   title: string;
   listName?: string;
   dueDateTime?: string;
+  /** M13: optional ISO reminder instant. Omitted/undefined = no reminder. */
+  reminderAt?: string | null;
   importance?: string;
   /** M10 (NEX-17): optional P-scale priority (integer 0–4). Wins over `importance` when both are sent. */
   priority?: number;
@@ -105,6 +119,8 @@ export interface TaskUpdateMutationInput {
   taskId: string;
   title?: string;
   dueDateTime?: string | null;
+  /** M13: ISO reminder instant, or null to clear. Key absent = leave unchanged. */
+  reminderAt?: string | null;
   importance?: string;
   /** M10 (NEX-17): optional P-scale priority (integer 0–4). Wins over `importance` when both are sent. */
   priority?: number;
@@ -171,6 +187,7 @@ type UnifiedTaskRow = {
   priority: number | null;
   due_date: string | null;
   due_is_datetime: number | null;
+  reminder_at: string | null;
   tags: string | null;
   notes: string | null;
   completed_at: string | null;
@@ -438,6 +455,24 @@ function createPriorityValue(input: Pick<TaskMutationInput, 'priority' | 'import
     return input.priority;
   }
   return importanceToPriority(input.importance);
+}
+
+/**
+ * M13 reminder-input guard: a reminder is either an ISO-ish instant or an
+ * explicit clear. `null`/`undefined`/empty normalize to null (clear); a
+ * non-empty string must parse as a date or this throws BAD_REQUEST instead of
+ * storing garbage iOS then fails to schedule from. Returns the value to store.
+ */
+function normalizeReminderAtInput(value: unknown): string | null {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (Number.isNaN(Date.parse(raw))) {
+    const err = new Error('reminderAt must be an ISO 8601 datetime or null');
+    (err as any).code = 'BAD_REQUEST';
+    throw err;
+  }
+  return raw;
 }
 
 function dtoStatus(value: string | null | undefined): string {
@@ -838,6 +873,8 @@ function rowToDto(
     priority: normalizeStoredTaskPriority(row.priority),
     status,
     dueDateTime: row.due_date || null,
+    dueIsDatetime: row.due_is_datetime === 1,
+    reminderAt: row.reminder_at || null,
     recurrence: providerData.recurrence || null,
     listId: row.project_id != null ? String(row.project_id) : null,
     listName,
@@ -1341,6 +1378,8 @@ function isCompletedTaskRow(row: UnifiedTaskRow): boolean {
     priority: 0,
     status: dtoStatus(row.status),
     dueDateTime: null,
+    dueIsDatetime: false,
+    reminderAt: null,
     recurrence: null,
     listId: null,
     listName: null,
@@ -1703,6 +1742,7 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
   }
   // Validate before any idempotency/ledger work so bad input never journals.
   const priorityValue = createPriorityValue(input);
+  const reminderAtValue = normalizeReminderAtInput(input.reminderAt);
 
   const operation = 'task.create';
   const clientMutationId = String(input.clientMutationId || input.idempotencyKey || randomId('client_task_mutation')).slice(0, 180);
@@ -1751,9 +1791,9 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
       `INSERT INTO unified_tasks (
          user_id, tenant_id, provider, external_id, project_id, project_name,
          title, description, status, priority, due_date, due_is_datetime,
-         tags, notes, provider_data, content_hash, synced_at, nexus_task_id,
+         reminder_at, tags, notes, provider_data, content_hash, synced_at, nexus_task_id,
          local_version, sync_state, source_of_truth
-       ) VALUES (?, ?, 'nexus', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, '[]', ?, ?, NULL, datetime('now'), ?, 1, ?, 'nexus')`,
+       ) VALUES (?, ?, 'nexus', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '[]', ?, ?, NULL, datetime('now'), ?, 1, ?, 'nexus')`,
     ).run(
       userId,
       tenantId,
@@ -1765,6 +1805,7 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
       priorityValue,
       input.dueDateTime || null,
       input.dueDateTime && input.dueDateTime.includes('T') ? 1 : 0,
+      reminderAtValue,
       input.body || null,
       JSON.stringify(providerData),
       taskId,
@@ -1841,6 +1882,9 @@ export function createOfflineFirstTask(tenantId: number, userId: number, input: 
 export function updateOfflineFirstTask(tenantId: number, userId: number, input: TaskUpdateMutationInput) {
   assertScope(tenantId, userId);
   if (input.priority != null) assertValidPriorityInput(input.priority);
+  // Validate reminder input before any ledger work so bad input never journals.
+  const reminderProvided = Object.prototype.hasOwnProperty.call(input, 'reminderAt');
+  const providedReminderAt = reminderProvided ? normalizeReminderAtInput(input.reminderAt) : null;
   const operation = 'task.update';
   const existingRow = getTaskRowByNexusId(tenantId, userId, input.taskId);
   if (!existingRow) {
@@ -1883,6 +1927,9 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
     const nextTitle = input.title != null ? String(input.title).trim() || existingRow.title : existingRow.title;
     const nextNotes = Object.prototype.hasOwnProperty.call(input, 'body') ? input.body || null : existingRow.notes;
     const nextDue = Object.prototype.hasOwnProperty.call(input, 'dueDateTime') ? input.dueDateTime || null : existingRow.due_date;
+    // Mirrors due_date: an explicit key sets/clears the reminder; an absent key
+    // leaves the stored reminder untouched.
+    const nextReminder = reminderProvided ? providedReminderAt : existingRow.reminder_at;
     // M10 priority resolution (NEX-17):
     //   1. explicit `priority` (0–4) wins;
     //   2. a coarse `importance` string only re-maps the stored priority when
@@ -1910,6 +1957,7 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
          description = ?,
          due_date = ?,
          due_is_datetime = ?,
+         reminder_at = ?,
          priority = ?,
          status = ?,
          provider_data = ?,
@@ -1923,6 +1971,7 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
       nextNotes,
       nextDue,
       nextDue && String(nextDue).includes('T') ? 1 : 0,
+      nextReminder,
       nextPriority,
       nextStatus,
       JSON.stringify(providerData),
@@ -3151,6 +3200,7 @@ export function restoreOfflineFirstTask(tenantId: number, userId: number, input:
           title: row.title,
           body: row.notes,
           dueDateTime: row.due_date,
+          reminderAt: row.reminder_at,
           status: restoredStatus,
         }),
         restoredAt,

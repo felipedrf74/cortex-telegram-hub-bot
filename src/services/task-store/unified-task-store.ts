@@ -43,6 +43,7 @@ interface UnifiedTaskRow {
   priority: number;
   due_date: string | null;
   due_is_datetime: number;
+  reminder_at: string | null;
   tags: string;
   notes: string | null;
   completed_at: string | null;
@@ -91,6 +92,7 @@ function rowToTask(row: UnifiedTaskRow): NormalizedTask {
     priority: row.priority,
     dueDate: row.due_date ?? undefined,
     dueIsDatetime: row.due_is_datetime === 1,
+    reminderAt: row.reminder_at ?? undefined,
     tags,
     notes: row.notes ?? undefined,
     completedAt: row.completed_at ?? undefined,
@@ -124,6 +126,13 @@ function rowToProject(row: UnifiedProjectRow): NormalizedProject {
  *   - `providerData` — opaque, varies between provider responses for the
  *     same logical task.
  *   - `synced_at`/`updated_at` — always change.
+ *   - `reminderAt` (M13, decision R19-a) — deliberately EXCLUDED. Adding a
+ *     field to the hash mass-flips every existing linked row to a phantom
+ *     change on the next pull (the M4/M10 lesson) unless paired with a
+ *     hash-recompute migration. The hash gates only PULL no-op detection;
+ *     reminder edits still sync because the single write path journals a
+ *     task.update regardless of the hash, and reminder-only provider-side
+ *     edits are rare. So the safe, migration-free choice is to leave it out.
  *
  * The hash is intentionally short (16 hex chars = 64 bits): collisions in
  * 64 bits are vanishingly unlikely for our scale (millions of tasks per user
@@ -616,10 +625,10 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
     db.prepare(
       `INSERT INTO unified_tasks (
         user_id, tenant_id, provider, external_id, project_id, project_name, title,
-        description, status, priority, due_date, due_is_datetime, tags, notes,
+        description, status, priority, due_date, due_is_datetime, reminder_at, tags, notes,
         completed_at, assignee, url, provider_data, content_hash, synced_at,
         nexus_task_id, local_version, sync_state, source_of_truth
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 1, 'synced', 'nexus')`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 1, 'synced', 'nexus')`,
     ).run(
       userId,
       tenantId,
@@ -633,6 +642,7 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
       task.priority,
       task.dueDate ?? null,
       task.dueIsDatetime ? 1 : 0,
+      task.reminderAt ?? null,
       JSON.stringify(task.tags || []),
       task.notes ?? null,
       task.completedAt ?? null,
@@ -677,7 +687,7 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
   db.prepare(
     `UPDATE unified_tasks SET
        title = ?, description = ?, status = ?, priority = ?,
-       due_date = ?, due_is_datetime = ?, tags = ?, notes = ?,
+       due_date = ?, due_is_datetime = ?, reminder_at = ?, tags = ?, notes = ?,
        completed_at = ?, project_name = ?, project_id = ?, url = ?,
        provider_data = ?, content_hash = ?, is_deleted = 0,
        tenant_id = COALESCE(tenant_id, ?),
@@ -693,6 +703,7 @@ export function upsertTask(userId: number, task: NormalizedTask, tenantId = user
     task.priority,
     task.dueDate ?? null,
     task.dueIsDatetime ? 1 : 0,
+    task.reminderAt ?? null,
     JSON.stringify(task.tags || []),
     task.notes ?? null,
     task.completedAt ?? null,

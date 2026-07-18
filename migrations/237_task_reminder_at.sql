@@ -1,0 +1,15 @@
+-- 237: reminder instant on the unified task read model (M13 reminders + notifications).
+-- `reminder_at` stores the ISO reminder instant that iOS schedules a local
+-- notification from. NULL (the default for every existing row and writer)
+-- means no reminder — identical to pre-237 behavior. It is plumbed through the
+-- offline-first read/write model exactly like `due_date`: the OfflineTaskDto
+-- exposes it, create/update accept it, and the mutation worker pushes it as
+-- Graph `reminderDateTime` (isReminderOn) serialized ZONE-NAIVE via
+-- toGraphDateTimeTimeZone, while the Microsoft To Do adapter maps inbound
+-- `reminderDateTime.dateTime` back onto it so both directions round-trip.
+-- Deliberately NOT part of computeContentHash (see unified-task-store.ts):
+-- adding it would mass-flip every existing linked row to a phantom pull change,
+-- and reminder edits already journal a task.update on the single write path.
+-- Plain ADD COLUMN: the production runner strips already-applied ADD COLUMN
+-- statements (filterAlreadyAppliedAddColumnStatements), so re-running is safe.
+ALTER TABLE unified_tasks ADD COLUMN reminder_at TEXT;
