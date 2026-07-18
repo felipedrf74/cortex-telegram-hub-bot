@@ -37,6 +37,13 @@ import {
 } from '../../services/integration-status';
 import { hasActiveGarminConnection } from '../../services/garmin-session-store';
 import { revokeThirdPartyOAuthTokenForProvider } from '../../services/user-data-export';
+import {
+  applyTaskDisconnectPolicy,
+  normalizeTaskDisconnectPolicy,
+  taskProviderForConnection,
+  type TaskDisconnectCounts,
+} from '../../services/task-store/task-disconnect-policy';
+import { clearTaskListSyncSelection } from '../../services/task-store/task-list-sync-selection';
 
 type ConnectionAvailability = {
   provider: string;
@@ -210,14 +217,25 @@ export function connectionRoutes(): Router {
   }));
 
   /**
-   * DELETE /api/v1/connections/:provider
+   * DELETE /api/v1/connections/:provider?policy=keep|archive|remove
    * Best-effort provider revoke + deterministic local disconnect.
+   *
+   * `policy` (M12) decides what happens to the tasks this provider imported.
+   * Defaults to `keep` (today's behavior — nothing but the sync-state row is
+   * touched), so old clients that omit it are unchanged. `archive` converts the
+   * provider's imports to local-only; `remove` soft-deletes provider-origin
+   * imports while keeping Nexus tasks that merely synced out. The response is
+   * additive: the legacy fields plus `policy` and `counts`.
    */
   router.delete('/:provider', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     const provider = normalizeRevocableProvider(req.params.provider);
     if (!provider) {
       return sendError(res, 'BAD_REQUEST', 'Unsupported connection provider.', 400);
+    }
+    const policy = normalizeTaskDisconnectPolicy(req.query?.policy);
+    if (!policy) {
+      return sendError(res, 'BAD_REQUEST', 'policy must be one of keep, archive, remove.', 400);
     }
 
     try {
@@ -226,12 +244,16 @@ export function connectionRoutes(): Router {
       if (provider !== 'garmin') {
         disconnectProvider(userId, provider);
       }
+      const counts = applyDisconnectDataPolicy(tenantId ?? userId, userId, provider, policy);
       clearTaskSyncStateForConnection(userId, provider);
+      clearTaskListSelectionForConnection(tenantId ?? userId, userId, provider);
       sendSuccess(res, {
         provider,
         disconnected: true,
         connectedBefore,
         revocation,
+        policy,
+        counts,
       });
     } catch (err: any) {
       logger.error({ err, userId, provider }, 'iOS connection revoke failed');
@@ -257,5 +279,43 @@ function clearTaskSyncStateForConnection(userId: number, provider: string): void
     ).run(userId, taskProvider);
   } catch (err) {
     logger.warn({ err, userId, provider }, 'Task sync-state cleanup on disconnect failed (non-fatal)');
+  }
+}
+
+/**
+ * Apply the disconnect data-choice to the provider's imported tasks (M12).
+ * No-op for non-task providers and for policy=keep. Non-fatal: a failure here
+ * (e.g. task tables absent in an isolated context) must never block the
+ * disconnect, so it logs and returns zeroed counts.
+ */
+function applyDisconnectDataPolicy(
+  tenantId: number,
+  userId: number,
+  provider: RevocableConnectionProvider,
+  policy: 'keep' | 'archive' | 'remove',
+): TaskDisconnectCounts {
+  const emptyCounts: TaskDisconnectCounts = { archivedCount: 0, removedCount: 0, keptLocalCount: 0 };
+  const taskProvider = taskProviderForConnection(provider);
+  if (!taskProvider || policy === 'keep') return emptyCounts;
+  try {
+    return applyTaskDisconnectPolicy({ tenantId, userId, provider: taskProvider, policy });
+  } catch (err) {
+    logger.warn({ err, userId, provider, policy }, 'Disconnect data-policy application failed (non-fatal)');
+    return emptyCounts;
+  }
+}
+
+/** Drop the per-list sync selection so a reconnect starts from all-enabled. */
+function clearTaskListSelectionForConnection(
+  tenantId: number,
+  userId: number,
+  provider: RevocableConnectionProvider,
+): void {
+  const taskProvider = taskProviderForConnection(provider);
+  if (!taskProvider) return;
+  try {
+    clearTaskListSyncSelection(tenantId, userId, taskProvider);
+  } catch (err) {
+    logger.warn({ err, userId, provider }, 'Task list-selection cleanup on disconnect failed (non-fatal)');
   }
 }

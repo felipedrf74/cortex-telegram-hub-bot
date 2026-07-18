@@ -15,6 +15,7 @@ import { computeTaskContentFingerprint } from './todoist-correlation';
 import { isTaskSyncPushKickEnabled } from './task-sync-flags';
 import { registerTaskMutationKick } from './task-mutation-kick';
 import { normalizeStoredTaskPriority, priorityToImportance } from './task-priority';
+import { isProviderListSyncEnabled } from './task-list-sync-selection';
 // Deliberate, benign cycle: the coordinator's runner calls back into this
 // module's runTaskMutationSyncBatch. Both sides only dereference each other's
 // bindings at call time (kick timer / run execution), never at module init.
@@ -603,6 +604,20 @@ function markDeadLetter(mutation: TaskMutationRow, code: TaskSyncWarningCode, me
 
 function providerContainerId(link: TaskProviderLinkRow): string | null {
   return link.provider === 'ms_todo' ? link.provider_list_id : link.provider_project_id || link.provider_list_id;
+}
+
+/**
+ * True when the mutation's target provider list was de-selected at connect time
+ * (M12). Such a mutation is kept local rather than pushed, so a list the user
+ * chose not to sync never receives writes. A link with no resolvable container
+ * id is not treated as disabled — the existing provider_list_missing path owns
+ * that case.
+ */
+function isMutationTargetListDisabled(mutation: TaskMutationRow, link: TaskProviderLinkRow): boolean {
+  if (link.provider !== 'ms_todo' && link.provider !== 'todoist') return false;
+  const containerId = providerContainerId(link);
+  if (!containerId) return false;
+  return !isProviderListSyncEnabled(mutation.tenant_id, mutation.user_id, link.provider, containerId);
 }
 
 function extractProviderTaskId(value: any): string | null {
@@ -1312,7 +1327,18 @@ async function processMutation(mutation: TaskMutationRow): Promise<'synced' | 'f
     && link
     && link.provider !== 'nexus_local'
     && link.link_state === 'pending_delete';
-  if (!link || link.provider === 'nexus_local' || (task.sync_state === 'local_only' && !providerCleanupDelete)) {
+  // M12: a mutation whose target provider list was de-selected at connect time
+  // is kept local (never written upstream) — the same terminal treatment as a
+  // local_only task or a nexus_local link.
+  const targetListDisabled = !!link
+    && link.provider !== 'nexus_local'
+    && isMutationTargetListDisabled(mutation, link);
+  if (
+    !link
+    || link.provider === 'nexus_local'
+    || (task.sync_state === 'local_only' && !providerCleanupDelete)
+    || targetListDisabled
+  ) {
     markSynced(mutation, task, link, { providerTaskId: task.nexus_task_id, syncState: 'local_only' });
     return 'synced';
   }

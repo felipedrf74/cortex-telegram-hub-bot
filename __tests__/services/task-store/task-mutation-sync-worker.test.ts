@@ -200,6 +200,18 @@ function createTestDb(): Database.Database {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       resolved_at TEXT
     );
+
+    CREATE TABLE task_list_sync_selection (
+      id TEXT PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      provider_list_id TEXT NOT NULL,
+      sync_enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, user_id, provider, provider_list_id)
+    );
   `);
   return db;
 }
@@ -1655,5 +1667,50 @@ describe('M10 priority push mapping and echo stability', () => {
       // must keep the stored 1. P2/P3/P4 echo onto themselves.
       expect(row.priority, `stored priority after echo for P${priority}`).toBe(priority);
     }
+  });
+});
+
+// ── M12: de-selected provider list is kept local, never pushed ─────────
+
+describe('task mutation sync worker — de-selected list skip (M12)', () => {
+  function disableList(provider: 'ms_todo' | 'todoist', providerListId: string): void {
+    testDb.prepare(
+      `INSERT INTO task_list_sync_selection (id, tenant_id, user_id, provider, provider_list_id, sync_enabled)
+       VALUES (?, ?, ?, ?, ?, 0)`,
+    ).run(`sel-${provider}-${providerListId}`, USER_ID, USER_ID, provider, providerListId);
+  }
+
+  it('keeps a create local (no provider write) when its target list is disabled', async () => {
+    const { taskId, containerId } = seedLinkedMutation({ taskId: 'task-disabled-list' });
+    disableList('ms_todo', containerId);
+
+    const result = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+    expect(result.synced).toBe(1);
+    const task = testDb.prepare(
+      'SELECT sync_state FROM unified_tasks WHERE nexus_task_id = ?',
+    ).get(taskId) as { sync_state: string };
+    expect(task.sync_state).toBe('local_only');
+    const mutation = testDb.prepare(
+      'SELECT status FROM task_mutations WHERE task_id = ?',
+    ).get(taskId) as { status: string };
+    expect(mutation.status).toBe('synced');
+  });
+
+  it('still pushes a create when the target list is explicitly enabled (control)', async () => {
+    const { taskId, containerId } = seedLinkedMutation({ taskId: 'task-enabled-list' });
+    testDb.prepare(
+      `INSERT INTO task_list_sync_selection (id, tenant_id, user_id, provider, provider_list_id, sync_enabled)
+       VALUES (?, ?, ?, 'ms_todo', ?, 1)`,
+    ).run(`sel-enabled-${containerId}`, USER_ID, USER_ID, containerId);
+
+    await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+
+    expect(providerApi.createTask).toHaveBeenCalledTimes(1);
+    const link = testDb.prepare(
+      'SELECT provider_task_id FROM task_provider_links WHERE task_id = ?',
+    ).get(taskId) as { provider_task_id: string };
+    expect(link.provider_task_id).toBe('provider-created-1');
   });
 });

@@ -51,7 +51,7 @@ function mockReq(userId: number): Request {
   } as any;
 }
 
-async function dispatchDisconnect(userId: number, provider: string): Promise<MockRes> {
+async function dispatchDisconnect(userId: number, provider: string, query: Record<string, string> = {}): Promise<MockRes> {
   const { connectionRoutes } = await import('../../src/api/routes/connections');
   const router = connectionRoutes();
   const req = mockReq(userId);
@@ -60,6 +60,7 @@ async function dispatchDisconnect(userId: number, provider: string): Promise<Moc
   (req as any).originalUrl = `/${provider}`;
   (req as any).baseUrl = '';
   (req as any).path = `/${provider}`;
+  (req as any).query = query;
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -483,6 +484,141 @@ describe('Connections routes', () => {
         expect.objectContaining({ userId: 42, provider: 'outlook' }),
         expect.stringContaining('Task sync-state cleanup on disconnect failed'),
       );
+    });
+  });
+
+  describe('DELETE /connections/:provider disconnect data-policy (M12)', () => {
+    let policyDb: Database.Database;
+
+    function seedFullTaskSchema(): void {
+      policyDb.exec(`
+        CREATE TABLE task_sync_state (
+          user_id INTEGER NOT NULL, provider TEXT NOT NULL, last_sync_at TEXT,
+          sync_cursor TEXT, status TEXT DEFAULT 'idle', error_message TEXT,
+          tasks_synced INTEGER DEFAULT 0, sync_duration_ms INTEGER,
+          UNIQUE(user_id, provider)
+        );
+        CREATE TABLE user_oauth_tokens (
+          user_id INTEGER NOT NULL, provider TEXT NOT NULL, PRIMARY KEY (user_id, provider)
+        );
+        CREATE TABLE unified_tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, tenant_id INTEGER,
+          provider TEXT NOT NULL, external_id TEXT NOT NULL, title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending', is_deleted INTEGER DEFAULT 0,
+          synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          nexus_task_id TEXT NOT NULL, sync_state TEXT NOT NULL DEFAULT 'synced',
+          source_of_truth TEXT NOT NULL DEFAULT 'nexus', deleted_at TEXT
+        );
+        CREATE TABLE task_provider_links (
+          id TEXT PRIMARY KEY, task_id TEXT NOT NULL, tenant_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL, provider TEXT NOT NULL, provider_account_id TEXT NOT NULL,
+          provider_task_id TEXT, provider_list_id TEXT, provider_project_id TEXT,
+          ownership TEXT NOT NULL, link_state TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE task_list_sync_selection (
+          id TEXT PRIMARY KEY, tenant_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+          provider TEXT NOT NULL, provider_list_id TEXT NOT NULL, sync_enabled INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(tenant_id, user_id, provider, provider_list_id)
+        );
+      `);
+      policyDb.prepare(`INSERT INTO task_sync_state (user_id, provider, status) VALUES (42, 'ms_todo', 'idle')`).run();
+      // Provider-origin import: unified_tasks.provider = ms_todo + active provider_imported link.
+      policyDb.prepare(
+        `INSERT INTO unified_tasks (user_id, tenant_id, provider, external_id, title, nexus_task_id, sync_state)
+         VALUES (42, 42, 'ms_todo', 'ext1', 'Imported', 'task_ext1', 'synced')`,
+      ).run();
+      policyDb.prepare(
+        `INSERT INTO task_provider_links (id, task_id, tenant_id, user_id, provider, provider_account_id, provider_task_id, provider_list_id, ownership, link_state)
+         VALUES ('link1', 'task_ext1', 42, 42, 'ms_todo', 'ms_todo:42', 'ext1', 'listA', 'provider_imported', 'linked')`,
+      ).run();
+      policyDb.prepare(
+        `INSERT INTO task_list_sync_selection (id, tenant_id, user_id, provider, provider_list_id, sync_enabled)
+         VALUES ('sel1', 42, 42, 'ms_todo', 'listB', 0)`,
+      ).run();
+    }
+
+    beforeEach(() => {
+      policyDb = new Database(':memory:');
+      seedFullTaskSchema();
+      taskSyncDb = policyDb;
+      mockDisconnectProvider.mockReset();
+      mockRevokeThirdPartyOAuthTokenForProvider.mockClear();
+    });
+
+    afterEach(() => {
+      taskSyncDb = null;
+      policyDb.close();
+    });
+
+    function taskState(): { is_deleted: number; sync_state: string } {
+      return policyDb.prepare(
+        `SELECT is_deleted, sync_state FROM unified_tasks WHERE external_id = 'ext1'`,
+      ).get() as { is_deleted: number; sync_state: string };
+    }
+
+    function linkState(): { link_state: string; provider_task_id: string | null } {
+      return policyDb.prepare(
+        `SELECT link_state, provider_task_id FROM task_provider_links WHERE id = 'link1'`,
+      ).get() as { link_state: string; provider_task_id: string | null };
+    }
+
+    it('defaults to policy=keep with zeroed counts (backward compatible)', async () => {
+      const res = await dispatchDisconnect(42, 'outlook');
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.data.policy).toBe('keep');
+      expect(res.body.data.counts).toEqual({ archivedCount: 0, removedCount: 0, keptLocalCount: 0 });
+      // keep leaves the imported row and its link untouched.
+      expect(taskState()).toEqual({ is_deleted: 0, sync_state: 'synced' });
+      expect(linkState().link_state).toBe('linked');
+    });
+
+    it('rejects an unknown policy with 400', async () => {
+      const res = await dispatchDisconnect(42, 'outlook', { policy: 'nuke' });
+      expect(res.statusCode).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+    });
+
+    it('archive converts provider imports to local-only and orphans the link', async () => {
+      const res = await dispatchDisconnect(42, 'outlook', { policy: 'archive' });
+
+      expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.data.policy).toBe('archive');
+      expect(res.body.data.counts).toEqual({ archivedCount: 1, removedCount: 0, keptLocalCount: 0 });
+      expect(taskState()).toEqual({ is_deleted: 0, sync_state: 'local_only' });
+      expect(linkState()).toEqual({ link_state: 'orphaned', provider_task_id: null });
+      // Selection is cleared on disconnect.
+      const selCount = policyDb.prepare(`SELECT COUNT(*) AS c FROM task_list_sync_selection`).get() as { c: number };
+      expect(selCount.c).toBe(0);
+    });
+
+    it('remove soft-deletes provider-origin imports', async () => {
+      const res = await dispatchDisconnect(42, 'outlook', { policy: 'remove' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.policy).toBe('remove');
+      expect(res.body.data.counts).toEqual({ archivedCount: 0, removedCount: 1, keptLocalCount: 0 });
+      expect(taskState()).toEqual({ is_deleted: 1, sync_state: 'local_only' });
+      expect(linkState().link_state).toBe('orphaned');
+    });
+
+    it('leaves no stale connected sync-state row after disconnect', async () => {
+      await dispatchDisconnect(42, 'outlook', { policy: 'archive' });
+      const remaining = policyDb.prepare(
+        `SELECT COUNT(*) AS c FROM task_sync_state WHERE user_id = 42 AND provider = 'ms_todo'`,
+      ).get() as { c: number };
+      expect(remaining.c).toBe(0);
+    });
+
+    it('accepts a policy for a non-task provider as a no-op', async () => {
+      const res = await dispatchDisconnect(42, 'google', { policy: 'remove' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.policy).toBe('remove');
+      expect(res.body.data.counts).toEqual({ archivedCount: 0, removedCount: 0, keptLocalCount: 0 });
+      // Task rows are untouched for a non-task provider.
+      expect(taskState()).toEqual({ is_deleted: 0, sync_state: 'synced' });
     });
   });
 });

@@ -789,12 +789,20 @@ export function softDeleteMissing(
   provider: TaskProvider,
   currentExternalIds: string[],
   tenantId = userId,
+  options?: { excludeProviderListIds?: Set<string> },
 ): number {
   const db = getDb();
+  const excluded = options?.excludeProviderListIds;
 
   let totalMarked = 0;
   const allRows = db.prepare(
-    `SELECT id, external_id, nexus_task_id, sync_state
+    `SELECT id, external_id, nexus_task_id, sync_state,
+            COALESCE(
+              json_extract(provider_data, '$.listId'),
+              json_extract(provider_data, '$.list_id'),
+              json_extract(provider_data, '$.project_id'),
+              json_extract(provider_data, '$.projectId')
+            ) AS provider_list_id
      FROM unified_tasks
      WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND is_deleted = 0`,
   ).all(userId, tenantId, provider) as Array<{
@@ -802,6 +810,7 @@ export function softDeleteMissing(
     external_id: string;
     nexus_task_id: string | null;
     sync_state: string | null;
+    provider_list_id: string | null;
   }>;
 
   // Canonical-links membership: pushed Nexus-origin tasks live in the
@@ -810,7 +819,8 @@ export function softDeleteMissing(
   const linkProvider = providerLinkProvider(provider);
   const linkedRows = linkProvider && linkProvider !== 'nexus_local'
     ? db.prepare(
-      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state
+      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state,
+              COALESCE(l.provider_list_id, l.provider_project_id) AS provider_list_id
        FROM task_provider_links l
        JOIN unified_tasks t
          ON t.nexus_task_id = l.task_id
@@ -826,6 +836,7 @@ export function softDeleteMissing(
       external_id: string;
       nexus_task_id: string | null;
       sync_state: string | null;
+      provider_list_id: string | null;
     }>
     : [];
 
@@ -838,6 +849,11 @@ export function softDeleteMissing(
 
   for (const row of stale) {
     if (seenRowIds.has(row.id)) continue;
+    // De-selected list (M12): its tasks are never reconciled, so a disabled
+    // list can never false-mark rows provider_missing.
+    if (excluded && excluded.size > 0 && row.provider_list_id && excluded.has(row.provider_list_id)) {
+      continue;
+    }
     seenRowIds.add(row.id);
     markProviderMissingTask({
       tenantId,
@@ -900,13 +916,16 @@ export function softDeleteMissingForLists(
   listIds: string[],
   currentExternalIds: string[],
   tenantId = userId,
+  options?: { excludeProviderListIds?: Set<string> },
 ): number {
   if (listIds.length === 0) return 0;
   const db = getDb();
+  const excluded = options?.excludeProviderListIds;
   const listPlaceholders = listIds.map(() => '?').join(', ');
 
   const providerRows = db.prepare(
-    `SELECT id, external_id, nexus_task_id, sync_state
+    `SELECT id, external_id, nexus_task_id, sync_state,
+            json_extract(provider_data, '$.listId') AS provider_list_id
      FROM unified_tasks
      WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ? AND is_deleted = 0
        AND json_extract(provider_data, '$.listId') IN (${listPlaceholders})`,
@@ -915,12 +934,14 @@ export function softDeleteMissingForLists(
     external_id: string;
     nexus_task_id: string | null;
     sync_state: string | null;
+    provider_list_id: string | null;
   }>;
 
   const linkProvider = providerLinkProvider(provider);
   const linkedRows = linkProvider && linkProvider !== 'nexus_local'
     ? db.prepare(
-      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state
+      `SELECT t.id, l.provider_task_id AS external_id, t.nexus_task_id, t.sync_state,
+              l.provider_list_id AS provider_list_id
        FROM task_provider_links l
        JOIN unified_tasks t
          ON t.nexus_task_id = l.task_id
@@ -936,6 +957,7 @@ export function softDeleteMissingForLists(
       external_id: string;
       nexus_task_id: string | null;
       sync_state: string | null;
+      provider_list_id: string | null;
     }>
     : [];
 
@@ -944,6 +966,9 @@ export function softDeleteMissingForLists(
   let totalMarked = 0;
   for (const row of [...providerRows, ...linkedRows]) {
     if (seenRowIds.has(row.id)) continue;
+    if (excluded && excluded.size > 0 && row.provider_list_id && excluded.has(row.provider_list_id)) {
+      continue;
+    }
     seenRowIds.add(row.id);
     if (seen.has(row.external_id)) continue;
     markProviderMissingTask({ tenantId, userId, provider, row });

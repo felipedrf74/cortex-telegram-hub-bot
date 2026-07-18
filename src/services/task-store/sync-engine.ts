@@ -41,7 +41,22 @@ import {
   updateSyncStatus,
   isSyncEnabled,
 } from './unified-task-store';
-import { NormalizedProject, SyncResult, TaskProvider } from './types';
+import { getDisabledProviderListIds } from './task-list-sync-selection';
+import { NormalizedProject, NormalizedTask, SyncResult, TaskProvider } from './types';
+
+/**
+ * The provider list id a pulled task belongs to. Mirrors the container-id
+ * extraction the store uses for links (Microsoft `listId`, Todoist
+ * `project_id`), so the disabled-list gate keys on the same value the
+ * selection table stores.
+ */
+function taskProviderListId(task: NormalizedTask): string | null {
+  const data = task.providerData as Record<string, unknown> | undefined;
+  const raw =
+    data?.listId ?? data?.list_id ?? data?.parentFolderId ?? data?.project_id ?? data?.projectId;
+  if (raw != null && String(raw).trim()) return String(raw);
+  return task.projectId != null ? String(task.projectId) : null;
+}
 
 // ─── Poll-interval gate for full-pull providers ────────────────────────
 // Providers without incremental sync (Notion, Microsoft To Do) re-download
@@ -187,6 +202,14 @@ export async function syncProvider(
     }
   }
 
+  // ── Per-list sync selection (M12) ──
+  // Lists the user de-selected at connect time are skipped on BOTH import and
+  // reconciliation: they are never pulled, their tasks are never upserted, and
+  // full-pull reconciliation excludes them so a disabled list's tasks are
+  // never false-marked provider_missing. Empty (the default) = every list
+  // enabled, identical to pre-M12 import-everything behavior.
+  const disabledListIds = getDisabledProviderListIds(userId, userId, provider);
+
   try {
     updateSyncStatus(userId, provider, 'syncing');
 
@@ -198,6 +221,7 @@ export async function syncProvider(
       const projects = await adapter.getProjects(userId);
       knownProjects = projects;
       for (const project of projects) {
+        if (disabledListIds.has(project.externalId)) continue;
         const result = upsertProject(userId, project);
         if (result !== 'unchanged') projectsUpserted++;
       }
@@ -211,6 +235,13 @@ export async function syncProvider(
       ? syncState.sync_cursor
       : undefined;
 
+    // Only hand the adapter the enabled lists so full-pull providers never even
+    // fetch a de-selected list's tasks (belt-and-suspenders with the per-task
+    // skip below, which also covers adapters that ignore knownProjects).
+    const enabledKnownProjects = disabledListIds.size > 0 && knownProjects
+      ? knownProjects.filter((project) => !disabledListIds.has(project.externalId))
+      : knownProjects;
+
     const {
       tasks,
       nextCursor,
@@ -220,7 +251,7 @@ export async function syncProvider(
       resyncedListIds,
     } = await adapter.getTasks(userId, {
       sinceCursor: cursor || undefined,
-      knownProjects,
+      knownProjects: enabledKnownProjects,
     });
     if (taskPullErrors?.length) {
       errors.push(...taskPullErrors.map((message) => `tasks: ${message}`));
@@ -228,6 +259,13 @@ export async function syncProvider(
 
     const seenExternalIds: string[] = [];
     for (const task of tasks) {
+      // Skip de-selected lists: don't import their tasks and don't record them
+      // as "seen", so the reconciliation pass (which also excludes them) leaves
+      // any previously-imported rows untouched.
+      if (disabledListIds.size > 0) {
+        const listId = taskProviderListId(task);
+        if (listId && disabledListIds.has(listId)) continue;
+      }
       try {
         const result = upsertTask(userId, task);
         if (result !== 'unchanged') tasksUpserted++;
@@ -261,7 +299,19 @@ export async function syncProvider(
     // would be lost forever (delta mode never runs the full-pull sweep).
     if (resyncedListIds?.length) {
       try {
-        tasksDeleted += softDeleteMissingForLists(userId, provider, resyncedListIds, seenExternalIds);
+        const enabledResyncedListIds = disabledListIds.size > 0
+          ? resyncedListIds.filter((listId) => !disabledListIds.has(listId))
+          : resyncedListIds;
+        if (enabledResyncedListIds.length > 0) {
+          tasksDeleted += softDeleteMissingForLists(
+            userId,
+            provider,
+            enabledResyncedListIds,
+            seenExternalIds,
+            userId,
+            { excludeProviderListIds: disabledListIds },
+          );
+        }
       } catch (err: any) {
         errors.push(`resync reconcile: ${err?.message || String(err)}`);
       }
@@ -272,7 +322,9 @@ export async function syncProvider(
     // wasn't returned — could be unchanged, could be deleted. Only the full
     // pull is authoritative on "this is the complete set."
     if (!cursor && !incomplete) {
-      tasksDeleted += softDeleteMissing(userId, provider, seenExternalIds);
+      tasksDeleted += softDeleteMissing(userId, provider, seenExternalIds, userId, {
+        excludeProviderListIds: disabledListIds,
+      });
     } else if (!cursor && incomplete) {
       logger.warn(
         { userId, provider, taskCount: tasks.length, errorCount: taskPullErrors?.length || 0 },
