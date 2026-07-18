@@ -84,6 +84,7 @@ function createTestDb(): Database.Database {
       priority INTEGER DEFAULT 0,
       due_date TEXT,
       due_is_datetime INTEGER DEFAULT 0,
+      reminder_at TEXT,
       tags TEXT DEFAULT '[]',
       notes TEXT,
       completed_at TEXT,

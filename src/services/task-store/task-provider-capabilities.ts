@@ -143,6 +143,11 @@ export function projectTaskForProvider(
     body: task.body || undefined,
     importance: task.importance,
     dueDateTime: task.dueDateTime || undefined,
+    // M13: forwarded to microsoft-todo.ts createTask/updateTask, which
+    // serialize it zone-naive via toGraphDateTimeTimeZone and toggle
+    // isReminderOn. Mirrors dueDateTime: a set reminder rides the push; an
+    // unset one is stripped below and leaves the provider reminder untouched.
+    reminderDateTime: task.reminderAt || undefined,
     status: task.status,
     recurrence: task.recurrence || undefined,
     checklistItems: capabilities.supportsSubtasks ? task.checklistItems || undefined : undefined,

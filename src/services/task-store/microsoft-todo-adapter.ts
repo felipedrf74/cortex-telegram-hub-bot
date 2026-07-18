@@ -37,6 +37,7 @@ type GraphTodoTask = {
   status?: string;
   dueDateTime?: { dateTime?: string; timeZone?: string };
   reminderDateTime?: { dateTime?: string; timeZone?: string };
+  isReminderOn?: boolean;
   createdDateTime?: string;
   completedDateTime?: { dateTime?: string; timeZone?: string } | string;
   recurrence?: unknown;
@@ -181,6 +182,11 @@ function taskProviderData(task: GraphTodoTask, list: NormalizedProject): Record<
 
 function taskFromGraphTask(task: GraphTodoTask, list: NormalizedProject): NormalizedTask {
   const dueDate = normalizeMsGraphDateTime(task.dueDateTime);
+  // M13 inbound reminder: Graph `isReminderOn: false` is an explicit "no
+  // reminder" (clear any stored one); otherwise map reminderDateTime.dateTime.
+  const reminderAt = task.isReminderOn === false
+    ? null
+    : normalizeMsGraphDateTime(task.reminderDateTime) ?? null;
   return {
     provider: 'ms_todo',
     externalId: String(task.id || ''),
@@ -192,6 +198,7 @@ function taskFromGraphTask(task: GraphTodoTask, list: NormalizedProject): Normal
     priority: graphImportanceToPriority(task.importance),
     dueDate,
     dueIsDatetime: !!dueDate && dueDate.includes('T'),
+    reminderAt,
     completedAt: normalizeMsGraphDateTime(task.completedDateTime),
     recurrence: task.recurrence,
     checklistItems: normalizeChecklistItems(task.checklistItems),
@@ -218,6 +225,15 @@ function graphTaskBodyFromNormalized(task: Partial<NormalizedTask>): Record<stri
     body.dueDateTime = task.dueDate
       ? toGraphDateTimeTimeZone(task.dueDate, config.app.timezone)
       : null;
+  }
+  if (task.reminderAt !== undefined) {
+    // NEX-29: reminders share the zone-naive dateTimeTimeZone contract with due
+    // dates — a 'Z' instant beside a named timeZone silently shifts the wall
+    // clock. isReminderOn toggles the reminder on set / off on clear.
+    body.reminderDateTime = task.reminderAt
+      ? toGraphDateTimeTimeZone(task.reminderAt, config.app.timezone)
+      : null;
+    body.isReminderOn = !!task.reminderAt;
   }
   if (task.recurrence !== undefined) body.recurrence = task.recurrence || null;
   return body;

@@ -393,6 +393,88 @@ describe('offline-first task service', () => {
     expect(duplicatePreventionHits.count).toBe(1);
   });
 
+  it('exposes reminderAt and dueIsDatetime on the offline DTO (M13)', () => {
+    const timedCreate = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Timed task',
+      listName: 'Tasks',
+      dueDateTime: '2026-07-19T09:00:00Z',
+      reminderAt: '2026-07-19T08:30:00Z',
+      clientMutationId: 'ios-reminder-create-1',
+      idempotencyKey: 'idem-reminder-create-1',
+    });
+    const timed = getOfflineTaskById(USER_ID, USER_ID, timedCreate.task.id);
+    expect(timed?.reminderAt).toBe('2026-07-19T08:30:00Z');
+    expect(timed?.dueIsDatetime).toBe(true);
+
+    const dateOnlyCreate = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'All-day task',
+      listName: 'Tasks',
+      dueDateTime: '2026-07-20',
+      clientMutationId: 'ios-reminder-create-2',
+      idempotencyKey: 'idem-reminder-create-2',
+    });
+    const bare = getOfflineTaskById(USER_ID, USER_ID, dateOnlyCreate.task.id);
+    expect(bare?.dueIsDatetime).toBe(false);
+    expect(bare?.reminderAt).toBeNull();
+  });
+
+  it('sets, preserves, and clears reminderAt across updates and journals it for sync (M13)', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Reminder lifecycle',
+      listName: 'Tasks',
+      clientMutationId: 'ios-reminder-life-create',
+      idempotencyKey: 'idem-reminder-life-create',
+    });
+    expect(getOfflineTaskById(USER_ID, USER_ID, created.task.id)?.reminderAt).toBeNull();
+
+    // Reminder-only edit journals a task.update whose patch carries reminderAt
+    // (the worker projects it to Graph reminderDateTime on push).
+    updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      reminderAt: '2026-07-21T07:45:00Z',
+      clientMutationId: 'ios-reminder-life-set',
+      idempotencyKey: 'idem-reminder-life-set',
+    });
+    expect(getOfflineTaskById(USER_ID, USER_ID, created.task.id)?.reminderAt).toBe('2026-07-21T07:45:00Z');
+    const setPatch = testDb.prepare(
+      `SELECT patch_json FROM task_mutations
+       WHERE operation = 'task.update' AND client_mutation_id = 'ios-reminder-life-set'`,
+    ).get() as { patch_json: string };
+    expect(JSON.parse(setPatch.patch_json).reminderAt).toBe('2026-07-21T07:45:00Z');
+
+    // A later edit that omits reminderAt leaves the stored reminder untouched.
+    updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      title: 'Reminder lifecycle (renamed)',
+      clientMutationId: 'ios-reminder-life-rename',
+      idempotencyKey: 'idem-reminder-life-rename',
+    });
+    expect(getOfflineTaskById(USER_ID, USER_ID, created.task.id)?.reminderAt).toBe('2026-07-21T07:45:00Z');
+
+    // Explicit null clears it.
+    updateOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: created.task.id,
+      reminderAt: null,
+      clientMutationId: 'ios-reminder-life-clear',
+      idempotencyKey: 'idem-reminder-life-clear',
+    });
+    expect(getOfflineTaskById(USER_ID, USER_ID, created.task.id)?.reminderAt).toBeNull();
+  });
+
+  it('rejects a non-ISO reminderAt with BAD_REQUEST without journaling (M13)', () => {
+    expect(() => createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Bad reminder',
+      listName: 'Tasks',
+      reminderAt: 'not-a-date',
+      clientMutationId: 'ios-reminder-bad',
+      idempotencyKey: 'idem-reminder-bad',
+    })).toThrow(/reminderAt/);
+    const mutationCount = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE client_mutation_id = 'ios-reminder-bad'`,
+    ).get() as { count: number };
+    expect(mutationCount.count).toBe(0);
+  });
+
   it('does not queue provider sync for local-only completion mutations', () => {
     const created = createOfflineFirstTask(USER_ID, USER_ID, {
       title: 'Local only task',

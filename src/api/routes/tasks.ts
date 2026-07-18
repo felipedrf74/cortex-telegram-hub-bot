@@ -759,7 +759,7 @@ export function taskRoutes(): Router {
   router.post('/', async (req, res: Response) => {
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'tasks_create_local_mutation');
-      const { title, listName, dueDateTime, importance, priority, body, recurrence, idempotencyKey, clientMutationId } = req.body;
+      const { title, listName, dueDateTime, reminderAt, importance, priority, body, recurrence, idempotencyKey, clientMutationId } = req.body;
 
       if (!title) {
         sendError(res, 'BAD_REQUEST', 'title is required');
@@ -771,6 +771,7 @@ export function taskRoutes(): Router {
         title,
         listName,
         dueDateTime,
+        reminderAt,
         importance,
         priority: priority ?? undefined,
         body,
@@ -835,6 +836,7 @@ export function taskRoutes(): Router {
             priority: req.body?.priority ?? undefined,
             status: req.body?.status,
             dueDateTime: req.body?.dueDateTime,
+            reminderAt: req.body?.reminderAt,
             recurrence: req.body?.recurrence,
             idempotencyKey: req.body?.idempotencyKey,
             clientMutationId: req.body?.clientMutationId,
@@ -849,6 +851,10 @@ export function taskRoutes(): Router {
       sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
     } catch (err: any) {
       if (sendVersionConflict(res as Response, err)) return;
+      if (err?.code === 'BAD_REQUEST') {
+        sendError(res, 'BAD_REQUEST', err.message || 'Invalid task payload', 400);
+        return;
+      }
       logger.error({ err }, 'iOS tasks update failed');
       sendInternalError(res, 'Failed to update task');
     }

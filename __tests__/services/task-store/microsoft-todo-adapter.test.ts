@@ -371,6 +371,50 @@ describe('MicrosoftTodoAdapter', () => {
     expect(__testing.graphImportanceToPriority('somethingOdd')).toBe(0);
   });
 
+  it('maps inbound Graph reminderDateTime onto reminderAt, honoring isReminderOn:false (M13)', () => {
+    const project = __testing.projectFromGraphList({ id: 'list-1', displayName: 'Inbox' });
+
+    const withReminder = __testing.taskFromGraphTask({
+      id: 'task-1',
+      title: 'Call the vet',
+      reminderDateTime: { dateTime: '2026-07-19T15:00:00.0000000', timeZone: 'UTC' },
+      isReminderOn: true,
+    }, project);
+    expect(withReminder.reminderAt).toBe('2026-07-19T15:00:00Z');
+
+    // isReminderOn:false is an explicit clear even when a stale dateTime remains.
+    const cleared = __testing.taskFromGraphTask({
+      id: 'task-2',
+      title: 'Reminder switched off',
+      reminderDateTime: { dateTime: '2026-07-19T15:00:00', timeZone: 'UTC' },
+      isReminderOn: false,
+    }, project);
+    expect(cleared.reminderAt).toBeNull();
+
+    // No reminder fields at all → null (nothing to schedule from).
+    const none = __testing.taskFromGraphTask({ id: 'task-3', title: 'Bare task' }, project);
+    expect(none.reminderAt).toBeNull();
+  });
+
+  it('serializes outbound reminderDateTime zone-naive with isReminderOn (M13/NEX-29)', () => {
+    // A 'Z' instant beside a named timeZone is the contract violation M6 fixed
+    // for due dates: the designator must be dropped and the wall clock expressed
+    // in the named zone.
+    const set = __testing.graphTaskBodyFromNormalized({ reminderAt: '2026-07-19T15:00:00Z' });
+    expect(set.reminderDateTime).toEqual({ dateTime: '2026-07-19T15:00:00', timeZone: 'UTC' });
+    expect(set.isReminderOn).toBe(true);
+
+    // Explicit clear → null payload + isReminderOn:false.
+    const cleared = __testing.graphTaskBodyFromNormalized({ reminderAt: null });
+    expect(cleared.reminderDateTime).toBeNull();
+    expect(cleared.isReminderOn).toBe(false);
+
+    // Absent field → omit reminder entirely so a partial update leaves it alone.
+    const untouched = __testing.graphTaskBodyFromNormalized({ title: 'no reminder change' });
+    expect(untouched).not.toHaveProperty('reminderDateTime');
+    expect(untouched).not.toHaveProperty('isReminderOn');
+  });
+
   it('normalizes Graph timestamps without seven-digit fractions', () => {
     expect(__testing.normalizeMsGraphDateTime({
       dateTime: '2026-06-24T09:00:00.1234567',

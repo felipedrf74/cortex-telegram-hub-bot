@@ -43,6 +43,13 @@ export interface NormalizedTask {
   /** ISO 8601 date or datetime. Combine with dueIsDatetime to know which. */
   dueDate?: string;
   dueIsDatetime?: boolean;
+  /**
+   * M13: ISO 8601 reminder instant. Round-trips with Microsoft To Do's
+   * `reminderDateTime`/`isReminderOn`. `null` is an explicit "no reminder"
+   * (e.g. Graph `isReminderOn: false`); `undefined` means the adapter did not
+   * carry a reminder for this task.
+   */
+  reminderAt?: string | null;
   tags?: string[];
   notes?: string;
   completedAt?: string;

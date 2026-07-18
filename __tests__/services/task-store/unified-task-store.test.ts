@@ -119,6 +119,12 @@ describe('computeContentHash', () => {
     expect(computeContentHash(a)).toBe(computeContentHash(b));
   });
 
+  it('does not depend on reminderAt (M13 decision R19-a: reminder is not hashed)', () => {
+    const a = makeTask({ reminderAt: null });
+    const b = makeTask({ ...a, reminderAt: '2026-07-21T07:45:00Z' });
+    expect(computeContentHash(a)).toBe(computeContentHash(b));
+  });
+
   it('produces a 16-character hex string', () => {
     const hash = computeContentHash(makeTask());
     expect(hash).toMatch(/^[a-f0-9]{16}$/);
@@ -135,6 +141,25 @@ describe('upsertTask', () => {
     const tasks = getPendingTasks(USER_ID);
     expect(tasks).toHaveLength(1);
     expect(tasks[0].externalId).toBe('new1');
+  });
+
+  it('stores reminderAt on insert and refreshes it only via a real content change (M13)', () => {
+    const readReminder = () => (testDb.prepare(
+      `SELECT reminder_at FROM unified_tasks WHERE user_id = ? AND external_id = 'rem1'`,
+    ).get(USER_ID) as { reminder_at: string | null }).reminder_at;
+
+    const task = makeTask({ externalId: 'rem1', reminderAt: '2026-07-21T07:45:00Z' });
+    expect(upsertTask(USER_ID, task)).toBe('inserted');
+    expect(readReminder()).toBe('2026-07-21T07:45:00Z');
+
+    // Reminder-only pull is a no-op: reminder is not in the content hash, so no
+    // existing linked row phantom-flips to a change (decision R19-a).
+    expect(upsertTask(USER_ID, { ...task, reminderAt: '2026-07-22T09:00:00Z' })).toBe('unchanged');
+    expect(readReminder()).toBe('2026-07-21T07:45:00Z');
+
+    // A real content change (title) takes the update path and refreshes reminder_at.
+    expect(upsertTask(USER_ID, { ...task, title: 'Renamed', reminderAt: '2026-07-22T09:00:00Z' })).toBe('updated');
+    expect(readReminder()).toBe('2026-07-22T09:00:00Z');
   });
 
   it('returns "unchanged" when content hash is identical', () => {
