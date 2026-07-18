@@ -5,7 +5,7 @@ import {
 } from '../../src/services/content-script-quality';
 
 describe('content script quality report', () => {
-  it('rewrites weak intros into structured, actionable script output', () => {
+  it('annotates weak intros and offers a structured suggestion without replacing the input', () => {
     const report = analyzeAndImproveScript({
       topic: 'creator retention',
       script: 'Today we are going to talk about creator retention.\nRetention gets better when proof appears early.',
@@ -24,12 +24,12 @@ describe('content script quality report', () => {
       'weak_intro_rewritten_to_first_three_seconds_hook',
       'platform_visual_direction_added',
     ]));
-    expect(report.revisedScript).toContain('FIRST 3 SECONDS:');
-    expect(report.revisedScript).toContain('[0-3s]');
-    expect(report.revisedScript).toContain('VISUAL DIRECTION:');
-    expect(report.revisedScript).toContain('CTA:');
+    expect(report.suggestedScript).toContain('FIRST 3 SECONDS:');
+    expect(report.suggestedScript).toContain('[0-3s]');
+    expect(report.suggestedScript).toContain('VISUAL DIRECTION:');
+    expect(report.suggestedScript).toContain('CTA:');
     expect(report.structuredOutput.beatByBeatScript.some((beat) => /^\[\d+-\d+s\]/.test(beat))).toBe(true);
-    expect(report.revisedScript).not.toMatch(/^Today we are going to talk/i);
+    expect(report.suggestedScript).not.toMatch(/^Today we are going to talk/i);
   });
 
   it('flags raw artifacts, unsupported claims, copied requests, and missing proof', () => {

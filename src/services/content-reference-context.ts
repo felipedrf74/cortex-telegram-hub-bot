@@ -276,7 +276,21 @@ export function buildAuthorizedContentReferenceContext(userId: number, tenantId?
 }
 
 function formatPromptReference(ref: ScopedContentReference): string {
-  return `- UNTRUSTED_SOURCE ${ref.sourceId} ${ref.title}${ref.url ? ` (${ref.url})` : ''}; source=${ref.source}; trust=${ref.trustLevel}; extraction=${ref.extractionStatus}; freshness=${ref.freshness}; confidence=${ref.confidence}; review_required=${ref.needsReview ? 'yes' : 'no'}`;
+  // One JSON record per source prevents a title or URL containing newlines,
+  // fake section headers, or instructions from escaping the untrusted-data
+  // boundary in the model prompt.
+  return `- UNTRUSTED_SOURCE ${JSON.stringify({
+    sourceId: ref.sourceId,
+    title: ref.title,
+    url: ref.url ?? null,
+    source: ref.source,
+    trust: ref.trustLevel,
+    extraction: ref.extractionStatus,
+    freshness: ref.freshness,
+    confidence: ref.confidence,
+    reviewRequired: ref.needsReview,
+    instructionAuthority: 'none',
+  })}`;
 }
 
 function buildReference(input: Omit<ScopedContentReference, 'trustLevel' | 'extractionStatus' | 'freshnessScore' | 'qualityScore' | 'brokenStatus' | 'staleStatus' | 'needsReview' | 'rejectionReasons'> & {

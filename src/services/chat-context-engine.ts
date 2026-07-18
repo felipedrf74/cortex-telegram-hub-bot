@@ -9,7 +9,10 @@ import {
 import { getConversationHistory } from '../state/conversation';
 import { getSharedMemoryByScope, type SharedMemoryEntry } from '../state/shared-memory';
 import { getDailyContextWithStatus } from './context-engine';
-import { buildSharedDecisionContext } from './shared-decision-context';
+import {
+  buildSharedDecisionContext,
+  resolveContentCrossSkillContextPolicy,
+} from './shared-decision-context';
 import {
   analyzeChatSkillOrchestration,
   buildChatSkillRoutingPromptBlock,
@@ -254,6 +257,9 @@ async function selectChatContextItemsWithDiagnostics(input: {
   intent?: ChatContextIntent;
 }): Promise<{ items: ChatContextItem[]; sourceDiagnostics: ChatContextSourceDiagnostic[] }> {
   const intent = input.intent ?? analyzeChatContextIntent(input.message, input.domain);
+  const contentPolicy = input.domain === 'content'
+    ? resolveContentCrossSkillContextPolicy(input.message)
+    : null;
   const items: ChatContextItem[] = [];
   const sourceDiagnostics: ChatContextSourceDiagnostic[] = [];
   const now = new Date();
@@ -332,6 +338,7 @@ async function selectChatContextItemsWithDiagnostics(input: {
     const memoryBuckets = getSharedMemoryByScope(input.userId, input.tenantId);
     let selectedMemoryCount = 0;
     for (const memory of [...memoryBuckets.userPrivate, ...memoryBuckets.tenantShared]) {
+      if (!shouldIncludeMemoryForPrompt(memory, input.domain)) continue;
       const item = buildMemoryItem(memory, input, intent, now);
       if (item.relevanceScore >= 0.28 || item.critical) {
         items.push(item);
@@ -348,7 +355,10 @@ async function selectChatContextItemsWithDiagnostics(input: {
     sourceDiagnostics.push({ source: 'shared_memory', status: 'failed', observedAt, reasonCode: 'shared_memory_read_failed' });
   }
 
-  if (shouldUseDailyContext(intent, input.domain)) {
+  // The legacy daily cache contains raw task titles, calendar titles,
+  // training sessions, readiness scores, and counts. Content prompts use the
+  // purpose-gated mesh projection below instead of copying that broad cache.
+  if (input.domain !== 'content' && shouldUseDailyContext(intent, input.domain)) {
     const dailyContext = getDailyContextWithStatus(input.userId, input.tenantId);
     sourceDiagnostics.push({
       source: 'daily_context',
@@ -382,31 +392,53 @@ async function selectChatContextItemsWithDiagnostics(input: {
 
   if (shouldUseSharedDecisionContext(intent, input.domain)) {
     try {
-      const sharedDecisionContext = await buildSharedDecisionContext(input.domain, input.userId, input.tenantId);
+      const sharedDecisionContext = contentPolicy
+        ? await buildSharedDecisionContext(
+            input.domain,
+            input.userId,
+            input.tenantId,
+            { contentPurpose: { userMessage: input.message } },
+          )
+        : await buildSharedDecisionContext(input.domain, input.userId, input.tenantId);
       if (sharedDecisionContext) {
-        items.push({
-          id: `shared-decision-${input.domain}`,
-          tenantId: input.tenantId,
-          userId: input.userId,
-          ownerUserId: input.userId,
-          scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
-          source: 'shared_decision_context',
-          observedAt,
-          content: truncateContextContent(sharedDecisionContext, 1000),
-          freshness: 'recent',
-          confidence: 0.74,
-          relevanceScore: intent.relevantDomains.length > 1 || intent.planning ? 0.88 : 0.62,
-          priority: intent.relevantDomains.length > 1 || intent.planning ? 78 : 54,
-          permissionRequirements: ['authenticated_user', 'active_tenant', 'skill_context_read'],
-          staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
-          reason: 'Peer skill decision context is scoped to this tenant/user and domain.',
-        });
-        sourceDiagnostics.push({
-          source: 'shared_decision_context',
-          status: 'available',
-          observedAt,
-          staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
-        });
+        const promptSafeSharedContext = contentPolicy
+          ? compactContentSharedDecisionContext(sharedDecisionContext)
+          : truncateContextContent(sharedDecisionContext, 1000);
+        if (promptSafeSharedContext) {
+          items.push({
+            id: `shared-decision-${input.domain}`,
+            tenantId: input.tenantId,
+            userId: input.userId,
+            ownerUserId: input.userId,
+            scope: DEFAULT_CHAT_VISIBILITY_SCOPE,
+            source: 'shared_decision_context',
+            observedAt,
+            content: promptSafeSharedContext,
+            freshness: 'recent',
+            confidence: 0.74,
+            relevanceScore: intent.relevantDomains.length > 1 || intent.planning ? 0.88 : 0.62,
+            priority: intent.relevantDomains.length > 1 || intent.planning ? 78 : 54,
+            permissionRequirements: ['authenticated_user', 'active_tenant', 'skill_context_read'],
+            staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
+            critical: contentPolicy?.explicitUserIntent === true,
+            reason: contentPolicy
+              ? 'Purpose-gated, presentation-safe peer constraints for Content; explicit grants are budget-critical.'
+              : 'Peer skill decision context is scoped to this tenant/user and domain.',
+          });
+          sourceDiagnostics.push({
+            source: 'shared_decision_context',
+            status: 'available',
+            observedAt,
+            staleAfter: new Date(now.getTime() + 30 * 1000).toISOString(),
+          });
+        } else {
+          sourceDiagnostics.push({
+            source: 'shared_decision_context',
+            status: 'empty',
+            observedAt,
+            reasonCode: 'no_presentation_safe_peer_constraints',
+          });
+        }
       } else {
         sourceDiagnostics.push({ source: 'shared_decision_context', status: 'empty', observedAt, reasonCode: 'no_active_shared_decisions' });
       }
@@ -416,6 +448,32 @@ async function selectChatContextItemsWithDiagnostics(input: {
   }
 
   return { items: dedupeAndSortContextItems(items), sourceDiagnostics };
+}
+
+function compactContentSharedDecisionContext(context: string): string {
+  const lines = context.split('\n').map((line) => line.trim()).filter(Boolean);
+  const purposeGate = lines.find((line) => line.startsWith('<purpose_gate '));
+  const constraints = lines.filter((line) => /^- (Training|Secretary|Finance|Cooking):/.test(line));
+  if (!purposeGate || constraints.length === 0) return '';
+  return [
+    '<content_cross_skill_context>',
+    purposeGate,
+    'Only presentation-safe derived constraints are included; underlying peer records remain withheld.',
+    ...constraints,
+    '</content_cross_skill_context>',
+  ].join('\n');
+}
+
+function shouldIncludeMemoryForPrompt(
+  memory: SharedMemoryEntry,
+  domain: DomainName,
+): boolean {
+  if (domain !== 'content') return true;
+  // Cross-skill memory values are free-form/raw and therefore cannot become
+  // presentation-safe merely because a turn opts into a domain. Content-owned
+  // memory remains available; peer facts must arrive through the derived mesh
+  // projection enforced by the purpose gate.
+  return memory.source_domain === 'content';
 }
 
 export function analyzeChatContextIntent(message: string, fallbackDomain: DomainName): ChatContextIntent {

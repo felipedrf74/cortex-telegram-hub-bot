@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import Database from 'better-sqlite3';
-import { applyPendingMigrations } from '../services/migration-runner';
+import { applyPendingMigrations, ensureMigrationSqlFunctions } from '../services/migration-runner';
 
 type MigratedTestDatabaseOptions = {
   excludeFiles?: readonly string[];
@@ -41,5 +41,6 @@ export function createMigratedTestDatabase(
 
   const database = new Database(Buffer.from(templateBuffer));
   database.pragma('foreign_keys = ON');
+  ensureMigrationSqlFunctions(database);
   return database;
 }

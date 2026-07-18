@@ -52,6 +52,7 @@ const mockRunAutoresearch = vi.hoisted(() => vi.fn());
 const mockGetEvalTarget = vi.hoisted(() => vi.fn());
 const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
 const mockRunTaskLedgerRetentionJob = vi.hoisted(() => vi.fn());
+const mockRunPipelineAgent = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: (...args: unknown[]) => mockCronSchedule(...args) },
@@ -195,7 +196,9 @@ vi.mock('../../src/services/cost-guardrail', () => {
     withAiBudgetReservation: (...args: unknown[]) => mockWithAiBudgetReservation(...args),
   };
 });
-vi.mock('../../src/agents/pipeline-agent', () => ({ runPipelineAgent: vi.fn() }));
+vi.mock('../../src/agents/pipeline-agent', () => ({
+  runPipelineAgent: (...args: unknown[]) => mockRunPipelineAgent(...args),
+}));
 vi.mock('../../src/agents/seo-agent', () => ({ runSEOAgent: vi.fn(), seedKeywordsIfEmpty: vi.fn() }));
 vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.fn() }));
 vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
@@ -355,6 +358,8 @@ import { TrainingPlanRevisionError } from '../../src/services/training-plan-revi
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRunPipelineAgent.mockReset();
+    mockRunPipelineAgent.mockResolvedValue(undefined);
     delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
     delete process.env.OWNER_AI_AUTOMATIONS_ENABLED;
     _resetSchedulerTenantStateForTesting();
@@ -1259,6 +1264,30 @@ describe('scheduler tenant scoping', () => {
     expect(result).toBe('skipped');
   });
 
+  it('continues pipeline-agent tenant scopes after one failure and reports one aggregate job failure', async () => {
+    mockRunPipelineAgent
+      .mockRejectedValueOnce(new Error('tenant-one-failed'))
+      .mockResolvedValueOnce(undefined);
+    startScheduler();
+    const pipelineJob = mockCronSchedule.mock.calls
+      .find((call) => (call[1] as { jobName?: string }).jobName === 'pipeline_agent')?.[1] as (() => Promise<unknown>) | undefined;
+    expect(pipelineJob).toBeTypeOf('function');
+
+    await expect(pipelineJob!()).rejects.toThrow('Pipeline agent failed for 1 of 2 tenant scopes');
+
+    expect(mockRunPipelineAgent).toHaveBeenCalledTimes(2);
+    expect(mockRunPipelineAgent).toHaveBeenNthCalledWith(1, { tenantId: 11, userId: 11 });
+    expect(mockRunPipelineAgent).toHaveBeenNthCalledWith(2, { tenantId: 22, userId: 22 });
+    expect(logger.warn).toHaveBeenCalledWith(
+      { operation: 'pipeline_agent_tenant_run', errorCode: 'Error' },
+      'Pipeline agent tenant run failed; continuing remaining scopes',
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      { attempted: 2, succeeded: 1, failed: 1 },
+      'Pipeline agent completed with tenant failures',
+    );
+  });
+
   it('task ledger retention is wired through the scheduler with the tuned batch policy (M2B)', async () => {
     startScheduler();
     const retentionJob = mockCronSchedule.mock.calls.find((call) => call[0] === '50 4 * * *')?.[1] as (() => Promise<unknown>) | undefined;
@@ -1419,9 +1448,9 @@ describe('scheduler tenant scoping', () => {
         all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
         get: vi.fn(() => {
           if (sql.includes('AS engaged')) {
-            // The durable content_scripts table is authoritative even when a
-            // legacy topic feedback row missed its script_generated marker.
-            return { engaged: sql.includes('FROM content_scripts') ? 1 : 0 };
+            // The canonical current-revision graph is authoritative even when
+            // a legacy topic feedback row missed its script_generated marker.
+            return { engaged: sql.includes('FROM content_domain_objects content_item') ? 1 : 0 };
           }
           return { count: 5, present: 1 };
         }),

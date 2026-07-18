@@ -12,6 +12,7 @@ import {
 
 export {
   assertNoUnexpectedMigrationPrefixCollisions,
+  ensureMigrationSqlFunctions,
   findUnexpectedMigrationPrefixCollisions,
   stripWrappingTransactionStatements,
 } from './migration-runner';
@@ -35,6 +36,72 @@ export function initDatabase(): Database.Database {
   db = storage.raw();
 
   runMigrations();
+
+  // Migration 246 makes content_pipeline a read-only compatibility archive.
+  // Refuse to serve if the canonical ingress map or writer guards are missing,
+  // or if an active private legacy root was not migrated into the workspace.
+  try {
+    const { assertContentPipelineWorkspaceExitReady } = require('./content-pipeline-workspace-exit');
+    assertContentPipelineWorkspaceExitReady(db);
+  } catch (err) {
+    logger.error({ err }, 'Content pipeline canonical workspace exit gate failed');
+    throw err;
+  }
+
+  // Migration 247 retires content_topics as a writable root. Fail before the
+  // API starts serving if the compatibility links or DB writer guards are
+  // missing; an older runtime is safe only with its exact pre-247 DB snapshot.
+  try {
+    const { assertContentTopicWorkspaceCompatibilityReady } = require('./content-topic-workspace-compat');
+    assertContentTopicWorkspaceCompatibilityReady(db);
+  } catch (err) {
+    logger.error({ err }, 'Content topic canonical workspace compatibility gate failed');
+    throw err;
+  }
+
+  // Migration 253 retires the remaining generic-note and saved-idea roots.
+  // Pin the reviewed bindings, views, and writer guards, then fail closed when
+  // either root has unbound, mismatched, or dishonestly quarantined sources.
+  try {
+    const { assertContentLegacyIdeaWorkspaceExitReady } = require('./content-legacy-idea-workspace-exit');
+    assertContentLegacyIdeaWorkspaceExitReady(db);
+  } catch (err) {
+    logger.error({ err }, 'Content legacy idea canonical workspace exit gate failed');
+    throw err;
+  }
+
+  // Migration 249 removes the pre-workspace editorial state machine as a
+  // writer. Refuse to serve if a private legacy root remains, historical
+  // ledgers are writable, or an old approval/schedule/publication claim was
+  // promoted without canonical revision and lineage evidence.
+  try {
+    const { assertContentEditorialWorkspaceExitReady } = require('./content-editorial-workspace-exit');
+    assertContentEditorialWorkspaceExitReady(db);
+  } catch (err) {
+    logger.error({ err }, 'Content editorial canonical workspace exit gate failed');
+    throw err;
+  }
+
+  // Migration 250 makes immutable workspace revision lineage mandatory for
+  // every new measured Content outcome and freezes pipeline_id as history.
+  try {
+    const { assertContentPerformanceWorkspaceLineageReady } = require('./content-performance-lineage');
+    assertContentPerformanceWorkspaceLineageReady(db);
+  } catch (err) {
+    logger.error({ err }, 'Content performance canonical workspace lineage gate failed');
+    throw err;
+  }
+
+  // Migration 251 makes tenant-scoped revision lineage and selected
+  // item/artifact/revision pointers database-enforced. Pin the reviewed guards
+  // and repeat its preflight before serving so ledger/schema drift fails closed.
+  try {
+    const { assertContentWorkspaceIntegrityReady } = require('./content-workspace-integrity-readiness');
+    assertContentWorkspaceIntegrityReady(db);
+  } catch (err) {
+    logger.error({ err }, 'Content canonical workspace integrity gate failed');
+    throw err;
+  }
 
   try {
     const { backfillLegacyRefreshTokenHashes } = require('./ios-auth-session');

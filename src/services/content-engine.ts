@@ -9,6 +9,7 @@ import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payl
 import { createInternalAttributionToken } from './internal-attribution';
 import { requireTenantIdParam } from './tenant-scope';
 import { ForwardedAiBudgetError, parseForwardedAiBudgetError } from './content-engine-error-contract';
+import { buildContentEngineCacheLogContext } from './content-engine-log-context';
 export { ForwardedAiBudgetError, parseForwardedAiBudgetError, type ForwardedAiBudgetCode } from './content-engine-error-contract';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
@@ -533,7 +534,7 @@ export async function getScript(
       const { getCached } = await import('./cache-store');
       const cached = getCached<ScriptResponse>(normalizedKey);
       if (cached) {
-        logger.info({ topic, mode, cacheHit: true }, 'Script cache hit — returning cached result');
+        logger.info(buildContentEngineCacheLogContext(topic, mode, true), 'Script cache hit — returning cached result');
         return cached;
       }
     } catch { /* cache unavailable — generate fresh */ }
@@ -604,7 +605,7 @@ export async function getScript(
     try {
       const { setCache } = await import('./cache-store');
       setCache(normalizedKey, result, cfg.cacheTtl);
-      logger.info({ topic, mode, cacheHit: false, cacheTtl: cfg.cacheTtl }, 'Script cached');
+      logger.info(buildContentEngineCacheLogContext(topic, mode, false, cfg.cacheTtl), 'Script cached');
     } catch { /* cache store failed — non-fatal */ }
   }
 

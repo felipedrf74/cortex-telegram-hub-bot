@@ -13,6 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { createMigratedDatabaseWithLegacySavedIdeas } from '../helpers/legacy-saved-ideas-fixture';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -25,6 +26,7 @@ import {
 import { getPipelineOperationalMetrics } from '../../src/agents/pipeline-agent';
 
 let testDb: Database.Database;
+const CONTENT_SCOPE = { tenantId: 42, userId: 42 };
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -324,7 +326,7 @@ describe('signal-ranking: pipeline metrics', () => {
   afterEach(() => testDb?.close());
 
   it('returns zero metrics on empty pipeline', () => {
-    const metrics = getPipelineOperationalMetrics();
+    const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
     expect(metrics.totalEverEntered).toBe(0);
     expect(metrics.totalPublished).toBe(0);
     expect(metrics.approvalToPublishRate).toBe(0);
@@ -333,15 +335,15 @@ describe('signal-ranking: pipeline metrics', () => {
 
   it('computes conversion rates', () => {
     // Insert pipeline entries at various stages
-    const stages = ['approved', 'scripted', 'filming', 'published', 'published'];
-    for (const stage of stages) {
-      testDb.prepare(`
-        INSERT INTO content_pipeline (topic_title, niche, stage, stage_history)
-        VALUES ('Topic ' || ?, 'tech', ?, '[]')
-      `).run(stage, stage);
-    }
+    seedWorkspaceMetricItem('Approved', 'active', 'idea');
+    seedWorkspaceMetricItem('Scripted', 'active', 'draft');
+    seedWorkspaceMetricItem('Filming compatibility', 'active', 'draft');
+    const publishedA = seedWorkspaceMetricItem('Published A', 'published', 'final');
+    const publishedB = seedWorkspaceMetricItem('Published B', 'published', 'final');
+    seedWorkspacePublishEvent(publishedA, '-2 days');
+    seedWorkspacePublishEvent(publishedB, '-8 days');
 
-    const metrics = getPipelineOperationalMetrics();
+    const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
     expect(metrics.totalEverEntered).toBe(5);
     expect(metrics.totalPublished).toBe(2);
     expect(metrics.approvalToPublishRate).toBe(40); // 2/5 = 40%
@@ -350,12 +352,9 @@ describe('signal-ranking: pipeline metrics', () => {
 
   it('detects stale inventory', () => {
     // Insert item stuck at 'scripted' for 10 days
-    testDb.prepare(`
-      INSERT INTO content_pipeline (topic_title, niche, stage, stage_history, updated_at)
-      VALUES ('Stuck Topic', 'fitness', 'scripted', '[]', datetime('now', '-10 days'))
-    `).run();
+    seedWorkspaceMetricItem('Stuck Topic', 'active', 'draft', '-10 days');
 
-    const metrics = getPipelineOperationalMetrics();
+    const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
     expect(metrics.staleInventory).toHaveLength(1);
     expect(metrics.staleInventory[0].title).toBe('Stuck Topic');
     expect(metrics.staleInventory[0].daysStuck).toBeGreaterThanOrEqual(9);
@@ -363,17 +362,53 @@ describe('signal-ranking: pipeline metrics', () => {
 
   it('computes weekly throughput', () => {
     // Insert a published item from 2 days ago
-    testDb.prepare(`
-      INSERT INTO content_pipeline (topic_title, stage, stage_history, updated_at)
-      VALUES ('Recent Pub', 'published', '[]', datetime('now', '-2 days'))
-    `).run();
+    const itemId = seedWorkspaceMetricItem('Recent Pub', 'published', 'final', '-2 days');
+    seedWorkspacePublishEvent(itemId, '-2 days');
 
-    const metrics = getPipelineOperationalMetrics();
+    const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
     // The most recent week (weeklyThroughput[3]) should have 1
     expect(metrics.weeklyThroughput).toHaveLength(4);
     expect(metrics.weeklyThroughput[3]).toBe(1);
   });
 });
+
+function seedWorkspaceMetricItem(
+  title: string,
+  productionState: string,
+  artifactPhase: string,
+  updatedOffset = '0 days',
+): number {
+  return Number(testDb.prepare(`
+    INSERT INTO content_domain_objects (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, lifecycle_state, title, production_state, artifact_phase,
+      format_id, created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?, ?, ?, ?,
+      'video', ?, ?, datetime('now', ?), datetime('now', ?))
+  `).run(
+    CONTENT_SCOPE.tenantId,
+    CONTENT_SCOPE.userId,
+    productionState,
+    title,
+    productionState,
+    artifactPhase,
+    CONTENT_SCOPE.userId,
+    CONTENT_SCOPE.userId,
+    updatedOffset,
+    updatedOffset,
+  ).lastInsertRowid);
+}
+
+function seedWorkspacePublishEvent(itemId: number, offset: string): void {
+  testDb.prepare(`
+    INSERT INTO content_workflow_events (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, object_id, action, from_state, to_state,
+      actor_user_id, created_at
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?,
+      'workspace_state_changed', 'approved', 'published', ?, datetime('now', ?))
+  `).run(CONTENT_SCOPE.tenantId, CONTENT_SCOPE.userId, String(itemId), CONTENT_SCOPE.userId, offset);
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // 6. Workflow Scoping
@@ -393,15 +428,17 @@ describe('signal-ranking: workflow scoping', () => {
   });
 
   it('getWorkflowEligibleIdeas scopes by userId when provided', async () => {
-    // Insert ideas for two different users
-    testDb.prepare(`
-      INSERT INTO saved_ideas (title, source_date, status, source, score, workflow_eligible, user_id)
-      VALUES ('User 1 Idea', date('now'), 'saved', 'discovery', 90, 1, 1)
-    `).run();
-    testDb.prepare(`
-      INSERT INTO saved_ideas (title, source_date, status, source, score, workflow_eligible, user_id)
-      VALUES ('User 2 Idea', date('now'), 'saved', 'discovery', 85, 1, 2)
-    `).run();
+    testDb.close();
+    testDb = createMigratedDatabaseWithLegacySavedIdeas((database) => {
+      database.prepare(`
+        INSERT INTO saved_ideas (title, source_date, status, source, score, workflow_eligible, user_id)
+        VALUES ('User 1 Idea', date('now'), 'saved', 'discovery', 90, 1, 1)
+      `).run();
+      database.prepare(`
+        INSERT INTO saved_ideas (title, source_date, status, source, score, workflow_eligible, user_id)
+        VALUES ('User 2 Idea', date('now'), 'saved', 'discovery', 85, 1, 2)
+      `).run();
+    });
 
     const { getWorkflowEligibleIdeas } = await import('../../src/state/saved-ideas');
 

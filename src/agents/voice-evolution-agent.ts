@@ -538,24 +538,23 @@ export async function runVoiceEvolutionForTarget(
     const db = getDb();
     ensureContentTenantScopeColumns(db);
 
-    // ── Collect generated scripts from the authenticated tenant ───
-    //
-    // Primary: read raw script text from content_scripts table (April 2026).
-    // This is reliable — the full text is stored durably in SQLite.
+    // ── Collect current canonical scripts from the authenticated tenant ───
+    // Superseded revisions and the frozen content_scripts archive are not
+    // learning inputs after canonical workspace parity.
     const scripts: { topic: string; text: string }[] = [];
 
     try {
-      const { getRecentScripts } = await import('../services/content-learning-store');
-      const dbScripts = getRecentScripts(userId, 30, 10, tenantId);
+      const { getRecentContentWorkspaceScripts } = await import('../services/content-workspace-read-models');
+      const dbScripts = getRecentContentWorkspaceScripts({ tenantId, userId }, 30, 10, db);
       for (const s of dbScripts) {
         scripts.push({
           topic: s.topic,
-          text: s.scriptText.slice(0, 3000),
+          text: s.text.slice(0, 3000),
         });
       }
-      logger.info({ count: dbScripts.length, userId, tenantId }, 'Voice agent: loaded scripts from scoped DB');
+      logger.info({ count: dbScripts.length, userId, tenantId }, 'Voice agent: loaded current scripts from canonical workspace');
     } catch (err) {
-      logger.warn({ err, userId, tenantId }, 'Voice agent: content_scripts table not available; skipping tenant script load');
+      logger.warn({ err, userId, tenantId }, 'Voice agent: canonical Content workspace unavailable; skipping tenant script load');
     }
 
     // Collect published video transcripts

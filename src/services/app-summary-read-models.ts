@@ -14,6 +14,11 @@ import { getDb } from './database';
 import { ensureEventOutboxTables, getEventSequenceBounds } from './event-outbox';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { NON_BADGE_NOTIFICATION_TYPES } from './notification-contracts';
+import {
+  CONTENT_WORKSPACE_OPERATIONAL_READ_MODEL_SCHEMA_VERSION,
+  getContentWorkspaceSummaryCounts,
+} from './content-workspace-read-models';
+import { getUserTimezoneById } from './user-service';
 
 export type SummaryType = 'home' | 'week' | 'training' | 'content' | 'notifications';
 
@@ -236,25 +241,62 @@ function buildTrainingSummary(userId: number, tenantId: number, db: Database.Dat
 }
 
 function buildContentSummary(userId: number, tenantId: number, db: Database.Database): Record<string, unknown> {
-  const pendingTopics = countScopedRows(db, 'content_topics', userId, tenantId, 'status IN (\'planned\', \'drafting\', \'ready\')');
-  const scheduledThisWeek = countScopedRows(db, 'content_topics', userId, tenantId, 'scheduled_date >= date(\'now\') AND scheduled_date < date(\'now\', \'+7 days\')');
-  const scriptsInProgress = countScopedRows(db, 'content_scripts', userId, tenantId, 'status IS NOT NULL');
-  const profileRows = countRows(db, 'content_creator_profile', 'user_id = ? AND tenant_id = ? AND scope_status = ?', [userId, tenantId, 'active']);
+  const profileRows = countRows(
+    db,
+    'content_creator_profile',
+    'user_id = ? AND tenant_id = ? AND scope_status = ?',
+    [userId, tenantId, 'active'],
+  );
+  const radarOpportunitiesCount = countScopedRows(
+    db,
+    'content_radar_signals',
+    userId,
+    tenantId,
+    "COALESCE(scope_status, 'active') = 'active' AND lifecycle_state IN ('detected', 'scored', 'shortlisted', 'review_required')",
+    [],
+    'owner_user_id',
+  );
+  const requiredWorkspaceTables = [
+    'content_domain_objects',
+    'content_artifacts',
+    'content_schedule_bindings',
+  ];
+  if (!requiredWorkspaceTables.every((table) => tableExists(db, table))) {
+    return {
+      schemaVersion: CONTENT_WORKSPACE_OPERATIONAL_READ_MODEL_SCHEMA_VERSION,
+      availability: 'unavailable',
+      unavailableReason: 'content_workspace_schema_missing',
+      source: 'content_workspace',
+      profileCompleteness: profileRows > 0 ? 'configured' : 'not_started',
+      ideasNeedingReview: 0,
+      scriptsInProgress: 0,
+      scheduledThisWeek: 0,
+      scheduleAttentionThisWeek: 0,
+      scheduleAuthorityStatus: 'unavailable',
+      scheduleSemantics: 'private_work_session',
+      radarOpportunitiesCount,
+      pendingCount: 0,
+    };
+  }
+  const workspace = getContentWorkspaceSummaryCounts(
+    { tenantId, userId },
+    db,
+    new Date(),
+    getUserTimezoneById(userId),
+  );
   return {
+    schemaVersion: workspace.schemaVersion,
+    availability: workspace.availability,
+    source: workspace.source,
     profileCompleteness: profileRows > 0 ? 'configured' : 'not_started',
-    ideasNeedingReview: pendingTopics,
-    scriptsInProgress,
-    scheduledThisWeek,
-    radarOpportunitiesCount: countScopedRows(
-      db,
-      'content_radar_signals',
-      userId,
-      tenantId,
-      "COALESCE(scope_status, 'active') = 'active' AND lifecycle_state IN ('detected', 'scored', 'shortlisted', 'review_required')",
-      [],
-      'owner_user_id',
-    ),
-    pendingCount: pendingTopics + scriptsInProgress,
+    ideasNeedingReview: workspace.ideasNeedingReview,
+    scriptsInProgress: workspace.scriptsInProgress,
+    scheduledThisWeek: workspace.scheduledThisWeek,
+    scheduleAttentionThisWeek: workspace.scheduleAttentionThisWeek,
+    scheduleAuthorityStatus: workspace.scheduleAuthorityStatus,
+    scheduleSemantics: workspace.scheduleSemantics,
+    radarOpportunitiesCount,
+    pendingCount: workspace.pendingCount,
   };
 }
 

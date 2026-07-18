@@ -44,8 +44,24 @@ export function notesRoutes(): Router {
       ? Math.min(parseInt(String(req.query.limit), 10) || 20, 100)
       : 20;
 
+    if (isContentIdeaDomain(domain)) {
+      sendError(
+        res,
+        'CONTENT_IDEA_REQUIRES_WORKSPACE',
+        'Content ideas are available from the Content workspace, where status and revisions remain authoritative.',
+        409,
+      );
+      return;
+    }
+
     try {
-      const notes = searchNotes(userId, { domain, query, tag, limit });
+      const notes = searchNotes(userId, {
+        domain,
+        query,
+        tag,
+        limit,
+        excludeDomain: 'content_idea',
+      });
       sendSuccess(res, {
         notes: notes.map(formatNote),
         count: notes.length,
@@ -67,6 +83,15 @@ export function notesRoutes(): Router {
 
     if (!content || typeof content !== 'string' || !content.trim()) {
       sendError(res, 'BAD_REQUEST', 'content is required and must be a non-empty string');
+      return;
+    }
+    if (isContentIdeaDomain(domain)) {
+      sendError(
+        res,
+        'CONTENT_IDEA_REQUIRES_WORKSPACE',
+        'Content ideas must be captured through the Content workspace so drafts, revisions, status, and recovery stay connected.',
+        409,
+      );
       return;
     }
 
@@ -113,8 +138,27 @@ export function notesRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'content must be a non-empty string when provided');
       return;
     }
+    if (isContentIdeaDomain(domain)) {
+      sendError(
+        res,
+        'CONTENT_IDEA_REQUIRES_WORKSPACE',
+        'A legacy note cannot be converted into a Content idea. Capture it through the Content workspace.',
+        409,
+      );
+      return;
+    }
 
     try {
+      const existing = getNoteById(userId, noteId);
+      if (existing && isContentIdeaDomain(existing.domain)) {
+        sendError(
+          res,
+          'CONTENT_IDEA_LEGACY_READ_ONLY',
+          'Legacy Content-idea notes are read-only. Duplicate or remix the idea in the Content workspace.',
+          409,
+        );
+        return;
+      }
       const updated = updateNote(userId, noteId, {
         content: content !== undefined ? content.trim() : undefined,
         domain: domain !== undefined ? String(domain) : undefined,
@@ -150,6 +194,16 @@ export function notesRoutes(): Router {
     }
 
     try {
+      const existing = getNoteById(userId, noteId);
+      if (existing && isContentIdeaDomain(existing.domain)) {
+        sendError(
+          res,
+          'CONTENT_IDEA_LEGACY_READ_ONLY',
+          'Legacy Content-idea notes are managed through the Content workspace and cannot be deleted from Notes.',
+          409,
+        );
+        return;
+      }
       const deleted = deleteNote(userId, noteId);
       if (!deleted) {
         sendError(res, 'NOT_FOUND', 'Note not found or not owned by user', 404);
@@ -176,4 +230,8 @@ function formatNote(n: any) {
     tags: n.tags || null,
     createdAt: n.created_at,
   };
+}
+
+function isContentIdeaDomain(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toLocaleLowerCase('en-US') === 'content_idea';
 }

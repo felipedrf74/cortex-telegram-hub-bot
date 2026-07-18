@@ -130,7 +130,12 @@ export function openSurfacePayloadForStep(
       },
     };
   }
-  if (step.skill === 'content') return { surface: 'script_studio', prefill: step.args };
+  if (step.skill === 'content') return {
+    surface: 'script_studio',
+    workspaceItemId: (result as any)?.workspaceItemId ?? null,
+    action: step.action === 'content_schedule_work' ? 'schedule' : null,
+    prefill: step.args,
+  };
   if (step.skill === 'tasks') return { surface: 'task_detail', prefill: step.args };
   if (step.skill === 'secretary_reminders') return { surface: 'reminder_detail', prefill: step.args };
   if (step.skill === 'secretary_calendar') return { surface: 'calendar_event', prefill: step.args };

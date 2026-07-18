@@ -264,6 +264,7 @@ export const defaultJobHandlers: JobHandler[] = [
         throw new Error('content_topic_secretary_sync_topic_id_required');
       }
       await syncContentTopicSecretaryArtifactsById(job.userId, topicId, {
+        tenantId: job.tenantId,
         language: typeof job.payload.language === 'string' ? job.payload.language : undefined,
       });
     },

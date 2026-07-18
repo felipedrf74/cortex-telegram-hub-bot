@@ -142,7 +142,13 @@ export async function executeChatActionPlan(
     // executors when policy says blocked.
     const stepDefinition = findChatActionDefinition(step.skill, step.action);
     if (stepDefinition?.executionPolicy === 'blocked') {
-      results.push({ step, status: 'blocked', error: 'execution_policy_blocked' });
+      results.push({
+        step,
+        status: 'blocked',
+        error: step.action === 'content_publish_now'
+          ? 'content_publication_execution_not_supported'
+          : 'execution_policy_blocked',
+      });
       break;
     }
     const runtimeStep: ChatPlanStep = { ...step, args: resolveStepRefs(step.args, results) };

@@ -4,11 +4,17 @@ import { DateTime } from 'luxon';
 import { claimChatActionRunForExecution, updateChatActionRun, type ChatActionRunStatus } from '../../chat-action-run-store';
 import { upsertPendingChatAction } from '../../chat-action-state';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../chat/types';
-import { addTopic, getTopicById } from '../../content-scheduler';
-import { buildContentAgencyPackage, ensureContentAgencyTables, getContentAgencyProject, handoffContentAgencyPackageToPipeline, persistContentAgencyArtifact } from '../../content-agency';
+import { buildContentAgencyPackage, getContentAgencyProject, handoffContentAgencyPackageToWorkspace, persistContentAgencyArtifact } from '../../content-agency';
+import { createContentTopicCompatibility, getContentTopicCompatibility } from '../../content-topic-workspace-compat';
+import { createContentSchedulePreview } from '../../content-workspace-scheduling';
 import { claimActionRunForStepExecution, reconciliationPendingResult, updateClaimedActionRun } from '../../chat/executor/helpers';
 import { getDb } from '../../database';
-import { invalidateContentDerivedCaches } from '../../cache-coherence-registry';
+import {
+  getContentWorkspaceItem,
+  listContentArtifacts,
+  type ContentWorkspaceItem,
+  type ContentWorkspaceScope,
+} from '../../content-workspace';
 import { normalizeContentPipelineTransitionStage, type ContentPipelineTransitionStage } from './pipeline-stage';
 import { missingContentAgencySlots } from './helpers';
 
@@ -107,6 +113,10 @@ export function executeContentScheduleWorkStep(
   persistRuns: boolean,
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const args = step.args as any;
+  const requestText = [input.text, typeof args.rawRequest === 'string' ? args.rawRequest : ''].join(' ');
+  if (hasPublicationExecutionSemantics(requestText)) {
+    return { step, status: 'blocked', error: 'content_publication_execution_not_supported' };
+  }
   const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : null;
   const dateTime = typeof args.dateTime === 'string' && args.dateTime.trim() ? DateTime.fromISO(args.dateTime, { zone: input.timezone }) : null;
   if (!title || !dateTime?.isValid) return { step, status: 'blocked', error: 'content_schedule_requires_title_and_datetime' };
@@ -114,28 +124,82 @@ export function executeContentScheduleWorkStep(
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
+  if (claim && !claim.acquired && claim.row.status === 'verified_pending') {
+    return { step, status: 'verified_pending', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
+  }
   try {
-    const topic = addTopic(input.userId, title, {
-      notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
-      scheduledDate: dateTime.toISODate(),
-      scheduledAt: dateTime.toISO(),
-      status: 'planned',
-      tenantId: input.tenantId,
-    });
-    const readBack = getTopicById(input.userId, topic.id);
-    const verified = Boolean(readBack && readBack.title === title && readBack.scheduled_date === dateTime.toISODate());
-    const result = { topic: readBack ?? topic, verified };
-    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    const db = getDb();
+    const scope = { tenantId: input.tenantId, userId: input.userId };
+    const lookup = findScopedWorkspaceItem(db, scope, args, title);
+    if (lookup.status === 'ambiguous') {
+      if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: 'content_schedule_item_ambiguous', title } });
+      return { step, status: 'blocked', error: 'content_schedule_item_ambiguous' };
+    }
+    const item = lookup.status === 'found'
+      ? lookup.item
+      : getContentWorkspaceItem(scope, createContentTopicCompatibility({
+        scope,
+        title,
+        notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
+        status: 'planned',
+        source: 'chat_action',
+        idempotencyKey: childIdempotencyKey(step.idempotencyKey, 'item'),
+      }, db).topic.workspace_item_id, db)!;
+    const durationMinutes = Number.isSafeInteger(args.durationMinutes)
+      ? Math.min(480, Math.max(15, Number(args.durationMinutes)))
+      : 60;
+    const start = dateTime.toUTC();
+    const end = start.plus({ minutes: durationMinutes });
+    const preview = createContentSchedulePreview({
+      scope,
+      itemId: item.id,
+      artifactId: item.currentArtifactId ?? undefined,
+      workKind: contentWorkKind(requestText),
+      durationMinutes,
+      preferredWindows: [{ start: start.toISO()!, end: end.toISO()! }],
+      priority: 'normal',
+      shareContentTitle: false,
+      idempotencyKey: childIdempotencyKey(step.idempotencyKey, 'preview'),
+      now: input.nowIso,
+    }, db);
+    const result = {
+      workspaceItemId: item.id,
+      preview: preview.value,
+      persistence: 'content_workspace',
+      verified: false,
+      scheduleKind: 'private_work_preview',
+      calendarEventCreated: false,
+      publicationExecution: 'not_performed',
+      confirmationRequired: true,
+    };
+    const status: ChatActionRunStatus = 'verified_pending';
     if (!updateClaimedActionRun(claim, status, {
       result,
-      providerObjectId: String(topic.id),
-      verification: { verified, expected: { title, date: dateTime.toISODate() } },
+      providerObjectId: preview.value.previewKey,
+      verification: {
+        verified: false,
+        reason: 'explicit_content_schedule_confirmation_required',
+        expected: { itemId: item.id, requestedStart: start.toISO(), durationMinutes },
+      },
     })) return reconciliationPendingResult(step, status);
-    return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
+    return { step, status, result };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
     return { step, status: 'failed', error: 'content_schedule_failed' };
   }
+}
+
+function contentWorkKind(requestText: string): 'write' | 'revise' | 'record' | 'edit' | 'review' {
+  const folded = requestText.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/\b(record|recording|film|filming|gravar|gravacao|graba|grabar|grabacion)\b/.test(folded)) return 'record';
+  if (/\b(edit|editing|editar|edicao|edicion)\b/.test(folded)) return 'edit';
+  if (/\b(revise|revision|rewrite|reescrever|revisar|reescritura)\b/.test(folded)) return 'revise';
+  if (/\b(review|approve|rever|aprovar|revisar)\b/.test(folded)) return 'review';
+  return 'write';
+}
+
+function childIdempotencyKey(parent: string, suffix: string): string {
+  return `${parent.slice(0, Math.max(8, 199 - suffix.length))}:${suffix}`;
 }
 
 function upsertContentPendingAction(
@@ -187,7 +251,7 @@ export function executeContentPipelineHandoffStep(
     return { step, status: 'verified_success', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
   try {
-    const handoff = handoffContentAgencyPackageToPipeline({
+    const handoff = handoffContentAgencyPackageToWorkspace({
       userId: input.userId,
       tenantId: input.tenantId,
       packageId,
@@ -207,18 +271,8 @@ export function executeContentPipelineHandoffStep(
   }
 }
 
-type ContentPipelineRow = {
-  id: number;
-  topic_title: string;
-  stage: string;
-  stage_history?: string | null;
-  published_url?: string | null;
-  published_at?: string | null;
-  youtube_video_id?: string | null;
-};
-
-type ContentPipelineLookupResult =
-  | { status: 'found'; row: ContentPipelineRow }
+type ContentWorkspaceLookupResult =
+  | { status: 'found'; item: ContentWorkspaceItem }
   | { status: 'not_found' }
   | { status: 'ambiguous' };
 
@@ -232,6 +286,12 @@ export function executeContentPipelineStageTransitionStep(
   const topicTitle = typeof args.topicTitle === 'string' && args.topicTitle.trim() ? args.topicTitle.trim() : null;
   const targetStage = normalizeContentPipelineTransitionStage(args.targetStage);
   if (!topicTitle || !targetStage) return { step, status: 'blocked', error: 'content_pipeline_stage_requires_topic_and_stage' };
+  if (targetStage === 'published') {
+    return { step, status: 'blocked', error: 'content_publication_tracking_not_supported' };
+  }
+  if (targetStage === 'filmed' || targetStage === 'editing') {
+    return { step, status: 'blocked', error: 'content_production_stage_not_modeled' };
+  }
 
   const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
@@ -240,8 +300,8 @@ export function executeContentPipelineStageTransitionStep(
 
   try {
     const db = getDb();
-    ensureContentAgencyTables(db);
-    const lookup = findScopedPipelineRow(db, input, args, topicTitle);
+    const scope = { tenantId: input.tenantId, userId: input.userId };
+    const lookup = findScopedWorkspaceItem(db, scope, args, topicTitle);
     if (lookup.status === 'ambiguous') {
       if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: 'content_pipeline_item_ambiguous', topicTitle } });
       return { step, status: 'blocked', error: 'content_pipeline_item_ambiguous' };
@@ -250,125 +310,124 @@ export function executeContentPipelineStageTransitionStep(
       if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: 'content_pipeline_item_not_found', topicTitle } });
       return { step, status: 'blocked', error: 'content_pipeline_item_not_found' };
     }
-    const row = lookup.row;
-
-    const nowIso = plan.createdAt || new Date().toISOString();
-    const currentStage = String(row.stage || 'unknown');
-    const history = parsePipelineHistory(row.stage_history);
-    const youtubeUrl = typeof args.youtubeUrl === 'string' && args.youtubeUrl.trim() ? args.youtubeUrl.trim() : null;
-    const youtubeVideoId = youtubeUrl ? extractYouTubeVideoId(youtubeUrl) : null;
-    history.push({ from: currentStage, to: targetStage, at: nowIso, source: 'chat_action' });
-
-    const sets = ['stage = ?', 'stage_history = ?', "updated_at = datetime('now')"];
-    const params: unknown[] = [targetStage, JSON.stringify(history)];
-    if (targetStage === 'published') {
-      sets.push('published_at = COALESCE(published_at, ?)');
-      params.push(nowIso);
-      if (youtubeUrl) {
-        sets.push('published_url = ?');
-        params.push(youtubeUrl);
-      }
-      if (youtubeVideoId) {
-        sets.push('youtube_video_id = COALESCE(?, youtube_video_id)');
-        params.push(youtubeVideoId);
-      }
+    const item = lookup.item;
+    const script = listContentArtifacts(scope, item.id, db)
+      .filter((artifact) => artifact.artifactType === 'script' && artifact.currentRevision != null)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    if (!script?.currentRevision) {
+      if (claim) updateChatActionRun(claim.row.id, 'blocked', {
+        error: { reason: 'content_pipeline_script_revision_required', workspaceItemId: item.id },
+      });
+      return { step, status: 'blocked', error: 'content_pipeline_script_revision_required' };
     }
-    params.push(row.id, input.userId, input.tenantId);
-
-    const update = db.prepare(`
-      UPDATE content_pipeline
-         SET ${sets.join(', ')}
-       WHERE id = ?
-         AND user_id = ?
-         AND tenant_id = ?
-         AND COALESCE(scope_status, 'active') = 'active'
-    `).run(...params);
-    if (update.changes < 1) {
-      if (claim) updateChatActionRun(claim.row.id, 'partial_success', { error: { reason: 'content_pipeline_stage_update_conflict', pipelineId: row.id } });
-      return { step, status: 'partial_success', error: 'content_pipeline_stage_update_conflict' };
-    }
-
-    invalidateContentDerivedCaches(input.userId);
-    const readBack = readScopedPipelineRow(db, input, row.id);
-    const verified = readBack?.stage === targetStage;
+    const currentStage = item.productionState === 'published'
+      ? 'published'
+      : item.artifactPhase === 'idea' || item.artifactPhase === 'brief' || item.artifactPhase === 'outline'
+        ? 'idea'
+        : 'scripted';
+    const verified = targetStage === 'scripted';
     const result = {
-      pipelineId: row.id,
-      topicTitle: readBack?.topic_title ?? row.topic_title,
+      pipelineId: item.id,
+      workspaceItemId: item.id,
+      workspaceArtifactId: script.id,
+      workspaceRevisionId: script.currentRevision.id,
+      pipelineIdIsWorkspaceAlias: true,
+      persistence: 'content_workspace',
+      topicTitle: item.title,
       fromStage: currentStage,
       targetStage,
-      stage: readBack?.stage ?? targetStage,
-      youtubeUrl: readBack?.published_url ?? youtubeUrl,
+      stage: 'scripted',
+      productionState: item.productionState,
+      artifactPhase: item.artifactPhase,
+      workflowVersion: item.workflowVersion,
+      changed: false,
       verified,
     };
-    const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
+    const status: ChatActionRunStatus = verified ? 'verified_success' : 'blocked';
     if (!updateClaimedActionRun(claim, status, {
       result,
-      providerObjectId: String(row.id),
-      verification: { verified, expected: { stage: targetStage }, actual: { stage: readBack?.stage ?? null } },
-      error: verified ? undefined : { reason: 'local_read_back_mismatch' },
+      providerObjectId: String(item.id),
+      verification: {
+        verified,
+        expected: { stage: targetStage, savedScriptRevision: true },
+        actual: { stage: 'scripted', revisionId: script.currentRevision.id },
+      },
+      error: verified ? undefined : { reason: 'content_production_stage_not_modeled' },
     })) return reconciliationPendingResult(step, status);
-    return { step, status, result, error: verified ? undefined : 'local_read_back_mismatch' };
+    return { step, status, result, error: verified ? undefined : 'content_production_stage_not_modeled' };
   } catch (err) {
     if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
     return { step, status: 'failed', error: 'content_pipeline_stage_transition_failed' };
   }
 }
 
-function findScopedPipelineRow(
+function findScopedWorkspaceItem(
   db: ReturnType<typeof getDb>,
-  input: ChatPlannerInput,
+  scope: ContentWorkspaceScope,
   args: Record<string, unknown>,
   topicTitle: string,
-): ContentPipelineLookupResult {
+): ContentWorkspaceLookupResult {
+  const workspaceItemId = parsePositiveId(args.workspaceItemId);
+  if (workspaceItemId != null) {
+    const explicit = getContentWorkspaceItem(scope, workspaceItemId, db);
+    return explicit ? { status: 'found', item: explicit } : { status: 'not_found' };
+  }
   const pipelineId = parsePositiveId(args.pipelineId);
   if (pipelineId != null) {
-    const row = readScopedPipelineRow(db, input, pipelineId);
-    return row ? { status: 'found', row } : { status: 'not_found' };
+    const direct = getContentWorkspaceItem(scope, pipelineId, db);
+    const binding = db.prepare(`
+      SELECT item_id
+        FROM content_workspace_ingress_bindings
+       WHERE tenant_id = ?
+         AND owner_user_id = ?
+         AND source_kind = 'legacy_pipeline'
+         AND source_id = ?
+       LIMIT 1
+    `).get(scope.tenantId, scope.userId, String(pipelineId)) as { item_id: number } | undefined;
+    const migrated = binding ? getContentWorkspaceItem(scope, Number(binding.item_id), db) : null;
+    if (direct && migrated && direct.id !== migrated.id) return { status: 'ambiguous' };
+    const item = migrated ?? direct;
+    return item ? { status: 'found', item } : { status: 'not_found' };
   }
   const exactRows = db.prepare(`
-    SELECT id, topic_title, stage, stage_history, published_url, published_at, youtube_video_id
-      FROM content_pipeline
-     WHERE user_id = ?
-       AND tenant_id = ?
-       AND COALESCE(scope_status, 'active') = 'active'
-       AND LOWER(topic_title) = LOWER(?)
+    SELECT id
+      FROM content_domain_objects
+     WHERE tenant_id = ?
+       AND owner_user_id = ?
+       AND visibility_scope = 'user_private'
+       AND scope_status = 'active'
+       AND deleted_at IS NULL
+       AND object_type = 'content_item'
+       AND LOWER(title) = LOWER(?)
      ORDER BY updated_at DESC, created_at DESC
      LIMIT 2
-  `).all(input.userId, input.tenantId, topicTitle) as ContentPipelineRow[];
-  if (exactRows.length === 1) return { status: 'found', row: exactRows[0]! };
+  `).all(scope.tenantId, scope.userId, topicTitle) as Array<{ id: number }>;
+  if (exactRows.length === 1) {
+    const item = getContentWorkspaceItem(scope, Number(exactRows[0]!.id), db);
+    return item ? { status: 'found', item } : { status: 'not_found' };
+  }
   if (exactRows.length > 1) return { status: 'ambiguous' };
 
   const like = `%${escapeSqlLike(topicTitle.slice(0, 48))}%`;
   const fuzzyRows = db.prepare(`
-    SELECT id, topic_title, stage, stage_history, published_url, published_at, youtube_video_id
-      FROM content_pipeline
-     WHERE user_id = ?
-       AND tenant_id = ?
-       AND COALESCE(scope_status, 'active') = 'active'
-       AND LOWER(topic_title) LIKE LOWER(?) ESCAPE '\\'
+    SELECT id
+      FROM content_domain_objects
+     WHERE tenant_id = ?
+       AND owner_user_id = ?
+       AND visibility_scope = 'user_private'
+       AND scope_status = 'active'
+       AND deleted_at IS NULL
+       AND object_type = 'content_item'
+       AND LOWER(title) LIKE LOWER(?) ESCAPE '\\'
      ORDER BY updated_at DESC, created_at DESC
      LIMIT 2
-  `).all(input.userId, input.tenantId, like) as ContentPipelineRow[];
-  if (fuzzyRows.length === 1) return { status: 'found', row: fuzzyRows[0]! };
+  `).all(scope.tenantId, scope.userId, like) as Array<{ id: number }>;
+  if (fuzzyRows.length === 1) {
+    const item = getContentWorkspaceItem(scope, Number(fuzzyRows[0]!.id), db);
+    return item ? { status: 'found', item } : { status: 'not_found' };
+  }
   if (fuzzyRows.length > 1) return { status: 'ambiguous' };
   return { status: 'not_found' };
-}
-
-function readScopedPipelineRow(
-  db: ReturnType<typeof getDb>,
-  input: ChatPlannerInput,
-  pipelineId: number,
-): ContentPipelineRow | null {
-  const row = db.prepare(`
-    SELECT id, topic_title, stage, stage_history, published_url, published_at, youtube_video_id
-      FROM content_pipeline
-     WHERE id = ?
-       AND user_id = ?
-       AND tenant_id = ?
-       AND COALESCE(scope_status, 'active') = 'active'
-     LIMIT 1
-  `).get(pipelineId, input.userId, input.tenantId) as ContentPipelineRow | undefined;
-  return row ?? null;
 }
 
 function parsePositiveId(value: unknown): number | null {
@@ -376,21 +435,15 @@ function parsePositiveId(value: unknown): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function parsePipelineHistory(value: unknown): Array<Record<string, unknown>> {
-  if (typeof value !== 'string' || !value.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === 'object') : [];
-  } catch {
-    return [];
-  }
-}
-
-function extractYouTubeVideoId(url: string): string | null {
-  const match = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-  return match?.[1] ?? null;
-}
-
 function escapeSqlLike(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+function hasPublicationExecutionSemantics(text: string): boolean {
+  const folded = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const hasWorkNoun = /\b(content\s+work|filming|recording|writing|editing|shoot|session|work\s+block|gravacao|filmagem|escrita|edicao|sessao|bloco|rodaje|grabacion|escritura|edicion|sesion|bloque)\b/.test(folded);
+  if (hasWorkNoun) return false;
+  return /\b(publish|publicar|publica|post|postar|postea|upload|subir|queue|go\s+live)\b/.test(folded)
+    || (/\b(schedule|agenda|agendar|programa|programar)\b/.test(folded)
+      && /\b(content|conteudo|contenido|reel|video|post|script|roteiro|guion|publication|publicacao|publicacion)\b/.test(folded));
 }

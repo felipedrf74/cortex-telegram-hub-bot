@@ -2,10 +2,50 @@
 
 Status: canonical
 Owner: Felipe
-Last verified: 2026-07-16
+Last verified: 2026-07-17
 
 Current runtime truth is `release-state.json`. Release evidence is an ignored
 artifact, not a Markdown narrative.
+
+State-coupled and forward-only database changes additionally follow
+`migration-irreversible.md`; it defines snapshot rollback and rehearsal gates but
+does not assert that any listed migration is deployed. Its machine-enforced
+registry is `config/irreversible-migrations.json`; changing either the registry
+or its enforcement module requires the same explicit migration approval and
+backup evidence as a governed cutover. Registry v2 pins the exact reviewed SQL
+bytes by SHA-256; a missing path or digest mismatch is a blocking registry
+identity error, and the migration 248 syntax exemption applies only to its
+registered digest.
+
+Ordinary PR and CI migration checks run in non-authorizing scan mode: they
+validate sequence, cumulative apply, governed SQL identity, and the exact
+review subject without consuming or implying owner approval. Irreversible
+review approval is supplied later as an ignored, digest-bound artifact, not as
+source text or a claimed future backup, and is consumed only by release
+preparation and promotion. Exact backup evidence is generated later by the
+canonical promotion path after writes are drained; promotion revalidates the
+approval and backup records before the candidate can mutate production.
+
+## Canonical Content workspace rollout controls
+
+Production defaults to `CONTENT_WORKSPACE_V1_MODE=read_only`. `write` mode is
+still ineligible until either `CONTENT_WORKSPACE_V1_GLOBAL_WRITE=true` or the
+authenticated owner/tenant appears in the corresponding positive-integer
+allowlist. Per-slice `*_WRITES` controls default true but can only narrow an
+eligible write cohort; they cannot enable one. Invalid modes and boolean values
+fail closed. `recovery_only` enables only the separately controlled Trash
+restore slice. Keep reads and exports available during an emergency pause, and
+record every operator change in governed release evidence without copying the
+allowlists into logs or Markdown.
+
+When an exact production candidate introduces migrations 239–253, promotion
+automatically requires the stricter scoped-owner rollout preflight while the
+predecessor is still online. That check opens the production database read-only,
+resolves the canonical persisted owner, rejects global write, and proves every
+write slice is explicitly enabled for that owner without emitting identifiers
+or environment values. Later emergency deployments remain free to use the
+documented read-only kill switch because this requirement is tied to the first
+canonical migration cutover, not every future release.
 
 ## Commands
 
@@ -51,11 +91,20 @@ gate.
 5. Switch staging only after advisory owner bootstrap succeeds or warns, then
    record native SQLite, database integrity, authenticated Content Engine,
    stable PM2 identity, and domain-smoke evidence against the exact digest.
-6. Obtain explicit owner authorization.
-7. Run strict owner bootstrap while production is live; copy and hash the
-   immutable runtime backup, briefly drain writes, checkpoint SQLite, append
-   and verify the database snapshot, switch PM2 atomically, and require the
-   extended readiness evidence before declaring recovery complete.
+6. Obtain explicit owner authorization bound to the migration gate's exact
+   review-subject digest; do not claim backup evidence at review time.
+7. Run strict owner bootstrap while production is live; rehearse the exact
+   candidate migrations and all Content readiness assertions against a private
+   same-host SQLite online-backup clone; validate its fresh aggregate-only
+   write-once evidence; for the first Content workspace cutover, require exactly
+   one active persisted owner in a non-global, all-slices write cohort; copy and
+   hash the immutable runtime backup; briefly drain writes,
+   checkpoint SQLite, append and verify the database snapshot; rerun migration
+   and Content readiness against the quiescent source and prove its digest
+   equals the archived database; bind both rehearsals into the machine-readable
+   exact-backup record; switch PM2
+   atomically; and require the extended readiness evidence before declaring
+   recovery complete.
 8. Restore the exact previous release automatically if readiness fails.
 
 Do not rebuild, rsync the repository, or install dependencies while production

@@ -62,6 +62,28 @@ vi.mock('../../src/services/content-topic-secretary-sync', () => ({
   cleanupContentTopicSecretaryArtifacts: vi.fn(async () => ({ taskDeleted: true, calendarDeleted: true, errors: [] })),
 }));
 
+vi.mock('../../src/services/content-topic-workspace-compat', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/content-topic-workspace-compat')>();
+  return {
+    ...actual,
+    assertContentTopicCompatibilityCanArchive: vi.fn(),
+    findContentTopicCompatibilityUpdateReplay: vi.fn(() => null),
+    hasContentTopicCompatibilityDeleteReplay: vi.fn(() => false),
+  };
+});
+
+vi.mock('../../src/services/content-workspace-observability', () => ({
+  recordContentWorkspaceProductSignal: vi.fn(),
+}));
+
+vi.mock('../../src/services/resource-budgets', () => ({
+  consumeResourceBudget: vi.fn(() => ({
+    allowed: true,
+    resetAt: '2026-07-17T12:00:00.000Z',
+    budgetKey: 'test',
+  })),
+}));
+
 vi.mock('../../src/services/content-scheduler', () => ({
   CONTENT_TOPIC_STATUSES: ['planned', 'drafting', 'ready', 'published', 'cancelled'],
   addTopic: vi.fn((userId: number, title: string, opts: any) => {
@@ -70,6 +92,8 @@ vi.mock('../../src/services/content-scheduler', () => ({
       user_id: userId,
       tenant_id: opts.tenantId,
       owner_user_id: userId,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
       title,
       notes: opts.notes,
       scheduled_date: opts.scheduledDate,
@@ -82,6 +106,11 @@ vi.mock('../../src/services/content-scheduler', () => ({
       calendar_source: null,
       secretary_sync_status: null,
       secretary_sync_error: null,
+      workspace_item_id: 111,
+      compatibility_artifact_id: 211,
+      compatibility_schema_version: 'content-topic-compatibility-v1',
+      compatibility_mode: 'canonical_workspace',
+      schedule_semantics: opts.scheduledDate || opts.scheduledAt ? 'workspace_deadline' : 'none',
       created_at: '2026-04-24T10:00:00.000Z',
       updated_at: '2026-04-24T10:00:00.000Z',
     };
@@ -101,16 +130,24 @@ vi.mock('../../src/services/content-scheduler', () => ({
     trainingLoad: 'light',
     calendarLoad: 'light',
   })),
-  getTopicById: vi.fn((userId: number, topicId: number) => {
+  getTopicById: vi.fn((userId: number, topicId: number, tenantId: number = userId) => {
     const topic = topicStore.get(topicId);
-    return topic?.user_id === userId ? topic : null;
+    return topic?.user_id === userId
+      && topic?.tenant_id === tenantId
+      && topic?.owner_user_id === userId
+      && (topic?.visibility_scope ?? 'user_private') === 'user_private'
+      && (topic?.scope_status ?? 'active') === 'active'
+      ? topic
+      : null;
   }),
-  updateTopic: vi.fn((userId: number, topicId: number, updates: any) => {
+  updateTopic: vi.fn((userId: number, topicId: number, updates: any, tenantId: number = userId) => {
     const existing = topicStore.get(topicId) ?? {
       id: topicId,
       user_id: userId,
       tenant_id: userId,
       owner_user_id: userId,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
       title: 'Race week recap',
       notes: null,
       scheduled_date: '2026-04-25',
@@ -126,7 +163,13 @@ vi.mock('../../src/services/content-scheduler', () => ({
       created_at: '2026-04-24T10:00:00.000Z',
       updated_at: '2026-04-24T10:00:00.000Z',
     };
-    if (existing.user_id !== userId) return null;
+    if (
+      existing.user_id !== userId
+      || existing.tenant_id !== tenantId
+      || existing.owner_user_id !== userId
+      || (existing.visibility_scope ?? 'user_private') !== 'user_private'
+      || (existing.scope_status ?? 'active') !== 'active'
+    ) return null;
     const topic = {
       ...existing,
       title: updates.title !== undefined ? updates.title : existing.title,
@@ -146,7 +189,17 @@ vi.mock('../../src/services/content-scheduler', () => ({
     topicStore.set(topicId, topic);
     return topic;
   }),
-  deleteTopic: vi.fn((_userId: number, topicId: number) => topicStore.delete(topicId)),
+  deleteTopic: vi.fn((userId: number, topicId: number, tenantId: number = userId) => {
+    const topic = topicStore.get(topicId);
+    if (
+      topic?.user_id !== userId
+      || topic?.tenant_id !== tenantId
+      || topic?.owner_user_id !== userId
+      || (topic?.visibility_scope ?? 'user_private') !== 'user_private'
+      || (topic?.scope_status ?? 'active') !== 'active'
+    ) return false;
+    return topicStore.delete(topicId);
+  }),
   // BE-3 (Content Studio): default = no replay hit; individual tests override.
   findTopicByClientRequestId: vi.fn(() => null),
 }));
@@ -155,6 +208,12 @@ import { registerContentTopicRoutes } from '../../src/api/routes/content-topic-r
 import { invalidateContentDerivedCaches } from '../../src/services/cache-coherence-registry';
 import { getContentRadarPreferences, setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 import { cleanupContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
+import {
+  findContentTopicCompatibilityUpdateReplay,
+  hasContentTopicCompatibilityDeleteReplay,
+} from '../../src/services/content-topic-workspace-compat';
+import { recordContentWorkspaceProductSignal } from '../../src/services/content-workspace-observability';
+import { consumeResourceBudget } from '../../src/services/resource-budgets';
 import {
   addTopic,
   deleteTopic,
@@ -188,6 +247,7 @@ function mockReq(
   path: string,
   body: Record<string, unknown> = {},
   userId: number | undefined = 41,
+  tenantId: number | undefined = userId,
 ): Request {
   const parsed = new URL(path, 'http://test.local');
   return {
@@ -198,7 +258,7 @@ function mockReq(
     // the request now yields `tenantId: undefined` instead of the user-id
     // fallback. Tests should reflect production where the middleware
     // ALWAYS sets both fields.
-    tenantId: userId,
+    tenantId,
     method,
     url: parsed.pathname + parsed.search,
     originalUrl: parsed.pathname + parsed.search,
@@ -230,11 +290,12 @@ async function dispatch(
   path: string,
   body: Record<string, unknown> = {},
   userId: number | undefined = 41,
+  tenantId: number | undefined = userId,
   ensureValidScope = makeEnsureValidScope(),
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentTopicRoutes(router, () => 'pt-BR', ensureValidScope);
-  const req = mockReq(method, path, body, userId);
+  const req = mockReq(method, path, body, userId, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve, reject) => {
@@ -290,8 +351,9 @@ describe('content topic routes', () => {
       scheduledOnly: true,
       limit: 7,
     }));
-    expect(getUpcomingTopicCount).toHaveBeenCalledWith(77, 14);
+    expect(getUpcomingTopicCount).toHaveBeenCalledWith(77, 14, 77);
     expect(getFilmingRecommendation).toHaveBeenCalledWith(77, expect.any(Array), 77);
+    expect(recordContentWorkspaceProductSignal).toHaveBeenCalledWith('legacy_topics_compatibility_read');
     expect(response.body.data.upcomingCount).toBe(1);
     expect(response.body.data.filmingRecommendation.confidence).toBe('high');
   });
@@ -322,15 +384,12 @@ describe('content topic routes', () => {
       status: 'drafting',
       tenantId: 77,
     });
-    expect(updateTopic).toHaveBeenCalledWith(77, 11, {
-      secretary_sync_status: 'pending',
-      secretary_sync_error: null,
-    });
-    expect(response.body.data.topic.secretary_sync_status).toBe('pending');
+    expect(updateTopic).not.toHaveBeenCalled();
+    expect(response.body.data.topic.schedule_semantics).toBe('workspace_deadline');
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
 
-  it('creates a Secretary task for date-only topics without requiring calendar time', async () => {
+  it('captures a date-only canonical deadline without claiming a Secretary task exists', async () => {
     const { response } = await dispatch('POST', '/topics', {
       title: '  Topic test  ',
       scheduledDate: '2026-04-26',
@@ -344,11 +403,9 @@ describe('content topic routes', () => {
       status: 'planned',
       tenantId: 77,
     });
-    expect(updateTopic).toHaveBeenCalledWith(77, 11, {
-      secretary_sync_status: 'pending',
-      secretary_sync_error: null,
-    });
-    expect(response.body.data.topic.secretary_sync_status).toBe('pending');
+    expect(updateTopic).not.toHaveBeenCalled();
+    expect(response.body.data.topic.secretary_task_external_id).toBeNull();
+    expect(response.body.data.topic.calendar_event_id).toBeNull();
   });
 
   it('rejects invalid scheduledDate values before creating or updating topics', async () => {
@@ -406,6 +463,7 @@ describe('content topic routes', () => {
       tenantId: 77,
       provenance: { source: 'capture', clientRequestId: 'cap-123' },
     });
+    expect(recordContentWorkspaceProductSignal).toHaveBeenCalledWith('legacy_topics_compatibility_mutation');
   });
 
   it('replays an already-applied create without re-creating or double-charging', async () => {
@@ -432,11 +490,19 @@ describe('content topic routes', () => {
       idempotencyKey: 'cap-123',
     }, 77);
 
-    expect(findTopicByClientRequestId).toHaveBeenCalledWith(77, 'cap-123');
+    expect(findTopicByClientRequestId).toHaveBeenCalledWith(77, 'cap-123', 77, {
+      title: 'Open water fear',
+      notes: null,
+      scheduledDate: null,
+      scheduledAt: null,
+      status: 'planned',
+      source: 'capture',
+    });
     expect(response.statusCode).toBe(200);
     expect(response.body.data.idempotentReplay).toBe(true);
     expect(response.body.data.topic.id).toBe(99);
     expect(addTopic).not.toHaveBeenCalled();
+    expect(consumeResourceBudget).not.toHaveBeenCalled();
   });
 
   it('accepts the idempotency key via the Idempotency-Key header', async () => {
@@ -490,21 +556,17 @@ describe('content topic routes', () => {
       scheduled_date: null,
       scheduled_at: undefined,
       status: undefined,
-      secretary_task_list_id: null,
-      secretary_task_list_name: null,
-      secretary_task_external_id: null,
-      calendar_event_id: null,
-      calendar_source: null,
-      secretary_sync_status: null,
-      secretary_sync_error: null,
-    });
+    }, 77, expect.stringMatching(/^server-/), { retireLegacySchedule: false });
     expect(remove.response.statusCode).toBe(200);
-    expect(getTopicById).toHaveBeenCalledWith(77, 11);
-    expect(deleteTopic).toHaveBeenCalledWith(77, 11);
+    expect(getTopicById).toHaveBeenCalledWith(77, 11, 77);
+    expect(deleteTopic).toHaveBeenCalledWith(77, 11, 77, expect.stringMatching(/^server-/), { retireLegacySchedule: false });
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
+    expect(recordContentWorkspaceProductSignal).toHaveBeenCalledTimes(2);
+    expect(recordContentWorkspaceProductSignal).toHaveBeenNthCalledWith(1, 'legacy_topics_compatibility_mutation');
+    expect(recordContentWorkspaceProductSignal).toHaveBeenNthCalledWith(2, 'legacy_topics_compatibility_mutation');
   });
 
-  it('cleans up synced Secretary artifacts before hard-deleting a topic', async () => {
+  it('cleans up imported Secretary artifacts before soft-deleting the canonical item', async () => {
     topicStore.set(11, {
       id: 11,
       user_id: 77,
@@ -533,8 +595,136 @@ describe('content topic routes', () => {
       id: 11,
       secretary_task_external_id: 'task-1',
       calendar_event_id: 'evt-1',
+    }), { tenantId: 77 });
+    expect(deleteTopic).toHaveBeenCalledWith(77, 11, 77, expect.stringMatching(/^server-/), { retireLegacySchedule: true });
+  });
+
+  it('passes the authenticated tenant to Secretary cleanup before a scoped schedule update', async () => {
+    topicStore.set(11, {
+      id: 11,
+      user_id: 77,
+      tenant_id: 88,
+      owner_user_id: 77,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
+      title: 'Tenant 88 filming block',
+      notes: null,
+      scheduled_date: '2026-04-25',
+      scheduled_at: '2026-04-25T09:30:00',
+      status: 'planned',
+      secretary_task_list_id: 'list-88',
+      secretary_task_list_name: 'Content',
+      secretary_task_external_id: 'task-88',
+      calendar_event_id: 'evt-88',
+      calendar_source: 'google',
+      secretary_sync_status: 'task_calendar_synced',
+      secretary_sync_error: null,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    });
+
+    const update = await dispatch('PATCH', '/topics/11', {
+      scheduledDate: null,
+      scheduledDateTime: null,
+    }, 77, 88);
+
+    expect(update.response.statusCode).toBe(200);
+    expect(cleanupContentTopicSecretaryArtifacts).toHaveBeenCalledWith(77, expect.objectContaining({
+      id: 11,
+      tenant_id: 88,
+      secretary_task_external_id: 'task-88',
+    }), { tenantId: 88 });
+    expect(updateTopic).toHaveBeenCalledWith(
+      77,
+      11,
+      expect.objectContaining({ scheduled_date: null, scheduled_at: null }),
+      88,
+      expect.stringMatching(/^server-/),
+      { retireLegacySchedule: true },
+    );
+  });
+
+  it('replays keyed updates before budget consumption or external cleanup', async () => {
+    const replay = {
+      id: 11,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      title: 'Already updated',
+      notes: null,
+      scheduled_date: null,
+      scheduled_at: null,
+      status: 'drafting',
+      workspace_item_id: 111,
+      compatibility_artifact_id: 211,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:10:00.000Z',
+    };
+    topicStore.set(11, { ...replay, visibility_scope: 'user_private', scope_status: 'active' });
+    vi.mocked(findContentTopicCompatibilityUpdateReplay).mockReturnValueOnce(replay as any);
+
+    const { response } = await dispatch('PATCH', '/topics/11', {
+      title: 'Already updated',
+      idempotencyKey: 'update-replay-001',
+    }, 77);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.idempotentReplay).toBe(true);
+    expect(findContentTopicCompatibilityUpdateReplay).toHaveBeenCalledWith(expect.objectContaining({
+      compatTopicId: 11,
+      title: 'Already updated',
+      idempotencyKey: 'update-replay-001',
     }));
-    expect(deleteTopic).toHaveBeenCalledWith(77, 11);
+    expect(consumeResourceBudget).not.toHaveBeenCalled();
+    expect(cleanupContentTopicSecretaryArtifacts).not.toHaveBeenCalled();
+    expect(updateTopic).not.toHaveBeenCalled();
+  });
+
+  it('replays keyed deletes before budget consumption or a second provider cleanup', async () => {
+    vi.mocked(hasContentTopicCompatibilityDeleteReplay).mockReturnValueOnce(true);
+
+    const { response } = await dispatch('DELETE', '/topics/11', {
+      idempotencyKey: 'delete-replay-001',
+    }, 77);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({ deleted: true, id: 11, idempotentReplay: true });
+    expect(hasContentTopicCompatibilityDeleteReplay).toHaveBeenCalledWith(
+      { tenantId: 77, userId: 77 },
+      11,
+      { idempotencyKey: 'delete-replay-001' },
+    );
+    expect(consumeResourceBudget).not.toHaveBeenCalled();
+    expect(cleanupContentTopicSecretaryArtifacts).not.toHaveBeenCalled();
+    expect(deleteTopic).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate a same-user topic from a different tenant scope', async () => {
+    topicStore.set(11, {
+      id: 11,
+      user_id: 77,
+      tenant_id: 88,
+      owner_user_id: 77,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
+      title: 'Private tenant 88 topic',
+      notes: 'Must not cross the tenant boundary',
+      scheduled_date: null,
+      scheduled_at: null,
+      status: 'planned',
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    });
+
+    const update = await dispatch('PATCH', '/topics/11', { title: 'Cross-tenant edit' }, 77, 77);
+    const remove = await dispatch('DELETE', '/topics/11', {}, 77, 77);
+
+    expect(update.response.statusCode).toBe(404);
+    expect(remove.response.statusCode).toBe(404);
+    expect(getTopicById).toHaveBeenCalledWith(77, 11, 77);
+    expect(updateTopic).not.toHaveBeenCalled();
+    expect(deleteTopic).not.toHaveBeenCalled();
+    expect(topicStore.get(11)?.title).toBe('Private tenant 88 topic');
   });
 
   it('refuses topic routes without a valid authenticated user scope', async () => {
@@ -544,5 +734,6 @@ describe('content topic routes', () => {
     expect(response.body.error.code).toBe('UNAUTHORIZED');
     expect(addTopic).not.toHaveBeenCalled();
     expect(ensureValidScope).toHaveBeenCalledWith(expect.anything(), 0, 'content_route_topics_create');
+    expect(recordContentWorkspaceProductSignal).not.toHaveBeenCalled();
   });
 });

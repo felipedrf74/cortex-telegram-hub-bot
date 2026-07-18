@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { analyzeAndImproveScript, buildScriptPreflightBrief } from './content-script-quality';
+import { buildContentAgencyPackage } from './content-agency';
 
 export type ContentEvalMode = 'fixture' | 'local_engine' | 'real_provider';
 
@@ -85,7 +86,8 @@ export type ContentFailureType =
   | 'raw_prompt_artifact'
   | 'weak_compliance_review'
   | 'unclear_next_action'
-  | 'script_actionability_failure';
+  | 'script_actionability_failure'
+  | 'lost_user_edits';
 
 export type ContentWorkflowEvent =
   | 'add_reference'
@@ -184,6 +186,9 @@ export interface ContentQualityRubricDimension {
 }
 
 export interface ContentProviderTrace {
+  /** The mode requested by the operator. This is not execution evidence. */
+  requestedMode: ContentEvalMode;
+  /** The mode that actually produced this case. Simulated cases are always fixtures. */
   mode: ContentEvalMode;
   provider: 'fixture' | 'live-routing';
   model: 'deterministic-content-fixture' | 'routed-by-provider-config';
@@ -193,6 +198,8 @@ export interface ContentProviderTrace {
   preservesLiveRouting: boolean;
   realProviderCalls: boolean;
   productionDataUsed: boolean;
+  executionKind: 'contract_fixture';
+  executionStatus: 'executed';
 }
 
 export interface ContentSimulationTurn {
@@ -218,7 +225,11 @@ export interface ContentSimulatedOutput {
   hookStrength: 'strong' | 'adequate' | 'weak';
   structureComplete: boolean;
   narrativeFit: boolean;
-  unsupportedClaimsRemaining: number;
+  /** Null means no executable claim review ran for this deterministic contract case. */
+  unsupportedClaimsRemaining: number | null;
+  claimReviewStatus: 'executed' | 'not_executed' | 'failed';
+  userEditsPreserved: boolean | null;
+  editPreservationStatus: 'executed' | 'not_executed' | 'failed';
   noveltyStatus: 'new_angle' | 'intentional_reuse' | 'duplicate_suppressed' | 'unknown';
   approvalRequired: boolean;
   secretaryScheduleRequested: boolean;
@@ -231,7 +242,8 @@ export interface ContentSimulatedOutput {
   providerTrace: ContentProviderTrace;
 }
 
-export type ContentDimensionScores = Record<ContentQualityDimension, number>;
+/** Null means that the dimension was not executed and must not be represented as a passing score. */
+export type ContentDimensionScores = Record<ContentQualityDimension, number | null>;
 
 export interface ContentEvalCaseResult {
   id: string;
@@ -285,12 +297,46 @@ export interface ContentEvalExternalLaneEvidence {
   sampleCount: number;
   artifactPath?: string;
   generatedAt?: string;
+  /** Required for a real-provider lane. Run metadata alone is not provider-call evidence. */
+  providerInvocations?: ContentEvalProviderInvocationProvenance[];
+}
+
+export interface ContentEvalProviderInvocationProvenance {
+  invocationId: string;
+  provider: string;
+  model: string;
+  tier: 'chat' | 'toolUse';
+  category: 'content_day_to_day_eval';
+  status: 'succeeded' | 'failed';
+  capturedAt: string;
+  routingPath: 'provider_registry';
+}
+
+export type ContentEvalExecutionStatus = 'executed' | 'not_executed' | 'failed' | 'invalid_evidence';
+
+export interface ContentEvalLaneExecutionEvidence {
+  kind: 'contract_fixture' | 'local_executable' | 'external_executable';
+  status: ContentEvalExecutionStatus;
+  source: string;
+  invocationCount: number;
+  failureCode?: 'engine_exception' | 'invalid_engine_output' | 'missing_invocation_provenance' | 'invalid_invocation_provenance';
+  providerInvocations?: ContentEvalProviderInvocationProvenance[];
+}
+
+export interface ContentEvalLaneEvidence {
+  fixture: ContentEvalLaneExecutionEvidence;
+  localEngine: ContentEvalLaneExecutionEvidence;
+  scriptQuality: ContentEvalLaneExecutionEvidence;
+  criticalUser: ContentEvalLaneExecutionEvidence;
+  realProviderSample: ContentEvalLaneExecutionEvidence;
+  iosExtraction: ContentEvalLaneExecutionEvidence;
 }
 
 export interface ContentEvalAggregate {
   caseCount: number;
   overallScore: number;
   laneScores: ContentEvalLaneScores;
+  laneEvidence: ContentEvalLaneEvidence;
   minScore: number;
   passCount: number;
   partialCount: number;
@@ -322,6 +368,26 @@ export interface ContentEvalRunOptions {
     packageVersion?: string;
     gitBranch?: string;
     gitCommit?: string;
+    /** Test/integration seam. Throwing or returning malformed output fails the engine lane closed. */
+    evaluateLocalPackage?: () => ContentEvalLocalPackageResult;
+  };
+  /** Used by permanent negative controls to prove unsafe simulated states fail the gate. */
+  simulationTransform?: (
+    output: ContentSimulatedOutput,
+    context: { persona: ContentEvalPersona; scenario: ContentEvalScenario },
+  ) => ContentSimulatedOutput;
+}
+
+export interface ContentEvalLocalPackageResult {
+  blockers: unknown[];
+  scriptVariants: unknown[];
+  hookBank: unknown[];
+  quality: { score: number };
+  criticalUserReview: {
+    canExtractNextStep: boolean;
+    canExplainWhy: boolean;
+    seesEvidence: boolean;
+    rejectsAsGeneric: boolean;
   };
 }
 
@@ -849,15 +915,18 @@ function scenario(input: Omit<ContentEvalScenario, 'requiresReference' | 'requir
 
 function providerTrace(mode: ContentEvalMode): ContentProviderTrace {
   return {
-    mode,
-    provider: mode === 'fixture' ? 'fixture' : 'live-routing',
-    model: mode === 'fixture' ? 'deterministic-content-fixture' : 'routed-by-provider-config',
-    tier: mode === 'fixture' ? 'fixture' : 'chat',
+    requestedMode: mode,
+    mode: 'fixture',
+    provider: 'fixture',
+    model: 'deterministic-content-fixture',
+    tier: 'fixture',
     category: 'content_day_to_day_eval',
     fallbackUsed: false,
-    preservesLiveRouting: true,
-    realProviderCalls: mode === 'real_provider',
+    preservesLiveRouting: false,
+    realProviderCalls: false,
     productionDataUsed: false,
+    executionKind: 'contract_fixture',
+    executionStatus: 'executed',
   };
 }
 
@@ -918,7 +987,10 @@ function simulateContentWorkflow(persona: ContentEvalPersona, scenario: ContentE
     hookStrength: hookStrengthForScenario(scenario),
     structureComplete: scenario.requiredWorkflow.every((event) => workflowEvents.includes(event)),
     narrativeFit: scenario.id !== 'radar_dismiss_and_explain' || workflowEvents.includes('explain_recommendation'),
-    unsupportedClaimsRemaining: scenario.id === 'remove_unsupported_claims' ? 0 : 0,
+    unsupportedClaimsRemaining: null,
+    claimReviewStatus: 'not_executed',
+    userEditsPreserved: null,
+    editPreservationStatus: 'not_executed',
     noveltyStatus,
     approvalRequired: scenario.requiresApproval || scenario.crossSkill,
     secretaryScheduleRequested: workflowEvents.includes('secretary_schedule_request'),
@@ -1020,7 +1092,9 @@ function scoreCase(persona: ContentEvalPersona, scenario: ContentEvalScenario, o
   scores.hook_quality = output.hookStrength === 'strong' ? 96 : output.hookStrength === 'adequate' ? 88 : 55;
   scores.narrative_quality = output.narrativeFit ? 95 : 62;
   scores.source_grounding = referenceRequiredButMissing ? (output.clarificationAsked ? 84 : 45) : output.sourceAttribution ? 96 : 52;
-  scores.claim_safety = output.unsupportedClaimsRemaining === 0 ? 97 : 45;
+  scores.claim_safety = output.claimReviewStatus === 'executed'
+    ? output.unsupportedClaimsRemaining === 0 ? 97 : 45
+    : null;
   scores.actionability = output.nextActionsProvided && (output.secretaryScheduleRequested || !scenario.title.toLowerCase().includes('schedule')) ? 96 : 76;
   scores.novelty = output.noveltyStatus === 'duplicate_suppressed' ? 97 : output.noveltyStatus === 'new_angle' ? 95 : 91;
   scores.reuse_quality = scenario.requiresReuse ? (output.noveltyStatus === 'intentional_reuse' ? 95 : 80) : 92;
@@ -1039,8 +1113,8 @@ function scoreCase(persona: ContentEvalPersona, scenario: ContentEvalScenario, o
   scores.next_action_extractability = output.nextActionsProvided ? 97 : 55;
 
   if (persona.scheduleCapacity === 'tight' && scenario.id === 'weekly_content_plan' && output.secretaryScheduleRequested) {
-    scores.actionability = Math.max(scores.actionability, 92);
-    scores.workflow_correctness = Math.max(scores.workflow_correctness, 93);
+    scores.actionability = Math.max(scores.actionability ?? 0, 92);
+    scores.workflow_correctness = Math.max(scores.workflow_correctness ?? 0, 93);
   }
 
   if (persona.voiceProfileStrength === 'weak') {
@@ -1059,22 +1133,26 @@ function failuresForCase(
   penalties: ContentQualityPenalty[],
 ): ContentFailureType[] {
   const failures: ContentFailureType[] = [];
-  if (scores.tenant_safety < 100) failures.push('wrong_tenant_reference');
-  if (scores.voice_fit < 75) failures.push('wrong_voice');
-  if (scores.platform_fit < 75) failures.push('wrong_platform_format');
+  if ((scores.tenant_safety ?? 0) < 100) failures.push('wrong_tenant_reference');
+  if ((scores.voice_fit ?? 0) < 75) failures.push('wrong_voice');
+  if ((scores.platform_fit ?? 0) < 75) failures.push('wrong_platform_format');
   if (scenario.requiresReference && output.referencesUsed.length > 0 && !output.sourceAttribution) failures.push('missing_source_attribution');
   if (scenario.requiresReference && output.referencesUsed.length === 0 && !output.clarificationAsked) failures.push('hallucinated_reference');
-  if (output.unsupportedClaimsRemaining > 0) failures.push('unsupported_claim');
-  if (scores.novelty < 75) failures.push('duplicate_idea');
-  if (scores.hook_quality < 70) failures.push('weak_hook');
-  if (scores.structure < 70) failures.push('poor_structure');
-  if (scores.workflow_correctness < 75) failures.push('bad_workflow_transition');
+  if (output.claimReviewStatus === 'executed' && (output.unsupportedClaimsRemaining ?? 0) > 0) failures.push('unsupported_claim');
+  if ((scores.novelty ?? 0) < 75) failures.push('duplicate_idea');
+  if ((scores.hook_quality ?? 0) < 70) failures.push('weak_hook');
+  if ((scores.structure ?? 0) < 70) failures.push('poor_structure');
+  if ((scores.workflow_correctness ?? 0) < 75) failures.push('bad_workflow_transition');
   if (scenario.requiresApproval && !output.approvalRequired) failures.push('missing_approval');
   if (scenario.crossSkill && !output.crossSkillSignalHandled) failures.push('poor_cross_skill_use');
-  if (scores.next_action_extractability < 75 || penalties.some((penalty) => penalty.id === 'unclear_cta')) failures.push('script_actionability_failure');
+  if ((scores.next_action_extractability ?? 0) < 75 || penalties.some((penalty) => penalty.id === 'unclear_cta')) failures.push('script_actionability_failure');
   if (penalties.some((penalty) => penalty.id === 'copied_structure_or_wording')) failures.push('copied_competitor_wording');
   if (penalties.some((penalty) => penalty.id === 'unsupported_metric_or_platform_claim')) failures.push('unsupported_analytics_claim');
   if (penalties.some((penalty) => penalty.id === 'raw_artifact')) failures.push('raw_prompt_artifact');
+  if (
+    output.editPreservationStatus === 'failed'
+    || (output.editPreservationStatus === 'executed' && output.userEditsPreserved !== true)
+  ) failures.push('lost_user_edits');
   return failures;
 }
 
@@ -1109,14 +1187,21 @@ function weightedScore(scores: ContentDimensionScores): number {
   let total = 0;
   let weightTotal = 0;
   for (const dimensionDef of CONTENT_QUALITY_RUBRIC) {
-    total += scores[dimensionDef.id] * dimensionDef.weight;
+    const score = scores[dimensionDef.id];
+    if (score == null) continue;
+    total += score * dimensionDef.weight;
     weightTotal += dimensionDef.weight;
   }
-  return Math.round(total / weightTotal);
+  return weightTotal > 0 ? Math.round(total / weightTotal) : 0;
 }
 
 function caseStatus(score: number, failures: ContentFailureType[]): ContentEvalCaseResult['status'] {
-  if (failures.includes('wrong_tenant_reference') || failures.includes('hallucinated_reference')) return 'fail';
+  if (
+    failures.includes('wrong_tenant_reference')
+    || failures.includes('hallucinated_reference')
+    || failures.includes('unsupported_claim')
+    || failures.includes('lost_user_edits')
+  ) return 'fail';
   if (score >= 85 && failures.length === 0) return 'pass';
   if (score >= 75) return 'partial';
   return 'fail';
@@ -1133,13 +1218,23 @@ function notesForCase(
   ];
   if (scenario.requiresReference) notes.push(`${output.referencesUsed.length} authorized reference(s) selected.`);
   if (scenario.requiresApproval) notes.push('Approval/review gate included before risky external action.');
+  if (output.claimReviewStatus !== 'executed') notes.push('Executable claim review was not run; claim-safety score is unavailable.');
+  if (output.editPreservationStatus !== 'executed') notes.push('Executable edit-preservation review was not run; preservation evidence is unavailable.');
   if (persona.voiceProfileStrength === 'weak') notes.push('Weak setup uses safe defaults plus targeted clarification.');
   if (scenario.tenantSwitch) notes.push(`Tenant switch scoped active context to ${output.tenantId}.`);
   return notes;
 }
 
-function runCase(persona: ContentEvalPersona, scenario: ContentEvalScenario, mode: ContentEvalMode): ContentEvalCaseResult {
-  const output = simulateContentWorkflow(persona, scenario, mode);
+function runCase(
+  persona: ContentEvalPersona,
+  scenario: ContentEvalScenario,
+  mode: ContentEvalMode,
+  simulationTransform?: ContentEvalRunOptions['simulationTransform'],
+): ContentEvalCaseResult {
+  const simulatedOutput = simulateContentWorkflow(persona, scenario, mode);
+  const output = simulationTransform
+    ? simulationTransform(simulatedOutput, { persona, scenario })
+    : simulatedOutput;
   const dimensionScores = scoreCase(persona, scenario, output);
   const penalties = penaltiesForCase(scenario, output);
   const failures = failuresForCase(scenario, output, dimensionScores, penalties);
@@ -1158,78 +1253,163 @@ function runCase(persona: ContentEvalPersona, scenario: ContentEvalScenario, mod
   };
 }
 
-function runtimeLaneScores(options: Pick<
+function runtimeLaneEvaluation(options: Pick<
   ContentEvalRunOptions,
-  'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence'
->): ContentEvalLaneScores {
-  const scriptSamples = [
-    analyzeAndImproveScript({
-      topic: 'AI creator operating system',
-      script: 'Today we are going to talk about AI tools.\nThis matters because creators waste hours.\nSave this.',
-      hook: '',
-      format: 'Reel',
-      cta: '',
-      preflightBrief: buildScriptPreflightBrief({ topic: 'AI creator operating system', format: 'Reel', cta: 'Save this.' }),
-    }),
-    analyzeAndImproveScript({
-      topic: 'YouTube retention diagnosis',
-      script: 'The thumbnail won the click, but the first 30 seconds lost the promise. Show the proof before the second section and ask viewers to test one intro change.',
-      hook: 'Your thumbnail did its job. Your intro broke the promise.',
-      format: 'YouTube',
-      cta: 'Test one intro change and compare retention.',
-      sources: [{ title: 'YouTube retention report', url: 'https://example.test', source_type: 'analytics', relevance_note: 'Used for retention framing' }],
-    }),
-  ];
-  const scriptQualityScore = Math.round(scriptSamples.reduce((sum, report) => sum + report.overallScore, 0) / scriptSamples.length);
-  let localEngineScore = 94;
-  let criticalUserScore = 94;
+  'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence' | 'engine'
+>): { laneScores: ContentEvalLaneScores; laneEvidence: Omit<ContentEvalLaneEvidence, 'fixture'> } {
+  let scriptQualityScore = 0;
+  let scriptQualityEvidence: ContentEvalLaneExecutionEvidence = {
+    kind: 'local_executable',
+    status: 'failed',
+    source: 'content-script-quality',
+    invocationCount: 0,
+    failureCode: 'engine_exception',
+  };
   try {
-    // Lazy-load to keep the fixture harness runnable in minimal environments
-    // that do not boot the full database/config stack.
-    process.env.TELEGRAM_BOT_TOKEN ||= 'fixture-content-eval-token';
-    process.env.TELEGRAM_ALLOWED_USER_IDS ||= '0';
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { buildContentAgencyPackage } = require('./content-agency') as typeof import('./content-agency');
-    const pkg = buildContentAgencyPackage({
-      userId: 501,
-      tenantId: 101,
-      brief: {
+    const scriptSamples = [
+      analyzeAndImproveScript({
+        topic: 'AI creator operating system',
+        script: 'Today we are going to talk about AI tools.\nThis matters because creators waste hours.\nSave this.',
+        hook: '',
+        format: 'Reel',
+        cta: '',
+        preflightBrief: buildScriptPreflightBrief({ topic: 'AI creator operating system', format: 'Reel', cta: 'Save this.' }),
+      }),
+      analyzeAndImproveScript({
+        topic: 'YouTube retention diagnosis',
+        script: 'The thumbnail won the click, but the first 30 seconds lost the promise. Show the proof before the second section and ask viewers to test one intro change.',
+        hook: 'Your thumbnail did its job. Your intro broke the promise.',
+        format: 'YouTube',
+        cta: 'Test one intro change and compare retention.',
+        sources: [{ title: 'YouTube retention report', url: 'https://example.test', source_type: 'analytics', relevance_note: 'Used for retention framing' }],
+      }),
+    ];
+    scriptQualityScore = Math.round(scriptSamples.reduce((sum, report) => sum + report.overallScore, 0) / scriptSamples.length);
+    scriptQualityEvidence = {
+      kind: 'local_executable',
+      status: 'executed',
+      source: 'content-script-quality',
+      invocationCount: scriptSamples.length,
+    };
+  } catch {
+    // Fail closed: an evaluator exception is evidence of failure, never a synthetic pass.
+  }
+
+  const localPackage = evaluateLocalPackage(options.engine?.evaluateLocalPackage);
+  const realProviderSampleScore = normalizeRealProviderLaneScore(
+    options.realProviderSampleScore,
+    options.realProviderSampleEvidence,
+  );
+  const iosExtractionScore = normalizeExternalLaneScore(options.iosExtractionScore, options.iosExtractionEvidence);
+
+  return {
+    laneScores: {
+      fixtureScore: 0,
+      localEngineScore: localPackage.localEngineScore,
+      realProviderSampleScore,
+      iosExtractionScore,
+      scriptQualityScore,
+      criticalUserScore: localPackage.criticalUserScore,
+    },
+    laneEvidence: {
+      localEngine: localPackage.evidence,
+      scriptQuality: scriptQualityEvidence,
+      criticalUser: { ...localPackage.evidence },
+      realProviderSample: realProviderLaneEvidence(options.realProviderSampleScore, options.realProviderSampleEvidence),
+      iosExtraction: externalLaneEvidence('ios-visible-text-extraction', options.iosExtractionScore, options.iosExtractionEvidence),
+    },
+  };
+}
+
+function evaluateLocalPackage(
+  evaluator?: () => ContentEvalLocalPackageResult,
+): { localEngineScore: number; criticalUserScore: number; evidence: ContentEvalLaneExecutionEvidence } {
+  try {
+    let pkg: ContentEvalLocalPackageResult;
+    if (evaluator) {
+      pkg = evaluator();
+    } else {
+      pkg = buildContentAgencyPackage({
         userId: 501,
         tenantId: 101,
-        goal: 'turn competitor pattern study into original short-form demand',
-        audience: 'founder creators building AI tools',
-        offer: 'join the beta list',
-        platform: 'TikTok',
-        objective: 'produce a proof-first original concept',
-        brandVoice: 'clear, evidence-led, premium',
-      },
-      competitors: [{
-        title: 'Competitor clip',
-        transcript: 'Founders show features before stakes. Here is the proof and before-after.',
-        url: 'https://example.test/competitor',
-      }],
-    });
-    localEngineScore = pkg.blockers.length === 0 && pkg.scriptVariants.length >= 2 && pkg.hookBank.length >= 4
+        brief: {
+          userId: 501,
+          tenantId: 101,
+          goal: 'turn competitor pattern study into original short-form demand',
+          audience: 'founder creators building AI tools',
+          offer: 'join the beta list',
+          platform: 'TikTok',
+          objective: 'produce a proof-first original concept',
+          brandVoice: 'clear, evidence-led, premium',
+        },
+        competitors: [{
+          title: 'Competitor clip',
+          transcript: 'Founders show features before stakes. Here is the proof and before-after.',
+          url: 'https://example.test/competitor',
+        }],
+      });
+    }
+
+    if (!isContentEvalLocalPackageResult(pkg)) {
+      return failedLocalPackage('invalid_engine_output');
+    }
+    const localEngineScore = pkg.blockers.length === 0 && pkg.scriptVariants.length >= 2 && pkg.hookBank.length >= 4
       ? Math.max(94, pkg.quality.score + 10)
       : 70;
-    criticalUserScore = pkg.criticalUserReview.canExtractNextStep
+    const criticalUserScore = pkg.criticalUserReview.canExtractNextStep
       && pkg.criticalUserReview.canExplainWhy
       && pkg.criticalUserReview.seesEvidence
       && !pkg.criticalUserReview.rejectsAsGeneric
       ? 96
       : 70;
+    return {
+      localEngineScore: clampScore(localEngineScore),
+      criticalUserScore: clampScore(criticalUserScore),
+      evidence: {
+        kind: 'local_executable',
+        status: 'executed',
+        source: 'content-agency.buildContentAgencyPackage',
+        invocationCount: 1,
+      },
+    };
   } catch {
-    localEngineScore = 94;
-    criticalUserScore = 94;
+    return failedLocalPackage('engine_exception');
   }
+}
+
+function failedLocalPackage(
+  failureCode: 'engine_exception' | 'invalid_engine_output',
+): { localEngineScore: 0; criticalUserScore: 0; evidence: ContentEvalLaneExecutionEvidence } {
   return {
-    fixtureScore: 0,
-    localEngineScore: Math.min(100, localEngineScore),
-    realProviderSampleScore: normalizeExternalLaneScore(options.realProviderSampleScore, options.realProviderSampleEvidence),
-    iosExtractionScore: normalizeExternalLaneScore(options.iosExtractionScore, options.iosExtractionEvidence),
-    scriptQualityScore,
-    criticalUserScore,
+    localEngineScore: 0,
+    criticalUserScore: 0,
+    evidence: {
+      kind: 'local_executable',
+      status: 'failed',
+      source: 'content-agency.buildContentAgencyPackage',
+      invocationCount: 1,
+      failureCode,
+    },
   };
+}
+
+function isContentEvalLocalPackageResult(value: unknown): value is ContentEvalLocalPackageResult {
+  if (!value || typeof value !== 'object') return false;
+  const pkg = value as Partial<ContentEvalLocalPackageResult>;
+  const review = pkg.criticalUserReview;
+  return Array.isArray(pkg.blockers)
+    && Array.isArray(pkg.scriptVariants)
+    && Array.isArray(pkg.hookBank)
+    && typeof pkg.quality?.score === 'number'
+    && Number.isFinite(pkg.quality.score)
+    && typeof review?.canExtractNextStep === 'boolean'
+    && typeof review.canExplainWhy === 'boolean'
+    && typeof review.seesEvidence === 'boolean'
+    && typeof review.rejectsAsGeneric === 'boolean';
+}
+
+function clampScore(score: number): number {
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 function normalizeExternalLaneScore(
@@ -1238,7 +1418,16 @@ function normalizeExternalLaneScore(
 ): number | null {
   if (typeof score !== 'number' || !Number.isFinite(score)) return null;
   if (!hasValidExternalLaneEvidence(evidence)) return null;
-  return Math.max(0, Math.min(100, Math.round(score)));
+  return clampScore(score);
+}
+
+function normalizeRealProviderLaneScore(
+  score: number | null | undefined,
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): number | null {
+  if (typeof score !== 'number' || !Number.isFinite(score)) return null;
+  if (!hasValidProviderInvocationEvidence(evidence)) return null;
+  return clampScore(score);
 }
 
 function hasValidExternalLaneEvidence(evidence: ContentEvalExternalLaneEvidence | null | undefined): evidence is ContentEvalExternalLaneEvidence {
@@ -1250,13 +1439,113 @@ function hasValidExternalLaneEvidence(evidence: ContentEvalExternalLaneEvidence 
     && evidence.sampleCount > 0;
 }
 
+function hasValidProviderInvocationEvidence(
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): evidence is ContentEvalExternalLaneEvidence & { providerInvocations: ContentEvalProviderInvocationProvenance[] } {
+  if (!hasValidExternalLaneEvidence(evidence) || !Array.isArray(evidence.providerInvocations)) return false;
+  if (evidence.providerInvocations.length !== evidence.sampleCount) return false;
+  const invocationIds = new Set<string>();
+  for (const invocation of evidence.providerInvocations) {
+    if (
+      !invocation
+      || typeof invocation.invocationId !== 'string'
+      || invocation.invocationId.trim().length === 0
+      || invocationIds.has(invocation.invocationId)
+      || typeof invocation.provider !== 'string'
+      || invocation.provider.trim().length === 0
+      || invocation.provider === 'fixture'
+      || typeof invocation.model !== 'string'
+      || invocation.model.trim().length === 0
+      || invocation.model === 'deterministic-content-fixture'
+      || (invocation.tier !== 'chat' && invocation.tier !== 'toolUse')
+      || invocation.category !== 'content_day_to_day_eval'
+      || invocation.status !== 'succeeded'
+      || typeof invocation.capturedAt !== 'string'
+      || !Number.isFinite(Date.parse(invocation.capturedAt))
+      || invocation.routingPath !== 'provider_registry'
+    ) return false;
+    invocationIds.add(invocation.invocationId);
+  }
+  return true;
+}
+
+function realProviderLaneEvidence(
+  score: number | null | undefined,
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): ContentEvalLaneExecutionEvidence {
+  if (score == null && evidence == null) {
+    return {
+      kind: 'external_executable',
+      status: 'not_executed',
+      source: 'provider-registry',
+      invocationCount: 0,
+      failureCode: 'missing_invocation_provenance',
+    };
+  }
+  if (!hasValidProviderInvocationEvidence(evidence)) {
+    return {
+      kind: 'external_executable',
+      status: 'invalid_evidence',
+      source: evidence?.source || 'provider-registry',
+      invocationCount: 0,
+      failureCode: Array.isArray(evidence?.providerInvocations)
+        ? 'invalid_invocation_provenance'
+        : 'missing_invocation_provenance',
+    };
+  }
+  const providerInvocations = evidence.providerInvocations.map((invocation) => ({
+    invocationId: invocation.invocationId,
+    provider: invocation.provider,
+    model: invocation.model,
+    tier: invocation.tier,
+    category: invocation.category,
+    status: invocation.status,
+    capturedAt: invocation.capturedAt,
+    routingPath: invocation.routingPath,
+  }));
+  return {
+    kind: 'external_executable',
+    status: 'executed',
+    source: evidence.source,
+    invocationCount: providerInvocations.length,
+    providerInvocations,
+  };
+}
+
+function externalLaneEvidence(
+  defaultSource: string,
+  score: number | null | undefined,
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): ContentEvalLaneExecutionEvidence {
+  const suppliedSource = typeof evidence?.source === 'string' && evidence.source.trim().length > 0
+    ? evidence.source
+    : defaultSource;
+  if (score == null && evidence == null) {
+    return { kind: 'external_executable', status: 'not_executed', source: defaultSource, invocationCount: 0 };
+  }
+  if (!hasValidExternalLaneEvidence(evidence)) {
+    return { kind: 'external_executable', status: 'invalid_evidence', source: suppliedSource, invocationCount: 0 };
+  }
+  return { kind: 'external_executable', status: 'executed', source: evidence.source, invocationCount: evidence.sampleCount };
+}
+
 function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<
   ContentEvalRunOptions,
-  'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence'
+  'mode' | 'iosExtractionScore' | 'iosExtractionEvidence' | 'realProviderSampleScore' | 'realProviderSampleEvidence' | 'engine'
 >): ContentEvalAggregate {
   const scores = cases.map((testCase) => testCase.score);
   const fixtureScore = Math.round(scores.reduce((sum, score) => sum + score, 0) / Math.max(scores.length, 1));
-  const laneScores = { ...runtimeLaneScores(options), fixtureScore };
+  const runtime = runtimeLaneEvaluation(options);
+  const laneScores = { ...runtime.laneScores, fixtureScore };
+  const laneEvidence: ContentEvalLaneEvidence = {
+    fixture: {
+      kind: 'contract_fixture',
+      status: 'executed',
+      source: 'deterministic-content-contract-fixtures',
+      invocationCount: cases.length,
+    },
+    ...runtime.laneEvidence,
+  };
   const availableLaneScores = [
     laneScores.fixtureScore,
     laneScores.localEngineScore,
@@ -1275,6 +1564,8 @@ function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<
       'missing_disclosure',
       'unsupported_analytics_claim',
       'script_actionability_failure',
+      'unsupported_claim',
+      'lost_user_edits',
     ].includes(failure))
   ).length;
   const failCount = cases.filter((testCase) => testCase.status === 'fail').length;
@@ -1287,7 +1578,10 @@ function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<
     || laneScores.scriptQualityScore < 94
     || laneScores.criticalUserScore < 92
     || (laneScores.iosExtractionScore != null && laneScores.iosExtractionScore < 90)
-    || (laneScores.realProviderSampleScore != null && laneScores.realProviderSampleScore < 90);
+    || (laneScores.realProviderSampleScore != null && laneScores.realProviderSampleScore < 90)
+    || laneEvidence.iosExtraction.status === 'invalid_evidence'
+    || laneEvidence.realProviderSample.status === 'invalid_evidence'
+    || (options.mode === 'real_provider' && laneEvidence.realProviderSample.status !== 'executed');
   const releaseGate = criticalFailureCount > 0 || failCount > 0 || coreThresholdFailed
     ? 'FAIL'
     : partialCount > 0 || laneScores.iosExtractionScore == null || laneScores.realProviderSampleScore == null
@@ -1297,6 +1591,7 @@ function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<
     caseCount: cases.length,
     overallScore,
     laneScores,
+    laneEvidence,
     minScore,
     passCount,
     partialCount,
@@ -1311,7 +1606,7 @@ export function runContentDayToDayEvaluation(options: ContentEvalRunOptions = {}
   const cases: ContentEvalCaseResult[] = [];
   for (const scenarioDef of CONTENT_SCENARIO_BANK) {
     for (const personaId of scenarioDef.personaIds) {
-      cases.push(runCase(getPersona(personaId), scenarioDef, mode));
+      cases.push(runCase(getPersona(personaId), scenarioDef, mode, options.simulationTransform));
     }
   }
 
@@ -1326,11 +1621,20 @@ export function runContentDayToDayEvaluation(options: ContentEvalRunOptions = {}
     aggregate.laneScores.iosExtractionScore == null
       ? 'iOS visible-text extraction is not part of the default fixture run; run focused iOS extraction tests before claiming a clean PASS.'
       : null,
-    options.realProviderSampleScore != null && !hasValidExternalLaneEvidence(options.realProviderSampleEvidence)
-      ? 'Real-provider sample score was ignored because it did not include run provenance.'
+    options.realProviderSampleScore != null && !hasValidProviderInvocationEvidence(options.realProviderSampleEvidence)
+      ? 'Real-provider sample score was ignored because it did not include valid captured provider invocation provenance.'
       : null,
     aggregate.laneScores.realProviderSampleScore == null
       ? 'Real provider calls are intentionally off by default; use limited real-provider samples only for representative quality checks.'
+      : null,
+    cases.some((testCase) => testCase.output.claimReviewStatus !== 'executed')
+      ? 'Executable claim review was not run for deterministic contract cases; claim-safety dimensions are recorded as unavailable, not passing.'
+      : null,
+    cases.some((testCase) => testCase.output.editPreservationStatus !== 'executed')
+      ? 'Executable edit-preservation review was not run for deterministic contract cases; lost-edit safety is recorded as unavailable, not passing.'
+      : null,
+    aggregate.laneEvidence.localEngine.status === 'failed'
+      ? `Local content engine evaluation failed closed (${aggregate.laneEvidence.localEngine.failureCode ?? 'engine_failure'}).`
       : null,
     'Secretary scheduling and portal rendering are represented as contract events here, not external-provider mutation proof.',
   ].filter((condition): condition is string => Boolean(condition));
@@ -1386,6 +1690,9 @@ Mode: \`${result.mode}\`
 | Critical-user score | ${result.aggregate.laneScores.criticalUserScore}/100 |
 | iOS extraction score | ${result.aggregate.laneScores.iosExtractionScore ?? 'not run'} |
 | Real-provider sample score | ${result.aggregate.laneScores.realProviderSampleScore ?? 'not run'} |
+| Fixture evidence | ${result.aggregate.laneEvidence.fixture.status} (${result.aggregate.laneEvidence.fixture.kind}) |
+| Local engine evidence | ${result.aggregate.laneEvidence.localEngine.status} (${result.aggregate.laneEvidence.localEngine.invocationCount} invocation(s)) |
+| Real-provider evidence | ${result.aggregate.laneEvidence.realProviderSample.status} (${result.aggregate.laneEvidence.realProviderSample.invocationCount} captured invocation(s)) |
 | Minimum case score | ${result.aggregate.minScore}/100 |
 | Cases | ${result.aggregate.caseCount} |
 | Pass | ${result.aggregate.passCount} |
@@ -1408,8 +1715,10 @@ ${failureRows}
 
 ## Routing And Data Controls
 
-- Fixture mode uses deterministic content fixtures and does not call production providers.
-- Provider metadata is still recorded as \`content_day_to_day_eval\` so live-routing observability remains part of the contract.
+- Deterministic contract cases always identify themselves as fixtures, even when the operator requests \`local_engine\` or \`real_provider\` mode.
+- A requested mode is not execution evidence. Real-provider calls are counted only from validated, captured provider-registry invocation provenance.
+- Claim-safety is \`unavailable\` for contract cases where executable claim review did not run; it is never synthesized as a passing score.
+- Edit-preservation is \`unavailable\` for contract cases where no save/revision execution ran; it is never synthesized as preserved.
 - The harness does not hardcode Gemini, OpenAI, Anthropic, or any single runtime provider.
 - Production data used: \`false\`.
 

@@ -9,6 +9,20 @@ async function getTenantScopeModule() {
 
 let testDb: Database.Database;
 
+async function seedCanonicalContentItem(input: {
+  tenantId: number;
+  userId: number;
+  title: string;
+}): Promise<number> {
+  const { createContentWorkspaceItem } = await import('../../src/services/content-workspace');
+  return createContentWorkspaceItem({
+    scope: { tenantId: input.tenantId, userId: input.userId },
+    itemType: 'content_item',
+    title: input.title,
+    idempotencyKey: `settings-fixture:${input.tenantId}:${input.userId}:${input.title}`,
+  }, testDb).value.id;
+}
+
 
 interface MockRes {
   statusCode: number;
@@ -417,6 +431,56 @@ describe('Settings language route', () => {
     ]);
   });
 
+  it('exports owner-scoped Content workspace tables only for the authenticated tenant', async () => {
+    await seedCanonicalContentItem({ tenantId: 44, userId: 1, title: 'Tenant 44 idea' });
+    await seedCanonicalContentItem({ tenantId: 55, userId: 1, title: 'Tenant 55 idea' });
+    testDb.prepare(`
+      INSERT INTO content_reference_registry (
+        tenant_id, owner_user_id, reference_type, source_identifier,
+        title, created_by, updated_by
+      ) VALUES
+        (44, 1, 'url', 'https://example.test/tenant-44', 'Tenant 44 source', 1, 1),
+        (55, 1, 'url', 'https://example.test/tenant-55', 'Tenant 55 source', 1, 1)
+    `).run();
+
+    const res = await dispatchAccountExport(1, 44);
+    expect(res.statusCode).toBe(200);
+    const tables = res.body.data.contentWorkspace.tables as Array<{
+      name: string;
+      records: Array<Record<string, unknown>>;
+    }>;
+    const records = (name: string) => tables.find((table) => table.name === name)?.records;
+
+    expect(records('content_domain_objects')).toEqual([
+      expect.objectContaining({ title: 'Tenant 44 idea', tenant_id: 44, owner_user_id: 1 }),
+    ]);
+    expect(records('content_reference_registry')).toEqual([
+      expect.objectContaining({ title: 'Tenant 44 source', tenant_id: 44, owner_user_id: 1 }),
+    ]);
+    expect(JSON.stringify(res.body.data.contentWorkspace)).not.toContain('Tenant 55');
+  });
+
+  it('keeps the legacy contentNotifications export alias inside the authenticated tenant', async () => {
+    testDb.prepare(`
+      INSERT INTO content_notifications (
+        user_id, type, title, body, tenant_id, owner_user_id,
+        visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+      ) VALUES
+        (1, 'script_ready', 'Tenant 44 notification', 'Visible', 44, 1,
+         'user_private', 'unread', 'active', 1, 1),
+        (1, 'script_ready', 'Tenant 55 notification', 'Private to another tenant', 55, 1,
+         'user_private', 'unread', 'active', 1, 1)
+    `).run();
+
+    const res = await dispatchAccountExport(1, 44);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.contentNotifications).toEqual([
+      expect.objectContaining({ title: 'Tenant 44 notification', tenant_id: 44 }),
+    ]);
+    expect(JSON.stringify(res.body.data.contentNotifications)).not.toContain('Tenant 55');
+  });
+
   it('audit-logs account deletion after cascade so the row survives erasure', async () => {
     const res = await dispatchAccountDelete(1);
 
@@ -432,6 +496,27 @@ describe('Settings language route', () => {
     expect(audit).toBeTruthy();
     expect(audit.ip_address).toBe('203.0.113.10');
     expect(JSON.parse(audit.details).tableCounts).toBeDefined();
+  });
+
+  it('does not report account deletion success when a Content delete fails', async () => {
+    await seedCanonicalContentItem({ tenantId: 1, userId: 1, title: 'Deletion must roll back' });
+    testDb.exec(`
+      CREATE TRIGGER fail_settings_content_delete
+      BEFORE DELETE ON content_domain_objects
+      WHEN OLD.owner_user_id = 1
+      BEGIN
+        SELECT RAISE(ABORT, 'injected settings Content deletion failure');
+      END
+    `);
+
+    const res = await dispatchAccountDelete(1);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.data?.deleted).not.toBe(true);
+    expect(testDb.prepare('SELECT id FROM users WHERE id = 1').get()).toBeTruthy();
+    expect(testDb.prepare('SELECT title FROM content_domain_objects WHERE owner_user_id = 1').get())
+      .toMatchObject({ title: 'Deletion must roll back' });
   });
 
   it('fails closed on invalid tenant scope for push preferences read', async () => {

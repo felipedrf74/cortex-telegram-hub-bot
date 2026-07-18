@@ -403,7 +403,12 @@ export async function buildSimpleStateContext(
   }
 
   // Cross-domain shared context
-  const sharedCtx = includeScopedContext ? getSharedMemorySummary(userId!, tenantId) : '';
+  // Content prompts must not receive the all-domain free-form memory dump.
+  // buildChatPromptContextBlock below keeps Content-owned memory and routes
+  // peer facts through the purpose-limited derived-context gate.
+  const sharedCtx = includeScopedContext && domain !== 'content'
+    ? getSharedMemorySummary(userId!, tenantId)
+    : '';
   if (sharedCtx) parts.push(sharedCtx);
 
   if (domain === 'cooking' && hasUserScope) {
@@ -416,7 +421,10 @@ export async function buildSimpleStateContext(
     }
   }
 
-  if (includeScopedContext) {
+  // Content has one canonical prompt path through chat-context-engine. That
+  // compiler attaches the purpose-gated projection and prevents an opted-in
+  // cache entry from being reused by a default turn.
+  if (includeScopedContext && domain !== 'content') {
     const decisionCtx = await buildSharedDecisionContext(domain, userId!, tenantId);
     if (decisionCtx) parts.push(`\n${decisionCtx}`);
   }
@@ -429,7 +437,9 @@ export async function buildSimpleStateContext(
   // The 5 AM pre-build cron was removed 2026-07-03: nothing consumed it on
   // schedule, and mid-day invalidations left chat context-less until the
   // next morning. See src/services/context-engine.ts.
-  if (includeScopedContext) {
+  // The legacy daily cache includes raw task/calendar titles, session names,
+  // readiness scores, and counts, so it is not a valid Content projection.
+  if (includeScopedContext && domain !== 'content') {
     const dailyContext = await getOrBuildDailyContext(userId!, tenantId);
     if (dailyContext) {
       parts.push('\n--- Daily Context ---\n' + dailyContext);

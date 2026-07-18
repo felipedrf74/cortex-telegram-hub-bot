@@ -276,13 +276,17 @@ describe('Content Creation security red-team controls', () => {
       tenantId: 101,
       objectType: 'script',
       title: 'Private draft',
-      editorialState: 'drafted',
+      editorialState: 'reviewed',
+      content: { format: 'plain_text', text: 'A user-authored script ready for review.' },
+      idempotencyKey: 'security-red-team-private-draft',
     });
     const approved = transitionContentWorkflow({
       userId: 501,
       tenantId: 101,
       objectId: draft.id,
       action: 'approve_draft',
+      expectedWorkflowVersion: draft.workflowVersion,
+      idempotencyKey: 'security-red-team-approve-private-draft',
     });
     const publishBlocked = transitionContentWorkflow({
       userId: 501,
@@ -290,19 +294,9 @@ describe('Content Creation security red-team controls', () => {
       objectId: draft.id,
       action: 'mark_published',
     });
-    const sharedCalendarItem = createContentWorkflowObject({
-      userId: 501,
-      tenantId: 101,
-      visibilityScope: 'tenant_shared',
-      objectType: 'content_calendar_item',
-      title: 'Shared editorial block',
-      editorialState: 'approved',
-    });
-    const scheduleBlocked = transitionContentWorkflow({
-      userId: 501,
-      tenantId: 101,
-      objectId: sharedCalendarItem.id,
+    const scheduleBlocked = evaluateContentApprovalRequirements({
       action: 'schedule_content',
+      visibilityScope: 'tenant_shared',
     });
     const deletion = evaluateContentApprovalRequirements({
       action: 'delete_draft',
@@ -318,10 +312,20 @@ describe('Content Creation security red-team controls', () => {
     });
 
     expect(approved.ok).toBe(true);
-    expect(publishBlocked.status).toBe('approval_required');
-    expect(publishBlocked.reasonCodes).toContain('publish_requires_human_approval');
-    expect(scheduleBlocked.status).toBe('approval_required');
+    expect(publishBlocked.status).toBe('replacement_required');
+    expect(publishBlocked.reasonCodes).toContain('CONTENT_PUBLICATION_CONFIRMATION_REQUIRED');
+    expect(publishBlocked.replacement?.publicationExecution).toBe('not_performed');
+    expect(scheduleBlocked.approvalRequired).toBe(true);
     expect(scheduleBlocked.reasonCodes).toContain('tenant_shared_scheduling_requires_approval');
+    expect(() => createContentWorkflowObject({
+      userId: 501,
+      tenantId: 101,
+      visibilityScope: 'tenant_shared',
+      objectType: 'content_calendar_item',
+      title: 'Shared editorial block',
+      editorialState: 'drafted',
+      idempotencyKey: 'security-red-team-shared-draft',
+    })).toThrow(/private/i);
     expect(deletion.reasonCodes).toContain('draft_removal_requires_confirmation');
     expect(voiceChange.reasonCodes).toContain('brand_voice_change_requires_approval');
     expect(sensitiveSignal.reasonCodes).toContain('sensitive_cross_skill_signal_requires_review');

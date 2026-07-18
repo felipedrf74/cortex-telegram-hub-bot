@@ -51,13 +51,21 @@ import {
   storeScript,
   getRecentScripts,
   getScriptByPipelineId,
-  logPerformanceFeedback,
   getPerformanceSummary,
   upsertLearnedPattern,
   getLearnedPatterns,
   getArtifactChain,
 } from '../../src/services/content-learning-store';
 import { buildContentCreativeProfileContext } from '../../src/services/content-memory-profile';
+import {
+  createContentArtifact,
+  createContentWorkspaceItem,
+} from '../../src/services/content-workspace';
+import { saveGeneratedScriptToWorkspace } from '../../src/services/content-workspace-capture';
+import {
+  recordContentPerformanceOutcome,
+  type RecordContentPerformanceOutcomeInput,
+} from '../../src/services/content-performance-lineage';
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Script Text Durable Storage
@@ -65,7 +73,13 @@ import { buildContentCreativeProfileContext } from '../../src/services/content-m
 
 describe('content-learning-store: script storage', () => {
   beforeEach(() => {
-    testDb = createMigratedTestDatabase();
+    testDb = createMigratedTestDatabase({
+      excludeFiles: [
+        '246_content_pipeline_workspace_exit.sql',
+        '252_content_legacy_script_workspace_parity.sql',
+        '250_content_performance_workspace_lineage.sql',
+      ],
+    });
   });
   afterEach(() => testDb?.close());
 
@@ -196,8 +210,8 @@ describe('content-learning-store: performance feedback', () => {
   });
   afterEach(() => testDb?.close());
 
-  it('logPerformanceFeedback stores metrics', () => {
-    const id = logPerformanceFeedback({
+  it('recordContentPerformanceOutcome stores metrics', () => {
+    const id = recordCanonicalPerformance({
       views: 5000,
       retentionPct: 45.2,
       likes: 300,
@@ -217,8 +231,8 @@ describe('content-learning-store: performance feedback', () => {
   });
 
   it('getPerformanceSummary aggregates correctly', () => {
-    logPerformanceFeedback({ views: 1000, retentionPct: 40, likes: 100, userId: 1 });
-    logPerformanceFeedback({ views: 3000, retentionPct: 60, likes: 200, userId: 1 });
+    recordCanonicalPerformance({ views: 1000, retentionPct: 40, likes: 100, userId: 1 });
+    recordCanonicalPerformance({ views: 3000, retentionPct: 60, likes: 200, userId: 1 });
 
     const summary = getPerformanceSummary(1, 30);
     expect(summary.count).toBe(2);
@@ -228,7 +242,7 @@ describe('content-learning-store: performance feedback', () => {
   });
 
   it('stores packaging decisions in performance lineage', () => {
-    logPerformanceFeedback({
+    recordCanonicalPerformance({
       views: 2400,
       retentionPct: 58,
       hookUsed: 'Curiosity',
@@ -249,8 +263,8 @@ describe('content-learning-store: performance feedback', () => {
   });
 
   it('feedback is user-scoped', () => {
-    logPerformanceFeedback({ views: 1000, retentionPct: 40, userId: 1 });
-    logPerformanceFeedback({ views: 5000, retentionPct: 80, userId: 2 });
+    recordCanonicalPerformance({ views: 1000, retentionPct: 40, userId: 1 });
+    recordCanonicalPerformance({ views: 5000, retentionPct: 80, userId: 2 });
 
     const summary1 = getPerformanceSummary(1, 30);
     const summary2 = getPerformanceSummary(2, 30);
@@ -261,8 +275,8 @@ describe('content-learning-store: performance feedback', () => {
   });
 
   it('feedback summaries are isolated by tenant for the same numeric user ID', () => {
-    logPerformanceFeedback({ views: 1200, retentionPct: 41, userId: 100, tenantId: 1 });
-    logPerformanceFeedback({ views: 9800, retentionPct: 88, userId: 100, tenantId: 2 });
+    recordCanonicalPerformance({ views: 1200, retentionPct: 41, userId: 100, tenantId: 1 });
+    recordCanonicalPerformance({ views: 9800, retentionPct: 88, userId: 100, tenantId: 2 });
 
     const tenantOne = getPerformanceSummary(100, 30, 1);
     const tenantTwo = getPerformanceSummary(100, 30, 2);
@@ -278,13 +292,13 @@ describe('content-learning-store: performance feedback', () => {
   it('feedback.json is no longer needed', () => {
     // The canonical store is SQLite, not the JSON file.
     // Verify the DB path works without any JSON file.
-    logPerformanceFeedback({ views: 100, retentionPct: 50, userId: 1 });
+    recordCanonicalPerformance({ views: 100, retentionPct: 50, userId: 1 });
     const summary = getPerformanceSummary(1, 30);
     expect(summary.count).toBe(1);
   });
 
   it('turns strong performance feedback into user-scoped content memory', () => {
-    logPerformanceFeedback({
+    recordCanonicalPerformance({
       views: 8000,
       retentionPct: 62,
       likes: 450,
@@ -313,7 +327,7 @@ describe('content-learning-store: performance feedback', () => {
   });
 
   it('turns weak performance feedback into avoid/rework memory', () => {
-    logPerformanceFeedback({
+    recordCanonicalPerformance({
       views: 1200,
       retentionPct: 18,
       likes: 4,
@@ -338,7 +352,7 @@ describe('content-learning-store: performance feedback', () => {
   });
 
   it('keeps performance-derived memory scoped to the feedback user and tenant', () => {
-    logPerformanceFeedback({
+    recordCanonicalPerformance({
       views: 9000,
       retentionPct: 70,
       hookUsed: 'Private winning hook',
@@ -530,84 +544,29 @@ describe('content-learning-store: artifact chain', () => {
   });
   afterEach(() => testDb?.close());
 
-  it('traces full chain from pipeline to script and performance', () => {
-    // Create topic feedback
-    testDb.prepare(`
-      INSERT INTO content_topic_feedback (
-        topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id,
-        tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES ('AI Fitness', 'tech', 'youtube', 'approved', 'manual', 'Best hook', 'Trending now', 1, 1, 1, 'user_private', 'active')
-    `).run();
-    const feedbackId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+  it('traces canonical workspace item, artifact, and immutable revision', () => {
+    const { itemId } = seedCanonicalScript({ tenantId: 1, userId: 1 }, 'AI Fitness', 'Full script text here...');
 
-    // Create pipeline entry
-    testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_feedback_id, topic_title, niche, stage, script_path, user_id,
-        tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES (?, 'AI Fitness', 'tech', 'scripted', '/path/to/script.docx', 1, 1, 1, 'user_private', 'active')
-    `).run(feedbackId);
-    const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+    const chain = getArtifactChain(itemId, 1, 1);
 
-    // Store script text
-    storeScript({
-      pipelineId,
-      topicFeedbackId: feedbackId,
-      topic: 'AI Fitness',
-      format: 'youtube',
-      scriptText: 'Full script text here...',
-      hook: 'Opening hook about AI',
-      titleOptions: ['Title 1', 'Title 2'],
-      hashtags: ['#ai', '#fitness'],
-      caption: 'Pipeline caption',
-      cta: 'Pipeline CTA',
-      userId: 1,
-      tenantId: 1,
-    });
-
-    // Log performance
-    logPerformanceFeedback({
-      pipelineId,
-      views: 10000,
-      retentionPct: 55,
-      likes: 800,
-      userId: 1,
-      tenantId: 1,
-    });
-
-    // Trace the chain
-    const chain = getArtifactChain(pipelineId, 1, 1);
-
-    expect(chain.topicFeedback).not.toBeNull();
-    expect(chain.topicFeedback!.topic).toBe('AI Fitness');
-    expect(chain.topicFeedback!.sentiment).toBe('approved');
-
+    expect(chain.availability).toBe('available');
+    expect(chain.source).toBe('content_workspace');
+    expect(chain.workspaceItem?.title).toBe('AI Fitness');
+    expect(chain.identifier).toMatchObject({ workspaceItemId: itemId, resolvedAs: 'workspace_item' });
     expect(chain.pipeline).not.toBeNull();
-    expect(chain.pipeline!.stage).toBe('scripted');
+    expect(chain.pipeline!.stage).toBe('active');
 
     expect(chain.script).not.toBeNull();
     expect(chain.script!.scriptText).toBe('Full script text here...');
-    expect(chain.script!.hook).toBe('Opening hook about AI');
-    expect(chain.script!.titleOptions).toEqual(['Title 1', 'Title 2']);
-    expect(chain.script!.hashtags).toEqual(['#ai', '#fitness']);
-    expect(chain.script!.caption).toBe('Pipeline caption');
-    expect(chain.script!.cta).toBe('Pipeline CTA');
+    expect(chain.script!.content).toEqual({ format: 'plain_text', text: 'Full script text here...' });
+    expect(chain.compatibility.legacyArchiveRead).toBe(false);
 
-    expect(chain.performance).toHaveLength(1);
-    expect(chain.performance[0].views).toBe(10000);
+    expect(chain.performance).toEqual([]);
+    expect(chain.compatibility.performanceAssociation).toBe('not_modeled');
   });
 
-  it('returns only learned patterns from the pipeline niche category', () => {
-    testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_title, niche, stage, user_id,
-        tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES ('Pattern scoped topic', 'tech', 'scripted', 1, 1, 1, 'user_private', 'active')
-    `).run();
-    const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+  it('does not guess learned-pattern linkage without canonical association evidence', () => {
+    const { itemId } = seedCanonicalScript({ tenantId: 1, userId: 1 }, 'Pattern scoped topic', 'Draft');
 
     upsertLearnedPattern({
       category: 'tech',
@@ -624,60 +583,109 @@ describe('content-learning-store: artifact chain', () => {
       tenantId: 1,
     });
 
-    const chain = getArtifactChain(pipelineId, 1, 1);
+    const chain = getArtifactChain(itemId, 1, 1);
 
-    expect(chain.patterns.map((pattern) => pattern.category)).toEqual(['tech']);
-    expect(chain.patterns.map((pattern) => pattern.patternText)).toEqual(['Use concrete implementation proof']);
+    expect(chain.patterns).toEqual([]);
+    expect(chain.compatibility.learnedPatternAssociation).toBe('not_modeled');
   });
 
   it('returns empty chain for non-existent pipeline', () => {
     const chain = getArtifactChain(99999, 1, 1);
+    expect(chain.availability).toBe('not_found');
     expect(chain.pipeline).toBeNull();
     expect(chain.script).toBeNull();
     expect(chain.performance).toHaveLength(0);
   });
 
   it('does not expose artifact chains across user or tenant boundaries', () => {
-    testDb.prepare(`
-      INSERT INTO content_topic_feedback (
-        topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id,
-        tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES ('Tenant One Idea', 'tech', 'youtube', 'approved', 'manual', 'Private hook', 'Private timing', 100, 1, 100, 'user_private', 'active')
-    `).run();
-    const feedbackId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
+    const target = seedCanonicalScript(
+      { tenantId: 1, userId: 100 },
+      'Tenant One Idea',
+      'private tenant one script',
+    );
+    recordContentPerformanceOutcome({
+      scope: { tenantId: 1, userId: 100 },
+      itemId: target.itemId,
+      artifactId: target.artifactId,
+      revisionId: target.revisionId,
+      idempotencyKey: 'artifact-chain-performance-001',
+      views: 4200,
+      retentionPct: 64,
+    }, testDb);
 
-    testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_feedback_id, topic_title, niche, stage, script_path, user_id,
-        tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES (?, 'Tenant One Idea', 'tech', 'scripted', '/private/script.docx', 100, 1, 100, 'user_private', 'active')
-    `).run(feedbackId);
-    const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
-
-    storeScript({
-      pipelineId,
-      topicFeedbackId: feedbackId,
-      topic: 'Tenant One Idea',
-      format: 'youtube',
-      scriptText: 'private tenant one script',
-      userId: 100,
-      tenantId: 1,
-    });
-    logPerformanceFeedback({ pipelineId, views: 4200, retentionPct: 64, userId: 100, tenantId: 1 });
-
-    const ownerChain = getArtifactChain(pipelineId, 100, 1);
-    const otherTenantChain = getArtifactChain(pipelineId, 100, 2);
-    const otherUserChain = getArtifactChain(pipelineId, 101, 1);
+    const ownerChain = getArtifactChain(target.itemId, 100, 1);
+    const otherTenantChain = getArtifactChain(target.itemId, 100, 2);
+    const otherUserChain = getArtifactChain(target.itemId, 101, 1);
 
     expect(ownerChain.pipeline).not.toBeNull();
     expect(ownerChain.script?.scriptText).toBe('private tenant one script');
     expect(ownerChain.performance).toHaveLength(1);
-    expect(otherTenantChain).toEqual({ idea: null, topicFeedback: null, pipeline: null, script: null, performance: [], patterns: [] });
-    expect(otherUserChain).toEqual({ idea: null, topicFeedback: null, pipeline: null, script: null, performance: [], patterns: [] });
+    expect(ownerChain.performance[0]).toMatchObject({
+      workspaceItemId: target.itemId,
+      artifactId: target.artifactId,
+      revisionId: target.revisionId,
+      association: 'canonical_revision',
+      pipelineId: null,
+    });
+    expect(ownerChain.compatibility.performanceAssociation).toBe('canonical_revision');
+    expect(otherTenantChain.availability).toBe('not_found');
+    expect(otherUserChain.availability).toBe('not_found');
   });
 });
+
+type PerformanceFixtureInput = Omit<
+  RecordContentPerformanceOutcomeInput,
+  'scope' | 'itemId' | 'artifactId' | 'revisionId' | 'idempotencyKey'
+> & {
+  userId: number;
+  tenantId?: number;
+};
+
+let performanceFixtureSequence = 0;
+
+function recordCanonicalPerformance(input: PerformanceFixtureInput): number {
+  performanceFixtureSequence += 1;
+  const { userId, tenantId = userId, ...outcome } = input;
+  const scope = { tenantId, userId };
+  const target = seedCanonicalScript(
+    scope,
+    `Performance fixture ${performanceFixtureSequence}`,
+    `Published revision ${performanceFixtureSequence}`,
+  );
+  return recordContentPerformanceOutcome({
+    scope,
+    ...target,
+    ...outcome,
+    idempotencyKey: `performance-fixture-${performanceFixtureSequence}-001`,
+  }, testDb).value.id;
+}
+
+function seedCanonicalScript(
+  scope: { tenantId: number; userId: number },
+  title: string,
+  text: string,
+): { itemId: number; artifactId: number; revisionId: number } {
+  const item = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title,
+    idempotencyKey: `test-item-${scope.tenantId}-${scope.userId}-${title}`,
+  }, testDb).value;
+  const artifact = createContentArtifact({
+    scope,
+    itemId: item.id,
+    expectedWorkflowVersion: item.workflowVersion,
+    artifactType: 'script',
+    title: `${title} script`,
+    initialContent: { format: 'plain_text', text },
+    idempotencyKey: `test-script-${scope.tenantId}-${scope.userId}-${title}`,
+  }, testDb).value;
+  return {
+    itemId: item.id,
+    artifactId: artifact.id,
+    revisionId: artifact.currentRevisionId!,
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // 5. Voice Agent Script Availability
@@ -714,6 +722,76 @@ describe('content-learning-store: voice agent access', () => {
     // Should find within 1 day
     expect(getRecentScripts(0, 1, 10)).toHaveLength(1);
   });
+
+  it('reads canonical private scripts with full packaging metadata after legacy parity', () => {
+    saveGeneratedScriptToWorkspace({
+      scope: { tenantId: 41, userId: 41 },
+      topic: 'Canonical voice script',
+      format: 'youtube',
+      scriptText: '  Preserve these exact voice-learning bytes.\n',
+      hook: 'A canonical hook',
+      titleOptions: ['Canonical title'],
+      hashtags: ['#canonical'],
+      caption: 'Canonical caption',
+      cta: 'Canonical CTA',
+      estimatedDuration: '08:00',
+      niche: 'technology',
+      generationDurationMs: 321,
+      topicFeedbackId: 77,
+      captureOrigin: 'script_generation',
+    }, testDb);
+
+    const scripts = getRecentScripts(41, 30, 10, 41);
+
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]).toMatchObject({
+      topic: 'Canonical voice script',
+      format: 'youtube',
+      scriptText: '  Preserve these exact voice-learning bytes.\n',
+      hook: 'A canonical hook',
+      titleOptions: ['Canonical title'],
+      hashtags: ['#canonical'],
+      caption: 'Canonical caption',
+      cta: 'Canonical CTA',
+      estimatedDuration: '08:00',
+      niche: 'technology',
+      generationDurationMs: 321,
+      topicFeedbackId: 77,
+      userId: 41,
+    });
+  });
+
+  it('freezes positive-user legacy script writes after canonical parity activates', () => {
+    expect(() => storeScript({
+      topic: 'Must not enter the legacy writer',
+      format: 'reel',
+      scriptText: 'legacy write',
+      userId: 42,
+      tenantId: 42,
+    })).toThrow(/read-only after canonical script parity/);
+
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_scripts
+      WHERE tenant_id = 42 AND owner_user_id = 42
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects a raw positive-user legacy writer after canonical parity activates', () => {
+    expect(() => testDb.prepare(`
+      INSERT INTO content_scripts (
+        topic, format, script_text, user_id, tenant_id, owner_user_id,
+        visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+      ) VALUES ('Bypassed legacy writer', 'reel', 'must remain outside the retired root',
+                42, 42, 42, 'user_private', 'active', 'active', 42, 42)
+    `).run()).toThrow(/content_scripts user scope is read-only after migration 252/);
+
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_scripts
+       WHERE tenant_id = 42 AND owner_user_id = 42
+    `).get()).toEqual({ count: 0 });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -721,18 +799,17 @@ describe('content-learning-store: voice agent access', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-learning-store: structural', () => {
-  it('voice-evolution-agent reads from content_scripts DB', () => {
+  it('voice-evolution-agent reads only current scripts from the canonical workspace', () => {
     const agentSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/agents/voice-evolution-agent.ts'),
       'utf8',
     );
 
-    // Should import getRecentScripts
-    expect(agentSource).toContain('getRecentScripts');
-    expect(agentSource).toContain('content-learning-store');
+    expect(agentSource).toContain('getRecentContentWorkspaceScripts');
+    expect(agentSource).toContain('content-workspace-read-models');
+    expect(agentSource).not.toContain('getRecentScripts');
     expect(agentSource).toContain('getActiveUserTargets');
     expect(agentSource).not.toContain('getOwnerBootstrapTarget');
-    expect(agentSource).not.toContain('getRecentScripts(0');
   });
 
   it('voice-evolution-agent persists patterns durably', () => {
@@ -745,14 +822,15 @@ describe('content-learning-store: structural', () => {
     expect(agentSource).toContain('content-learning-store');
   });
 
-  it('content-workflow stores script text after generation', () => {
+  it('content-workflow captures script text through the canonical workspace', () => {
     const workflowSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/services/content-workflow.ts'),
       'utf8',
     );
 
-    expect(workflowSource).toContain('storeScript');
-    expect(workflowSource).toContain('content-learning-store');
+    expect(workflowSource).toContain('saveGeneratedScriptToWorkspace');
+    expect(workflowSource).toContain('content-workspace-capture');
+    expect(workflowSource).not.toContain("import('./content-learning-store')");
   });
 
   it('feedback.json has been fully removed from Python backend', () => {

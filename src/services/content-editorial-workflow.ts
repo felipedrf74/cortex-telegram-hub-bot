@@ -1,38 +1,66 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+/**
+ * Deprecated editorial-workflow compatibility facade.
+ *
+ * The canonical Content workspace owns item lifecycle, artifacts, immutable
+ * revisions, lineage, approvals, and scheduling. This module intentionally
+ * contains no SQL writer for those concepts. It remains only while older
+ * callers migrate from `/content/workflow/:id/*` to `/content/workspace/*`.
+ */
+
+import { createHash } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import {
-  contentDirectScopePredicate,
-  contentScopeForInsert,
-  contentScopeParams,
-  resolveContentTenantId,
-  type ContentVisibilityScope,
-} from './content-tenant-scope';
+  ContentWorkspaceError,
+  createContentArtifact,
+  createContentWorkspaceItem,
+  getContentWorkspaceItem,
+  getContentWorkspaceItemDetail,
+  transitionContentWorkspaceItem,
+  type ContentArtifact,
+  type ContentArtifactType,
+  type ContentProductionState,
+  type ContentRevisionContent,
+  type ContentWorkspaceItem,
+  type ContentWorkspaceScope,
+} from './content-workspace';
+import {
+  recordContentWorkspaceProductSignal,
+} from './content-workspace-observability';
 import {
   assessClaimsGrounding,
-  getContentOutputProvenance,
-  recordContentOutputProvenance,
   type ContentRegisteredReference,
   type ContentOutputProvenance,
   type ContentProvenanceClaimInput,
 } from './content-reference-provenance';
-import {
-  recordContentRepurpose,
-  type ContentRepurposeRecord,
-  type ContentTransformationType,
-} from './content-novelty-reuse';
-import {
-  validateGenerationReadiness,
-  type ContentDomainObjectInput,
-  type ContentObjectType,
-} from './content-domain-ontology';
 import type {
   SecretaryIntentFlexibility,
   SecretarySchedulingDecision,
   SecretarySchedulingIntent,
   SecretaryTimeWindow,
 } from './secretary-scheduling-arbitrator';
-import { previewSecretarySchedulingIntent, submitSecretarySchedulingIntent } from './secretary-scheduling-arbitrator';
+import type {
+  ContentDomainObjectInput,
+  ContentObjectType,
+} from './content-domain-ontology';
+import { validateGenerationReadiness } from './content-domain-ontology';
+import type {
+  ContentRepurposeRecord,
+  ContentTransformationType,
+} from './content-novelty-reuse';
+import type { ContentVisibilityScope } from './content-tenant-scope';
+import { resolveContentTenantId } from './content-tenant-scope';
+import {
+  CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+  CONTENT_EDITORIAL_WORKFLOW_EXIT,
+} from './content-editorial-workspace-exit';
+
+export {
+  CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+  CONTENT_EDITORIAL_WORKFLOW_EXIT,
+};
 
 export const CONTENT_EDITORIAL_STATES = [
   'idea',
@@ -50,7 +78,6 @@ export const CONTENT_EDITORIAL_STATES = [
   'rejected',
   'stale',
 ] as const;
-
 export type ContentEditorialState = typeof CONTENT_EDITORIAL_STATES[number];
 
 export const CONTENT_RADAR_LIFECYCLE_STATES = [
@@ -66,7 +93,6 @@ export const CONTENT_RADAR_LIFECYCLE_STATES = [
   'scheduled',
   'expired',
 ] as const;
-
 export type ContentRadarLifecycleState = typeof CONTENT_RADAR_LIFECYCLE_STATES[number];
 
 export const CONTENT_REFERENCE_LIFECYCLE_STATES = [
@@ -78,7 +104,6 @@ export const CONTENT_REFERENCE_LIFECYCLE_STATES = [
   'broken',
   'archived',
 ] as const;
-
 export type ContentReferenceLifecycleState = typeof CONTENT_REFERENCE_LIFECYCLE_STATES[number];
 
 export type ContentWorkflowAction =
@@ -97,6 +122,7 @@ export type ContentWorkflowAction =
   | 'mark_stale';
 
 export type ContentApprovalType =
+  | 'content_review'
   | 'publish'
   | 'schedule_tenant_shared'
   | 'delete_draft'
@@ -114,6 +140,9 @@ export interface ContentWorkflowObject {
   objectType: string;
   title: string;
   editorialState: ContentEditorialState;
+  productionState: ContentProductionState;
+  artifactPhase: string;
+  currentArtifactId: number | null;
   approvalState: string;
   reviewRequired: boolean;
   reviewReasonCodes: string[];
@@ -121,6 +150,7 @@ export interface ContentWorkflowObject {
   secretaryAgendaItemId: string | null;
   metadata: Record<string, unknown>;
   workflowVersion: number;
+  nextAction: ContentWorkspaceItem['nextAction'];
   createdAt: string;
   updatedAt: string;
 }
@@ -137,6 +167,8 @@ export interface CreateContentWorkflowObjectInput {
   platformId?: string | null;
   formatId?: string | null;
   metadata?: Record<string, unknown>;
+  content?: ContentRevisionContent;
+  idempotencyKey?: string;
 }
 
 export interface ContentApprovalEvaluationInput {
@@ -169,16 +201,27 @@ export interface TransitionContentWorkflowInput extends ContentApprovalEvaluatio
   approvalConfirmed?: boolean;
   reason?: string | null;
   metadata?: Record<string, unknown>;
+  expectedWorkflowVersion?: number;
+  idempotencyKey?: string;
+}
+
+export interface ContentWorkflowReplacement {
+  code: string;
+  message: string;
+  canonicalRoutes: Partial<typeof CONTENT_EDITORIAL_WORKFLOW_EXIT.canonicalRoutes>;
+  publicationExecution: 'not_performed';
+  recovery: string;
 }
 
 export interface ContentWorkflowTransitionResult {
   ok: boolean;
-  status: 'transitioned' | 'approval_required' | 'invalid_transition' | 'not_found' | 'version_conflict';
+  status: 'transitioned' | 'approval_required' | 'invalid_transition' | 'not_found' | 'version_conflict' | 'replacement_required';
   object: ContentWorkflowObject | null;
   fromState: ContentEditorialState | null;
   toState: ContentEditorialState | null;
   approval: ContentApprovalEvaluation;
   reasonCodes: string[];
+  replacement?: ContentWorkflowReplacement;
   secretaryIntent?: SecretarySchedulingIntent;
 }
 
@@ -201,11 +244,12 @@ export interface ReviewContentSourcesInput {
 
 export interface ReviewContentSourcesResult {
   ok: boolean;
-  status: 'reviewed' | 'approval_required' | 'rejected' | 'not_found' | 'unauthorized_reference';
+  status: 'reviewed' | 'approval_required' | 'rejected' | 'not_found' | 'unauthorized_reference' | 'replacement_required';
   object: ContentWorkflowObject | null;
   provenance: ContentOutputProvenance | null;
   approval: ContentApprovalEvaluation;
   reasonCodes: string[];
+  replacement?: ContentWorkflowReplacement;
 }
 
 export interface DecideContentApprovalInput {
@@ -217,14 +261,17 @@ export interface DecideContentApprovalInput {
   reason?: string | null;
   actorUserId?: number;
   metadata?: Record<string, unknown>;
+  expectedWorkflowVersion?: number;
+  idempotencyKey?: string;
 }
 
 export interface DecideContentApprovalResult {
   ok: boolean;
-  status: 'approved' | 'rejected' | 'not_found';
+  status: 'approved' | 'rejected' | 'not_found' | 'version_conflict' | 'replacement_required' | 'invalid_transition';
   object: ContentWorkflowObject | null;
   approvalRecords: Array<Record<string, unknown>>;
   reasonCodes: string[];
+  replacement?: ContentWorkflowReplacement;
 }
 
 export interface RepurposeContentWorkflowInput {
@@ -247,12 +294,13 @@ export interface RepurposeContentWorkflowInput {
 
 export interface RepurposeContentWorkflowResult {
   ok: boolean;
-  status: 'repurposed' | 'approval_required' | 'invalid_transition' | 'not_found';
+  status: 'repurposed' | 'approval_required' | 'invalid_transition' | 'not_found' | 'replacement_required';
   sourceObject: ContentWorkflowObject | null;
   reusedObject: ContentWorkflowObject | null;
   reuseRecord: ContentRepurposeRecord | null;
   transition: ContentWorkflowTransitionResult;
   reasonCodes: string[];
+  replacement?: ContentWorkflowReplacement;
 }
 
 export interface ContentScheduleRequestInput {
@@ -295,6 +343,18 @@ export interface ConvertRadarSignalResult {
   reasonCodes: string[];
 }
 
+export class ContentEditorialCompatibilityError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: number,
+    public readonly details: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'ContentEditorialCompatibilityError';
+  }
+}
+
 const CONTENT_TRANSITIONS: Record<ContentEditorialState, ContentEditorialState[]> = {
   idea: ['researched', 'selected', 'outlined', 'rejected', 'archived', 'stale'],
   researched: ['selected', 'outlined', 'rejected', 'archived', 'stale'],
@@ -310,22 +370,6 @@ const CONTENT_TRANSITIONS: Record<ContentEditorialState, ContentEditorialState[]
   repurposed: ['scheduled', 'published', 'archived'],
   rejected: ['archived'],
   stale: ['researched', 'revised', 'archived', 'rejected'],
-};
-
-const ACTION_TARGETS: Partial<Record<ContentWorkflowAction, ContentEditorialState>> = {
-  convert_radar_to_idea: 'idea',
-  convert_radar_to_script: 'drafted',
-  convert_idea_to_outline: 'outlined',
-  convert_outline_to_script: 'drafted',
-  refine_script: 'revised',
-  approve_draft: 'approved',
-  schedule_content: 'scheduled',
-  mark_published: 'published',
-  archive: 'archived',
-  reject: 'rejected',
-  repurpose_content: 'repurposed',
-  delete_draft: 'archived',
-  mark_stale: 'stale',
 };
 
 const RADAR_TRANSITIONS: Record<ContentRadarLifecycleState, ContentRadarLifecycleState[]> = {
@@ -352,119 +396,101 @@ const REFERENCE_TRANSITIONS: Record<ContentReferenceLifecycleState, ContentRefer
   archived: [],
 };
 
-export function ensureContentEditorialWorkflowTables(db: any = getDb()): void {
-  if (!db || typeof db.prepare !== 'function' || typeof db.exec !== 'function') return;
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS content_workflow_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tenant_id INTEGER NOT NULL,
-      owner_user_id INTEGER NOT NULL,
-      visibility_scope TEXT NOT NULL DEFAULT 'user_private',
-      scope_status TEXT NOT NULL DEFAULT 'active',
-      object_type TEXT NOT NULL,
-      object_id TEXT NOT NULL,
-      action TEXT NOT NULL,
-      from_state TEXT,
-      to_state TEXT,
-      approval_state TEXT NOT NULL DEFAULT 'not_required',
-      review_required INTEGER NOT NULL DEFAULT 0,
-      reason_codes_json TEXT NOT NULL DEFAULT '[]',
-      actor_user_id INTEGER NOT NULL,
-      secretary_intent_id TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS content_approval_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tenant_id INTEGER NOT NULL,
-      owner_user_id INTEGER NOT NULL,
-      visibility_scope TEXT NOT NULL DEFAULT 'user_private',
-      scope_status TEXT NOT NULL DEFAULT 'active',
-      object_type TEXT NOT NULL,
-      object_id TEXT NOT NULL,
-      approval_type TEXT NOT NULL,
-      approval_state TEXT NOT NULL DEFAULT 'required',
-      required_reason_codes_json TEXT NOT NULL DEFAULT '[]',
-      requested_by INTEGER NOT NULL,
-      requested_at TEXT NOT NULL DEFAULT (datetime('now')),
-      approved_by INTEGER,
-      approved_at TEXT,
-      rejected_by INTEGER,
-      rejected_at TEXT,
-      rejection_reason TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}',
-      UNIQUE(tenant_id, owner_user_id, object_type, object_id, approval_type)
-    );
-    CREATE TABLE IF NOT EXISTS content_source_review_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tenant_id INTEGER NOT NULL,
-      owner_user_id INTEGER NOT NULL,
-      visibility_scope TEXT NOT NULL DEFAULT 'user_private',
-      scope_status TEXT NOT NULL DEFAULT 'active',
-      object_type TEXT NOT NULL,
-      object_id TEXT NOT NULL,
-      review_state TEXT NOT NULL,
-      grounding_status TEXT,
-      reason_codes_json TEXT NOT NULL DEFAULT '[]',
-      reviewed_by INTEGER NOT NULL,
-      reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
-      notes TEXT,
-      metadata_json TEXT NOT NULL DEFAULT '{}'
-    );
-  `);
+const SAFE_LEGACY_CREATE_STATES = new Set<ContentEditorialState>([
+  'idea',
+  'researched',
+  'selected',
+  'outlined',
+  'drafted',
+  'reviewed',
+]);
+
+/** Schema ownership moved to migrations 090, 092, 239, and 246. */
+export function ensureContentEditorialWorkflowTables(): void {
+  // Deliberate no-op retained only for binary/source compatibility.
+}
+
+export function getContentEditorialCompatibility(itemId: number | string) {
+  const id = String(itemId);
+  return {
+    ...CONTENT_EDITORIAL_WORKFLOW_EXIT,
+    canonicalRoutes: Object.fromEntries(Object.entries(CONTENT_EDITORIAL_WORKFLOW_EXIT.canonicalRoutes)
+      .map(([key, value]) => [key, value.replace(':itemId', id)])),
+  };
 }
 
 export function createContentWorkflowObject(input: CreateContentWorkflowObjectInput): ContentWorkflowObject {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  ensureDomainObjectColumns(db);
-  const scope = contentScopeForInsert(input.userId, input.tenantId, input.visibilityScope ?? 'user_private');
-  const editorialState = input.editorialState ?? defaultEditorialState(input.objectType);
-  const lifecycleState = input.lifecycleState ?? editorialState;
-  const result = db.prepare(`
-    INSERT INTO content_domain_objects (
-      tenant_id, owner_user_id, visibility_scope, scope_status,
-      object_type, lifecycle_state, editorial_state, approval_state,
-      review_required, review_reason_codes_json, title, summary,
-      platform_id, format_id, ontology_metadata_json, ontology_schema_version,
-      created_by, updated_by, audit_metadata_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'content-ontology-v1', ?, ?, ?)
-  `).run(
-    scope.tenantId,
-    scope.ownerUserId,
-    scope.visibilityScope,
-    scope.scopeStatus,
-    input.objectType,
-    lifecycleState,
-    editorialState,
-    'not_required',
-    0,
-    '[]',
-    input.title,
-    input.summary ?? null,
-    input.platformId ?? null,
-    input.formatId ?? null,
-    JSON.stringify(input.metadata ?? {}),
-    scope.createdBy,
-    scope.updatedBy,
-    scope.auditMetadataJson,
-  );
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_mutation');
+  const scope = workflowScope(input.userId, input.tenantId);
+  requirePrivateCompatibilityScope(input.visibilityScope);
+  const idempotencyKey = requireCompatibilityIdempotencyKey(input.idempotencyKey);
+  const requestedState = input.editorialState ?? defaultEditorialState(input.objectType);
+  if (!SAFE_LEGACY_CREATE_STATES.has(requestedState)) {
+    throw replacementError(
+      'CONTENT_EDITORIAL_CREATE_STATE_UNSUPPORTED',
+      'Legacy creation cannot manufacture approval, schedule, publication, archive, or rejection state.',
+      409,
+      replacementFor('create_artifact'),
+    );
+  }
 
-  const object = getContentWorkflowObject(input.userId, Number(result.lastInsertRowid), input.tenantId);
-  if (!object) throw new Error('Failed to create content workflow object');
-  writeWorkflowEvent(db, scope, {
-    objectType: object.objectType,
-    objectId: String(object.id),
-    action: 'create',
-    fromState: null,
-    toState: object.editorialState,
-    approvalState: object.approvalState,
-    reviewRequired: object.reviewRequired,
-    reasonCodes: [],
-    actorUserId: input.userId,
-    metadata: input.metadata ?? {},
+  const created = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: input.title,
+    summary: input.summary ?? null,
+    platformId: input.platformId ?? null,
+    formatId: input.formatId ?? null,
+    idempotencyKey,
   });
+  let item = created.value;
+  const artifactType = artifactTypeForLegacyObject(input.objectType);
+  const artifactIdempotencyKey = internalIdempotencyKey('editorial-artifact', idempotencyKey);
+  const artifactExpectedVersion = created.replayed
+    ? originalArtifactExpectedVersion(scope, item.id, artifactIdempotencyKey) ?? item.workflowVersion
+    : item.workflowVersion;
+  const artifact = createContentArtifact({
+    scope,
+    itemId: item.id,
+    expectedWorkflowVersion: artifactExpectedVersion,
+    artifactType,
+    title: input.title,
+    platformId: input.platformId ?? null,
+    formatId: input.formatId ?? null,
+    metadata: {
+      ...(input.metadata ?? {}),
+      legacyObjectType: String(input.objectType),
+      compatibilityOrigin: 'legacy_editorial_create',
+      requestedEditorialState: requestedState,
+    },
+    initialContent: input.content,
+    changeSummary: input.content ? 'Imported through the deprecated editorial compatibility facade.' : null,
+    actorType: 'user',
+    actorId: String(input.userId),
+    provenance: { source: 'legacy_editorial_compatibility', instructionsTrusted: false },
+    idempotencyKey: artifactIdempotencyKey,
+  }).value;
+  item = getContentWorkspaceItem(scope, item.id) ?? item;
+
+  // Review is a safe, canonical, review-required state only when an actual
+  // saved revision exists. Approval is always a separate user action.
+  if (requestedState === 'reviewed' && artifact.currentRevision && item.productionState === 'active') {
+    item = transitionContentWorkspaceItem({
+      scope,
+      itemId: item.id,
+      targetState: 'review',
+      expectedWorkflowVersion: item.workflowVersion,
+      idempotencyKey: internalIdempotencyKey('editorial-review', idempotencyKey),
+    }).value;
+  }
+
+  const object = getContentWorkflowObject(input.userId, item.id, input.tenantId);
+  if (!object) throw new ContentEditorialCompatibilityError(
+    'CONTENT_WORKSPACE_WRITE_FAILED',
+    'The canonical Content item could not be read after creation.',
+    500,
+    { recovery: 'reload_workspace', publicationExecution: 'not_performed' },
+  );
   return object;
 }
 
@@ -473,231 +499,122 @@ export function getContentWorkflowObject(
   objectId: number | string,
   tenantId?: number,
 ): ContentWorkflowObject | null {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  ensureDomainObjectColumns(db);
-  const row = db.prepare(`
-    SELECT *
-      FROM content_domain_objects
-     WHERE id = ?
-       AND ${contentDirectScopePredicate()}
-     LIMIT 1
-  `).get(objectId, ...contentScopeParams(userId, tenantId)) as any;
-  return row ? mapWorkflowObject(row) : null;
-}
-
-function contentApprovalActorAuthorized(
-  object: ContentWorkflowObject,
-  input: TransitionContentWorkflowInput,
-): boolean {
-  const actor = input.actorUserId ?? input.userId;
-  const tenantId = resolveContentTenantId(input.userId, input.tenantId);
-  // Until Nexus has a tenant-member approver role table, the only safe
-  // approver is the owner of the content object inside the active tenant.
-  return actor === object.ownerUserId && input.userId === object.ownerUserId && tenantId === object.tenantId;
-}
-
-function visibilityRank(scope: string | null | undefined): number {
-  switch (scope) {
-    case 'user_private': return 0;
-    case 'tenant_admin_visible': return 1;
-    case 'tenant_shared': return 2;
-    case 'public_published': return 3;
-    case 'platform_internal': return 4;
-    default: return 0;
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_read');
+  const id = positiveIntegerOrNull(objectId);
+  if (id == null) return null;
+  const scope = workflowScope(userId, tenantId);
+  let detail;
+  try {
+    detail = getContentWorkspaceItemDetail(scope, id);
+  } catch (error) {
+    if (error instanceof ContentWorkspaceError && error.code === 'CONTENT_VALIDATION_FAILED') return null;
+    throw error;
   }
+  if (!detail) return null;
+  const currentArtifact = detail.artifacts.find((artifact) => artifact.id === detail.currentArtifactId) ?? null;
+  const row = getDb().prepare(`
+    SELECT approval_state, review_required, review_reason_codes_json,
+           ontology_metadata_json, audit_metadata_json
+      FROM content_domain_objects
+     WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+       AND visibility_scope = 'user_private' AND scope_status = 'active'
+       AND object_type IN ('content_item', 'project')
+     LIMIT 1
+  `).get(id, scope.tenantId, scope.userId) as any;
+  if (!row) return null;
+  return mapCompatibilityObject(scope, detail, currentArtifact, row);
 }
 
 export function transitionContentWorkflow(input: TransitionContentWorkflowInput): ContentWorkflowTransitionResult {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  ensureDomainObjectColumns(db);
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_mutation');
   const object = getContentWorkflowObject(input.userId, input.objectId, input.tenantId);
-  if (!object) {
-    return emptyTransition('not_found', input, null, null, evaluateContentApprovalRequirements(input));
-  }
-
-  const fromState = object.editorialState;
-  const toState = input.targetState ?? ACTION_TARGETS[input.action];
-  if (!toState || !canTransitionContent(fromState, toState)) {
-    return emptyTransition('invalid_transition', input, object, toState ?? null, evaluateContentApprovalRequirements(input));
-  }
-
   const approval = evaluateContentApprovalRequirements({
     ...input,
-    currentState: fromState,
-    targetState: toState,
-    visibilityScope: object.visibilityScope,
+    currentState: object?.editorialState,
+    visibilityScope: object?.visibilityScope,
   });
-  const reasonCodes = [...approval.reasonCodes];
-
-  if (
-    (approval.approvalRequired && input.approvalConfirmed) || input.action === 'approve_draft'
-  ) {
-    if (!contentApprovalActorAuthorized(object, input)) {
-      reasonCodes.push('approval_actor_not_authorized');
-      requestApprovalRecords(db, object, input, approval);
-      writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-        objectType: object.objectType,
-        objectId: String(object.id),
-        action: input.action,
-        fromState,
-        toState: fromState,
-        approvalState: 'required',
-        reviewRequired: true,
-        reasonCodes,
-        actorUserId: input.actorUserId ?? input.userId,
-        metadata: input.metadata ?? {},
-      });
-      return {
-        ok: false,
-        status: 'approval_required',
-        object: { ...object, approvalState: 'required', reviewRequired: true, reviewReasonCodes: reasonCodes },
-        fromState,
-        toState: fromState,
-        approval: { ...approval, approvalRequired: true, reviewRequired: true, reasonCodes },
-        reasonCodes,
-      };
-    }
+  if (!object) return emptyTransition('not_found', input, null, null, approval, ['content_object_not_found_or_unauthorized']);
+  if (!approvalActorAuthorized(object, input.actorUserId ?? input.userId, input.userId)) {
+    return emptyTransition('not_found', input, null, null, approval, ['content_object_not_found_or_unauthorized']);
   }
 
-  if (approval.approvalRequired && !input.approvalConfirmed) {
-    requestApprovalRecords(db, object, input, approval);
-    db.prepare(`
-      UPDATE content_domain_objects
-         SET approval_state = 'required',
-             review_required = 1,
-             review_reason_codes_json = ?,
-             updated_by = ?,
-             updated_at = datetime('now')
-       WHERE id = ?
-    `).run(
-      JSON.stringify(reasonCodes),
-      input.actorUserId ?? input.userId,
-      object.id,
+  const replacement = replacementFor(input.action);
+  const targetState = canonicalTargetForLegacyAction(input.action);
+  if (!targetState) {
+    return emptyTransition(
+      'replacement_required',
+      input,
+      object,
+      legacyTargetForAction(input.action),
+      approval,
+      [replacement.code],
+      replacement,
     );
-    writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-      objectType: object.objectType,
-      objectId: String(object.id),
-      action: input.action,
-      fromState,
-      toState: fromState,
-      approvalState: 'required',
-      reviewRequired: true,
-      reasonCodes,
-      actorUserId: input.actorUserId ?? input.userId,
-      metadata: input.metadata ?? {},
+  }
+  if (approval.approvalRequired && input.approvalConfirmed !== true) {
+    return emptyTransition(
+      'approval_required',
+      input,
+      object,
+      editorialStateForTarget(targetState, object.artifactPhase),
+      approval,
+      approval.reasonCodes,
+    );
+  }
+  if (!validConcurrency(input.expectedWorkflowVersion, input.idempotencyKey)) {
+    const concurrencyReplacement = replacementFor('canonical_concurrency');
+    return emptyTransition(
+      'replacement_required',
+      input,
+      object,
+      editorialStateForTarget(targetState, object.artifactPhase),
+      approval,
+      [concurrencyReplacement.code],
+      concurrencyReplacement,
+    );
+  }
+
+  try {
+    const mutation = transitionContentWorkspaceItem({
+      scope: workflowScope(input.userId, input.tenantId),
+      itemId: object.id,
+      targetState,
+      expectedWorkflowVersion: input.expectedWorkflowVersion!,
+      idempotencyKey: input.idempotencyKey!,
     });
+    const updated = getContentWorkflowObject(input.userId, object.id, input.tenantId);
     return {
-      ok: false,
-      status: 'approval_required',
-      object: { ...object, approvalState: 'required', reviewRequired: true, reviewReasonCodes: reasonCodes },
-      fromState,
-      toState: fromState,
+      ok: true,
+      status: 'transitioned',
+      object: updated,
+      fromState: object.editorialState,
+      toState: updated?.editorialState ?? editorialStateForTarget(targetState, object.artifactPhase),
       approval,
-      reasonCodes,
+      reasonCodes: mutation.replayed ? ['canonical_idempotent_replay'] : [],
     };
+  } catch (error) {
+    return transitionFailure(error, input, object, approval, targetState);
   }
-
-  const approvalState = input.action === 'approve_draft' || input.approvalConfirmed ? 'approved' : approval.approvalRequired ? 'approved' : object.approvalState;
-  const secretaryIntent = input.action === 'schedule_content'
-    ? buildContentSecretarySchedulingIntent({
-        userId: input.userId,
-        tenantId: input.tenantId,
-        objectId: object.id,
-        title: object.title,
-        reason: input.reason ?? null,
-      })
-    : undefined;
-  const update = db.prepare(`
-    UPDATE content_domain_objects
-       SET editorial_state = ?,
-           lifecycle_state = ?,
-           approval_state = ?,
-           review_required = ?,
-           review_reason_codes_json = ?,
-           approved_by = CASE WHEN ? = 'approved' THEN ? ELSE approved_by END,
-           approved_at = CASE WHEN ? = 'approved' THEN datetime('now') ELSE approved_at END,
-           rejected_reason = CASE WHEN ? = 'rejected' THEN ? ELSE rejected_reason END,
-           archived_at = CASE WHEN ? = 'archived' THEN datetime('now') ELSE archived_at END,
-           secretary_intent_id = COALESCE(?, secretary_intent_id),
-           updated_by = ?,
-           updated_at = datetime('now'),
-           workflow_version = workflow_version + 1
-     WHERE id = ?
-       AND workflow_version = ?
-  `).run(
-    toState,
-    toState,
-    approvalState,
-    approval.reviewRequired ? 1 : 0,
-    JSON.stringify(reasonCodes),
-    approvalState,
-    input.actorUserId ?? input.userId,
-    approvalState,
-    toState,
-    input.reason ?? null,
-    toState,
-    secretaryIntent?.intentId ?? null,
-    input.actorUserId ?? input.userId,
-    object.id,
-    object.workflowVersion,
-  );
-  if (update.changes < 1) {
-    return {
-      ok: false,
-      status: 'version_conflict',
-      object: getContentWorkflowObject(input.userId, object.id, input.tenantId),
-      fromState,
-      toState: fromState,
-      approval,
-      reasonCodes: [...reasonCodes, 'workflow_version_conflict'],
-      secretaryIntent,
-    };
-  }
-
-  approveRecordsIfConfirmed(db, object, input, approval);
-  const updated = getContentWorkflowObject(input.userId, object.id, input.tenantId);
-  writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-    objectType: object.objectType,
-    objectId: String(object.id),
-    action: input.action,
-    fromState,
-    toState,
-    approvalState,
-    reviewRequired: approval.reviewRequired,
-    reasonCodes,
-    actorUserId: input.actorUserId ?? input.userId,
-    metadata: input.metadata ?? {},
-  });
-
-  return {
-    ok: true,
-    status: 'transitioned',
-    object: updated,
-    fromState,
-    toState,
-    approval,
-    reasonCodes,
-    secretaryIntent,
-  };
 }
 
 export function evaluateContentApprovalRequirements(input: ContentApprovalEvaluationInput): ContentApprovalEvaluation {
   const approvalTypes: ContentApprovalType[] = [];
   const reasonCodes: string[] = [];
-
-  const action = input.action;
-  const targetState = input.targetState;
-  if (action === 'mark_published' || action === 'publish' || targetState === 'published' || input.sendsExternally || action === 'external_send_publish') {
+  if (
+    input.action === 'mark_published'
+    || input.action === 'publish'
+    || input.targetState === 'published'
+    || input.sendsExternally
+    || input.action === 'external_send_publish'
+  ) {
     approvalTypes.push('publish');
     reasonCodes.push('publish_requires_human_approval');
   }
-  if ((action === 'schedule_content' || targetState === 'scheduled') && input.visibilityScope === 'tenant_shared') {
+  if ((input.action === 'schedule_content' || input.targetState === 'scheduled') && input.visibilityScope === 'tenant_shared') {
     approvalTypes.push('schedule_tenant_shared');
     reasonCodes.push('tenant_shared_scheduling_requires_approval');
   }
-  if (action === 'delete_draft' || (action === 'archive' && ['drafted', 'reviewed', 'revised'].includes(input.currentState ?? ''))) {
+  if (input.action === 'delete_draft' || (input.action === 'archive' && ['drafted', 'reviewed', 'revised'].includes(input.currentState ?? ''))) {
     approvalTypes.push('delete_draft');
     reasonCodes.push('draft_removal_requires_confirmation');
   }
@@ -715,7 +632,7 @@ export function evaluateContentApprovalRequirements(input: ContentApprovalEvalua
       reasonCodes.push('unsupported_claim_requires_review');
     }
   }
-  if (input.changesBrandVoice || action === 'change_brand_voice') {
+  if (input.changesBrandVoice || input.action === 'change_brand_voice') {
     approvalTypes.push('brand_voice_change');
     reasonCodes.push('brand_voice_change_requires_approval');
   }
@@ -723,7 +640,6 @@ export function evaluateContentApprovalRequirements(input: ContentApprovalEvalua
     approvalTypes.push('sensitive_cross_skill_signal');
     reasonCodes.push('sensitive_cross_skill_signal_requires_review');
   }
-
   const uniqueTypes = Array.from(new Set(approvalTypes));
   return {
     approvalRequired: uniqueTypes.length > 0,
@@ -734,388 +650,124 @@ export function evaluateContentApprovalRequirements(input: ContentApprovalEvalua
 }
 
 export function reviewContentSources(input: ReviewContentSourcesInput): ReviewContentSourcesResult {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  ensureDomainObjectColumns(db);
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_mutation');
   const object = getContentWorkflowObject(input.userId, input.objectId, input.tenantId);
-  if (!object || (input.objectType && object.objectType !== input.objectType)) {
-    return {
-      ok: false,
-      status: 'not_found',
-      object: null,
-      provenance: null,
-      approval: evaluateContentApprovalRequirements({ action: 'approve_draft' }),
-      reasonCodes: ['content_object_not_found_or_unauthorized'],
-    };
+  const approval = evaluateContentApprovalRequirements({
+    action: 'approve_draft',
+    currentState: object?.editorialState,
+    visibilityScope: object?.visibilityScope,
+    references: input.references,
+    claims: input.claims,
+  });
+  if (!object || (input.objectType && !legacyObjectTypeMatches(object, input.objectType))) {
+    return { ok: false, status: 'not_found', object: null, provenance: null, approval, reasonCodes: ['content_object_not_found_or_unauthorized'] };
   }
-
-  const tenantId = resolveContentTenantId(input.userId, input.tenantId);
-  const references = [...(input.references ?? [])];
-  if (references.some((ref) => !isReferenceAuthorizedForReview(ref, input.userId, tenantId))) {
+  const scope = workflowScope(input.userId, input.tenantId);
+  if (input.references?.some((reference) => !referenceAuthorized(reference, scope))) {
     return {
       ok: false,
       status: 'unauthorized_reference',
       object,
-      provenance: getContentOutputProvenance(input.userId, object.objectType, object.id, input.tenantId),
-      approval: evaluateContentApprovalRequirements({ action: 'approve_draft' }),
+      provenance: null,
+      approval,
       reasonCodes: ['unauthorized_reference_for_source_review'],
     };
   }
-
-  let provenance: ContentOutputProvenance | null = null;
-  if (input.references || input.claims || input.sourceSummaries) {
-    recordContentOutputProvenance({
-      userId: input.userId,
-      tenantId: input.tenantId,
-      visibilityScope: object.visibilityScope as ContentVisibilityScope,
-      outputObjectType: object.objectType,
-      outputId: object.id,
-      referencesUsed: references,
-      claims: [...(input.claims ?? [])],
-      sourceSummaries: input.sourceSummaries,
-    });
-  }
-  provenance = getContentOutputProvenance(input.userId, object.objectType, object.id, input.tenantId);
-
-  const approval = evaluateContentApprovalRequirements({
-    action: 'approve_draft',
-    currentState: object.editorialState,
-    targetState: 'reviewed',
-    visibilityScope: object.visibilityScope,
-    references,
-    claims: input.claims,
-  });
-  const reasonCodes = Array.from(new Set([
-    ...approval.reasonCodes,
-    ...(provenance?.reviewRequired ? ['source_provenance_requires_review'] : []),
-    ...(input.decision === 'needs_revision' ? ['source_review_requested_revision'] : []),
-    ...(input.decision === 'rejected' ? ['source_review_rejected'] : []),
-  ]));
-  const actor = input.actorUserId ?? input.userId;
-
-  if (approval.approvalRequired || provenance?.reviewRequired || input.decision === 'needs_revision' || input.decision === 'rejected') {
-    requestApprovalRecords(db, object, {
-      ...input,
-      action: 'approve_draft',
-      metadata: input.metadata,
-    }, {
-      approvalRequired: true,
-      approvalTypes: approval.approvalTypes.length > 0 ? approval.approvalTypes : ['low_confidence_sources'],
-      reasonCodes,
-      reviewRequired: true,
-    });
-    updateObjectReviewState(db, object.id, {
-      approvalState: 'required',
-      reviewRequired: true,
-      reasonCodes,
-      actorUserId: actor,
-    });
-    writeSourceReviewRecord(db, object, {
-      reviewState: input.decision === 'rejected' ? 'rejected' : 'approval_required',
-      groundingStatus: provenance?.groundingStatus ?? null,
-      reasonCodes,
-      actorUserId: actor,
-      notes: input.notes ?? null,
-      metadata: input.metadata ?? {},
-    });
-    writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-      objectType: object.objectType,
-      objectId: String(object.id),
-      action: 'source_review',
-      fromState: object.editorialState,
-      toState: object.editorialState,
-      approvalState: 'required',
-      reviewRequired: true,
-      reasonCodes,
-      actorUserId: actor,
-      metadata: {
-        ...(input.metadata ?? {}),
-        groundingStatus: provenance?.groundingStatus ?? null,
-        sourceReviewDecision: input.decision ?? 'needs_revision',
-      },
-    });
-    return {
-      ok: false,
-      status: input.decision === 'rejected' ? 'rejected' : 'approval_required',
-      object: getContentWorkflowObject(input.userId, object.id, input.tenantId),
-      provenance,
-      approval: { ...approval, approvalRequired: true, reviewRequired: true, reasonCodes },
-      reasonCodes,
-    };
-  }
-
-  const toState: ContentEditorialState = canTransitionContent(object.editorialState, 'reviewed')
-    ? 'reviewed'
-    : object.editorialState;
-  db.prepare(`
-    UPDATE content_domain_objects
-       SET editorial_state = ?,
-           lifecycle_state = ?,
-           approval_state = CASE WHEN approval_state = 'required' THEN 'not_required' ELSE approval_state END,
-           review_required = 0,
-           review_reason_codes_json = '[]',
-           updated_by = ?,
-           updated_at = datetime('now'),
-           workflow_version = workflow_version + 1
-     WHERE id = ?
-       AND tenant_id = ?
-       AND owner_user_id = ?
-  `).run(
-    toState,
-    toState,
-    actor,
-    object.id,
-    object.tenantId,
-    object.ownerUserId,
-  );
-  writeSourceReviewRecord(db, object, {
-    reviewState: 'reviewed',
-    groundingStatus: provenance?.groundingStatus ?? null,
-    reasonCodes: [],
-    actorUserId: actor,
-    notes: input.notes ?? null,
-    metadata: input.metadata ?? {},
-  });
-  writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-    objectType: object.objectType,
-    objectId: String(object.id),
-    action: 'source_review',
-    fromState: object.editorialState,
-    toState,
-    approvalState: object.approvalState === 'required' ? 'not_required' : object.approvalState,
-    reviewRequired: false,
-    reasonCodes: [],
-    actorUserId: actor,
-    metadata: {
-      ...(input.metadata ?? {}),
-      groundingStatus: provenance?.groundingStatus ?? null,
-      sourceReviewDecision: input.decision ?? 'approved',
-    },
-  });
+  const replacement = replacementFor('source_review');
   return {
-    ok: true,
-    status: 'reviewed',
-    object: getContentWorkflowObject(input.userId, object.id, input.tenantId),
-    provenance,
+    ok: false,
+    status: 'replacement_required',
+    object,
+    provenance: null,
     approval,
-    reasonCodes: [],
+    reasonCodes: [replacement.code],
+    replacement,
   };
 }
 
 export function decideContentApproval(input: DecideContentApprovalInput): DecideContentApprovalResult {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  ensureDomainObjectColumns(db);
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_mutation');
   const object = getContentWorkflowObject(input.userId, input.objectId, input.tenantId);
-  if (!object) {
+  if (!object || !approvalActorAuthorized(object, input.actorUserId ?? input.userId, input.userId)) {
+    return { ok: false, status: 'not_found', object: null, approvalRecords: [], reasonCodes: ['content_object_not_found_or_unauthorized'] };
+  }
+  if (input.approvalType !== 'content_review') {
+    const replacement = input.approvalType === 'publish'
+      ? replacementFor('mark_published')
+      : replacementFor('approval_type');
     return {
       ok: false,
-      status: 'not_found',
-      object: null,
-      approvalRecords: [],
-      reasonCodes: ['content_object_not_found_or_unauthorized'],
+      status: 'replacement_required',
+      object,
+      approvalRecords: listContentApprovalRecords({ userId: input.userId, tenantId: input.tenantId, objectId: object.id }),
+      reasonCodes: [replacement.code],
+      replacement,
     };
   }
-
-  const actor = input.actorUserId ?? input.userId;
-  const approvalTypes = input.approvalType
-    ? [String(input.approvalType)]
-    : listContentApprovalRecords({ userId: input.userId, tenantId: input.tenantId, objectType: object.objectType, objectId: object.id })
-      .filter((row) => row.approval_state === 'required')
-      .map((row) => String(row.approval_type));
-  const uniqueTypes = Array.from(new Set(approvalTypes.length > 0 ? approvalTypes : ['publish']));
-
-  for (const type of uniqueTypes) {
-    if (input.decision === 'approved') {
-      db.prepare(`
-        INSERT INTO content_approval_records (
-          tenant_id, owner_user_id, visibility_scope, scope_status,
-          object_type, object_id, approval_type, approval_state,
-          required_reason_codes_json, requested_by, approved_by, approved_at, metadata_json
-        )
-        VALUES (?, ?, ?, 'active', ?, ?, ?, 'approved', '[]', ?, ?, datetime('now'), ?)
-        ON CONFLICT(tenant_id, owner_user_id, object_type, object_id, approval_type)
-        DO UPDATE SET
-          approval_state = 'approved',
-          approved_by = excluded.approved_by,
-          approved_at = datetime('now'),
-          rejected_by = NULL,
-          rejected_at = NULL,
-          rejection_reason = NULL,
-          metadata_json = excluded.metadata_json
-      `).run(
-        object.tenantId,
-        object.ownerUserId,
-        object.visibilityScope,
-        object.objectType,
-        String(object.id),
-        type,
-        actor,
-        actor,
-        JSON.stringify(input.metadata ?? {}),
-      );
-    } else {
-      db.prepare(`
-        INSERT INTO content_approval_records (
-          tenant_id, owner_user_id, visibility_scope, scope_status,
-          object_type, object_id, approval_type, approval_state,
-          required_reason_codes_json, requested_by, rejected_by, rejected_at, rejection_reason, metadata_json
-        )
-        VALUES (?, ?, ?, 'active', ?, ?, ?, 'rejected', '[]', ?, ?, datetime('now'), ?, ?)
-        ON CONFLICT(tenant_id, owner_user_id, object_type, object_id, approval_type)
-        DO UPDATE SET
-          approval_state = 'rejected',
-          rejected_by = excluded.rejected_by,
-          rejected_at = datetime('now'),
-          rejection_reason = excluded.rejection_reason,
-          metadata_json = excluded.metadata_json
-      `).run(
-        object.tenantId,
-        object.ownerUserId,
-        object.visibilityScope,
-        object.objectType,
-        String(object.id),
-        type,
-        actor,
-        actor,
-        input.reason ?? null,
-        JSON.stringify(input.metadata ?? {}),
-      );
-    }
+  if (!validConcurrency(input.expectedWorkflowVersion, input.idempotencyKey)) {
+    const replacement = replacementFor('canonical_concurrency');
+    return {
+      ok: false,
+      status: 'replacement_required',
+      object,
+      approvalRecords: listContentApprovalRecords({ userId: input.userId, tenantId: input.tenantId, objectId: object.id }),
+      reasonCodes: [replacement.code],
+      replacement,
+    };
   }
-
-  const remaining = db.prepare(`
-    SELECT COUNT(*) AS count
-      FROM content_approval_records
-     WHERE tenant_id = ?
-       AND owner_user_id = ?
-       AND object_type = ?
-       AND object_id = ?
-       AND approval_state = 'required'
-  `).get(object.tenantId, object.ownerUserId, object.objectType, String(object.id)) as { count?: number } | undefined;
-  const hasRemainingRequired = Number(remaining?.count ?? 0) > 0;
-  updateObjectReviewState(db, object.id, {
-    approvalState: input.decision,
-    reviewRequired: input.decision === 'rejected' || hasRemainingRequired,
-    reasonCodes: input.decision === 'rejected' ? ['approval_rejected'] : [],
-    actorUserId: actor,
+  const transition = transitionContentWorkflow({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    objectId: object.id,
+    action: input.decision === 'approved' ? 'approve_draft' : 'reject',
+    actorUserId: input.actorUserId,
+    expectedWorkflowVersion: input.expectedWorkflowVersion,
+    idempotencyKey: input.idempotencyKey,
+    metadata: input.metadata,
+    reason: input.reason,
   });
-  writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-    objectType: object.objectType,
-    objectId: String(object.id),
-    action: `approval_${input.decision}`,
-    fromState: object.editorialState,
-    toState: object.editorialState,
-    approvalState: input.decision,
-    reviewRequired: input.decision === 'rejected' || hasRemainingRequired,
-    reasonCodes: input.decision === 'rejected' ? ['approval_rejected'] : [],
-    actorUserId: actor,
-    metadata: {
-      ...(input.metadata ?? {}),
-      approvalTypes: uniqueTypes,
-      rejectionReason: input.reason ?? null,
-    },
-  });
-
+  const status: DecideContentApprovalResult['status'] = transition.status === 'transitioned'
+    ? input.decision
+    : transition.status === 'version_conflict'
+      ? 'version_conflict'
+      : transition.status === 'not_found'
+        ? 'not_found'
+        : transition.status === 'replacement_required'
+          ? 'replacement_required'
+          : 'invalid_transition';
   return {
-    ok: true,
-    status: input.decision,
-    object: getContentWorkflowObject(input.userId, object.id, input.tenantId),
-    approvalRecords: listContentApprovalRecords({
-      userId: input.userId,
-      tenantId: input.tenantId,
-      objectType: object.objectType,
-      objectId: object.id,
-    }),
-    reasonCodes: input.decision === 'rejected' ? ['approval_rejected'] : [],
+    ok: transition.ok,
+    status,
+    object: transition.object,
+    approvalRecords: listContentApprovalRecords({ userId: input.userId, tenantId: input.tenantId, objectId: object.id }),
+    reasonCodes: transition.reasonCodes,
+    ...(transition.replacement ? { replacement: transition.replacement } : {}),
   };
 }
 
 export function repurposeContentWorkflowObject(input: RepurposeContentWorkflowInput): RepurposeContentWorkflowResult {
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_mutation');
   const source = getContentWorkflowObject(input.userId, input.sourceObjectId, input.tenantId);
-  const missingTransition = emptyTransition('not_found', {
-    userId: input.userId,
-    tenantId: input.tenantId,
-    objectId: input.sourceObjectId,
-    action: 'repurpose_content',
-  }, null, 'repurposed', evaluateContentApprovalRequirements({ action: 'repurpose_content' }));
-  if (!source) {
-    return {
-      ok: false,
-      status: 'not_found',
-      sourceObject: null,
-      reusedObject: null,
-      reuseRecord: null,
-      transition: missingTransition,
-      reasonCodes: ['content_object_not_found_or_unauthorized'],
-    };
-  }
-
-  const transition = transitionContentWorkflow({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    objectId: source.id,
-    action: 'repurpose_content',
-    approvalConfirmed: input.approvalConfirmed,
-    metadata: input.metadata,
-  });
-  if (!transition.ok) {
-    return {
-      ok: false,
-      status: transition.status === 'approval_required' ? 'approval_required' : 'invalid_transition',
-      sourceObject: transition.object,
-      reusedObject: null,
-      reuseRecord: null,
-      transition,
-      reasonCodes: transition.reasonCodes,
-    };
-  }
-
-  const reused = createContentWorkflowObject({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    visibilityScope: source.visibilityScope as ContentVisibilityScope,
-    objectType: input.targetObjectType ?? source.objectType,
-    title: input.title,
-    summary: input.summary ?? null,
-    editorialState: defaultEditorialState(input.targetObjectType ?? source.objectType),
-    platformId: input.toPlatformId ?? null,
-    metadata: {
-      ...(input.metadata ?? {}),
-      repurposedFromContentId: String(source.id),
-      repurposedFromObjectType: source.objectType,
-      repurposedFromTitle: source.title,
-      transformationType: String(input.transformationType),
-    },
-  });
-  const reuseRecord = recordContentRepurpose({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    visibilityScope: source.visibilityScope as ContentVisibilityScope,
-    originalContentId: source.id,
-    reusedContentId: reused.id,
-    originalArtifactType: source.objectType,
-    reusedArtifactType: reused.objectType,
-    transformationType: input.transformationType,
-    fromPlatformId: input.fromPlatformId ?? null,
-    toPlatformId: input.toPlatformId ?? null,
-    referencesPreserved: input.referencesPreserved ?? [],
-    referencesChanged: input.referencesChanged ?? [],
-    noveltyScore: input.noveltyScore,
-    reasonCodes: input.reasonCodes ?? ['content_repurposed_with_lineage'],
-    status: 'created',
-    createdBy: input.userId,
-    metadata: input.metadata ?? {},
-  });
-
+  const approval = evaluateContentApprovalRequirements({ action: 'repurpose_content' });
+  const replacement = replacementFor('repurpose_content');
+  const transition = emptyTransition(
+    source ? 'replacement_required' : 'not_found',
+    { action: 'repurpose_content' },
+    source,
+    source?.editorialState ?? null,
+    approval,
+    source ? [replacement.code] : ['content_object_not_found_or_unauthorized'],
+    source ? replacement : undefined,
+  );
   return {
-    ok: true,
-    status: 'repurposed',
-    sourceObject: getContentWorkflowObject(input.userId, source.id, input.tenantId),
-    reusedObject: reused,
-    reuseRecord,
+    ok: false,
+    status: source ? 'replacement_required' : 'not_found',
+    sourceObject: source,
+    reusedObject: null,
+    reuseRecord: null,
     transition,
-    reasonCodes: ['content_repurposed_with_lineage'],
+    reasonCodes: transition.reasonCodes,
+    ...(source ? { replacement } : {}),
   };
 }
 
@@ -1131,221 +783,66 @@ export function canTransitionReference(from: ContentReferenceLifecycleState, to:
   return REFERENCE_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
+/** Pure preview-shape helper retained for old diagnostics; it never schedules. */
 export function buildContentSecretarySchedulingIntent(input: ContentScheduleRequestInput): SecretarySchedulingIntent {
-  const tenantId = resolveContentTenantId(input.userId, input.tenantId);
   return {
-    intentId: `content:${input.objectId}:schedule`,
+    intentId: `content-workspace:${input.objectId}:work`,
     action: 'find_time_for_this',
     sourceSkill: 'content',
-    sourceAction: 'schedule_content_block',
+    sourceAction: 'schedule_content_work_block',
     sourceEntityId: input.objectId,
-    sourceEntityType: 'content_domain_object',
+    sourceEntityType: 'content_workspace_item',
     ownerUserId: input.userId,
-    tenantId,
+    tenantId: resolveContentTenantId(input.userId, input.tenantId),
     title: input.title,
     requestedDurationMinutes: input.durationMinutes ?? 60,
     minimumDurationMinutes: input.minimumDurationMinutes,
     preferredWindows: input.preferredWindows,
     hardConstraints: input.unavailableWindows || input.protectedWindows
-      ? {
-          unavailableWindows: input.unavailableWindows,
-          protectedWindows: input.protectedWindows,
-        }
+      ? { unavailableWindows: input.unavailableWindows, protectedWindows: input.protectedWindows }
       : undefined,
     deadline: input.deadline ?? null,
     priority: input.priority ?? 'normal',
     flexibility: input.flexibility ?? 'flexible',
-    reason: input.reason ?? 'Content editorial workflow requested a scheduled production block.',
-    context: 'Content Creation owns the content; Secretary owns schedule placement.',
+    reason: input.reason ?? 'Preview a private Content work block.',
+    context: 'Content owns the item. Secretary owns time placement. This intent never publishes content.',
   };
 }
 
+/**
+ * Removed single-step scheduling boundary. Callers must preview and then
+ * explicitly confirm through content-workspace-scheduling.
+ */
 export function requestContentScheduleThroughSecretary(
   input: ContentScheduleRequestInput,
 ): SecretarySchedulingDecision {
-  const db = getDb();
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_mutation');
   const object = getContentWorkflowObject(input.userId, input.objectId, input.tenantId);
   if (!object) {
-    throw new Error('Content object not found or not authorized for scheduling');
+    throw new ContentEditorialCompatibilityError(
+      'CONTENT_ITEM_NOT_FOUND',
+      'Content item not found.',
+      404,
+      { publicationExecution: 'not_performed' },
+    );
   }
-  if (object.editorialState !== 'scheduled' && !canTransitionContent(object.editorialState, 'scheduled')) {
-    throw new Error(`Content object cannot be scheduled from state: ${object.editorialState}`);
-  }
-  const approval = evaluateContentApprovalRequirements({
-    action: 'schedule_content',
-    targetState: 'scheduled',
-    currentState: object.editorialState,
-    visibilityScope: object.visibilityScope,
-  });
-  if (approval.approvalRequired && !input.approvalConfirmed) {
-    throw new Error(`Content scheduling requires approval: ${approval.reasonCodes.join(',')}`);
-  }
-  const intent = buildContentSecretarySchedulingIntent(input);
-  const schedulingOptions = requireContentLiveBusyWindows(input);
-  const preview = previewSecretarySchedulingIntent(intent, schedulingOptions);
-  if (!isAcceptedSecretarySchedule(preview.status) || !preview.recommendedSlot) {
-    return {
-      status: preview.status,
-      agendaItem: {
-        agendaItemId: `preview:${intent.intentId}`,
-        sourceIntentId: intent.intentId,
-        sourceSkill: 'content',
-        sourceAction: intent.sourceAction ?? null,
-        intentAction: intent.action ?? 'find_time_for_this',
-        sourceEntityId: String(intent.sourceEntityId ?? ''),
-        sourceEntityType: intent.sourceEntityType ?? null,
-        ownerUserId: intent.ownerUserId,
-        tenantId: String(intent.tenantId),
-        lifecycleState: 'unscheduled',
-        providerSyncState: 'not_synced',
-        providerEventId: null,
-        providerSource: null,
-        version: 0,
-        title: intent.title,
-        startAt: null,
-        endAt: null,
-        durationMinutes: intent.requestedDurationMinutes ?? null,
-        decisionAction: preview.status,
-        decisionReasonCodes: preview.reasonCodes,
-        decisionExplanation: 'Preview found no feasible Content slot.',
-        sourceShapeHash: '',
-        scheduledSegments: [],
-        cancellationReason: null,
-        supersededByAgendaItemId: null,
-        createdAt: intent.createdAt ?? new Date().toISOString(),
-        updatedAt: intent.updatedAt ?? new Date().toISOString(),
-        completedAt: null,
-        sourceCreatedAt: intent.createdAt ?? null,
-        sourceUpdatedAt: intent.updatedAt ?? null,
-        reasoningTrail: preview.reasoningTrail,
-        providerSyncFailureCount: 0,
-        lastSyncedFingerprint: null,
-        lastSyncedVerifiedAt: null,
-      },
-      reasonCodes: preview.reasonCodes,
-      explanation: 'Secretary preview found no feasible Content slot.',
-      selectedSlot: null,
-      alternativeSlots: preview.alternatives,
-      conflicts: [],
-      downstreamImplications: ['content should ask for another production window before scheduling.'],
-      confidence: preview.confidence,
-      feedback: {
-        sourceSkill: 'content',
-        sourceIntentId: intent.intentId,
-        agendaItemId: `preview:${intent.intentId}`,
-        ownerUserId: intent.ownerUserId,
-        tenantId: String(intent.tenantId),
-        agendaVersion: 0,
-        status: preview.status,
-        reasonCodes: preview.reasonCodes,
-        scheduledStart: null,
-        scheduledEnd: null,
-        shouldRefreshSource: true,
-        downstreamImplications: ['content should ask for another production window before scheduling.'],
-      },
-      reasoningTrail: preview.reasoningTrail,
-    };
-  }
-  const decision = submitSecretarySchedulingIntent(intent, schedulingOptions);
-  const accepted = isAcceptedSecretarySchedule(decision.status);
-  const toState = accepted ? 'scheduled' : object.editorialState;
-  const approvalState = approval.approvalRequired && input.approvalConfirmed ? 'approved' : object.approvalState;
-  const reviewRequired = approval.approvalRequired && input.approvalConfirmed ? 0 : object.reviewRequired ? 1 : 0;
-  const reviewReasonCodes = approval.approvalRequired && input.approvalConfirmed ? [] : object.reviewReasonCodes;
-
-  if (approval.approvalRequired && input.approvalConfirmed) {
-    approveRecordsIfConfirmed(db, object, {
-      userId: input.userId,
-      tenantId: input.tenantId,
-      objectId: input.objectId,
-      action: 'schedule_content',
-      approvalConfirmed: true,
-      reason: input.reason ?? null,
-      metadata: {
-        secretaryIntentId: intent.intentId,
-        secretaryStatus: decision.status,
-        agendaItemId: decision.agendaItem.agendaItemId,
-      },
-    }, approval);
-  }
-
-  db.prepare(`
-    UPDATE content_domain_objects
-       SET editorial_state = CASE WHEN ? = 1 THEN 'scheduled' ELSE editorial_state END,
-           lifecycle_state = CASE WHEN ? = 1 THEN 'scheduled' ELSE lifecycle_state END,
-           approval_state = ?,
-           review_required = ?,
-           review_reason_codes_json = ?,
-           scheduled_for = COALESCE(?, scheduled_for),
-           secretary_intent_id = ?,
-           secretary_agenda_item_id = ?,
-           updated_by = ?,
-           updated_at = datetime('now'),
-           workflow_version = workflow_version + 1
-     WHERE id = ?
-       AND tenant_id = ?
-       AND owner_user_id = ?
-  `).run(
-    accepted ? 1 : 0,
-    accepted ? 1 : 0,
-    approvalState,
-    reviewRequired,
-    JSON.stringify(reviewReasonCodes),
-    decision.selectedSlot?.start ?? null,
-    intent.intentId,
-    decision.agendaItem.agendaItemId,
-    input.userId,
-    object.id,
-    object.tenantId,
-    object.ownerUserId,
+  throw replacementError(
+    'CONTENT_WORKFLOW_SCHEDULING_MOVED',
+    'Legacy single-step scheduling is retired. Preview a Content work block, review the exact effect, then confirm it explicitly.',
+    426,
+    replacementFor('schedule_content'),
   );
-
-  writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-    objectType: object.objectType,
-    objectId: String(object.id),
-    action: 'schedule_content',
-    fromState: object.editorialState,
-    toState,
-    approvalState: object.approvalState,
-    reviewRequired: object.reviewRequired,
-    reasonCodes: decision.reasonCodes,
-    actorUserId: input.userId,
-    secretaryIntentId: intent.intentId,
-    metadata: {
-      agendaItemId: decision.agendaItem.agendaItemId,
-      secretaryStatus: decision.status,
-      selectedSlot: decision.selectedSlot,
-      conflicts: decision.conflicts,
-      downstreamImplications: decision.downstreamImplications,
-    },
-  });
-
-  return decision;
-}
-
-function requireContentLiveBusyWindows(input: ContentScheduleRequestInput): { additionalBusyWindows: SecretaryTimeWindow[] } {
-  if (input.liveBusyWindowsDegraded === true) {
-    throw new Error('CONTENT_SECRETARY_LIVE_BUSY_WINDOWS_DEGRADED');
-  }
-  if (!Array.isArray(input.additionalBusyWindows)) {
-    throw new Error('CONTENT_SECRETARY_LIVE_BUSY_WINDOWS_REQUIRED');
-  }
-  return { additionalBusyWindows: input.additionalBusyWindows };
 }
 
 export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): ConvertRadarSignalResult {
   const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  ensureDomainObjectColumns(db);
-  ensureRadarLifecycleColumns(db);
+  const scope = workflowScope(input.userId, input.tenantId);
   const row = db.prepare(`
-    SELECT *
-      FROM content_topic_feedback
-     WHERE id = ?
-       AND ${contentDirectScopePredicate()}
+    SELECT * FROM content_topic_feedback
+     WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+       AND visibility_scope = 'user_private' AND scope_status = 'active'
      LIMIT 1
-  `).get(input.radarSignalId, ...contentScopeParams(input.userId, input.tenantId)) as any;
-
+  `).get(input.radarSignalId, scope.tenantId, scope.userId) as any;
   if (!row) {
     return {
       ok: false,
@@ -1357,9 +854,19 @@ export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): Conver
       reasonCodes: ['radar_signal_not_found_or_unauthorized'],
     };
   }
-
   const fromState = normalizeRadarState(row.radar_lifecycle_state ?? 'detected');
   const toState: ContentRadarLifecycleState = 'converted_to_idea';
+  if (fromState === toState && row.converted_to_object_id) {
+    return {
+      ok: true,
+      status: 'converted',
+      radarSignalId: String(input.radarSignalId),
+      radarFromState: fromState,
+      radarToState: toState,
+      object: getContentWorkflowObject(input.userId, row.converted_to_object_id, input.tenantId),
+      reasonCodes: ['canonical_idempotent_replay'],
+    };
+  }
   if (!canTransitionRadar(fromState, toState)) {
     return {
       ok: false,
@@ -1371,10 +878,7 @@ export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): Conver
       reasonCodes: ['invalid_radar_lifecycle_transition'],
     };
   }
-
-  const sourceVisibility = (row.visibility_scope ?? 'user_private') as ContentVisibilityScope;
-  const requestedVisibility = input.visibilityScope ?? sourceVisibility;
-  if (visibilityRank(requestedVisibility) > visibilityRank(sourceVisibility)) {
+  if (input.visibilityScope && input.visibilityScope !== 'user_private') {
     return {
       ok: false,
       status: 'approval_required',
@@ -1386,59 +890,46 @@ export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): Conver
     };
   }
 
-  const object = createContentWorkflowObject({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    visibilityScope: requestedVisibility,
-    objectType: 'idea',
-    title: input.title ?? row.topic ?? row.title ?? `Radar signal ${input.radarSignalId}`,
-    summary: input.summary ?? row.reason ?? row.feedback_text ?? null,
-    editorialState: 'idea',
-    metadata: {
-      ...(input.metadata ?? {}),
-      generatedFromRadarSignalId: String(input.radarSignalId),
+  return db.transaction((): ConvertRadarSignalResult => {
+    const object = createContentWorkflowObject({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      visibilityScope: 'user_private',
+      objectType: 'idea',
+      title: input.title ?? row.topic ?? row.title ?? `Radar signal ${input.radarSignalId}`,
+      summary: input.summary ?? row.reason ?? row.feedback_text ?? null,
+      editorialState: 'idea',
+      metadata: {
+        ...(input.metadata ?? {}),
+        generatedFromRadarSignalId: String(input.radarSignalId),
+        radarFromState: fromState,
+      },
+      idempotencyKey: internalIdempotencyKey('radar-idea', `${scope.tenantId}:${scope.userId}:${input.radarSignalId}`),
+    });
+    const update = db.prepare(`
+      UPDATE content_topic_feedback
+         SET radar_lifecycle_state = ?, converted_to_object_id = ?,
+             converted_to_object_type = 'content_item', converted_at = datetime('now'),
+             updated_by = ?
+       WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+         AND radar_lifecycle_state = ?
+    `).run(toState, object.id, input.actorUserId ?? input.userId, input.radarSignalId, scope.tenantId, scope.userId, fromState);
+    if (update.changes !== 1) throw new ContentEditorialCompatibilityError(
+      'CONTENT_RADAR_VERSION_CONFLICT',
+      'The radar signal changed while it was being converted.',
+      409,
+      { recovery: 'reload_radar_signal', publicationExecution: 'not_performed' },
+    );
+    return {
+      ok: true,
+      status: 'converted',
+      radarSignalId: String(input.radarSignalId),
       radarFromState: fromState,
-    },
-  });
-
-  db.prepare(`
-    UPDATE content_topic_feedback
-       SET radar_lifecycle_state = ?,
-           converted_to_object_id = ?,
-           converted_to_object_type = 'idea',
-           converted_at = datetime('now'),
-           updated_by = ?,
-           updated_at = datetime('now')
-     WHERE id = ?
-  `).run(
-    toState,
-    object.id,
-    input.actorUserId ?? input.userId,
-    input.radarSignalId,
-  );
-
-  writeWorkflowEvent(db, contentScopeForInsert(input.userId, input.tenantId, object.visibilityScope as ContentVisibilityScope), {
-    objectType: object.objectType,
-    objectId: String(object.id),
-    action: 'convert_radar_to_idea',
-    fromState,
-    toState: object.editorialState,
-    approvalState: object.approvalState,
-    reviewRequired: object.reviewRequired,
-    reasonCodes: ['radar_signal_converted_to_idea'],
-    actorUserId: input.actorUserId ?? input.userId,
-    metadata: { radarSignalId: String(input.radarSignalId) },
-  });
-
-  return {
-    ok: true,
-    status: 'converted',
-    radarSignalId: String(input.radarSignalId),
-    radarFromState: fromState,
-    radarToState: toState,
-    object,
-    reasonCodes: ['radar_signal_converted_to_idea'],
-  };
+      radarToState: toState,
+      object,
+      reasonCodes: ['radar_signal_converted_to_canonical_idea'],
+    };
+  }).immediate();
 }
 
 export function listContentWorkflowEvents(input: {
@@ -1447,58 +938,146 @@ export function listContentWorkflowEvents(input: {
   objectType?: string;
   objectId?: string | number;
 }): Array<Record<string, unknown>> {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  const filters: string[] = [contentDirectScopePredicate()];
-  const params: unknown[] = [...contentScopeParams(input.userId, input.tenantId)];
-  if (input.objectType) {
-    filters.push('object_type = ?');
-    params.push(input.objectType);
-  }
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_read');
+  const scope = workflowScope(input.userId, input.tenantId);
+  const filters = [
+    "tenant_id = ?",
+    "owner_user_id = ?",
+    "visibility_scope = 'user_private'",
+    "scope_status = 'active'",
+  ];
+  const params: unknown[] = [scope.tenantId, scope.userId];
   if (input.objectId != null) {
     filters.push('object_id = ?');
     params.push(String(input.objectId));
+  } else if (input.objectType) {
+    filters.push('object_type = ?');
+    params.push(input.objectType);
   }
-  return db.prepare(`
-    SELECT *
-      FROM content_workflow_events
+  return getDb().prepare(`
+    SELECT * FROM content_workflow_events
      WHERE ${filters.join(' AND ')}
      ORDER BY id ASC
   `).all(...params) as Array<Record<string, unknown>>;
 }
 
+/** Historical audit evidence only. Migration 249 blocks every runtime write. */
 export function listContentApprovalRecords(input: {
   userId: number;
   tenantId?: number;
   objectType?: string;
   objectId?: string | number;
 }): Array<Record<string, unknown>> {
-  const db = getDb();
-  ensureContentEditorialWorkflowTables(db);
-  const filters: string[] = [contentDirectScopePredicate()];
-  const params: unknown[] = [...contentScopeParams(input.userId, input.tenantId)];
-  if (input.objectType) {
-    filters.push('object_type = ?');
-    params.push(input.objectType);
-  }
+  recordContentWorkspaceProductSignal('legacy_editorial_compatibility_read');
+  const scope = workflowScope(input.userId, input.tenantId);
+  const filters = [
+    'tenant_id = ?',
+    'owner_user_id = ?',
+    "visibility_scope = 'user_private'",
+    "scope_status = 'active'",
+  ];
+  const params: unknown[] = [scope.tenantId, scope.userId];
   if (input.objectId != null) {
     filters.push('object_id = ?');
     params.push(String(input.objectId));
+  } else if (input.objectType) {
+    filters.push('object_type = ?');
+    params.push(input.objectType);
   }
-  return db.prepare(`
-    SELECT *
-      FROM content_approval_records
+  return getDb().prepare(`
+    SELECT * FROM content_approval_records
      WHERE ${filters.join(' AND ')}
      ORDER BY id ASC
   `).all(...params) as Array<Record<string, unknown>>;
 }
 
+export function validateContentObjectGenerationReadiness(input: ContentDomainObjectInput) {
+  return validateGenerationReadiness(input);
+}
+
+function mapCompatibilityObject(
+  scope: ContentWorkspaceScope,
+  item: ReturnType<typeof getContentWorkspaceItemDetail> extends infer T ? Exclude<T, null> : never,
+  artifact: ContentArtifact | null,
+  row: any,
+): ContentWorkflowObject {
+  const productionState = item.productionState;
+  const editorialState = editorialStateForTarget(productionState, item.artifactPhase);
+  const approvalState = productionState === 'review'
+    ? 'required'
+    : productionState === 'approved'
+      ? 'approved'
+      : productionState === 'rejected'
+        ? 'rejected'
+        : 'not_required';
+  const metadata = {
+    ...parseObject(row.ontology_metadata_json),
+    ...parseObject(row.audit_metadata_json),
+    ...(artifact?.metadata ?? {}),
+    compatibility: getContentEditorialCompatibility(item.id),
+  };
+  return {
+    id: item.id,
+    tenantId: scope.tenantId,
+    ownerUserId: scope.userId,
+    visibilityScope: 'user_private',
+    objectType: legacyObjectType(artifact),
+    title: item.title,
+    editorialState,
+    productionState,
+    artifactPhase: item.artifactPhase,
+    currentArtifactId: item.currentArtifactId,
+    approvalState,
+    reviewRequired: productionState === 'review',
+    reviewReasonCodes: productionState === 'review' ? parseStringArray(row.review_reason_codes_json) : [],
+    // Canonical scheduling truth is exposed only by the schedule read model;
+    // legacy Secretary ids are intentionally never projected as authority.
+    secretaryIntentId: null,
+    secretaryAgendaItemId: null,
+    metadata,
+    workflowVersion: item.workflowVersion,
+    nextAction: item.nextAction,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function transitionFailure(
+  error: unknown,
+  input: TransitionContentWorkflowInput,
+  object: ContentWorkflowObject,
+  approval: ContentApprovalEvaluation,
+  targetState: ContentProductionState,
+): ContentWorkflowTransitionResult {
+  if (error instanceof ContentWorkspaceError) {
+    const current = getContentWorkflowObject(input.userId, object.id, input.tenantId);
+    const reasonCodes = [error.code, ...stringArray(error.details?.reasonCodes)];
+    if (error.code === 'CONTENT_WORKFLOW_VERSION_CONFLICT') {
+      return emptyTransition('version_conflict', input, current, current?.editorialState ?? object.editorialState, approval, reasonCodes);
+    }
+    if (error.code === 'CONTENT_ITEM_NOT_FOUND') {
+      return emptyTransition('not_found', input, null, null, approval, reasonCodes);
+    }
+    return emptyTransition(
+      'invalid_transition',
+      input,
+      current ?? object,
+      editorialStateForTarget(targetState, object.artifactPhase),
+      approval,
+      reasonCodes,
+    );
+  }
+  throw error;
+}
+
 function emptyTransition(
   status: ContentWorkflowTransitionResult['status'],
-  input: TransitionContentWorkflowInput,
+  input: Pick<TransitionContentWorkflowInput, 'action'>,
   object: ContentWorkflowObject | null,
   toState: ContentEditorialState | null,
   approval: ContentApprovalEvaluation,
+  reasonCodes: string[],
+  replacement?: ContentWorkflowReplacement,
 ): ContentWorkflowTransitionResult {
   return {
     ok: false,
@@ -1507,318 +1086,289 @@ function emptyTransition(
     fromState: object?.editorialState ?? null,
     toState,
     approval,
-    reasonCodes: status === 'invalid_transition' ? ['invalid_lifecycle_transition'] : [],
+    reasonCodes,
+    ...(replacement ? { replacement } : {}),
   };
 }
 
-function isAcceptedSecretarySchedule(status: SecretarySchedulingDecision['status']): boolean {
-  return status === 'scheduled' || status === 'reflowed' || status === 'compressed';
+function canonicalTargetForLegacyAction(action: ContentWorkflowAction): ContentProductionState | null {
+  if (action === 'approve_draft') return 'approved';
+  if (action === 'archive') return 'archived';
+  if (action === 'reject') return 'rejected';
+  return null;
 }
 
-function defaultEditorialState(objectType: string): ContentEditorialState {
-  if (objectType === 'radar_signal') return 'idea';
-  if (objectType === 'outline') return 'outlined';
-  if (objectType === 'script' || objectType === 'caption' || objectType === 'carousel' || objectType === 'thread') return 'drafted';
-  if (objectType === 'content_calendar_item') return 'scheduled';
+function legacyTargetForAction(action: ContentWorkflowAction): ContentEditorialState | null {
+  const targets: Partial<Record<ContentWorkflowAction, ContentEditorialState>> = {
+    convert_radar_to_idea: 'idea',
+    convert_radar_to_script: 'drafted',
+    convert_idea_to_outline: 'outlined',
+    convert_outline_to_script: 'drafted',
+    refine_script: 'revised',
+    approve_draft: 'approved',
+    schedule_content: 'scheduled',
+    mark_published: 'published',
+    archive: 'archived',
+    reject: 'rejected',
+    repurpose_content: 'repurposed',
+    delete_draft: 'archived',
+    mark_stale: 'stale',
+  };
+  return targets[action] ?? null;
+}
+
+function replacementFor(action: ContentWorkflowAction | 'source_review' | 'approval_type' | 'create_artifact' | 'canonical_concurrency'): ContentWorkflowReplacement {
+  const routes = CONTENT_EDITORIAL_WORKFLOW_EXIT.canonicalRoutes;
+  switch (action) {
+    case 'schedule_content':
+      return {
+        code: 'CONTENT_WORKFLOW_SCHEDULING_MOVED',
+        message: 'Create a schedule preview and explicitly confirm one slot. This schedules work only and never publishes.',
+        canonicalRoutes: { schedulePreview: routes.schedulePreview, scheduleConfirm: routes.scheduleConfirm },
+        publicationExecution: 'not_performed',
+        recovery: 'create_schedule_preview_then_confirm',
+      };
+    case 'mark_published':
+      return {
+        code: 'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED',
+        message: 'Publication cannot be inferred from a legacy state change. No publication was performed.',
+        canonicalRoutes: { item: routes.item },
+        publicationExecution: 'not_performed',
+        recovery: 'confirm_external_publication_in_a_dedicated_tracking_flow',
+      };
+    case 'source_review':
+      return {
+        code: 'CONTENT_SOURCE_REVIEW_MOVED',
+        message: 'Register private sources and record immutable lineage against the exact saved revision.',
+        canonicalRoutes: { sources: routes.sources, lineage: routes.lineage },
+        publicationExecution: 'not_performed',
+        recovery: 'register_sources_then_record_revision_lineage',
+      };
+    case 'repurpose_content':
+      return {
+        code: 'CONTENT_REPURPOSE_MOVED',
+        message: 'Create a canonical target item and record a derived, variant, or remix relationship.',
+        canonicalRoutes: { item: routes.item, relationships: routes.relationships },
+        publicationExecution: 'not_performed',
+        recovery: 'create_target_item_then_record_relationship',
+      };
+    case 'delete_draft':
+      return {
+        code: 'CONTENT_DELETE_MOVED',
+        message: 'Use the recoverable workspace Trash operation with the current workflow version.',
+        canonicalRoutes: { item: routes.item },
+        publicationExecution: 'not_performed',
+        recovery: 'soft_delete_with_cas_and_idempotency',
+      };
+    case 'canonical_concurrency':
+      return {
+        code: 'CONTENT_WORKFLOW_CANONICAL_CONCURRENCY_REQUIRED',
+        message: 'Reload the item and provide expectedWorkflowVersion plus an idempotency key.',
+        canonicalRoutes: { item: routes.item, state: routes.state },
+        publicationExecution: 'not_performed',
+        recovery: 'reload_and_retry_with_cas_and_idempotency',
+      };
+    case 'approval_type':
+      return {
+        code: 'CONTENT_APPROVAL_TYPE_REQUIRED',
+        message: 'Only an explicit content_review approval can use this compatibility adapter.',
+        canonicalRoutes: { item: routes.item, state: routes.state },
+        publicationExecution: 'not_performed',
+        recovery: 'submit_explicit_content_review_decision',
+      };
+    case 'create_artifact':
+    case 'convert_radar_to_idea':
+    case 'convert_radar_to_script':
+    case 'convert_idea_to_outline':
+    case 'convert_outline_to_script':
+    case 'refine_script':
+      return {
+        code: 'CONTENT_ARTIFACT_WORKFLOW_MOVED',
+        message: 'Create the next typed artifact or save a new immutable revision in the workspace.',
+        canonicalRoutes: { artifacts: routes.artifacts, revisions: routes.revisions },
+        publicationExecution: 'not_performed',
+        recovery: 'create_typed_artifact_or_save_revision',
+      };
+    case 'mark_stale':
+      return {
+        code: 'CONTENT_STALE_STATE_RETIRED',
+        message: 'The parallel stale lifecycle is retired. Use status, deadline, and next-action workspace fields.',
+        canonicalRoutes: { item: routes.item },
+        publicationExecution: 'not_performed',
+        recovery: 'update_workspace_metadata',
+      };
+    default:
+      return {
+        code: 'CONTENT_WORKFLOW_ACTION_MOVED',
+        message: 'This legacy editorial action has moved to the canonical Content workspace.',
+        canonicalRoutes: { item: routes.item, state: routes.state },
+        publicationExecution: 'not_performed',
+        recovery: 'use_canonical_workspace_contract',
+      };
+  }
+}
+
+function replacementError(code: string, message: string, status: number, replacement: ContentWorkflowReplacement) {
+  return new ContentEditorialCompatibilityError(code, message, status, {
+    ...replacement,
+    compatibilitySchemaVersion: CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+  });
+}
+
+function workflowScope(userId: number, tenantId?: number): ContentWorkspaceScope {
+  if (!Number.isInteger(userId) || userId <= 0) throw new ContentEditorialCompatibilityError(
+    'CONTENT_SCOPE_REQUIRED',
+    'A valid authenticated user is required.',
+    401,
+    { publicationExecution: 'not_performed' },
+  );
+  const resolvedTenantId = resolveContentTenantId(userId, tenantId);
+  if (!Number.isInteger(resolvedTenantId) || resolvedTenantId <= 0) throw new ContentEditorialCompatibilityError(
+    'CONTENT_SCOPE_REQUIRED',
+    'A valid tenant is required.',
+    401,
+    { publicationExecution: 'not_performed' },
+  );
+  return { tenantId: resolvedTenantId, userId };
+}
+
+function requirePrivateCompatibilityScope(scope: ContentVisibilityScope | undefined): void {
+  if (scope == null || scope === 'user_private') return;
+  throw replacementError(
+    'CONTENT_SHARED_WORKFLOW_ROLE_REQUIRED',
+    'The canonical workspace is private until explicit tenant collaboration roles and approvals exist.',
+    409,
+    replacementFor('create_artifact'),
+  );
+}
+
+function requireCompatibilityIdempotencyKey(value: string | undefined): string {
+  if (typeof value !== 'string' || value.trim().length < 8 || value.trim().length > 200) {
+    throw replacementError(
+      'CONTENT_IDEMPOTENCY_KEY_REQUIRED',
+      'An idempotency key between 8 and 200 characters is required.',
+      409,
+      replacementFor('canonical_concurrency'),
+    );
+  }
+  return value.trim();
+}
+
+function validConcurrency(version: number | undefined, idempotencyKey: string | undefined): boolean {
+  return Number.isInteger(version) && Number(version) > 0
+    && typeof idempotencyKey === 'string'
+    && idempotencyKey.trim().length >= 8
+    && idempotencyKey.trim().length <= 200;
+}
+
+function internalIdempotencyKey(prefix: string, seed: string): string {
+  return `${prefix}:${createHash('sha256').update(seed).digest('hex')}`;
+}
+
+function originalArtifactExpectedVersion(
+  scope: ContentWorkspaceScope,
+  itemId: number,
+  idempotencyKey: string,
+): number | null {
+  const db = getDb();
+  const receipt = db.prepare(`
+    SELECT resource_id
+      FROM content_mutation_receipts
+     WHERE tenant_id = ? AND owner_user_id = ?
+       AND operation = ? AND idempotency_key = ?
+     LIMIT 1
+  `).get(scope.tenantId, scope.userId, `create_artifact:${itemId}`, idempotencyKey) as {
+    resource_id: string;
+  } | undefined;
+  if (!receipt) return null;
+  const events = db.prepare(`
+    SELECT metadata_json
+      FROM content_workflow_events
+     WHERE tenant_id = ? AND owner_user_id = ?
+       AND object_type = 'content_item' AND object_id = ?
+       AND action = 'workspace_artifact_created'
+     ORDER BY id ASC
+  `).all(scope.tenantId, scope.userId, String(itemId)) as Array<{ metadata_json: string }>;
+  for (const event of events) {
+    const metadata = parseObject(event.metadata_json);
+    if (String(metadata.artifactId ?? '') !== receipt.resource_id) continue;
+    const version = Number(metadata.expectedWorkflowVersion);
+    if (Number.isSafeInteger(version) && version > 0) return version;
+  }
+  throw new ContentEditorialCompatibilityError(
+    'CONTENT_IDEMPOTENCY_RECEIPT_INCONSISTENT',
+    'The prior compatibility write cannot be verified safely.',
+    500,
+    { recovery: 'reload_workspace_item', publicationExecution: 'not_performed' },
+  );
+}
+
+function artifactTypeForLegacyObject(objectType: string): ContentArtifactType {
+  switch (objectType) {
+    case 'idea': return 'idea_note';
+    case 'brief': return 'brief';
+    case 'outline': return 'outline';
+    case 'script': return 'script';
+    case 'caption': return 'caption';
+    case 'shot_list': return 'shot_list';
+    case 'platform_variant': return 'platform_variant';
+    case 'research_notes': return 'research_notes';
+    default: return 'other';
+  }
+}
+
+function legacyObjectType(artifact: ContentArtifact | null): string {
+  const explicit = artifact?.metadata?.legacyObjectType;
+  if (typeof explicit === 'string' && explicit.trim()) return explicit;
+  switch (artifact?.artifactType) {
+    case 'idea_note': return 'idea';
+    case 'brief': return 'brief';
+    case 'outline': return 'outline';
+    case 'script': return 'script';
+    case 'caption': return 'caption';
+    case 'shot_list': return 'shot_list';
+    case 'platform_variant': return 'platform_variant';
+    case 'research_notes': return 'research_notes';
+    default: return 'content_item';
+  }
+}
+
+function legacyObjectTypeMatches(object: ContentWorkflowObject, requested: string): boolean {
+  return object.objectType === requested || requested === 'content_item';
+}
+
+function editorialStateForTarget(state: ContentProductionState, artifactPhase: string): ContentEditorialState {
+  if (state === 'review') return 'reviewed';
+  if (state === 'approved') return 'approved';
+  if (state === 'scheduled') return 'scheduled';
+  if (state === 'published') return 'published';
+  if (state === 'archived') return 'archived';
+  if (state === 'rejected') return 'rejected';
+  if (artifactPhase === 'outline') return 'outlined';
+  if (artifactPhase === 'draft' || artifactPhase === 'final') return 'drafted';
   return 'idea';
 }
 
-function mapWorkflowObject(row: any): ContentWorkflowObject {
-  return {
-    id: Number(row.id),
-    tenantId: Number(row.tenant_id),
-    ownerUserId: Number(row.owner_user_id),
-    visibilityScope: row.visibility_scope,
-    objectType: row.object_type,
-    title: row.title,
-    editorialState: normalizeEditorialState(row.editorial_state ?? row.lifecycle_state ?? 'idea'),
-    approvalState: row.approval_state ?? 'not_required',
-    reviewRequired: row.review_required === 1,
-    reviewReasonCodes: parseJsonArray(row.review_reason_codes_json),
-    secretaryIntentId: row.secretary_intent_id ?? null,
-    secretaryAgendaItemId: row.secretary_agenda_item_id ?? null,
-    metadata: parseJsonObject(row.ontology_metadata_json),
-    workflowVersion: Number(row.workflow_version ?? 1),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function defaultEditorialState(objectType: string): ContentEditorialState {
+  if (objectType === 'outline') return 'outlined';
+  if (['script', 'caption', 'carousel', 'thread'].includes(objectType)) return 'drafted';
+  if (objectType === 'content_calendar_item') return 'selected';
+  return 'idea';
 }
 
-function requestApprovalRecords(
-  db: any,
-  object: ContentWorkflowObject,
-  input: TransitionContentWorkflowInput,
-  approval: ContentApprovalEvaluation,
-): void {
-  for (const type of approval.approvalTypes) {
-    db.prepare(`
-      INSERT INTO content_approval_records (
-        tenant_id, owner_user_id, visibility_scope, scope_status,
-        object_type, object_id, approval_type, approval_state,
-        required_reason_codes_json, requested_by, metadata_json
-      )
-      VALUES (?, ?, ?, 'active', ?, ?, ?, 'required', ?, ?, ?)
-      ON CONFLICT(tenant_id, owner_user_id, object_type, object_id, approval_type)
-      DO UPDATE SET
-        approval_state = 'required',
-        required_reason_codes_json = excluded.required_reason_codes_json,
-        requested_by = excluded.requested_by,
-        requested_at = datetime('now'),
-        metadata_json = excluded.metadata_json
-    `).run(
-      object.tenantId,
-      object.ownerUserId,
-      object.visibilityScope,
-      object.objectType,
-      String(object.id),
-      type,
-      JSON.stringify(approval.reasonCodes),
-      input.actorUserId ?? input.userId,
-      JSON.stringify(input.metadata ?? {}),
-    );
-  }
+function approvalActorAuthorized(object: ContentWorkflowObject, actor: number, userId: number): boolean {
+  return actor === userId && object.ownerUserId === userId && object.visibilityScope === 'user_private';
 }
 
-function approveRecordsIfConfirmed(
-  db: any,
-  object: ContentWorkflowObject,
-  input: TransitionContentWorkflowInput,
-  approval: ContentApprovalEvaluation,
-): void {
-  if (!input.approvalConfirmed && input.action !== 'approve_draft') return;
-  for (const type of approval.approvalTypes.length > 0 ? approval.approvalTypes : ['publish' as ContentApprovalType]) {
-    db.prepare(`
-      INSERT INTO content_approval_records (
-        tenant_id, owner_user_id, visibility_scope, scope_status,
-        object_type, object_id, approval_type, approval_state,
-        required_reason_codes_json, requested_by, approved_by, approved_at, metadata_json
-      )
-      VALUES (?, ?, ?, 'active', ?, ?, ?, 'approved', ?, ?, ?, datetime('now'), ?)
-      ON CONFLICT(tenant_id, owner_user_id, object_type, object_id, approval_type)
-      DO UPDATE SET
-        approval_state = 'approved',
-        approved_by = excluded.approved_by,
-        approved_at = datetime('now'),
-        metadata_json = excluded.metadata_json
-    `).run(
-      object.tenantId,
-      object.ownerUserId,
-      object.visibilityScope,
-      object.objectType,
-      String(object.id),
-      type,
-      JSON.stringify(approval.reasonCodes),
-      input.userId,
-      input.actorUserId ?? input.userId,
-      JSON.stringify(input.metadata ?? {}),
-    );
-  }
+function referenceAuthorized(reference: ContentRegisteredReference, scope: ContentWorkspaceScope): boolean {
+  return reference.tenantId === scope.tenantId
+    && reference.ownerUserId === scope.userId
+    && reference.visibilityScope === 'user_private';
 }
 
-function writeWorkflowEvent(
-  db: any,
-  scope: ReturnType<typeof contentScopeForInsert>,
-  input: {
-    objectType: string;
-    objectId: string;
-    action: string;
-    fromState: string | null;
-    toState: string | null;
-    approvalState: string;
-    reviewRequired: boolean;
-    reasonCodes: string[];
-    actorUserId: number;
-    secretaryIntentId?: string | null;
-    metadata?: Record<string, unknown>;
-  },
-): void {
-  db.prepare(`
-    INSERT INTO content_workflow_events (
-      tenant_id, owner_user_id, visibility_scope, scope_status,
-      object_type, object_id, action, from_state, to_state,
-      approval_state, review_required, reason_codes_json, actor_user_id,
-      secretary_intent_id, metadata_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    scope.tenantId,
-    scope.ownerUserId,
-    scope.visibilityScope,
-    scope.scopeStatus,
-    input.objectType,
-    input.objectId,
-    input.action,
-    input.fromState,
-    input.toState,
-    input.approvalState,
-    input.reviewRequired ? 1 : 0,
-    JSON.stringify(input.reasonCodes),
-    input.actorUserId,
-    input.secretaryIntentId ?? null,
-    JSON.stringify(input.metadata ?? {}),
-  );
-}
-
-function updateObjectReviewState(
-  db: any,
-  objectId: number | string,
-  input: {
-    approvalState: string;
-    reviewRequired: boolean;
-    reasonCodes: string[];
-    actorUserId: number;
-  },
-): void {
-  db.prepare(`
-    UPDATE content_domain_objects
-       SET approval_state = ?,
-           review_required = ?,
-           review_reason_codes_json = ?,
-           updated_by = ?,
-           updated_at = datetime('now'),
-           workflow_version = workflow_version + 1
-     WHERE id = ?
-  `).run(
-    input.approvalState,
-    input.reviewRequired ? 1 : 0,
-    JSON.stringify(input.reasonCodes),
-    input.actorUserId,
-    objectId,
-  );
-}
-
-function writeSourceReviewRecord(
-  db: any,
-  object: ContentWorkflowObject,
-  input: {
-    reviewState: string;
-    groundingStatus: string | null;
-    reasonCodes: string[];
-    actorUserId: number;
-    notes: string | null;
-    metadata: Record<string, unknown>;
-  },
-): void {
-  db.prepare(`
-    INSERT INTO content_source_review_records (
-      tenant_id, owner_user_id, visibility_scope, scope_status,
-      object_type, object_id, review_state, grounding_status,
-      reason_codes_json, reviewed_by, notes, metadata_json
-    )
-    VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    object.tenantId,
-    object.ownerUserId,
-    object.visibilityScope,
-    object.objectType,
-    String(object.id),
-    input.reviewState,
-    input.groundingStatus,
-    JSON.stringify(input.reasonCodes),
-    input.actorUserId,
-    input.notes,
-    JSON.stringify(input.metadata),
-  );
-}
-
-function isReferenceAuthorizedForReview(ref: ContentRegisteredReference, userId: number, tenantId: number): boolean {
-  if (ref.tenantId !== tenantId) return false;
-  if (ref.visibilityScope === 'user_private') return ref.ownerUserId === userId;
-  if (ref.visibilityScope === 'tenant_shared' || ref.visibilityScope === 'public_published') return true;
-  return false;
-}
-
-function ensureDomainObjectColumns(db: any): void {
-  if (!tableExists(db, 'content_domain_objects')) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS content_domain_objects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tenant_id INTEGER NOT NULL,
-        owner_user_id INTEGER NOT NULL,
-        visibility_scope TEXT NOT NULL DEFAULT 'user_private',
-        scope_status TEXT NOT NULL DEFAULT 'active',
-        object_type TEXT NOT NULL,
-        lifecycle_state TEXT NOT NULL DEFAULT 'captured',
-        editorial_state TEXT DEFAULT 'idea',
-        approval_state TEXT DEFAULT 'not_required',
-        review_required INTEGER NOT NULL DEFAULT 0,
-        review_reason_codes_json TEXT DEFAULT '[]',
-        title TEXT NOT NULL,
-        summary TEXT,
-        platform_id TEXT,
-        format_id TEXT,
-        ontology_metadata_json TEXT NOT NULL DEFAULT '{}',
-        ontology_schema_version TEXT NOT NULL DEFAULT 'content-ontology-v1',
-        created_by INTEGER NOT NULL,
-        updated_by INTEGER NOT NULL,
-        audit_metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        approved_by INTEGER,
-        approved_at TEXT,
-        rejected_reason TEXT,
-        archived_at TEXT,
-        scheduled_for TEXT,
-        secretary_intent_id TEXT,
-        secretary_agenda_item_id TEXT,
-        workflow_version INTEGER NOT NULL DEFAULT 1
-      );
-    `);
-    return;
-  }
-  ensureColumn(db, 'content_domain_objects', 'editorial_state', "TEXT DEFAULT 'idea'");
-  ensureColumn(db, 'content_domain_objects', 'approval_state', "TEXT DEFAULT 'not_required'");
-  ensureColumn(db, 'content_domain_objects', 'review_required', 'INTEGER NOT NULL DEFAULT 0');
-  ensureColumn(db, 'content_domain_objects', 'review_reason_codes_json', "TEXT DEFAULT '[]'");
-  ensureColumn(db, 'content_domain_objects', 'approved_by', 'INTEGER');
-  ensureColumn(db, 'content_domain_objects', 'approved_at', 'TEXT');
-  ensureColumn(db, 'content_domain_objects', 'rejected_reason', 'TEXT');
-  ensureColumn(db, 'content_domain_objects', 'archived_at', 'TEXT');
-  ensureColumn(db, 'content_domain_objects', 'scheduled_for', 'TEXT');
-  ensureColumn(db, 'content_domain_objects', 'secretary_intent_id', 'TEXT');
-  ensureColumn(db, 'content_domain_objects', 'secretary_agenda_item_id', 'TEXT');
-  ensureColumn(db, 'content_domain_objects', 'workflow_version', 'INTEGER NOT NULL DEFAULT 1');
-}
-
-function ensureRadarLifecycleColumns(db: any): void {
-  if (!tableExists(db, 'content_topic_feedback')) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS content_topic_feedback (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tenant_id INTEGER NOT NULL,
-        owner_user_id INTEGER NOT NULL,
-        visibility_scope TEXT NOT NULL DEFAULT 'user_private',
-        scope_status TEXT NOT NULL DEFAULT 'active',
-        topic TEXT,
-        reason TEXT,
-        feedback_text TEXT,
-        radar_lifecycle_state TEXT DEFAULT 'detected',
-        converted_to_object_id INTEGER,
-        converted_to_object_type TEXT,
-        converted_at TEXT,
-        created_by INTEGER,
-        updated_by INTEGER,
-        audit_metadata_json TEXT DEFAULT '{}',
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now'))
-      );
-    `);
-    return;
-  }
-  ensureColumn(db, 'content_topic_feedback', 'tenant_id', 'INTEGER');
-  ensureColumn(db, 'content_topic_feedback', 'owner_user_id', 'INTEGER');
-  ensureColumn(db, 'content_topic_feedback', 'visibility_scope', "TEXT DEFAULT 'user_private'");
-  ensureColumn(db, 'content_topic_feedback', 'scope_status', "TEXT DEFAULT 'active'");
-  ensureColumn(db, 'content_topic_feedback', 'radar_lifecycle_state', "TEXT DEFAULT 'detected'");
-  ensureColumn(db, 'content_topic_feedback', 'converted_to_object_id', 'INTEGER');
-  ensureColumn(db, 'content_topic_feedback', 'converted_to_object_type', 'TEXT');
-  ensureColumn(db, 'content_topic_feedback', 'converted_at', 'TEXT');
-  ensureColumn(db, 'content_topic_feedback', 'updated_by', 'INTEGER');
-  ensureColumn(db, 'content_topic_feedback', 'updated_at', "TEXT DEFAULT (datetime('now'))");
-}
-
-function normalizeEditorialState(value: string): ContentEditorialState {
-  return CONTENT_EDITORIAL_STATES.includes(value as ContentEditorialState) ? value as ContentEditorialState : 'idea';
+function positiveIntegerOrNull(value: number | string): number | null {
+  const numeric = typeof value === 'number' ? value : /^\d+$/.test(value) ? Number(value) : NaN;
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
 function normalizeRadarState(value: string): ContentRadarLifecycleState {
@@ -1827,18 +1377,7 @@ function normalizeRadarState(value: string): ContentRadarLifecycleState {
     : 'detected';
 }
 
-function parseJsonArray(value: unknown): any[] {
-  if (Array.isArray(value)) return value;
-  if (typeof value !== 'string' || !value.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonObject(value: unknown): Record<string, unknown> {
+function parseObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
   if (typeof value !== 'string' || !value.trim()) return {};
   try {
@@ -1849,23 +1388,16 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
-function tableExists(db: any, table: string): boolean {
-  const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  return Boolean(row);
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === 'string');
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    return stringArray(JSON.parse(value));
+  } catch {
+    return [];
+  }
 }
 
-function hasColumn(db: any, table: string, column: string): boolean {
-  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
-    .some((row) => row.name === column);
-}
-
-function ensureColumn(db: any, table: string, column: string, definition: string): void {
-  if (hasColumn(db, table, column)) return;
-  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-export function validateContentObjectGenerationReadiness(
-  input: ContentDomainObjectInput,
-) {
-  return validateGenerationReadiness(input);
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }

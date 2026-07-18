@@ -524,11 +524,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify migration sequence, cumulative apply, and fast-path policy
+      - name: Scan migration sequence, cumulative apply, and review subject
         run: |
           BASE='${{ needs.classify.outputs.base_sha }}'
           if [ -n "$BASE" ]; then
-            node scripts/migration-safety-check.mjs --base "$BASE" --changed-only
+            node scripts/migration-safety-check.mjs \
+              --base "$BASE" \
+              --changed-only \
+              --approval-mode scan
           else
             node scripts/migration-safety-check.mjs
           fi

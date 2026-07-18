@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
@@ -24,9 +24,17 @@ import {
 } from '../../services/content-radar-preferences';
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
 import { cleanupContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
+import {
+  assertContentTopicCompatibilityCanArchive,
+  findContentTopicCompatibilityUpdateReplay,
+  hasContentTopicCompatibilityDeleteReplay,
+} from '../../services/content-topic-workspace-compat';
+import { ContentWorkspaceError } from '../../services/content-workspace';
 import { logger } from '../../utils/logger';
 import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
+import { recordContentWorkspaceProductSignal } from '../../services/content-workspace-observability';
+import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
 import type { Lang } from '../../utils/i18n';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -97,6 +105,7 @@ export function registerContentTopicRoutes(
   router.get('/topics', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_list')) return;
+    recordContentWorkspaceProductSignal('legacy_topics_compatibility_read');
 
     const status = typeof req.query.status === 'string'
       ? (req.query.status as ContentTopicStatus)
@@ -119,12 +128,13 @@ export function registerContentTopicRoutes(
         scheduledOnly,
         includeTerminal: status === 'cancelled' || status === 'published',
         limit,
+        tenantId,
       });
 
       // Precompute the upcoming count so the iOS landing page card
       // can render a "N this week" subtitle without a second request.
       const [upcomingCount, filmingRecommendation] = await Promise.all([
-        Promise.resolve(getUpcomingTopicCount(userId, 14)),
+        Promise.resolve(getUpcomingTopicCount(userId, 14, tenantId)),
         getFilmingRecommendation(userId, topics, tenantId),
       ]);
       const language = resolveContentLanguage(req, userId);
@@ -161,6 +171,7 @@ export function registerContentTopicRoutes(
   router.post('/topics', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
+    recordContentWorkspaceProductSignal('legacy_topics_compatibility_mutation');
 
     const { title, notes, scheduledDate, scheduledDateTime, status, source } = req.body;
     if (!title || typeof title !== 'string' || !title.trim()) {
@@ -195,23 +206,30 @@ export function registerContentTopicRoutes(
       return;
     }
 
-    // BE-3: replay check BEFORE budget consumption — a retry of an already-
-    // applied create must not double-charge or double-create.
-    if (idempotencyKey) {
-      const existing = findTopicByClientRequestId(userId, idempotencyKey);
-      if (existing) {
-        sendSuccess(res, { topic: existing, idempotentReplay: true }, { status: 200 });
-        return;
-      }
-    }
-
-    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_create')) return;
-
     try {
       const language = resolveContentLanguage(req, userId);
       const effectiveScheduledDate = scheduledDate
         ?? datePartFromScheduledDateTime(scheduledDateTime)
         ?? null;
+      // Replay validation includes the complete normalized payload. Reusing a
+      // key with a different status, deadline, or content is a typed conflict,
+      // not permission to return or mutate the earlier idea.
+      if (idempotencyKey) {
+        const existing = findTopicByClientRequestId(userId, idempotencyKey, tenantId, {
+          title: title.trim(),
+          notes: notes ?? null,
+          scheduledDate: effectiveScheduledDate,
+          scheduledAt: scheduledDateTime ?? null,
+          status: status ?? 'planned',
+          source: source ?? null,
+        });
+        if (existing) {
+          sendSuccess(res, { topic: existing, idempotentReplay: true }, { status: 200 });
+          return;
+        }
+      }
+      if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_create')) return;
+
       const writeTopic = () => addTopic(userId, title.trim(), {
         notes: notes ?? null,
         scheduledDate: effectiveScheduledDate,
@@ -223,33 +241,33 @@ export function registerContentTopicRoutes(
           : {}),
       });
       const topic = runOutboxTransaction((emitDomainEvent) => {
-        const created = markTopicSecretarySyncPending(userId, writeTopic());
+        const created = writeTopic();
         emitDomainEvent({
           tenantId,
           userId,
           sourceSkill: 'content',
           eventType: 'content.idea.created',
-          entityType: 'content_topic',
-          entityId: created.id,
+          entityType: 'content_workspace_item',
+          entityId: created.workspace_item_id ?? created.id,
           payload: {
             summary: {
               status: created.status,
               scheduled: Boolean(created.scheduled_date ?? created.scheduled_at),
-              syncPending: topicNeedsSecretarySync(created),
+              syncPending: false,
+              scheduleSemantics: created.schedule_semantics ?? 'none',
             },
             action: 'created',
             language,
           },
           privacyClassification: 'private_content',
-          idempotencyKey: `content.idea.created:${userId}:${created.id}`,
+          idempotencyKey: `content.idea.created:${userId}:${created.workspace_item_id ?? created.id}`,
         });
         return created;
       });
       invalidateContentDerivedCaches(userId);
       sendSuccess(res, { topic }, { status: 201 });
     } catch (err: any) {
-      logger.error({ err, userId }, 'iOS content topic create failed');
-      sendInternalError(res, 'Failed to create topic');
+      sendContentTopicError(res, err, userId, tenantId, 'iOS content topic create failed');
     }
   }));
 
@@ -264,6 +282,7 @@ export function registerContentTopicRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_update', { topicId })) return;
+    recordContentWorkspaceProductSignal('legacy_topics_compatibility_mutation');
 
     const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
     if (topicId == null) {
@@ -290,68 +309,93 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
-    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_update')) return;
+    const headerIdempotencyKey = req.header('Idempotency-Key');
+    const rawIdempotencyKey = typeof req.body?.idempotencyKey === 'string'
+      ? req.body.idempotencyKey
+      : (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
+    const idempotencyKey = rawIdempotencyKey?.trim() || undefined;
+    if (idempotencyKey !== undefined && idempotencyKey.length > 128) {
+      sendError(res, 'BAD_REQUEST', 'idempotencyKey must be at most 128 characters');
+      return;
+    }
 
     try {
-      const existingTopic = getTopicById(userId, topicId);
+      const existingTopic = getTopicById(userId, topicId, tenantId);
       if (!existingTopic) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
       const effectiveScheduledDate = scheduledDate !== undefined
         ? scheduledDate
-        : datePartFromScheduledDateTime(scheduledDateTime);
-      const nextSchedule = resolveNextTopicSchedule(existingTopic, scheduledDate, scheduledDateTime);
-      if (nextSchedule.clearsSchedule && topicHasSecretaryRefs(existingTopic)) {
-        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, existingTopic);
+        : scheduledDateTime === null
+          ? existingTopic.scheduled_date
+          : datePartFromScheduledDateTime(scheduledDateTime);
+      const retiresLegacySchedule = topicHasSecretaryRefs(existingTopic)
+        && (topicScheduleChanged(existingTopic, scheduledDate, scheduledDateTime) || status === 'cancelled');
+      const normalizedUpdate = {
+        scope: { tenantId, userId },
+        compatTopicId: topicId,
+        title: title !== undefined ? title.trim() : undefined,
+        notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
+        scheduledDate: effectiveScheduledDate,
+        scheduledAt: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
+        status,
+        retireLegacySchedule: retiresLegacySchedule,
+        idempotencyKey,
+      };
+      if (idempotencyKey) {
+        const replay = findContentTopicCompatibilityUpdateReplay(normalizedUpdate);
+        if (replay) {
+          sendSuccess(res, { topic: replay, idempotentReplay: true });
+          return;
+        }
+      }
+      if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_update')) return;
+
+      if (status === 'cancelled') {
+        assertContentTopicCompatibilityCanArchive({ tenantId, userId }, topicId);
+      }
+      if (retiresLegacySchedule) {
+        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, existingTopic, { tenantId });
         if (cleanup.errors.length > 0) {
           sendInternalError(res, 'Failed to clean up synced Secretary artifacts');
           return;
         }
       }
-      const mutationFingerprint = stableMutationFingerprint({
-        title: title !== undefined ? title.trim() : undefined,
-        notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
-        scheduledDate: effectiveScheduledDate,
-        scheduledDateTime: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
-        status,
-      });
+      const operationKey = idempotencyKey ?? `server-${randomUUID()}`;
+      const mutationFingerprint = stableMutationFingerprint({ ...normalizedUpdate, idempotencyKey: operationKey });
       const writeUpdate = () => updateTopic(userId, topicId, {
-        title: title !== undefined ? title.trim() : undefined,
-        notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
-        scheduled_date: effectiveScheduledDate,
-        scheduled_at: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
-        status,
-        secretary_task_list_id: nextSchedule.clearsSchedule ? null : undefined,
-        secretary_task_list_name: nextSchedule.clearsSchedule ? null : undefined,
-        secretary_task_external_id: nextSchedule.clearsSchedule ? null : undefined,
-        calendar_event_id: nextSchedule.clearsSchedule ? null : undefined,
-        calendar_source: nextSchedule.clearsSchedule ? null : undefined,
-        secretary_sync_status: nextSchedule.hasSchedule ? 'pending' : nextSchedule.clearsSchedule ? null : undefined,
-        secretary_sync_error: nextSchedule.hasSchedule || nextSchedule.clearsSchedule ? null : undefined,
+        title: normalizedUpdate.title,
+        notes: normalizedUpdate.notes,
+        scheduled_date: normalizedUpdate.scheduledDate,
+        scheduled_at: normalizedUpdate.scheduledAt,
+        status: normalizedUpdate.status,
+      }, tenantId, operationKey, {
+        retireLegacySchedule: retiresLegacySchedule,
       });
       const updated = runOutboxTransaction((emitDomainEvent) => {
         const row = writeUpdate();
         if (!row) return null;
-        const topic = markTopicSecretarySyncPending(userId, row);
+        const topic = row;
         emitDomainEvent({
           tenantId,
           userId,
           sourceSkill: 'content',
           eventType: 'content.idea.updated',
-          entityType: 'content_topic',
-          entityId: topic.id,
+          entityType: 'content_workspace_item',
+          entityId: topic.workspace_item_id ?? topic.id,
           payload: {
             summary: {
               status: topic.status,
               scheduled: Boolean(topic.scheduled_date ?? topic.scheduled_at),
-              syncPending: topicNeedsSecretarySync(topic),
+              syncPending: false,
+              scheduleSemantics: topic.schedule_semantics ?? 'none',
             },
             action: 'updated',
             language: resolveContentLanguage(req, userId),
           },
           privacyClassification: 'private_content',
-          idempotencyKey: `content.idea.updated:${userId}:${topic.id}:${mutationFingerprint}`,
+          idempotencyKey: `content.idea.updated:${userId}:${topic.workspace_item_id ?? topic.id}:${mutationFingerprint}`,
         });
         return topic;
       });
@@ -362,41 +406,68 @@ export function registerContentTopicRoutes(
       invalidateContentDerivedCaches(userId);
       sendSuccess(res, { topic: updated });
     } catch (err: any) {
-      logger.error({ err, userId, topicId }, 'iOS content topic update failed');
-      sendInternalError(res, 'Failed to update topic');
+      sendContentTopicError(res, err, userId, tenantId, 'iOS content topic update failed', { topicId });
     }
   }));
 
   /**
    * DELETE /api/v1/content/topics/:id
-   * Hard-delete. UIs that want to preserve history can PATCH
-   * status='cancelled' instead.
+   * Compatibility delete. The canonical item moves to recoverable trash;
+   * content and revisions are not hard-deleted.
    */
   router.delete('/topics/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_delete', { topicId })) return;
+    recordContentWorkspaceProductSignal('legacy_topics_compatibility_mutation');
 
     if (topicId == null) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
-    if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_delete')) return;
+    const headerIdempotencyKey = req.header('Idempotency-Key');
+    const rawIdempotencyKey = typeof req.body?.idempotencyKey === 'string'
+      ? req.body.idempotencyKey
+      : (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
+    const idempotencyKey = rawIdempotencyKey?.trim() || undefined;
+    if (idempotencyKey !== undefined && idempotencyKey.length > 128) {
+      sendError(res, 'BAD_REQUEST', 'idempotencyKey must be at most 128 characters');
+      return;
+    }
 
     try {
-      const topic = getTopicById(userId, topicId);
+      if (idempotencyKey && hasContentTopicCompatibilityDeleteReplay(
+        { tenantId, userId },
+        topicId,
+        { idempotencyKey },
+      )) {
+        sendSuccess(res, { deleted: true, id: topicId, idempotentReplay: true });
+        return;
+      }
+      if (!consumeContentWriteBudget(res, tenantId, userId, 'content_topic_delete')) return;
+
+      const topic = getTopicById(userId, topicId, tenantId);
       if (!topic) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
+      assertContentTopicCompatibilityCanArchive({ tenantId, userId }, topicId);
+      const retiresLegacySchedule = topicHasSecretaryRefs(topic);
       if (topicHasSecretaryRefs(topic)) {
-        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, topic);
+        const cleanup = await cleanupContentTopicSecretaryArtifacts(userId, topic, { tenantId });
         if (cleanup.errors.length > 0) {
           sendInternalError(res, 'Failed to clean up synced Secretary artifacts');
           return;
         }
       }
-      const writeDelete = () => deleteTopic(userId, topicId);
+      const operationKey = idempotencyKey ?? `server-${randomUUID()}`;
+      const writeDelete = () => deleteTopic(
+        userId,
+        topicId,
+        tenantId,
+        operationKey,
+        { retireLegacySchedule: retiresLegacySchedule },
+      );
       const deleted = runOutboxTransaction((emitDomainEvent) => {
         const didDelete = writeDelete();
         if (!didDelete) return false;
@@ -405,14 +476,14 @@ export function registerContentTopicRoutes(
           userId,
           sourceSkill: 'content',
           eventType: 'content.idea.updated',
-          entityType: 'content_topic',
-          entityId: topicId,
+          entityType: 'content_workspace_item',
+          entityId: topic.workspace_item_id ?? topicId,
           payload: {
             summary: { deleted: true },
             action: 'deleted',
           },
           privacyClassification: 'private_content',
-          idempotencyKey: `content.idea.deleted:${userId}:${topicId}`,
+          idempotencyKey: `content.idea.deleted:${userId}:${topic.workspace_item_id ?? topicId}:${stableMutationFingerprint({ operationKey })}`,
         });
         return true;
       });
@@ -423,8 +494,7 @@ export function registerContentTopicRoutes(
       invalidateContentDerivedCaches(userId);
       sendSuccess(res, { deleted: true, id: topicId });
     } catch (err: any) {
-      logger.error({ err, userId, topicId }, 'iOS content topic delete failed');
-      sendInternalError(res, 'Failed to delete topic');
+      sendContentTopicError(res, err, userId, tenantId, 'iOS content topic delete failed', { topicId });
     }
   }));
 }
@@ -436,10 +506,6 @@ function stableMutationFingerprint(value: Record<string, unknown>): string {
     .slice(0, 16);
 }
 
-function topicNeedsSecretarySync(topic: Pick<ContentTopic, 'scheduled_date' | 'scheduled_at'>): boolean {
-  return Boolean(topic.scheduled_date ?? topic.scheduled_at);
-}
-
 function topicHasSecretaryRefs(topic: ContentTopic): boolean {
   return Boolean(
     (topic.secretary_task_external_id && topic.secretary_task_list_id)
@@ -447,36 +513,34 @@ function topicHasSecretaryRefs(topic: ContentTopic): boolean {
   );
 }
 
-function markTopicSecretarySyncPending(userId: number, topic: ContentTopic): ContentTopic {
-  if (!topicNeedsSecretarySync(topic)) return topic;
-  if (topic.secretary_sync_status === 'pending' && !topic.secretary_sync_error) return topic;
-  return updateTopic(userId, topic.id, {
-    secretary_sync_status: 'pending',
-    secretary_sync_error: null,
-  }) ?? {
-    ...topic,
-    secretary_sync_status: 'pending',
-    secretary_sync_error: null,
-  };
-}
-
-function resolveNextTopicSchedule(
+function topicScheduleChanged(
   existing: ContentTopic,
   scheduledDate: string | null | undefined,
   scheduledDateTime: string | null | undefined,
-): { hasSchedule: boolean; clearsSchedule: boolean } {
-  const nextDate = scheduledDate !== undefined
-    ? scheduledDate
-    : scheduledDateTime !== undefined && scheduledDateTime !== null
-      ? datePartFromScheduledDateTime(scheduledDateTime)
-      : existing.scheduled_date;
-  const nextDateTime = scheduledDateTime !== undefined ? scheduledDateTime : existing.scheduled_at;
-  const hadSchedule = topicNeedsSecretarySync(existing);
-  const hasSchedule = Boolean(nextDate ?? nextDateTime);
-  return {
-    hasSchedule,
-    clearsSchedule: hadSchedule && !hasSchedule,
-  };
+): boolean {
+  if (scheduledDate !== undefined && scheduledDate !== existing.scheduled_date) return true;
+  if (scheduledDateTime !== undefined && scheduledDateTime !== existing.scheduled_at) return true;
+  return false;
+}
+
+function sendContentTopicError(
+  res: Response,
+  error: unknown,
+  userId: number,
+  tenantId: number,
+  logMessage: string,
+  details: Record<string, unknown> = {},
+): void {
+  if (error instanceof ContentWorkspaceWriteDisabledError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
+  if (error instanceof ContentWorkspaceError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
+  logger.error({ err: error, userId, tenantId, ...details }, logMessage);
+  sendInternalError(res, 'Content workspace is temporarily unavailable.');
 }
 
 function consumeContentWriteBudget(res: Response, tenantId: number, userId: number, budgetKey: string): boolean {

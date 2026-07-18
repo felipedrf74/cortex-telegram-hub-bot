@@ -1,13 +1,32 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import crypto from 'crypto';
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
+import {
+  createContentArtifact,
+  createContentWorkspaceItem,
+  getContentArtifact,
+  getContentWorkspaceItem,
+  transitionContentWorkspaceItem,
+  type ContentArtifact,
+  type ContentWorkspaceItem,
+  type ContentWorkspaceScope,
+} from './content-workspace';
 import {
   getContentAgencyRulesByCategory,
   listContentAgencyRules,
   validateContentAgencyRuleCoverage,
   validateContentAgencyRuntimeRuleCoverage,
 } from './content-agency-rules';
+import { assertContentWorkspaceWriteEnabled } from './content-workspace-capabilities';
+
+/**
+ * Bump this contract whenever package-generation rules or serialized output
+ * can change for the same material inputs. It is part of package identity,
+ * so old immutable packages never collide with a newer generator contract.
+ */
+export const CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION = 'content-agency-package.v1';
 
 export type ContentAgencyPlatform =
   | 'youtube'
@@ -183,8 +202,14 @@ export interface ContentAgencyPackageInput {
   requestedOutput?: string | null;
 }
 
+export interface ContentAgencyPackageBuildOptions {
+  generatorContractVersion?: string;
+}
+
 export interface ContentAgencyPackage {
   id: string;
+  contentHash: string;
+  generatorContractVersion: string;
   tenantId: number;
   userId: number;
   visibilityScope: ContentAgencyVisibilityScope;
@@ -220,10 +245,20 @@ export interface ContentAgencyPackage {
   createdAt: string;
 }
 
-export interface ContentAgencyPipelineHandoffResult {
+export interface ContentAgencyWorkspaceHandoffResult {
   packageId: string;
+  packageHash: string | null;
   status: 'created' | 'already_exists' | 'blocked' | 'not_found';
+  /**
+   * Deprecated response alias retained for old REST/chat clients. It is the
+   * canonical workspace item ID; migration 246 creates no content_pipeline
+   * row. Remove after compatibility telemetry is zero for the agreed window.
+   */
   pipelineId: number | null;
+  workspaceItemId: number | null;
+  workspaceArtifactId: number | null;
+  workspaceRevisionId: number | null;
+  persistence: 'content_workspace';
   blockers: string[];
   warnings: string[];
   nextBestActions: string[];
@@ -375,7 +410,11 @@ export function buildContentAgencyTranscriptStudy(input: {
   };
 }
 
-export function buildContentAgencyPackage(input: ContentAgencyPackageInput): ContentAgencyPackage {
+export function buildContentAgencyPackage(
+  input: ContentAgencyPackageInput,
+  options: ContentAgencyPackageBuildOptions = {},
+): ContentAgencyPackage {
+  const generatorContractVersion = normalizeGeneratorContractVersion(options.generatorContractVersion);
   const brief = isBrief(input.brief)
     ? input.brief
     : buildContentAgencyBrief({
@@ -446,8 +485,29 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
       'Run the compliance/originality review again before approval if sponsor, claims, or competitor references change.',
     ];
 
-  return {
-    id: stableId('package', input.tenantId, input.userId, brief.id, JSON.stringify(input.competitors ?? []), input.transcript ?? ''),
+  const packageId = stableId('package', input.tenantId, input.userId, {
+    generatorContractVersion,
+    brief: {
+      goal: brief.goal,
+      audience: brief.audience,
+      offer: brief.offer,
+      platform: brief.platform,
+      format: brief.format,
+      objective: brief.objective,
+      constraints: brief.constraints,
+      currentMetrics: brief.currentMetrics,
+      brandVoice: brief.brandVoice,
+      visibilityScope: brief.visibilityScope,
+    },
+    competitors: input.competitors ?? [],
+    transcript: input.transcript ?? '',
+    brandedContent: input.brandedContent === true,
+    references: referenceIds,
+    requestedOutput: input.requestedOutput ?? null,
+  });
+  const packageWithoutHash: Omit<ContentAgencyPackage, 'contentHash'> = {
+    id: packageId,
+    generatorContractVersion,
     tenantId: input.tenantId,
     userId: input.userId,
     visibilityScope: brief.visibilityScope,
@@ -475,6 +535,10 @@ export function buildContentAgencyPackage(input: ContentAgencyPackageInput): Con
     reviewRequired: blockers.length > 0 || warnings.length > 0 || complianceReview.status !== 'pass',
     nextBestActions,
     createdAt: new Date().toISOString(),
+  };
+  return {
+    ...packageWithoutHash,
+    contentHash: computeContentAgencyArtifactHash(packageWithoutHash),
   };
 }
 
@@ -551,16 +615,23 @@ export function persistContentAgencyArtifact(kind: PersistKind, artifact: any): 
   const db = getDb();
   ensureContentAgencyTables(db);
   const table = tableForKind(kind);
-  const payload = JSON.stringify(artifact);
-  const sourceTrace = JSON.stringify(artifact.sourceTrace ?? []);
-  const warnings = JSON.stringify(artifact.warnings ?? artifact.quality?.warnings ?? []);
-  const blockers = JSON.stringify(artifact.blockers ?? artifact.quality?.blockers ?? []);
-  const result = db.prepare(`
-    INSERT INTO ${table} (
-      agency_id, user_id, tenant_id, visibility_scope, platform, format, status,
-      source_trace_json, quality_score, warnings_json, blockers_json, payload_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(tenant_id, user_id, agency_id) DO UPDATE SET
+  let artifactToPersist = artifact;
+  if (kind === 'package') {
+    const incomingHash = computeContentAgencyArtifactHash(artifact);
+    if (artifact.contentHash && artifact.contentHash !== incomingHash) {
+      // Validate before the immutable INSERT. A poisoned first row cannot be
+      // repaired through the package store's deliberate DO NOTHING contract.
+      throw new Error('Content agency package integrity check failed for incoming payload');
+    }
+    artifactToPersist = { ...artifact, contentHash: incomingHash };
+  }
+  const payload = JSON.stringify(artifactToPersist);
+  const sourceTrace = JSON.stringify(artifactToPersist.sourceTrace ?? []);
+  const warnings = JSON.stringify(artifactToPersist.warnings ?? artifactToPersist.quality?.warnings ?? []);
+  const blockers = JSON.stringify(artifactToPersist.blockers ?? artifactToPersist.quality?.blockers ?? []);
+  const conflictAction = kind === 'package'
+    ? 'DO NOTHING'
+    : `DO UPDATE SET
       visibility_scope = excluded.visibility_scope,
       platform = excluded.platform,
       format = excluded.format,
@@ -570,22 +641,51 @@ export function persistContentAgencyArtifact(kind: PersistKind, artifact: any): 
       warnings_json = excluded.warnings_json,
       blockers_json = excluded.blockers_json,
       payload_json = excluded.payload_json,
-      updated_at = datetime('now')
+      updated_at = datetime('now')`;
+  db.prepare(`
+    INSERT INTO ${table} (
+      agency_id, user_id, tenant_id, visibility_scope, platform, format, status,
+      source_trace_json, quality_score, warnings_json, blockers_json, payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tenant_id, user_id, agency_id) ${conflictAction}
   `).run(
-    artifact.id,
-    artifact.userId,
-    artifact.tenantId,
-    artifact.visibilityScope ?? 'user_private',
-    artifact.platform ?? artifact.brief?.platform ?? null,
-    artifact.format ?? artifact.brief?.format ?? null,
-    artifact.status ?? artifact.quality?.status ?? artifact.complianceReview?.status ?? 'draft',
+    artifactToPersist.id,
+    artifactToPersist.userId,
+    artifactToPersist.tenantId,
+    artifactToPersist.visibilityScope ?? 'user_private',
+    artifactToPersist.platform ?? artifactToPersist.brief?.platform ?? null,
+    artifactToPersist.format ?? artifactToPersist.brief?.format ?? null,
+    artifactToPersist.status ?? artifactToPersist.quality?.status ?? artifactToPersist.complianceReview?.status ?? 'draft',
     sourceTrace,
-    artifact.quality?.score ?? artifact.qualityScore ?? null,
+    artifactToPersist.quality?.score ?? artifactToPersist.qualityScore ?? null,
     warnings,
     blockers,
     payload,
   );
-  return Number(result.lastInsertRowid ?? null);
+  const persisted = db.prepare(`
+    SELECT id, payload_json
+      FROM ${table}
+     WHERE agency_id = ?
+       AND user_id = ?
+       AND tenant_id = ?
+     LIMIT 1
+  `).get(artifactToPersist.id, artifactToPersist.userId, artifactToPersist.tenantId) as { id: number; payload_json: string } | undefined;
+  if (!persisted) return null;
+  if (kind === 'package') {
+    const persistedArtifact = JSON.parse(persisted.payload_json);
+    const persistedHash = computeContentAgencyArtifactHash(persistedArtifact);
+    const incomingHash = computeContentAgencyArtifactHash(artifactToPersist);
+    if (persistedArtifact.contentHash && persistedArtifact.contentHash !== persistedHash) {
+      throw new Error('Content agency package integrity check failed for persisted payload');
+    }
+    if (artifactToPersist.contentHash && artifactToPersist.contentHash !== incomingHash) {
+      throw new Error('Content agency package integrity check failed for incoming payload');
+    }
+    if (persistedHash !== incomingHash) {
+      throw new Error('Content agency package identity conflict: immutable package payload differs');
+    }
+  }
+  return Number(persisted.id);
 }
 
 export function getContentAgencyProject(input: {
@@ -605,174 +705,381 @@ export function getContentAgencyProject(input: {
        ORDER BY id DESC
        LIMIT 1
     `).get(input.id, input.userId, input.tenantId) as { payload_json: string } | undefined;
-    if (row) return { kind, artifact: JSON.parse(row.payload_json) };
+    if (row) {
+      const artifact = JSON.parse(row.payload_json);
+      if (kind === 'package') {
+        const computedHash = computeContentAgencyArtifactHash(artifact);
+        if (artifact.contentHash && artifact.contentHash !== computedHash) {
+          throw new Error('Content agency package integrity check failed for persisted payload');
+        }
+        artifact.contentHash = computedHash;
+      }
+      return { kind, artifact };
+    }
   }
   return null;
 }
 
-export function handoffContentAgencyPackageToPipeline(input: {
+export function handoffContentAgencyPackageToWorkspace(input: {
   userId: number;
   tenantId: number;
   packageId: string;
-}): ContentAgencyPipelineHandoffResult {
+}): ContentAgencyWorkspaceHandoffResult {
   const db = getDb();
   ensureContentAgencyTables(db);
-  ensureAgencyPipelineHandoffSchema(db);
+  const scope = normalizeAgencyHandoffScope(input);
+  // A package handoff atomically crosses all three slices. Requiring each
+  // kill switch here prevents an alternate transport from creating a partial
+  // item/revision/lineage chain when one slice is paused.
+  assertContentWorkspaceWriteEnabled(scope, 'core');
+  assertContentWorkspaceWriteEnabled(scope, 'revisions');
+  assertContentWorkspaceWriteEnabled(scope, 'lineage');
 
   const project = getContentAgencyProject({
-    userId: input.userId,
-    tenantId: input.tenantId,
+    userId: scope.userId,
+    tenantId: scope.tenantId,
     id: input.packageId,
   });
   if (!project || project.kind !== 'package') {
     return {
       packageId: input.packageId,
+      packageHash: null,
       status: 'not_found',
       pipelineId: null,
+      workspaceItemId: null,
+      workspaceArtifactId: null,
+      workspaceRevisionId: null,
+      persistence: 'content_workspace',
       blockers: ['content_agency_package_not_found'],
       warnings: [],
-      nextBestActions: ['Generate or reopen the agency package before moving it to the pipeline.'],
+      nextBestActions: ['Generate or reopen the agency package before adding it to the Content workspace.'],
       sourceTrace: ['Content Agency package store'],
     };
   }
 
   const pkg = project.artifact as ContentAgencyPackage;
-  const blockers = Array.isArray(pkg.blockers) ? pkg.blockers : [];
+  const packageHash = pkg.contentHash || computeContentAgencyArtifactHash(pkg);
+  const blockers = [
+    ...(Array.isArray(pkg.blockers) ? pkg.blockers : []),
+    ...(pkg.visibilityScope === 'user_private' ? [] : ['content_agency_workspace_requires_private_scope']),
+  ];
   if (blockers.length > 0 || pkg.quality?.status === 'blocked') {
     return {
       packageId: pkg.id,
+      packageHash,
       status: 'blocked',
       pipelineId: null,
+      workspaceItemId: null,
+      workspaceArtifactId: null,
+      workspaceRevisionId: null,
+      persistence: 'content_workspace',
       blockers: blockers.length > 0 ? blockers : ['content_agency_quality_blocked'],
       warnings: Array.isArray(pkg.warnings) ? pkg.warnings : [],
       nextBestActions: blockers.map((blocker) => `Resolve blocker: ${humanize(blocker)}.`),
-      sourceTrace: [...(pkg.sourceTrace ?? []), 'Content pipeline handoff gate'],
+      sourceTrace: [...(pkg.sourceTrace ?? []), 'Content workspace handoff gate'],
     };
   }
 
-  const existing = db.prepare(`
-    SELECT id
-      FROM content_pipeline
-     WHERE source_agency_package_id = ?
-       AND user_id = ?
-       AND tenant_id = ?
-       AND scope_status = 'active'
-     ORDER BY id DESC
-     LIMIT 1
-  `).get(pkg.id, input.userId, input.tenantId) as { id: number } | undefined;
-  if (existing) {
-    return {
-      packageId: pkg.id,
-      status: 'already_exists',
-      pipelineId: Number(existing.id),
-      blockers: [],
-      warnings: Array.isArray(pkg.warnings) ? pkg.warnings : [],
-      nextBestActions: ['Open the existing pipeline item and continue editorial review.'],
-      sourceTrace: [...(pkg.sourceTrace ?? []), 'Existing content pipeline item'],
-    };
+  return db.transaction(() => {
+    const existing = findAgencyWorkspaceBinding(db, scope, pkg.id);
+    if (existing) {
+      return reuseAgencyWorkspaceBinding(db, scope, pkg, packageHash, existing);
+    }
+
+    const item = createContentWorkspaceItem({
+      scope,
+      itemType: 'content_item',
+      title: truncate(pkg.objective || pkg.brief?.goal || 'Creator package', 240),
+      summary: truncate(
+        `${pkg.brief?.audience || 'Target audience'} · ${pkg.platform || 'generic'} · ${pkg.format || 'content'}`,
+        20_000,
+      ),
+      platformId: pkg.platform || null,
+      formatId: pkg.format || null,
+      idempotencyKey: agencyWorkspaceIdempotencyKey('item', pkg.id, packageHash),
+    }, db).value;
+    const artifact = createAgencyWorkspaceArtifact(db, scope, item, pkg, packageHash, true);
+    const current = getContentWorkspaceItem(scope, item.id, db);
+    if (!current) throw new Error('Content agency workspace handoff item read-back failed');
+    const reviewed = transitionContentWorkspaceItem({
+      scope,
+      itemId: current.id,
+      targetState: 'review',
+      expectedWorkflowVersion: current.workflowVersion,
+      idempotencyKey: agencyWorkspaceIdempotencyKey('review', pkg.id, packageHash),
+    }, db).value;
+    if (reviewed.productionState !== 'review') {
+      throw new Error('Content agency workspace handoff review-state verification failed');
+    }
+    const revisionId = requireAgencyArtifactRevision(artifact, pkg.id, packageHash);
+    db.prepare(`
+      INSERT INTO content_workspace_ingress_bindings (
+        tenant_id, owner_user_id, source_kind, source_id, source_hash,
+        item_id, artifact_id, revision_id, content_parity_status, ingress_origin
+      ) VALUES (?, ?, 'content_agency_package', ?, ?, ?, ?, ?, 'artifact_pinned', 'content_agency_handoff')
+    `).run(
+      scope.tenantId,
+      scope.userId,
+      pkg.id,
+      packageHash,
+      reviewed.id,
+      artifact.id,
+      revisionId,
+    );
+    const binding = findAgencyWorkspaceBinding(db, scope, pkg.id);
+    if (!binding) throw new Error('Content agency workspace handoff binding read-back failed');
+    verifyAgencyWorkspaceBinding(db, scope, pkg, packageHash, binding);
+    return agencyWorkspaceHandoffResult(pkg, packageHash, binding, 'created');
+  }).immediate();
+}
+
+type AgencyWorkspaceBindingRow = {
+  id: number;
+  source_hash: string | null;
+  item_id: number;
+  artifact_id: number | null;
+  revision_id: number | null;
+  content_parity_status: 'metadata_only' | 'artifact_pinned';
+  ingress_origin: 'legacy_pipeline_backfill' | 'content_agency_handoff';
+};
+
+function normalizeAgencyHandoffScope(input: { userId: number; tenantId: number }): ContentWorkspaceScope {
+  if (!Number.isSafeInteger(input.userId) || input.userId <= 0
+    || !Number.isSafeInteger(input.tenantId) || input.tenantId <= 0) {
+    throw new Error('Content agency workspace handoff requires a valid tenant and user scope');
   }
+  return { userId: input.userId, tenantId: input.tenantId };
+}
 
-  const now = new Date().toISOString();
-  const topicTitle = truncate(`Agency: ${pkg.objective || pkg.brief?.goal || 'Creator package'}`, 180);
-  const niche = truncate(`${pkg.platform || 'content'} · ${pkg.brief?.audience || 'target audience'}`, 160);
-  const warnings = Array.isArray(pkg.warnings) ? pkg.warnings : [];
-  const reviewRequired = Boolean(pkg.reviewRequired)
-    || warnings.length > 0
-    || pkg.quality?.status === 'warning'
-    || pkg.complianceReview?.status === 'warning';
-  const pipelineStage = reviewRequired ? 'review' : 'approved';
-  const editorialState = reviewRequired ? 'review' : 'selected';
-  const approvalState = reviewRequired ? 'pending' : 'approved';
-  const approvedBy = reviewRequired ? null : input.userId;
-  const approvedAt = reviewRequired ? null : now;
-  const stageHistory = JSON.stringify([
-    {
-      at: now,
-      action: 'content_agency_handoff',
-      from: 'content_agency_package',
-      to: reviewRequired ? 'content_pipeline_review' : 'content_pipeline',
-      agencyPackageId: pkg.id,
-      qualityScore: pkg.quality?.score ?? null,
-      platform: pkg.platform,
-      reviewRequired,
-    },
-  ]);
-
-  const result = db.prepare(`
-    INSERT INTO content_pipeline (
-      topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
-      visibility_scope, scope_status, editorial_state, approval_state, review_required,
-      approved_by, approved_at, source_agency_package_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    topicTitle,
-    niche,
-    pipelineStage,
-    stageHistory,
-    input.userId,
-    input.tenantId,
-    input.userId,
-    pkg.visibilityScope ?? 'user_private',
-    editorialState,
-    approvalState,
-    reviewRequired ? 1 : 0,
-    approvedBy,
-    approvedAt,
-    pkg.id,
-    now,
-    now,
-  );
-  const pipelineId = Number(result.lastInsertRowid);
-  const readBack = db.prepare(`
-    SELECT id, user_id, tenant_id, owner_user_id, visibility_scope, approval_state,
-           review_required, approved_by, approved_at, source_agency_package_id
-      FROM content_pipeline
-     WHERE id = ?
-       AND user_id = ?
-       AND tenant_id = ?
+function findAgencyWorkspaceBinding(
+  db: Database.Database,
+  scope: ContentWorkspaceScope,
+  packageId: string,
+): AgencyWorkspaceBindingRow | undefined {
+  return db.prepare(`
+    SELECT id, source_hash, item_id, artifact_id, revision_id, content_parity_status, ingress_origin
+      FROM content_workspace_ingress_bindings
+     WHERE tenant_id = ?
        AND owner_user_id = ?
-       AND source_agency_package_id = ?
-       AND scope_status = 'active'
-       AND approval_state = ?
-       AND review_required = ?
+       AND source_kind = 'content_agency_package'
+       AND source_id = ?
      LIMIT 1
-  `).get(
-    pipelineId,
-    input.userId,
-    input.tenantId,
-    input.userId,
-    pkg.id,
-    approvalState,
-    reviewRequired ? 1 : 0,
-  ) as {
-    id: number;
-    user_id: number;
-    tenant_id: number;
-    owner_user_id: number;
-    visibility_scope: string;
-    approval_state: string;
-    review_required: number;
-    approved_by: number | null;
-    approved_at: string | null;
-    source_agency_package_id: string;
-  } | undefined;
-  if (readBack && reviewRequired && (readBack.approved_by != null || readBack.approved_at != null)) {
-    throw new Error('Content agency pipeline handoff read-back failed');
+  `).get(scope.tenantId, scope.userId, packageId) as AgencyWorkspaceBindingRow | undefined;
+}
+
+function reuseAgencyWorkspaceBinding(
+  db: Database.Database,
+  scope: ContentWorkspaceScope,
+  pkg: ContentAgencyPackage,
+  packageHash: string,
+  candidate: AgencyWorkspaceBindingRow,
+): ContentAgencyWorkspaceHandoffResult {
+  let binding = candidate;
+  if (binding.source_hash == null) {
+    db.prepare(`
+      UPDATE content_workspace_ingress_bindings
+         SET source_hash = ?, updated_at = ?
+       WHERE id = ?
+         AND tenant_id = ?
+         AND owner_user_id = ?
+         AND source_kind = 'content_agency_package'
+         AND source_id = ?
+         AND source_hash IS NULL
+    `).run(packageHash, new Date().toISOString(), binding.id, scope.tenantId, scope.userId, pkg.id);
+    binding = findAgencyWorkspaceBinding(db, scope, pkg.id)
+      ?? (() => { throw new Error('Content agency workspace hash pin read-back failed'); })();
   }
-  if (!readBack) {
-    throw new Error('Content agency pipeline handoff read-back failed');
+  if (binding.source_hash !== packageHash) {
+    throw new Error('Content agency workspace handoff integrity conflict: pinned package hash differs');
   }
+
+  const rawItem = db.prepare(`
+    SELECT scope_status
+      FROM content_domain_objects
+     WHERE id = ? AND tenant_id = ? AND owner_user_id = ? AND object_type = 'content_item'
+     LIMIT 1
+  `).get(binding.item_id, scope.tenantId, scope.userId) as { scope_status: string } | undefined;
+  if (!rawItem) throw new Error('Content agency workspace handoff binding points to a missing item');
+  if (rawItem.scope_status !== 'active') {
+    return agencyWorkspaceHandoffResult(pkg, packageHash, binding, 'already_exists', {
+      warnings: ['content_workspace_item_requires_restore'],
+      nextBestActions: ['Restore the existing Content workspace item before continuing editorial review.'],
+      sourceTrace: ['Existing recoverable Content workspace item'],
+    });
+  }
+
+  let item = getContentWorkspaceItem(scope, binding.item_id, db);
+  if (!item) throw new Error('Content agency workspace handoff item read-back failed');
+  if (binding.artifact_id == null || binding.revision_id == null) {
+    const makeCurrent = ['inbox', 'active', 'review'].includes(item.productionState);
+    const artifact = createAgencyWorkspaceArtifact(db, scope, item, pkg, packageHash, makeCurrent);
+    const revisionId = requireAgencyArtifactRevision(artifact, pkg.id, packageHash);
+    db.prepare(`
+      UPDATE content_workspace_ingress_bindings
+         SET artifact_id = ?, revision_id = ?, content_parity_status = 'artifact_pinned', updated_at = ?
+       WHERE id = ?
+         AND tenant_id = ?
+         AND owner_user_id = ?
+         AND artifact_id IS NULL
+         AND revision_id IS NULL
+    `).run(
+      artifact.id,
+      revisionId,
+      new Date().toISOString(),
+      binding.id,
+      scope.tenantId,
+      scope.userId,
+    );
+    binding = findAgencyWorkspaceBinding(db, scope, pkg.id)
+      ?? (() => { throw new Error('Content agency workspace artifact pin read-back failed'); })();
+    item = getContentWorkspaceItem(scope, binding.item_id, db)
+      ?? (() => { throw new Error('Content agency workspace item read-back failed after artifact attach'); })();
+  }
+  if (item.productionState === 'inbox' || item.productionState === 'active') {
+    transitionContentWorkspaceItem({
+      scope,
+      itemId: item.id,
+      targetState: 'review',
+      expectedWorkflowVersion: item.workflowVersion,
+      idempotencyKey: agencyWorkspaceIdempotencyKey('review', pkg.id, packageHash),
+    }, db);
+  }
+  verifyAgencyWorkspaceBinding(db, scope, pkg, packageHash, binding);
+  return agencyWorkspaceHandoffResult(pkg, packageHash, binding, 'already_exists');
+}
+
+function createAgencyWorkspaceArtifact(
+  db: Database.Database,
+  scope: ContentWorkspaceScope,
+  item: ContentWorkspaceItem,
+  pkg: ContentAgencyPackage,
+  packageHash: string,
+  makeCurrent: boolean,
+): ContentArtifact {
+  const selectedVariant = pkg.scriptVariants[0] ?? null;
+  return createContentArtifact({
+    scope,
+    itemId: item.id,
+    expectedWorkflowVersion: item.workflowVersion,
+    artifactType: 'script',
+    title: truncate(selectedVariant?.title || `${pkg.objective} script`, 240),
+    platformId: pkg.platform,
+    formatId: pkg.format,
+    metadata: {
+      sourceKind: 'content_agency_package',
+      sourcePackageId: pkg.id,
+      sourcePackageHash: packageHash,
+      generatorContractVersion: pkg.generatorContractVersion,
+      qualityStatus: pkg.quality?.status ?? 'warning',
+      qualityScore: pkg.quality?.score ?? null,
+      reviewRequired: true,
+    },
+    initialContent: {
+      format: 'structured_json',
+      document: {
+        schemaVersion: 'content-agency-workspace-handoff-v1',
+        objective: pkg.objective,
+        platform: pkg.platform,
+        format: pkg.format,
+        brief: pkg.brief,
+        hooks: pkg.hookBank,
+        scriptVariants: pkg.scriptVariants,
+        selectedVariantId: selectedVariant?.id ?? null,
+        creativeDirection: pkg.creativeDirection,
+        complianceReview: pkg.complianceReview,
+        experimentPlan: pkg.experimentPlan,
+        quality: pkg.quality,
+        sourcePackage: {
+          id: pkg.id,
+          contentHash: packageHash,
+          generatorContractVersion: pkg.generatorContractVersion,
+        },
+      },
+    },
+    changeSummary: 'Imported immutable Content Agency package for editorial review',
+    actorType: 'agent',
+    actorId: 'content_agency',
+    provenance: {
+      sourceKind: 'content_agency_package',
+      packageId: pkg.id,
+      packageHash,
+      generatorContractVersion: pkg.generatorContractVersion,
+      sourceTrace: pkg.sourceTrace ?? [],
+      referenceIds: pkg.referenceIds ?? [],
+      approvalGranted: false,
+    },
+    makeCurrent,
+    idempotencyKey: agencyWorkspaceIdempotencyKey('artifact', pkg.id, packageHash),
+  }, db).value;
+}
+
+function requireAgencyArtifactRevision(
+  artifact: ContentArtifact,
+  packageId: string,
+  packageHash: string,
+): number {
+  const revision = artifact.currentRevision;
+  if (!revision || revision.actorType !== 'agent'
+    || revision.provenance.packageId !== packageId
+    || revision.provenance.packageHash !== packageHash) {
+    throw new Error('Content agency workspace artifact provenance verification failed');
+  }
+  return revision.id;
+}
+
+function verifyAgencyWorkspaceBinding(
+  db: Database.Database,
+  scope: ContentWorkspaceScope,
+  pkg: ContentAgencyPackage,
+  packageHash: string,
+  binding: AgencyWorkspaceBindingRow,
+): void {
+  if (binding.source_hash !== packageHash
+    || binding.content_parity_status !== 'artifact_pinned'
+    || binding.artifact_id == null
+    || binding.revision_id == null) {
+    throw new Error('Content agency workspace handoff binding verification failed');
+  }
+  const artifact = getContentArtifact(scope, binding.artifact_id, db);
+  const revisionId = artifact ? requireAgencyArtifactRevision(artifact, pkg.id, packageHash) : null;
+  if (!artifact || artifact.itemId !== binding.item_id || revisionId !== binding.revision_id) {
+    throw new Error('Content agency workspace handoff read-back failed');
+  }
+}
+
+function agencyWorkspaceHandoffResult(
+  pkg: ContentAgencyPackage,
+  packageHash: string,
+  binding: AgencyWorkspaceBindingRow,
+  status: 'created' | 'already_exists',
+  overrides: {
+    warnings?: string[];
+    nextBestActions?: string[];
+    sourceTrace?: string[];
+  } = {},
+): ContentAgencyWorkspaceHandoffResult {
   return {
     packageId: pkg.id,
-    status: 'created',
-    pipelineId: Number(readBack.id),
+    packageHash,
+    status,
+    pipelineId: binding.item_id,
+    workspaceItemId: binding.item_id,
+    workspaceArtifactId: binding.artifact_id,
+    workspaceRevisionId: binding.revision_id,
+    persistence: 'content_workspace',
     blockers: [],
-    warnings,
-    nextBestActions: reviewRequired
-      ? ['Open the pipeline item, complete editorial review, and approve only after resolving warnings.']
-      : ['Open the pipeline item, approve filming/script work, and keep the experiment metric attached.'],
-    sourceTrace: [...(pkg.sourceTrace ?? []), 'content_pipeline read-back verified'],
+    warnings: [...new Set([...(pkg.warnings ?? []), ...(overrides.warnings ?? [])])],
+    nextBestActions: overrides.nextBestActions
+      ?? ['Open the Content workspace item, review the pinned package revision, and approve it separately.'],
+    sourceTrace: [
+      ...(pkg.sourceTrace ?? []),
+      ...(overrides.sourceTrace ?? ['Canonical Content workspace read-back verified']),
+    ],
   };
+}
+
+function agencyWorkspaceIdempotencyKey(kind: string, packageId: string, packageHash: string): string {
+  return `agency-${kind}:${crypto.createHash('sha256').update(`${packageId}:${packageHash}`).digest('hex')}`;
 }
 
 export function buildCriticalUserReview(input: {
@@ -842,48 +1149,6 @@ export function ensureContentAgencyTables(db: any = getDb()): void {
   }
 }
 
-function ensureAgencyPipelineHandoffSchema(db: any): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS content_pipeline (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      topic_feedback_id INTEGER,
-      topic_title TEXT NOT NULL,
-      niche TEXT,
-      stage TEXT NOT NULL DEFAULT 'approved',
-      script_path TEXT,
-      drive_url TEXT,
-      youtube_video_id TEXT,
-      stage_history TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-  const columns = new Set((db.prepare(`PRAGMA table_info(content_pipeline)`).all() as Array<{ name: string }>).map((row) => row.name));
-  const addColumn = (name: string, definition: string) => {
-    if (!columns.has(name)) {
-      db.exec(`ALTER TABLE content_pipeline ADD COLUMN ${name} ${definition}`);
-      columns.add(name);
-    }
-  };
-  addColumn('user_id', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn('tenant_id', 'INTEGER');
-  addColumn('owner_user_id', 'INTEGER');
-  addColumn('visibility_scope', 'TEXT');
-  addColumn('scope_status', "TEXT DEFAULT 'active'");
-  addColumn('editorial_state', "TEXT DEFAULT 'selected'");
-  addColumn('approval_state', "TEXT DEFAULT 'not_required'");
-  addColumn('review_required', 'INTEGER NOT NULL DEFAULT 0');
-  addColumn('approved_by', 'INTEGER');
-  addColumn('approved_at', 'TEXT');
-  addColumn('source_agency_package_id', 'TEXT');
-  addColumn('published_url', 'TEXT');
-  addColumn('published_at', 'TEXT');
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_content_pipeline_agency_package
-      ON content_pipeline(tenant_id, user_id, source_agency_package_id, scope_status);
-  `);
-}
-
 export function validateContentAgencyReadiness(): { valid: boolean; errors: string[] } {
   const coverage = validateContentAgencyRuleCoverage();
   const runtimeCoverage = validateContentAgencyRuntimeRuleCoverage();
@@ -943,6 +1208,14 @@ function normalizeAgencyFormatAlias(value: string): string {
   return aliases[normalized] ?? normalized;
 }
 
+function normalizeGeneratorContractVersion(value?: string): string {
+  const version = value?.trim() || CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION;
+  if (!/^content-agency-package\.v[1-9][0-9]*$/.test(version)) {
+    throw new Error('Invalid Content Agency package generator contract version');
+  }
+  return version;
+}
+
 function cleanText(value: string | null | undefined, fallback: string): string {
   const trimmed = value?.trim();
   return trimmed ? trimmed.slice(0, 600) : fallback;
@@ -954,8 +1227,34 @@ function toStringList(value: unknown): string[] {
 }
 
 function stableId(prefix: string, ...parts: unknown[]): string {
-  const hash = crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16);
+  const hash = crypto.createHash('sha256').update(canonicalJson(parts)).digest('hex').slice(0, 16);
   return `${prefix}_${hash}`;
+}
+
+export function computeContentAgencyArtifactHash(artifact: unknown): string {
+  const material = artifact && typeof artifact === 'object' && !Array.isArray(artifact)
+    ? Object.fromEntries(
+      Object.entries(artifact as Record<string, unknown>)
+        .filter(([key]) => key !== 'contentHash' && key !== 'createdAt'),
+    )
+    : artifact;
+  return crypto.createHash('sha256').update(canonicalJson(material)).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalize(entry)]),
+    );
+  }
+  return value;
 }
 
 function numericMetric(metrics: Record<string, unknown>, keys: string[]): number | null {

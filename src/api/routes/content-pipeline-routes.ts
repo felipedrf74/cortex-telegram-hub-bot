@@ -2,160 +2,215 @@
 
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
-import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
+import { sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
-import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
+import { getContentWorkspaceItem, type ContentWorkspaceScope } from '../../services/content-workspace';
+import {
+  readContentCompatibilityProjection,
+  readContentPublishedThisMonth,
+} from './content-home-route-utils';
+import { recordContentWorkspaceProductSignal } from '../../services/content-workspace-observability';
 import { logger } from '../../utils/logger';
 
-const CONTENT_PIPELINE_STAGE_ORDER = ['ideas', 'scripted', 'filmed', 'editing', 'published'] as const;
+type EnsureValidContentRouteScope = (
+  res: Response,
+  userId: number | undefined,
+  operation: string,
+  details?: Record<string, unknown>,
+) => userId is number;
 
-type ContentPipelineStage = typeof CONTENT_PIPELINE_STAGE_ORDER[number];
-
-type ContentIdeaRow = {
-  id: number | string;
-  title: string;
-  score?: number | null;
-  stage?: string | null;
-  created_at?: string | null;
-  user_id?: number;
-};
-
-function formatIdea(row: ContentIdeaRow): {
-  id: string;
-  title: string;
-  score: number | null;
-  createdAt: string | null;
-} {
-  return {
-    id: row.id?.toString(),
-    title: row.title,
-    score: row.score || null,
-    createdAt: row.created_at || null,
-  };
-}
-
-function emptyPipelinePayload() {
-  return {
-    stages: { ideas: [], scripted: [], filmed: [], editing: [], published: [] },
-    stats: { totalIdeas: 0, publishedThisMonth: 0 },
-  };
-}
-
-export function registerContentPipelineRoutes(router: Router): void {
-  /** GET /api/v1/content/pipeline */
+export function registerContentPipelineRoutes(
+  router: Router,
+  ensureValidContentRouteScope: EnsureValidContentRouteScope,
+): void {
+  /**
+   * GET /api/v1/content/pipeline
+   *
+   * Read-only compatibility projection over the canonical workspace. The
+   * legacy filmed/editing buckets stay present for old clients but are marked
+   * as not tracked; no parallel `content_ideas` store is queried or created.
+   */
   router.get('/pipeline', async (req, res: Response) => {
+    const scope = resolveScope(
+      req as unknown as AuthenticatedRequest,
+      res,
+      ensureValidContentRouteScope,
+      'content_pipeline_compatibility_read',
+    );
+    if (!scope) return;
+    recordContentWorkspaceProductSignal('legacy_pipeline_compatibility_read');
     try {
-      const { userId } = req as unknown as AuthenticatedRequest;
       const db = getDb();
-
-      // Per-user content pipeline — each user only sees their own ideas.
-      const ideas = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'ideas' AND user_id = ? ORDER BY score DESC",
-      ).all(userId) as ContentIdeaRow[];
-
-      const scripted = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'scripted' AND user_id = ? ORDER BY created_at DESC",
-      ).all(userId) as ContentIdeaRow[];
-
-      const filmed = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'filmed' AND user_id = ? ORDER BY created_at DESC",
-      ).all(userId) as ContentIdeaRow[];
-
-      const editing = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'editing' AND user_id = ? ORDER BY created_at DESC",
-      ).all(userId) as ContentIdeaRow[];
-
-      const published = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'published' AND user_id = ? ORDER BY created_at DESC LIMIT 10",
-      ).all(userId) as ContentIdeaRow[];
+      const projection = readContentCompatibilityProjection(db, scope.userId, scope.tenantId);
+      const publishedMetric = readContentPublishedThisMonth(db, scope.userId, scope.tenantId);
 
       sendSuccess(res, {
-        stages: {
-          ideas: ideas.map(formatIdea),
-          scripted: scripted.map(formatIdea),
-          filmed: filmed.map(formatIdea),
-          editing: editing.map(formatIdea),
-          published: published.map(formatIdea),
-        },
+        schemaVersion: projection.schemaVersion,
+        stages: projection.stages,
         stats: {
-          totalIdeas: ideas.length + scripted.length + filmed.length + editing.length,
-          publishedThisMonth: published.filter((p) => {
-            const d = new Date(p.created_at || '');
-            const now = new Date();
-            return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-          }).length,
+          totalIdeas: projection.stages.ideas.length + projection.stages.scripted.length,
+          publishedThisMonth: publishedMetric.count,
+          publishedThisMonthStatus: {
+            availability: 'available',
+            source: publishedMetric.source,
+            windowStart: publishedMetric.windowStart,
+            windowEnd: publishedMetric.windowEnd,
+          },
+        },
+        workspace: { source: 'content_workspace', canonical: true },
+        compatibility: {
+          projection: 'legacy_pipeline_read_only',
+          coverage: projection.coverage,
+          stages: {
+            ideas: { tracking: 'derived', source: 'artifact_phase' },
+            scripted: { tracking: 'derived', source: 'artifact_phase' },
+            filmed: { tracking: 'not_tracked', reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED' },
+            editing: { tracking: 'not_tracked', reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED' },
+            published: { tracking: 'derived', source: 'production_state' },
+          },
+          implicitAdvance: {
+            supported: false,
+            replacement: '/api/v1/content/workspace/items/:itemId/state',
+          },
         },
       });
-    } catch (err: any) {
-      // Table may not exist — soft-fail with empty pipeline.
-      logger.debug({ err }, 'Content pipeline query failed (table may not exist)');
-      sendSuccess(res, emptyPipelinePayload());
+    } catch (err) {
+      logger.error({ err, ...scope, reasonCode: 'CONTENT_PIPELINE_STORE_UNAVAILABLE' }, 'Content pipeline compatibility read failed');
+      sendPipelineUnavailable(res);
     }
   });
 
-  /** GET /api/v1/content/ideas — list all content ideas */
-  router.get('/ideas', async (req, res: Response) => {
+  /**
+   * GET /api/v1/content/ideas and /ideas/library — read-only projection over
+   * canonical workspace items. The explicit library alias lets save callers
+   * verify persistence without falling back to the retired saved_ideas store.
+   */
+  router.get(['/ideas', '/ideas/library'], async (req, res: Response) => {
+    const scope = resolveScope(
+      req as unknown as AuthenticatedRequest,
+      res,
+      ensureValidContentRouteScope,
+      'content_ideas_compatibility_read',
+    );
+    if (!scope) return;
+    recordContentWorkspaceProductSignal('legacy_ideas_compatibility_read');
     try {
-      const { userId } = req as unknown as AuthenticatedRequest;
-      const db = getDb();
-      const ideas = db.prepare(
-        'SELECT id, title, score, created_at, stage FROM content_ideas WHERE user_id = ? ORDER BY score DESC, created_at DESC',
-      ).all(userId) as ContentIdeaRow[];
-
+      const projection = readContentCompatibilityProjection(getDb(), scope.userId, scope.tenantId);
       sendSuccess(res, {
-        ideas: ideas.map((row) => ({
-          ...formatIdea(row),
-          stage: row.stage || 'ideas',
-        })),
-        count: ideas.length,
+        schemaVersion: projection.schemaVersion,
+        ideas: projection.items,
+        count: projection.items.length,
+        workspace: { source: 'content_workspace', canonical: true },
+        compatibility: {
+          projection: 'legacy_ideas_read_only',
+          coverage: projection.coverage,
+        },
       });
-    } catch (err: any) {
-      logger.debug({ err }, 'Content ideas query failed');
-      sendSuccess(res, { ideas: [], count: 0 });
+    } catch (err) {
+      logger.error({ err, ...scope, reasonCode: 'CONTENT_IDEAS_STORE_UNAVAILABLE' }, 'Content ideas compatibility read failed');
+      sendError(
+        res,
+        'CONTENT_IDEAS_UNAVAILABLE',
+        'Content ideas are temporarily unavailable. Your saved ideas have not been reported as empty.',
+        503,
+        {
+          availability: 'unavailable',
+          retryable: true,
+          reasonCode: 'CONTENT_IDEAS_STORE_UNAVAILABLE',
+        },
+      );
     }
   });
 
-  /** POST /api/v1/content/pipeline/:id/advance — move idea to next stage */
+  /**
+   * Legacy implicit advancement is deliberately disabled. Professional
+   * workflow changes require an explicit target state, workflow version, and
+   * idempotency key through the canonical workspace route.
+   */
   router.post('/pipeline/:id/advance', async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    const { id } = req.params;
-
+    const scope = resolveScope(
+      req as unknown as AuthenticatedRequest,
+      res,
+      ensureValidContentRouteScope,
+      'content_pipeline_compatibility_advance',
+      { itemId: req.params.id },
+    );
+    if (!scope) return;
+    recordContentWorkspaceProductSignal('legacy_pipeline_compatibility_mutation');
+    const itemId = positiveInteger(req.params.id);
+    if (itemId === null) {
+      sendItemNotFound(res);
+      return;
+    }
     try {
-      const db = getDb();
-
-      // Ownership check: only advance your own ideas.
-      const idea = db.prepare('SELECT stage, user_id FROM content_ideas WHERE id = ?').get(id) as { stage: string; user_id: number } | undefined;
-      if (!idea) {
-        sendError(res, 'NOT_FOUND', 'Idea not found', 404);
+      const item = getContentWorkspaceItem(scope, itemId);
+      if (!item) {
+        // The scoped lookup deliberately makes foreign and nonexistent IDs
+        // indistinguishable, preventing cross-tenant existence disclosure.
+        sendItemNotFound(res);
         return;
       }
-      if (idea.user_id === 0) {
-        sendError(res, 'FORBIDDEN', 'System seed ideas cannot be advanced', 403);
-        return;
-      }
-      if (idea.user_id !== userId) {
-        sendError(res, 'FORBIDDEN', 'Not your idea', 403);
-        return;
-      }
-
-      const currentIdx = CONTENT_PIPELINE_STAGE_ORDER.indexOf(idea.stage as ContentPipelineStage);
-      if (currentIdx === -1 || currentIdx >= CONTENT_PIPELINE_STAGE_ORDER.length - 1) {
-        sendSuccess(res, { advanced: false, message: 'Already at final stage.' });
-        return;
-      }
-
-      const nextStage = CONTENT_PIPELINE_STAGE_ORDER[currentIdx + 1];
-      const result = db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ? AND user_id = ?').run(nextStage, id, userId);
-      if (result.changes < 1) {
-        sendError(res, 'CONFLICT', 'Idea could not be advanced; refresh and try again', 409);
-        return;
-      }
-      invalidateContentDerivedCaches(userId);
-
-      sendSuccess(res, { advanced: true, newStage: nextStage });
-    } catch (err: any) {
-      logger.error({ err }, 'iOS content/advance failed');
-      sendInternalError(res, 'Failed to advance pipeline stage');
+      sendError(
+        res,
+        'CONTENT_PIPELINE_ADVANCE_DEPRECATED',
+        'Implicit pipeline advancement is no longer supported. Use an explicit workspace action.',
+        409,
+        {
+          itemId: String(item.id),
+          currentState: item.productionState,
+          artifactPhase: item.artifactPhase,
+          workflowVersion: item.workflowVersion,
+          nextAction: item.nextAction,
+          replacement: {
+            method: 'POST',
+            path: '/api/v1/content/workspace/items/:itemId/state',
+            requiresExpectedWorkflowVersion: true,
+            requiresIdempotencyKey: true,
+          },
+        },
+      );
+    } catch (err) {
+      logger.error({ err, ...scope, itemId }, 'Content legacy advance compatibility lookup failed');
+      sendPipelineUnavailable(res);
     }
   });
+}
+
+function resolveScope(
+  req: AuthenticatedRequest,
+  res: Response,
+  ensureValidContentRouteScope: EnsureValidContentRouteScope,
+  operation: string,
+  details?: Record<string, unknown>,
+): ContentWorkspaceScope | null {
+  if (!ensureValidContentRouteScope(res, req.userId, operation, details)) return null;
+  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+    sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
+    return null;
+  }
+  return { tenantId: Number(req.tenantId), userId: req.userId };
+}
+
+function positiveInteger(value: string | undefined): number | null {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function sendItemNotFound(res: Response): void {
+  sendError(res, 'CONTENT_ITEM_NOT_FOUND', 'Content item not found.', 404);
+}
+
+function sendPipelineUnavailable(res: Response): void {
+  sendError(
+    res,
+    'CONTENT_PIPELINE_UNAVAILABLE',
+    'Content pipeline is temporarily unavailable. Your saved content has not been reported as empty.',
+    503,
+    {
+      availability: 'unavailable',
+      retryable: true,
+      reasonCode: 'CONTENT_PIPELINE_STORE_UNAVAILABLE',
+    },
+  );
 }

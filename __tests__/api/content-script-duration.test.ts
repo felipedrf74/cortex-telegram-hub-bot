@@ -57,7 +57,14 @@ const mockGetContentResearchArtifact = vi.fn(() => ({
   unsafeOrUnverifiedClaims: [],
   expiresAt: '2026-04-17T00:00:00.000Z',
 }));
-const mockStoreScript = vi.fn(() => 451);
+const mockSaveGeneratedScriptToWorkspace = vi.fn(() => ({
+  schemaVersion: 'content-workspace-capture-v1',
+  workspaceSchemaVersion: 'content-workspace-v1',
+  item: { id: 451, workflowVersion: 2 },
+  artifact: { id: 452 },
+  revisionId: 453,
+  replayed: false,
+}));
 const mockRecordContentVariantFeedback = vi.fn(() => ({
   topic: 'Test topic',
   variantKind: 'script',
@@ -197,8 +204,8 @@ vi.mock('../../src/services/content-token-artifact-store', () => ({
   ]),
 }));
 
-vi.mock('../../src/services/content-learning-store', () => ({
-  storeScript: (...args: unknown[]) => mockStoreScript(...args),
+vi.mock('../../src/services/content-workspace-capture', () => ({
+  saveGeneratedScriptToWorkspace: (...args: unknown[]) => mockSaveGeneratedScriptToWorkspace(...args),
 }));
 
 interface MockRes {
@@ -278,7 +285,7 @@ describe('Content API — script duration presets', () => {
     mockPersistContentArtifacts.mockClear();
     mockGetContentSourcePackage.mockClear();
     mockGetContentResearchArtifact.mockClear();
-    mockStoreScript.mockClear();
+    mockSaveGeneratedScriptToWorkspace.mockClear();
     mockRecordContentVariantFeedback.mockClear();
     mockWithAiBudgetReservation.mockClear();
   });
@@ -416,27 +423,104 @@ describe('Content API — script duration presets', () => {
       saved: true,
       topic: 'Test topic',
       variantKind: 'script',
-      accepted: true,
+      accepted: false,
+      approvalStatus: 'draft',
+      learningApplied: false,
       sourcePackageId: null,
-      scriptId: 451,
+      workspace: {
+        schemaVersion: 'content-workspace-capture-v1',
+        itemId: 451,
+        artifactId: 452,
+        revisionId: 453,
+        workflowVersion: 2,
+        replayed: false,
+      },
     }));
     expect(response.body.data.savedIdea.variantTextChars).toBe(response.body.data.script.length);
-    expect(mockStoreScript).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockSaveGeneratedScriptToWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { tenantId: 12, userId: 12 },
       topic: response.body.data.topic,
       format: 'YouTube',
       scriptText: response.body.data.script,
-      userId: 12,
-      tenantId: 12,
+      captureOrigin: 'script_generation',
     }));
-    expect(mockRecordContentVariantFeedback).toHaveBeenCalledWith(expect.objectContaining({
-      tenantId: 12,
-      userId: 12,
-      topic: response.body.data.topic,
-      variantText: response.body.data.script,
-      sentiment: 'approved',
-      variantKind: 'script',
-      sourcePackageId: undefined,
+    expect(mockRecordContentVariantFeedback).not.toHaveBeenCalled();
+  });
+
+  it('persists the complete engine script including a long tail sentinel', async () => {
+    const fullEngineScript = [
+      ...Array.from({ length: 24 }, (_, index) => `Section ${index + 1}: preserve this complete generated paragraph.`),
+      'TAIL_SENTINEL_SAVED_SCRIPT_INTEGRITY_91D2',
+    ].join('\n');
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Lossless saved script',
+      script: fullEngineScript,
+      hook: 'Preserve the entire generated script.',
+      title_options: ['Lossless script'],
+      sources_used: [],
+      estimated_duration: '10:00',
+      duration_ms: 1200,
+      hashtags: ['#integrity'],
+      caption: 'Complete script.',
+      cta: 'Save this.',
+      degraded: false,
+      warnings: [],
+    });
+
+    const response = await dispatch({
+      topic: 'Lossless saved script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.script).toBe(fullEngineScript);
+    expect(response.body.data.script).toContain('TAIL_SENTINEL_SAVED_SCRIPT_INTEGRITY_91D2');
+    expect(mockSaveGeneratedScriptToWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+      scriptText: fullEngineScript,
     }));
+  });
+
+  it('withholds blocked engine output and never auto-saves or returns the raw text', async () => {
+    const blockedEngineScript = 'RAW_PROVIDER_OUTPUT\nKeep this exact evidence for review.';
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Blocked output review',
+      script: blockedEngineScript,
+      hook: 'Review this output.',
+      title_options: ['Blocked output'],
+      sources_used: [],
+      estimated_duration: '8:00',
+      duration_ms: 1200,
+      hashtags: [],
+      caption: '',
+      cta: 'Review this.',
+      degraded: false,
+      warnings: [],
+    });
+
+    const response = await dispatch({
+      topic: 'Blocked output review',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'CONTENT_SCRIPT_OUTPUT_BLOCKED',
+        details: {
+          reasonCodes: ['raw_script_artifact_blocked'],
+          displayWithheld: true,
+          retryable: true,
+        },
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(blockedEngineScript);
+    expect(JSON.stringify(response.body)).not.toContain('RAW_PROVIDER_OUTPUT');
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
   });
 
   it('does not auto-save degraded fallback generations as approved ideas', async () => {
@@ -480,7 +564,7 @@ describe('Content API — script duration presets', () => {
       accepted: false,
       reason: 'review_required_degraded_generation',
     }));
-    expect(mockStoreScript).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
     expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
   });
 
@@ -522,9 +606,11 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.warnings).not.toContain('Model fallback output needs human review before publishing.');
     expect(response.body.data.savedIdea).toEqual(expect.objectContaining({
       saved: true,
-      accepted: true,
+      accepted: false,
+      approvalStatus: 'draft',
+      learningApplied: false,
     }));
-    expect(mockStoreScript).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockSaveGeneratedScriptToWorkspace).toHaveBeenCalledWith(expect.objectContaining({
       topic: 'Open-water panic breathing reset',
     }));
   });
@@ -639,6 +725,20 @@ describe('Content API — script duration presets', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.script).toBe('Expanded or rewritten script body.');
+    expect(response.body.data.editPatch).toEqual(expect.objectContaining({
+      contractVersion: 'content-script-edit.v1',
+      status: 'proposed',
+      applied: false,
+      operation: 'expand',
+      action: 'expand_full',
+      applyMode: 'replace_document',
+      target: { kind: 'document', id: 'script' },
+      proposedText: 'Expanded or rewritten script body.',
+      baseScriptCharCount: 'Draft hook and outline.'.length,
+      baseContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
     expect(response.body.data.requestedMode).toBe('expand');
     expect(response.body.data.appliedMode).toBe('expand');
     expect(response.body.data.research.route).toBe('reused_research');
@@ -662,9 +762,25 @@ describe('Content API — script duration presets', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
-    expect(response.body.data.script).toBe('Expanded or rewritten script body.');
+    expect(response.body.data.script).toBe('Draft hook and outline.');
+    expect(response.body.data.editPatch).toEqual(expect.objectContaining({
+      contractVersion: 'content-script-edit.v1',
+      status: 'proposed',
+      applied: false,
+      operation: 'rewrite',
+      action: 'rewrite_hook',
+      applyMode: 'replace_field',
+      target: { kind: 'field', id: 'hook' },
+      proposedText: 'Expanded or rewritten script body.',
+      baseScriptCharCount: 'Draft hook and outline.'.length,
+      baseContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
     expect(response.body.data.requestedMode).toBe('rewrite');
     expect(response.body.data.appliedMode).toBe('rewrite');
+    expect(response.body.data.editState).toBe('proposed');
+    expect(response.body.data.contentMutationApplied).toBe(false);
     expect(response.body.data.research.route).toBe('reused_research');
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(mockGetScript).not.toHaveBeenCalled();
@@ -672,6 +788,81 @@ describe('Content API — script duration presets', () => {
       expect.objectContaining({ baseCategory: 'content_script_rewrite', jobName: 'content_script_rewrite' }),
       expect.any(Function),
     );
+  });
+
+  it('returns section expansion as a proposal while preserving the full legacy script field', async () => {
+    const originalScript = 'Intro stays here.\nBody and CTA must survive.';
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'Expanded intro proposal only.',
+      provider: 'gemini',
+    });
+
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      script: originalScript,
+      action: 'expand_section:intro',
+    }, '/script/expand');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.script).toBe(originalScript);
+    expect(response.body.data.editPatch).toEqual(expect.objectContaining({
+      contractVersion: 'content-script-edit.v1',
+      status: 'proposed',
+      applied: false,
+      operation: 'expand',
+      applyMode: 'replace_section',
+      target: { kind: 'section', id: 'intro' },
+      proposedText: 'Expanded intro proposal only.',
+      baseContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(response.body.data.contentMutationApplied).toBe(false);
+  });
+
+  it('rejects oversized script input without truncating it or spending edit tokens', async () => {
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      script: `Keep all of this:${'x'.repeat(20_001)}`,
+      action: 'rewrite_hook',
+    }, '/script/rewrite');
+
+    expect(response.statusCode).toBe(413);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+      details: {
+        field: 'script',
+        maxChars: 20_000,
+        truncated: false,
+      },
+    });
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized provider edit output and preserves the original script', async () => {
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'y'.repeat(24_001),
+      provider: 'gemini',
+    });
+
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      script: 'Original script must remain authoritative.',
+      action: 'rewrite',
+    }, '/script/rewrite');
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_EDIT_OUTPUT_TOO_LARGE',
+      details: {
+        maxChars: 24_000,
+        actualChars: 24_001,
+        originalPreserved: true,
+      },
+    });
   });
 
   it('rejects unsupported edit topics before spending edit tokens', async () => {
@@ -764,6 +955,7 @@ describe('Content API — script duration presets', () => {
     expect(routeSource).not.toContain('budgetState=${budgetState}');
     expect(routeSource).toContain("Budget enforcement is external to the model and must not shorten, simplify, or reduce delivery quality.");
     expect(topicContextSource).toContain('function resolveScriptTopicContext(');
+    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.workspaceItemId)');
     expect(topicContextSource).toContain('parseOptionalPositiveId(raw.pipelineId)');
     expect(topicContextSource).toContain('parseOptionalPositiveId(raw.topicFeedbackId)');
     expect(topicContextSource).toContain('parseOptionalPositiveId(raw.ideaId)');

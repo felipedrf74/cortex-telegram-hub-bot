@@ -95,6 +95,8 @@ type OneShotOptions = {
   tenantId?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** Optional caller-specific retry cap for latency-bounded workflows. */
+  maxRetries?: number;
 };
 
 const warnedUnresolvedModels = new Set<string>();
@@ -320,8 +322,8 @@ export async function completeOneShot(
   const maxTokens = options?.maxTokens ?? 2500;
   const temperature = options?.temperature ?? 0.7;
 
-  const response = await withRetry(() =>
-    trackedCompletion(
+  const response = await withRetry(
+    () => trackedCompletion(
       getClient(),
       withTokenLimit({
         model,
@@ -337,6 +339,7 @@ export async function completeOneShot(
       options?.tenantId ?? options?.userId ?? 0,
       options?.timeoutMs,
     ),
+    normalizeRetryCount(options?.maxRetries, 3),
   );
 
   return response.choices[0]?.message?.content ?? '';
@@ -685,6 +688,12 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     }
   }
   throw new Error('withRetry: unreachable');
+}
+
+function normalizeRetryCount(value: number | undefined, fallback: number): number {
+  if (value == null) return fallback;
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(3, Math.floor(value));
 }
 
 // ─── Tool format conversion ─────────────────────────────────────────

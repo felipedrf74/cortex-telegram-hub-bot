@@ -252,11 +252,35 @@ command_health() {
 command_auth_token() {
   ensure_dirs
   load_env
+  local legal_metadata
+  legal_metadata="$(mktemp)"
+  curl -fsS \
+    -H "Accept: application/json" \
+    "$BASE_URL/api/v1/legal/current" > "$legal_metadata"
   local payload
   payload="$(mktemp)"
-  cat > "$payload" <<EOF
-{"deviceId":"${LOCAL_DEVICE_ID}","deviceName":"Local Full Nexus Smoke","inviteCode":"${LOCAL_INVITE_CODE}"}
+  node - "$legal_metadata" "$payload" "$LOCAL_DEVICE_ID" "$LOCAL_INVITE_CODE" <<'EOF'
+const fs = require('fs');
+const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const legal = metadata.data || metadata;
+const termsVersion = legal.documents?.terms?.version;
+const privacyVersion = legal.documents?.privacy?.version;
+if (!termsVersion || !privacyVersion) {
+  console.error('Legal metadata did not contain current terms and privacy versions');
+  process.exit(1);
+}
+fs.writeFileSync(process.argv[3], JSON.stringify({
+  deviceId: process.argv[4],
+  deviceName: 'Local Full Nexus Smoke',
+  inviteCode: process.argv[5],
+  acceptedLegal: {
+    accepted: true,
+    termsVersion,
+    privacyVersion,
+  },
+}));
 EOF
+  rm -f "$legal_metadata"
   local response
   response="$(mktemp)"
   echo "Registering local sandbox iOS user at $BASE_URL/api/v1/auth/register"

@@ -2,6 +2,10 @@
 
 import { AsyncLocalStorage } from 'async_hooks';
 import { resolveChatTenantId } from './chat-tenant-scope';
+import {
+  validateContentIdeaCaptureConsent,
+  type ContentIdeaCaptureConsentReceipt,
+} from './content-workspace-chat-consent';
 
 export interface ChatToolAuthorizationContext {
   userId: number;
@@ -9,6 +13,7 @@ export interface ChatToolAuthorizationContext {
   confirmedDestructiveAction: boolean;
   confirmationSource: 'explicit_current_turn' | 'pending_confirmation' | 'none';
   requireConfirmationForWrites?: boolean;
+  contentIdeaCaptureConsent?: ContentIdeaCaptureConsentReceipt | null;
 }
 
 export interface ChatToolAuthorizationResult {
@@ -187,6 +192,26 @@ export function authorizeChatToolCall(
       message: `${toolName} requested a user outside the authenticated chat user`,
       toolRisk: risk,
     };
+  }
+
+  if (toolName === 'save_note'
+    && typeof input?.domain === 'string'
+    && input.domain.trim().toLowerCase() === 'content_idea') {
+    const consent = validateContentIdeaCaptureConsent(current.contentIdeaCaptureConsent, {
+      tenantId: current.tenantId,
+      userId: current.userId,
+      content: input.content,
+      title: input.title,
+    });
+    if (!consent.ok) {
+      return {
+        allowed: false,
+        code: 'CONFIRMATION_REQUIRED',
+        message: 'Content idea capture requires an explicit current-turn save request matching the captured content',
+        confirmationRequired: true,
+        toolRisk: risk,
+      };
+    }
   }
 
   const requiresConfirmation = risk === 'destructive'

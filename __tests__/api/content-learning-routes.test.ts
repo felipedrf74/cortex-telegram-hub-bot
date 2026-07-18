@@ -9,12 +9,20 @@ const mocks = vi.hoisted(() => ({
   generateAndStoreTopicCandidates: vi.fn(),
   generateWeeklyPackage: vi.fn(),
   updateFeedback: vi.fn(),
-  logPerformanceFeedback: vi.fn(),
+  recordContentPerformanceOutcome: vi.fn(),
   getPerformanceSummary: vi.fn(),
   getLearnedPatterns: vi.fn(),
   getArtifactChain: vi.fn(),
   getRecentScripts: vi.fn(),
   invalidateContentDerivedCaches: vi.fn(),
+  saveGeneratedScriptToWorkspace: vi.fn(() => ({
+    schemaVersion: 'content-workspace-capture-v1',
+    workspaceSchemaVersion: 'content-workspace-v1',
+    item: { id: 701, workflowVersion: 2 },
+    artifact: { id: 702 },
+    revisionId: 703,
+    replayed: false,
+  })),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -41,11 +49,18 @@ vi.mock('../../src/services/content-learning-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/content-learning-store')>();
   return {
     ...actual,
-    logPerformanceFeedback: mocks.logPerformanceFeedback,
     getPerformanceSummary: mocks.getPerformanceSummary,
     getLearnedPatterns: mocks.getLearnedPatterns,
     getArtifactChain: mocks.getArtifactChain,
     getRecentScripts: mocks.getRecentScripts,
+  };
+});
+
+vi.mock('../../src/services/content-performance-lineage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/content-performance-lineage')>();
+  return {
+    ...actual,
+    recordContentPerformanceOutcome: mocks.recordContentPerformanceOutcome,
   };
 });
 
@@ -72,6 +87,10 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
     invalidateTrainingDerivedCaches: vi.fn(),
   },
   invalidateContentDerivedCaches: mocks.invalidateContentDerivedCaches,
+}));
+
+vi.mock('../../src/services/content-workspace-capture', () => ({
+  saveGeneratedScriptToWorkspace: mocks.saveGeneratedScriptToWorkspace,
 }));
 
 import { registerContentLearningRoutes } from '../../src/api/routes/content-learning-routes';
@@ -153,6 +172,9 @@ async function dispatch(
     });
     setImmediate(resolve);
   });
+  for (let attempt = 0; attempt < 100 && res.body == null; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
 
   return { response: res, ensureValidScope };
 }
@@ -347,7 +369,7 @@ describe('content learning routes', () => {
     }));
   });
 
-  it('persists approved script variant feedback as a durable recent script artifact', async () => {
+  it('persists approved script variant feedback as a canonical workspace artifact', async () => {
     const scriptText = Array.from({ length: 40 }, (_, index) => {
       return `[${index}:00] Paragraph ${index} keeps the generated script body intact.`;
     }).join('\n');
@@ -367,21 +389,24 @@ describe('content learning routes', () => {
       sentiment: 'approved',
       accepted: true,
       variantTextChars: scriptText.length,
-      scriptId: expect.any(Number),
+      workspace: {
+        schemaVersion: 'content-workspace-capture-v1',
+        itemId: 701,
+        artifactId: 702,
+        revisionId: 703,
+        workflowVersion: 2,
+        replayed: false,
+      },
     }));
-
-    const scriptRow = testDb.prepare(`
-      SELECT topic, format, script_text, user_id, tenant_id
-      FROM content_scripts
-      WHERE id = ?
-    `).get(response.body.data.scriptId) as any;
-    expect(scriptRow).toEqual(expect.objectContaining({
+    expect(mocks.saveGeneratedScriptToWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { tenantId: 77, userId: 77 },
       topic: 'AI scripting workflow',
       format: 'YouTube',
-      script_text: scriptText,
-      user_id: 77,
-      tenant_id: 77,
-    }));
+      scriptText,
+      captureOrigin: 'approved_variant',
+    }), testDb);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_scripts').get())
+      .toEqual({ count: 0 });
 
     const memoryRow = testDb.prepare(`
       SELECT topic, hook, variant_kind, feedback_sentiment, accepted
@@ -488,49 +513,86 @@ describe('content learning routes', () => {
     ]);
   });
 
-  it('requires views and retention when logging performance feedback', async () => {
+  it('requires canonical revision identifiers, metrics, and idempotency when logging performance feedback', async () => {
     const { response } = await dispatch('POST', '/performance', { views: 1200 });
 
     expect(response.statusCode).toBe(400);
-    expect(response.body.error.code).toBe('VALIDATION');
-    expect(mocks.logPerformanceFeedback).not.toHaveBeenCalled();
+    expect(response.body.error.code).toBe('CONTENT_PERFORMANCE_VALIDATION_FAILED');
+    expect(mocks.recordContentPerformanceOutcome).not.toHaveBeenCalled();
   });
 
-  it('logs performance feedback with authenticated user ownership', async () => {
-    mocks.logPerformanceFeedback.mockReturnValueOnce(55);
+  it('logs revision-linked performance feedback with authenticated user ownership', async () => {
+    mocks.recordContentPerformanceOutcome.mockReturnValueOnce({
+      value: {
+        id: 55,
+        workspaceItemId: 8,
+        artifactId: 12,
+        revisionId: 13,
+        association: 'canonical_revision',
+        linkOrigin: 'canonical_api',
+        pipelineId: null,
+      },
+      replayed: false,
+      created: true,
+    });
 
     const { response } = await dispatch('POST', '/performance', {
-      pipelineId: 8,
+      itemId: 8,
+      artifactId: 12,
+      revisionId: 13,
+      idempotencyKey: 'performance-api-001',
       views: 1200,
       retentionPct: 43.5,
       likes: 100,
     }, 77);
 
-    expect(response.statusCode).toBe(200);
-    expect(mocks.logPerformanceFeedback).toHaveBeenCalledWith(expect.objectContaining({
-      pipelineId: 8,
+    expect(response.statusCode).toBe(201);
+    expect(mocks.recordContentPerformanceOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { tenantId: 77, userId: 77 },
+      itemId: 8,
+      artifactId: 12,
+      revisionId: 13,
       views: 1200,
       retentionPct: 43.5,
       likes: 100,
-      userId: 77,
     }));
     expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
-    expect(response.body.data).toEqual({ feedbackId: 55 });
+    expect(response.body.data).toEqual(expect.objectContaining({
+      schemaVersion: 'content-performance-lineage-v1',
+      outcome: expect.objectContaining({ id: 55, revisionId: 13, pipelineId: null }),
+      mutation: { replayed: false, created: true },
+      evidenceStatus: 'user_reported',
+      publicationExecution: 'not_performed',
+    }));
   });
 
-  it('forbids artifact-chain access for another user pipeline', async () => {
+  it('rejects legacy pipeline aliases instead of guessing a workspace revision', async () => {
+    const { response } = await dispatch('POST', '/performance', {
+      pipelineId: 8,
+      views: 1200,
+      retentionPct: 43.5,
+    }, 77);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error.code).toBe('CONTENT_LEGACY_PIPELINE_ALIAS_READ_ONLY');
+    expect(mocks.recordContentPerformanceOutcome).not.toHaveBeenCalled();
+  });
+
+  it('makes foreign and missing artifact-chain identifiers indistinguishable', async () => {
     const pipelineId = seedPipeline(99);
+    mocks.getArtifactChain.mockReturnValueOnce({ availability: 'not_found' });
 
     const { response } = await dispatch('GET', `/artifact-chain/${pipelineId}`, {}, 41);
 
-    expect(response.statusCode).toBe(403);
-    expect(response.body.error.code).toBe('FORBIDDEN');
-    expect(mocks.getArtifactChain).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(404);
+    expect(response.body.error.code).toBe('NOT_FOUND');
+    expect(mocks.getArtifactChain).toHaveBeenCalledWith(pipelineId, 41, 41);
   });
 
   it('returns artifact-chain for an owned pipeline', async () => {
     const pipelineId = seedPipeline(41);
     mocks.getArtifactChain.mockReturnValueOnce({
+      availability: 'available',
       idea: null,
       topicFeedback: null,
       pipeline: { id: pipelineId },

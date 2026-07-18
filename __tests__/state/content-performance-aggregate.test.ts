@@ -46,23 +46,72 @@ function insertTopic(
   daysAgo = 0,
 ): void {
   const dateExpr = daysAgo === 0 ? "datetime('now')" : `datetime('now', '-${daysAgo} days')`;
-  testDb.prepare(`
-    INSERT INTO content_topics (
-      user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
-      title, status, scheduled_date, lifecycle_state,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, 'user_private', 'active', ?, ?, ?, 'active', ${dateExpr}, ${dateExpr})
-  `).run(userId, tenantId, userId, `Topic for ${userId}-${status}-${Math.random()}`, status, scheduledDate);
+  const productionState = status === 'published'
+    ? 'published'
+    : status === 'drafting'
+      ? 'active'
+      : 'inbox';
+  const artifactPhase = status === 'published'
+    ? 'final'
+    : status === 'drafting'
+      ? 'draft'
+      : 'idea';
+  const result = testDb.prepare(`
+    INSERT INTO content_domain_objects (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, lifecycle_state, title, production_state, artifact_phase,
+      deadline_at, created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?, ?, ?, ?, ?, ?, ?, ${dateExpr}, ${dateExpr})
+  `).run(
+    tenantId,
+    userId,
+    productionState,
+    `Topic for ${userId}-${status}-${Math.random()}`,
+    productionState,
+    artifactPhase,
+    scheduledDate,
+    userId,
+    userId,
+  );
+  if (status === 'published') {
+    testDb.prepare(`
+      INSERT INTO content_workflow_events (
+        tenant_id, owner_user_id, visibility_scope, scope_status,
+        object_type, object_id, action, from_state, to_state,
+        actor_user_id, created_at
+      ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?,
+        'workspace_state_changed', 'approved', 'published', ?, ${dateExpr})
+    `).run(tenantId, userId, String(result.lastInsertRowid), userId);
+  }
 }
 
 function insertScript(userId: number, tenantId: number, daysAgo = 0): void {
   const dateExpr = daysAgo === 0 ? "datetime('now')" : `datetime('now', '-${daysAgo} days')`;
+  const item = testDb.prepare(`
+    INSERT INTO content_domain_objects (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, lifecycle_state, title, production_state, artifact_phase,
+      created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', 'active', ?, 'active', 'draft',
+      ?, ?, ${dateExpr}, ${dateExpr})
+  `).run(tenantId, userId, `Script for ${userId}-${Math.random()}`, userId, userId);
+  const artifact = testDb.prepare(`
+    INSERT INTO content_artifacts (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      item_id, artifact_type, title, created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, 'user_private', 'active', ?, 'script', 'Script', ?, ?, ${dateExpr}, ${dateExpr})
+  `).run(tenantId, userId, Number(item.lastInsertRowid), userId, userId);
+  const revision = testDb.prepare(`
+    INSERT INTO content_revisions (
+      tenant_id, owner_user_id, artifact_id, revision_number,
+      content_format, content_text, content_hash, created_by, created_at
+    ) VALUES (?, ?, ?, 1, 'plain_text', 'script body', ?, ?, ${dateExpr})
+  `).run(tenantId, userId, Number(artifact.lastInsertRowid), 'a'.repeat(64), userId);
   testDb.prepare(`
-    INSERT INTO content_scripts (
-      user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
-      topic, format, script_text, created_at
-    ) VALUES (?, ?, ?, 'user_private', 'active', ?, 'youtube', 'script body', ${dateExpr})
-  `).run(userId, tenantId, userId, `Script for ${userId}-${Math.random()}`);
+    UPDATE content_artifacts
+       SET current_revision_id = ?, revision_count = 1
+     WHERE id = ?
+  `).run(Number(revision.lastInsertRowid), Number(artifact.lastInsertRowid));
 }
 
 function insertPerformance(
@@ -124,15 +173,15 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.highlights).toEqual([]);
   });
 
-  it('counts topics by status', () => {
+  it('counts canonical workspace items by production state', () => {
     insertTopic(USER_A, USER_A, 'planned');
     insertTopic(USER_A, USER_A, 'planned');
     insertTopic(USER_A, USER_A, 'drafting');
     insertTopic(USER_A, USER_A, 'published');
     const a = getContentPerformanceAggregate(USER_A, USER_A);
     expect(a.topics.total).toBe(4);
-    expect(a.topics.byStatus.planned).toBe(2);
-    expect(a.topics.byStatus.drafting).toBe(1);
+    expect(a.topics.byStatus.inbox).toBe(2);
+    expect(a.topics.byStatus.active).toBe(1);
     expect(a.topics.byStatus.published).toBe(1);
   });
 
@@ -192,11 +241,11 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     }
     const a = getContentPerformanceAggregate(USER_A, USER_A);
     expect(a.warnings.length).toBeGreaterThanOrEqual(1);
-    // Either the "no published" or "no scripts" warning
-    expect(a.warnings.some(w => /no topics published|no scripts/i.test(w))).toBe(true);
+    // Either the verified-publication or current-script-artifact warning.
+    expect(a.warnings.some(w => /no verified publication|no current script artifacts/i.test(w))).toBe(true);
   });
 
-  it('counts scripts using the real content_scripts schema without updated_at', () => {
+  it('counts scripts from canonical artifacts and immutable revisions', () => {
     insertScript(USER_A, USER_A, 2);
     insertScript(USER_A, USER_A, 45);
     const a = getContentPerformanceAggregate(USER_A, USER_A);

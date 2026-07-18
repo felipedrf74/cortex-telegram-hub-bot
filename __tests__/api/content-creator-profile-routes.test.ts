@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   revokeRadarFeedback: vi.fn(),
   listRadarFeedback: vi.fn(),
   radarFeedbackAggregateBySignal: vi.fn(),
+  recordContentRadarWorkspaceAction: vi.fn(),
   summarizeCanonicalLifecycle: vi.fn(),
 }));
 
@@ -31,6 +32,10 @@ vi.mock('../../src/state/content-radar-feedback', () => ({
 
 vi.mock('../../src/state/content-lifecycle', () => ({
   summarizeCanonicalLifecycle: (...args: unknown[]) => mocks.summarizeCanonicalLifecycle(...args),
+}));
+
+vi.mock('../../src/services/content-radar-workspace-actions', () => ({
+  recordContentRadarWorkspaceAction: (...args: unknown[]) => mocks.recordContentRadarWorkspaceAction(...args),
 }));
 
 import { registerContentCreatorProfileRoutes } from '../../src/api/routes/content-creator-profile-routes';
@@ -139,6 +144,17 @@ describe('content creator profile routes', () => {
     mocks.radarFeedbackAggregateBySignal.mockReturnValue({
       'sig-1': { create_brief: 1 },
     });
+    mocks.recordContentRadarWorkspaceAction.mockReturnValue({
+      schemaVersion: 'content-radar-workspace-action-v1',
+      workspaceSchemaVersion: 'content-workspace-v1',
+      feedback: { id: 12, signalId: 'sig-brief', action: 'create_brief' },
+      workspace: {
+        item: { id: 81, title: 'Radar brief', workflowVersion: 2 },
+        artifact: { id: 82, itemId: 81, artifactType: 'brief', currentRevisionId: 83 },
+        revisionId: 83,
+      },
+      mutation: { replayed: false },
+    });
     mocks.summarizeCanonicalLifecycle.mockReturnValue({
       stages: [{ key: 'briefing', count: 1 }],
       totals: { total: 1 },
@@ -192,6 +208,59 @@ describe('content creator profile routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('VALIDATION');
     expect(mocks.recordRadarFeedback).not.toHaveBeenCalled();
+  });
+
+  it('atomically materializes a radar brief and returns canonical workspace references', async () => {
+    const brief = {
+      objective: 'Build a source-aware explainer',
+      mainPoints: ['What changed'],
+      claims: ['Adoption increased'],
+    };
+    const { response, ensureValidScope } = await dispatch('POST', '/radar/workspace-actions', {
+      signalId: 'sig-brief',
+      action: 'create_brief',
+      signalTopic: 'Radar brief',
+      signalSummary: 'A useful source signal',
+      reason: 'Develop this now',
+      brief,
+    }, 99);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({
+      schemaVersion: 'content-radar-workspace-action-v1',
+      workspace: {
+        item: { id: 81 },
+        artifact: { id: 82, currentRevisionId: 83 },
+        revisionId: 83,
+      },
+      mutation: { replayed: false },
+    });
+    expect(ensureValidScope).toHaveBeenCalledWith(
+      expect.anything(),
+      99,
+      'content_radar_workspace_action',
+    );
+    expect(mocks.recordContentRadarWorkspaceAction).toHaveBeenCalledWith({
+      scope: { userId: 99, tenantId: 99 },
+      signalId: 'sig-brief',
+      action: 'create_brief',
+      signalTopic: 'Radar brief',
+      signalSummary: 'A useful source signal',
+      reason: 'Develop this now',
+      brief,
+    });
+  });
+
+  it('rejects non-materializing actions before any radar workspace mutation', async () => {
+    const { response } = await dispatch('POST', '/radar/workspace-actions', {
+      signalId: 'sig-brief',
+      action: 'accept',
+      signalTopic: 'Radar brief',
+    }, 99);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(mocks.recordContentRadarWorkspaceAction).not.toHaveBeenCalled();
   });
 
   it('revokes radar feedback with authenticated user and tenant scope', async () => {

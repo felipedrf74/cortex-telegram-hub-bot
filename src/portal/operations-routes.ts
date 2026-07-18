@@ -9,6 +9,7 @@ import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-f
 import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
 import { getTrainingGenerationObservabilitySnapshot } from '../services/training-generation-observability';
+import { getContentWorkspaceObservabilitySnapshot } from '../services/content-workspace-observability';
 import {
   acknowledgeOperatorAlert,
   getOperatorAlertDeliverySummary,
@@ -155,6 +156,22 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
           progression_state_counts: {},
         },
       });
+    }
+  });
+
+  app.get('/api/content-workspace-metrics', requirePortalAdminToken, (_req: Request, res: Response) => {
+    try {
+      res.json({
+        ok: true,
+        contentWorkspace: getContentWorkspaceObservabilitySnapshot(),
+      });
+    } catch (err) {
+      sendPortalInternalError(
+        res,
+        err,
+        'Content workspace metrics unavailable',
+        'Portal: content workspace metrics failed',
+      );
     }
   });
 

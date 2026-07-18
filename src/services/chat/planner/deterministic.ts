@@ -81,11 +81,11 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   // "refused", they just shouldn't be treated as action requests.
   if (hasPastTenseSignal(input.text)) return null;
   const foldedInput = foldCalendarText(input.text);
-  const earlyContentSchedule = parseContentActionStep(input, foldedInput);
-  if (earlyContentSchedule?.action === 'content_schedule_work'
+  const earlyContentAction = parseContentActionStep(input, foldedInput);
+  if ((earlyContentAction?.action === 'content_schedule_work' || earlyContentAction?.action === 'content_publish_now')
     && !/\b(?:na\s+agenda|agenda\s+(?:do|da)\s+(?:google|gmail))\b/.test(foldedInput)
     && !/\b(event|evento|meeting|reuni[aã]o|appointment|compromisso|cita[s]?)\b/.test(foldedInput)) {
-    return buildPlanFromSteps(input, [earlyContentSchedule], ['content_action_intent', 'deterministic_skill_parser', 'content_schedule_preflight'], 0.8);
+    return buildPlanFromSteps(input, [earlyContentAction], ['content_action_intent', 'deterministic_skill_parser', 'content_schedule_preflight'], 0.8);
   }
   // Task-with-subtasks owns legacy "create task X with subtasks A B C" before
   // the simpler create-task parser can flatten the whole tail into the title.

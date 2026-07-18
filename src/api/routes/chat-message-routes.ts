@@ -30,6 +30,7 @@ import {
   type NexusSkillId,
 } from '../../services/chat-skill-orchestrator';
 import { runWithChatToolAuthorization } from '../../services/chat-tool-authorization';
+import { issueContentIdeaCaptureConsent } from '../../services/content-workspace-chat-consent';
 import {
   buildBlocksFromMarkdown,
   type ChatResponseBlock,
@@ -1832,6 +1833,7 @@ export function registerChatMessageRoutes(
         ? await tryBuildTokenZeroChatMessageShortcutResponse({
           normalizedText,
           userId,
+          tenantId,
           userLanguage: chatCoreV2RouteLocale,
         })
         : null;
@@ -3321,6 +3323,12 @@ export function registerChatMessageRoutes(
           ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
           : 'none',
         requireConfirmationForWrites: true,
+        contentIdeaCaptureConsent: issueContentIdeaCaptureConsent({
+          tenantId,
+          userId,
+          sourceMessageId: userMessageId,
+          message: normalizedText,
+        }),
       }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
       latency.mark('domain_handler_completed');
       if (routingDecision.safety.explicitConfirmation) {

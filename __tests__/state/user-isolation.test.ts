@@ -311,6 +311,17 @@ describe('Per-user data isolation', () => {
       expect(notesB).toHaveLength(1);
       expect(notesB[0].content).toBe('B note');
     });
+
+    it('rejects the retired Content-idea note writer before persistence', () => {
+      expect(() => saveNote(USER_A, {
+        content: 'This belongs in the workspace',
+        domain: ' CONTENT_IDEA ',
+      })).toThrowError(expect.objectContaining({
+        code: 'CONTENT_IDEA_REQUIRES_WORKSPACE',
+      }));
+      expect(searchNotes(USER_A, { domain: 'content_idea' })).toEqual([]);
+    });
+
   });
 
   describe('backward compatibility', () => {
@@ -422,25 +433,15 @@ describe('Per-user data isolation', () => {
   });
 
   describe('saved_ideas isolation', () => {
-    it('user A idea not visible to user B', () => {
-      testDb.prepare(
+    it('blocks post-cutover legacy idea roots for every user', () => {
+      expect(() => testDb.prepare(
         "INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)"
-      ).run('Idea A', '2026-04-12', USER_A);
-      testDb.prepare(
+      ).run('Idea A', '2026-04-12', USER_A)).toThrow(/read-only.*content workspace/i);
+      expect(() => testDb.prepare(
         "INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)"
-      ).run('Idea B', '2026-04-12', USER_B);
-
-      const ideasA = testDb.prepare(
-        "SELECT * FROM saved_ideas WHERE user_id IN (0, ?) AND status = 'saved'"
-      ).all(USER_A);
-      const ideasB = testDb.prepare(
-        "SELECT * FROM saved_ideas WHERE user_id IN (0, ?) AND status = 'saved'"
-      ).all(USER_B);
-
-      expect(ideasA).toHaveLength(1);
-      expect(ideasB).toHaveLength(1);
-      expect((ideasA[0] as any).title).toBe('Idea A');
-      expect((ideasB[0] as any).title).toBe('Idea B');
+      ).run('Idea B', '2026-04-12', USER_B)).toThrow(/read-only.*content workspace/i);
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM saved_ideas').get())
+        .toEqual({ count: 0 });
     });
   });
 });

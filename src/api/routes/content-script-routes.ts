@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'node:crypto';
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import {
@@ -67,11 +68,15 @@ import {
   getContentSourcePackage,
   listRecentContentIdeaMemory,
   persistContentArtifacts,
-  recordContentVariantFeedback,
 } from '../../services/content-token-artifact-store';
-import { storeScript } from '../../services/content-learning-store';
+import { saveGeneratedScriptToWorkspace } from '../../services/content-workspace-capture';
 import { isPaidAiCostControlsEnforcementEnabled } from '../../services/entitlement';
 import { getCurrentRequestId } from '../../utils/request-context';
+import {
+  recordContentWorkspaceProductSignal,
+  recordContentWorkspaceQualitySignal,
+  startContentWorkspaceObservation,
+} from '../../services/content-workspace-observability';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -80,6 +85,12 @@ type EnsureValidContentRouteScope = (
   operation: string,
   details?: Record<string, unknown>,
 ) => userId is number;
+
+const CONTENT_SCRIPT_EDIT_MAX_TOPIC_CHARS = 240;
+const CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS = 20_000;
+const CONTENT_SCRIPT_EDIT_MAX_ACTION_CHARS = 80;
+const CONTENT_SCRIPT_EDIT_MAX_INSTRUCTION_CHARS = 600;
+const CONTENT_SCRIPT_EDIT_MAX_OUTPUT_CHARS = 24_000;
 
 export function registerContentScriptRoutes(
   router: Router,
@@ -108,6 +119,7 @@ export function registerContentScriptRoutes(
   router.post('/script', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_generate')) return;
+    const generationObservation = startContentWorkspaceObservation('generation');
 
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
     const {
@@ -125,17 +137,20 @@ export function registerContentScriptRoutes(
       regenerate,
       regenerationSeed,
       saveToIdeas,
+      idempotencyKey,
       highRiskAcknowledged,
       acknowledgeHighRisk,
     } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
+      generationObservation.complete('blocked', 'validation_rejected');
       sendError(res, 'VALIDATION', 'topic is required', 400);
       return;
     }
 
     const normalizedFormat = normalizeScriptFormat(format);
     if (!normalizedFormat) {
+      generationObservation.complete('blocked', 'validation_rejected');
       sendError(res, 'VALIDATION', invalidScriptFormatMessage(requestLanguage), 400);
       return;
     }
@@ -146,6 +161,7 @@ export function registerContentScriptRoutes(
       targetDurationSeconds,
     );
     if ('error' in durationPreset) {
+      generationObservation.complete('blocked', 'validation_rejected');
       sendError(res, 'VALIDATION', durationPreset.error, 400);
       return;
     }
@@ -202,6 +218,7 @@ export function registerContentScriptRoutes(
       });
 
       if (routeDecision.route === 'unsupported') {
+        generationObservation.complete('blocked', 'validation_rejected');
         sendError(
           res,
           'CONTENT_UNSUPPORTED_TOPIC',
@@ -216,6 +233,7 @@ export function registerContentScriptRoutes(
 
       const highRiskAccepted = highRiskAcknowledged === true || acknowledgeHighRisk === true;
       if (routeDecision.route === 'high_risk_review' && !highRiskAccepted) {
+        generationObservation.complete('blocked', 'claim_safety_block');
         sendError(
           res,
           'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
@@ -487,6 +505,31 @@ export function registerContentScriptRoutes(
           modelRouting: generationPackage.modelRoutingMetadata,
         },
       });
+      if (scriptResponse.scriptSafety.blocked) {
+        generationObservation.complete('blocked', 'output_safety_block');
+        recordContentWorkspaceQualitySignal('generation_output_blocked');
+        logger.warn(
+          {
+            userId,
+            tenantId,
+            topicLength: topic.trim().length,
+            blockerCount: scriptResponse.scriptSafety.blockers.length,
+          },
+          'Content script output withheld by the quality safety gate',
+        );
+        sendError(
+          res,
+          'CONTENT_SCRIPT_OUTPUT_BLOCKED',
+          'The generated script was withheld because it contained unsafe or internal output. Please retry.',
+          422,
+          {
+            reasonCodes: scriptResponse.scriptSafety.blockers,
+            displayWithheld: true,
+            retryable: true,
+          },
+        );
+        return;
+      }
       let savedIdea: Record<string, unknown> | undefined;
       if (saveToIdeas === true) {
         const degradedGeneration = scriptResponse.degraded === true
@@ -503,49 +546,50 @@ export function registerContentScriptRoutes(
           };
         } else {
           try {
-            const scriptId = storeScript({
+            const saved = saveGeneratedScriptToWorkspace({
+              scope: { tenantId, userId },
               topic: scriptResponse.topic,
               format: scriptResponse.format,
               scriptText: scriptResponse.script,
               hook: scriptResponse.hook,
               titleOptions: scriptResponse.titleOptions ?? [],
               sourcesUsed: scriptResponse.sourcesUsed ?? [],
+              claimsUsed: scriptResponse.claimLedger ?? [],
               hashtags: scriptResponse.hashtags ?? [],
               caption: scriptResponse.caption,
               cta: scriptResponse.cta,
               estimatedDuration: scriptResponse.estimatedDuration,
               niche: scriptTopicContext?.niche || niche || 'general',
               generationDurationMs: scriptResponse.durationMs ?? elapsedMs,
-              userId,
-              tenantId,
+              sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+              topicFeedbackId: scriptTopicContext?.topicFeedbackId ?? null,
+              actorType: 'agent',
+              actorId: 'content-script-generation',
+              idempotencyKey: typeof idempotencyKey === 'string'
+                ? idempotencyKey
+                : req.header('x-idempotency-key'),
+              captureOrigin: 'script_generation',
             });
-            try {
-              recordContentVariantFeedback({
-                tenantId: typeof tenantId === 'number' ? tenantId : userId,
-                userId,
-                topic: scriptResponse.topic,
-                variantText: scriptResponse.script,
-                sentiment: 'approved',
-                variantKind: 'script',
-                sourcePackageId: persistedArtifacts?.sourcePackageId,
-                angle: scriptTopicContext?.angleTag ?? null,
-                format: normalizedFormat,
-                notes: 'Saved from iOS Script Generator.',
-              });
-            } catch (err) {
-              logger.warn({ err, userId, tenantId, scriptId }, 'Content script save memory feedback could not be recorded');
-            }
             savedIdea = {
               saved: true,
               topic: scriptResponse.topic,
               variantKind: 'script',
-              accepted: true,
+              accepted: false,
+              approvalStatus: 'draft',
+              learningApplied: false,
               sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
               variantTextChars: scriptResponse.script.length,
-              scriptId,
+              workspace: {
+                schemaVersion: saved.schemaVersion,
+                itemId: saved.item.id,
+                artifactId: saved.artifact.id,
+                revisionId: saved.revisionId,
+                workflowVersion: saved.item.workflowVersion,
+                replayed: saved.replayed,
+              },
             };
           } catch (err) {
-            logger.warn({ err, userId, tenantId, topic }, 'Content script could not be saved to ideas');
+            logger.warn({ err, userId, tenantId, topicLength: topic.trim().length }, 'Content script could not be saved to ideas');
             savedIdea = {
               saved: false,
               topic: scriptResponse.topic,
@@ -559,9 +603,18 @@ export function registerContentScriptRoutes(
         }
       }
 
+      if (generationQuality.reviewRequired || generationQuality.reviewWarnings.length > 0) {
+        recordContentWorkspaceQualitySignal('generation_quality_warning');
+      }
+      if (sourceWarnings.length > 0) {
+        recordContentWorkspaceQualitySignal('factuality_warning');
+      }
+      recordContentWorkspaceProductSignal('script_generated');
+      generationObservation.complete('success');
       sendSuccess(res, savedIdea ? { ...scriptResponse, savedIdea } : scriptResponse);
     } catch (err: any) {
-      logger.error({ err, topic }, 'iOS content/script failed');
+      generationObservation.completeFromError(err);
+      logger.error({ err, topicLength: typeof topic === 'string' ? topic.trim().length : 0 }, 'iOS content/script failed');
       if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Script generation failed');
     }
@@ -637,8 +690,14 @@ export function registerContentScriptRoutes(
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_research_refresh')) return;
     const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
-    const topic = cleanRequiredString(req.body?.topic, 240);
-    const script = cleanRequiredString(req.body?.script, 20_000);
+    const topicInput = readBoundedString(req.body?.topic, CONTENT_SCRIPT_EDIT_MAX_TOPIC_CHARS);
+    const scriptInput = readBoundedString(req.body?.script, CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS, { preserveWhitespace: true });
+    if (sendScriptInputLimitError(res, requestLanguage, [
+      { field: 'topic', result: topicInput },
+      { field: 'script', result: scriptInput },
+    ])) return;
+    const topic = topicInput.value;
+    const script = scriptInput.value;
     if (!topic || !script) {
       sendError(res, 'VALIDATION', requestLanguage.startsWith('pt') ? 'topic e script são obrigatórios' : 'topic and script are required', 400);
       return;
@@ -737,7 +796,8 @@ export function registerContentScriptRoutes(
 
       sendSuccess(res, buildScriptEditResponse({
         topic,
-        script,
+        baseScript: script,
+        proposedText: null,
         action: 'refresh_research',
         provider: researchProvider,
         kind: 'research_refresh',
@@ -749,7 +809,7 @@ export function registerContentScriptRoutes(
         warnings: refreshedSummary.length === 0 ? ['No fresh source summary was returned.'] : [],
       }));
     } catch (err: any) {
-      logger.error({ err, topic }, 'iOS content/script research refresh failed');
+      logger.error({ err, topicLength: topic.length }, 'iOS content/script research refresh failed');
       if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Research refresh failed');
     }
@@ -765,6 +825,26 @@ function isProviderHeadroomDenial(error: unknown): boolean {
 
 type ScriptEditKind = 'expand' | 'rewrite';
 
+type ScriptEditPatchTarget =
+  | { kind: 'document'; id: 'script' }
+  | { kind: 'section'; id: string }
+  | { kind: 'field'; id: 'hook' | 'caption' | 'titles' | 'thumbnail' | 'cta' };
+
+interface ScriptEditPatch {
+  contractVersion: 'content-script-edit.v1';
+  status: 'proposed';
+  applied: false;
+  operation: ScriptEditKind;
+  action: string;
+  applyMode: 'replace_document' | 'replace_section' | 'replace_field';
+  target: ScriptEditPatchTarget;
+  proposedText: string;
+  baseScriptCharCount: number;
+  baseContentHash: string;
+  proposedContentHash: string;
+  proposalId: string;
+}
+
 async function handleScriptEditRoute(
   req: AuthenticatedRequest,
   res: Response,
@@ -778,10 +858,20 @@ async function handleScriptEditRoute(
   if (!options.ensureValidContentRouteScope(res, userId, `content_route_script_${options.kind}`)) return;
   const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
   const requestLanguage = options.resolveContentLanguage(req, userId);
-  const topic = cleanRequiredString(req.body?.topic, 240);
-  const currentScript = cleanRequiredString(req.body?.script, 20_000);
-  const action = cleanRequiredString(req.body?.action, 80) ?? (options.kind === 'expand' ? 'expand_full' : 'rewrite');
-  const instruction = cleanOptionalString(req.body?.instruction, 600);
+  const topicInput = readBoundedString(req.body?.topic, CONTENT_SCRIPT_EDIT_MAX_TOPIC_CHARS);
+  const scriptInput = readBoundedString(req.body?.script, CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS, { preserveWhitespace: true });
+  const actionInput = readBoundedString(req.body?.action, CONTENT_SCRIPT_EDIT_MAX_ACTION_CHARS);
+  const instructionInput = readBoundedString(req.body?.instruction, CONTENT_SCRIPT_EDIT_MAX_INSTRUCTION_CHARS);
+  if (sendScriptInputLimitError(res, requestLanguage, [
+    { field: 'topic', result: topicInput },
+    { field: 'script', result: scriptInput },
+    { field: 'action', result: actionInput },
+    { field: 'instruction', result: instructionInput },
+  ])) return;
+  const topic = topicInput.value;
+  const currentScript = scriptInput.value;
+  const action = actionInput.value ?? (options.kind === 'expand' ? 'expand_full' : 'rewrite');
+  const instruction = instructionInput.value;
   const sourceSummary = compactSourceSummary(sanitizeSourceSummary(req.body?.sourceSummary));
 
   if (!topic || !currentScript) {
@@ -850,10 +940,27 @@ async function handleScriptEditRoute(
           tenantId: routeTenantId,
         },
       ));
-    const edited = cleanRequiredString(text, 24_000) ?? '';
+    const edited = typeof text === 'string' && text.trim().length > 0 ? text : '';
+    if (edited.length > CONTENT_SCRIPT_EDIT_MAX_OUTPUT_CHARS) {
+      sendError(
+        res,
+        'CONTENT_SCRIPT_EDIT_OUTPUT_TOO_LARGE',
+        requestLanguage.startsWith('pt')
+          ? 'A edição gerada excedeu o limite seguro. O roteiro original foi preservado.'
+          : 'The generated edit exceeded the safe limit. The original script was preserved.',
+        502,
+        {
+          maxChars: CONTENT_SCRIPT_EDIT_MAX_OUTPUT_CHARS,
+          actualChars: edited.length,
+          originalPreserved: true,
+        },
+      );
+      return;
+    }
     sendSuccess(res, buildScriptEditResponse({
       topic,
-      script: edited || currentScript,
+      baseScript: currentScript,
+      proposedText: edited || null,
       action,
       provider,
       kind: options.kind,
@@ -865,7 +972,12 @@ async function handleScriptEditRoute(
       warnings: edited ? [] : ['The edit provider returned an empty response; original script was preserved.'],
     }));
   } catch (err: any) {
-    logger.error({ err, topic, action }, `iOS content/script ${options.kind} failed`);
+    logger.error({
+      err,
+      topicLength: topic.length,
+      actionLength: action.length,
+      editKind: options.kind,
+    }, `iOS content/script ${options.kind} failed`);
     if (sendAiBudgetError(res, err)) return;
     sendInternalError(res, options.kind === 'expand' ? 'Script expansion failed' : 'Script rewrite failed');
   }
@@ -909,7 +1021,8 @@ function buildScriptEditUserPrompt(input: {
 
 function buildScriptEditResponse(input: {
   topic: string;
-  script: string;
+  baseScript: string;
+  proposedText: string | null;
   action: string;
   provider: string;
   kind: ScriptEditKind | 'research_refresh';
@@ -920,8 +1033,8 @@ function buildScriptEditResponse(input: {
   appliedMode: string;
   warnings: string[];
 }): Record<string, unknown> {
-  const estimatedInputTokens = Math.ceil((input.topic.length + input.script.length) / 4);
-  const estimatedOutputTokens = Math.min(input.kind === 'expand' ? 1800 : 900, Math.max(300, Math.ceil(input.script.length / 6)));
+  const estimatedInputTokens = Math.ceil((input.topic.length + input.baseScript.length) / 4);
+  const estimatedOutputTokens = Math.min(input.kind === 'expand' ? 1800 : 900, Math.max(300, Math.ceil(input.baseScript.length / 6)));
   const operation: ContentOperationKind = input.kind === 'expand'
     ? 'script_expand'
     : input.kind === 'research_refresh'
@@ -935,9 +1048,28 @@ function buildScriptEditResponse(input: {
     cacheStatus: input.kind === 'research_refresh' ? 'refreshed' : 'reused',
     latencyMs: Date.now() - input.startMs,
   });
+  const editPatch = input.kind === 'research_refresh' || !input.proposedText
+    ? null
+    : buildScriptEditPatch({
+      kind: input.kind,
+      action: input.action,
+      baseScript: input.baseScript,
+      proposedText: input.proposedText,
+    });
+  // Backward compatibility: legacy clients still decode `script`. A complete
+  // document edit may use the proposed document there, while section/field
+  // proposals keep the original script so they cannot be mistaken for a
+  // destructive whole-document replacement.
+  const compatibilityScript = editPatch?.applyMode === 'replace_document'
+    ? editPatch.proposedText
+    : input.baseScript;
+
   return {
     topic: input.topic,
-    script: input.script,
+    script: compatibilityScript,
+    editPatch,
+    editState: editPatch ? 'proposed' : 'no_change',
+    contentMutationApplied: false,
     hook: null,
     titleOptions: [],
     sourcesUsed: [],
@@ -983,7 +1115,7 @@ function buildScriptEditResponse(input: {
     }),
     artifactRefs: [],
     operationTrace,
-    claimLedger: buildClaimLedger({ text: input.script }),
+    claimLedger: buildClaimLedger({ text: compatibilityScript }),
     agentSignalsUsed: [],
     reuseStatus: input.kind === 'research_refresh' ? 'refreshed' : 'reused',
     costTier: operationTrace.costTier,
@@ -997,6 +1129,70 @@ function buildScriptEditResponse(input: {
     warnings: input.warnings,
     model: input.provider,
   };
+}
+
+function buildScriptEditPatch(input: {
+  kind: ScriptEditKind;
+  action: string;
+  baseScript: string;
+  proposedText: string;
+}): ScriptEditPatch {
+  const target = resolveScriptEditPatchTarget(input.kind, input.action);
+  const baseContentHash = hashScriptEditContent(input.baseScript);
+  const proposedContentHash = hashScriptEditContent(input.proposedText);
+  const proposalId = createHash('sha256').update(JSON.stringify({
+    contractVersion: 'content-script-edit.v1',
+    operation: input.kind,
+    action: input.action,
+    target,
+    baseContentHash,
+    proposedContentHash,
+  })).digest('hex');
+  return {
+    contractVersion: 'content-script-edit.v1',
+    status: 'proposed',
+    applied: false,
+    operation: input.kind,
+    action: input.action,
+    applyMode: target.kind === 'document'
+      ? 'replace_document'
+      : target.kind === 'section'
+        ? 'replace_section'
+        : 'replace_field',
+    target,
+    proposedText: input.proposedText,
+    baseScriptCharCount: input.baseScript.length,
+    baseContentHash,
+    proposedContentHash,
+    proposalId,
+  };
+}
+
+function hashScriptEditContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function resolveScriptEditPatchTarget(kind: ScriptEditKind, action: string): ScriptEditPatchTarget {
+  if (kind === 'expand') {
+    if (action === 'expand_full') return { kind: 'document', id: 'script' };
+    const explicitSection = action.match(/^expand_section:([a-z0-9_-]{1,40})$/i)?.[1];
+    const legacySection = action.match(/^expand_([a-z0-9_-]{1,40})$/i)?.[1];
+    return { kind: 'section', id: explicitSection || legacySection || 'requested_section' };
+  }
+
+  const fieldTargets: Record<string, Extract<ScriptEditPatchTarget, { kind: 'field' }>['id']> = {
+    rewrite_hook: 'hook',
+    rewrite_caption: 'caption',
+    hook_pack: 'hook',
+    title_pack: 'titles',
+    caption_pack: 'caption',
+    thumbnail_pack: 'thumbnail',
+    cta_pack: 'cta',
+    change_cta: 'cta',
+  };
+  const field = fieldTargets[action];
+  if (field) return { kind: 'field', id: field };
+  return { kind: 'document', id: 'script' };
 }
 
 function defaultEditExpandOptions(action: string): Array<{ id: string; label: string; action: string }> {
@@ -1015,17 +1211,53 @@ function defaultEditExpandOptions(action: string): Array<{ id: string; label: st
   ];
 }
 
-function cleanRequiredString(value: unknown, maxChars: number): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.slice(0, maxChars);
+interface BoundedStringResult {
+  value: string | null;
+  tooLarge: boolean;
+  actualChars: number;
+  maxChars: number;
 }
 
-function cleanOptionalString(value: unknown, maxChars: number): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, maxChars) : null;
+function readBoundedString(
+  value: unknown,
+  maxChars: number,
+  options: { preserveWhitespace?: boolean } = {},
+): BoundedStringResult {
+  if (typeof value !== 'string') {
+    return { value: null, tooLarge: false, actualChars: 0, maxChars };
+  }
+  const normalized = options.preserveWhitespace ? value : value.trim();
+  if (!normalized.trim()) {
+    return { value: null, tooLarge: false, actualChars: normalized.length, maxChars };
+  }
+  if (normalized.length > maxChars) {
+    return { value: null, tooLarge: true, actualChars: normalized.length, maxChars };
+  }
+  return { value: normalized, tooLarge: false, actualChars: normalized.length, maxChars };
+}
+
+function sendScriptInputLimitError(
+  res: Response,
+  language: Lang,
+  inputs: Array<{ field: string; result: BoundedStringResult }>,
+): boolean {
+  const oversized = inputs.find((input) => input.result.tooLarge);
+  if (!oversized) return false;
+  sendError(
+    res,
+    'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+    language.startsWith('pt')
+      ? `O campo ${oversized.field} excede o limite seguro. O conteúdo não foi cortado.`
+      : `${oversized.field} exceeds the safe limit. The content was not truncated.`,
+    413,
+    {
+      field: oversized.field,
+      maxChars: oversized.result.maxChars,
+      actualChars: oversized.result.actualChars,
+      truncated: false,
+    },
+  );
+  return true;
 }
 
 function sanitizeSourceSummary(value: unknown): string[] {

@@ -39,7 +39,12 @@ export interface ScriptQualityReport {
   complianceWarnings: string[];
   revisionActions: string[];
   blockers: string[];
-  revisedScript: string;
+  /**
+   * A derived quality suggestion for review. This is deliberately separate
+   * from the user-visible/generated script: quality analysis must never
+   * replace or truncate the engine's lossless output.
+   */
+  suggestedScript: string;
   structuredOutput: ScriptStructuredOutput;
 }
 
@@ -190,7 +195,7 @@ export function analyzeAndImproveScript(input: {
     complianceWarnings: [...new Set(complianceWarnings)],
     revisionActions: [...new Set(revisionActions)],
     blockers,
-    revisedScript: renderStructuredScript(structuredOutput),
+    suggestedScript: renderStructuredScript(structuredOutput),
     structuredOutput,
   };
 }

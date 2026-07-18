@@ -16,7 +16,9 @@ const STAGE_ALIASES: Array<{ stage: ContentPipelineTransitionStage; pattern: Reg
   pattern: new RegExp(`\\b(?:${STAGE_PATTERN_BY_STAGE[stage]})\\b`, 'i'),
 }));
 
-const TRANSITION_VERB = '(?:mark|set|move|advance|put|send|pass|promote|marca|marcar|mete|meter|move|mover|avanca|avança|avancar|avançar|envia|enviar|manda|mandar|poner|pon|pasa|pasar|avanza|avanzar)';
+const TRANSITION_VERB = '(?:mark|set|record|track|log|move|advance|put|send|pass|promote|marca|marcar|regista|registar|registra|registrar|anota|anotar|mete|meter|move|mover|avanca|avança|avancar|avançar|envia|enviar|manda|mandar|poner|pon|pasa|pasar|mueve|avanza|avanzar)';
+const TRANSITION_VERB_SIGNAL = new RegExp(`\\b${TRANSITION_VERB}\\b`, 'i');
+const PUBLISHED_TRACKING_VERB = /\b(?:mark|set|record|track|log|marca|marcar|regista|registar|registra|registrar|anota|anotar)\b/i;
 const ARTICLE = '(?:the|this|that|o|a|os|as|este|esta|esse|essa|el|la|este|esta)?';
 const YOUTUBE_URL = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\S+)/i;
 
@@ -42,6 +44,10 @@ export function normalizeContentPipelineTransitionStage(value: unknown): Content
 export function parseContentPipelineStageTransition(text: string): ContentPipelineStageSlots {
   const targetStage = normalizeContentPipelineTransitionStage(text);
   if (!targetStage) return { topicTitle: null, targetStage: null };
+  if (!TRANSITION_VERB_SIGNAL.test(text)) return { topicTitle: null, targetStage: null };
+  if (targetStage === 'published' && !PUBLISHED_TRACKING_VERB.test(text)) {
+    return { topicTitle: null, targetStage: null };
+  }
 
   const youtubeUrl = text.match(YOUTUBE_URL)?.[1] ?? null;
   const withoutUrl = youtubeUrl ? text.replace(youtubeUrl, '').trim() : text;

@@ -125,6 +125,10 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.post('/api/operator-alerts/:id/retry-delivery', requirePortalAdminToken");
   });
 
+  it('protects content-workspace operational metrics with the admin token middleware', () => {
+    expect(portalRouteSource).toContain("app.get('/api/content-workspace-metrics', requirePortalAdminToken");
+  });
+
   it('captures operator-alert lifecycle mutations in the admin audit trail', () => {
     expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'operator_alert.ack'");
     expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'operator_alert.resolve'");

@@ -866,11 +866,27 @@ function scheduledContentWorkNeeded(userId: number, slot: ScheduledContentPriori
              )
         )
         OR EXISTS(
-          SELECT 1 FROM content_scripts
-           WHERE user_id = ?
-             AND COALESCE(tenant_id, user_id) = ?
-             AND COALESCE(scope_status, 'active') = 'active'
-             AND created_at >= datetime('now', '-30 days')
+          SELECT 1
+            FROM content_domain_objects content_item
+            JOIN content_artifacts content_artifact
+              ON content_artifact.item_id = content_item.id
+             AND content_artifact.tenant_id = content_item.tenant_id
+             AND content_artifact.owner_user_id = content_item.owner_user_id
+            JOIN content_revisions content_revision
+              ON content_revision.id = content_artifact.current_revision_id
+             AND content_revision.artifact_id = content_artifact.id
+             AND content_revision.tenant_id = content_artifact.tenant_id
+             AND content_revision.owner_user_id = content_artifact.owner_user_id
+           WHERE content_item.owner_user_id = ?
+             AND content_item.tenant_id = ?
+             AND content_item.visibility_scope = 'user_private'
+             AND content_item.scope_status = 'active'
+             AND content_item.deleted_at IS NULL
+             AND content_item.object_type = 'content_item'
+             AND content_artifact.visibility_scope = 'user_private'
+             AND content_artifact.scope_status = 'active'
+             AND content_artifact.artifact_type IN ('script', 'platform_variant')
+             AND content_revision.created_at >= datetime('now', '-30 days')
         )
       ) AS engaged
     `).get(userId, userId, userId, userId) as { engaged?: number };

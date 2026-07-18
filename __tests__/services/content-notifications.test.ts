@@ -238,6 +238,38 @@ describe('content-notifications: user scoping', () => {
     expect(user2[0].title).toBe('User 2');
   });
 
+  it('keeps legacy NULL scope personal and omits foreign or malformed tenant rows', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO content_notifications (
+        user_id, type, title, body, data, status,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      ) VALUES (?, 'script_ready', ?, ?, '{}', 'unread', ?, ?, ?, ?)
+    `);
+
+    const personalId = Number(insert.run(1, 'Personal legacy title', 'Personal legacy detail', null, null, null, null).lastInsertRowid);
+    const tenant84Id = Number(insert.run(1, 'Tenant 84 title', 'Tenant 84 detail', 84, 1, 'user_private', 'active').lastInsertRowid);
+    insert.run(1, 'Malformed foreign title', 'Malformed foreign detail', 84, 2, 'user_private', 'active');
+    insert.run(1, 'Quarantined title', 'Quarantined detail', 84, 1, 'user_private', 'quarantined');
+
+    const personal = getUnreadNotifications(1, 20, 1);
+    const tenant84 = getUnreadNotifications(1, 20, 84);
+
+    expect(personal.map((item) => item.title)).toEqual(['Personal legacy title']);
+    expect(JSON.stringify(personal)).not.toContain('Tenant 84 detail');
+    expect(tenant84.map((item) => item.title)).toEqual(['Tenant 84 title']);
+    expect(JSON.stringify(tenant84)).not.toContain('Personal legacy detail');
+    expect(JSON.stringify(tenant84)).not.toContain('Malformed foreign detail');
+    expect(JSON.stringify(tenant84)).not.toContain('Quarantined detail');
+
+    expect(markRead(tenant84Id, 1, 1)).toBe(false);
+    expect(resolveNotification(tenant84Id, 1, 1)).toBe(false);
+    expect(markRead(personalId, 1, 84)).toBe(false);
+    expect(markAllRead(1, 1)).toBe(1);
+    expect(getNotificationById(tenant84Id, 1, 84)?.status).toBe('unread');
+    expect(markRead(tenant84Id, 1, 84)).toBe(true);
+    expect(resolveNotification(tenant84Id, 1, 84)).toBe(true);
+  });
+
   it('unread count is per-user', () => {
     createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'A', body: 'a' });
     createNotification({ userId: 1, type: 'script_ready', title: 'B', body: 'b' });

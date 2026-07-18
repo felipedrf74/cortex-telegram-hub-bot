@@ -35,7 +35,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { createContentWorkflowObject } from '../../src/services/content-editorial-workflow';
+import {
+  createCanonicalContentDecisionFixture,
+  ensureCanonicalContentDecisionFixtureSchema,
+} from '../helpers/content-workspace-decision-fixture';
 import type { DecisionApiItem } from '../../src/services/decision-center';
 import {
   addDecisionDependency,
@@ -100,14 +103,17 @@ import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNo
 import { clearPendingChatConfirmation, trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 import { buildNormalizedDecisionAction } from '../../src/services/decision-action-contract';
 import { evaluateDecisionConflicts } from '../../src/services/decision-conflict-evaluator';
+import { decideContentWorkspaceReview } from '../../src/services/content-workspace-decision-adapter';
+import { transitionContentWorkspaceItem } from '../../src/services/content-workspace';
 
 async function createContentApprovalDecision(userId: number, tenantId: number, dedupeKey: string) {
-  const object = createContentWorkflowObject({
+  const object = createCanonicalContentDecisionFixture(testDb, {
     userId,
     tenantId,
     objectType: 'script',
     title: `Draft ${dedupeKey}`,
     editorialState: 'drafted',
+    inReview: true,
   });
   const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', userId, {
     tenantId,
@@ -260,6 +266,7 @@ describe('Decision Center facade', () => {
     delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
     delete process.env.DECISION_FLOW_V1_ENFORCE_ENABLED;
     delete process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED;
+    ensureCanonicalContentDecisionFixtureSchema(testDb);
     ensureNotificationTables();
     ensureDecisionCenterTables();
     ensureTrainingCommitmentFixtureTables();
@@ -746,7 +753,7 @@ describe('Decision Center facade', () => {
   });
 
   it('excludes smoke and internal decisions from normal Decision Center surfaces', async () => {
-    const object = createContentWorkflowObject({
+    const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 93,
       tenantId: 93,
       objectType: 'script',
@@ -809,7 +816,7 @@ describe('Decision Center facade', () => {
       const hasRelatedOverride = Object.prototype.hasOwnProperty.call(overrides, 'relatedEntityId');
       const object = hasRelatedOverride
         ? null
-        : createContentWorkflowObject({
+        : createCanonicalContentDecisionFixture(testDb, {
           userId,
           tenantId,
           objectType: 'script',
@@ -896,7 +903,7 @@ describe('Decision Center facade', () => {
   });
 
   it('cleans up only scoped Decision Center smoke rows with dry-run and confirm modes', async () => {
-    const object = createContentWorkflowObject({
+    const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 94,
       tenantId: 94,
       objectType: 'script',
@@ -939,7 +946,7 @@ describe('Decision Center facade', () => {
   });
 
   it('redacts banned technical terms from user-facing guidance without throwing', async () => {
-    const object = createContentWorkflowObject({
+    const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 96,
       tenantId: 96,
       objectType: 'script',
@@ -1206,7 +1213,7 @@ describe('Decision Center facade', () => {
       const card = getDecisionItem(id, 98, 98)!.contentCard;
       expect(card).toBeDefined();
       expect(card!.objectType).toBe('script');     // straight from the workflow object
-      expect(card!.pipelineStage).toBe('drafted');  // editorialState
+      expect(card!.pipelineStage).toBe('reviewed'); // canonical review state
       expect(typeof card!.approvalState).toBe('string');
       expect(typeof card!.reviewRequired).toBe('boolean');
       expect(card!.nextActionLabel).toBeTruthy();   // the decision's primary action label
@@ -1304,7 +1311,7 @@ describe('Decision Center facade', () => {
   });
 
   it('executes content approval actions through Content and read-back verifies state', async () => {
-    const object = createContentWorkflowObject({
+    const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 2,
       tenantId: 2,
       objectType: 'script',
@@ -1496,7 +1503,7 @@ describe('Decision Center facade', () => {
 
   it('executes legacy content notification decisions through their workflow object data', async () => {
     testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
-    const object = createContentWorkflowObject({
+    const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 22,
       tenantId: 22,
       objectType: 'script',
@@ -1809,7 +1816,7 @@ describe('Decision Center facade', () => {
         tax_due, inss_due, status, created_at, updated_at
       ) VALUES (606, 606, '2026-05', 0, 0, 0, 0, 0, 'pending', datetime('now'), datetime('now'))
     `).run();
-    const contentObject = createContentWorkflowObject({
+    const contentObject = createCanonicalContentDecisionFixture(testDb, {
       userId: 606,
       tenantId: 606,
       objectType: 'script',
@@ -1902,7 +1909,7 @@ describe('Decision Center facade', () => {
         tax_due, inss_due, status, created_at, updated_at
       ) VALUES (607, 607, '2026-05', 0, 0, 0, 0, 0, 'pending', datetime('now'), datetime('now'))
     `).run();
-    const contentObject = createContentWorkflowObject({
+    const contentObject = createCanonicalContentDecisionFixture(testDb, {
       userId: 608,
       tenantId: 608,
       objectType: 'script',
@@ -2286,6 +2293,107 @@ describe('Decision Center facade', () => {
     }
   });
 
+  it('keeps a rewrite execution uncertain when an unrelated edit only matches the generic active state', async () => {
+    const { object, created } = await createContentApprovalDecision(452, 452, 'rewrite-reconcile-unrelated-edit');
+    const resumed = transitionContentWorkspaceItem({
+      scope: { tenantId: 452, userId: 452 },
+      itemId: object.id,
+      targetState: 'active',
+      expectedWorkflowVersion: object.workflowVersion,
+      idempotencyKey: 'user-resumed-editing-without-decision',
+    }, testDb).value;
+    expect(resumed).toMatchObject({ productionState: 'active' });
+
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, expected_effect_json,
+        effect_results_json, recovery_json
+      ) VALUES ('dae_content_rewrite_unrelated', ?, 'request_rewrite', 452, 452,
+        'rewrite-reconcile-unrelated-edit', 'content', 'partially_failed', ?, '[]', '{}')
+    `).run(created.item!.decisionId, JSON.stringify({
+      verifier: 'content_workflow_object',
+      targetRef: String(object.id),
+      expectedApprovalState: 'rewrite_requested',
+    }));
+
+    const refreshed = refreshDecisionItem(created.item!.decisionId, 452, 452)!.item;
+    expect(refreshed.status).not.toBe('actioned');
+    expect(testDb.prepare(`
+      SELECT status, error_code AS errorCode
+        FROM decision_action_executions
+       WHERE action_execution_id = 'dae_content_rewrite_unrelated'
+    `).get()).toEqual({
+      status: 'partially_failed',
+      errorCode: 'DECISION_MANUAL_RECONCILIATION_REQUIRED',
+    });
+  });
+
+  it('reconciles a rewrite only when the scoped receipt and Decision audit event prove the exact action', async () => {
+    const { object, created } = await createContentApprovalDecision(453, 453, 'rewrite-reconcile-explicit-decision');
+    const decisionId = created.item!.decisionId;
+    expect(decideContentWorkspaceReview({
+      userId: 453,
+      tenantId: 453,
+      objectId: object.id,
+      decision: 'rewrite_requested',
+      approvalType: 'content_review',
+      expectedWorkflowVersion: object.workflowVersion,
+      idempotencyKey: `decision-content:${decisionId}:request_rewrite`,
+      metadata: { source: 'decision_center', decisionId },
+    }, testDb)).toMatchObject({
+      ok: true,
+      status: 'rewrite_requested',
+      object: { productionState: 'active', approvalState: 'not_required' },
+    });
+
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, expected_effect_json,
+        effect_results_json, recovery_json
+      ) VALUES ('dae_content_rewrite_explicit', ?, 'request_rewrite', 453, 453,
+        'rewrite-reconcile-explicit-decision', 'content', 'partially_failed', ?, '[]', '{}')
+    `).run(decisionId, JSON.stringify({
+      verifier: 'content_workflow_object',
+      targetRef: String(object.id),
+      expectedApprovalState: 'rewrite_requested',
+    }));
+
+    const refreshed = refreshDecisionItem(decisionId, 453, 453)!.item;
+    expect(refreshed.status).toBe('actioned');
+    expect(testDb.prepare(`
+      SELECT status, error_code AS errorCode
+        FROM decision_action_executions
+       WHERE action_execution_id = 'dae_content_rewrite_explicit'
+    `).get()).toEqual({ status: 'succeeded', errorCode: null });
+  });
+
+  it('does not use personal task state to supersede a malformed cross-tenant daily-attention decision', async () => {
+    const created = await createDecisionIntent(buildSkillNotificationFixtureIntent('secretary', 454, {
+      tenantId: 954,
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityType: 'task_attention_day',
+      relatedEntityId: '2026-05-10',
+      actionButtons: [{ id: 'open_detail', label: 'Open tasks', style: 'primary' }],
+      dedupeKey: 'malformed-cross-tenant-task-attention',
+    }));
+    expect(created.item).not.toBeNull();
+
+    const prepareSpy = vi.spyOn(testDb, 'prepare');
+    const item = getDecisionItem(created.item!.decisionId, 454, 954);
+    const preparedSql = prepareSpy.mock.calls.map(([sql]) => String(sql));
+    prepareSpy.mockRestore();
+    expect(item).toMatchObject({ status: 'unread', tenantId: 954, userId: 454 });
+    expect(preparedSql.some((sql) => sql.includes('unified_tasks') || sql.includes('native_tasks'))).toBe(false);
+    expect(testDb.prepare(`
+      SELECT status, decision_state AS decisionState
+        FROM notification_center_items
+       WHERE item_id = ? AND user_id = 454 AND tenant_id = 954
+    `).get(created.item!.decisionId)).toEqual({ status: 'unread', decisionState: null });
+  });
+
   it('denies wrong-user decision list/detail/action access by scope', async () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 4, {
       dedupeKey: 'content:scope',
@@ -2351,7 +2459,7 @@ describe('Decision Center facade', () => {
     expect(executions.count).toBe(1);
 
     const workflow = testDb.prepare(`SELECT workflow_version, approval_state FROM content_domain_objects WHERE id = ?`).get(object.id) as { workflow_version: number; approval_state: string };
-    expect(workflow.workflow_version).toBe(2);
+    expect(workflow.workflow_version).toBe(object.workflowVersion + 1);
     expect(workflow.approval_state).toBe('approved');
   });
 
@@ -2378,7 +2486,7 @@ describe('Decision Center facade', () => {
     `).get(created.item!.decisionId) as { count: number };
     expect(executions.count).toBe(1);
     const workflow = testDb.prepare(`SELECT workflow_version, approval_state FROM content_domain_objects WHERE id = ?`).get(object.id) as { workflow_version: number; approval_state: string };
-    expect(workflow).toEqual({ workflow_version: 2, approval_state: 'approved' });
+    expect(workflow).toEqual({ workflow_version: object.workflowVersion + 1, approval_state: 'approved' });
   });
 
   it('enforces expected proposal versions for opted-in mutating clients', async () => {
@@ -3300,7 +3408,10 @@ describe('Decision Center facade', () => {
     const { object, created } = await createContentApprovalDecision(61, 61, 'content-supersession');
     testDb.prepare(`
       UPDATE content_domain_objects
-         SET approval_state = 'approved', approved_at = datetime('now')
+         SET production_state = 'approved', lifecycle_state = 'approved',
+             artifact_phase = 'final', editorial_state = 'approved',
+             approval_state = 'approved', approved_at = datetime('now'),
+             workflow_version = workflow_version + 1
        WHERE id = ?
     `).run(object.id);
 

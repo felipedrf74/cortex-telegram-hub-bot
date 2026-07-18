@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-07-10
+Last verified: 2026-07-17
 Update policy: update when REST contract conventions, route shape, or
 migration discipline changes. The risk-based gate matrix at
 `docs/release/risk-based-release-gate-matrix.md` is the runtime
@@ -203,7 +203,7 @@ no-side-effect assertion is the explicit unit-level form.
 2. **Every migration has an inverse.** Either an explicit
    `migrations/down/082_*.sql` or, where down-migration is impossible,
    a documented "irreversible" note alongside the migration file
-   (the canonical home is `docs/release/migration-irreversible`,
+   (the canonical home is `docs/release/migration-irreversible.md`,
    create when the first irreversible migration ships).
 3. **A migration that drops a column requires a feature-flag intermediate
    step.** Step 1: stop reading the column (deploy). Step 2: stop writing
@@ -235,6 +235,336 @@ Nexus runtime model routing is **configurable**. Do not hardcode "Gemini",
    reservation contract in `src/services/cost-guardrail.ts`; `api_usage` is
    quota truth. Do not use `users.tier`, `usage_metering`, prompt instructions,
    or a route-local counter as an access/blocking authority.
+
+### 10.1 Content-pipeline compatibility exit (must)
+
+Migration 246 makes the canonical content workspace the only supported write
+root for items previously tracked in `content_pipeline` and for Content Agency
+package handoffs.
+
+1. **`content_pipeline` is a read-only compatibility archive.** Supported
+   runtime code must never insert or update it. The legacy route shape may
+   remain temporarily, but writes and read-back use workspace items, artifacts,
+   immutable revisions, mutation receipts, and workflow events.
+2. **Agency handoffs are one scoped canonical transaction.** A successful
+   handoff pins the package ID and content hash to one tenant/user item, one
+   script artifact, and one revision through
+   `content_workspace_ingress_bindings`. Replay returns that same chain; a hash
+   conflict fails closed. Approval and publication are never inferred.
+3. **Legacy stages cannot manufacture workspace truth.** `scripted` is a
+   compatibility projection derived from a saved script revision. Filming,
+   editing, approval, and publication require canonical modeled evidence; an
+   unsupported transition makes no change.
+4. **Startup and rollback are state-coupled.** Startup must fail when either
+   legacy writer guard is absent, an active private row is unbound, or a binding
+   has a broken tenant-scoped item/artifact/revision chain. After migration 246,
+   rollback requires the exact predecessor runtime and exact pre-246 database
+   snapshot; code-only downgrade is unsafe.
+5. **Metadata-only means parity is incomplete.** Legacy script paths, linked
+   scripts, sources, stage history, performance, and publication evidence stay
+   available for compatibility reads until each has verified canonical lineage.
+   Migration never upgrades those signals into approval or publication claims.
+6. **Removal is evidence-gated.** Drop the archive only after every active
+   private row is bound, artifact/lineage parity is complete, supported clients,
+   exports, dashboards, and agents use workspace IDs, compatibility telemetry
+   is zero for the observation window, and release policy no longer requires
+   exact-snapshot rollback.
+
+### 10.2 Content-topic compatibility exit (must)
+
+Migration 247 makes the canonical content workspace the only supported write
+root for content ideas that were previously stored in `content_topics`.
+
+1. **Legacy topic endpoints are compatibility projections.** Their public
+   route shape may remain during client migration, but creates, updates, and
+   deletes must write `content_domain_objects`, `content_artifacts`, immutable
+   revisions, mutation receipts, and the scoped compatibility link. Supported
+   runtime code must never mutate `content_topics`.
+2. **The legacy table is database-enforced read-only.** Startup must fail
+   closed when the migration's insert, update, or delete guard is absent, or
+   when an eligible legacy row lacks a valid canonical link. The sole delete
+   exception is the existing short-lived, subject-scoped legal/account-erasure
+   authorization used by the transactional account-deletion flow; it is not a
+   product mutation path.
+3. **A content deadline is not a publishing or Secretary-sync assertion.** A
+   migrated `scheduled_date`/`scheduled_at` is a workspace deadline only. Task
+   or calendar creation requires its own preview, explicit user confirmation,
+   idempotency contract, and canonical schedule binding. `published` requires
+   separately recorded publication confirmation.
+4. **Compatibility edits preserve canonical work.** The legacy projection may
+   revise its linked idea artifact, but it must refuse to replace a different
+   current artifact such as an outline or script. Deletes are recoverable
+   workspace soft deletes.
+5. **Rollback is state-coupled.** After migration 247 is used, a code-only
+   rollback to an old writer is unsafe. Recovery requires the exact predecessor
+   runtime and its exact pre-247 database snapshot. The down migration is only
+   a rehearsal guard for an untouched migration.
+6. **Removal is evidence-gated.** Remove compatibility routes and the legacy
+   table only after supported clients no longer call them, all eligible rows
+   are linked, no supported runtime imports the legacy mutators, rollback and
+   recovery drills pass, and the deprecation window has elapsed. Temporary
+   coexistence is not permission to maintain a second content engine.
+
+### 10.3 Canonical Content workspace and rollout authority (must)
+
+The Content workspace is the single supported domain for user-owned ideas,
+projects, briefs, outlines, scripts, variants, revisions, sources, claims,
+specialist proposals, and private work scheduling.
+
+The governed schema sequence runs from migration 239 (immutable Content Agency
+package identity) through migration 253 (lossless legacy Content-idea note
+parity). It
+adds the canonical domain, library, specialist jobs, artifact relationships,
+Secretary schedule bindings, privacy-safe aggregates, rollout evidence, and
+the evidence-gated exits described below; it does not authorize deployment by
+itself.
+
+1. **One persistence root.** New Content work starts in tenant-scoped
+   `content_domain_objects`, then uses `content_artifacts` and immutable
+   `content_revisions`. Compatibility routes may project this truth but may not
+   create another mutable lifecycle or silently mirror a write into a legacy
+   table.
+2. **Every mutation is replay- and conflict-safe.** Creates and actions require
+   an idempotency key. Edits, transitions, restores, tag changes, and revision
+   saves also require the current workflow or revision version. A stale client
+   receives a typed conflict with authoritative read-back; the server never
+   overwrites user edits to make a retry succeed. An immutable soft-delete
+   receipt is returned separately from current deletion truth: if another
+   client restored the item before a retry, the replay identifies the receipt
+   as superseded and returns the authoritative active item.
+3. **Sources, claims, and agent work are revision-scoped.** Source/claim
+   lineage and specialist proposals identify the immutable revision they were
+   derived from. Agent output is a proposal until an explicit accept action
+   creates a new revision. Reject, retry, cancel, compare, and restore preserve
+   the prior revision and provenance. A specialist job may start or resume only
+   when its private Agency package is `artifact_pinned` to the exact target
+   artifact through `content_workspace_ingress_bindings`; the package ID/hash
+   and the pinned revision's generator-contract provenance must all match.
+4. **Scheduling means private work time.** Content schedule routes preview and
+   confirm Secretary-owned writing, recording, or editing time. A deadline,
+   schedule binding, approval, or agent completion never means the content was
+   externally published. Publication execution is not supported by this
+   contract.
+5. **Server capability truth is authoritative.** Authenticated clients read
+   `GET /api/v1/content/workspace/capabilities` before exposing mutations.
+   Production defaults to read-only unless a valid server mode and explicit
+   cohort enrollment enable the relevant write slice. HTTP middleware and the
+   domain service both enforce the gate, so chat, jobs, old URLs, and future
+   transports cannot bypass it. Unknown modes and client decode failures fail
+   closed for writes while reads and recovery guidance remain available.
+6. **Rollout is temporary and measurable.** The gate may be removed only after
+   migration parity, supported-client adoption, two supported release windows
+   with zero compatibility traffic, and a full observation window without a
+   kill-switch event. Rollback after state-bearing migrations requires the
+   exact compatible runtime and database snapshot; a code-only downgrade is
+   unsafe.
+7. **Normal UI receives presentation contracts, not internals.** DTOs expose
+   stable user-facing state, next action, warnings, and recovery options. Raw
+   prompts, traces, hashes, provider responses, tenant IDs, and machine-only
+   status values remain in scoped support/debug surfaces and never become
+   normal Content UI copy.
+8. **Bounded reads remain complete and stable.** Library and Trash cursors bind
+   the normalized filter/sort contract to a scoped snapshot and use keyset
+   continuation. Items inserted or edited after that snapshot are deferred to
+   refresh, while unchanged snapshot-eligible rows are not duplicated or
+   skipped. Immutable revision history uses its own artifact-bound keyset.
+   Dashboard totals come from complete aggregate reads such as
+   `GET /api/v1/content/workspace/today-summary`, never from the first bounded
+   library page.
+9. **Generated ingress preserves both the mutation receipt and live truth.** A
+   generated script may create a new item or target an existing item only with
+   that item's current workflow version. Its response returns the immutable
+   revision created by the request separately from the authoritative current
+   item, artifact, and revision; replay never rewinds later user work. Changing
+   accepted source or claim lineage while reusing an idempotency key conflicts.
+10. **Progressive development stays inside one content item.** A brief,
+    outline, script, or platform variant may name a source artifact only from
+    the same scoped item. The service records an explicit artifact relationship
+    in the creation transaction; it never infers lineage from titles or raw
+    body similarity.
+11. **Chat capture is explicit and minimal.** Chat or Telegram may save a
+    user-authored thought as a canonical private idea only after an explicit
+    request. The capture is deterministic, tenant-scoped, and records chat as
+    provenance rather than AI authorship. It must not silently import private
+    cross-skill context or treat imported text as trusted instructions.
+12. **Specialist execution is bounded and truthful.** Strategy and research
+    may run in parallel before writing; structural, factuality, and platform
+    reviews may run in parallel after it; final quality review depends on those
+    outputs. All calls use the configurable provider router inside one governed
+    interactive budget reservation and require bounded structured output.
+    Package and dependency data are untrusted quoted context; downstream
+    proposal excerpts are bounded and any truncation is surfaced. Provider
+    retries and timeouts must remain inside the durable job lease. Each step
+    exposes whether it was independently provider-reviewed or package-derived,
+    plus a closed fallback reason; package-derived fallback must never appear
+    as an independent fact-check. No specialist mutates content until the user
+    accepts a still-current proposal.
+
+### 10.4 Legacy editorial authority exit (must)
+
+Migration 249 removes the pre-workspace editorial lifecycle as a supported
+writer without upgrading historical assertions into current Content truth.
+
+1. **Only valid private roots can be normalized.** Active noncanonical rows
+   require positive tenant/owner identity and `user_private` visibility. A
+   shared, public, internal, or invalid row aborts the migration before any
+   persistent cutover write and requires owner-reviewed reconciliation.
+2. **Historical state is evidence, not authority.** Reviewed, approved,
+   scheduled, and published legacy rows become review-required canonical items.
+   The binding preserves the old values, but the migration creates no artifact,
+   revision, source lineage, schedule binding, approval, or publication proof.
+3. **Compatibility actions use canonical CAS.** Legacy editorial and Decision
+   projections may capture, revise, submit, approve, reject, or archive only
+   when those actions map safely to the canonical lifecycle. Legacy scheduling,
+   publication, source-review, and repurpose execution fail with a typed
+   replacement requirement rather than mutating another authority.
+4. **Historical ledgers are read-only.** `content_approval_records` and
+   `content_source_review_records` remain available for scoped export and audit.
+   Database guards block normal inserts, updates, and deletes; only an active
+   subject-scoped account/legal-erasure authorization permits deletion.
+5. **Rollback and removal are evidence-gated.** Once any row is normalized,
+   rollback requires the exact pre-249 database snapshot and matching runtime.
+   Remove the compatibility façade and historical tables only after two
+   supported release windows with zero traffic, canonical Decision targets,
+   and verified export and erasure coverage.
+
+### 10.5 Content performance revision lineage (must)
+
+Migration 250 binds each new measured Content outcome to the immutable revision
+whose packaging or script the user says produced it.
+
+1. **Canonical identifiers are required.** New writes identify one scoped
+   content item, artifact, and revision and carry an idempotency key. The
+   outcome, immutable link, and mutation receipt commit in one immediate
+   transaction or none of them commit.
+2. **The pipeline alias is frozen.** Canonical rows keep `pipeline_id` NULL.
+   Insert/update guards reject new legacy aliases, and no supported alternate
+   performance writer may create unlinked rows.
+3. **Backfill never guesses.** A historical pipeline outcome is linked only
+   when migration 246 already recorded an `artifact_pinned` ingress binding.
+   Metadata-only rows stay explicitly unlinked for later reconciliation.
+4. **Evidence labels stay honest.** The API reports performance as
+   user-reported and publication execution as not performed. A URL or metric
+   payload is not provider verification and cannot manufacture publication
+   state.
+5. **Reads, export, and erasure preserve scope.** Canonical read models join
+   through the tenant/owner link. Export includes the link; account deletion
+   removes it through scoped foreign-key/erasure behavior without logging raw
+   content or metrics.
+6. **Rollback is snapshot-only.** Once migration 250 applies, a code-only
+   downgrade could restore the split writer or lose lineage. Recovery requires
+   the exact predecessor runtime and exact pre-250 database snapshot.
+
+### 10.6 Content revision, selection, and approval integrity (must)
+
+Migration 251 and the canonical mutation service make the bytes reviewed by a
+user inseparable from the workflow version they approve.
+
+1. **Revision ancestry is scoped and sequential.** Revision 1 has no parent;
+   every later revision names the immediately preceding revision of the same
+   tenant, owner, and artifact. Restore provenance may name only a strictly
+   older revision from that same chain.
+2. **Current pointers are coherent.** An item's selected artifact belongs to
+   that item and scope. An artifact's current revision belongs to that artifact,
+   is its latest numbered revision, and agrees with `revision_count`. Selected
+   artifacts/revisions must be unselected before direct deletion.
+3. **Every content-byte mutation advances review truth.** Artifact creation,
+   revision save, restore, and accepted agent proposals advance the parent item
+   workflow version. Editing previously approved, scheduled, or published
+   content returns it to review, clears prior approval identity/time, and records
+   a closed reason code. Saving an older or secondary artifact never selects it
+   implicitly.
+4. **Clients receive authoritative parent state.** Artifact and revision
+   mutation responses include the current parent item. A client updates both
+   its library and open detail model from that response and uses a follow-up GET
+   only during the predecessor compatibility window.
+5. **Agent result pointers are immutable evidence.** Accepted artifact/revision
+   pointers are assigned together only on the original proposed-to-accepted
+   transition, stay in the source item's scope, and cannot be rewritten or
+   cleared during normal operation.
+6. **Erasure is explicit and bounded.** Foreign-key nulling of revision lineage
+   or accepted proposal results is permitted only while a live subject-scoped
+   `ACCOUNT_DELETION` or `LEGAL_ERASURE` authorization exists. This exception
+   enables graph deletion; it is not a content-editing API.
+7. **Rollback is snapshot-only.** Removing these guards in place would reopen
+   cross-scope or silent-lineage rewrites. Recovery requires the exact
+   predecessor runtime and exact pre-251 database snapshot.
+
+### 10.7 Legacy script artifact parity and writer exit (must)
+
+Migration 252 completes the lossless canonical cutover for eligible private
+rows retained in `content_scripts`.
+
+1. **Every eligible body is pinned byte-for-byte.** Each positive-user,
+   tenant-scoped private script receives an immutable hash binding to one
+   canonical item, script artifact, and revision. A valid same-scope pipeline
+   binding reuses its canonical item; otherwise the migration creates a
+   standalone item. A pipeline identifier from another scope can never select
+   the destination.
+2. **History remains recoverable without manufacturing trust.** Multiple
+   legacy scripts attached to one item remain separate artifacts for compare,
+   export, and recovery, while the newest becomes current. The import creates
+   no new approval, work schedule, or publication evidence; selecting imported
+   bytes on an item previously marked approved, scheduled, or published returns
+   the item to review and clears inherited approval identity.
+3. **The legacy writer is frozen.** Database guards reject positive-user
+   inserts and updates to `content_scripts`; supported generation, learning,
+   chat, and compatibility paths write the canonical workspace. Ownerless
+   system fixtures remain isolated, and the remaining delete capability is
+   reserved for the scoped account/legal-erasure path rather than product use.
+4. **Readiness proves the whole chain.** Startup verifies the binding and
+   writer guards, exact body/hash parity, scoped item/artifact/revision links,
+   current revision integrity, and the upgraded pipeline binding. Any eligible
+   unbound or mismatched script fails readiness closed.
+5. **Compatibility reads have an exit gate.** Legacy rows remain only for
+   bounded compatibility reads until supported clients, learning consumers,
+   exports, and recovery use canonical IDs and observed legacy read traffic is
+   zero for the declared window.
+6. **Rollback is snapshot-coupled.** Once a parity binding exists, inverse SQL
+   is unsafe. Restore the matching predecessor runtime and exact pre-252
+   database snapshot.
+
+### 10.8 Legacy idea-root parity and writer exit (must)
+
+Migration 253 retires both `notes.domain = content_idea` and `saved_ideas` as
+parallel idea stores without assigning ownerless rows to a user, collapsing
+tenant membership into owner identity, or discarding historical bytes.
+
+1. **Every eligible source is exact and private.** A case-insensitive,
+   whitespace-normalized `content_idea` note with a positive `user_id` and a
+   nonblank body receives a tenant-equals-user private content item, idea-note
+   artifact, immutable revision, and scoped ingress binding. Revision text and
+   source hash are computed from the original body bytes, never trimmed display
+   text. Every active private `saved_ideas` row with positive independently
+   resolved tenant and owner scope receives its own canonical chain; the
+   migration does not require tenant ID to equal owner ID.
+2. **Exclusions are explicit, not guessed.** Ownerless, nonprivate, inactive,
+   and Unicode-blank sources stay in their legacy tables and receive closed,
+   hash-backed quarantine reasons. The migration never promotes an empty
+   artifact or copies raw excluded content into release evidence.
+3. **Legacy metadata remains attributable.** Note domain/tag bytes remain in
+   item, artifact, and revision provenance, with suitable tags normalized into
+   the canonical library. Each eligible saved idea also pins one ordered JSON
+   snapshot and hash covering its exact title, date, status, source, score,
+   workflow eligibility, angle, niche, hook, why-now, scope, ontology, strategy,
+   source IDs, audit metadata, and timestamps.
+4. **Readiness proves both roots.** Separate migration-owned readiness views
+   report eligible, bound, unbound, exact byte/snapshot/hash mismatch,
+   quarantine, and writer/binding-guard counts. The cutover transaction fails
+   unless every eligible source is pinned exactly, every ineligible source is
+   classified, and both retired roots are database-enforced read-only. Runtime
+   startup also pins the reviewed SQL identity of the binding/quarantine tables,
+   readiness views, and writer/immutability guards, then re-evaluates exact
+   parity and scoped foreign-key integrity; a missing or same-name replacement
+   object fails closed before the API serves traffic.
+5. **Old ingress is frozen without blocking erasure.** Database guards reject
+   note conversions plus every insert/update to `saved_ideas`. Legacy rows are
+   never deleted by the migration; delete and foreign-key cascade remain
+   available to the existing scoped account/legal-erasure transaction, while
+   immutable bindings retain source identity and hash provenance.
+6. **Rollback is snapshot-coupled.** Once any ingress binding exists, inverse
+   SQL refuses to remove the ledger or writer guards. Recovery requires the
+   matching predecessor runtime and exact pre-253 database snapshot.
 
 ## 11. OpenAPI/contract documentation (should)
 

@@ -2451,7 +2451,35 @@ export function startScheduler(): void {
 
   // ── Pipeline Agent (daily 20:00) ───────────────────────────────────
   cron.schedule('0 20 * * *', wrapJob('pipeline_agent', async () => {
-    await runPipelineAgent();
+    // One isolated run per eligible canonical tenant/user. The scheduler is
+    // only an orchestrator; it never aggregates private workspaces into a
+    // global content recommendation or logs their identities/content.
+    const targets = getActiveUserTargets();
+    if (targets.length === 0) return 'skipped';
+    let succeeded = 0;
+    let failed = 0;
+    for (const target of targets) {
+      try {
+        await runPipelineAgent({ tenantId: target.tenantId, userId: target.userId });
+        succeeded += 1;
+      } catch (error) {
+        failed += 1;
+        logger.warn(
+          {
+            operation: 'pipeline_agent_tenant_run',
+            errorCode: error instanceof Error ? error.name : 'UnknownError',
+          },
+          'Pipeline agent tenant run failed; continuing remaining scopes',
+        );
+      }
+    }
+    if (failed > 0) {
+      logger.error(
+        { attempted: targets.length, succeeded, failed },
+        'Pipeline agent completed with tenant failures',
+      );
+      throw new Error(`Pipeline agent failed for ${failed} of ${targets.length} tenant scopes`);
+    }
   }), { timezone: tz });
 
   // ── Performance Agent (Sunday 06:00, after channel relearn) ──────

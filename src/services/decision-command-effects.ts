@@ -3,10 +3,10 @@
 import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import {
-  decideContentApproval,
-  getContentWorkflowObject,
-  type ContentWorkflowObject,
-} from './content-editorial-workflow';
+  decideContentWorkspaceReview as decideContentApproval,
+  getContentDecisionWorkspaceObject as getContentWorkflowObject,
+  type ContentDecisionWorkspaceObject as ContentWorkflowObject,
+} from './content-workspace-decision-adapter';
 import type { DecisionApiItem } from './decision-center';
 import { hashStable } from './chat-core-v2/deterministic-read/common';
 
@@ -23,7 +23,7 @@ export interface DecisionCommandProjectionResult {
 
 export interface DecisionContentCommandResult extends DecisionCommandProjectionResult {
   contentObjectId: number;
-  contentApprovalState: 'approved' | 'rejected';
+  contentApprovalState: 'approved' | 'rewrite_requested';
 }
 
 /**
@@ -79,15 +79,18 @@ export function executeDecisionContentCommand(input: {
       throw new Error('DECISION_CONTENT_TARGET_STALE');
     }
 
-    const expectedApprovalState: 'approved' | 'rejected' = input.actionId === 'approve_script'
+    const expectedContentState: 'approved' | 'rewrite_requested' = input.actionId === 'approve_script'
       ? 'approved'
-      : 'rejected';
+      : 'rewrite_requested';
     const result = decideContentApproval({
       userId: input.userId,
       tenantId: input.tenantId,
       objectId: object.id,
       actorUserId: input.userId,
-      decision: expectedApprovalState,
+      approvalType: 'content_review',
+      expectedWorkflowVersion: object.workflowVersion,
+      idempotencyKey: `decision-content:${input.item.decisionId}:${input.actionId}`,
+      decision: expectedContentState,
       reason: input.actionId === 'request_rewrite' ? 'Requested changes from Decision Center' : null,
       metadata: {
         source: 'decision_center_command_bus',
@@ -97,7 +100,10 @@ export function executeDecisionContentCommand(input: {
       },
     });
     const verifiedObject = getContentWorkflowObject(input.userId, object.id, input.tenantId);
-    if (!result.ok || !verifiedObject || verifiedObject.approvalState !== expectedApprovalState) {
+    const sourceStateMatches = input.actionId === 'approve_script'
+      ? verifiedObject?.productionState === 'approved' && verifiedObject.approvalState === 'approved'
+      : verifiedObject?.productionState === 'active' && verifiedObject.approvalState === 'not_required';
+    if (!result.ok || result.status !== expectedContentState || !verifiedObject || !sourceStateMatches) {
       throw new Error('DECISION_CONTENT_READBACK_MISMATCH');
     }
 
@@ -108,8 +114,9 @@ export function executeDecisionContentCommand(input: {
       tenantId: input.tenantId,
       actionResult: {
         contentObjectId: object.id,
-        approvalState: expectedApprovalState,
-        contentApprovalState: expectedApprovalState,
+        approvalState: verifiedObject.approvalState,
+        workflowState: verifiedObject.productionState,
+        contentApprovalState: expectedContentState,
         providerActionExecuted: false,
       },
       db,
@@ -118,7 +125,7 @@ export function executeDecisionContentCommand(input: {
     return {
       ...projection,
       contentObjectId: object.id,
-      contentApprovalState: expectedApprovalState,
+      contentApprovalState: expectedContentState,
     };
   })();
 }

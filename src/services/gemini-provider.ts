@@ -351,6 +351,8 @@ type OneShotOptions = {
   tenantId?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** Optional caller-specific retry cap; bounded by the global safety cap. */
+  maxRetries?: number;
 };
 
 const SEARCH_PROMPT_PRIVACY_PATTERNS: Array<[RegExp, string]> = [
@@ -512,9 +514,14 @@ function parseNonNegativeIntEnv(name: string, defaultValue: number): number {
  * retry (single attempt — the pre-2026-07 behavior). Read at call time so
  * operators can flip it without a redeploy-triggering config change.
  */
-function resolveOneShotMaxRetries(): number {
+function resolveOneShotMaxRetries(override?: number): number {
+  const requested = override == null
+    ? parseNonNegativeIntEnv('GEMINI_ONESHOT_MAX_RETRIES', ONESHOT_RETRY_DEFAULT_MAX_RETRIES)
+    : Number.isFinite(override) && override >= 0
+      ? Math.floor(override)
+      : ONESHOT_RETRY_DEFAULT_MAX_RETRIES;
   return Math.min(
-    parseNonNegativeIntEnv('GEMINI_ONESHOT_MAX_RETRIES', ONESHOT_RETRY_DEFAULT_MAX_RETRIES),
+    requested,
     ONESHOT_RETRY_MAX_RETRIES_CAP,
   );
 }
@@ -548,8 +555,9 @@ function oneShotBackoffMs(retryIndex: number): number {
 async function withOneShotPrimaryRetry<T>(
   fn: () => Promise<T>,
   logContext: { category: string; model: string },
+  maxRetriesOverride?: number,
 ): Promise<T> {
-  const maxRetries = resolveOneShotMaxRetries();
+  const maxRetries = resolveOneShotMaxRetries(maxRetriesOverride);
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
@@ -906,6 +914,7 @@ export async function completeOneShotWithFallback(
       const text = await withOneShotPrimaryRetry(
         () => completeOneShot(systemPrompt, userPrompt, category, options),
         { category, model: primaryModel },
+        options?.maxRetries,
       );
       return { text, provider: 'gemini' };
     } catch (err) {

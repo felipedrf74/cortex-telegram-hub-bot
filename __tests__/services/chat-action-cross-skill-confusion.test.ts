@@ -145,12 +145,12 @@ const FIXTURES: ConfusionFixture[] = [
       'Mail parser runs before calendar parser in parseBroadSkillActionIntent and matches "email". The default mail branch is unread_count when no specific verb-class match. Calendar would need an explicit event-noun ("meeting", "event") to claim.',
   },
   {
-    text: 'Schedule the meal-prep reel for Sunday',
+    text: 'Schedule a recording session for the meal-prep reel on Sunday',
     expectedSkill: 'content',
     expectedAction: 'content_schedule_work',
     runnerUp: 'cooking.cooking_meal_plan (because "meal-prep"), secretary_calendar.schedule_event',
     reason:
-      'Content gate matches "reel"; content_schedule_work branch claims when schedule-verb + content-object are both present. "meal-prep" is a hyphenated noun, not a cooking trigger; the dominant content noun "reel" wins.',
+      'The explicit recording-session noun makes this local Content work rather than publication scheduling; the dominant content noun "reel" wins.',
   },
   {
     text: 'Create a notification when my budget goes negative',

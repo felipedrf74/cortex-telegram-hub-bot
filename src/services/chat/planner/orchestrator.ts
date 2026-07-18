@@ -33,6 +33,13 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const cancellation = buildPendingCancellationPlan(input);
   if (cancellation) return cancellation;
 
+  // Publication requests must fail closed before a pending Content brief can
+  // absorb words such as "hook" or "tomorrow" as harmless specifications.
+  const publicationBoundary = buildDeterministicChatActionPlan(input);
+  if (publicationBoundary?.steps[0]?.action === 'content_publish_now') {
+    return publicationBoundary;
+  }
+
   const pendingContinuation = buildPendingSlotContinuationPlan(input, PENDING_CONTINUATION_HELPERS);
   if (pendingContinuation) return pendingContinuation;
   // Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.

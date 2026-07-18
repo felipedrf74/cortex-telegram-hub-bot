@@ -10,22 +10,21 @@
  *   1. Persists raw script text alongside the DOCX file path
  *   2. Stores performance feedback in SQLite (not JSON files)
  *   3. Durably records learned patterns (survive signal expiry)
- *   4. Links all artifacts: idea → script → publish → feedback → pattern
+ *   4. Links measured outcomes to canonical workspace artifacts
  *
  * All functions accept a userId parameter for multi-tenant isolation.
- * The artifact chain is traceable via foreign keys:
- *   content_topic_feedback.id → content_pipeline.topic_feedback_id
- *   content_pipeline.id → content_scripts.pipeline_id
- *   content_pipeline.id → content_performance.pipeline_id
- *   content_learned_patterns (standalone, aggregated from all sources)
+ * The workspace is the artifact/revision/source lineage authority. Legacy
+ * `pipeline_id` columns on learning tables are compatibility aliases only;
+ * the frozen pipeline root is never read for live artifact guidance.
  *
  * Consumers:
- *   - content-workflow.ts — calls storeScript() after generation
+ *   - content-workspace-capture.ts — owns positive-user script persistence
  *   - voice-evolution-agent.ts — calls getRecentScripts() for voice learning
  *   - iOS API routes — calls getPerformanceSummary(), getLearnedPatterns()
  *   - portal dashboard — calls getArtifactChain() for pipeline inspection
  */
 
+import { createHash } from 'node:crypto';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import {
@@ -35,7 +34,13 @@ import {
   contentScopePredicate,
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
-import { recordContentPerformanceMemory } from './content-memory-profile';
+import {
+  getContentWorkspaceItemDetail,
+  type ContentRevisionContent,
+  type ContentWorkspaceItemDetail,
+} from './content-workspace';
+import { getContentRevisionLineage, type ContentRevisionLineageReadModel } from './content-workspace-lineage';
+import { resolveContentWorkspaceIdentifier } from './content-workspace-read-models';
 
 const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
 
@@ -95,6 +100,11 @@ export interface StoredScript {
 export interface PerformanceFeedback {
   id: number;
   pipelineId: number | null;
+  workspaceItemId: number | null;
+  artifactId: number | null;
+  revisionId: number | null;
+  association: 'canonical_revision' | 'legacy_pipeline_alias' | 'unlinked_legacy';
+  linkOrigin: 'canonical_api' | 'legacy_pipeline_backfill' | null;
   videoUrl: string | null;
   views: number;
   retentionPct: number;
@@ -127,6 +137,16 @@ export interface LearnedPattern {
 }
 
 export interface ArtifactChain {
+  schemaVersion: 'content-workspace-artifact-chain-v1';
+  availability: 'available' | 'not_found';
+  source: 'content_workspace';
+  identifier: {
+    requestedId: number;
+    workspaceItemId: number | null;
+    resolvedAs: 'workspace_item' | 'legacy_pipeline_binding' | 'not_found';
+  };
+  workspaceItem: ContentWorkspaceItemDetail | null;
+  revisionLineage: ContentRevisionLineageReadModel[];
   idea: { id: number; title: string; status: string; source: string } | null;
   topicFeedback: {
     id: number; topic: string; niche: string; format: string;
@@ -137,11 +157,18 @@ export interface ArtifactChain {
     youtubeVideoId: string | null; publishedAt: string | null;
   } | null;
   script: {
-    id: number; scriptText: string; hook: string | null;
+    id: number; scriptText: string | null; hook: string | null;
     titleOptions: string[]; hashtags: string[]; caption: string | null; cta: string | null; estimatedDuration: string | null;
+    content: ContentRevisionContent;
   } | null;
   performance: PerformanceFeedback[];
   patterns: LearnedPattern[];
+  compatibility: {
+    legacyIdentifierAccepted: boolean;
+    legacyArchiveRead: false;
+    performanceAssociation: 'canonical_revision' | 'legacy_identifier_alias' | 'not_modeled';
+    learnedPatternAssociation: 'not_modeled';
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -149,8 +176,9 @@ export interface ArtifactChain {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Store raw script text durably after generation.
- * Called by content-workflow.ts right after getScript() returns.
+ * Legacy/system script ingress retained only for compatibility fixtures and
+ * ownerless system rows. Positive-user writers are frozen once migration 252
+ * proves canonical body parity; use saveGeneratedScriptToWorkspace instead.
  */
 export function storeScript(opts: {
   pipelineId?: number;
@@ -172,6 +200,9 @@ export function storeScript(opts: {
 }): number {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
+  if (opts.userId > 0 && tableExists(db, 'content_legacy_script_ingress_bindings')) {
+    throw new Error('content_scripts is read-only after canonical script parity; use content workspace capture');
+  }
   const scope = contentScopeForInsert(opts.userId, opts.tenantId);
   const result = db.prepare(`
     INSERT INTO content_scripts
@@ -205,7 +236,11 @@ export function storeScript(opts: {
     scope.updatedBy,
     scope.auditMetadataJson,
   );
-  logger.info({ scriptId: result.lastInsertRowid, topic: opts.topic }, 'Script text stored durably');
+  logger.info({
+    scriptId: result.lastInsertRowid,
+    topicLength: opts.topic.length,
+    topicHash: createHash('sha256').update(opts.topic).digest('hex').slice(0, 16),
+  }, 'Script text stored durably');
   return Number(result.lastInsertRowid);
 }
 
@@ -216,6 +251,40 @@ export function storeScript(opts: {
 export function getRecentScripts(userId: number, days = 30, limit = 20, tenantId?: number): StoredScript[] {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
+  if (userId > 0 && tableExists(db, 'content_legacy_script_ingress_bindings')) {
+    const canonicalRows = db.prepare(`
+      SELECT artifact.id,
+             item.title AS topic,
+             artifact.format_id,
+             artifact.metadata_json,
+             revision.content_text AS script_text,
+             artifact.owner_user_id AS user_id,
+             artifact.created_at
+        FROM content_artifacts AS artifact
+        JOIN content_domain_objects AS item
+          ON item.id = artifact.item_id
+         AND item.tenant_id = artifact.tenant_id
+         AND item.owner_user_id = artifact.owner_user_id
+        JOIN content_revisions AS revision
+          ON revision.id = artifact.current_revision_id
+         AND revision.artifact_id = artifact.id
+         AND revision.tenant_id = artifact.tenant_id
+         AND revision.owner_user_id = artifact.owner_user_id
+       WHERE artifact.tenant_id = ?
+         AND artifact.owner_user_id = ?
+         AND artifact.visibility_scope = 'user_private'
+         AND artifact.scope_status = 'active'
+         AND artifact.artifact_type = 'script'
+         AND item.visibility_scope = 'user_private'
+         AND item.scope_status = 'active'
+         AND item.deleted_at IS NULL
+         AND revision.content_format IN ('plain_text', 'markdown')
+         AND artifact.created_at > datetime('now', '-' || ? || ' days')
+       ORDER BY artifact.created_at DESC, artifact.id DESC
+       LIMIT ?
+    `).all(tenantId ?? userId, userId, days, limit) as any[];
+    return canonicalRows.map(mapCanonicalScript);
+  }
   const rows = db.prepare(`
     SELECT id, pipeline_id, topic_feedback_id, topic, format, script_text,
            hook, title_options, sources_used, hashtags, caption, cta, estimated_duration, niche,
@@ -227,6 +296,33 @@ export function getRecentScripts(userId: number, days = 30, limit = 20, tenantId
   `).all(...contentScopeParams(userId, tenantId), days, limit) as any[];
 
   return rows.map(mapScript);
+}
+
+function mapCanonicalScript(row: any): StoredScript {
+  const metadata = safeParseJSON(row.metadata_json, {}) as Record<string, unknown>;
+  return {
+    id: Number(row.id),
+    pipelineId: positiveMetadataInteger(metadata.legacyPipelineId),
+    topicFeedbackId: positiveMetadataInteger(metadata.topicFeedbackId),
+    topic: String(row.topic),
+    format: typeof row.format_id === 'string' && row.format_id.trim()
+      ? row.format_id
+      : 'script',
+    scriptText: String(row.script_text),
+    hook: typeof metadata.hook === 'string' ? metadata.hook : null,
+    titleOptions: Array.isArray(metadata.titleOptions) ? metadata.titleOptions as string[] : [],
+    sourcesUsed: Array.isArray(metadata.sourcesUsed) ? metadata.sourcesUsed : [],
+    hashtags: Array.isArray(metadata.hashtags) ? metadata.hashtags as string[] : [],
+    caption: typeof metadata.caption === 'string' ? metadata.caption : null,
+    cta: typeof metadata.cta === 'string' ? metadata.cta : null,
+    estimatedDuration: typeof metadata.estimatedDuration === 'string' ? metadata.estimatedDuration : null,
+    niche: typeof metadata.niche === 'string' ? metadata.niche : null,
+    generationDurationMs: typeof metadata.generationDurationMs === 'number'
+      ? metadata.generationDurationMs
+      : null,
+    userId: Number(row.user_id),
+    createdAt: String(row.created_at),
+  };
 }
 
 /**
@@ -273,98 +369,6 @@ function mapScript(row: any): StoredScript {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Record performance feedback for a video.
- * Replaces content-engine/data/feedback.json with durable DB storage.
- */
-export function logPerformanceFeedback(opts: {
-  pipelineId?: number;
-  videoUrl?: string;
-  views: number;
-  retentionPct: number;
-  likes?: number;
-  comments?: number;
-  subsGained?: number;
-  hookUsed?: string;
-  selectedTitle?: string;
-  finalCaption?: string;
-  finalCta?: string;
-  finalScriptVariant?: string;
-  publishedHashtags?: string[];
-  notes?: string;
-  analysis?: any;
-  userId: number;
-  tenantId?: number;
-}): number {
-  const db = getDb();
-  ensureContentTenantScopeColumns(db);
-  const scope = contentScopeForInsert(opts.userId, opts.tenantId);
-  const result = db.prepare(`
-    INSERT INTO content_performance
-      (pipeline_id, video_url, views, retention_pct, likes, comments,
-       subs_gained, hook_used, selected_title, final_caption, final_cta,
-       final_script_variant, published_hashtags, notes, analysis, user_id,
-       tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
-       created_by, updated_by, audit_metadata_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    opts.pipelineId ?? null,
-    opts.videoUrl ?? null,
-    opts.views,
-    opts.retentionPct,
-    opts.likes ?? 0,
-    opts.comments ?? 0,
-    opts.subsGained ?? 0,
-    opts.hookUsed ?? null,
-    opts.selectedTitle ?? null,
-    opts.finalCaption ?? null,
-    opts.finalCta ?? null,
-    opts.finalScriptVariant ?? null,
-    JSON.stringify(opts.publishedHashtags ?? []),
-    opts.notes ?? null,
-    opts.analysis ? JSON.stringify(opts.analysis) : null,
-    opts.userId,
-    scope.tenantId,
-    scope.ownerUserId,
-    scope.visibilityScope,
-    scope.lifecycleState,
-    scope.scopeStatus,
-    scope.createdBy,
-    scope.updatedBy,
-    scope.auditMetadataJson,
-  );
-  const performanceMemory = derivePerformanceMemory(opts);
-  if (performanceMemory) {
-    try {
-      recordContentPerformanceMemory({
-        tenantId: scope.tenantId,
-        userId: opts.userId,
-        scope: 'user_private',
-        source: 'content_performance_feedback',
-        confidence: performanceMemory.confidence,
-        successfulTopics: performanceMemory.successfulTopics,
-        weakTopics: performanceMemory.weakTopics,
-        successfulHooks: performanceMemory.successfulHooks,
-        successfulFormats: performanceMemory.successfulFormats,
-        rejectedPatterns: performanceMemory.rejectedPatterns,
-        audienceResponseSignals: performanceMemory.audienceResponseSignals,
-      });
-    } catch (error) {
-      logger.warn(
-        {
-          feedbackId: result.lastInsertRowid,
-          userId: opts.userId,
-          tenantId: scope.tenantId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Performance feedback stored but content memory update failed',
-      );
-    }
-  }
-  logger.info({ feedbackId: result.lastInsertRowid }, 'Performance feedback stored');
-  return Number(result.lastInsertRowid);
-}
-
-/**
  * Get performance summary for reporting.
  */
 export function getPerformanceSummary(userId: number, days = 30, tenantId?: number): {
@@ -378,13 +382,44 @@ export function getPerformanceSummary(userId: number, days = 30, tenantId?: numb
 } {
   const db = getDb();
   ensureContentTenantScopeColumns(db);
-  const rows = db.prepare(`
-    SELECT id, pipeline_id, video_url, views, retention_pct, likes,
-           comments, subs_gained, hook_used, selected_title, final_caption,
-           final_cta, final_script_variant, published_hashtags, notes, analysis, user_id, logged_at
-    FROM content_performance
-    WHERE ${contentScopePredicate()} AND logged_at > datetime('now', '-' || ? || ' days')
-    ORDER BY logged_at DESC
+  const rows = tableExists(db, 'content_performance_workspace_links')
+    ? db.prepare(`
+    SELECT performance.id, performance.pipeline_id, performance.video_url,
+           performance.views, performance.retention_pct, performance.likes,
+           performance.comments, performance.subs_gained, performance.hook_used,
+           performance.selected_title, performance.final_caption,
+           performance.final_cta, performance.final_script_variant,
+           performance.published_hashtags, performance.notes, performance.analysis,
+           performance.user_id, performance.logged_at,
+           link.item_id AS workspace_item_id,
+           link.artifact_id AS workspace_artifact_id,
+           link.revision_id AS workspace_revision_id,
+           link.origin AS performance_link_origin
+      FROM content_performance AS performance
+      LEFT JOIN content_performance_workspace_links AS link
+        ON link.performance_id = performance.id
+       AND link.tenant_id = performance.tenant_id
+       AND link.owner_user_id = performance.owner_user_id
+     WHERE ${contentScopePredicate('performance')}
+       AND performance.logged_at > datetime('now', '-' || ? || ' days')
+     ORDER BY performance.logged_at DESC, performance.id DESC
+  `).all(...contentScopeParams(userId, tenantId), days) as any[]
+    : db.prepare(`
+    SELECT performance.id, performance.pipeline_id, performance.video_url,
+           performance.views, performance.retention_pct, performance.likes,
+           performance.comments, performance.subs_gained, performance.hook_used,
+           performance.selected_title, performance.final_caption,
+           performance.final_cta, performance.final_script_variant,
+           performance.published_hashtags, performance.notes, performance.analysis,
+           performance.user_id, performance.logged_at,
+           NULL AS workspace_item_id,
+           NULL AS workspace_artifact_id,
+           NULL AS workspace_revision_id,
+           NULL AS performance_link_origin
+      FROM content_performance AS performance
+     WHERE ${contentScopePredicate('performance')}
+       AND performance.logged_at > datetime('now', '-' || ? || ' days')
+     ORDER BY performance.logged_at DESC, performance.id DESC
   `).all(...contentScopeParams(userId, tenantId), days) as any[];
 
   const entries = rows.map(mapPerformance);
@@ -405,6 +440,19 @@ function mapPerformance(row: any): PerformanceFeedback {
   return {
     id: row.id,
     pipelineId: row.pipeline_id,
+    workspaceItemId: row.workspace_item_id == null ? null : Number(row.workspace_item_id),
+    artifactId: row.workspace_artifact_id == null ? null : Number(row.workspace_artifact_id),
+    revisionId: row.workspace_revision_id == null ? null : Number(row.workspace_revision_id),
+    association: row.workspace_revision_id != null
+      ? 'canonical_revision'
+      : row.pipeline_id != null
+        ? 'legacy_pipeline_alias'
+        : 'unlinked_legacy',
+    linkOrigin: row.performance_link_origin === 'canonical_api'
+      ? 'canonical_api'
+      : row.performance_link_origin === 'legacy_pipeline_backfill'
+        ? 'legacy_pipeline_backfill'
+        : null,
     videoUrl: row.video_url,
     views: row.views,
     retentionPct: row.retention_pct,
@@ -422,103 +470,6 @@ function mapPerformance(row: any): PerformanceFeedback {
     userId: row.user_id,
     loggedAt: row.logged_at,
   };
-}
-
-function derivePerformanceMemory(opts: {
-  views: number;
-  retentionPct: number;
-  likes?: number;
-  comments?: number;
-  subsGained?: number;
-  hookUsed?: string;
-  selectedTitle?: string;
-  finalScriptVariant?: string;
-  publishedHashtags?: string[];
-  analysis?: any;
-}): {
-  successfulTopics?: string[];
-  weakTopics?: string[];
-  successfulHooks?: string[];
-  successfulFormats?: string[];
-  rejectedPatterns?: string[];
-  audienceResponseSignals: string[];
-  confidence: number;
-} | null {
-  const views = Math.max(0, Number(opts.views) || 0);
-  const retentionPct = Math.max(0, Math.min(100, Number(opts.retentionPct) || 0));
-  const likes = Math.max(0, Number(opts.likes ?? 0) || 0);
-  const comments = Math.max(0, Number(opts.comments ?? 0) || 0);
-  const subsGained = Math.max(0, Number(opts.subsGained ?? 0) || 0);
-  const highSignal = (
-    (retentionPct >= 55 && views >= 500)
-    || views >= 5000
-    || likes >= 300
-    || comments >= 50
-    || subsGained >= 10
-  );
-  const weakSignal = (
-    (views >= 250 && retentionPct > 0 && retentionPct < 25)
-    || (views >= 1000 && likes < 10 && comments === 0)
-  );
-  if (!highSignal && !weakSignal) return null;
-
-  const title = sanitizeMemoryText(opts.selectedTitle);
-  const hook = sanitizeMemoryText(opts.hookUsed);
-  const hashtags = (opts.publishedHashtags ?? [])
-    .map((tag) => sanitizeMemoryText(String(tag).replace(/^#/, '')))
-    .filter((tag): tag is string => Boolean(tag))
-    .slice(0, 3);
-  const format = extractPerformanceFormat(opts);
-  const audienceResponseSignals = [
-    views >= 5000 ? 'views_high' : views >= 1000 ? 'views_moderate' : null,
-    retentionPct >= 55 ? 'retention_high' : retentionPct < 25 && retentionPct > 0 ? 'retention_low' : null,
-    likes >= 300 ? 'likes_high' : null,
-    comments >= 50 ? 'comments_high' : null,
-    subsGained >= 10 ? 'subscriber_gain_high' : null,
-  ].filter((signal): signal is string => Boolean(signal));
-
-  if (highSignal) {
-    const successfulTopics = [...new Set([title, ...hashtags].filter((item): item is string => Boolean(item)))].slice(0, 4);
-    return {
-      successfulTopics,
-      successfulHooks: hook ? [hook] : undefined,
-      successfulFormats: format ? [format] : undefined,
-      audienceResponseSignals,
-      confidence: retentionPct >= 55 && views >= 1000 ? 0.82 : 0.72,
-    };
-  }
-
-  const weakTopics = [...new Set([title, ...hashtags].filter((item): item is string => Boolean(item)))].slice(0, 4);
-  return {
-    weakTopics,
-    rejectedPatterns: hook ? [hook] : undefined,
-    audienceResponseSignals,
-    confidence: views >= 1000 ? 0.72 : 0.62,
-  };
-}
-
-function sanitizeMemoryText(value?: string | null): string | undefined {
-  const cleaned = String(value ?? '')
-    .replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 160);
-  return cleaned || undefined;
-}
-
-function extractPerformanceFormat(opts: { finalScriptVariant?: string; analysis?: any }): string | undefined {
-  const candidates = [
-    opts.analysis?.format,
-    opts.analysis?.platform,
-    opts.analysis?.contentFormat,
-    opts.finalScriptVariant,
-  ];
-  const knownFormats = new Set(['youtube', 'reel', 'short', 'shorts', 'tiktok', 'newsletter', 'carousel', 'thread', 'article']);
-  for (const candidate of candidates) {
-    const normalized = sanitizeMemoryText(candidate)?.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    if (normalized && knownFormats.has(normalized)) return normalized;
-  }
-  return undefined;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -681,112 +632,194 @@ function mapPattern(row: any): LearnedPattern {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Build the complete artifact chain for a pipeline entry.
- * This is the canonical tracing function: given a pipeline ID, it
- * returns every linked object from idea to learned patterns.
+ * Build the tenant-scoped artifact chain for a canonical workspace item.
+ *
+ * `contentIdentifier` may be a current workspace item ID or a migration-246
+ * compatibility ID. Resolution uses the immutable ingress binding; the frozen
+ * legacy row itself is never read. Missing and foreign identifiers are
+ * intentionally indistinguishable.
  */
-export function getArtifactChain(pipelineId: number, userId: number, tenantId: number): ArtifactChain {
+export function getArtifactChain(
+  contentIdentifier: number,
+  userId: number,
+  tenantId: number,
+): ArtifactChain {
   const db = getDb();
-  ensureContentTenantScopeColumns(db);
+  const scope = { tenantId, userId };
+  const resolved = resolveContentWorkspaceIdentifier(scope, contentIdentifier, db);
+  if (!resolved) return emptyArtifactChain(contentIdentifier);
+  const item = getContentWorkspaceItemDetail(scope, resolved.itemId, db);
+  if (!item) return emptyArtifactChain(contentIdentifier);
 
-  // Pipeline entry
-  const pipeline = db.prepare(`
-    SELECT id, topic_feedback_id, topic_title, niche, stage, script_path,
-           youtube_video_id, published_at, user_id, tenant_id
-    FROM content_pipeline
-    WHERE id = ?
-      AND ${contentScopePredicate()}
-  `).get(pipelineId, ...contentScopeParams(userId, tenantId)) as any;
-
-  if (!pipeline) {
-    return { idea: null, topicFeedback: null, pipeline: null, script: null, performance: [], patterns: [] };
-  }
-
-  // Topic feedback
-  let topicFeedback = null;
-  if (pipeline.topic_feedback_id) {
-    const tf = db.prepare(`
-      SELECT id, topic, niche, format, sentiment, hook_idea, why_now
-      FROM content_topic_feedback
-      WHERE id = ?
-        AND ${contentScopePredicate()}
-    `).get(pipeline.topic_feedback_id, ...contentScopeParams(userId, tenantId)) as any;
-    if (tf) {
-      topicFeedback = {
-        id: tf.id, topic: tf.topic, niche: tf.niche, format: tf.format,
-        sentiment: tf.sentiment, hookIdea: tf.hook_idea, whyNow: tf.why_now,
-      };
-    }
-  }
-
-  // Saved idea (linked via topic title match)
-  let idea = null;
-  try {
-    const ideaRow = db.prepare(`
-      SELECT id, title, status, source FROM saved_ideas
-      WHERE title = ?
-        AND ${contentScopePredicate()}
-      LIMIT 1
-    `).get(pipeline.topic_title, ...contentScopeParams(userId, tenantId)) as any;
-    if (ideaRow) {
-      idea = { id: ideaRow.id, title: ideaRow.title, status: ideaRow.status, source: ideaRow.source };
-    }
-  } catch { /* table might not exist in test env */ }
-
-  // Script (durable text)
-  const scriptRow = db.prepare(`
-    SELECT id, script_text, hook, title_options, estimated_duration
-           , hashtags, caption, cta
-    FROM content_scripts
-    WHERE pipeline_id = ?
-      AND ${contentScopePredicate()}
-  `).get(pipelineId, ...contentScopeParams(userId, tenantId)) as any;
-  const script = scriptRow ? {
-    id: scriptRow.id,
-    scriptText: scriptRow.script_text,
-    hook: scriptRow.hook,
-    titleOptions: safeParseJSON(scriptRow.title_options, []),
-    hashtags: safeParseJSON(scriptRow.hashtags, []),
-    caption: scriptRow.caption,
-    cta: scriptRow.cta,
-    estimatedDuration: scriptRow.estimated_duration,
+  const currentScripts = item.artifacts
+    .filter((artifact) => artifact.artifactType === 'script' && artifact.currentRevision != null)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id - left.id);
+  const scriptArtifact = currentScripts[0] ?? null;
+  const currentRevision = scriptArtifact?.currentRevision ?? null;
+  const script = scriptArtifact && currentRevision ? {
+    id: scriptArtifact.id,
+    scriptText: currentRevision.content.format === 'plain_text'
+      || currentRevision.content.format === 'markdown'
+      ? currentRevision.content.text
+      : null,
+    hook: null,
+    titleOptions: [],
+    hashtags: [],
+    caption: null,
+    cta: null,
+    estimatedDuration: null,
+    content: currentRevision.content,
   } : null;
 
-  // Performance feedback
-  const perfRows = db.prepare(`
-    SELECT id, pipeline_id, video_url, views, retention_pct, likes,
-           comments, subs_gained, hook_used, selected_title, final_caption,
-           final_cta, final_script_variant, published_hashtags, notes, analysis, user_id, logged_at
-    FROM content_performance
-    WHERE pipeline_id = ?
-      AND ${contentScopePredicate()}
-    ORDER BY logged_at DESC
-  `).all(pipelineId, ...contentScopeParams(userId, tenantId)) as any[];
-  const performance = perfRows.map(mapPerformance);
+  const publishedAt = db.prepare(`
+    SELECT MAX(created_at) AS published_at
+      FROM content_workflow_events
+     WHERE tenant_id = ? AND owner_user_id = ?
+       AND visibility_scope = 'user_private'
+       AND scope_status = 'active'
+       AND object_type = 'content_item'
+       AND object_id = ?
+       AND action = 'workspace_state_changed'
+       AND to_state = 'published'
+  `).get(tenantId, userId, String(item.id)) as { published_at: string | null } | undefined;
 
-  // Learned patterns (from the same niche/category)
-  const patterns = pipeline.niche
-    ? db.prepare(`
-        SELECT * FROM content_learned_patterns
-        WHERE ${contentScopePredicate()}
-          AND LOWER(category) = LOWER(?)
-        ORDER BY confidence DESC LIMIT 10
-      `).all(...contentScopeParams(userId, tenantId), pipeline.niche).map(mapPattern) as LearnedPattern[]
+  const performanceLinksAvailable = tableExists(db, 'content_performance_workspace_links');
+  const canonicalPerfRows = performanceLinksAvailable ? db.prepare(`
+    SELECT performance.id, performance.pipeline_id, performance.video_url,
+           performance.views, performance.retention_pct, performance.likes,
+           performance.comments, performance.subs_gained, performance.hook_used,
+           performance.selected_title, performance.final_caption,
+           performance.final_cta, performance.final_script_variant,
+           performance.published_hashtags, performance.notes, performance.analysis,
+           performance.user_id, performance.logged_at,
+           link.item_id AS workspace_item_id,
+           link.artifact_id AS workspace_artifact_id,
+           link.revision_id AS workspace_revision_id,
+           link.origin AS performance_link_origin
+      FROM content_performance_workspace_links AS link
+      JOIN content_performance AS performance
+        ON performance.id = link.performance_id
+       AND performance.tenant_id = link.tenant_id
+       AND performance.owner_user_id = link.owner_user_id
+     WHERE link.item_id = ?
+       AND link.tenant_id = ? AND link.owner_user_id = ?
+       AND ${contentScopePredicate('performance')}
+  `).all(item.id, tenantId, userId, ...contentScopeParams(userId, tenantId)) as any[] : [];
+
+  const legacyPerfRows = resolved.resolvedAs === 'legacy_pipeline_binding'
+    ? performanceLinksAvailable
+      ? db.prepare(`
+        SELECT performance.id, performance.pipeline_id, performance.video_url,
+               performance.views, performance.retention_pct, performance.likes,
+               performance.comments, performance.subs_gained, performance.hook_used,
+               performance.selected_title, performance.final_caption,
+               performance.final_cta, performance.final_script_variant,
+               performance.published_hashtags, performance.notes, performance.analysis,
+               performance.user_id, performance.logged_at,
+               NULL AS workspace_item_id,
+               NULL AS workspace_artifact_id,
+               NULL AS workspace_revision_id,
+               NULL AS performance_link_origin
+          FROM content_performance AS performance
+         WHERE performance.pipeline_id = ?
+           AND ${contentScopePredicate('performance')}
+           AND NOT EXISTS (
+             SELECT 1
+               FROM content_performance_workspace_links AS link
+              WHERE link.performance_id = performance.id
+                AND link.tenant_id = performance.tenant_id
+                AND link.owner_user_id = performance.owner_user_id
+           )
+      `).all(contentIdentifier, ...contentScopeParams(userId, tenantId)) as any[]
+      : db.prepare(`
+        SELECT performance.id, performance.pipeline_id, performance.video_url,
+               performance.views, performance.retention_pct, performance.likes,
+               performance.comments, performance.subs_gained, performance.hook_used,
+               performance.selected_title, performance.final_caption,
+               performance.final_cta, performance.final_script_variant,
+               performance.published_hashtags, performance.notes, performance.analysis,
+               performance.user_id, performance.logged_at,
+               NULL AS workspace_item_id,
+               NULL AS workspace_artifact_id,
+               NULL AS workspace_revision_id,
+               NULL AS performance_link_origin
+          FROM content_performance AS performance
+         WHERE performance.pipeline_id = ?
+           AND ${contentScopePredicate('performance')}
+      `).all(contentIdentifier, ...contentScopeParams(userId, tenantId)) as any[]
     : [];
+  const perfRows = [...canonicalPerfRows, ...legacyPerfRows]
+    .sort((left, right) => String(right.logged_at).localeCompare(String(left.logged_at)) || right.id - left.id);
+
+  const revisionLineage = item.artifacts.flatMap((artifact) => artifact.currentRevision
+    ? [getContentRevisionLineage(scope, artifact.currentRevision.id, db)]
+    : []);
 
   return {
-    idea,
-    topicFeedback,
+    schemaVersion: 'content-workspace-artifact-chain-v1',
+    availability: 'available',
+    source: 'content_workspace',
+    identifier: {
+      requestedId: contentIdentifier,
+      workspaceItemId: item.id,
+      resolvedAs: resolved.resolvedAs,
+    },
+    workspaceItem: item,
+    revisionLineage,
+    idea: {
+      id: item.id,
+      title: item.title,
+      status: item.productionState,
+      source: 'content_workspace',
+    },
+    topicFeedback: null,
     pipeline: {
-      id: pipeline.id,
-      stage: pipeline.stage,
-      scriptPath: pipeline.script_path,
-      youtubeVideoId: pipeline.youtube_video_id,
-      publishedAt: pipeline.published_at,
+      id: item.id,
+      stage: item.productionState,
+      scriptPath: null,
+      youtubeVideoId: null,
+      publishedAt: publishedAt?.published_at ?? null,
     },
     script,
-    performance,
-    patterns,
+    performance: perfRows.map(mapPerformance),
+    patterns: [],
+    compatibility: {
+      legacyIdentifierAccepted: resolved.resolvedAs === 'legacy_pipeline_binding',
+      legacyArchiveRead: false,
+      performanceAssociation: canonicalPerfRows.length > 0
+        ? 'canonical_revision'
+        : legacyPerfRows.length > 0
+          ? 'legacy_identifier_alias'
+          : 'not_modeled',
+      learnedPatternAssociation: 'not_modeled',
+    },
+  };
+}
+
+function emptyArtifactChain(contentIdentifier: number): ArtifactChain {
+  return {
+    schemaVersion: 'content-workspace-artifact-chain-v1',
+    availability: 'not_found',
+    source: 'content_workspace',
+    identifier: {
+      requestedId: contentIdentifier,
+      workspaceItemId: null,
+      resolvedAs: 'not_found',
+    },
+    workspaceItem: null,
+    revisionLineage: [],
+    idea: null,
+    topicFeedback: null,
+    pipeline: null,
+    script: null,
+    performance: [],
+    patterns: [],
+    compatibility: {
+      legacyIdentifierAccepted: false,
+      legacyArchiveRead: false,
+      performanceAssociation: 'not_modeled',
+      learnedPatternAssociation: 'not_modeled',
+    },
   };
 }
 
@@ -798,4 +831,17 @@ function safeParseJSON(val: any, fallback: any): any {
   if (val === null || val === undefined) return fallback;
   if (typeof val !== 'string') return val;
   try { return JSON.parse(val); } catch { return fallback; }
+}
+
+function positiveMetadataInteger(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : null;
+}
+
+function tableExists(db: ReturnType<typeof getDb>, table: string): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1
+      FROM sqlite_master
+     WHERE type = 'table' AND name = ?
+     LIMIT 1
+  `).get(table));
 }

@@ -54,6 +54,7 @@ export type ChatActionName =
   | 'content_script_create'
   | 'content_rewrite'
   | 'content_schedule_work'
+  | 'content_publish_now'
   | 'content_pipeline_handoff'
   | 'content_pipeline_stage_transition'
   | 'cooking_meal_support'

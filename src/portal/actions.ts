@@ -122,7 +122,12 @@ export async function handlePortalAction(
       return { ok: true, message: 'SEO Agent completed' };
     }
     case 'run-pipeline-agent': {
-      await runPipelineAgent();
+      const ownerTarget = getOwnerBootstrapTarget();
+      if (!ownerTarget) return { ok: false, message: 'Owner bootstrap target unavailable' };
+      await runPipelineAgent({
+        tenantId: ownerTarget.tenantId,
+        userId: ownerTarget.tenantId,
+      });
       return { ok: true, message: 'Pipeline Agent completed' };
     }
 

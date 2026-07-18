@@ -1120,7 +1120,7 @@ describe('Notification inbox routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.unreadCount).toBe(4);
-    expect(mockGetUnreadCountExcludingNotificationIds).toHaveBeenCalledWith(7, [9]);
+    expect(mockGetUnreadCountExcludingNotificationIds).toHaveBeenCalledWith(7, [9], 7);
     expect(mockGetUnreadReportCountExcludingIds).toHaveBeenCalledWith(7, [3]);
   });
 

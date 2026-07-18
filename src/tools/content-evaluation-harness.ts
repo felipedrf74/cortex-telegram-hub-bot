@@ -8,6 +8,7 @@ import {
   runContentDayToDayEvaluation,
   type ContentEvalMode,
   type ContentEvalExternalLaneEvidence,
+  type ContentEvalProviderInvocationProvenance,
 } from '../services/content-day-to-day-evaluation';
 import { persistContentEvalRun } from '../services/content-eval-history';
 
@@ -26,6 +27,7 @@ interface CliOptions {
   realProviderSampleRunId?: string;
   realProviderSampleSource?: string;
   realProviderSampleCount?: number;
+  realProviderInvocationArtifact?: string;
 }
 
 function readPackageVersion(): string {
@@ -106,6 +108,9 @@ function parseArgs(argv: string[]): CliOptions {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.realProviderSampleCount = parsed;
       i++;
+    } else if (arg === '--real-provider-invocation-artifact' && next) {
+      options.realProviderInvocationArtifact = next;
+      i++;
     } else if (arg === '--persist-db') {
       if (next && !next.startsWith('--')) {
         options.persistDb = next;
@@ -135,6 +140,8 @@ function buildExternalLaneEvidence(input: {
   runId?: string;
   source?: string;
   sampleCount?: number;
+  artifactPath?: string;
+  providerInvocations?: ContentEvalProviderInvocationProvenance[];
 }): ContentEvalExternalLaneEvidence | null {
   const runId = firstNonEmpty(input.runId);
   const source = firstNonEmpty(input.source);
@@ -142,7 +149,30 @@ function buildExternalLaneEvidence(input: {
   if (!runId || !source || typeof sampleCount !== 'number' || !Number.isInteger(sampleCount) || sampleCount <= 0) {
     return null;
   }
-  return { runId, source, sampleCount };
+  return {
+    runId,
+    source,
+    sampleCount,
+    artifactPath: firstNonEmpty(input.artifactPath),
+    providerInvocations: input.providerInvocations,
+  };
+}
+
+function readProviderInvocationArtifact(
+  artifactPath: string | undefined,
+): ContentEvalProviderInvocationProvenance[] | undefined {
+  const resolvedPath = firstNonEmpty(artifactPath);
+  if (!resolvedPath) return undefined;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.resolve(resolvedPath), 'utf8')) as unknown;
+    if (Array.isArray(parsed)) return parsed as ContentEvalProviderInvocationProvenance[];
+    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { invocations?: unknown }).invocations)) {
+      return (parsed as { invocations: ContentEvalProviderInvocationProvenance[] }).invocations;
+    }
+  } catch {
+    // Invalid or missing artifacts are represented as invalid evidence by the evaluator.
+  }
+  return undefined;
 }
 
 function ensureParent(filePath: string): void {
@@ -158,6 +188,9 @@ function main(): void {
   const mode = options.mode ?? parseMode(process.env.CONTENT_EVAL_MODE) ?? 'fixture';
   const iosExtractionScore = options.iosExtractionScore ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SCORE') ?? null;
   const realProviderSampleScore = options.realProviderSampleScore ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE') ?? null;
+  const realProviderInvocationArtifact = options.realProviderInvocationArtifact
+    ?? process.env.CONTENT_EVAL_REAL_PROVIDER_INVOCATION_ARTIFACT;
+  const providerInvocations = readProviderInvocationArtifact(realProviderInvocationArtifact);
   const iosExtractionEvidence = buildExternalLaneEvidence({
     runId: options.iosExtractionRunId ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_RUN_ID,
     source: options.iosExtractionSource ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_SOURCE,
@@ -167,6 +200,8 @@ function main(): void {
     runId: options.realProviderSampleRunId ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_RUN_ID,
     source: options.realProviderSampleSource ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SOURCE,
     sampleCount: options.realProviderSampleCount ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_COUNT'),
+    artifactPath: realProviderInvocationArtifact,
+    providerInvocations,
   });
   const outDir = options.outDir ?? 'reports/content-eval';
   const baseName = `content-eval-${timestamp()}`;

@@ -9,6 +9,7 @@ cd "$ROOT"
 SHARD=""
 RUN_PYTEST=true
 RUN_VITEST=true
+BASE_REF="origin/main"
 
 resolve_content_engine_python() {
   if [ -n "${CONTENT_ENGINE_PYTHON:-}" ]; then
@@ -34,7 +35,14 @@ resolve_content_engine_python() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --shard) SHARD="$2"; shift 2 ;;
+    --base)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "--base requires a ref" >&2; exit 64; }
+      BASE_REF="$2"; shift 2
+      ;;
+    --shard)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "--shard requires a value" >&2; exit 64; }
+      SHARD="$2"; shift 2
+      ;;
     --skip-pytest) RUN_PYTEST=false; shift ;;
     --skip-vitest) RUN_VITEST=false; shift ;;
     -h|--help)
@@ -45,6 +53,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+BASE_SHA="$(git rev-parse --verify --quiet --end-of-options "${BASE_REF}^{commit}")" || {
+  echo "Release verification base does not resolve: $BASE_REF" >&2
+  exit 64
+}
+
 echo "═══════════════════════════════════════════════"
 echo "  Nexus release verify"
 echo "═══════════════════════════════════════════════"
@@ -52,8 +65,12 @@ echo "════════════════════════�
 npm run typecheck
 npm run science-policy:check
 npm run build
-node scripts/migration-safety-check.mjs
-scripts/cannot-skip-gate-dashboard.sh --json --no-evidence >/tmp/nexus-cannot-skip-dashboard.json
+node scripts/migration-safety-check.mjs \
+  --base "$BASE_SHA" \
+  --changed-only \
+  --approval-mode review \
+  --review-evidence "${NEXUS_MIGRATION_REVIEW_EVIDENCE:-.local/release/migration-review/current.json}"
+scripts/cannot-skip-gate-dashboard.sh --json --no-evidence --base "$BASE_SHA" >/tmp/nexus-cannot-skip-dashboard.json
 scripts/notification-release-gate.sh
 
 if [ "$RUN_VITEST" = true ]; then

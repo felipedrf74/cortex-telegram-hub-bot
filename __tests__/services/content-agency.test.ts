@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database;
 
@@ -11,12 +14,13 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 import {
+  CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION,
   buildContentAgencyBrief,
   buildContentAgencyPackage,
   buildCriticalUserReview,
   ensureContentAgencyTables,
   getContentAgencyProject,
-  handoffContentAgencyPackageToPipeline,
+  handoffContentAgencyPackageToWorkspace,
   persistContentAgencyArtifact,
   validateContentAgencyReadiness,
 } from '../../src/services/content-agency';
@@ -29,8 +33,7 @@ import {
 
 describe('Content Agency orchestrator', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('foreign_keys = ON');
+    testDb = createMigratedTestDatabase();
     ensureContentAgencyTables(testDb);
   });
 
@@ -260,7 +263,7 @@ describe('Content Agency orchestrator', () => {
     expect(wrongTenant).toBeNull();
   });
 
-  it('enforces unique scoped agency ids and updates duplicate artifacts instead of accumulating rows', () => {
+  it('keeps package payloads immutable for a scoped agency id', () => {
     const pkg = buildContentAgencyPackage({
       userId: 501,
       tenantId: 101,
@@ -275,22 +278,97 @@ describe('Content Agency orchestrator', () => {
     });
 
     const firstRowId = persistContentAgencyArtifact('package', pkg);
+    const replayRowId = persistContentAgencyArtifact('package', pkg);
     const updated = { ...pkg, warnings: ['updated_warning_after_rescore'] };
-    const secondRowId = persistContentAgencyArtifact('package', updated);
 
     expect(firstRowId).toBeGreaterThan(0);
-    expect(secondRowId).toBeGreaterThan(0);
+    expect(replayRowId).toBe(firstRowId);
+    expect(() => persistContentAgencyArtifact('package', updated)).toThrow(/integrity check failed|immutable package payload differs/i);
     const rows = testDb.prepare('SELECT agency_id, payload_json FROM content_agency_packages').all() as Array<{ agency_id: string; payload_json: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].agency_id).toBe(pkg.id);
-    expect(JSON.parse(rows[0].payload_json).warnings).toEqual(['updated_warning_after_rescore']);
+    expect(JSON.parse(rows[0].payload_json).warnings).toEqual(pkg.warnings);
+    expect(JSON.parse(rows[0].payload_json).contentHash).toBe(pkg.contentHash);
     const indexes = testDb.prepare('PRAGMA index_list(content_agency_packages)').all() as Array<{ name: string; unique: number }>;
     expect(indexes).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'uniq_content_agency_packages_scope', unique: 1 }),
     ]));
   });
 
-  it('hands warning-only packages to the pipeline as pending editorial review', () => {
+  it('rejects a malformed package hash before poisoning the immutable store', () => {
+    const pkg = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        userId: 501,
+        tenantId: 101,
+        goal: 'validate before package persistence',
+        audience: 'operator creators',
+        offer: 'join the sprint',
+        platform: 'TikTok',
+      },
+    });
+
+    expect(() => persistContentAgencyArtifact('package', {
+      ...pkg,
+      contentHash: '0'.repeat(64),
+    })).toThrow(/integrity check failed for incoming payload/i);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agency_packages').get())
+      .toEqual({ count: 0 });
+  });
+
+  it('changes package identity and content hash when material brief inputs change', () => {
+    const first = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        goal: 'build a creator package',
+        audience: 'operator creators',
+        offer: 'join the sprint',
+        platform: 'TikTok',
+        brandVoice: 'direct and evidence-led',
+      },
+    });
+    const changed = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        goal: 'build a creator package',
+        audience: 'operator creators',
+        offer: 'join the sprint',
+        platform: 'TikTok',
+        brandVoice: 'warm and conversational',
+      },
+    });
+
+    expect(changed.id).not.toBe(first.id);
+    expect(changed.contentHash).not.toBe(first.contentHash);
+  });
+
+  it('versions deterministic package identity with the generator contract', () => {
+    const input = {
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        goal: 'build a versioned creator package',
+        audience: 'operator creators',
+        offer: 'join the sprint',
+        platform: 'TikTok',
+      },
+    };
+
+    const current = buildContentAgencyPackage(input);
+    const nextContract = buildContentAgencyPackage(input, {
+      generatorContractVersion: 'content-agency-package.v2',
+    });
+
+    expect(current.generatorContractVersion).toBe(CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION);
+    expect(nextContract.generatorContractVersion).toBe('content-agency-package.v2');
+    expect(nextContract.id).not.toBe(current.id);
+    expect(nextContract.contentHash).not.toBe(current.contentHash);
+  });
+
+  it('hands warning-only packages to one versioned workspace item pending editorial review', () => {
     const pkg = buildContentAgencyPackage({
       userId: 501,
       tenantId: 101,
@@ -306,7 +384,8 @@ describe('Content Agency orchestrator', () => {
     expect(pkg.reviewRequired).toBe(true);
 
     persistContentAgencyArtifact('package', pkg);
-    const handoff = handoffContentAgencyPackageToPipeline({
+    const legacyCountBefore = testDb.prepare('SELECT COUNT(*) AS count FROM content_pipeline').get();
+    const handoff = handoffContentAgencyPackageToWorkspace({
       userId: 501,
       tenantId: 101,
       packageId: pkg.id,
@@ -314,36 +393,170 @@ describe('Content Agency orchestrator', () => {
 
     expect(handoff.status).toBe('created');
     expect(handoff.warnings).toContain('missing_audience');
-    const row = testDb.prepare(`
-      SELECT stage, editorial_state, approval_state, review_required, approved_by, approved_at
-      FROM content_pipeline
-      WHERE source_agency_package_id = ?
-    `).get(pkg.id) as {
-      stage: string;
-      editorial_state: string;
-      approval_state: string;
-      review_required: number;
-      approved_by: number | null;
-      approved_at: string | null;
-    };
-    expect(row).toEqual({
-      stage: 'review',
-      editorial_state: 'review',
-      approval_state: 'pending',
+    expect(handoff).toMatchObject({
+      pipelineId: handoff.workspaceItemId,
+      workspaceItemId: expect.any(Number),
+      workspaceArtifactId: expect.any(Number),
+      workspaceRevisionId: expect.any(Number),
+      persistence: 'content_workspace',
+    });
+    expect(testDb.prepare(`
+      SELECT production_state, artifact_phase, editorial_state, approval_state,
+             review_required, approved_by, approved_at, current_artifact_id
+        FROM content_domain_objects
+       WHERE id = ? AND tenant_id = 101 AND owner_user_id = 501
+    `).get(handoff.workspaceItemId)).toEqual({
+      production_state: 'review',
+      artifact_phase: 'draft',
+      editorial_state: 'reviewed',
+      approval_state: 'required',
       review_required: 1,
       approved_by: null,
       approved_at: null,
+      current_artifact_id: handoff.workspaceArtifactId,
     });
+    const artifact = testDb.prepare(`
+      SELECT artifact_type, item_id, current_revision_id, revision_count, metadata_json
+        FROM content_artifacts WHERE id = ?
+    `).get(handoff.workspaceArtifactId) as any;
+    expect(artifact).toMatchObject({
+      artifact_type: 'script',
+      item_id: handoff.workspaceItemId,
+      current_revision_id: handoff.workspaceRevisionId,
+      revision_count: 1,
+    });
+    const revision = testDb.prepare(`
+      SELECT actor_type, actor_id, provenance_json, structured_content_json
+        FROM content_revisions WHERE id = ?
+    `).get(handoff.workspaceRevisionId) as any;
+    expect(revision).toMatchObject({ actor_type: 'agent', actor_id: 'content_agency' });
+    expect(JSON.parse(revision.provenance_json)).toMatchObject({
+      packageId: pkg.id,
+      packageHash: pkg.contentHash,
+      approvalGranted: false,
+    });
+    expect(JSON.parse(revision.structured_content_json)).toMatchObject({
+      schemaVersion: 'content-agency-workspace-handoff-v1',
+      sourcePackage: { id: pkg.id, contentHash: pkg.contentHash },
+      scriptVariants: expect.any(Array),
+    });
+    expect(testDb.prepare(`
+      SELECT source_hash, item_id, artifact_id, revision_id, content_parity_status,
+             ingress_origin
+        FROM content_workspace_ingress_bindings
+       WHERE source_kind = 'content_agency_package' AND source_id = ?
+    `).get(pkg.id)).toEqual({
+      source_hash: pkg.contentHash,
+      item_id: handoff.workspaceItemId,
+      artifact_id: handoff.workspaceArtifactId,
+      revision_id: handoff.workspaceRevisionId,
+      content_parity_status: 'artifact_pinned',
+      ingress_origin: 'content_agency_handoff',
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_pipeline').get()).toEqual(legacyCountBefore);
   });
 
-  it('does not claim pipeline handoff success if read-back verification fails', () => {
+  it('replays handoff idempotently without duplicate roots, artifacts, or revisions', () => {
     const pkg = buildContentAgencyPackage({
       userId: 501,
       tenantId: 101,
       brief: {
         userId: 501,
         tenantId: 101,
-        goal: 'move a content agency package into pipeline',
+        goal: 'make a race-safe canonical content handoff',
+        audience: 'technical creators',
+        offer: 'join the editorial sprint',
+        platform: 'YouTube',
+      },
+    });
+    persistContentAgencyArtifact('package', pkg);
+    const first = handoffContentAgencyPackageToWorkspace({
+      userId: 501,
+      tenantId: 101,
+      packageId: pkg.id,
+    });
+    const second = handoffContentAgencyPackageToWorkspace({
+      userId: 501,
+      tenantId: 101,
+      packageId: pkg.id,
+    });
+    expect(first.status).toBe('created');
+    expect(second).toMatchObject({
+      status: 'already_exists',
+      workspaceItemId: first.workspaceItemId,
+      workspaceArtifactId: first.workspaceArtifactId,
+      workspaceRevisionId: first.workspaceRevisionId,
+      pipelineId: first.workspaceItemId,
+    });
+    expect(testDb.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM content_workspace_ingress_bindings
+          WHERE source_kind = 'content_agency_package' AND source_id = ?) AS bindings,
+        (SELECT COUNT(*) FROM content_domain_objects WHERE id = ?) AS items,
+        (SELECT COUNT(*) FROM content_artifacts WHERE item_id = ?) AS artifacts,
+        (SELECT COUNT(*) FROM content_revisions WHERE artifact_id = ?) AS revisions
+    `).get(pkg.id, first.workspaceItemId, first.workspaceItemId, first.workspaceArtifactId))
+      .toEqual({ bindings: 1, items: 1, artifacts: 1, revisions: 1 });
+  });
+
+  it('upgrades a metadata-only legacy package binding without creating another item', () => {
+    testDb.close();
+    testDb = createMigratedTestDatabase({ stopBefore: '246_content_pipeline_workspace_exit.sql' });
+    const pkg = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        goal: 'upgrade the legacy handoff safely',
+        audience: 'technical creators',
+        offer: 'join the editorial sprint',
+        platform: 'YouTube',
+      },
+    });
+    persistContentAgencyArtifact('package', pkg);
+    testDb.prepare(`
+      INSERT INTO content_pipeline (
+        topic_title, stage, stage_history, user_id, tenant_id, owner_user_id,
+        visibility_scope, scope_status, source_agency_package_id,
+        source_agency_package_hash, created_by, updated_by
+      ) VALUES (?, 'review', '[]', 501, 101, 501, 'user_private', 'active', ?, NULL, 501, 501)
+    `).run('Legacy agency review', pkg.id);
+    testDb.exec(readFileSync(resolve(process.cwd(), 'migrations/246_content_pipeline_workspace_exit.sql'), 'utf8'));
+    const before = testDb.prepare(`
+      SELECT item_id FROM content_workspace_ingress_bindings
+       WHERE source_kind = 'content_agency_package' AND source_id = ?
+    `).get(pkg.id) as { item_id: number };
+
+    const replay = handoffContentAgencyPackageToWorkspace({ userId: 501, tenantId: 101, packageId: pkg.id });
+
+    expect(replay).toMatchObject({
+      status: 'already_exists',
+      workspaceItemId: before.item_id,
+      workspaceArtifactId: expect.any(Number),
+      workspaceRevisionId: expect.any(Number),
+    });
+    expect(testDb.prepare(`
+      SELECT source_hash, content_parity_status, item_id, artifact_id, revision_id
+        FROM content_workspace_ingress_bindings
+       WHERE source_kind = 'content_agency_package' AND source_id = ?
+    `).get(pkg.id)).toMatchObject({
+      source_hash: pkg.contentHash,
+      content_parity_status: 'artifact_pinned',
+      item_id: before.item_id,
+      artifact_id: replay.workspaceArtifactId,
+      revision_id: replay.workspaceRevisionId,
+    });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM content_domain_objects
+       WHERE tenant_id = 101 AND owner_user_id = 501 AND object_type = 'content_item'
+    `).get()).toEqual({ count: 1 });
+  });
+
+  it('rolls back the item, revision, receipt, and binding if artifact persistence fails', () => {
+    const pkg = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        goal: 'prove atomic handoff rollback',
         audience: 'technical creators',
         offer: 'join the editorial sprint',
         platform: 'YouTube',
@@ -351,41 +564,50 @@ describe('Content Agency orchestrator', () => {
     });
     persistContentAgencyArtifact('package', pkg);
     testDb.exec(`
-      CREATE TABLE content_pipeline (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        topic_feedback_id INTEGER,
-        topic_title TEXT NOT NULL,
-        niche TEXT,
-        stage TEXT NOT NULL DEFAULT 'approved',
-        script_path TEXT,
-        drive_url TEXT,
-        youtube_video_id TEXT,
-        stage_history TEXT NOT NULL DEFAULT '[]',
-        user_id INTEGER,
-        tenant_id INTEGER,
-        owner_user_id INTEGER,
-        visibility_scope TEXT NOT NULL DEFAULT 'user_private',
-        scope_status TEXT NOT NULL DEFAULT 'active',
-        editorial_state TEXT NOT NULL DEFAULT 'selected',
-        approval_state TEXT NOT NULL DEFAULT 'approved',
-        review_required INTEGER NOT NULL DEFAULT 0,
-        approved_by INTEGER,
-        approved_at TEXT,
-        source_agency_package_id TEXT,
-        created_at TEXT,
-        updated_at TEXT
-      );
-      CREATE TRIGGER delete_content_pipeline_after_insert
-      AFTER INSERT ON content_pipeline
+      CREATE TRIGGER fail_agency_artifact_insert
+      BEFORE INSERT ON content_artifacts
       BEGIN
-        DELETE FROM content_pipeline WHERE id = NEW.id;
+        SELECT RAISE(ABORT, 'simulated agency artifact failure');
       END;
     `);
 
-    expect(() => handoffContentAgencyPackageToPipeline({
+    expect(() => handoffContentAgencyPackageToWorkspace({
       userId: 501,
       tenantId: 101,
       packageId: pkg.id,
-    })).toThrow(/read-back failed/i);
+    })).toThrow(/simulated agency artifact failure/);
+    expect(testDb.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM content_domain_objects WHERE tenant_id = 101 AND owner_user_id = 501) AS items,
+        (SELECT COUNT(*) FROM content_artifacts WHERE tenant_id = 101 AND owner_user_id = 501) AS artifacts,
+        (SELECT COUNT(*) FROM content_revisions WHERE tenant_id = 101 AND owner_user_id = 501) AS revisions,
+        (SELECT COUNT(*) FROM content_mutation_receipts WHERE tenant_id = 101 AND owner_user_id = 501) AS receipts,
+        (SELECT COUNT(*) FROM content_workspace_ingress_bindings WHERE tenant_id = 101 AND owner_user_id = 501) AS bindings
+    `).get()).toEqual({ items: 0, artifacts: 0, revisions: 0, receipts: 0, bindings: 0 });
+  });
+
+  it('does not expose an owning tenant package or workspace binding to another scope', () => {
+    const pkg = buildContentAgencyPackage({
+      userId: 501,
+      tenantId: 101,
+      brief: {
+        goal: 'respect canonical handoff ownership',
+        audience: 'technical creators',
+        offer: 'join the editorial sprint',
+        platform: 'YouTube',
+      },
+    });
+    persistContentAgencyArtifact('package', pkg);
+    const owned = handoffContentAgencyPackageToWorkspace({ userId: 501, tenantId: 101, packageId: pkg.id });
+    const wrongTenant = handoffContentAgencyPackageToWorkspace({ userId: 501, tenantId: 202, packageId: pkg.id });
+    const wrongOwner = handoffContentAgencyPackageToWorkspace({ userId: 777, tenantId: 101, packageId: pkg.id });
+
+    expect(owned.status).toBe('created');
+    expect(wrongTenant).toMatchObject({ status: 'not_found', workspaceItemId: null });
+    expect(wrongOwner).toMatchObject({ status: 'not_found', workspaceItemId: null });
+    expect(testDb.prepare(`
+      SELECT tenant_id, owner_user_id FROM content_workspace_ingress_bindings
+       WHERE source_kind = 'content_agency_package' AND source_id = ?
+    `).all(pkg.id)).toEqual([{ tenant_id: 101, owner_user_id: 501 }]);
   });
 });

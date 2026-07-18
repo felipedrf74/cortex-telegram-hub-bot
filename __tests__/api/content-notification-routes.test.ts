@@ -44,7 +44,11 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(path: string, userId: number | undefined = 501, tenantId = 101): Request {
+function mockReq(
+  path: string,
+  userId: number | undefined = 501,
+  tenantId: number | undefined = userId,
+): Request {
   return {
     userId,
     tenantId,
@@ -75,7 +79,7 @@ function makeEnsureValidScope() {
 async function dispatch(
   path: string,
   userId: number | undefined = 501,
-  tenantId = 101,
+  tenantId: number | undefined = userId,
   ensureValidScope = makeEnsureValidScope(),
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
@@ -168,6 +172,21 @@ describe('content notification resolver route', () => {
     });
 
     const { response } = await dispatch(`/notifications/${id}`, 777);
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('does not resolve a personal notification through a distinct tenant scope', async () => {
+    const id = createNotification({
+      userId: 501,
+      type: 'script_ready',
+      title: 'Personal script',
+      body: 'Keep this in the personal tenant',
+      data: { scriptId: 'script_personal' },
+    });
+
+    const { response } = await dispatch(`/notifications/${id}`, 501, 101);
 
     expect(response.statusCode).toBe(404);
     expect(response.body.error.code).toBe('NOT_FOUND');

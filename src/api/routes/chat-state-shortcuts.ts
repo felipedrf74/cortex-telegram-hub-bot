@@ -128,7 +128,7 @@ export async function buildContentStateShortcutResponse(
 ): Promise<{ text: string; metadata: Record<string, unknown> }> {
   switch (shortcut) {
     case 'desk': {
-      const items = getContentDeskItems(userId, 3);
+      const items = getContentDeskItems(userId, 3, tenantId ?? userId);
       if (items.length === 0) {
         return {
           text: language === 'en-US'
@@ -147,7 +147,7 @@ export async function buildContentStateShortcutResponse(
       };
     }
     case 'pillars': {
-      const pillars = getActiveContentPillars(userId);
+      const pillars = getActiveContentPillars(userId, tenantId ?? userId);
       if (pillars.length === 0) {
         return {
           text: language === 'en-US'
@@ -170,7 +170,7 @@ export async function buildContentStateShortcutResponse(
         await getFilmingRecommendation(userId, undefined, tenantId),
         language,
       );
-      const upcomingCount = getUpcomingTopicCount(userId, 7);
+      const upcomingCount = getUpcomingTopicCount(userId, 7, tenantId ?? userId);
       if (!recommendation) {
         return {
           text: language === 'en-US'
@@ -215,9 +215,13 @@ export async function buildContentStateShortcutResponse(
       };
     }
     case 'next_publish': {
-      const topics = getTopics(userId, { includeTerminal: false, limit: 50 });
+      const topics = getTopics(userId, {
+        includeTerminal: false,
+        limit: 50,
+        tenantId: tenantId ?? userId,
+      });
       const nextTopic = chooseNextContentPriority(topics);
-      const deskItems = getContentDeskItems(userId, 3);
+      const deskItems = getContentDeskItems(userId, 3, tenantId ?? userId);
       const scriptReady = deskItems.find((item) => item.type === 'script_ready');
       const rankedSignals = getRankedContentSignals(userId, 3, tenantId);
       const nextExecution = await getNextContentExecutionHint(userId, {

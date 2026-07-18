@@ -6,7 +6,7 @@
 //   • training_coach_report — "Dame un informe del coach"
 //   • connections_reconnect_guidance — "Cómo me reconecto a Garmin"
 //   • cooking_fueling_support — "Qué desayuno antes del entrenamiento"
-//   • content_schedule_work alt — "Publica este reel mañana"
+//   • content_publish_now fail-closed — "Publica este reel mañana"
 //   • mail.send_email alt — "Manda un correo a Pedro con asunto Update"
 
 import { describe, expect, it, vi } from 'vitest';
@@ -68,8 +68,8 @@ const FIXTURES = [
   {
     text: 'Publica este reel mañana',
     expectedSkill: 'content',
-    expectedAction: 'content_schedule_work',
-    reason: 'Spanish "publica este reel mañana" — content schedule work.',
+    expectedAction: 'content_publish_now',
+    reason: 'Spanish publication request fails closed instead of becoming local work scheduling.',
   },
   {
     text: 'Manda un correo a Pedro con asunto Update',

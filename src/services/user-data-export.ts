@@ -148,14 +148,18 @@ export async function revokeThirdPartyOAuthTokenForProvider(
  */
 export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promise<OAuthRevocationResult[]> {
   const db = getDb();
-  const rows = safeAll(db, 'SELECT provider FROM user_oauth_tokens WHERE user_id = ?', userId) as Array<{ provider: OAuthProvider }>;
+  const rows = tableExistsForDeletion(db, 'user_oauth_tokens')
+    ? db.prepare('SELECT provider FROM user_oauth_tokens WHERE user_id = ?').all(userId) as Array<{ provider: OAuthProvider }>
+    : [];
   const results: OAuthRevocationResult[] = [];
 
   for (const row of rows) {
     results.push(await revokeOneThirdPartyProvider(userId, row.provider));
   }
 
-  const garminSession = safeGet(db, 'SELECT user_id FROM garmin_sessions WHERE user_id = ?', userId);
+  const garminSession = tableExistsForDeletion(db, 'garmin_sessions')
+    ? db.prepare('SELECT user_id FROM garmin_sessions WHERE user_id = ?').get(userId)
+    : null;
   if (garminSession) {
     results.push(await revokeOneThirdPartyProvider(userId, 'garmin'));
   }
@@ -195,7 +199,8 @@ export interface FullUserExport {
   todos: Array<{ title: string; description: string | null; status: string; priority: string; dueDate: string | null; createdAt: string }>;
   reminders: Array<{ message: string; remindAt: string; status: string; createdAt: string }>;
   notes: Array<{ content: string; domain: string; createdAt: string }>;
-  savedIdeas: Array<{ content: string; createdAt: string }>;
+  savedIdeas: Array<{ title: string; content: string; createdAt: string }>;
+  contentWorkspace: ContentWorkspaceExport;
   sharedMemory: Array<{ key: string; value: string; updatedAt: string }>;
   finance: UserFinanceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
@@ -266,6 +271,70 @@ export interface FullUserExport {
   };
 }
 
+export type ContentWorkspaceExportTable = {
+  name: string;
+  ownershipColumns: Array<'user_id' | 'owner_user_id'>;
+  records: Array<Record<string, unknown>>;
+};
+
+export interface ContentWorkspaceExport {
+  schemaVersion: 'content-workspace-export-v1';
+  tables: ContentWorkspaceExportTable[];
+}
+
+const LEGACY_CONTENT_EXPORT_TABLES = new Set([
+  'book_library',
+  'config_pillars',
+  'saved_ideas',
+  'video_studies',
+  'video_transcripts',
+]);
+
+function isContentExportTable(table: string): boolean {
+  return table.startsWith('content_') || LEGACY_CONTENT_EXPORT_TABLES.has(table);
+}
+
+/**
+ * Export every schema-present, directly user-owned Content table.
+ *
+ * This intentionally discovers current ownership columns instead of relying on
+ * a hand-maintained list. A Content table that exists but cannot be queried is
+ * a hard failure: returning a successful, incomplete privacy archive would be
+ * less truthful than asking the caller to retry.
+ */
+export function exportContentWorkspaceData(
+  userId: number,
+  tenantId?: number,
+): ContentWorkspaceExport {
+  const db = getDb();
+  const tables = accountDeletionTablesForDb(db)
+    .filter(({ table }) => isContentExportTable(table))
+    .sort((left, right) => left.table.localeCompare(right.table))
+    .map((descriptor): ContentWorkspaceExportTable => {
+      const ownership = buildOwnershipPredicate(descriptor.columns, userId);
+      const tenantClause = descriptor.hasTenantId && typeof tenantId === 'number'
+        ? ` AND (${quoteSqlIdentifier('tenant_id')} = ? OR ${quoteSqlIdentifier('tenant_id')} IS NULL)`
+        : '';
+      const params = descriptor.hasTenantId && typeof tenantId === 'number'
+        ? [...ownership.params, tenantId]
+        : ownership.params;
+      const records = db.prepare(
+        `SELECT * FROM ${quoteSqlIdentifier(descriptor.table)} WHERE (${ownership.sql})${tenantClause}`,
+      ).all(...params) as Array<Record<string, unknown>>;
+
+      return {
+        name: descriptor.table,
+        ownershipColumns: [...descriptor.columns],
+        records,
+      };
+    });
+
+  return {
+    schemaVersion: 'content-workspace-export-v1',
+    tables,
+  };
+}
+
 export function exportAllUserData(userId: number): FullUserExport {
   const db = getDb();
 
@@ -290,9 +359,17 @@ export function exportAllUserData(userId: number): FullUserExport {
   const notes = safeAll(db,
     'SELECT content, domain, created_at as createdAt FROM notes WHERE user_id = ? ORDER BY created_at', userId);
 
-  // Saved Ideas
-  const savedIdeas = safeAll(db,
-    'SELECT content, created_at as createdAt FROM saved_ideas WHERE user_id = ? ORDER BY created_at', userId);
+  // Content export is account-wide here because this service has no
+  // authenticated tenant context. Tenant-scoped HTTP exports pass tenantId
+  // explicitly at the route boundary.
+  const contentWorkspace = exportContentWorkspaceData(userId);
+  const savedIdeas = (contentWorkspace.tables.find(({ name }) => name === 'saved_ideas')?.records ?? [])
+    .map((row) => ({
+      title: String(row.title ?? ''),
+      content: String(row.title ?? ''),
+      createdAt: String(row.created_at ?? ''),
+    }))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 
   // Shared Memory
   const sharedMemory = safeAll(db,
@@ -603,6 +680,7 @@ export function exportAllUserData(userId: number): FullUserExport {
     reminders,
     notes,
     savedIdeas,
+    contentWorkspace,
     sharedMemory,
     finance,
     oauthConnections: oauthRows.map((c: any) => ({ provider: c.provider, connectedAt: c.created_at })),
@@ -708,37 +786,89 @@ const ACCOUNT_DELETION_RETAINED_TABLES = new Set([
   '_migrations',
 ]);
 
-function accountDeletionTablesForDb(db: any): Array<{ table: string; column: string }> {
-  const tables: Array<{ table: string; column: string }> = [];
-  const seen = new Set<string>();
-  const add = (entry: { table: string; column: string }) => {
-    const key = `${entry.table}.${entry.column}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    tables.push(entry);
+type AccountOwnershipColumn = 'user_id' | 'owner_user_id';
+
+type AccountDeletionTableDescriptor = {
+  table: string;
+  columns: AccountOwnershipColumn[];
+  hasTenantId: boolean;
+};
+
+function quoteSqlIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function buildOwnershipPredicate(
+  columns: readonly AccountOwnershipColumn[],
+  userId: number,
+): { sql: string; params: number[] } {
+  if (columns.length === 0) {
+    throw new Error('Account data lifecycle table has no ownership column.');
+  }
+  const hasCanonicalOwner = columns.includes('owner_user_id');
+  const hasLegacyOwner = columns.includes('user_id');
+  if (hasCanonicalOwner && hasLegacyOwner) {
+    return {
+      sql: `${quoteSqlIdentifier('owner_user_id')} = ? OR (${quoteSqlIdentifier('owner_user_id')} IS NULL AND ${quoteSqlIdentifier('user_id')} = ?)`,
+      params: [userId, userId],
+    };
+  }
+  const ownerColumn: AccountOwnershipColumn = hasCanonicalOwner ? 'owner_user_id' : 'user_id';
+  return {
+    sql: `${quoteSqlIdentifier(ownerColumn)} = ?`,
+    params: [userId],
   };
+}
 
-  for (const entry of ACCOUNT_DELETION_TABLES) add(entry);
+/**
+ * Discover every directly user-owned table in the current schema.
+ *
+ * Both legacy `user_id` and canonical `owner_user_id` are discovered. When
+ * both exist, the canonical owner wins and `user_id` is used only for rows
+ * that have not yet been backfilled. Introspection is deliberately fail-closed
+ * because a static fallback can never prove that a newer privacy-sensitive
+ * table was covered.
+ */
+function accountDeletionTablesForDb(db: any): AccountDeletionTableDescriptor[] {
+  const rows = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name NOT LIKE 'sqlite_%'
+  `).all() as Array<{ name: string }>;
 
-  try {
-    const rows = db.prepare(`
-      SELECT name
-      FROM sqlite_master
-      WHERE type = 'table'
-        AND name NOT LIKE 'sqlite_%'
-    `).all() as Array<{ name: string }>;
-    for (const row of rows) {
-      if (!row?.name || row.name === 'users' || ACCOUNT_DELETION_RETAINED_TABLES.has(row.name)) continue;
-      const columns = db.prepare(`PRAGMA table_info(${row.name})`).all() as Array<{ name: string }>;
-      if (columns.some((column) => column.name === 'user_id')) {
-        add({ table: row.name, column: 'user_id' });
-      }
-    }
-  } catch {
-    // Keep the seeded list usable even if schema introspection fails.
+  const descriptors = new Map<string, AccountDeletionTableDescriptor>();
+  for (const row of rows) {
+    if (!row?.name || row.name === 'users' || ACCOUNT_DELETION_RETAINED_TABLES.has(row.name)) continue;
+    const schemaColumns = db.prepare(`PRAGMA table_info(${quoteSqlIdentifier(row.name)})`).all() as Array<{ name: string }>;
+    const names = new Set(schemaColumns.map((column) => column.name));
+    const columns: AccountOwnershipColumn[] = [];
+    if (names.has('user_id')) columns.push('user_id');
+    if (names.has('owner_user_id')) columns.push('owner_user_id');
+    if (columns.length === 0) continue;
+    descriptors.set(row.name, {
+      table: row.name,
+      columns,
+      hasTenantId: names.has('tenant_id'),
+    });
   }
 
-  return tables;
+  const ordered: AccountDeletionTableDescriptor[] = [];
+  const added = new Set<string>();
+  for (const { table } of ACCOUNT_DELETION_TABLES) {
+    const descriptor = descriptors.get(table);
+    if (!descriptor || added.has(table)) continue;
+    ordered.push(descriptor);
+    added.add(table);
+  }
+  for (const row of rows) {
+    const descriptor = descriptors.get(row.name);
+    if (!descriptor || added.has(row.name)) continue;
+    ordered.push(descriptor);
+    added.add(row.name);
+  }
+
+  return ordered;
 }
 
 export interface AccountDeletionInventory {
@@ -751,26 +881,19 @@ export interface AccountDeletionInventory {
 export function getAccountDeletionInventoryForUser(userId: number): AccountDeletionInventory {
   const db = getDb();
   const deletableTables: Record<string, number> = {};
-  for (const { table, column } of accountDeletionTablesForDb(db)) {
-    try {
-      const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${column} = ?`).get(userId) as { count: number };
-      deletableTables[table] = row.count;
-    } catch {
-      deletableTables[table] = 0;
-    }
+  for (const { table, columns } of accountDeletionTablesForDb(db)) {
+    const ownership = buildOwnershipPredicate(columns, userId);
+    const row = db.prepare(
+      `SELECT COUNT(*) AS count FROM ${quoteSqlIdentifier(table)} WHERE ${ownership.sql}`,
+    ).get(...ownership.params) as { count: number };
+    deletableTables[table] = row.count;
   }
-  try {
-    const row = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?').get(`config:${userId}:%`) as { count: number };
-    deletableTables.kv_store_settings = row.count;
-  } catch {
-    deletableTables.kv_store_settings = 0;
-  }
-  try {
-    const row = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?').get(userId, userId) as { count: number };
-    deletableTables.users = row.count;
-  } catch {
-    deletableTables.users = 0;
-  }
+  const kvRow = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?')
+    .get(`config:${userId}:%`) as { count: number };
+  deletableTables.kv_store_settings = kvRow.count;
+  const userRow = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?')
+    .get(userId, userId) as { count: number };
+  deletableTables.users = userRow.count;
 
   return {
     userId,
@@ -792,6 +915,7 @@ export function getAccountDeletionInventoryForUser(userId: number): AccountDelet
 export function deleteAllUserData(userId: number): Record<string, number> {
   const db = getDb();
   const counts: Record<string, number> = {};
+  const ownedTables = accountDeletionTablesForDb(db);
 
   const deleteAll = db.transaction(() => {
     const trainingErasureId = `training-erasure-${randomUUID()}`;
@@ -803,13 +927,12 @@ export function deleteAllUserData(userId: number): Record<string, number> {
         ) VALUES (?, ?, 'ACCOUNT_DELETION', datetime('now', '+5 minutes'))
       `).run(trainingErasureId, userId);
     }
-    for (const { table, column } of accountDeletionTablesForDb(db)) {
-      try {
-        const result = db.prepare(`DELETE FROM ${table} WHERE ${column} = ?`).run(userId);
-        counts[table] = result.changes;
-      } catch {
-        counts[table] = 0; // table may not exist
-      }
+    for (const { table, columns } of ownedTables) {
+      const ownership = buildOwnershipPredicate(columns, userId);
+      const result = db.prepare(
+        `DELETE FROM ${quoteSqlIdentifier(table)} WHERE ${ownership.sql}`,
+      ).run(...ownership.params);
+      counts[table] = result.changes;
     }
 
     if (hasTrainingErasureGate) {
@@ -841,19 +964,31 @@ export function deleteAllUserData(userId: number): Record<string, number> {
     }
 
     // KV store per-user settings
-    try {
-      const kvResult = db.prepare("DELETE FROM kv_store WHERE key LIKE ?").run(`config:${userId}:%`);
-      counts['kv_store_settings'] = kvResult.changes;
-    } catch {
-      counts['kv_store_settings'] = 0;
-    }
+    const kvResult = db.prepare("DELETE FROM kv_store WHERE key LIKE ?").run(`config:${userId}:%`);
+    counts['kv_store_settings'] = kvResult.changes;
 
     // Delete user record last
-    try {
-      const userResult = db.prepare('DELETE FROM users WHERE id = ? OR telegram_id = ?').run(userId, userId);
-      counts['users'] = userResult.changes;
-    } catch {
-      counts['users'] = 0;
+    const userResult = db.prepare('DELETE FROM users WHERE id = ? OR telegram_id = ?').run(userId, userId);
+    counts['users'] = userResult.changes;
+
+    for (const { table, columns } of ownedTables) {
+      const ownership = buildOwnershipPredicate(columns, userId);
+      const row = db.prepare(
+        `SELECT COUNT(*) AS count FROM ${quoteSqlIdentifier(table)} WHERE ${ownership.sql}`,
+      ).get(...ownership.params) as { count: number };
+      if (row.count !== 0) {
+        throw new Error(`Account deletion left user-owned rows in ${table}.`);
+      }
+    }
+    const remainingSettings = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?')
+      .get(`config:${userId}:%`) as { count: number };
+    if (remainingSettings.count !== 0) {
+      throw new Error('Account deletion left user-owned settings rows.');
+    }
+    const remainingUsers = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?')
+      .get(userId, userId) as { count: number };
+    if (remainingUsers.count !== 0) {
+      throw new Error('Account deletion left the user record in place.');
     }
   });
 
@@ -863,11 +998,7 @@ export function deleteAllUserData(userId: number): Record<string, number> {
 }
 
 function tableExistsForDeletion(db: any, table: string): boolean {
-  try {
-    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  } catch {
-    return false;
-  }
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

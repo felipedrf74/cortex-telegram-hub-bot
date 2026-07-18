@@ -516,6 +516,26 @@ describe('GeminiProvider', () => {
       expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
     });
 
+    it('allows a latency-bounded caller to override primary retries without changing global policy', async () => {
+      process.env.GEMINI_ONESHOT_MAX_RETRIES = '5';
+      mockGenerateContent
+        .mockRejectedValueOnce(error503())
+        .mockResolvedValueOnce(successResponse('bounded fallback model text'));
+
+      const result = await completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'content_agent_strategy',
+        vi.fn(async () => 'anthropic text'),
+        { maxTokens: 32, maxRetries: 0 },
+      );
+
+      expect(result).toEqual({ text: 'bounded fallback model text', provider: 'gemini' });
+      expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+      expect(mockGenerateContent.mock.calls[0][0].model).toBe('gemini-2.0-pro');
+      expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
+    });
+
     it('vision primary retries transient 503s before hopping to OpenAI', async () => {
       mockGenerateContent
         .mockRejectedValueOnce(error503())

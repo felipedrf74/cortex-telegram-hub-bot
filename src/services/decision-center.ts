@@ -36,9 +36,9 @@ import {
 } from './notification-orchestrator';
 import { listNotificationApnsActionExposures } from './notification-contracts';
 import {
-  decideContentApproval,
-  getContentWorkflowObject,
-} from './content-editorial-workflow';
+  decideContentWorkspaceReview as decideContentApproval,
+  getContentDecisionWorkspaceObject as getContentWorkflowObject,
+} from './content-workspace-decision-adapter';
 import {
   getSecretaryAgendaItemById,
   type ReasoningTrailNode,
@@ -1666,7 +1666,7 @@ function deriveNormalizedActionForKnownProducer(
       && contentAction) {
     const sourceVersion = contentWorkflowStateRevision({ userId: input.userId, tenantId }, relatedEntityId);
     if (!sourceVersion) return null;
-    const targetApproval = contentAction === 'approve_script' ? 'approved' : 'rejected';
+    const targetApproval = contentAction === 'approve_script' ? 'approved' : 'rewrite_requested';
     return buildNormalizedDecisionAction({
       intent: `content.${contentAction}`,
       targetEntities: [{ type: 'content_workflow_object', id: relatedEntityId, version: sourceVersion }],
@@ -1685,7 +1685,7 @@ function deriveNormalizedActionForKnownProducer(
       prohibitedEffects: [{
         type: 'set_content_approval_state',
         targetRef: `content_workflow_object:${relatedEntityId}`,
-        value: targetApproval === 'approved' ? 'rejected' : 'approved',
+        value: targetApproval === 'approved' ? 'rewrite_requested' : 'approved',
       }],
       dependencies: [],
       exclusivityKeys: [`content_workflow_object:${tenantId}:${relatedEntityId}`],
@@ -9181,9 +9181,30 @@ function verifyUncertainDecisionExecution(
     const objectId = contentWorkflowObjectIdForDecision(record);
     const object = objectId ? getContentWorkflowObject(record.userId, objectId, record.tenantId) : null;
     if (!object) return { outcome: 'unknown', actualEffect: { sourceState: 'missing' } };
-    const expectedState = actionId === 'approve_script' ? 'approved' : 'rejected';
-    if (object.approvalState === expectedState) {
+    const expectedState = actionId === 'approve_script' ? 'approved' : 'rewrite_requested';
+    const sourceMatches = actionId === 'approve_script'
+      ? object.productionState === 'approved' && object.approvalState === 'approved'
+      : object.productionState === 'active'
+        && object.approvalState === 'not_required'
+        && hasContentRewriteDecisionEvidence(record, object.id);
+    if (sourceMatches) {
       return { outcome: 'applied', actualEffect: { contentObjectId: object.id, contentApprovalState: expectedState } };
+    }
+    // `active`/`not_required` is also the ordinary state after a user resumes
+    // editing. Without the deterministic Decision receipt and its matching
+    // audit event, recovery cannot attribute that state to request_rewrite.
+    // Keep the execution uncertain so a retry cannot overwrite newer work.
+    if (actionId === 'request_rewrite'
+        && object.productionState === 'active'
+        && object.approvalState === 'not_required') {
+      return {
+        outcome: 'unknown',
+        actualEffect: {
+          contentObjectId: object.id,
+          contentApprovalState: object.approvalState,
+          explicitDecisionEvidence: false,
+        },
+      };
     }
     if (!['approved', 'rejected'].includes(object.approvalState)) {
       return { outcome: 'not_applied', actualEffect: { contentObjectId: object.id, contentApprovalState: object.approvalState } };
@@ -9255,6 +9276,61 @@ function verifyUncertainDecisionExecution(
     return { outcome: 'applied', actualEffect: { pendingConfirmationState: 'cleared' } };
   }
   return { outcome: 'unknown', actualEffect: { verifier: expected.verifier ?? 'unavailable' } };
+}
+
+/**
+ * Proves that the canonical review-to-active transition was the exact rewrite
+ * action for this Decision, rather than an unrelated user or agent edit.
+ * Both durable records are required: the receipt gives idempotent mutation
+ * identity and the workflow event gives human-auditable action provenance.
+ */
+function hasContentRewriteDecisionEvidence(record: DecisionRecord, objectId: number): boolean {
+  const parentKey = `decision-content:${record.itemId}:request_rewrite`;
+  const compactKey = `${parentKey}:rewrite_requested`;
+  const receiptKey = compactKey.length <= 200
+    ? compactKey
+    : `${parentKey.slice(0, 180)}:rewrite_requested`;
+  const receipt = getDb().prepare(`
+    SELECT resource_id AS resourceId, result_metadata_json AS resultMetadataJson
+      FROM content_mutation_receipts
+     WHERE tenant_id = ? AND owner_user_id = ?
+       AND operation = ? AND idempotency_key = ?
+     LIMIT 1
+  `).get(
+    record.tenantId,
+    record.userId,
+    `transition_item:${objectId}`,
+    receiptKey,
+  ) as { resourceId: string; resultMetadataJson: string } | undefined;
+  if (!receipt || String(receipt.resourceId) !== String(objectId)) return false;
+  const receiptMetadata = safeParseJson<Record<string, unknown>>(receipt.resultMetadataJson, {});
+  if (receiptMetadata.changed !== true) return false;
+
+  const events = getDb().prepare(`
+    SELECT metadata_json AS metadataJson, reason_codes_json AS reasonCodesJson
+      FROM content_workflow_events
+     WHERE tenant_id = ? AND owner_user_id = ?
+       AND visibility_scope = 'user_private' AND scope_status = 'active'
+       AND object_id = ? AND action = 'workspace_changes_requested'
+       AND from_state = 'review' AND to_state = 'active'
+       AND approval_state = 'not_required' AND review_required = 0
+     ORDER BY id DESC
+     LIMIT 20
+  `).all(record.tenantId, record.userId, String(objectId)) as Array<{
+    metadataJson: string;
+    reasonCodesJson: string;
+  }>;
+  return events.some((event) => {
+    const reasonCodes = safeParseJson<unknown[]>(event.reasonCodesJson, []);
+    if (!reasonCodes.includes('changes_requested')) return false;
+    const metadata = safeParseJson<Record<string, unknown>>(event.metadataJson, {});
+    const audit = metadata.auditContext;
+    if (!audit || typeof audit !== 'object' || Array.isArray(audit)) return false;
+    const context = audit as Record<string, unknown>;
+    return context.action === 'request_rewrite'
+      && context.decisionId === record.itemId
+      && (context.source === 'decision_center' || context.source === 'decision_center_command_bus');
+  });
 }
 
 function reclaimExpiredExecutionLeases(userId: number, tenantId: number): void {
@@ -10362,11 +10438,14 @@ function executeContentApprovalDecision(
   if (!object) {
     throw new DecisionActionError('DECISION_RELATED_ENTITY_NOT_FOUND', 'Content object was not found for this user.', 404);
   }
-  const decision = actionId === 'approve_script' ? 'approved' : 'rejected';
+  const decision = actionId === 'approve_script' ? 'approved' : 'rewrite_requested';
   const result = decideContentApproval({
     userId,
     tenantId,
     objectId: object.id,
+    approvalType: 'content_review',
+    expectedWorkflowVersion: object.workflowVersion,
+    idempotencyKey: `decision-content:${record.itemId}:${actionId}`,
     decision,
     reason: actionId === 'request_rewrite' ? 'Requested changes from Decision Center' : null,
     metadata: { source: 'decision_center', decisionId: record.itemId, actionId },
@@ -10376,19 +10455,23 @@ function executeContentApprovalDecision(
   }
 
   const verified = getContentWorkflowObject(userId, object.id, tenantId);
-  const expectedApprovalState = decision;
-  const readBackOk = verified?.approvalState === expectedApprovalState;
+  const expectedContentState = decision;
+  const readBackOk = decision === 'approved'
+    ? verified?.productionState === 'approved' && verified.approvalState === 'approved'
+    : verified?.productionState === 'active' && verified.approvalState === 'not_required';
   if (!readBackOk) {
     throw new DecisionActionError('DECISION_READBACK_MISMATCH', 'Content approval read-back verification failed', 409, {
-      expectedApprovalState,
+      expectedContentState,
       actualApprovalState: verified?.approvalState ?? null,
+      actualProductionState: verified?.productionState ?? null,
     });
   }
 
   return persistProjectionAfterVerifiedSourceEffect('content_approval_effect', () => (
     markDecisionActioned(record, actionId, {
       contentObjectId: object.id,
-      contentApprovalState: verified?.approvalState,
+      contentApprovalState: expectedContentState,
+      workflowState: verified?.productionState,
     }, decision === 'approved' ? 'Content was approved.' : 'Changes were requested.')
   ));
 }
@@ -10805,6 +10888,11 @@ function sourceStateSupersessionReason(record: DecisionRecord): string | null {
 
 function secretaryDailyTaskAttentionSupersessionReason(record: DecisionRecord): string | null {
   if (!record.relatedEntityId || !/^\d{4}-\d{2}-\d{2}$/.test(record.relatedEntityId)) return null;
+  // Daily task-attention decisions are intentionally personal-tenant only.
+  // The producer rejects tenant != user because the current task read model is
+  // user-scoped. Preserve that invariant for malformed or legacy rows before
+  // making any user-only task read; an unverifiable row must remain open.
+  if (record.tenantId !== record.userId) return null;
   let tasks: NormalizedTask[];
   try {
     tasks = listTasksForUser(record.userId, { status: 'pending' });

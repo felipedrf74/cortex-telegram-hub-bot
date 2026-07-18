@@ -10,10 +10,24 @@ import {
   type ContentVisibilityScope,
 } from './content-tenant-scope';
 import {
-  createContentWorkflowObject,
-  type ContentRadarLifecycleState,
-  type ContentWorkflowObject,
-} from './content-editorial-workflow';
+  createContentArtifact,
+  createContentWorkspaceItem,
+  getContentWorkspaceItem,
+  type ContentWorkspaceItem,
+} from './content-workspace';
+
+export type ContentRadarLifecycleState =
+  | 'detected'
+  | 'scored'
+  | 'review_required'
+  | 'shortlisted'
+  | 'dismissed'
+  | 'converted_to_idea'
+  | 'converted_to_outline'
+  | 'converted_to_script'
+  | 'converted_to_calendar_item'
+  | 'scheduled'
+  | 'expired';
 import { buildContentCreativeProfileContext } from './content-memory-profile';
 import {
   contentTokenOverlap,
@@ -125,7 +139,7 @@ export interface ContentRadarConversionResult {
   ok: boolean;
   status: 'converted' | 'dismissed' | 'expired' | 'not_found' | 'invalid_target';
   signal: ContentRadarSignal | null;
-  object: ContentWorkflowObject | null;
+  object: ContentWorkspaceItem | null;
   reasonCodes: string[];
 }
 
@@ -551,51 +565,103 @@ export function convertContentRadarSignal(input: {
     };
   }
 
-  const objectType = input.target === 'content_calendar_item' ? 'content_calendar_item' : input.target;
-  const editorialState = input.target === 'outline'
-    ? 'outlined'
-    : input.target === 'script'
-      ? 'drafted'
-      : input.target === 'content_calendar_item'
-        ? 'selected'
-        : 'idea';
-  const object = createContentWorkflowObject({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    objectType,
-    title: signal.topic,
-    summary: signal.summary,
-    editorialState,
-    metadata: {
-      generatedFromRadarSignalId: signal.signalId,
-      radarSourceType: signal.sourceType,
-      radarScore: signal.score.total,
-      evidence: signal.evidence,
-      provenance: signal.provenance,
-    },
-  });
-  db.prepare(`
-    UPDATE content_radar_signals
-       SET lifecycle_state = ?,
-           converted_to_object_id = ?,
-           converted_to_object_type = ?,
-           converted_at = datetime('now'),
-           updated_by = ?,
-           updated_at = datetime('now')
-     WHERE signal_id = ?
-  `).run(
-    targetState,
-    object.id,
-    object.objectType,
-    input.actorUserId ?? input.userId,
-    signal.signalId,
-  );
+  if (signal.visibilityScope !== 'user_private') {
+    return {
+      ok: false,
+      status: 'invalid_target',
+      signal,
+      object: null,
+      reasonCodes: ['canonical_workspace_private_scope_required'],
+    };
+  }
+  const scope = { tenantId: resolveContentTenantId(input.userId, input.tenantId), userId: input.userId };
+  if (
+    signal.lifecycleState === targetState
+    && signal.convertedToObjectType === 'content_item'
+    && signal.convertedToObjectId != null
+  ) {
+    return {
+      ok: true,
+      status: 'converted',
+      signal,
+      object: getContentWorkspaceItem(scope, signal.convertedToObjectId, db),
+      reasonCodes: ['canonical_idempotent_replay'],
+    };
+  }
+  if (signal.lifecycleState.startsWith('converted_to_')) {
+    return {
+      ok: false,
+      status: 'invalid_target',
+      signal,
+      object: signal.convertedToObjectId == null
+        ? null
+        : getContentWorkspaceItem(scope, signal.convertedToObjectId, db),
+      reasonCodes: ['radar_signal_already_converted'],
+    };
+  }
+  const object = db.transaction(() => {
+    const item = createContentWorkspaceItem({
+      scope,
+      itemType: 'content_item',
+      title: signal.topic,
+      summary: signal.summary,
+      platformId: signal.platformId,
+      formatId: signal.formatId,
+      idempotencyKey: `content-radar:${signal.signalId}:${input.target}`,
+    }, db).value;
+    createContentArtifact({
+      scope,
+      itemId: item.id,
+      expectedWorkflowVersion: item.workflowVersion,
+      artifactType: input.target === 'outline'
+        ? 'outline'
+        : input.target === 'script'
+          ? 'script'
+          : input.target === 'idea'
+            ? 'idea_note'
+            : 'other',
+      title: signal.topic,
+      platformId: signal.platformId,
+      formatId: signal.formatId,
+      metadata: {
+        conversionTarget: input.target,
+        generatedFromRadarSignalId: signal.signalId,
+        radarSourceType: signal.sourceType,
+        radarScore: signal.score.total,
+        evidence: signal.evidence,
+        provenance: signal.provenance,
+        contentParity: 'metadata_only',
+      },
+      idempotencyKey: `radar-artifact:${signal.signalId}:${input.target}`,
+    }, db);
+    const update = db.prepare(`
+      UPDATE content_radar_signals
+         SET lifecycle_state = ?,
+             converted_to_object_id = ?,
+             converted_to_object_type = 'content_item',
+             converted_at = datetime('now'),
+             updated_by = ?,
+             updated_at = datetime('now')
+       WHERE signal_id = ? AND tenant_id = ? AND owner_user_id = ?
+         AND lifecycle_state = ?
+    `).run(
+      targetState,
+      item.id,
+      input.actorUserId ?? input.userId,
+      signal.signalId,
+      scope.tenantId,
+      scope.userId,
+      signal.lifecycleState,
+    );
+    if (update.changes !== 1) throw new Error('CONTENT_RADAR_CONVERSION_CONFLICT');
+    return getContentWorkspaceItem(scope, item.id, db) ?? item;
+  }).immediate();
   return {
     ok: true,
     status: 'converted',
     signal: getContentRadarSignal(input),
     object,
-    reasonCodes: [`radar_signal_converted_to_${input.target}`],
+    reasonCodes: [`radar_signal_converted_to_canonical_${input.target}`],
   };
 }
 

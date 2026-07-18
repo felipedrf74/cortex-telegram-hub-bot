@@ -44,9 +44,10 @@ import {
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import {
-  createContentWorkflowObject,
-  getContentWorkflowObject,
-} from '../../src/services/content-editorial-workflow';
+  createCanonicalContentDecisionFixture,
+  ensureCanonicalContentDecisionFixtureSchema,
+} from '../helpers/content-workspace-decision-fixture';
+import { getContentDecisionWorkspaceObject } from '../../src/services/content-workspace-decision-adapter';
 
 describe('Decision Center Command Bus equivalence', () => {
   beforeEach(() => {
@@ -55,6 +56,7 @@ describe('Decision Center Command Bus equivalence', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     delete process.env.DECISION_CENTER_COMMAND_BUS_ENABLED;
+    ensureCanonicalContentDecisionFixtureSchema(testDb);
     ensureNotificationTables();
     ensureDecisionCenterTables();
     testDb.exec(readFileSync('migrations/183_chat_core_v2_command_events.sql', 'utf8'));
@@ -139,14 +141,14 @@ describe('Decision Center Command Bus equivalence', () => {
 
   it.each([
     ['approve_script', 'approved'],
-    ['request_rewrite', 'rejected'],
-  ] as const)('keeps direct owner content %s equivalent while atomically verifying source and decision projections', async (actionId, expectedApprovalState) => {
-    const legacyObject = createContentWorkflowObject({
+    ['request_rewrite', 'rewrite_requested'],
+  ] as const)('keeps direct owner content %s equivalent while atomically verifying source and decision projections', async (actionId, expectedContentState) => {
+    const legacyObject = createCanonicalContentDecisionFixture(testDb, {
       userId: 72,
       tenantId: 72,
       objectType: 'script',
       title: 'Legacy private draft',
-      editorialState: 'drafted',
+      inReview: true,
     });
     const legacy = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 72, {
       tenantId: 72,
@@ -163,12 +165,12 @@ describe('Decision Center Command Bus equivalence', () => {
     });
 
     process.env.DECISION_CENTER_COMMAND_BUS_ENABLED = 'true';
-    const busObject = createContentWorkflowObject({
+    const busObject = createCanonicalContentDecisionFixture(testDb, {
       userId: 73,
       tenantId: 73,
       objectType: 'script',
       title: 'Bus private draft',
-      editorialState: 'drafted',
+      inReview: true,
     });
     const bus = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 73, {
       tenantId: 73,
@@ -186,12 +188,20 @@ describe('Decision Center Command Bus equivalence', () => {
 
     expect(legacyResult.status).toBe('succeeded');
     expect(busResult.status).toBe('succeeded');
-    expect(getContentWorkflowObject(72, legacyObject.id, 72)?.approvalState).toBe(expectedApprovalState);
-    expect(getContentWorkflowObject(73, busObject.id, 73)?.approvalState).toBe(expectedApprovalState);
+    const expectedProductionState = actionId === 'approve_script' ? 'approved' : 'active';
+    const expectedApprovalState = actionId === 'approve_script' ? 'approved' : 'not_required';
+    expect(getContentDecisionWorkspaceObject(72, legacyObject.id, 72, testDb)).toMatchObject({
+      productionState: expectedProductionState,
+      approvalState: expectedApprovalState,
+    });
+    expect(getContentDecisionWorkspaceObject(73, busObject.id, 73, testDb)).toMatchObject({
+      productionState: expectedProductionState,
+      approvalState: expectedApprovalState,
+    });
     expect(busResult.verification.actualEffect).toMatchObject({
       decisionStatus: 'actioned',
       contentObjectId: busObject.id,
-      contentApprovalState: expectedApprovalState,
+      contentApprovalState: expectedContentState,
       providerActionExecuted: false,
       viaCommandBus: true,
       commandStatus: 'verified',
@@ -205,30 +215,17 @@ describe('Decision Center Command Bus equivalence', () => {
     expect(JSON.stringify(commandEventsForScope(73, 73))).not.toContain('Bus private draft');
   });
 
-  it('keeps tenant-shared content on the legacy executor until an explicit tenant approver role exists', async () => {
+  it('fails closed instead of recreating tenant-shared content on a legacy executor', () => {
     process.env.DECISION_CENTER_COMMAND_BUS_ENABLED = 'true';
-    const object = createContentWorkflowObject({
+    expect(() => createCanonicalContentDecisionFixture(testDb, {
       userId: 74,
       tenantId: 740,
       visibilityScope: 'tenant_shared',
       objectType: 'script',
       title: 'Shared draft',
-      editorialState: 'drafted',
-    });
-    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 74, {
-      tenantId: 740,
-      relatedEntityId: object.id,
-      relatedEntityType: 'content_workflow_object',
-      dedupeKey: 'decision-bus-content-shared-fallback',
-      actionButtons: [{ id: 'approve_script', label: 'Approve', style: 'primary', mutating: true }],
-    }));
-
-    const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 74, 740, {
-      idempotencyKey: 'content-shared-legacy-fallback',
-    });
-
-    expect(result.status).toBe('succeeded');
-    expect(result.verification.actualEffect.viaCommandBus).toBeUndefined();
+    })).toThrow('Canonical Content decision fixtures are private-owner scoped.');
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_domain_objects WHERE tenant_id = 740').get())
+      .toEqual({ count: 0 });
     expect(commandEventCountForScope(74, 740)).toBe(0);
   });
 

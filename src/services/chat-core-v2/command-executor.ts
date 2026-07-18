@@ -101,7 +101,7 @@ export interface ChatCoreV2CommandExecutionResult {
   snoozedDecisionId?: string;
   actionedDecisionId?: string;
   contentObjectId?: number;
-  contentApprovalState?: 'approved' | 'rejected';
+  contentApprovalState?: 'approved' | 'rewrite_requested';
   freshConfirmationRequired?: boolean;
 }
 

@@ -38,7 +38,7 @@ export function shouldRunActionPlannerBeforeReadOnlyFastPaths(text: string): boo
   const folded = foldCalendarText(text);
   if (hasMailReadIntent(text) && !messageHasActionCandidate(text)) return false;
   return messageHasActionCandidate(text) && (
-    /\b(send|enviar|draft|reply|responder|publish|publicar|delete|apaga|apagar|cancel|cancelar|remove|remover|paga|pay|stripe|refund|reembolso|admin|security|seguranca|revoga|revogar|revoke|reconnect)\b/.test(folded)
+    /\b(send|enviar|draft|reply|responder|publish|publicar|post|postar|postea|upload|subir|queue|delete|apaga|apagar|cancel|cancelar|remove|remover|paga|pay|stripe|refund|reembolso|admin|security|seguranca|revoga|revogar|revoke|reconnect)\b/.test(folded)
     || /\b(script|roteiro|brief|conteudo|content|meal|refeicao|jantar|almoco|ceia|lanche|compras|grocery|fueling|finance|financeiro|financeira|orcamento|budget|receipt|categorize|conexao|connection|sync|notificacao|notificacoes|notification|decision|decisao|treino|training)\b/.test(folded)
   );
 }

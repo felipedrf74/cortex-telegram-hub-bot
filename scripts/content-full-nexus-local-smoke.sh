@@ -12,7 +12,7 @@ STATE_DIR="${CONTENT_SMOKE_STATE_DIR:-$ROOT/.local/content-full-nexus-smoke}"
 DB_PATH="${CONTENT_SMOKE_DATABASE_PATH:-$ROOT/data/content-full-nexus-smoke.db}"
 EVAL_DB_PATH="${CONTENT_EVAL_DB_PATH:-$ROOT/reports/content-eval/content-eval-history.sqlite}"
 EVAL_JSON_PATH="${CONTENT_EVAL_JSON_PATH:-$ROOT/reports/content-eval/content-eval-latest.json}"
-EVAL_MD_PATH="${CONTENT_EVAL_MARKDOWN_PATH:-$ROOT/docs/content/content-eval-baseline-results.md}"
+EVAL_MD_PATH="${CONTENT_EVAL_MARKDOWN_PATH:-$ROOT/reports/content-eval/content-eval-baseline-results.md}"
 PORTAL_PORT="${PORTAL_PORT:-8200}"
 
 usage() {
@@ -34,6 +34,9 @@ Important env vars:
   CONTENT_SMOKE_KEEP_RUNNING=1  Do not stop the backend after run.
   CONTENT_SMOKE_SKIP_RUNTIME=1  Skip backend start/smoke and run tests/eval only.
   NEXUS_LOCAL_ALLOW_MODEL_CALLS=1 explicitly allows live provider calls.
+  CONTENT_EVAL_REAL_PROVIDER_INVOCATION_ARTIFACT must point to captured
+                                    provider-registry invocation provenance
+                                    before any real-provider score is accepted.
 
 Default behavior uses deterministic fixture mode and loopback-only local data.
 EOF
@@ -65,22 +68,57 @@ run_content_tests() {
     __tests__/services/content-memory-profile.test.ts \
     __tests__/services/content-radar-engine.test.ts \
     __tests__/services/content-generation-quality.test.ts \
+    __tests__/services/content-eval-history.test.ts \
     __tests__/services/content-novelty-reuse.test.ts \
     __tests__/services/provider-registry-fixture-mode.test.ts \
     __tests__/api/content-admin-write-auth.test.ts \
     __tests__/services/content-dashboard-service.test.ts \
     __tests__/api/content-dashboard.test.ts
   npm run test:evaluate -- \
-    __tests__/services/content-day-to-day-evaluation.test.ts \
-    __tests__/services/content-eval-history.test.ts
+    __tests__/services/content-day-to-day-evaluation.test.ts
 }
 
 run_eval() {
+  local provider_artifact="${CONTENT_EVAL_REAL_PROVIDER_INVOCATION_ARTIFACT:-}"
+  if [[ "${CONTENT_EVAL_MODE:-fixture}" == "real_provider" || -n "${CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE:-}" ]]; then
+    if [[ -z "$provider_artifact" || ! -f "$provider_artifact" ]]; then
+      echo "Real-provider evaluation requested without a captured invocation provenance artifact." >&2
+      echo "Requested mode alone is not evidence; set CONTENT_EVAL_REAL_PROVIDER_INVOCATION_ARTIFACT." >&2
+      return 1
+    fi
+  fi
+  local eval_exit=0
+  set +e
   npm run eval:content -- \
     --markdown "$EVAL_MD_PATH" \
     --json "$EVAL_JSON_PATH" \
     --fail-under 85 \
     --persist-db "$EVAL_DB_PATH"
+  eval_exit=$?
+  set -e
+  if [[ "$eval_exit" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${CONTENT_EVAL_MODE:-fixture}" != "real_provider" ]] && node - "$EVAL_JSON_PATH" <<'EOF'
+const fs = require('fs');
+const reportPath = process.argv[2];
+if (!fs.existsSync(reportPath)) process.exit(1);
+const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+const aggregate = report.aggregate;
+const expectedExternalBlock = report.passed === false
+  && aggregate?.releaseGate === 'PASS_WITH_CONDITIONS'
+  && aggregate?.failCount === 0
+  && aggregate?.criticalFailureCount === 0
+  && aggregate?.overallScore >= 85
+  && aggregate?.laneEvidence?.realProviderSample?.status === 'not_executed'
+  && aggregate?.laneEvidence?.iosExtraction?.status === 'not_executed';
+process.exit(expectedExternalBlock ? 0 : 1);
+EOF
+  then
+    echo "Local Content quality gates passed; live-provider and iOS extraction evidence remain external release gates." >&2
+    return 2
+  fi
+  return "$eval_exit"
 }
 
 command_doctor() {
@@ -95,6 +133,8 @@ command_doctor() {
   echo "Eval Markdown: $EVAL_MD_PATH"
   echo "Model calls allowed: $NEXUS_LOCAL_ALLOW_MODEL_CALLS"
   echo "Fixture mode: $NEXUS_MODEL_FIXTURE_MODE"
+  echo "Eval mode (request only): $CONTENT_EVAL_MODE"
+  echo "Provider invocation artifact: ${CONTENT_EVAL_REAL_PROVIDER_INVOCATION_ARTIFACT:-not supplied}"
   "$ROOT/scripts/full-nexus-local-engine.sh" status || true
 }
 

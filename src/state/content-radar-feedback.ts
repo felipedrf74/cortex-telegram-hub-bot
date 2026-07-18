@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import type Database from 'better-sqlite3';
 import { getDb } from '../services/database';
 import {
   contentScopeForInsert,
@@ -66,6 +67,7 @@ export function recordRadarFeedback(
   userId: number,
   tenantId: number | null | undefined,
   input: ContentRadarFeedbackInput,
+  db: Database.Database = getDb(),
 ): ContentRadarFeedbackRecord {
   if (!Number.isFinite(userId) || userId <= 0) {
     throw new Error('recordRadarFeedback requires a positive userId');
@@ -77,8 +79,7 @@ export function recordRadarFeedback(
     throw new Error(`Invalid action: ${String(input.action)}`);
   }
 
-  ensureContentTenantScopeColumns();
-  const db = getDb();
+  ensureContentTenantScopeColumns(db);
   ensureRadarFeedbackIdempotencyIndex(db);
   const scope = contentScopeForInsert(userId, tenantId, 'user_private', 'active');
   const reason = input.reason ? String(input.reason).slice(0, 600) : null;

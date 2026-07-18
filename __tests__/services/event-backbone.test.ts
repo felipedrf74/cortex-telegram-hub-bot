@@ -500,6 +500,51 @@ describe('event backbone foundation', () => {
     const result = await processPendingJobs(defaultJobHandlers, { limit: 1 });
     expect(result.completed).toBe(1);
     expect(getAppSummary({ tenantId: 7, userId: 7, summaryType: 'home' }).payload.kind).toBe('home');
+    expect(getAppSummary({ tenantId: 7, userId: 7, summaryType: 'content' }).payload).toMatchObject({
+      availability: 'unavailable',
+      unavailableReason: 'content_workspace_schema_missing',
+      pendingCount: 0,
+    });
+  });
+
+  it('reports the canonical Content workspace unavailable without reviving legacy roots', () => {
+    testDb.exec(`
+      CREATE TABLE content_topics (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        scheduled_date TEXT
+      );
+      CREATE TABLE content_scripts (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        status TEXT NOT NULL
+      );
+      INSERT INTO content_topics (id, user_id, tenant_id, status, scheduled_date)
+      VALUES (1, 7, 7, 'planned', date('now', '+1 day'));
+      INSERT INTO content_scripts (id, user_id, tenant_id, status)
+      VALUES (1, 7, 7, 'drafted');
+    `);
+
+    const content = projectSummaryReadModelsForUser({
+      tenantId: 7,
+      userId: 7,
+      summaryTypes: ['content'],
+    })[0];
+
+    expect(content.payload).toMatchObject({
+      availability: 'unavailable',
+      unavailableReason: 'content_workspace_schema_missing',
+      source: 'content_workspace',
+      ideasNeedingReview: 0,
+      scriptsInProgress: 0,
+      scheduledThisWeek: 0,
+      scheduleAttentionThisWeek: 0,
+      scheduleAuthorityStatus: 'unavailable',
+      pendingCount: 0,
+    });
   });
 
   it('processes deliver_notification jobs through the notification release handler', async () => {

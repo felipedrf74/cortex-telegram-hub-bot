@@ -961,7 +961,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(getMonthlyBudgetView).not.toHaveBeenCalled();
   });
 
-  it('answers content pipeline questions without exposing raw draft bodies or provider IDs', () => {
+  it('answers personal-tenant content pipeline questions without exposing raw draft bodies or provider IDs', () => {
     vi.mocked(getTopics).mockReturnValue([
       contentTopic({ id: 401, title: 'Race-week fueling mistakes', status: 'ready', scheduled_date: '2026-05-27' }),
       contentTopic({ id: 402, title: 'Recovery myth carousel', status: 'drafting', scheduled_date: null }),
@@ -977,7 +977,7 @@ describe('Chat Core v2 deterministic read route', () => {
     const result = tryBuildChatCoreV2DeterministicReadRoute({
       normalizedText: 'Show my content pipeline',
       userId: 42,
-      tenantId: 84,
+      tenantId: 42,
       locale: 'en-US',
       timezone: 'Europe/Lisbon',
       now: FIXED_NOW,
@@ -987,7 +987,7 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(result).not.toBeNull();
     expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20 });
     expect(getContentDeskItems).toHaveBeenCalledWith(42, 5);
-    expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5, 84);
+    expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5, 42);
     expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
     expect(listNotificationCenterItems).not.toHaveBeenCalled();
@@ -1042,6 +1042,36 @@ describe('Chat Core v2 deterministic read route', () => {
     ]);
   });
 
+  it('fails closed before every Content producer for a same-user distinct-tenant read', () => {
+    vi.mocked(getTopics).mockReturnValue([
+      contentTopic({ id: 404, title: 'Personal tenant title', status: 'ready' }),
+    ]);
+    vi.mocked(getContentDeskItems).mockReturnValue([
+      contentDeskItem({ id: 504, title: 'Personal desk title' }),
+    ]);
+    vi.mocked(getRankedContentSignals).mockReturnValue([
+      contentSignal({ title: 'Foreign signal title' }),
+    ]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'Show my content pipeline',
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result).toBeNull();
+    expect(getTopics).not.toHaveBeenCalled();
+    expect(getContentDeskItems).not.toHaveBeenCalled();
+    expect(getRankedContentSignals).not.toHaveBeenCalled();
+    expect(getActiveContentPillars).not.toHaveBeenCalled();
+    expect(getLearnedPatterns).not.toHaveBeenCalled();
+    expect(getPerformanceSummary).not.toHaveBeenCalled();
+  });
+
   it('preserves content state shortcut empty states as plain answer messages', () => {
     vi.mocked(getTopics).mockReturnValue([]);
     vi.mocked(getContentDeskItems).mockReturnValue([]);
@@ -1051,7 +1081,7 @@ describe('Chat Core v2 deterministic read route', () => {
     const result = tryBuildChatCoreV2DeterministicReadRoute({
       normalizedText: 'which pillars am i tracking',
       userId: 42,
-      tenantId: 84,
+      tenantId: 42,
       locale: 'en-US',
       timezone: 'Europe/Lisbon',
       now: FIXED_NOW,

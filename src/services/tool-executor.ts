@@ -41,7 +41,11 @@ import {
 import { getUserTimezoneById, resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 import { resolveChatTenantId } from './chat-tenant-scope';
-import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
+import {
+  authorizeChatToolCall,
+  formatToolAuthorizationFailure,
+  getCurrentChatToolAuthorizationContext,
+} from './chat-tool-authorization';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import {
   assertLegacyPlanGenerationAllowed,
@@ -51,6 +55,7 @@ import {
 } from './training-plan-revision-legacy-guard';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 import { normalizeTrainingExercisesJsonForWrite } from './training-exercise-identity';
+import { captureChatContentIdea } from './content-workspace-chat-capture';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
 //
@@ -593,6 +598,32 @@ export async function executeToolCall(
       case 'save_note': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (typeof input.domain === 'string' && input.domain.trim().toLowerCase() === 'content_idea') {
+          const consentReceipt = getCurrentChatToolAuthorizationContext()?.contentIdeaCaptureConsent;
+          if (!consentReceipt) {
+            return {
+              success: false,
+              code: 'ACTION_CONFIRMATION_REQUIRED',
+              error: 'Content idea capture requires an explicit current-turn save request',
+              confirmation_required: true,
+            };
+          }
+          const captured = captureChatContentIdea({
+            scope: { tenantId: scope.tenantId, userId: scope.userId },
+            content: input.content,
+            title: input.title,
+            consentReceipt,
+          });
+          return {
+            success: true,
+            destination: 'content_workspace',
+            item_id: captured.item.id,
+            title: captured.item.title,
+            status: captured.item.productionState,
+            next_action: captured.item.nextAction.action,
+            replayed: captured.replayed,
+          };
+        }
         return saveNote(scope.userId, {
           content: input.content,
           domain: input.domain,

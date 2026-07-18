@@ -8,6 +8,19 @@ import {
   runContentDayToDayEvaluation,
 } from '../../src/services/content-day-to-day-evaluation';
 
+function providerInvocations(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    invocationId: `provider-call-${index + 1}`,
+    provider: 'configured-provider',
+    model: 'configured-model',
+    tier: 'chat' as const,
+    category: 'content_day_to_day_eval' as const,
+    status: 'succeeded' as const,
+    capturedAt: `2026-06-04T00:00:0${index}.000Z`,
+    routingPath: 'provider_registry' as const,
+  }));
+}
+
 describe('Content day-to-day evaluation harness', () => {
   it('defines the required persona bank for realistic Content Creation work', () => {
     const personaIds = new Set(CONTENT_PERSONA_BANK.map((persona) => persona.id));
@@ -112,7 +125,14 @@ describe('Content day-to-day evaluation harness', () => {
       expect(testCase.penalties).toEqual([]);
       expect(testCase.output.transcript.length).toBeGreaterThanOrEqual(3);
       expect(testCase.output.providerTrace.productionDataUsed).toBe(false);
-      expect(testCase.output.providerTrace.preservesLiveRouting).toBe(true);
+      expect(testCase.output.providerTrace.preservesLiveRouting).toBe(false);
+      expect(testCase.output.providerTrace.realProviderCalls).toBe(false);
+      expect(testCase.output.providerTrace.executionKind).toBe('contract_fixture');
+      expect(testCase.output.unsupportedClaimsRemaining).toBeNull();
+      expect(testCase.output.claimReviewStatus).toBe('not_executed');
+      expect(testCase.output.userEditsPreserved).toBeNull();
+      expect(testCase.output.editPreservationStatus).toBe('not_executed');
+      expect(testCase.dimensionScores.claim_safety).toBeNull();
       expect(testCase.output.providerTrace.category).toBe('content_day_to_day_eval');
     }
   });
@@ -131,6 +151,7 @@ describe('Content day-to-day evaluation harness', () => {
         runId: 'provider-content-sample-20260604',
         source: 'limited-real-provider-eval',
         sampleCount: 5,
+        providerInvocations: providerInvocations(5),
       },
     });
 
@@ -156,6 +177,7 @@ describe('Content day-to-day evaluation harness', () => {
         runId: 'provider-content-sample-overflow',
         source: 'limited-real-provider-eval',
         sampleCount: 5,
+        providerInvocations: providerInvocations(5),
       },
     });
 
@@ -174,7 +196,7 @@ describe('Content day-to-day evaluation harness', () => {
 
     expect(result.aggregate.laneScores.iosExtractionScore).toBeNull();
     expect(result.aggregate.laneScores.realProviderSampleScore).toBeNull();
-    expect(result.aggregate.releaseGate).toBe('PASS_WITH_CONDITIONS');
+    expect(result.aggregate.releaseGate).toBe('FAIL');
     expect(result.passed).toBe(false);
     expect(result.openConditions).toEqual(expect.arrayContaining([
       expect.stringContaining('iOS visible-text extraction score was ignored'),
@@ -196,12 +218,100 @@ describe('Content day-to-day evaluation harness', () => {
         runId: 'provider-content-sample-low',
         source: 'limited-real-provider-eval',
         sampleCount: 5,
+        providerInvocations: providerInvocations(5),
       },
     });
 
     expect(result.aggregate.overallScore).toBeLessThan(95);
     expect(result.aggregate.releaseGate).toBe('FAIL');
     expect(result.passed).toBe(false);
+  });
+
+  it('never treats a requested real-provider mode as captured provider execution', () => {
+    const result = runContentDayToDayEvaluation({ mode: 'real_provider' });
+
+    expect(result.cases.every((testCase) => testCase.output.providerTrace.mode === 'fixture')).toBe(true);
+    expect(result.cases.every((testCase) => testCase.output.providerTrace.requestedMode === 'real_provider')).toBe(true);
+    expect(result.cases.every((testCase) => testCase.output.providerTrace.realProviderCalls === false)).toBe(true);
+    expect(result.aggregate.laneScores.realProviderSampleScore).toBeNull();
+    expect(result.aggregate.laneEvidence.realProviderSample).toMatchObject({
+      status: 'not_executed',
+      invocationCount: 0,
+      failureCode: 'missing_invocation_provenance',
+    });
+    expect(result.aggregate.releaseGate).toBe('FAIL');
+    expect(result.passed).toBe(false);
+  });
+
+  it('fails the release gate closed when local engine execution throws', () => {
+    const result = runContentDayToDayEvaluation({
+      mode: 'local_engine',
+      engine: {
+        evaluateLocalPackage: () => {
+          throw new Error('simulated engine failure');
+        },
+      },
+    });
+
+    expect(result.aggregate.laneScores.localEngineScore).toBe(0);
+    expect(result.aggregate.laneScores.criticalUserScore).toBe(0);
+    expect(result.aggregate.laneEvidence.localEngine).toMatchObject({
+      status: 'failed',
+      failureCode: 'engine_exception',
+    });
+    expect(result.aggregate.releaseGate).toBe('FAIL');
+    expect(result.passed).toBe(false);
+  });
+
+  it('fails the release gate when executable review finds an unsupported claim', () => {
+    const result = runContentDayToDayEvaluation({
+      simulationTransform: (output, { scenario }) => scenario.id === 'remove_unsupported_claims'
+        ? { ...output, claimReviewStatus: 'executed', unsupportedClaimsRemaining: 1 }
+        : output,
+    });
+    const unsafeCase = result.cases.find((testCase) => testCase.scenarioId === 'remove_unsupported_claims');
+
+    expect(unsafeCase?.failures).toContain('unsupported_claim');
+    expect(unsafeCase?.status).toBe('fail');
+    expect(result.aggregate.releaseGate).toBe('FAIL');
+  });
+
+  it('fails the release gate when a revision simulation loses user edits', () => {
+    const result = runContentDayToDayEvaluation({
+      simulationTransform: (output, { scenario }) => scenario.id === 'weak_script_rewrite'
+        ? { ...output, editPreservationStatus: 'executed', userEditsPreserved: false }
+        : output,
+    });
+    const lostEditCase = result.cases.find((testCase) => testCase.scenarioId === 'weak_script_rewrite');
+
+    expect(lostEditCase?.failures).toContain('lost_user_edits');
+    expect(lostEditCase?.status).toBe('fail');
+    expect(result.aggregate.releaseGate).toBe('FAIL');
+  });
+
+  it('fails the release gate when a simulation introduces a cross-tenant reference', () => {
+    const result = runContentDayToDayEvaluation({
+      simulationTransform: (output, { scenario }) => scenario.id === 'tenant_brand_switch_safety'
+        ? {
+            ...output,
+            referencesUsed: [{
+              id: 'leaked-reference',
+              title: 'Other tenant draft',
+              type: 'previous_content',
+              tenantId: 'tenant-other',
+              scope: 'tenant-shared',
+              confidence: 1,
+              freshness: 'fresh',
+            }],
+          }
+        : output,
+    });
+    const leakedCase = result.cases.find((testCase) => testCase.scenarioId === 'tenant_brand_switch_safety');
+
+    expect(leakedCase?.dimensionScores.tenant_safety).toBe(0);
+    expect(leakedCase?.failures).toContain('wrong_tenant_reference');
+    expect(leakedCase?.status).toBe('fail');
+    expect(result.aggregate.releaseGate).toBe('FAIL');
   });
 
   it('penalizes low-value or unsafe output instead of letting averages hide it', () => {

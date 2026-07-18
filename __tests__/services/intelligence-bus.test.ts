@@ -165,9 +165,8 @@ describe('intelligence bus tenant scope', () => {
       source_agent: 'test-agent',
       signal_type: 'pipeline_capacity',
       payload: {},
-      user_id: 10,
       provenance,
-    }), 'unexpected_user_scope');
+    }), 'missing_user_scope');
     expectGovernedWriteError(() => writeGovernedSignal({
       source_agent: 'test-agent',
       signal_type: 'voice_pattern',

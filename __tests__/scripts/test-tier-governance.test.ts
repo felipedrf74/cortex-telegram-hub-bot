@@ -58,6 +58,19 @@ describe('governed test tier partitions', () => {
     });
   });
 
+  it('keeps migration 253 legacy-idea authority suites on exact reviewed dispositions', () => {
+    const policy = loadTestPolicy();
+    for (const file of [
+      '__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts',
+      '__tests__/services/content-legacy-idea-workspace-exit.test.ts',
+    ]) {
+      expect(resolveTestDisposition(file, policy)).toMatchObject({
+        disposition: 'keep',
+        provenance: { kind: 'exact', pattern: file },
+      });
+    }
+  });
+
   it('makes full and evaluation runners exact, disjoint disposition partitions', () => {
     const files = walkTestFiles();
     const policy = loadTestPolicy();

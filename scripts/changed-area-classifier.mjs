@@ -9,12 +9,19 @@ import {
   formatClassifierMarkdown,
 } from './lib/changed-area-classifier.mjs';
 import { cleanGitEnv } from './lib/git-ref.mjs';
+import {
+  parseGitNameStatusZ,
+  parseGitPathsZ,
+} from './lib/git-changed-paths.mjs';
 
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(process.env.NEXUS_CLASSIFIER_REPO_ROOT || scriptRoot);
 const policyPath = process.env.NEXUS_TEST_POLICY_PATH
   ? path.resolve(process.env.NEXUS_TEST_POLICY_PATH)
   : path.join(root, 'config/test-policy.json');
+const irreversiblePolicyPath = process.env.NEXUS_IRREVERSIBLE_MIGRATIONS_PATH
+  ? path.resolve(process.env.NEXUS_IRREVERSIBLE_MIGRATIONS_PATH)
+  : path.join(root, 'config/irreversible-migrations.json');
 
 function usage() {
   return `changed-area-classifier — map a Git diff to release tiers and gates
@@ -66,28 +73,39 @@ function git(args, { allowFailure = false } = {}) {
 }
 
 function resolves(ref) {
-  return git(['rev-parse', '--verify', `${ref}^{commit}`], { allowFailure: true }) !== null;
+  return git(
+    ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`],
+    { allowFailure: true },
+  );
 }
 
 function resolveBase(requested) {
   if (requested) {
-    if (resolves(requested)) return requested;
+    const resolved = resolves(requested);
+    if (resolved) return resolved;
     throw new Error(`Base ref '${requested}' does not resolve`);
   }
   for (const candidate of ['origin/main', 'main', 'HEAD~1']) {
-    if (resolves(candidate)) return candidate;
+    const resolved = resolves(candidate);
+    if (resolved) return resolved;
   }
   throw new Error('Could not resolve any base ref');
 }
 
-function statusFiles() {
-  const status = git(['status', '--porcelain', '--untracked-files=all'], { allowFailure: true }) ?? '';
-  return status.split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).replace(/^"|"$/g, ''));
-}
-
 function collectGitChanges(baseRef) {
-  const diff = git(['diff', '--name-only', `${baseRef}...HEAD`], { allowFailure: true }) ?? '';
-  return [...diff.split(/\r?\n/), ...statusFiles()].filter(Boolean);
+  const committed = parseGitNameStatusZ(
+    git(['diff', '--name-status', '-z', `${baseRef}...HEAD`], { allowFailure: true }) ?? '',
+  );
+  const staged = parseGitNameStatusZ(
+    git(['diff', '--cached', '--name-status', '-z'], { allowFailure: true }) ?? '',
+  );
+  const unstaged = parseGitNameStatusZ(
+    git(['diff', '--name-status', '-z'], { allowFailure: true }) ?? '',
+  );
+  const untracked = parseGitPathsZ(
+    git(['ls-files', '--others', '--exclude-standard', '-z'], { allowFailure: true }) ?? '',
+  );
+  return [...committed, ...staged, ...unstaged, ...untracked];
 }
 
 function isAncestor(baseRef) {
@@ -109,6 +127,7 @@ try {
     files,
     root,
     policyPath,
+    irreversiblePolicyPath,
     baseRef,
     head,
     impactResolved,

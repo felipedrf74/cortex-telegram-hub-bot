@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   completeOneShotWithSearch: vi.fn(),
@@ -6,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   isOpenAIConfigured: vi.fn(() => false),
   trackedCreate: vi.fn(),
   withAiBudgetReservation: vi.fn(),
+  isDuplicateIdea: vi.fn(async () => ({ isDuplicate: false, confidence: 0 })),
+  captureDiscoveredIdea: vi.fn(() => ({ replayed: false })),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
@@ -34,11 +37,20 @@ vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: vi.fn(() => 'en-US'),
 }));
 
+vi.mock('../../src/services/content-dedup', () => ({
+  isDuplicateIdea: (...args: unknown[]) => mocks.isDuplicateIdea(...args),
+}));
+
+vi.mock('../../src/services/content-workspace-capture', () => ({
+  captureDiscoveredIdea: (...args: unknown[]) => mocks.captureDiscoveredIdea(...args),
+}));
+
 import { runContentDiscovery } from '../../src/services/content-discovery';
 
 describe('content discovery user scope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.withAiBudgetReservation.mockImplementation(async (_request, providerCall) => providerCall());
   });
 
   it('rejects missing or invalid user scope before provider calls or saved-idea writes', async () => {
@@ -66,5 +78,36 @@ describe('content discovery user scope', () => {
     }, expect.any(Function));
     expect(mocks.completeOneShotWithSearch).not.toHaveBeenCalled();
     expect(mocks.trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('captures discovery output canonically and never writes the retired shared markdown file', async () => {
+    const writeSpy = vi.spyOn(fs, 'writeFileSync');
+    mocks.completeOneShotWithSearch.mockResolvedValueOnce({
+      text: [
+        '# Content Ideas — 2026-07-17',
+        '## Idea 1: Canonical discovery workspace',
+        '**Why now:** Useful now.',
+        '## Quick-Fire Shorts (bonus)',
+        '- One-minute creator systems check',
+      ].join('\n'),
+      sources: ['https://example.test/fresh-source'],
+    });
+
+    const result = await runContentDiscovery({ userId: 42, tenantId: 42 });
+
+    expect(result).toMatchObject({
+      ideas: ['Canonical discovery workspace', 'One-minute creator systems check'],
+      filePath: null,
+      storage: 'content_workspace',
+      provider: 'gemini',
+    });
+    expect(mocks.captureDiscoveredIdea).toHaveBeenCalledTimes(2);
+    expect(mocks.captureDiscoveredIdea).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { tenantId: 42, userId: 42 },
+      title: 'Canonical discovery workspace',
+      provider: 'gemini',
+    }));
+    expect(writeSpy).not.toHaveBeenCalled();
+    writeSpy.mockRestore();
   });
 });

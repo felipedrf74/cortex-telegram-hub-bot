@@ -24,7 +24,13 @@ import {
   getContentSourcePackage,
   recordContentVariantFeedback,
 } from '../../services/content-token-artifact-store';
-import { storeScript } from '../../services/content-learning-store';
+import { saveGeneratedScriptToWorkspace } from '../../services/content-workspace-capture';
+import {
+  CONTENT_PERFORMANCE_LINEAGE_SCHEMA_VERSION,
+  ContentPerformanceLineageError,
+  recordContentPerformanceOutcome,
+} from '../../services/content-performance-lineage';
+import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
 
 type ContentTopicGeneratorFormat = 'reel' | 'youtube';
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -193,34 +199,49 @@ export function registerContentLearningRoutes(
       }
     }
 
-    let scriptId: number | null = null;
-    if (variantKind === 'script' && sentiment === 'approved') {
-      scriptId = storeScript({
-        topic,
-        format: format || 'YouTube',
-        scriptText: scriptText || variantText,
+    const db = getDb();
+    const mutation = db.transaction(() => {
+      const recorded = recordContentVariantFeedback({
+        tenantId: routeTenantId,
         userId,
-        tenantId,
-      });
-    }
-
-    const recorded = recordContentVariantFeedback({
-      tenantId: routeTenantId,
-      userId,
-      topic,
-      variantText,
-      sentiment,
-      variantKind,
-      sourcePackageId,
-      angle: cleanFeedbackString(req.body?.angle, 160),
-      format,
-      notes: cleanFeedbackString(req.body?.notes, 320),
-    });
+        topic,
+        variantText,
+        sentiment,
+        variantKind,
+        sourcePackageId,
+        angle: cleanFeedbackString(req.body?.angle, 160),
+        format,
+        notes: cleanFeedbackString(req.body?.notes, 320),
+      }, db);
+      const savedScript = variantKind === 'script' && sentiment === 'approved'
+        ? saveGeneratedScriptToWorkspace({
+          scope: { tenantId: routeTenantId, userId },
+          topic,
+          format: format || 'YouTube',
+          scriptText: scriptText || variantText,
+          sourcePackageId,
+          actorType: 'user',
+          actorId: String(userId),
+          idempotencyKey: typeof req.body?.idempotencyKey === 'string'
+            ? req.body.idempotencyKey
+            : req.header('x-idempotency-key'),
+          captureOrigin: 'approved_variant',
+        }, db)
+        : null;
+      return { recorded, savedScript };
+    }).immediate();
 
     invalidateContentDerivedCaches(userId);
     sendSuccess(res, {
-      ...recorded,
-      scriptId,
+      ...mutation.recorded,
+      workspace: mutation.savedScript ? {
+        schemaVersion: mutation.savedScript.schemaVersion,
+        itemId: mutation.savedScript.item.id,
+        artifactId: mutation.savedScript.artifact.id,
+        revisionId: mutation.savedScript.revisionId,
+        workflowVersion: mutation.savedScript.item.workflowVersion,
+        replayed: mutation.savedScript.replayed,
+      } : null,
       variantTextChars: (scriptText || variantText).length,
     });
   }));
@@ -301,6 +322,11 @@ export function registerContentLearningRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const {
       pipelineId,
+      itemId,
+      workspaceItemId,
+      artifactId,
+      revisionId,
+      idempotencyKey,
       videoUrl,
       views,
       retentionPct,
@@ -314,24 +340,86 @@ export function registerContentLearningRoutes(
       finalScriptVariant,
       publishedHashtags,
       notes,
+      analysis,
     } = req.body;
 
-    if (views === undefined || retentionPct === undefined) {
-      sendError(res, 'VALIDATION', 'views and retentionPct are required', 400);
+    if (!Number.isInteger(tenantId) || Number(tenantId) <= 0) {
+      sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
+      return;
+    }
+    if (Number(tenantId) !== userId) {
+      sendError(res, 'CONTENT_TENANT_SCOPE_MISMATCH', 'The active tenant does not match the authenticated session.', 403);
+      return;
+    }
+    if (pipelineId !== undefined && pipelineId !== null) {
+      sendError(
+        res,
+        'CONTENT_LEGACY_PIPELINE_ALIAS_READ_ONLY',
+        'pipelineId is a read-only historical alias. Save performance against a workspace item, artifact, and revision.',
+        409,
+        { recovery: 'use_workspace_revision_identifiers' },
+      );
+      return;
+    }
+    const resolvedItemId = itemId ?? workspaceItemId;
+    const resolvedIdempotencyKey = typeof idempotencyKey === 'string'
+      ? idempotencyKey
+      : req.header('x-idempotency-key') ?? '';
+    if (
+      resolvedItemId === undefined
+      || artifactId === undefined
+      || revisionId === undefined
+      || views === undefined
+      || retentionPct === undefined
+      || resolvedIdempotencyKey.trim() === ''
+    ) {
+      sendError(
+        res,
+        'CONTENT_PERFORMANCE_VALIDATION_FAILED',
+        'itemId, artifactId, revisionId, views, retentionPct, and an idempotency key are required.',
+        400,
+      );
       return;
     }
 
-    const { logPerformanceFeedback } = await import('../../services/content-learning-store');
-    const id = logPerformanceFeedback({
-      pipelineId, videoUrl, views, retentionPct,
-      likes, comments, subsGained, hookUsed, selectedTitle,
-      finalCaption, finalCta, finalScriptVariant, publishedHashtags, notes,
-      userId,
-      tenantId,
-    });
+    try {
+      const mutation = recordContentPerformanceOutcome({
+        scope: { tenantId: Number(tenantId), userId },
+        itemId: resolvedItemId,
+        artifactId,
+        revisionId,
+        idempotencyKey: resolvedIdempotencyKey,
+        videoUrl,
+        views,
+        retentionPct,
+        likes,
+        comments,
+        subsGained,
+        hookUsed,
+        selectedTitle,
+        finalCaption,
+        finalCta,
+        finalScriptVariant,
+        publishedHashtags,
+        notes,
+        analysis,
+      });
 
-    invalidateContentDerivedCaches(userId);
-    sendSuccess(res, { feedbackId: id });
+      invalidateContentDerivedCaches(userId);
+      sendSuccess(res, {
+        schemaVersion: CONTENT_PERFORMANCE_LINEAGE_SCHEMA_VERSION,
+        outcome: mutation.value,
+        mutation: { replayed: mutation.replayed, created: mutation.created },
+        evidenceStatus: 'user_reported',
+        publicationExecution: 'not_performed',
+      }, { status: mutation.created ? 201 : 200 });
+    } catch (error) {
+      if (error instanceof ContentWorkspaceWriteDisabledError || error instanceof ContentPerformanceLineageError) {
+        sendError(res, error.code, error.message, error.status, error.details);
+        return;
+      }
+      throw error;
+    }
   }));
 
   /**
@@ -367,41 +455,28 @@ export function registerContentLearningRoutes(
   }));
 
   /**
-   * GET /api/v1/content/artifact-chain/:pipelineId
+   * GET /api/v1/content/artifact-chain/:contentIdentifier
    *
-   * Trace the full artifact chain for a pipeline entry:
-   * idea → topic feedback → pipeline → script → performance → patterns
-   *
-   * Ownership-gated: the pipeline must belong to the authenticated user.
+   * Trace the canonical item → artifact → revision → source/claim
+   * chain. A migration-246 pipeline ID remains accepted as a scoped read-only
+   * alias, but the frozen archive is never queried for live guidance.
    */
   router.get('/artifact-chain/:pipelineId', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const pipelineId = parseInt(req.params.pipelineId, 10);
+    const contentIdentifier = parseInt(req.params.pipelineId, 10);
 
-    if (Number.isNaN(pipelineId)) {
-      sendError(res, 'BAD_REQUEST', 'pipelineId must be a number', 400);
-      return;
-    }
-
-    const db = getDb();
-    ensureContentTenantScopeColumns(db);
-    const row = db.prepare(
-      `SELECT user_id, tenant_id, owner_user_id, visibility_scope, scope_status
-         FROM content_pipeline
-        WHERE id = ?`
-    ).get(pipelineId) as { user_id: number; tenant_id?: number; owner_user_id?: number; visibility_scope?: string; scope_status?: string } | undefined;
-
-    if (!row) {
-      sendError(res, 'NOT_FOUND', 'Pipeline entry not found', 404);
-      return;
-    }
-    if (row.user_id <= 0 || row.user_id !== userId || row.scope_status === 'quarantined' || (row.tenant_id != null && row.tenant_id !== tenantId)) {
-      sendError(res, 'FORBIDDEN', 'Not your pipeline entry', 403);
+    if (Number.isNaN(contentIdentifier)) {
+      sendError(res, 'BAD_REQUEST', 'contentIdentifier must be a number', 400);
       return;
     }
 
     const { getArtifactChain } = await import('../../services/content-learning-store');
-    const chain = getArtifactChain(pipelineId, userId, tenantId);
+    const chain = getArtifactChain(contentIdentifier, userId, tenantId);
+    if (chain.availability === 'not_found') {
+      // Missing and foreign identifiers are deliberately indistinguishable.
+      sendError(res, 'NOT_FOUND', 'Content item not found', 404);
+      return;
+    }
 
     sendSuccess(res, chain);
   }));

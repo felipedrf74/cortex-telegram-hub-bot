@@ -16,6 +16,20 @@ export function parseContentActionStep(
 ): ChatPlanStep | null {
   const pipelineStage = parseContentPipelineStageTransition(input.text);
   if (pipelineStage.targetStage && pipelineStage.topicTitle) {
+    if (pipelineStage.targetStage === 'published') {
+      return makeStep(input, {
+        skill: 'content',
+        action: 'content_publish_now',
+        risk: 'ambiguous',
+        provider: 'none',
+        args: {
+          publicationRequest: input.text,
+          requestedMode: 'track_publication',
+          rejectionReason: 'content_publication_tracking_not_supported',
+        },
+        requiredArgsPresent: false,
+      });
+    }
     return makeStep(input, {
       skill: 'content',
       action: 'content_pipeline_stage_transition',
@@ -29,7 +43,7 @@ export function parseContentActionStep(
   // Phase 10 batch 51 (2026-05-16): Spanish content vocabulary added —
   // contenido / guion / guión / reescribe / reescribir / publicación /
   // campaña / programa (verb).
-  if (!/\b(content|conteudo|contenido|script|roteiro|guion|guión|brief|reel|tiktok|youtube|post|video|publicaci[oó]n|rewrite|reescreve|reescrever|reescribe[r]?|reescritura|pipeline|publica|publish|schedule|programa[r]?|caption|legenda|copy|campa[nñ]a)\b/.test(folded)) return null;
+  if (!/\b(content|conteudo|contenido|script|roteiro|guion|guión|brief|reel|tiktok|youtube|post|postar|postea[r]?|upload|subir|queue|video|publicaci[oó]n|rewrite|reescreve|reescrever|reescribe[r]?|reescritura|pipeline|publica|publish|published|posted|schedule|programa[r]?|filming|recording|writing|editing|shoot|session|block|grava[cç][aã]o|filmagem|escrita|edi[cç][aã]o|sesi[oó]n|bloque|caption|legenda|copy|campa[nñ]a)\b/.test(folded)) return null;
   const platform = inferContentPlatform(folded);
   const topic = extractTopic(input.text) || input.text.trim();
 
@@ -71,13 +85,34 @@ export function parseContentActionStep(
     });
   }
 
-  // Schedule content work: scheduling a piece of content for a date/time.
-  // Phase 7 close-out: "queue" added as a content-scheduling verb (common in
-  // social-media management vocabulary).
-  // Phase 10 batch 51: Spanish "programa"/"publicar" verbs + "contenido"/
-  // "guion"/"publicación" nouns added.
-  if (/\b(schedule|agenda[r]?|publish|publica[r]?|programa[r]?|queue)\b.*\b(content|conteudo|contenido|reel|tiktok|video|post|script|roteiro|guion|guión|publicaci[oó]n)\b/.test(folded)
-    || /\b(content|conteudo|contenido|video|reel|post|script|roteiro|guion|guión|publicaci[oó]n)\b.*\b(schedule|agenda[r]?|publish|publica[r]?|programa[r]?|queue)\b/.test(folded)) {
+  const hasScheduleVerb = /\b(schedule|agenda[r]?|programa[r]?|queue)\b/.test(folded);
+  const hasPublicationVerb = /\b(publish|publica[r]?|post|postar|postea[r]?|upload|subir|queue)\b/.test(folded);
+  const hasPublishableObject = /\b(content|conteudo|contenido|reel|tiktok|video|post|script|roteiro|guion|guión|publicaci[oó]n)\b/.test(folded);
+  const hasWorkNoun = /\b(content\s+work|filming|recording|writing|editing|shoot|session|work\s+block|grava[cç][aã]o|filmagem|escrita|edi[cç][aã]o|sess[aã]o|bloco|rodaje|grabaci[oó]n|escritura|edici[oó]n|sesi[oó]n|bloque)\b/.test(folded);
+  const asksToCausePublishedState = /\b(?:get|have|make|move|send|deixa[r]?|faz(?:er)?|poner|haz|mueve)\b.*\b(?:published|posted|uploaded|live|publicad[oa]|publicado|subid[oa]|en\s+vivo)\b/.test(folded);
+
+  if (
+    (hasPublicationVerb && hasPublishableObject && !hasWorkNoun)
+    || (hasScheduleVerb && hasPublishableObject && !hasWorkNoun)
+    || asksToCausePublishedState
+  ) {
+    return makeStep(input, {
+      skill: 'content',
+      action: 'content_publish_now',
+      risk: 'ambiguous',
+      provider: 'none',
+      args: {
+        publicationRequest: input.text,
+        requestedMode: hasScheduleVerb ? 'schedule_publication' : 'publish_now',
+        rejectionReason: 'content_publication_execution_not_supported',
+      },
+      requiredArgsPresent: false,
+    });
+  }
+
+  // Local work-target compatibility. This does not create a Calendar event or
+  // execute publication; the explicit work noun prevents semantic confusion.
+  if (hasScheduleVerb && hasWorkNoun && hasPublishableObject) {
     const dateTime = extractContentScheduleDateTime(input.text, {
       timezone: input.timezone || 'UTC',
       nowIso: input.nowIso,

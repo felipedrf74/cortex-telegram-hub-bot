@@ -54,15 +54,17 @@ export async function readContentMeshContext(opts: {
   ]);
 
   const filmingRecommendation = filmingResult.status === 'fulfilled' ? filmingResult.value : null;
-  const unreadNotifications = safely(() => getUnreadNotifications(opts.userId, 10), []);
-  const deskItems = safely(() => getContentDeskItems(opts.userId, 4), []);
-  const monitoredPillars = safely(() => getActiveContentPillars(opts.userId), []);
+  const tenantId = opts.tenantId ?? opts.userId;
+  const unreadNotifications = safely(() => getUnreadNotifications(opts.userId, 10, tenantId), []);
+  const deskItems = safely(() => getContentDeskItems(opts.userId, 4, tenantId), []);
+  const monitoredPillars = safely(() => getActiveContentPillars(opts.userId, tenantId), []);
   const recentSignals = safely(() => getRankedContentSignals(opts.userId, 6, opts.tenantId), []);
-  const upcomingTopicCount = safely(() => getUpcomingTopicCount(opts.userId, 14), 0);
+  const upcomingTopicCount = safely(() => getUpcomingTopicCount(opts.userId, 14, tenantId), 0);
   const topics = safely(
     () => getTopics(opts.userId, {
       includeTerminal: false,
       limit: 100,
+      tenantId,
     }),
     [],
   );

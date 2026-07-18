@@ -5,29 +5,16 @@ import { ensureContentTenantScopeColumns, resolveContentTenantId } from '../serv
 import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────
-// CONTENT-UI-O4 (2026-05-04): Canonical 12-stage Content Idea lifecycle.
+// CONTENT-UI-O4 (2026-05-04): Canonical 12-stage Content lifecycle.
 //
-// Two competing lifecycle models exist today:
-//   - `ContentStages` (legacy): ideas → scripted → filmed → editing → published
-//   - `ContentTopicStatus` (rich): planned, drafting, idea, researched, selected,
-//     outlined, drafted, reviewed, revised, approved, scheduled, ready,
-//     published, cancelled, archived, repurposed, rejected, stale,
-//     deferred, unscheduled, blocked, unknown
-//
-// The product spec asks for 12 buckets:
+// The workspace owns lifecycle truth through `production_state` plus
+// `artifact_phase`. Frozen topic/idea stores are not operational inputs.
+// The product surface keeps these 12 presentation buckets:
 //   discovered → suggested → accepted → briefing → drafting → review →
 //   approved → scheduled → published → measured → archived → rejected
 //
-// This module is a PURE DERIVED VIEW. We don't add new schema or
-// migrate existing rows. We map both `saved_ideas.status` and
-// `content_topics.status` into the canonical 12 buckets so the
-// portal/iOS can render a unified pipeline. When backend code adopts
-// the canonical states natively, this mapper becomes a pass-through.
-//
-// Rationale: minimal blast radius. No data migration required. Existing
-// 5-stage view keeps working unchanged (`ContentStages` continues to
-// surface `ideas/scripted/filmed/editing/published` from
-// `content-pipeline-routes.ts`). The new view is additive.
+// This module is a pure tenant-scoped read model. It never writes workflow
+// state or reconstructs publication truth from a legacy status claim.
 // ─────────────────────────────────────────────────────────────────────
 
 export type CanonicalLifecycleStage =
@@ -75,10 +62,9 @@ export const CANONICAL_LIFECYCLE_LABEL: Record<CanonicalLifecycleStage, string> 
 };
 
 /**
- * Map a `content_topics.status` value into a canonical lifecycle stage.
- * The rich set has 22 values; we collapse them into the 12 canonical
- * buckets. Order of map keys reflects nuance — e.g. `'approved'` and
- * `'scheduled'` are distinct buckets, not folded.
+ * Translate retired topic-API status values for compatibility payloads.
+ * This pure translator does not read the retired topic store. The rich set
+ * has 22 values; we collapse them into the 12 canonical presentation buckets.
  */
 export function mapContentTopicStatusToCanonical(
   status: string | null | undefined,
@@ -131,6 +117,33 @@ export function mapSavedIdeaStatusToCanonical(
   }
 }
 
+/** Map canonical workspace state into the 12-stage presentation model. */
+export function mapContentWorkspaceStateToCanonical(
+  productionState: string | null | undefined,
+  artifactPhase: string | null | undefined,
+): CanonicalLifecycleStage {
+  switch ((productionState ?? '').toLowerCase()) {
+    case 'published': return 'published';
+    case 'scheduled': return 'scheduled';
+    case 'approved': return 'approved';
+    case 'review': return 'review';
+    case 'archived': return 'archived';
+    case 'rejected': return 'rejected';
+    case 'inbox': return 'suggested';
+    case 'active': {
+      switch ((artifactPhase ?? '').toLowerCase()) {
+        case 'brief':
+        case 'outline': return 'briefing';
+        case 'draft': return 'drafting';
+        case 'final': return 'review';
+        case 'idea':
+        default: return 'accepted';
+      }
+    }
+    default: return 'discovered';
+  }
+}
+
 export interface CanonicalLifecycleBucket {
   stage: CanonicalLifecycleStage;
   label: string;
@@ -145,11 +158,6 @@ export interface CanonicalLifecycleSummary {
   total: number;
   hasData: boolean;
 }
-
-const STATUS_BY_TABLE = {
-  topics: 'content_topics',
-  ideas: 'saved_ideas',
-} as const;
 
 export function summarizeCanonicalLifecycle(
   userId: number,
@@ -173,47 +181,35 @@ export function summarizeCanonicalLifecycle(
   const db = getDb();
   const resolvedTenantId = resolveContentTenantId(userId, tenantId);
 
-  // ─── Topics → canonical ────────────────────────────────────────
+  // ─── Canonical workspace inventory ─────────────────────────────
   try {
     const rows = db.prepare(`
-      SELECT COALESCE(status, 'idea') AS status, COUNT(*) AS c
-      FROM ${STATUS_BY_TABLE.topics}
+      SELECT production_state, artifact_phase, COUNT(*) AS c
+      FROM content_domain_objects
       WHERE tenant_id = ? AND owner_user_id = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-      GROUP BY status
-    `).all(resolvedTenantId, userId) as Array<{ status: string; c: number }>;
+        AND visibility_scope = 'user_private'
+        AND scope_status = 'active'
+        AND deleted_at IS NULL
+        AND object_type = 'content_item'
+      GROUP BY production_state, artifact_phase
+    `).all(resolvedTenantId, userId) as Array<{
+      production_state: string;
+      artifact_phase: string;
+      c: number;
+    }>;
     for (const r of rows) {
-      const stage = mapContentTopicStatusToCanonical(String(r.status ?? ''));
+      const stage = mapContentWorkspaceStateToCanonical(r.production_state, r.artifact_phase);
       counters[stage] += Number(r.c) || 0;
     }
   } catch (err) {
     logger.warn({ err, userId, tenantId: resolvedTenantId },
-      'content-lifecycle.summarize topics failed');
-  }
-
-  // ─── Ideas → canonical ─────────────────────────────────────────
-  try {
-    const rows = db.prepare(`
-      SELECT COALESCE(status, 'idea') AS status, COUNT(*) AS c
-      FROM ${STATUS_BY_TABLE.ideas}
-      WHERE COALESCE(tenant_id, user_id) = ?
-        AND COALESCE(owner_user_id, user_id) = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-      GROUP BY status
-    `).all(resolvedTenantId, userId) as Array<{ status: string; c: number }>;
-    for (const r of rows) {
-      const stage = mapSavedIdeaStatusToCanonical(String(r.status ?? ''));
-      counters[stage] += Number(r.c) || 0;
-    }
-  } catch (err) {
-    logger.warn({ err, userId, tenantId: resolvedTenantId },
-      'content-lifecycle.summarize ideas failed');
+      'content-lifecycle.summarize workspace failed');
   }
 
   // ─── Radar-feedback signals → 'rejected' / 'accepted' ──────────
   // A radar signal that the user has 'reject'-ed at least once feeds
   // the 'rejected' bucket; an 'accept'-ed signal that hasn't been
-  // converted into a topic yet sits in 'accepted'.
+  // converted into a workspace item yet sits in 'accepted'.
   try {
     const rejected = db.prepare(`
       SELECT COUNT(DISTINCT signal_id) AS c
@@ -241,12 +237,15 @@ export function summarizeCanonicalLifecycle(
         )
         AND NOT EXISTS (
           SELECT 1
-          FROM content_topics topic
-          WHERE topic.tenant_id = f.tenant_id
-            AND topic.owner_user_id = f.owner_user_id
-            AND COALESCE(topic.scope_status, 'active') = 'active'
+          FROM content_domain_objects item
+          WHERE item.tenant_id = f.tenant_id
+            AND item.owner_user_id = f.owner_user_id
+            AND item.visibility_scope = 'user_private'
+            AND item.scope_status = 'active'
+            AND item.deleted_at IS NULL
+            AND item.object_type = 'content_item'
             AND f.signal_topic IS NOT NULL
-            AND lower(trim(topic.title)) = lower(trim(f.signal_topic))
+            AND lower(trim(item.title)) = lower(trim(f.signal_topic))
         )
     `).get(resolvedTenantId, userId) as { c: number };
     counters.accepted += Number(accepted?.c ?? 0);

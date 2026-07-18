@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  getTaskProviderForUser: vi.fn(),
   getAllPendingTasks: vi.fn(),
   getEventsWithDiagnostics: vi.fn(),
   getUnreadMailSummaryForUser: vi.fn(),
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getActivitiesByDateForUser: vi.fn(),
   isGarminConfiguredForUser: vi.fn(),
   getLatestReadinessEvent: vi.fn(),
+  getUserTimezone: vi.fn(),
   isSubmoduleEnabled: vi.fn(),
   composeDailyBrief: vi.fn(),
 }));
@@ -21,7 +23,7 @@ vi.mock('../../src/services/task-store/task-router', async () => {
   );
   return {
     ...actual,
-    getTaskProviderForUser: () => ({ getAllPendingTasks: mocks.getAllPendingTasks }),
+    getTaskProviderForUser: mocks.getTaskProviderForUser,
   };
 });
 vi.mock('../../src/services/unified-calendar', async () => {
@@ -59,7 +61,7 @@ vi.mock('../../src/services/user-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
     '../../src/services/user-service',
   );
-  return { ...actual, getUserTimezone: () => 'UTC' };
+  return { ...actual, getUserTimezone: mocks.getUserTimezone };
 });
 vi.mock('../../src/skills/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/skills/registry')>('../../src/skills/registry');
@@ -72,6 +74,8 @@ import { collectSecretaryOperationalContext } from '../../src/services/chat-core
 describe('secretary operational context', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getTaskProviderForUser.mockReturnValue({ getAllPendingTasks: mocks.getAllPendingTasks });
+    mocks.getUserTimezone.mockReturnValue('UTC');
     mocks.isSubmoduleEnabled.mockReturnValue(true);
     mocks.getAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     mocks.getEventsWithDiagnostics.mockResolvedValue({
@@ -98,6 +102,47 @@ describe('secretary operational context', () => {
     });
   });
 
+  it('fails closed before any personal operational producer read for a distinct tenant', async () => {
+    const observedAt = '2026-07-10T12:00:00.000Z';
+    const result = await collectSecretaryOperationalContext({
+      message: 'Plan my private day around tasks, calendar, reminders, email and training',
+      userId: 7,
+      tenantId: 42,
+      planning: true,
+      now: new Date(observedAt),
+    });
+
+    expect(result).toEqual({
+      items: [],
+      diagnostics: [
+        'tasks',
+        'calendar',
+        'mail',
+        'reminders',
+        'readiness',
+        'garmin',
+        'daily_context',
+      ].map((source) => ({
+        source,
+        status: 'permission_denied',
+        observedAt,
+        reasonCode: 'authenticated_scope_unavailable',
+      })),
+    });
+    expect(mocks.isSubmoduleEnabled).not.toHaveBeenCalled();
+    expect(mocks.getTaskProviderForUser).not.toHaveBeenCalled();
+    expect(mocks.getAllPendingTasks).not.toHaveBeenCalled();
+    expect(mocks.getEventsWithDiagnostics).not.toHaveBeenCalled();
+    expect(mocks.isAnyMailConfiguredForUser).not.toHaveBeenCalled();
+    expect(mocks.getUnreadMailSummaryForUser).not.toHaveBeenCalled();
+    expect(mocks.getRemindersForWindow).not.toHaveBeenCalled();
+    expect(mocks.getLatestReadinessEvent).not.toHaveBeenCalled();
+    expect(mocks.isGarminConfiguredForUser).not.toHaveBeenCalled();
+    expect(mocks.getActivitiesByDateForUser).not.toHaveBeenCalled();
+    expect(mocks.getUserTimezone).not.toHaveBeenCalled();
+    expect(mocks.composeDailyBrief).not.toHaveBeenCalled();
+  });
+
   it('collects bounded live evidence without provider bodies or raw health metrics', async () => {
     mocks.getAllPendingTasks.mockResolvedValue({ success: true, data: [{
       id: 'task-1', listId: 'list-1', title: 'Review launch plan', body: 'SECRET TASK BODY',
@@ -116,7 +161,7 @@ describe('secretary operational context', () => {
       configuredProviders: ['outlook'], outlookUnread: 3, gmailUnread: null, totalUnread: 3,
     });
     mocks.getRemindersForWindow.mockReturnValue([{
-      id: 9, user_id: 7, tenant_id: 42, message: 'Call supplier', remind_at: '2026-07-10T16:00:00.000Z',
+      id: 9, user_id: 7, tenant_id: 7, message: 'Call supplier', remind_at: '2026-07-10T16:00:00.000Z',
       recurring: null, status: 'active', timezone: 'UTC', agenda_item_id: null, created_at: '2026-07-09 08:00:00',
     }]);
     mocks.getActivitiesByDateForUser.mockResolvedValue([{
@@ -124,7 +169,7 @@ describe('secretary operational context', () => {
       startTimeLocal: '2026-07-09T07:00:00', duration: 3600, averageHR: 180,
     }]);
     mocks.getLatestReadinessEvent.mockReturnValue({
-      id: 11, user_id: 7, tenant_id: 42, date: '2026-07-10', sleep_hours: 4.2, sleep_quality: 30,
+      id: 11, user_id: 7, tenant_id: 7, date: '2026-07-10', sleep_hours: 4.2, sleep_quality: 30,
       stress_score: 90, hrv_status: 'low', resting_hr_status: 'elevated', source: 'garmin',
       consent_scope: 'readiness_basic,hrv_status,resting_hr', created_at: '2026-07-10 07:00:00',
     });
@@ -132,7 +177,7 @@ describe('secretary operational context', () => {
     const result = await collectSecretaryOperationalContext({
       message: 'Plan my day around tasks, calendar, reminders, email and training',
       userId: 7,
-      tenantId: 42,
+      tenantId: 7,
       planning: true,
       now: new Date('2026-07-10T12:00:00.000Z'),
     });
@@ -156,14 +201,14 @@ describe('secretary operational context', () => {
     expect(evidence).not.toContain('180');
     expect(evidence).not.toContain('4.2');
     expect(mocks.getRemindersForWindow).toHaveBeenCalledWith(
-      7, 42, '2026-07-10T00:00:00.000Z', '2026-07-10T23:59:59.999Z', 'UTC',
+      7, 7, '2026-07-10T00:00:00.000Z', '2026-07-10T23:59:59.999Z', 'UTC',
     );
-    expect(mocks.getLatestReadinessEvent).toHaveBeenCalledWith(7, 42);
+    expect(mocks.getLatestReadinessEvent).toHaveBeenCalledWith(7, 7);
   });
 
   it('keeps not-requested and ambiguous Garmin empty-or-failure states unknown', async () => {
     const result = await collectSecretaryOperationalContext({
-      message: 'How many unread emails?', userId: 7, tenantId: 42,
+      message: 'How many unread emails?', userId: 7, tenantId: 7,
       now: new Date('2026-07-10T12:00:00.000Z'),
     });
     expect(result.diagnostics).toEqual(expect.arrayContaining([
@@ -177,7 +222,7 @@ describe('secretary operational context', () => {
     ]));
 
     const garmin = await collectSecretaryOperationalContext({
-      message: 'What does Garmin say about training?', userId: 7, tenantId: 42,
+      message: 'What does Garmin say about training?', userId: 7, tenantId: 7,
       now: new Date('2026-07-10T12:00:00.000Z'),
     });
     expect(garmin.diagnostics).toEqual(expect.arrayContaining([
@@ -194,7 +239,7 @@ describe('secretary operational context', () => {
     ['What is on my calendar in 3 days?', '2026-07-13T00:00:00.000Z', '2026-07-13T23:59:59.999Z', 'in 3 days'],
   ] as const)('queries the calendar horizon requested by the user: %s', async (message, expectedStart, expectedEnd, label) => {
     const result = await collectSecretaryOperationalContext({
-      message, userId: 7, tenantId: 42,
+      message, userId: 7, tenantId: 7,
       now: new Date('2026-07-10T12:00:00.000Z'),
     });
 
@@ -206,12 +251,12 @@ describe('secretary operational context', () => {
 
   it('uses the same requested future horizon for reminder evidence', async () => {
     await collectSecretaryOperationalContext({
-      message: 'What reminders do I have tomorrow?', userId: 7, tenantId: 42,
+      message: 'What reminders do I have tomorrow?', userId: 7, tenantId: 7,
       now: new Date('2026-07-10T12:00:00.000Z'),
     });
 
     expect(mocks.getRemindersForWindow).toHaveBeenCalledWith(
-      7, 42, '2026-07-11T00:00:00.000Z', '2026-07-11T23:59:59.999Z', 'UTC',
+      7, 7, '2026-07-11T00:00:00.000Z', '2026-07-11T23:59:59.999Z', 'UTC',
     );
   });
 
@@ -224,7 +269,7 @@ describe('secretary operational context', () => {
     mocks.isGarminConfiguredForUser.mockReturnValue(false);
 
     const result = await collectSecretaryOperationalContext({
-      message: 'Plan my day', userId: 7, tenantId: 42, planning: true,
+      message: 'Plan my day', userId: 7, tenantId: 7, planning: true,
       now: new Date('2026-07-10T12:00:00.000Z'),
     });
     expect(result.diagnostics).toEqual(expect.arrayContaining([

@@ -256,10 +256,10 @@ async function buildFinanceBusyFallback(language: string, userId: number): Promi
   }
 }
 
-async function buildContentBusyFallback(language: string, userId: number): Promise<string | null> {
+async function buildContentBusyFallback(language: string, userId: number, tenantId: number): Promise<string | null> {
   try {
-    const deskItems = getContentDeskItems(userId, 2);
-    const pillars = getActiveContentPillars(userId).slice(0, 3).map((item) => item.name);
+    const deskItems = getContentDeskItems(userId, 2, tenantId);
+    const pillars = getActiveContentPillars(userId, tenantId).slice(0, 3).map((item) => item.name);
 
     if (deskItems.length === 0 && pillars.length === 0) {
       return null;
@@ -342,7 +342,7 @@ export async function buildAITemporarilyBusyResponse(domain: DomainName, userId?
   }
 
   if (domain === 'content' && hasValidUserScope) {
-    const contentFallback = await buildContentBusyFallback(language, userId);
+    const contentFallback = await buildContentBusyFallback(language, userId, scopedTenantId ?? userId);
     if (contentFallback) {
       return {
         text: contentFallback,

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type Anthropic from '@anthropic-ai/sdk';
+import { createHash } from 'node:crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -19,7 +20,6 @@ import {
   isDuplicateIdea,
   isDuplicateIdeaInBatch,
 } from './content-dedup';
-import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
 import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
@@ -35,6 +35,12 @@ import { createLazyAnthropicClient } from './anthropic-lazy-client';
 import { withAiBudgetReservation, type AiBudgetRequest } from './cost-guardrail';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
+import {
+  getWorkflowEligibleDiscoveryIdeas,
+  recordDiscoveryIdeaConsumption,
+  type ContentWorkspaceIdeaCandidate,
+} from './content-workspace-idea-consumers';
+import { ContentWorkspaceWriteDisabledError } from './content-workspace-capabilities';
 
 const client = createLazyAnthropicClient();
 
@@ -311,7 +317,7 @@ function buildWeeklyPackageSystemPrompt(userId: number, tenantId: number): strin
 
 function buildTopicEnrichment(userId: number, tenantId: number): {
   text: string;
-  promotedDiscoveryIdeaIds: number[];
+  discoveryIdeas: ContentWorkspaceIdeaCandidate[];
   hasFreshSignals: boolean;
 } {
   const angleDiversity = buildAngleDiversityBlock(userId, tenantId);
@@ -323,20 +329,21 @@ function buildTopicEnrichment(userId: number, tenantId: number): {
       const bookLines = bookSignals.slice(0, 5).map((s: any) => {
         const p = s.payload as any;
         const fwNames = (p.key_frameworks || []).map((f: any) => f.name).join(', ');
-        return `- "${p.title}" by ${p.author}: ${fwNames}`;
+        return `- "${sanitizeForPromptInterpolation(String(p.title ?? 'Untitled'))}" by ${sanitizeForPromptInterpolation(String(p.author ?? 'Unknown'))}: ${sanitizeForPromptInterpolation(fwNames)}`;
       });
       bookBlock = `\n## Book Frameworks Available\nThese intellectual frameworks from your library could seed compelling topics:\n${bookLines.join('\n')}\nConsider generating 1-2 topics that apply these frameworks to current events. Use angle_tag "framework" for these.\n`;
     }
   } catch { /* non-critical enrichment */ }
 
   let discoveryBlock = '';
-  let promotedDiscoveryIdeaIds: number[] = [];
+  let discoveryIdeas: ContentWorkspaceIdeaCandidate[] = [];
   try {
-    const eligible = getWorkflowEligibleIdeas(userId);
+    const eligible = getWorkflowEligibleDiscoveryIdeas({ tenantId, userId });
     if (eligible.length > 0) {
-      const promotedIdeas = eligible.slice(0, 5);
-      promotedDiscoveryIdeaIds = promotedIdeas.map((idea) => idea.id);
-      const ideasList = promotedIdeas.map((idea) => `- ${idea.title}`).join('\n');
+      discoveryIdeas = eligible.slice(0, 5);
+      const ideasList = discoveryIdeas
+        .map((idea) => `- ${sanitizeForPromptInterpolation(idea.title)}`)
+        .join('\n');
       discoveryBlock = `\n## Pre-Researched Ideas from Daily Discovery\nThese high-scoring ideas were found by the daily trend scanner. Consider including, modifying, or building on them:\n${ideasList}\n`;
     }
   } catch { /* non-critical enrichment */ }
@@ -366,8 +373,8 @@ function buildTopicEnrichment(userId: number, tenantId: number): {
 
   return {
     text: `${angleDiversity}${bookBlock}${discoveryBlock}${radarBlock}`,
-    promotedDiscoveryIdeaIds,
-    hasFreshSignals: promotedDiscoveryIdeaIds.length > 0 || hasFreshRadarSignals,
+    discoveryIdeas,
+    hasFreshSignals: discoveryIdeas.length > 0 || hasFreshRadarSignals,
   };
 }
 
@@ -607,7 +614,12 @@ async function deduplicateTopicCandidates(
     );
     if (inBatchDuplicate.isDuplicate && inBatchDuplicate.confidence > 0.8) {
       logger.info(
-        { title: candidate.title, similarTo: inBatchDuplicate.similarTo },
+        {
+          titleLength: candidate.title.length,
+          titleHash: privacyHash(candidate.title),
+          similarTitleLength: inBatchDuplicate.similarTo?.length ?? 0,
+          similarTitleHash: inBatchDuplicate.similarTo ? privacyHash(inBatchDuplicate.similarTo) : null,
+        },
         'Workflow topic skipped (same provider batch duplicate)',
       );
       continue;
@@ -615,7 +627,12 @@ async function deduplicateTopicCandidates(
     try {
       const duplicate = await isDuplicateIdea(candidate.title, candidate.angleTag, userId, tenantId);
       if (duplicate.isDuplicate && duplicate.confidence > 0.8) {
-        logger.info({ title: candidate.title, similarTo: duplicate.similarTo }, 'Workflow topic skipped (duplicate)');
+        logger.info({
+          titleLength: candidate.title.length,
+          titleHash: privacyHash(candidate.title),
+          similarTitleLength: duplicate.similarTo?.length ?? 0,
+          similarTitleHash: duplicate.similarTo ? privacyHash(duplicate.similarTo) : null,
+        }, 'Workflow topic skipped (duplicate)');
         continue;
       }
     } catch { /* deterministic de-dup failure must not erase usable output */ }
@@ -625,20 +642,9 @@ async function deduplicateTopicCandidates(
   return deduped;
 }
 
-function markPromotedDiscoveryIdeas(ideaIds: number[], generatedCount: number, userId: number): void {
-  if (generatedCount === 0) return;
-  for (const ideaId of ideaIds) {
-    try {
-      markIdeaPromoted(ideaId, userId);
-    } catch (err) {
-      logger.warn({ err, ideaId, userId }, 'Generated topic stored but Discovery promotion marker failed');
-    }
-  }
-}
-
 interface GeneratedTopicCandidateBatch {
   candidates: TopicCandidate[];
-  promotedDiscoveryIdeaIds: number[];
+  discoveryIdeas: ContentWorkspaceIdeaCandidate[];
 }
 
 async function generateTopicCandidateBatch(
@@ -706,7 +712,7 @@ async function generateTopicCandidateBatch(
       format,
       responseChars: textContent.length,
     }, 'Could not find JSON array in topic response');
-    return { candidates: [], promotedDiscoveryIdeaIds: [] };
+    return { candidates: [], discoveryIdeas: [] };
   }
 
   try {
@@ -716,11 +722,11 @@ async function generateTopicCandidateBatch(
     const deduped = await deduplicateTopicCandidates(candidates, userId, tenantId);
     return {
       candidates: deduped,
-      promotedDiscoveryIdeaIds: deduped.length > 0 ? enrichment.promotedDiscoveryIdeaIds : [],
+      discoveryIdeas: deduped.length > 0 ? enrichment.discoveryIdeas : [],
     };
   } catch (err) {
     logger.error({ err, format }, 'Failed to parse topic candidates JSON');
-    return { candidates: [], promotedDiscoveryIdeaIds: [] };
+    return { candidates: [], discoveryIdeas: [] };
   }
 }
 
@@ -803,14 +809,12 @@ export async function generateScript(
     'detailed',
   );
 
-  // ── Durable script storage (April 2026) ──
-  // Persist raw script text in the DB so voice-evolution-agent can
-  // read it without parsing DOCX files. The DOCX export still happens
-  // downstream for teleprompter use, but the DB is the canonical store.
-  try {
-    const { storeScript } = await import('./content-learning-store');
-    storeScript({
-      topicFeedbackId: topic.feedbackId,
+  // Persist through the canonical item/artifact/revision graph. This workflow
+  // is owner-private today, so its authenticated user is also the tenant.
+  if (userId > 0) try {
+    const { saveGeneratedScriptToWorkspace } = await import('./content-workspace-capture');
+    saveGeneratedScriptToWorkspace({
+      scope: { tenantId: userId, userId },
       topic: topic.title,
       format,
       scriptText: result.script,
@@ -823,12 +827,18 @@ export async function generateScript(
       cta: result.cta,
       niche: topic.niche || 'general',
       generationDurationMs: result.duration_ms,
-      userId,
+      topicFeedbackId: topic.feedbackId ?? null,
+      actorType: 'agent',
+      actorId: 'content-workflow',
+      captureOrigin: 'script_generation',
     });
   } catch (err) {
-    // Non-fatal — script generation succeeded, just storage failed.
-    // The script is still returned to the caller and saved as DOCX.
-    logger.warn({ err, topic: topic.title }, 'Failed to store script text in DB (non-fatal)');
+    // Generation still returns its bytes, but the caller can see the durable
+    // save through its own response/next action and retry without overwrite.
+    logger.warn({
+      err,
+      topicLength: topic.title.length,
+    }, 'Failed to capture generated script in the content workspace');
   }
 
   return result;
@@ -920,17 +930,20 @@ export async function generateAndStoreTopicCandidates(
 
   const generated = boundedCount > 0
     ? await generateTopicCandidateBatch(format, boundedCount, isTrending, userId, tenantId, budgetContext)
-    : { candidates: [], promotedDiscoveryIdeaIds: [] };
+    : { candidates: [], discoveryIdeas: [] };
   const candidates = generated.candidates;
   let feedbackIds: number[] = [];
   if (candidates.length > 0) {
     getDb().transaction(() => {
       feedbackIds = storeTopicCandidates(candidates, format, sourceJob, userId, tenantId);
+      recordDiscoveryIdeaConsumptionWhenWritable({
+        scope: { tenantId, userId },
+        ideas: generated.discoveryIdeas,
+        sourceJob,
+        candidateFeedbackIds: feedbackIds,
+      });
     })();
   }
-  // Inserts throw on failure. Reaching this point proves every returned
-  // candidate has durable feedback inventory before source ideas are marked.
-  markPromotedDiscoveryIdeas(generated.promotedDiscoveryIdeaIds, feedbackIds.length, userId);
 
   return {
     format,
@@ -1040,17 +1053,39 @@ export async function generateWeeklyPackage(
     reelIds = reelTopics.length > 0
       ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly', userId, tenantId)
       : [];
+    recordDiscoveryIdeaConsumptionWhenWritable({
+      scope: { tenantId, userId },
+      ideas: enrichment.discoveryIdeas,
+      sourceJob: 'friday_weekly',
+      candidateFeedbackIds: [...ytIds, ...reelIds],
+    });
   })();
-  markPromotedDiscoveryIdeas(
-    enrichment.promotedDiscoveryIdeaIds,
-    ytTopics.length + reelTopics.length,
-    userId,
-  );
 
   return {
     youtube: ytTopics.map((c, i) => ({ ...c, feedbackId: ytIds[i] ?? 0 })),
     reels: reelTopics.map((c, i) => ({ ...c, feedbackId: reelIds[i] ?? 0 })),
   };
+}
+
+function recordDiscoveryIdeaConsumptionWhenWritable(
+  input: Parameters<typeof recordDiscoveryIdeaConsumption>[0],
+): void {
+  try {
+    recordDiscoveryIdeaConsumption(input);
+  } catch (error) {
+    if (error instanceof ContentWorkspaceWriteDisabledError) {
+      logger.info({
+        mode: error.details.mode,
+        writeSlice: error.details.writeSlice,
+      }, 'Discovery consumption remains unrecorded while the Content workspace is read-only');
+      return;
+    }
+    throw error;
+  }
+}
+
+function privacyHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 // ─── Telegram adapters REMOVED ─────────────────────────────────────

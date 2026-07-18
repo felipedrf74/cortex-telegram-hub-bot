@@ -1,0 +1,54 @@
+{
+  "schema": "nexus.irreversible-migrations.v2",
+  "migrations": [
+    {
+      "file": "migrations/246_content_pipeline_workspace_exit.sql",
+      "sha256": "9d8dc3f80ee536a4b5315073c2918adcf74714bece6f7d5862fab27de20486f9",
+      "reason": "state_coupled_legacy_pipeline_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    },
+    {
+      "file": "migrations/247_content_topics_workspace_exit.sql",
+      "sha256": "26709f5a36f5a878886a04e2ed1066078ea44cb0933f4f043992b616aec8d8f1",
+      "reason": "state_coupled_topic_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    },
+    {
+      "file": "migrations/249_content_editorial_workspace_exit.sql",
+      "sha256": "f8131667068a6df7627865aef31b18b284da02feeb1cebd06ee3e2d16cbec386",
+      "reason": "state_coupled_editorial_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    },
+    {
+      "file": "migrations/250_content_performance_workspace_lineage.sql",
+      "sha256": "f1d911796a075ac5ee77a0d3caf0f1a208cfb0893f85bcc522d868368bd01893",
+      "reason": "immutable_performance_lineage_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    },
+    {
+      "file": "migrations/251_content_workspace_integrity.sql",
+      "sha256": "6d698d4df580193c96fd0d5771e26a772f965fabfdd1e2c975d8e5e936a54fcf",
+      "reason": "database_enforced_lineage_integrity_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    },
+    {
+      "file": "migrations/252_content_legacy_script_workspace_parity.sql",
+      "sha256": "214fcf84726b7db27e9f873890b3c50e08f1e9f7b4e3e41c38788928faed6311",
+      "reason": "lossless_legacy_script_authority_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    },
+    {
+      "file": "migrations/253_content_legacy_idea_note_workspace_parity.sql",
+      "sha256": "d94448b6a42a94a27425225adbf8293a93040566f29450129a6268f8abaf265f",
+      "reason": "lossless_legacy_idea_roots_authority_cutover",
+      "rollback": "exact_pre_migration_snapshot"
+    }
+  ],
+  "syntaxExemptions": [
+    {
+      "file": "migrations/248_content_workspace_rollout_observability.sql",
+      "sha256": "3fd0e7124a2cd1c26639fa6283d0a39612bc1849171a42b68647d40c3effd58d",
+      "reason": "lossless_metrics_table_rebuild_with_cumulative_rehearsal"
+    }
+  ]
+}

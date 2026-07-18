@@ -91,7 +91,7 @@ describe('migration 228 — Training plan revision v1', () => {
   });
 
   it('replays safely when one additive legacy column already exists', () => {
-    const db = createMigratedTestDatabase({ excludeFiles: ['228_training_plan_revision_v1.sql'] });
+    const db = createMigratedTestDatabase({ stopBefore: '228_training_plan_revision_v1.sql' });
     try {
       db.exec('ALTER TABLE fitness_training_plans ADD COLUMN source_revision_id TEXT');
       applyMigrationFileForTest(db, '228_training_plan_revision_v1.sql');

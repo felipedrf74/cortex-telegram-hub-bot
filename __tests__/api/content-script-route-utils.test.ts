@@ -115,7 +115,7 @@ describe('content script route contract utilities', () => {
 
     expect(response).toMatchObject({
       topic: 'Creator OS',
-      script: expect.stringContaining('FIRST 3 SECONDS:'),
+      script: 'Open with the constraint.',
       hook: 'Stop treating content as captions.',
       titleOptions: ['A', 'B'],
       sourcesUsed: [{
@@ -145,7 +145,13 @@ describe('content script route contract utilities', () => {
         structureScore: expect.any(Number),
         complianceWarnings: expect.any(Array),
         revisionActions: expect.any(Array),
+        suggestedActions: expect.any(Array),
+        appliedChanges: [],
         blockers: expect.any(Array),
+      },
+      scriptSafety: {
+        blocked: false,
+        blockers: [],
       },
       scriptStructure: {
         firstThreeSeconds: expect.stringContaining('Stop treating content as captions'),
@@ -162,6 +168,33 @@ describe('content script route contract utilities', () => {
       cacheHit: false,
       usageImpact: 'high',
     });
+  });
+
+  it('preserves every engine-generated script character beyond the bounded quality structure', () => {
+    const longScript = [
+      ...Array.from({ length: 24 }, (_, index) => `Section ${index + 1}: detailed user-owned script body.`),
+      'TAIL_SENTINEL_MUST_SURVIVE_7A6F',
+    ].join('\n');
+
+    const response = buildScriptSuccessResponse({
+      result: {
+        topic: 'Lossless script integrity',
+        script: longScript,
+        hook: 'Keep the whole generated document.',
+        title_options: ['Lossless generation'],
+        sources_used: [],
+      },
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'detailed',
+      generationMode: 'standard',
+      startMs: Date.now() - 10,
+      cacheHit: false,
+    });
+
+    expect(response.script).toBe(longScript);
+    expect(response.script).toContain('TAIL_SENTINEL_MUST_SURVIVE_7A6F');
+    expect(response.scriptStructure.beatByBeatScript.length).toBeLessThan(24);
   });
 
   it('attaches draft-first cost, prompt, research, and expansion metadata', () => {

@@ -335,7 +335,7 @@ describe('script-pipeline: iOS API route', () => {
     // The /script route delegates structured response shaping to
     // content-script-route-utils.ts after the route extraction pass.
     expect(routeUtilitySource).toContain('topic: result.topic');
-    expect(routeUtilitySource).toContain('script: scriptQuality.revisedScript');
+    expect(routeUtilitySource).toContain('script: result.script');
     expect(routeUtilitySource).toContain('hook: result.hook');
     expect(routeUtilitySource).toContain('titleOptions:');
     expect(routeUtilitySource).toContain('sourcesUsed:');

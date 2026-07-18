@@ -15,6 +15,23 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/services/shared-decision-context', () => ({
   buildSharedDecisionContext: (...args: unknown[]) => mockBuildSharedDecisionContext(...args),
+  resolveContentCrossSkillContextPolicy: (message?: string) => {
+    const text = (message ?? '').toLowerCase();
+    const allowedPeerSkills = [
+      /\b(training|workout|recovery)\b/.test(text) ? 'training' : null,
+      /\b(calendar|schedule|availability)\b/.test(text) ? 'secretary' : null,
+      /\b(budget|finance|spending)\b/.test(text) ? 'finance' : null,
+      /\b(meal|cooking|nutrition)\b/.test(text) ? 'cooking' : null,
+    ].filter(Boolean);
+    const explicit = /\b(use|consider|factor|account|based|coordinate|adapt|fit|plan around)\b/.test(text)
+      && allowedPeerSkills.length > 0;
+    return {
+      purpose: 'content_planning',
+      disclosure: explicit ? 'presentation_safe' : 'coarse',
+      allowedPeerSkills: explicit ? allowedPeerSkills : ['training', 'secretary', 'finance', 'cooking'],
+      explicitUserIntent: explicit,
+    };
+  },
   buildSharedDecisionContracts: vi.fn(async () => ({})),
   invalidateSharedContextForSkillChange: vi.fn(),
   invalidateSharedDecisionContextCache: vi.fn(),
@@ -279,6 +296,106 @@ describe('chat-context-engine', () => {
 
     expect(context.weakSignals.map((signal) => signal.code)).toContain('tenant_boundary_requires_confirmation');
     expect(context.block).toContain('Which workspace should this apply to?');
+  });
+
+  it('keeps the default Content provider prompt coarse and excludes raw cross-skill memory and daily cache', async () => {
+    insertMemory({
+      tenantId: 10,
+      userId: 7,
+      key: 'training_session',
+      value: 'Tempo Run at 07:00 with private health details',
+      sourceDomain: 'triathlon',
+    });
+    insertMemory({
+      tenantId: 10,
+      userId: 7,
+      key: 'finance_snapshot',
+      value: 'EUR 812.44 remaining and tax due Friday',
+      sourceDomain: 'finance',
+    });
+    insertMemory({
+      tenantId: 10,
+      userId: 7,
+      key: 'content_voice',
+      value: 'Use a calm, direct creator voice',
+      sourceDomain: 'content',
+    });
+    insertDailyContext(
+      10,
+      7,
+      'CALENDAR: 09:00 Private oncology appointment\nTRAINING: Tempo Run\nREADINESS: 31/100\nTASKS: 7 overdue',
+    );
+    mockBuildSharedDecisionContext.mockResolvedValue([
+      '<shared_decision_context domain="content">',
+      '<purpose_gate purpose="content_planning" disclosure="coarse" explicit_user_intent="false" />',
+      '- Training: training-derived capacity is constrained; keep production light and flexible.',
+      '- Finance: finance-derived constraints favor a cost-conscious production plan.',
+      '</shared_decision_context>',
+    ].join('\n'));
+
+    const context = await buildChatPromptContext({
+      domain: 'content',
+      message: 'Plan my content production week',
+      userId: 7,
+      tenantId: 10,
+    });
+
+    expect(context.block).toContain('Use a calm, direct creator voice');
+    expect(context.block).toContain('training-derived capacity is constrained');
+    expect(context.block).toContain('cost-conscious production plan');
+    expect(context.block).not.toContain('Tempo Run at 07:00');
+    expect(context.block).not.toContain('EUR 812.44');
+    expect(context.block).not.toContain('tax due Friday');
+    expect(context.block).not.toContain('Private oncology appointment');
+    expect(context.block).not.toContain('31/100');
+    expect(context.block).not.toContain('7 overdue');
+    expect(context.items.some((item) => item.source === 'daily_context')).toBe(false);
+    expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith(
+      'content',
+      7,
+      10,
+      {
+        contentPurpose: { userMessage: 'Plan my content production week' },
+      },
+    );
+  });
+
+  it('passes only an explicitly requested peer domain into the Content provider prompt gate', async () => {
+    insertMemory({
+      tenantId: 10,
+      userId: 7,
+      key: 'finance_snapshot',
+      value: 'Unrelated private finance amount EUR 999',
+      sourceDomain: 'finance',
+    });
+    mockBuildSharedDecisionContext.mockResolvedValue([
+      '<shared_decision_context domain="content">',
+      '<purpose_gate purpose="content_planning" disclosure="presentation_safe" explicit_user_intent="true" allowed_peer_skills="training" />',
+      '- Training: training-derived capacity is constrained; keep production light and flexible.',
+      '</shared_decision_context>',
+    ].join('\n'));
+
+    const context = await buildChatPromptContext({
+      domain: 'content',
+      message: 'Use my training capacity when planning this content week',
+      userId: 7,
+      tenantId: 10,
+    });
+
+    expect(context.block).toContain('allowed_peer_skills="training"');
+    expect(context.block).toContain('training-derived capacity is constrained');
+    expect(context.block).not.toContain('Unrelated private finance amount');
+    expect(context.block).not.toContain('Finance:');
+    expect(context.block).not.toContain('Secretary:');
+    expect(context.block).not.toContain('Cooking:');
+    expect(mockBuildSharedDecisionContext).toHaveBeenCalledWith(
+      'content',
+      7,
+      10,
+      {
+        contentPurpose: { userMessage: 'Use my training capacity when planning this content week' },
+      },
+    );
   });
 
   it('keeps user-private and tenant-shared memory scoped to the active tenant/user', async () => {

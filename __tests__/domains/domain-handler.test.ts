@@ -587,6 +587,48 @@ describe('handleSimpleDomain', () => {
     expect(stateCtx).toContain('COACH RECOMMENDATIONS');
   });
 
+  it('does not place the all-domain raw memory dump in the Content provider prompt', async () => {
+    vi.mocked(getSharedMemorySummary).mockReturnValue([
+      '[Shared] private_training_session: Tempo Run at 07:00',
+      '[Shared] private_finance_amount: EUR 812.44',
+      '[Shared] private_calendar_title: Oncology appointment',
+    ].join('\n'));
+    mockCallDomain.mockResolvedValue({
+      text: 'Content plan ready.', toolCalls: [], stopReason: 'end_turn',
+    } as any);
+
+    await handleSimpleDomain('content', 'Plan my content production week', 5, 42, undefined, 42);
+
+    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+    expect(stateCtx).not.toContain('Tempo Run at 07:00');
+    expect(stateCtx).not.toContain('EUR 812.44');
+    expect(stateCtx).not.toContain('Oncology appointment');
+    expect(getSharedMemorySummary).not.toHaveBeenCalled();
+  });
+
+  it('places only explicitly requested presentation-safe peer context in the Content provider prompt', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Training-aware content plan ready.', toolCalls: [], stopReason: 'end_turn',
+    } as any);
+
+    await handleSimpleDomain(
+      'content',
+      'Use my training capacity when planning this content production week',
+      5,
+      42,
+      undefined,
+      42,
+    );
+
+    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+    expect(stateCtx).toContain('disclosure="presentation_safe"');
+    expect(stateCtx).toContain('allowed_peer_skills="training"');
+    expect(stateCtx).toContain('Training: training-derived capacity');
+    expect(stateCtx).not.toContain('Finance:');
+    expect(stateCtx).not.toContain('Secretary:');
+    expect(stateCtx).not.toContain('Cooking:');
+  });
+
   it('passes maxTokensOverride to callDomain', async () => {
     mockCallDomain.mockResolvedValue({
       text: 'Long response.', toolCalls: [], stopReason: 'end_turn',

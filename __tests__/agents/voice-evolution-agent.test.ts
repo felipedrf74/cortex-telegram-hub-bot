@@ -121,7 +121,9 @@ describe('Voice Evolution Agent — Content Pipeline Query', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = createMigratedTestDatabase();
+    // This suite exercises the retained legacy read against a predecessor
+    // snapshot. Migration 246 separately proves post-cutover writes fail.
+    db = createMigratedTestDatabase({ stopBefore: '246_content_pipeline_workspace_exit.sql' });
   });
   afterEach(() => { db.close(); });
 

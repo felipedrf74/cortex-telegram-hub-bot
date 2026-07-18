@@ -30,6 +30,7 @@ import { config } from '../config';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { taskPriorityRankSql } from './task-store/task-priority';
+import { countActiveContentWorkspaceItems } from './content-workspace-idea-consumers';
 
 export type DailyContextReadStatus = 'available' | 'empty' | 'failed';
 
@@ -80,6 +81,35 @@ export const DAILY_CONTEXT_PROJECTED_SOURCES: readonly DailyContextProjectedSour
  * Garmin data".
  */
 export const DAILY_CONTEXT_UNREPRESENTED_SOURCES = ['mail', 'reminders', 'garmin'] as const;
+
+interface TaskContextScopeQuery {
+  predicate: string;
+  params: number[];
+}
+
+/**
+ * Older local/test databases predate unified_tasks.tenant_id. They may be
+ * read only for the user's personal tenant; a distinct tenant must fail
+ * closed until the scoped column is present.
+ */
+function resolveTaskContextScopeQuery(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+  tenantId: number,
+): TaskContextScopeQuery {
+  const columns = db.prepare('PRAGMA table_info(unified_tasks)').all() as Array<{ name?: string }>;
+  const hasTenantId = columns.some((column) => column.name === 'tenant_id');
+  if (hasTenantId) {
+    return {
+      predicate: 'user_id = ? AND COALESCE(tenant_id, user_id) = ?',
+      params: [userId, tenantId],
+    };
+  }
+  if (tenantId === userId) {
+    return { predicate: 'user_id = ?', params: [userId] };
+  }
+  return { predicate: '0 = 1', params: [] };
+}
 
 // ─── Cache primitives ──────────────────────────────────────────────────
 
@@ -263,16 +293,19 @@ export async function getOrBuildDailyContext(userId: number, tenantId?: number):
 export async function buildDailyContext(userId: number, tenantId?: number): Promise<string> {
   const parts: string[] = [];
   const db = getDb();
+  const scopedTenantId = resolveChatTenantId(userId, tenantId);
 
   // ── Tasks (from unified store — zero API calls) ─────────────────────
   try {
+    const taskScope = resolveTaskContextScopeQuery(db, userId, scopedTenantId);
     const counts = db.prepare(
       `SELECT
          SUM(CASE WHEN status = 'pending' AND is_deleted = 0 AND date(due_date) < date('now') THEN 1 ELSE 0 END) AS overdue,
          SUM(CASE WHEN status = 'pending' AND is_deleted = 0 AND date(due_date) = date('now') THEN 1 ELSE 0 END) AS due_today,
          SUM(CASE WHEN status = 'pending' AND is_deleted = 0 THEN 1 ELSE 0 END) AS pending
-       FROM unified_tasks WHERE user_id = ?`,
-    ).get(userId) as { overdue: number | null; due_today: number | null; pending: number | null };
+       FROM unified_tasks
+       WHERE ${taskScope.predicate}`,
+    ).get(...taskScope.params) as { overdue: number | null; due_today: number | null; pending: number | null };
 
     const overdueCount = counts.overdue || 0;
     const dueTodayCount = counts.due_today || 0;
@@ -284,9 +317,10 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
       // List up to 5 tasks due today by priority for AI specificity
       const dueToday = db.prepare(
         `SELECT title FROM unified_tasks
-         WHERE user_id = ? AND status = 'pending' AND is_deleted = 0 AND date(due_date) = date('now')
+         WHERE ${taskScope.predicate}
+           AND status = 'pending' AND is_deleted = 0 AND date(due_date) = date('now')
          ORDER BY ${taskPriorityRankSql('priority')} ASC LIMIT 5`,
-      ).all(userId) as { title: string }[];
+      ).all(...taskScope.params) as { title: string }[];
 
       if (dueToday.length > 0) {
         parts.push(`Due today: ${dueToday.map((t) => sanitizeForPromptInterpolation(t.title)).join(', ')}`);
@@ -359,22 +393,14 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
     logger.debug({ err, userId }, 'context: readiness section failed');
   }
 
-  // ── Content pipeline (saved ideas count) ────────────────────────────
+  // ── Content workspace (private active item count) ──────────────────
   try {
-    // saved_ideas.status enum: 'saved' | 'promoted' | 'used'
-    // 'saved' means in the pipeline and not yet acted on
-    // Identity-safety (May 2026 audit): scope strictly by user_id. Earlier
-    // code used `user_id IN (0, ?)` to mix system seeds (user_id = 0) into
-    // every user's pipeline count; that allowed any non-zero user's
-    // accidentally-zero-keyed row to leak into other users' counts. The
-    // strict per-user scope removes that risk surface entirely. System
-    // seeds, if needed, should now be surfaced via an explicit, audited
-    // path that does not coalesce with per-user data.
-    const pipeline = db.prepare(
-      `SELECT COUNT(*) AS cnt FROM saved_ideas WHERE user_id = ? AND status = 'saved'`,
-    ).get(userId) as { cnt: number };
-    if (pipeline.cnt > 0) {
-      parts.push(`CONTENT: ${pipeline.cnt} ideas saved in pipeline`);
+    const activeItems = countActiveContentWorkspaceItems(
+      { tenantId: scopedTenantId, userId },
+      db,
+    );
+    if (activeItems > 0) {
+      parts.push(`CONTENT: ${activeItems} active items in workspace`);
     }
   } catch (err) {
     logger.debug({ err, userId }, 'context: content section failed');
@@ -384,7 +410,6 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
 
   // Persist to cache (PK conflict → overwrite the existing row)
   try {
-    const scopedTenantId = resolveChatTenantId(userId, tenantId);
     db.prepare(
       `INSERT INTO daily_context_cache (tenant_id, user_id, scope_status, context_summary, date, built_at)
        VALUES (?, ?, 'active', ?, ?, datetime('now'))

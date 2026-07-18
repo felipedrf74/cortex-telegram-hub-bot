@@ -24,105 +24,102 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/portal/telemetry', () => ({
-  getJobStatuses: () => [],
-}));
+vi.mock('../../src/portal/telemetry', () => ({ getJobStatuses: () => [] }));
 
 import { contentRoutes } from '../../src/api/routes/content';
+import { createContentWorkspaceItem } from '../../src/services/content-workspace';
+import { saveGeneratedScriptToWorkspace } from '../../src/services/content-workspace-capture';
 
-
-interface MockRes {
-  statusCode: number;
-  body: any;
-  status(code: number): MockRes;
-  json(body: any): MockRes;
-}
-
-function mockRes(): MockRes {
-  const response: MockRes = {
+function mockRes(): any {
+  const response: any = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
     json(body: any) { response.body = body; return response; },
+    setHeader(name: string, value: string) { response.headers[name.toLowerCase()] = value; },
+    getHeader(name: string) { return response.headers[name.toLowerCase()]; },
   };
   return response;
 }
 
-function mockReq(userId: number): Request {
-  return {
+async function dispatch(userId: number, tenantId: number, path = '/ideas'): Promise<any> {
+  const router = contentRoutes();
+  const req = {
     userId,
+    tenantId,
     method: 'GET',
-    url: '/ideas',
-    originalUrl: '/ideas',
+    url: path,
+    originalUrl: path,
     baseUrl: '',
-    path: '/ideas',
+    path,
     query: {},
     params: {},
     headers: {},
     header: () => undefined,
-  } as any;
-}
-
-async function dispatch(userId: number): Promise<MockRes> {
-  const router = contentRoutes();
-  const req = mockReq(userId);
+  } as unknown as Request;
   const res = mockRes();
-
-  await new Promise<void>((resolve) => {
-    (router as any).handle(req, res, (err: any) => {
-      if (err) throw err;
-      resolve();
-    });
+  await new Promise<void>((resolve, reject) => {
+    (router as any).handle(req, res, (err: unknown) => err ? reject(err) : resolve());
     setImmediate(resolve);
   });
-
   return res;
 }
 
-describe('Content API — ideas contract', () => {
-  beforeEach(() => {
-    testDb = createMigratedTestDatabase();
-    testDb.exec(`
-      CREATE TABLE IF NOT EXISTS content_ideas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        score REAL,
-        stage TEXT DEFAULT 'ideas',
-        created_at TEXT DEFAULT (datetime('now'))
-      )
-    `);
-  });
+describe('Content API — canonical ideas compatibility contract', () => {
+  beforeEach(() => { testDb = createMigratedTestDatabase(); });
+  afterEach(() => testDb?.close());
 
-  afterEach(() => {
-    testDb?.close();
-  });
+  it('returns canonical workspace items with count and next-action metadata', async () => {
+    createContentWorkspaceItem({
+      scope: { userId: 41, tenantId: 7 },
+      itemType: 'content_item',
+      title: 'Hybrid athlete workflow',
+      idempotencyKey: 'ideas-route-canonical-001',
+    }, testDb);
 
-  it('returns count metadata alongside the ideas list', async () => {
-    testDb.prepare(`
-      INSERT INTO content_ideas (user_id, title, score, stage, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(41, 'Hybrid athlete workflow', 8.4, 'ideas', '2026-04-17T09:00:00.000Z');
-    testDb.prepare(`
-      INSERT INTO content_ideas (user_id, title, score, stage, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(41, 'Race-week recovery notes', 7.8, 'scripted', '2026-04-17T10:00:00.000Z');
-
-    const response = await dispatch(41);
+    const response = await dispatch(41, 7);
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.ok).toBe(true);
-    expect(response.body.data.ideas).toHaveLength(2);
-    expect(response.body.data.count).toBe(2);
+    expect(response.body.data.count).toBe(1);
+    expect(response.body.data.ideas[0]).toMatchObject({
+      title: 'Hybrid athlete workflow',
+      stage: 'ideas',
+      nextAction: { action: 'develop_brief' },
+      workspace: { productionState: 'inbox', artifactPhase: 'idea' },
+    });
+    expect(response.body.data.workspace).toEqual({ source: 'content_workspace', canonical: true });
   });
 
-  it('returns a stable empty payload when the ideas query fails', async () => {
-    testDb.exec('DROP TABLE content_ideas');
+  it('does not convert a canonical read failure into a successful empty list', async () => {
+    testDb.pragma('foreign_keys = OFF');
+    testDb.exec('DROP TABLE content_domain_objects');
 
-    const response = await dispatch(41);
+    const response = await dispatch(41, 7);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error.code).toBe('CONTENT_IDEAS_UNAVAILABLE');
+  });
+
+  it('shows a canonically saved generated script through the explicit ideas library route', async () => {
+    const saved = saveGeneratedScriptToWorkspace({
+      scope: { userId: 41, tenantId: 7 },
+      topic: 'Saved route script',
+      format: 'YouTube',
+      scriptText: 'First line\n\nExact saved body.',
+      idempotencyKey: 'ideas-library-script-001',
+      captureOrigin: 'script_generation',
+    }, testDb);
+
+    const response = await dispatch(41, 7, '/ideas/library');
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.ok).toBe(true);
-    expect(response.body.data).toEqual({ ideas: [], count: 0 });
+    expect(response.body.data.count).toBe(1);
+    expect(response.body.data.ideas).toContainEqual(expect.objectContaining({
+      id: String(saved.item.id),
+      title: 'Saved route script',
+      stage: 'scripted',
+      workspace: expect.objectContaining({ artifactPhase: 'draft' }),
+    }));
   });
 });

@@ -26,6 +26,7 @@ import {
 } from '../../src/services/content-radar-engine';
 import { upsertContentBrandProfile } from '../../src/services/content-memory-profile';
 import { recordRadarFeedback } from '../../src/state/content-radar-feedback';
+import { getContentWorkspaceItemDetail } from '../../src/services/content-workspace';
 
 
 describe('Content radar opportunity engine', () => {
@@ -340,18 +341,33 @@ describe('Content radar opportunity engine', () => {
     expect(result.ok).toBe(true);
     expect(result.status).toBe('converted');
     expect(result.signal?.lifecycleState).toBe('converted_to_idea');
-    expect(result.signal?.convertedToObjectType).toBe('idea');
+    expect(result.signal?.convertedToObjectType).toBe('content_item');
     expect(result.object).toMatchObject({
-      tenantId: 101,
-      ownerUserId: 501,
-      objectType: 'idea',
+      itemType: 'content_item',
       title: 'Build a creator operating system',
-      editorialState: 'idea',
+      productionState: 'inbox',
+      artifactPhase: 'idea',
     });
-    expect(result.object?.metadata).toMatchObject({
+    const detail = getContentWorkspaceItemDetail(
+      { tenantId: 101, userId: 501 },
+      result.object!.id,
+      testDb,
+    );
+    expect(detail?.artifacts[0].metadata).toMatchObject({
       generatedFromRadarSignalId: signal.signalId,
       radarSourceType: 'book',
       provenance: { referenceId: 'book-to-idea', referenceType: 'book' },
+    });
+    const replay = convertContentRadarSignal({
+      userId: 501,
+      tenantId: 101,
+      signalId: signal.signalId,
+      target: 'idea',
+    });
+    expect(replay).toMatchObject({
+      ok: true,
+      object: { id: result.object!.id },
+      reasonCodes: ['canonical_idempotent_replay'],
     });
   });
 });

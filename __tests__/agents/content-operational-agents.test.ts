@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
-import path from 'path';
 
 let testDb: Database.Database;
-
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
   initDatabase: vi.fn(),
@@ -66,43 +64,39 @@ describe('Content operational agents direct health checks', () => {
   });
 
   it('pipeline agent does not turn a user-private backlog into global bottleneck signals', async () => {
-    testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_title, niche, stage, stage_history, updated_at,
-        user_id, tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES (
-        'Tenant A Private Launch Plan', 'creator agency', 'scripted', '[]',
-        datetime('now', '-14 days'), 501, 101, 501, 'user_private', 'active'
-      )
-    `).run();
+    seedWorkspaceAgentItem(
+      { tenantId: 101, userId: 501 },
+      'Tenant A Private Launch Plan',
+      'active',
+      'draft',
+      '-14 days',
+    );
 
-    await runPipelineAgent();
+    await runPipelineAgent({ tenantId: 202, userId: 502 });
 
     const signals = activeSignals();
     expect(signals.map((signal) => signal.signal_type)).toEqual(['pipeline_capacity']);
     expect(JSON.stringify(signals)).not.toContain('Tenant A Private Launch Plan');
+    expect(signals[0]).toMatchObject({ tenant_id: 202, user_id: 502 });
     expect(latestAgentRun('pipeline-agent')).toMatchObject({ status: 'success', signals_produced: 1 });
   });
 
-  it('pipeline agent detects bottlenecks only from platform/global pipeline rows', async () => {
-    testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_title, niche, stage, stage_history, updated_at,
-        user_id, tenant_id, owner_user_id, visibility_scope, scope_status
-      )
-      VALUES (
-        'Public Content System Deep Dive', 'creator agency', 'scripted', '[]',
-        datetime('now', '-14 days'), 0, NULL, 0, 'platform_internal', 'active'
-      )
-    `).run();
+  it('pipeline agent detects bottlenecks only inside the requested private scope', async () => {
+    seedWorkspaceAgentItem(
+      { tenantId: 101, userId: 501 },
+      'Private Content System Deep Dive',
+      'active',
+      'draft',
+      '-14 days',
+    );
 
-    await runPipelineAgent();
+    await runPipelineAgent({ tenantId: 101, userId: 501 });
 
     const bottlenecks = activeSignals('pipeline_bottleneck');
     expect(bottlenecks).toHaveLength(1);
     expect(bottlenecks[0].payload.bottleneck_stage).toBe('scripted');
     expect(bottlenecks[0].payload.stuck_count).toBe(1);
+    expect(bottlenecks[0]).toMatchObject({ tenant_id: 101, user_id: 501 });
     expect(latestAgentRun('pipeline-agent')).toMatchObject({ status: 'success', signals_produced: 1 });
   });
 
@@ -213,3 +207,31 @@ describe('Content operational agents direct health checks', () => {
     expect(JSON.stringify(result.signals)).not.toMatch(/post consistently|generic|undefined/i);
   });
 });
+
+function seedWorkspaceAgentItem(
+  scope: { tenantId: number; userId: number },
+  title: string,
+  productionState: string,
+  artifactPhase: string,
+  updatedOffset: string,
+): void {
+  testDb.prepare(`
+    INSERT INTO content_domain_objects (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, lifecycle_state, title, production_state, artifact_phase,
+      created_by, updated_by, created_at, updated_at
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?, ?, ?, ?,
+      ?, ?, datetime('now', ?), datetime('now', ?))
+  `).run(
+    scope.tenantId,
+    scope.userId,
+    productionState,
+    title,
+    productionState,
+    artifactPhase,
+    scope.userId,
+    scope.userId,
+    updatedOffset,
+    updatedOffset,
+  );
+}

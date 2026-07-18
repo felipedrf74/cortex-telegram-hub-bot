@@ -17,6 +17,7 @@ import { buildScreenContractMeta } from '../../services/screen-contract-meta';
 import type { Lang } from '../../utils/i18n';
 import {
   buildUnavailableSection,
+  CONTENT_DASHBOARD_STAGE_TRACKING,
   fetchCalendar,
   fetchContent,
   fetchTasks,
@@ -272,7 +273,7 @@ async function buildDashboardPayload(userId: number, tenantId: number, language:
     timedAsync(timings, 'calendar', () => withDashboardTimeout(fetchCalendar(userId, tenantId), DASHBOARD_SECTION_TIMEOUT_MS, 'calendar')),
     timedAsync(timings, 'tasks', () => withDashboardTimeout(fetchTasks(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'tasks')),
     timedAsync(timings, 'training', () => withDashboardTimeout(fetchTraining(userId, tenantId), DASHBOARD_SECTION_TIMEOUT_MS, 'training')),
-    timedAsync(timings, 'content', () => withDashboardTimeout(fetchContent(userId), DASHBOARD_SECTION_TIMEOUT_MS, 'content')),
+    timedAsync(timings, 'content', () => withDashboardTimeout(fetchContent(userId, tenantId), DASHBOARD_SECTION_TIMEOUT_MS, 'content')),
   ]);
 
   const calendar = calendarResult.status === 'fulfilled'
@@ -305,7 +306,11 @@ async function buildDashboardPayload(userId: number, tenantId: number, language:
   const content = contentResult.status === 'fulfilled'
     ? contentResult.value
     : buildUnavailableSection(
-      { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+      {
+        pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 },
+        stageTracking: CONTENT_DASHBOARD_STAGE_TRACKING,
+        nextDeadline: null,
+      },
       ['CONTENT_UNAVAILABLE'],
       ['Content pipeline is unavailable right now.'],
     );

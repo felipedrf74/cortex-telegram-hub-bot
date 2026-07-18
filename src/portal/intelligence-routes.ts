@@ -101,18 +101,22 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/pipeline', (_req: Request, res: Response) => {
+  app.get('/api/pipeline', (req: Request, res: Response) => {
     try {
-      const stats = getPipelineStats();
+      const scope = parseRequiredSignalScope(req, res);
+      if (!scope) return;
+      const stats = getPipelineStats(scope);
       res.json({ ok: true, ...stats });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }
   });
 
-  app.get('/api/pipeline/metrics', (_req: Request, res: Response) => {
+  app.get('/api/pipeline/metrics', (req: Request, res: Response) => {
     try {
-      const metrics = getPipelineOperationalMetrics();
+      const scope = parseRequiredSignalScope(req, res);
+      if (!scope) return;
+      const metrics = getPipelineOperationalMetrics(scope);
       res.json({ ok: true, ...metrics });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');

@@ -61,6 +61,10 @@ describe('release-artifact-manifest', () => {
     fs.writeFileSync(path.join(tmp, 'content-engine/requirements.txt'), 'fastapi\n');
     fs.writeFileSync(path.join(tmp, 'content-engine/services/orchestrator.py'), 'VALUE = 1\n');
     fs.writeFileSync(path.join(tmp, 'scripts/promote-exact-release.sh'), '#!/usr/bin/env bash\nexit 0\n');
+    fs.writeFileSync(path.join(tmp, 'scripts/remote-production-shape-migration-rehearsal.sh'), '#!/usr/bin/env bash\nexit 0\n');
+    fs.writeFileSync(path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'), 'export {};\n');
+    fs.writeFileSync(path.join(tmp, 'scripts/validate-production-shape-migration-rehearsal.mjs'), 'export {};\n');
+    fs.writeFileSync(path.join(tmp, 'scripts/lib/production-shape-migration-rehearsal-evidence.mjs'), 'export {};\n');
   });
 
   afterEach(() => {
@@ -80,6 +84,8 @@ describe('release-artifact-manifest', () => {
     ['runtime catalog', 'catalog/training/exercise-media/v1/compiled-manifest.json'],
     ['capability schema source', 'src/services/chat-turn-contract.ts'],
     ['production promotion tooling', 'scripts/promote-exact-release.sh'],
+    ['production-shape migration rehearsal', 'scripts/production-shape-migration-rehearsal.mjs'],
+    ['production-shape rehearsal evidence', 'scripts/lib/production-shape-migration-rehearsal-evidence.mjs'],
   ])('changes digest when %s changes', (_label, relativePath) => {
     const before = digest();
     fs.appendFileSync(path.join(tmp, relativePath), 'changed\n');

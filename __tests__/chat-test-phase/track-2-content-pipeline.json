@@ -31,21 +31,20 @@
       "id": "content-pipeline-published-pt",
       "user_text": "Marca o vídeo de mobilidade como publicado https://youtu.be/abc123def45",
       "locale": "pt-PT",
-      "expected_action": "content_pipeline_stage_transition",
-      "expected_slots": {
-        "topicTitle": "vídeo de mobilidade",
-        "targetStage": "published"
-      },
-      "expected_verifier": "verified_success",
-      "expected_response_substring": ["vídeo de mobilidade", "pipeline"]
+      "expected_action": "content_publish_now",
+      "expected_verifier": "refused",
+      "expected_response_substring": ["Não consigo publicar", "Não fiz alterações"],
+      "forbidden_response_substring": ["verifiquei no pipeline", "verified_success"]
     },
     {
       "id": "content-schedule-vs-published-es",
       "user_text": "Publica este reel mañana",
       "locale": "es-ES",
-      "expected_action": "content_schedule_work",
+      "expected_action": "content_publish_now",
       "expected_action_NOT": "content_pipeline_stage_transition",
-      "forbidden_response_substring": ["already published", "stage transition"]
+      "expected_verifier": "refused",
+      "expected_response_substring": ["No puedo publicar", "No hice cambios"],
+      "forbidden_response_substring": ["stage transition", "verified_success"]
     }
   ]
 }

@@ -243,8 +243,8 @@ describe('content intelligence routes', () => {
     );
     expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 7700);
     expect(filterSignalsForRadarPreferences).toHaveBeenCalledWith(expect.any(Array), ['marathon']);
-    expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77);
-    expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77);
+    expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77, 7700);
+    expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77, 7700);
     expect(getPerformanceSummary).toHaveBeenCalledWith(77, 30, 7700);
     expect(response.body.data.discovery.activeCount).toBe(1);
     expect(response.body.data.script.status).toBe('ready');
@@ -282,7 +282,7 @@ describe('content intelligence routes', () => {
     expect(getFilmingRecommendation).toHaveBeenCalledWith(88, undefined, 8800);
     expect(localizeFilmingRecommendation).toHaveBeenCalledWith(expect.any(Object), 'pt-BR');
     expect(buildRadarTopicSummaries).toHaveBeenCalledWith(['marathon'], expect.any(Array));
-    expect(getContentDeskItems).toHaveBeenCalledWith(88, 3);
+    expect(getContentDeskItems).toHaveBeenCalledWith(88, 3, 8800);
     expect(response.body.data.discovery.preferredTopics).toEqual(['marathon']);
     expect(response.body.data.discovery.monitoredPillars).toEqual([{ name: 'marathon', keywordCount: 1 }]);
     expect(response.body.data.schedule.filmingRecommendation.reason).toContain('pt-BR:');

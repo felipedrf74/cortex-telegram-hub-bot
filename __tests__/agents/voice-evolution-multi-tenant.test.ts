@@ -153,33 +153,33 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   });
 
   it('builds voice signals from each active tenant’s own transcripts and scripts only', async () => {
-    const { storeScript } = await import('../../src/services/content-learning-store');
+    const { saveGeneratedScriptToWorkspace } = await import('../../src/services/content-workspace-capture');
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
 
     seedUser(25, 'founder');
     seedUser(28, 'knitter');
     seedUser(30, 'script-only');
 
-    storeScript({
-      userId: 25,
-      tenantId: 25,
+    saveGeneratedScriptToWorkspace({
+      scope: { userId: 25, tenantId: 25 },
       topic: 'Founder training topic',
       format: 'reel',
       scriptText: 'founder-only-script strength phrasing',
+      captureOrigin: 'script_generation',
     });
-    storeScript({
-      userId: 28,
-      tenantId: 28,
+    saveGeneratedScriptToWorkspace({
+      scope: { userId: 28, tenantId: 28 },
       topic: 'Knitting pattern topic',
       format: 'reel',
       scriptText: 'knitter-only-script knitting phrasing',
+      captureOrigin: 'script_generation',
     });
-    storeScript({
-      userId: 30,
-      tenantId: 30,
+    saveGeneratedScriptToWorkspace({
+      scope: { userId: 30, tenantId: 30 },
       topic: 'Script-only topic',
       format: 'reel',
       scriptText: 'script-only-script without a transcript',
+      captureOrigin: 'script_generation',
     });
 
     seedTranscript(

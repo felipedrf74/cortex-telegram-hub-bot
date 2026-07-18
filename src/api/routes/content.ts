@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Request, Response } from 'express';
+import { createHash } from 'node:crypto';
+import { Router, Request, Response, type NextFunction } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendAiBudgetError, sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
@@ -22,6 +23,10 @@ import { registerContentScriptRoutes } from './content-script-routes';
 import { registerContentTopicRoutes } from './content-topic-routes';
 import { registerContentCreatorProfileRoutes } from './content-creator-profile-routes';
 import { registerContentAgencyRoutes } from './content-agency-routes';
+import { registerContentWorkspaceRoutes } from './content-workspace-routes';
+import { registerContentAgentJobRoutes } from './content-agent-job-routes';
+import { registerContentWorkspaceScheduleRoutes } from './content-workspace-schedule-routes';
+import { registerContentWorkspaceDecisionRoutes } from './content-workspace-decision-routes';
 import {
   getFilmingRecommendation,
   getTopics,
@@ -43,9 +48,14 @@ import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguageById } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
 import { buildContentHomeViewState } from '../../services/content-home-view-state';
-import { saveIdea } from '../../state/saved-ideas';
+import { captureDiscoveredIdea } from '../../services/content-workspace-capture';
 import { sendConditionalApiSuccess } from '../conditional-cache';
 import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
+import {
+  classifyContentWorkspaceWriteSlice,
+  resolveContentWorkspaceCapabilities,
+} from '../../services/content-workspace-capabilities';
+import { recordContentWorkspaceOperationalOutcome } from '../../services/content-workspace-observability';
 
 const CONTENT_HOME_TTL_SECONDS = 120;
 const CONTENT_HOME_SWR_STALE_SECONDS = 600;
@@ -62,7 +72,28 @@ export function contentRoutes(): Router {
     return ensureCachedRouteTenantScope(res, userId, operation, details);
   }
 
-  registerContentPipelineRoutes(router);
+  registerContentPipelineRoutes(router, ensureValidContentRouteScope);
+
+  /** Server-authoritative rollout/readiness contract. Always available to an authenticated owner. */
+  router.get('/workspace/capabilities', (req, res: Response) => {
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidContentRouteScope(res, userId, 'content_workspace_capabilities')) return;
+    if (!Number.isInteger(tenantId) || tenantId <= 0 || tenantId !== userId) {
+      sendError(res, 'CONTENT_TENANT_SCOPE_MISMATCH', 'Content workspace requires the authenticated private owner scope.', 403);
+      return;
+    }
+    sendSuccess(res, resolveContentWorkspaceCapabilities({ userId, tenantId }));
+  });
+  // Apply to every subsequent Content route. The classifier ignores reads and
+  // unrelated mutations, but also recognizes compatibility/editorial paths
+  // that write the canonical workspace so they cannot bypass the rollout
+  // authority simply because their public URL predates `/workspace`.
+  router.use(enforceContentWorkspaceWriteCapability);
+
+  registerContentWorkspaceRoutes(router, ensureValidContentRouteScope);
+  registerContentAgentJobRoutes(router, ensureValidContentRouteScope);
+  registerContentWorkspaceScheduleRoutes(router, ensureValidContentRouteScope);
+  registerContentWorkspaceDecisionRoutes(router, ensureValidContentRouteScope);
   registerContentEditorialRoutes(router, ensureValidContentRouteScope);
   registerContentNotificationRoutes(router, ensureValidContentRouteScope);
   registerContentTopicRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
@@ -167,6 +198,59 @@ export function contentRoutes(): Router {
   return router;
 }
 
+/**
+ * Fail-closed mutation gate shared by core, revision, lineage, specialist, and
+ * schedule routes. Reads and capability discovery remain available for safe
+ * recovery. Route handlers still own full authentication and tenant checks.
+ */
+export function enforceContentWorkspaceWriteCapability(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const slice = classifyContentWorkspaceWriteSlice(req.method, req.originalUrl || req.url, req.body);
+  if (!slice) {
+    next();
+    return;
+  }
+
+  const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+  if (!Number.isInteger(userId) || !Number.isInteger(tenantId) || userId <= 0 || tenantId <= 0 || tenantId !== userId) {
+    // Preserve the route's existing typed auth/scope response instead of
+    // disclosing rollout state to an invalid scope.
+    next();
+    return;
+  }
+
+  const capabilities = resolveContentWorkspaceCapabilities({ userId, tenantId });
+  if (capabilities.writes[slice]) {
+    next();
+    return;
+  }
+
+  recordContentWorkspaceOperationalOutcome({
+    operation: 'rollout_gate',
+    outcome: 'blocked',
+    reason: 'rollout_write_disabled',
+  });
+
+  sendError(
+    res,
+    'CONTENT_WORKSPACE_WRITE_DISABLED',
+    slice === 'restore_deleted_items'
+      ? 'Content recovery is temporarily unavailable. The deleted item remains preserved in Trash.'
+      : 'This Content workspace action is temporarily read-only. Existing content remains available.',
+    503,
+    {
+      capabilitySchemaVersion: capabilities.schemaVersion,
+      mode: capabilities.mode,
+      writeSlice: slice,
+      reasonCode: capabilities.reasonCode,
+      retryable: true,
+    },
+  );
+}
+
 async function buildContentHomePayload(userId: number, tenantId: number, language: Lang) {
   const db = getDb();
 
@@ -204,6 +288,7 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
     topics = getTopics(userId, {
       includeTerminal: false,
       limit: 100,
+      tenantId,
     }).map((topic) => ({
       status: topic.status,
       scheduledDate: topic.scheduled_date ?? null,
@@ -234,8 +319,8 @@ async function buildContentHomePayload(userId: number, tenantId: number, languag
   );
   const monitoredPillars = radarPreferences.topics.length > 0
     ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
-    : getActiveContentPillars(userId);
-  const deskItems = getContentDeskItems(userId, 3);
+    : getActiveContentPillars(userId, tenantId);
+  const deskItems = getContentDeskItems(userId, 3, tenantId);
   const voiceEntries = getVoiceDna(undefined, userId, tenantId);
   const knowledgeStats = getKnowledgeStats(undefined, userId, tenantId);
   const filmingRecommendation = localizeFilmingRecommendation(
@@ -372,6 +457,8 @@ async function buildLocalDiscoveryFallback(params: {
   requestedTopic?: string;
   language: Lang;
 }) {
+  if (!Number.isInteger(params.tenantId) || Number(params.tenantId) <= 0) return [];
+  const tenantId = Number(params.tenantId);
   const preferences = getContentRadarPreferences(params.userId, params.tenantId);
   const topics = [
     params.requestedTopic,
@@ -401,21 +488,28 @@ async function buildLocalDiscoveryFallback(params: {
     try {
       const dedupe = await isDuplicateIdea(title, undefined, params.userId, params.tenantId);
       if (dedupe.isDuplicate && dedupe.confidence > 0.8) continue;
-      saveIdea({
+      captureDiscoveredIdea({
+        scope: { tenantId, userId: params.userId },
         title,
         sourceDate,
-        source: 'discovery',
         score: 0.35,
         workflowEligible: true,
         angleTag: 'local-radar-fallback',
         whyNow: params.language.startsWith('pt')
           ? 'Gerado localmente a partir dos temas guardados enquanto a pesquisa ao vivo estava indisponível.'
           : 'Generated locally from saved radar topics while live discovery was unavailable.',
-        userId: params.userId,
+        provider: 'local-fallback',
       });
+      // Replays return the already-saved canonical item without creating a
+      // duplicate, but the user still sees the refreshed recommendation.
       saved.push(title);
     } catch (fallbackErr) {
-      logger.warn({ err: fallbackErr, userId: params.userId, title }, 'Content discovery local fallback save failed');
+      logger.warn({
+        err: fallbackErr,
+        userId: params.userId,
+        titleLength: title.length,
+        titleHash: createHash('sha256').update(title).digest('hex').slice(0, 16),
+      }, 'Content discovery local fallback save failed');
     }
   }
 
