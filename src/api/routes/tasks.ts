@@ -44,6 +44,13 @@ import {
 } from '../../services/task-store/offline-first-task-service';
 import { getTaskSyncOperationalMetrics } from '../../services/task-store/task-mutation-sync-worker';
 import { requestTaskSync } from '../../services/task-store/task-sync-coordinator';
+import { getAdapter } from '../../services/task-store/sync-engine';
+import {
+  setTaskListSyncSelection,
+  normalizeTaskListSelectionProvider,
+  type TaskListSelectionProvider,
+} from '../../services/task-store/task-list-sync-selection';
+import type { NormalizedTask } from '../../services/task-store/types';
 import { getDb } from '../../services/database';
 import {
   getTaskConflictPreview,
@@ -260,6 +267,72 @@ function getTodo(req?: any) {
   return microsoftTodo;
 }
 
+/** Provider list id a pulled task belongs to (Microsoft `listId`, Todoist `project_id`). */
+function taskPreviewListId(task: NormalizedTask): string | null {
+  const data = task.providerData as Record<string, unknown> | undefined;
+  const raw =
+    data?.listId ?? data?.list_id ?? data?.parentFolderId ?? data?.project_id ?? data?.projectId;
+  if (raw != null && String(raw).trim()) return String(raw);
+  return task.projectId != null ? String(task.projectId) : null;
+}
+
+/**
+ * Active local-origin tasks that the connect flow would push upstream (the "M
+ * local tasks" in "uploads M local tasks"). These are Nexus-created rows, not
+ * provider imports.
+ */
+function countLocalUploadableTasks(tenantId: number, userId: number): number {
+  try {
+    const row = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM unified_tasks
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+         AND provider = 'nexus' AND is_deleted = 0`,
+    ).get(userId, tenantId) as { count: number } | undefined;
+    return row?.count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The set of provider list ids to reason about at connect time. Prefers a live
+ * probe (authoritative, includes lists added since the last import); falls back
+ * to already-imported projects so connect never fails just because the provider
+ * is briefly unreachable.
+ */
+async function resolveProviderListUniverse(
+  tenantId: number,
+  userId: number,
+  provider: TaskListSelectionProvider,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const adapter = getAdapter(provider);
+  if (adapter && adapter.isConnected(userId)) {
+    try {
+      const projects = await adapter.getProjects(userId);
+      for (const project of projects) {
+        if (project.externalId) ids.add(project.externalId);
+      }
+      return ids;
+    } catch (err) {
+      logger.warn({ err, userId, provider }, 'Connect list-universe probe failed; using imported projects');
+    }
+  }
+  try {
+    const rows = getDb().prepare(
+      `SELECT external_id FROM unified_projects
+       WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ? AND provider = ?`,
+    ).all(userId, tenantId, provider) as Array<{ external_id: string | null }>;
+    for (const row of rows) {
+      if (row.external_id) ids.add(row.external_id);
+    }
+  } catch {
+    /* unified_projects unavailable — return whatever the probe found. */
+  }
+  return ids;
+}
+
 export function taskRoutes(): Router {
   const router = Router();
 
@@ -405,6 +478,137 @@ export function taskRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/sync/now failed');
       sendInternalError(res, 'Failed to run task sync');
+    }
+  });
+
+  /**
+   * GET /api/v1/tasks/sync/import-preview?provider=ms_todo — merge preview (M12).
+   *
+   * A live, token-zero (no-AI) probe of the freshly-connected provider so iOS
+   * can show "Imports N tasks · uploads M local tasks" and a per-list checkbox
+   * list BEFORE the full import. Contract (pinned with the iOS connect screen):
+   *   200 {
+   *     provider,
+   *     lists: [{ providerListId, name, taskCount }],
+   *     localTaskCount,          // active Nexus-origin tasks that would upload
+   *     wouldImportTaskCount,    // total provider tasks across all lists
+   *     incomplete               // provider returned a partial set (some lists errored)
+   *   }
+   *   400 BAD_REQUEST          — provider missing / not selectable
+   *   409 PROVIDER_NOT_CONNECTED — provider has no live connection yet
+   *   503 PROVIDER_UNAVAILABLE — the live probe could not reach the provider
+   *
+   * `taskCount` is derived by bucketing the live task pull by list id, so it is
+   * exact even on a first connect (before anything is imported locally).
+   */
+  router.get('/sync/import-preview', async (req, res: Response) => {
+    try {
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_import_preview_read');
+      const provider = normalizeTaskListSelectionProvider(req.query.provider);
+      if (!provider) {
+        sendError(res, 'BAD_REQUEST', 'provider must be one of ms_todo, todoist, notion.', 400);
+        return;
+      }
+      const adapter = getAdapter(provider);
+      if (!adapter || !adapter.isConnected(userId)) {
+        sendError(res, 'PROVIDER_NOT_CONNECTED', 'Connect this provider before previewing its lists.', 409);
+        return;
+      }
+
+      let projects;
+      let pull;
+      try {
+        projects = await adapter.getProjects(userId);
+        pull = await adapter.getTasks(userId, { knownProjects: projects });
+      } catch (err) {
+        logger.warn({ err, userId, provider }, 'Import preview provider probe failed');
+        sendError(res, 'PROVIDER_UNAVAILABLE', 'Could not reach the provider to build an import preview. Try again shortly.', 503);
+        return;
+      }
+
+      const countsByList = new Map<string, number>();
+      for (const task of pull.tasks) {
+        const listId = taskPreviewListId(task);
+        if (!listId) continue;
+        countsByList.set(listId, (countsByList.get(listId) || 0) + 1);
+      }
+      const lists = projects.map((project) => ({
+        providerListId: project.externalId,
+        name: project.name,
+        taskCount: countsByList.get(project.externalId) || 0,
+      }));
+
+      sendSuccess(res, {
+        provider,
+        lists,
+        localTaskCount: countLocalUploadableTasks(tenantId, userId),
+        wouldImportTaskCount: pull.tasks.length,
+        incomplete: Boolean(pull.incomplete),
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/sync/import-preview failed');
+      sendInternalError(res, 'Failed to build import preview');
+    }
+  });
+
+  /**
+   * POST /api/v1/tasks/sync/connect — record the user's list selection (M12).
+   *
+   * Body: { provider, selectedListIds: string[] }. Persists one selection row
+   * per provider list: enabled for the ids in `selectedListIds`, disabled for
+   * the rest of the known universe (live probe, else already-imported
+   * projects), then kicks the coordinated connect sync (push-before-pull) so
+   * the initial import + ongoing sync only touch the selected lists. Resilient:
+   * it never 503s on provider flakiness — the selection is always persisted.
+   *   200 { provider, selectedListIds, enabledCount, disabledCount, syncStarted }
+   *   400 BAD_REQUEST — provider not selectable / selectedListIds not string[]
+   */
+  router.post('/sync/connect', async (req, res: Response) => {
+    try {
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_sync_connect_mutation');
+      const provider = normalizeTaskListSelectionProvider(req.body?.provider);
+      if (!provider) {
+        sendError(res, 'BAD_REQUEST', 'provider must be one of ms_todo, todoist, notion.', 400);
+        return;
+      }
+      const rawSelected = req.body?.selectedListIds;
+      if (!Array.isArray(rawSelected) || !rawSelected.every((id) => typeof id === 'string')) {
+        sendError(res, 'BAD_REQUEST', 'selectedListIds must be an array of provider list ids.', 400);
+        return;
+      }
+
+      const selectedSet = new Set(rawSelected.map((id) => id.trim()).filter((id) => id.length > 0));
+      const universe = await resolveProviderListUniverse(tenantId, userId, provider);
+
+      const entries = [
+        ...[...selectedSet].map((providerListId) => ({ providerListId, syncEnabled: true })),
+        ...[...universe]
+          .filter((providerListId) => !selectedSet.has(providerListId))
+          .map((providerListId) => ({ providerListId, syncEnabled: false })),
+      ];
+      const { enabledCount, disabledCount } = setTaskListSyncSelection({ tenantId, userId, provider, entries });
+
+      let syncStarted = false;
+      try {
+        const request = requestTaskSync({ tenantId, userId }, 'connect', { push: true, pull: [provider] });
+        // The coordinator's completion never rejects, but attach a guard so an
+        // unexpected error can't surface as an unhandled rejection.
+        Promise.resolve(request.completion).catch(() => undefined);
+        syncStarted = true;
+      } catch (err) {
+        logger.warn({ err, userId, provider }, 'Connect sync kick failed (selection still saved)');
+      }
+
+      sendSuccess(res, {
+        provider,
+        selectedListIds: [...selectedSet],
+        enabledCount,
+        disabledCount,
+        syncStarted,
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/sync/connect failed');
+      sendInternalError(res, 'Failed to save list selection');
     }
   });
 

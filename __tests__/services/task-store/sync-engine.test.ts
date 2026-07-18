@@ -85,6 +85,7 @@ import {
   getProjects,
   getSyncState,
 } from '../../../src/services/task-store/unified-task-store';
+import { setTaskListSyncSelection } from '../../../src/services/task-store/task-list-sync-selection';
 
 const USER_ID = 7;
 
@@ -854,5 +855,115 @@ describe('M6 cursor preservation and delta removals', () => {
     expect(states['ms-a1']).toBe('synced');
     expect(states['ms-a2']).toBe('provider_missing');
     expect(states['ms-b1']).toBe('synced');
+  });
+});
+
+// ── M12: per-list sync selection (disabled lists) ─────────────────────
+
+describe('syncProvider — de-selected list skip (M12)', () => {
+  function msTask(externalId: string, listId: string): NormalizedTask {
+    return {
+      provider: 'ms_todo',
+      externalId,
+      title: `Task ${externalId}`,
+      status: 'pending',
+      priority: 0,
+      providerData: { listId },
+    };
+  }
+
+  function syncStateByExternalId(): Record<string, string> {
+    return Object.fromEntries((testDb.prepare(
+      `SELECT external_id, sync_state FROM unified_tasks WHERE user_id = ? AND provider = 'ms_todo' AND is_deleted = 0`,
+    ).all(USER_ID) as Array<{ external_id: string; sync_state: string }>)
+      .map((row) => [row.external_id, row.sync_state]));
+  }
+
+  it('does not import tasks (or projects) from a disabled list', async () => {
+    setTaskListSyncSelection({
+      tenantId: USER_ID, userId: USER_ID, provider: 'ms_todo',
+      entries: [
+        { providerListId: 'listA', syncEnabled: true },
+        { providerListId: 'listB', syncEnabled: false },
+      ],
+    });
+    const adapter = makeMockAdapter({
+      provider: 'ms_todo',
+      projects: [
+        { provider: 'ms_todo', externalId: 'listA', name: 'A' },
+        { provider: 'ms_todo', externalId: 'listB', name: 'B' },
+      ],
+      tasksByCall: [[msTask('a', 'listA'), msTask('b', 'listB')]],
+    });
+    registerAdapter(adapter);
+
+    const result = await syncProvider(USER_ID, 'ms_todo');
+
+    const imported = getPendingTasks(USER_ID).map((t) => t.externalId).sort();
+    expect(imported).toEqual(['a']);
+    expect(result.projectsUpserted).toBe(1); // only listA
+    // The disabled list is not represented as a project either.
+    expect(getProjects(USER_ID).map((p) => p.externalId)).toEqual(['listA']);
+  });
+
+  it('does not false-mark a disabled list provider_missing on full-pull reconciliation', async () => {
+    // First pull with BOTH lists enabled imports a & b.
+    const first = makeMockAdapter({
+      provider: 'ms_todo',
+      projects: [
+        { provider: 'ms_todo', externalId: 'listA', name: 'A' },
+        { provider: 'ms_todo', externalId: 'listB', name: 'B' },
+      ],
+      tasksByCall: [[msTask('a', 'listA'), msTask('b', 'listB')]],
+    });
+    registerAdapter(first);
+    await syncProvider(USER_ID, 'ms_todo');
+    expect(syncStateByExternalId()).toEqual({ a: 'synced', b: 'synced' });
+
+    // Now disable listB, then a full pull that returns only listA's task.
+    setTaskListSyncSelection({
+      tenantId: USER_ID, userId: USER_ID, provider: 'ms_todo',
+      entries: [{ providerListId: 'listB', syncEnabled: false }],
+    });
+    const second = makeMockAdapter({
+      provider: 'ms_todo',
+      projects: [
+        { provider: 'ms_todo', externalId: 'listA', name: 'A' },
+        { provider: 'ms_todo', externalId: 'listB', name: 'B' },
+      ],
+      tasksByCall: [[msTask('a', 'listA')]],
+    });
+    registerAdapter(second);
+    await syncProvider(USER_ID, 'ms_todo');
+
+    // b lives in the disabled list → excluded from reconciliation → still synced.
+    expect(syncStateByExternalId()).toEqual({ a: 'synced', b: 'synced' });
+  });
+
+  it('DOES mark a missing task provider_missing when its list stays enabled (control)', async () => {
+    const first = makeMockAdapter({
+      provider: 'ms_todo',
+      projects: [
+        { provider: 'ms_todo', externalId: 'listA', name: 'A' },
+        { provider: 'ms_todo', externalId: 'listB', name: 'B' },
+      ],
+      tasksByCall: [[msTask('a', 'listA'), msTask('b', 'listB')]],
+    });
+    registerAdapter(first);
+    await syncProvider(USER_ID, 'ms_todo');
+
+    // No selection → both lists enabled. A full pull without b marks it missing.
+    const second = makeMockAdapter({
+      provider: 'ms_todo',
+      projects: [
+        { provider: 'ms_todo', externalId: 'listA', name: 'A' },
+        { provider: 'ms_todo', externalId: 'listB', name: 'B' },
+      ],
+      tasksByCall: [[msTask('a', 'listA')]],
+    });
+    registerAdapter(second);
+    await syncProvider(USER_ID, 'ms_todo');
+
+    expect(syncStateByExternalId()).toEqual({ a: 'synced', b: 'provider_missing' });
   });
 });
