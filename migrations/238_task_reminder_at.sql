@@ -1,4 +1,4 @@
--- 237: reminder instant on the unified task read model (M13 reminders + notifications).
+-- 238: reminder instant on the unified task read model (M13 reminders + notifications).
 -- `reminder_at` stores the ISO reminder instant that iOS schedules a local
 -- notification from. NULL (the default for every existing row and writer)
 -- means no reminder — identical to pre-237 behavior. It is plumbed through the
