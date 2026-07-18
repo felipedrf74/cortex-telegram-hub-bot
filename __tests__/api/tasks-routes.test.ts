@@ -1972,3 +1972,155 @@ describe('M10 priority REST contract', () => {
     expect(task?.importance).toBe('low');
   });
 });
+
+// ─── M11 minimal Sync Center + Recently Deleted ──────────────────────────────
+
+describe('M11 Recently Deleted route (GET /deleted) + Sync Center status fields', () => {
+  async function createTask(suffix: string) {
+    const created = await dispatch('POST', '/', {
+      body: {
+        title: `Sync center task ${suffix}`,
+        listName: 'Tasks',
+        clientMutationId: `ios-m11-route-create-${suffix}`,
+        idempotencyKey: `idem-m11-route-create-${suffix}`,
+      },
+    });
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    return created.body.data.task as { id: string; listId: string };
+  }
+
+  function tombstone(taskId: string, deletedAt: string): void {
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = ?, status = 'cancelled'
+       WHERE nexus_task_id = ?`,
+    ).run(deletedAt, taskId);
+  }
+
+  it('returns an empty Recently Deleted page without touching providers', async () => {
+    await createTask('empty-live');
+
+    const res = await dispatch('GET', '/deleted');
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toEqual({ tasks: [], count: 0 });
+    expectNoProviderReads();
+  });
+
+  it('lists tombstones newest-first with the pinned wire shape and 90-day window', async () => {
+    const older = await createTask('older');
+    const newer = await createTask('newer');
+    const ancient = await createTask('ancient');
+    const live = await createTask('live');
+    tombstone(older.id, '2026-07-10T09:00:00.000Z');
+    tombstone(newer.id, '2026-07-16T09:00:00.000Z');
+    tombstone(ancient.id, '2026-03-01T09:00:00.000Z'); // beyond the 90-day window
+
+    const res = await dispatch('GET', '/deleted');
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.count).toBe(2);
+    expect(res.body.data.tasks.map((task: any) => task.id)).toEqual([newer.id, older.id]);
+    // Exact pinned contract keys — the iOS section decodes exactly these.
+    expect(res.body.data.tasks[0]).toEqual({
+      id: newer.id,
+      title: 'Sync center task newer',
+      listId: newer.listId,
+      listName: 'Tasks',
+      deletedAt: '2026-07-16T09:00:00.000Z',
+      syncProvider: 'nexus',
+      restorable: true,
+    });
+    expect(res.body.data.tasks.some((task: any) => task.id === live.id)).toBe(false);
+    expect(res.body.data.tasks.some((task: any) => task.id === ancient.id)).toBe(false);
+    expectNoProviderReads();
+  });
+
+  it('marks merged twin-repair tombstones restorable: false and honors the limit clamp', async () => {
+    const merged = await createTask('merged');
+    const plain = await createTask('plain');
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = '2026-07-16T10:00:00.000Z', provider_data = ?
+       WHERE nexus_task_id = ?`,
+    ).run(JSON.stringify({ merged_into: 'task_m11_route_survivor' }), merged.id);
+    tombstone(plain.id, '2026-07-15T10:00:00.000Z');
+
+    const res = await dispatch('GET', '/deleted');
+    const limited = await dispatch('GET', '/deleted', { query: { limit: '1' } });
+    const defaulted = await dispatch('GET', '/deleted', { query: { limit: 'not-a-number' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.tasks.find((task: any) => task.id === merged.id)?.restorable).toBe(false);
+    expect(res.body.data.tasks.find((task: any) => task.id === plain.id)?.restorable).toBe(true);
+    // A merged tombstone still 409s on restore — the read model pre-announced it.
+    const restore = await dispatch('POST', `/list-1/${merged.id}/restore`, {
+      params: { listId: 'list-1', taskId: merged.id },
+    });
+    expect(restore.statusCode).toBe(409);
+    expect(restore.body.error.code).toBe('NOT_RESTORABLE');
+    // limit clamps the page while count stays the total in-window number.
+    expect(limited.body.data.tasks).toHaveLength(1);
+    expect(limited.body.data.tasks[0].id).toBe(merged.id);
+    expect(limited.body.data.count).toBe(2);
+    expect(defaulted.body.data.tasks).toHaveLength(2);
+    expectNoProviderReads();
+  });
+
+  it('scopes Recently Deleted to the requesting tenant/user', async () => {
+    const mine = await createTask('scope-mine');
+    tombstone(mine.id, '2026-07-16T09:00:00.000Z');
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status,
+         is_deleted, deleted_at, nexus_task_id
+       ) VALUES (99, 99, 'nexus', 'ext-m11-route-other', 'Other user tombstone', 'cancelled',
+         1, '2026-07-16T09:30:00.000Z', 'task_m11_route_other')`,
+    ).run();
+
+    const res = await dispatch('GET', '/deleted', { userId: 12, tenantId: 12 });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.tasks.map((task: any) => task.id)).toEqual([mine.id]);
+    expect(res.body.data.count).toBe(1);
+  });
+
+  it('sync/status carries the M11 additive fields and deletedRecentCount matches /deleted', async () => {
+    const gone = await createTask('status-badge');
+    tombstone(gone.id, '2026-07-16T11:00:00.000Z');
+    const insertMutation = testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, status
+       ) VALUES (?, ?, ?, 12, 12, ?, 'task.update', '{}', ?)`,
+    );
+    insertMutation.run('m11-pending', 'c-m11-pending', 'i-m11-pending', 'task-m11-pending', 'queued');
+    insertMutation.run('m11-dead', 'c-m11-dead', 'i-m11-dead', 'task-m11-dead', 'dead_letter');
+    testDb.prepare(
+      `INSERT INTO task_sync_state (user_id, provider, last_sync_at, status, error_message)
+       VALUES (12, 'ms_todo', '2026-07-16T08:00:00.000Z', 'error', 'Graph rejected the token: 401 unauthorized')`,
+    ).run();
+
+    const status = await dispatch('GET', '/sync/status');
+    const deleted = await dispatch('GET', '/deleted');
+
+    expect(status.statusCode, JSON.stringify(status.body)).toBe(200);
+    // Exactly the seeded queued mutation is pending (the nexus-local create
+    // above journaled 'synced'); the dead-letter row is counted discretely,
+    // never as pending.
+    expect(status.body.data.pendingMutationCount).toBe(1);
+    expect(status.body.data.deadLetterCount).toBe(1);
+    expect(status.body.data.deletedRecentCount).toBe(1);
+    expect(status.body.data.deletedRecentCount).toBe(deleted.body.data.count);
+    expect(status.body.data.providerStates).toContainEqual(
+      expect.objectContaining({
+        provider: 'ms_todo',
+        lastErrorCode: 'provider_auth_expired',
+      }),
+    );
+    expect(status.body.data.providerStates).toContainEqual(
+      expect.objectContaining({ provider: 'todoist' }),
+    );
+    expectNoProviderReads();
+  });
+});

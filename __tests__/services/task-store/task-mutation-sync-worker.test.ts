@@ -841,6 +841,75 @@ describe('getTaskSyncOperationalMetrics user scoping', () => {
     expect(scoped.taskCounts.providerDisconnected).toBe(1);
     expect(tenantWide.taskCounts.providerDisconnected).toBe(2);
   });
+
+  it('exposes the M11 Sync Center additive fields: pending/dead-letter/deleted counts and providerStates', () => {
+    // One pending ('failed') mutation for the requesting user.
+    seedAuthParkedMutation({ taskId: 'task-m11-pending' });
+    // One dead-letter row — counted discretely, not as pending.
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, status
+       ) VALUES ('mutation-m11-dead', 'client-m11-dead', 'idem-m11-dead', ?, ?, 'task-m11-dead', 'task.update', '{}', 'dead_letter')`,
+    ).run(USER_ID, USER_ID);
+    const insertTombstone = testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status,
+         is_deleted, deleted_at, nexus_task_id
+       ) VALUES (?, ?, 'nexus', ?, ?, 'cancelled', 1, ?, ?)`,
+    );
+    // In-window tombstone for the requesting user; a beyond-90-days one that
+    // must NOT count; and a same-tenant teammate tombstone that only the
+    // tenant-wide aggregate may see.
+    insertTombstone.run(USER_ID, USER_ID, 'ext-m11-mine', 'Mine recent', new Date().toISOString(), 'task-m11-del-mine');
+    insertTombstone.run(USER_ID, USER_ID, 'ext-m11-old', 'Mine ancient', '2025-01-01T00:00:00.000Z', 'task-m11-del-old');
+    insertTombstone.run(7, USER_ID, 'ext-m11-teammate', 'Teammate recent', new Date().toISOString(), 'task-m11-del-teammate');
+    // Provider sync-state row with an auth-shaped error → machine-readable code.
+    testDb.prepare(
+      `INSERT INTO task_sync_state (user_id, provider, last_sync_at, status, error_message)
+       VALUES (?, 'ms_todo', '2026-07-17T00:00:00.000Z', 'error', 'Graph request failed: 401 unauthorized')`,
+    ).run(USER_ID);
+
+    const scoped = getTaskSyncOperationalMetrics(USER_ID, USER_ID);
+    const tenantWide = getTaskSyncOperationalMetrics(USER_ID);
+
+    expect(scoped.pendingMutationCount).toBe(1);
+    expect(scoped.deadLetterCount).toBe(1);
+    expect(scoped.deletedRecentCount).toBe(1);
+    expect(tenantWide.deletedRecentCount).toBe(2);
+    expect(scoped.providerStates).toEqual([
+      expect.objectContaining({
+        provider: 'ms_todo',
+        state: 'failed',
+        lastSyncedAt: '2026-07-17T00:00:00.000Z',
+        lastErrorCode: 'provider_auth_expired',
+      }),
+      expect.objectContaining({ provider: 'todoist' }),
+    ]);
+    // Provider state is a per-user read — the tenant-wide aggregate variant
+    // (no userId) reports none rather than leaking another member's state.
+    expect(tenantWide.providerStates).toEqual([]);
+  });
+
+  it('counts every in-window tombstone across tenants when called with no scope at all', () => {
+    const insertTombstone = testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status,
+         is_deleted, deleted_at, nexus_task_id
+       ) VALUES (?, ?, 'nexus', ?, ?, 'cancelled', 1, ?, ?)`,
+    );
+    insertTombstone.run(USER_ID, USER_ID, 'ext-m11-global-mine', 'Mine', new Date().toISOString(), 'task-m11-global-mine');
+    // A different TENANT entirely — invisible to both scoped variants.
+    insertTombstone.run(9, 9, 'ext-m11-global-other', 'Other tenant', new Date().toISOString(), 'task-m11-global-other');
+    insertTombstone.run(9, 9, 'ext-m11-global-old', 'Other ancient', '2025-01-01T00:00:00.000Z', 'task-m11-global-old');
+
+    // The operator-facing global variant (no tenantId) drops the tenant
+    // predicate entirely; the 90-day window still applies.
+    const global = getTaskSyncOperationalMetrics();
+
+    expect(global.deletedRecentCount).toBe(2);
+    expect(getTaskSyncOperationalMetrics(USER_ID, USER_ID).deletedRecentCount).toBe(1);
+  });
 });
 
 describe('M5B list.* mutation dispatch', () => {

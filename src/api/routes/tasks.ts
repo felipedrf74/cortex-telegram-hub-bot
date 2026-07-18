@@ -28,6 +28,7 @@ import {
   createOfflineFirstTaskList,
   deleteOfflineFirstTaskList,
   getOfflineFilteredTasks,
+  getOfflineRecentlyDeletedTasks,
   getOfflineTaskById,
   getOfflineTaskChanges,
   getOfflineTaskLists,
@@ -308,6 +309,36 @@ export function taskRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/changes failed');
       sendInternalError(res, 'Failed to fetch task changes');
+    }
+  });
+
+  /**
+   * GET /api/v1/tasks/deleted?limit=50 — Recently Deleted read (M11).
+   *
+   * Token-zero local read over tombstoned rows (is_deleted = 1) for the
+   * requesting tenant/user, newest effective deletion first, capped limit
+   * (default 50, max 100). Only tombstones from the last 90 days are shown
+   * (RECENTLY_DELETED_WINDOW_DAYS — pinned to the ledger retention horizon;
+   * tombstoned task rows themselves are never pruned by retention).
+   *
+   * Contract (pinned with the iOS Recently Deleted section):
+   *   200 { tasks: [{ id, title, listId, listName, deletedAt, syncProvider,
+   *                   restorable }], count }
+   * `count` is the TOTAL in-window tombstone count (it can exceed
+   * tasks.length when the limit clamps the page) and always equals
+   * /sync/status.deletedRecentCount. `restorable: false` only for merged
+   * twin-repair tombstones, where POST /:listId/:taskId/restore (M9) would
+   * answer 409 NOT_RESTORABLE; every other tombstone restores.
+   */
+  router.get('/deleted', async (req, res: Response) => {
+    try {
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_deleted_local_read');
+      sendSuccess(res, getOfflineRecentlyDeletedTasks(tenantId, userId, {
+        limit: capTaskPageSize(req.query.limit, 50, 100),
+      }));
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/deleted failed');
+      sendInternalError(res, 'Failed to fetch recently deleted tasks');
     }
   });
 

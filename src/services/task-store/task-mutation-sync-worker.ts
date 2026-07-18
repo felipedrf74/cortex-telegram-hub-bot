@@ -21,6 +21,12 @@ import { normalizeStoredTaskPriority, priorityToImportance } from './task-priori
 import { requestTaskSync } from './task-sync-coordinator';
 import { getGraphRateLimitCounters } from '../graph-request-policy';
 import type { OfflineTaskDto, TaskSyncState, TaskSyncWarningCode } from './offline-first-task-service';
+// Runtime import is one-directional (offline-first-task-service reaches this
+// module graph only through the zero-dependency kick registry) — no cycle.
+import {
+  getOfflineTaskProviderStates,
+  RECENTLY_DELETED_WINDOW_PREDICATE_SQL,
+} from './offline-first-task-service';
 
 type LinkProvider = 'ms_todo' | 'todoist' | 'nexus_local';
 
@@ -1651,6 +1657,22 @@ export function getTaskSyncOperationalMetrics(tenantId?: number, userId?: number
   const duplicatePreventionHits = observabilityRows
     .filter((row) => row.event_type === 'duplicate_prevention_hit')
     .reduce((sum, row) => sum + row.count, 0);
+  // M11 Sync Center header/pending bindings: the discrete convenience counts
+  // the iOS client would otherwise have to derive from mutationBacklog rows.
+  // Pending statuses mirror countPendingMutations in the offline-first read
+  // model (everything non-terminal that still needs worker or user action).
+  const pendingMutationCount = mutationRows
+    .filter((row) => ['queued', 'accepted_local', 'syncing', 'failed', 'conflict'].includes(row.status))
+    .reduce((sum, row) => sum + row.count, 0);
+  const deadLetterCount = mutationRows
+    .filter((row) => row.status === 'dead_letter')
+    .reduce((sum, row) => sum + row.count, 0);
+  // Shared predicate with GET /tasks/deleted so the Recently Deleted badge
+  // can never disagree with the endpoint it summarizes.
+  const deletedRecentCount = (db.prepare(
+    `SELECT COUNT(*) AS count FROM unified_tasks
+     ${tenantWhere ? `${tenantWhere} AND` : 'WHERE'} ${RECENTLY_DELETED_WINDOW_PREDICATE_SQL}`,
+  ).get(...args) as { count: number }).count;
 
   return {
     generatedAt: nowIso(),
@@ -1675,6 +1697,14 @@ export function getTaskSyncOperationalMetrics(tenantId?: number, userId?: number
       duplicateGroups: row.duplicate_groups,
     })),
     duplicatePreventionHits,
+    // ── M11 additive Sync Center fields ─────────────────────────────────
+    pendingMutationCount,
+    deadLetterCount,
+    deletedRecentCount,
+    // Provider connectivity/freshness with machine-readable lastErrorCode —
+    // per-user by definition (task_sync_state + OAuth truth), so the
+    // tenant-wide aggregate variant reports none.
+    providerStates: userId != null ? getOfflineTaskProviderStates(userId) : [],
     observabilityEvents: observabilityRows,
     backpressure: {
       rateWindowMs: RATE_WINDOW_MS,

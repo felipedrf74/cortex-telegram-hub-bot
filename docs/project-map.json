@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "e0f0cc49d7f8d5d471ecc477e576cd421ca17d441092ec779e3382ecdc8a70af",
-    "baseCommit": "3f3d1ba9359afebf3f1b56e0dfcef9b8fb14845a",
-    "baseCommitTimestamp": "2026-07-18T01:13:18+01:00",
+    "sourceDigest": "8c95ba19ee9e6c644842a543d3ba6fe9a1e9857e10db85d72922a04181d38675",
+    "baseCommit": "d09ecea78fe618c8e8bbc2488723b7ec14f9b34e",
+    "baseCommitTimestamp": "2026-07-18T02:13:00+01:00",
     "trackedFiles": 2590,
     "sourceFiles": 980
   },
@@ -3268,6 +3268,14 @@
       "method": "GET",
       "path": "/api/v1/tasks/changes",
       "localPath": "/changes",
+      "mountPath": "/api/v1/tasks",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tasks/deleted",
+      "localPath": "/deleted",
       "mountPath": "/api/v1/tasks",
       "source": "src/api/routes/tasks.ts",
       "owner": "backend"

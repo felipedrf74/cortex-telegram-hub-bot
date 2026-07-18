@@ -45,8 +45,10 @@ vi.mock('../../../src/services/task-store/task-router', () => ({
 import {
   addOfflineTaskChecklistItem,
   assignOfflineTaskProvider,
+  countOfflineRecentlyDeletedTasks,
   countPendingMutations,
   createOfflineFirstTask,
+  getOfflineRecentlyDeletedTasks,
   createOfflineFirstTaskList,
   deleteOfflineFirstTaskList,
   resolveOfflineCaptureListName,
@@ -2125,5 +2127,200 @@ describe('M10 REST priority contract', () => {
       p3Task,
       noneTask,
     ]);
+  });
+});
+
+// ─── M11 Recently Deleted read model ─────────────────────────────────────────
+
+describe('M11 getOfflineRecentlyDeletedTasks', () => {
+  function createTask(suffix: string, listName = 'Tasks') {
+    return createOfflineFirstTask(USER_ID, USER_ID, {
+      title: `Recently deleted ${suffix}`,
+      listName,
+      clientMutationId: `ios-m11-create-${suffix}`,
+      idempotencyKey: `idem-m11-create-${suffix}`,
+    }).task;
+  }
+
+  function tombstone(taskId: string, deletedAt: string | null): void {
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = ?, status = 'cancelled'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run(deletedAt, USER_ID, USER_ID, taskId);
+  }
+
+  it('returns tombstones newest-first with the pinned wire shape and excludes live tasks', () => {
+    const live = createTask('live');
+    const older = createTask('older');
+    const newer = createTask('newer');
+    tombstone(older.id, '2026-07-10T09:00:00.000Z');
+    tombstone(newer.id, '2026-07-16T09:00:00.000Z');
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.count).toBe(2);
+    expect(result.tasks.map((task) => task.id)).toEqual([newer.id, older.id]);
+    expect(result.tasks[0]).toEqual({
+      id: newer.id,
+      title: 'Recently deleted newer',
+      listId: newer.listId,
+      listName: 'Tasks',
+      deletedAt: '2026-07-16T09:00:00.000Z',
+      syncProvider: 'nexus',
+      restorable: true,
+    });
+    expect(result.tasks.some((task) => task.id === live.id)).toBe(false);
+  });
+
+  it('returns an empty page and zero count when nothing is tombstoned', () => {
+    createTask('only-live');
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result).toEqual({ tasks: [], count: 0 });
+    expect(countOfflineRecentlyDeletedTasks(USER_ID, USER_ID)).toBe(0);
+  });
+
+  it('hides tombstones older than the 90-day window and falls back to updated_at when deleted_at is NULL', () => {
+    const inWindow = createTask('in-window');
+    const beyondWindow = createTask('beyond-window');
+    const legacy = createTask('legacy-null-deleted-at');
+    tombstone(inWindow.id, new Date().toISOString());
+    tombstone(beyondWindow.id, '2026-04-01T09:00:00.000Z'); // > 90 days before 2026-07
+    // Legacy provider soft-delete shape: is_deleted = 1 with no deleted_at.
+    tombstone(legacy.id, null);
+    const legacyUpdatedAt = (testDb.prepare(
+      `SELECT updated_at FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(legacy.id) as { updated_at: string }).updated_at;
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.tasks.map((task) => task.id).sort()).toEqual([inWindow.id, legacy.id].sort());
+    expect(result.count).toBe(2);
+    const legacyDto = result.tasks.find((task) => task.id === legacy.id);
+    expect(legacyDto?.deletedAt).toBe(legacyUpdatedAt);
+  });
+
+  it('marks merged twin-repair tombstones restorable: false (the M9 NOT_RESTORABLE rule)', () => {
+    const merged = createTask('merged');
+    const plain = createTask('plain');
+    tombstone(plain.id, '2026-07-15T09:00:00.000Z');
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = '2026-07-16T09:00:00.000Z', provider_data = ?
+       WHERE nexus_task_id = ?`,
+    ).run(JSON.stringify({ merged_into: 'task_m11_survivor' }), merged.id);
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.tasks.find((task) => task.id === merged.id)?.restorable).toBe(false);
+    expect(result.tasks.find((task) => task.id === plain.id)?.restorable).toBe(true);
+  });
+
+  it('reports the sync-target provider from the link — including the orphan a pushed delete leaves behind', () => {
+    const pushed = createTask('pushed-delete');
+    tombstone(pushed.id, '2026-07-16T10:00:00.000Z');
+    // A pushed delete surrenders the provider id and orphans the link (M4);
+    // the orphan is still the provider a restore would re-push to.
+    testDb.prepare(
+      `UPDATE task_provider_links
+       SET provider = 'ms_todo', provider_account_id = 'ms_todo:42',
+           provider_task_id = NULL, link_state = 'orphaned'
+       WHERE tenant_id = ? AND user_id = ? AND task_id = ?`,
+    ).run(USER_ID, USER_ID, pushed.id);
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.tasks[0]?.syncProvider).toBe('ms_todo');
+  });
+
+  it('clamps the limit (min 1, default 50, max 100) while count stays the total', () => {
+    const first = createTask('clamp-1');
+    const second = createTask('clamp-2');
+    const third = createTask('clamp-3');
+    tombstone(first.id, '2026-07-14T09:00:00.000Z');
+    tombstone(second.id, '2026-07-15T09:00:00.000Z');
+    tombstone(third.id, '2026-07-16T09:00:00.000Z');
+
+    const pageOfOne = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID, { limit: 1 });
+    const clampedLow = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID, { limit: 0 });
+    const clampedHigh = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID, { limit: 5000 });
+    const defaulted = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID, { limit: Number.NaN });
+
+    expect(pageOfOne.tasks.map((task) => task.id)).toEqual([third.id]);
+    expect(pageOfOne.count).toBe(3);
+    expect(clampedLow.tasks).toHaveLength(1);
+    expect(clampedHigh.tasks).toHaveLength(3);
+    expect(defaulted.tasks).toHaveLength(3);
+  });
+
+  it('scopes tombstones to the requesting tenant/user', () => {
+    testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)').run(7, 7);
+    const mine = createTask('scope-mine');
+    tombstone(mine.id, '2026-07-16T09:00:00.000Z');
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, status,
+         is_deleted, deleted_at, nexus_task_id
+       ) VALUES (7, 7, 'nexus', 'ext-m11-other', 'Other user tombstone', 'cancelled',
+         1, '2026-07-16T09:30:00.000Z', 'task_m11_other')`,
+    ).run();
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.tasks.map((task) => task.id)).toEqual([mine.id]);
+    expect(result.count).toBe(1);
+    expect(countOfflineRecentlyDeletedTasks(7, 7)).toBe(1);
+  });
+
+  it('renders a defensively-shaped legacy tombstone instead of dropping the row', () => {
+    // Worst-case legacy row that can still pass the window predicate: no
+    // title, no project binding, no origin provider, no deleted_at. The page
+    // must render it — a row the user cannot see is a row they cannot restore.
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, project_id, project_name,
+         status, is_deleted, deleted_at, updated_at, nexus_task_id
+       ) VALUES (?, ?, '', 'ext-m11-bare', '', NULL, NULL, 'cancelled',
+         1, NULL, ?, 'task_m11_bare')`,
+    ).run(USER_ID, USER_ID, new Date().toISOString());
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]).toEqual({
+      id: 'task_m11_bare',
+      title: '(Untitled)',
+      listId: null,
+      listName: null,
+      // deleted_at is NULL → updated_at is the effective deletion time,
+      // exactly as the window predicate's COALESCE computed it.
+      deletedAt: expect.any(String),
+      // No active link and no origin provider → the local store is the
+      // honest answer for where this tombstone lives.
+      syncProvider: 'nexus',
+      restorable: true,
+    });
+  });
+
+  it('resolves listName through the project map when the row carries only project_id', () => {
+    const anchor = createTask('project-map', 'Errands');
+    const projectId = Number(anchor.listId);
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, title, project_id, project_name,
+         status, is_deleted, deleted_at, nexus_task_id
+       ) VALUES (?, ?, 'nexus', 'ext-m11-namemap', 'Denormalized name missing', ?, NULL,
+         'cancelled', 1, ?, 'task_m11_namemap')`,
+    ).run(USER_ID, USER_ID, projectId, new Date().toISOString());
+
+    const result = getOfflineRecentlyDeletedTasks(USER_ID, USER_ID);
+
+    expect(result.tasks[0]).toMatchObject({
+      id: 'task_m11_namemap',
+      listId: String(projectId),
+      listName: 'Errands',
+    });
   });
 });
