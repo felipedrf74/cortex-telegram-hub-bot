@@ -57,7 +57,11 @@ import {
   requeueAuthParkedMutations,
   runTaskMutationSyncBatch,
 } from '../../../src/services/task-store/task-mutation-sync-worker';
-import { getOfflineTaskLists } from '../../../src/services/task-store/offline-first-task-service';
+import {
+  getOfflineTaskLists,
+  recordLocalTaskMutation,
+  restoreOfflineFirstTask,
+} from '../../../src/services/task-store/offline-first-task-service';
 import { isConnected } from '../../../src/services/oauth-store';
 
 const USER_ID = 42;
@@ -1340,5 +1344,163 @@ describe('M6 latency hardening', () => {
     vi.useFakeTimers();
     expect(scheduleTaskMutationKick(USER_ID, USER_ID)).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+// ── M9: restore (undo delete) against the real worker ────────────────
+
+describe('M9 restore end-to-end with the mutation worker', () => {
+  /** Provider-linked synced task with NO pending mutation. */
+  function seedSyncedProviderTask(taskId: string, providerTaskId: string): void {
+    testDb.prepare(
+      `INSERT INTO unified_tasks (
+         user_id, tenant_id, provider, external_id, project_id, project_name,
+         title, description, status, priority, provider_data, created_at, updated_at,
+         nexus_task_id, local_version, sync_state, source_of_truth
+       ) VALUES (?, ?, 'nexus', ?, 1, 'Work', 'Restore matrix task', '', 'pending', 2, '{}',
+         '2026-07-01 02:00:00', '2026-07-01 02:00:00', ?, 1, 'synced', 'nexus')`,
+    ).run(USER_ID, USER_ID, taskId, taskId);
+    testDb.prepare(
+      `INSERT INTO task_provider_links (
+         id, task_id, tenant_id, user_id, provider, provider_account_id,
+         provider_task_id, provider_list_id, provider_version, ownership, link_state
+       ) VALUES (?, ?, ?, ?, 'ms_todo', 'ms_todo:42', ?, 'ms-list-1', 'etag-live', 'nexus_created', 'linked')`,
+    ).run(`link-${taskId}`, taskId, USER_ID, USER_ID, providerTaskId);
+  }
+
+  it('matrix: delete → push completes → restore → push re-creates — single task, one valid link, present at the provider, zero twins', async () => {
+    const taskId = 'task-restore-matrix';
+    seedSyncedProviderTask(taskId, 'ms-task-matrix');
+
+    // 1. Journal the delete (M6 holdback keeps it invisible to the worker).
+    const deleted = recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId,
+      operation: 'task.delete',
+      clientMutationId: 'ios-matrix-delete',
+      idempotencyKey: 'idem-matrix-delete',
+      patch: { deleted: true },
+    });
+
+    // 2. Holdback elapses; the worker ships the provider hard-delete.
+    testDb.prepare(
+      `UPDATE task_mutations SET available_at = '2020-01-01T00:00:00.000Z' WHERE mutation_id = ?`,
+    ).run(deleted.mutationId);
+    const pushBatch = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(pushBatch.synced).toBe(1);
+    expect(providerApi.deleteTask).toHaveBeenCalledTimes(1);
+    expect(providerApi.deleteTask).toHaveBeenCalledWith('ms-list-1', 'ms-task-matrix');
+    const orphaned = testDb.prepare(
+      `SELECT provider_task_id, link_state FROM task_provider_links WHERE task_id = ?`,
+    ).get(taskId) as { provider_task_id: string | null; link_state: string };
+    // M4 invariant: the pushed delete surrendered the provider id.
+    expect(orphaned).toEqual({ provider_task_id: null, link_state: 'orphaned' });
+
+    // 3. Restore — path (b): revived pending_create link + queued re-push.
+    const restored = restoreOfflineFirstTask(USER_ID, USER_ID, {
+      taskId,
+      clientMutationId: 'ios-matrix-restore',
+      idempotencyKey: 'idem-matrix-restore',
+    });
+    expect(restored.path).toBe('undeleted');
+
+    // 4. The worker re-creates the provider copy through create-recovery
+    //    (marker scan finds nothing → createTask mints a fresh provider id).
+    const repushBatch = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(repushBatch.synced).toBe(1);
+    expect(providerApi.createTask).toHaveBeenCalledTimes(1);
+    expect(providerApi.deleteTask).toHaveBeenCalledTimes(1);
+
+    // Acceptance: exactly ONE unified row, ONE active link holding the NEW
+    // provider id, zero twins.
+    const taskRows = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ?`,
+    ).get(USER_ID) as { count: number };
+    expect(taskRows.count).toBe(1);
+    const links = testDb.prepare(
+      `SELECT provider_task_id, link_state FROM task_provider_links WHERE task_id = ?`,
+    ).all(taskId) as Array<{ provider_task_id: string | null; link_state: string }>;
+    expect(links).toEqual([{ provider_task_id: 'provider-created-1', link_state: 'linked' }]);
+    const row = testDb.prepare(
+      `SELECT is_deleted, deleted_at, sync_state, status FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { is_deleted: number; deleted_at: string | null; sync_state: string; status: string };
+    expect(row).toEqual({ is_deleted: 0, deleted_at: null, sync_state: 'synced', status: 'pending' });
+  });
+
+  it('restore inside the holdback supersedes the delete: the provider deleteTask is NEVER called', async () => {
+    const taskId = 'task-restore-holdback';
+    seedSyncedProviderTask(taskId, 'ms-task-holdback');
+    const deleted = recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId,
+      operation: 'task.delete',
+      clientMutationId: 'ios-holdback-delete',
+      idempotencyKey: 'idem-holdback-delete',
+      patch: { deleted: true },
+    });
+
+    // Inside the holdback the delete is invisible to EVERY runner.
+    const beforeRestore = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(beforeRestore.processed).toBe(0);
+    expect(providerApi.deleteTask).not.toHaveBeenCalled();
+
+    const restored = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+    expect(restored.path).toBe('superseded_delete');
+
+    // Even once the holdback would have elapsed, the superseded row is inert.
+    testDb.prepare(
+      `UPDATE task_mutations SET available_at = '2020-01-01T00:00:00.000Z' WHERE mutation_id = ?`,
+    ).run(deleted.mutationId);
+    const afterRestore = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(afterRestore.processed).toBe(0);
+    expect(providerApi.deleteTask).not.toHaveBeenCalled();
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+
+    const mutation = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = ?`,
+    ).get(deleted.mutationId) as { status: string };
+    expect(mutation.status).toBe('superseded');
+    const link = testDb.prepare(
+      `SELECT provider_task_id, link_state FROM task_provider_links WHERE task_id = ?`,
+    ).get(taskId) as { provider_task_id: string; link_state: string };
+    // The link was never touched — the provider copy still exists untouched.
+    expect(link).toEqual({ provider_task_id: 'ms-task-holdback', link_state: 'linked' });
+    const row = testDb.prepare(
+      `SELECT is_deleted, sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { is_deleted: number; sync_state: string };
+    expect(row).toEqual({ is_deleted: 0, sync_state: 'synced' });
+  });
+
+  it('restore re-push adopts a surviving provider copy through the marker scan instead of twinning', async () => {
+    const taskId = 'task-restore-adopt';
+    seedSyncedProviderTask(taskId, 'ms-task-adopt');
+    // Tombstone with the delete already delivered (link orphaned).
+    testDb.prepare(
+      `UPDATE unified_tasks SET is_deleted = 1, deleted_at = '2026-07-01T03:00:00Z', status = 'cancelled' WHERE nexus_task_id = ?`,
+    ).run(taskId);
+    testDb.prepare(
+      `UPDATE task_provider_links SET provider_task_id = NULL, link_state = 'orphaned' WHERE task_id = ?`,
+    ).run(taskId);
+
+    const restored = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+    expect(restored.path).toBe('undeleted');
+
+    // The provider still has a copy carrying this task's Nexus marker
+    // (e.g. the delete 404'd as already-converged) — recovery adopts it.
+    providerApi.getTasks.mockResolvedValueOnce({
+      success: true,
+      data: [{
+        id: 'ms-survivor-1',
+        listId: 'ms-list-1',
+        title: 'Restore matrix task',
+        linkedResources: [{ applicationName: 'NexusHub', externalId: taskId }],
+      }],
+    });
+
+    const batch = await runTaskMutationSyncBatch({ tenantId: USER_ID, userId: USER_ID });
+    expect(batch.synced).toBe(1);
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+    const link = testDb.prepare(
+      `SELECT provider_task_id, link_state FROM task_provider_links WHERE task_id = ?`,
+    ).get(taskId) as { provider_task_id: string; link_state: string };
+    expect(link).toEqual({ provider_task_id: 'ms-survivor-1', link_state: 'linked' });
   });
 });

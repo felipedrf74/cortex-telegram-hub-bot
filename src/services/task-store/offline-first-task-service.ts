@@ -2,11 +2,13 @@
 
 import crypto from 'crypto';
 import { getDb } from '../database';
+import { logger } from '../../utils/logger';
 import { getUserTimezoneById } from '../user-service';
 import { resolveTaskProvider, type TaskProviderType } from './task-router';
-import { getOpenTaskSyncWarningsForTasks, recordTaskSyncIssue } from './task-sync-issues';
+import { getOpenTaskSyncWarningsForTasks, recordTaskSyncIssue, resolveTaskSyncIssue } from './task-sync-issues';
 import { resolveTaskSyncTarget } from './task-sync-policy';
 import { triggerTaskMutationKick } from './task-mutation-kick';
+import { assertTransition } from './task-sync-transitions';
 
 export type TaskSyncState =
   | 'local_only'
@@ -131,6 +133,15 @@ export interface TaskRetrySyncMutationInput {
   idempotencyKey?: string;
   clientMutationId?: string;
 }
+
+export interface TaskRestoreMutationInput {
+  taskId: string;
+  idempotencyKey?: string;
+  clientMutationId?: string;
+}
+
+/** How a restore converged (wire-visible, pinned by the iOS undo contract). */
+export type TaskRestorePath = 'superseded_delete' | 'undeleted';
 
 type UnifiedTaskRow = {
   id: number;
@@ -2671,6 +2682,332 @@ export function recordLocalTaskMutation(
     mutationId: result.mutationId,
     idempotentReplay: false,
   };
+}
+
+// ─── M9 instant capture: task restore (undo delete) ─────────────────────────
+
+type HeldDeleteMutationRow = {
+  mutation_id: string;
+  status: string;
+  patch_json: string;
+  last_error_code: string | null;
+};
+
+/**
+ * Restore (undo) a deleted task. Two designed paths, decided by whether the
+ * journaled task.delete is still held in the ledger:
+ *
+ *  (a) 'superseded_delete' — the delete mutation is still queued/failed (the
+ *      common case: M6's available_at holdback keeps deletes invisible to
+ *      every runner for 10s). The pending delete rows are retired as
+ *      'superseded' (the M2B conflict-resolution precedent), the tombstone is
+ *      cleared, and NO provider write ever happens. The link was never
+ *      touched by a held delete (the worker only NULLs provider ids on
+ *      PUSHED deletes), so it is left alone. An in-flight 'syncing' delete is
+ *      never superseded — the worker owns it, and such a restore falls
+ *      through to path (b).
+ *
+ *  (b) 'undeleted' — the delete already reached the provider (row tombstoned,
+ *      link orphaned with its provider id surrendered per the M4 invariant),
+ *      or the tombstone has no pending delete at all (e.g. keep_provider
+ *      accepted a remote deletion, or a list delete tombstoned the task). The
+ *      tombstone is cleared and a fresh re-push is journaled the
+ *      canonical-links way: the task's link re-arms as 'pending_create' with
+ *      a NULL provider id (mirror of the M2B keep_local provider-missing
+ *      branch) and ONE queued full-content task.update rides the worker's
+ *      existing create-recovery — marker search first, so a surviving
+ *      provider copy is adopted, never twinned. Local-only tasks (no provider
+ *      link) restore with no mutation at all.
+ *
+ * Merged twin-repair tombstones (provider_data.merged_into) are refused with
+ * NOT_RESTORABLE: the canonical content lives on the surviving task, and
+ * resurrecting the retired twin would mint the duplicate the repair removed.
+ */
+export function restoreOfflineFirstTask(tenantId: number, userId: number, input: TaskRestoreMutationInput) {
+  assertScope(tenantId, userId);
+  const operation = 'task.restore';
+  const { clientMutationId, idempotencyKey } = mutationKeys(tenantId, userId, operation, input);
+  const existingMutation = findExistingMutation(tenantId, userId, operation, clientMutationId, idempotencyKey);
+  if (existingMutation?.task_id) {
+    const replayTask = getTaskByNexusId(tenantId, userId, existingMutation.task_id);
+    if (replayTask) {
+      recordDuplicatePreventionHit(tenantId, userId, existingMutation);
+      const replayPatch = safeJsonParse<Record<string, unknown>>(existingMutation.patch_json, {});
+      return {
+        restored: true as const,
+        path: (replayPatch.path === 'undeleted' ? 'undeleted' : 'superseded_delete') as TaskRestorePath,
+        task: replayTask,
+        mutationId: existingMutation.mutation_id,
+        clientMutationId: existingMutation.client_mutation_id,
+        idempotencyKey: existingMutation.idempotency_key,
+        idempotentReplay: true,
+      };
+    }
+  }
+
+  const row = getTaskRowByNexusId(tenantId, userId, input.taskId);
+  if (!row) {
+    const err = new Error('Task not found');
+    (err as any).code = 'NOT_FOUND';
+    throw err;
+  }
+  if (!row.is_deleted) {
+    const err = new Error('Task is not deleted');
+    (err as any).code = 'NOT_DELETED';
+    throw err;
+  }
+  const mergedInto = safeJsonParse<Record<string, unknown>>(row.provider_data, {}).merged_into;
+  if (typeof mergedInto === 'string' && mergedInto && mergedInto !== row.nexus_task_id) {
+    const err = new Error('This task was merged into another task during duplicate repair and cannot be restored. Restore or edit the surviving task instead.');
+    (err as any).code = 'NOT_RESTORABLE';
+    throw err;
+  }
+
+  const db = getDb();
+  // Path (a) candidates: still-pending USER deletes only. Reassignment
+  // cleanup deletes (patch.reason 'provider_reassignment_cleanup') target an
+  // old provider copy of a re-assigned task and must keep pushing; 'syncing'
+  // rows are in flight and are never superseded.
+  const heldDeletes = (db.prepare(
+    `SELECT mutation_id, status, patch_json, last_error_code
+     FROM task_mutations
+     WHERE tenant_id = ? AND user_id = ? AND task_id = ?
+       AND operation = 'task.delete' AND status IN ('queued', 'failed')
+     ORDER BY created_at ASC`,
+  ).all(tenantId, userId, input.taskId) as HeldDeleteMutationRow[])
+    .filter((mutation) => safeJsonParse<Record<string, unknown>>(mutation.patch_json, {}).reason !== 'provider_reassignment_cleanup');
+
+  const restoredAt = nowIso();
+  // The delete stamped status 'cancelled'; the pre-delete status is not
+  // journaled, so restore to the closest honest state: completed_at survives
+  // deletion, everything else returns to pending.
+  const restoredStatus = row.completed_at ? 'completed' : 'pending';
+  const mutationId = randomId('task_mutation');
+
+  if (heldDeletes.length > 0) {
+    // ── Path (a): supersede the held delete — no provider write happens. ──
+    const nextSyncState = db.transaction((): TaskSyncState => {
+      const supersede = db.prepare(
+        `UPDATE task_mutations
+         SET status = 'superseded',
+             locked_at = NULL,
+             next_retry_at = NULL,
+             last_error_code = 'restore_superseded_delete',
+             last_error_message = NULL
+         WHERE mutation_id = ?`,
+      );
+      for (const held of heldDeletes) {
+        assertTransition('mutation_status', held.status, 'superseded', { mutationId: held.mutation_id });
+        supersede.run(held.mutation_id);
+      }
+
+      const otherPending = db.prepare(
+        `SELECT COUNT(*) AS count FROM task_mutations
+         WHERE tenant_id = ? AND user_id = ? AND task_id = ?
+           AND status IN ('queued', 'accepted_local', 'syncing', 'failed', 'conflict')`,
+      ).get(tenantId, userId, input.taskId) as { count: number };
+      const activeProviderLink = db.prepare(
+        `SELECT 1 AS ok FROM task_provider_links
+         WHERE tenant_id = ? AND user_id = ? AND task_id = ?
+           AND provider != 'nexus_local' AND link_state != 'orphaned'
+         LIMIT 1`,
+      ).get(tenantId, userId, input.taskId) as { ok: number } | undefined;
+      const syncState: TaskSyncState = otherPending.count > 0
+        ? 'queued'
+        : activeProviderLink ? 'synced' : 'local_only';
+
+      if (row.sync_state !== syncState) {
+        assertTransition('task_sync_state', String(row.sync_state || ''), syncState, { taskId: input.taskId });
+      }
+      db.prepare(
+        `UPDATE unified_tasks SET
+           is_deleted = 0,
+           deleted_at = NULL,
+           status = ?,
+           sync_state = ?,
+           local_version = COALESCE(local_version, 1) + 1,
+           updated_at = ?
+         WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+      ).run(restoredStatus, syncState, restoredAt, tenantId, userId, input.taskId);
+
+      // Local bookkeeping row ('synced' short-circuit, the local_only
+      // precedent): never selected by the worker, carries the replay identity.
+      db.prepare(
+        `INSERT INTO task_mutations (
+           mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+           task_id, operation, base_local_version, patch_json, submitted_at, status
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+      ).run(
+        mutationId,
+        clientMutationId,
+        idempotencyKey,
+        tenantId,
+        userId,
+        input.taskId,
+        operation,
+        (row.local_version || 1) + 1,
+        JSON.stringify({
+          path: 'superseded_delete',
+          supersededMutationIds: heldDeletes.map((held) => held.mutation_id),
+        }),
+        restoredAt,
+      );
+      return syncState;
+    })();
+
+    // A failed delete attempt recorded a user-visible issue; the delete is
+    // retired, so exactly those issue codes are stale now. Unrelated issues
+    // (the task returns to its pre-delete state) are left alone.
+    for (const held of heldDeletes) {
+      if (held.status === 'failed' && held.last_error_code) {
+        resolveTaskSyncIssue({
+          tenantId,
+          userId,
+          taskId: input.taskId,
+          code: held.last_error_code as TaskSyncWarningCode,
+        });
+      }
+    }
+
+    const task = getTaskByNexusId(tenantId, userId, input.taskId);
+    if (!task) throw new Error('Failed to restore task');
+    logRestore(tenantId, userId, input.taskId, 'superseded_delete', nextSyncState);
+    return {
+      restored: true as const,
+      path: 'superseded_delete' as TaskRestorePath,
+      task,
+      mutationId,
+      clientMutationId,
+      idempotencyKey,
+      idempotentReplay: false,
+    };
+  }
+
+  // ── Path (b): the delete already pushed (or no delete is pending). ──
+  // Active links outrank orphans so the revival can never collide with
+  // migration 234's active-slot UNIQUE index.
+  const repushLink = db.prepare(
+    `SELECT * FROM task_provider_links
+     WHERE tenant_id = ? AND user_id = ? AND task_id = ?
+       AND provider != 'nexus_local'
+     ORDER BY CASE WHEN link_state = 'orphaned' THEN 1 ELSE 0 END, updated_at DESC
+     LIMIT 1`,
+  ).get(tenantId, userId, input.taskId) as TaskProviderLinkRow | undefined;
+
+  const nextSyncState: TaskSyncState = repushLink
+    ? 'queued'
+    : row.sync_state === 'local_only' || !row.sync_state ? 'local_only' : 'synced';
+  const repushClientMutationId = `${clientMutationId}:restore-repush`.slice(0, 180);
+  const repushMutationId = randomId('task_mutation');
+
+  db.transaction(() => {
+    if (repushLink) {
+      if (repushLink.link_state !== 'pending_create') {
+        assertTransition('link_state', repushLink.link_state, 'pending_create', { linkId: repushLink.id });
+      }
+      db.prepare(
+        `UPDATE task_provider_links
+         SET provider_task_id = NULL,
+             provider_version = NULL,
+             link_state = 'pending_create',
+             updated_at = ?
+         WHERE id = ?`,
+      ).run(restoredAt, repushLink.id);
+    }
+
+    if (row.sync_state !== nextSyncState) {
+      assertTransition('task_sync_state', String(row.sync_state || ''), nextSyncState, { taskId: input.taskId });
+    }
+    db.prepare(
+      `UPDATE unified_tasks SET
+         is_deleted = 0,
+         deleted_at = NULL,
+         status = ?,
+         sync_state = ?,
+         local_version = COALESCE(local_version, 1) + 1,
+         updated_at = ?
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run(restoredStatus, nextSyncState, restoredAt, tenantId, userId, input.taskId);
+
+    db.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, base_local_version, patch_json, submitted_at, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+    ).run(
+      mutationId,
+      clientMutationId,
+      idempotencyKey,
+      tenantId,
+      userId,
+      input.taskId,
+      operation,
+      (row.local_version || 1) + 1,
+      JSON.stringify({ path: 'undeleted', providerLinkProvider: repushLink?.provider || null }),
+      restoredAt,
+    );
+
+    if (repushLink) {
+      // ONE queued full-content re-push (the M2B keep_local patch precedent):
+      // the worker builds the provider payload from the canonical row; the
+      // patch carries the content for audit plus the provider filter.
+      db.prepare(
+        `INSERT INTO task_mutations (
+           mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+           task_id, operation, base_local_version, patch_json, submitted_at, status
+         ) VALUES (?, ?, ?, ?, ?, ?, 'task.update', ?, ?, ?, 'queued')`,
+      ).run(
+        repushMutationId,
+        repushClientMutationId,
+        `${tenantId}:${userId}:${repushClientMutationId}:task.update`.slice(0, 220),
+        tenantId,
+        userId,
+        input.taskId,
+        (row.local_version || 1) + 1,
+        JSON.stringify({
+          resolution: 'restore_undelete',
+          providerLinkProvider: repushLink.provider,
+          title: row.title,
+          body: row.notes,
+          dueDateTime: row.due_date,
+          status: restoredStatus,
+        }),
+        restoredAt,
+      );
+    }
+  })();
+
+  // Restores are not deletes: the journaled re-push rides the standard
+  // debounced kick (flag-gated inside the registry).
+  if (repushLink) {
+    kickAfterJournal(tenantId, userId, 'queued');
+  }
+  // The tombstone's history of sync trouble is void — the restored task
+  // starts a fresh push cycle (or a clean local-only life).
+  resolveTaskSyncIssue({ tenantId, userId, taskId: input.taskId });
+
+  const task = getTaskByNexusId(tenantId, userId, input.taskId);
+  if (!task) throw new Error('Failed to restore task');
+  logRestore(tenantId, userId, input.taskId, 'undeleted', nextSyncState);
+  return {
+    restored: true as const,
+    path: 'undeleted' as TaskRestorePath,
+    task,
+    mutationId,
+    clientMutationId,
+    idempotencyKey,
+    idempotentReplay: false,
+  };
+}
+
+function logRestore(
+  tenantId: number,
+  userId: number,
+  taskId: string,
+  path: TaskRestorePath,
+  syncState: TaskSyncState,
+): void {
+  logger.info({ tenantId, userId, taskId, path, syncState }, 'Task restored (undo delete)');
 }
 
 // ─── M5 single write path: list operations through the ledger ───────────────

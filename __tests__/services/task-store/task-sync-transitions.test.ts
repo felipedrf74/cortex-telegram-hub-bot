@@ -119,7 +119,7 @@ describe('task-sync-transitions', () => {
       ]);
     });
 
-    it('link conflict heals only through M2B resolution; orphaned is terminal', () => {
+    it('link conflict heals only through M2B resolution; orphaned exits only through the M9 restore revival', () => {
       expect([..._transitionTableForTests('link_state').conflict].sort()).toEqual([
         'conflict',
         'linked',
@@ -127,7 +127,10 @@ describe('task-sync-transitions', () => {
         'pending_create',
         'pending_update',
       ]);
-      expect(_transitionTableForTests('link_state').orphaned).toEqual([]);
+      // M9 restore: a task whose delete already pushed revives its most
+      // recent orphan as pending_create (NULL provider id → create-recovery).
+      // No other exit exists — orphans stay history for every other writer.
+      expect(_transitionTableForTests('link_state').orphaned).toEqual(['pending_create']);
     });
   });
 
@@ -179,9 +182,31 @@ describe('task-sync-transitions', () => {
       }
     });
 
-    it('deleted_pending_sync completes to synced only via the delete push (NEX-19 resurrect closed)', () => {
+    it('deleted_pending_sync exits: delete push, conflict guard, and the M9 restore undo (NEX-19 resurrect stays closed)', () => {
       expect(isTransitionAllowed('task_sync_state', 'deleted_pending_sync', 'synced')).toBe(true);
       expect(isTransitionAllowed('task_sync_state', 'deleted_pending_sync', 'conflict')).toBe(true);
+      // M9 restore path (a): superseding the held delete returns the row to
+      // queued (other pending mutations) or local_only (no provider link).
+      // Pulls still cannot resurrect the row — the pending guard conflicts it.
+      expect([..._transitionTableForTests('task_sync_state').deleted_pending_sync].sort()).toEqual([
+        'conflict',
+        'local_only',
+        'queued',
+        'synced',
+      ]);
+    });
+
+    it('M9 restore edges: tombstone undo re-queues and revives links as pending_create', () => {
+      // Path (b) re-push can start from any tombstone sync_state, including a
+      // pending retry parked at delete time (list-delete tombstones).
+      expect(isTransitionAllowed('task_sync_state', 'failed_retryable', 'queued')).toBe(true);
+      // The restore writer can meet the link in any state (pushed deletes
+      // orphan it; list-delete tombstones leave it as-is), so every link
+      // state carries the pending_create re-arm.
+      for (const from of knownStates('link_state')) {
+        if (from === 'pending_create') continue;
+        expect(isTransitionAllowed('link_state', from, 'pending_create'), from).toBe(true);
+      }
     });
 
     it('M2B supersede sources: every still-pending ledger status can retire, delivered work cannot', () => {

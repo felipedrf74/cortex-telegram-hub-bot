@@ -58,6 +58,7 @@ import {
   getOfflineTaskSnapshot,
   getOfflineTasksForList,
   recordLocalTaskMutation,
+  restoreOfflineFirstTask,
   retryOfflineTaskSync,
   toggleOfflineTaskChecklistItem,
   updateOfflineFirstTask,
@@ -1536,5 +1537,385 @@ describe('M6 push-kick wiring and delete holdback', () => {
       `SELECT status FROM task_mutations WHERE mutation_id = ?`,
     ).get(result.mutationId) as { status: string };
     expect(mutation.status).toBe('queued');
+  });
+});
+
+// ── M9: task restore (undo delete) ───────────────────────────────────
+
+describe('M9 restoreOfflineFirstTask', () => {
+  const kick = vi.fn(() => true);
+
+  beforeEach(() => {
+    kick.mockClear();
+    registerTaskMutationKick(kick);
+  });
+
+  afterEach(() => {
+    _resetTaskMutationKickRegistryForTests();
+  });
+
+  /** Create a task and hand it a linked ms_todo provider identity. */
+  function createProviderLinkedTask(suffix: string): { taskId: string; linkId: string } {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: `Restore harness ${suffix}`,
+      listName: 'Tasks',
+      clientMutationId: `ios-restore-create-${suffix}`,
+      idempotencyKey: `idem-restore-create-${suffix}`,
+    });
+    testDb.prepare(
+      `UPDATE task_provider_links
+       SET provider = 'ms_todo',
+           provider_account_id = 'ms_todo:42',
+           provider_task_id = ?,
+           provider_list_id = 'ms-list-1',
+           provider_version = 'etag-1',
+           ownership = 'nexus_created',
+           link_state = 'linked'
+       WHERE tenant_id = ? AND user_id = ? AND task_id = ?`,
+    ).run(`ms-task-${suffix}`, USER_ID, USER_ID, created.task.id);
+    testDb.prepare(
+      `UPDATE unified_tasks SET sync_state = 'synced'
+       WHERE tenant_id = ? AND user_id = ? AND nexus_task_id = ?`,
+    ).run(USER_ID, USER_ID, created.task.id);
+    const link = testDb.prepare(
+      `SELECT id FROM task_provider_links WHERE task_id = ?`,
+    ).get(created.task.id) as { id: string };
+    return { taskId: created.task.id, linkId: link.id };
+  }
+
+  function deleteTask(taskId: string, suffix: string) {
+    return recordLocalTaskMutation(USER_ID, USER_ID, {
+      taskId,
+      operation: 'task.delete',
+      clientMutationId: `ios-restore-delete-${suffix}`,
+      idempotencyKey: `idem-restore-delete-${suffix}`,
+      patch: { deleted: true },
+    });
+  }
+
+  it('path (a): supersedes a held delete inside the holdback — tombstone cleared, link untouched, no re-push journaled', () => {
+    const { taskId } = createProviderLinkedTask('held');
+    const deleted = deleteTask(taskId, 'held');
+    kick.mockClear();
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+
+    expect(result).toEqual(expect.objectContaining({
+      restored: true,
+      path: 'superseded_delete',
+      idempotentReplay: false,
+    }));
+    expect(result.task).toEqual(expect.objectContaining({
+      id: taskId,
+      status: 'notStarted',
+      syncState: 'synced',
+      deletedAt: null,
+    }));
+    const deleteMutation = testDb.prepare(
+      `SELECT status, last_error_code FROM task_mutations WHERE mutation_id = ?`,
+    ).get(deleted.mutationId) as { status: string; last_error_code: string | null };
+    expect(deleteMutation).toEqual({ status: 'superseded', last_error_code: 'restore_superseded_delete' });
+    const row = testDb.prepare(
+      `SELECT is_deleted, deleted_at, status, sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { is_deleted: number; deleted_at: string | null; status: string; sync_state: string };
+    expect(row).toEqual({ is_deleted: 0, deleted_at: null, status: 'pending', sync_state: 'synced' });
+    // The held delete never touched the link, so restore must not either.
+    const link = testDb.prepare(
+      `SELECT provider_task_id, link_state FROM task_provider_links WHERE task_id = ?`,
+    ).get(taskId) as { provider_task_id: string; link_state: string };
+    expect(link).toEqual({ provider_task_id: 'ms-task-held', link_state: 'linked' });
+    // No re-push journaled and nothing pending — path (a) is provider-silent.
+    const updates = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE task_id = ? AND operation = 'task.update'`,
+    ).get(taskId) as { count: number };
+    expect(updates.count).toBe(0);
+    expect(countPendingMutations(USER_ID, USER_ID)).toBe(0);
+    expect(kick).not.toHaveBeenCalled();
+  });
+
+  it('path (a): leaves reassignment-cleanup deletes pending and re-queues the row behind them', () => {
+    const { taskId } = createProviderLinkedTask('cleanup');
+    deleteTask(taskId, 'cleanup');
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, submitted_at, status
+       ) VALUES ('mutation-cleanup-delete', 'client-cleanup-delete', 'idem-cleanup-delete', ?, ?, ?, 'task.delete', ?, ?, 'queued')`,
+    ).run(USER_ID, USER_ID, taskId, JSON.stringify({
+      reason: 'provider_reassignment_cleanup',
+      providerLinkProvider: 'todoist',
+    }), new Date().toISOString());
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+
+    expect(result.path).toBe('superseded_delete');
+    // The cleanup delete targets an old provider copy of the (now live)
+    // task — it must keep pushing, and it keeps the row 'queued'.
+    const cleanup = testDb.prepare(
+      `SELECT status FROM task_mutations WHERE mutation_id = 'mutation-cleanup-delete'`,
+    ).get() as { status: string };
+    expect(cleanup.status).toBe('queued');
+    const row = testDb.prepare(
+      `SELECT is_deleted, sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(taskId) as { is_deleted: number; sync_state: string };
+    expect(row).toEqual({ is_deleted: 0, sync_state: 'queued' });
+  });
+
+  it('path (a): resolves the sync issue a FAILED delete attempt recorded', () => {
+    const { taskId } = createProviderLinkedTask('failed-delete');
+    const deleted = deleteTask(taskId, 'failed-delete');
+    testDb.prepare(
+      `UPDATE task_mutations SET status = 'failed', last_error_code = 'provider_timeout'
+       WHERE mutation_id = ?`,
+    ).run(deleted.mutationId);
+    recordTaskSyncIssue({
+      tenantId: USER_ID,
+      userId: USER_ID,
+      taskId,
+      provider: 'ms_todo',
+      code: 'provider_timeout',
+    });
+
+    restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+
+    const issue = testDb.prepare(
+      `SELECT state FROM task_sync_issues WHERE task_id = ? AND code = 'provider_timeout'`,
+    ).get(taskId) as { state: string };
+    expect(issue.state).toBe('resolved');
+  });
+
+  it('path (a): a held delete with no provider link restores to local_only', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Restore local held delete',
+      listName: 'Tasks',
+      clientMutationId: 'ios-restore-local-held-create',
+      idempotencyKey: 'idem-restore-local-held-create',
+    });
+    // Hand-craft the deleted_pending_sync tombstone + held delete (defensive
+    // shape: a provider-bound delete whose link was never provisioned).
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = ?, status = 'cancelled', sync_state = 'deleted_pending_sync'
+       WHERE nexus_task_id = ?`,
+    ).run(new Date().toISOString(), created.task.id);
+    testDb.prepare(
+      `INSERT INTO task_mutations (
+         mutation_id, client_mutation_id, idempotency_key, tenant_id, user_id,
+         task_id, operation, patch_json, submitted_at, status
+       ) VALUES ('mutation-local-held-delete', 'client-local-held-delete', 'idem-local-held-delete', ?, ?, ?, 'task.delete', '{}', ?, 'queued')`,
+    ).run(USER_ID, USER_ID, created.task.id, new Date().toISOString());
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId: created.task.id });
+
+    expect(result.path).toBe('superseded_delete');
+    const row = testDb.prepare(
+      `SELECT is_deleted, sync_state FROM unified_tasks WHERE nexus_task_id = ?`,
+    ).get(created.task.id) as { is_deleted: number; sync_state: string };
+    expect(row).toEqual({ is_deleted: 0, sync_state: 'local_only' });
+  });
+
+  it('path (b): after a pushed delete, revives the orphaned link as pending_create and journals ONE queued full-content re-push', () => {
+    const { taskId, linkId } = createProviderLinkedTask('pushed');
+    const deleted = deleteTask(taskId, 'pushed');
+    // Simulate the worker having pushed the delete: mutation delivered, link
+    // orphaned with its provider id surrendered (M4 invariant), row synced.
+    testDb.prepare(`UPDATE task_mutations SET status = 'synced', available_at = NULL WHERE mutation_id = ?`).run(deleted.mutationId);
+    testDb.prepare(
+      `UPDATE task_provider_links SET provider_task_id = NULL, link_state = 'orphaned' WHERE id = ?`,
+    ).run(linkId);
+    testDb.prepare(
+      `UPDATE unified_tasks SET sync_state = 'synced' WHERE nexus_task_id = ?`,
+    ).run(taskId);
+    recordTaskSyncIssue({
+      tenantId: USER_ID,
+      userId: USER_ID,
+      taskId,
+      provider: 'ms_todo',
+      code: 'provider_task_missing',
+    });
+    kick.mockClear();
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, {
+      taskId,
+      clientMutationId: 'ios-restore-pushed',
+      idempotencyKey: 'idem-restore-pushed',
+    });
+
+    expect(result).toEqual(expect.objectContaining({ restored: true, path: 'undeleted', idempotentReplay: false }));
+    expect(result.task).toEqual(expect.objectContaining({ id: taskId, syncState: 'queued', deletedAt: null }));
+    const link = testDb.prepare(
+      `SELECT provider_task_id, provider_version, link_state, provider_list_id FROM task_provider_links WHERE id = ?`,
+    ).get(linkId) as { provider_task_id: string | null; provider_version: string | null; link_state: string; provider_list_id: string };
+    // Canonical-links re-push: NULL provider id in pending_create re-arms the
+    // worker's create-recovery; the container identity is kept.
+    expect(link).toEqual({
+      provider_task_id: null,
+      provider_version: null,
+      link_state: 'pending_create',
+      provider_list_id: 'ms-list-1',
+    });
+    const repush = testDb.prepare(
+      `SELECT status, patch_json FROM task_mutations WHERE task_id = ? AND operation = 'task.update'`,
+    ).all(taskId) as Array<{ status: string; patch_json: string }>;
+    expect(repush).toHaveLength(1);
+    expect(repush[0].status).toBe('queued');
+    expect(JSON.parse(repush[0].patch_json)).toEqual(expect.objectContaining({
+      resolution: 'restore_undelete',
+      providerLinkProvider: 'ms_todo',
+      title: 'Restore harness pushed',
+      status: 'pending',
+    }));
+    const issue = testDb.prepare(
+      `SELECT state FROM task_sync_issues WHERE task_id = ? AND code = 'provider_task_missing'`,
+    ).get(taskId) as { state: string };
+    expect(issue.state).toBe('resolved');
+    // Restores are not deletes: the re-push rides the standard kick.
+    expect(kick).toHaveBeenCalledTimes(1);
+    expect(kick).toHaveBeenCalledWith(USER_ID, USER_ID);
+  });
+
+  it('path (b): restores a completed task as completed', () => {
+    const { taskId, linkId } = createProviderLinkedTask('completed');
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = ?, status = 'cancelled',
+           completed_at = '2026-07-01T10:00:00Z', sync_state = 'synced'
+       WHERE nexus_task_id = ?`,
+    ).run(new Date().toISOString(), taskId);
+    testDb.prepare(
+      `UPDATE task_provider_links SET provider_task_id = NULL, link_state = 'orphaned' WHERE id = ?`,
+    ).run(linkId);
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+
+    expect(result.path).toBe('undeleted');
+    expect(result.task.status).toBe('completed');
+  });
+
+  it('path (b): local-only tombstones restore with no mutation and no kick', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Restore local-only',
+      listName: 'Tasks',
+      clientMutationId: 'ios-restore-local-create',
+      idempotencyKey: 'idem-restore-local-create',
+    });
+    deleteTask(created.task.id, 'local');
+    kick.mockClear();
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId: created.task.id });
+
+    expect(result.path).toBe('undeleted');
+    expect(result.task).toEqual(expect.objectContaining({
+      id: created.task.id,
+      status: 'notStarted',
+      syncState: 'local_only',
+      deletedAt: null,
+    }));
+    const repush = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE task_id = ? AND operation = 'task.update'`,
+    ).get(created.task.id) as { count: number };
+    expect(repush.count).toBe(0);
+    expect(kick).not.toHaveBeenCalled();
+  });
+
+  it('path (b): a link already parked in pending_create is reused as-is', () => {
+    const { taskId, linkId } = createProviderLinkedTask('pending-create');
+    testDb.prepare(
+      `UPDATE task_provider_links SET provider_task_id = NULL, provider_version = NULL, link_state = 'pending_create' WHERE id = ?`,
+    ).run(linkId);
+    testDb.prepare(
+      `UPDATE unified_tasks SET is_deleted = 1, deleted_at = ?, status = 'cancelled' WHERE nexus_task_id = ?`,
+    ).run(new Date().toISOString(), taskId);
+
+    const result = restoreOfflineFirstTask(USER_ID, USER_ID, { taskId });
+
+    expect(result.path).toBe('undeleted');
+    const links = testDb.prepare(
+      `SELECT link_state FROM task_provider_links WHERE task_id = ?`,
+    ).all(taskId) as Array<{ link_state: string }>;
+    expect(links).toEqual([{ link_state: 'pending_create' }]);
+  });
+
+  it('refuses unknown ids (NOT_FOUND) and live tasks (NOT_DELETED)', () => {
+    expect(() => restoreOfflineFirstTask(USER_ID, USER_ID, { taskId: 'task_does_not_exist' }))
+      .toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Live task restore refusal',
+      listName: 'Tasks',
+      clientMutationId: 'ios-restore-live-create',
+      idempotencyKey: 'idem-restore-live-create',
+    });
+    expect(() => restoreOfflineFirstTask(USER_ID, USER_ID, { taskId: created.task.id }))
+      .toThrowError(expect.objectContaining({ code: 'NOT_DELETED' }));
+  });
+
+  it('refuses merged twin-repair tombstones (NOT_RESTORABLE)', () => {
+    const created = createOfflineFirstTask(USER_ID, USER_ID, {
+      title: 'Merged tombstone',
+      listName: 'Tasks',
+      clientMutationId: 'ios-restore-merged-create',
+      idempotencyKey: 'idem-restore-merged-create',
+    });
+    testDb.prepare(
+      `UPDATE unified_tasks
+       SET is_deleted = 1, deleted_at = ?, provider_data = ?
+       WHERE nexus_task_id = ?`,
+    ).run(new Date().toISOString(), JSON.stringify({ merged_into: 'task_survivor_1' }), created.task.id);
+
+    expect(() => restoreOfflineFirstTask(USER_ID, USER_ID, { taskId: created.task.id }))
+      .toThrowError(expect.objectContaining({ code: 'NOT_RESTORABLE' }));
+  });
+
+  it('replays idempotently with the recorded path, and refuses a keyless second restore', () => {
+    // Path (a) replay ('superseded_delete').
+    const held = createProviderLinkedTask('replay-held');
+    deleteTask(held.taskId, 'replay-held');
+    const first = restoreOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: held.taskId,
+      clientMutationId: 'ios-restore-replay-held',
+      idempotencyKey: 'idem-restore-replay-held',
+    });
+    const replayHeld = restoreOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: held.taskId,
+      clientMutationId: 'ios-restore-replay-held',
+      idempotencyKey: 'idem-restore-replay-held',
+    });
+    expect(first.idempotentReplay).toBe(false);
+    expect(replayHeld).toEqual(expect.objectContaining({
+      restored: true,
+      path: 'superseded_delete',
+      idempotentReplay: true,
+      mutationId: first.mutationId,
+    }));
+
+    // Path (b) replay ('undeleted') must not journal a second re-push.
+    const pushed = createProviderLinkedTask('replay-pushed');
+    deleteTask(pushed.taskId, 'replay-pushed');
+    testDb.prepare(
+      `UPDATE task_mutations SET status = 'synced' WHERE task_id = ? AND operation = 'task.delete'`,
+    ).run(pushed.taskId);
+    testDb.prepare(
+      `UPDATE task_provider_links SET provider_task_id = NULL, link_state = 'orphaned' WHERE id = ?`,
+    ).run(pushed.linkId);
+    restoreOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: pushed.taskId,
+      clientMutationId: 'ios-restore-replay-pushed',
+      idempotencyKey: 'idem-restore-replay-pushed',
+    });
+    const replayPushed = restoreOfflineFirstTask(USER_ID, USER_ID, {
+      taskId: pushed.taskId,
+      clientMutationId: 'ios-restore-replay-pushed',
+      idempotencyKey: 'idem-restore-replay-pushed',
+    });
+    expect(replayPushed).toEqual(expect.objectContaining({ path: 'undeleted', idempotentReplay: true }));
+    const repushCount = testDb.prepare(
+      `SELECT COUNT(*) AS count FROM task_mutations WHERE task_id = ? AND operation = 'task.update'`,
+    ).get(pushed.taskId) as { count: number };
+    expect(repushCount.count).toBe(1);
+
+    // A NEW restore attempt (fresh keys) against the now-live task is a 409.
+    expect(() => restoreOfflineFirstTask(USER_ID, USER_ID, { taskId: pushed.taskId }))
+      .toThrowError(expect.objectContaining({ code: 'NOT_DELETED' }));
   });
 });
