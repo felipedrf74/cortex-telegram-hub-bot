@@ -1242,6 +1242,16 @@ function buildFreshness(tenantId: number, userId: number, tasks: OfflineTaskDto[
   };
 }
 
+/**
+ * Public wrapper over the freshness provider-state read for surfaces outside
+ * this module (M11: providerStates on /api/v1/tasks/sync/status). OAuth
+ * connection state stays the connectivity truth; the task_sync_state row only
+ * contributes sync freshness and the machine-readable lastErrorCode.
+ */
+export function getOfflineTaskProviderStates(userId: number): TaskFreshness['providerStates'] {
+  return providerStates(userId);
+}
+
 export function countPendingMutations(tenantId: number, userId: number): number {
   const row = getDb().prepare(
     `SELECT COUNT(*) AS count
@@ -1555,6 +1565,132 @@ export function getOfflineTaskChanges(tenantId: number, userId: number, sinceCur
     deletes,
     freshness: buildFreshness(tenantId, userId, upserts),
   };
+}
+
+// ─── Recently Deleted (M11, Sync Center read surface) ───────────────────
+
+/**
+ * Read window for tombstoned tasks. Tombstoned unified_tasks rows are NOT
+ * pruned by the ledger retention job — task-ledger-retention.ts only ages out
+ * terminal task_mutations, resolved task_sync_issues, and observability
+ * events — so without a read-side horizon the Recently Deleted list would
+ * grow forever. The window is pinned to the retention job's 90-day mutation
+ * horizon for UX consistency: past it the delete's ledger context may already
+ * be pruned, so the tombstone stops being presented as "recent".
+ */
+export const RECENTLY_DELETED_WINDOW_DAYS = 90;
+
+/**
+ * Shared predicate so GET /tasks/deleted and the /tasks/sync/status
+ * deletedRecentCount can never disagree about what "recently deleted" means.
+ * Legacy provider soft-deletes can predate the deleted_at column (migration
+ * 216), so the effective deletion time falls back to updated_at/created_at
+ * exactly like the /changes delete feed does.
+ */
+export const RECENTLY_DELETED_WINDOW_PREDICATE_SQL =
+  `is_deleted = 1 AND datetime(COALESCE(deleted_at, updated_at, created_at)) >= datetime('now', '-${RECENTLY_DELETED_WINDOW_DAYS} days')`;
+
+const RECENTLY_DELETED_DEFAULT_LIMIT = 50;
+const RECENTLY_DELETED_MAX_LIMIT = 100;
+
+/** Wire DTO for GET /api/v1/tasks/deleted — contract pinned with iOS (M11). */
+export interface RecentlyDeletedTaskDto {
+  id: string;
+  title: string;
+  listId: string | null;
+  listName: string | null;
+  deletedAt: string;
+  syncProvider: string;
+  restorable: boolean;
+}
+
+/**
+ * A merged twin-repair tombstone (provider_data.merged_into pointing at the
+ * surviving task) is the one tombstone class restore refuses with
+ * NOT_RESTORABLE — mirror of the restoreOfflineFirstTask guard, so the read
+ * model pre-announces the refusal instead of letting a client render a
+ * restore affordance that would 409.
+ */
+function isMergedTombstoneRow(row: UnifiedTaskRow): boolean {
+  const mergedInto = safeJsonParse<Record<string, unknown>>(row.provider_data, {}).merged_into;
+  return typeof mergedInto === 'string' && !!mergedInto && mergedInto !== row.nexus_task_id;
+}
+
+/**
+ * Sync-target provider for tombstoned rows. getLinkProviderMap excludes
+ * orphaned links, but a pushed delete orphans the link by design (M4), so for
+ * deleted tasks the orphaned link is exactly the provider a restore would
+ * re-push to (restore's repushLink preference: active link first, else the
+ * newest orphan). Rows are ordered worst-first so the last Map.set wins.
+ */
+function getDeletedLinkProviderMap(tenantId: number, userId: number, taskIds: string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  if (taskIds.length === 0) return map;
+  const placeholders = taskIds.map(() => '?').join(', ');
+  const rows = getDb().prepare(
+    `SELECT task_id, provider
+     FROM task_provider_links
+     WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+       AND provider != 'nexus_local'
+       AND task_id IN (${placeholders})
+     ORDER BY CASE WHEN link_state = 'orphaned' THEN 0 ELSE 1 END ASC, updated_at ASC`,
+  ).all(userId, tenantId, ...taskIds) as Array<{ task_id: string; provider: string }>;
+  for (const row of rows) map.set(row.task_id, row.provider);
+  return map;
+}
+
+/** Total in-window tombstones — the /sync/status deletedRecentCount source. */
+export function countOfflineRecentlyDeletedTasks(tenantId: number, userId: number): number {
+  assertScope(tenantId, userId);
+  const row = getDb().prepare(
+    `SELECT COUNT(*) AS count FROM unified_tasks
+     WHERE tenant_id = ? AND user_id = ? AND ${RECENTLY_DELETED_WINDOW_PREDICATE_SQL}`,
+  ).get(tenantId, userId) as { count: number } | undefined;
+  return row?.count || 0;
+}
+
+/**
+ * Recently Deleted read model (M11): tombstoned rows for the scope, newest
+ * effective deletion first, capped page (default 50, max 100). `count` is the
+ * total in-window tombstone count — it can exceed tasks.length when the limit
+ * clamps the page, and it always equals /sync/status.deletedRecentCount.
+ */
+export function getOfflineRecentlyDeletedTasks(
+  tenantId: number,
+  userId: number,
+  options: { limit?: number } = {},
+): { tasks: RecentlyDeletedTaskDto[]; count: number } {
+  assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
+  const requested = Number(options.limit);
+  const limit = Number.isFinite(requested)
+    ? Math.min(Math.max(Math.floor(requested), 1), RECENTLY_DELETED_MAX_LIMIT)
+    : RECENTLY_DELETED_DEFAULT_LIMIT;
+  const rows = getDb().prepare(
+    `SELECT * FROM unified_tasks
+     WHERE tenant_id = ? AND user_id = ? AND ${RECENTLY_DELETED_WINDOW_PREDICATE_SQL}
+     ORDER BY COALESCE(deleted_at, updated_at, created_at) DESC, nexus_task_id DESC
+     LIMIT ?`,
+  ).all(tenantId, userId, limit) as UnifiedTaskRow[];
+  const listNameById = getProjectNameMap(tenantId, userId);
+  const linkProviderMap = getDeletedLinkProviderMap(tenantId, userId, rows.map(rowTaskId));
+  const tasks = rows.map((row): RecentlyDeletedTaskDto => {
+    const taskId = rowTaskId(row);
+    return {
+      id: taskId,
+      title: row.title || '(Untitled)',
+      listId: row.project_id != null ? String(row.project_id) : null,
+      listName: row.project_name || (row.project_id ? listNameById.get(row.project_id) : null) || null,
+      // Mirrors the window predicate's COALESCE(deleted_at, updated_at).
+      // created_at is deliberately NOT a third fallback: updated_at is NOT
+      // NULL, and a blank one makes datetime() NULL, so the predicate has
+      // already filtered such a row out before it reaches this mapper.
+      deletedAt: row.deleted_at || row.updated_at,
+      syncProvider: linkProviderMap.get(taskId) || row.provider || 'nexus',
+      restorable: !isMergedTombstoneRow(row),
+    };
+  });
+  return { tasks, count: countOfflineRecentlyDeletedTasks(tenantId, userId) };
 }
 
 export function createOfflineFirstTask(tenantId: number, userId: number, input: TaskMutationInput) {
