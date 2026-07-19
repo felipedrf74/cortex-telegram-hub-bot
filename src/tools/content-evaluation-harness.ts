@@ -3,14 +3,42 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import {
+import type {
+  ContentEvalMode,
+  ContentEvalExternalLaneEvidence,
+  ContentEvalProviderInvocationProvenance,
+} from '../services/content-day-to-day-evaluation';
+import type { ContentLiveEvaluationArtifact } from '../services/content-live-evaluation-artifact';
+import type { ContentIosExtractionArtifact } from '../services/content-ios-extraction-artifact';
+
+// Capture operator configuration before any Nexus config module can load. The
+// verifier flag makes config ignore every repository dotenv file; the captured
+// value can therefore come only from the clean launch environment.
+const launchTrustedAttestationKeyFingerprint = process.env.CONTENT_EVAL_TRUSTED_ATTESTATION_KEY_SHA256;
+const launchTrustedIosAttestationKeyFingerprint = process.env.CONTENT_EVAL_TRUSTED_IOS_ATTESTATION_KEY_SHA256;
+const launchExpectedIosGitCommit = process.env.CONTENT_EVAL_EXPECTED_IOS_GIT_COMMIT;
+const launchExpectedIosSourceTreeDigest = process.env.CONTENT_EVAL_EXPECTED_IOS_SOURCE_TREE_DIGEST;
+process.env.NEXUS_CONTENT_LIVE_EVAL_VERIFIER_RUNTIME = '1';
+
+const {
   formatContentEvalResultsMarkdown,
   runContentDayToDayEvaluation,
-  type ContentEvalMode,
-  type ContentEvalExternalLaneEvidence,
-  type ContentEvalProviderInvocationProvenance,
-} from '../services/content-day-to-day-evaluation';
-import { persistContentEvalRun } from '../services/content-eval-history';
+  CONTENT_QUALITY_RUBRIC,
+} = require('../services/content-day-to-day-evaluation') as typeof import('../services/content-day-to-day-evaluation');
+const { persistContentEvalRun } = require('../services/content-eval-history') as typeof import('../services/content-eval-history');
+const {
+  claimContentLiveEvalArtifactForRelease,
+  finalizeContentLiveEvalArtifactClaim,
+} = require('../services/content-live-evaluation-consumption') as typeof import('../services/content-live-evaluation-consumption');
+const {
+  contentEvalSha256,
+  readContentLiveEvalAttestationKeyFile,
+  resolveContentLiveEvalSourceIdentity,
+  validateContentLiveEvaluationArtifact,
+} = require('../services/content-live-evaluation-artifact') as typeof import('../services/content-live-evaluation-artifact');
+const {
+  validateContentIosExtractionArtifact,
+} = require('../services/content-ios-extraction-artifact') as typeof import('../services/content-ios-extraction-artifact');
 
 interface CliOptions {
   mode?: ContentEvalMode;
@@ -23,11 +51,15 @@ interface CliOptions {
   iosExtractionRunId?: string;
   iosExtractionSource?: string;
   iosExtractionSampleCount?: number;
+  iosExtractionArtifact?: string;
+  iosExtractionAttestationKeyFile?: string;
   realProviderSampleScore?: number;
   realProviderSampleRunId?: string;
   realProviderSampleSource?: string;
   realProviderSampleCount?: number;
   realProviderInvocationArtifact?: string;
+  realProviderArtifact?: string;
+  realProviderAttestationKeyFile?: string;
 }
 
 function readPackageVersion(): string {
@@ -94,6 +126,12 @@ function parseArgs(argv: string[]): CliOptions {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.iosExtractionSampleCount = parsed;
       i++;
+    } else if (arg === '--ios-extraction-artifact' && next) {
+      options.iosExtractionArtifact = next;
+      i++;
+    } else if (arg === '--ios-extraction-attestation-key-file' && next) {
+      options.iosExtractionAttestationKeyFile = next;
+      i++;
     } else if (arg === '--real-provider-sample-score' && next) {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.realProviderSampleScore = parsed;
@@ -108,8 +146,14 @@ function parseArgs(argv: string[]): CliOptions {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) options.realProviderSampleCount = parsed;
       i++;
+    } else if (arg === '--real-provider-artifact' && next) {
+      options.realProviderArtifact = next;
+      i++;
     } else if (arg === '--real-provider-invocation-artifact' && next) {
       options.realProviderInvocationArtifact = next;
+      i++;
+    } else if (arg === '--real-provider-attestation-key-file' && next) {
+      options.realProviderAttestationKeyFile = next;
       i++;
     } else if (arg === '--persist-db') {
       if (next && !next.startsWith('--')) {
@@ -118,6 +162,8 @@ function parseArgs(argv: string[]): CliOptions {
       } else {
         options.persistDb = process.env.CONTENT_EVAL_DB_PATH || 'reports/content-eval/content-eval-history.sqlite';
       }
+    } else {
+      throw new Error(`Unknown Content evaluation argument: ${arg}`);
     }
   }
   return options;
@@ -160,19 +206,55 @@ function buildExternalLaneEvidence(input: {
 
 function readProviderInvocationArtifact(
   artifactPath: string | undefined,
-): ContentEvalProviderInvocationProvenance[] | undefined {
+  attestationKeyFile: string | undefined,
+  trustedAttestationKeyFingerprint: string | undefined,
+): { artifact: ContentLiveEvaluationArtifact; releaseQualified: boolean } | undefined {
   const resolvedPath = firstNonEmpty(artifactPath);
-  if (!resolvedPath) return undefined;
+  const resolvedKeyFile = firstNonEmpty(attestationKeyFile);
+  if (!resolvedPath || !resolvedKeyFile) return undefined;
   try {
     const parsed = JSON.parse(fs.readFileSync(path.resolve(resolvedPath), 'utf8')) as unknown;
-    if (Array.isArray(parsed)) return parsed as ContentEvalProviderInvocationProvenance[];
-    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { invocations?: unknown }).invocations)) {
-      return (parsed as { invocations: ContentEvalProviderInvocationProvenance[] }).invocations;
-    }
+    const attestationKey = readContentLiveEvalAttestationKeyFile(resolvedKeyFile);
+    const expectedSourceIdentity = resolveContentLiveEvalSourceIdentity(process.cwd(), {
+      requireCleanGeneratorSurface: true,
+    });
+    const validation = validateContentLiveEvaluationArtifact(parsed, {
+      rubricDigest: contentEvalSha256(CONTENT_QUALITY_RUBRIC),
+      attestationKey,
+      trustedAttestationKeyFingerprint,
+      expectedSourceIdentity,
+    });
+    if (!validation.valid || !validation.artifact) return undefined;
+    return { artifact: validation.artifact, releaseQualified: validation.releaseQualified === true };
   } catch {
     // Invalid or missing artifacts are represented as invalid evidence by the evaluator.
   }
   return undefined;
+}
+
+function readIosExtractionArtifact(
+  artifactPath: string | undefined,
+  attestationKeyFile: string | undefined,
+): ContentIosExtractionArtifact | undefined {
+  const resolvedPath = firstNonEmpty(artifactPath);
+  const resolvedKeyFile = firstNonEmpty(attestationKeyFile);
+  const trustedFingerprint = firstNonEmpty(launchTrustedIosAttestationKeyFingerprint);
+  const expectedGitCommit = firstNonEmpty(launchExpectedIosGitCommit);
+  const expectedSourceTreeDigest = firstNonEmpty(launchExpectedIosSourceTreeDigest);
+  if (!resolvedPath || !resolvedKeyFile || !trustedFingerprint || !expectedGitCommit || !expectedSourceTreeDigest) return undefined;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.resolve(resolvedPath), 'utf8')) as unknown;
+    const attestationKey = readContentLiveEvalAttestationKeyFile(resolvedKeyFile);
+    const validation = validateContentIosExtractionArtifact(parsed, {
+      attestationKey,
+      trustedAttestationKeyFingerprint: trustedFingerprint,
+      expectedIosGitCommit: expectedGitCommit,
+      expectedIosSourceTreeDigest: expectedSourceTreeDigest,
+    });
+    return validation.valid && validation.releaseQualified ? validation.artifact : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function ensureParent(filePath: string): void {
@@ -186,23 +268,66 @@ function timestamp(): string {
 function main(): void {
   const options = parseArgs(process.argv.slice(2));
   const mode = options.mode ?? parseMode(process.env.CONTENT_EVAL_MODE) ?? 'fixture';
-  const iosExtractionScore = options.iosExtractionScore ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SCORE') ?? null;
-  const realProviderSampleScore = options.realProviderSampleScore ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE') ?? null;
-  const realProviderInvocationArtifact = options.realProviderInvocationArtifact
+  const iosArtifactPath = options.iosExtractionArtifact ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_ARTIFACT;
+  const iosAttestationKeyFile = options.iosExtractionAttestationKeyFile
+    ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_ATTESTATION_KEY_FILE;
+  const iosArtifact = readIosExtractionArtifact(iosArtifactPath, iosAttestationKeyFile);
+  const iosExtractionScore = options.iosExtractionScore
+    ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SCORE')
+    ?? iosArtifact?.score
+    ?? null;
+  const realProviderArtifactPath = options.realProviderArtifact
+    ?? options.realProviderInvocationArtifact
+    ?? process.env.CONTENT_EVAL_REAL_PROVIDER_ARTIFACT
     ?? process.env.CONTENT_EVAL_REAL_PROVIDER_INVOCATION_ARTIFACT;
-  const providerInvocations = readProviderInvocationArtifact(realProviderInvocationArtifact);
-  const iosExtractionEvidence = buildExternalLaneEvidence({
-    runId: options.iosExtractionRunId ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_RUN_ID,
-    source: options.iosExtractionSource ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_SOURCE,
-    sampleCount: options.iosExtractionSampleCount ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SAMPLE_COUNT'),
+  const realProviderAttestationKeyFile = options.realProviderAttestationKeyFile
+    ?? process.env.CONTENT_EVAL_REAL_PROVIDER_ATTESTATION_KEY_FILE;
+  const realProviderArtifactResult = readProviderInvocationArtifact(
+    realProviderArtifactPath,
+    realProviderAttestationKeyFile,
+    launchTrustedAttestationKeyFingerprint,
+  );
+  const realProviderArtifact = realProviderArtifactResult?.releaseQualified
+    ? realProviderArtifactResult.artifact
+    : undefined;
+  const consumptionClaimPath = realProviderArtifact
+    ? claimContentLiveEvalArtifactForRelease(realProviderArtifact)
+    : undefined;
+  const realProviderSampleScore = options.realProviderSampleScore
+    ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SCORE')
+    ?? realProviderArtifact?.summary.score
+    ?? null;
+  let iosExtractionEvidence = buildExternalLaneEvidence({
+    runId: options.iosExtractionRunId ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_RUN_ID ?? iosArtifact?.runId,
+    source: options.iosExtractionSource ?? process.env.CONTENT_EVAL_IOS_EXTRACTION_SOURCE ?? iosArtifact?.source,
+    sampleCount: options.iosExtractionSampleCount ?? envNumber('CONTENT_EVAL_IOS_EXTRACTION_SAMPLE_COUNT') ?? iosArtifact?.summary.totalCount,
+    artifactPath: iosArtifactPath,
   });
+  // A requested artifact that cannot be authenticated must be visible to the
+  // evaluator as invalid evidence, not downgraded to a merely unexecuted lane.
+  if (iosArtifactPath && !iosArtifact && !iosExtractionEvidence) {
+    iosExtractionEvidence = {
+      runId: 'content-ios-extraction-invalid-artifact',
+      source: 'xcodebuild-content-ui-tests',
+      sampleCount: 1,
+      artifactPath: iosArtifactPath,
+    };
+  }
+  if (iosExtractionEvidence && iosArtifact) {
+    iosExtractionEvidence.generatedAt = iosArtifact.generatedAt;
+    iosExtractionEvidence.iosArtifact = iosArtifact;
+  }
   const realProviderSampleEvidence = buildExternalLaneEvidence({
-    runId: options.realProviderSampleRunId ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_RUN_ID,
-    source: options.realProviderSampleSource ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SOURCE,
-    sampleCount: options.realProviderSampleCount ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_COUNT'),
-    artifactPath: realProviderInvocationArtifact,
-    providerInvocations,
+    runId: options.realProviderSampleRunId ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_RUN_ID ?? realProviderArtifact?.runId,
+    source: options.realProviderSampleSource ?? process.env.CONTENT_EVAL_REAL_PROVIDER_SAMPLE_SOURCE ?? realProviderArtifact?.source,
+    sampleCount: options.realProviderSampleCount ?? envNumber('CONTENT_EVAL_REAL_PROVIDER_SAMPLE_COUNT') ?? realProviderArtifact?.summary.sampleCount,
+    artifactPath: realProviderArtifactPath,
+    providerInvocations: realProviderArtifact?.invocations,
   });
+  if (realProviderSampleEvidence && realProviderArtifact) {
+    realProviderSampleEvidence.generatedAt = realProviderArtifact.generatedAt;
+    realProviderSampleEvidence.artifact = realProviderArtifact;
+  }
   const outDir = options.outDir ?? 'reports/content-eval';
   const baseName = `content-eval-${timestamp()}`;
   const jsonPath = options.json ?? path.join(outDir, `${baseName}.json`);
@@ -254,6 +379,14 @@ function main(): void {
   if (options.failUnder != null && result.aggregate.overallScore < options.failUnder) {
     console.error(`Content eval score ${result.aggregate.overallScore} is below threshold ${options.failUnder}.`);
     process.exitCode = 1;
+  }
+
+  if (consumptionClaimPath && realProviderArtifact) {
+    finalizeContentLiveEvalArtifactClaim(
+      consumptionClaimPath,
+      realProviderArtifact,
+      result.passed ? 'pass' : 'fail',
+    );
   }
 
   if (!result.passed) {

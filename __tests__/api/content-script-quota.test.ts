@@ -108,6 +108,8 @@ function mockReq(body: any, userId?: number | null): Request {
     query: {},
     params: {},
     headers: {},
+    header: () => undefined,
+    socket: { remoteAddress: '127.0.0.1' },
     body,
     userId,
   } as any;

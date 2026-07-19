@@ -831,11 +831,11 @@ describe('changed-critical mutation gate', () => {
       '__tests__/services/openai-provider.test.ts',
     ]));
     expect(mapping?.mutationTargets?.map(({ pattern }) => pattern)).toEqual([
-      'src/services/gemini-provider.ts:647-647',
-      'src/services/openai-provider.ts:379-379',
-      'src/services/openai-provider.ts:424-424',
-      'src/services/openai-provider.ts:562-562',
-      'src/services/openai-provider.ts:606-606',
+      'src/services/gemini-provider.ts:657-657',
+      'src/services/openai-provider.ts:381-381',
+      'src/services/openai-provider.ts:428-428',
+      'src/services/openai-provider.ts:566-566',
+      'src/services/openai-provider.ts:610-610',
     ]);
     expect(mapping?.mutationTargets?.reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(8);
   });

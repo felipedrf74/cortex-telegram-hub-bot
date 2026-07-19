@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-18.1",
+  "version": "2026-07-19.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -172,6 +172,16 @@
     { "pattern": "__tests__/services/registry-*eval*.test.ts", "disposition": "keep", "reason": "Registry eval gates are deterministic release-safety and routing contracts, not subjective grading." },
     { "pattern": "__tests__/services/chat-core-v2-*eval*.test.ts", "disposition": "keep", "reason": "Chat Core eval services enforce deterministic corpus shape, safety, recall, persistence, and promotion contracts." },
     { "pattern": "__tests__/**/*evaluation-harness.test.ts", "disposition": "keep", "reason": "Harness and CLI suites verify deterministic evaluation machinery and evidence contracts; they do not grade live provider output." },
+    { "pattern": "__tests__/scripts/run-content-eval-live.test.ts", "disposition": "keep", "reason": "Protects the bounded live-evaluation runner's signed request, budget, output, and failure contracts without invoking providers in the test." },
+    { "pattern": "__tests__/scripts/backend-ios-contract-fixture.test.ts", "disposition": "keep", "reason": "Protects deterministic backend-to-iOS contract fixture generation, canonical bytes, and exact release-artifact binding." },
+    { "pattern": "__tests__/services/content-ios-extraction-artifact.test.ts", "disposition": "keep", "reason": "Protects signed iOS extraction evidence against stale, partial, reordered, source-mismatched, or tampered artifacts." },
+    { "pattern": "__tests__/services/content-ios-extraction-producer.test.ts", "disposition": "keep", "reason": "Protects clean-source identity, xcresult extraction, attachment traversal limits, and producer-side evidence derivation." },
+    { "pattern": "__tests__/services/content-live-evaluation-artifact.test.ts", "disposition": "keep", "reason": "Protects the signed live-evaluation artifact schema, source identity, runtime contract binding, and tamper rejection." },
+    { "pattern": "__tests__/services/content-live-evaluation-consumption.test.ts", "disposition": "keep", "reason": "Protects atomic single-consumption semantics and replay rejection for live-evaluation evidence." },
+    { "pattern": "__tests__/services/content-live-evaluation-request.test.ts", "disposition": "keep", "reason": "Protects loopback-only synthetic request authorization, scenario validation, and bounded budget contracts." },
+    { "pattern": "__tests__/services/content-live-evaluation-runtime.test.ts", "disposition": "keep", "reason": "Protects fail-closed synthetic runtime scope, isolated database state, and disabled cross-user context." },
+    { "pattern": "__tests__/services/invoice-filer-logging.test.ts", "disposition": "keep", "reason": "Protects privacy-safe invoice observability against receipt values, raw provider errors, and invalid provider output leakage." },
+    { "pattern": "__tests__/services/receipt-ai-transfer-consent.test.ts", "disposition": "keep", "reason": "Protects tenant- and content-bound receipt AI consent, single-spend replay safety, encrypted result reuse, expiry, and cleanup." },
     { "pattern": "__tests__/services/creator-config-eval.test.ts", "disposition": "keep", "reason": "Creator configuration checks protect prompt neutrality, loading, and cross-runtime consistency." },
     { "pattern": "__tests__/api/content-agent-job-routes.test.ts", "disposition": "keep", "reason": "Protects authenticated specialist-job lifecycle, proposal review, tenant scope, stale-base conflicts, and redacted API projections." },
     { "pattern": "__tests__/api/content-workspace-capabilities-route.test.ts", "disposition": "keep", "reason": "Protects the fail-closed server-authoritative Content rollout capability contract." },
@@ -556,14 +566,22 @@
     {
       "test": "__tests__/scripts/trusted-release-signing.test.ts",
       "replacementTests": [
-        "__tests__/scripts/trusted-release-signing.test.ts"
+        "__tests__/scripts/trusted-release-signing.test.ts",
+        "__tests__/scripts/backend-ios-contract-fixture.test.ts"
       ],
       "sources": [
         "scripts/trusted-release-signer.mjs",
+        "scripts/lib/backend-ios-contract-fixture.mjs",
+        "scripts/lib/ios-distribution-attestation.mjs",
+        "scripts/release-bundle.mjs",
+        "scripts/release-manifest-v2.mjs",
+        "src/release/backend-ios-contract-fixture.ts",
         ".github/workflows/release-candidate-evidence.yml",
-        ".github/workflows/sign-release-manifest.yml"
+        ".github/workflows/sign-release-manifest.yml",
+        "docs/release/evidence/ios-contract-evidence-public-key.pem",
+        "docs/release/evidence/ios-distribution-public-key.b64"
       ],
-      "reason": "Replaced raw test-count floors and candidate-authored identity assumptions with recomputed selected-tier, nightly freshness, trusted timestamp, and immutable artifact identity proofs. This one-change mapping is removed after merge."
+      "reason": "Replaced raw test-count floors and candidate-authored identity assumptions with recomputed selected-tier, nightly freshness, trusted timestamp, immutable backend artifact identity, candidate-derived iOS decoder fixtures, and signed source-bound iOS CI evidence proofs. This one-change mapping is removed after merge."
     },
     {
       "test": "__tests__/billing/pricing-display-contract.test.ts",
@@ -613,8 +631,10 @@
       ],
       "sources": [
         ".github/workflows/release-candidate-evidence.yml",
+        ".github/workflows/sign-release-manifest.yml",
         "scripts/release-evidence-container.sh",
         "scripts/release-operator.sh",
+        "scripts/request-release-manifest-signature.sh",
         "scripts/promote-exact-release.sh",
         "scripts/env-parity-check.sh",
         "scripts/remote-release-preflight.sh",
@@ -1044,7 +1064,7 @@
         "sources": ["src/services/usage-metering.ts", "src/portal/snapshot-builder.ts", "src/services/gemini-provider.ts", "src/services/openai-provider.ts"],
         "mutationTargets": [
           {
-            "pattern": "src/services/gemini-provider.ts:647-647",
+            "pattern": "src/services/gemini-provider.ts:657-657",
             "anchor": "hasUnboundedProviderInjectedContext: true",
             "behavior": "Grounded Gemini calls reserve budget under the unbounded provider-context risk policy.",
             "replacementTest": "__tests__/services/gemini-provider.test.ts",
@@ -1052,7 +1072,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/openai-provider.ts:379-379",
+            "pattern": "src/services/openai-provider.ts:381-381",
             "anchor": "getProviderToolFeeUsd('openai_web_search')",
             "behavior": "OpenAI web search budget reservations include the maximum separately billed tool fees.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",
@@ -1060,7 +1080,7 @@
             "minimumMutants": 2
           },
           {
-            "pattern": "src/services/openai-provider.ts:424-424",
+            "pattern": "src/services/openai-provider.ts:428-428",
             "anchor": "webSearchRequests * getProviderToolFeeUsd",
             "behavior": "Recorded OpenAI response cost includes the observed number of billed web search requests.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",
@@ -1068,7 +1088,7 @@
             "minimumMutants": 2
           },
           {
-            "pattern": "src/services/openai-provider.ts:562-562",
+            "pattern": "src/services/openai-provider.ts:566-566",
             "anchor": "input.webSearchRequests ?? 0",
             "behavior": "Persisted OpenAI API usage stores provider tool cost and web search request attribution.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",
@@ -1076,7 +1096,7 @@
             "minimumMutants": 2
           },
           {
-            "pattern": "src/services/openai-provider.ts:606-606",
+            "pattern": "src/services/openai-provider.ts:610-610",
             "anchor": "recordUsage(input.userId",
             "behavior": "Successful OpenAI response usage is mirrored to the calendar-aligned usage meter as best effort.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",

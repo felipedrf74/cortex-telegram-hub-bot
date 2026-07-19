@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 import fs from 'fs';
 import path from 'path';
+import {
+  CONTENT_LIVE_EVAL_CORPUS,
+  CONTENT_LIVE_EVAL_OPT_IN,
+} from '../../src/services/content-live-evaluation-artifact';
 
 const mockGetScript = vi.fn(async () => ({
   topic: 'Test topic',
@@ -36,6 +40,46 @@ const mockPersistContentArtifacts = vi.fn(() => ({
   researchArtifactId: 'ra_1234567890abcdef_abcdef1234567890',
   voiceCardVersion: 'voice-v1',
 }));
+const mockGetAllKnowledge = vi.fn(() => [
+  { category: 'brand_voice', synthesized_text: 'Direct founder voice.' },
+  { category: 'hook_style', synthesized_text: 'Open with a misconception.' },
+]);
+const mockListRecentContentIdeaMemory = vi.fn(() => [
+  { topic: 'Old SaaS angle', hook: 'The costly myth', angle: 'proof', format: 'YouTube' },
+]);
+const mockResolveScriptTopicContext = vi.fn(() => null);
+const mockBuildAuthorizedContentReferenceContext = vi.fn(() => ({ references: [] }));
+const mockBuildContentCreativeProfileContext = vi.fn(() => ({
+  tenantId: 12,
+  userId: 12,
+  platform: 'youtube',
+  contextBlock: '',
+  memories: [],
+  appliedMemoryKeys: [],
+  omittedPrivateMemoryKeys: [],
+  warnings: [],
+  followUpQuestions: [],
+  quality: { completenessScore: 0, confidenceScore: 0, staleCount: 0, missingCriticalKeys: [] },
+}));
+const mockAssessContentNovelty = vi.fn(() => ({
+  status: 'novel',
+  noveltyScore: 1,
+  duplicationRisk: 0,
+  reuseAllowed: false,
+  matchedCandidates: [],
+  reasonCodes: [],
+  reviewWarnings: [],
+  strategicReuse: {
+    intent: 'none',
+    originalContentId: null,
+    transformationType: null,
+    platformChanged: false,
+    formatChanged: false,
+    angleChanged: false,
+    referenceChanged: false,
+  },
+}));
+const mockAssertContentLiveEvalSyntheticRuntimeScope = vi.fn();
 const mockGetContentSourcePackage = vi.fn(() => ({
   sourcePackageId: 'sp_1234567890abcdef_abcdef1234567890',
   researchArtifactId: 'ra_1234567890abcdef_abcdef1234567890',
@@ -138,10 +182,25 @@ vi.mock('../../src/services/entitlement', () => ({
 
 vi.mock('../../src/state/content-references', () => ({
   getKnowledgeByCategory: vi.fn(() => null),
-  getAllKnowledge: vi.fn(() => [
-    { category: 'brand_voice', synthesized_text: 'Direct founder voice.' },
-    { category: 'hook_style', synthesized_text: 'Open with a misconception.' },
-  ]),
+  getAllKnowledge: (...args: unknown[]) => mockGetAllKnowledge(...args),
+}));
+
+vi.mock('../../src/api/routes/content-topic-context', () => ({
+  resolveScriptTopicContext: (...args: unknown[]) => mockResolveScriptTopicContext(...args),
+}));
+
+vi.mock('../../src/services/content-reference-context', () => ({
+  buildAuthorizedContentReferenceContext: (...args: unknown[]) => mockBuildAuthorizedContentReferenceContext(...args),
+}));
+
+vi.mock('../../src/services/content-memory-profile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/content-memory-profile')>()),
+  buildContentCreativeProfileContext: (...args: unknown[]) => mockBuildContentCreativeProfileContext(...args),
+}));
+
+vi.mock('../../src/services/content-novelty-reuse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/content-novelty-reuse')>()),
+  assessContentNovelty: (...args: unknown[]) => mockAssessContentNovelty(...args),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -164,10 +223,21 @@ vi.mock('../../src/services/database', () => ({
   withDatabaseForTestAsync: vi.fn(),
 }));
 
+vi.mock('../../src/services/content-live-evaluation-request', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/content-live-evaluation-request')>()),
+  assertContentLiveEvalSyntheticRuntimeScope: (...args: unknown[]) => (
+    mockAssertContentLiveEvalSyntheticRuntimeScope(...args)
+  ),
+}));
+
 vi.mock('../../src/services/content-engine', () => ({
+  SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY: {
+    cache: 'bypass',
+    intelligenceSignals: 'bypass',
+  },
   getScript: (...args: unknown[]) => {
     const providerBoundary = args[16] as ((providerCall: () => Promise<unknown>) => Promise<unknown>) | undefined;
-    const providerCall = () => mockGetScript(...args.slice(0, 16));
+    const providerCall = () => mockGetScript(...args.slice(0, 16), undefined, args[17]);
     return providerBoundary ? providerBoundary(providerCall) : providerCall();
   },
 }));
@@ -199,9 +269,7 @@ vi.mock('../../src/services/content-token-artifact-store', () => ({
   getContentSourcePackage: (...args: unknown[]) => mockGetContentSourcePackage(...args),
   getContentResearchArtifact: (...args: unknown[]) => mockGetContentResearchArtifact(...args),
   recordContentVariantFeedback: (...args: unknown[]) => mockRecordContentVariantFeedback(...args),
-  listRecentContentIdeaMemory: vi.fn(() => [
-    { topic: 'Old SaaS angle', hook: 'The costly myth', angle: 'proof', format: 'YouTube' },
-  ]),
+  listRecentContentIdeaMemory: (...args: unknown[]) => mockListRecentContentIdeaMemory(...args),
 }));
 
 vi.mock('../../src/services/content-workspace-capture', () => ({
@@ -246,6 +314,8 @@ function mockReq(
     body,
     userId: 12,
     tenantId: 12,
+    ip: '127.0.0.1',
+    socket: { remoteAddress: '127.0.0.1' },
   } as any;
 }
 
@@ -288,10 +358,82 @@ describe('Content API — script duration presets', () => {
     mockSaveGeneratedScriptToWorkspace.mockClear();
     mockRecordContentVariantFeedback.mockClear();
     mockWithAiBudgetReservation.mockClear();
+    mockGetAllKnowledge.mockClear();
+    mockListRecentContentIdeaMemory.mockClear();
+    mockResolveScriptTopicContext.mockClear();
+    mockBuildAuthorizedContentReferenceContext.mockClear();
+    mockBuildContentCreativeProfileContext.mockClear();
+    mockAssessContentNovelty.mockClear();
+    mockAssertContentLiveEvalSyntheticRuntimeScope.mockClear();
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('keeps the governed live-eval route synthetic, non-persistent, and cache-bypassed', async () => {
+    vi.stubEnv('CONTENT_LIVE_EVAL_ENABLED', '1');
+    vi.stubEnv('NEXUS_CONTENT_LIVE_EVAL_RUNTIME', '1');
+    const scenario = CONTENT_LIVE_EVAL_CORPUS[0];
+    mockGetScript.mockResolvedValueOnce({
+      topic: scenario.topic,
+      script: 'A practical creator workflow with three useful steps and one clear next action.',
+      hook: 'Turn rough notes into a useful plan.',
+      title_options: ['A useful weekly plan', 'Three practical creator steps'],
+      sources_used: [{ title: 'Synthetic source', url: 'https://example.invalid/source', source_type: 'test', relevance_note: 'Synthetic only' }],
+      estimated_duration: '45 seconds',
+      duration_ms: 1200,
+      hashtags: [],
+      caption: 'Synthetic evaluation caption.',
+      cta: 'Choose one next action.',
+      degraded: false,
+      warnings: [],
+      cache_status: 'fresh',
+    });
+    const headers = {
+      'x-nexus-content-live-eval-opt-in': CONTENT_LIVE_EVAL_OPT_IN,
+      'x-nexus-content-live-eval-run-id': 'content-live-eval-route-20260719',
+      'x-nexus-content-live-eval-budget-usd': '1.00',
+      'x-nexus-content-live-eval-scenario-id': scenario.id,
+    };
+
+    const response = await dispatch({
+      topic: scenario.topic,
+      niche: scenario.niche,
+      format: scenario.format,
+      targetDurationSeconds: scenario.targetDurationSeconds,
+      language: scenario.language,
+      mode: 'standard',
+      renderMode: 'structured',
+      scriptStyle: 'detailed',
+      forceRefresh: true,
+      saveToIdeas: false,
+    }, '/script', headers);
+
+    expect(response.statusCode).toBe(200);
+    expect(mockGetAllKnowledge).not.toHaveBeenCalled();
+    expect(mockAssertContentLiveEvalSyntheticRuntimeScope).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 12,
+      runId: 'content-live-eval-route-20260719',
+    }));
+    expect(mockResolveScriptTopicContext).not.toHaveBeenCalled();
+    expect(mockBuildAuthorizedContentReferenceContext).not.toHaveBeenCalled();
+    expect(mockBuildContentCreativeProfileContext).not.toHaveBeenCalled();
+    expect(mockAssessContentNovelty).not.toHaveBeenCalled();
+    expect(mockListRecentContentIdeaMemory).not.toHaveBeenCalled();
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+    expect(mockGetScript.mock.calls[0]?.[17]).toEqual({
+      cache: 'bypass',
+      intelligenceSignals: 'bypass',
+    });
+    expect(mockWithAiBudgetReservation.mock.calls[0]?.[0]).toMatchObject({
+      baseCategory: 'content_live_eval',
+      jobName: `content_live_eval:${scenario.id}`,
+      hardRunCostLimitUsd: 1,
+      hardJobCostLimitUsd: 0.2,
+    });
   });
 
   it('rejects unsupported short durations', async () => {
@@ -947,7 +1089,8 @@ describe('Content API — script duration presets', () => {
     expect(contentRouteSource).toContain("import { registerContentScriptRoutes } from './content-script-routes';");
     expect(contentRouteSource).toContain('registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);');
     expect(routeSource).toContain("import { resolveScriptTopicContext } from './content-topic-context';");
-    expect(routeSource).toContain('const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);');
+    expect(routeSource).toContain('const scriptTopicContext = liveEvalContext');
+    expect(routeSource).toContain(': resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);');
     expect(routeSource).toContain("scriptTopicContext?.niche || niche || 'general'");
     expect(routeSource).toContain('durationPreset.targetDurationSeconds,');
     expect(routeSource).toContain('scriptTopicContext,');

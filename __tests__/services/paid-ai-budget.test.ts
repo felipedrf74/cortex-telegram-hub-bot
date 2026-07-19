@@ -1101,6 +1101,277 @@ describe('paid AI budget enforcement', () => {
     });
   });
 
+  it('allows the exact hard run boundary and denies the next provider attempt before network I/O', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(79);
+    await withAiBudgetReservation({
+      userId: 79,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      runId: 'content-live-hard-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.01,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 79,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.01,
+      })).not.toThrow();
+      db.prepare(`
+        INSERT INTO api_usage (
+          category, user_id, cost_usd, request_source, base_category, run_id
+        ) VALUES ('content_engine_script_standard', 79, 0.01, 'interactive', 'content_live_eval', 'content-live-hard-run')
+      `).run();
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 79,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.000001,
+      })).toThrowError(AiBudgetError);
+    });
+  });
+
+  it('rejects an unreviewed dated live-eval model before any provider callback can run', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(84);
+    let providerInvoked = false;
+    await withAiBudgetReservation({
+      userId: 84,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:unreviewed-model',
+      runId: 'content-live-unreviewed-model',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.2,
+      hardJobCostLimitUsd: 0.2,
+    }, async () => {
+      expect(() => {
+        assertAiBudgetReservationForProvider({
+          userId: 84,
+          category: 'content_engine_script_standard',
+          provider: 'openai',
+          model: 'gpt-5-mini-2099-01-01',
+          maxCostUsd: 0.01,
+        });
+        providerInvoked = true;
+      }).toThrowError(AiBudgetError);
+    });
+    expect(providerInvoked).toBe(false);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM ai_provider_attempt_reservations
+      WHERE run_id = 'content-live-unreviewed-model'
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('allows only the two reviewed standard-script provider fallback categories', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(85);
+    await withAiBudgetReservation({
+      userId: 85,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:reviewed-fallbacks',
+      runId: 'content-live-reviewed-fallbacks',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.05,
+      hardJobCostLimitUsd: 0.05,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 85,
+        category: 'content_engine_script_standard_openai_fallback',
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        maxCostUsd: 0.01,
+      })).not.toThrow();
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 85,
+        category: 'content_engine_script_standard_gemini_model_fallback',
+        provider: 'gemini',
+        model: 'gemini-2.5-flash-lite',
+        maxCostUsd: 0.01,
+      })).not.toThrow();
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 85,
+        category: 'content_engine_script_standard_unreviewed',
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        maxCostUsd: 0.01,
+      })).toThrowError(AiBudgetError);
+    });
+  });
+
+  it('allows the exact hard job boundary and prevents one sample from spending a later sample slice', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(80);
+    await withAiBudgetReservation({
+      userId: 80,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:sample-a',
+      runId: 'content-live-hard-job',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.05,
+      hardJobCostLimitUsd: 0.01,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 80,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.01,
+      })).not.toThrow();
+      db.prepare(`
+        INSERT INTO api_usage (
+          category, user_id, cost_usd, request_source, job_name, base_category, run_id
+        ) VALUES (
+          'content_engine_script_standard', 80, 0.01, 'interactive',
+          'content_live_eval:sample-a', 'content_live_eval', 'content-live-hard-job'
+        )
+      `).run();
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 80,
+        category: 'content_engine_script_repair',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.000001,
+      })).toThrowError(AiBudgetError);
+    });
+  });
+
+  it('retains a failed-attempt maximum and rejects replay before any usage row exists', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(83, 'max');
+    await withAiBudgetReservation({
+      userId: 83,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:ambiguous-attempt',
+      runId: 'content-live-ambiguous-attempt',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.01,
+      hardJobCostLimitUsd: 0.01,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 83,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.006,
+      })).not.toThrow();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM api_usage').get()).toEqual({ count: 0 });
+      expect(db.prepare(`
+        SELECT provider, model, reserved_cost_usd
+          FROM ai_provider_attempt_reservations
+         WHERE run_id = 'content-live-ambiguous-attempt'
+      `).get()).toEqual({ provider: 'openai', model: 'gpt-5-mini', reserved_cost_usd: 0.006 });
+
+      // Simulates replay/fallback after an ambiguous transport failure: no
+      // usage row arrived, but the first maximum remains fully committed.
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 83,
+        category: 'content_engine_script_standard',
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        maxCostUsd: 0.005,
+      })).toThrowError(AiBudgetError);
+    });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM ai_provider_attempt_reservations
+       WHERE run_id = 'content-live-ambiguous-attempt'
+    `).get()).toEqual({ count: 1 });
+  });
+
+  it('fails hard ceilings closed when scope is missing or durable spend cannot be read', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(81);
+    expect(checkAiBudget({
+      userId: 81,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.01,
+    })).toMatchObject({ allowed: false, code: 'SERVICE_DEGRADED' });
+    expect(checkAiBudget({
+      userId: 81,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      runId: 'content-live-missing-job',
+      estimatedCostUsd: 0.001,
+      hardJobCostLimitUsd: 0.01,
+    })).toMatchObject({ allowed: false, code: 'SERVICE_DEGRADED' });
+
+    await expect(withAiBudgetReservation({
+      userId: 81,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:unreadable',
+      runId: 'content-live-unreadable',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.02,
+      hardJobCostLimitUsd: 0.02,
+    }, async () => {
+      db.exec('DROP TABLE api_usage');
+      assertAiBudgetReservationForProvider({
+        userId: 81,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.001,
+      });
+    })).rejects.toMatchObject({ decision: { code: 'SERVICE_DEGRADED' } });
+  });
+
+  it('signs and propagates both hard ceilings and rejects re-entry tampering', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    vi.stubEnv('INTERNAL_ATTRIBUTION_SECRET', 'test-internal-attribution-secret');
+    addPaidUser(82);
+
+    await withAiBudgetReservation({
+      userId: 82,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:signed',
+      runId: 'content-live-signed',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.05,
+      hardJobCostLimitUsd: 0.01,
+    }, async () => {
+      const marker = getActiveAiBudgetReservationMarker(82, 'content_engine_script_standard');
+      expect(marker).toMatchObject({ hardRunCostLimitUsd: 0.05, hardJobCostLimitUsd: 0.01 });
+      const token = createInternalAttributionToken({
+        userId: 82,
+        tenantId: 82,
+        category: 'content_engine_script_standard',
+      });
+      const claims = verifyInternalAttributionToken(token, 'content_engine_script_standard');
+      expect(claims?.outerReservation).toMatchObject({ hardRunCostLimitUsd: 0.05, hardJobCostLimitUsd: 0.01 });
+
+      const matchingRequest = {
+        userId: 82,
+        requestSource: 'interactive' as const,
+        baseCategory: 'content_live_eval',
+        jobName: 'content_live_eval:signed',
+        runId: 'content-live-signed',
+        hardRunCostLimitUsd: 0.05,
+        hardJobCostLimitUsd: 0.01,
+      };
+      await expect(withSignedOuterAiBudgetReservation(
+        matchingRequest,
+        claims!.outerReservation!,
+        async () => 'reentered',
+      )).resolves.toBe('reentered');
+      await expect(withSignedOuterAiBudgetReservation(
+        { ...matchingRequest, hardJobCostLimitUsd: 0.02 },
+        claims!.outerReservation!,
+        async () => 'must-not-run',
+      )).rejects.toMatchObject({ decision: { code: 'SERVICE_DEGRADED' } });
+    });
+  });
+
   it('validates signed system re-entry against the shared user:0 lock for a positive target user', async () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     await withAiBudgetReservation({

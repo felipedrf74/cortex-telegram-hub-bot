@@ -1,5 +1,6 @@
 """
-News search via NewsAPI.org.  Falls back to mock data when NEWSAPI_API_KEY is empty.
+News search via NewsAPI.org. Synthetic results are available only in explicit
+fixture mode; missing credentials never fabricate evidence.
 
 Free tier: 100 requests/day, developer use only (no production caching).
 Searches across 80 000+ sources worldwide, filterable by language.
@@ -28,9 +29,15 @@ class NewsSearcher:
     name = "news"
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        if not cfg.newsapi_key:
-            logger.debug("No NEWSAPI_API_KEY — returning mock results")
+        if getattr(cfg, "fixture_mode", False):
+            logger.debug("Content-engine fixture mode — returning synthetic news results")
             return self._mock(query, max_results)
+        if getattr(cfg, "research_network_disabled", False):
+            logger.info("News search disabled for this isolated runtime")
+            return []
+        if not cfg.newsapi_key:
+            logger.info("News search unavailable because NEWSAPI_API_KEY is not configured")
+            return []
 
         # Search last 48 hours, Portuguese + English
         from_date = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S")

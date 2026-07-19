@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runContentDayToDayEvaluation } from '../../src/services/content-day-to-day-evaluation';
+import { CONTENT_LIVE_EVAL_CORPUS } from '../../src/services/content-live-evaluation-artifact';
+import { makeReleaseQualifiedContentLiveEvalArtifact } from '../fixtures/content-live-evaluation';
 import {
   ensureContentEvalHistoryTables,
   persistContentEvalRun,
 } from '../../src/services/content-eval-history';
 
 let db: Database.Database;
+
+function liveArtifact() {
+  return makeReleaseQualifiedContentLiveEvalArtifact();
+}
 
 describe('Content eval history', () => {
   beforeEach(() => {
@@ -90,41 +96,33 @@ describe('Content eval history', () => {
       invocationCount: 0,
     });
 
+    const artifact = liveArtifact();
     const withInvocation = runContentDayToDayEvaluation({
       mode: 'fixture',
       iosExtractionScore: 96,
       iosExtractionEvidence: { runId: 'ios-run', source: 'xcodebuild', sampleCount: 1 },
-      realProviderSampleScore: 95,
+      realProviderSampleScore: artifact.summary.score,
       realProviderSampleEvidence: {
-        runId: 'provider-run',
-        source: 'provider-registry-artifact',
-        sampleCount: 1,
-        providerInvocations: [{
-          invocationId: 'provider-invocation-1',
-          provider: 'configured-provider',
-          model: 'configured-model',
-          tier: 'chat',
-          category: 'content_day_to_day_eval',
-          status: 'succeeded',
-          capturedAt: '2026-06-04T00:00:00.000Z',
-          routingPath: 'provider_registry',
-          rawPrompt: 'must-not-be-persisted',
-        }] as any,
+        runId: artifact.runId,
+        source: artifact.source,
+        sampleCount: artifact.summary.sampleCount,
+        providerInvocations: artifact.invocations,
+        artifact,
       },
     });
     persistContentEvalRun(withInvocation, { db, runId: 'content-eval-with-invocation' });
 
     const capturedRow = db.prepare('SELECT * FROM content_eval_runs WHERE run_id = ?')
       .get('content-eval-with-invocation') as any;
-    expect(capturedRow.real_provider_calls).toBe(1);
-    expect(capturedRow.provider).toBe('configured-provider');
-    expect(capturedRow.model).toBe('configured-model');
+    expect(capturedRow.real_provider_calls).toBe(5);
+    expect(capturedRow.provider).toBe('openai');
+    expect(capturedRow.model).toBe('gpt-5-mini');
     const capturedEvidence = JSON.parse(capturedRow.execution_evidence_json);
     expect(capturedEvidence.realProviderSample).toMatchObject({
       status: 'executed',
-      invocationCount: 1,
+      invocationCount: 5,
     });
-    expect(capturedRow.execution_evidence_json).not.toContain('must-not-be-persisted');
+    expect(capturedRow.execution_evidence_json).not.toContain(CONTENT_LIVE_EVAL_CORPUS[0].topic);
   });
 
   it('updates an existing run idempotently instead of duplicating case rows', () => {

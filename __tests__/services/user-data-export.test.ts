@@ -757,6 +757,31 @@ describe('deleteAllUserData', () => {
     expect(counts['users']).toBe(1);
   });
 
+  it('discovers and erases receipt AI execution rows by user across tenant scopes', () => {
+    testDb.prepare(`
+      INSERT INTO receipt_ai_transfer_executions (
+        tenant_id, user_id, consent_receipt_key_hash,
+        transfer_binding_hash, status
+      ) VALUES (?, ?, ?, ?, 'in_progress')
+    `).run(901, 1, 'a'.repeat(64), 'b'.repeat(64));
+    testDb.prepare(`
+      INSERT INTO receipt_ai_transfer_executions (
+        tenant_id, user_id, consent_receipt_key_hash,
+        transfer_binding_hash, status
+      ) VALUES (?, ?, ?, ?, 'in_progress')
+    `).run(901, 2, 'c'.repeat(64), 'd'.repeat(64));
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.receipt_ai_transfer_executions).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.receipt_ai_transfer_executions).toBe(1);
+    expect(testDb.prepare(`
+      SELECT tenant_id AS tenantId, user_id AS userId
+        FROM receipt_ai_transfer_executions
+    `).all()).toEqual([{ tenantId: 901, userId: 2 }]);
+  });
+
   it('erases a migrated legacy topic through the scoped legal-erasure gate', () => {
     testDb.close();
     testDb = createMigratedTestDatabase({ stopBefore: '247_content_topics_workspace_exit.sql' });

@@ -38,9 +38,12 @@ class RedditSearcher:
     name = "reddit"
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        if cfg.fixture_mode:
+        if getattr(cfg, "fixture_mode", False):
             logger.debug("Content-engine fixture mode — returning mock Reddit results")
             return self._mock(query, max_results)
+        if getattr(cfg, "research_network_disabled", False):
+            logger.info("Reddit search disabled for this isolated runtime")
+            return []
 
         params = {
             "q": query,

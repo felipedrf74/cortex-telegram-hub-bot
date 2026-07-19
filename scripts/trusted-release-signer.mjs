@@ -25,6 +25,18 @@ import {
   vitestTestFiles,
 } from './release-test-evidence.mjs';
 import { loadTestPolicy, partitionTestFiles, walkTestFiles } from './lib/test-policy.mjs';
+import {
+  BACKEND_IOS_CONTRACT_FIXTURE_PATH,
+  BACKEND_IOS_CONTRACT_FIXTURE_SCHEMA,
+  backendIosContractDigest,
+  backendIosContractFixtureIdentity,
+} from './lib/backend-ios-contract-fixture.mjs';
+import {
+  IOS_DISTRIBUTION_ATTESTATION_FILE,
+  validateIosDistributionAttestation,
+} from './lib/ios-distribution-attestation.mjs';
+
+export { backendIosContractDigest } from './lib/backend-ios-contract-fixture.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'verify-candidate';
@@ -36,6 +48,24 @@ const TRUSTED_KEY_ID = 'github-environment-release-signing-2026-07';
 const TRUSTED_WORKFLOW_PATH = '.github/workflows/release-candidate-evidence.yml';
 const TRUSTED_WORKFLOW_NAME = 'RC — Release Evidence';
 const CANDIDATE_ARTIFACT_PREFIX = 'release-candidate-v2-';
+const IOS_REPOSITORY = 'felipedrf74/nexus-hub-ios';
+const IOS_WORKFLOW_PATH = '.github/workflows/ios-contract-evidence.yml';
+const IOS_WORKFLOW_NAME = 'iOS Contract Evidence';
+const IOS_ATTESTATION_FILE = 'ios-contract-attestation.json';
+const IOS_ATTESTATION_KEY_ID = 'ios-release-signing-2026-07';
+const IOS_ATTESTATION_MAX_LIFETIME_MS = 24 * 60 * 60 * 1_000;
+const IOS_ATTESTATION_PUBLIC_KEY_PATH = 'docs/release/evidence/ios-contract-evidence-public-key.pem';
+const IOS_CONTRACT_SUITE_NAME = 'Nexus Hub contract decoder suite';
+export const IOS_CONTRACT_TEST_SELECTORS = Object.freeze([
+  'Nexus HubTests/BackendCandidateContractFixtureTests',
+  'Nexus HubTests/ContractDecoderResilienceTests',
+  'Nexus HubTests/HomeViewStateContractDecodingTests',
+  'Nexus HubTests/TrainingHomeViewStateContractDecodingTests',
+  'Nexus HubTests/ContentHomeContractDecodingTests',
+  'Nexus HubTests/PlanGenerateResponseRaceDateTests',
+  'Nexus HubTests/PlanGenerateResponseExpertCoachTests',
+  'Nexus HubTests/PlanGenerateResponsePrimaryFocusTests',
+]);
 const RELEASE_RESULT_MAX_AGE_MS = 6 * 60 * 60 * 1_000;
 const MANIFEST_LIFETIME_MS = 72 * 60 * 60 * 1_000;
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,6 +89,208 @@ function exactKeys(value, expected, label) {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (canonicalJson(actual) !== canonicalJson(wanted)) fail(`${label} fields do not match the trusted schema`);
+}
+
+function validateContractScopeInputs({
+  contractScope,
+  hasIosEvidence = false,
+  hasIosDistributionEvidence = false,
+}) {
+  if (contractScope === 'backend_only') {
+    if (hasIosEvidence || hasIosDistributionEvidence) {
+      fail('backend-only release must not include iOS evidence');
+    }
+    return false;
+  }
+  if (contractScope !== 'shared_backend_ios') fail('release contract scope is invalid');
+  if (!hasIosEvidence) fail('shared backend/iOS release requires signed iOS evidence');
+  if (!hasIosDistributionEvidence) {
+    fail('shared backend/iOS release requires signed iOS distribution evidence');
+  }
+  return true;
+}
+
+export function validateIosContractAttestation({
+  attestation,
+  runtimeSha,
+  artifactDigest,
+  fixtureIdentity,
+  trustedRoot = scriptRoot,
+  nowMs = Date.now(),
+}) {
+  exactKeys(attestation, [
+    'schema', 'keyId', 'signatureAlgorithm', 'payload', 'signature',
+  ], 'iOS contract attestation envelope');
+  if (attestation.schema !== 'nexus.ios-contract-attestation.v2'
+      || attestation.keyId !== IOS_ATTESTATION_KEY_ID
+      || attestation.signatureAlgorithm !== 'ed25519'
+      || typeof attestation.signature !== 'string'
+      || !/^[A-Za-z0-9+/]+={0,2}$/.test(attestation.signature)) {
+    fail('iOS contract attestation envelope identity is invalid');
+  }
+  const payload = attestation.payload;
+  exactKeys(payload, [
+    'schema', 'generatedAt', 'expiresAt', 'ios', 'backend', 'contractSuite', 'ci',
+  ], 'iOS contract attestation payload');
+  if (payload.schema !== 'nexus.ios-contract-attestation-payload.v2') {
+    fail('iOS contract attestation payload schema is invalid');
+  }
+  exactKeys(payload.ios, ['repository', 'sha', 'buildNumber'], 'iOS contract source identity');
+  if (payload.ios.repository !== IOS_REPOSITORY
+      || !/^[0-9a-f]{40}$/.test(payload.ios.sha ?? '')
+      || !/^[1-9][0-9]*$/.test(String(payload.ios.buildNumber ?? ''))) {
+    fail('iOS contract source identity is invalid or mismatched');
+  }
+  const buildNumber = Number(payload.ios.buildNumber);
+  if (!Number.isSafeInteger(buildNumber)) fail('iOS contract build number is invalid');
+
+  const expectedContractDigest = backendIosContractDigest({
+    runtimeSha,
+    artifactDigest,
+    fixtureDigest: fixtureIdentity.digest,
+  });
+  exactKeys(payload.backend, [
+    'repository', 'runtimeSha', 'artifactDigest', 'contractDigest', 'fixture',
+  ], 'iOS contract backend identity');
+  exactKeys(payload.backend.fixture, ['schema', 'path', 'digest'], 'iOS contract fixture identity');
+  if (payload.backend.repository !== 'felipedrf74/cortex-telegram-hub-bot'
+      || payload.backend.runtimeSha !== runtimeSha
+      || payload.backend.artifactDigest !== artifactDigest
+      || payload.backend.contractDigest !== expectedContractDigest
+      || payload.backend.fixture.schema !== BACKEND_IOS_CONTRACT_FIXTURE_SCHEMA
+      || payload.backend.fixture.path !== BACKEND_IOS_CONTRACT_FIXTURE_PATH
+      || payload.backend.fixture.digest !== fixtureIdentity.digest) {
+    fail('iOS contract backend release identity is invalid or mismatched');
+  }
+  exactKeys(payload.contractSuite, [
+    'name', 'result', 'testCount', 'passedCount', 'failedCount', 'skippedCount',
+    'testSelectors', 'selectionDigest',
+  ], 'iOS contract suite');
+  const expectedSelectionDigest = sha256(canonicalJson(IOS_CONTRACT_TEST_SELECTORS));
+  if (payload.contractSuite.name !== IOS_CONTRACT_SUITE_NAME
+      || payload.contractSuite.result !== 'passed'
+      || !Number.isSafeInteger(payload.contractSuite.testCount)
+      || payload.contractSuite.testCount <= 0
+      || payload.contractSuite.passedCount !== payload.contractSuite.testCount
+      || payload.contractSuite.failedCount !== 0
+      || payload.contractSuite.skippedCount !== 0
+      || canonicalJson(payload.contractSuite.testSelectors) !== canonicalJson(IOS_CONTRACT_TEST_SELECTORS)
+      || payload.contractSuite.selectionDigest !== expectedSelectionDigest) {
+    fail('iOS contract suite evidence is invalid');
+  }
+  exactKeys(payload.ci, ['provider', 'workflow', 'runId', 'runAttempt'], 'iOS contract CI identity');
+  if (payload.ci.provider !== 'github-actions'
+      || payload.ci.workflow !== IOS_WORKFLOW_NAME
+      || !/^[1-9][0-9]*$/.test(String(payload.ci.runId ?? ''))
+      || !/^[1-9][0-9]*$/.test(String(payload.ci.runAttempt ?? ''))) {
+    fail('iOS contract CI identity is invalid or mismatched');
+  }
+
+  const generatedAtMs = Date.parse(payload.generatedAt ?? '');
+  const expiresAtMs = Date.parse(payload.expiresAt ?? '');
+  if (!Number.isFinite(generatedAtMs) || !Number.isFinite(expiresAtMs)
+      || generatedAtMs > nowMs + 5 * 60_000
+      || expiresAtMs <= nowMs
+      || expiresAtMs <= generatedAtMs
+      || expiresAtMs - generatedAtMs !== IOS_ATTESTATION_MAX_LIFETIME_MS) {
+    fail('iOS contract attestation timing is invalid');
+  }
+
+  const publicKeyPath = path.join(trustedRoot, IOS_ATTESTATION_PUBLIC_KEY_PATH);
+  const publicKeyStat = fs.lstatSync(publicKeyPath);
+  if (!publicKeyStat.isFile() || publicKeyStat.isSymbolicLink()) {
+    fail('trusted iOS contract public key is not a regular file');
+  }
+  let signatureValid = false;
+  try {
+    signatureValid = cryptoVerify(
+      null,
+      Buffer.from(canonicalJson(payload)),
+      createPublicKey(fs.readFileSync(publicKeyPath, 'utf8')),
+      Buffer.from(attestation.signature, 'base64'),
+    );
+  } catch {
+    signatureValid = false;
+  }
+  if (!signatureValid) fail('iOS contract attestation signature is invalid');
+  return {
+    binding: {
+      sha: payload.ios.sha,
+      buildNumber,
+      contractTestResult: 'passed',
+      fixtureDigest: fixtureIdentity.digest,
+      contractDigest: expectedContractDigest,
+    },
+    payload,
+    contractDigest: expectedContractDigest,
+  };
+}
+
+export function resolveTrustedIosBinding({
+  contractScope,
+  runtimeSha = '',
+  artifactDigest = '',
+  fixtureIdentity = null,
+  evidenceRoot = '',
+  distributionEvidenceRoot = '',
+  trustedRoot = scriptRoot,
+  nowMs = Date.now(),
+}) {
+  const shared = validateContractScopeInputs({
+    contractScope,
+    hasIosEvidence: Boolean(evidenceRoot),
+    hasIosDistributionEvidence: Boolean(distributionEvidenceRoot),
+  });
+  if (!shared) {
+    return { binding: null, evidence: null };
+  }
+  if (!evidenceRoot) fail('iOS evidence artifact root is required');
+  if (!fixtureIdentity) fail('exact backend/iOS contract fixture identity is required');
+  const files = regularFiles(evidenceRoot, 'iOS evidence');
+  if (files.length !== 1 || path.basename(files[0]) !== IOS_ATTESTATION_FILE) {
+    fail('iOS evidence artifact must contain exactly the governed attestation file');
+  }
+  const attestation = readJson(files[0]);
+  const validated = validateIosContractAttestation({
+    attestation,
+    runtimeSha,
+    artifactDigest,
+    fixtureIdentity,
+    trustedRoot,
+    nowMs,
+  });
+  const distributionFiles = regularFiles(distributionEvidenceRoot, 'iOS distribution evidence');
+  if (distributionFiles.length !== 1
+      || path.basename(distributionFiles[0]) !== IOS_DISTRIBUTION_ATTESTATION_FILE) {
+    fail('iOS distribution evidence artifact must contain exactly the governed attestation file');
+  }
+  const distributionAttestation = readJson(distributionFiles[0]);
+  const distribution = validateIosDistributionAttestation({
+    attestation: distributionAttestation,
+    iosSha: validated.binding.sha,
+    buildNumber: validated.binding.buildNumber,
+    trustedRoot,
+    nowMs,
+  });
+  return {
+    binding: {
+      ...validated.binding,
+      distribution: distribution.binding,
+    },
+    evidence: {
+      runId: String(validated.payload.ci.runId),
+      runAttempt: String(validated.payload.ci.runAttempt),
+      artifactPath: files[0],
+      attestation,
+      attestationDigest: sha256(fs.readFileSync(files[0])),
+      contractDigest: validated.contractDigest,
+      fixtureDigest: fixtureIdentity.digest,
+      distributionArtifactPath: distributionFiles[0],
+      distributionAttestationDigest: distribution.binding.attestationDigest,
+      distributionPayloadDigest: distribution.binding.payloadDigest,
+      distributionCiBuildId: distribution.binding.ci.buildId,
+    },
+  };
 }
 
 export function validateCandidateManifestTiming({
@@ -301,7 +533,7 @@ export function validateGitHubIdentity({
   if (run.status !== 'completed' || run.conclusion !== 'success') fail('candidate GitHub run did not succeed');
   if (run.head_sha !== runtimeSha) fail('candidate GitHub run head SHA mismatch');
   if (run.path !== TRUSTED_WORKFLOW_PATH) fail('candidate GitHub workflow path mismatch');
-  if (!['workflow_dispatch', 'push'].includes(run.event)) fail('candidate GitHub run event is not allowed');
+  if (run.event !== 'workflow_dispatch') fail('candidate GitHub run event is not allowed');
   if (run.repository?.full_name !== repository || run.head_repository?.full_name !== repository) {
     fail('candidate GitHub repository identity mismatch');
   }
@@ -314,6 +546,7 @@ export function validateGitHubIdentity({
   }
 
   const expectedJobs = [
+    '🔗 Validate release contract binding',
     '🧭 Resolve release test tier',
     '🐍 Content Engine full pytest',
     '📦 Write unsigned release candidate',
@@ -372,9 +605,9 @@ export function validateGitHubIdentity({
   };
 }
 
-function regularFiles(rootDirectory) {
+function regularFiles(rootDirectory, label = 'evidence') {
   if (!fs.existsSync(rootDirectory) || !fs.lstatSync(rootDirectory).isDirectory()) {
-    fail('nightly evidence artifact root is missing');
+    fail(`${label} artifact root is missing`);
   }
   assertRegularTree(rootDirectory);
   const files = [];
@@ -448,7 +681,7 @@ export function validateNightlyGitHubIdentity({
     fail('nightly GitHub evidence artifact is not bound to the referenced run');
   }
 
-  const files = regularFiles(evidenceRoot);
+  const files = regularFiles(evidenceRoot, 'nightly evidence');
   if (files.length !== 1 || path.basename(files[0]) !== 'nightly-full-suite-evidence.json') {
     fail('nightly evidence artifact must contain exactly the governed evidence file');
   }
@@ -593,6 +826,22 @@ export function validateTestEvidence({
 function validateCandidate() {
   const runtimeSha = valueOf('--runtime-sha');
   if (!/^[0-9a-f]{40}$/.test(runtimeSha)) fail('runtime SHA is invalid');
+  const contractScope = valueOf('--contract-scope');
+  const iosEvidenceRoot = valueOf('--ios-evidence-root');
+  const iosDistributionEvidenceRoot = valueOf('--ios-distribution-evidence-root');
+  const sharedIosRelease = validateContractScopeInputs({
+    contractScope,
+    hasIosEvidence: Boolean(iosEvidenceRoot),
+    hasIosDistributionEvidence: Boolean(iosDistributionEvidenceRoot),
+  });
+  if (['--ios-sha', '--ios-build-number', '--ios-contract-result'].some((flag) => valueOf(flag))) {
+    fail('direct iOS identity inputs are not accepted by the trusted signer');
+  }
+  if ([
+    '--ios-evidence-run-id', '--ios-run-metadata', '--ios-jobs-metadata', '--ios-artifact-metadata',
+  ].some((flag) => valueOf(flag))) {
+    fail('legacy iOS GitHub metadata inputs are not accepted by the trusted signer');
+  }
   const repository = valueOf('--repository');
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) fail('repository identity is invalid');
   const candidateArtifactRoot = resolveRequired('--candidate-artifact');
@@ -653,6 +902,7 @@ function validateCandidate() {
   if (artifact.git?.sha !== runtimeSha || path.basename(bundleRoot) !== artifact.digest) {
     fail('candidate bundle source SHA or digest directory mismatch');
   }
+  const fixtureIdentity = backendIosContractFixtureIdentity({ bundleRoot, artifact });
   for (const entry of artifact.files) {
     if (entry.path.startsWith('dist/')) continue;
     const sourcePath = path.join(candidateSourceRoot, entry.path);
@@ -663,6 +913,19 @@ function validateCandidate() {
       fail(`candidate bundle differs from exact source data: ${entry.path}`);
     }
   }
+
+  const iosResolution = sharedIosRelease
+    ? resolveTrustedIosBinding({
+      contractScope,
+      runtimeSha,
+      artifactDigest: artifact.digest,
+      fixtureIdentity,
+      evidenceRoot: path.resolve(iosEvidenceRoot),
+      distributionEvidenceRoot: path.resolve(iosDistributionEvidenceRoot),
+      trustedRoot,
+    })
+    : resolveTrustedIosBinding({ contractScope });
+  const ios = iosResolution.binding;
 
   const unsignedPath = path.join(
     candidateArtifactRoot,
@@ -739,7 +1002,7 @@ function validateCandidate() {
     artifactDigest: artifact.digest,
     testPolicyDigest,
   };
-  const expectedPayload = {
+  const expectedCandidatePayload = {
     schema: 'nexus.release-manifest-payload.v2',
     runtimeSha,
     docsHead: runtimeSha,
@@ -768,11 +1031,14 @@ function validateCandidate() {
       workflow: TRUSTED_WORKFLOW_NAME,
     },
     staging: null,
-    ios: null,
+    ios: ios ? { ...ios, distribution: null } : null,
   };
-  if (canonicalJson(payload) !== canonicalJson(expectedPayload)) {
+  if (canonicalJson(payload) !== canonicalJson(expectedCandidatePayload)) {
     fail('unsigned release manifest payload does not match independently reconstructed candidate data');
   }
+  const expectedPayload = ios
+    ? { ...expectedCandidatePayload, ios }
+    : expectedCandidatePayload;
   return {
     runtimeSha,
     repository,
@@ -783,6 +1049,7 @@ function validateCandidate() {
     payload: expectedPayload,
     artifact: githubIdentity.artifact,
     nightlyGitHubIdentity,
+    iosEvidence: iosResolution.evidence,
     candidateRunId: valueOf('--candidate-run-id'),
     candidateRunAttempt: githubIdentity.runAttempt,
   };
@@ -815,6 +1082,35 @@ function writeNightlyRequest() {
     runId: null,
     runAttempt: null,
     artifactName: null,
+  };
+}
+
+function writeIosContractRequest() {
+  const runtimeSha = valueOf('--runtime-sha');
+  if (!/^[0-9a-f]{40}$/.test(runtimeSha)) fail('runtime SHA is invalid');
+  const candidateArtifactRoot = resolveRequired('--candidate-artifact');
+  assertRegularTree(candidateArtifactRoot);
+  const bundleRoot = locateBundle(candidateArtifactRoot, runtimeSha);
+  const verifiedBundle = verifyReleaseBundle(bundleRoot, runtimeSha);
+  const artifactDigest = verifiedBundle.manifest.digest;
+  const fixture = backendIosContractFixtureIdentity({
+    bundleRoot,
+    artifact: verifiedBundle.manifest,
+  });
+  return {
+    schema: 'nexus.ios-contract-evidence-request.v2',
+    iosRepository: IOS_REPOSITORY,
+    workflow: IOS_WORKFLOW_PATH,
+    backendRuntimeSha: runtimeSha,
+    backendArtifactDigest: artifactDigest,
+    backendContractFixturePath: fixture.relativePath,
+    backendContractFixtureDigest: fixture.digest,
+    backendContractFixtureBase64: fixture.base64,
+    backendContractDigest: backendIosContractDigest({
+      runtimeSha,
+      artifactDigest,
+      fixtureDigest: fixture.digest,
+    }),
   };
 }
 
@@ -882,8 +1178,21 @@ function writeSignedOutput(candidate) {
     path.join(outputRoot, '.local/release/rc-test-results'),
     { recursive: true, errorOnExist: true },
   );
+  if (candidate.iosEvidence) {
+    const destination = path.join(outputRoot, `.local/release/${IOS_ATTESTATION_FILE}`);
+    fs.copyFileSync(candidate.iosEvidence.artifactPath, destination, fs.constants.COPYFILE_EXCL);
+    const distributionDestination = path.join(
+      outputRoot,
+      `.local/release/${IOS_DISTRIBUTION_ATTESTATION_FILE}`,
+    );
+    fs.copyFileSync(
+      candidate.iosEvidence.distributionArtifactPath,
+      distributionDestination,
+      fs.constants.COPYFILE_EXCL,
+    );
+  }
   const provenance = {
-    schema: 'nexus.release-signing-provenance.v1',
+    schema: 'nexus.release-signing-provenance.v3',
     runtimeSha: candidate.runtimeSha,
     artifactDigest: candidate.payload.artifact.digest,
     candidateRunId: candidate.candidateRunId,
@@ -897,6 +1206,15 @@ function writeSignedOutput(candidate) {
       ? String(candidate.nightlyGitHubIdentity.artifact.id)
       : null,
     nightlyArtifactDigest: candidate.nightlyGitHubIdentity?.artifact.digest ?? null,
+    iosEvidenceRunId: candidate.iosEvidence?.runId ?? null,
+    iosEvidenceRunAttempt: candidate.iosEvidence?.runAttempt ?? null,
+    iosAttestationDigest: candidate.iosEvidence?.attestationDigest ?? null,
+    iosContractDigest: candidate.iosEvidence?.contractDigest ?? null,
+    iosContractFixtureDigest: candidate.iosEvidence?.fixtureDigest ?? null,
+    iosDistributionAttestationDigest:
+      candidate.iosEvidence?.distributionAttestationDigest ?? null,
+    iosDistributionPayloadDigest: candidate.iosEvidence?.distributionPayloadDigest ?? null,
+    iosDistributionCiBuildId: candidate.iosEvidence?.distributionCiBuildId ?? null,
     signingRunId: process.env.GITHUB_RUN_ID ?? null,
     signingRunAttempt: process.env.GITHUB_RUN_ATTEMPT ?? null,
     trustedToolingSha: git(candidate.trustedRoot, 'rev-parse', 'HEAD'),
@@ -914,6 +1232,8 @@ function writeSignedOutput(candidate) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (command === 'nightly-request') {
     process.stdout.write(`${JSON.stringify(writeNightlyRequest(), null, 2)}\n`);
+  } else if (command === 'ios-contract-request') {
+    process.stdout.write(`${JSON.stringify(writeIosContractRequest(), null, 2)}\n`);
   } else {
     const candidate = validateCandidate();
     if (command === 'verify-candidate') {
@@ -923,6 +1243,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       artifactDigest: candidate.payload.artifact.digest,
       candidateRunId: candidate.candidateRunId,
       candidateArtifactId: candidate.artifact.id,
+      iosEvidenceRunId: candidate.iosEvidence?.runId ?? null,
+      iosDistributionCiBuildId: candidate.iosEvidence?.distributionCiBuildId ?? null,
+      iosSha: candidate.payload.ios?.sha ?? null,
+      iosBuildNumber: candidate.payload.ios?.buildNumber ?? null,
     }, null, 2)}\n`);
     } else if (command === 'sign-manifest') {
       const result = writeSignedOutput(candidate);
@@ -936,7 +1260,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         keyId: TRUSTED_KEY_ID,
       }, null, 2)}\n`);
     } else {
-      fail('Usage: trusted-release-signer.mjs <nightly-request|verify-candidate|sign-manifest> [options]');
+      fail('Usage: trusted-release-signer.mjs <nightly-request|ios-contract-request|verify-candidate|sign-manifest> [options]');
     }
   }
 }

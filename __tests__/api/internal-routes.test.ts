@@ -49,6 +49,12 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('jsonMode,');
   });
 
+  it('fails signed live-evaluation traffic outside its fixed input/output envelope before provider routing', () => {
+    expect(routesSrc).toContain("outerReservation?.baseCategory === 'content_live_eval'");
+    expect(routesSrc).toContain('contentLiveEvalInternalEnvelopeWithinLimits');
+    expect(routesSrc).toContain('No model call was made.');
+  });
+
   it('ai-complete strips body-supplied user and tenant metadata before provider usage attribution', () => {
     expect(routesSrc).toContain('userId?: number');
     expect(routesSrc).toContain('tenantId?: number');

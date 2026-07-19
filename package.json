@@ -28,6 +28,7 @@
     "test:ui": "vitest --ui",
     "eval:training": "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-training-eval-token-disabled} TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-1} npm run build && TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-training-eval-token-disabled} TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-1} node dist/tools/training-eval-harness.js",
     "eval:content": "npm run build && node dist/tools/content-evaluation-harness.js",
+    "eval:content:ios-extraction": "npx tsx scripts/create-content-ios-extraction-artifact.ts",
     "smoke:content:local": "scripts/with-smoke-evidence.sh content-full-nexus-local scripts/content-full-nexus-local-smoke.sh",
     "smoke:cooking:portal": "scripts/with-smoke-evidence.sh cooking-portal npx tsx scripts/cooking-portal-browser-smoke.ts",
     "smoke:decision-center-notification": "npm run build && scripts/decision-center-notification-smoke.sh",

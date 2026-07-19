@@ -179,10 +179,11 @@ describe('Python reddit.py — fixture mode avoids live unauthenticated calls', 
   const src = readEngineFile(path.join('searchers', 'reddit.py'));
 
   it('returns deterministic mock results when fixture mode is enabled', () => {
-    expect(src).toContain('if cfg.fixture_mode:');
+    expect(src).toContain('if getattr(cfg, "fixture_mode", False):');
     expect(src).toContain('Content-engine fixture mode');
     expect(src).toContain('def _mock');
     expect(src).toContain('Fixture mode avoids live Reddit calls.');
+    expect(src).toContain('if getattr(cfg, "research_network_disabled", False):');
   });
 });
 

@@ -2,6 +2,18 @@
 
 import { analyzeAndImproveScript, buildScriptPreflightBrief } from './content-script-quality';
 import { buildContentAgencyPackage } from './content-agency';
+import {
+  CONTENT_LIVE_EVAL_ROUTING_PATH,
+  CONTENT_LIVE_EVAL_SOURCE,
+  isReleaseQualifiedContentLiveEvaluationArtifact,
+  stableContentEvalJson,
+  type ContentLiveEvaluationArtifact,
+} from './content-live-evaluation-artifact';
+import {
+  CONTENT_IOS_EXTRACTION_SOURCE,
+  isReleaseQualifiedContentIosExtractionArtifact,
+  type ContentIosExtractionArtifact,
+} from './content-ios-extraction-artifact';
 
 export type ContentEvalMode = 'fixture' | 'local_engine' | 'real_provider';
 
@@ -299,17 +311,32 @@ export interface ContentEvalExternalLaneEvidence {
   generatedAt?: string;
   /** Required for a real-provider lane. Run metadata alone is not provider-call evidence. */
   providerInvocations?: ContentEvalProviderInvocationProvenance[];
+  /** Canonical, score-bound, redacted live-evaluation artifact. */
+  artifact?: ContentLiveEvaluationArtifact;
+  /** Canonical, score-bound, redacted iOS visible-text artifact. */
+  iosArtifact?: ContentIosExtractionArtifact;
 }
 
 export interface ContentEvalProviderInvocationProvenance {
   invocationId: string;
+  scenarioId: string;
   provider: string;
   model: string;
-  tier: 'chat' | 'toolUse';
+  resolvedModel: string;
+  tier: 'chat';
   category: 'content_day_to_day_eval';
+  providerCategory: string;
   status: 'succeeded' | 'failed';
   capturedAt: string;
-  routingPath: 'provider_registry';
+  routingPath: typeof CONTENT_LIVE_EVAL_ROUTING_PATH;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  pricingStatus: string;
+  usageDigest: string;
 }
 
 export type ContentEvalExecutionStatus = 'executed' | 'not_executed' | 'failed' | 'invalid_evidence';
@@ -319,8 +346,12 @@ export interface ContentEvalLaneExecutionEvidence {
   status: ContentEvalExecutionStatus;
   source: string;
   invocationCount: number;
-  failureCode?: 'engine_exception' | 'invalid_engine_output' | 'missing_invocation_provenance' | 'invalid_invocation_provenance';
+  failureCode?: 'engine_exception' | 'invalid_engine_output' | 'missing_invocation_provenance' | 'invalid_invocation_provenance' | 'missing_bound_artifact' | 'invalid_artifact_binding' | 'score_artifact_mismatch' | 'typed_artifact_required';
   providerInvocations?: ContentEvalProviderInvocationProvenance[];
+  iosExecutionContext?: Pick<
+    ContentIosExtractionArtifact['iosSource'],
+    'scheme' | 'buildConfiguration' | 'evidenceScope'
+  >;
 }
 
 export interface ContentEvalLaneEvidence {
@@ -1300,7 +1331,10 @@ function runtimeLaneEvaluation(options: Pick<
     options.realProviderSampleScore,
     options.realProviderSampleEvidence,
   );
-  const iosExtractionScore = normalizeExternalLaneScore(options.iosExtractionScore, options.iosExtractionEvidence);
+  const iosExtractionScore = normalizeIosExtractionLaneScore(
+    options.iosExtractionScore,
+    options.iosExtractionEvidence,
+  );
 
   return {
     laneScores: {
@@ -1316,7 +1350,7 @@ function runtimeLaneEvaluation(options: Pick<
       scriptQuality: scriptQualityEvidence,
       criticalUser: { ...localPackage.evidence },
       realProviderSample: realProviderLaneEvidence(options.realProviderSampleScore, options.realProviderSampleEvidence),
-      iosExtraction: externalLaneEvidence('ios-visible-text-extraction', options.iosExtractionScore, options.iosExtractionEvidence),
+      iosExtraction: iosExtractionLaneEvidence(options.iosExtractionScore, options.iosExtractionEvidence),
     },
   };
 }
@@ -1412,22 +1446,24 @@ function clampScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function normalizeExternalLaneScore(
-  score: number | null | undefined,
-  evidence: ContentEvalExternalLaneEvidence | null | undefined,
-): number | null {
-  if (typeof score !== 'number' || !Number.isFinite(score)) return null;
-  if (!hasValidExternalLaneEvidence(evidence)) return null;
-  return clampScore(score);
-}
-
 function normalizeRealProviderLaneScore(
   score: number | null | undefined,
   evidence: ContentEvalExternalLaneEvidence | null | undefined,
 ): number | null {
   if (typeof score !== 'number' || !Number.isFinite(score)) return null;
-  if (!hasValidProviderInvocationEvidence(evidence)) return null;
-  return clampScore(score);
+  const artifact = validatedContentLiveArtifact(evidence);
+  if (!artifact || score !== artifact.summary.score) return null;
+  return artifact.summary.score;
+}
+
+function normalizeIosExtractionLaneScore(
+  score: number | null | undefined,
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): number | null {
+  const artifact = validatedContentIosExtractionArtifact(evidence);
+  if (!artifact) return null;
+  if (score != null && (!Number.isFinite(score) || score !== artifact.score)) return null;
+  return artifact.score;
 }
 
 function hasValidExternalLaneEvidence(evidence: ContentEvalExternalLaneEvidence | null | undefined): evidence is ContentEvalExternalLaneEvidence {
@@ -1441,32 +1477,87 @@ function hasValidExternalLaneEvidence(evidence: ContentEvalExternalLaneEvidence 
 
 function hasValidProviderInvocationEvidence(
   evidence: ContentEvalExternalLaneEvidence | null | undefined,
-): evidence is ContentEvalExternalLaneEvidence & { providerInvocations: ContentEvalProviderInvocationProvenance[] } {
-  if (!hasValidExternalLaneEvidence(evidence) || !Array.isArray(evidence.providerInvocations)) return false;
-  if (evidence.providerInvocations.length !== evidence.sampleCount) return false;
-  const invocationIds = new Set<string>();
-  for (const invocation of evidence.providerInvocations) {
-    if (
-      !invocation
-      || typeof invocation.invocationId !== 'string'
-      || invocation.invocationId.trim().length === 0
-      || invocationIds.has(invocation.invocationId)
-      || typeof invocation.provider !== 'string'
-      || invocation.provider.trim().length === 0
-      || invocation.provider === 'fixture'
-      || typeof invocation.model !== 'string'
-      || invocation.model.trim().length === 0
-      || invocation.model === 'deterministic-content-fixture'
-      || (invocation.tier !== 'chat' && invocation.tier !== 'toolUse')
-      || invocation.category !== 'content_day_to_day_eval'
-      || invocation.status !== 'succeeded'
-      || typeof invocation.capturedAt !== 'string'
-      || !Number.isFinite(Date.parse(invocation.capturedAt))
-      || invocation.routingPath !== 'provider_registry'
-    ) return false;
-    invocationIds.add(invocation.invocationId);
-  }
+): evidence is ContentEvalExternalLaneEvidence & { artifact: ContentLiveEvaluationArtifact } {
+  const artifact = validatedContentLiveArtifact(evidence);
+  if (!artifact) return false;
+  if (Array.isArray(evidence?.providerInvocations)
+    && stableContentEvalJson(evidence.providerInvocations) !== stableContentEvalJson(artifact.invocations)) return false;
   return true;
+}
+
+function validatedContentLiveArtifact(
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): ContentLiveEvaluationArtifact | null {
+  if (!hasValidExternalLaneEvidence(evidence) || !evidence.artifact) return null;
+  const artifact = evidence.artifact;
+  if (!isReleaseQualifiedContentLiveEvaluationArtifact(artifact)) return null;
+  if (
+    evidence.runId !== artifact.runId
+    || evidence.source !== artifact.source
+    || evidence.sampleCount !== artifact.summary.sampleCount
+    || (evidence.generatedAt != null && evidence.generatedAt !== artifact.generatedAt)
+  ) return null;
+  return artifact;
+}
+
+function validatedContentIosExtractionArtifact(
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): ContentIosExtractionArtifact | null {
+  if (!hasValidExternalLaneEvidence(evidence) || !evidence.iosArtifact) return null;
+  const artifact = evidence.iosArtifact;
+  if (!isReleaseQualifiedContentIosExtractionArtifact(artifact)) return null;
+  if (
+    evidence.runId !== artifact.runId
+    || evidence.source !== artifact.source
+    || evidence.sampleCount !== artifact.summary.totalCount
+    || (evidence.generatedAt != null && evidence.generatedAt !== artifact.generatedAt)
+  ) return null;
+  return artifact;
+}
+
+function iosExtractionLaneEvidence(
+  score: number | null | undefined,
+  evidence: ContentEvalExternalLaneEvidence | null | undefined,
+): ContentEvalLaneExecutionEvidence {
+  if (score == null && evidence == null) {
+    return {
+      kind: 'external_executable',
+      status: 'not_executed',
+      source: CONTENT_IOS_EXTRACTION_SOURCE,
+      invocationCount: 0,
+      failureCode: 'typed_artifact_required',
+    };
+  }
+  const artifact = validatedContentIosExtractionArtifact(evidence);
+  if (!artifact) {
+    return {
+      kind: 'external_executable',
+      status: 'invalid_evidence',
+      source: evidence?.source || CONTENT_IOS_EXTRACTION_SOURCE,
+      invocationCount: 0,
+      failureCode: evidence?.iosArtifact ? 'invalid_artifact_binding' : 'typed_artifact_required',
+    };
+  }
+  if (score != null && score !== artifact.score) {
+    return {
+      kind: 'external_executable',
+      status: 'invalid_evidence',
+      source: evidence?.source || artifact.source,
+      invocationCount: 0,
+      failureCode: 'score_artifact_mismatch',
+    };
+  }
+  return {
+    kind: 'external_executable',
+    status: 'executed',
+    source: artifact.source,
+    invocationCount: artifact.summary.totalCount,
+    iosExecutionContext: {
+      scheme: artifact.iosSource.scheme,
+      buildConfiguration: artifact.iosSource.buildConfiguration,
+      evidenceScope: artifact.iosSource.evidenceScope,
+    },
+  };
 }
 
 function realProviderLaneEvidence(
@@ -1477,31 +1568,50 @@ function realProviderLaneEvidence(
     return {
       kind: 'external_executable',
       status: 'not_executed',
-      source: 'provider-registry',
+      source: CONTENT_LIVE_EVAL_SOURCE,
       invocationCount: 0,
-      failureCode: 'missing_invocation_provenance',
+      failureCode: 'missing_bound_artifact',
     };
   }
-  if (!hasValidProviderInvocationEvidence(evidence)) {
+  const artifact = validatedContentLiveArtifact(evidence);
+  if (!artifact || !hasValidProviderInvocationEvidence(evidence)) {
     return {
       kind: 'external_executable',
       status: 'invalid_evidence',
-      source: evidence?.source || 'provider-registry',
+      source: evidence?.source || CONTENT_LIVE_EVAL_SOURCE,
       invocationCount: 0,
-      failureCode: Array.isArray(evidence?.providerInvocations)
-        ? 'invalid_invocation_provenance'
-        : 'missing_invocation_provenance',
+      failureCode: evidence?.artifact ? 'invalid_artifact_binding' : 'missing_bound_artifact',
     };
   }
-  const providerInvocations = evidence.providerInvocations.map((invocation) => ({
+  if (typeof score !== 'number' || score !== artifact.summary.score) {
+    return {
+      kind: 'external_executable',
+      status: 'invalid_evidence',
+      source: evidence.source,
+      invocationCount: 0,
+      failureCode: 'score_artifact_mismatch',
+    };
+  }
+  const providerInvocations = artifact.invocations.map((invocation) => ({
     invocationId: invocation.invocationId,
+    scenarioId: invocation.scenarioId,
     provider: invocation.provider,
     model: invocation.model,
+    resolvedModel: invocation.resolvedModel,
     tier: invocation.tier,
     category: invocation.category,
+    providerCategory: invocation.providerCategory,
     status: invocation.status,
     capturedAt: invocation.capturedAt,
     routingPath: invocation.routingPath,
+    inputTokens: invocation.inputTokens,
+    outputTokens: invocation.outputTokens,
+    cacheReadTokens: invocation.cacheReadTokens,
+    cacheWriteTokens: invocation.cacheWriteTokens,
+    totalTokens: invocation.totalTokens,
+    costUsd: invocation.costUsd,
+    pricingStatus: invocation.pricingStatus,
+    usageDigest: invocation.usageDigest,
   }));
   return {
     kind: 'external_executable',
@@ -1510,23 +1620,6 @@ function realProviderLaneEvidence(
     invocationCount: providerInvocations.length,
     providerInvocations,
   };
-}
-
-function externalLaneEvidence(
-  defaultSource: string,
-  score: number | null | undefined,
-  evidence: ContentEvalExternalLaneEvidence | null | undefined,
-): ContentEvalLaneExecutionEvidence {
-  const suppliedSource = typeof evidence?.source === 'string' && evidence.source.trim().length > 0
-    ? evidence.source
-    : defaultSource;
-  if (score == null && evidence == null) {
-    return { kind: 'external_executable', status: 'not_executed', source: defaultSource, invocationCount: 0 };
-  }
-  if (!hasValidExternalLaneEvidence(evidence)) {
-    return { kind: 'external_executable', status: 'invalid_evidence', source: suppliedSource, invocationCount: 0 };
-  }
-  return { kind: 'external_executable', status: 'executed', source: evidence.source, invocationCount: evidence.sampleCount };
 }
 
 function aggregateCases(cases: ContentEvalCaseResult[], options: Pick<
@@ -1615,14 +1708,15 @@ export function runContentDayToDayEvaluation(options: ContentEvalRunOptions = {}
     aggregate.releaseGate === 'PASS_WITH_CONDITIONS'
       ? 'Fixture/local deterministic evidence is a baseline only; it is not a release-passing generation gate without the required external lanes.'
       : null,
-    options.iosExtractionScore != null && !hasValidExternalLaneEvidence(options.iosExtractionEvidence)
-      ? 'iOS visible-text extraction score was ignored because it did not include run provenance.'
+    (options.iosExtractionScore != null || options.iosExtractionEvidence != null)
+      && aggregate.laneScores.iosExtractionScore == null
+      ? 'iOS visible-text extraction evidence was ignored because it did not match a validated, score-bound iOS artifact.'
       : null,
     aggregate.laneScores.iosExtractionScore == null
       ? 'iOS visible-text extraction is not part of the default fixture run; run focused iOS extraction tests before claiming a clean PASS.'
       : null,
     options.realProviderSampleScore != null && !hasValidProviderInvocationEvidence(options.realProviderSampleEvidence)
-      ? 'Real-provider sample score was ignored because it did not include valid captured provider invocation provenance.'
+      ? 'Real-provider sample score was ignored because it did not match a validated, redacted canonical Content live-evaluation artifact.'
       : null,
     aggregate.laneScores.realProviderSampleScore == null
       ? 'Real provider calls are intentionally off by default; use limited real-provider samples only for representative quality checks.'
@@ -1672,6 +1766,13 @@ export function formatContentEvalResultsMarkdown(result: ContentDayToDayEvalResu
     .join('\n');
 
   const conditionRows = result.openConditions.map((condition) => `- ${condition}`).join('\n');
+  const iosExecutionContext = result.aggregate.laneEvidence.iosExtraction.iosExecutionContext;
+  const iosEvidenceScope = iosExecutionContext
+    ? 'Behavioral UI/recovery evidence only; not App Store archive equivalence'
+    : 'not verified';
+  const iosBuildContext = iosExecutionContext
+    ? `${iosExecutionContext.scheme} — ${iosExecutionContext.buildConfiguration}`
+    : 'not verified';
 
   return `# Content Day-to-Day Evaluation Baseline Results
 
@@ -1692,6 +1793,9 @@ Mode: \`${result.mode}\`
 | Real-provider sample score | ${result.aggregate.laneScores.realProviderSampleScore ?? 'not run'} |
 | Fixture evidence | ${result.aggregate.laneEvidence.fixture.status} (${result.aggregate.laneEvidence.fixture.kind}) |
 | Local engine evidence | ${result.aggregate.laneEvidence.localEngine.status} (${result.aggregate.laneEvidence.localEngine.invocationCount} invocation(s)) |
+| iOS extraction evidence | ${result.aggregate.laneEvidence.iosExtraction.status} (${result.aggregate.laneEvidence.iosExtraction.invocationCount} invocation(s)) |
+| iOS evidence scope | ${iosEvidenceScope} |
+| iOS build context | ${iosBuildContext} |
 | Real-provider evidence | ${result.aggregate.laneEvidence.realProviderSample.status} (${result.aggregate.laneEvidence.realProviderSample.invocationCount} captured invocation(s)) |
 | Minimum case score | ${result.aggregate.minScore}/100 |
 | Cases | ${result.aggregate.caseCount} |
@@ -1716,7 +1820,7 @@ ${failureRows}
 ## Routing And Data Controls
 
 - Deterministic contract cases always identify themselves as fixtures, even when the operator requests \`local_engine\` or \`real_provider\` mode.
-- A requested mode is not execution evidence. Real-provider calls are counted only from validated, captured provider-registry invocation provenance.
+- A requested mode is not execution evidence. Real-provider calls are counted only from a validated, score-bound artifact produced through the canonical Content script route.
 - Claim-safety is \`unavailable\` for contract cases where executable claim review did not run; it is never synthesized as a passing score.
 - Edit-preservation is \`unavailable\` for contract cases where no save/revision execution ran; it is never synthesized as preserved.
 - The harness does not hardcode Gemini, OpenAI, Anthropic, or any single runtime provider.

@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  BACKEND_IOS_CONTRACT_FIXTURE_PATH,
+  validateBackendIosContractFixtureBytes,
+} from './lib/backend-ios-contract-fixture.mjs';
 
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = '') => {
@@ -9,6 +14,20 @@ const valueOf = (name, fallback = '') => {
   return index === -1 ? fallback : args[index + 1] || fallback;
 };
 const root = path.resolve(valueOf('--root', process.cwd()));
+const require = createRequire(import.meta.url);
+const fixtureModulePath = path.join(root, 'dist/release/backend-ios-contract-fixture.js');
+if (!fs.existsSync(fixtureModulePath)) {
+  throw new Error('compiled backend/iOS contract fixture builder is missing; build the exact runtime first');
+}
+const fixtureModule = require(fixtureModulePath);
+if (typeof fixtureModule.buildBackendIosContractFixture !== 'function') {
+  throw new Error('compiled backend/iOS contract fixture builder is invalid');
+}
+const fixtureOutputPath = path.join(root, BACKEND_IOS_CONTRACT_FIXTURE_PATH);
+fs.mkdirSync(path.dirname(fixtureOutputPath), { recursive: true });
+const fixtureBytes = Buffer.from(`${JSON.stringify(fixtureModule.buildBackendIosContractFixture())}\n`);
+validateBackendIosContractFixtureBytes(fixtureBytes);
+fs.writeFileSync(fixtureOutputPath, fixtureBytes, { mode: 0o600 });
 const artifact = JSON.parse(execFileSync(process.execPath, [
   path.join(root, 'scripts/release-artifact-manifest.mjs'), '--root', root, '--format', 'json',
 ], { cwd: root, encoding: 'utf8' }));

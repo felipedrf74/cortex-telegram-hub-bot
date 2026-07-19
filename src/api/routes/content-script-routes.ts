@@ -30,7 +30,10 @@ import {
 } from './content-script-route-utils';
 import { resolveScriptTopicContext } from './content-topic-context';
 import { getAllKnowledge } from '../../state/content-references';
-import { getScript } from '../../services/content-engine';
+import {
+  getScript,
+  SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY,
+} from '../../services/content-engine';
 import { buildScriptPreflightBrief } from '../../services/content-script-quality';
 import { buildAuthorizedContentReferenceContext } from '../../services/content-reference-context';
 import { completeOneShotWithFallback, completeOneShotWithSearch } from '../../services/gemini-provider';
@@ -77,6 +80,14 @@ import {
   recordContentWorkspaceQualitySignal,
   startContentWorkspaceObservation,
 } from '../../services/content-workspace-observability';
+import {
+  assertContentLiveEvalSyntheticRuntimeScope,
+  ContentLiveEvalRequestError,
+  resolveContentLiveEvalRequest,
+} from '../../services/content-live-evaluation-request';
+import { CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE } from '../../services/content-live-evaluation-artifact';
+import { isLoopbackRequest } from '../secret-guards';
+import { getDb } from '../../services/database';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -120,6 +131,30 @@ export function registerContentScriptRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_generate')) return;
     const generationObservation = startContentWorkspaceObservation('generation');
+
+    let liveEvalContext: ReturnType<typeof resolveContentLiveEvalRequest>;
+    try {
+      liveEvalContext = resolveContentLiveEvalRequest({
+        readHeader: (name) => req.header(name),
+        body: req.body,
+        isLoopback: isLoopbackRequest(req),
+      });
+      if (liveEvalContext) {
+        assertContentLiveEvalSyntheticRuntimeScope({
+          db: getDb(),
+          userId,
+          tenantId,
+          runId: liveEvalContext.runId,
+        });
+      }
+    } catch (error) {
+      generationObservation.complete('blocked', 'validation_rejected');
+      if (error instanceof ContentLiveEvalRequestError) {
+        sendError(res, error.code, error.message, error.status);
+        return;
+      }
+      throw error;
+    }
 
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
     const {
@@ -176,19 +211,26 @@ export function registerContentScriptRoutes(
       // and pass it to the script engine so scripts reflect tone, structure,
       // phrases, and creator preferences instead of only topic research.
       let voiceMemory: string | null = null;
-      try {
-        voiceMemory = buildUserVoiceMemory(userId, (scopedUserId) => getAllKnowledge(scopedUserId, tenantId));
-      } catch { /* non-critical — generate without voice if DB fails */ }
+      if (!liveEvalContext) {
+        try {
+          voiceMemory = buildUserVoiceMemory(userId, (scopedUserId) => getAllKnowledge(scopedUserId, tenantId));
+        } catch { /* non-critical — generate without voice if DB fails */ }
+      }
 
-      const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);
-      const targetLanguage = resolveScriptTargetLanguage(language, userId, getUserLanguageById);
+      const scriptTopicContext = liveEvalContext
+        ? null
+        : resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);
+      const targetLanguage = liveEvalContext?.scenario.language
+        ?? resolveScriptTargetLanguage(language, userId, getUserLanguageById);
       const shouldForceRefresh = forceRefresh === true || regenerate === true;
       const resolvedRegenerationSeed = shouldForceRefresh
         ? (typeof regenerationSeed === 'string' && regenerationSeed.trim().length > 0
           ? regenerationSeed.trim().slice(0, 120)
           : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
         : null;
-      const authorizedReferences = buildAuthorizedContentReferenceContext(userId, tenantId);
+      const authorizedReferences = liveEvalContext
+        ? { references: [] }
+        : buildAuthorizedContentReferenceContext(userId, tenantId);
       const generationPackage = buildContentGenerationPackage({
         tenantId,
         userId,
@@ -199,6 +241,7 @@ export function registerContentScriptRoutes(
         contentPillar: scriptTopicContext?.angleTag ?? null,
         workflowState: scriptTopicContext ? 'selected' : 'drafted',
         references: authorizedReferences.references,
+        syntheticEvaluationIsolation: Boolean(liveEvalContext),
       });
       const voiceCard = buildCreatorVoiceCard({
         tenantId,
@@ -208,9 +251,11 @@ export function registerContentScriptRoutes(
         voiceMemory,
       });
       let recentIdeaMemory: Array<{ topic: string; hook: string | null; angle: string | null; format: string | null }> = [];
-      try {
-        recentIdeaMemory = listRecentContentIdeaMemory({ tenantId, userId }, 5);
-      } catch { /* artifact cache unavailable — generation still proceeds */ }
+      if (!liveEvalContext) {
+        try {
+          recentIdeaMemory = listRecentContentIdeaMemory({ tenantId, userId }, 5);
+        } catch { /* artifact cache unavailable — generation still proceeds */ }
+      }
       const routeDecision = routeContentResearch({
         topic: topic.trim(),
         mode: requestedMode,
@@ -397,11 +442,18 @@ export function registerContentScriptRoutes(
         (providerCall) => withAiBudgetReservation({
           userId,
           requestSource: 'interactive',
-          baseCategory: `content_engine_script_${genMode}`,
-          jobName: 'content_script_generate',
-          runId: getCurrentRequestId() ?? null,
-          estimatedCostUsd: estimatedCost.estimatedCostUsd,
+          baseCategory: liveEvalContext ? 'content_live_eval' : `content_engine_script_${genMode}`,
+          jobName: liveEvalContext ? `content_live_eval:${liveEvalContext.scenario.id}` : 'content_script_generate',
+          runId: liveEvalContext?.runId ?? getCurrentRequestId() ?? null,
+          estimatedCostUsd: liveEvalContext
+            ? CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE
+            : estimatedCost.estimatedCostUsd,
+          ...(liveEvalContext ? {
+            hardRunCostLimitUsd: liveEvalContext.budgetUsd,
+            hardJobCostLimitUsd: CONTENT_LIVE_EVAL_HARD_MAX_USD_PER_SAMPLE,
+          } : {}),
         }, providerCall),
+        liveEvalContext ? SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY : undefined,
       );
       const elapsedMs = Date.now() - startMs;
       // 2026-05-18 phase2-qa P1: previously `cacheHit = elapsedMs < 500` —
@@ -425,7 +477,8 @@ export function registerContentScriptRoutes(
         warnings: result.warnings,
       });
       const sourceWarnings = lintSourcePackage(sourcePackage);
-      const canPersistSourcePackage = result.degraded !== true
+      const canPersistSourcePackage = !liveEvalContext
+        && result.degraded !== true
         && result.cache_status !== 'fallback'
         && sourcePackage.sources.length > 0;
       let persistedArtifacts: { sourcePackageId: string; researchArtifactId: string } | undefined;

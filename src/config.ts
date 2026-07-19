@@ -1,10 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import dotenv from 'dotenv';
-dotenv.config({
-  quiet: true,
-  override: process.env.NODE_ENV !== 'test',
-});
+import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation-runtime';
+dotenv.config(contentLiveEvalDotenvOptions());
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
 // "production-only" required env vars (TELEGRAM_BOT_TOKEN, etc.) become

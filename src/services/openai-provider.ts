@@ -163,6 +163,8 @@ async function trackedCompletion(
   assertAiBudgetReservationForProvider({
     userId,
     category,
+    provider: 'openai',
+    model: params.model,
     maxCostUsd,
   });
   const start = Date.now();
@@ -384,6 +386,8 @@ export async function completeOneShotWithWebSearch(
     assertAiBudgetReservationForProvider({
       userId: options?.userId ?? 0,
       category,
+      provider: 'openai',
+      model,
       maxCostUsd,
       hasUnboundedProviderInjectedContext: true,
     });

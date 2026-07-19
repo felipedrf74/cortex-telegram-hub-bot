@@ -270,6 +270,8 @@ describe('GeminiProvider', () => {
       expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith({
         userId: 7,
         category: 'content_discovery',
+        provider: 'gemini',
+        model: 'gemini-2.0-pro',
         hasUnboundedProviderInjectedContext: true,
         maxCostUsd: expect.any(Number),
       });
@@ -555,6 +557,55 @@ describe('GeminiProvider', () => {
       expect(result).toEqual({ text: 'vision text', provider: 'gemini' });
       expect(mockGenerateContent).toHaveBeenCalledTimes(3);
       expect(anthropicFallback).not.toHaveBeenCalled();
+    });
+
+    it('never logs receipt OCR, image, request, response, or raw SDK errors during vision fallback', async () => {
+      const privateMarker = 'PRIVATE_RECEIPT_OCR_MARKER_7f18a2';
+      const privateImage = Buffer.from(`image-${privateMarker}`).toString('base64');
+      const sdkError = Object.assign(
+        new Error(`invalid receipt prompt ${privateMarker}`),
+        {
+          status: 400,
+          code: 'INVALID_ARGUMENT',
+          request: { prompt: privateMarker, inlineData: privateImage },
+          response: { data: { echoedOcr: privateMarker } },
+        },
+      );
+      mockGenerateContent.mockRejectedValueOnce(sdkError);
+
+      try {
+        await completeVisionOneShotWithFallback(
+          'Extract receipt fields.',
+          `OCR hint: ${privateMarker}`,
+          { base64: privateImage, mimeType: 'image/jpeg' },
+          'invoice_vision',
+          vi.fn(async () => 'anthropic text'),
+          { maxTokens: 32 },
+        );
+      } catch {
+        // All configured providers are expected to be unavailable in this test.
+      }
+
+      const serializedLogs = JSON.stringify(vi.mocked(logger.warn).mock.calls);
+      expect(serializedLogs).not.toContain(privateMarker);
+      expect(serializedLogs).not.toContain(privateImage);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        {
+          provider: 'gemini',
+          category: 'invoice_vision',
+          model: 'gemini-2.0-pro',
+          status: 400,
+          code: 'INVALID_ARGUMENT',
+          attempt: 1,
+          failureCategory: 'provider_call_failed',
+        },
+        'Gemini vision one-shot failed, trying OpenAI fallback',
+      );
+      const loggedFields = Object.keys(vi.mocked(logger.warn).mock.calls[0]?.[0] as object);
+      expect(loggedFields).not.toContain('err');
+      expect(loggedFields).not.toContain('message');
+      expect(loggedFields).not.toContain('request');
+      expect(loggedFields).not.toContain('response');
     });
   });
 

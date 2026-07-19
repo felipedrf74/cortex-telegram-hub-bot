@@ -61,6 +61,11 @@ def _capture_logger(monkeypatch, logger_name: str, level: int) -> list[str]:
     handler.setLevel(level)
     monkeypatch.setattr(logger, "handlers", [*logger.handlers, handler])
     monkeypatch.setattr(logger, "level", level)
+    # Earlier searcher tests can populate Logger.isEnabledFor's cache while
+    # the default effective level is WARNING. Directly scoping `level` for
+    # this test must also scope that cache or INFO assertions become
+    # order-dependent in the full Content Engine suite.
+    monkeypatch.setattr(logger, "_cache", {})
     monkeypatch.setattr(logger, "disabled", False)
     monkeypatch.setattr(logger, "propagate", True)
     return messages

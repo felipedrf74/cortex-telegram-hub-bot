@@ -47,9 +47,9 @@ import {
   normalizeFinanceCategory,
   updateTransaction,
 } from '../../services/finance-tracker';
-import { withAiBudgetReservation } from '../../services/cost-guardrail';
-import { analyzeInvoiceImage, fileInvoice } from '../../services/invoice-filer';
-import { getFilingById, recordFiling } from '../../state/invoice-filings';
+import { AiBudgetError, withAiBudgetReservation } from '../../services/cost-guardrail';
+import { analyzeInvoiceImage } from '../../services/invoice-filer';
+import { getFilingById } from '../../state/invoice-filings';
 import { verifyInvoiceObjectChecksum } from '../../services/invoice-object-storage';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { createDecisionIntent, supersedeDecisionSourceStateForEntity } from '../../services/decision-center';
@@ -62,10 +62,31 @@ import {
 } from '../../services/finance-secretary-integration';
 import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 import { assertTenantScope, TenantScopeError } from '../../services/tenant-scope';
+import {
+  claimReceiptAiTransferExecution,
+  completeReceiptAiTransferExecution,
+  computeReceiptAiTransferDigest,
+  failReceiptAiTransferExecution,
+  normalizeReceiptAiTransferMimeType,
+  normalizeReceiptAiTransferOcrHint,
+  parseReceiptAiTransferConsent,
+  RECEIPT_AI_TRANSFER_DISCLOSURE_VERSION,
+  RECEIPT_AI_TRANSFER_SCOPE,
+  receiptAiTransferDigestMatches,
+  ReceiptAiTransferReplayConflictError,
+  releaseReceiptAiTransferExecutionClaim,
+} from '../../services/receipt-ai-transfer-consent';
 
 function requireFinanceHandlerScope(req: Request, operation: string): { userId: number; tenantId: number } {
   return assertTenantScope(req as AuthenticatedRequest, operation);
 }
+
+const RECEIPT_VERIFICATION_COPY = Object.freeze({
+  ocr_fields_backfilled: 'Filled missing receipt fields using on-device OCR.',
+  ocr_local_fallback: 'AI receipt analysis was unavailable. Parsed from on-device OCR only.',
+} as const);
+
+type ReceiptVerificationCode = keyof typeof RECEIPT_VERIFICATION_COPY;
 
 export function financeRoutes(): Router {
   const router = Router();
@@ -563,19 +584,16 @@ export function financeRoutes(): Router {
   // Receipt parsing via vision models (TASK-14 Phase 4)
   //
   // The iOS Finance tab's capture-expense flow tries on-device
-  // Vision OCR + heuristic parsing first (free, zero tokens) and
-  // now calls this endpoint automatically after the on-device heuristic
-  // pass. The local OCR result is still sent as a hint, but the server-side
-  // model is now the primary extractor so the output matches the bot flow.
+  // Vision OCR + heuristic parsing first. It calls this endpoint only after
+  // the user explicitly requests AI analysis from the review screen. The
+  // local OCR result may be sent as a hint.
   //
-  // Anthropic Haiku is the primary provider because it has proven more
-  // reliable on invoices/receipts in production. Gemini/OpenAI remain
-  // automatic fallbacks through `analyzeInvoiceImage`.
+  // `analyzeInvoiceImage` owns configured provider selection and fallback.
+  // This route is advisory and side-effect-free: it never retains the image,
+  // creates an invoice filing, or creates a transaction. The separate
+  // transaction editor remains the only app commit path.
   //
-  // Cost cap: the endpoint reuses the per-user daily USD cap from
-  // cost-guardrail.ts (isUserOverDailyCap). A single Gemini Flash
-  // vision call is ~$0.0001 so the cap is more of a belt-and-
-  // suspenders safety net than a real constraint.
+  // Provider work is governed by the standard per-user AI budget controls.
   // ────────────────────────────────────────────────────────────────
 
   /**
@@ -584,6 +602,13 @@ export function financeRoutes(): Router {
    *   imageBase64: string,      // base64-encoded JPEG or PNG
    *   mimeType: string,         // "image/jpeg" or "image/png"
    *   ocrHint?: string,         // optional on-device OCR text as a hint
+   *   aiTransferConsent: {
+   *     granted: true,
+   *     disclosureVersion: "receipt-ai-transfer-v1",
+   *     scope: "receipt_image_and_ocr_to_configured_ai_providers",
+   *     consentReceiptId: "<fresh UUID generated for this explicit user action>",
+   *     transferDigest: "<sha256 receipt-ai-transfer-payload-v1 digest>"
+   *   }
    * }
    *
    * Response: {
@@ -591,70 +616,259 @@ export function financeRoutes(): Router {
    *     merchant: string | null,
    *     date: string | null,      // YYYY-MM-DD
    *     amount: number | null,
-     *     currency: string,         // default "EUR" unless the user's profile says otherwise
+   *     currency: string,
    *     category: string | null,  // best-guess category
    *     confidence: number,       // 0-1, model confidence after server validation
    *   },
-   *   tokensUsed: number,
+   *   tokensUsed: number | null,
    *   model: string,
-   *   verificationNote?: string | null
+   *   verificationCodes: ("ocr_fields_backfilled" | "ocr_local_fallback")[],
+   *   verificationNote: string | null, // bounded compatibility copy
+   *   receiptImageDurablyStoredByNexus: false,
+   *   receiptImageRetained: false // compatibility alias; Nexus durable storage only
    * }
    *
    * The iOS review sheet then lets the user edit any of the
-   * parsed fields before they tap "Add transaction" — the final
+   * parsed fields before they continue to the editor — the final
    * POST /transactions call is separate from this parse call.
    */
   router.post('/parse-receipt', asyncHandler(async (req, res: Response) => {
-    const { userId, tenantId = userId } = req as AuthenticatedRequest;
-    const { imageBase64, mimeType, ocrHint } = req.body;
-    const normalizedOcrHint = typeof ocrHint === 'string' && ocrHint.trim().length > 0
-      ? ocrHint.trim()
+    const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance.receipt_parse');
+    const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+
+    // Fail closed for legacy or malformed clients before quota reservation,
+    // provider selection, OCR processing, or any storage-capable service.
+    // The iOS app may recover from this stable 428 by keeping its on-device
+    // OCR result and asking the user to explicitly approve AI transfer.
+    const aiTransferConsent = parseReceiptAiTransferConsent(body.aiTransferConsent);
+    if (!aiTransferConsent) {
+      sendError(
+        res,
+        'AI_TRANSFER_CONSENT_REQUIRED',
+        'Explicit consent is required before receipt data can be sent to configured AI providers.',
+        428,
+        {
+          requiredDisclosureVersion: RECEIPT_AI_TRANSFER_DISCLOSURE_VERSION,
+          requiredScope: RECEIPT_AI_TRANSFER_SCOPE,
+          consentReceiptIdFormat: 'uuid',
+          transferDigestFormat: 'sha256',
+        },
+      );
+      return;
+    }
+
+    const hasImageField = Object.prototype.hasOwnProperty.call(body, 'imageBase64');
+    const hasMimeField = Object.prototype.hasOwnProperty.call(body, 'mimeType');
+    const hasOcrField = Object.prototype.hasOwnProperty.call(body, 'ocrHint');
+    if ((hasImageField && typeof body.imageBase64 !== 'string')
+      || (hasMimeField && typeof body.mimeType !== 'string')
+      || (hasOcrField && typeof body.ocrHint !== 'string')) {
+      sendError(res, 'BAD_REQUEST', 'Receipt image, MIME type, and OCR hint must be strings when provided.');
+      return;
+    }
+    const imageBase64 = typeof body.imageBase64 === 'string' ? body.imageBase64 : undefined;
+    const mimeType = normalizeReceiptAiTransferMimeType(
+      typeof body.mimeType === 'string' ? body.mimeType : undefined,
+    );
+    const rawOcrHint = typeof body.ocrHint === 'string' ? body.ocrHint : undefined;
+    const canonicalOcrHint = normalizeReceiptAiTransferOcrHint(rawOcrHint);
+    const normalizedOcrHint = canonicalOcrHint && canonicalOcrHint.trim().length > 0
+      ? canonicalOcrHint
       : undefined;
-    const ocrFallback = normalizedOcrHint
-      ? parseReceiptFromOcrHint(normalizedOcrHint, userId)
-      : null;
     const visionUnavailable = !config.anthropic.apiKey && !config.gemini.apiKey && !config.openai.apiKey;
 
-    // ── Validation ────────────────────────────────────────────
-    if ((!imageBase64 || typeof imageBase64 !== 'string') && !(visionUnavailable && normalizedOcrHint)) {
+    // Validate the bounded request shape before creating any durable consent
+    // or idempotency record. These checks do not parse OCR or call a provider.
+    if ((imageBase64 === undefined) !== (mimeType === undefined)) {
+      sendError(res, 'BAD_REQUEST', 'imageBase64 and mimeType must be provided together');
+      return;
+    }
+    if (!imageBase64 && !(visionUnavailable && normalizedOcrHint)) {
       sendError(res, 'BAD_REQUEST', 'imageBase64 is required and must be a string');
       return;
     }
-    if ((!mimeType || typeof mimeType !== 'string') && !(visionUnavailable && normalizedOcrHint)) {
+    if (!mimeType && !(visionUnavailable && normalizedOcrHint)) {
       sendError(res, 'BAD_REQUEST', 'mimeType is required (e.g. "image/jpeg")');
       return;
     }
-    if (mimeType && !['image/jpeg', 'image/jpg', 'image/png', 'image/heic'].includes(mimeType.toLowerCase())) {
-      sendError(res, 'BAD_REQUEST', 'mimeType must be image/jpeg, image/png, or image/heic');
+    if (mimeType && !['image/jpeg', 'image/png'].includes(mimeType)) {
+      sendError(res, 'BAD_REQUEST', 'mimeType must be image/jpeg or image/png');
+      return;
+    }
+    const imageBytes = imageBase64 === undefined ? undefined : decodeStrictBase64(imageBase64);
+    if (imageBase64 !== undefined && imageBytes === null) {
+      sendError(res, 'BAD_REQUEST', 'imageBase64 must be valid canonical base64');
       return;
     }
 
-    // Reject oversized bodies early. Base64 is ~33% larger than raw bytes,
-    // so the 6MB cap = ~4.5MB original image.
-    const approxBytes = typeof imageBase64 === 'string' ? (imageBase64.length * 3) / 4 : 0;
-    if (approxBytes > 6 * 1024 * 1024) {
+    // Reject oversized decoded image bytes before consent persistence.
+    if (imageBytes && imageBytes.length > 6 * 1024 * 1024) {
       sendError(res, 'PAYLOAD_TOO_LARGE', 'Image exceeds 6MB. Compress before uploading.', 413);
       return;
     }
+    if (canonicalOcrHint && Buffer.byteLength(canonicalOcrHint, 'utf8') > 100_000) {
+      sendError(res, 'PAYLOAD_TOO_LARGE', 'OCR hint exceeds 100KB.', 413);
+      return;
+    }
 
-    // ── Provider availability ─────────────────────────────────
-    if (visionUnavailable) {
-      if (ocrFallback) {
-        sendSuccess(res, {
-          parsed: ocrFallback.parsed,
-          verificationNote: ocrFallback.verificationNote,
-          tokensUsed: 0,
-          model: 'ocr_hint_fallback',
-        });
-        return;
-      }
-
+    if (visionUnavailable && !normalizedOcrHint) {
       sendError(
         res,
         'VISION_NOT_CONFIGURED',
         'No receipt vision provider is configured on this server. Fall back to manual entry.',
         503,
       );
+      return;
+    }
+
+    const computedTransferDigest = computeReceiptAiTransferDigest({
+      imageBytes: imageBytes ?? undefined,
+      mimeType,
+      ocrHint: canonicalOcrHint,
+    });
+    if (!receiptAiTransferDigestMatches(aiTransferConsent.transferDigest, computedTransferDigest)) {
+      sendError(
+        res,
+        'AI_TRANSFER_PAYLOAD_MISMATCH',
+        'The receipt data no longer matches the disclosed AI transfer. Review it and try again.',
+        409,
+      );
+      return;
+    }
+
+    // When no external AI provider is configured, parsing the already-sent
+    // on-device OCR hint is a local compatibility fallback. It does not create
+    // an external-AI transfer audit/execution row or consume AI quota.
+    if (visionUnavailable && normalizedOcrHint) {
+      const ocrFallback = parseReceiptFromOcrHint(normalizedOcrHint, userId);
+      const verificationCodes: ReceiptVerificationCode[] = ['ocr_local_fallback'];
+      sendSuccess(res, {
+        parsed: ocrFallback.parsed,
+        verificationCodes,
+        verificationNote: receiptVerificationCompatibilityNote(verificationCodes),
+        filedInvoice: null,
+        filingWarning: null,
+        receiptImageDurablyStoredByNexus: false,
+        receiptImageRetained: false,
+        tokensUsed: 0,
+        model: 'ocr_hint_fallback',
+      });
+      return;
+    }
+
+    const protectionSecret = String(
+      config.financeEncryption?.masterKey || config.ios?.jwtSecret || '',
+    );
+    let executionClaim: ReturnType<typeof claimReceiptAiTransferExecution>;
+    try {
+      executionClaim = claimReceiptAiTransferExecution({
+        tenantId,
+        userId,
+        actorId: userId,
+        consent: aiTransferConsent,
+        computedTransferDigest,
+        protectionSecret,
+      });
+    } catch (err) {
+      if (err instanceof ReceiptAiTransferReplayConflictError) {
+        sendError(
+          res,
+          err.code,
+          'That consent receipt is already bound to different receipt data. Review the current receipt and try again.',
+          409,
+        );
+        return;
+      }
+      logger.error(
+        { userId, failureCategory: 'receipt_ai_consent_receipt_persistence_failed' },
+        'iOS receipt AI consent receipt persistence failed',
+      );
+      sendError(
+        res,
+        'AI_TRANSFER_CONSENT_RECEIPT_UNAVAILABLE',
+        'AI receipt analysis is temporarily unavailable because consent could not be recorded safely.',
+        503,
+      );
+      return;
+    }
+
+    if (executionClaim.state === 'completed') {
+      sendSuccess(res, executionClaim.responseData);
+      return;
+    }
+    if (executionClaim.state === 'failed') {
+      sendError(
+        res,
+        executionClaim.error.code,
+        executionClaim.error.message,
+        executionClaim.error.status,
+      );
+      return;
+    }
+    if (executionClaim.state === 'in_progress') {
+      sendError(
+        res,
+        'AI_TRANSFER_ANALYSIS_IN_PROGRESS',
+        'This receipt analysis is still being reconciled. Try the same request again shortly.',
+        409,
+      );
+      return;
+    }
+    if (executionClaim.state === 'completed_expired') {
+      sendError(
+        res,
+        'AI_TRANSFER_REPLAY_EXPIRED',
+        'This completed receipt response is no longer available. Review the receipt and start a new AI analysis.',
+        409,
+      );
+      return;
+    }
+
+    const executionScope = {
+      tenantId,
+      userId,
+      consentReceiptId: aiTransferConsent.consentReceiptId,
+      computedTransferDigest,
+      protectionSecret,
+    };
+    const persistAndSendSuccess = (responseData: Record<string, unknown>): boolean => {
+      try {
+        completeReceiptAiTransferExecution({ ...executionScope, responseData });
+      } catch {
+        logger.error(
+          { userId, failureCategory: 'receipt_ai_result_persistence_failed' },
+          'iOS receipt AI result persistence failed',
+        );
+        sendError(
+          res,
+          'AI_TRANSFER_RESULT_UNAVAILABLE',
+          'AI receipt analysis finished but could not be saved safely for retry. Try again later.',
+          503,
+        );
+        return false;
+      }
+      sendSuccess(res, responseData);
+      return true;
+    };
+
+    // OCR parsing begins only after the exact transfer is durably claimed.
+    const ocrFallback = normalizedOcrHint
+      ? parseReceiptFromOcrHint(normalizedOcrHint, userId)
+      : null;
+
+    // Validation requires both values whenever a provider is available.
+    if (!imageBase64 || !mimeType) {
+      // Defensive invariant only; the pre-claim validation above owns the
+      // client-facing error and this branch must never spend.
+      failReceiptAiTransferExecution({
+        ...executionScope,
+        error: {
+          code: 'BAD_REQUEST',
+          message: 'imageBase64 and mimeType are required for AI receipt analysis',
+          status: 400,
+        },
+      });
+      sendError(res, 'BAD_REQUEST', 'imageBase64 and mimeType are required for AI receipt analysis');
       return;
     }
 
@@ -683,11 +897,9 @@ export function financeRoutes(): Router {
       };
 
       const mergedResult = mergeReceiptParseResult(result, ocrFallback?.parsed);
-      const verificationNote = buildReceiptVerificationNote(
-        typeof analysis.validationNote === 'string' ? analysis.validationNote : null,
+      const verificationCodes = buildReceiptVerificationCodes(
         result,
         mergedResult,
-        ocrFallback?.verificationNote ?? null,
       );
 
       logger.info(
@@ -700,78 +912,85 @@ export function financeRoutes(): Router {
         'iOS receipt parsed',
       );
 
-      let filedInvoice: Record<string, unknown> | null = null;
-      let filingWarning: string | null = null;
-      if (
-        typeof imageBase64 === 'string' &&
-        analysis.isInvoice &&
-        mergedResult.confidence >= config.invoices.minConfidence
-      ) {
-        try {
-          const imageBuffer = Buffer.from(imageBase64, 'base64');
-          const filingResult = await fileInvoice(
-            imageBuffer,
-            normalizeMimeType(mimeType),
-            analysis,
-            { tenantId, userId },
-          );
-          if (filingResult.success) {
-            const filing = recordFiling({
-              tenant_id: tenantId,
-              user_id: userId,
-              vendor: analysis.vendor || mergedResult.merchant || 'Unknown',
-              amount: analysis.totalAmount ?? (mergedResult.amount != null ? String(mergedResult.amount) : null),
-              document_date: analysis.documentDate || mergedResult.date,
-              invoice_number: analysis.invoiceNumber,
-              source: 'photo',
-              source_ref: filingResult.objectKey ? `photo:${filingResult.objectKey}` : `photo:${Date.now()}`,
-              remote_path: filingResult.filePath,
-              folder_path: filingResult.folderPath,
-              filename: filingResult.filename,
-              file_size_bytes: imageBuffer.length,
-              compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
-              object_key: filingResult.objectKey ?? null,
-              checksum: filingResult.checksum ?? null,
-              mime: filingResult.mime ?? normalizeMimeType(mimeType),
-              bytes: filingResult.bytes ?? imageBuffer.length,
-              storage_backend: filingResult.storageBackend ?? null,
-              status: 'filed',
-            });
-            filedInvoice = {
-              id: filing.id,
-              objectKey: filing.object_key,
-              checksum: filing.checksum,
-              filename: filing.filename,
-              mime: filing.mime,
-              bytes: filing.bytes,
-            };
-          } else {
-            filingWarning = filingResult.error || 'Invoice image was parsed but not durably filed.';
-          }
-        } catch (filingErr: any) {
-          logger.error({ err: filingErr, userId, tenantId }, 'iOS parse-receipt: durable filing failed');
-          filingWarning = filingErr?.message || 'Invoice image was parsed but not durably filed.';
-        }
-      }
-
-      sendSuccess(res, {
+      persistAndSendSuccess({
         parsed: mergedResult,
-        verificationNote,
-        filedInvoice,
-        filingWarning,
-        tokensUsed: 0,
+        verificationCodes,
+        verificationNote: receiptVerificationCompatibilityNote(verificationCodes),
+        // Backward-compatible nullable fields make the new consent boundary
+        // explicit to clients that previously inspected the implicit result.
+        filedInvoice: null,
+        filingWarning: null,
+        receiptImageDurablyStoredByNexus: false,
+        receiptImageRetained: false,
+        // The provider abstraction does not currently return trustworthy
+        // per-call token counts to this route; do not report a fabricated 0.
+        tokensUsed: null,
         model: provider,
       });
     } catch (err: any) {
-      logger.error({ err, userId }, 'iOS parse-receipt: vision pipeline failed');
-      if (sendAiBudgetError(res, err)) return;
+      if (err instanceof AiBudgetError) {
+        try {
+          releaseReceiptAiTransferExecutionClaim(executionScope);
+        } catch {
+          logger.error(
+            { userId, failureCategory: 'receipt_ai_unspent_claim_release_failed' },
+            'iOS receipt AI unspent claim release failed',
+          );
+          sendError(
+            res,
+            'AI_TRANSFER_RESULT_UNAVAILABLE',
+            'AI receipt analysis could not be reconciled safely. Try again later.',
+            503,
+          );
+          return;
+        }
+        sendAiBudgetError(res, err);
+        return;
+      }
+      // Provider exceptions can contain request fragments, OCR text, or raw
+      // response content in their message/stack. Keep receipt telemetry to an
+      // allowlisted event shape instead of forwarding the Error object.
+      logger.error(
+        { userId, failureCategory: 'receipt_vision_pipeline_failed' },
+        'iOS parse-receipt: vision pipeline failed',
+      );
       if (ocrFallback) {
-        sendSuccess(res, {
+        const verificationCodes: ReceiptVerificationCode[] = ['ocr_local_fallback'];
+        persistAndSendSuccess({
           parsed: ocrFallback.parsed,
-          verificationNote: ocrFallback.verificationNote,
-          tokensUsed: 0,
+          verificationCodes,
+          verificationNote: receiptVerificationCompatibilityNote(verificationCodes),
+          filedInvoice: null,
+          filingWarning: null,
+          receiptImageDurablyStoredByNexus: false,
+          receiptImageRetained: false,
+          // A provider attempt may have reached the network before failing.
+          // The route cannot prove a zero-token charge, so keep this unknown.
+          tokensUsed: null,
           model: 'ocr_hint_fallback_after_ai_error',
         });
+        return;
+      }
+      try {
+        failReceiptAiTransferExecution({
+          ...executionScope,
+          error: {
+            code: 'INTERNAL',
+            message: 'Receipt parsing failed',
+            status: 500,
+          },
+        });
+      } catch {
+        logger.error(
+          { userId, failureCategory: 'receipt_ai_failure_persistence_failed' },
+          'iOS receipt AI failure persistence failed',
+        );
+        sendError(
+          res,
+          'AI_TRANSFER_RESULT_UNAVAILABLE',
+          'AI receipt analysis could not be reconciled safely. Try again later.',
+          503,
+        );
         return;
       }
       sendInternalError(res, 'Receipt parsing failed');
@@ -869,8 +1088,20 @@ function setRetryAfter(res: Response, resetAt: string): void {
   res.setHeader('Retry-After', String(Number.isFinite(seconds) ? seconds : 60));
 }
 
+function decodeStrictBase64(value: string): Buffer | null {
+  if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    return null;
+  }
+  try {
+    const decoded = Buffer.from(value, 'base64');
+    return decoded.toString('base64') === value ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeMimeType(mimeType: string): 'image/jpeg' | 'image/png' | 'image/webp' {
-  const normalized = mimeType.toLowerCase();
+  const normalized = mimeType.trim().toLowerCase();
   if (normalized === 'image/png') return 'image/png';
   if (normalized === 'image/webp') return 'image/webp';
   return 'image/jpeg';
@@ -974,17 +1205,10 @@ function mergeReceiptParseResult(
   };
 }
 
-function buildReceiptVerificationNote(
-  providerNote: string | null,
+function buildReceiptVerificationCodes(
   primary: ParsedReceiptResult,
   merged: ParsedReceiptResult,
-  fallbackNote: string | null,
-): string | null {
-  const notes: string[] = [];
-  if (providerNote && providerNote.trim().length > 0) {
-    notes.push(providerNote.trim());
-  }
-
+): ReceiptVerificationCode[] {
   const usedOcrBackfill = primary.merchant !== merged.merchant
     || primary.date !== merged.date
     || primary.amount !== merged.amount
@@ -992,13 +1216,14 @@ function buildReceiptVerificationNote(
     || primary.category !== merged.category;
 
   if (usedOcrBackfill) {
-    notes.push('Filled missing receipt fields using on-device OCR.');
-  } else if (!providerNote && fallbackNote && merged.confidence <= 0.45) {
-    notes.push(fallbackNote);
+    return ['ocr_fields_backfilled'];
   }
+  return [];
+}
 
-  if (notes.length === 0) return null;
-  return Array.from(new Set(notes)).join(' ');
+function receiptVerificationCompatibilityNote(codes: readonly ReceiptVerificationCode[]): string | null {
+  if (codes.length === 0) return null;
+  return codes.map((code) => RECEIPT_VERIFICATION_COPY[code]).join(' ');
 }
 
 function defaultCurrencyForTimezone(userId: number): string {
@@ -1022,7 +1247,6 @@ function parseReceiptFromOcrHint(ocrHint: string, userId: number): {
     category: string | null;
     confidence: number;
   };
-  verificationNote: string;
 } {
   const lines = ocrHint
     .split(/\r?\n/)
@@ -1049,7 +1273,6 @@ function parseReceiptFromOcrHint(ocrHint: string, userId: number): {
       category: guessReceiptCategory(merchant),
       confidence: Math.min(0.88, confidence),
     },
-    verificationNote: 'AI receipt vision unavailable. Parsed from on-device OCR only.',
   };
 }
 

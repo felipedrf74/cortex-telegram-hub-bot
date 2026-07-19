@@ -1,17 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  backendIosContractDigest,
+  IOS_CONTRACT_TEST_SELECTORS,
   isGitAncestor,
+  resolveTrustedIosBinding,
   validateCandidateManifestTiming,
   validateGitHubIdentity,
+  validateIosContractAttestation,
   validateNightlyGitHubIdentity,
   validateRecomputedSelection,
   validateTestEvidence,
 } from '../../scripts/trusted-release-signer.mjs';
+import { validateIosDistributionAttestation } from '../../scripts/lib/ios-distribution-attestation.mjs';
 import { partitionTestFiles } from '../../scripts/lib/test-policy.mjs';
 
 const runtimeSha = 'a'.repeat(40);
@@ -21,6 +26,13 @@ const roots: string[] = [];
 
 function digest(value: unknown) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
 
 function fullIdentitySelection() {
@@ -53,6 +65,7 @@ function successfulIdentity(selection = fullIdentitySelection()) {
     },
     jobs: {
       jobs: [
+        '🔗 Validate release contract binding',
         '🧭 Resolve release test tier',
         ...tierJobs,
         '🐍 Content Engine full pytest',
@@ -69,6 +82,203 @@ function successfulIdentity(selection = fullIdentitySelection()) {
         workflow_run: { id: Number(candidateRunId), head_sha: runtimeSha },
       }],
     },
+  };
+}
+
+function iosEvidenceFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-ios-contract-evidence-'));
+  roots.push(root);
+  const trustedRoot = path.join(root, 'trusted');
+  const evidenceRoot = path.join(root, 'evidence');
+  const distributionEvidenceRoot = path.join(root, 'distribution-evidence');
+  fs.mkdirSync(path.join(trustedRoot, 'docs/release/evidence'), { recursive: true });
+  fs.mkdirSync(evidenceRoot, { recursive: true });
+  fs.mkdirSync(distributionEvidenceRoot, { recursive: true });
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  fs.writeFileSync(
+    path.join(trustedRoot, 'docs/release/evidence/ios-contract-evidence-public-key.pem'),
+    publicKey.export({ format: 'pem', type: 'spki' }),
+  );
+  const iosEvidenceRunId = '24681012';
+  const iosSha = 'c'.repeat(40);
+  const artifactDigest = 'd'.repeat(64);
+  const fixtureDocument = {
+    schema: 'nexus.backend-ios-contract-fixtures.v1',
+    contracts: [
+      { id: 'dashboard.home.v1', method: 'GET', path: '/api/v1/dashboard/home', decoder: 'HomeViewState', payload: {} },
+      { id: 'training.home.v1', method: 'GET', path: '/api/v1/training/home', decoder: 'TrainingHomeViewState', payload: {} },
+      { id: 'content.home.v1', method: 'GET', path: '/api/v1/content/home', decoder: 'ContentHomeViewState', payload: {} },
+    ],
+  };
+  const fixtureBytes = Buffer.from(`${JSON.stringify(fixtureDocument)}\n`);
+  const fixtureIdentity = {
+    fixture: fixtureDocument,
+    bytes: fixtureBytes,
+    digest: createHash('sha256').update(fixtureBytes).digest('hex'),
+    base64: fixtureBytes.toString('base64'),
+    path: path.join(root, 'fixture.json'),
+    relativePath: 'dist/release/backend-ios-contract-fixture.v1.json',
+  };
+  const generatedAt = new Date(Date.now() - 60_000);
+  const contractDigest = backendIosContractDigest({
+    runtimeSha,
+    artifactDigest,
+    fixtureDigest: fixtureIdentity.digest,
+  });
+  const selectionDigest = createHash('sha256')
+    .update(canonicalJson(IOS_CONTRACT_TEST_SELECTORS))
+    .digest('hex');
+  const payload = {
+    schema: 'nexus.ios-contract-attestation-payload.v2',
+    generatedAt: generatedAt.toISOString(),
+    expiresAt: new Date(generatedAt.getTime() + 24 * 3_600_000).toISOString(),
+    ios: { repository: 'felipedrf74/nexus-hub-ios', sha: iosSha, buildNumber: '59' },
+    backend: {
+      repository,
+      runtimeSha,
+      artifactDigest,
+      contractDigest,
+      fixture: {
+        schema: 'nexus.backend-ios-contract-fixtures.v1',
+        path: 'dist/release/backend-ios-contract-fixture.v1.json',
+        digest: fixtureIdentity.digest,
+      },
+    },
+    contractSuite: {
+      name: 'Nexus Hub contract decoder suite',
+      result: 'passed',
+      testCount: 27,
+      passedCount: 27,
+      failedCount: 0,
+      skippedCount: 0,
+      testSelectors: IOS_CONTRACT_TEST_SELECTORS,
+      selectionDigest,
+    },
+    ci: {
+      provider: 'github-actions',
+      workflow: 'iOS Contract Evidence',
+      runId: iosEvidenceRunId,
+      runAttempt: '3',
+    },
+  };
+  const attestation = {
+    schema: 'nexus.ios-contract-attestation.v2',
+    keyId: 'ios-release-signing-2026-07',
+    signatureAlgorithm: 'ed25519',
+    payload,
+    signature: sign(null, Buffer.from(canonicalJson(payload)), privateKey).toString('base64'),
+  };
+  fs.writeFileSync(path.join(evidenceRoot, 'ios-contract-attestation.json'), JSON.stringify(attestation));
+  const distributionKeyPair = generateKeyPairSync('ed25519');
+  const rawDistributionPublicKey = Buffer.from(
+    distributionKeyPair.publicKey.export({ format: 'der', type: 'spki' }),
+  ).subarray(-32);
+  fs.writeFileSync(
+    path.join(trustedRoot, 'docs/release/evidence/ios-distribution-public-key.b64'),
+    `${rawDistributionPublicKey.toString('base64')}\n`,
+  );
+  const digestValue = (value: string, semantics = 'nexus.raw-file.v1') => ({
+    algorithm: 'sha256', semantics, value,
+  });
+  const appIdentity = {
+    bundleId: 'me.nexushub.app',
+    marketingVersion: '1.5.0',
+    buildNumber: '59',
+  };
+  const artifactBlock = (seed: string, pathKind: string, semantics: string) => ({
+    artifactDigest: digestValue(seed.repeat(64), semantics),
+    appDigest: digestValue(String.fromCharCode(seed.charCodeAt(0) + 1).repeat(64), 'nexus.canonical-tree.v1'),
+    infoPlistDigest: digestValue(String.fromCharCode(seed.charCodeAt(0) + 2).repeat(64)),
+    executableDigest: digestValue(String.fromCharCode(seed.charCodeAt(0) + 3).repeat(64)),
+    identity: appIdentity,
+    pathKind,
+    signing: {
+      identifier: 'me.nexushub.app',
+      teamIdentifier: 'B6885R8NWM',
+      cdHash: 'e'.repeat(40),
+      authorities: [
+        'Apple Distribution: Nexus Hub (B6885R8NWM)',
+        'Apple Worldwide Developer Relations Certification Authority',
+        'Apple Root CA',
+      ],
+      entitlementsSha256: 'f'.repeat(64),
+      verification: 'codesign-deep-strict',
+    },
+  });
+  const distributionPayload = {
+    schema: 'nexus.ios-distribution-attestation-payload.v1',
+    generatedAt: generatedAt.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    expiresAt: new Date(generatedAt.getTime() + 24 * 3_600_000)
+      .toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    source: {
+      repository: 'felipedrf74/nexus-hub-ios',
+      commit: iosSha,
+      tree: 'd'.repeat(40),
+      ref: 'refs/heads/main',
+      clean: true,
+    },
+    release: {
+      bundleId: 'me.nexushub.app',
+      teamId: 'B6885R8NWM',
+      marketingVersion: '1.5.0',
+      buildNumber: '59',
+      configuration: 'Release',
+    },
+    archive: artifactBlock('1', 'xcarchive-directory', 'nexus.canonical-tree.v1'),
+    distribution: artifactBlock('5', 'ipa-file', 'nexus.raw-file.v1'),
+    toolchain: {
+      developerDir: '/Applications/Xcode.app/Contents/Developer',
+      xcodeVersion: '26.4',
+      xcodeBuild: '17E300',
+      sdkName: 'iphoneos26.4',
+      hostVersion: '26.4',
+      hostBuild: '25E100',
+      archiveXcode: '2640',
+      archiveXcodeBuild: '17E300',
+      archiveSDK: 'iphoneos26.4',
+      archiveHostBuild: '25E100',
+    },
+    ci: {
+      provider: 'xcode-cloud',
+      buildId: '123e4567-e89b-12d3-a456-426614174000',
+      buildNumber: '17',
+      buildUrl: 'https://appstoreconnect.apple.com/teams/502b7720-ce21-4a3a-bced-bf176ed4a127/apps/6762022696/ci/builds/123e4567-e89b-12d3-a456-426614174000',
+      workflow: 'App Store Release',
+      workflowId: '20e0adf7-2854-4207-98eb-8f3b5afcac60',
+      startCondition: 'manual',
+      action: 'archive',
+    },
+  };
+  const signDistribution = (payloadValue: typeof distributionPayload) => ({
+    schema: 'nexus.ios-distribution-attestation.v1',
+    keyId: 'ios-distribution-signing-2026-07',
+    signatureAlgorithm: 'ed25519',
+    payload: payloadValue,
+    signature: sign(
+      null,
+      Buffer.from(canonicalJson(payloadValue)),
+      distributionKeyPair.privateKey,
+    ).toString('base64'),
+  });
+  const distributionAttestation = signDistribution(distributionPayload);
+  fs.writeFileSync(
+    path.join(distributionEvidenceRoot, 'ios-distribution-attestation.json'),
+    JSON.stringify(distributionAttestation),
+  );
+  return {
+    trustedRoot,
+    evidenceRoot,
+    distributionEvidenceRoot,
+    privateKey,
+    iosEvidenceRunId,
+    iosSha,
+    artifactDigest,
+    fixtureIdentity,
+    contractDigest,
+    attestation,
+    distributionPayload,
+    distributionAttestation,
+    signDistribution,
   };
 }
 
@@ -149,6 +359,217 @@ afterEach(() => {
 });
 
 describe('trusted release signing boundary', () => {
+  it('derives a shared iOS binding only from exact signed candidate-fixture evidence', () => {
+    expect(resolveTrustedIosBinding({ contractScope: 'backend_only' })).toEqual({
+      binding: null,
+      evidence: null,
+    });
+    const fixture = iosEvidenceFixture();
+    const resolved = resolveTrustedIosBinding({
+      contractScope: 'shared_backend_ios',
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: fixture.fixtureIdentity,
+      evidenceRoot: fixture.evidenceRoot,
+      distributionEvidenceRoot: fixture.distributionEvidenceRoot,
+      trustedRoot: fixture.trustedRoot,
+    });
+
+    expect(resolved).toMatchObject({
+      binding: {
+        sha: fixture.iosSha,
+        buildNumber: 59,
+        contractTestResult: 'passed',
+        fixtureDigest: fixture.fixtureIdentity.digest,
+        contractDigest: fixture.contractDigest,
+        distribution: {
+          result: 'passed',
+          sourceCommit: fixture.iosSha,
+          release: { buildNumber: '59' },
+          ci: { buildId: '123e4567-e89b-12d3-a456-426614174000' },
+        },
+      },
+      evidence: {
+        runId: fixture.iosEvidenceRunId,
+        runAttempt: '3',
+        contractDigest: fixture.contractDigest,
+        fixtureDigest: fixture.fixtureIdentity.digest,
+      },
+    });
+    expect(resolved.evidence?.attestationDigest).toMatch(/^[0-9a-f]{64}$/);
+
+    expect(() => resolveTrustedIosBinding({ contractScope: '' }))
+      .toThrow('release contract scope is invalid');
+    expect(() => resolveTrustedIosBinding({
+      contractScope: 'backend_only',
+      evidenceRoot: fixture.evidenceRoot,
+    })).toThrow('backend-only release must not include iOS evidence');
+    expect(() => resolveTrustedIosBinding({
+      contractScope: 'shared_backend_ios',
+    })).toThrow('requires signed iOS evidence');
+    expect(() => resolveTrustedIosBinding({
+      contractScope: 'shared_backend_ios',
+      evidenceRoot: fixture.evidenceRoot,
+    })).toThrow('requires signed iOS distribution evidence');
+  });
+
+  it('fails closed on mismatched fixture, source, backend, timing, signature, and partial suites', () => {
+    const fixture = iosEvidenceFixture();
+    expect(validateIosContractAttestation({
+      attestation: fixture.attestation,
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: fixture.fixtureIdentity,
+      trustedRoot: fixture.trustedRoot,
+    })).toMatchObject({ binding: { buildNumber: 59, contractTestResult: 'passed' } });
+
+    const wrongSource = structuredClone(fixture.attestation);
+    wrongSource.payload.ios.sha = 'not-a-sha';
+    expect(() => validateIosContractAttestation({
+      attestation: wrongSource,
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: fixture.fixtureIdentity,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('source identity is invalid');
+
+    const wrongBackend = structuredClone(fixture.attestation);
+    wrongBackend.payload.backend.artifactDigest = 'f'.repeat(64);
+    expect(() => validateIosContractAttestation({
+      attestation: wrongBackend,
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: fixture.fixtureIdentity,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('backend release identity is invalid or mismatched');
+
+    const wrongFixtureIdentity = {
+      ...fixture.fixtureIdentity,
+      digest: 'f'.repeat(64),
+    };
+    expect(() => validateIosContractAttestation({
+      attestation: fixture.attestation,
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: wrongFixtureIdentity,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('backend release identity is invalid or mismatched');
+
+    for (const mutate of [
+      (value: any) => { value.contractSuite.passedCount = value.contractSuite.testCount - 1; },
+      (value: any) => { value.contractSuite.skippedCount = 1; },
+      (value: any) => { value.contractSuite.testSelectors = value.contractSuite.testSelectors.slice(1); },
+      (value: any) => { value.contractSuite.selectionDigest = '0'.repeat(64); },
+    ]) {
+      const incompleteSuite = structuredClone(fixture.attestation);
+      mutate(incompleteSuite.payload);
+      expect(() => validateIosContractAttestation({
+        attestation: incompleteSuite,
+        runtimeSha,
+        artifactDigest: fixture.artifactDigest,
+        fixtureIdentity: fixture.fixtureIdentity,
+        trustedRoot: fixture.trustedRoot,
+      })).toThrow('suite evidence is invalid');
+    }
+
+    const expired = structuredClone(fixture.attestation);
+    const oldGeneratedAt = new Date(Date.now() - 48 * 3_600_000);
+    expired.payload.generatedAt = oldGeneratedAt.toISOString();
+    expired.payload.expiresAt = new Date(oldGeneratedAt.getTime() + 24 * 3_600_000).toISOString();
+    expect(() => validateIosContractAttestation({
+      attestation: expired,
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: fixture.fixtureIdentity,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('timing is invalid');
+
+    const tamperedSignature = structuredClone(fixture.attestation);
+    tamperedSignature.signature = Buffer.alloc(64).toString('base64');
+    expect(() => validateIosContractAttestation({
+      attestation: tamperedSignature,
+      runtimeSha,
+      artifactDigest: fixture.artifactDigest,
+      fixtureIdentity: fixture.fixtureIdentity,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('signature is invalid');
+  });
+
+  it('requires a separately signed exact Xcode Cloud distribution proof', () => {
+    const fixture = iosEvidenceFixture();
+    expect(validateIosDistributionAttestation({
+      attestation: fixture.distributionAttestation,
+      iosSha: fixture.iosSha,
+      buildNumber: 59,
+      trustedRoot: fixture.trustedRoot,
+    })).toMatchObject({
+      binding: {
+        result: 'passed',
+        sourceCommit: fixture.iosSha,
+        release: { buildNumber: '59' },
+        exportedArtifact: { artifactSemantics: 'nexus.raw-file.v1' },
+        ci: { buildId: '123e4567-e89b-12d3-a456-426614174000' },
+      },
+    });
+
+    for (const [label, mutate, message] of [
+      [
+        'source',
+        (payload: any) => { payload.source.commit = 'f'.repeat(40); },
+        'source identity is invalid or mismatched',
+      ],
+      [
+        'build',
+        (payload: any) => { payload.release.buildNumber = '60'; },
+        'release identity is invalid or mismatched',
+      ],
+      [
+        'dirty checkout',
+        (payload: any) => { payload.source.clean = false; },
+        'source identity is invalid or mismatched',
+      ],
+      [
+        'workflow',
+        (payload: any) => { payload.ci.workflow = 'Untrusted archive'; },
+        'CI identity is invalid or mismatched',
+      ],
+      [
+        'unbound App Store URL',
+        (payload: any) => { payload.ci.buildUrl = 'https://example.com/build'; },
+        'CI identity is invalid or mismatched',
+      ],
+      [
+        'incomplete certificate chain',
+        (payload: any) => { payload.distribution.signing.authorities = ['Apple Distribution: Fake']; },
+        'signing identity is invalid',
+      ],
+      [
+        'reused archive toolchain',
+        (payload: any) => { payload.toolchain.archiveXcodeBuild = 'OLD'; },
+        'toolchain identity is invalid or mismatched',
+      ],
+    ] as const) {
+      const payload = structuredClone(fixture.distributionPayload);
+      mutate(payload);
+      const attestation = fixture.signDistribution(payload as typeof fixture.distributionPayload);
+      expect(() => validateIosDistributionAttestation({
+        attestation,
+        iosSha: fixture.iosSha,
+        buildNumber: 59,
+        trustedRoot: fixture.trustedRoot,
+      }), label).toThrow(message);
+    }
+
+    const badSignature = structuredClone(fixture.distributionAttestation);
+    badSignature.signature = Buffer.alloc(64).toString('base64');
+    expect(() => validateIosDistributionAttestation({
+      attestation: badSignature,
+      iosSha: fixture.iosSha,
+      buildNumber: 59,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('signature is invalid');
+  });
+
   it('binds candidate-generated time and nightly freshness to the trusted GitHub run', () => {
     const nowMs = Date.now();
     const runStartedAtMs = nowMs - 120_000;
@@ -453,7 +874,7 @@ describe('trusted release signing boundary', () => {
     expect(trustedSigner).toContain('delete commandEnv.NEXUS_RELEASE_MANIFEST_PRIVATE_KEY_PEM');
   });
 
-  it('validates dispatch identities before use and never renders them into signer shell source', () => {
+  it('validates dispatch identities and treats the compact signed iOS attestation as untrusted input', () => {
     const signer = fs.readFileSync('.github/workflows/sign-release-manifest.yml', 'utf8');
     const runBlocks = workflowRunBlocks(signer).join('\n');
     const maliciousRunId = '29407618419?x=$(printf exfiltrate)';
@@ -462,9 +883,23 @@ describe('trusted release signing boundary', () => {
     expect(/^[0-9]+$/.test(maliciousRunId)).toBe(false);
     expect(signer).toContain('[[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]]');
     expect(signer).toContain('[[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]');
+    expect(signer).toContain('[[ -n "$IOS_ATTESTATION_BASE64" && ${#IOS_ATTESTATION_BASE64} -le 32768 ]]');
+    expect(signer).toContain('[[ "$IOS_ATTESTATION_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]');
+    expect(signer).toContain('[[ -n "$IOS_DISTRIBUTION_ATTESTATION_BASE64" && ${#IOS_DISTRIBUTION_ATTESTATION_BASE64} -le 131072 ]]');
+    expect(signer).toContain('[[ "$IOS_DISTRIBUTION_ATTESTATION_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]');
+    expect(signer).not.toContain('NEXUS_IOS_RELEASE_EVIDENCE_READ_TOKEN');
+    expect(signer).not.toContain('repos/felipedrf74/nexus-hub-ios/actions/runs/');
+    expect(signer).not.toContain('inputs.ios_sha');
+    expect(signer).not.toContain('inputs.ios_build_number');
+    expect(signer).not.toContain('inputs.ios_contract_result');
     expect(runBlocks).not.toContain('${{ inputs.');
     expect(runBlocks).toContain('--runtime-sha "$RUNTIME_SHA"');
     expect(runBlocks).toContain('--candidate-run-id "$CANDIDATE_RUN_ID"');
+    expect(runBlocks).toContain('--contract-scope "$CONTRACT_SCOPE"');
+    expect(runBlocks).toContain('--ios-evidence-root trusted-input/ios-evidence');
+    expect(runBlocks).toContain('--ios-distribution-evidence-root trusted-input/ios-distribution-evidence');
+    expect(runBlocks).not.toContain('--ios-evidence-run-id');
+    expect(runBlocks).not.toContain('--ios-sha');
   });
 
   it('does not resolve artifact helpers from the candidate root', () => {

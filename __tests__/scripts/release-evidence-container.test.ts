@@ -66,6 +66,9 @@ describe('release-evidence-container wrapper', () => {
     expect(raw).toContain('release-test-selection-${{ github.run_id }}-${{ github.run_attempt }}');
     expect(raw).toContain('release-manifest-v2.mjs write');
     expect(raw).toContain('--allow-unsigned');
+    expect(raw).toContain('--includes-ios');
+    expect(raw).toContain('--backend-only');
+    expect(raw).toContain('contract_scope must be explicitly selected');
     expect(raw).toContain('.local/release/test-results.json');
     expect(raw).toContain('timeout-minutes: 30');
   });
@@ -242,8 +245,29 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
       label: 'release manifest',
       script: 'request-release-manifest-signature.sh',
       workflow: 'sign-release-manifest.yml',
-      args: (root: string, runtimeSha: string) => [runtimeSha, '123456', root],
+      args: (root: string, runtimeSha: string) => [runtimeSha, '123456', root, '--backend-only'],
       prepare: (_root: string, _runtimeSha: string) => {},
+      contractScope: 'backend_only',
+    },
+    {
+      label: 'shared release manifest',
+      script: 'request-release-manifest-signature.sh',
+      workflow: 'sign-release-manifest.yml',
+      args: (root: string, runtimeSha: string) => [
+        runtimeSha,
+        '123456',
+        root,
+        '--includes-ios',
+        '--ios-attestation',
+        join(root, 'ios-contract-attestation.json'),
+        '--ios-distribution-attestation',
+        join(root, 'ios-distribution-attestation.json'),
+      ],
+      prepare: (root: string, _runtimeSha: string) => {
+        writeFileSync(join(root, 'ios-contract-attestation.json'), '{"signed":"fixture"}\n');
+        writeFileSync(join(root, 'ios-distribution-attestation.json'), '{"signed":"fixture"}\n');
+      },
+      contractScope: 'shared_backend_ios',
     },
     {
       label: 'staging attestation',
@@ -263,12 +287,14 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
           if (process.argv[2] !== 'validate-request') process.exit(70);
         `);
       },
+      contractScope: null,
     },
   ])('behaviorally probes the $label workflow YAML before dispatch', ({
     script: scriptName,
     workflow: workflowName,
     args,
     prepare,
+    contractScope,
   }) => {
     const root = mkdtempSync(join(tmpdir(), 'release-signing-probe-'));
     const runtimeSha = 'a'.repeat(40);
@@ -319,6 +345,17 @@ exit 74
       expect(viewIndex).toBeGreaterThan(-1);
       expect(calls[viewIndex]).toContain('--ref main --yaml');
       expect(dispatchIndex).toBeGreaterThan(viewIndex);
+      if (scriptName === 'request-release-manifest-signature.sh') {
+        expect(calls[dispatchIndex]).toContain(`-f contract_scope=${contractScope}`);
+        if (contractScope === 'shared_backend_ios') {
+          expect(calls[dispatchIndex]).toContain('-f ios_attestation_base64=');
+          expect(calls[dispatchIndex]).toContain('-f ios_distribution_attestation_base64=');
+          expect(calls[dispatchIndex]).not.toContain('ios_evidence_run_id=');
+          expect(calls[dispatchIndex]).not.toContain('ios_sha=');
+          expect(calls[dispatchIndex]).not.toContain('ios_build_number=');
+          expect(calls[dispatchIndex]).not.toContain('ios_contract_result=');
+        }
+      }
       expect(calls.some((call) => call.startsWith('run watch '))).toBe(false);
       expect(calls.some((call) => call.startsWith('run download '))).toBe(false);
     } finally {

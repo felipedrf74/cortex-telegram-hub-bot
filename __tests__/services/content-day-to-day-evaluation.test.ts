@@ -7,18 +7,58 @@ import {
   formatContentEvalResultsMarkdown,
   runContentDayToDayEvaluation,
 } from '../../src/services/content-day-to-day-evaluation';
+import {
+  type ContentLiveEvaluationArtifact,
+} from '../../src/services/content-live-evaluation-artifact';
+import { makeReleaseQualifiedContentLiveEvalArtifact } from '../fixtures/content-live-evaluation';
+import {
+  CONTENT_IOS_TEST_FINGERPRINT,
+  CONTENT_IOS_TEST_GIT_COMMIT,
+  CONTENT_IOS_TEST_KEY,
+  CONTENT_IOS_TEST_SOURCE_TREE_DIGEST,
+  makeContentIosExtractionTestArtifact,
+} from '../fixtures/content-ios-extraction';
+import {
+  validateContentIosExtractionArtifact,
+  type ContentIosExtractionArtifact,
+} from '../../src/services/content-ios-extraction-artifact';
 
-function providerInvocations(count: number) {
-  return Array.from({ length: count }, (_, index) => ({
-    invocationId: `provider-call-${index + 1}`,
-    provider: 'configured-provider',
-    model: 'configured-model',
-    tier: 'chat' as const,
-    category: 'content_day_to_day_eval' as const,
-    status: 'succeeded' as const,
-    capturedAt: `2026-06-04T00:00:0${index}.000Z`,
-    routingPath: 'provider_registry' as const,
-  }));
+function liveArtifact(lowQuality = false): ContentLiveEvaluationArtifact {
+  return makeReleaseQualifiedContentLiveEvalArtifact(lowQuality);
+}
+
+function liveEvidence(artifact: ContentLiveEvaluationArtifact) {
+  return {
+    runId: artifact.runId,
+    source: artifact.source,
+    sampleCount: artifact.summary.sampleCount,
+    generatedAt: artifact.generatedAt,
+    providerInvocations: artifact.invocations,
+    artifact,
+  };
+}
+
+function iosArtifact(): ContentIosExtractionArtifact {
+  const artifact = makeContentIosExtractionTestArtifact();
+  const validation = validateContentIosExtractionArtifact(artifact, {
+    attestationKey: CONTENT_IOS_TEST_KEY,
+    trustedAttestationKeyFingerprint: CONTENT_IOS_TEST_FINGERPRINT,
+    expectedIosGitCommit: CONTENT_IOS_TEST_GIT_COMMIT,
+    expectedIosSourceTreeDigest: CONTENT_IOS_TEST_SOURCE_TREE_DIGEST,
+    now: new Date('2026-07-19T10:05:00.000Z'),
+  });
+  if (!validation.releaseQualified) throw new Error(`Invalid iOS test artifact: ${validation.reason}`);
+  return artifact;
+}
+
+function iosEvidence(artifact: ContentIosExtractionArtifact) {
+  return {
+    runId: artifact.runId,
+    source: artifact.source,
+    sampleCount: artifact.summary.totalCount,
+    generatedAt: artifact.generatedAt,
+    iosArtifact: artifact,
+  };
 }
 
 describe('Content day-to-day evaluation harness', () => {
@@ -137,33 +177,39 @@ describe('Content day-to-day evaluation harness', () => {
     }
   });
 
-  it('can report a clean PASS only after fixture, runtime, provider sample, and iOS extraction lanes are supplied', () => {
+  it('can report PASS only with both typed iOS and live-provider artifacts', () => {
+    const artifact = liveArtifact();
+    const ios = iosArtifact();
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
-      iosExtractionScore: 96,
-      iosExtractionEvidence: {
-        runId: 'ios-content-extraction-20260604',
-        source: 'xcodebuild-content-ui-tests',
-        sampleCount: 4,
-      },
-      realProviderSampleScore: 95,
-      realProviderSampleEvidence: {
-        runId: 'provider-content-sample-20260604',
-        source: 'limited-real-provider-eval',
-        sampleCount: 5,
-        providerInvocations: providerInvocations(5),
-      },
+      iosExtractionScore: ios.score,
+      iosExtractionEvidence: iosEvidence(ios),
+      realProviderSampleScore: artifact.summary.score,
+      realProviderSampleEvidence: liveEvidence(artifact),
     });
 
     expect(result.aggregate.releaseGate).toBe('PASS');
     expect(result.passed).toBe(true);
     expect(result.aggregate.laneScores).toMatchObject({
-      iosExtractionScore: 96,
-      realProviderSampleScore: 95,
+      iosExtractionScore: 100,
+      realProviderSampleScore: artifact.summary.score,
     });
+    expect(result.aggregate.laneEvidence.iosExtraction).toMatchObject({
+      status: 'executed',
+      invocationCount: 5,
+      iosExecutionContext: {
+        scheme: 'Nexus Hub Debug UI Smoke',
+        buildConfiguration: 'Debug',
+        evidenceScope: 'behavioral_not_archive_equivalence',
+      },
+    });
+    const markdown = formatContentEvalResultsMarkdown(result);
+    expect(markdown).toContain('Behavioral UI/recovery evidence only; not App Store archive equivalence');
+    expect(markdown).toContain('Nexus Hub Debug UI Smoke — Debug');
   });
 
-  it('clamps external lane scores so invalid evidence cannot inflate the aggregate above 100', () => {
+  it('rejects an operator score that does not exactly match the bound artifact', () => {
+    const artifact = liveArtifact();
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
       iosExtractionScore: 999,
@@ -173,18 +219,14 @@ describe('Content day-to-day evaluation harness', () => {
         sampleCount: 4,
       },
       realProviderSampleScore: 999,
-      realProviderSampleEvidence: {
-        runId: 'provider-content-sample-overflow',
-        source: 'limited-real-provider-eval',
-        sampleCount: 5,
-        providerInvocations: providerInvocations(5),
-      },
+      realProviderSampleEvidence: liveEvidence(artifact),
     });
 
     expect(result.aggregate.overallScore).toBeLessThanOrEqual(100);
-    expect(result.aggregate.laneScores.iosExtractionScore).toBe(100);
-    expect(result.aggregate.laneScores.realProviderSampleScore).toBe(100);
-    expect(result.aggregate.releaseGate).toBe('PASS');
+    expect(result.aggregate.laneScores.iosExtractionScore).toBeNull();
+    expect(result.aggregate.laneScores.realProviderSampleScore).toBeNull();
+    expect(result.aggregate.laneEvidence.realProviderSample.failureCode).toBe('score_artifact_mismatch');
+    expect(result.aggregate.releaseGate).toBe('FAIL');
   });
 
   it('does not allow fabricated external lane numbers to force a release PASS', () => {
@@ -199,12 +241,38 @@ describe('Content day-to-day evaluation harness', () => {
     expect(result.aggregate.releaseGate).toBe('FAIL');
     expect(result.passed).toBe(false);
     expect(result.openConditions).toEqual(expect.arrayContaining([
-      expect.stringContaining('iOS visible-text extraction score was ignored'),
+      expect.stringContaining('iOS visible-text extraction evidence was ignored'),
       expect.stringContaining('Real-provider sample score was ignored'),
     ]));
   });
 
+  it('ignores forged iOS provenance metadata even when every field and score looks plausible', () => {
+    const artifact = liveArtifact();
+    const result = runContentDayToDayEvaluation({
+      mode: 'fixture',
+      iosExtractionScore: 100,
+      iosExtractionEvidence: {
+        runId: 'ios-forged-perfect-run',
+        source: 'xcodebuild-content-ui-tests',
+        sampleCount: 999,
+        generatedAt: '2026-07-19T10:00:00.000Z',
+      },
+      realProviderSampleScore: artifact.summary.score,
+      realProviderSampleEvidence: liveEvidence(artifact),
+    });
+
+    expect(result.aggregate.laneScores.iosExtractionScore).toBeNull();
+    expect(result.aggregate.laneEvidence.iosExtraction).toMatchObject({
+      status: 'invalid_evidence',
+      invocationCount: 0,
+      failureCode: 'typed_artifact_required',
+    });
+    expect(result.aggregate.releaseGate).toBe('FAIL');
+    expect(result.passed).toBe(false);
+  });
+
   it('fails when supplied external lane evidence is below the release quality floor', () => {
+    const artifact = liveArtifact(true);
     const result = runContentDayToDayEvaluation({
       mode: 'fixture',
       iosExtractionScore: 70,
@@ -213,16 +281,11 @@ describe('Content day-to-day evaluation harness', () => {
         source: 'xcodebuild-content-ui-tests',
         sampleCount: 4,
       },
-      realProviderSampleScore: 60,
-      realProviderSampleEvidence: {
-        runId: 'provider-content-sample-low',
-        source: 'limited-real-provider-eval',
-        sampleCount: 5,
-        providerInvocations: providerInvocations(5),
-      },
+      realProviderSampleScore: artifact.summary.score,
+      realProviderSampleEvidence: liveEvidence(artifact),
     });
 
-    expect(result.aggregate.overallScore).toBeLessThan(95);
+    expect(result.aggregate.laneScores.iosExtractionScore).toBeNull();
     expect(result.aggregate.releaseGate).toBe('FAIL');
     expect(result.passed).toBe(false);
   });
@@ -237,7 +300,7 @@ describe('Content day-to-day evaluation harness', () => {
     expect(result.aggregate.laneEvidence.realProviderSample).toMatchObject({
       status: 'not_executed',
       invocationCount: 0,
-      failureCode: 'missing_invocation_provenance',
+      failureCode: 'missing_bound_artifact',
     });
     expect(result.aggregate.releaseGate).toBe('FAIL');
     expect(result.passed).toBe(false);

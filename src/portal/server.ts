@@ -20,6 +20,7 @@ import { config } from '../config';
 import { getDb } from '../services/database';
 import { expireSubscriptions } from '../services/webhook-registry';
 import { getOwnerBootstrapTarget } from '../services/user-service';
+import { shouldStartContentLiveEvalBackgroundServices } from '../services/content-live-evaluation-runtime';
 import { logger } from '../utils/logger';
 import { generateRequestId, runWithContext } from '../utils/request-context';
 import { requirePortalTokenByMethod } from '../api/secret-guards';
@@ -228,7 +229,7 @@ export function createPortalServer(): http.Server {
     logger.info('iOS API enabled on /api/v1');
 
     // Warm ALL caches on startup so first app open is instant
-    try {
+    if (shouldStartContentLiveEvalBackgroundServices()) try {
       const { warmTaskCache } = require('../api/routes/tasks');
       const { warmDashboardCache } = require('../api/routes/dashboard');
       const ownerTarget = getOwnerBootstrapTarget();

@@ -165,6 +165,22 @@ describe('script-pipeline: cache key hardening', () => {
     expect(engineSource).toMatch(/readSignals\('script-engine', \[\.\.\.signalTypes\], 100, userId, cfg\.signalDays, tenantId\)/);
   });
 
+  it('gates user-derived signal reads behind the typed execution policy', () => {
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+    const executionPolicySource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-script-execution-policy.ts'),
+      'utf8',
+    );
+
+    expect(executionPolicySource).toContain('export interface ScriptGenerationExecutionPolicy');
+    expect(executionPolicySource).toContain("intelligenceSignals: 'default' | 'bypass'");
+    expect(engineSource).toContain("executionPolicy.intelligenceSignals === 'default' && cfg.signalDays > 0");
+    expect(executionPolicySource).toContain("intelligenceSignals: 'bypass'");
+  });
+
   it('script engine forwards first-party topic context into the Python request', () => {
     const engineSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-engine.ts'),

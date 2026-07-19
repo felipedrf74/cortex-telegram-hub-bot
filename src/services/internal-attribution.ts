@@ -121,10 +121,26 @@ function normalizeOuterReservation(
   const baseCategory = typeof record.baseCategory === 'string' ? record.baseCategory.trim() : '';
   const jobName = typeof record.jobName === 'string' ? record.jobName.trim() || null : null;
   const runId = typeof record.runId === 'string' ? record.runId.trim() || null : null;
+  const hardRunCostLimitUsd = record.hardRunCostLimitUsd === undefined
+    ? undefined
+    : Number(record.hardRunCostLimitUsd);
+  const hardJobCostLimitUsd = record.hardJobCostLimitUsd === undefined
+    ? undefined
+    : Number(record.hardJobCostLimitUsd);
   if (!reservationId || reservationId.length < 16) return null;
   if (!baseCategory) return null;
   if (requestSource !== 'interactive' && requestSource !== 'automation' && requestSource !== 'system') return null;
+  if (hardRunCostLimitUsd !== undefined && (!Number.isFinite(hardRunCostLimitUsd) || hardRunCostLimitUsd <= 0)) return null;
+  if (hardJobCostLimitUsd !== undefined && (!Number.isFinite(hardJobCostLimitUsd) || hardJobCostLimitUsd <= 0)) return null;
   // Provider category and outer workload base category are separate signed
   // claims. HMAC verification above protects both; they need not be equal.
-  return { reservationId, requestSource, baseCategory, jobName, runId };
+  return {
+    reservationId,
+    requestSource,
+    baseCategory,
+    jobName,
+    runId,
+    ...(hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd } : {}),
+    ...(hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd } : {}),
+  };
 }

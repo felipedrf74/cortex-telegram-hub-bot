@@ -19,6 +19,7 @@ export type AuditAction =
   | 'mutation_scope'
   | 'encrypt'
   | 'decrypt'
+  | 'privacy_consent'
   | 'billing.nexus_points.checkout_started'
   | 'nexus_points.transfer'
   /**

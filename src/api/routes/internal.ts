@@ -43,6 +43,7 @@ import {
   type AiBudgetRequest,
 } from '../../services/cost-guardrail';
 import { settleNexusPointOverageForUser } from '../../services/nexus-points';
+import { contentLiveEvalInternalEnvelopeWithinLimits } from '../../services/content-live-evaluation-artifact';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -346,12 +347,30 @@ export function internalRoutes(): Router {
       }
 
       const outerReservation = verifiedAttribution?.outerReservation ?? null;
+      if (
+        outerReservation?.baseCategory === 'content_live_eval'
+        && !contentLiveEvalInternalEnvelopeWithinLimits({ system, prompt: userPrompt, maxTokens })
+      ) {
+        sendError(
+          res,
+          'BAD_REQUEST',
+          'Live Content evaluation exceeded its fixed provider input or output envelope. No model call was made.',
+          400,
+        );
+        return;
+      }
       const budgetRequest: AiBudgetRequest = {
         userId: scopedUserId,
         requestSource: outerReservation?.requestSource ?? (scopedUserId > 0 ? 'interactive' : 'system'),
         baseCategory: outerReservation?.baseCategory ?? category,
         jobName: outerReservation?.jobName ?? null,
         runId: outerReservation?.runId ?? null,
+        ...(outerReservation?.hardRunCostLimitUsd !== undefined
+          ? { hardRunCostLimitUsd: outerReservation.hardRunCostLimitUsd }
+          : {}),
+        ...(outerReservation?.hardJobCostLimitUsd !== undefined
+          ? { hardJobCostLimitUsd: outerReservation.hardJobCostLimitUsd }
+          : {}),
       };
       const invokeProvider = () => completeOneShotWithFallback(
           system,

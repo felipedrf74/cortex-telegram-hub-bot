@@ -165,7 +165,7 @@ export function persistContentEvalRun(
       productionDataUsed ? 1 : 0,
       realProviderCalls,
       providerInvocation?.provider ?? trace?.provider ?? null,
-      providerInvocation?.model ?? trace?.model ?? null,
+      providerInvocation?.resolvedModel ?? providerInvocation?.model ?? trace?.model ?? null,
       providerInvocation?.tier ?? trace?.tier ?? null,
       providerInvocation?.category ?? trace?.category ?? null,
       fallbackUsed ? 1 : 0,

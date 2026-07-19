@@ -9,6 +9,7 @@ COMMAND="${1:-status}"
 [ $# -gt 0 ] && shift
 usage() {
   echo "Usage: scripts/release-operator.sh <prepare|staging|promote|status> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request]"
+  echo "       prepare requires exactly one contract scope: --backend-only OR --includes-ios --ios-sha <sha> --ios-build-number <number> --ios-contract-result passed"
 }
 if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ]; then usage; exit 0; fi
 BASE="origin/main"
@@ -16,6 +17,10 @@ MANIFEST=""
 STAGING_ATTESTATION=""
 DRY_RUN=false
 SIGN_REQUEST="${NEXUS_RELEASE_SIGN_STAGING:-1}"
+CONTRACT_SCOPE=""
+IOS_SHA=""
+IOS_BUILD_NUMBER=""
+IOS_CONTRACT_RESULT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
@@ -23,10 +28,28 @@ while [ $# -gt 0 ]; do
     --staging-attestation) STAGING_ATTESTATION="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --no-sign-request) SIGN_REQUEST=0; shift ;;
+    --backend-only)
+      [ -z "$CONTRACT_SCOPE" ] || { echo "release contract scope may be specified only once" >&2; exit 64; }
+      CONTRACT_SCOPE="backend_only"
+      shift
+      ;;
+    --includes-ios)
+      [ -z "$CONTRACT_SCOPE" ] || { echo "release contract scope may be specified only once" >&2; exit 64; }
+      CONTRACT_SCOPE="shared_backend_ios"
+      shift
+      ;;
+    --ios-sha) IOS_SHA="$2"; shift 2 ;;
+    --ios-build-number) IOS_BUILD_NUMBER="$2"; shift 2 ;;
+    --ios-contract-result) IOS_CONTRACT_RESULT="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
   esac
 done
+
+if [ "$COMMAND" != "prepare" ] && [ -n "$CONTRACT_SCOPE$IOS_SHA$IOS_BUILD_NUMBER$IOS_CONTRACT_RESULT" ]; then
+  echo "release contract scope arguments are valid only for release:prepare" >&2
+  exit 64
+fi
 
 SHA="$(git rev-parse HEAD)"
 MANIFEST="${MANIFEST:-.local/release/manifests/$SHA.json}"
@@ -113,6 +136,39 @@ case "$COMMAND" in
     fi
     ;;
   prepare)
+    CONTRACT_ARGS=()
+    MANIFEST_EXPECTATIONS=()
+    case "$CONTRACT_SCOPE" in
+      backend_only)
+        [ -z "$IOS_SHA$IOS_BUILD_NUMBER$IOS_CONTRACT_RESULT" ] || {
+          echo "backend-only release must not include iOS contract fields" >&2
+          exit 64
+        }
+        CONTRACT_ARGS=(--backend-only)
+        MANIFEST_EXPECTATIONS=(--expect-backend-only)
+        ;;
+      shared_backend_ios)
+        [[ "$IOS_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid iOS SHA" >&2; exit 64; }
+        [[ "$IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "invalid iOS build number" >&2; exit 64; }
+        [ "$IOS_CONTRACT_RESULT" = "passed" ] || { echo "iOS contract result must be passed" >&2; exit 64; }
+        CONTRACT_ARGS=(
+          --includes-ios
+          --ios-sha "$IOS_SHA"
+          --ios-build-number "$IOS_BUILD_NUMBER"
+          --ios-contract-result "$IOS_CONTRACT_RESULT"
+        )
+        MANIFEST_EXPECTATIONS=(
+          --require-ios-contract
+          --expect-ios-sha "$IOS_SHA"
+          --expect-ios-build-number "$IOS_BUILD_NUMBER"
+          --expect-ios-contract-result "$IOS_CONTRACT_RESULT"
+        )
+        ;;
+      *)
+        echo "release:prepare requires an explicit --backend-only or --includes-ios contract scope" >&2
+        exit 64
+        ;;
+    esac
     [ -z "$(git status --porcelain=v1 --untracked-files=normal)" ] || {
       echo "release:prepare requires a clean exact runtime SHA" >&2
       exit 1
@@ -126,10 +182,12 @@ case "$COMMAND" in
     node scripts/release-manifest-v2.mjs write \
       --allow-unsigned \
       --key-id unsigned-release-candidate \
-      --manifest "$UNSIGNED_MANIFEST"
+      --manifest "$UNSIGNED_MANIFEST" \
+      "${CONTRACT_ARGS[@]}"
     node scripts/release-manifest-v2.mjs validate-payload \
       --manifest "$UNSIGNED_MANIFEST" \
-      --expect-runtime-sha "$SHA" >/dev/null
+      --expect-runtime-sha "$SHA" \
+      "${MANIFEST_EXPECTATIONS[@]}" >/dev/null
     printf '{"ok":true,"prepared":true,"promotable":false,"reason":"trusted_signer_required","unsignedManifest":"%s"}\n' "$UNSIGNED_MANIFEST"
     ;;
   staging)

@@ -901,6 +901,8 @@ describe('OpenAIProvider', () => {
         expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith({
           userId: 42,
           category: 'content_discovery',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
           hasUnboundedProviderInjectedContext: true,
           maxCostUsd: expect.any(Number),
         });

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe
-Last verified: 2026-07-17
+Last verified: 2026-07-19
 
 Current runtime truth is `release-state.json`. Release evidence is an ignored
 artifact, not a Markdown narrative.
@@ -51,12 +51,49 @@ canonical migration cutover, not every future release.
 
 ```bash
 npm run release:status
-npm run release:prepare -- --base <sha>
-gh workflow run release-candidate-evidence.yml --ref <candidate-ref>
-scripts/request-release-manifest-signature.sh <sha> <rc-run-id>
+npm run release:prepare -- --base <sha> --backend-only
+gh workflow run release-candidate-evidence.yml --ref <candidate-ref> -f contract_scope=backend_only
+scripts/request-release-manifest-signature.sh <sha> <rc-run-id> --backend-only
 npm run release:staging -- --manifest .local/release/manifests/<sha>.json
 npm run release:promote -- --manifest .local/release/manifests/<sha>.json
 ```
+
+For a release that changes a shared backend/iOS contract, use
+`--includes-ios --ios-sha <ios-sha> --ios-build-number <build> --ios-contract-result passed`
+for `release:prepare`. Dispatch the RC workflow with
+`contract_scope=shared_backend_ios` plus matching `ios_sha`,
+`ios_build_number`, and `ios_contract_result=passed` fields. RC creation and
+protected signing both fail closed when the scope is omitted, contradictory,
+or incomplete. Tag pushes do not infer contract scope or create RC evidence.
+RC iOS fields are untrusted candidate intent, not compatibility evidence.
+
+Once the RC artifact exists, run `trusted-release-signer.mjs
+ios-contract-request` against its downloaded root, then dispatch the iOS
+repository's protected-main `ios-contract-evidence.yml` with the emitted exact
+backend SHA, artifact digest, candidate fixture digest, and fixture base64.
+Download the successful run's signed compatibility attestation. Separately run
+the protected iOS `App Store Release` Xcode Cloud workflow for that same clean
+SHA/build. Its post-archive gate emits a signed
+`nexus.ios-distribution-attestation.v1` only after proving the selected stable
+Xcode/iOS SDK, source tree, `.xcarchive`, exported App Store app/IPA, bundle,
+team, version/build, production signing identity, entitlements, and Xcode Cloud
+build identity. Extract the attestation JSON from its bounded base64url marker,
+then request signing with both proofs:
+
+```bash
+scripts/request-release-manifest-signature.sh <backend-sha> <rc-run-id> \
+  --includes-ios \
+  --ios-attestation <ios-contract-attestation.json> \
+  --ios-distribution-attestation <ios-distribution-attestation.json>
+```
+
+The signer accepts no direct iOS SHA, build, or result fields and needs no
+cross-repository PAT. It verifies each envelope against its separate pinned iOS
+public key, independently reads the fixture from the exact RC bundle, and
+requires both proofs to name the same iOS SHA/build. Compatibility proof alone
+does not prove archive or App Store binary identity; distribution proof alone
+does not prove the backend payload decodes. Missing, expired, or mismatched
+proofs make a shared release non-promotable.
 
 `release:prepare` runs the release gate, builds one governed runtime bundle,
 and writes an unsigned candidate payload. The RC workflow also contains no
@@ -64,6 +101,12 @@ signing secret. Only the protected-main signer, gated by the `release-signing`
 environment, may turn a successful exact-run artifact into a promotable
 `ReleaseManifestV2`. A changed artifact or test policy invalidates the result.
 A docs-only commit cannot replace the required check for a runtime SHA.
+The signer independently reconstructs the selected backend-only or shared
+backend/iOS compatibility binding from protected CI evidence and requires it to
+match the unsigned candidate byte-for-byte. A shared unsigned RC deliberately
+contains `ios.distribution: null`; only protected-main tooling may enrich that
+field after verifying the second attestation. The final signed output retains
+both exact iOS attestations and their digest-bearing signing provenance.
 
 The default RC lane runs the exact union of changed, critical, and cannot-skip
 tests only when a successful full nightly from the preceding 36 hours is an

@@ -1,6 +1,6 @@
 """
-YouTube video search via YouTube Data API v3.
-Falls back to mock data when YOUTUBE_API_KEY is empty.
+YouTube video search via YouTube Data API v3. Synthetic results are available
+only in explicit fixture mode; missing credentials never fabricate evidence.
 
 Free tier: 10,000 quota units/day.  A search.list call costs 100 units,
 so ~100 searches/day on the free tier.
@@ -44,9 +44,15 @@ class YouTubeSearcher:
     name = "youtube"
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        if not cfg.youtube_api_key:
-            logger.debug("No YOUTUBE_API_KEY — returning mock results")
+        if getattr(cfg, "fixture_mode", False):
+            logger.debug("Content-engine fixture mode — returning synthetic YouTube results")
             return self._mock(query, max_results)
+        if getattr(cfg, "research_network_disabled", False):
+            logger.info("YouTube search disabled for this isolated runtime")
+            return []
+        if not cfg.youtube_api_key:
+            logger.info("YouTube search unavailable because YOUTUBE_API_KEY is not configured")
+            return []
 
         async with httpx.AsyncClient(timeout=cfg.searcher_timeout) as client:
             # Step 1 — search for video IDs
