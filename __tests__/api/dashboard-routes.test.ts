@@ -1091,7 +1091,9 @@ describe('Dashboard API route', () => {
       },
     };
 
-    expect(() => queryContentPipelineCounts(db, 4, undefined as any)).toThrow('requires a validated tenantId');
+    expect(() => queryContentPipelineCounts(db, 4, undefined as any)).toThrow(
+      'queryContentPipelineCounts requires a validated tenantId',
+    );
     expect(all).not.toHaveBeenCalled();
   });
 });

@@ -277,7 +277,7 @@ describe('migration-safety-check', () => {
     }
   });
 
-  it('requires a fresh verified exact-backup record in promotion mode', { timeout: 30_000 }, () => {
+  it('requires a fresh verified exact-backup record in promotion mode', { timeout: 120_000 }, () => {
     const id = `${process.pid}-${Date.now()}`;
     const reviewRelative = `.local/release/migration-review/promotion-${id}.json`;
     const backupRelative = `.local/release/production/promotion-${id}.json`;

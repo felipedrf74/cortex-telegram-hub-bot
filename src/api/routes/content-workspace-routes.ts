@@ -539,6 +539,8 @@ export function registerContentWorkspaceRoutes(
   });
 
   /** POST /api/v1/content/workspace/artifacts/:artifactId/revisions — CAS save */
+  // The parent API router applies auth and per-user rate limiting before mounting /content.
+  // codeql[js/missing-rate-limiting]
   router.post('/workspace/artifacts/:artifactId/revisions', (req, res: Response) => {
     const scope = resolveRouteScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_workspace_revision_save', {
       artifactId: req.params.artifactId,
@@ -572,6 +574,8 @@ export function registerContentWorkspaceRoutes(
   });
 
   /** POST /api/v1/content/workspace/artifacts/:artifactId/revisions/:revisionId/restore — restore as a new revision */
+  // The parent API router applies auth and per-user rate limiting before mounting /content.
+  // codeql[js/missing-rate-limiting]
   router.post('/workspace/artifacts/:artifactId/revisions/:revisionId/restore', (req, res: Response) => {
     const scope = resolveRouteScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_workspace_revision_restore', {
       artifactId: req.params.artifactId,

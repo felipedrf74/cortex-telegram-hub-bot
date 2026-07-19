@@ -382,6 +382,613 @@
     ],
   "cleanupMappings": [
     {
+      "test": "__tests__/api/chat-script-shortcut-response.test.ts",
+      "replacementTests": [
+        "__tests__/api/chat-script-shortcut-response.test.ts",
+        "__tests__/services/content-script-quality.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/chat-script-shortcut-response.ts",
+        "src/services/content-script-quality.ts"
+      ],
+      "reason": "Replaced automatic weak-intro rewriting in the visible chat script with non-destructive suggestions, while retaining blocked-artifact redaction and structured quality metadata coverage."
+    },
+    {
+      "test": "__tests__/api/content-topics-recommendation.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-topics-recommendation.test.ts",
+        "__tests__/services/content-topic-workspace-compat.test.ts",
+        "__tests__/migrations/content-topics-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/services/content-scheduler.ts",
+        "src/services/content-topic-workspace-compat.ts",
+        "migrations/247_content_topics_workspace_exit.sql"
+      ],
+      "reason": "Moved the filming-recommendation fixture from the retired content_topics row to the canonical workspace deadline and compatibility link, with an explicit assertion that no legacy root is created."
+    },
+    {
+      "test": "__tests__/api/finance-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/finance-routes.test.ts",
+        "__tests__/services/receipt-ai-transfer-consent.test.ts",
+        "__tests__/services/invoice-filer-logging.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/finance.ts",
+        "src/services/receipt-ai-transfer-consent.ts",
+        "src/services/invoice-filer.ts"
+      ],
+      "reason": "Replaced a loose OCR-note substring assertion with exact bounded verification codes and text while adding content-bound consent, replay, privacy, and no-provider negative controls."
+    },
+    {
+      "test": "__tests__/scope/content-tenant-isolation.test.ts",
+      "replacementTests": [
+        "__tests__/scope/content-tenant-isolation.test.ts",
+        "__tests__/security/content-workspace-library-tenant-isolation.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/services/content-learning-store.ts",
+        "src/services/content-workspace-read-models.ts",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "reason": "Updated owner-read assertions for the migration-246 metadata-only legacy binding: foreign scope still receives not-found, while raw archived script bytes are not presented before canonical artifact parity."
+    },
+    {
+      "test": "__tests__/scripts/migration-safety-check.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/migration-safety-check.test.ts",
+        "__tests__/scripts/production-shape-migration-rehearsal.test.ts"
+      ],
+      "sources": [
+        "scripts/migration-safety-check.mjs",
+        "scripts/lib/irreversible-migration-policy.mjs",
+        "config/irreversible-migrations.json",
+        "scripts/lib/production-shape-migration-rehearsal-evidence.mjs"
+      ],
+      "reason": "Replaced coarse approver-and-backup cases with digest-bound governance identity, non-authorizing scan mode, exact review evidence, promotion-only verified backup evidence, rename/deletion detection, and production-shape rehearsal coverage."
+    },
+    {
+      "test": "__tests__/security/p0-chat-identity-isolation.test.ts",
+      "replacementTests": [
+        "__tests__/security/p0-chat-identity-isolation.test.ts",
+        "__tests__/security/content-workspace-library-tenant-isolation.test.ts",
+        "__tests__/services/content-legacy-idea-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/services/context-engine.ts",
+        "src/state/saved-ideas.ts",
+        "src/services/content-workspace-read-models.ts",
+        "src/services/content-legacy-idea-workspace-exit.ts"
+      ],
+      "reason": "Converted source-string checks for the retired saved_ideas query into canonical private workspace delegation and behavioral tenant-isolation coverage while preserving the explicit user parameter contract."
+    },
+    {
+      "test": "__tests__/services/content-agency.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-agency.test.ts",
+        "__tests__/migrations/content-agency-package-integrity.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts",
+        "__tests__/services/content-workspace-integrity-readiness.test.ts"
+      ],
+      "sources": [
+        "src/services/content-agency.ts",
+        "src/services/content-workspace.ts",
+        "migrations/239_content_agency_package_integrity.sql",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "reason": "Replaced mutable duplicate-package and legacy pipeline assertions with immutable content hashes, deterministic package identity, one canonical workspace root, artifact and revision parity, replay safety, rollback, and cross-scope denial."
+    },
+    {
+      "test": "__tests__/services/content-dashboard-service.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-dashboard-service.test.ts",
+        "__tests__/services/content-workspace-read-models.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/services/content-dashboard-service.ts",
+        "src/services/content-workspace-read-models.ts",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "reason": "Moved recent-pipeline fixtures and limit assertions from the frozen legacy table to tenant-scoped canonical workspace projections while retaining the public dashboard shape."
+    },
+    {
+      "test": "__tests__/services/content-day-to-day-evaluation.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-day-to-day-evaluation.test.ts",
+        "__tests__/services/content-ios-extraction-artifact.test.ts",
+        "__tests__/services/content-live-evaluation-artifact.test.ts",
+        "__tests__/services/content-live-evaluation-consumption.test.ts"
+      ],
+      "sources": [
+        "src/services/content-day-to-day-evaluation.ts",
+        "src/services/content-ios-extraction-artifact.ts",
+        "src/services/content-live-evaluation-artifact.ts"
+      ],
+      "reason": "Removed caller-supplied external lane scores and now recomputes release quality only from typed source-bound iOS and live-provider artifacts, with forged evidence and adverse content simulations failing closed."
+    },
+    {
+      "test": "__tests__/services/content-editorial-workflow.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-editorial-workflow.test.ts",
+        "__tests__/services/content-editorial-static-exit.test.ts",
+        "__tests__/services/content-workspace-scheduling.test.ts",
+        "__tests__/services/content-workspace-decision-adapter.test.ts",
+        "__tests__/services/content-workspace-lineage.test.ts",
+        "__tests__/migrations/content-editorial-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/services/content-editorial-workflow.ts",
+        "src/services/content-editorial-workspace-exit.ts",
+        "src/services/content-workspace-scheduling.ts",
+        "src/services/content-workspace-decision-adapter.ts",
+        "src/services/content-workspace-lineage.ts",
+        "migrations/249_content_editorial_workspace_exit.sql"
+      ],
+      "reason": "Retired the parallel editorial lifecycle and Secretary scheduling writer; the compatibility facade now creates canonical artifacts, exposes typed replacements, preserves pure approval policy, and delegates review, lineage, and scheduling to canonical services."
+    },
+    {
+      "test": "__tests__/services/content-radar-engine.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-radar-engine.test.ts",
+        "__tests__/services/content-radar-workspace-actions.test.ts",
+        "__tests__/services/content-workspace-lineage.test.ts"
+      ],
+      "sources": [
+        "src/services/content-radar-engine.ts",
+        "src/services/content-radar-workspace-actions.ts",
+        "src/services/content-workspace.ts"
+      ],
+      "reason": "Moved radar conversion metadata from a parallel editorial object into a canonical item artifact with immutable provenance and added idempotent replay coverage."
+    },
+    {
+      "test": "__tests__/services/content-script-quality.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-script-quality.test.ts",
+        "__tests__/api/chat-script-shortcut-response.test.ts"
+      ],
+      "sources": [
+        "src/services/content-script-quality.ts",
+        "src/api/routes/chat-script-shortcut-response.ts"
+      ],
+      "reason": "Changed weak-intro improvement from destructive revisedScript replacement to an explicit suggestedScript, preserving the user's input while retaining hook, visual direction, CTA, and structured-beat quality assertions."
+    },
+    {
+      "test": "__tests__/services/content-security-red-team.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-security-red-team.test.ts",
+        "__tests__/services/content-editorial-static-exit.test.ts",
+        "__tests__/services/content-workspace-decision-adapter.test.ts"
+      ],
+      "sources": [
+        "src/services/content-editorial-workflow.ts",
+        "src/services/content-editorial-workspace-exit.ts",
+        "src/services/content-generation-quality.ts",
+        "src/services/content-workspace-decision-adapter.ts"
+      ],
+      "reason": "Updated the publishing and scheduling red-team expectations from a parallel approval-required state to fail-closed canonical replacement guidance while retaining human approval policy and private-scope enforcement."
+    },
+    {
+      "test": "__tests__/services/content-workflow-user-scope.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-workflow-user-scope.test.ts",
+        "__tests__/services/content-workspace-capture.test.ts",
+        "__tests__/services/content-legacy-idea-workspace-exit.test.ts",
+        "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts"
+      ],
+      "sources": [
+        "src/services/content-workflow.ts",
+        "src/services/content-workspace-capture.ts",
+        "src/services/content-workspace-idea-consumers.ts",
+        "src/services/content-legacy-idea-workspace-exit.ts",
+        "migrations/253_content_legacy_idea_note_workspace_parity.sql"
+      ],
+      "reason": "Moved Discovery consumption from mutable saved-idea markers to canonical receipts and workflow events committed only after durable candidate persistence, with empty, rollback, rollout-mode, and prompt-injection negative controls."
+    },
+    {
+      "test": "__tests__/services/database.test.ts",
+      "replacementTests": [
+        "__tests__/services/database.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts",
+        "__tests__/services/content-workspace-integrity-readiness.test.ts"
+      ],
+      "sources": [
+        "migrations/246_content_pipeline_workspace_exit.sql",
+        "migrations/251_content_workspace_integrity.sql"
+      ],
+      "reason": "Replaced obsolete content_pipeline stage mutation coverage with database-enforced read-only archive behavior and canonical workspace integrity readiness after the migration-246 cutover."
+    },
+    {
+      "test": "__tests__/services/decision-center-command-bus-equivalence.test.ts",
+      "replacementTests": [
+        "__tests__/services/decision-center-command-bus-equivalence.test.ts",
+        "__tests__/services/content-workspace-decision-adapter.test.ts",
+        "__tests__/api/content-workspace-decision-route.test.ts"
+      ],
+      "sources": [
+        "src/services/content-workspace-decision-adapter.ts",
+        "src/services/decision-center.ts",
+        "src/services/notification-orchestrator.ts"
+      ],
+      "reason": "Updated direct and command-bus equivalence to canonical rewrite_requested semantics and removed the unsafe tenant-shared legacy fallback, which now fails closed until an explicit approver role exists."
+    },
+    {
+      "test": "__tests__/services/signal-ranking.test.ts",
+      "replacementTests": [
+        "__tests__/services/signal-ranking.test.ts",
+        "__tests__/services/content-workspace-read-models.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/agents/pipeline-agent.ts",
+        "src/services/content-workspace-read-models.ts",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "reason": "Converted the pipeline-metrics fixture loop from legacy stage inserts to canonical workspace state and publication events while preserving conversion, stale inventory, throughput, and scoped-read assertions."
+    },
+    {
+      "test": "__tests__/state/content-performance-aggregate.test.ts",
+      "replacementTests": [
+        "__tests__/state/content-performance-aggregate.test.ts",
+        "__tests__/services/content-performance-lineage.test.ts",
+        "__tests__/migrations/content-performance-workspace-lineage.test.ts"
+      ],
+      "sources": [
+        "src/state/content-performance-aggregate.ts",
+        "src/services/content-performance-lineage.ts",
+        "migrations/250_content_performance_workspace_lineage.sql"
+      ],
+      "reason": "Moved topic and script aggregate counts from retired mutable tables to canonical production states, artifacts, and immutable revisions while retaining truthful empty-state warnings."
+    },
+    {
+      "test": "__tests__/state/content-topic-provenance.test.ts",
+      "replacementTests": [
+        "__tests__/state/content-topic-provenance.test.ts",
+        "__tests__/services/content-topic-workspace-compat.test.ts",
+        "__tests__/migrations/content-topics-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/services/content-scheduler.ts",
+        "src/services/content-topic-workspace-compat.ts",
+        "migrations/247_content_topics_workspace_exit.sql"
+      ],
+      "reason": "Moved topic capture provenance from mutable audit JSON to the immutable canonical idea revision and added scoped read, replay, update, and delete coverage with neutral compatibility provenance when absent."
+    },
+    {
+      "test": "__tests__/state/saved-ideas-scope.test.ts",
+      "replacementTests": [
+        "__tests__/state/saved-ideas-scope.test.ts",
+        "__tests__/services/content-legacy-idea-workspace-exit.test.ts",
+        "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts"
+      ],
+      "sources": [
+        "src/state/saved-ideas.ts",
+        "src/services/content-legacy-idea-workspace-exit.ts",
+        "migrations/253_content_legacy_idea_note_workspace_parity.sql"
+      ],
+      "reason": "Replaced legacy mark-used, promote, and delete mutation assertions with owner-readable compatibility history and an unconditional post-cutover write freeze backed by canonical parity tests."
+    },
+    {
+      "test": "__tests__/state/user-isolation.test.ts",
+      "replacementTests": [
+        "__tests__/state/user-isolation.test.ts",
+        "__tests__/services/content-legacy-idea-workspace-exit.test.ts",
+        "__tests__/security/content-workspace-library-tenant-isolation.test.ts",
+        "__tests__/migrations/content-legacy-idea-note-workspace-parity.test.ts"
+      ],
+      "sources": [
+        "src/state/saved-ideas.ts",
+        "src/services/content-legacy-idea-workspace-exit.ts",
+        "migrations/253_content_legacy_idea_note_workspace_parity.sql"
+      ],
+      "reason": "Replaced post-cutover saved_ideas visibility fixtures with stronger proof that every positive-user legacy root write is blocked and canonical private workspace isolation remains authoritative."
+    },
+    {
+      "test": "__tests__/tools/content-evaluation-harness.test.ts",
+      "replacementTests": [
+        "__tests__/tools/content-evaluation-harness.test.ts",
+        "__tests__/services/content-ios-extraction-artifact.test.ts",
+        "__tests__/services/content-live-evaluation-artifact.test.ts",
+        "__tests__/services/content-live-evaluation-consumption.test.ts"
+      ],
+      "sources": [
+        "src/tools/content-evaluation-harness.ts",
+        "src/services/content-ios-extraction-artifact.ts",
+        "src/services/content-live-evaluation-artifact.ts"
+      ],
+      "reason": "Removed environment-provided scalar lane scores and now accepts only independently pinned, typed, source-bound iOS and live-provider artifacts while forged or requested-but-uncaptured evidence fails closed."
+    },
+    {
+      "test": "__tests__/api/content-agency-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-agency-routes.test.ts",
+        "__tests__/services/content-agency.test.ts",
+        "__tests__/migrations/content-agency-package-integrity.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content-agency-routes.ts",
+        "src/services/content-agency.ts",
+        "migrations/239_content_agency_package_integrity.sql",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content-agency-routes.ts:388-388",
+          "anchor": "result.status === 'created' ? 201 : 200",
+          "behavior": "Created agency handoffs return HTTP 201 while idempotent canonical workspace replays return HTTP 200.",
+          "replacementTest": "__tests__/api/content-agency-routes.test.ts",
+          "ownerTestName": "content agency routes moves an approved agency package into the canonical Content workspace once and with scope",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Converted mutable legacy-pipeline handoff assertions to immutable package-to-workspace item, artifact, and revision bindings with exact read-back, rollback, and idempotent replay coverage."
+    },
+    {
+      "test": "__tests__/api/content-editorial-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-editorial-routes.test.ts",
+        "__tests__/services/content-editorial-static-exit.test.ts",
+        "__tests__/migrations/content-editorial-workspace-exit.test.ts",
+        "__tests__/api/content-workspace-routes.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content-editorial-routes.ts",
+        "src/services/content-editorial-workflow.ts",
+        "src/services/content-editorial-workspace-exit.ts",
+        "migrations/249_content_editorial_workspace_exit.sql"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content-editorial-routes.ts:61-61",
+          "anchor": "if (!object)",
+          "behavior": "Canonical compatibility reads fail closed for missing or foreign Content items.",
+          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
+          "ownerTestName": "deprecated content editorial HTTP compatibility routes serves a presentation-safe canonical read with explicit deprecation and historical-ledger labels",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-editorial-routes.ts:102-102",
+          "anchor": "approvalConfirmed: req.body?.approvalConfirmed === true",
+          "behavior": "Legacy actions pass explicit confirmation without treating it as publication approval.",
+          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
+          "ownerTestName": "deprecated content editorial HTTP compatibility routes requires confirmation, current workflow version, and idempotency before a safe legacy archive adapter mutates",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-editorial-routes.ts:144-144",
+          "anchor": "if (result.status === 'unauthorized_reference')",
+          "behavior": "Source review rejects cross-scope references before returning canonical replacement guidance.",
+          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
+          "ownerTestName": "deprecated content editorial HTTP compatibility routes moves raw source review to revision-pinned lineage and rejects cross-scope references before guidance",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-editorial-routes.ts:165-165",
+          "anchor": "typeof req.body?.approvalType !== 'string'",
+          "behavior": "Approval compatibility requires an explicit non-empty approval type before invoking the canonical adapter.",
+          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
+          "ownerTestName": "deprecated content editorial HTTP compatibility routes requires an explicit content_review approval type and preserves canonical lineage policy",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-editorial-routes.ts:216-217",
+          "anchor": "if (result.status === 'not_found')",
+          "behavior": "Repurpose compatibility cannot disclose or transform a missing or foreign source item.",
+          "replacementTest": "__tests__/api/content-editorial-routes.test.ts",
+          "ownerTestName": "deprecated content editorial HTTP compatibility routes moves repurpose to explicit canonical target creation and relationship recording with no inferred copy",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Retired unsafe parallel source-review, publish, schedule, and repurpose mutations in favor of a presentation-safe compatibility facade and explicit canonical routes."
+    },
+    {
+      "test": "__tests__/api/content-home-route.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-home-route.test.ts",
+        "__tests__/services/content-workspace-capture.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content.ts",
+        "src/services/content-workspace-capture.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content.ts:501-501",
+          "anchor": "provider: 'local-fallback'",
+          "behavior": "Local discovery fallback captures canonical workspace ideas with truthful provider provenance.",
+          "replacementTest": "__tests__/api/content-home-route.test.ts",
+          "ownerTestName": "Content API — home route falls back to saved radar topics when live discovery fails",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Moved local discovery fallback persistence from the retired saved-ideas/file path to idempotent canonical workspace capture."
+    },
+    {
+      "test": "__tests__/api/content-ideas-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-ideas-routes.test.ts",
+        "__tests__/services/content-workspace-read-models.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content-pipeline-routes.ts",
+        "src/services/content-workspace-read-models.ts",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content-pipeline-routes.ts:103-103",
+          "anchor": "workspace: { source: 'content_workspace', canonical: true }",
+          "behavior": "Ideas compatibility reads identify the canonical workspace as their source of truth.",
+          "replacementTest": "__tests__/api/content-ideas-routes.test.ts",
+          "ownerTestName": "Content API — canonical ideas compatibility contract returns canonical workspace items with count and next-action metadata",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Replaced the legacy-table list and fake-empty fallback with canonical items, next-action metadata, and truthful unavailable recovery."
+    },
+    {
+      "test": "__tests__/api/content-learning-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-learning-routes.test.ts",
+        "__tests__/services/content-performance-lineage.test.ts",
+        "__tests__/services/content-workspace-capture.test.ts",
+        "__tests__/services/content-workspace-lineage.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content-learning-routes.ts",
+        "src/services/content-performance-lineage.ts",
+        "src/services/content-workspace-capture.ts",
+        "src/services/content-learning-store.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content-learning-routes.ts:228-228",
+          "anchor": "captureOrigin: 'approved_variant'",
+          "behavior": "Accepted script feedback is captured as a canonical artifact with explicit provenance.",
+          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
+          "ownerTestName": "content learning routes persists approved script variant feedback as a canonical workspace artifact",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-learning-routes.ts:357-357",
+          "anchor": "'CONTENT_LEGACY_PIPELINE_ALIAS_READ_ONLY'",
+          "behavior": "Performance writes reject ambiguous legacy pipeline identifiers instead of guessing revision lineage.",
+          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
+          "ownerTestName": "content learning routes rejects legacy pipeline aliases instead of guessing a workspace revision",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-learning-routes.ts:415-415",
+          "anchor": "mutation.created ? 201 : 200",
+          "behavior": "New performance outcomes return created status while idempotent replays return success without duplication.",
+          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
+          "ownerTestName": "content learning routes logs revision-linked performance feedback with authenticated user ownership",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-learning-routes.ts:475-477",
+          "anchor": "chain.availability === 'not_found'",
+          "behavior": "Missing and foreign artifact-chain identifiers return the same non-disclosing response.",
+          "replacementTest": "__tests__/api/content-learning-routes.test.ts",
+          "ownerTestName": "content learning routes makes foreign and missing artifact-chain identifiers indistinguishable",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Bound accepted scripts and performance outcomes to canonical artifacts, revisions, tenant scope, and idempotency while making foreign and missing identifiers indistinguishable."
+    },
+    {
+      "test": "__tests__/api/content-pipeline-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-pipeline-routes.test.ts",
+        "__tests__/services/content-workspace-read-models.test.ts",
+        "__tests__/migrations/content-pipeline-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content-pipeline-routes.ts",
+        "src/services/content-workspace-read-models.ts",
+        "migrations/246_content_pipeline_workspace_exit.sql"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content-pipeline-routes.ts:67-68",
+          "anchor": "CONTENT_FILMING_STATE_NOT_MODELED",
+          "behavior": "Legacy filmed and editing buckets remain explicitly unmodeled instead of being fabricated from canonical states.",
+          "replacementTest": "__tests__/api/content-pipeline-routes.test.ts",
+          "ownerTestName": "canonical Content pipeline compatibility routes projects canonical phases truthfully and marks unmodeled legacy stages",
+          "minimumMutants": 1
+        },
+        {
+          "pattern": "src/api/routes/content-pipeline-routes.ts:155-155",
+          "anchor": "CONTENT_PIPELINE_ADVANCE_DEPRECATED",
+          "behavior": "Implicit pipeline advancement is rejected without mutating canonical workflow state.",
+          "replacementTest": "__tests__/api/content-pipeline-routes.test.ts",
+          "ownerTestName": "canonical Content pipeline compatibility routes rejects implicit advancement with the current explicit next action and no mutation",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Converted the legacy pipeline to a scoped canonical read projection with explicit unmodeled stages and no implicit mutation path."
+    },
+    {
+      "test": "__tests__/api/content-topic-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/content-topic-routes.test.ts",
+        "__tests__/services/content-topic-workspace-compat.test.ts",
+        "__tests__/migrations/content-topics-workspace-exit.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/content-topic-routes.ts",
+        "src/services/content-topic-workspace-compat.ts",
+        "migrations/247_content_topics_workspace_exit.sql"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/content-topic-routes.ts:457-457",
+          "anchor": "cleanupContentTopicSecretaryArtifacts",
+          "behavior": "Imported Secretary cleanup receives the authenticated owner and tenant scope before canonical soft deletion.",
+          "replacementTest": "__tests__/api/content-topic-routes.test.ts",
+          "ownerTestName": "content topic routes cleans up imported Secretary artifacts before soft-deleting the canonical item",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Stopped inventing Secretary tasks for canonical deadlines and moved keyed topic updates and deletes to scoped replay-safe compatibility with recoverable deletion."
+    },
+    {
+      "test": "__tests__/api/dashboard-routes.test.ts",
+      "replacementTests": [
+        "__tests__/api/dashboard-routes.test.ts",
+        "__tests__/services/content-workspace-read-models.test.ts"
+      ],
+      "sources": [
+        "src/api/routes/dashboard-data-fetchers.ts",
+        "src/services/content-workspace-read-models.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/api/routes/dashboard-data-fetchers.ts:587-587",
+          "anchor": "requireTenantIdParam(tenantId, 'queryContentPipelineCounts')",
+          "behavior": "Dashboard Content counts reject missing tenant scope before preparing any canonical query.",
+          "replacementTest": "__tests__/api/dashboard-routes.test.ts",
+          "ownerTestName": "Dashboard API route requires an explicit tenant before querying canonical content",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Removed the stale legacy-schema fallback and made canonical tenant-scoped counts or truthful unavailable state authoritative."
+    },
+    {
+      "test": "__tests__/services/content-learning-store.test.ts",
+      "replacementTests": [
+        "__tests__/services/content-learning-store.test.ts",
+        "__tests__/services/content-performance-lineage.test.ts",
+        "__tests__/services/content-workspace-capture.test.ts",
+        "__tests__/services/content-workspace-read-models.test.ts",
+        "__tests__/agents/voice-evolution-multi-tenant.test.ts",
+        "__tests__/migrations/content-performance-workspace-lineage.test.ts"
+      ],
+      "sources": [
+        "src/services/content-learning-store.ts",
+        "src/services/content-performance-lineage.ts",
+        "src/services/content-workspace-read-models.ts",
+        "src/agents/voice-evolution-agent.ts",
+        "migrations/250_content_performance_workspace_lineage.sql",
+        "migrations/252_content_legacy_script_workspace_parity.sql"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/agents/voice-evolution-agent.ts:549-554",
+          "anchor": "for (const s of dbScripts)",
+          "behavior": "Voice learning includes current canonical script text and excludes the frozen legacy script archive.",
+          "replacementTest": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
+          "ownerTestName": "Voice Evolution Agent — multi-tenant scope builds voice signals from each active tenant’s own transcripts and scripts only",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Moved legacy script and performance ownership to canonical artifacts and revisions and replaced raw source scans with behavioral multi-tenant voice-input coverage."
+    },
+    {
       "test": "__tests__/services/calendar-dedup-qa-validation.test.ts",
       "replacementTests": [
         "__tests__/services/calendar-dedup.test.ts"

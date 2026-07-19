@@ -38,7 +38,13 @@ describe('production-shape migration rehearsal', () => {
   let policyDigest: string;
 
   beforeAll(() => {
-    expect(existsSync(join(ROOT, 'dist/services/migration-runner.js'))).toBe(true);
+    const builtMigrationRunner = join(ROOT, 'dist/services/migration-runner.js');
+    const build = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(build.status, `${build.stdout}${build.stderr}`).toBe(0);
+    expect(existsSync(builtMigrationRunner)).toBe(true);
     base = mkdtempSync(join(ROOT, '.local', 'production-shape-rehearsal-test-'));
     release = join(base, 'releases', 'candidate');
     mkdirSync(join(base, 'data'), { recursive: true, mode: 0o700 });
@@ -53,9 +59,11 @@ describe('production-shape migration rehearsal', () => {
     })}\n`, { mode: 0o600 });
     writeFileSync(join(release, 'artifact-manifest.json'), '{}\n', { mode: 0o600 });
     policyDigest = loadIrreversibleMigrationPolicy({ root: release }).reviewSubjectSha256;
-  }, 60_000);
+  }, 120_000);
 
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => {
+    if (base) rmSync(base, { recursive: true, force: true });
+  });
 
   function createSource({ fullyMigrated = false, invalidPipeline = false, seedPipeline = true } = {}) {
     const source = join(base, 'data', 'bot.db');

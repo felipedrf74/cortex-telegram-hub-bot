@@ -164,7 +164,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       scope: { userId: 25, tenantId: 25 },
       topic: 'Founder training topic',
       format: 'reel',
-      scriptText: 'founder-only-script strength phrasing',
+      scriptText: `founder-only-script strength phrasing ${'s'.repeat(3_100)} founder-script-truncation-tail`,
       captureOrigin: 'script_generation',
     });
     saveGeneratedScriptToWorkspace({
@@ -197,6 +197,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
         expect(prompt).toContain('founder-companion-transcript');
         expect(prompt).toContain('\n\n===');
         expect(prompt).not.toContain('founder-truncation-tail');
+        expect(prompt).not.toContain('founder-script-truncation-tail');
         return {
           text: JSON.stringify({
             additions: [{ pattern: 'founder-signal', examples: ['marathon cadence'], frequency: 'often', category: 'argument' }],

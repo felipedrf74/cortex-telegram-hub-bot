@@ -6,9 +6,15 @@ import { createMigratedTestDatabase } from '../../src/testing/migrated-test-data
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return {
+    ...actual,
+    getDb: () => testDb,
+  };
+});
 
 import {
   claimReceiptAiTransferExecution,

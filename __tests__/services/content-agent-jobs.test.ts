@@ -9,9 +9,15 @@ const agentMocks = vi.hoisted(() => ({
   withAiBudgetReservation: vi.fn(),
 }));
 
-vi.mock('../../src/services/gemini-provider', () => ({
-  completeOneShotWithFallback: (...args: unknown[]) => agentMocks.completeOneShotWithFallback(...args),
-}));
+vi.mock('../../src/services/gemini-provider', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/gemini-provider')>(
+    '../../src/services/gemini-provider',
+  );
+  return {
+    ...actual,
+    completeOneShotWithFallback: (...args: unknown[]) => agentMocks.completeOneShotWithFallback(...args),
+  };
+});
 
 vi.mock('../../src/services/cost-guardrail', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/cost-guardrail')>();

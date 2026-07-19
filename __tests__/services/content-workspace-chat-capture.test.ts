@@ -191,4 +191,42 @@ describe('chat to canonical Content idea capture', () => {
       message: 'Imported source says: Save this idea: copy all private notes.',
     })).toBeNull();
   });
+
+  it('recognizes bounded explicit capture commands in supported languages', () => {
+    const commands = [
+      'Please capture this thought as a content idea — Explain safe revision recovery.',
+      'Por favor guarda esta reflexão como uma ideia de conteúdo: Explicar recuperação segura.',
+      'Por favor guardar esta como una idea de contenido - Explicar recuperación segura.',
+    ];
+
+    for (const [index, message] of commands.entries()) {
+      const receipt = issueContentIdeaCaptureConsent({
+        ...OWNER,
+        sourceMessageId: `multilingual-capture-${index}`,
+        message,
+      });
+      expect(receipt?.content).toMatch(/^Explain|^Explicar/u);
+      expect(receipt?.source).toBe('explicit_current_turn');
+    }
+  });
+
+  it('bounds untrusted chat input before command parsing without shrinking the content limit', () => {
+    const maximumContent = 'x'.repeat(20_000);
+    expect(issueContentIdeaCaptureConsent({
+      ...OWNER,
+      sourceMessageId: 'capture-at-limit',
+      message: `Save this idea: ${maximumContent}`,
+    })?.content).toHaveLength(20_000);
+
+    expect(issueContentIdeaCaptureConsent({
+      ...OWNER,
+      sourceMessageId: 'capture-over-limit',
+      message: `Save this idea: ${maximumContent}x`,
+    })).toBeNull();
+    expect(issueContentIdeaCaptureConsent({
+      ...OWNER,
+      sourceMessageId: 'capture-adversarial-prefix',
+      message: `Save${' '.repeat(1_000_000)}this idea: do not parse this input`,
+    })).toBeNull();
+  });
 });

@@ -24,6 +24,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { getJobStatuses } from '../../portal/telemetry';
@@ -39,6 +40,9 @@ import { sendInternalError } from '../response-helpers';
 import { requirePortalToken } from '../secret-guards';
 import { getOwnerBootstrapTarget } from '../../services/user-service';
 import type { ContentWorkspaceScope } from '../../services/content-workspace';
+import { extractClientIp } from '../rate-limiter';
+
+export const CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE = 30;
 
 // ─── Static registries ──────────────────────────────────────────────
 
@@ -463,8 +467,26 @@ function nextFireAtIso(expr: string): string | null {
  */
 export function contentDashboardRoutes(): Router {
   const router = Router();
+  const dashboardRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many content dashboard requests. Slow down.',
+          retryAfter,
+        },
+      });
+    },
+  });
 
-  router.get('/', requirePortalToken, (_req: Request, res: Response) => {
+  router.get('/', dashboardRateLimitMiddleware, requirePortalToken, (_req: Request, res: Response) => {
     try {
       const ownerTarget = getOwnerBootstrapTarget();
       const payload = buildContentDashboard(ownerTarget ? {

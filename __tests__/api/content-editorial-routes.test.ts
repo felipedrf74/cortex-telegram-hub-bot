@@ -163,6 +163,15 @@ describe('deprecated content editorial HTTP compatibility routes', () => {
 
   it('requires an explicit content_review approval type and preserves canonical lineage policy', async () => {
     const review = createReview('route-explicit-approval-create-001');
+    const invalidDecision = await dispatch('POST', `/workflow/${review.id}/approval`, {
+      approvalType: 'content_review',
+      decision: 'maybe',
+      expectedWorkflowVersion: review.workflowVersion,
+      idempotencyKey: 'route-invalid-decision-001',
+    });
+    expect(invalidDecision.statusCode).toBe(400);
+    expect(invalidDecision.body.error.code).toBe('CONTENT_APPROVAL_DECISION_INVALID');
+
     const ambiguous = await dispatch('POST', `/workflow/${review.id}/approval`, {
       decision: 'approved',
       expectedWorkflowVersion: review.workflowVersion,
@@ -189,6 +198,16 @@ describe('deprecated content editorial HTTP compatibility routes', () => {
     expect(approved.statusCode).toBe(200);
     expect(approved.body.data.object).toMatchObject({ productionState: 'approved', approvalState: 'approved' });
     expect(approved.body.data.historicalApprovalRecords).toEqual([]);
+
+    const rejectedReview = createReview('route-explicit-rejection-create-001');
+    const rejected = await dispatch('POST', `/workflow/${rejectedReview.id}/approval`, {
+      approvalType: 'content_review',
+      decision: 'rejected',
+      expectedWorkflowVersion: rejectedReview.workflowVersion,
+      idempotencyKey: 'route-explicit-rejection-001',
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.body.data.object).toMatchObject({ productionState: 'rejected', approvalState: 'rejected' });
   });
 
   it('moves raw source review to revision-pinned lineage and rejects cross-scope references before guidance', async () => {
@@ -217,6 +236,16 @@ describe('deprecated content editorial HTTP compatibility routes', () => {
   });
 
   it('moves repurpose to explicit canonical target creation and relationship recording with no inferred copy', async () => {
+    const missing = await dispatch('POST', '/workflow/missing-content-item/repurpose', {
+      title: 'Missing source variant',
+      transformationType: 'shorten',
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.body.error).toMatchObject({
+      code: 'CONTENT_ITEM_NOT_FOUND',
+      message: 'Content item not found.',
+    });
+
     const draft = createDraft('route-repurpose-create-001');
     const response = await dispatch('POST', `/workflow/${draft.id}/repurpose`, {
       title: 'Inferred unsafe variant',

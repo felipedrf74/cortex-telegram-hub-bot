@@ -299,7 +299,11 @@ describe('ReleaseManifestV2', () => {
     roots.push(temp);
     const resultsPath = path.join(temp, 'results.json');
     const manifestPath = path.join(temp, 'manifest.unsigned.json');
-    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const fixtureRoot = createSharedManifestFixtureRoot(temp);
+    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: fixtureRoot,
+      encoding: 'utf8',
+    }).trim();
     fs.writeFileSync(resultsPath, JSON.stringify({
       schema: 'nexus.release-test-results.v1',
       status: 'passed',
@@ -310,6 +314,7 @@ describe('ReleaseManifestV2', () => {
     }));
 
     const unclassified = spawnSync(process.execPath, [script, 'write',
+      '--root', fixtureRoot,
       '--allow-unsigned',
       '--allow-dirty',
       '--key-id', 'unsigned-release-candidate',
@@ -321,6 +326,7 @@ describe('ReleaseManifestV2', () => {
     expect(fs.existsSync(manifestPath)).toBe(false);
 
     const contradictory = spawnSync(process.execPath, [script, 'write',
+      '--root', fixtureRoot,
       '--backend-only',
       '--ios-sha', 'b'.repeat(40),
       '--allow-unsigned',
@@ -334,6 +340,7 @@ describe('ReleaseManifestV2', () => {
     expect(fs.existsSync(manifestPath)).toBe(false);
 
     execFileSync(process.execPath, [script, 'write',
+      '--root', fixtureRoot,
       '--backend-only',
       '--allow-unsigned',
       '--allow-dirty',
@@ -342,6 +349,7 @@ describe('ReleaseManifestV2', () => {
       '--test-results', resultsPath,
     ], { cwd: process.cwd(), env: localFixtureEnv });
     const validation = JSON.parse(execFileSync(process.execPath, [script, 'validate-payload',
+      '--root', fixtureRoot,
       '--allow-dirty',
       '--manifest', manifestPath,
     ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } }));

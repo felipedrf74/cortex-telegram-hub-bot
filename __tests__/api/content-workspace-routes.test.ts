@@ -6,20 +6,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-  initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return {
+    ...actual,
+    getDb: () => testDb,
+    initDatabase: vi.fn(),
+    closeDatabase: vi.fn(),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/user-service', () => ({
-  getUserTimezoneById: vi.fn(() => 'UTC'),
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return {
+    ...actual,
+    getUserTimezoneById: vi.fn(() => 'UTC'),
+  };
+});
 
 import { registerContentWorkspaceRoutes } from '../../src/api/routes/content-workspace-routes';
 import { ensureContentReferenceProvenanceTables } from '../../src/services/content-reference-provenance';

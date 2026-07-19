@@ -24,6 +24,7 @@ vi.mock('../../src/config', () => ({
 }));
 
 vi.mock('../../src/utils/logger', () => ({
+  LOGGER_REDACTION_PATHS: [],
   logger: {
     debug: (...args: unknown[]) => mocks.loggerDebug(...args),
     info: (...args: unknown[]) => mocks.loggerInfo(...args),
@@ -36,14 +37,23 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
   trackedCreate: (...args: unknown[]) => mocks.trackedCreate(...args),
 }));
 
-vi.mock('../../src/services/gemini-provider', () => ({
-  completeVisionOneShotWithFallback: (...args: unknown[]) => mocks.providerFallback(...args),
-}));
+vi.mock('../../src/services/gemini-provider', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/gemini-provider')>(
+    '../../src/services/gemini-provider',
+  );
+  return {
+    ...actual,
+    completeVisionOneShotWithFallback: (...args: unknown[]) => mocks.providerFallback(...args),
+  };
+});
 
 vi.mock('../../src/services/invoice-object-storage', () => ({
   buildInvoiceObjectKey: vi.fn(),
+  getInvoiceObjectBuffer: vi.fn(),
   isInvoiceObjectStorageConfigured: vi.fn(() => false),
   putInvoiceObject: vi.fn(),
+  sha256Hex: vi.fn(),
+  verifyInvoiceObjectChecksum: vi.fn(),
 }));
 
 import { analyzeInvoiceImage } from '../../src/services/invoice-filer';

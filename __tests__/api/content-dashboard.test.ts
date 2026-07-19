@@ -32,6 +32,7 @@ import {
   createContentArtifact,
   createContentWorkspaceItem,
 } from '../../src/services/content-workspace';
+import { getDb } from '../../src/services/database';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -54,7 +55,7 @@ let portalAllowLocalBypass = false;
 // all together.
 
 vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
+  getDb: vi.fn(() => testDb),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
@@ -553,6 +554,40 @@ describe('content-dashboard route', () => {
       Authorization: 'Bearer wrong-token',
     });
     expect(badAuth.status).toBe(401);
+  });
+
+  it('rate-limits unauthorized and authorized bursts before additional dashboard database work', async () => {
+    portalTokenValue = 'test-secret-123';
+    const {
+      contentDashboardRoutes,
+      CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE,
+    } = await import('../../src/api/routes/content-dashboard');
+
+    const unauthorizedApp = express();
+    unauthorizedApp.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+    for (let index = 0; index < CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE; index += 1) {
+      const response = await fetchJson(unauthorizedApp, '/api/v1/admin/content-dashboard');
+      expect(response.status).toBe(401);
+    }
+    const unauthorizedBlocked = await fetchJson(unauthorizedApp, '/api/v1/admin/content-dashboard');
+    expect(unauthorizedBlocked.status).toBe(429);
+    expect(unauthorizedBlocked.body.error.code).toBe('RATE_LIMITED');
+
+    const authorizedApp = express();
+    authorizedApp.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+    for (let index = 0; index < CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE; index += 1) {
+      const response = await fetchJson(authorizedApp, '/api/v1/admin/content-dashboard', {
+        Authorization: 'Bearer test-secret-123',
+      });
+      expect(response.status).toBe(200);
+    }
+    const databaseCallsBeforeBlock = vi.mocked(getDb).mock.calls.length;
+    const authorizedBlocked = await fetchJson(authorizedApp, '/api/v1/admin/content-dashboard', {
+      Authorization: 'Bearer test-secret-123',
+    });
+    expect(authorizedBlocked.status).toBe(429);
+    expect(authorizedBlocked.body.error.code).toBe('RATE_LIMITED');
+    expect(getDb).toHaveBeenCalledTimes(databaseCallsBeforeBlock);
   });
 
   it('rejects access when no portal token is configured and bypass is disabled', async () => {

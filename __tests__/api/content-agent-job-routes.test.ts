@@ -11,20 +11,32 @@ const agentRouteMocks = vi.hoisted(() => ({
   withAiBudgetReservation: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
-  initDatabase: vi.fn(),
-  closeDatabase: vi.fn(),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return {
+    ...actual,
+    getDb: () => testDb,
+    initDatabase: vi.fn(),
+    closeDatabase: vi.fn(),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/gemini-provider', () => ({
-  completeOneShotWithFallback: (...args: unknown[]) => agentRouteMocks.completeOneShotWithFallback(...args),
-}));
+vi.mock('../../src/services/gemini-provider', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/gemini-provider')>(
+    '../../src/services/gemini-provider',
+  );
+  return {
+    ...actual,
+    completeOneShotWithFallback: (...args: unknown[]) => agentRouteMocks.completeOneShotWithFallback(...args),
+  };
+});
 
 vi.mock('../../src/services/cost-guardrail', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/cost-guardrail')>();

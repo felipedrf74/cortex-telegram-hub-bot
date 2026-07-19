@@ -57,4 +57,14 @@ describe('API router authorization boundary', () => {
     expect(protectedSection).toContain("requireEntitlement({ skill: 'content' })");
     expect(protectedSection).toContain("requireEntitlement({ skill: 'finance' })");
   });
+
+  it('keeps canonical Content revision writes behind auth and the shared per-user limiter', () => {
+    const authIndex = routerSource.indexOf('router.use(authMiddleware);');
+    const rateLimitIndex = routerSource.indexOf('router.use(rateLimitMiddleware);');
+    const contentIndex = routerSource.indexOf("router.use('/content'");
+
+    expect(authIndex).toBeGreaterThan(0);
+    expect(rateLimitIndex).toBeGreaterThan(authIndex);
+    expect(contentIndex).toBeGreaterThan(rateLimitIndex);
+  });
 });
