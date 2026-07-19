@@ -639,5 +639,14 @@ describe('chat internet research', () => {
       ok: false,
       denialReason: 'private_context_disallowed_for_web_search',
     });
+
+    expect(buildChatInternetResearchSafeQueryPacket({
+      message: `%${'%'.repeat(20_001)}`,
+      skill: 'cooking',
+      expectedResponseShape: 'direct_answer',
+    })).toMatchObject({
+      ok: false,
+      denialReason: 'empty_public_query',
+    });
   });
 });

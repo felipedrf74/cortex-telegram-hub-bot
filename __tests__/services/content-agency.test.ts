@@ -16,6 +16,7 @@ vi.mock('../../src/services/database', () => ({
 import {
   CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION,
   buildContentAgencyBrief,
+  buildContentAgencyCompetitorStudy,
   buildContentAgencyPackage,
   buildCriticalUserReview,
   ensureContentAgencyTables,
@@ -183,6 +184,26 @@ describe('Content Agency orchestrator', () => {
     expect(pkg.quality.status).toBe('blocked');
     expect(pkg.blockers).toContain('platform_required_for_agency_package');
     expect(pkg.nextBestActions.join('\n')).toMatch(/Resolve blocker/i);
+  });
+
+  it('normalizes edge separators and detects ordered from-to hook transformations', () => {
+    const brief = buildContentAgencyBrief({
+      userId: 501,
+      tenantId: 101,
+      goal: 'teach a proof workflow',
+      audience: 'technical creators',
+      platform: 'YouTube',
+      format: '---YouTube---',
+    });
+    const study = buildContentAgencyCompetitorStudy({
+      userId: 501,
+      tenantId: 101,
+      brief,
+      competitors: [{ transcript: 'Move from random posts to a proof-first operating system.' }],
+    });
+
+    expect(brief.format).toBe('youtube_long_form');
+    expect(study.hookMechanisms).toContain('before/after transformation');
   });
 
   it('blocks prompt injection inside competitor transcripts and keeps it out of generated copy', () => {

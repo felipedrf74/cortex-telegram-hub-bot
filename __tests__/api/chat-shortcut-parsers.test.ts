@@ -30,6 +30,7 @@ describe('chat shortcut parsers', () => {
   it('does not mistake script refinement follow-ups for new generation requests', () => {
     expect(parseContentScriptShortcut('rewrite this script')).toBeNull();
     expect(parseContentScriptShortcut('melhora este roteiro')).toBeNull();
+    expect(parseContentScriptShortcut(`Write a script about${' '.repeat(4_097)}x`)).toBeNull();
   });
 
   it('resolves requested script language explicitly before falling back to user preference', () => {

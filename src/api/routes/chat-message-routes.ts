@@ -323,6 +323,10 @@ function safeGetChatV2ClientFirstProgressMs(req: Request): number | null {
 }
 
 function isAcceptCurrentDecisionShortcut(text: string): boolean {
+  // This shortcut is intentionally a short, explicit acknowledgement. Bound
+  // untrusted chat text before the whitespace-heavy compatibility patterns so
+  // a single oversized request cannot turn the parser into event-loop work.
+  if (text.length > 512) return false;
   return /^(accept|approve|confirm|yes|sim|aceitar|aprovar|confirmar)\s+(this|current|the)?\s*(decision|choice|clarification|decisão|escolha)?$/i.test(text.trim())
     || /\b(accept|approve|confirm)\s+this\s+decision\b/i.test(text)
     || /\b(aceitar|aprovar|confirmar)\s+esta\s+decis[aã]o\b/i.test(text);
@@ -1607,7 +1611,8 @@ export function registerChatMessageRoutes(
    * domain handler as natural language since the handler functions
    * accept the raw message text including the / prefix.
    */
-  router.post('/message', async (req, res: Response) => {
+  // The API composition root applies the shared per-user limiter before /chat.
+  router.post('/message', async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
     const { userId, tenantId } = req as AuthenticatedRequest;
     const {
       normalizedText,

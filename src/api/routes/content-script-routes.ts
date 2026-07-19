@@ -127,7 +127,8 @@ export function registerContentScriptRoutes(
    * NOTE: AI-using endpoint — script generation is a CONTENT GENERATION
    * operation, not a data lookup, so token cost is justified.
    */
-  router.post('/script', asyncHandler(async (req, res: Response) => {
+  // The API composition root applies the shared per-user limiter before /content.
+  router.post('/script', asyncHandler(async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_generate')) return;
     const generationObservation = startContentWorkspaceObservation('generation');

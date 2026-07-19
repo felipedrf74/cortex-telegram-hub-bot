@@ -49,6 +49,15 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('jsonMode,');
   });
 
+  it('keeps mixed-trust content-engine guidance out of the provider system instruction', () => {
+    expect(routesSrc).toContain('INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION');
+    expect(routesSrc).toContain('buildInternalAiProxyUserPrompt(system, prompt, jsonMode)');
+    expect(routesSrc).toContain('applicationGuidance: system || null');
+    expect(routesSrc).toContain('system: INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION');
+    expect(routesSrc).not.toContain('system: system || undefined');
+    expect(routesSrc).not.toContain('system, // lgtm[js/system-prompt-injection]');
+  });
+
   it('fails signed live-evaluation traffic outside its fixed input/output envelope before provider routing', () => {
     expect(routesSrc).toContain("outerReservation?.baseCategory === 'content_live_eval'");
     expect(routesSrc).toContain('contentLiveEvalInternalEnvelopeWithinLimits');
@@ -146,6 +155,10 @@ describe('Router registration', () => {
     path.join(__dirname, '..', '..', 'src', 'api', 'router.ts'),
     'utf-8',
   );
+  const internalRoutesSrc = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'api', 'routes', 'internal.ts'),
+    'utf-8',
+  );
 
   it('imports internalRoutes', () => {
     expect(routerSrc).toContain("import { internalRoutes } from './routes/internal'");
@@ -157,5 +170,19 @@ describe('Router registration', () => {
     expect(internalMount).toBeGreaterThan(0);
     expect(authMount).toBeGreaterThan(0);
     expect(internalMount).toBeLessThan(authMount);
+  });
+
+  it('mounts internal abuse controls before every expensive internal handler', () => {
+    const sharedLimiter = internalRoutesSrc.indexOf('router.use(internalRateLimitMiddleware);');
+    const secretGuard = internalRoutesSrc.indexOf('router.use((req: Request, res: Response, next) =>');
+    const reportUsage = internalRoutesSrc.indexOf("router.post('/report-usage'");
+    const aiComplete = internalRoutesSrc.indexOf("router.post('/ai-complete', internalAiCompleteRateLimitMiddleware");
+    const performanceSummary = internalRoutesSrc.indexOf("router.get('/performance-summary'");
+
+    expect(sharedLimiter).toBeGreaterThan(0);
+    expect(secretGuard).toBeGreaterThan(sharedLimiter);
+    expect(reportUsage).toBeGreaterThan(secretGuard);
+    expect(aiComplete).toBeGreaterThan(secretGuard);
+    expect(performanceSummary).toBeGreaterThan(secretGuard);
   });
 });

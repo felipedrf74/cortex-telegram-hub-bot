@@ -241,10 +241,16 @@ function buildBeats(script: string, brief: ScriptPreflightBrief): string[] {
     .map((line) => line.replace(/^(?:hook|intro|cta|call to action|fecho|abertura)\s*:\s*/i, '').trim())
     .filter(Boolean)
     .slice(0, 8);
-  const topicLabel = brief.objective
-    .replace(/^Make\s+/i, '')
-    .replace(/\s+useful, memorable, and worth acting on\.$/i, '')
-    .trim();
+  const objectiveWithoutPrefix = brief.objective.replace(/^Make\s+/i, '');
+  const objectiveSuffix = 'useful, memorable, and worth acting on.';
+  const suffixStart = objectiveWithoutPrefix.toLowerCase().endsWith(objectiveSuffix)
+    ? objectiveWithoutPrefix.length - objectiveSuffix.length
+    : -1;
+  let topicEnd = suffixStart;
+  while (topicEnd > 0 && /\s/u.test(objectiveWithoutPrefix[topicEnd - 1])) topicEnd -= 1;
+  const topicLabel = (suffixStart >= 0 && topicEnd < suffixStart
+    ? objectiveWithoutPrefix.slice(0, topicEnd)
+    : objectiveWithoutPrefix).trim();
   const defaultBeats = [
     `Name the specific tension behind ${topicLabel}.`,
     `Show the common mistake people make with ${topicLabel}.`,

@@ -22,6 +22,8 @@ export type FinanceStateShortcut =
   | 'monthly_spend'
   | 'filed_invoices';
 
+const MAX_SHORTCUT_PARSE_CHARS = 4_096;
+
 export function normalizeScriptLanguage(language?: string | null): ShortcutLanguage {
   const normalized = String(language || 'pt-BR').trim().toLowerCase();
   if (normalized.startsWith('en')) return 'en-US';
@@ -63,6 +65,7 @@ export function resolveFinanceShortcutLanguage(userLanguage: string | null | und
 }
 
 export function stripTrailingLanguageQualifier(topic: string): string {
+  if (topic.length > MAX_SHORTCUT_PARSE_CHARS) return topic.trim();
   return topic
     .replace(/\s+(?:in english|english version|english please)\.?$/i, '')
     .replace(/\s+(?:em ingl[eê]s)\.?$/i, '')
@@ -72,6 +75,7 @@ export function stripTrailingLanguageQualifier(topic: string): string {
 }
 
 export function parseContentScriptShortcut(message: string): ContentScriptShortcut | null {
+  if (message.length > MAX_SHORTCUT_PARSE_CHARS) return null;
   const normalized = message.trim();
   if (!normalized) return null;
 

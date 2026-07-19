@@ -1184,11 +1184,13 @@ function normalizeAgencyFormat(value: string | null | undefined, platform: Conte
 }
 
 function normalizeAgencyFormatAlias(value: string): string {
-  const normalized = value
+  const underscored = value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+    .replace(/[^a-z0-9]+/g, '_');
+  const start = underscored.startsWith('_') ? 1 : 0;
+  const end = underscored.endsWith('_') ? underscored.length - 1 : underscored.length;
+  const normalized = underscored.slice(start, Math.max(start, end));
   const aliases: Record<string, string> = {
     youtube: 'youtube_long_form',
     youtube_video: 'youtube_long_form',
@@ -1290,7 +1292,17 @@ function inferHookMechanisms(text: string): string[] {
   if (/\?/.test(text)) mechanisms.push('direct question');
   if (/not|never|wrong|mistake|myth|contrary/i.test(text)) mechanisms.push('contradiction');
   if (/\b\d+[%x]?\b/.test(text)) mechanisms.push('specific proof or number');
-  if (/before|after|from .* to|transformation/i.test(text)) mechanisms.push('before/after transformation');
+  const normalized = text.toLowerCase();
+  const hasFromToTransformation = normalized.split(/[\n\r\u2028\u2029]/u).some((line) => {
+    const fromIndex = line.indexOf('from ');
+    return fromIndex >= 0 && line.indexOf(' to', fromIndex + 5) >= 0;
+  });
+  if (normalized.includes('before')
+    || normalized.includes('after')
+    || normalized.includes('transformation')
+    || hasFromToTransformation) {
+    mechanisms.push('before/after transformation');
+  }
   return mechanisms.length ? mechanisms : ['clear promise with an open loop'];
 }
 

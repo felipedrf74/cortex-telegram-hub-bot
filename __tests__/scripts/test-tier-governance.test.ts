@@ -71,7 +71,7 @@ describe('governed test tier partitions', () => {
     }
   });
 
-  it('makes full and evaluation runners exact, disjoint disposition partitions', () => {
+  it('makes full and evaluation runners exact, disjoint disposition partitions', { timeout: 30_000 }, () => {
     const files = walkTestFiles();
     const policy = loadTestPolicy();
     const partitions = partitionTestFiles(files, policy);

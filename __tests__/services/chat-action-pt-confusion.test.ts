@@ -32,6 +32,7 @@ import {
   buildDeterministicChatActionPlan,
   type ChatPlannerInput,
 } from '../../src/services/chat';
+import { parseSimpleTaskStep } from '../../src/services/chat/planner/simple-task';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';
 
@@ -267,5 +268,10 @@ describe('PT-PT/PT-BR cross-skill confusion (Phase 6 batch 34)', () => {
       expect(plan?.steps[0]?.skill, `${fixture.text} should claim ${fixture.expectedSkill} under ${otherLocale}`).toBe(fixture.expectedSkill);
       expect(plan?.steps[0]?.action, `${fixture.text} should claim ${fixture.expectedAction} under ${otherLocale}`).toBe(fixture.expectedAction);
     }
+  });
+
+  it('does not run deterministic task regexes on oversized chat input', () => {
+    const oversized = `Cria uma tarefa chamada${' '.repeat(20_001)}comprar leite`;
+    expect(parseSimpleTaskStep(input(oversized, 'pt-PT'), oversized)).toBeNull();
   });
 });

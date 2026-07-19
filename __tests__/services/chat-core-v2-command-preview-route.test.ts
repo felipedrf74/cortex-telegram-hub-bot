@@ -1794,4 +1794,12 @@ seguro`, 'es-ES', CONFIRMATIONS_ENABLED_ENV);
     expect(buildPreview('Show my training sessions')).toBeNull();
     expect(buildPreview('Pay my credit card bill tomorrow')).toBeNull();
   });
+
+  it('fails closed on oversized deterministic preview commands', () => {
+    const oversizedTail = ' '.repeat(20_001);
+    expect(buildPreview(`Create a content brief about${oversizedTail}`, PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview(`Add eggs${oversizedTail}to my grocery list`, PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview(`Complete${oversizedTail}task`, PREVIEWS_ENABLED_ENV)).toBeNull();
+    expect(buildPreview(`Snooze${oversizedTail}decision`, PREVIEWS_ENABLED_ENV)).toBeNull();
+  });
 });

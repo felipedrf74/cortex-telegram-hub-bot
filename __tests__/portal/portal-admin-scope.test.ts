@@ -129,11 +129,13 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.get('/api/content-workspace-metrics', requirePortalAdminToken");
   });
 
-  it('mounts the shared portal API limiter before content-workspace operational metrics', () => {
+  it('mounts the shared portal API limiter before expensive portal route families', () => {
     const portalRateLimitIndex = serverSource.indexOf('return rateLimitMiddleware(req, res, next);');
+    const intelligenceRoutesIndex = serverSource.indexOf('registerPortalIntelligenceRoutes(app);');
     const operationsRoutesIndex = serverSource.indexOf('registerPortalOperationsRoutes(app);');
 
     expect(portalRateLimitIndex).toBeGreaterThan(0);
+    expect(intelligenceRoutesIndex).toBeGreaterThan(portalRateLimitIndex);
     expect(operationsRoutesIndex).toBeGreaterThan(portalRateLimitIndex);
   });
 

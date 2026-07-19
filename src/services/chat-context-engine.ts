@@ -854,9 +854,57 @@ function summarizeCurrentTurn(message: string, intent: ChatContextIntent): strin
 }
 
 function truncateContextContent(content: string, maxChars: number = MAX_ITEM_CONTENT_CHARS): string {
-  const normalized = content.replace(/\s+\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
+  const normalized = normalizeContextWhitespace(content);
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 16)).trimEnd()}\n[…truncated]`;
+}
+
+function normalizeContextWhitespace(content: string): string {
+  const normalized: string[] = [];
+  let pendingWhitespace: string[] = [];
+  let lastOutputWasNewline = false;
+
+  const flushPendingWhitespace = (): void => {
+    if (pendingWhitespace.length === 0) return;
+    let horizontalRunLength = 0;
+    let horizontalRunCharacter = '';
+    const flushHorizontalRun = (): void => {
+      if (horizontalRunLength === 0) return;
+      normalized.push(horizontalRunLength > 1 ? ' ' : horizontalRunCharacter);
+      horizontalRunLength = 0;
+      horizontalRunCharacter = '';
+    };
+    for (const character of pendingWhitespace) {
+      if (character === ' ' || character === '\t') {
+        if (horizontalRunLength === 0) horizontalRunCharacter = character;
+        horizontalRunLength += 1;
+        continue;
+      }
+      flushHorizontalRun();
+      normalized.push(character);
+    }
+    flushHorizontalRun();
+    pendingWhitespace = [];
+    lastOutputWasNewline = false;
+  };
+
+  for (const character of content) {
+    if (character === '\n') {
+      pendingWhitespace = [];
+      if (!lastOutputWasNewline) normalized.push('\n');
+      lastOutputWasNewline = true;
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      pendingWhitespace.push(character);
+      continue;
+    }
+    flushPendingWhitespace();
+    normalized.push(character);
+    lastOutputWasNewline = false;
+  }
+  flushPendingWhitespace();
+  return normalized.join('').trim();
 }
 
 function normalizeForDedupe(content: string): string {

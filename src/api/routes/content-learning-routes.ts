@@ -106,7 +106,8 @@ export function registerContentLearningRoutes(
    * Record approval/skip/reject for a topic candidate.
    * Body: { sentiment: "approved" | "skipped" | "rejected" }
    */
-  router.post('/topics/:feedbackId/feedback', asyncHandler(async (req, res: Response) => {
+  // The API composition root applies the shared per-user limiter before /content.
+  router.post('/topics/:feedbackId/feedback', asyncHandler(async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const { feedbackId } = req.params;
     const { sentiment } = req.body;
@@ -165,7 +166,8 @@ export function registerContentLearningRoutes(
    *   notes?: string
    * }
    */
-  router.post('/variant-feedback', asyncHandler(async (req, res: Response) => {
+  // The API composition root applies the shared per-user limiter before /content.
+  router.post('/variant-feedback', asyncHandler(async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
     const topic = cleanFeedbackString(req.body?.topic, 240);
@@ -273,7 +275,8 @@ export function registerContentLearningRoutes(
    * Generate the full weekly content package (2 YT + 4 reels).
    * Returns structured data — iOS renders as a grouped approval UI.
    */
-  router.post('/weekly-package', asyncHandler(async (req, res: Response) => {
+  // The API composition root applies the shared per-user limiter before /content.
+  router.post('/weekly-package', asyncHandler(async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const startMs = Date.now();
 

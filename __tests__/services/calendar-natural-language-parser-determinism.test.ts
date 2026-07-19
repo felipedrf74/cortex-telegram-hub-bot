@@ -116,4 +116,18 @@ describe('calendar natural-language parser date/time determinism', () => {
     expect(source).not.toMatch(/\bfunction\s+resolveCalendarCreateDate\b/);
     expect(source).not.toMatch(/\bfunction\s+parseCalendarTimeRange\b/);
   });
+
+  it('extracts attendee emails once and fails closed before parsing oversized commands', () => {
+    const parsed = parseNaturalLanguageCalendarEvent(
+      'Schedule a meeting tomorrow at 9 called Review with Teammate@Example.com and teammate@example.com',
+      { timezone: TIMEZONE, nowIso: FIXED_REFERENCE_DATE },
+    );
+    expect(parsed?.attendees).toEqual(['teammate@example.com']);
+
+    const oversized = `Schedule a meeting${' '.repeat(20_001)}tomorrow at 9 called Review`;
+    expect(parseNaturalLanguageCalendarEvent(oversized, {
+      timezone: TIMEZONE,
+      nowIso: FIXED_REFERENCE_DATE,
+    })).toBeNull();
+  });
 });

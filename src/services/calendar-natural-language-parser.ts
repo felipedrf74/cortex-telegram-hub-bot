@@ -22,7 +22,8 @@ export interface ParsedNaturalLanguageCalendarEvent {
   };
 }
 
-const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const EMAIL_PATTERN = /(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const MAX_CALENDAR_PARSE_CHARS = 20_000;
 const NUMERIC_DATE_PATTERN = /\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/;
 // Phase 10 batch 50 (2026-05-16): Spanish weekday names added alongside
 // PT-EN forms. Spanish: lunes/martes/miércoles/jueves/viernes/sábado/domingo.
@@ -134,6 +135,7 @@ export function resolveCalendarProviderAlias(text: string): CalendarNlProvider |
 }
 
 function uniqueEmails(text: string): string[] {
+  if (text.length > MAX_CALENDAR_PARSE_CHARS) return [];
   return Array.from(new Set((text.match(EMAIL_PATTERN) ?? []).map((email) => email.toLowerCase())));
 }
 
@@ -241,6 +243,7 @@ function parseSingleTime(raw: string): { hour: number; minute: number } | null {
 }
 
 function extractTimeRange(text: string): { start: { hour: number; minute: number }; end: { hour: number; minute: number }; matched: string } | null {
+  if (text.length > MAX_CALENDAR_PARSE_CHARS) return null;
   // Phase 10 batch 50 (2026-05-16): Spanish PM/AM tail added — "de la
   // tarde"/"de la noche"/"de la mañana" + "por la …" variants. extractTimeRange
   // runs on RAW text (not folded), so the accent variants matter:
@@ -311,6 +314,7 @@ function extractTimeRange(text: string): { start: { hour: number; minute: number
 }
 
 function extractTitle(text: string, timeRangeText?: string): { title: string | null; matched?: string } {
+  if (text.length > MAX_CALENDAR_PARSE_CHARS) return { title: null };
   // Phase 10 batch 50: Spanish "llamad[oa]" title marker added alongside
   // PT "chamad[oa]" / EN "called|named". Spanish date words (lunes…viernes,
   // hoy, mañana, "el"/"la" articles) added to the lookahead so the title
@@ -361,6 +365,7 @@ export function parseNaturalLanguageCalendarEvent(
   text: string,
   options: { timezone: string; nowIso?: string },
 ): ParsedNaturalLanguageCalendarEvent | null {
+  if (text.length > MAX_CALENDAR_PARSE_CHARS) return null;
   if (!hasCalendarWriteIntent(text)) return null;
   const date = resolveDate(text, options.timezone, options.nowIso);
   const timeRange = extractTimeRange(text);

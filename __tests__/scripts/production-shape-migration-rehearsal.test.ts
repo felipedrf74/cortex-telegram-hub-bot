@@ -45,6 +45,7 @@ describe('production-shape migration rehearsal', () => {
     });
     expect(build.status, `${build.stdout}${build.stderr}`).toBe(0);
     expect(existsSync(builtMigrationRunner)).toBe(true);
+    mkdirSync(join(ROOT, '.local'), { recursive: true, mode: 0o700 });
     base = mkdtempSync(join(ROOT, '.local', 'production-shape-rehearsal-test-'));
     release = join(base, 'releases', 'candidate');
     mkdirSync(join(base, 'data'), { recursive: true, mode: 0o700 });

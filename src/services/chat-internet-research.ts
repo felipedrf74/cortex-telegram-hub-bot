@@ -420,7 +420,8 @@ function maxTokensForShape(shape: NexusChatExpectedResponseShape): number {
   return 2_400;
 }
 
-const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const EMAIL_RE = /(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const MAX_PUBLIC_QUERY_PARSE_CHARS = 20_000;
 const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/;
 const PRIVATE_CONTEXT_RE = /\b(my|meu|minha|minhas|meus|mi|mis|mine|our|nosso|nossa)\b.{0,80}\b(calendar|agenda|task|tasks|tarefa|tarefas|email|e-mail|mail|inbox|conta|account|saldo|balance|invoice|fatura|client|cliente|meeting|reuni[aã]o|evento|event|treino|training plan|plano de treino)\b/i;
 const HEALTH_TRAINING_RE = /\b(knee|joelho|pain|dor|injury|les[aã]o|train|treinar|workout|treino|exercise|exerc[ií]cio)\b/i;
@@ -431,6 +432,7 @@ const PERSONAL_PRONOUN_RE = /\b(?:i|me|my|mine|eu|meu|minha|minhas|meus|yo|mi|mi
 const QUESTION_WORD_RE = /\b(?:should|can|could|devo|posso|puedo|deber[ií]a)\b/giu;
 
 function canUseGenericPublicQuery(message: string, skill: NexusChatOwnerSkill): boolean {
+  if (message.length > MAX_PUBLIC_QUERY_PARSE_CHARS) return false;
   if (EMAIL_RE.test(message) || PHONE_RE.test(message)) return false;
   if (skill === 'training' && HEALTH_TRAINING_RE.test(message)) {
     return Boolean(buildPublicHealthTrainingQuery(message));
@@ -444,6 +446,7 @@ function toGenericPublicQuery(
   skill: NexusChatOwnerSkill,
   shape: NexusChatExpectedResponseShape,
 ): string {
+  if (message.length > MAX_PUBLIC_QUERY_PARSE_CHARS) return '';
   const normalized = message
     .replace(EMAIL_RE, ' ')
     .replace(PHONE_RE, ' ')
@@ -463,6 +466,7 @@ function toGenericPublicQuery(
 }
 
 function buildPublicHealthTrainingQuery(message: string): string {
+  if (message.length > MAX_PUBLIC_QUERY_PARSE_CHARS) return '';
   const topic = message
     .replace(EMAIL_RE, ' ')
     .replace(PHONE_RE, ' ')

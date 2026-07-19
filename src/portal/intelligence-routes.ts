@@ -80,7 +80,8 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
     }
   });
 
-  app.post('/api/signals/:id/dismiss', requirePortalAdminToken, (req: Request, res: Response) => {
+  // The portal composition root applies the shared /api limiter before registering this route family.
+  app.post('/api/signals/:id/dismiss', requirePortalAdminToken, (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
     try {
       const id = parseInt(String(req.params.id), 10);
       if (Number.isNaN(id)) {

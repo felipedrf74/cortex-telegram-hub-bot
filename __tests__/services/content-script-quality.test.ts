@@ -119,4 +119,16 @@ describe('content script quality report', () => {
       expect.stringMatching(/^\[3-8s\]/),
     ]));
   });
+
+  it('removes only the generated objective suffix when deriving default beats', () => {
+    const report = analyzeAndImproveScript({
+      topic: 'proof loops',
+      script: '',
+      format: 'Reel',
+      preflightBrief: buildScriptPreflightBrief({ topic: 'proof loops', format: 'Reel' }),
+    });
+
+    expect(report.structuredOutput.beatByBeatScript.join('\n')).toContain('proof loops');
+    expect(report.structuredOutput.beatByBeatScript.join('\n')).not.toContain('worth acting on');
+  });
 });

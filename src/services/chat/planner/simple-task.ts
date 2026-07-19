@@ -18,6 +18,8 @@ import {
   removeTaskQuotedSegments,
 } from './task-subtasks';
 
+const MAX_DETERMINISTIC_TASK_PARSE_CHARS = 20_000;
+
 export function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan | null {
   const step = parseSimpleTaskStep(input, input.text);
   if (!step) return null;
@@ -46,6 +48,7 @@ export function parseSimpleTaskIntent(input: ChatPlannerInput): ChatActionPlan |
 
 export function parseSimpleTaskStep(input: ChatPlannerInput, text: string | null): ChatPlanStep | null {
   if (!text) return null;
+  if (text.length > MAX_DETERMINISTIC_TASK_PARSE_CHARS) return null;
   const folded = foldCalendarText(text);
   if (hasLegacySubtaskIntent(removeTaskQuotedSegments(text))) return null;
   // Phase 2 batch 10: PT-BR colloquial create-verbs ("bota", "coloca", "põe",
@@ -146,6 +149,7 @@ function isUnsafeTaskTitle(title: string): boolean {
 }
 
 function extractTaskTitleSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
+  if (text.length > MAX_DETERMINISTIC_TASK_PARSE_CHARS) return null;
   const quotedTaskTitle = /\b(?:task|tarefa|todo|lembrete|tarea)\b\s*["“]([^"”]+)["”]/i.exec(text);
   if (quotedTaskTitle?.[1]) {
     const raw = quotedTaskTitle[1].trim();
@@ -249,6 +253,7 @@ function stripTaskTemporalPhrase(title: string, input: ChatPlannerInput): string
 }
 
 function extractTaskDueDateTimeSlot(input: ChatPlannerInput, text: string): { value: string; rawText: string; spanStart: number; spanEnd: number; confidence: number } | null {
+  if (text.length > MAX_DETERMINISTIC_TASK_PARSE_CHARS) return null;
   const now = DateTime.fromISO(input.nowIso ?? new Date().toISOString()).setZone(input.timezone);
   const patterns = [
     /\b(?:for|para|due|vence|pra|p[ao]ra)?\s*(?<date>tomorrow|amanh[ãa]|ma[ñn]ana|today|hoje)(?=\s|$|[,.!?])\s+(?:at|às?|as|a\s+las|pelas?|by|para\s+as)?\s*(?<time>\d{1,2}h(?:\d{2})?|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i,
