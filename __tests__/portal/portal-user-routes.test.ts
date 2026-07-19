@@ -148,33 +148,58 @@ async function postJson(
   const server = app.listen(0);
   try {
     const address = server.address() as { port: number };
-    return await new Promise((resolve, reject) => {
-      const req = http.request(
-        {
-          hostname: '127.0.0.1',
-          port: address.port,
-          method: 'POST',
-          path,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
-          },
-        },
-        (res) => {
-          let data = '';
-          res.on('data', (chunk) => { data += chunk; });
-          res.on('end', () => {
-            resolve({
-              status: res.statusCode ?? 0,
-              body: data ? JSON.parse(data) : null,
-            });
+    // A route that rejects on headers alone (e.g. the 413 oversized-body
+    // guard) responds without ever consuming the request body, so the
+    // server may RST the connection while the client is still flushing it.
+    // Whether the buffered response or the reset reaches the client first
+    // is a wire race that widens under parallel-suite load. The reset IS
+    // the rejection arriving early; retry until the actual response is
+    // captured so the status/body contract stays fully asserted.
+    const RESET_RETRIES = 5;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await new Promise((resolve, reject) => {
+          let settled = false;
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: address.port,
+              method: 'POST',
+              path,
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+              },
+            },
+            (res) => {
+              let data = '';
+              res.on('data', (chunk) => { data += chunk; });
+              res.on('end', () => {
+                settled = true;
+                resolve({
+                  status: res.statusCode ?? 0,
+                  body: data ? JSON.parse(data) : null,
+                });
+              });
+              res.on('error', (err) => {
+                if (!settled) { settled = true; reject(err); }
+              });
+            },
+          );
+          req.on('error', (err) => {
+            if (!settled) { settled = true; reject(err); }
           });
-        },
-      );
-      req.on('error', reject);
-      req.end(body);
-    });
+          req.end(body);
+        });
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        const resetLike = code === 'ECONNRESET' || code === 'EPIPE'
+          || (err as Error).message === 'socket hang up';
+        if (!resetLike || attempt >= RESET_RETRIES) throw err;
+      }
+    }
   } finally {
+    (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }

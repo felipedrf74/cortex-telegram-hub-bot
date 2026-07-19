@@ -120,6 +120,42 @@
       "owner": "database",
       "reason": "Retains one production-runner rehearsal with pre-226 historical edge rows and a second-pass idempotency proof; shared runners may exceed the global correctness timeout.",
       "expires": "2026-09-15"
+    },
+    {
+      "file": "__tests__/scripts/project-map-generation.test.ts",
+      "owner": "scripts",
+      "reason": "Regenerates the full project map over the entire repository (486 routes, 229 migrations, ~950 test files) to prove generator determinism; wall time scales with repo size and exceeds the 10s single-sample bound on shared nightly runners.",
+      "expires": "2026-10-15"
+    },
+    {
+      "file": "__tests__/scripts/test-tier-governance.test.ts",
+      "owner": "scripts",
+      "reason": "Spawns the real test-inventory and tier-partition CLIs over the full ~950-file corpus several times to pin governance behavior; subprocess startup dominates and exceeds the 10s single-sample bound on shared nightly runners.",
+      "expires": "2026-10-15"
+    },
+    {
+      "file": "__tests__/scripts/migration-safety-check.test.ts",
+      "owner": "scripts",
+      "reason": "Rehearses the cumulative apply of all 229 SQL migrations against fresh databases per scenario; runtime grows with every migration and exceeds the 10s single-sample bound on shared nightly runners.",
+      "expires": "2026-10-15"
+    },
+    {
+      "file": "__tests__/integration/training-plan-create-cycle.test.ts",
+      "owner": "integration",
+      "reason": "End-to-end training-plan lifecycle over a real migrated database (create, revise, complete across weeks); the integration breadth is the point and exceeds the 10s single-sample bound on shared nightly runners.",
+      "expires": "2026-10-15"
+    },
+    {
+      "file": "__tests__/services/database.test.ts",
+      "owner": "services",
+      "reason": "Boots the full migration chain (229 files) plus WAL/backup/integrity paths on real SQLite files; migration count growth pushed it past the 10s single-sample bound on shared nightly runners.",
+      "expires": "2026-10-15"
+    },
+    {
+      "file": "__tests__/services/decision-center.test.ts",
+      "owner": "services",
+      "reason": "Exercises the Decision Center read model against a fully migrated database with cross-domain fixtures; migration chain startup cost dominates and exceeds the 10s single-sample bound on shared nightly runners.",
+      "expires": "2026-10-15"
     }
   ],
   "inventoryEvidence": {
