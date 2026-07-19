@@ -209,11 +209,14 @@ import { invalidateContentDerivedCaches } from '../../src/services/cache-coheren
 import { getContentRadarPreferences, setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 import { cleanupContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
 import {
+  assertContentTopicCompatibilityCanArchive,
   findContentTopicCompatibilityUpdateReplay,
   hasContentTopicCompatibilityDeleteReplay,
 } from '../../src/services/content-topic-workspace-compat';
 import { recordContentWorkspaceProductSignal } from '../../src/services/content-workspace-observability';
 import { consumeResourceBudget } from '../../src/services/resource-budgets';
+import { ContentWorkspaceWriteDisabledError } from '../../src/services/content-workspace-capabilities';
+import { ContentWorkspaceError } from '../../src/services/content-workspace';
 import {
   addTopic,
   deleteTopic,
@@ -228,16 +231,22 @@ import {
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string>;
   status(code: number): MockRes;
   json(body: any): MockRes;
+  setHeader(name: string, value: string): MockRes;
+  getHeader(name: string): string | undefined;
 }
 
 function mockRes(): MockRes {
   const response: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
     json(body: any) { response.body = body; return response; },
+    setHeader(name: string, value: string) { response.headers[name.toLowerCase()] = value; return response; },
+    getHeader(name: string) { return response.headers[name.toLowerCase()]; },
   };
   return response;
 }
@@ -248,6 +257,7 @@ function mockReq(
   body: Record<string, unknown> = {},
   userId: number | undefined = 41,
   tenantId: number | undefined = userId,
+  headers: Record<string, string> = {},
 ): Request {
   const parsed = new URL(path, 'http://test.local');
   return {
@@ -267,7 +277,7 @@ function mockReq(
     query: Object.fromEntries(parsed.searchParams.entries()),
     params: {},
     body,
-    headers: { 'x-language': 'pt-BR' },
+    headers: { 'x-language': 'pt-BR', ...headers },
     header(name: string) {
       return (this.headers as any)[name.toLowerCase()] ?? (this.headers as any)[name];
     },
@@ -292,10 +302,11 @@ async function dispatch(
   userId: number | undefined = 41,
   tenantId: number | undefined = userId,
   ensureValidScope = makeEnsureValidScope(),
+  headers: Record<string, string> = {},
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentTopicRoutes(router, () => 'pt-BR', ensureValidScope);
-  const req = mockReq(method, path, body, userId, tenantId);
+  const req = mockReq(method, path, body, userId, tenantId, headers);
   const res = mockRes();
 
   await new Promise<void>((resolve, reject) => {
@@ -735,5 +746,194 @@ describe('content topic routes', () => {
     expect(addTopic).not.toHaveBeenCalled();
     expect(ensureValidScope).toHaveBeenCalledWith(expect.anything(), 0, 'content_route_topics_create');
     expect(recordContentWorkspaceProductSignal).not.toHaveBeenCalled();
+  });
+
+  it('enforces bounded write budgets before create, update, and delete mutations', async () => {
+    topicStore.set(11, {
+      id: 11,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
+      title: 'Budget protected topic',
+      notes: null,
+      scheduled_date: null,
+      scheduled_at: null,
+      status: 'planned',
+    });
+    const deniedBudget = {
+      allowed: false,
+      resetAt: new Date(Date.now() + 60_000).toISOString(),
+      budgetKey: 'content-topic-test',
+    } as any;
+    vi.mocked(consumeResourceBudget)
+      .mockReturnValueOnce(deniedBudget)
+      .mockReturnValueOnce(deniedBudget)
+      .mockReturnValueOnce(deniedBudget);
+
+    const created = await dispatch('POST', '/topics', { title: 'Blocked create' }, 77);
+    const updated = await dispatch('PATCH', '/topics/11', { title: 'Blocked update' }, 77);
+    const deleted = await dispatch('DELETE', '/topics/11', {}, 77);
+
+    for (const result of [created.response, updated.response, deleted.response]) {
+      expect(result.statusCode).toBe(429);
+      expect(result.body.error.code).toBe('RATE_LIMITED');
+      expect(Number(result.headers['retry-after'])).toBeGreaterThanOrEqual(1);
+    }
+    expect(addTopic).not.toHaveBeenCalled();
+    expect(updateTopic).not.toHaveBeenCalled();
+    expect(deleteTopic).not.toHaveBeenCalled();
+  });
+
+  it('normalizes header-keyed nullable updates and archives cancelled topics', async () => {
+    topicStore.set(11, {
+      id: 11,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
+      title: 'Nullable update topic',
+      notes: 'Clear this note',
+      scheduled_date: '2026-04-25',
+      scheduled_at: '2026-04-25T09:30:00',
+      status: 'planned',
+      secretary_task_list_id: null,
+      secretary_task_list_name: null,
+      secretary_task_external_id: null,
+      calendar_event_id: null,
+      calendar_source: null,
+    });
+
+    const { response } = await dispatch(
+      'PATCH',
+      '/topics/11',
+      { notes: null, scheduledDateTime: null, status: 'cancelled' },
+      77,
+      77,
+      makeEnsureValidScope(),
+      { 'idempotency-key': 'header-update-001' },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(updateTopic).toHaveBeenCalledWith(
+      77,
+      11,
+      expect.objectContaining({ notes: null, scheduled_date: '2026-04-25', scheduled_at: null, status: 'cancelled' }),
+      77,
+      'header-update-001',
+      { retireLegacySchedule: false },
+    );
+    expect(assertContentTopicCompatibilityCanArchive).toHaveBeenCalledWith(
+      { tenantId: 77, userId: 77 },
+      11,
+    );
+  });
+
+  it('rejects oversized header idempotency keys before update and delete writes', async () => {
+    const headers = { 'idempotency-key': 'x'.repeat(129) };
+    const update = await dispatch(
+      'PATCH',
+      '/topics/11',
+      { notes: 'No write' },
+      77,
+      77,
+      makeEnsureValidScope(),
+      headers,
+    );
+    const remove = await dispatch(
+      'DELETE',
+      '/topics/11',
+      {},
+      77,
+      77,
+      makeEnsureValidScope(),
+      headers,
+    );
+
+    expect(update.response.statusCode).toBe(400);
+    expect(remove.response.statusCode).toBe(400);
+    expect(updateTopic).not.toHaveBeenCalled();
+    expect(deleteTopic).not.toHaveBeenCalled();
+  });
+
+  it('keeps compatibility event fallbacks truthful when a legacy row lacks canonical projection fields', async () => {
+    vi.mocked(addTopic).mockReturnValueOnce({
+      id: 91,
+      user_id: 77,
+      tenant_id: 77,
+      owner_user_id: 77,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
+      title: 'Legacy projection fallback',
+      notes: null,
+      scheduled_date: null,
+      scheduled_at: null,
+      status: 'planned',
+      workspace_item_id: null,
+      schedule_semantics: null,
+      created_at: '2026-04-24T10:00:00.000Z',
+      updated_at: '2026-04-24T10:00:00.000Z',
+    } as any);
+
+    const { response } = await dispatch('POST', '/topics', { title: 'Legacy projection fallback' }, 77);
+
+    expect(response.statusCode).toBe(201);
+    expect(response.body.data.topic.id).toBe(91);
+    const event = testDb.prepare(`
+      SELECT tenant_id, user_id, source_skill, event_type, entity_type, entity_id,
+             payload_json, privacy_classification, idempotency_key
+        FROM event_outbox
+       WHERE event_type = 'content.idea.created'
+    `).get() as Record<string, unknown>;
+    expect(event).toMatchObject({
+      tenant_id: 77,
+      user_id: 77,
+      source_skill: 'content',
+      event_type: 'content.idea.created',
+      entity_type: 'content_workspace_item',
+      entity_id: '91',
+      privacy_classification: 'private_content',
+      idempotency_key: 'content.idea.created:77:91',
+    });
+    expect(JSON.parse(String(event.payload_json))).toMatchObject({
+      summary: {
+        status: 'planned',
+        scheduled: false,
+        syncPending: false,
+        scheduleSemantics: 'none',
+      },
+      action: 'created',
+      language: 'pt-BR',
+    });
+  });
+
+  it('preserves typed workspace errors from compatibility writes', async () => {
+    const capabilities = {
+      schemaVersion: 'content-workspace-capabilities-v1',
+      mode: 'read_only',
+      reasonCode: 'mode_read_only',
+    } as any;
+    vi.mocked(addTopic)
+      .mockImplementationOnce(() => {
+        throw new ContentWorkspaceWriteDisabledError(capabilities, 'core');
+      })
+      .mockImplementationOnce(() => {
+        throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', 'Canonical validation failed.', 400, {
+          field: 'title',
+        });
+      });
+
+    const disabled = await dispatch('POST', '/topics', { title: 'Read only' }, 77);
+    const invalid = await dispatch('POST', '/topics', { title: 'Invalid canonical input' }, 77);
+
+    expect(disabled.response.statusCode).toBe(503);
+    expect(disabled.response.body.error.code).toBe('CONTENT_WORKSPACE_WRITE_DISABLED');
+    expect(invalid.response.statusCode).toBe(400);
+    expect(invalid.response.body.error).toMatchObject({
+      code: 'CONTENT_VALIDATION_FAILED',
+      details: { field: 'title' },
+    });
   });
 });

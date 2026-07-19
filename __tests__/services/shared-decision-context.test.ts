@@ -399,6 +399,293 @@ describe('shared-decision-context', () => {
     expect(coarse).toContain('Secretary: schedule-derived availability is constrained');
   });
 
+  it('omits an explicitly requested Training section when no recognized constraint exists', async () => {
+    mockReadTrainingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.training-note',
+          signalType: 'unrecognized_training_note',
+          payload: { note: 'private detail must not enter Content' },
+        }),
+      ],
+    });
+
+    const options = {
+      contentPurpose: { userMessage: 'Use my training context for this content plan.' },
+    };
+    const context = await buildSharedDecisionContext('content', 42, 42, options);
+    const contracts = await buildSharedDecisionContracts('content', 42, 42, options);
+
+    expect(context).toBe('');
+    expect(contracts.training).toBeUndefined();
+    expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
+    expect(mockReadSecretaryMeshContext).not.toHaveBeenCalled();
+  });
+
+  it('uses overdue inbox pressure without exposing counts when Secretary access is explicit', async () => {
+    mockReadSecretaryMeshContext.mockResolvedValue({
+      focusBlock: null,
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.secretary-pressure',
+          signalType: 'inbox_pressure',
+          payload: { overdueCount: 3, dueTodayCount: 0, dueThisWeekCount: 4, pendingCount: 8 },
+        }),
+      ],
+    });
+
+    const options = {
+      contentPurpose: { userMessage: 'Use my calendar context for this content plan.' },
+    };
+    const context = await buildSharedDecisionContext('content', 42, 42, options);
+    const contracts = await buildSharedDecisionContracts('content', 42, 42, options);
+
+    expect(context).toContain('schedule-derived availability is constrained');
+    expect(context).toContain('Explicitly requested; calendar and inbox details withheld.');
+    expect(context).not.toContain('3 overdue');
+    expect(contracts.secretary?.notes).toContain(
+      'Explicitly requested availability constraint; calendar and inbox details withheld.',
+    );
+  });
+
+  it('treats due-today pressure as a summary constraint without inventing a contract constraint', async () => {
+    mockReadSecretaryMeshContext.mockResolvedValue({
+      focusBlock: null,
+      derivedSignals: [
+        meshSignal({
+          signalType: 'inbox_pressure',
+          payload: { overdueCount: 0, dueTodayCount: 2, dueThisWeekCount: 2, pendingCount: 2 },
+        }),
+      ],
+    });
+
+    const options = {
+      contentPurpose: { userMessage: 'Use my schedule context for this content plan.' },
+    };
+    const context = await buildSharedDecisionContext('content', 42, 42, options);
+    const contracts = await buildSharedDecisionContracts('content', 42, 42, options);
+
+    expect(context).toContain('schedule-derived availability is constrained');
+    expect(context).not.toContain('2 due today');
+    expect(contracts.secretary).toBeUndefined();
+  });
+
+  it('preserves a non-constraining Secretary signal without leaking its date', async () => {
+    mockReadSecretaryMeshContext.mockResolvedValue({
+      focusBlock: null,
+      derivedSignals: [
+        meshSignal({
+          signalType: 'meeting_criticality',
+          payload: { criticalEventCount: 0, dates: ['2026-04-27'] },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('content', 42);
+    const contracts = await buildSharedDecisionContracts('content', 42);
+
+    expect(context).toContain('schedule-derived availability does not currently add a production constraint');
+    expect(context).not.toContain('2026-04-27');
+    expect(contracts.secretary).toBeUndefined();
+  });
+
+  it('applies an explicitly requested tight Content spend mode without exposing finance values', async () => {
+    mockReadFinanceMeshContext.mockResolvedValue({
+      monthlySummary: {
+        transactionCount: 731927,
+        totalIncome: 987654.31,
+        totalExpenses: 912345.67,
+        totalDeductions: 2468.13,
+      },
+      budgetView: makeBudgetView({
+        affordability: 'tight',
+        expensesInBasisCurrency: 912345.67,
+        currentRemainingInBasisCurrency: 75308.64,
+        currentRemainingRatio: 0.077243,
+        projectedExpensesInBasisCurrency: 934567.89,
+        projectedRemainingInBasisCurrency: 53086.42,
+        projectedRemainingRatio: 0.054355,
+      }),
+      derivedSignals: [
+        meshSignal({
+          signalType: 'budget_remaining',
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.077243,
+            budgetMode: 'tight',
+            contentSpendMode: 'no_new_spend',
+          },
+        }),
+      ],
+    });
+
+    const options = {
+      contentPurpose: { userMessage: 'Use my budget context for this content plan.' },
+    };
+    const context = await buildSharedDecisionContext('content', 42, 42, options);
+    const contracts = await buildSharedDecisionContracts('content', 42, 42, options);
+
+    expect(context).toContain('finance-derived production mode is no new spend; avoid unrequested spend');
+    expect(context).toContain('Explicitly requested; amounts, percentages, transactions, and tax details withheld.');
+    const disclosureSurface = `${context}\n${JSON.stringify(contracts)}`;
+    const digitOnlyDisclosure = disclosureSurface.replace(/\D/g, '');
+    for (const privateDigitSentinel of [
+      '731927',
+      '98765431',
+      '91234567',
+      '246813',
+      '7530864',
+      '93456789',
+      '5308642',
+    ]) {
+      expect(digitOnlyDisclosure).not.toContain(privateDigitSentinel);
+    }
+    for (const privateTextSentinel of [
+      'totalIncome',
+      'totalExpenses',
+      'totalDeductions',
+      'transactionCount',
+      'remainingRatio',
+      '0.077243',
+      '7.7243%',
+      '7.72%',
+      '7.7%',
+      '8%',
+      '0.054355',
+      '5.4355%',
+      '5.44%',
+      '5.4%',
+      '5%',
+    ]) {
+      expect(disclosureSurface).not.toContain(privateTextSentinel);
+    }
+    expect(contracts.finance?.nonNegotiables).toContain('Do not assume room for paid production upgrades.');
+    expect(contracts.finance?.preferredWindows).toContain(
+      'Use the presentation-safe content spend mode: no new spend.',
+    );
+    expect(contracts.finance?.fallbackIfDeferred).toContain(
+      'Prefer lower-friction production that does not add spend.',
+    );
+    expect(contracts.finance?.budgetMode).toBeNull();
+  });
+
+  it('does not infer spend headroom from a controlled budget with no Content mode', async () => {
+    mockReadFinanceMeshContext.mockResolvedValue({
+      monthlySummary: { transactionCount: 1, totalIncome: 1000, totalExpenses: 400, totalDeductions: 0 },
+      budgetView: makeBudgetView({
+        affordability: 'comfortable',
+        expensesInBasisCurrency: 400,
+        currentRemainingInBasisCurrency: 600,
+        currentRemainingRatio: 0.6,
+        projectedExpensesInBasisCurrency: 400,
+        projectedRemainingInBasisCurrency: 600,
+        projectedRemainingRatio: 0.6,
+      }),
+      derivedSignals: [
+        meshSignal({
+          signalType: 'budget_remaining',
+          payload: { month: '2026-04', remainingRatio: 0.6, budgetMode: 'controlled' },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('content', 42);
+    const contracts = await buildSharedDecisionContracts('content', 42);
+
+    expect(context).toContain('finance-derived constraints do not justify additional production spend');
+    expect(context).not.toContain('60%');
+    expect(contracts.finance?.nonNegotiables).toEqual([]);
+    expect(contracts.finance?.fallbackIfDeferred).toEqual([]);
+    expect(contracts.finance?.preferredWindows).toEqual([]);
+  });
+
+  it('omits a Cooking section when the allowed peer has no recognized capacity signal', async () => {
+    mockReadCookingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          sourceAgent: 'mesh.cooking-note',
+          signalType: 'unrecognized_cooking_note',
+          payload: { recipe: 'private recipe detail' },
+        }),
+      ],
+    });
+
+    const options = {
+      contentPurpose: { userMessage: 'Use my cooking context for this content plan.' },
+    };
+    const context = await buildSharedDecisionContext('content', 42, 42, options);
+    const contracts = await buildSharedDecisionContracts('content', 42, 42, options);
+
+    expect(context).toBe('');
+    expect(contracts.cooking).toBeUndefined();
+    expect(mockReadCookingMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
+    expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
+  });
+
+  it('keeps a fully covered meal window non-constraining and date-private', async () => {
+    mockReadCookingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          signalType: 'meal_plan_window',
+          payload: { coveredDays: ['2026-04-27'], missingDates: [] },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('content', 42);
+    const contracts = await buildSharedDecisionContracts('content', 42);
+
+    expect(context).toContain('meal-support-derived capacity does not currently add a production constraint');
+    expect(context).not.toContain('2026-04-27');
+    expect(contracts.cooking).toBeUndefined();
+  });
+
+  it('uses explicitly requested at-risk fueling as a date-private Content constraint', async () => {
+    mockReadCookingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          signalType: 'fueling_support_status',
+          payload: { status: 'at_risk', hardDatesMissingMeals: ['2026-04-28'] },
+        }),
+      ],
+    });
+
+    const options = {
+      contentPurpose: { userMessage: 'Use my meal plan context for this content plan.' },
+    };
+    const context = await buildSharedDecisionContext('content', 42, 42, options);
+    const contracts = await buildSharedDecisionContracts('content', 42, 42, options);
+
+    expect(context).toContain('meal-support-derived capacity is constrained; keep production low-friction');
+    expect(context).toContain('Explicitly requested; meal, grocery, and nutrition details withheld.');
+    expect(context).not.toContain('2026-04-28');
+    expect(contracts.cooking?.fallbackIfDeferred).toContain(
+      'Keep production low-friction so it does not displace meal support.',
+    );
+    expect(contracts.cooking?.notes).toContain(
+      'Explicitly requested meal-support constraint; meal gaps and dates withheld.',
+    );
+  });
+
+  it('treats partial meal execution readiness as a coarse capacity constraint', async () => {
+    mockReadCookingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        meshSignal({
+          signalType: 'meal_execution_readiness',
+          payload: { status: 'partial', constrainedMealDates: ['2026-04-29'] },
+        }),
+      ],
+    });
+
+    const context = await buildSharedDecisionContext('content', 42);
+    const contracts = await buildSharedDecisionContracts('content', 42);
+
+    expect(context).toContain('meal-support-derived capacity is constrained; keep production low-friction');
+    expect(context).toContain('Meal, grocery, and nutrition details withheld.');
+    expect(context).not.toContain('2026-04-29');
+    expect(contracts.cooking).toBeUndefined();
+  });
+
   it('fails closed before peer reads when Content tenant scope is not safely readable', async () => {
     await expect(buildSharedDecisionContext('content', 42, 1001, {
       contentPurpose: { userMessage: 'Use my training capacity for this content plan' },

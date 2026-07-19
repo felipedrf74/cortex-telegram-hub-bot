@@ -8,15 +8,19 @@
  * - Migration sequence stays append-only and duplicate prefixes are explicit
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import {
+  assertContentWorkspaceBootReadiness,
   ensureMigrationSqlFunctions,
+  getDb,
   runMigrationsForTest,
   stripWrappingTransactionStatements,
+  withDatabaseForTest,
+  withDatabaseForTestAsync,
 } from '../../src/services/database';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
@@ -147,6 +151,45 @@ describe('Database Migrations', () => {
     ).toEqual({
       hash: '21a3230e03772a58aff1b3709a9e232850916337e1fba95c434076b6668c6e08',
     });
+  });
+
+  it('runs every Content workspace boot-readiness gate and fails closed in order', () => {
+    const calls: string[] = [];
+    const failure = new Error('reviewed readiness drift');
+    const neverReached = vi.fn();
+
+    expect(() => assertContentWorkspaceBootReadiness(db, [
+      {
+        load: () => (database) => {
+          expect(database).toBe(db);
+          calls.push('pipeline');
+        },
+        failureMessage: 'pipeline gate failed',
+      },
+      {
+        load: () => () => {
+          calls.push('integrity');
+          throw failure;
+        },
+        failureMessage: 'integrity gate failed',
+      },
+      {
+        load: () => neverReached,
+        failureMessage: 'later gate failed',
+      },
+    ])).toThrow(failure);
+
+    expect(calls).toEqual(['pipeline', 'integrity']);
+    expect(neverReached).not.toHaveBeenCalled();
+  });
+
+  it('binds synchronous and asynchronous database work to an explicit test connection', async () => {
+    expect(() => getDb()).toThrow('Database not initialized');
+
+    expect(withDatabaseForTest(db, () => getDb())).toBe(db);
+    await expect(withDatabaseForTestAsync(db, async () => getDb())).resolves.toBe(db);
+
+    expect(() => getDb()).toThrow('Database not initialized');
   });
 
   it('migration filenames follow non-decreasing numbering', () => {

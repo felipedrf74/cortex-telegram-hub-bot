@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-19.1",
+  "version": "2026-07-19.2",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -220,6 +220,7 @@
     { "pattern": "__tests__/services/receipt-ai-transfer-consent.test.ts", "disposition": "keep", "reason": "Protects tenant- and content-bound receipt AI consent, single-spend replay safety, encrypted result reuse, expiry, and cleanup." },
     { "pattern": "__tests__/services/creator-config-eval.test.ts", "disposition": "keep", "reason": "Creator configuration checks protect prompt neutrality, loading, and cross-runtime consistency." },
     { "pattern": "__tests__/api/content-agent-job-routes.test.ts", "disposition": "keep", "reason": "Protects authenticated specialist-job lifecycle, proposal review, tenant scope, stale-base conflicts, and redacted API projections." },
+    { "pattern": "__tests__/api/content-route-internal-auth-matrix.test.ts", "disposition": "keep", "reason": "Protects every registered Content route against missing authenticated scope before durable service access, with one privacy-safe scope anomaly per rejection." },
     { "pattern": "__tests__/api/content-workspace-capabilities-route.test.ts", "disposition": "keep", "reason": "Protects the fail-closed server-authoritative Content rollout capability contract." },
     { "pattern": "__tests__/api/content-workspace-routes.test.ts", "disposition": "keep", "reason": "Protects canonical library keyset pagination, complete Today totals, immutable revision receipts and history pages, recovery, progressive artifact lineage, tenant scope, and idempotency API contracts." },
     { "pattern": "__tests__/api/content-workspace-calendar-route.test.ts", "disposition": "keep", "reason": "Protects the tenant-scoped canonical Content calendar contract, bounded filters, safe Secretary degradation, and non-publication semantics." },

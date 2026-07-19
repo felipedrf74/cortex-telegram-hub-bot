@@ -191,6 +191,37 @@ function makeCoachEligible(userId: number): void {
   `).run(userId);
 }
 
+function installScalarReadOverrideForTest(
+  override: (sql: string, actual: () => unknown) => unknown,
+): () => void {
+  const originalDb = db;
+  const originalPrepare = originalDb.prepare.bind(originalDb);
+  db = new Proxy(originalDb, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql: string) => {
+          const statement = originalPrepare(sql);
+          const originalGet = statement.get.bind(statement) as (...params: unknown[]) => unknown;
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty) {
+              if (statementProperty === 'get') {
+                return (...params: unknown[]) => override(sql, () => originalGet(...params));
+              }
+              const value = Reflect.get(statementTarget, statementProperty, statementTarget);
+              return typeof value === 'function' ? value.bind(statementTarget) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as Database.Database;
+  return () => {
+    db = originalDb;
+  };
+}
+
 describe('paid AI budget enforcement', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: new Date('2026-07-09T12:00:00.000Z') });
@@ -1323,6 +1354,401 @@ describe('paid AI budget enforcement', () => {
         maxCostUsd: 0.001,
       });
     })).rejects.toMatchObject({ decision: { code: 'SERVICE_DEGRADED' } });
+  });
+
+  it('uses the shared system scope for hard run, job, and provider-attempt accounting', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+
+    await withAiBudgetReservation({
+      userId: 901,
+      requestSource: 'system',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:system-sample',
+      runId: 'content-live-system-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.05,
+      hardJobCostLimitUsd: 0.01,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 901,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.001,
+      })).not.toThrow();
+    });
+
+    expect(db.prepare(`
+      SELECT user_id, request_source, job_name, run_id, reserved_cost_usd
+        FROM ai_provider_attempt_reservations
+       WHERE run_id = 'content-live-system-run'
+    `).get()).toEqual({
+      user_id: 901,
+      request_source: 'system',
+      job_name: 'content_live_eval:system-sample',
+      run_id: 'content-live-system-run',
+      reserved_cost_usd: 0.001,
+    });
+  });
+
+  it('treats absent aggregate rows as zero without weakening either hard ceiling', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(902);
+
+    await withAiBudgetReservation({
+      userId: 902,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+      jobName: 'aggregate-row-fallback',
+      runId: 'aggregate-row-fallback-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.02,
+      hardJobCostLimitUsd: 0.01,
+    }, async () => {
+      const restoreDb = installScalarReadOverrideForTest((sql, actual) => {
+        const isRunOrJobUsage = sql.includes('SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd')
+          && sql.includes('AND run_id = ?');
+        const isReservedTotal = sql.includes('SELECT COALESCE(SUM(reserved_cost_usd), 0) AS reserved_cost_usd');
+        const isCommittedTotal = sql.includes('SELECT COALESCE(SUM(') && sql.includes('AS amount');
+        return isRunOrJobUsage || isReservedTotal || isCommittedTotal ? undefined : actual();
+      });
+      try {
+        expect(() => assertAiBudgetReservationForProvider({
+          userId: 902,
+          category: 'chat_secretary',
+          provider: 'openai',
+          model: 'gpt-5-mini',
+          maxCostUsd: 0.001,
+        })).not.toThrow();
+      } finally {
+        restoreDb();
+      }
+    });
+
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM ai_provider_attempt_reservations
+       WHERE run_id = 'aggregate-row-fallback-run'
+    `).get()).toEqual({ count: 1 });
+  });
+
+  it('fails closed when durable run or job usage is non-finite', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(903);
+    addPaidUser(904);
+
+    const restoreRunRead = installScalarReadOverrideForTest((sql, actual) => (
+      sql.includes('SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd')
+        && sql.includes('AND run_id = ?')
+        && !sql.includes('AND job_name = ?')
+        ? { cost_usd: Number.POSITIVE_INFINITY }
+        : actual()
+    ));
+    try {
+      expect(checkAiBudget({
+        userId: 903,
+        requestSource: 'interactive',
+        baseCategory: 'content_live_eval',
+        runId: 'non-finite-run',
+        estimatedCostUsd: 0.001,
+        hardRunCostLimitUsd: 0.02,
+      })).toMatchObject({ allowed: false, code: 'SERVICE_DEGRADED', window: 'global' });
+    } finally {
+      restoreRunRead();
+    }
+
+    const restoreJobRead = installScalarReadOverrideForTest((sql, actual) => (
+      sql.includes('SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd')
+        && sql.includes('AND job_name = ?')
+        ? { cost_usd: Number.POSITIVE_INFINITY }
+        : actual()
+    ));
+    try {
+      expect(checkAiBudget({
+        userId: 904,
+        requestSource: 'interactive',
+        baseCategory: 'content_live_eval',
+        jobName: 'content_live_eval:non-finite-job',
+        runId: 'non-finite-job-run',
+        estimatedCostUsd: 0.001,
+        hardJobCostLimitUsd: 0.02,
+      })).toMatchObject({ allowed: false, code: 'SERVICE_DEGRADED', window: 'global' });
+    } finally {
+      restoreJobRead();
+    }
+  });
+
+  it('fails closed when durable provider reservations contain invalid accounting', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(905);
+
+    expect(checkAiBudget({
+      userId: 905,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:invalid-accounting',
+      runId: 'invalid-accounting-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.02,
+      hardJobCostLimitUsd: 0.01,
+    }).allowed).toBe(true);
+    db.pragma('ignore_check_constraints = ON');
+    db.prepare(`
+      INSERT INTO ai_provider_attempt_reservations (
+        user_id, request_source, base_category, job_name, run_id,
+        provider, model, provider_category, reserved_cost_usd
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      905,
+      'interactive',
+      'content_live_eval',
+      'content_live_eval:invalid-accounting',
+      'invalid-accounting-run',
+      'openai',
+      'gpt-5-mini',
+      'content_engine_script_standard',
+      -0.001,
+    );
+    db.pragma('ignore_check_constraints = OFF');
+
+    expect(checkAiBudget({
+      userId: 905,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:invalid-accounting',
+      runId: 'invalid-accounting-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.02,
+    })).toMatchObject({ allowed: false, code: 'SERVICE_DEGRADED' });
+    expect(checkAiBudget({
+      userId: 905,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:invalid-accounting',
+      runId: 'invalid-accounting-run',
+      estimatedCostUsd: 0.001,
+      hardJobCostLimitUsd: 0.01,
+    })).toMatchObject({ allowed: false, code: 'SERVICE_DEGRADED' });
+  });
+
+  it('validates missing live-eval provider and model metadata before reservation writes', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(906);
+
+    await withAiBudgetReservation({
+      userId: 906,
+      requestSource: 'interactive',
+      baseCategory: 'content_live_eval',
+      jobName: 'content_live_eval:metadata-validation',
+      runId: 'metadata-validation-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.05,
+      hardJobCostLimitUsd: 0.02,
+    }, async () => {
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 906,
+        category: 'content_engine_script_standard',
+        model: 'gpt-5-mini',
+        maxCostUsd: 0.001,
+      })).toThrowError(AiBudgetError);
+      expect(() => assertAiBudgetReservationForProvider({
+        userId: 906,
+        category: 'content_engine_script_standard',
+        provider: 'openai',
+        maxCostUsd: 0.001,
+      })).toThrowError(AiBudgetError);
+    });
+
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM ai_provider_attempt_reservations
+       WHERE run_id = 'metadata-validation-run'
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('fails closed when a hard-ceiling provider attempt omits durable identity metadata', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(907);
+
+    await withAiBudgetReservation({
+      userId: 907,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+      jobName: 'provider-identity-validation',
+      runId: 'provider-identity-validation-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.02,
+    }, async () => {
+      for (const providerInput of [
+        { model: 'gpt-5-mini' },
+        { provider: 'openai' },
+      ]) {
+        let failure: AiBudgetError | null = null;
+        try {
+          assertAiBudgetReservationForProvider({
+            userId: 907,
+            category: 'chat_secretary',
+            maxCostUsd: 0.001,
+            ...providerInput,
+          });
+        } catch (error) {
+          failure = error as AiBudgetError;
+        }
+        expect(failure?.decision).toMatchObject({
+          code: 'SERVICE_DEGRADED',
+          internalReason: 'metering_unavailable',
+        });
+      }
+    });
+
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM ai_provider_attempt_reservations
+       WHERE run_id = 'provider-identity-validation-run'
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects a provider attempt when a concurrently committed run reservation consumes its ceiling', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(908);
+
+    await withAiBudgetReservation({
+      userId: 908,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+      runId: 'concurrent-run-ceiling',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.01,
+    }, async () => {
+      db.prepare(`
+        INSERT INTO ai_provider_attempt_reservations (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, provider_category, reserved_cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(908, 'interactive', 'chat_secretary', null, 'concurrent-run-ceiling',
+        'openai', 'gpt-5-mini', 'chat_secretary', 0.009);
+
+      const restoreDb = installScalarReadOverrideForTest((sql, actual) => (
+        sql.includes('SELECT COALESCE(SUM(reserved_cost_usd), 0) AS reserved_cost_usd')
+          ? { reserved_cost_usd: 0 }
+          : actual()
+      ));
+      try {
+        let failure: AiBudgetError | null = null;
+        try {
+          assertAiBudgetReservationForProvider({
+            userId: 908,
+            category: 'chat_secretary',
+            provider: 'openai',
+            model: 'gpt-5-mini',
+            maxCostUsd: 0.002,
+          });
+        } catch (error) {
+          failure = error as AiBudgetError;
+        }
+        expect(failure?.decision.message).toContain('another provider attempt already committed');
+        expect(failure?.decision.internalReason).toBeUndefined();
+      } finally {
+        restoreDb();
+      }
+    });
+  });
+
+  it('rejects a provider attempt when a concurrently committed job reservation consumes its slice', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(909);
+
+    await withAiBudgetReservation({
+      userId: 909,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+      jobName: 'concurrent-job-ceiling',
+      runId: 'concurrent-job-run',
+      estimatedCostUsd: 0.001,
+      hardJobCostLimitUsd: 0.01,
+    }, async () => {
+      db.prepare(`
+        INSERT INTO ai_provider_attempt_reservations (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, provider_category, reserved_cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(909, 'interactive', 'chat_secretary', 'concurrent-job-ceiling', 'concurrent-job-run',
+        'openai', 'gpt-5-mini', 'chat_secretary', 0.009);
+
+      const restoreDb = installScalarReadOverrideForTest((sql, actual) => (
+        sql.includes('SELECT COALESCE(SUM(reserved_cost_usd), 0) AS reserved_cost_usd')
+          ? { reserved_cost_usd: 0 }
+          : actual()
+      ));
+      try {
+        let failure: AiBudgetError | null = null;
+        try {
+          assertAiBudgetReservationForProvider({
+            userId: 909,
+            category: 'chat_secretary',
+            provider: 'openai',
+            model: 'gpt-5-mini',
+            maxCostUsd: 0.002,
+          });
+        } catch (error) {
+          failure = error as AiBudgetError;
+        }
+        expect(failure?.decision.message).toContain('another provider attempt already committed');
+        expect(failure?.decision.internalReason).toBeUndefined();
+      } finally {
+        restoreDb();
+      }
+    });
+  });
+
+  it('fails closed when provider-attempt accounting becomes invalid after the budget recheck', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(910);
+
+    await withAiBudgetReservation({
+      userId: 910,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+      runId: 'invalid-attempt-accounting-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.01,
+    }, async () => {
+      db.pragma('ignore_check_constraints = ON');
+      db.prepare(`
+        INSERT INTO ai_provider_attempt_reservations (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, provider_category, reserved_cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(910, 'interactive', 'chat_secretary', null, 'invalid-attempt-accounting-run',
+        'openai', 'gpt-5-mini', 'chat_secretary', -0.001);
+      db.pragma('ignore_check_constraints = OFF');
+
+      const restoreDb = installScalarReadOverrideForTest((sql, actual) => (
+        sql.includes('SELECT COALESCE(SUM(reserved_cost_usd), 0) AS reserved_cost_usd')
+          ? { reserved_cost_usd: 0 }
+          : actual()
+      ));
+      try {
+        let failure: AiBudgetError | null = null;
+        try {
+          assertAiBudgetReservationForProvider({
+            userId: 910,
+            category: 'chat_secretary',
+            provider: 'openai',
+            model: 'gpt-5-mini',
+            maxCostUsd: 0.001,
+          });
+        } catch (error) {
+          failure = error as AiBudgetError;
+        }
+        expect(failure?.decision).toMatchObject({
+          code: 'SERVICE_DEGRADED',
+          internalReason: 'metering_unavailable',
+        });
+      } finally {
+        restoreDb();
+      }
+    });
   });
 
   it('signs and propagates both hard ceilings and rejects re-entry tampering', async () => {
