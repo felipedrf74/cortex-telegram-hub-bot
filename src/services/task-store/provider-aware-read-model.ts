@@ -77,8 +77,31 @@ export async function getProviderAwareTaskReadModel(userId: number): Promise<Nor
 
 function taskKey(task: NormalizedTask): string {
   const provider = task.provider || 'nexus';
+  return `${provider}:${canonicalExternalId(task)}`;
+}
+
+/**
+ * NEX-27: the legacy native→unified backfill mirrors each `native_tasks` row
+ * into unified_tasks with external_id `native_task_<id>` (and
+ * provider_data.nativeTaskId = <id>), while the native adapter emits
+ * externalId `<id>` for the SAME underlying row. Left un-normalized, the two
+ * projections carry different keys (`nexus:native_task_5` vs `nexus:5`) and
+ * the merge below lists the task TWICE in the chat/AI read. Collapse both
+ * onto the underlying native id so a native task appears exactly once — the
+ * native adapter row (loaded second) still wins, preserving read-after-write.
+ */
+function canonicalExternalId(task: NormalizedTask): string {
+  const nativeTaskId = task.providerData?.nativeTaskId;
+  if (
+    task.providerData?.source === 'native_tasks_backfill'
+    && (typeof nativeTaskId === 'number' || typeof nativeTaskId === 'string')
+    && String(nativeTaskId).trim()
+  ) {
+    return String(nativeTaskId);
+  }
   const externalId = task.externalId || String(task.id ?? '');
-  return `${provider}:${externalId}`;
+  const backfillMatch = /^native_task_(\d+)$/.exec(externalId);
+  return backfillMatch ? backfillMatch[1] : externalId;
 }
 
 function compareTasksForRead(left: NormalizedTask, right: NormalizedTask): number {

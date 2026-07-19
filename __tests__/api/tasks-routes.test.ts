@@ -94,6 +94,10 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { taskRoutes } from '../../src/api/routes/tasks';
+import {
+  getOfflineTasksForList,
+  searchOfflineTasks,
+} from '../../src/services/task-store/offline-first-task-service';
 
 interface MockRes {
   statusCode: number;
@@ -314,6 +318,7 @@ function mockReq(
     query?: Record<string, any>;
     params?: Record<string, string>;
     body?: Record<string, any>;
+    headers?: Record<string, string>;
   } = {},
 ): Request {
   return {
@@ -325,7 +330,7 @@ function mockReq(
     query: options.query || {},
     params: options.params || {},
     body: options.body || {},
-    headers: {},
+    headers: options.headers || {},
     userId: options.userId ?? 12,
     tenantId: options.tenantId ?? options.userId ?? 12,
   } as any;
@@ -340,6 +345,7 @@ async function dispatch(
     query?: Record<string, any>;
     params?: Record<string, string>;
     body?: Record<string, any>;
+    headers?: Record<string, string>;
   } = {},
 ): Promise<MockRes> {
   const router = taskRoutes();
@@ -2123,5 +2129,236 @@ describe('M11 Recently Deleted route (GET /deleted) + Sync Center status fields'
       expect.objectContaining({ provider: 'todoist' }),
     );
     expectNoProviderReads();
+  });
+});
+
+describe('M14 search + read-path performance', () => {
+  async function createTask(body: Record<string, any>): Promise<{ id: string; listId: string; status: string; title: string }> {
+    const res = await dispatch('POST', '/', { body });
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(201);
+    return res.body.data.task;
+  }
+
+  function seedProject(name: string): number {
+    const info = testDb.prepare(
+      `INSERT INTO unified_projects (user_id, tenant_id, provider, external_id, name) VALUES (12, 12, 'nexus', ?, ?)`,
+    ).run(`ext-${name}`, name);
+    return Number(info.lastInsertRowid);
+  }
+
+  function seedCompletedTask(projectId: number, projectName: string, title: string): void {
+    testDb.prepare(
+      `INSERT INTO unified_tasks
+         (user_id, tenant_id, provider, external_id, project_id, project_name, title, status, priority, is_deleted, nexus_task_id, local_version, sync_state)
+       VALUES (12, 12, 'nexus', ?, ?, ?, ?, 'completed', 0, 0, ?, 1, 'synced')`,
+    ).run(`ext-${title}`, projectId, projectName, title, `task_${title}`);
+  }
+
+  describe('NEX-23 combined reopen + edit', () => {
+    it('applies the reopen AND the field edits (status-only route would lose the reopen)', async () => {
+      const task = await createTask({ title: 'Reopen me', listName: 'Tasks', clientMutationId: 'nex23-create', idempotencyKey: 'nex23-create' });
+      const completed = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+        params: { listId: task.listId, taskId: task.id },
+        body: { status: 'completed', clientMutationId: 'nex23-complete', idempotencyKey: 'nex23-complete' },
+      });
+      expect(completed.statusCode).toBe(200);
+
+      const reopened = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+        params: { listId: task.listId, taskId: task.id },
+        body: { status: 'notStarted', title: 'Reopened and edited', clientMutationId: 'nex23-reopen', idempotencyKey: 'nex23-reopen' },
+      });
+      expect(reopened.statusCode).toBe(200);
+
+      const detail = await dispatch('GET', `/${task.listId}/${task.id}`, { params: { listId: task.listId, taskId: task.id } });
+      expect(detail.body.data.task.status).toBe('notStarted');
+      expect(detail.body.data.task.title).toBe('Reopened and edited');
+
+      const row = testDb.prepare(`SELECT status, completed_at FROM unified_tasks WHERE nexus_task_id = ?`).get(task.id) as { status: string; completed_at: string | null };
+      expect(row.status).toBe('pending');
+      expect(row.completed_at).toBeNull();
+
+      const updateMutations = testDb.prepare(`SELECT COUNT(*) AS n FROM task_mutations WHERE task_id = ? AND operation = 'task.update'`).get(task.id) as { n: number };
+      expect(updateMutations.n).toBe(1);
+      expectNoProviderReads();
+    });
+
+    it('a combined complete + edit stamps completed_at', async () => {
+      const task = await createTask({ title: 'Finish me', listName: 'Tasks', clientMutationId: 'nex23b-create', idempotencyKey: 'nex23b-create' });
+      const res = await dispatch('PATCH', `/${task.listId}/${task.id}`, {
+        params: { listId: task.listId, taskId: task.id },
+        body: { status: 'completed', body: 'notes edited', clientMutationId: 'nex23b-done', idempotencyKey: 'nex23b-done' },
+      });
+      expect(res.statusCode).toBe(200);
+      const row = testDb.prepare(`SELECT status, completed_at, notes FROM unified_tasks WHERE nexus_task_id = ?`).get(task.id) as { status: string; completed_at: string | null; notes: string | null };
+      expect(row.status).toBe('completed');
+      expect(row.completed_at).not.toBeNull();
+      expect(row.notes).toBe('notes edited');
+    });
+  });
+
+  describe('GET /search', () => {
+    it('400s on a missing or blank q', async () => {
+      const missing = await dispatch('GET', '/search', { query: {} });
+      expect(missing.statusCode).toBe(400);
+      expect(missing.body.error.code).toBe('BAD_REQUEST');
+      const blank = await dispatch('GET', '/search', { query: { q: '   ' } });
+      expect(blank.statusCode).toBe(400);
+    });
+
+    it('matches title AND notes case-insensitively, active-only by default, in the OfflineTaskDto shape', async () => {
+      await createTask({ title: 'Buy MILK', listName: 'Tasks', clientMutationId: 's1', idempotencyKey: 's1' });
+      await createTask({ title: 'Call bank', body: 'ask about the milk delivery', listName: 'Tasks', clientMutationId: 's2', idempotencyKey: 's2' });
+      await createTask({ title: 'Unrelated', listName: 'Tasks', clientMutationId: 's3', idempotencyKey: 's3' });
+
+      const res = await dispatch('GET', '/search', { query: { q: 'milk' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.query).toBe('milk');
+      expect(res.body.data.tasks.map((t: any) => t.title).sort()).toEqual(['Buy MILK', 'Call bank']);
+      expect(res.body.data.pageInfo.hasMore).toBe(false);
+      expect(res.body.data.pageInfo.nextCursor).toBeNull();
+      const sample = res.body.data.tasks[0];
+      expect(sample).toHaveProperty('reminderAt');
+      expect(sample).toHaveProperty('dueIsDatetime');
+      expect(sample).toHaveProperty('priority');
+      expect(sample).toHaveProperty('syncState');
+      expectNoProviderReads();
+    });
+
+    it('escapes LIKE wildcards so % matches literally', async () => {
+      await createTask({ title: '50% discount', listName: 'Tasks', clientMutationId: 'w1', idempotencyKey: 'w1' });
+      await createTask({ title: 'no discount here', listName: 'Tasks', clientMutationId: 'w2', idempotencyKey: 'w2' });
+      const res = await dispatch('GET', '/search', { query: { q: '%' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.tasks.map((t: any) => t.title)).toEqual(['50% discount']);
+    });
+
+    it('includes completed tasks only with includeCompleted=1', async () => {
+      await createTask({ title: 'active review', listName: 'Tasks', clientMutationId: 'c1', idempotencyKey: 'c1' });
+      const done = await createTask({ title: 'done review', listName: 'Tasks', clientMutationId: 'c2', idempotencyKey: 'c2' });
+      await dispatch('PATCH', `/${done.listId}/${done.id}`, {
+        params: { listId: done.listId, taskId: done.id },
+        body: { status: 'completed', clientMutationId: 'c2done', idempotencyKey: 'c2done' },
+      });
+
+      const defaultRes = await dispatch('GET', '/search', { query: { q: 'review' } });
+      expect(defaultRes.body.data.tasks.map((t: any) => t.title)).toEqual(['active review']);
+      expect(defaultRes.body.data.includeCompleted).toBe(false);
+
+      const inclRes = await dispatch('GET', '/search', { query: { q: 'review', includeCompleted: '1' } });
+      expect(inclRes.body.data.tasks.map((t: any) => t.title).sort()).toEqual(['active review', 'done review']);
+      expect(inclRes.body.data.includeCompleted).toBe(true);
+    });
+
+    it('paginates deterministically with an opaque keyset cursor', async () => {
+      await createTask({ title: 'alpha match', listName: 'Tasks', clientMutationId: 'p1', idempotencyKey: 'p1' });
+      await createTask({ title: 'bravo match', listName: 'Tasks', clientMutationId: 'p2', idempotencyKey: 'p2' });
+      await createTask({ title: 'charlie match', listName: 'Tasks', clientMutationId: 'p3', idempotencyKey: 'p3' });
+
+      const page1 = await dispatch('GET', '/search', { query: { q: 'match', limit: '2' } });
+      expect(page1.body.data.tasks.map((t: any) => t.title)).toEqual(['alpha match', 'bravo match']);
+      expect(page1.body.data.pageInfo.hasMore).toBe(true);
+      expect(page1.body.data.pageInfo.nextCursor).toBeTruthy();
+      expect(page1.body.data.pageInfo.limit).toBe(2);
+
+      const page2 = await dispatch('GET', '/search', { query: { q: 'match', limit: '2', cursor: page1.body.data.pageInfo.nextCursor } });
+      expect(page2.body.data.tasks.map((t: any) => t.title)).toEqual(['charlie match']);
+      expect(page2.body.data.pageInfo.hasMore).toBe(false);
+      expect(page2.body.data.pageInfo.nextCursor).toBeNull();
+    });
+
+    it('treats a malformed cursor as the first page', async () => {
+      await createTask({ title: 'only match', listName: 'Tasks', clientMutationId: 'm1', idempotencyKey: 'm1' });
+      const res = await dispatch('GET', '/search', { query: { q: 'match', cursor: 'not-a-valid-cursor' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.tasks.map((t: any) => t.title)).toEqual(['only match']);
+    });
+
+    it('is tenant/user scoped — a different user sees nothing', async () => {
+      await createTask({ title: 'user12 secret', listName: 'Tasks', clientMutationId: 't1', idempotencyKey: 't1' });
+      const res = await dispatch('GET', '/search', { query: { q: 'secret' }, userId: 99, tenantId: 99 });
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data.tasks).toEqual([]);
+    });
+
+    it('searchOfflineTasks returns an empty page for a blank query (defensive service guard)', () => {
+      const result = searchOfflineTasks(12, 12, { q: '   ' });
+      expect(result.tasks).toEqual([]);
+      expect(result.pageInfo.hasMore).toBe(false);
+      expect(result.pageInfo.nextCursor).toBeNull();
+      expect(result.query).toBe('');
+    });
+  });
+
+  describe('NEX-21 completed list cursor', () => {
+    it('pages past the first page of completed tasks with a keyset cursor', () => {
+      const projectId = seedProject('Archive');
+      seedCompletedTask(projectId, 'Archive', 'a-done');
+      seedCompletedTask(projectId, 'Archive', 'b-done');
+      seedCompletedTask(projectId, 'Archive', 'c-done');
+
+      const page1 = getOfflineTasksForList(12, 12, String(projectId), { status: 'completed', pageSize: 2 });
+      expect(page1.tasks.map((t) => t.title)).toEqual(['a-done', 'b-done']);
+      expect(page1.pageInfo.hasMore).toBe(true);
+      expect(page1.pageInfo.nextCursor).toBeTruthy();
+
+      const page2 = getOfflineTasksForList(12, 12, String(projectId), { status: 'completed', pageSize: 2, cursor: page1.pageInfo.nextCursor });
+      expect(page2.tasks.map((t) => t.title)).toEqual(['c-done']);
+      expect(page2.pageInfo.hasMore).toBe(false);
+      expect(page2.pageInfo.nextCursor).toBeNull();
+    });
+
+    it('a malformed list cursor falls back to the first page', () => {
+      const projectId = seedProject('Archive2');
+      seedCompletedTask(projectId, 'Archive2', 'x-done');
+      seedCompletedTask(projectId, 'Archive2', 'y-done');
+      const res = getOfflineTasksForList(12, 12, String(projectId), { status: 'completed', pageSize: 2, cursor: 'garbage' });
+      expect(res.tasks.map((t) => t.title)).toEqual(['x-done', 'y-done']);
+    });
+
+    it('the route forwards the cursor query param', async () => {
+      const projectId = seedProject('RouteArchive');
+      seedCompletedTask(projectId, 'RouteArchive', 'r1-done');
+      seedCompletedTask(projectId, 'RouteArchive', 'r2-done');
+      const page1 = await dispatch('GET', `/list/${projectId}`, {
+        params: { listId: String(projectId) },
+        query: { scope: 'completed', limit: '1' },
+      });
+      expect(page1.statusCode).toBe(200);
+      expect(page1.body.data.tasks.map((t: any) => t.title)).toEqual(['r1-done']);
+      expect(page1.body.data.pageInfo.nextCursor).toBeTruthy();
+      const page2 = await dispatch('GET', `/list/${projectId}`, {
+        params: { listId: String(projectId) },
+        query: { scope: 'completed', limit: '1', cursor: page1.body.data.pageInfo.nextCursor },
+      });
+      expect(page2.body.data.tasks.map((t: any) => t.title)).toEqual(['r2-done']);
+      expect(page2.body.data.pageInfo.hasMore).toBe(false);
+    });
+  });
+
+  describe('ETag / 304 on heavy reads', () => {
+    it('emits a stable ETag and answers 304 when unchanged, 200 on a mismatch', async () => {
+      await createTask({ title: 'etag task', listName: 'Tasks', clientMutationId: 'e1', idempotencyKey: 'e1' });
+      const first = await dispatch('GET', '/snapshot');
+      expect(first.statusCode).toBe(200);
+      const etag = first.headers['ETag'];
+      expect(etag).toBeTruthy();
+
+      const notModified = await dispatch('GET', '/snapshot', { headers: { 'if-none-match': etag } });
+      expect(notModified.statusCode).toBe(304);
+      expect(notModified.body).toBeNull();
+
+      const mismatched = await dispatch('GET', '/snapshot', { headers: { 'if-none-match': '"deadbeef"' } });
+      expect(mismatched.statusCode).toBe(200);
+      expect(mismatched.body.data).toBeTruthy();
+    });
+
+    it('the ETag changes when a mutation changes the data', async () => {
+      await createTask({ title: 'etag base', listName: 'Tasks', clientMutationId: 'e2', idempotencyKey: 'e2' });
+      const before = (await dispatch('GET', '/snapshot')).headers['ETag'];
+      await createTask({ title: 'etag added', listName: 'Tasks', clientMutationId: 'e3', idempotencyKey: 'e3' });
+      const after = (await dispatch('GET', '/snapshot')).headers['ETag'];
+      expect(before).toBeTruthy();
+      expect(after).not.toBe(before);
+    });
   });
 });

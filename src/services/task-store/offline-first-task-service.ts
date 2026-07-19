@@ -516,6 +516,20 @@ function dbStatusForValue(value: unknown, fallback: string): string {
       return 'cancelled';
     case 'archived':
       return 'archived';
+    // NEX-23: a COMBINED PATCH body ({ status: 'notStarted', ...otherFields })
+    // reaches updateOfflineFirstTask, not the status-only reopen route. Before
+    // this case existed, every active-status synonym fell through to the
+    // fallback — which the combined path passes as the task's CURRENT status —
+    // so reopening a completed task alongside a title/notes edit silently kept
+    // it completed. Map the active synonyms to 'pending' so the reopen applies
+    // together with the other field edits, matching the status-only
+    // task.reopen route's target status (dbStatusForOperation('task.reopen')).
+    case 'notstarted':
+    case 'pending':
+    case 'open':
+    case 'inprogress':
+    case 'active':
+      return 'pending';
     default:
       return fallback || 'pending';
   }
@@ -534,6 +548,140 @@ function completedLikeStatusSql(column: string): string {
 function activeLikeStatusSql(column: string): string {
   return `${normalizedStatusSql(column)} NOT IN (${COMPLETED_LIKE_STATUS_VALUES.map(() => '?').join(', ')})`;
 }
+
+// ── M14 search + keyset pagination helpers ─────────────────────────────
+
+/**
+ * SQLite's `lower()` and the `NOCASE` collation only fold ASCII A–Z. Mirror
+ * that EXACTLY in JS (leave non-ASCII untouched) so a keyset cursor's title
+ * component compares identically on the SQL and JS sides — otherwise a page
+ * boundary on an accented title could skip or repeat a row.
+ */
+function asciiLower(value: string | null | undefined): string {
+  return String(value || '').replace(/[A-Z]/g, (ch) => ch.toLowerCase());
+}
+
+/**
+ * Escape the LIKE metacharacters (`%`, `_`) and the escape char (`\`) in raw
+ * user search input so a query of "50%_off" matches literally instead of as a
+ * wildcard. Paired with `LIKE ? ESCAPE '\'`.
+ */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+// Shared sort-key SQL fragments defining the total order used by search
+// (priority rank, due date NULLS LAST, title NOCASE, then the unique rowid).
+// Kept in sync with OFFLINE_TASK_ORDER_BY's leading columns; `id` is the
+// unique final tiebreaker that makes keyset pagination deterministic.
+const SEARCH_PR_EXPR = `(CASE WHEN COALESCE(priority, 0) BETWEEN 1 AND 4 THEN priority ELSE 5 END)`;
+const SEARCH_DUE_NULL_EXPR = `(CASE WHEN due_date IS NULL OR due_date = '' THEN 1 ELSE 0 END)`;
+const SEARCH_DUE_EXPR = `COALESCE(due_date, '')`;
+const SEARCH_TITLE_EXPR = `lower(COALESCE(title, ''))`;
+
+interface TaskSearchCursor {
+  pr: number;
+  dn: number;
+  due: string;
+  title: string;
+  id: number;
+}
+
+function searchCursorForRow(row: UnifiedTaskRow): TaskSearchCursor {
+  const priority = normalizeStoredTaskPriority(row.priority);
+  return {
+    pr: priority >= 1 && priority <= 4 ? priority : 5,
+    dn: row.due_date ? 0 : 1,
+    due: row.due_date || '',
+    title: asciiLower(row.title),
+    id: row.id,
+  };
+}
+
+function encodeTaskSearchCursor(cursor: TaskSearchCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+function decodeTaskSearchCursor(cursor: string | null | undefined): TaskSearchCursor | null {
+  if (!cursor) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8')) as Partial<TaskSearchCursor>;
+    if (
+      parsed
+      && typeof parsed.pr === 'number'
+      && typeof parsed.dn === 'number'
+      && typeof parsed.due === 'string'
+      && typeof parsed.title === 'string'
+      && typeof parsed.id === 'number'
+    ) {
+      return { pr: parsed.pr, dn: parsed.dn, due: parsed.due, title: parsed.title, id: parsed.id };
+    }
+  } catch { /* malformed opaque cursor — treated as no cursor (first page) */ }
+  return null;
+}
+
+/**
+ * Total-order key for the list-read keyset cursor (NEX-21). Mirrors
+ * OFFLINE_TASK_ORDER_BY (priority rank, due NULLS LAST, title NOCASE,
+ * updated_at DESC) and appends the unique rowid so ties never make a page
+ * boundary ambiguous.
+ */
+interface TaskListPageKey {
+  pr: number;
+  dn: number;
+  due: string;
+  title: string;
+  updatedAt: string;
+  id: number;
+}
+
+function listPageKeyForRow(row: UnifiedTaskRow): TaskListPageKey {
+  const priority = normalizeStoredTaskPriority(row.priority);
+  return {
+    pr: priority >= 1 && priority <= 4 ? priority : 5,
+    dn: row.due_date ? 0 : 1,
+    due: row.due_date || '',
+    title: asciiLower(row.title),
+    updatedAt: row.updated_at || '',
+    id: row.id,
+  };
+}
+
+function compareTaskListPageKeys(a: TaskListPageKey, b: TaskListPageKey): number {
+  if (a.pr !== b.pr) return a.pr - b.pr;
+  if (a.dn !== b.dn) return a.dn - b.dn;                       // null dues last
+  if (a.due !== b.due) return a.due < b.due ? -1 : 1;         // due ASC
+  if (a.title !== b.title) return a.title < b.title ? -1 : 1; // title NOCASE ASC
+  if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? 1 : -1; // updated_at DESC
+  return a.id - b.id;                                          // unique tiebreaker
+}
+
+function encodeTaskListPageCursor(key: TaskListPageKey): string {
+  return Buffer.from(JSON.stringify(key), 'utf8').toString('base64url');
+}
+
+function decodeTaskListPageCursor(cursor: string | null | undefined): TaskListPageKey | null {
+  if (!cursor) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8')) as Partial<TaskListPageKey>;
+    if (
+      parsed
+      && typeof parsed.pr === 'number'
+      && typeof parsed.dn === 'number'
+      && typeof parsed.due === 'string'
+      && typeof parsed.title === 'string'
+      && typeof parsed.updatedAt === 'string'
+      && typeof parsed.id === 'number'
+    ) {
+      return { pr: parsed.pr, dn: parsed.dn, due: parsed.due, title: parsed.title, updatedAt: parsed.updatedAt, id: parsed.id };
+    }
+  } catch { /* malformed opaque cursor — treated as no cursor (first page) */ }
+  return null;
+}
+
+const SEARCH_DEFAULT_LIMIT = 50;
+const SEARCH_MAX_LIMIT = 200;
+const SEARCH_MAX_QUERY_LENGTH = 200;
 
 function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -1506,7 +1654,7 @@ export function getOfflineTasksForList(
   tenantId: number,
   userId: number,
   listId: string,
-  options: { status?: string; pageSize?: number; listName?: string } = {},
+  options: { status?: string; pageSize?: number; listName?: string; cursor?: string | null } = {},
 ) {
   assertScope(tenantId, userId);
   ensureNativeTasksBackfilled(tenantId, userId);
@@ -1528,10 +1676,25 @@ export function getOfflineTasksForList(
   } else if (normalizedStatus === 'completed') {
     rows = rows.filter(isCompletedTaskRow);
   }
-  rows = rows.slice(0, pageSize);
-  let tasks = rowsToDtos(tenantId, userId, rows, listNameById);
-  if (options.status === 'active') tasks = tasks.filter((task) => !isCompletedDto(task));
-  if (options.status === 'completed') tasks = tasks.filter(isCompletedDto);
+  // NEX-21: real keyset cursor. Previously this sliced the first `pageSize`
+  // rows and always returned nextCursor:null, so a completed list with >150
+  // rows (the route's completed cap) could never page past the first screen.
+  // Re-sort into a deterministic TOTAL order (OFFLINE_TASK_ORDER_BY + unique
+  // rowid) so the opaque keyset boundary is unambiguous even on ties, then
+  // page forward from the cursor.
+  const sorted = rows
+    .map((row) => ({ row, key: listPageKeyForRow(row) }))
+    .sort((a, b) => compareTaskListPageKeys(a.key, b.key));
+  const cursorKey = decodeTaskListPageCursor(options.cursor);
+  const afterCursor = cursorKey
+    ? sorted.filter((entry) => compareTaskListPageKeys(entry.key, cursorKey) > 0)
+    : sorted;
+  const pageEntries = afterCursor.slice(0, pageSize);
+  const hasMore = afterCursor.length > pageSize;
+  const nextCursor = hasMore && pageEntries.length > 0
+    ? encodeTaskListPageCursor(pageEntries[pageEntries.length - 1].key)
+    : null;
+  const tasks = rowsToDtos(tenantId, userId, pageEntries.map((entry) => entry.row), listNameById);
   const scope = normalizedStatus === 'completed'
     ? 'completed'
     : normalizedStatus === 'active'
@@ -1544,8 +1707,8 @@ export function getOfflineTasksForList(
     freshness: buildFreshness(tenantId, userId, tasks),
     pageInfo: {
       pageSize,
-      nextCursor: null,
-      hasMore: tasks.length >= pageSize,
+      nextCursor,
+      hasMore,
     },
     pendingMutationCount: countPendingMutations(tenantId, userId),
     conflictsCount: countConflicts(tenantId, userId),
@@ -1562,6 +1725,107 @@ export function getOfflineFilteredTasks(tenantId: number, userId: number, filter
   return {
     tasks,
     count: tasks.length,
+    freshness: buildFreshness(tenantId, userId, tasks),
+    pendingMutationCount: countPendingMutations(tenantId, userId),
+    conflictsCount: countConflicts(tenantId, userId),
+  };
+}
+
+export interface OfflineTaskSearchOptions {
+  q: string;
+  /** Default false — active tasks only. Set true to also match completed/cancelled tasks. */
+  includeCompleted?: boolean;
+  /** Page size (default 50, hard-capped at 200). */
+  limit?: number;
+  /** Opaque keyset cursor from a prior page's `pageInfo.nextCursor`. */
+  cursor?: string | null;
+}
+
+/**
+ * M14 server-side search — token-zero local read over the user's own
+ * unified_tasks rows. Case-insensitive (SQLite LIKE folds ASCII case)
+ * substring match on title AND notes/description; user wildcards (%, _) are
+ * escaped so they match literally. Active tasks only by default; completed
+ * tasks join in with `includeCompleted`. Deterministic keyset pagination over
+ * (priority rank, due NULLS LAST, title NOCASE, rowid) — the same leading
+ * order as the list reads plus the unique rowid tiebreaker.
+ *
+ * DECISION (documented, no migration): LIKE over the existing columns rather
+ * than an FTS5 virtual table. At single-user scale a full scan of one user's
+ * rows is trivially fast, and FTS would add a migration + trigger-maintained
+ * shadow table (schema churn this milestone deliberately avoids — migrations
+ * already run through 238). LIKE needs no migration.
+ */
+export function searchOfflineTasks(tenantId: number, userId: number, options: OfflineTaskSearchOptions) {
+  assertScope(tenantId, userId);
+  ensureNativeTasksBackfilled(tenantId, userId);
+  const includeCompleted = options.includeCompleted === true;
+  const limit = Math.min(Math.max(Number(options.limit) || SEARCH_DEFAULT_LIMIT, 1), SEARCH_MAX_LIMIT);
+  const trimmedQuery = String(options.q ?? '').trim().slice(0, SEARCH_MAX_QUERY_LENGTH);
+
+  const emptyResult = () => ({
+    query: trimmedQuery,
+    includeCompleted,
+    tasks: [] as OfflineTaskDto[],
+    pageInfo: { limit, nextCursor: null as string | null, hasMore: false },
+    freshness: buildFreshness(tenantId, userId, []),
+    pendingMutationCount: countPendingMutations(tenantId, userId),
+    conflictsCount: countConflicts(tenantId, userId),
+  });
+
+  // Defensive: the route rejects an empty q with 400, but never scan on a
+  // blank pattern (it would LIKE '%%' and return everything).
+  if (!trimmedQuery) return emptyResult();
+
+  const likePattern = `%${escapeLikePattern(trimmedQuery)}%`;
+  const where: string[] = ['tenant_id = ?', 'user_id = ?', 'is_deleted = 0'];
+  const params: unknown[] = [tenantId, userId];
+
+  if (!includeCompleted) {
+    where.push(activeLikeStatusSql('status'));
+    params.push(...COMPLETED_LIKE_STATUS_VALUES);
+  }
+
+  where.push(`(title LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')`);
+  params.push(likePattern, likePattern, likePattern);
+
+  const cursor = decodeTaskSearchCursor(options.cursor);
+  if (cursor) {
+    where.push(`(
+      ${SEARCH_PR_EXPR} > ?
+      OR (${SEARCH_PR_EXPR} = ? AND ${SEARCH_DUE_NULL_EXPR} > ?)
+      OR (${SEARCH_PR_EXPR} = ? AND ${SEARCH_DUE_NULL_EXPR} = ? AND ${SEARCH_DUE_EXPR} > ?)
+      OR (${SEARCH_PR_EXPR} = ? AND ${SEARCH_DUE_NULL_EXPR} = ? AND ${SEARCH_DUE_EXPR} = ? AND ${SEARCH_TITLE_EXPR} > ?)
+      OR (${SEARCH_PR_EXPR} = ? AND ${SEARCH_DUE_NULL_EXPR} = ? AND ${SEARCH_DUE_EXPR} = ? AND ${SEARCH_TITLE_EXPR} = ? AND id > ?)
+    )`);
+    params.push(
+      cursor.pr,
+      cursor.pr, cursor.dn,
+      cursor.pr, cursor.dn, cursor.due,
+      cursor.pr, cursor.dn, cursor.due, cursor.title,
+      cursor.pr, cursor.dn, cursor.due, cursor.title, cursor.id,
+    );
+  }
+
+  const sql = `SELECT * FROM unified_tasks
+    WHERE ${where.join(' AND ')}
+    ORDER BY ${SEARCH_PR_EXPR} ASC, ${SEARCH_DUE_NULL_EXPR} ASC, ${SEARCH_DUE_EXPR} ASC, ${SEARCH_TITLE_EXPR} ASC, id ASC
+    LIMIT ?`;
+  params.push(limit + 1);
+
+  const rows = getDb().prepare(sql).all(...params) as UnifiedTaskRow[];
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  const listNameById = getProjectNameMap(tenantId, userId);
+  const tasks = rowsToDtos(tenantId, userId, pageRows, listNameById);
+  const lastRow = pageRows[pageRows.length - 1];
+  const nextCursor = hasMore && lastRow ? encodeTaskSearchCursor(searchCursorForRow(lastRow)) : null;
+
+  return {
+    query: trimmedQuery,
+    includeCompleted,
+    tasks,
+    pageInfo: { limit, nextCursor, hasMore },
     freshness: buildFreshness(tenantId, userId, tasks),
     pendingMutationCount: countPendingMutations(tenantId, userId),
     conflictsCount: countConflicts(tenantId, userId),
@@ -1950,6 +2214,13 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
     const nextStatus = Object.prototype.hasOwnProperty.call(input, 'status')
       ? dbStatusForValue(input.status, existingRow.status)
       : existingRow.status;
+    // NEX-23: keep completed_at consistent with the resolved status so a
+    // combined reopen (completed → active) clears the stale completion stamp,
+    // and a combined complete stamps it — mirroring the status-only
+    // task.reopen/task.complete ledger paths. Idempotent when the status is
+    // unchanged (an active task stays null, a completed one keeps its stamp).
+    const nextStatusIsCompletedLike = nextStatus === 'completed' || nextStatus === 'cancelled' || nextStatus === 'archived';
+    const nextCompletedAt = nextStatusIsCompletedLike ? (existingRow.completed_at || updatedAt) : null;
     db.prepare(
       `UPDATE unified_tasks SET
          title = ?,
@@ -1960,6 +2231,7 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
          reminder_at = ?,
          priority = ?,
          status = ?,
+         completed_at = ?,
          provider_data = ?,
          sync_state = ?,
          local_version = COALESCE(local_version, 1) + 1,
@@ -1974,6 +2246,7 @@ export function updateOfflineFirstTask(tenantId: number, userId: number, input: 
       nextReminder,
       nextPriority,
       nextStatus,
+      nextCompletedAt,
       JSON.stringify(providerData),
       newSyncState,
       updatedAt,
