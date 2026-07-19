@@ -381,4 +381,78 @@ describe('microsoft-auth access token cache', () => {
       refreshToken: 'refresh-user-25-b',
     });
   });
+
+  it('NEX-13: persists a rotated refresh token MSAL returns, without defeating the access-token cache', async () => {
+    const { microsoftAuth, oauthStore } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 25, 'refresh-user-25');
+    mockState.confidentialAcquire.mockResolvedValue({
+      accessToken: 'access-user-25',
+      refreshToken: 'rotated-refresh-25',
+      expiresOn: new Date('2026-05-08T13:00:00Z'),
+    });
+
+    await expect(microsoftAuth.getAccessTokenForUser(25)).resolves.toBe('access-user-25');
+    // Second call within the TTL is served from the re-affirmed cache even
+    // though the rotation persist fired storeTokens (which invalidates it).
+    await expect(microsoftAuth.getAccessTokenForUser(25)).resolves.toBe('access-user-25');
+    expect(mockState.confidentialAcquire).toHaveBeenCalledTimes(1);
+
+    oauthStore._resetDecryptCacheForTests();
+    const stored = oauthStore.getTokens(25, 'outlook');
+    expect(stored?.refreshToken).toBe('rotated-refresh-25');
+    expect(stored?.expiresAt).toBe('2026-05-08T13:00:00.000Z');
+  });
+
+  it('NEX-13: does not rewrite the stored token when MSAL returns the same refresh token', async () => {
+    const { microsoftAuth, oauthStore } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 30, 'refresh-user-30');
+    mockState.confidentialAcquire.mockResolvedValue({
+      accessToken: 'access-user-30',
+      refreshToken: 'refresh-user-30',
+    });
+
+    await expect(microsoftAuth.getAccessTokenForUser(30)).resolves.toBe('access-user-30');
+
+    oauthStore._resetDecryptCacheForTests();
+    expect(oauthStore.getTokens(30, 'outlook')?.refreshToken).toBe('refresh-user-30');
+  });
+
+  it('NEX-13: skips persistence on the owner env-fallback path when there is no stored token to update', async () => {
+    mockState.ownerRefs = [111111];
+    mockState.config.outlook.refreshToken = 'owner-refresh-token';
+    const { microsoftAuth, oauthStore } = await loadModulesWithMsalClients();
+    // No stored outlook token for owner ref 111111 → the env refresh token is used.
+    mockState.confidentialAcquire.mockResolvedValue({
+      accessToken: 'owner-access',
+      refreshToken: 'rotated-owner-rt',
+    });
+
+    await expect(microsoftAuth.__testing.getAccessTokenForOwner()).resolves.toBe('owner-access');
+
+    oauthStore._resetDecryptCacheForTests();
+    expect(oauthStore.getTokens(111111, 'outlook')).toBeNull();
+  });
+
+  it('NEX-13: does not clobber a token changed concurrently, and accepts a string expiresOn', async () => {
+    const { microsoftAuth, oauthStore } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 40, 'stored-A');
+    mockState.confidentialAcquire.mockImplementation(async () => {
+      // A concurrent reconnect stores a NEW token before MSAL returns, so the
+      // refresh token we rotated away from is no longer the stored one.
+      oauthStore.storeTokens(40, 'outlook', {
+        accessToken: 'concurrent-access',
+        refreshToken: 'concurrent-C',
+        tokenType: 'Bearer',
+        expiresAt: null,
+        scopes: ['Tasks.ReadWrite'],
+      });
+      return { accessToken: 'access-40', refreshToken: 'rotated-B', expiresOn: '2026-05-08T14:00:00Z' };
+    });
+
+    await expect(microsoftAuth.getAccessTokenForUser(40)).resolves.toBe('access-40');
+
+    oauthStore._resetDecryptCacheForTests();
+    // The concurrent token wins — rotation detected the mismatch and skipped.
+    expect(oauthStore.getTokens(40, 'outlook')?.refreshToken).toBe('concurrent-C');
+  });
 });

@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "df986006c9c9d147604b394c95303a9587acefc6dc3792d40d268de187a3e53c",
-    "baseCommit": "b39ea2467eae3f7e6be82ae38714f2993b029f4b",
-    "baseCommitTimestamp": "2026-07-18T23:58:58+01:00",
-    "trackedFiles": 2598,
+    "sourceDigest": "63dc3f9ab52032b7051cbfb1fef0a2a8be08b1542de902a7fa17b13ff3dba17e",
+    "baseCommit": "049d12ddc76cbe062666b1b9cf1a60f0421f4d6a",
+    "baseCommitTimestamp": "2026-07-19T00:21:58+01:00",
+    "trackedFiles": 2599,
     "sourceFiles": 982
   },
   "navigation": {
@@ -3322,6 +3322,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/tasks/search",
+      "localPath": "/search",
+      "mountPath": "/api/v1/tasks",
+      "source": "src/api/routes/tasks.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/tasks/snapshot",
       "localPath": "/snapshot",
       "mountPath": "/api/v1/tasks",
@@ -4366,7 +4374,7 @@
     }
   ],
   "tests": {
-    "files": 949,
+    "files": 950,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4388,7 +4396,7 @@
       "scripts": 50,
       "sdk": 1,
       "security": 21,
-      "services": 602,
+      "services": 603,
       "skills": 11,
       "state": 17,
       "storage": 1,
