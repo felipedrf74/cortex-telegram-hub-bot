@@ -1,7 +1,7 @@
 {
   "schema": "nexus.release-state.v1",
   "lastVerifiedAt": "2026-07-19T12:43:05.167Z",
-  "docsHead": "4e09a4f7ddadcced7e1e928c6c6f0b9a2140a3f2",
+  "docsHead": "7e1e25bb62080b0e39f6e30398f3153fc4db8baf",
   "backend": {
     "version": "4.14.224",
     "runtimeSha": "74f89adc0f1cbb5657cf42808b9ac6dce18713ca",
