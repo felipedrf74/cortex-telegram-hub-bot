@@ -846,7 +846,7 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/api/routes/content-learning-routes.ts:228-228",
+          "pattern": "src/api/routes/content-learning-routes.ts:230-230",
           "anchor": "captureOrigin: 'approved_variant'",
           "behavior": "Accepted script feedback is captured as a canonical artifact with explicit provenance.",
           "replacementTest": "__tests__/api/content-learning-routes.test.ts",
@@ -854,7 +854,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/api/routes/content-learning-routes.ts:357-357",
+          "pattern": "src/api/routes/content-learning-routes.ts:360-360",
           "anchor": "'CONTENT_LEGACY_PIPELINE_ALIAS_READ_ONLY'",
           "behavior": "Performance writes reject ambiguous legacy pipeline identifiers instead of guessing revision lineage.",
           "replacementTest": "__tests__/api/content-learning-routes.test.ts",
@@ -862,7 +862,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/api/routes/content-learning-routes.ts:415-415",
+          "pattern": "src/api/routes/content-learning-routes.ts:418-418",
           "anchor": "mutation.created ? 201 : 200",
           "behavior": "New performance outcomes return created status while idempotent replays return success without duplication.",
           "replacementTest": "__tests__/api/content-learning-routes.test.ts",
@@ -870,7 +870,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/api/routes/content-learning-routes.ts:475-477",
+          "pattern": "src/api/routes/content-learning-routes.ts:478-480",
           "anchor": "chain.availability === 'not_found'",
           "behavior": "Missing and foreign artifact-chain identifiers return the same non-disclosing response.",
           "replacementTest": "__tests__/api/content-learning-routes.test.ts",
