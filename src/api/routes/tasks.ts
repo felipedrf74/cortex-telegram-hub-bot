@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { setCache, setCacheSWR } from '../../services/cache-store';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
+import { sendConditionalApiSuccess } from '../conditional-cache';
 import * as microsoftTodo from '../../services/microsoft-todo';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { getOwnerBootstrapUser } from '../../services/user-service';
@@ -39,6 +40,7 @@ import {
   restoreOfflineFirstTask,
   retryOfflineTaskSync,
   resolveOfflineNexusTaskId,
+  searchOfflineTasks,
   toggleOfflineTaskChecklistItem,
   updateOfflineFirstTask,
 } from '../../services/task-store/offline-first-task-service';
@@ -333,6 +335,20 @@ async function resolveProviderListUniverse(
   return ids;
 }
 
+/**
+ * M14 ETag seed for the heavy token-zero task reads. The read payloads embed a
+ * per-call `freshness.generatedAt` (and, for an empty snapshot, a `cursor` that
+ * falls back to it) — hashing the whole body would change the ETag on every
+ * request and make 304 revalidation useless. Strip ONLY those two derived,
+ * volatile fields (both are recomputed from the same rows the rest of the body
+ * already reflects) so the ETag changes iff the client-visible data changes.
+ * The read still runs to build the body, so the 304 win is bandwidth, not
+ * compute — the existing helper takes the built payload.
+ */
+function taskReadEtagSeed(payload: unknown): string {
+  return JSON.stringify(payload, (key, value) => (key === 'generatedAt' || key === 'cursor' ? undefined : value));
+}
+
 export function taskRoutes(): Router {
   const router = Router();
 
@@ -355,7 +371,12 @@ export function taskRoutes(): Router {
   router.get('/lists', async (req, res: Response) => {
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'tasks_lists_local_read');
-      sendSuccess(res, getOfflineTaskLists(tenantId, userId));
+      // M14: real ETag/304 on this heavy token-zero read. The validator is a
+      // hash of the payload with volatile timestamps stripped (etagSeed), so a
+      // 304 fires when the data is unchanged. The read still runs — the win is
+      // bandwidth (no body re-sent), not compute.
+      const listsPayload = getOfflineTaskLists(tenantId, userId);
+      sendConditionalApiSuccess(res, req, listsPayload, { etagSeed: taskReadEtagSeed(listsPayload) });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
       sendInternalError(res, 'Failed to fetch lists');
@@ -365,9 +386,10 @@ export function taskRoutes(): Router {
   router.get('/snapshot', async (req, res: Response) => {
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'tasks_snapshot_local_read');
-      sendSuccess(res, getOfflineTaskSnapshot(tenantId, userId, {
+      const snapshotPayload = getOfflineTaskSnapshot(tenantId, userId, {
         pageSize: capTaskPageSize(req.query.pageSize, 75, 200),
-      }));
+      });
+      sendConditionalApiSuccess(res, req, snapshotPayload, { etagSeed: taskReadEtagSeed(snapshotPayload) });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/snapshot failed');
       sendInternalError(res, 'Failed to fetch task snapshot');
@@ -623,9 +645,10 @@ export function taskRoutes(): Router {
   router.get('/working-set', async (req, res: Response) => {
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'tasks_working_set_local_read');
-      sendSuccess(res, getOfflineTaskSnapshot(tenantId, userId, {
+      const workingSetPayload = getOfflineTaskSnapshot(tenantId, userId, {
         pageSize: capTaskPageSize(req.query.pageSize, 75, 200),
-      }));
+      });
+      sendConditionalApiSuccess(res, req, workingSetPayload, { etagSeed: taskReadEtagSeed(workingSetPayload) });
     } catch (err: any) {
       if (err?.code || err?.status) {
         sendError(res, err?.code ?? 'UNAUTHORIZED', err?.message ?? 'Authenticated user required', err?.status ?? 401);
@@ -704,10 +727,53 @@ export function taskRoutes(): Router {
         payload,
         cached: false,
       });
-      sendSuccess(res, payload);
+      sendConditionalApiSuccess(res, req, payload, { etagSeed: taskReadEtagSeed(payload) });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');
       sendInternalError(res, 'Failed to fetch tasks');
+    }
+  });
+
+  /**
+   * GET /api/v1/tasks/search?q=&includeCompleted=&limit=&cursor= — M14
+   * server-side search (token-zero local read).
+   *
+   * - `q` (required): trimmed, non-empty, capped at 200 chars → 400 otherwise.
+   *   Case-insensitive substring match on title AND notes/body; user wildcards
+   *   (%, _) are escaped so they match literally.
+   * - `includeCompleted=1|true`: also match completed/cancelled tasks
+   *   (default: active tasks only).
+   * - `limit`: page size, default 50, hard-capped at 200.
+   * - `cursor`: opaque keyset cursor from a prior page's pageInfo.nextCursor.
+   *
+   * 200 {
+   *   query, includeCompleted,
+   *   tasks: OfflineTaskDto[],          // same DTO shape as every other read
+   *   pageInfo: { limit, nextCursor, hasMore },
+   *   freshness, pendingMutationCount, conflictsCount
+   * }
+   */
+  router.get('/search', async (req, res: Response) => {
+    try {
+      const { userId, tenantId } = assertTenantScope(req as any, 'tasks_search_local_read');
+      const rawQ = typeof req.query.q === 'string'
+        ? req.query.q
+        : Array.isArray(req.query.q) ? String((req.query.q as unknown[])[0] ?? '') : '';
+      if (!rawQ.trim()) {
+        sendError(res, 'BAD_REQUEST', 'q is required and must be a non-empty search string', 400);
+        return;
+      }
+      const includeCompleted = req.query.includeCompleted === '1' || req.query.includeCompleted === 'true';
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+      sendSuccess(res, searchOfflineTasks(tenantId, userId, {
+        q: rawQ,
+        includeCompleted,
+        limit: capTaskPageSize(req.query.limit, 50, 200),
+        cursor,
+      }));
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/search failed');
+      sendInternalError(res, 'Failed to search tasks');
     }
   });
 
@@ -724,11 +790,15 @@ export function taskRoutes(): Router {
     const pageSize = capTaskPageSize(req.query.pageSize ?? req.query.limit, scope === 'completed' ? 50 : 75, 150);
     try {
       const { userId, tenantId } = assertTenantScope(req as any, 'tasks_list_local_read');
-      sendSuccess(res, getOfflineTasksForList(tenantId, userId, listId, {
+      const listPayload = getOfflineTasksForList(tenantId, userId, listId, {
         status,
         pageSize,
+        // NEX-21: forward the opaque keyset cursor so completed lists longer
+        // than one page (the 150 cap) are reachable.
+        cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
         listName: typeof req.query.listName === 'string' ? req.query.listName : undefined,
-      }));
+      });
+      sendConditionalApiSuccess(res, req, listPayload, { etagSeed: taskReadEtagSeed(listPayload) });
       return;
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
@@ -748,7 +818,7 @@ export function taskRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Task not found in local task store', 404);
         return;
       }
-      sendSuccess(res, { task });
+      sendConditionalApiSuccess(res, req, { task });
     } catch (err: any) {
       logger.error({ err }, 'iOS task detail failed');
       sendInternalError(res, 'Failed to fetch task detail');

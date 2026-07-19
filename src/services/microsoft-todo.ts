@@ -69,12 +69,47 @@ export function isOutlookTodoConfigured(): boolean {
   return isMicrosoftConfigured();
 }
 
-// ─── Retry Helper ───────────────────────────────────────────────────
+// ─── Timeout + Retry Helpers ────────────────────────────────────────
+
+// NEX-25 residual: the chat-path Graph calls in this module had NO request
+// timeout (only the offline-first adapter and mutation worker wrapped their
+// own), so a hung Graph socket could stall a chat/AI read indefinitely. Bound
+// every raw Graph call at ~15s, matching the adapter's convention and its
+// MS_TODO_GRAPH_REQUEST_TIMEOUT_MS override. Retry-After handling is untouched
+// (M6 owns it in graph-request-policy).
+const DEFAULT_MS_GRAPH_REQUEST_TIMEOUT_MS = 15_000;
+
+function microsoftGraphRequestTimeoutMs(): number {
+  const parsed = Number(process.env.MS_TODO_GRAPH_REQUEST_TIMEOUT_MS || '');
+  if (Number.isFinite(parsed) && parsed >= 1000) return Math.floor(parsed);
+  return DEFAULT_MS_GRAPH_REQUEST_TIMEOUT_MS;
+}
+
+async function withGraphTimeout<T>(
+  promise: Promise<T>,
+  label = 'Microsoft To Do Graph request',
+  timeoutMs = microsoftGraphRequestTimeoutMs(),
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label} timed out`);
+      (err as any).code = 'ETIMEDOUT';
+      reject(err);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      return await withGraphTimeout(fn());
     } catch (err: any) {
       const status = err?.statusCode || err?.code;
       if (status === 429) recordGraphRateLimitHit('microsoft-todo');
@@ -555,7 +590,9 @@ export async function createTask(
       }];
     }
 
-    const response = await client.api(`/me/todo/lists/${listId}/tasks`).post(taskBody);
+    // NEX-25 residual: this create path does not go through withRetry, so it
+    // gets the bounded timeout applied directly.
+    const response = await withGraphTimeout(client.api(`/me/todo/lists/${listId}/tasks`).post(taskBody));
 
     // Track self-created tasks so shared list notifications can filter them out
     if (response.id) selfCreatedTaskIds.add(response.id);

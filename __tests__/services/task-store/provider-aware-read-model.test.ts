@@ -68,6 +68,43 @@ describe('provider-aware task read model', () => {
     });
   });
 
+  it('NEX-27: dedupes a legacy native_tasks_backfill projection against the native adapter row', async () => {
+    const listId = (testDb.prepare('SELECT id FROM native_task_lists WHERE user_id = ?').get(42) as { id: number }).id;
+    testDb.prepare(`
+      INSERT INTO native_tasks (id, user_id, list_id, title, status, importance)
+      VALUES (?, ?, ?, ?, 'notStarted', 'normal')
+    `).run(7, 42, listId, 'Local task');
+    // Legacy backfill mirror: external_id `native_task_7`, provider_data marks
+    // it a backfill of native id 7. The native adapter emits externalId `7` for
+    // the SAME row, so pre-fix the chat read listed it twice.
+    testDb.prepare(`
+      INSERT INTO unified_tasks (user_id, provider, external_id, title, status, priority, project_name, provider_data)
+      VALUES (?, 'nexus', 'native_task_7', ?, 'pending', 0, 'Inbox', ?)
+    `).run(42, 'Local task (backfilled)', JSON.stringify({ source: 'native_tasks_backfill', nativeTaskId: 7 }));
+
+    const tasks = await getProviderAwareTaskReadModel(42);
+    const local = tasks.filter((task) => task.provider === 'nexus');
+    expect(local).toHaveLength(1);
+    expect(local[0]).toMatchObject({ provider: 'nexus', externalId: '7', title: 'Local task' });
+  });
+
+  it('NEX-27: dedupes via the external_id prefix even without the backfill provider_data marker', async () => {
+    const listId = (testDb.prepare('SELECT id FROM native_task_lists WHERE user_id = ?').get(42) as { id: number }).id;
+    testDb.prepare(`
+      INSERT INTO native_tasks (id, user_id, list_id, title, status, importance)
+      VALUES (?, ?, ?, ?, 'notStarted', 'normal')
+    `).run(8, 42, listId, 'Another local task');
+    testDb.prepare(`
+      INSERT INTO unified_tasks (user_id, provider, external_id, title, status, priority, project_name, provider_data)
+      VALUES (?, 'nexus', 'native_task_8', ?, 'pending', 0, 'Inbox', '{}')
+    `).run(42, 'Another local task (backfilled)');
+
+    const tasks = await getProviderAwareTaskReadModel(42);
+    const local = tasks.filter((task) => task.provider === 'nexus');
+    expect(local).toHaveLength(1);
+    expect(local[0]).toMatchObject({ provider: 'nexus', externalId: '8', title: 'Another local task' });
+  });
+
   it('provides Microsoft To Do shaped pending and date-range results for fast reads', async () => {
     const listId = (testDb.prepare('SELECT id FROM native_task_lists WHERE user_id = ?').get(42) as { id: number }).id;
     testDb.prepare(`

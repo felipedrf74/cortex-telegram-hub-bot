@@ -22,7 +22,7 @@ import { Client } from '@microsoft/microsoft-graph-client';
 import { PublicClientApplication } from '@azure/msal-node';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { getTokens } from './oauth-store';
+import { getTokens, storeTokens } from './oauth-store';
 import { getOwnerBootstrapUserRefs } from './user-service';
 import { registerOAuthTokenMutationListener } from './oauth-token-cache-events';
 
@@ -151,6 +151,63 @@ function isPublicClientRefreshTokenMismatch(err: unknown): boolean {
     || message.includes("Public clients can't send a client secret");
 }
 
+// ─── NEX-13: rotated refresh-token persistence ──────────────────────
+
+/** The users a token cache key maps to, for persisting a rotated refresh token. */
+function resolveUserIdsForCacheKey(cacheKey: MicrosoftAccessTokenCacheKey): number[] {
+  return cacheKey === 'owner' ? getOwnerBootstrapUserRefs() : [Number(cacheKey.slice('user:'.length))];
+}
+
+/**
+ * Re-affirm the freshly acquired token in the access-token cache. storeTokens()
+ * fires the OAuth mutation listener above, which invalidates THIS module's
+ * cache for the affected user (and owner). Without this a routine refresh-token
+ * rotation would defeat the cache and force an immediate re-acquire.
+ */
+function reaffirmAccessTokenCache(cacheKey: MicrosoftAccessTokenCacheKey, token: string, clientType: MicrosoftClientType): void {
+  clientTypeByCacheKey.set(cacheKey, clientType);
+  accessTokenCache.set(cacheKey, { token, refreshAt: Date.now() + ACCESS_TOKEN_CACHE_TTL_MS });
+}
+
+/**
+ * Persist a rotated refresh token when MSAL returns one on the result. Only
+ * users whose CURRENTLY STORED Outlook refresh token is the one we just rotated
+ * away from are updated — this skips the env-only owner fallback (no stored
+ * row) and never clobbers a token changed concurrently by a re-connect.
+ */
+function persistRotatedRefreshTokenIfNeeded(
+  cacheKey: MicrosoftAccessTokenCacheKey,
+  previousRefreshToken: string,
+  result: any,
+  clientType: MicrosoftClientType,
+): void {
+  const candidate = result?.refreshToken;
+  const rotated = typeof candidate === 'string' ? candidate.trim() : '';
+  if (!rotated || rotated === previousRefreshToken) return;
+  try {
+    const accessToken = result.accessToken as string;
+    const expiresOn = result?.expiresOn;
+    const expiresAt = expiresOn instanceof Date
+      ? expiresOn.toISOString()
+      : typeof expiresOn === 'string' ? expiresOn : null;
+    for (const userId of resolveUserIdsForCacheKey(cacheKey)) {
+      const existing = getTokens(userId, 'outlook');
+      if (!existing || existing.refreshToken !== previousRefreshToken) continue;
+      storeTokens(userId, 'outlook', {
+        accessToken,
+        refreshToken: rotated,
+        tokenType: existing.tokenType,
+        expiresAt: expiresAt ?? existing.expiresAt,
+        scopes: existing.scopes,
+      });
+      reaffirmAccessTokenCache(cacheKey, accessToken, clientType);
+      logger.info({ userId, cacheKey }, 'microsoft_auth_refresh_token_rotated_persisted');
+    }
+  } catch (err) {
+    logger.warn({ err, cacheKey }, 'Failed to persist rotated Outlook refresh token');
+  }
+}
+
 async function acquireAccessTokenFromRefreshToken(
   refreshToken: string,
   cacheKey: MicrosoftAccessTokenCacheKey = 'owner',
@@ -185,7 +242,7 @@ async function acquireAccessTokenFromRefreshToken(
       throw new Error('Failed to acquire Microsoft Graph access token');
     }
 
-    return result.accessToken;
+    return result;
   };
 
   const acquisitionGeneration = cacheGenerationByCacheKey.get(cacheKey) ?? 0;
@@ -198,23 +255,32 @@ async function acquireAccessTokenFromRefreshToken(
     accessTokenCache.set(cacheKey, { token, refreshAt: Date.now() + ACCESS_TOKEN_CACHE_TTL_MS });
   };
 
+  // NEX-13: MSAL rotates the refresh token on each acquireTokenByRefreshToken
+  // call. When it surfaces the rotated token on the result, persist it to the
+  // encrypted oauth-store so the next process/call doesn't keep presenting the
+  // stale (now-consumed) refresh token and eventually fail with invalid_grant.
   const acquisition = (async () => {
     const memoizedClientType = clientTypeByCacheKey.get(cacheKey);
     const initialMode: 'auto' | 'confidential' | 'public' = memoizedClientType ?? 'auto';
 
     try {
-      const token = await acquire(initialMode);
+      const result = await acquire(initialMode);
+      const token = result.accessToken as string;
       if (initialMode === 'public' || (!config.outlook.clientSecret && initialMode === 'auto')) {
         writeAcquiredToken(token, 'public');
+        persistRotatedRefreshTokenIfNeeded(cacheKey, refreshToken, result, 'public');
       } else {
         writeAcquiredToken(token, 'confidential');
+        persistRotatedRefreshTokenIfNeeded(cacheKey, refreshToken, result, 'confidential');
       }
       return token;
     } catch (err) {
       if (initialMode !== 'public' && config.outlook.clientSecret && isPublicClientRefreshTokenMismatch(err)) {
         logger.warn({ cacheKey }, 'Microsoft refresh token requires public-client MSAL flow; retrying without client secret');
-        const token = await acquire('public');
+        const result = await acquire('public');
+        const token = result.accessToken as string;
         writeAcquiredToken(token, 'public');
+        persistRotatedRefreshTokenIfNeeded(cacheKey, refreshToken, result, 'public');
         return token;
       }
       throw err;
