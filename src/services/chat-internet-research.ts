@@ -16,7 +16,10 @@ import { canUseAnthropicRuntimeFallback } from './runtime-flags';
 import { logger } from '../utils/logger';
 import { completeOneShotWithWebSearch, isOpenAIConfigured } from './openai-provider';
 import { isResearchProviderRefusal } from './chat-research-refusal-policy';
-import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
+import {
+  assessChatResearchAnswerCompleteness,
+  stripResearchSourceFooter,
+} from './chat-research-answer-quality';
 import { ApiUsagePersistenceError } from './api-usage-fallback';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 
@@ -354,28 +357,19 @@ export function buildChatInternetResearchSafeQueryPacket(
 }
 
 function appendSourceNote(text: string, sources: string[], sourceLabel: string): string {
-  const trimmed = stripProviderSourceFooter(text).trim();
+  const trimmed = stripResearchSourceFooter(text).trim();
   const uniqueSources = dedupeSources(sources).slice(0, 3);
   if (uniqueSources.length === 0) return trimmed;
   return `${trimmed}\n\n${sourceLabel}: ${uniqueSources.join(', ')}`;
 }
 
 export function normalizeResearchAnswerText(text: string, language: NexusChatLanguage): string {
-  return stripProviderSourceFooter(text)
+  return stripResearchSourceFooter(text)
     .replace(/\s{3,}/g, ' ')
     .trim();
 }
 
 export { isResearchProviderRefusal } from './chat-research-refusal-policy';
-
-function stripProviderSourceFooter(text: string): string {
-  return text
-    .replace(
-      /\n{1,3}\s*(?:Sources consulted|Fuentes consultadas|Fontes consultadas|Sources|Fuentes|Fontes)\s*:\s*(?:https?:\/\/\S+(?:\s*,\s*)?)+\s*$/iu,
-      '',
-    )
-    .trim();
-}
 
 function researchLocalization(language: NexusChatLanguage): {
   sourceLabel: string;

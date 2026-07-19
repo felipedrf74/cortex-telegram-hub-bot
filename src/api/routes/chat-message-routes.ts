@@ -1612,7 +1612,7 @@ export function registerChatMessageRoutes(
    * accept the raw message text including the / prefix.
    */
   // The API composition root applies the shared per-user limiter before /chat.
-  router.post('/message', async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
+  router.post('/message', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
     const {
       normalizedText,

@@ -42,6 +42,7 @@ import {
   isResearchProviderRefusal,
   normalizeResearchAnswerText,
 } from '../../src/services/chat-internet-research';
+import { assessChatResearchAnswerCompleteness } from '../../src/services/chat-research-answer-quality';
 
 describe('chat internet research', () => {
   beforeEach(() => {
@@ -555,6 +556,25 @@ describe('chat internet research', () => {
       'Respuesta pública.\n\nFontes consultadas: https://example.com/a',
       'es',
     )).toBe('Respuesta pública.');
+    expect(normalizeResearchAnswerText(
+      'Public answer.\n\nSources consulted: https://example.com/a, http://example.org/b',
+      'en',
+    )).toBe('Public answer.');
+    expect(normalizeResearchAnswerText(
+      'Public answer.\n\nSources: HTTPS://EXAMPLE.COM/A',
+      'en',
+    )).toBe('Public answer.');
+    expect(normalizeResearchAnswerText(
+      'Public answer.\n\nSources consulted: not-a-url',
+      'en',
+    )).toBe('Public answer.\n\nSources consulted: not-a-url');
+    expect(normalizeResearchAnswerText(
+      'Public answer.\n\nSources consulted: https://',
+      'en',
+    )).toBe('Public answer.\n\nSources consulted: https://');
+    expect(assessChatResearchAnswerCompleteness(
+      'A complete public research answer sentence.\n\nSources: https://example.com/source',
+    )).toEqual({ ok: true });
   });
 
   it('refuses to send private scoped Nexus state into web-search prompts', async () => {

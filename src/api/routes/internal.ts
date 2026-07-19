@@ -138,7 +138,7 @@ export function internalRoutes(): Router {
   //   requestId?: string, // for tracing
   // }
   // The router-local internal limiter is mounted before shared-secret validation and every handler.
-  router.post('/report-usage', async (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  router.post('/report-usage', async (req: Request, res: Response) => {
     try {
       const {
         category: rawCategory, model: rawModel,
@@ -315,7 +315,7 @@ export function internalRoutes(): Router {
   //
   // Response: { text: string, provider: string }
   // This handler also has a tighter dedicated limiter after the router-local internal limiter.
-  router.post('/ai-complete', internalAiCompleteRateLimitMiddleware, async (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  router.post('/ai-complete', internalAiCompleteRateLimitMiddleware, async (req: Request, res: Response) => {
     try {
       const {
         prompt: rawPrompt, system: rawSystem = '', category: rawCategory,
@@ -464,7 +464,7 @@ export function internalRoutes(): Router {
   // Returns performance feedback entries for the Python report generator.
   // Query param: ?days=7 (default 30)
   // The router-local internal limiter is mounted before shared-secret validation and every handler.
-  router.get('/performance-summary', (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  router.get('/performance-summary', (req: Request, res: Response) => {
     try {
       const days = parseInt(req.query.days as string, 10) || 30;
       const requestedTenantId = normalizeOptionalScopeId(req.query.tenantId);

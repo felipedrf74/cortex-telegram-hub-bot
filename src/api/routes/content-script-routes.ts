@@ -128,7 +128,7 @@ export function registerContentScriptRoutes(
    * operation, not a data lookup, so token cost is justified.
    */
   // The API composition root applies the shared per-user limiter before /content.
-  router.post('/script', asyncHandler(async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
+  router.post('/script', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_generate')) return;
     const generationObservation = startContentWorkspaceObservation('generation');

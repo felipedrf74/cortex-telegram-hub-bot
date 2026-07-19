@@ -160,7 +160,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
   });
 
   // The portal composition root rate-limits /api before registering this route family.
-  app.get('/api/content-workspace-metrics', requirePortalAdminToken, (_req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  app.get('/api/content-workspace-metrics', requirePortalAdminToken, (_req: Request, res: Response) => {
     try {
       res.json({
         ok: true,
@@ -191,7 +191,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
   });
 
   // The portal composition root applies the shared /api limiter before registering this route family.
-  app.post('/api/operator-alerts/:id/ack', requirePortalAdminToken, (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  app.post('/api/operator-alerts/:id/ack', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
       if (!id) {
@@ -209,7 +209,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
   });
 
   // The portal composition root applies the shared /api limiter before registering this route family.
-  app.post('/api/operator-alerts/:id/resolve', requirePortalAdminToken, (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  app.post('/api/operator-alerts/:id/resolve', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
       if (!id) {
@@ -227,7 +227,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
   });
 
   // The portal composition root applies the shared /api limiter before registering this route family.
-  app.post('/api/operator-alerts/:id/retry-delivery', requirePortalAdminToken, (req: Request, res: Response) => { // lgtm[js/missing-rate-limiting]
+  app.post('/api/operator-alerts/:id/retry-delivery', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
       if (!id) {

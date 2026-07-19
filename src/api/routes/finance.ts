@@ -633,7 +633,7 @@ export function financeRoutes(): Router {
    * POST /transactions call is separate from this parse call.
    */
   // The API composition root applies the shared per-user limiter before /finance.
-  router.post('/parse-receipt', asyncHandler(async (req, res: Response) => { // lgtm[js/missing-rate-limiting]
+  router.post('/parse-receipt', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = requireFinanceHandlerScope(req, 'finance.receipt_parse');
     const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
 
