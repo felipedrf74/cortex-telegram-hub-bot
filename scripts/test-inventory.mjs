@@ -219,4 +219,13 @@ if (enforceEvidence) {
   }
 }
 
-if (timingsPath && summary.slowNonExemptFiles > 0) process.exit(1);
+if (timingsPath && summary.slowNonExemptFiles > 0) {
+  const slow = records
+    .filter((record) => record.runtimeMs > 10_000 && !record.timingException)
+    .sort((a, b) => b.runtimeMs - a.runtimeMs);
+  console.error(`Slow-test governance: ${slow.length} file(s) exceed 10s without a timingExceptions entry in config/test-policy.json:`);
+  for (const record of slow) {
+    console.error(`  ${Math.round(record.runtimeMs)}ms ${record.file}`);
+  }
+  process.exit(1);
+}

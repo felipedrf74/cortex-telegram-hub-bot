@@ -205,9 +205,19 @@ if (fs.existsSync(path.join(root, 'docs/project-map.json'))) {
     { cwd: root, encoding: 'utf8' },
   );
   if (projectMapCheck.status !== 0) {
-    const detail = (projectMapCheck.stderr || projectMapCheck.stdout || 'Project map freshness check failed.')
-      .trim().split('\n')[0];
-    add('project-map-drift', 'docs/project-map.json', detail);
+    const output = `${projectMapCheck.stdout || ''}\n${projectMapCheck.stderr || ''}`.trim();
+    // Only genuine drift is drift; a crashed checker (missing node_modules,
+    // ERR_MODULE_NOT_FOUND, git warnings) must say so instead of masquerading
+    // as drift — the nightly lane spent weeks reporting a dependency error as
+    // "project-map-drift: node:internal/modules/package_json_reader".
+    const driftLine = output.split('\n').find((line) => line.includes('Project map drift'));
+    if (driftLine) {
+      add('project-map-drift', 'docs/project-map.json', driftLine);
+    } else {
+      const firstLine = output.split('\n').filter(Boolean)[0] || 'Project map freshness check failed.';
+      add('project-map-check-error', 'docs/project-map.json',
+        `Checker exited ${projectMapCheck.status} without reporting drift: ${firstLine}`);
+    }
   }
 }
 const state = JSON.parse(fs.readFileSync(path.join(root, 'docs/release/release-state.json'), 'utf8'));
