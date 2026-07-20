@@ -319,13 +319,15 @@ function iosDistributionBindingReasons(distribution, binding, { required = true 
   const release = distribution.release;
   if (!release || typeof release !== 'object' || Array.isArray(release)
       || canonicalJson(Object.keys(release).sort()) !== canonicalJson([
-        'buildNumber', 'bundleId', 'configuration', 'marketingVersion', 'teamId',
+        'bundleId', 'configuration', 'distributedBuildNumber', 'marketingVersion',
+        'sourceBuildNumber', 'teamId',
       ])) {
     reasons.push('ios_distribution_release_identity_invalid');
   } else if (release.bundleId !== 'me.nexushub.app'
       || release.teamId !== 'B6885R8NWM'
       || release.configuration !== 'Release'
-      || release.buildNumber !== String(binding.buildNumber)
+      || release.sourceBuildNumber !== String(binding.buildNumber)
+      || !/^[1-9][0-9]*$/.test(release.distributedBuildNumber ?? '')
       || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(release.marketingVersion ?? '')) {
     reasons.push('ios_distribution_release_identity_mismatch');
   }
@@ -364,6 +366,7 @@ function iosDistributionBindingReasons(distribution, binding, { required = true 
       || typeof ci.buildId !== 'string'
       || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(ci.buildId)
       || typeof ci.buildNumber !== 'string' || !/^[1-9][0-9]*$/.test(ci.buildNumber)
+      || ci.buildNumber !== release?.distributedBuildNumber
       || ci.workflow !== 'App Store Release'
       || ci.workflowId !== '20e0adf7-2854-4207-98eb-8f3b5afcac60') {
     reasons.push('ios_distribution_ci_identity_invalid');

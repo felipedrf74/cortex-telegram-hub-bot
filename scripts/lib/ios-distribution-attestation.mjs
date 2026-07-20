@@ -20,8 +20,8 @@ export const IOS_DISTRIBUTION_ASC_TEAM_PATH_ID = '502b7720-ce21-4a3a-bced-bf176e
 export const IOS_DISTRIBUTION_APP_APPLE_ID = '6762022696';
 export const IOS_DISTRIBUTION_START_CONDITIONS = Object.freeze(['manual', 'manual_rebuild']);
 
-const ENVELOPE_SCHEMA = 'nexus.ios-distribution-attestation.v1';
-const PAYLOAD_SCHEMA = 'nexus.ios-distribution-attestation-payload.v1';
+const ENVELOPE_SCHEMA = 'nexus.ios-distribution-attestation.v2';
+const PAYLOAD_SCHEMA = 'nexus.ios-distribution-attestation-payload.v2';
 const KEY_ID = 'ios-distribution-signing-2026-07';
 const MAX_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const TREE_SEMANTICS = 'nexus.canonical-tree.v1';
@@ -51,7 +51,9 @@ function validateDigest(value, semantics, label) {
   }
 }
 
-function validateArtifactBlock(block, { label, artifactSemantics, release }) {
+function validateArtifactBlock(block, {
+  label, artifactSemantics, release, signingKind, expectedBuildNumber,
+}) {
   exactKeys(block, [
     'artifactDigest', 'appDigest', 'infoPlistDigest', 'executableDigest',
     'identity', 'pathKind', 'signing',
@@ -63,19 +65,31 @@ function validateArtifactBlock(block, { label, artifactSemantics, release }) {
   exactKeys(block.identity, ['bundleId', 'marketingVersion', 'buildNumber'], `${label} identity`);
   if (block.identity.bundleId !== release.bundleId
       || block.identity.marketingVersion !== release.marketingVersion
-      || block.identity.buildNumber !== release.buildNumber) {
+      || block.identity.buildNumber !== expectedBuildNumber) {
     fail(`${label} app identity does not match release identity`);
   }
   exactKeys(block.signing, [
-    'identifier', 'teamIdentifier', 'cdHash', 'authorities',
+    'kind', 'identifier', 'teamIdentifier', 'cdHash', 'authorities',
     'entitlementsSha256', 'verification',
   ], `${label} signing identity`);
   if (block.signing.identifier !== release.bundleId
-      || block.signing.teamIdentifier !== release.teamId
       || block.signing.verification !== 'codesign-deep-strict'
       || !/^[0-9a-f]{40,64}$/.test(block.signing.cdHash ?? '')
       || !/^[0-9a-f]{64}$/.test(block.signing.entitlementsSha256 ?? '')
-      || !Array.isArray(block.signing.authorities)
+      || !Array.isArray(block.signing.authorities)) {
+    fail(`${label} signing identity is invalid`);
+  }
+  if (signingKind === 'ad-hoc') {
+    if (block.signing.kind !== 'ad-hoc'
+        || block.signing.teamIdentifier !== null
+        || block.signing.authorities.length !== 0) {
+      fail(`${label} signing identity must describe a verified ad-hoc archive`);
+    }
+    return;
+  }
+  if (signingKind !== 'apple-distribution'
+      || block.signing.kind !== 'apple-distribution'
+      || block.signing.teamIdentifier !== release.teamId
       || block.signing.authorities.length < 3
       || !new RegExp(
         `^Apple Distribution: .+ \\(${IOS_DISTRIBUTION_TEAM_ID}\\)$`,
@@ -159,13 +173,15 @@ export function validateIosDistributionAttestation({
   }
 
   const release = exactKeys(payload.release, [
-    'bundleId', 'teamId', 'marketingVersion', 'buildNumber', 'configuration',
+    'bundleId', 'teamId', 'marketingVersion', 'sourceBuildNumber',
+    'distributedBuildNumber', 'configuration',
   ], 'iOS distribution release identity');
   if (release.bundleId !== IOS_DISTRIBUTION_BUNDLE_ID
       || release.teamId !== IOS_DISTRIBUTION_TEAM_ID
       || release.configuration !== IOS_DISTRIBUTION_CONFIGURATION
       || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(release.marketingVersion ?? '')
-      || release.buildNumber !== String(buildNumber)) {
+      || release.sourceBuildNumber !== String(buildNumber)
+      || !/^[1-9][0-9]*$/.test(release.distributedBuildNumber ?? '')) {
     fail('iOS distribution release identity is invalid or mismatched');
   }
 
@@ -173,11 +189,15 @@ export function validateIosDistributionAttestation({
     label: 'iOS archive',
     artifactSemantics: [TREE_SEMANTICS],
     release,
+    signingKind: 'ad-hoc',
+    expectedBuildNumber: release.sourceBuildNumber,
   });
   validateArtifactBlock(payload.distribution, {
     label: 'iOS distribution',
     artifactSemantics: [TREE_SEMANTICS, FILE_SEMANTICS],
     release,
+    signingKind: 'apple-distribution',
+    expectedBuildNumber: release.distributedBuildNumber,
   });
   if (payload.archive.pathKind !== 'xcarchive-directory'
       || !['ipa-file', 'signed-export-directory'].includes(payload.distribution.pathKind)
@@ -233,6 +253,7 @@ export function validateIosDistributionAttestation({
       || !IOS_DISTRIBUTION_START_CONDITIONS.includes(ci.startCondition)
       || !buildIdValid
       || typeof ci.buildNumber !== 'string' || !/^[1-9][0-9]*$/.test(ci.buildNumber)
+      || ci.buildNumber !== release.distributedBuildNumber
       || !buildUrlValid) {
     fail('iOS distribution CI identity is invalid or mismatched');
   }
@@ -274,7 +295,8 @@ export function validateIosDistributionAttestation({
         bundleId: release.bundleId,
         teamId: release.teamId,
         marketingVersion: release.marketingVersion,
-        buildNumber: release.buildNumber,
+        sourceBuildNumber: release.sourceBuildNumber,
+        distributedBuildNumber: release.distributedBuildNumber,
         configuration: release.configuration,
       },
       archive: {

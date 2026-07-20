@@ -73,11 +73,13 @@ repository's protected-main `ios-contract-evidence.yml` with the emitted exact
 backend SHA, artifact digest, candidate fixture digest, and fixture base64.
 Download the successful run's signed compatibility attestation. Separately run
 the protected iOS `App Store Release` Xcode Cloud workflow for that same clean
-SHA/build. Its post-archive gate emits a signed
-`nexus.ios-distribution-attestation.v1` only after proving the selected stable
-Xcode/iOS SDK, source tree, `.xcarchive`, exported App Store app/IPA, bundle,
-team, version/build, production signing identity, entitlements, and Xcode Cloud
-build identity. Extract the attestation JSON from its bounded base64url marker,
+SHA and source build. Its post-archive gate emits a signed
+`nexus.ios-distribution-attestation.v2` only after proving the selected stable
+Xcode/iOS SDK, source tree, verified ad-hoc `.xcarchive`, exported App Store
+app/IPA, bundle, team, version, source build, Xcode Cloud-assigned distributed
+build, Apple Distribution signing identity, entitlements, and Xcode Cloud build
+identity. Extract the attestation JSON from
+its bounded base64url marker,
 then request signing with both proofs:
 
 ```bash
@@ -90,7 +92,9 @@ scripts/request-release-manifest-signature.sh <backend-sha> <rc-run-id> \
 The signer accepts no direct iOS SHA, build, or result fields and needs no
 cross-repository PAT. It verifies each envelope against its separate pinned iOS
 public key, independently reads the fixture from the exact RC bundle, and
-requires both proofs to name the same iOS SHA/build. Compatibility proof alone
+requires both proofs to name the same iOS SHA/source build; the distribution
+proof additionally requires the exported app build to equal the Xcode Cloud
+build number. Compatibility proof alone
 does not prove archive or App Store binary identity; distribution proof alone
 does not prove the backend payload decodes. Missing, expired, or mismatched
 proofs make a shared release non-promotable.
