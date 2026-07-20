@@ -107,8 +107,15 @@ describe('Database Migrations', () => {
     expect(stripped).not.toMatch(/^\s*COMMIT\s*;/im);
   });
 
-  it('applies literal-transaction migrations through the real migration runner', () => {
-    expect(() => runMigrationsForTest(db)).not.toThrow();
+  it('applies literal-transaction migrations and invokes post-migration Content readiness', () => {
+    const contentWorkspaceReadinessCheck = vi.fn((database: Database.Database) => {
+      expect(database).toBe(db);
+    });
+
+    expect(() => runMigrationsForTest(db, {
+      contentWorkspaceReadinessCheck,
+    })).not.toThrow();
+    expect(contentWorkspaceReadinessCheck).toHaveBeenCalledOnce();
     const applied = db.prepare(`
       SELECT filename FROM _migrations
       WHERE filename IN ('042_unified_fks.sql', '116_chat_reasoning_engine_v1.sql')

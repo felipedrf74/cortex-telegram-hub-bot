@@ -37,11 +37,6 @@ export function initDatabase(): Database.Database {
 
   runMigrations();
 
-  // Migrations 246, 247, 249, 250, 251, and 253 retire legacy Content
-  // authorities. Refuse to serve if any reviewed canonical cutover invariant
-  // is missing or has drifted.
-  assertContentWorkspaceBootReadiness(db);
-
   try {
     const { backfillLegacyRefreshTokenHashes } = require('./ios-auth-session');
     const result = backfillLegacyRefreshTokenHashes();
@@ -146,16 +141,30 @@ export function initDatabase(): Database.Database {
   return db;
 }
 
-function runMigrations(options: {
-  excludeFiles?: ReadonlySet<string>;
-  stopBefore?: string;
-} = {}): void {
+function runMigrations(
+  options: {
+    excludeFiles?: ReadonlySet<string>;
+    stopBefore?: string;
+  } = {},
+  contentWorkspaceReadinessCheck: ((database: Database.Database) => void) | null = assertContentWorkspaceBootReadiness,
+): void {
   applyPendingMigrations(db, { ...options, logger });
+
+  if (contentWorkspaceReadinessCheck) {
+    // Migrations 246, 247, 249, 250, 251, and 253 retire legacy Content
+    // authorities. Refuse to serve if any reviewed canonical cutover invariant
+    // is missing or has drifted.
+    contentWorkspaceReadinessCheck(db);
+  }
 }
 
 export function runMigrationsForTest(
   testDb: Database.Database,
-  options: { excludeFiles?: readonly string[]; stopBefore?: string } = {},
+  options: {
+    excludeFiles?: readonly string[];
+    stopBefore?: string;
+    contentWorkspaceReadinessCheck?: (database: Database.Database) => void;
+  } = {},
 ): void {
   const previousDb = db as Database.Database | undefined;
   (db as any) = testDb;
@@ -163,7 +172,7 @@ export function runMigrationsForTest(
     runMigrations({
       excludeFiles: new Set(options.excludeFiles ?? []),
       stopBefore: options.stopBefore,
-    });
+    }, options.contentWorkspaceReadinessCheck ?? null);
   } finally {
     (db as any) = previousDb;
   }
