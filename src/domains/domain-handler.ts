@@ -597,10 +597,13 @@ export async function handleSimpleDomain(
         { role: 'user' as const, content: toolResults },
       );
 
-      // Continue with tool results via the routing provider
+      // Continue with tool results via the routing provider. ADV-2: echo the
+      // issuing provider back so the routing layer pins the continuation to
+      // it — open tool_use ids must never reach a different provider.
       result = await provider.continueWithToolResults(domain, history, message, stateContext, toolConversation, {
         userId,
         tenantId,
+        toolLoopProviderName: result.routedProviderName,
       });
       finalText = result.text;
     }

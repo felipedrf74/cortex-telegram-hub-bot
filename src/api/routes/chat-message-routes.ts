@@ -3324,6 +3324,12 @@ export function registerChatMessageRoutes(
         userId,
         tenantId,
         confirmedDestructiveAction: routingDecision.safety.explicitConfirmation,
+        // ADV-3: an accepted staged confirmation authorizes exactly the
+        // targets it was staged with; a free-text confirmation collapses to a
+        // single untyped grant (undefined) inside the authorization layer.
+        confirmedDestructiveTargets: routingDecision.safety.explicitConfirmation
+          ? pendingConfirmation?.confirmedTargets
+          : undefined,
         confirmationSource: routingDecision.safety.explicitConfirmation
           ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
           : 'none',

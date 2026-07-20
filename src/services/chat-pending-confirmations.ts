@@ -28,6 +28,7 @@
 // typed action lifecycle. Reclassified as KEEP after that inspection.
 
 import type { NexusSkillId } from './chat-skill-orchestrator';
+import type { ChatConfirmedDestructiveTarget } from './chat-tool-authorization';
 import { resolveChatTenantId } from './chat-tenant-scope';
 import { hashChatConfirmationToken } from './chat-confirmation-token';
 
@@ -40,6 +41,10 @@ export interface PendingChatConfirmation {
   actionSummary: string;
   involvedSkills: NexusSkillId[];
   reasonCodes: string[];
+  // ADV-3: typed targets the staged confirmation covers. When present, an
+  // accepted confirmation authorizes exactly these destructive calls; when
+  // absent, acceptance collapses to a single untyped grant.
+  confirmedTargets?: ChatConfirmedDestructiveTarget[];
   sourceMessageId?: string | null;
   createdAt: string;
   expiresAt: string;
@@ -53,6 +58,7 @@ export interface TrackPendingChatConfirmationInput {
   reasonCodes: string[];
   intentClass?: string;
   summary?: Record<string, unknown>;
+  confirmedTargets?: ChatConfirmedDestructiveTarget[];
   sourceMessageId?: string | null;
   ttlMs?: number;
   now?: Date;
@@ -80,6 +86,20 @@ function sanitizeActionSummary(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 220);
 }
 
+const MAX_CONFIRMED_TARGETS = 10;
+
+function sanitizeConfirmedTargets(
+  targets: ChatConfirmedDestructiveTarget[] | undefined,
+): ChatConfirmedDestructiveTarget[] | undefined {
+  if (!targets) return undefined;
+  return targets.slice(0, MAX_CONFIRMED_TARGETS).map((target) => ({
+    tool: typeof target.tool === 'string' && target.tool.trim() ? target.tool.trim() : undefined,
+    targetId: typeof target.targetId === 'string' && target.targetId.trim()
+      ? target.targetId.trim().slice(0, 200)
+      : undefined,
+  }));
+}
+
 export function trackPendingChatConfirmation(input: TrackPendingChatConfirmationInput): PendingChatConfirmation {
   const now = input.now ?? new Date();
   const tenantId = resolveChatTenantId(input.userId, input.tenantId);
@@ -94,6 +114,7 @@ export function trackPendingChatConfirmation(input: TrackPendingChatConfirmation
     actionSummary: sanitizeActionSummary(input.actionSummary),
     involvedSkills: [...new Set(input.involvedSkills)],
     reasonCodes: [...new Set(input.reasonCodes)],
+    confirmedTargets: sanitizeConfirmedTargets(input.confirmedTargets),
     sourceMessageId: input.sourceMessageId ?? null,
     createdAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),

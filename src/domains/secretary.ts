@@ -885,9 +885,13 @@ export async function handleSecretary(message: string, userId?: number, tenantId
     );
 
     logger.debug({ iteration: iterations, msgCount: toolConversation.length }, 'Calling continueWithToolResults');
+    // ADV-2: echo the issuing provider back so the routing layer pins the
+    // continuation to it — open tool_use ids must never reach a different
+    // provider (secretary is the cross-provider domain by default).
     result = await provider.continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, {
       userId,
       tenantId,
+      toolLoopProviderName: result.routedProviderName,
     });
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');

@@ -47,6 +47,27 @@ import {
 import { executeStepWithReliability } from './reliability';
 import { buildExecutedChatActionResponse } from './result-response';
 
+const CONFIRMATION_GRANT_STEP_RISKS = new Set([
+  'destructive',
+  'financial',
+  'admin_security',
+  'external_side_effect',
+]);
+
+function confirmedDestructiveTargetsForPlan(plan: ChatActionPlan) {
+  return plan.steps
+    .filter((step) => CONFIRMATION_GRANT_STEP_RISKS.has(step.risk))
+    .map((step) => {
+      const args = step.args as Record<string, unknown> | undefined;
+      const targetId = typeof args?.eventId === 'string' && args.eventId.trim()
+        ? args.eventId.trim()
+        : typeof args?.taskId === 'string' && args.taskId.trim()
+          ? args.taskId.trim()
+          : undefined;
+      return targetId ? { targetId } : {};
+    });
+}
+
 export async function executeChatActionPlan(
   plan: ChatActionPlan,
   input: ChatPlannerInput,
@@ -65,6 +86,11 @@ export async function executeChatActionPlan(
       userId: input.userId,
       tenantId: input.tenantId,
       confirmedDestructiveAction: options.confirmed === true,
+      // ADV-3: a confirmed plan authorizes at most one destructive/external
+      // call per previewed risky step — never a turn-wide blank check.
+      confirmedDestructiveTargets: options.confirmed === true
+        ? confirmedDestructiveTargetsForPlan(plan)
+        : undefined,
       confirmationSource: options.confirmationSource
         ?? (options.confirmed === true ? 'pending_confirmation' : 'none'),
       requireConfirmationForWrites: shouldRequireSafeWriteConfirmation(input),

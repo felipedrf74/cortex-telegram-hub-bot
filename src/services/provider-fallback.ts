@@ -57,6 +57,53 @@ export class AIProviderTruncatedError extends Error {
   }
 }
 
+// ADV-2 (milestone 1 safety hardening): thrown when a tool-loop continuation
+// would have to run on a provider other than the one that issued the open
+// tool_use ids (operator override / routing change mid-loop). Handing those
+// ids to a different provider is never valid — it either rejects them or
+// answers around them. Non-retryable by design: the turn must surface a
+// degraded response, not shop the orphaned loop to more providers.
+export class MidLoopProviderFallbackError extends Error {
+  readonly retryable = false;
+  readonly status = 502;
+  readonly code = 'AI_MID_LOOP_PROVIDER_FALLBACK';
+  readonly issuerProvider: string;
+  readonly attemptedPrimary: string;
+  readonly openToolUseIds: string[];
+  constructor(issuerProvider: string, attemptedPrimary: string, openToolUseIds: string[]) {
+    super(
+      `Tool loop opened on provider ${issuerProvider} but routing now resolves to ${attemptedPrimary}; `
+      + `refusing to hand over ${openToolUseIds.length} open tool_use id(s)`,
+    );
+    this.name = 'MidLoopProviderFallbackError';
+    this.issuerProvider = issuerProvider;
+    this.attemptedPrimary = attemptedPrimary;
+    this.openToolUseIds = openToolUseIds;
+  }
+}
+
+// ADV-2 helpers: dispatch is the only layer that knows which concrete
+// provider ran, so it stamps the result; the tool loop echoes the stamp back
+// on the next continuation via CallDomainOptions.toolLoopProviderName.
+function stampRoutedProvider<T>(result: T, providerName: string): T {
+  if (result && typeof result === 'object' && (result as { routedProviderName?: string }).routedProviderName == null) {
+    (result as { routedProviderName?: string }).routedProviderName = providerName;
+  }
+  return result;
+}
+
+function openToolUseIdsFromConversation(toolConversation: Array<{ role: string; content: unknown }>): string[] {
+  const ids: string[] = [];
+  for (const message of toolConversation) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      const candidate = block as { type?: string; id?: string };
+      if (candidate?.type === 'tool_use' && typeof candidate.id === 'string') ids.push(candidate.id);
+    }
+  }
+  return ids;
+}
+
 function isRetryableError(err: any): boolean {
   if (err?.name === 'ApiUsagePersistenceError' || err?.code === 'AI_USAGE_PERSISTENCE_FAILED' || err?.name === 'AiBudgetError') return false;
   const status = err?.status ?? err?.statusCode ?? err?.error_code;
@@ -1102,7 +1149,8 @@ export class TaskRoutingProvider implements AIProvider {
     }
 
     return this.executeWithFallback(taskType, (p) =>
-      p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions),
+      p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions)
+        .then((result) => stampRoutedProvider(result, p.name)),
     pair, {
       callKind: 'domain',
       category: `domain_${domain}`,
@@ -1126,7 +1174,8 @@ export class TaskRoutingProvider implements AIProvider {
     toolConversation: AIToolResultMessage[],
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
-    const { taskType, pair, pairSource, operatorOverrideApplied } = this.resolveProviderPairForDomain(domain);
+    const { taskType, pair: resolvedPair, pairSource, operatorOverrideApplied } = this.resolveProviderPairForDomain(domain);
+    let pair = resolvedPair;
 
     // Same optimization logic as callDomain. Critical: must compute the
     // SAME decision (same currentMessage → same tier/tools/history) so
@@ -1136,8 +1185,29 @@ export class TaskRoutingProvider implements AIProvider {
     const callerOpts = options || {};
     const opts = this.buildOptimizedOptions(domain, history, currentMessage, callerOpts);
 
+    // ADV-2: pin the continuation to the provider that issued the open
+    // tool_use ids. A different provider must never receive them — so the
+    // issuer runs WITHOUT a cross-provider fallback (its own error surfaces
+    // to the degraded-response path instead), and an unroutable issuer is a
+    // typed refusal before any provider call.
+    const issuer = callerOpts.toolLoopProviderName;
+    if (issuer) {
+      if (pair.primary.name === issuer) {
+        pair = { primary: pair.primary, fallback: undefined };
+      } else if (pair.fallback && pair.fallback.name === issuer) {
+        pair = { primary: pair.fallback, fallback: undefined };
+      } else {
+        throw new MidLoopProviderFallbackError(
+          issuer,
+          pair.primary.name,
+          openToolUseIdsFromConversation(toolConversation),
+        );
+      }
+    }
+
     return this.executeWithFallback(taskType, (p) =>
-      p.continueWithToolResults(domain, opts.slicedHistory, currentMessage, stateContext, toolConversation, opts.callOptions),
+      p.continueWithToolResults(domain, opts.slicedHistory, currentMessage, stateContext, toolConversation, opts.callOptions)
+        .then((result) => stampRoutedProvider(result, p.name)),
     pair, {
       callKind: 'tool-continuation',
       category: 'tool_continuation',
