@@ -1208,6 +1208,18 @@
       "reason": "Merged safe pragma policy and missing-parent filesystem behavior into the primary storage suite while removing repeated SQLite driver semantics, singleton happy paths, and export-existence assertions."
     },
     {
+      "test": "__tests__/scripts/release-manifest-v2.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-manifest-v2.test.ts",
+        "__tests__/scripts/trusted-release-signing.test.ts"
+      ],
+      "sources": [
+        "scripts/release-manifest-v2.mjs",
+        "scripts/lib/ios-distribution-attestation.mjs"
+      ],
+      "reason": "Replaced the single iOS build identity fixture with explicit source/archive and Xcode Cloud-distributed build contracts while retaining downgrade, role-confusion, manifest-binding, and build-drift negative coverage. This one-change mapping is removed after merge."
+    },
+    {
       "test": "__tests__/scripts/trusted-release-signing.test.ts",
       "replacementTests": [
         "__tests__/scripts/trusted-release-signing.test.ts",

@@ -52,11 +52,14 @@ with zero failed or skipped tests. Download its signed compatibility
 attestation.
 
 Compatibility is necessary but is not archive equivalence. For the same iOS
-SHA/build, run the protected `App Store Release` Xcode Cloud workflow. Its
+SHA/source build, run the protected `App Store Release` Xcode Cloud workflow. Its
 post-archive hook validates the exact clean source, archive and exported
 App Store artifact digests, app executable and Info.plist, bundle/team/version,
-production code signature and entitlements, selected stable toolchain/SDK, and
-Xcode Cloud workflow/build identity. It signs that payload with a dedicated
+the preserved archive's verified ad-hoc signature, the exported app's governed
+Apple Distribution signature and entitlements, selected stable toolchain/SDK,
+and Xcode Cloud workflow/build identity. The archive retains the governed source
+build while the exported app must use Xcode Cloud's assigned build number. It
+signs that payload with a dedicated
 Xcode Cloud secret and emits
 `NEXUS_IOS_DISTRIBUTION_EVIDENCE_BASE64URL=<canonical-envelope>`; decode the
 marker to `ios-distribution-attestation.json`. Then request backend signing with
@@ -72,12 +75,12 @@ scripts/request-release-manifest-signature.sh <backend-sha> <rc-run-id> \
 The protected backend signer treats both supplied attestations as untrusted
 data, verifies their Ed25519 signatures against distinct pinned iOS public
 keys, then requires the compatibility proof's repository/workflow/run/source
-SHA/build, backend SHA, immutable
+SHA/source build, backend SHA, immutable
 artifact digest, candidate fixture digest, contract subject, exact selector
 set/digest, all-passed counts, and lifetime to match. It also requires the
-distribution proof's protected-main source, build, release identity, archive,
+distribution proof's protected-main source, source/distributed build identities, archive,
 exported artifact, signing, toolchain, and Xcode Cloud identity to be valid and
-requires both proofs to agree on SHA/build. It independently reads the same
+requires both proofs to agree on SHA/source build. It independently reads the same
 fixture from the verified RC bundle, copies both attestations into the signed
 output, and records their digests in signing provenance. Direct
 owner-entered iOS SHA/build/result fields and legacy iOS run metadata inputs are

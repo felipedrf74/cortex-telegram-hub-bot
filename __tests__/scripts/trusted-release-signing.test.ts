@@ -185,18 +185,25 @@ function iosEvidenceFixture() {
     marketingVersion: '1.5.0',
     buildNumber: '59',
   };
-  const artifactBlock = (seed: string, pathKind: string, semantics: string) => ({
+  const artifactBlock = (
+    seed: string,
+    pathKind: string,
+    semantics: string,
+    signingKind: 'ad-hoc' | 'apple-distribution',
+    artifactBuildNumber: string,
+  ) => ({
     artifactDigest: digestValue(seed.repeat(64), semantics),
     appDigest: digestValue(String.fromCharCode(seed.charCodeAt(0) + 1).repeat(64), 'nexus.canonical-tree.v1'),
     infoPlistDigest: digestValue(String.fromCharCode(seed.charCodeAt(0) + 2).repeat(64)),
     executableDigest: digestValue(String.fromCharCode(seed.charCodeAt(0) + 3).repeat(64)),
-    identity: appIdentity,
+    identity: { ...appIdentity, buildNumber: artifactBuildNumber },
     pathKind,
     signing: {
+      kind: signingKind,
       identifier: 'me.nexushub.app',
-      teamIdentifier: 'B6885R8NWM',
+      teamIdentifier: signingKind === 'ad-hoc' ? null : 'B6885R8NWM',
       cdHash: 'e'.repeat(40),
-      authorities: [
+      authorities: signingKind === 'ad-hoc' ? [] : [
         'Apple Distribution: Nexus Hub (B6885R8NWM)',
         'Apple Worldwide Developer Relations Certification Authority',
         'Apple Root CA',
@@ -206,7 +213,7 @@ function iosEvidenceFixture() {
     },
   });
   const distributionPayload = {
-    schema: 'nexus.ios-distribution-attestation-payload.v1',
+    schema: 'nexus.ios-distribution-attestation-payload.v2',
     generatedAt: generatedAt.toISOString().replace(/\.\d{3}Z$/, 'Z'),
     expiresAt: new Date(generatedAt.getTime() + 24 * 3_600_000)
       .toISOString().replace(/\.\d{3}Z$/, 'Z'),
@@ -221,11 +228,12 @@ function iosEvidenceFixture() {
       bundleId: 'me.nexushub.app',
       teamId: 'B6885R8NWM',
       marketingVersion: '1.5.0',
-      buildNumber: '59',
+      sourceBuildNumber: '59',
+      distributedBuildNumber: '17',
       configuration: 'Release',
     },
-    archive: artifactBlock('1', 'xcarchive-directory', 'nexus.canonical-tree.v1'),
-    distribution: artifactBlock('5', 'ipa-file', 'nexus.raw-file.v1'),
+    archive: artifactBlock('1', 'xcarchive-directory', 'nexus.canonical-tree.v1', 'ad-hoc', '59'),
+    distribution: artifactBlock('5', 'ipa-file', 'nexus.raw-file.v1', 'apple-distribution', '17'),
     toolchain: {
       developerDir: '/Applications/Xcode.app/Contents/Developer',
       xcodeVersion: '26.4',
@@ -250,7 +258,7 @@ function iosEvidenceFixture() {
     },
   };
   const signDistribution = (payloadValue: typeof distributionPayload) => ({
-    schema: 'nexus.ios-distribution-attestation.v1',
+    schema: 'nexus.ios-distribution-attestation.v2',
     keyId: 'ios-distribution-signing-2026-07',
     signatureAlgorithm: 'ed25519',
     payload: payloadValue,
@@ -385,7 +393,7 @@ describe('trusted release signing boundary', () => {
         distribution: {
           result: 'passed',
           sourceCommit: fixture.iosSha,
-          release: { buildNumber: '59' },
+          release: { sourceBuildNumber: '59', distributedBuildNumber: '17' },
           ci: { buildId: '123e4567-e89b-12d3-a456-426614174000' },
         },
       },
@@ -506,7 +514,7 @@ describe('trusted release signing boundary', () => {
       binding: {
         result: 'passed',
         sourceCommit: fixture.iosSha,
-        release: { buildNumber: '59' },
+        release: { sourceBuildNumber: '59', distributedBuildNumber: '17' },
         exportedArtifact: { artifactSemantics: 'nexus.raw-file.v1' },
         ci: { buildId: '123e4567-e89b-12d3-a456-426614174000' },
       },
@@ -520,8 +528,13 @@ describe('trusted release signing boundary', () => {
       ],
       [
         'build',
-        (payload: any) => { payload.release.buildNumber = '60'; },
+        (payload: any) => { payload.release.sourceBuildNumber = '60'; },
         'release identity is invalid or mismatched',
+      ],
+      [
+        'distributed build',
+        (payload: any) => { payload.release.distributedBuildNumber = '18'; },
+        'app identity does not match release identity',
       ],
       [
         'dirty checkout',
@@ -544,6 +557,20 @@ describe('trusted release signing boundary', () => {
         'signing identity is invalid',
       ],
       [
+        'archive signing confused with final distribution',
+        (payload: any) => {
+          payload.archive.signing = structuredClone(payload.distribution.signing);
+        },
+        'verified ad-hoc archive',
+      ],
+      [
+        'final distribution downgraded to ad-hoc',
+        (payload: any) => {
+          payload.distribution.signing = structuredClone(payload.archive.signing);
+        },
+        'signing identity is invalid',
+      ],
+      [
         'reused archive toolchain',
         (payload: any) => { payload.toolchain.archiveXcodeBuild = 'OLD'; },
         'toolchain identity is invalid or mismatched',
@@ -559,6 +586,16 @@ describe('trusted release signing boundary', () => {
         trustedRoot: fixture.trustedRoot,
       }), label).toThrow(message);
     }
+
+    const legacy = structuredClone(fixture.distributionAttestation);
+    legacy.schema = 'nexus.ios-distribution-attestation.v1';
+    legacy.payload.schema = 'nexus.ios-distribution-attestation-payload.v1';
+    expect(() => validateIosDistributionAttestation({
+      attestation: legacy,
+      iosSha: fixture.iosSha,
+      buildNumber: 59,
+      trustedRoot: fixture.trustedRoot,
+    })).toThrow('envelope identity is invalid');
 
     const badSignature = structuredClone(fixture.distributionAttestation);
     badSignature.signature = Buffer.alloc(64).toString('base64');

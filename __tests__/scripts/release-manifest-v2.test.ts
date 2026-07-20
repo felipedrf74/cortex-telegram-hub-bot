@@ -31,7 +31,11 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
 
-function validDistributionBinding(iosSha: string, buildNumber: number) {
+function validDistributionBinding(
+  iosSha: string,
+  sourceBuildNumber: number,
+  distributedBuildNumber = 17,
+) {
   return {
     result: 'passed',
     attestationDigest: '1'.repeat(64),
@@ -42,7 +46,8 @@ function validDistributionBinding(iosSha: string, buildNumber: number) {
       bundleId: 'me.nexushub.app',
       teamId: 'B6885R8NWM',
       marketingVersion: '1.5.0',
-      buildNumber: String(buildNumber),
+      sourceBuildNumber: String(sourceBuildNumber),
+      distributedBuildNumber: String(distributedBuildNumber),
       configuration: 'Release',
     },
     archive: { artifactDigest: '4'.repeat(64), appDigest: '5'.repeat(64) },
@@ -54,7 +59,7 @@ function validDistributionBinding(iosSha: string, buildNumber: number) {
     toolchain: { xcodeVersion: '26.4', xcodeBuild: '17E300', sdkName: 'iphoneos26.4' },
     ci: {
       buildId: '123e4567-e89b-12d3-a456-426614174000',
-      buildNumber: '17',
+      buildNumber: String(distributedBuildNumber),
       workflow: 'App Store Release',
       workflowId: '20e0adf7-2854-4207-98eb-8f3b5afcac60',
     },
@@ -540,8 +545,12 @@ describe('ReleaseManifestV2', () => {
         'ios_distribution_sha_mismatch',
       ],
       [
-        (value: any) => { value.release.buildNumber = '60'; },
+        (value: any) => { value.release.sourceBuildNumber = '60'; },
         'ios_distribution_release_identity_mismatch',
+      ],
+      [
+        (value: any) => { value.release.distributedBuildNumber = '18'; },
+        'ios_distribution_ci_identity_invalid',
       ],
       [
         (value: any) => { value.ci.buildId = 'not-a-uuid'; },
