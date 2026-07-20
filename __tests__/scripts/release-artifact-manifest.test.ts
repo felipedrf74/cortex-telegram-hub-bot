@@ -3,7 +3,13 @@ import { generateKeyPairSync } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  releaseArtifactDigest,
+  sha256,
+  verifyReleaseBundle,
+} from '../../scripts/lib/release-artifact-manifest.mjs';
 
 const script = path.resolve('scripts/release-artifact-manifest.mjs');
 const evidenceScript = path.resolve('scripts/release-evidence.mjs');
@@ -62,8 +68,20 @@ describe('release-artifact-manifest', () => {
     fs.writeFileSync(path.join(tmp, 'content-engine/services/orchestrator.py'), 'VALUE = 1\n');
     fs.writeFileSync(path.join(tmp, 'scripts/promote-exact-release.sh'), '#!/usr/bin/env bash\nexit 0\n');
     fs.writeFileSync(path.join(tmp, 'scripts/remote-production-shape-migration-rehearsal.sh'), '#!/usr/bin/env bash\nexit 0\n');
-    fs.writeFileSync(path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'), 'export {};\n');
-    fs.writeFileSync(path.join(tmp, 'scripts/validate-production-shape-migration-rehearsal.mjs'), 'export {};\n');
+    fs.writeFileSync(
+      path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'),
+      [
+        "import './lib/production-shape-migration-rehearsal-evidence.mjs';",
+        "import './lib/irreversible-migration-policy.mjs';",
+        'export {};',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmp, 'scripts/validate-production-shape-migration-rehearsal.mjs'),
+      "import './lib/production-shape-migration-rehearsal-evidence.mjs';\nexport {};\n",
+    );
+    fs.writeFileSync(path.join(tmp, 'scripts/lib/irreversible-migration-policy.mjs'), 'export {};\n');
     fs.writeFileSync(path.join(tmp, 'scripts/lib/production-shape-migration-rehearsal-evidence.mjs'), 'export {};\n');
   });
 
@@ -85,6 +103,7 @@ describe('release-artifact-manifest', () => {
     ['capability schema source', 'src/services/chat-turn-contract.ts'],
     ['production promotion tooling', 'scripts/promote-exact-release.sh'],
     ['production-shape migration rehearsal', 'scripts/production-shape-migration-rehearsal.mjs'],
+    ['irreversible migration policy runtime', 'scripts/lib/irreversible-migration-policy.mjs'],
     ['production-shape rehearsal evidence', 'scripts/lib/production-shape-migration-rehearsal-evidence.mjs'],
   ])('changes digest when %s changes', (_label, relativePath) => {
     const before = digest();
@@ -104,6 +123,190 @@ describe('release-artifact-manifest', () => {
     expect(manifest.files.map((entry: { path: string }) => entry.path)).toContain(
       'src/services/chat-turn-contract.ts',
     );
+  });
+
+  it('includes every declared dependency of the production-shape rehearsal', () => {
+    const manifest = JSON.parse(execFileSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    ));
+
+    expect(manifest.files.map((entry: { path: string }) => entry.path)).toEqual(
+      expect.arrayContaining([
+        'scripts/production-shape-migration-rehearsal.mjs',
+        'scripts/lib/irreversible-migration-policy.mjs',
+        'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
+      ]),
+    );
+  });
+
+  it('fails closed when a bundled release script dependency is missing', () => {
+    fs.unlinkSync(path.join(tmp, 'scripts/lib/irreversible-migration-policy.mjs'));
+
+    const failed = spawnSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      'release runtime dependency is missing: scripts/production-shape-migration-rehearsal.mjs -> ./lib/irreversible-migration-policy.mjs',
+    );
+  });
+
+  it('fails closed when a bundled release script dependency is not allowlisted', () => {
+    fs.writeFileSync(path.join(tmp, 'scripts/lib/undeclared-runtime.mjs'), 'export {};\n');
+    fs.appendFileSync(
+      path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'),
+      "import './lib/undeclared-runtime.mjs';\n",
+    );
+
+    const failed = spawnSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      'release runtime dependency is not declared: scripts/production-shape-migration-rehearsal.mjs -> scripts/lib/undeclared-runtime.mjs',
+    );
+  });
+
+  it.each([
+    ["import /* closure */ './lib/missing-commented.mjs';", './lib/missing-commented.mjs'],
+    ["export { value } from './lib/missing-export.mjs';", './lib/missing-export.mjs'],
+    ["import value from\n  './lib/missing-multiline.mjs';", './lib/missing-multiline.mjs'],
+    ["import data from './lib/missing-attributes.json' with { type: 'json' };", './lib/missing-attributes.json'],
+  ])('parses static ESM dependency syntax with the Node runtime parser: %s', (statement, specifier) => {
+    fs.appendFileSync(
+      path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'),
+      `${statement}\n`,
+    );
+
+    const failed = spawnSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      `release runtime dependency is missing: scripts/production-shape-migration-rehearsal.mjs -> ${specifier}`,
+    );
+  });
+
+  it('does not treat comments or string contents as runtime dependencies', () => {
+    fs.appendFileSync(
+      path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'),
+      [
+        "// import './lib/comment-only.mjs';",
+        "const example = \"require('./lib/string-only.cjs')\";",
+        '',
+      ].join('\n'),
+    );
+
+    expect(() => digest()).not.toThrow();
+  });
+
+  it.each(['/private/host-only.mjs', 'file:///private/host-only.mjs', 'https://example.invalid/remote.mjs'])(
+    'rejects unsafe static ESM runtime dependency %s',
+    (specifier) => {
+      fs.appendFileSync(
+        path.join(tmp, 'scripts/production-shape-migration-rehearsal.mjs'),
+        `import ${JSON.stringify(specifier)};\n`,
+      );
+
+      const failed = spawnSync(
+        'node',
+        [script, '--root', tmp, '--format', 'json'],
+        { encoding: 'utf8' },
+      );
+
+      expect(failed.status).toBe(1);
+      expect(failed.stderr).toContain(
+        `release runtime dependency is unsafe: scripts/production-shape-migration-rehearsal.mjs -> ${specifier}`,
+      );
+    },
+  );
+
+  it('revalidates dependency closure from sealed bundle bytes', () => {
+    const bundle = path.join(tmp, 'sealed-bundle');
+    const entryPath = 'scripts/entry.mjs';
+    const entryBody = Buffer.from("import './lib/omitted.mjs';\n");
+    fs.mkdirSync(path.join(bundle, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(bundle, entryPath), entryBody);
+    const files = [{ path: entryPath, size: entryBody.length, sha256: sha256(entryBody) }];
+    const artifactDigest = releaseArtifactDigest(files);
+    fs.writeFileSync(path.join(bundle, 'artifact-manifest.json'), `${JSON.stringify({
+      schema: 'nexus.release-artifact-manifest.v1',
+      digest: artifactDigest,
+      fileCount: files.length,
+      files,
+    })}\n`);
+    fs.writeFileSync(path.join(bundle, '.complete.json'), `${JSON.stringify({
+      schema: 'nexus.release-bundle.v1',
+      runtimeSha: 'a'.repeat(40),
+      artifactDigest,
+      fileCount: files.length,
+    })}\n`);
+
+    expect(() => verifyReleaseBundle(bundle, 'a'.repeat(40))).toThrow(
+      'release runtime dependency is missing: scripts/entry.mjs -> ./lib/omitted.mjs',
+    );
+  });
+
+  it('revalidates sealed bundle closure without installed package dependencies', () => {
+    const bundle = path.join(tmp, 'isolated-bundle');
+    const verifierRoot = path.join(tmp, 'isolated-verifier');
+    const verifierPath = path.join(verifierRoot, 'release-artifact-manifest.mjs');
+    const entryPath = 'scripts/entry.mjs';
+    const entryBody = Buffer.from("import './lib/omitted.mjs';\n");
+    fs.mkdirSync(path.join(bundle, 'scripts'), { recursive: true });
+    fs.mkdirSync(verifierRoot, { recursive: true });
+    fs.copyFileSync(
+      path.resolve('scripts/lib/release-artifact-manifest.mjs'),
+      verifierPath,
+    );
+    fs.writeFileSync(path.join(bundle, entryPath), entryBody);
+    const files = [{ path: entryPath, size: entryBody.length, sha256: sha256(entryBody) }];
+    const artifactDigest = releaseArtifactDigest(files);
+    fs.writeFileSync(path.join(bundle, 'artifact-manifest.json'), `${JSON.stringify({
+      schema: 'nexus.release-artifact-manifest.v1',
+      digest: artifactDigest,
+      fileCount: files.length,
+      files,
+    })}\n`);
+    fs.writeFileSync(path.join(bundle, '.complete.json'), `${JSON.stringify({
+      schema: 'nexus.release-bundle.v1',
+      runtimeSha: 'a'.repeat(40),
+      artifactDigest,
+      fileCount: files.length,
+    })}\n`);
+    const check = [
+      `import(${JSON.stringify(pathToFileURL(verifierPath).href)}).then(({ verifyReleaseBundle }) => {`,
+      '  try {',
+      `    verifyReleaseBundle(${JSON.stringify(bundle)}, '${'a'.repeat(40)}');`,
+      '    process.exitCode = 2;',
+      '  } catch (error) {',
+      "    if (!String(error.message).includes('scripts/entry.mjs -> ./lib/omitted.mjs')) process.exitCode = 3;",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const isolated = spawnSync(process.execPath, ['--input-type=module', '-e', check], {
+      cwd: verifierRoot,
+      encoding: 'utf8',
+      env: {
+        HOME: verifierRoot,
+        PATH: process.env.PATH || '',
+        TMPDIR: os.tmpdir(),
+      },
+    });
+
+    expect(isolated.status, `${isolated.stdout}${isolated.stderr}`).toBe(0);
   });
 
   it('fails closed when a declared capability schema source is missing', () => {
