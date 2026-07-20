@@ -14,6 +14,7 @@ const mockResolveCanonicalUserId = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
 const mockInvalidateFinanceDerivedCaches = vi.fn();
 const mockInvalidateCookingDerivedCaches = vi.fn();
+const mockCaptureChatContentIdea = vi.fn();
 
 // ─── Mock all external services ──────────────────────────────────────
 
@@ -94,6 +95,10 @@ vi.mock('../../src/state/reminders', () => ({
 vi.mock('../../src/state/notes', () => ({
   saveNote: vi.fn(),
   searchNotes: vi.fn(),
+}));
+
+vi.mock('../../src/services/content-workspace-chat-capture', () => ({
+  captureChatContentIdea: (...args: unknown[]) => mockCaptureChatContentIdea(...args),
 }));
 
 vi.mock('../../src/state/shared-memory', () => ({
@@ -177,6 +182,7 @@ import {
   getCurrentChatToolAuthorizationContext,
   runWithChatToolAuthorization,
 } from '../../src/services/chat-tool-authorization';
+import { issueContentIdeaCaptureConsent } from '../../src/services/content-workspace-chat-consent';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -236,6 +242,7 @@ beforeEach(() => {
   mockInvalidateCalendarCaches.mockReset();
   mockInvalidateFinanceDerivedCaches.mockReset();
   mockInvalidateCookingDerivedCaches.mockReset();
+  mockCaptureChatContentIdea.mockReset();
   vi.mocked(setReminder).mockReset();
   vi.unstubAllEnvs();
   mockCreateOfflineFirstTask.mockReset();
@@ -1357,6 +1364,118 @@ describe('executeToolCall — Notes', () => {
       domain: 'triathlon',
       tags: ['pr', 'swim'],
     });
+  });
+
+  it('save_note — routes only the explicit content_idea domain to the canonical workspace', async () => {
+    const content = 'Explain safe edit recovery.';
+    const consentReceipt = issueContentIdeaCaptureConsent({
+      tenantId: AUTH_USER_ID,
+      userId: AUTH_USER_ID,
+      sourceMessageId: 'message-content-capture-1',
+      message: `Save this idea: ${content}`,
+    });
+    expect(consentReceipt).not.toBeNull();
+    mockCaptureChatContentIdea.mockReturnValue({
+      item: {
+        id: 91,
+        title: content,
+        productionState: 'inbox',
+        nextAction: { action: 'develop_brief' },
+      },
+      artifact: { id: 92 },
+      replayed: false,
+      created: true,
+    });
+
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: AUTH_USER_ID,
+      confirmedDestructiveAction: true,
+      confirmationSource: 'explicit_current_turn',
+      contentIdeaCaptureConsent: consentReceipt,
+    }, () => executeToolCallWithoutContext('save_note', {
+      content,
+      domain: 'content_idea',
+    }, AUTH_USER_ID, AUTH_USER_ID));
+
+    expect(result).toEqual({
+      success: true,
+      destination: 'content_workspace',
+      item_id: 91,
+      title: content,
+      status: 'inbox',
+      next_action: 'develop_brief',
+      replayed: false,
+    });
+    expect(mockCaptureChatContentIdea).toHaveBeenCalledWith({
+      scope: { tenantId: AUTH_USER_ID, userId: AUTH_USER_ID },
+      content,
+      title: undefined,
+      consentReceipt,
+    });
+    expect(saveNote).not.toHaveBeenCalledWith(
+      AUTH_USER_ID,
+      expect.objectContaining({ domain: 'content_idea' }),
+    );
+  });
+
+  it('save_note — rejects content idea capture without a matching current-turn consent receipt', async () => {
+    const content = 'A thought that should remain private.';
+    const result = await execAsUser('save_note', {
+      content,
+      domain: 'content_idea',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'CONFIRMATION_REQUIRED',
+      confirmation_required: true,
+    });
+    expect(mockCaptureChatContentIdea).not.toHaveBeenCalled();
+  });
+
+  it('save_note — rejects stale, cross-scope, and argument-mismatched capture receipts', async () => {
+    const content = 'A scoped private thought.';
+    const receipts = [
+      issueContentIdeaCaptureConsent({
+        tenantId: AUTH_USER_ID,
+        userId: AUTH_USER_ID,
+        sourceMessageId: 'stale-message',
+        message: `Save this idea: ${content}`,
+        now: new Date(Date.now() - (11 * 60 * 1000)),
+      }),
+      issueContentIdeaCaptureConsent({
+        tenantId: 999,
+        userId: 999,
+        sourceMessageId: 'wrong-scope-message',
+        message: `Save this idea: ${content}`,
+      }),
+      issueContentIdeaCaptureConsent({
+        tenantId: AUTH_USER_ID,
+        userId: AUTH_USER_ID,
+        sourceMessageId: 'mismatch-message',
+        message: `Save this idea: ${content}`,
+      }),
+    ];
+
+    for (const [index, receipt] of receipts.entries()) {
+      const result = await runWithChatToolAuthorization({
+        userId: AUTH_USER_ID,
+        tenantId: AUTH_USER_ID,
+        confirmedDestructiveAction: true,
+        confirmationSource: 'explicit_current_turn',
+        contentIdeaCaptureConsent: receipt,
+      }, () => executeToolCallWithoutContext('save_note', {
+        content: index === 2 ? `${content} changed` : content,
+        domain: 'content_idea',
+      }, AUTH_USER_ID, AUTH_USER_ID));
+      expect(result).toMatchObject({
+        success: false,
+        code: 'CONFIRMATION_REQUIRED',
+        confirmation_required: true,
+      });
+    }
+    expect(mockCaptureChatContentIdea).not.toHaveBeenCalled();
   });
 
   it('search_notes — delegates with query, domain, and tag filters', async () => {

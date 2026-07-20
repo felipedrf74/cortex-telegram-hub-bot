@@ -56,8 +56,8 @@ describe('chat script shortcut response helpers', () => {
 
     expect(text).toContain('Roteiro curto • Duração estimada: 0:45');
     expect(text).toContain('Plan recovery before you chase intensity.');
-    expect(text).toContain('FIRST 3 SECONDS:');
-    expect(text).toContain('VISUAL DIRECTION:');
+    expect(text).not.toContain('FIRST 3 SECONDS:');
+    expect(text).not.toContain('VISUAL DIRECTION:');
     expect(text).not.toContain('CTA:');
   });
 
@@ -78,6 +78,30 @@ describe('chat script shortcut response helpers', () => {
     expect(text).toContain('Script • Estimated duration: 0:45');
     expect(text).toContain('Plan recovery first.');
     expect(text).toContain('Suggested closing line: Follow for more.');
+  });
+
+  it('withholds blocked provider artifacts from both chat text and metadata', () => {
+    const blocked = scriptResult({
+      script: 'RAW_PROVIDER_OUTPUT\nDo not expose this internal artifact.',
+      hook: 'Internal response',
+      caption: 'Internal caption',
+    });
+
+    const text = buildScriptShortcutText(blocked, 'en-US', 'YouTube');
+    const metadata = buildScriptShortcutMetadata(blocked, 'YouTube');
+
+    expect(text).toContain('withheld');
+    expect(text).not.toContain('RAW_PROVIDER_OUTPUT');
+    expect(metadata).toEqual({
+      type: 'content_script_blocked',
+      format: 'YouTube',
+      blocked: true,
+      displayWithheld: true,
+      retryable: true,
+      reasonCodes: ['raw_script_artifact_blocked'],
+    });
+    expect(JSON.stringify(metadata)).not.toContain('Internal response');
+    expect(JSON.stringify(metadata)).not.toContain('Internal caption');
   });
 
   it('builds unavailable responses in supported chat languages', () => {
@@ -110,6 +134,8 @@ describe('chat script shortcut response helpers', () => {
       scriptQuality: {
         overallScore: expect.any(Number),
         revisionActions: expect.any(Array),
+        suggestedActions: expect.any(Array),
+        appliedChanges: [],
         complianceWarnings: expect.any(Array),
       },
       sourcesUsed: [],

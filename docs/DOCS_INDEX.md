@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-07-15
+Last verified: 2026-07-17
 Update policy: update only when a canonical path changes
 
 Start with `docs/project-map.json`; it provides structured module, route,
@@ -15,6 +15,7 @@ review cadence through compact path rules plus explicit exceptions.
 | Current production and TestFlight truth | `docs/release/release-state.json` |
 | Human release summary and operator commands | `docs/release/CURRENT_RELEASE_STATE.md`, `docs/release/README.md` |
 | Signed release contract | `docs/release/release-evidence-contract.md` |
+| State-coupled migration release contract | `docs/release/migration-irreversible.md` |
 | Test tiers and dispositions | `config/test-policy.json` |
 | Documentation status, ownership, and review | `config/documentation-policy.json` |
 | Engineering standards | `docs/engineering/ENGINEERING_STANDARDS_INDEX.md` |

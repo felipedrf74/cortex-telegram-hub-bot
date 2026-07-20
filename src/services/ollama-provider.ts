@@ -1190,7 +1190,13 @@ export class OllamaProvider implements AIProvider {
     // Entitlement/budget denial must happen before the local capacity meter.
     // Otherwise an ineligible request could consume a per-user/global Ollama
     // rate-limit unit even though it is forbidden from reaching the model.
-    assertAiBudgetReservationForProvider({ userId, category, maxCostUsd: 0 });
+    assertAiBudgetReservationForProvider({
+      userId,
+      category,
+      provider: 'ollama',
+      model: request.model,
+      maxCostUsd: 0,
+    });
 
     // Explicit offline recordUsage=false calls bypass rate-limiting. Runtime
     // shadow calls are metered and therefore take the normal path.
@@ -1210,7 +1216,13 @@ export class OllamaProvider implements AIProvider {
       // Queue wait can be non-trivial. Revalidate immediately before the HTTP
       // request so a provider call never relies only on a stale pre-queue
       // decision (the first check above still keeps ineligible work out early).
-      assertAiBudgetReservationForProvider({ userId, category, maxCostUsd: 0 });
+      assertAiBudgetReservationForProvider({
+        userId,
+        category,
+        provider: 'ollama',
+        model: request.model,
+        maxCostUsd: 0,
+      });
       const t0 = Date.now();
       const effectiveTimeoutMs = timeoutMsOverride ?? config.ollama.timeoutMs;
       const response = await ollamaChat(request, effectiveTimeoutMs, externalSignal);

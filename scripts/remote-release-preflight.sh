@@ -9,9 +9,10 @@ ROLE=""
 BASE_DIR=""
 RELEASE_DIR=""
 NODE_BIN="/usr/bin/node"
+REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE=false
 
 usage() {
-  echo "Usage: remote-release-preflight.sh --role <staging|production> --base-dir <path> --release-dir <path> [--node-bin <path>]"
+  echo "Usage: remote-release-preflight.sh --role <staging|production> --base-dir <path> --release-dir <path> [--node-bin <path>] [--require-content-workspace-owner-write]"
 }
 
 while [ $# -gt 0 ]; do
@@ -20,12 +21,17 @@ while [ $# -gt 0 ]; do
     --base-dir) BASE_DIR="$2"; shift 2 ;;
     --release-dir) RELEASE_DIR="$2"; shift 2 ;;
     --node-bin) NODE_BIN="$2"; shift 2 ;;
+    --require-content-workspace-owner-write) REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
   esac
 done
 
 case "$ROLE" in staging|production) ;; *) echo "invalid release role" >&2; exit 64 ;; esac
+[ "$REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE" = false ] || [ "$ROLE" = production ] || {
+  echo "Content workspace owner-write preflight is production-only" >&2
+  exit 64
+}
 [[ "$BASE_DIR" == /* && "$RELEASE_DIR" == "$BASE_DIR"/releases/* ]] || {
   echo "unsafe exact-release preflight path" >&2
   exit 64
@@ -135,8 +141,28 @@ if [ "$owner_status" -ne 0 ]; then
   fi
 fi
 
+content_workspace_policy=not_required
+if [ "$REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE" = true ]; then
+  : >"$owner_output"
+  set +e
+  (
+    cd "$RELEASE_DIR"
+    DOTENV_CONFIG_PATH="$ENV_FILE" \
+      NODE_ENV=production \
+      DATABASE_PATH="$BASE_DIR/data/bot.db" \
+      "$NODE_BIN" -r dotenv/config dist/tools/content-workspace-rollout-preflight.js
+  ) >"$owner_output" 2>&1
+  rollout_status=$?
+  set -e
+  if [ "$rollout_status" -ne 0 ]; then
+    echo "production Content workspace scoped-owner write preflight failed" >&2
+    exit "$rollout_status"
+  fi
+  content_workspace_policy=scoped_owner_write
+fi
+
 # The bootstrap tool may report database paths or private owner identifiers.
 # Its raw output stays in a private temporary file and is never forwarded by
 # release mode. Emit only stable, non-identifying validation categories.
-printf 'release_preflight_ok role=%s envPermissions=private envOwnership=validated ownerPolicy=%s\n' \
-  "$ROLE" "$([ "$ROLE" = production ] && printf strict || printf warning)"
+printf 'release_preflight_ok role=%s envPermissions=private envOwnership=validated ownerPolicy=%s contentWorkspace=%s\n' \
+  "$ROLE" "$([ "$ROLE" = production ] && printf strict || printf warning)" "$content_workspace_policy"

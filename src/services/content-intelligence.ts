@@ -5,6 +5,12 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import type { Lang } from '../utils/i18n';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import {
+  contentScopeOrderExpr,
+  contentPrivateScopeParams,
+  contentPrivateScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 import { readRankedSignals } from './intelligence-bus';
 import {
   getFilmingRecommendation,
@@ -65,9 +71,12 @@ function reportInvalidContentIntelligenceScope(
   });
 }
 
-export function getActiveContentPillars(userId: number): ContentPillarSummary[] {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidContentIntelligenceScope('get_active_content_pillars', userId);
+export function getActiveContentPillars(
+  userId: number,
+  tenantId: number = userId,
+): ContentPillarSummary[] {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidContentIntelligenceScope('get_active_content_pillars', userId, { tenantId });
     return [];
   }
 
@@ -92,13 +101,20 @@ export function getActiveContentPillars(userId: number): ContentPillarSummary[] 
     // `content-workflow.ts`, `scorer.py`, and `orchestrator.py`, so
     // first-touch users are no longer pushed into a founder pillar
     // set even on the AI-driven path.
-    const rows = getDb().prepare(`
+    const db = getDb();
+    ensureContentTenantScopeColumns(db);
+    const rows = db.prepare(`
       SELECT name, keywords, weight, user_id
       FROM config_pillars
       WHERE enabled = 1
-        AND user_id = ?
-      ORDER BY weight DESC, name ASC
-    `).all(userId) as Array<{ name: string; keywords: string | null; user_id: number; weight: number }>;
+        AND ${contentPrivateScopePredicate()}
+      ORDER BY ${contentScopeOrderExpr(undefined, userId)}, weight DESC, name ASC
+    `).all(...contentPrivateScopeParams(userId, tenantId)) as Array<{
+      name: string;
+      keywords: string | null;
+      user_id: number;
+      weight: number;
+    }>;
 
     const deduped = new Map<string, ContentPillarSummary>();
     for (const row of rows) {
@@ -116,14 +132,18 @@ export function getActiveContentPillars(userId: number): ContentPillarSummary[] 
   }
 }
 
-export function getContentDeskItems(userId: number, limit: number): ContentDeskItem[] {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidContentIntelligenceScope('get_content_desk_items', userId, { limit });
+export function getContentDeskItems(
+  userId: number,
+  limit: number,
+  tenantId: number = userId,
+): ContentDeskItem[] {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidContentIntelligenceScope('get_content_desk_items', userId, { limit, tenantId });
     return [];
   }
 
   try {
-    return getUnreadNotifications(userId, limit * 3)
+    return getUnreadNotifications(userId, limit * 3, tenantId)
       .filter((notification) => (
         notification.type === 'topic_candidates_ready'
         || notification.type === 'script_ready'
@@ -203,11 +223,15 @@ export async function getNextContentExecutionHint(
     return null;
   }
 
-  const topics = opts?.topics ?? getTopics(userId, { includeTerminal: false, limit: 100 });
-  const deskItems = opts?.deskItems ?? getContentDeskItems(userId, 4);
+  const topics = opts?.topics ?? getTopics(userId, {
+    includeTerminal: false,
+    limit: 100,
+    tenantId: opts?.tenantId,
+  });
+  const deskItems = opts?.deskItems ?? getContentDeskItems(userId, 4, opts?.tenantId ?? userId);
   const rankedSignals = opts?.rankedSignals ?? getRankedContentSignals(userId, 4, opts?.tenantId);
   const filmingRecommendation = opts?.filmingRecommendation ?? await getFilmingRecommendation(userId, topics, opts?.tenantId);
-  const pillars = opts?.pillars ?? getActiveContentPillars(userId);
+  const pillars = opts?.pillars ?? getActiveContentPillars(userId, opts?.tenantId ?? userId);
 
   const readyScheduled = topics.find((topic) => topic.status === 'ready' && topic.scheduled_date);
   if (readyScheduled) {

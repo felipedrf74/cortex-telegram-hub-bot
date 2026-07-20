@@ -8,6 +8,7 @@ export function saveNote(userId: number, data: {
   domain?: string;
   tags?: string;
 }): Note {
+  if (isLegacyContentIdeaDomain(data.domain)) throw legacyContentIdeaReadOnlyError();
   const db = getDb();
   const stmt = db.prepare(`
     INSERT INTO notes (user_id, content, domain, tags) VALUES (?, ?, ?, ?)
@@ -19,6 +20,7 @@ export function saveNote(userId: number, data: {
 export function searchNotes(userId: number, filters?: {
   query?: string;
   domain?: string;
+  excludeDomain?: string;
   tag?: string;
   limit?: number;
 }): Note[] {
@@ -33,6 +35,10 @@ export function searchNotes(userId: number, filters?: {
   if (filters?.domain) {
     query += ' AND domain = ?';
     params.push(filters.domain);
+  }
+  if (filters?.excludeDomain) {
+    query += " AND LOWER(TRIM(COALESCE(domain, ''))) <> ?";
+    params.push(filters.excludeDomain.trim().toLocaleLowerCase('en-US'));
   }
   if (filters?.tag) {
     query += ' AND tags LIKE ?';
@@ -75,6 +81,9 @@ export function updateNote(
   updates: { content?: string; domain?: string; tags?: string | null },
 ): Note | null {
   const db = getDb();
+  if (isLegacyContentIdeaDomain(updates.domain)) throw legacyContentIdeaReadOnlyError();
+  const existing = getNoteById(userId, noteId);
+  if (existing && isLegacyContentIdeaDomain(existing.domain)) throw legacyContentIdeaReadOnlyError();
 
   // Build the SET clause dynamically so we only touch fields the
   // caller actually wants to change. Empty updates object is a no-op
@@ -113,8 +122,22 @@ export function updateNote(
  */
 export function deleteNote(userId: number, noteId: number): boolean {
   const db = getDb();
+  const existing = getNoteById(userId, noteId);
+  if (existing && isLegacyContentIdeaDomain(existing.domain)) throw legacyContentIdeaReadOnlyError();
   const result = db.prepare(
     'DELETE FROM notes WHERE id = ? AND user_id = ?'
   ).run(noteId, userId);
   return result.changes > 0;
+}
+
+function isLegacyContentIdeaDomain(value: unknown): boolean {
+  return typeof value === 'string'
+    && value.trim().toLocaleLowerCase('en-US') === 'content_idea';
+}
+
+function legacyContentIdeaReadOnlyError(): Error & { code: string } {
+  return Object.assign(
+    new Error('content_idea notes are a read-only compatibility archive; use the Content workspace'),
+    { code: 'CONTENT_IDEA_REQUIRES_WORKSPACE' },
+  );
 }

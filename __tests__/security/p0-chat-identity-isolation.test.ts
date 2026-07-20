@@ -190,17 +190,18 @@ describe('P0 identity: iOS API routes use strict by-id user-service helpers', ()
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 6. saved_ideas pipeline count — strict per-user scope
+// 6. canonical Content workspace count — strict tenant/user scope
 // ═══════════════════════════════════════════════════════════════════
 
-describe('P0 identity: saved_ideas count is strictly user-scoped', () => {
-  it('context-engine.ts does NOT use IN (0, ?) for saved_ideas pipeline count', () => {
+describe('P0 identity: canonical Content count is strictly tenant/user-scoped', () => {
+  it('context-engine.ts delegates to the canonical private workspace projection', () => {
     const source = fs.readFileSync(
       path.join(REPO_ROOT, 'src/services/context-engine.ts'),
       'utf8',
     );
-    expect(source).not.toMatch(/saved_ideas\s+WHERE\s+user_id\s+IN\s*\(\s*0\s*,/);
-    expect(source).toMatch(/saved_ideas\s+WHERE\s+user_id\s*=\s*\?/);
+    expect(source).not.toContain('FROM saved_ideas');
+    expect(source).toContain('countActiveContentWorkspaceItems(');
+    expect(source).toContain('{ tenantId: scopedTenantId, userId }');
   });
 
   it('getIdeasBySource requires a userId parameter', () => {

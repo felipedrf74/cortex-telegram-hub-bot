@@ -30,6 +30,7 @@ import {
   type NexusSkillId,
 } from '../../services/chat-skill-orchestrator';
 import { runWithChatToolAuthorization } from '../../services/chat-tool-authorization';
+import { issueContentIdeaCaptureConsent } from '../../services/content-workspace-chat-consent';
 import {
   buildBlocksFromMarkdown,
   type ChatResponseBlock,
@@ -322,6 +323,10 @@ function safeGetChatV2ClientFirstProgressMs(req: Request): number | null {
 }
 
 function isAcceptCurrentDecisionShortcut(text: string): boolean {
+  // This shortcut is intentionally a short, explicit acknowledgement. Bound
+  // untrusted chat text before the whitespace-heavy compatibility patterns so
+  // a single oversized request cannot turn the parser into event-loop work.
+  if (text.length > 512) return false;
   return /^(accept|approve|confirm|yes|sim|aceitar|aprovar|confirmar)\s+(this|current|the)?\s*(decision|choice|clarification|decisão|escolha)?$/i.test(text.trim())
     || /\b(accept|approve|confirm)\s+this\s+decision\b/i.test(text)
     || /\b(aceitar|aprovar|confirmar)\s+esta\s+decis[aã]o\b/i.test(text);
@@ -1606,6 +1611,7 @@ export function registerChatMessageRoutes(
    * domain handler as natural language since the handler functions
    * accept the raw message text including the / prefix.
    */
+  // The API composition root applies the shared per-user limiter before /chat.
   router.post('/message', async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
     const {
@@ -1832,6 +1838,7 @@ export function registerChatMessageRoutes(
         ? await tryBuildTokenZeroChatMessageShortcutResponse({
           normalizedText,
           userId,
+          tenantId,
           userLanguage: chatCoreV2RouteLocale,
         })
         : null;
@@ -3321,6 +3328,12 @@ export function registerChatMessageRoutes(
           ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
           : 'none',
         requireConfirmationForWrites: true,
+        contentIdeaCaptureConsent: issueContentIdeaCaptureConsent({
+          tenantId,
+          userId,
+          sourceMessageId: userMessageId,
+          message: normalizedText,
+        }),
       }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
       latency.mark('domain_handler_completed');
       if (routingDecision.safety.explicitConfirmation) {

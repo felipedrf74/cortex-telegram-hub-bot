@@ -53,6 +53,7 @@ export function ensureContentEvalHistoryTables(db: Database.Database): void {
       tier TEXT,
       category TEXT,
       fallback_used INTEGER NOT NULL DEFAULT 0,
+      execution_evidence_json TEXT NOT NULL DEFAULT '{}',
       json_report_path TEXT,
       markdown_report_path TEXT,
       open_conditions_json TEXT NOT NULL DEFAULT '[]',
@@ -81,6 +82,13 @@ export function ensureContentEvalHistoryTables(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_content_eval_case_results_run
       ON content_eval_case_results(run_id, scenario_id, persona_id);
   `);
+
+  // Existing local history databases predate executable-lane provenance.
+  // Add the column in place without rewriting or discarding prior runs.
+  const runColumns = db.prepare('PRAGMA table_info(content_eval_runs)').all() as Array<{ name: string }>;
+  if (!runColumns.some((column) => column.name === 'execution_evidence_json')) {
+    db.exec("ALTER TABLE content_eval_runs ADD COLUMN execution_evidence_json TEXT NOT NULL DEFAULT '{}'");
+  }
 }
 
 export function persistContentEvalRun(
@@ -93,8 +101,11 @@ export function persistContentEvalRun(
 
   const runId = options.runId ?? `content-eval-${result.generatedAt.replace(/[:.]/g, '-')}`;
   const trace = firstProviderTrace(result.cases);
+  const providerInvocation = result.aggregate.laneEvidence.realProviderSample.providerInvocations?.[0];
   const productionDataUsed = result.cases.some((testCase) => testCase.output.providerTrace.productionDataUsed);
-  const realProviderCalls = result.cases.some((testCase) => testCase.output.providerTrace.realProviderCalls);
+  const realProviderCalls = result.aggregate.laneEvidence.realProviderSample.status === 'executed'
+    ? result.aggregate.laneEvidence.realProviderSample.invocationCount
+    : 0;
   const fallbackUsed = result.cases.some((testCase) => testCase.output.providerTrace.fallbackUsed);
 
   const transaction = db.transaction(() => {
@@ -103,10 +114,10 @@ export function persistContentEvalRun(
         run_id, skill_version, mode, generated_at, package_version, git_branch, git_commit,
         overall_score, min_score, case_count, pass_count, partial_count, fail_count,
         critical_failure_count, release_gate, passed, production_data_used, real_provider_calls,
-        provider, model, tier, category, fallback_used, json_report_path, markdown_report_path,
+        provider, model, tier, category, fallback_used, execution_evidence_json, json_report_path, markdown_report_path,
         open_conditions_json
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         skill_version = excluded.skill_version,
         mode = excluded.mode,
@@ -130,6 +141,7 @@ export function persistContentEvalRun(
         tier = excluded.tier,
         category = excluded.category,
         fallback_used = excluded.fallback_used,
+        execution_evidence_json = excluded.execution_evidence_json,
         json_report_path = excluded.json_report_path,
         markdown_report_path = excluded.markdown_report_path,
         open_conditions_json = excluded.open_conditions_json
@@ -151,12 +163,13 @@ export function persistContentEvalRun(
       result.aggregate.releaseGate,
       result.passed ? 1 : 0,
       productionDataUsed ? 1 : 0,
-      realProviderCalls ? 1 : 0,
-      trace?.provider ?? null,
-      trace?.model ?? null,
-      trace?.tier ?? null,
-      trace?.category ?? null,
+      realProviderCalls,
+      providerInvocation?.provider ?? trace?.provider ?? null,
+      providerInvocation?.resolvedModel ?? providerInvocation?.model ?? trace?.model ?? null,
+      providerInvocation?.tier ?? trace?.tier ?? null,
+      providerInvocation?.category ?? trace?.category ?? null,
       fallbackUsed ? 1 : 0,
+      JSON.stringify(result.aggregate.laneEvidence),
       options.jsonReportPath ?? null,
       options.markdownReportPath ?? null,
       JSON.stringify(result.openConditions),

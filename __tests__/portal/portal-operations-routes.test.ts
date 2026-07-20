@@ -10,6 +10,7 @@ const mockGetQualityByAgent = vi.fn();
 const mockGetTaskExecutionSummary = vi.fn();
 const mockGetRecentExecutions = vi.fn();
 const mockGetTrainingGenerationObservabilitySnapshot = vi.fn();
+const mockGetContentWorkspaceObservabilitySnapshot = vi.fn();
 const mockListOperatorAlerts = vi.fn();
 const mockGetOperatorAlertDeliverySummary = vi.fn();
 const mockAcknowledgeOperatorAlert = vi.fn();
@@ -47,6 +48,11 @@ vi.mock('../../src/services/task-metrics', () => ({
 vi.mock('../../src/services/training-generation-observability', () => ({
   getTrainingGenerationObservabilitySnapshot: (...args: unknown[]) =>
     mockGetTrainingGenerationObservabilitySnapshot(...args),
+}));
+
+vi.mock('../../src/services/content-workspace-observability', () => ({
+  getContentWorkspaceObservabilitySnapshot: (...args: unknown[]) =>
+    mockGetContentWorkspaceObservabilitySnapshot(...args),
 }));
 
 vi.mock('../../src/services/operator-alerts', () => ({
@@ -148,6 +154,7 @@ describe('portal operations routes', () => {
     mockGetTaskExecutionSummary.mockReset();
     mockGetRecentExecutions.mockReset();
     mockGetTrainingGenerationObservabilitySnapshot.mockReset();
+    mockGetContentWorkspaceObservabilitySnapshot.mockReset();
     mockListOperatorAlerts.mockReset();
     mockGetOperatorAlertDeliverySummary.mockReset();
     mockAcknowledgeOperatorAlert.mockReset();
@@ -172,6 +179,7 @@ describe('portal operations routes', () => {
       'GET /api/quality-scores',
       'GET /api/task-metrics',
       'GET /api/training-generation-metrics',
+      'GET /api/content-workspace-metrics',
       'GET /api/operator-alerts',
       'POST /api/operator-alerts/:id/ack',
       'POST /api/operator-alerts/:id/resolve',
@@ -317,6 +325,70 @@ describe('portal operations routes', () => {
         },
       },
     });
+  });
+
+  it('returns only aggregate content-workspace metrics through the admin-protected route', () => {
+    const snapshot = {
+      reliability: {
+        workspace_operation_success_total: 12,
+        workspace_operation_failure_total: 1,
+        generation_success_total: 4,
+        generation_failure_total: 1,
+        schedule_confirm_success_total: 2,
+        schedule_confirm_failure_total: 0,
+      },
+      operations: {
+        schedule_confirm: {
+          attempts: 2,
+          successes: 2,
+          failures: 0,
+          duration_ms: { count: 2, sum: 40, min: 15, max: 25 },
+        },
+      },
+      reasons: { CONTENT_SCHEDULE_STALE: 1 },
+      product: {
+        idea_captured_total: 3,
+        content_scheduled_total: 2,
+      },
+      quality: {
+        generated_total: 5,
+        blocked_total: 1,
+        warnings_total: 2,
+      },
+      storage: {
+        mode: 'durable',
+        durableStore: 'sqlite_aggregate',
+        durableAvailable: true,
+        includesHistoricalTotals: true,
+        pendingWrite: false,
+        bestEffortWrites: true,
+        userOperationFailurePropagation: false,
+      },
+    };
+    mockGetContentWorkspaceObservabilitySnapshot.mockReturnValue(snapshot);
+
+    const res = invoke('/api/content-workspace-metrics');
+
+    expect(res.body).toEqual({ ok: true, contentWorkspace: snapshot });
+    expect(mockGetContentWorkspaceObservabilitySnapshot).toHaveBeenCalledOnce();
+    const serialized = JSON.stringify(res.body);
+    expect(serialized).not.toMatch(/prompt|rawContent|sourceUrl|userId|tenantId|providerResponse/i);
+  });
+
+  it('sanitizes content-workspace metric failures', () => {
+    const error = new Error('raw durable metric database failure');
+    mockGetContentWorkspaceObservabilitySnapshot.mockImplementation(() => {
+      throw error;
+    });
+
+    const res = invoke('/api/content-workspace-metrics');
+
+    expect(mockSendPortalInternalError).toHaveBeenCalledWith(
+      res,
+      error,
+      'Content workspace metrics unavailable',
+      'Portal: content workspace metrics failed',
+    );
   });
 
   it('returns durable operator alerts with query filters', () => {

@@ -57,4 +57,15 @@ describe('API router authorization boundary', () => {
     expect(protectedSection).toContain("requireEntitlement({ skill: 'content' })");
     expect(protectedSection).toContain("requireEntitlement({ skill: 'finance' })");
   });
+
+  it('keeps expensive scoped route families behind auth and the shared per-user limiter', () => {
+    const authIndex = routerSource.indexOf('router.use(authMiddleware);');
+    const rateLimitIndex = routerSource.indexOf('router.use(rateLimitMiddleware);');
+
+    expect(authIndex).toBeGreaterThan(0);
+    expect(rateLimitIndex).toBeGreaterThan(authIndex);
+    for (const scopedSurface of ['/chat', '/content', '/finance']) {
+      expect(routerSource.indexOf(`router.use('${scopedSurface}'`)).toBeGreaterThan(rateLimitIndex);
+    }
+  });
 });

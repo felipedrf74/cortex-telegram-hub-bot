@@ -5,6 +5,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -46,8 +47,11 @@ function installClassifierFixture(repo: string): void {
     'scripts/changed-area-classifier.sh',
     'scripts/changed-area-classifier.mjs',
     'scripts/lib/changed-area-classifier.mjs',
+    'scripts/lib/git-changed-paths.mjs',
+    'scripts/lib/irreversible-migration-policy.mjs',
     'scripts/lib/git-ref.mjs',
     'config/test-policy.json',
+    'config/irreversible-migrations.json',
   ]) {
     copyFileSync(file, join(repo, file));
   }
@@ -195,6 +199,7 @@ const routingFixtures: RoutingFixture[] = [
       '__tests__/scripts/exact-promotion-operational-safety.test.ts',
       '__tests__/scripts/release-exact-attestations.test.ts',
       '__tests__/scripts/release-backup-runtime-artifact.test.ts',
+      '__tests__/scripts/production-shape-migration-rehearsal.test.ts',
       '__tests__/scripts/rollback-versioned-runtime.test.ts',
       '__tests__/scripts/pm2-sanitized-start.test.ts',
       '__tests__/scripts/release-evidence-container.test.ts',
@@ -252,9 +257,15 @@ describe('changed-area-classifier pure routing fixtures', () => {
 
 const fullSuiteTriggers = [
   'config/test-policy.json',
+  'config/irreversible-migrations.json',
   'scripts/changed-area-classifier.sh',
   'scripts/changed-area-classifier.mjs',
   'scripts/lib/changed-area-classifier.mjs',
+  'scripts/lib/git-changed-paths.mjs',
+  'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/migration-safety-check.mjs',
+  'scripts/release-test-gate.sh',
+  'scripts/release-verify.sh',
   'scripts/resolve-ci-change-base.sh',
   'scripts/select-vitest-files.mjs',
   'scripts/run-test-tier.mjs',
@@ -313,6 +324,72 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     expect(result.vitest.mode).toBe('changed-only');
   });
 
+  it.each([
+    'migrations/246_content_pipeline_workspace_exit.sql',
+    'migrations/250_content_performance_workspace_lineage.sql',
+    'migrations/252_content_legacy_script_workspace_parity.sql',
+  ])('flags policy-governed state-coupled cutover %s', (file) => {
+    const result = classify(file);
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+  });
+
+  it('honors the reviewed syntax exemption for the lossless rollout-metrics rebuild', () => {
+    const result = classify('migrations/248_content_workspace_rollout_observability.sql');
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(false);
+    expect(result.cannotSkip).not.toContain('irreversible-migration-manual-approval');
+  });
+
+  it('revokes the syntax exemption when migration 248 bytes drift', () => {
+    const migration = 'migrations/248_content_workspace_rollout_observability.sql';
+    const absolute = join(root, migration);
+    const result = classifyChangedFiles({
+      files: [migration],
+      root,
+      generatedAt,
+      readText: (file) => file === absolute
+        ? `${readFileSync(file, 'utf8')}\nDROP TABLE content_workspace_metrics;\n`
+        : readFileSync(file, 'utf8'),
+    });
+
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+  });
+
+  it('fails closed when the irreversible-migration registry itself changes', () => {
+    const result = classify('config/irreversible-migrations.json');
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.flags.fullSuiteTrigger).toBe(true);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+  });
+
+  it.each([
+    ['.github/workflows/ci.yml', true],
+    ['.husky/pre-commit', false],
+    ['scripts/changed-area-classifier.mjs', true],
+    ['scripts/lib/changed-area-classifier.mjs', true],
+    ['scripts/lib/git-changed-paths.mjs', true],
+    ['scripts/lib/irreversible-migration-policy.mjs', true],
+    ['scripts/migration-safety-check.mjs', true],
+    ['scripts/promote-exact-release.sh', false],
+    ['scripts/remote-create-release-backup.sh', false],
+    ['scripts/remote-production-shape-migration-rehearsal.sh', false],
+    ['scripts/production-shape-migration-rehearsal.mjs', true],
+    ['scripts/validate-production-shape-migration-rehearsal.mjs', true],
+    ['scripts/lib/production-shape-migration-rehearsal-evidence.mjs', true],
+    ['scripts/risk-gate.sh', true],
+    ['scripts/release-test-gate.sh', true],
+    ['scripts/release-verify.sh', true],
+  ])('fails closed when migration governance code changes: %s', (file, fullSuiteExpected) => {
+    const result = classify(file);
+    expect(result.flags.migration).toBe(true);
+    expect(result.flags.irreversibleMigration).toBe(true);
+    expect(result.flags.fullSuiteTrigger).toBe(fullSuiteExpected);
+    expect(result.cannotSkip).toContain('irreversible-migration-manual-approval');
+  });
+
   it('does not mistake rollback DROP statements for an irreversible forward migration', () => {
     const result = classify([
       'migrations/233_agent_job_runner_audit.sql',
@@ -350,6 +427,7 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/remote-release-readiness.sh',
     'scripts/remote-prepare-release-backup.sh',
     'scripts/remote-create-release-backup.sh',
+    'scripts/remote-production-shape-migration-rehearsal.sh',
     'scripts/remote-start-sanitized-pm2.sh',
     'scripts/rollback.sh',
     'scripts/restore.sh',
@@ -364,6 +442,19 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     expect(result.cannotSkip).toContain('exact-release-promotion-rehearsal');
     expect(result.tiers).toContain('T4');
     expect(result.vitest.mode).toBe('focused');
+    expect(result.stagingSmoke.generic).toBe(true);
+  });
+
+  it.each([
+    'scripts/production-shape-migration-rehearsal.mjs',
+    'scripts/validate-production-shape-migration-rehearsal.mjs',
+    'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
+  ])('routes migration rehearsal trust-boundary code %s through the operator gate and full suite', (file) => {
+    const result = classify(file);
+    expect(result.flags.releaseOperator).toBe(true);
+    expect(result.cannotSkip).toContain('exact-release-promotion-rehearsal');
+    expect(result.tiers).toContain('T4');
+    expect(result.vitest.mode).toBe('full');
     expect(result.stagingSmoke.generic).toBe(true);
   });
 
@@ -397,6 +488,39 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
 });
 
 describe('changed-area-classifier process-boundary integration', () => {
+  it('preserves both sides of a tracked rename whose paths contain spaces', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-classifier-spaced-rename-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    try {
+      installClassifierFixture(repo);
+      mkdirSync(join(repo, 'src'), { recursive: true });
+      writeFileSync(join(repo, 'src/old feature.ts'), 'export const value = 1;\n');
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      const base = git('rev-parse', 'HEAD');
+      git('mv', 'src/old feature.ts', 'src/new feature.ts');
+
+      const result = JSON.parse(execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--base', base],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      ));
+
+      expect(result.changedFiles).toEqual(['src/new feature.ts', 'src/old feature.ts']);
+      expect(result.flags.backendSrc).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('reads candidate source state while enforcing the trusted policy path', () => {
     const candidate = mkdtempSync(join(tmpdir(), 'nexus-classifier-candidate-'));
     const trusted = mkdtempSync(join(tmpdir(), 'nexus-classifier-policy-'));
@@ -413,9 +537,14 @@ describe('changed-area-classifier process-boundary integration', () => {
         JSON.stringify({ fullSuiteTriggers: [] }),
       );
       const trustedPolicy = join(trusted, 'config/test-policy.json');
+      const trustedIrreversiblePolicy = join(trusted, 'config/irreversible-migrations.json');
       writeFileSync(
         trustedPolicy,
         JSON.stringify({ fullSuiteTriggers: ['src/runtime-feature.ts'] }),
+      );
+      copyFileSync(
+        join(root, 'config/irreversible-migrations.json'),
+        trustedIrreversiblePolicy,
       );
       const invoke = (file: string) => JSON.parse(execFileSync(
         'bash',
@@ -428,6 +557,7 @@ describe('changed-area-classifier process-boundary integration', () => {
             GIT_DIR: '/invalid/inherited/git-dir',
             NEXUS_CLASSIFIER_REPO_ROOT: candidate,
             NEXUS_TEST_POLICY_PATH: trustedPolicy,
+            NEXUS_IRREVERSIBLE_MIGRATIONS_PATH: trustedIrreversiblePolicy,
           },
         },
       ));

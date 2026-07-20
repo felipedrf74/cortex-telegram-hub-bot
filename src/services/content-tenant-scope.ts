@@ -46,7 +46,9 @@ const scopedTables = [
   'content_performance',
   'content_learned_patterns',
   'content_radar_preferences',
-  'content_topics',
+  // Migration 247 owns the retired content_topics scope forever. Keeping it
+  // here would let this runtime's dynamic backfill attempt an UPDATE against
+  // the database-enforced read-only archive.
   'content_topic_feedback',
   'content_pipeline',
   'saved_ideas',
@@ -153,6 +155,26 @@ export function contentScopePredicate(alias?: string): string {
   )`;
 }
 
+/**
+ * Strict private-owner read predicate for personal Content surfaces. Legacy
+ * NULL scope fields inherit only their positive user_id, so they remain
+ * visible in that user's personal tenant and never in an arbitrary tenant.
+ */
+export function contentPrivateScopePredicate(alias?: string): string {
+  const c = (name: string) => alias ? `${alias}.${name}` : name;
+  const tenantExpr = `COALESCE(${c('tenant_id')}, CASE WHEN ${c('user_id')} > 0 THEN ${c('user_id')} ELSE 0 END)`;
+  const ownerExpr = `COALESCE(${c('owner_user_id')}, ${c('user_id')}, 0)`;
+  const visibilityExpr = `COALESCE(${c('visibility_scope')}, CASE WHEN ${c('user_id')} > 0 THEN 'user_private' ELSE 'platform_internal' END)`;
+  const statusExpr = `COALESCE(${c('scope_status')}, CASE WHEN ${c('user_id')} > 0 THEN 'active' ELSE 'quarantined' END)`;
+
+  return `(
+    ${statusExpr} = 'active'
+    AND ${visibilityExpr} = 'user_private'
+    AND ${tenantExpr} = ?
+    AND ${ownerExpr} = ?
+  )`;
+}
+
 export function contentDirectScopePredicate(alias?: string): string {
   const c = (name: string) => alias ? `${alias}.${name}` : name;
   return `(
@@ -197,6 +219,10 @@ export function platformOrSystemSeedContentScopePredicate(alias?: string): strin
 export function contentScopeParams(userId: number, tenantId?: number | null): [number, number, number] {
   const resolvedTenantId = resolveContentTenantId(userId, tenantId);
   return [resolvedTenantId, userId, resolvedTenantId];
+}
+
+export function contentPrivateScopeParams(userId: number, tenantId?: number | null): [number, number] {
+  return [resolveContentTenantId(userId, tenantId), userId];
 }
 
 export function contentScopeOrderExpr(alias?: string, userId?: number): string {

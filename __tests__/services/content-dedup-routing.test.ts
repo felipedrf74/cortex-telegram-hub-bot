@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database;
 
@@ -22,47 +23,52 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { isDuplicateIdea, isDuplicateIdeaInBatch } from '../../src/services/content-dedup';
+import {
+  getAngleDistribution,
+  isDuplicateIdea,
+  isDuplicateIdeaInBatch,
+} from '../../src/services/content-dedup';
+import { captureDiscoveredIdea } from '../../src/services/content-workspace-capture';
+import { saveContentRevision } from '../../src/services/content-workspace';
 import { logger } from '../../src/utils/logger';
 
-function seedIdea(userId: number, title: string, angleTag: string | null = null): void {
-  testDb.prepare(`
-    INSERT INTO saved_ideas (title, angle_tag, user_id, created_at)
-    VALUES (?, ?, ?, datetime('now'))
-  `).run(title, angleTag, userId);
+function seedIdea(
+  userId: number,
+  title: string,
+  angleTag: string | null = null,
+  tenantId = userId,
+) {
+  return captureDiscoveredIdea({
+    scope: { tenantId, userId },
+    title,
+    sourceDate: '2026-07-17',
+    score: 0.7,
+    workflowEligible: true,
+    angleTag,
+    provider: 'test',
+  }, testDb);
 }
 
-function seedFeedback(userId: number, topic: string, angleTag: string | null = null): void {
+function seedFeedback(userId: number, topic: string, angleTag: string | null = null, tenantId = userId): void {
   testDb.prepare(`
-    INSERT INTO content_topic_feedback (topic, angle_tag, user_id, created_at)
-    VALUES (?, ?, ?, datetime('now'))
-  `).run(topic, angleTag, userId);
+    INSERT INTO content_topic_feedback (
+      topic, format, angle_tag, user_id, tenant_id, owner_user_id,
+      visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json, created_at
+    ) VALUES (?, 'reel', ?, ?, ?, ?, 'user_private', 'active', 'active', ?, ?, '{}', datetime('now'))
+  `).run(topic, angleTag, userId, tenantId, userId, userId, userId);
 }
 
 describe('content dedup deterministic classifier', () => {
   beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.exec(`
-      CREATE TABLE saved_ideas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        angle_tag TEXT,
-        user_id INTEGER NOT NULL,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-      CREATE TABLE content_topic_feedback (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        topic TEXT NOT NULL,
-        angle_tag TEXT,
-        user_id INTEGER NOT NULL,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-    `);
+    vi.stubEnv('CONTENT_WORKSPACE_V1_MODE', 'write');
+    testDb = createMigratedTestDatabase();
     vi.mocked(logger.warn).mockClear();
   });
 
   afterEach(() => {
     if (testDb?.open) testDb.close();
+    vi.unstubAllEnvs();
   });
 
   it('flags a byte-identical title as duplicate with confidence 0.95', async () => {
@@ -153,6 +159,38 @@ describe('content dedup deterministic classifier', () => {
     const result = await isDuplicateIdea('Race week recap', undefined, 42, 42);
 
     expect(result).toEqual({ isDuplicate: true, similarTo: 'Race week recap', confidence: 0.95 });
+  });
+
+  it('compares only the current canonical idea revision, never a superseded title', async () => {
+    const revised = seedIdea(42, 'Superseded launch title', 'framework');
+    seedIdea(42, 'Second canonical idea');
+    seedIdea(42, 'Third canonical idea');
+    saveContentRevision({
+      scope: { tenantId: 42, userId: 42 },
+      artifactId: revised.artifact.id,
+      baseRevision: 1,
+      content: { format: 'plain_text', text: 'Current launch title' },
+      changeSummary: 'User refined the idea title',
+      actorType: 'user',
+      idempotencyKey: 'dedup-current-revision-001',
+    }, testDb);
+
+    await expect(isDuplicateIdea('Superseded launch title', undefined, 42, 42))
+      .resolves.toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+    await expect(isDuplicateIdea('Current launch title', undefined, 42, 42))
+      .resolves.toEqual({ isDuplicate: true, similarTo: 'Current launch title', confidence: 0.95 });
+  });
+
+  it('combines canonical current idea angles with candidate inventory without crossing tenants', () => {
+    seedIdea(42, 'Canonical opinion idea', 'opinion');
+    seedFeedback(42, 'Feedback opinion idea', 'opinion');
+    seedIdea(77, 'Other tenant framework idea', 'framework');
+    seedFeedback(77, 'Other tenant framework feedback', 'framework');
+
+    const distribution = getAngleDistribution(42, 42);
+
+    expect(distribution.find((entry) => entry.tag === 'opinion')).toMatchObject({ count: 2, pct: 100 });
+    expect(distribution.find((entry) => entry.tag === 'framework')).toMatchObject({ count: 0, pct: 0 });
   });
 
   it('scopes recent ideas per user', async () => {

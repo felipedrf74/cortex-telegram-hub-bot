@@ -426,7 +426,13 @@ export function assessClaimsGrounding(
       reviewRequired: false,
     };
   }
-  const referenceIds = new Set(references.map((ref) => ref.referenceId));
+  // Pending, stale, unverified, or otherwise review-required references may
+  // inspire a draft, but they are not evidence for factual claims.
+  const referenceIds = new Set(
+    references
+      .filter((ref) => ref.usableForGeneration && !ref.reviewRequired)
+      .map((ref) => ref.referenceId),
+  );
   const unsupportedClaims = claims.filter((claim) => {
     const supportedBy = claim.supportedBy ?? [];
     return supportedBy.length === 0 || supportedBy.some((id) => !referenceIds.has(id));
@@ -657,8 +663,8 @@ function markReferenceUsed(
        SET last_used_at = datetime('now'),
            related_output_ids_json = ?,
            updated_at = datetime('now')
-     WHERE id = ?
-  `).run(JSON.stringify(related), ref.id);
+     WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+  `).run(JSON.stringify(related), ref.id, ref.tenantId, ref.ownerUserId);
 }
 
 function mapReferenceRow(row: any): ContentRegisteredReference {

@@ -98,9 +98,9 @@ describe('registry examples end-to-end deterministic routing', () => {
   const routableCases = cases.filter((testCase) => !isLlmTierExample(testCase));
 
   it('loads golden examples from the runtime registry', () => {
-    expect(activeActions()).toHaveLength(50);
+    expect(activeActions()).toHaveLength(51);
     expect(cases.length).toBeGreaterThanOrEqual(150);
-    expect(cases.filter((testCase) => testCase.locale === 'es')).toHaveLength(51);
+    expect(cases.filter((testCase) => testCase.locale === 'es')).toHaveLength(52);
   });
 
   it('every runtime golden example declares expectedAction', () => {

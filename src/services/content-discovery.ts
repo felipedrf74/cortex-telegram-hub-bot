@@ -1,15 +1,13 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type Anthropic from '@anthropic-ai/sdk';
-import fs from 'fs';
-import path from 'path';
+import { createHash } from 'node:crypto';
 import { config } from '../config';
 import { now } from '../utils/date-parser';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
 import { completeOneShotWithWebSearch, isOpenAIConfigured } from './openai-provider';
-import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
 import { getUserLanguage } from './user-service';
 import { isValidTenantUserId } from './tenant-scope-observability';
@@ -18,6 +16,7 @@ import { requireTenantIdParam } from './tenant-scope';
 import { withAiBudgetReservation } from './cost-guardrail';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
+import { captureDiscoveredIdea } from './content-workspace-capture';
 
 const client = createLazyAnthropicClient();
 
@@ -74,7 +73,9 @@ RULES:
 export interface ContentDiscoveryResult {
   ideas: string[];       // just the titles/headers
   fullContent: string;   // the complete detailed output
-  filePath: string;      // where it was saved
+  /** Deprecated compatibility field. Discovery no longer writes shared files. */
+  filePath: null;
+  storage: 'content_workspace';
   searchCount: number;   // how many web searches were used
   provider: 'gemini' | 'openai' | 'anthropic';
 }
@@ -271,16 +272,8 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
   // trailing bullets from source notes or summaries.
   const quickShorts = extractQuickFireShorts(fullContent);
 
-  // Save to file
-  const dir = path.join(path.dirname(config.app.databasePath), 'content-ideas');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const filePath = path.join(dir, `${dateStr}.md`);
-  const fileContent = `# Daily Content Ideas — ${dayName}, ${today.toFormat('LLLL dd, yyyy')}\n\n_Generated at ${today.toFormat('HH:mm')} | ${searchCount} web searches used_\n\n${fullContent}`;
-  fs.writeFileSync(filePath, fileContent, 'utf-8');
-
-  // Save ideas to SQLite (unified storage)
+  // Persist through the canonical private workspace. The retired date-only
+  // file was shared across users and absent from account export/erasure.
   const seenInBatch = new Set<string>();
   const allIdeas = [...ideas, ...quickShorts].filter((title) => {
     const key = normalizeDiscoveryTitle(title);
@@ -293,33 +286,38 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     try {
       const dedup = await isDuplicateIdea(title, undefined, userId, tenantId);
       if (dedup.isDuplicate && dedup.confidence > 0.8) {
-        logger.info({ title, similarTo: dedup.similarTo }, 'Discovery idea skipped (duplicate)');
+        logger.info({
+          titleLength: title.length,
+          titleHash: privacyHash(title),
+          similarTitleLength: dedup.similarTo?.length ?? 0,
+          similarTitleHash: dedup.similarTo ? privacyHash(dedup.similarTo) : null,
+        }, 'Discovery idea skipped (duplicate)');
         continue;
       }
       // Score: main ideas get higher score than quick shorts
       const isMainIdea = ideas.includes(title);
       const score = isMainIdea ? 0.7 : 0.4;
-      saveIdea({
+      const capture = captureDiscoveredIdea({
+        scope: { tenantId, userId },
         title,
         sourceDate: dateStr,
-        source: 'discovery',
         score,
         workflowEligible: isMainIdea,
-        niche: undefined,
-        userId,
+        provider: usedProvider,
       });
-      savedCount++;
+      if (!capture.replayed) savedCount++;
     } catch (err) {
-      logger.warn({ err, title }, 'Failed to save discovery idea to DB');
+      logger.warn({ err, titleLength: title.length, titleHash: privacyHash(title) }, 'Failed to save discovery idea to workspace');
     }
   }
 
-  logger.info({ searchCount, ideaCount: allIdeas.length, savedCount, filePath }, 'Content discovery complete');
+  logger.info({ searchCount, ideaCount: allIdeas.length, savedCount }, 'Content discovery complete');
 
   return {
     ideas: allIdeas,
     fullContent,
-    filePath,
+    filePath: null,
+    storage: 'content_workspace',
     searchCount,
     provider: usedProvider,
   };
@@ -356,4 +354,8 @@ function normalizeDiscoveryTitle(title: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function privacyHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }

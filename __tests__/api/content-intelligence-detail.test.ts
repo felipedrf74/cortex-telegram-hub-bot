@@ -64,8 +64,13 @@ vi.mock('../../src/portal/telemetry', () => ({
 import { contentRoutes } from '../../src/api/routes/content';
 import { getOrCreateUser, setUserLanguage } from '../../src/services/user-service';
 import { setDbProvider } from '../../src/services/intelligence-bus';
-import { logPerformanceFeedback } from '../../src/services/content-learning-store';
+import { createContentArtifact, createContentWorkspaceItem } from '../../src/services/content-workspace';
+import {
+  recordContentPerformanceOutcome,
+  type RecordContentPerformanceOutcomeInput,
+} from '../../src/services/content-performance-lineage';
 import { setContentRadarPreferences } from '../../src/services/content-radar-preferences';
+import { ensureContentTenantScopeColumns } from '../../src/services/content-tenant-scope';
 
 
 interface MockRes {
@@ -131,6 +136,39 @@ async function dispatch(
   });
 
   return response;
+}
+
+function recordCanonicalPerformance(
+  userId: number,
+  suffix: string,
+  outcome: Omit<
+    RecordContentPerformanceOutcomeInput,
+    'scope' | 'itemId' | 'artifactId' | 'revisionId' | 'idempotencyKey'
+  >,
+): void {
+  const scope = { tenantId: userId, userId };
+  const item = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: `Intelligence performance ${suffix}`,
+    idempotencyKey: `intelligence-performance-item-${userId}-${suffix}`,
+  }, testDb).value;
+  const artifact = createContentArtifact({
+    scope,
+    itemId: item.id,
+    expectedWorkflowVersion: item.workflowVersion,
+    artifactType: 'script',
+    initialContent: { format: 'markdown', text: `Published script ${suffix}` },
+    idempotencyKey: `intelligence-performance-artifact-${userId}-${suffix}`,
+  }, testDb).value;
+  recordContentPerformanceOutcome({
+    scope,
+    itemId: item.id,
+    artifactId: artifact.id,
+    revisionId: artifact.currentRevisionId!,
+    idempotencyKey: `intelligence-performance-outcome-${userId}-${suffix}`,
+    ...outcome,
+  }, testDb);
 }
 
 function daysAgoIso(daysAgo: number): string {
@@ -237,7 +275,7 @@ describe('Content API — intelligence detail', () => {
       recentOptimizationAt,
       user.id
     );
-    logPerformanceFeedback({
+    recordCanonicalPerformance(user.id, 'strong', {
       views: 8600,
       retentionPct: 64,
       likes: 720,
@@ -245,18 +283,14 @@ describe('Content API — intelligence detail', () => {
       subsGained: 18,
       selectedTitle: 'Como reconstruir consistência de treino',
       hookUsed: 'Pare de perder consistência',
-      userId: user.id,
-      tenantId: user.id,
     });
-    logPerformanceFeedback({
+    recordCanonicalPerformance(user.id, 'moderate', {
       views: 2400,
       retentionPct: 47,
       likes: 190,
       comments: 18,
       subsGained: 4,
       selectedTitle: 'Recuperação sem drama',
-      userId: user.id,
-      tenantId: user.id,
     });
 
     const response = await dispatch('/intelligence/detail', user.id);
@@ -369,6 +403,68 @@ describe('Content API — intelligence detail', () => {
       title: 'Training',
       summary: 'Reaction window: treino com forte gancho',
     });
+  });
+
+  it('keeps intelligence details private across tenant scope and limits NULL legacy rows to personal tenant', async () => {
+    const user = getOrCreateUser(57003, { username: 'content-intelligence-scope' });
+    ensureContentTenantScopeColumns(testDb);
+
+    const insertPillar = testDb.prepare(`
+      INSERT INTO config_pillars (
+        name, keywords, weight, enabled, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      ) VALUES (?, ?, 1, 1, ?, ?, ?, ?, ?)
+    `);
+    insertPillar.run('Personal legacy pillar', '["personal"]', user.id, null, null, null, null);
+    insertPillar.run('Tenant 84 pillar', '["tenant84"]', user.id, 84, user.id, 'user_private', 'active');
+    insertPillar.run('Foreign shared pillar', '["shared"]', 999, 84, 999, 'tenant_shared', 'active');
+    insertPillar.run('Malformed foreign pillar', '["malformed"]', user.id, 84, 999, 'user_private', 'active');
+
+    const insertNotification = testDb.prepare(`
+      INSERT INTO content_notifications (
+        user_id, type, title, body, data, status,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      ) VALUES (?, 'script_ready', ?, ?, '{}', 'unread', ?, ?, ?, ?)
+    `);
+    insertNotification.run(user.id, 'Personal legacy desk', 'personal-legacy-detail', null, null, null, null);
+    insertNotification.run(user.id, 'Tenant 84 desk', 'tenant-84-detail', 84, user.id, 'user_private', 'active');
+    insertNotification.run(999, 'Foreign shared desk', 'foreign-shared-detail', 84, 999, 'tenant_shared', 'active');
+    insertNotification.run(user.id, 'Malformed foreign desk', 'malformed-foreign-detail', 84, 999, 'user_private', 'active');
+
+    const insertKnowledge = testDb.prepare(`
+      INSERT INTO content_knowledge (
+        category, synthesized_text, source_channels, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      ) VALUES (?, ?, '[]', ?, ?, ?, ?, ?)
+    `);
+    insertKnowledge.run('personal_legacy_voice', 'personal-legacy-voice-detail', user.id, null, null, null, null);
+    insertKnowledge.run('tenant_84_voice', 'tenant-84-voice-detail', user.id, 84, user.id, 'user_private', 'active');
+    insertKnowledge.run('foreign_shared_voice', 'foreign-shared-voice-detail', 999, 84, 999, 'tenant_shared', 'active');
+
+    const tenant84 = await dispatch('/intelligence/detail', user.id, {}, 84);
+    const tenant84Json = JSON.stringify(tenant84.body.data);
+    expect(tenant84.statusCode).toBe(200);
+    expect(tenant84Json).toContain('Tenant 84 pillar');
+    expect(tenant84Json).toContain('Tenant 84 desk');
+    expect(tenant84Json).toContain('tenant_84_voice');
+    expect(tenant84Json).not.toContain('Personal legacy pillar');
+    expect(tenant84Json).not.toContain('personal-legacy-detail');
+    expect(tenant84Json).not.toContain('personal_legacy_voice');
+    expect(tenant84Json).not.toContain('Foreign shared pillar');
+    expect(tenant84Json).not.toContain('foreign-shared-detail');
+    expect(tenant84Json).not.toContain('foreign_shared_voice');
+    expect(tenant84Json).not.toContain('Malformed foreign pillar');
+    expect(tenant84Json).not.toContain('malformed-foreign-detail');
+
+    const personal = await dispatch('/intelligence/detail', user.id);
+    const personalJson = JSON.stringify(personal.body.data);
+    expect(personal.statusCode).toBe(200);
+    expect(personalJson).toContain('Personal legacy pillar');
+    expect(personalJson).toContain('Personal legacy desk');
+    expect(personalJson).toContain('personal_legacy_voice');
+    expect(personalJson).not.toContain('Tenant 84 pillar');
+    expect(personalJson).not.toContain('tenant-84-detail');
+    expect(personalJson).not.toContain('tenant_84_voice');
   });
 
   it('fails closed on invalid tenant scope before building intelligence detail', async () => {

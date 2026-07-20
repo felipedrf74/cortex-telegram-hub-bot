@@ -73,9 +73,13 @@ vi.mock('../../src/services/unified-calendar', () => ({
 
 vi.mock('../../src/services/content-scheduler', () => ({
   getTopicById: vi.fn(() => null),
-  updateTopic: vi.fn((_userId: number, topicId: number, updates: any) => ({
+  updateTopic: vi.fn((_userId: number, topicId: number, updates: any, tenantId: number = _userId) => ({
     id: topicId,
     user_id: _userId,
+    tenant_id: tenantId,
+    owner_user_id: _userId,
+    visibility_scope: 'user_private',
+    scope_status: 'active',
     title: 'Topic test',
     notes: null,
     scheduled_date: '2026-04-26',
@@ -87,9 +91,13 @@ vi.mock('../../src/services/content-scheduler', () => ({
   })),
 }));
 
-import { cleanupContentTopicSecretaryArtifacts, syncContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
+import {
+  cleanupContentTopicSecretaryArtifacts,
+  syncContentTopicSecretaryArtifacts,
+  syncContentTopicSecretaryArtifactsById,
+} from '../../src/services/content-topic-secretary-sync';
 import { invalidateCalendarCaches } from '../../src/services/cache-coherence-registry';
-import { updateTopic } from '../../src/services/content-scheduler';
+import { getTopicById, updateTopic } from '../../src/services/content-scheduler';
 import { invalidateTaskCaches } from '../../src/services/cache-coherence-registry';
 import { createEvent, deleteEvent, updateEvent } from '../../src/services/unified-calendar';
 
@@ -97,6 +105,10 @@ function topic(overrides: Partial<any> = {}) {
   return {
     id: 42,
     user_id: 77,
+    tenant_id: 77,
+    owner_user_id: 77,
+    visibility_scope: 'user_private',
+    scope_status: 'active',
     title: 'Topic test',
     notes: 'Film the practical angle',
     scheduled_date: '2026-04-26',
@@ -114,7 +126,7 @@ describe('content topic Secretary sync', () => {
     calendarWritable = true;
     listResult = { id: 'list-1', displayName: 'Tarefas' };
     taskProvider = {
-      createTask: vi.fn(async () => ({ success: true, data: { id: 'task-1', title: 'Conteúdo: Topic test' } })),
+      createTask: vi.fn(async () => ({ success: true, data: { id: 'task-1', title: 'Bloco de trabalho de conteúdo' } })),
       updateTask: vi.fn(async () => ({ success: true, data: { id: 'task-existing' } })),
       deleteTask: vi.fn(async () => ({ success: true })),
     };
@@ -125,13 +137,13 @@ describe('content topic Secretary sync', () => {
     mockResolveOfflineNexusTaskId.mockReset();
     mockResolveOfflineCaptureListName.mockReset();
     mockCreateOfflineFirstTask.mockReturnValue({
-      task: { id: 'task_nexus_topic', title: 'Conteúdo: Topic test', listId: '88', listName: 'Tarefas', status: 'notStarted', syncState: 'local_only' },
+      task: { id: 'task_nexus_topic', title: 'Bloco de trabalho de conteúdo', listId: '88', listName: 'Tarefas', status: 'notStarted', syncState: 'local_only' },
       mutationId: 'mutation-topic-create',
       idempotentReplay: false,
       warnings: [],
     });
     mockUpdateOfflineFirstTask.mockReturnValue({
-      task: { id: 'task_nexus_existing', title: 'Content: Topic test', listId: '90', listName: 'Content', status: 'notStarted', syncState: 'queued' },
+      task: { id: 'task_nexus_existing', title: 'Content work block', listId: '90', listName: 'Content', status: 'notStarted', syncState: 'queued' },
       mutationId: 'mutation-topic-update',
       idempotentReplay: false,
     });
@@ -144,15 +156,41 @@ describe('content topic Secretary sync', () => {
     mockResolveOfflineCaptureListName.mockImplementation((_tenantId: unknown, _userId: unknown, name: unknown) => (name as string) || 'Tarefas');
   });
 
-  it('creates a ledger Secretary task for a date-only topic and does not create a calendar event', async () => {
-    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR' });
+  it('makes queued legacy sync jobs harmless after a topic is linked to the canonical workspace', async () => {
+    const canonical = topic({
+      workspace_item_id: 9001,
+      compatibility_mode: 'canonical_workspace',
+      secretary_sync_status: 'workspace_confirmation_required',
+    });
+
+    await expect(syncContentTopicSecretaryArtifacts(77, canonical, {
+      language: 'en',
+      tenantId: 77,
+      shareContentTitle: true,
+      sharePrivateNotes: true,
+    })).resolves.toBe(canonical);
+
+    expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
+    expect(mockUpdateOfflineFirstTask).not.toHaveBeenCalled();
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+    expect(taskProvider.updateTask).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(updateTopic).not.toHaveBeenCalled();
+  });
+
+  it('creates a privacy-safe ledger Secretary task for a date-only topic and does not create a calendar event', async () => {
+    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR', tenantId: 77 });
 
     expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(77, 77, expect.objectContaining({
-      title: 'Conteúdo: Topic test',
+      title: 'Bloco de trabalho de conteúdo',
       dueDateTime: '2026-04-26T23:59:00',
       importance: 'normal',
       listName: 'Tarefas',
     }));
+    const createPayload = mockCreateOfflineFirstTask.mock.calls[0][2];
+    expect(createPayload.body).toContain('Referência privada: content-topic-42');
+    expect(createPayload.body).not.toContain('Topic test');
+    expect(createPayload.body).not.toContain('Film the practical angle');
     expect(taskProvider.createTask).not.toHaveBeenCalled();
     expect(createEvent).not.toHaveBeenCalled();
     // secretary_task_external_id now stores the NEXUS task id (see the
@@ -162,7 +200,7 @@ describe('content topic Secretary sync', () => {
       secretary_task_list_name: 'Tarefas',
       secretary_task_external_id: 'task_nexus_topic',
       secretary_sync_status: 'task_synced',
-    }));
+    }), 77);
     expect(invalidateTaskCaches).toHaveBeenCalledWith({
       userId: 77,
       listIds: ['88'],
@@ -170,9 +208,30 @@ describe('content topic Secretary sync', () => {
     });
   });
 
+  it('writes the Secretary task to the explicit tenant ledger when tenant and owner differ', async () => {
+    await syncContentTopicSecretaryArtifacts(77, topic({ tenant_id: 88 }), {
+      language: 'en',
+      tenantId: 88,
+    });
+
+    expect(mockCreateOfflineFirstTask).toHaveBeenCalledWith(88, 77, expect.objectContaining({
+      title: 'Content work block',
+      listName: 'Tarefas',
+    }));
+    expect(mockResolveOfflineCaptureListName).toHaveBeenCalledWith(88, 77, 'Tarefas');
+    expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
+      secretary_task_external_id: 'task_nexus_topic',
+      secretary_sync_status: 'task_synced',
+    }), 88);
+  });
+
   it('legacy flag-off path creates the Secretary task through the provider', async () => {
     vi.stubEnv('TASK_SINGLE_WRITE_PATH', '0');
-    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR' });
+    await syncContentTopicSecretaryArtifacts(77, topic(), {
+      language: 'pt-BR',
+      tenantId: 77,
+      shareContentTitle: true,
+    });
 
     expect(taskProvider.createTask).toHaveBeenCalledWith('list-1', 'Tarefas', expect.objectContaining({
       title: 'Conteúdo: Topic test',
@@ -183,26 +242,29 @@ describe('content topic Secretary sync', () => {
       secretary_task_list_id: 'list-1',
       secretary_task_external_id: 'task-1',
       secretary_sync_status: 'task_synced',
-    }));
+    }), 77);
   });
 
   it('creates a calendar agenda when the topic includes date and time', async () => {
     await syncContentTopicSecretaryArtifacts(77, topic({
       scheduled_at: '2026-04-26T09:30:00',
-    }), { language: 'pt-BR' });
+    }), { language: 'pt-BR', tenantId: 77 });
 
     expect(mockCreateOfflineFirstTask).toHaveBeenCalled();
     expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'Conteúdo: Topic test',
+      title: 'Bloco de trabalho de conteúdo',
       start: '2026-04-26T09:30:00+01:00',
       end: '2026-04-26T10:30:00+01:00',
       categories: ['Content'],
     }), undefined, 77);
+    const calendarPayload = vi.mocked(createEvent).mock.calls[0][0];
+    expect(calendarPayload.description).not.toContain('Topic test');
+    expect(calendarPayload.description).not.toContain('Film the practical angle');
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
       calendar_event_id: 'evt-1',
       calendar_source: 'google',
       secretary_sync_status: 'task_calendar_synced',
-    }));
+    }), 77);
     expect(invalidateCalendarCaches).toHaveBeenCalledWith(77);
   });
 
@@ -214,19 +276,19 @@ describe('content topic Secretary sync', () => {
       secretary_task_external_id: 'task-existing',
       calendar_event_id: 'evt-existing',
       calendar_source: 'outlook',
-    }), { language: 'en' });
+    }), { language: 'en', tenantId: 77 });
 
     expect(mockResolveOfflineNexusTaskId).toHaveBeenCalledWith(77, 77, 'task-existing');
     expect(mockUpdateOfflineFirstTask).toHaveBeenCalledWith(77, 77, expect.objectContaining({
       taskId: 'task_nexus_existing',
-      title: 'Content: Topic test',
+      title: 'Content work block',
     }));
     expect(taskProvider.updateTask).not.toHaveBeenCalled();
     expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
     expect(taskProvider.createTask).not.toHaveBeenCalled();
     expect(updateEvent).toHaveBeenCalledWith(expect.objectContaining({
       event_id: 'evt-existing',
-      new_title: 'Content: Topic test',
+      new_title: 'Content work block',
     }), 'outlook', 77);
   });
 
@@ -236,13 +298,59 @@ describe('content topic Secretary sync', () => {
 
     await syncContentTopicSecretaryArtifacts(77, topic({
       scheduled_at: '2026-04-26T09:30:00',
-    }), { language: 'pt-BR' });
+    }), { language: 'pt-BR', tenantId: 77 });
 
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
       secretary_task_external_id: 'task_nexus_topic',
       secretary_sync_status: 'task_synced_calendar_unavailable',
       secretary_sync_error: 'calendar_not_connected',
-    }));
+    }), 77);
+  });
+
+  it('shares the private title and notes only after explicit per-field opt in', async () => {
+    await syncContentTopicSecretaryArtifacts(77, topic(), {
+      language: 'en',
+      tenantId: 77,
+      shareContentTitle: true,
+      sharePrivateNotes: true,
+    });
+
+    const payload = mockCreateOfflineFirstTask.mock.calls[0][2];
+    expect(payload.title).toBe('Content: Topic test');
+    expect(payload.body).toContain('Notes: Film the practical angle');
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+    expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.any(Object), 77);
+  });
+
+  it('passes tenant scope through id-based lookups before attempting external sync', async () => {
+    await expect(syncContentTopicSecretaryArtifactsById(77, 42, {
+      language: 'en',
+      tenantId: 88,
+    })).resolves.toBeNull();
+
+    expect(getTopicById).toHaveBeenCalledWith(77, 42, 88);
+    expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['tenant', { tenant_id: 88 }],
+    ['owner', { owner_user_id: 88 }],
+  ])('rejects a %s scope mismatch before sharing anything externally', async (_scope, overrides) => {
+    await expect(syncContentTopicSecretaryArtifacts(77, topic(overrides), {
+      language: 'en',
+      tenantId: 77,
+      shareContentTitle: true,
+      sharePrivateNotes: true,
+    })).rejects.toThrow('content_topic_secretary_sync_scope_mismatch');
+
+    expect(mockCreateOfflineFirstTask).not.toHaveBeenCalled();
+    expect(mockUpdateOfflineFirstTask).not.toHaveBeenCalled();
+    expect(taskProvider.createTask).not.toHaveBeenCalled();
+    expect(taskProvider.updateTask).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(updateTopic).not.toHaveBeenCalled();
   });
 
   it('cleans up existing Secretary task and calendar artifacts', async () => {
@@ -269,6 +377,37 @@ describe('content topic Secretary sync', () => {
       includeDerivedSurfaces: true,
     });
     expect(invalidateCalendarCaches).toHaveBeenCalledWith(77);
+  });
+
+  it('cleans up the task in the explicit tenant ledger when tenant and owner differ', async () => {
+    const result = await cleanupContentTopicSecretaryArtifacts(77, topic({
+      tenant_id: 88,
+      secretary_task_list_id: 'list-old',
+      secretary_task_external_id: 'task-existing',
+    }), { tenantId: 88 });
+
+    expect(result).toEqual({ taskDeleted: true, calendarDeleted: false, errors: [] });
+    expect(mockResolveOfflineNexusTaskId).toHaveBeenCalledWith(88, 77, 'task-existing');
+    expect(mockRecordLocalTaskMutation).toHaveBeenCalledWith(88, 77, {
+      taskId: 'task_nexus_existing',
+      operation: 'task.delete',
+      patch: { source: 'content_topic_secretary_sync' },
+    });
+  });
+
+  it('rejects cross-scope cleanup before reading or mutating task and calendar artifacts', async () => {
+    await expect(cleanupContentTopicSecretaryArtifacts(77, topic({
+      tenant_id: 88,
+      secretary_task_list_id: 'list-old',
+      secretary_task_external_id: 'task-existing',
+      calendar_event_id: 'evt-existing',
+      calendar_source: 'outlook',
+    }), { tenantId: 77 })).rejects.toThrow('content_topic_secretary_sync_scope_mismatch');
+
+    expect(mockResolveOfflineNexusTaskId).not.toHaveBeenCalled();
+    expect(mockRecordLocalTaskMutation).not.toHaveBeenCalled();
+    expect(taskProvider.deleteTask).not.toHaveBeenCalled();
+    expect(deleteEvent).not.toHaveBeenCalled();
   });
 
   it('treats cleanup of a task the ledger no longer knows as converged', async () => {
@@ -361,7 +500,7 @@ describe('content topic Secretary sync', () => {
 
   it('ledger update falls back to the stored topic list identity when the local row has none', async () => {
     mockUpdateOfflineFirstTask.mockReturnValue({
-      task: { id: 'task_nexus_existing', title: 'Content: Topic test', listId: null, listName: null, status: 'notStarted', syncState: 'queued' },
+      task: { id: 'task_nexus_existing', title: 'Content work block', listId: null, listName: null, status: 'notStarted', syncState: 'queued' },
       mutationId: 'mutation-topic-update',
       idempotentReplay: false,
     });
@@ -370,45 +509,45 @@ describe('content topic Secretary sync', () => {
       secretary_task_list_id: 'list-old',
       secretary_task_list_name: 'Content',
       secretary_task_external_id: 'task-existing',
-    }), { language: 'en' });
+    }), { language: 'en', tenantId: 77 });
 
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
       secretary_task_list_id: 'list-old',
       secretary_task_list_name: 'Content',
-    }));
+    }), 77);
   });
 
   it('ledger update defaults to the Inbox label when neither the row nor the topic has a list', async () => {
     mockUpdateOfflineFirstTask.mockReturnValue({
-      task: { id: 'task_nexus_existing', title: 'Content: Topic test', listId: null, listName: null, status: 'notStarted', syncState: 'queued' },
+      task: { id: 'task_nexus_existing', title: 'Content work block', listId: null, listName: null, status: 'notStarted', syncState: 'queued' },
       mutationId: 'mutation-topic-update',
       idempotentReplay: false,
     });
 
     await syncContentTopicSecretaryArtifacts(77, topic({
       secretary_task_external_id: 'task-existing',
-    }), { language: 'en' });
+    }), { language: 'en', tenantId: 77 });
 
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
       secretary_task_list_id: '',
       secretary_task_list_name: 'Inbox',
-    }));
+    }), 77);
   });
 
   it('ledger create defaults to the Tarefas label when the created row carries no list identity', async () => {
     mockCreateOfflineFirstTask.mockReturnValue({
-      task: { id: 'task_nexus_topic', title: 'Conteúdo: Topic test', listId: null, listName: null, status: 'notStarted', syncState: 'local_only' },
+      task: { id: 'task_nexus_topic', title: 'Bloco de trabalho de conteúdo', listId: null, listName: null, status: 'notStarted', syncState: 'local_only' },
       mutationId: 'mutation-topic-create',
       idempotentReplay: false,
       warnings: [],
     });
 
-    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR' });
+    await syncContentTopicSecretaryArtifacts(77, topic(), { language: 'pt-BR', tenantId: 77 });
 
     expect(updateTopic).toHaveBeenCalledWith(77, 42, expect.objectContaining({
       secretary_task_list_id: '',
       secretary_task_list_name: 'Tarefas',
       secretary_task_external_id: 'task_nexus_topic',
-    }));
+    }), 77);
   });
 });

@@ -13,7 +13,11 @@ import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
 import { registerNotificationDeviceToken } from '../../services/notification-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
-import { deleteAllUserDataForAccountDeletion, getAccountDeletionInventoryForUser } from '../../services/user-data-export';
+import {
+  deleteAllUserDataForAccountDeletion,
+  exportContentWorkspaceData,
+  getAccountDeletionInventoryForUser,
+} from '../../services/user-data-export';
 import { logAudit } from '../../services/audit-trail';
 import {
   getProviderPreferences,
@@ -274,8 +278,8 @@ export function settingsRoutes(): Router {
       // This list must stay in sync with the DELETE /account table list.
       const userData: Record<string, any> = {};
 
-      // Helper: safe query that returns [] if table doesn't exist, and surfaces
-      // real export gaps instead of silently returning an incomplete archive.
+      // Helper: collect query failures and fail the export as a whole below.
+      // A successful-but-partial privacy archive is not a truthful export.
       const exportErrors: string[] = [];
       const safeAll = (sql: string, ...params: any[]) => {
         try {
@@ -306,21 +310,36 @@ export function settingsRoutes(): Router {
         userData.profiles = allQ.map((q: any) => onboarding.getProfile(userId, q.id)).filter(Boolean);
       } catch { userData.profiles = []; }
 
-      // ── Content (learning store) ──
-      userData.contentScripts = safeAll('SELECT * FROM content_scripts WHERE user_id = ? ORDER BY created_at DESC', userId);
-      userData.contentPerformance = safeAll('SELECT * FROM content_performance WHERE user_id = ? ORDER BY logged_at DESC', userId);
-      userData.contentLearnedPatterns = safeAll('SELECT * FROM content_learned_patterns WHERE user_id = ?', userId);
-      userData.contentPipeline = safeAll('SELECT * FROM content_pipeline WHERE user_id = ? ORDER BY created_at DESC', userId);
-      userData.contentTopicFeedback = safeAll('SELECT * FROM content_topic_feedback WHERE user_id = ? ORDER BY created_at DESC', userId);
-      userData.contentTopics = safeAll('SELECT * FROM content_topics WHERE user_id = ? ORDER BY created_at DESC', userId);
-      userData.contentKnowledge = safeAll('SELECT * FROM content_knowledge WHERE user_id = ?', userId);
-      userData.contentRefChannels = safeAll('SELECT * FROM content_ref_channels WHERE user_id = ?', userId);
-      userData.bookLibrary = safeAll('SELECT * FROM book_library WHERE user_id = ?', userId);
+      // ── Content workspace ──
+      // The canonical export discovers every schema-present Content table with
+      // user_id and/or owner_user_id. The legacy arrays remain additive aliases
+      // for existing consumers, but are sourced from the same scoped archive.
+      const contentWorkspace = exportContentWorkspaceData(userId, tenantId);
+      const contentRecords = (
+        table: string,
+        descendingField?: string,
+      ): Array<Record<string, unknown>> => {
+        const records = [...(contentWorkspace.tables.find((entry) => entry.name === table)?.records ?? [])];
+        if (!descendingField) return records;
+        return records.sort((left, right) => String(right[descendingField] ?? '')
+          .localeCompare(String(left[descendingField] ?? '')));
+      };
+      userData.contentWorkspace = contentWorkspace;
+      userData.contentScripts = contentRecords('content_scripts', 'created_at');
+      userData.contentPerformance = contentRecords('content_performance', 'logged_at');
+      userData.contentLearnedPatterns = contentRecords('content_learned_patterns');
+      userData.contentPipeline = contentRecords('content_pipeline', 'created_at');
+      userData.contentTopicFeedback = contentRecords('content_topic_feedback', 'created_at');
+      userData.contentTopics = contentRecords('content_topics', 'created_at');
+      userData.contentKnowledge = contentRecords('content_knowledge');
+      userData.contentRefChannels = contentRecords('content_ref_channels');
+      userData.bookLibrary = contentRecords('book_library');
+      userData.savedIdeas = contentRecords('saved_ideas');
 
       // ── Reports & notifications ──
       userData.reportDocuments = safeAll('SELECT * FROM report_documents WHERE user_id = ? ORDER BY created_at DESC', userId);
       userData.pushPreferences = safeAll('SELECT * FROM push_preferences WHERE user_id = ?', userId);
-      userData.contentNotifications = safeAll('SELECT * FROM content_notifications WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.contentNotifications = contentRecords('content_notifications', 'created_at');
 
       // ── Tasks & reminders ──
       userData.nativeTasks = safeAll('SELECT * FROM native_tasks WHERE user_id = ?', userId);
@@ -330,7 +349,13 @@ export function settingsRoutes(): Router {
       // ── Health & training ──
       userData.appleHealthData = safeAll('SELECT * FROM apple_health_data WHERE user_id = ? ORDER BY date DESC LIMIT 365', userId);
       userData.readinessScores = safeAll('SELECT * FROM readiness_scores WHERE user_id = ? ORDER BY date DESC LIMIT 365', userId);
-      userData.trainingCompletions = safeAll('SELECT * FROM training_completions WHERE user_id = ?', userId);
+      userData.trainingCompletions = safeAll(`
+        SELECT completion.*
+        FROM training_completions completion
+        INNER JOIN fitness_training_plans plan ON plan.id = completion.plan_id
+        WHERE (plan.tenant_id = ? OR plan.tenant_id IS NULL) AND plan.user_id = ?
+        ORDER BY completion.completed_at DESC
+      `, tenantId, userId);
       userData.fitnessTrainingPlans = safeAll('SELECT * FROM fitness_training_plans WHERE user_id = ?', userId);
       userData.productLearningCases = safeAll(`
         SELECT case_id AS caseId, tenant_id AS tenantId, user_id AS userId,
@@ -386,11 +411,11 @@ export function settingsRoutes(): Router {
         'SELECT provider, created_at FROM user_oauth_tokens WHERE user_id = ?', userId
       );
 
+      if (exportErrors.length > 0) {
+        throw new Error(`GDPR export incomplete for tables: ${[...new Set(exportErrors)].sort().join(', ')}`);
+      }
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
-      if (exportErrors.length > 0) {
-        userData._exportErrors = [...new Set(exportErrors)];
-      }
       userData._systemNotes = {
         sharedSeedData: 'Tables content_ref_channels, book_library, content_knowledge, and content_learned_patterns may contain explicit system-owned rows (owner_scope=system) that serve as shared reference data (e.g., default books, seed channels). These rows are not user-generated and are excluded from this export.',
       };
@@ -406,7 +431,13 @@ export function settingsRoutes(): Router {
         actorId: userId,
         action: 'export',
         resource: 'account',
-        details: { tableCounts, exportErrors: [...new Set(exportErrors)] },
+        details: {
+          tableCounts,
+          contentWorkspaceTableCounts: Object.fromEntries(
+            contentWorkspace.tables.map((table) => [table.name, table.records.length]),
+          ),
+          exportErrors: [],
+        },
         ipAddress: req.ip,
       });
 

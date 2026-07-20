@@ -123,8 +123,10 @@ function normalizeAuthPayload(json) {
 }
 
 function writeAuthFile(authFile, payload) {
-  fs.mkdirSync(path.dirname(authFile), { recursive: true });
-  fs.writeFileSync(authFile, JSON.stringify(payload, null, 2));
+  fs.mkdirSync(path.dirname(authFile), { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.dirname(authFile), 0o700);
+  fs.writeFileSync(authFile, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  fs.chmodSync(authFile, 0o600);
 }
 
 function grantLocalMaxAccess(db, userId) {

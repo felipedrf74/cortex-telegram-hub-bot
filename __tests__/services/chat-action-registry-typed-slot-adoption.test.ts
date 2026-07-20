@@ -223,10 +223,10 @@ describe('typed slot adoption — cooking ingredient substitution', () => {
 });
 
 describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () => {
-  it('imports the runtime registry and finds exactly 50 active actions', () => {
+  it('imports the runtime registry and finds exactly 51 active actions', () => {
     const entries = getChatActionRegistry();
-    expect(entries).toHaveLength(50);
-    expect(activeActions(entries)).toHaveLength(50);
+    expect(entries).toHaveLength(51);
+    expect(activeActions(entries)).toHaveLength(51);
   });
 
   it('excludes non-active action definitions from active-action counts', () => {
@@ -240,7 +240,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(activeActions(synthetic).map((entry) => entry.status)).toEqual(['active']);
   });
 
-  it('all 50 active registry actions have typedSlotExtractors (full coverage)', () => {
+  it('all 51 active registry actions have typedSlotExtractors (full coverage)', () => {
     // Adoption history:
     //   Phase 12 batch 63 — 3 (calendar/task/training core)
     //   Phase 13 batch 67 — +5 (mail send/draft, delete_event, etc.)
@@ -249,7 +249,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     //     where extraction has no useful NL signal)
     const entries = activeActions(getChatActionRegistry());
     const adopted = entries.filter((e: { typedSlotExtractors?: unknown }) => Array.isArray(e.typedSlotExtractors) && e.typedSlotExtractors.length > 0);
-    expect(adopted.length).toBe(50);
+    expect(adopted.length).toBe(51);
     expect(adopted.length).toBe(entries.length);
   });
 

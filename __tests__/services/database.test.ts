@@ -8,15 +8,20 @@
  * - Migration sequence stays append-only and duplicate prefixes are explicit
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import {
+  getDb,
   runMigrationsForTest,
   stripWrappingTransactionStatements,
+  withDatabaseForTest,
+  withDatabaseForTestAsync,
 } from '../../src/services/database';
+import { ensureMigrationSqlFunctions } from '../../src/services/migration-runner';
+import { assertContentWorkspaceBootReadiness } from '../../src/services/content-workspace-boot-readiness';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -46,6 +51,7 @@ function createTestDb(): Database.Database {
 }
 
 function applyMigrations(db: Database.Database): string[] {
+  ensureMigrationSqlFunctions(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,8 +107,15 @@ describe('Database Migrations', () => {
     expect(stripped).not.toMatch(/^\s*COMMIT\s*;/im);
   });
 
-  it('applies literal-transaction migrations through the real migration runner', () => {
-    expect(() => runMigrationsForTest(db)).not.toThrow();
+  it('applies literal-transaction migrations and invokes post-migration Content readiness', () => {
+    const contentWorkspaceReadinessCheck = vi.fn((database: Database.Database) => {
+      expect(database).toBe(db);
+    });
+
+    expect(() => runMigrationsForTest(db, {
+      contentWorkspaceReadinessCheck,
+    })).not.toThrow();
+    expect(contentWorkspaceReadinessCheck).toHaveBeenCalledOnce();
     const applied = db.prepare(`
       SELECT filename FROM _migrations
       WHERE filename IN ('042_unified_fks.sql', '116_chat_reasoning_engine_v1.sql')
@@ -125,6 +138,65 @@ describe('Database Migrations', () => {
     for (const file of files) {
       expect(applied.has(file)).toBe(true);
     }
+  });
+
+  it('registers migration SQL functions on a fully migrated connection', () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL UNIQUE,
+        applied_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    const recordApplied = db.prepare('INSERT INTO _migrations (filename) VALUES (?)');
+    for (const file of migrationFiles()) recordApplied.run(file);
+
+    runMigrationsForTest(db);
+
+    expect(
+      db.prepare("SELECT nexus_sha256('workspace') AS hash").get(),
+    ).toEqual({
+      hash: '21a3230e03772a58aff1b3709a9e232850916337e1fba95c434076b6668c6e08',
+    });
+  });
+
+  it('runs every Content workspace boot-readiness gate and fails closed in order', () => {
+    const calls: string[] = [];
+    const failure = new Error('reviewed readiness drift');
+    const neverReached = vi.fn();
+
+    expect(() => assertContentWorkspaceBootReadiness(db, [
+      {
+        load: () => (database) => {
+          expect(database).toBe(db);
+          calls.push('pipeline');
+        },
+        failureMessage: 'pipeline gate failed',
+      },
+      {
+        load: () => () => {
+          calls.push('integrity');
+          throw failure;
+        },
+        failureMessage: 'integrity gate failed',
+      },
+      {
+        load: () => neverReached,
+        failureMessage: 'later gate failed',
+      },
+    ])).toThrow(failure);
+
+    expect(calls).toEqual(['pipeline', 'integrity']);
+    expect(neverReached).not.toHaveBeenCalled();
+  });
+
+  it('binds synchronous and asynchronous database work to an explicit test connection', async () => {
+    expect(() => getDb()).toThrow('Database not initialized');
+
+    expect(withDatabaseForTest(db, () => getDb())).toBe(db);
+    await expect(withDatabaseForTestAsync(db, async () => getDb())).resolves.toBe(db);
+
+    expect(() => getDb()).toThrow('Database not initialized');
   });
 
   it('migration filenames follow non-decreasing numbering', () => {
@@ -320,15 +392,15 @@ describe('Database CRUD Operations', () => {
   });
 
   describe('content_pipeline table', () => {
-    it('tracks content through stages', () => {
-      db.prepare(`
+    it('is read-only after the canonical workspace cutover', () => {
+      expect(() => db.prepare(`
         INSERT INTO content_pipeline (topic_title, niche, stage)
         VALUES (?, ?, ?)
-      `).run('Why the free market works', 'economics', 'approved');
+      `).run('Why the free market works', 'economics', 'approved'))
+        .toThrow(/content_pipeline is read-only after migration 246/i);
 
       const item = db.prepare('SELECT * FROM content_pipeline WHERE topic_title LIKE ?').get('%free market%') as any;
-      expect(item.stage).toBe('approved');
-      expect(item.niche).toBe('economics');
+      expect(item).toBeUndefined();
     });
   });
 });

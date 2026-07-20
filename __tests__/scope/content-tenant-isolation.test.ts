@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 let testDb: Database.Database;
 
 vi.mock('../../src/services/database', () => ({
@@ -101,7 +103,9 @@ function insertScopedContentBundle(userId: number, tenantId: number): { feedback
 
 describe('content tenant isolation sweep', () => {
   beforeEach(() => {
-    testDb = createMigratedTestDatabase();
+    // The isolation sweep seeds a legacy artifact chain. Migration 246 owns
+    // the post-cutover write-block coverage for the production schema.
+    testDb = createMigratedTestDatabase({ stopBefore: '246_content_pipeline_workspace_exit.sql' });
   });
 
   afterEach(() => {
@@ -110,9 +114,14 @@ describe('content tenant isolation sweep', () => {
 
   it('blocks cross-tenant artifact chain and script reads', () => {
     const { pipelineId } = insertScopedContentBundle(101, 1001);
+    testDb.exec(readFileSync(
+      resolve(process.cwd(), 'migrations/246_content_pipeline_workspace_exit.sql'),
+      'utf8',
+    ));
 
     expect(getScriptByPipelineId(pipelineId, 202, 2002)).toBeNull();
     expect(getArtifactChain(pipelineId, 202, 2002)).toMatchObject({
+      availability: 'not_found',
       idea: null,
       topicFeedback: null,
       pipeline: null,
@@ -122,8 +131,15 @@ describe('content tenant isolation sweep', () => {
     });
 
     const ownerChain = getArtifactChain(pipelineId, 101, 1001);
-    expect(ownerChain.pipeline?.id).toBe(pipelineId);
-    expect(ownerChain.script?.scriptText).toBe('Tenant-owned script text');
+    expect(ownerChain).toMatchObject({
+      availability: 'available',
+      identifier: { requestedId: pipelineId, resolvedAs: 'legacy_pipeline_binding' },
+      compatibility: { legacyIdentifierAccepted: true, legacyArchiveRead: false },
+    });
+    // Migration 246 truthfully leaves this metadata-only until a canonical
+    // artifact/revision import pins parity; it does not surface the old script
+    // as if it had already been migrated.
+    expect(ownerChain.script).toBeNull();
     expect(ownerChain.performance).toHaveLength(1);
   });
 

@@ -11,6 +11,7 @@ const mockSaveNote = vi.fn();
 const mockSearchNotes = vi.fn();
 const mockUpdateNote = vi.fn();
 const mockDeleteNote = vi.fn();
+const mockGetNoteById = vi.fn();
 const mockSetReminder = vi.fn();
 const mockGetActiveReminders = vi.fn();
 const mockCancelReminder = vi.fn();
@@ -55,7 +56,7 @@ vi.mock('../../src/state/notes', () => ({
   searchNotes: (...args: unknown[]) => mockSearchNotes(...args),
   updateNote: (...args: unknown[]) => mockUpdateNote(...args),
   deleteNote: (...args: unknown[]) => mockDeleteNote(...args),
-  getNoteById: vi.fn(),
+  getNoteById: (...args: unknown[]) => mockGetNoteById(...args),
 }));
 
 vi.mock('../../src/state/reminders', () => ({
@@ -410,6 +411,72 @@ describe('Authenticated support routes scope guards', () => {
     expect(res.body.error.code).toBe('INTERNAL');
     expect(res.body.error.message).toBe('Failed to save note');
     expect(JSON.stringify(res.body)).not.toContain('notes sqlite write failed');
+  });
+
+  it('reserves Content ideas for the canonical workspace instead of writing legacy notes', async () => {
+    const created = await dispatch(notesRoutes, 'POST', '/', 12, {
+      content: 'A connected Content idea',
+      domain: ' CONTENT_IDEA ',
+    });
+    expect(created.statusCode).toBe(409);
+    expect(created.body.error.code).toBe('CONTENT_IDEA_REQUIRES_WORKSPACE');
+    expect(mockSaveNote).not.toHaveBeenCalled();
+
+    const converted = await dispatch(notesRoutes, 'PATCH', '/42', 12, {
+      domain: 'content_idea',
+    });
+    expect(converted.statusCode).toBe(409);
+    expect(converted.body.error.code).toBe('CONTENT_IDEA_REQUIRES_WORKSPACE');
+    expect(mockUpdateNote).not.toHaveBeenCalled();
+
+    const searched = await dispatch(notesRoutes, 'GET', '/?domain=content_idea', 12);
+    expect(searched.statusCode).toBe(409);
+    expect(searched.body.error.code).toBe('CONTENT_IDEA_REQUIRES_WORKSPACE');
+    expect(mockSearchNotes).not.toHaveBeenCalled();
+  });
+
+  it('keeps migrated Content ideas out of generic Notes list reads', async () => {
+    mockSearchNotes.mockReturnValueOnce([]);
+    const response = await dispatch(notesRoutes, 'GET', '/?domain=general&limit=50', 12);
+
+    expect(response.statusCode).toBe(200);
+    expect(mockSearchNotes).toHaveBeenCalledWith(12, {
+      domain: 'general',
+      query: undefined,
+      tag: undefined,
+      limit: 50,
+      excludeDomain: 'content_idea',
+    });
+  });
+
+  it('keeps legacy Content-idea notes read-only while allowing canonical migration', async () => {
+    mockGetNoteById.mockReturnValueOnce({
+      id: 42,
+      user_id: 12,
+      content: 'Legacy idea',
+      domain: 'content_idea',
+      tags: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+    const response = await dispatch(notesRoutes, 'PATCH', '/42', 12, {
+      content: 'Unsafe parallel update',
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error.code).toBe('CONTENT_IDEA_LEGACY_READ_ONLY');
+    expect(mockUpdateNote).not.toHaveBeenCalled();
+
+    mockGetNoteById.mockReturnValueOnce({
+      id: 42,
+      user_id: 12,
+      content: 'Legacy idea',
+      domain: ' CONTENT_IDEA ',
+      tags: null,
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+    const deleted = await dispatch(notesRoutes, 'DELETE', '/42', 12);
+    expect(deleted.statusCode).toBe(409);
+    expect(deleted.body.error.code).toBe('CONTENT_IDEA_LEGACY_READ_ONLY');
+    expect(mockDeleteNote).not.toHaveBeenCalled();
   });
 
   it('sanitizes reminder creation failures instead of leaking scheduler internals', async () => {

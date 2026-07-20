@@ -1,8 +1,88 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from '../../services/database';
+import {
+  CONTENT_WORKSPACE_SCHEMA_VERSION,
+  listContentWorkspaceItems,
+  type ContentNextAction,
+  type ContentWorkspaceItem,
+} from '../../services/content-workspace';
 import type { AgentSignal } from '../../services/intelligence-bus';
 import type { Lang } from '../../utils/i18n';
+
+const CONTENT_COMPATIBILITY_ITEM_LIMIT = 200;
+
+export type ContentCompatibilityStage = 'ideas' | 'scripted' | 'published';
+
+export interface ContentCompatibilityItem {
+  id: string;
+  title: string;
+  summary: string | null;
+  score: null;
+  createdAt: string;
+  updatedAt: string;
+  stage: ContentCompatibilityStage;
+  nextAction: ContentNextAction;
+  workspace: {
+    productionState: ContentWorkspaceItem['productionState'];
+    artifactPhase: ContentWorkspaceItem['artifactPhase'];
+    workflowVersion: number;
+    currentArtifactId: number | null;
+  };
+}
+
+export interface ContentCompatibilityProjection {
+  schemaVersion: typeof CONTENT_WORKSPACE_SCHEMA_VERSION;
+  items: ContentCompatibilityItem[];
+  stages: {
+    ideas: ContentCompatibilityItem[];
+    scripted: ContentCompatibilityItem[];
+    filmed: ContentCompatibilityItem[];
+    editing: ContentCompatibilityItem[];
+    published: ContentCompatibilityItem[];
+  };
+  coverage: {
+    itemLimit: number;
+    itemWindowMayBeTruncated: boolean;
+    publishedWindowLimit: number;
+    publishedWindowMayBeTruncated: boolean;
+  };
+}
+
+export function readContentCompatibilityProjection(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+  tenantId: number,
+): ContentCompatibilityProjection {
+  const workspaceItems = listContentWorkspaceItems({
+    scope: { tenantId, userId },
+    itemType: 'content_item',
+    limit: CONTENT_COMPATIBILITY_ITEM_LIMIT,
+  }, db);
+  const items = workspaceItems.map(projectWorkspaceItem);
+  const ideas = items.filter((item) => item.stage === 'ideas');
+  const scripted = items.filter((item) => item.stage === 'scripted');
+  const allPublished = items.filter((item) => item.stage === 'published');
+  const publishedWindowLimit = 10;
+
+  return {
+    schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
+    items,
+    stages: {
+      ideas,
+      scripted,
+      filmed: [],
+      editing: [],
+      published: allPublished.slice(0, publishedWindowLimit),
+    },
+    coverage: {
+      itemLimit: CONTENT_COMPATIBILITY_ITEM_LIMIT,
+      itemWindowMayBeTruncated: workspaceItems.length === CONTENT_COMPATIBILITY_ITEM_LIMIT,
+      publishedWindowLimit,
+      publishedWindowMayBeTruncated: allPublished.length > publishedWindowLimit,
+    },
+  };
+}
 
 export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: number, tenantId?: number): {
   stages: {
@@ -13,26 +93,8 @@ export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: nu
     published: Array<{ title: string }>;
   };
 } {
-  const scope = contentHomeScopePredicate(db, 'content_ideas', userId, tenantId);
-  const readStage = (stage: 'ideas' | 'scripted' | 'filmed' | 'editing' | 'published') => (
-    db.prepare(
-      `SELECT title
-         FROM content_ideas
-        WHERE stage = ? AND ${scope.where}
-        ORDER BY COALESCE(score, 0) DESC, created_at DESC
-        LIMIT 20`,
-    ).all(stage, ...scope.params) as Array<{ title: string }>
-  ).map((row) => ({ title: row.title }));
-
-  return {
-    stages: {
-      ideas: readStage('ideas'),
-      scripted: readStage('scripted'),
-      filmed: readStage('filmed'),
-      editing: readStage('editing'),
-      published: readStage('published'),
-    },
-  };
+  const projection = readContentCompatibilityProjection(db, userId, requireTenantId(tenantId));
+  return { stages: projection.stages };
 }
 
 export function readContentHomeIdeas(
@@ -40,47 +102,71 @@ export function readContentHomeIdeas(
   userId: number,
   tenantId?: number,
 ): Array<{ title: string }> {
-  const scope = contentHomeScopePredicate(db, 'content_ideas', userId, tenantId);
-  return (
-    db.prepare(`
-      SELECT title
-      FROM content_ideas
-      WHERE ${scope.where}
-      ORDER BY COALESCE(score, 0) DESC, created_at DESC
-      LIMIT 30
-    `).all(...scope.params) as Array<{ title: string }>
-  ).map((row) => ({ title: row.title }));
+  return readContentCompatibilityProjection(db, userId, requireTenantId(tenantId)).stages.ideas;
 }
 
-function contentHomeScopePredicate(
+export function readContentPublishedThisMonth(
   db: ReturnType<typeof getDb>,
-  table: string,
   userId: number,
-  tenantId?: number,
-): { where: string; params: unknown[] } {
-  const clauses: string[] = ['user_id = ?'];
-  const params: unknown[] = [userId];
-  if (contentHomeColumnExists(db, table, 'tenant_id')) {
-    clauses.push('COALESCE(tenant_id, user_id) = ?');
-    params.push(tenantId ?? userId);
+  tenantId: number,
+  now: Date = new Date(),
+): { count: number; windowStart: string; windowEnd: string; source: 'content_workflow_events' } {
+  const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const windowEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const row = db.prepare(`
+    SELECT COUNT(DISTINCT object_id) AS count
+      FROM content_workflow_events
+     WHERE tenant_id = ?
+       AND owner_user_id = ?
+       AND visibility_scope = 'user_private'
+       AND scope_status = 'active'
+       AND object_type = 'content_item'
+       AND action = 'workspace_state_changed'
+       AND to_state = 'published'
+       AND datetime(created_at) >= datetime(?)
+       AND datetime(created_at) < datetime(?)
+  `).get(tenantId, userId, windowStart.toISOString(), windowEnd.toISOString()) as { count: unknown } | undefined;
+  const count = Number(row?.count);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error('Content published metric returned an invalid count.');
   }
-  if (contentHomeColumnExists(db, table, 'owner_user_id')) {
-    clauses.push('COALESCE(owner_user_id, user_id) = ?');
-    params.push(userId);
-  }
-  if (contentHomeColumnExists(db, table, 'scope_status')) {
-    clauses.push("COALESCE(scope_status, 'active') = 'active'");
-  }
-  return { where: clauses.join(' AND '), params };
+  return {
+    count,
+    windowStart: windowStart.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    source: 'content_workflow_events',
+  };
 }
 
-function contentHomeColumnExists(db: ReturnType<typeof getDb>, table: string, column: string): boolean {
-  try {
-    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    return rows.some((row) => row.name === column);
-  } catch {
-    return false;
+function projectWorkspaceItem(item: ContentWorkspaceItem): ContentCompatibilityItem {
+  const stage: ContentCompatibilityStage = item.productionState === 'published'
+    ? 'published'
+    : ['idea', 'brief', 'outline'].includes(item.artifactPhase)
+      ? 'ideas'
+      : 'scripted';
+  return {
+    id: String(item.id),
+    title: item.title,
+    summary: item.summary,
+    score: null,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    stage,
+    nextAction: item.nextAction,
+    workspace: {
+      productionState: item.productionState,
+      artifactPhase: item.artifactPhase,
+      workflowVersion: item.workflowVersion,
+      currentArtifactId: item.currentArtifactId,
+    },
+  };
+}
+
+function requireTenantId(tenantId: number | undefined): number {
+  if (!Number.isInteger(tenantId) || Number(tenantId) <= 0) {
+    throw new Error('A valid tenant scope is required for Content workspace reads.');
   }
+  return Number(tenantId);
 }
 
 export function summarizeContentJobStatus(

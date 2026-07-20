@@ -187,7 +187,7 @@ describe('exact production promotion operational safety', () => {
   it('requires every exact runtime and public proof before writing success evidence', () => {
     const raw = source(PROMOTE);
     const cutover = raw.indexOf("<<'REMOTE_CUTOVER'");
-    const evidence = raw.indexOf('EVIDENCE="$ROOT/.local/release/production/');
+    const evidence = raw.indexOf('EVIDENCE="$ROOT/.local/release/production/${RUNTIME_SHA}-${ARTIFACT_DIGEST}.json"');
     const successPath = raw.slice(cutover, evidence);
 
     expect(cutover).toBeGreaterThan(-1);
@@ -224,12 +224,67 @@ describe('exact production promotion operational safety', () => {
   it('runs env parity and strict owner bootstrap before production stop', () => {
     const raw = source(PROMOTE);
     const parity = raw.indexOf('scripts/env-parity-check.sh');
-    const preflight = raw.indexOf('remote-release-preflight.sh');
+    const preflightArgs = raw.indexOf('PRODUCTION_PREFLIGHT_ARGS=(');
+    const preflight = raw.indexOf('remote-release-preflight.sh', preflightArgs);
     const stop = raw.indexOf("<<'REMOTE_STOP'");
     expect(parity).toBeGreaterThan(-1);
+    expect(preflightArgs).toBeGreaterThan(parity);
     expect(preflight).toBeGreaterThan(parity);
     expect(stop).toBeGreaterThan(preflight);
-    expect(raw.slice(preflight, stop)).toContain('--role production');
+    expect(raw.slice(preflightArgs, stop)).toContain('--role production');
+    expect(raw.slice(0, preflightArgs)).toContain('CONTENT_WORKSPACE_ROLLOUT_REQUIRED=true');
+    expect(raw.slice(preflightArgs, stop)).toContain('--require-content-workspace-owner-write');
+  });
+
+  it('requires online and final stopped-state rehearsals plus exact backup evidence before candidate mutation', () => {
+    const raw = source(PROMOTE);
+    const review = raw.indexOf('--approval-mode review');
+    const onlineRehearsal = raw.indexOf('online_pre_stop online');
+    const stop = raw.indexOf("<<'REMOTE_STOP'");
+    const backup = raw.indexOf('remote-create-release-backup.sh', stop);
+    const finalRehearsal = raw.indexOf('stopped_final stopped', backup);
+    const databaseIdentity = raw.indexOf('FINAL_MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" = "$BACKUP_DATABASE_SHA256', finalRehearsal);
+    const evidenceWrite = raw.indexOf('nexus.exact-migration-backup-evidence.v2', finalRehearsal);
+    const strictGate = raw.indexOf('--approval-mode promotion', evidenceWrite);
+    const candidateMutation = raw.indexOf('CANDIDATE_MUTATED=true', strictGate);
+    const cutover = raw.indexOf("<<'REMOTE_CUTOVER'", candidateMutation);
+
+    expect(review).toBeGreaterThan(-1);
+    expect(onlineRehearsal).toBeGreaterThan(review);
+    expect(onlineRehearsal).toBeLessThan(stop);
+    expect(backup).toBeGreaterThan(stop);
+    expect(finalRehearsal).toBeGreaterThan(backup);
+    expect(databaseIdentity).toBeGreaterThan(finalRehearsal);
+    expect(evidenceWrite).toBeGreaterThan(databaseIdentity);
+    expect(strictGate).toBeGreaterThan(evidenceWrite);
+    expect(candidateMutation).toBeGreaterThan(strictGate);
+    expect(cutover).toBeGreaterThan(candidateMutation);
+    expect(raw.slice(backup, strictGate)).toContain('NEXUS_BACKUP_SHA256');
+    expect(raw.slice(backup, strictGate)).toContain('NEXUS_BACKUP_DATABASE_SHA256');
+    expect(raw.slice(evidenceWrite, strictGate)).toContain("flag: 'wx'");
+    expect(raw.slice(evidenceWrite, strictGate)).toContain('fs.linkSync(temporary, output)');
+    expect(raw.slice(finalRehearsal, strictGate)).toContain('${PROMOTION_RUN_ID}.migration-backup.json');
+    expect(raw.slice(evidenceWrite, strictGate)).toContain('databaseOwnersStopped: true');
+    expect(raw.slice(evidenceWrite, strictGate)).toContain('noOpenDatabaseHandles: true');
+    expect(raw.slice(evidenceWrite, strictGate)).toContain("sqliteIntegrity: 'ok'");
+    expect(raw.slice(evidenceWrite, strictGate)).toContain('onlinePreStop');
+    expect(raw.slice(evidenceWrite, strictGate)).toContain('stoppedFinal');
+    expect(raw.slice(strictGate, candidateMutation)).toContain('--final-rehearsal-evidence');
+  });
+
+  it('restarts the untouched predecessor when final rehearsal fails after backup but before mutation', () => {
+    const raw = source(PROMOTE);
+    const finalRehearsal = raw.indexOf('stopped_final stopped');
+    const candidateMutation = raw.indexOf('CANDIDATE_MUTATED=true', finalRehearsal);
+    const handlerStart = raw.indexOf('promotion_exit_handler()');
+    const handlerEnd = raw.indexOf('trap promotion_exit_handler EXIT', handlerStart);
+    const handler = raw.slice(handlerStart, handlerEnd);
+
+    expect(finalRehearsal).toBeGreaterThan(raw.indexOf("<<'REMOTE_STOP'"));
+    expect(finalRehearsal).toBeLessThan(candidateMutation);
+    expect(handler).toContain('if [ "$CANDIDATE_MUTATED" = true ]');
+    expect(handler).toContain('restart_previous');
+    expect(handler.indexOf('restart_previous')).toBeGreaterThan(handler.indexOf('else'));
   });
 
   it('rejects an already-active exact release before rsync or symlink mutation', () => {

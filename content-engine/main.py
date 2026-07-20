@@ -18,10 +18,11 @@ _shared_env_candidates = (
     Path(__file__).resolve().parent / ".env",
 )
 
-for _env_path in _shared_env_candidates:
-    if _env_path.exists():
-        load_dotenv(_env_path, override=False)
-        break
+if os.environ.get("NEXUS_CONTENT_LIVE_EVAL_RUNTIME") != "1":
+    for _env_path in _shared_env_candidates:
+        if _env_path.exists():
+            load_dotenv(_env_path, override=False)
+            break
 
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
@@ -222,6 +223,9 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("CONTENT_ENGINE_PORT", "8100"))
-    reload = os.environ.get("ENV", "production") != "production"
+    reload = (
+        os.environ.get("ENV", "production") != "production"
+        and os.environ.get("NEXUS_CONTENT_LIVE_EVAL_RUNTIME") != "1"
+    )
     logger.info("Starting Content Engine on port %d (reload=%s)", port, reload)
     uvicorn.run("main:app", host="127.0.0.1", port=port, reload=reload)

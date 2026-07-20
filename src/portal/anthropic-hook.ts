@@ -170,6 +170,8 @@ export async function trackedCreate(
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
+    provider: 'anthropic',
+    model: requestParams.model,
     hasUnboundedProviderInjectedContext: maxWebSearchRequests > 0,
     maxCostUsd,
   });

@@ -118,6 +118,24 @@ describe('runtime config validation', () => {
     expect(config.waitlist.warnOnEphemeralIpSalt).toBe(false);
   });
 
+  it('centralizes fail-closed Content workspace rollout defaults', async () => {
+    vi.stubEnv('CONTENT_WORKSPACE_V1_MODE', 'unexpected');
+    vi.stubEnv('CONTENT_WORKSPACE_V1_GLOBAL_WRITE', 'yes');
+    vi.stubEnv('CONTENT_WORKSPACE_V1_CORE_WRITES', 'invalid');
+    vi.stubEnv('CONTENT_WORKSPACE_V1_REVISION_WRITES', 'on');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.contentWorkspaceRollout).toMatchObject({
+      mode: 'read_only',
+      globalWrite: true,
+      slices: {
+        core: false,
+        revisions: true,
+      },
+    });
+  });
+
   it('fails fast when production tries to boot with PAYWALL_ENABLED=false', async () => {
     applySafeProductionEnv();
     vi.stubEnv('PAYWALL_ENABLED', 'false');

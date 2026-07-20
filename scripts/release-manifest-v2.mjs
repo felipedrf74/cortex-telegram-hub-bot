@@ -18,6 +18,10 @@ import {
   RELEASE_RESULTS_SCHEMA,
   validateReleaseSelection,
 } from './release-test-evidence.mjs';
+import {
+  backendIosContractDigest,
+  backendIosContractFixtureIdentity,
+} from './lib/backend-ios-contract-fixture.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'validate';
@@ -42,6 +46,14 @@ const GOVERNED_LOCAL_RELEASE_COMMANDS = Object.freeze([
   'changed-critical-union',
   'content-engine-pytest',
   'artifact-validation',
+]);
+const IOS_CONTRACT_RESULT = 'passed';
+const IOS_CONTRACT_FIELDS = Object.freeze([
+  'sha', 'buildNumber', 'contractTestResult', 'contractDigest', 'fixtureDigest', 'distribution',
+]);
+const IOS_DISTRIBUTION_FIELDS = Object.freeze([
+  'result', 'attestationDigest', 'payloadDigest', 'sourceCommit', 'sourceTree',
+  'release', 'archive', 'exportedArtifact', 'toolchain', 'ci',
 ]);
 
 function canonicalJson(value) {
@@ -243,6 +255,203 @@ function releaseTestResultReasons(results, binding, options = {}) {
   }
   return reasons;
 }
+function resolveIosContractBinding(artifact) {
+  const backendOnly = has('--backend-only');
+  const includesIos = has('--includes-ios');
+  const iosArgumentsSupplied = ['--ios-sha', '--ios-build-number', '--ios-contract-result'].some(has);
+  if (backendOnly === includesIos) {
+    throw new Error('release contract scope must be explicit: choose exactly one of --backend-only or --includes-ios');
+  }
+  if (backendOnly) {
+    if (iosArgumentsSupplied) {
+      throw new Error('backend-only release must not include iOS contract fields');
+    }
+    return null;
+  }
+
+  const sha = valueOf('--ios-sha', '');
+  const buildNumberRaw = valueOf('--ios-build-number', '');
+  const contractTestResult = valueOf('--ios-contract-result', '');
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('iOS contract SHA must be an exact lowercase Git SHA');
+  if (!/^[1-9][0-9]*$/.test(buildNumberRaw)) throw new Error('iOS build number must be a positive integer');
+  const buildNumber = Number(buildNumberRaw);
+  if (!Number.isSafeInteger(buildNumber)) throw new Error('iOS build number must be a safe positive integer');
+  if (contractTestResult !== IOS_CONTRACT_RESULT) {
+    throw new Error(`iOS contract result must be ${IOS_CONTRACT_RESULT}`);
+  }
+  const fixture = backendIosContractFixtureIdentity({ bundleRoot: root, artifact });
+  return {
+    sha,
+    buildNumber,
+    contractTestResult,
+    fixtureDigest: fixture.digest,
+    contractDigest: backendIosContractDigest({
+      runtimeSha: valueOf('--runtime-sha', git('rev-parse', 'HEAD')),
+      artifactDigest: artifact.digest,
+      fixtureDigest: fixture.digest,
+    }),
+    // The protected signer enriches this only after independently verifying a
+    // second, Xcode Cloud-signed proof for the exact App Store artifact.
+    distribution: null,
+  };
+}
+function iosDistributionBindingReasons(distribution, binding, { required = true } = {}) {
+  if (distribution === null) return required ? ['ios_distribution_evidence_missing'] : [];
+  if (!distribution || typeof distribution !== 'object' || Array.isArray(distribution)) {
+    return ['ios_distribution_binding_invalid'];
+  }
+  const reasons = [];
+  if (canonicalJson(Object.keys(distribution).sort())
+      !== canonicalJson([...IOS_DISTRIBUTION_FIELDS].sort())) {
+    reasons.push('ios_distribution_binding_invalid');
+    return reasons;
+  }
+  if (distribution.result !== 'passed') reasons.push('ios_distribution_result_not_passed');
+  for (const field of ['attestationDigest', 'payloadDigest']) {
+    if (!/^[0-9a-f]{64}$/.test(distribution[field] ?? '')) {
+      reasons.push(`ios_distribution_${field.replace(/[A-Z]/g, (value) => `_${value.toLowerCase()}`)}_invalid`);
+    }
+  }
+  if (!/^[0-9a-f]{40}$/.test(distribution.sourceTree ?? '')) {
+    reasons.push('ios_distribution_source_tree_invalid');
+  }
+  if (distribution.sourceCommit !== binding.sha) reasons.push('ios_distribution_sha_mismatch');
+  const release = distribution.release;
+  if (!release || typeof release !== 'object' || Array.isArray(release)
+      || canonicalJson(Object.keys(release).sort()) !== canonicalJson([
+        'buildNumber', 'bundleId', 'configuration', 'marketingVersion', 'teamId',
+      ])) {
+    reasons.push('ios_distribution_release_identity_invalid');
+  } else if (release.bundleId !== 'me.nexushub.app'
+      || release.teamId !== 'B6885R8NWM'
+      || release.configuration !== 'Release'
+      || release.buildNumber !== String(binding.buildNumber)
+      || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(release.marketingVersion ?? '')) {
+    reasons.push('ios_distribution_release_identity_mismatch');
+  }
+  const digestBlock = (value, fields, label) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || canonicalJson(Object.keys(value).sort()) !== canonicalJson([...fields].sort())) {
+      reasons.push(`${label}_invalid`);
+      return;
+    }
+    for (const field of fields.filter((name) => name.endsWith('Digest'))) {
+      if (!/^[0-9a-f]{64}$/.test(value[field] ?? '')) reasons.push(`${label}_invalid`);
+    }
+  };
+  digestBlock(distribution.archive, ['artifactDigest', 'appDigest'], 'ios_distribution_archive_binding');
+  digestBlock(
+    distribution.exportedArtifact,
+    ['artifactDigest', 'artifactSemantics', 'appDigest'],
+    'ios_distribution_export_binding',
+  );
+  if (distribution.exportedArtifact
+      && !['nexus.canonical-tree.v1', 'nexus.raw-file.v1']
+        .includes(distribution.exportedArtifact.artifactSemantics)) {
+    reasons.push('ios_distribution_export_binding_invalid');
+  }
+  const toolchain = distribution.toolchain;
+  if (!toolchain || typeof toolchain !== 'object' || Array.isArray(toolchain)
+      || canonicalJson(Object.keys(toolchain).sort())
+        !== canonicalJson(['sdkName', 'xcodeBuild', 'xcodeVersion'])
+      || Object.values(toolchain).some((value) => typeof value !== 'string' || !value)) {
+    reasons.push('ios_distribution_toolchain_invalid');
+  }
+  const ci = distribution.ci;
+  if (!ci || typeof ci !== 'object' || Array.isArray(ci)
+      || canonicalJson(Object.keys(ci).sort())
+        !== canonicalJson(['buildId', 'buildNumber', 'workflow', 'workflowId'])
+      || typeof ci.buildId !== 'string'
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(ci.buildId)
+      || typeof ci.buildNumber !== 'string' || !/^[1-9][0-9]*$/.test(ci.buildNumber)
+      || ci.workflow !== 'App Store Release'
+      || ci.workflowId !== '20e0adf7-2854-4207-98eb-8f3b5afcac60') {
+    reasons.push('ios_distribution_ci_identity_invalid');
+  }
+  return [...new Set(reasons)];
+}
+function iosContractBindingReasons(
+  binding,
+  artifact = null,
+  runtimeSha = '',
+  { requireDistribution = true } = {},
+) {
+  if (binding === undefined) return ['ios_contract_binding_missing'];
+  if (binding === null) return [];
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
+    return ['ios_contract_binding_invalid'];
+  }
+  const reasons = [];
+  const keys = Object.keys(binding).sort();
+  if (canonicalJson(keys) !== canonicalJson([...IOS_CONTRACT_FIELDS].sort())) {
+    reasons.push('ios_contract_binding_invalid');
+  }
+  if (!/^[0-9a-f]{40}$/.test(binding.sha ?? '')) reasons.push('ios_contract_sha_invalid');
+  if (!Number.isSafeInteger(binding.buildNumber) || binding.buildNumber <= 0) {
+    reasons.push('ios_contract_build_number_invalid');
+  }
+  if (binding.contractTestResult !== IOS_CONTRACT_RESULT) {
+    reasons.push('ios_contract_result_not_passed');
+  }
+  if (!/^[0-9a-f]{64}$/.test(binding.fixtureDigest ?? '')) {
+    reasons.push('ios_contract_fixture_digest_invalid');
+  }
+  if (!/^[0-9a-f]{64}$/.test(binding.contractDigest ?? '')) {
+    reasons.push('ios_contract_digest_invalid');
+  }
+  reasons.push(...iosDistributionBindingReasons(binding.distribution, binding, {
+    required: requireDistribution,
+  }));
+  if (artifact && reasons.length === 0) {
+    try {
+      const fixture = backendIosContractFixtureIdentity({ bundleRoot: root, artifact });
+      if (binding.fixtureDigest !== fixture.digest) {
+        reasons.push('ios_contract_fixture_digest_mismatch');
+      }
+      const expectedContractDigest = backendIosContractDigest({
+        runtimeSha,
+        artifactDigest: artifact.digest,
+        fixtureDigest: fixture.digest,
+      });
+      if (binding.contractDigest !== expectedContractDigest) {
+        reasons.push('ios_contract_digest_mismatch');
+      }
+    } catch {
+      reasons.push('ios_contract_fixture_invalid');
+    }
+  }
+  return reasons;
+}
+function iosContractExpectationReasons(binding) {
+  const expectBackendOnly = has('--expect-backend-only');
+  const requireIos = has('--require-ios-contract');
+  const expectedFieldsSupplied = [
+    '--expect-ios-sha',
+    '--expect-ios-build-number',
+    '--expect-ios-contract-result',
+  ].some(has);
+  const reasons = [];
+  if (expectBackendOnly && requireIos) return ['ios_contract_expectation_invalid'];
+  if (!requireIos && expectedFieldsSupplied) reasons.push('ios_contract_expectation_invalid');
+  if (expectBackendOnly && binding !== null) reasons.push('ios_contract_scope_mismatch');
+  if (requireIos && (!binding || typeof binding !== 'object' || Array.isArray(binding))) {
+    reasons.push('ios_contract_scope_mismatch');
+    return reasons;
+  }
+  if (requireIos && expectedFieldsSupplied) {
+    const expectedSha = valueOf('--expect-ios-sha', '');
+    const expectedBuild = valueOf('--expect-ios-build-number', '');
+    const expectedResult = valueOf('--expect-ios-contract-result', '');
+    if (!expectedSha || !expectedBuild || !expectedResult) {
+      reasons.push('ios_contract_expectation_missing');
+    } else {
+      if (binding.sha !== expectedSha) reasons.push('ios_contract_sha_mismatch');
+      if (String(binding.buildNumber) !== expectedBuild) reasons.push('ios_contract_build_number_mismatch');
+      if (binding.contractTestResult !== expectedResult) reasons.push('ios_contract_result_mismatch');
+    }
+  }
+  return reasons;
+}
 function buildPayload() {
   const artifact = artifactManifest();
   const now = new Date();
@@ -263,6 +472,7 @@ function buildPayload() {
   if (testResultErrors.length > 0) {
     throw new Error(`release test result is not reusable: ${testResultErrors.join(',')}`);
   }
+  const ios = resolveIosContractBinding(artifact);
   const testResults = { ...testResultsInput, ...testBinding };
   const stagingEvidencePath = valueOf('--staging-evidence', '');
   const expiresHours = Number(valueOf('--expires-hours', '72'));
@@ -305,11 +515,7 @@ function buildPayload() {
       workflow: process.env.GITHUB_WORKFLOW ?? null,
     },
     staging: stagingEvidencePath ? readJsonIfPresent(stagingEvidencePath) : null,
-    ios: has('--includes-ios') ? {
-      sha: valueOf('--ios-sha', null),
-      buildNumber: valueOf('--ios-build-number', null),
-      contractTestResult: valueOf('--ios-contract-result', 'missing'),
-    } : null,
+    ios,
   };
 }
 function writeManifest() {
@@ -399,6 +605,11 @@ function validateManifest() {
   const stagingRequired = has('--require-staging');
   if (stagingRequired && (!payload.staging || payload.staging.status !== 'passed'
     || payload.staging.artifactDigest !== payload.artifact.digest)) reasons.push('staging_evidence_missing_or_mismatched');
+  const iosBindingErrors = iosContractBindingReasons(payload.ios, artifact, payload.runtimeSha, {
+    requireDistribution: !payloadOnly,
+  });
+  reasons.push(...iosBindingErrors);
+  reasons.push(...iosContractExpectationReasons(payload.ios));
   process.stdout.write(`${JSON.stringify({
     ok: reasons.length === 0,
     promotable: !payloadOnly && reasons.length === 0,
@@ -407,7 +618,15 @@ function validateManifest() {
     runtimeSha: payload.runtimeSha,
     docsHead: payload.docsHead,
     artifactDigest: payload.artifact?.digest,
-    legacyReadable: legacyKey || reasons.some((reason) => reason.startsWith('release_test_')),
+    contractScope: payload.ios === null
+      ? 'backend_only'
+      : (iosBindingErrors.length === 0 ? 'shared_backend_ios' : 'invalid'),
+    ios: payload.ios ?? null,
+    legacyReadable: legacyKey || reasons.some((reason) => (
+      reason.startsWith('release_test_')
+      || reason.startsWith('ios_contract_')
+      || reason.startsWith('ios_distribution_')
+    )),
     reasons,
   }, null, 2)}\n`);
   process.exit(reasons.length === 0 ? 0 : 1);

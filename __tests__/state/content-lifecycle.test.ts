@@ -34,6 +34,7 @@ vi.mock('../../src/config', () => ({
 import {
   mapContentTopicStatusToCanonical,
   mapSavedIdeaStatusToCanonical,
+  mapContentWorkspaceStateToCanonical,
   summarizeCanonicalLifecycle,
   CANONICAL_LIFECYCLE_STAGES,
 } from '../../src/state/content-lifecycle';
@@ -116,6 +117,14 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(mapSavedIdeaStatusToCanonical('editing')).toBe('review');
   });
 
+  it('maps canonical workspace state and artifact phase without legacy status reconstruction', () => {
+    expect(mapContentWorkspaceStateToCanonical('inbox', 'idea')).toBe('suggested');
+    expect(mapContentWorkspaceStateToCanonical('active', 'brief')).toBe('briefing');
+    expect(mapContentWorkspaceStateToCanonical('active', 'draft')).toBe('drafting');
+    expect(mapContentWorkspaceStateToCanonical('review', 'final')).toBe('review');
+    expect(mapContentWorkspaceStateToCanonical('published', 'final')).toBe('published');
+  });
+
   // ──────── summary integration ────────
 
   it('returns 12 buckets with zero counts for empty user', () => {
@@ -126,20 +135,9 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(summary.buckets.every(b => b.count === 0)).toBe(true);
   });
 
-  it('aggregates topics + radar feedback into canonical buckets', () => {
-    // Insert 2 topics (drafting + published)
-    testDb.prepare(`
-      INSERT INTO content_topics (
-        user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
-        title, status, lifecycle_state, created_at, updated_at
-      ) VALUES (?, ?, ?, 'user_private', 'active', 'T1', 'drafting', 'active', datetime('now'), datetime('now'))
-    `).run(USER, USER, USER);
-    testDb.prepare(`
-      INSERT INTO content_topics (
-        user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
-        title, status, lifecycle_state, created_at, updated_at
-      ) VALUES (?, ?, ?, 'user_private', 'active', 'T2', 'published', 'active', datetime('now'), datetime('now'))
-    `).run(USER, USER, USER);
+  it('aggregates canonical workspace items + radar feedback into lifecycle buckets', () => {
+    seedWorkspaceLifecycleItem('T1', 'active', 'draft');
+    seedWorkspaceLifecycleItem('T2', 'published', 'final');
 
     // 1 accepted + 2 rejected radar feedback (distinct signals)
     recordRadarFeedback(USER, USER, { signalId: 'sig-acc-1', action: 'accept' });
@@ -156,12 +154,7 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
   });
 
   it('does not count accepted radar signals that were converted or already have a topic', () => {
-    testDb.prepare(`
-      INSERT INTO content_topics (
-        user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
-        title, status, lifecycle_state, created_at, updated_at
-      ) VALUES (?, ?, ?, 'user_private', 'active', 'Already a topic', 'planned', 'active', datetime('now'), datetime('now'))
-    `).run(USER, USER, USER);
+    seedWorkspaceLifecycleItem('Already a topic', 'inbox', 'idea');
 
     recordRadarFeedback(USER, USER, { signalId: 'sig-active', action: 'accept', signalTopic: 'Still only accepted' });
     recordRadarFeedback(USER, USER, { signalId: 'sig-topic', action: 'accept', signalTopic: 'Already a topic' });
@@ -181,3 +174,26 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(summary.buckets).toHaveLength(12);
   });
 });
+
+function seedWorkspaceLifecycleItem(
+  title: string,
+  productionState: string,
+  artifactPhase: string,
+): number {
+  return Number(testDb.prepare(`
+    INSERT INTO content_domain_objects (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, lifecycle_state, title, production_state, artifact_phase,
+      created_by, updated_by
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?, ?, ?, ?, ?, ?)
+  `).run(
+    USER,
+    USER,
+    productionState,
+    title,
+    productionState,
+    artifactPhase,
+    USER,
+    USER,
+  ).lastInsertRowid);
+}

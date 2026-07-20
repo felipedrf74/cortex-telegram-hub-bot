@@ -66,6 +66,12 @@ export interface FilingResult {
   error?: string;
 }
 
+function invoiceConfidenceBucket(confidence: number): 'low' | 'medium' | 'high' {
+  if (!Number.isFinite(confidence) || confidence < 0.5) return 'low';
+  if (confidence < 0.85) return 'medium';
+  return 'high';
+}
+
 // ─── Configuration Guard ────────────────────────────────────────────
 
 export function isInvoiceFilingConfigured(): boolean {
@@ -156,7 +162,12 @@ export async function analyzeInvoiceImage(
       .join('');
   } catch (err) {
     rethrowAiUsageFailClosedError(err);
-    logger.warn({ err }, 'Anthropic Haiku invoice analysis failed — falling back to alternate vision providers');
+    // Do not log provider Error objects here: messages/stacks can echo OCR,
+    // image request metadata, or provider response fragments.
+    logger.warn(
+      { failureCategory: 'primary_receipt_provider_failed' },
+      'Anthropic Haiku invoice analysis failed — falling back to alternate vision providers',
+    );
     const fallback = await completeVisionOneShotWithFallback(
       INVOICE_SYSTEM_PROMPT,
       userPrompt,
@@ -214,7 +225,12 @@ export async function analyzeInvoiceImage(
       // If items sum to ~X but total is 100× X, likely decimal misread
       if (itemSum > 0 && total > 0 && total / itemSum > 50) {
         logger.warn(
-          { total, itemSum, vendor: parsed.vendor, validationNote: parsed.validationNote },
+          {
+            amountMismatchDetected: true,
+            amountRatioBucket: 'over_50x',
+            hasVendor: Boolean(parsed.vendor),
+            hasValidationNote: Boolean(parsed.validationNote),
+          },
           'Invoice total vs item sum mismatch — auto-correcting to item sum'
         );
         parsed.totalAmount = parsed.itemsSum;
@@ -240,12 +256,20 @@ export async function analyzeInvoiceImage(
     }
 
     logger.info(
-      { isInvoice: parsed.isInvoice, confidence: parsed.confidence, vendor: parsed.vendor },
+      {
+        isInvoice: parsed.isInvoice,
+        confidenceBucket: invoiceConfidenceBucket(parsed.confidence),
+        hasVendor: Boolean(parsed.vendor),
+        hasValidationNote: Boolean(parsed.validationNote),
+      },
       'Invoice analysis complete'
     );
     return { analysis: parsed, provider: usedProvider };
-  } catch (err) {
-    logger.warn({ err, responseChars: text.length }, 'Failed to parse invoice analysis JSON');
+  } catch {
+    logger.warn(
+      { failureCategory: 'invalid_receipt_provider_response', responseChars: text.length },
+      'Failed to parse invoice analysis JSON',
+    );
     return {
       analysis: {
         isInvoice: false, confidence: 0,

@@ -1514,7 +1514,7 @@ export function listNotificationBridgeEntityIds(
   }
   if (userScopedContentTypes.size > 0) {
     try {
-      for (const legacyId of listUnreadContentNotificationIdsByTypes(userId, [...userScopedContentTypes])) {
+      for (const legacyId of listUnreadContentNotificationIdsByTypes(userId, [...userScopedContentTypes], tenantId)) {
         if (Number.isInteger(legacyId) && legacyId > 0) ids.add(legacyId);
       }
     } catch (err) {

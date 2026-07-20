@@ -2737,7 +2737,7 @@ describe('Chat API routes', () => {
       type: 'content_desk_snapshot',
       deskReadyCount: 2,
     });
-    expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 3);
+    expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 3, 7001);
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
   });
 
@@ -4640,6 +4640,7 @@ describe('Chat API routes', () => {
         objectType: 'script',
         title: 'Quarterly planning cleanup decision',
         editorialState: 'drafted',
+        idempotencyKey: 'chat-core-v2-decision-dismiss-content-fixture',
       });
       const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 7001, {
         tenantId: 7001,

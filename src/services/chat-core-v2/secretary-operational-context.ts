@@ -82,16 +82,8 @@ export async function collectSecretaryOperationalContext(
   input: CollectSecretaryOperationalContextInput,
 ): Promise<SecretaryOperationalContextCollection> {
   const observedAt = (input.now ?? new Date()).toISOString();
-  if (!isValidScope(input.userId, input.tenantId)) {
-    return {
-      items: [],
-      diagnostics: OPERATIONAL_SOURCES.map((source) => ({
-        source,
-        status: 'permission_denied',
-        observedAt,
-        reasonCode: 'authenticated_scope_unavailable',
-      })),
-    };
+  if (!isValidScope(input.userId, input.tenantId) || input.tenantId !== input.userId) {
+    return unavailableOperationalContext(observedAt);
   }
 
   const intent = analyzeIntent(input.message);
@@ -130,6 +122,18 @@ export async function collectSecretaryOperationalContext(
   return {
     items: results.flatMap((result) => result.items),
     diagnostics: results.map((result) => result.diagnostic),
+  };
+}
+
+function unavailableOperationalContext(observedAt: string): SecretaryOperationalContextCollection {
+  return {
+    items: [],
+    diagnostics: OPERATIONAL_SOURCES.map((source) => ({
+      source,
+      status: 'permission_denied',
+      observedAt,
+      reasonCode: 'authenticated_scope_unavailable',
+    })),
   };
 }
 

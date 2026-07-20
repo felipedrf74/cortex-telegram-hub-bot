@@ -948,7 +948,7 @@ describe('Dashboard API route', () => {
 
   it('marks content as unavailable instead of returning fake zero pipeline counts on database failure', async () => {
     mockDashboardDbAll.mockImplementation((sql: string) => {
-      if (sql.includes('FROM content_ideas')) {
+      if (sql.includes('FROM content_domain_objects')) {
         throw new Error('database unavailable');
       }
       return [];
@@ -965,6 +965,14 @@ describe('Dashboard API route', () => {
       filmed: 0,
       editing: 0,
       published: 0,
+    });
+    expect(res.body.data.content.stageTracking.filmed).toEqual({
+      tracking: 'not_tracked',
+      reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED',
+    });
+    expect(res.body.data.content.stageTracking.editing).toEqual({
+      tracking: 'not_tracked',
+      reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED',
     });
   });
 
@@ -1025,16 +1033,18 @@ describe('Dashboard API route', () => {
     expect(result.bodyBatteryStatus).toBe('ready');
   });
 
-  it('falls back to stage-only content counts when the legacy status column is missing', () => {
+  it('derives content counts from the canonical private tenant workspace', () => {
+    let capturedSql = '';
+    let capturedArgs: unknown[] = [];
     const db = {
       prepare(sql: string) {
+        capturedSql = sql;
         return {
-          all: () => {
-            if (sql.includes("status != 'archived'")) {
-              throw new Error('no such column: status');
-            }
+          all: (...args: unknown[]) => {
+            capturedArgs = args;
             return [
               { stage: 'ideas', count: 2 },
+              { stage: 'scripted', count: 3 },
               { stage: 'published', count: 1 },
             ];
           },
@@ -1042,10 +1052,21 @@ describe('Dashboard API route', () => {
       },
     };
 
-    expect(queryContentPipelineCounts(db, 4)).toEqual([
+    expect(queryContentPipelineCounts(db, 4, 44)).toEqual([
       { stage: 'ideas', count: 2 },
+      { stage: 'scripted', count: 3 },
       { stage: 'published', count: 1 },
     ]);
+    expect(capturedArgs).toEqual([44, 4]);
+    expect(capturedSql).toContain('FROM content_domain_objects');
+    expect(capturedSql).toContain("visibility_scope = 'user_private'");
+    expect(capturedSql).toContain("scope_status = 'active'");
+    expect(capturedSql).toContain("object_type = 'content_item'");
+    expect(capturedSql).toContain('deleted_at IS NULL');
+    expect(capturedSql).toContain("production_state NOT IN ('archived', 'rejected')");
+    expect(capturedSql).toContain("WHEN production_state = 'published' THEN 'published'");
+    expect(capturedSql).toContain("artifact_phase IN ('idea', 'brief', 'outline')");
+    expect(capturedSql).not.toContain('content_ideas');
   });
 
   it('rethrows non-schema content query failures', () => {
@@ -1059,20 +1080,20 @@ describe('Dashboard API route', () => {
       },
     };
 
-    expect(() => queryContentPipelineCounts(db, 4)).toThrow('database unavailable');
+    expect(() => queryContentPipelineCounts(db, 4, 44)).toThrow('database unavailable');
   });
 
-  it('treats a missing content_ideas table as an empty pipeline instead of an outage', () => {
+  it('requires an explicit tenant before querying canonical content', () => {
+    const all = vi.fn();
     const db = {
       prepare() {
-        return {
-          all: () => {
-            throw new Error('no such table: content_ideas');
-          },
-        };
+        return { all };
       },
     };
 
-    expect(queryContentPipelineCounts(db, 4)).toEqual([]);
+    expect(() => queryContentPipelineCounts(db, 4, undefined as any)).toThrow(
+      'queryContentPipelineCounts requires a validated tenantId',
+    );
+    expect(all).not.toHaveBeenCalled();
   });
 });

@@ -83,6 +83,7 @@ import { getChatActionRegistry } from '../../src/services/chat/registry';
 import { parseNaturalLanguageCalendarEvent } from '../../src/services/calendar-natural-language-parser';
 import { isPendingChatWorkCancellationTurn } from '../../src/services/chat-pending-cancellation';
 import { buildContentAgencyPackage, ensureContentAgencyTables, getContentAgencyProject, persistContentAgencyArtifact } from '../../src/services/content-agency';
+import { createContentArtifact, createContentWorkspaceItem, getContentWorkspaceItem } from '../../src/services/content-workspace';
 import { getTopics } from '../../src/services/content-scheduler';
 import { addRecipe, generateShoppingList, getMealPlan, getRecipeById, getShoppingList, setMealPlan } from '../../src/services/cooking-chef';
 import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } from '../../src/services/finance-tracker';
@@ -2472,7 +2473,7 @@ describe('ChatActionPlanner', () => {
     expect(response.text).toContain('Feito');
   });
 
-  it('executes Content scheduling and pipeline handoff through local read-back', async () => {
+  it('prepares Content scheduling through Secretary without setting a deadline or claiming a calendar write', async () => {
     const schedulePlan = parseLlmPlannerJson(JSON.stringify({
       confidence: 0.9,
       steps: [{
@@ -2486,6 +2487,26 @@ describe('ChatActionPlanner', () => {
       }],
     }), { ...baseInput, userId: 4201, tenantId: 4201, persistRuns: false });
 
+    const confirmation = await executeChatActionPlan(schedulePlan!, {
+      ...baseInput,
+      userId: 4201,
+      tenantId: 4201,
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    });
+    expect(confirmation.metadata.actionStatus).toBe('needs_confirmation');
+    expect(confirmation.text).toContain('proposta de horário');
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_schedule_previews').get()).toEqual({ count: 0 });
+    expect(testDb.prepare("SELECT COUNT(*) AS count FROM content_domain_objects WHERE object_type = 'content_item'").get())
+      .toEqual({ count: 0 });
+
     const scheduleResponse = await executeChatActionPlan(schedulePlan!, { ...baseInput, userId: 4201, tenantId: 4201, persistRuns: false }, {
       calendar: {
         createEvent: vi.fn() as any,
@@ -2495,11 +2516,60 @@ describe('ChatActionPlanner', () => {
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
     }, { confirmed: true });
-    expect(scheduleResponse.metadata.actionStatus).toBe('verified_success');
+    expect(scheduleResponse.metadata.actionStatus).toBe('verified_pending');
+    expect(scheduleResponse.text).toContain('ainda não marquei nada no calendário nem publiquei conteúdo');
     expect(getTopics(4201, { includeTerminal: true, limit: 5 })).toEqual(expect.arrayContaining([
-      expect.objectContaining({ title: 'Filmar reel de recuperação', scheduled_date: '2026-05-18' }),
+      expect.objectContaining({ title: 'Filmar reel de recuperação', scheduled_date: null }),
     ]));
-    expect(testDb.prepare('SELECT tenant_id FROM content_topics WHERE title = ?').get('Filmar reel de recuperação')).toEqual({ tenant_id: 4201 });
+    expect(testDb.prepare(`
+      SELECT item.tenant_id, item.owner_user_id
+        FROM content_topic_workspace_links link
+        JOIN content_domain_objects item ON item.id = link.workspace_item_id
+       WHERE item.title = ?
+    `).get('Filmar reel de recuperação')).toEqual({ tenant_id: 4201, owner_user_id: 4201 });
+    expect(testDb.prepare('SELECT id FROM content_topics WHERE title = ?').get('Filmar reel de recuperação')).toBeUndefined();
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_schedule_previews').get()).toEqual({ count: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_schedule_bindings').get()).toEqual({ count: 0 });
+    expect(testDb.prepare("SELECT COUNT(*) AS count FROM secretary_agenda_items WHERE source_skill = 'content'").get())
+      .toEqual({ count: 0 });
+
+    const topicsBeforeBlockedPublication = getTopics(4201, { includeTerminal: true, limit: 50 }).length;
+    const legacyPublicationPlan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_schedule_work',
+        args: {
+          title: 'Recovery reel publication',
+          dateTime: '2026-05-19T09:00:00+01:00',
+        },
+        missingFields: [],
+      }],
+    }), {
+      ...baseInput,
+      userId: 4201,
+      tenantId: 4201,
+      text: 'Publish the recovery reel tomorrow',
+      persistRuns: false,
+    });
+    const blockedPublication = await executeChatActionPlan(legacyPublicationPlan!, {
+      ...baseInput,
+      userId: 4201,
+      tenantId: 4201,
+      text: 'Publish the recovery reel tomorrow',
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    }, { confirmed: true });
+    expect(blockedPublication.metadata.actionStatus).toBe('blocked');
+    expect(getTopics(4201, { includeTerminal: true, limit: 50 })).toHaveLength(topicsBeforeBlockedPublication);
+    expect(blockedPublication.text).toMatch(/made no changes|não fiz alterações/i);
 
     const pkg = buildContentAgencyPackage({
       userId: 4201,
@@ -2534,13 +2604,13 @@ describe('ChatActionPlanner', () => {
       taskProviderForUser: vi.fn(() => ({}) as any),
     }, { confirmed: true });
     expect(handoffResponse.metadata.actionStatus).toBe('verified_success');
-    expect(handoffResponse.text).toContain('pipeline');
+    expect(handoffResponse.text).toContain('workspace');
   });
 
   it('extracts Content schedule date-time slots before executor dispatch', () => {
     const plan = buildDeterministicChatActionPlan({
       ...baseInput,
-      text: 'Schedule the reel about morning routines for Friday at 10am',
+      text: 'Schedule a recording session for the reel about morning routines for Friday at 10am',
       locale: 'en-US',
       messageId: 'content-schedule-datetime',
       nowIso: '2026-05-14T12:00:00+01:00',
@@ -2551,10 +2621,42 @@ describe('ChatActionPlanner', () => {
       action: 'content_schedule_work',
       requiredArgsPresent: true,
       args: {
-        title: 'morning routines',
+        title: 'the reel about morning routines',
       },
     });
     expect(String(plan?.steps[0]?.args.dateTime)).toMatch(/^2026-05-15T10:00:00(?:\.000)?\+01:00$/);
+  });
+
+  it('fails closed for direct, scheduled, and tracked publication language', () => {
+    const fixtures = [
+      ['Publish this reel now', 'publish_now', 'content_publication_execution_not_supported'],
+      ['Programa este video para mañana', 'schedule_publication', 'content_publication_execution_not_supported'],
+      ['Mark the recovery reel as published', 'track_publication', 'content_publication_tracking_not_supported'],
+      ['Get this reel published tomorrow', 'publish_now', 'content_publication_execution_not_supported'],
+    ] as const;
+    for (const [text, requestedMode, rejectionReason] of fixtures) {
+      const plan = buildDeterministicChatActionPlan({
+        ...baseInput,
+        text,
+        locale: text.startsWith('Programa') ? 'es-ES' : 'en-US',
+        messageId: `content-publication-refusal-${requestedMode}-${text.length}`,
+      });
+      expect(plan?.steps[0]).toMatchObject({
+        skill: 'content',
+        action: 'content_publish_now',
+        risk: 'ambiguous',
+        requiredArgsPresent: false,
+        args: { requestedMode, rejectionReason },
+      });
+    }
+
+    const question = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Is this reel published?',
+      locale: 'en-US',
+      messageId: 'content-publication-question-negative',
+    });
+    expect(question?.steps[0]?.action).not.toBe('content_pipeline_stage_transition');
   });
 
   it('routes Content pipeline stage transitions before the content noun gate and keeps edit/live narrow', () => {
@@ -2682,30 +2784,29 @@ describe('ChatActionPlanner', () => {
       },
     });
 
-    ensureContentAgencyTables(testDb);
-    const rowId = Number(testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
-        visibility_scope, scope_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'Recovery Reel',
-      'training',
-      'scripted',
-      JSON.stringify([{ to: 'scripted', at: '2026-05-14T10:00:00.000Z' }]),
-      4210,
-      4210,
-      4210,
-      'user_private',
-      'active',
-    ).lastInsertRowid);
+    const scope = { tenantId: 4210, userId: 4210 };
+    const item = createContentWorkspaceItem({
+      scope,
+      itemType: 'content_item',
+      title: 'Recovery Reel',
+      idempotencyKey: 'planner-recovery-reel-item-001',
+    }, testDb).value;
+    const script = createContentArtifact({
+      scope,
+      itemId: item.id,
+      expectedWorkflowVersion: item.workflowVersion,
+      artifactType: 'script',
+      title: 'Recovery Reel script',
+      initialContent: { format: 'markdown', text: '# Hook\nRecovery starts before the next session.' },
+      idempotencyKey: 'planner-recovery-reel-script-001',
+    }, testDb).value;
 
     const plan = parseLlmPlannerJson(JSON.stringify({
       confidence: 0.9,
       steps: [{
         skill: 'content',
         action: 'content_pipeline_stage_transition',
-        args: { topicTitle: 'Recovery Reel', targetStage: 'editing' },
+        args: { topicTitle: 'Recovery Reel', targetStage: 'scripted' },
         missingFields: [],
       }],
     }), { ...baseInput, userId: 4210, tenantId: 4210, persistRuns: false });
@@ -2722,22 +2823,99 @@ describe('ChatActionPlanner', () => {
 
     expect(response.metadata.actionStatus).toBe('verified_success');
     expect(response.text).toContain('Recovery Reel');
-    const readBack = testDb.prepare('SELECT stage, stage_history FROM content_pipeline WHERE id = ?').get(rowId) as any;
-    expect(readBack.stage).toBe('editing');
-    expect(JSON.parse(readBack.stage_history)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: 'scripted', to: 'editing', source: 'chat_action' }),
-    ]));
+    expect(response.text).toMatch(/workspace/i);
+    expect(getContentWorkspaceItem(scope, item.id, testDb)).toMatchObject({
+      productionState: 'active',
+      artifactPhase: 'draft',
+      currentArtifactId: script.id,
+    });
+
+    const editingPlan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_pipeline_stage_transition',
+        args: { topicTitle: 'Recovery Reel', targetStage: 'editing' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, userId: 4210, tenantId: 4210, persistRuns: false });
+    const blockedEditing = await executeChatActionPlan(editingPlan!, {
+      ...baseInput,
+      userId: 4210,
+      tenantId: 4210,
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    }, { confirmed: true });
+    expect(blockedEditing.metadata.actionStatus).toBe('blocked');
+    expect(getContentWorkspaceItem(scope, item.id, testDb)).toMatchObject({
+      productionState: 'active',
+      artifactPhase: 'draft',
+      currentArtifactId: script.id,
+    });
+
+    const publishedPlan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_pipeline_stage_transition',
+        args: { topicTitle: 'Recovery Reel', targetStage: 'published' },
+        missingFields: [],
+      }],
+    }), {
+      ...baseInput,
+      userId: 4210,
+      tenantId: 4210,
+      text: 'Mark the Recovery Reel as published',
+      persistRuns: false,
+    });
+    const blockedPublished = await executeChatActionPlan(publishedPlan!, {
+      ...baseInput,
+      userId: 4210,
+      tenantId: 4210,
+      text: 'Mark the Recovery Reel as published',
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    }, { confirmed: true });
+    expect(blockedPublished.metadata.actionStatus).toBe('blocked');
+    expect(getContentWorkspaceItem(scope, item.id, testDb)).toMatchObject({
+      productionState: 'active',
+      artifactPhase: 'draft',
+      currentArtifactId: script.id,
+    });
+    expect(blockedPublished.text).toMatch(/made no changes|não fiz alterações/i);
   });
 
   it('blocks Content pipeline stage transitions when the topic reference is ambiguous', async () => {
-    ensureContentAgencyTables(testDb);
+    const scope = { tenantId: 4213, userId: 4213 };
     for (const title of ['Recovery Reel A', 'Recovery Reel B']) {
-      testDb.prepare(`
-        INSERT INTO content_pipeline (
-          topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
-          visibility_scope, scope_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(title, 'training', 'scripted', '[]', 4213, 4213, 4213, 'user_private', 'active');
+      const item = createContentWorkspaceItem({
+        scope,
+        itemType: 'content_item',
+        title,
+        idempotencyKey: `planner-${title.toLowerCase().replaceAll(' ', '-')}-item-001`,
+      }, testDb).value;
+      createContentArtifact({
+        scope,
+        itemId: item.id,
+        expectedWorkflowVersion: item.workflowVersion,
+        artifactType: 'script',
+        initialContent: { format: 'markdown', text: '# Hook\nRecovery.' },
+        idempotencyKey: `planner-${item.id}-script-001`,
+      }, testDb);
     }
 
     const plan = parseLlmPlannerJson(JSON.stringify({
@@ -2745,7 +2923,7 @@ describe('ChatActionPlanner', () => {
       steps: [{
         skill: 'content',
         action: 'content_pipeline_stage_transition',
-        args: { topicTitle: 'Recovery Reel', targetStage: 'filmed' },
+        args: { topicTitle: 'Recovery Reel', targetStage: 'scripted' },
         missingFields: [],
       }],
     }), { ...baseInput, userId: 4213, tenantId: 4213, persistRuns: false });
@@ -2762,24 +2940,36 @@ describe('ChatActionPlanner', () => {
 
     expect(response.metadata.actionStatus).toBe('blocked');
     expect(response.text.length).toBeGreaterThan(0);
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_pipeline WHERE stage = ?').get('filmed')).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_domain_objects
+       WHERE tenant_id = ? AND owner_user_id = ? AND title LIKE 'Recovery Reel%'
+    `).get(4213, 4213)).toEqual({ count: 2 });
   });
 
   it('blocks Content pipeline stage transitions across tenant scope', async () => {
-    ensureContentAgencyTables(testDb);
-    testDb.prepare(`
-      INSERT INTO content_pipeline (
-        topic_title, niche, stage, stage_history, user_id, tenant_id, owner_user_id,
-        visibility_scope, scope_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Other User Reel', 'training', 'scripted', '[]', 4212, 4212, 4212, 'user_private', 'active');
+    const foreignScope = { tenantId: 4212, userId: 4212 };
+    const foreignItem = createContentWorkspaceItem({
+      scope: foreignScope,
+      itemType: 'content_item',
+      title: 'Other User Reel',
+      idempotencyKey: 'planner-foreign-reel-item-001',
+    }, testDb).value;
+    const foreignScript = createContentArtifact({
+      scope: foreignScope,
+      itemId: foreignItem.id,
+      expectedWorkflowVersion: foreignItem.workflowVersion,
+      artifactType: 'script',
+      initialContent: { format: 'markdown', text: '# Hook\nPrivate tenant script.' },
+      idempotencyKey: 'planner-foreign-reel-script-001',
+    }, testDb).value;
 
     const plan = parseLlmPlannerJson(JSON.stringify({
       confidence: 0.9,
       steps: [{
         skill: 'content',
         action: 'content_pipeline_stage_transition',
-        args: { topicTitle: 'Other User Reel', targetStage: 'published' },
+        args: { topicTitle: 'Other User Reel', targetStage: 'scripted' },
         missingFields: [],
       }],
     }), { ...baseInput, userId: 4211, tenantId: 4211, persistRuns: false });
@@ -2795,7 +2985,11 @@ describe('ChatActionPlanner', () => {
     }, { confirmed: true });
 
     expect(response.metadata.actionStatus).toBe('blocked');
-    expect(testDb.prepare('SELECT stage FROM content_pipeline WHERE topic_title = ?').get('Other User Reel')).toEqual({ stage: 'scripted' });
+    expect(getContentWorkspaceItem(foreignScope, foreignItem.id, testDb)).toMatchObject({
+      productionState: 'active',
+      artifactPhase: 'draft',
+      currentArtifactId: foreignScript.id,
+    });
   });
 
   it('executes Cooking meal-plan slot writes with scoped read-back', async () => {

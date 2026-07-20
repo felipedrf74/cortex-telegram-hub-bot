@@ -27,6 +27,7 @@ import {
 import { setDbProvider } from '../../src/services/intelligence-bus';
 
 let testDb: Database.Database;
+const CONTENT_SCOPE = { tenantId: 42, userId: 42 };
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -180,15 +181,12 @@ describe('content-dashboard-service: pipeline recent', () => {
   afterEach(() => testDb?.close());
 
   it('returns recent pipeline items with correct shape', () => {
-    testDb.prepare(`
-      INSERT INTO content_pipeline (topic_title, niche, stage, stage_history)
-      VALUES ('AI Fitness', 'tech', 'scripted', '[]')
-    `).run();
+    seedWorkspaceItem('AI Fitness', 'active', 'draft');
 
-    const recent = getPipelineRecent();
+    const recent = getPipelineRecent(CONTENT_SCOPE);
     expect(recent).toHaveLength(1);
     expect(recent[0].topicTitle).toBe('AI Fitness');
-    expect(recent[0].niche).toBe('tech');
+    expect(recent[0].niche).toBeNull();
     expect(recent[0].stage).toBe('scripted');
     expect(recent[0]).toHaveProperty('createdAt');
     expect(recent[0]).toHaveProperty('updatedAt');
@@ -196,14 +194,11 @@ describe('content-dashboard-service: pipeline recent', () => {
 
   it('respects limit parameter', () => {
     for (let i = 0; i < 10; i++) {
-      testDb.prepare(`
-        INSERT INTO content_pipeline (topic_title, stage, stage_history)
-        VALUES ('Topic ' || ?, 'approved', '[]')
-      `).run(i);
+      seedWorkspaceItem(`Topic ${i}`, 'active', 'idea');
     }
 
-    expect(getPipelineRecent(3)).toHaveLength(3);
-    expect(getPipelineRecent(10)).toHaveLength(10);
+    expect(getPipelineRecent(CONTENT_SCOPE, 3)).toHaveLength(3);
+    expect(getPipelineRecent(CONTENT_SCOPE, 10)).toHaveLength(10);
   });
 });
 
@@ -386,7 +381,7 @@ describe('content-dashboard-service: no raw SQL duplication', () => {
 
 describe('content-dashboard-service: contract consistency', () => {
   beforeEach(() => {
-    testDb = createMigratedTestDatabase();
+    testDb = createMigratedTestDatabase({ stopBefore: '246_content_pipeline_workspace_exit.sql' });
   });
   afterEach(() => testDb?.close());
 
@@ -428,12 +423,9 @@ describe('content-dashboard-service: contract consistency', () => {
   });
 
   it('getPipelineRecent returns PipelineRecentItem shape', () => {
-    testDb.prepare(`
-      INSERT INTO content_pipeline (topic_title, niche, stage, stage_history)
-      VALUES ('Test', 'tech', 'scripted', '[]')
-    `).run();
+    seedWorkspaceItem('Test', 'active', 'draft');
 
-    const recent = getPipelineRecent();
+    const recent = getPipelineRecent(CONTENT_SCOPE);
     const item = recent[0];
 
     expect(item).toHaveProperty('id');
@@ -446,3 +438,22 @@ describe('content-dashboard-service: contract consistency', () => {
     expect(item).toHaveProperty('publishedAt');
   });
 });
+
+function seedWorkspaceItem(title: string, productionState: string, artifactPhase: string): number {
+  return Number(testDb.prepare(`
+    INSERT INTO content_domain_objects (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, lifecycle_state, title, production_state, artifact_phase,
+      created_by, updated_by
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?, ?, ?, ?, ?, ?)
+  `).run(
+    CONTENT_SCOPE.tenantId,
+    CONTENT_SCOPE.userId,
+    productionState,
+    title,
+    productionState,
+    artifactPhase,
+    CONTENT_SCOPE.userId,
+    CONTENT_SCOPE.userId,
+  ).lastInsertRowid);
+}

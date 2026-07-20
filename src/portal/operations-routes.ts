@@ -9,6 +9,7 @@ import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-f
 import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
 import { getTrainingGenerationObservabilitySnapshot } from '../services/training-generation-observability';
+import { getContentWorkspaceObservabilitySnapshot } from '../services/content-workspace-observability';
 import {
   acknowledgeOperatorAlert,
   getOperatorAlertDeliverySummary,
@@ -158,6 +159,23 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
+  // The portal composition root rate-limits /api before registering this route family.
+  app.get('/api/content-workspace-metrics', requirePortalAdminToken, (_req: Request, res: Response) => {
+    try {
+      res.json({
+        ok: true,
+        contentWorkspace: getContentWorkspaceObservabilitySnapshot(),
+      });
+    } catch (err) {
+      sendPortalInternalError(
+        res,
+        err,
+        'Content workspace metrics unavailable',
+        'Portal: content workspace metrics failed',
+      );
+    }
+  });
+
   app.get('/api/operator-alerts', (req: Request, res: Response) => {
     try {
       const status = parseAlertStatus(req.query?.status);
@@ -172,6 +190,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
+  // The portal composition root applies the shared /api limiter before registering this route family.
   app.post('/api/operator-alerts/:id/ack', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
@@ -189,6 +208,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
+  // The portal composition root applies the shared /api limiter before registering this route family.
   app.post('/api/operator-alerts/:id/resolve', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
@@ -206,6 +226,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
+  // The portal composition root applies the shared /api limiter before registering this route family.
   app.post('/api/operator-alerts/:id/retry-delivery', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);

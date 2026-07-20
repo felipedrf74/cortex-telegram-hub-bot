@@ -9,6 +9,7 @@
  * the cost, latency, or provider-error fail-open.
  */
 
+import { createHash } from 'node:crypto';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import {
@@ -17,6 +18,10 @@ import {
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
 import { requireTenantIdParam } from './tenant-scope';
+import {
+  getContentWorkspaceIdeaAngleCounts,
+  getRecentContentWorkspaceIdeas,
+} from './content-workspace-idea-consumers';
 
 export interface DedupResult {
   isDuplicate: boolean;
@@ -166,12 +171,14 @@ export async function isDuplicateIdea(
     const scopeFilter = `AND ${contentScopePredicate()}`;
     const scopeArgs = contentScopeParams(uid, tid);
 
-    // Gather recent ideas from both tables (per-user)
-    const recentSaved = db.prepare(`
-      SELECT title, angle_tag FROM saved_ideas
-      WHERE created_at > datetime('now', '-14 days') ${scopeFilter}
-      ORDER BY created_at DESC LIMIT 30
-    `).all(...scopeArgs) as { title: string; angle_tag: string | null }[];
+    // Gather canonical current idea artifacts plus the still-live generated
+    // candidate inventory. The retired idea archive is export-only.
+    const recentWorkspaceIdeas = getRecentContentWorkspaceIdeas(
+      { tenantId: tid, userId: uid },
+      14,
+      30,
+      db,
+    );
 
     const recentFeedback = db.prepare(`
       SELECT topic as title, angle_tag FROM content_topic_feedback
@@ -179,7 +186,7 @@ export async function isDuplicateIdea(
       ORDER BY created_at DESC LIMIT 30
     `).all(...scopeArgs) as { title: string; angle_tag: string | null }[];
 
-    const existingIdeas = [...recentSaved, ...recentFeedback];
+    const existingIdeas = [...recentWorkspaceIdeas, ...recentFeedback];
 
     // If fewer than 3 recent ideas, skip dedup (not enough data)
     if (existingIdeas.length < 3) {
@@ -189,12 +196,29 @@ export async function isDuplicateIdea(
     const result = classifyAgainstRecent(newIdea, angleTag, existingIdeas);
 
     logger.debug(
-      { newIdea, isDuplicate: result.isDuplicate, similarTo: result.similarTo, confidence: result.confidence, userId: uid, tenantId: tid },
+      {
+        titleLength: newIdea.length,
+        titleHash: privacyHash(newIdea),
+        isDuplicate: result.isDuplicate,
+        similarTitleLength: result.similarTo?.length ?? 0,
+        similarTitleHash: result.similarTo ? privacyHash(result.similarTo) : null,
+        confidence: result.confidence,
+        userId: uid,
+        tenantId: tid,
+      },
       'Content dedup decision',
     );
     if (result.isDuplicate) {
       logger.info(
-        { newIdea, similarTo: result.similarTo, confidence: result.confidence, userId: uid, tenantId: tid },
+        {
+          titleLength: newIdea.length,
+          titleHash: privacyHash(newIdea),
+          similarTitleLength: result.similarTo?.length ?? 0,
+          similarTitleHash: result.similarTo ? privacyHash(result.similarTo) : null,
+          confidence: result.confidence,
+          userId: uid,
+          tenantId: tid,
+        },
         'Duplicate idea detected',
       );
     }
@@ -222,12 +246,8 @@ export function getAngleDistribution(userId?: number, tenantId?: number): { tag:
     'comparison', 'data', 'framework', 'listicle', 'trending-take',
   ];
 
-  // Count from both tables (per-user)
-  const savedAngles = db.prepare(`
-    SELECT angle_tag, COUNT(*) as cnt FROM saved_ideas
-    WHERE angle_tag IS NOT NULL AND created_at > datetime('now', '-30 days') ${scopeFilter}
-    GROUP BY angle_tag
-  `).all(...scopeArgs) as { angle_tag: string; cnt: number }[];
+  // Count canonical current idea artifacts plus generated candidate inventory.
+  const workspaceAngles = getContentWorkspaceIdeaAngleCounts(scope, 30, db);
 
   const feedbackAngles = db.prepare(`
     SELECT angle_tag, COUNT(*) as cnt FROM content_topic_feedback
@@ -238,7 +258,7 @@ export function getAngleDistribution(userId?: number, tenantId?: number): { tag:
   // Merge counts
   const counts = new Map<string, number>();
   for (const tag of ANGLE_TAGS) counts.set(tag, 0);
-  for (const r of [...savedAngles, ...feedbackAngles]) {
+  for (const r of [...workspaceAngles, ...feedbackAngles]) {
     counts.set(r.angle_tag, (counts.get(r.angle_tag) || 0) + r.cnt);
   }
 
@@ -249,6 +269,10 @@ export function getAngleDistribution(userId?: number, tenantId?: number): { tag:
     count: counts.get(tag) || 0,
     pct: Math.round(((counts.get(tag) || 0) / total) * 100),
   }));
+}
+
+function privacyHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 /**

@@ -78,6 +78,7 @@ describe('content-intelligence', () => {
           operation: 'get_active_content_pillars',
           reason: 'invalid_user_scope',
           userId: 0,
+          details: { tenantId: 0 },
         }),
       ]),
     );
@@ -93,7 +94,7 @@ describe('content-intelligence', () => {
           operation: 'get_content_desk_items',
           reason: 'invalid_user_scope',
           userId: 0,
-          details: { limit: 3 },
+          details: { limit: 3, tenantId: 0 },
         }),
       ]),
     );

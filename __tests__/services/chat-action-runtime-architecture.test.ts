@@ -146,7 +146,7 @@ describe('manifest loader runtime architecture', () => {
 describe('runtime registry shape', () => {
   it('keeps disabled/deprecated actions out of the active registry count', () => {
     const actions = getChatActionRegistry();
-    expect(actions).toHaveLength(50);
+    expect(actions).toHaveLength(51);
     expect(actions.every((entry) => entry.status === 'active')).toBe(true);
   });
 });

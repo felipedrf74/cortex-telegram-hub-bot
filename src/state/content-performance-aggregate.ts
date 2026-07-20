@@ -6,10 +6,11 @@ import { logger } from '../utils/logger';
 
 // CONTENT-UI-O3 (2026-05-04): Content Performance aggregate.
 //
-// Read-only aggregate over existing tenant-scoped tables:
-//   - content_topics (status counts, last 30/90 day distribution)
-//   - content_scripts (count, last 30 days)
-//   - saved_ideas (count)
+// Read-only aggregate over canonical tenant-scoped Content data:
+//   - content_domain_objects (workspace state and idea inventory)
+//   - content_artifacts/content_revisions (durable script inventory)
+//   - content_workflow_events (verified publication transitions)
+//   - content_schedule_bindings (private work sessions, never publication)
 //   - content_performance (published video metrics)
 //   - content_radar_feedback (accept vs reject counts)
 //
@@ -25,6 +26,8 @@ export interface ContentPerformanceAggregate {
     byStatus: Record<string, number>;
     publishedLast30d: number;
     scheduledNext14d: number;
+    source: 'content_workspace';
+    scheduleSemantics: 'private_work_session';
   };
   scripts: {
     total: number;
@@ -61,7 +64,14 @@ function emptyAggregate(tenantId: number, ownerUserId: number): ContentPerforman
     generatedAt: new Date().toISOString(),
     tenantId,
     ownerUserId,
-    topics: { total: 0, byStatus: {}, publishedLast30d: 0, scheduledNext14d: 0 },
+    topics: {
+      total: 0,
+      byStatus: {},
+      publishedLast30d: 0,
+      scheduledNext14d: 0,
+      source: 'content_workspace',
+      scheduleSemantics: 'private_work_session',
+    },
     scripts: { total: 0, last30d: 0 },
     ideas: { total: 0 },
     radarFeedback: {
@@ -121,72 +131,125 @@ export function getContentPerformanceAggregate(
   const resolvedTenantId = resolveContentTenantId(userId, tenantId);
   const result = emptyAggregate(resolvedTenantId, userId);
 
-  // ─── Topics ─────────────────────────────────────────────────────
+  // ─── Canonical workspace inventory ──────────────────────────────
   safeQuery(() => {
     const totalRow = db.prepare(`
-      SELECT COUNT(*) AS c FROM content_topics
-      WHERE tenant_id = ? AND owner_user_id = ?
-        AND COALESCE(scope_status, 'active') = 'active'
+      SELECT COUNT(*) AS c FROM content_domain_objects item
+      WHERE item.tenant_id = ? AND item.owner_user_id = ?
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
     `).get(resolvedTenantId, userId) as { c: number };
     result.topics.total = Number(totalRow?.c ?? 0);
 
     const statusRows = db.prepare(`
-      SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS c
-      FROM content_topics
-      WHERE tenant_id = ? AND owner_user_id = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-      GROUP BY status
+      SELECT production_state AS status, COUNT(*) AS c
+      FROM content_domain_objects item
+      WHERE item.tenant_id = ? AND item.owner_user_id = ?
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
+      GROUP BY production_state
     `).all(resolvedTenantId, userId) as Array<{ status: string; c: number }>;
     for (const row of statusRows) {
       result.topics.byStatus[String(row.status)] = Number(row.c) || 0;
     }
 
     const publishedLast30dRow = db.prepare(`
-      SELECT COUNT(*) AS c FROM content_topics
-      WHERE tenant_id = ? AND owner_user_id = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-        AND status = 'published'
-        AND COALESCE(updated_at, created_at) >= datetime('now', '-30 days')
+      SELECT COUNT(DISTINCT event.object_id) AS c
+      FROM content_workflow_events event
+      JOIN content_domain_objects item
+        ON item.id = CAST(event.object_id AS INTEGER)
+       AND item.tenant_id = event.tenant_id
+       AND item.owner_user_id = event.owner_user_id
+      WHERE event.tenant_id = ? AND event.owner_user_id = ?
+        AND event.visibility_scope = 'user_private'
+        AND event.scope_status = 'active'
+        AND event.object_type = 'content_item'
+        AND event.action = 'workspace_state_changed'
+        AND event.to_state = 'published'
+        AND event.created_at >= datetime('now', '-30 days')
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
     `).get(resolvedTenantId, userId) as { c: number };
     result.topics.publishedLast30d = Number(publishedLast30dRow?.c ?? 0);
 
     const scheduledNext14dRow = db.prepare(`
-      SELECT COUNT(*) AS c FROM content_topics
-      WHERE tenant_id = ? AND owner_user_id = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-        AND scheduled_date IS NOT NULL
-        AND scheduled_date BETWEEN date('now') AND date('now', '+14 days')
+      SELECT COUNT(DISTINCT binding.item_id) AS c
+      FROM content_schedule_bindings binding
+      JOIN content_domain_objects item
+        ON item.id = binding.item_id
+       AND item.tenant_id = binding.tenant_id
+       AND item.owner_user_id = binding.owner_user_id
+      WHERE binding.tenant_id = ? AND binding.owner_user_id = ?
+        AND binding.state IN ('scheduled', 'provider_synced', 'sync_failed', 'cancel_pending', 'cancel_failed')
+        AND binding.scheduled_start_at >= datetime('now')
+        AND binding.scheduled_start_at < datetime('now', '+14 days')
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
     `).get(resolvedTenantId, userId) as { c: number };
     result.topics.scheduledNext14d = Number(scheduledNext14dRow?.c ?? 0);
-  }, undefined, 'topics', { userId, tenantId: resolvedTenantId });
+  }, undefined, 'workspaceInventory', { userId, tenantId: resolvedTenantId });
 
-  // ─── Scripts ────────────────────────────────────────────────────
+  // ─── Canonical scripts ──────────────────────────────────────────
   safeQuery(() => {
     const total = db.prepare(`
-      SELECT COUNT(*) AS c FROM content_scripts
-      WHERE COALESCE(tenant_id, user_id) = ?
-        AND COALESCE(owner_user_id, user_id) = ?
-        AND COALESCE(scope_status, 'active') = 'active'
+      SELECT COUNT(DISTINCT artifact.id) AS c
+      FROM content_artifacts artifact
+      JOIN content_domain_objects item
+        ON item.id = artifact.item_id
+       AND item.tenant_id = artifact.tenant_id
+       AND item.owner_user_id = artifact.owner_user_id
+      WHERE artifact.tenant_id = ? AND artifact.owner_user_id = ?
+        AND artifact.visibility_scope = 'user_private'
+        AND artifact.scope_status = 'active'
+        AND artifact.artifact_type = 'script'
+        AND artifact.current_revision_id IS NOT NULL
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
     `).get(resolvedTenantId, userId) as { c: number };
     result.scripts.total = Number(total?.c ?? 0);
 
     const last30 = db.prepare(`
-      SELECT COUNT(*) AS c FROM content_scripts
-      WHERE COALESCE(tenant_id, user_id) = ?
-        AND COALESCE(owner_user_id, user_id) = ?
-        AND COALESCE(scope_status, 'active') = 'active'
-        AND created_at >= datetime('now', '-30 days')
+      SELECT COUNT(DISTINCT artifact.id) AS c
+      FROM content_artifacts artifact
+      JOIN content_domain_objects item
+        ON item.id = artifact.item_id
+       AND item.tenant_id = artifact.tenant_id
+       AND item.owner_user_id = artifact.owner_user_id
+      WHERE artifact.tenant_id = ? AND artifact.owner_user_id = ?
+        AND artifact.visibility_scope = 'user_private'
+        AND artifact.scope_status = 'active'
+        AND artifact.artifact_type = 'script'
+        AND artifact.current_revision_id IS NOT NULL
+        AND artifact.created_at >= datetime('now', '-30 days')
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
     `).get(resolvedTenantId, userId) as { c: number };
     result.scripts.last30d = Number(last30?.c ?? 0);
   }, undefined, 'scripts', { userId, tenantId: resolvedTenantId });
 
-  // ─── Ideas ──────────────────────────────────────────────────────
+  // ─── Canonical early-phase ideas ────────────────────────────────
   safeQuery(() => {
     const total = db.prepare(`
-      SELECT COUNT(*) AS c FROM saved_ideas
-      WHERE COALESCE(tenant_id, user_id) = ?
-        AND COALESCE(owner_user_id, user_id) = ?
-        AND COALESCE(scope_status, 'active') = 'active'
+      SELECT COUNT(*) AS c FROM content_domain_objects item
+      WHERE item.tenant_id = ? AND item.owner_user_id = ?
+        AND item.visibility_scope = 'user_private'
+        AND item.scope_status = 'active'
+        AND item.deleted_at IS NULL
+        AND item.object_type = 'content_item'
+        AND item.artifact_phase IN ('idea', 'brief', 'outline')
+        AND item.production_state NOT IN ('published', 'archived', 'rejected')
     `).get(resolvedTenantId, userId) as { c: number };
     result.ideas.total = Number(total?.c ?? 0);
   }, undefined, 'ideas', { userId, tenantId: resolvedTenantId });
@@ -318,7 +381,7 @@ export function getContentPerformanceAggregate(
   // ─── Highlights / warnings ──────────────────────────────────────
   if (result.topics.publishedLast30d >= 4) {
     result.highlights.push(
-      `Strong publishing cadence — ${result.topics.publishedLast30d} topics published in the last 30 days.`,
+      `Strong publishing cadence — ${result.topics.publishedLast30d} content items have verified publication events in the last 30 days.`,
     );
   }
   if (result.scripts.last30d >= 8) {
@@ -349,12 +412,12 @@ export function getContentPerformanceAggregate(
   }
   if (result.topics.publishedLast30d === 0 && result.topics.total > 5) {
     result.warnings.push(
-      'No topics published in the last 30 days even though the pipeline has work-in-progress. Schedule the next publish window.',
+      'No verified publication event was recorded in the last 30 days even though the workspace has active items. Plan the next writing, review, or publish-preparation work session.',
     );
   }
   if (result.scripts.total === 0 && result.topics.total >= 3) {
     result.warnings.push(
-      'Topics exist but no scripts have been generated yet. Run script generation on the highest-confidence topic.',
+      'Workspace items exist but no current script artifacts are available. Develop the highest-priority item into an outline or script.',
     );
   }
 

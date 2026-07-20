@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { captureDiscoveredIdea } from '../../src/services/content-workspace-capture';
 import {
   parseOptionalPositiveId,
   parseOptionalText,
@@ -81,5 +83,30 @@ describe('content topic context helpers', () => {
     );
 
     expect(context).toBeNull();
+  });
+
+  it('prefers a scoped canonical workspaceItemId over the legacy pipeline alias', () => {
+    vi.stubEnv('CONTENT_WORKSPACE_V1_MODE', 'write');
+    const db = createMigratedTestDatabase();
+    try {
+      const captured = captureDiscoveredIdea({
+        scope: { tenantId: 7, userId: 7 },
+        title: 'Canonical script context idea',
+        sourceDate: '2026-07-17',
+        score: 0.8,
+        workflowEligible: true,
+      }, db);
+
+      expect(resolveScriptTopicContext(7, {
+        workspaceItemId: captured.item.id,
+        pipelineId: 999_999,
+      }, db as any, 7)).toEqual({ pipelineId: captured.item.id });
+      expect(resolveScriptTopicContext(7, {
+        workspaceItemId: captured.item.id,
+      }, db as any, 8)).toBeNull();
+    } finally {
+      db.close();
+      vi.unstubAllEnvs();
+    }
   });
 });

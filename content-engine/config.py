@@ -20,6 +20,7 @@ class EngineConfig:
     reddit_client_secret: str = ""
     internal_api_secret: str = ""
     fixture_mode: bool = False
+    research_network_disabled: bool = False
     env: str = "development"
 
     # ── Timeouts (seconds) ────────────────────────────────────────────
@@ -59,6 +60,7 @@ def load_config() -> EngineConfig:
         reddit_client_id=os.environ.get("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.environ.get("REDDIT_CLIENT_SECRET", ""),
         internal_api_secret=internal_api_secret,
+        research_network_disabled=os.environ.get("CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED") == "1",
         env=env,
     )
 

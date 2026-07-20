@@ -165,6 +165,22 @@ describe('script-pipeline: cache key hardening', () => {
     expect(engineSource).toMatch(/readSignals\('script-engine', \[\.\.\.signalTypes\], 100, userId, cfg\.signalDays, tenantId\)/);
   });
 
+  it('gates user-derived signal reads behind the typed execution policy', () => {
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+    const executionPolicySource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-script-execution-policy.ts'),
+      'utf8',
+    );
+
+    expect(executionPolicySource).toContain('export interface ScriptGenerationExecutionPolicy');
+    expect(executionPolicySource).toContain("intelligenceSignals: 'default' | 'bypass'");
+    expect(engineSource).toContain("executionPolicy.intelligenceSignals === 'default' && cfg.signalDays > 0");
+    expect(executionPolicySource).toContain("intelligenceSignals: 'bypass'");
+  });
+
   it('script engine forwards first-party topic context into the Python request', () => {
     const engineSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
@@ -335,7 +351,7 @@ describe('script-pipeline: iOS API route', () => {
     // The /script route delegates structured response shaping to
     // content-script-route-utils.ts after the route extraction pass.
     expect(routeUtilitySource).toContain('topic: result.topic');
-    expect(routeUtilitySource).toContain('script: scriptQuality.revisedScript');
+    expect(routeUtilitySource).toContain('script: result.script');
     expect(routeUtilitySource).toContain('hook: result.hook');
     expect(routeUtilitySource).toContain('titleOptions:');
     expect(routeUtilitySource).toContain('sourcesUsed:');

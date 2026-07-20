@@ -35,7 +35,107 @@ type MeshBundle = {
 };
 
 type PeerSkill = 'training' | 'cooking' | 'finance' | 'content' | 'secretary';
+export type ContentCrossSkillPeer = Exclude<PeerSkill, 'content'>;
 type SharedContextFreshness = 'active' | 'expiring' | 'stale' | 'unknown';
+
+const CONTENT_CROSS_SKILL_PEERS: readonly ContentCrossSkillPeer[] = [
+  'training',
+  'secretary',
+  'finance',
+  'cooking',
+] as const;
+
+/**
+ * Purpose limitation for peer-skill facts entering a Content prompt.
+ *
+ * `coarse` is the default and exposes only presentation-safe capacity
+ * constraints. `presentation_safe` requires explicit, per-turn user intent and
+ * is restricted to the named peer skills. Neither mode exposes raw records,
+ * amounts, percentages, event titles, session prescriptions, inbox counts, or
+ * meal-gap details.
+ */
+export interface ContentCrossSkillContextPolicy {
+  purpose: 'content_planning';
+  disclosure: 'coarse' | 'presentation_safe';
+  allowedPeerSkills: ContentCrossSkillPeer[];
+  explicitUserIntent: boolean;
+}
+
+export interface SharedDecisionContextOptions {
+  /** The authenticated user's current-turn text; the service re-derives consent from it. */
+  contentPurpose?: { userMessage: string };
+}
+
+/**
+ * Resolve a narrow, per-turn Content context grant from the user's own words.
+ * Merely writing *about* training, food, finance, or calendars is not consent
+ * to read private Nexus state. The request must contain an explicit use/
+ * consideration verb and name the domain. Prompt-injection language always
+ * falls back to the coarse default.
+ */
+export function resolveContentCrossSkillContextPolicy(
+  message?: string | null,
+): ContentCrossSkillContextPolicy {
+  const text = (message ?? '').trim().toLowerCase();
+  const injectionAttempt = /\b(?:ignore|bypass|override)\b.{0,40}\b(?:privacy|consent|permission|security|policy|tenant)\b/.test(text)
+    || /\b(?:ignora|contorna|ultrapassa|substitui)\b.{0,40}\b(?:privacidade|consentimento|permiss[aã]o|seguran[cç]a|pol[ií]tica|tenant)\b/.test(text);
+  if (!text || injectionAttempt || !hasExplicitContentContextPurpose(text)) {
+    return defaultContentCrossSkillContextPolicy();
+  }
+
+  const allowedPeerSkills = CONTENT_CROSS_SKILL_PEERS.filter((skill) =>
+    explicitlyNamesContentPeer(text, skill),
+  );
+  if (allowedPeerSkills.length === 0) {
+    return defaultContentCrossSkillContextPolicy();
+  }
+
+  return {
+    purpose: 'content_planning',
+    disclosure: 'presentation_safe',
+    allowedPeerSkills: [...allowedPeerSkills],
+    explicitUserIntent: true,
+  };
+}
+
+function defaultContentCrossSkillContextPolicy(): ContentCrossSkillContextPolicy {
+  return {
+    purpose: 'content_planning',
+    disclosure: 'coarse',
+    allowedPeerSkills: [...CONTENT_CROSS_SKILL_PEERS],
+    explicitUserIntent: false,
+  };
+}
+
+function hasExplicitContentContextPurpose(text: string): boolean {
+  return /\b(?:use|using|consider|factor(?:ing)? in|account(?:ing)? for|take into account|base(?:d)? on|coordinate with|adapt to|fit around|plan around|check|look at)\b/.test(text)
+    || /\b(?:usar|usa|usando|considerar|considera|considerando|levar em conta|ter em conta|basear(?:-se)? em|com base em|coordenar com|adaptar a|encaixar em torno|planejar em torno|planear em torno|verificar|consultar)\b/.test(text);
+}
+
+function explicitlyNamesContentPeer(text: string, skill: ContentCrossSkillPeer): boolean {
+  switch (skill) {
+    case 'training':
+      return /\b(?:my|the saved|nexus|current nexus)\s+(?:training|workout|recovery|training load|training schedule|sessions?)\b/.test(text)
+        || /\b(?:training|workout|recovery)\s+(?:context|data|state|capacity|schedule)\b/.test(text)
+        || /\b(?:meu|minha|o meu|a minha)\s*(?:treino|treinos|recupera[cç][aã]o|carga de treino|agenda de treino|sess(?:a|ã)o|sess(?:o|õ)es)\b/.test(text)
+        || /\b(?:treino|recupera[cç][aã]o)\s+(?:contexto|dados|estado|capacidade|agenda)\b/.test(text);
+    case 'secretary':
+      return /\b(?:my|the saved|nexus|current nexus)\s+(?:calendar|schedule|availability|agenda|meetings?|focus time)\b/.test(text)
+        || /\b(?:calendar|schedule)\s+(?:context|data|state|availability|constraints?)\b/.test(text)
+        || /\b(?:meu|minha|o meu|a minha)\s*(?:calend[aá]rio|agenda|disponibilidade|reuni(?:a|ã)o|reuni(?:o|õ)es|tempo de foco)\b/.test(text)
+        || /\b(?:calend[aá]rio|agenda)\s+(?:contexto|dados|estado|disponibilidade|restri[cç][oõ]es)\b/.test(text);
+    case 'finance':
+      return /\b(?:my|the saved|nexus|current nexus)\s+(?:budget|finances?|spending|cost constraints?|money)\b/.test(text)
+        || /\b(?:budget|finance)\s+(?:context|data|state|constraints?|posture)\b/.test(text)
+        || /\b(?:meu|minha|o meu|a minha)\s*(?:or[cç]amento|finan[cç]as|gastos?|custos?|dinheiro)\b/.test(text)
+        || /\b(?:or[cç]amento|finan[cç]as)\s+(?:contexto|dados|estado|restri[cç][oõ]es|postura)\b/.test(text);
+    case 'cooking':
+      return /\b(?:my|the saved|nexus|current nexus)\s+(?:meal plan|meals?|food prep|cooking|nutrition|fueling)\b/.test(text)
+        || /\b(?:meal|cooking|nutrition|fueling)\s+(?:context|data|state|capacity|plan|constraints?)\b/.test(text)
+        || /\b(?:meu|minha|o meu|a minha)\s*(?:plano de refei[cç][oõ]es|refei[cç][aã]o|refei[cç][oõ]es|preparo de comida|cozinha|nutri[cç][aã]o|abastecimento)\b/.test(text)
+        || /\b(?:refei[cç][oõ]es|cozinha|nutri[cç][aã]o)\s+(?:contexto|dados|estado|capacidade|plano|restri[cç][oõ]es)\b/.test(text);
+  }
+}
 
 export interface PeerDecisionContract {
   nonNegotiables: string[];
@@ -77,13 +177,23 @@ export function invalidateSharedContextForSkillChange(input: {
   invalidateContextCache(input.userId, input.tenantId);
 }
 
-export async function buildSharedDecisionContext(domain: DomainName, userId: number, tenantId?: number): Promise<string> {
-  const artifacts = await buildSharedDecisionArtifacts(domain, userId, tenantId);
+export async function buildSharedDecisionContext(
+  domain: DomainName,
+  userId: number,
+  tenantId?: number,
+  options: SharedDecisionContextOptions = {},
+): Promise<string> {
+  const artifacts = await buildSharedDecisionArtifacts(domain, userId, tenantId, options);
   return artifacts.text;
 }
 
-export async function buildSharedDecisionContracts(domain: DomainName, userId: number, tenantId?: number): Promise<SharedDecisionContracts> {
-  const artifacts = await buildSharedDecisionArtifacts(domain, userId, tenantId);
+export async function buildSharedDecisionContracts(
+  domain: DomainName,
+  userId: number,
+  tenantId?: number,
+  options: SharedDecisionContextOptions = {},
+): Promise<SharedDecisionContracts> {
+  const artifacts = await buildSharedDecisionArtifacts(domain, userId, tenantId, options);
   return artifacts.contracts;
 }
 
@@ -91,6 +201,7 @@ async function buildSharedDecisionArtifacts(
   domain: DomainName,
   userId: number,
   tenantId?: number,
+  options: SharedDecisionContextOptions = {},
 ): Promise<{ text: string; contracts: SharedDecisionContracts }> {
   if (!isValidTenantUserId(userId)) {
     recordTenantScopeAnomaly({
@@ -121,7 +232,13 @@ async function buildSharedDecisionArtifacts(
     return { text: '', contracts: {} };
   }
 
-  const cacheKey = `${resolvedTenantId}:${userId}:${domain}`;
+  const contentPolicy = domain === 'content'
+    ? resolveContentCrossSkillContextPolicy(options.contentPurpose?.userMessage)
+    : null;
+  const policyCacheKey = contentPolicy
+    ? `${contentPolicy.disclosure}:${contentPolicy.explicitUserIntent ? 'explicit' : 'default'}:${contentPolicy.allowedPeerSkills.join(',')}`
+    : 'standard';
+  const cacheKey = `${resolvedTenantId}:${userId}:${domain}:${policyCacheKey}`;
   const cached = _sharedDecisionContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return {
@@ -130,20 +247,33 @@ async function buildSharedDecisionArtifacts(
     };
   }
 
-  const rawBundle = await readRelevantPeerContexts(domain, userId, resolvedTenantId);
-  const { bundle, staleSignals } = filterStaleBundle(rawBundle);
-  const sections = buildSectionsForDomain(domain, bundle);
-  const sourceLines = buildSourceAttributionLines(bundle);
-  const staleLines = buildStaleContextLines(staleSignals);
+  const rawBundle = await readRelevantPeerContexts(domain, userId, resolvedTenantId, contentPolicy);
+  const filtered = filterStaleBundle(rawBundle);
+  const bundle = contentPolicy
+    ? filterBundleForContentPolicy(filtered.bundle, contentPolicy)
+    : filtered.bundle;
+  const staleSignals = contentPolicy
+    ? filtered.staleSignals.filter(({ skill }) => contentPolicy.allowedPeerSkills.includes(skill as ContentCrossSkillPeer))
+    : filtered.staleSignals;
+  const sections = buildSectionsForDomain(domain, bundle, contentPolicy);
+  const sourceLines = contentPolicy
+    ? buildContentSourceAttributionLines(bundle, contentPolicy)
+    : buildSourceAttributionLines(bundle);
+  const staleLines = contentPolicy
+    ? buildContentStaleContextLines(staleSignals, contentPolicy)
+    : buildStaleContextLines(staleSignals);
   const text = sections.length > 0 || staleLines.length > 0
     ? [
       `<shared_decision_context domain="${domain}">`,
       `<context_scope tenant_id="${resolvedTenantId}" user_id="${userId}" visibility="user_private" cache_ttl_ms="${CONTEXT_TTL_MS}" />`,
+      ...(contentPolicy
+        ? [`<purpose_gate purpose="${contentPolicy.purpose}" disclosure="${contentPolicy.disclosure}" explicit_user_intent="${contentPolicy.explicitUserIntent}" allowed_peer_skills="${contentPolicy.allowedPeerSkills.join(',')}" />`]
+        : []),
       '<source_attribution>',
       ...(sourceLines.length > 0 ? sourceLines : ['- none: no fresh peer-skill signals available']),
       '</source_attribution>',
       '<skill_ownership_boundaries>',
-      ...buildSkillOwnershipLines(domain),
+      ...buildSkillOwnershipLines(domain, contentPolicy?.allowedPeerSkills),
       '</skill_ownership_boundaries>',
       ...(staleLines.length > 0
         ? [
@@ -160,7 +290,7 @@ async function buildSharedDecisionArtifacts(
       '</shared_decision_context>',
     ].join('\n')
     : '';
-  const contracts = buildContractsForDomain(domain, bundle);
+  const contracts = buildContractsForDomain(domain, bundle, contentPolicy);
 
   _sharedDecisionContextCache.set(cacheKey, {
     text,
@@ -170,12 +300,22 @@ async function buildSharedDecisionArtifacts(
   return { text, contracts };
 }
 
-async function readRelevantPeerContexts(domain: DomainName, userId: number, tenantId: number): Promise<MeshBundle> {
-  const needsTraining = domain !== 'triathlon';
-  const needsCooking = domain === 'triathlon' || domain === 'secretary' || domain === 'content' || domain === 'finance';
-  const needsFinance = domain === 'triathlon' || domain === 'secretary' || domain === 'cooking' || domain === 'content';
+async function readRelevantPeerContexts(
+  domain: DomainName,
+  userId: number,
+  tenantId: number,
+  contentPolicy: ContentCrossSkillContextPolicy | null,
+): Promise<MeshBundle> {
+  const contentAllows = (skill: ContentCrossSkillPeer): boolean =>
+    domain !== 'content' || contentPolicy?.allowedPeerSkills.includes(skill) === true;
+  const needsTraining = domain !== 'triathlon' && contentAllows('training');
+  const needsCooking = (domain === 'triathlon' || domain === 'secretary' || domain === 'content' || domain === 'finance')
+    && contentAllows('cooking');
+  const needsFinance = (domain === 'triathlon' || domain === 'secretary' || domain === 'cooking' || domain === 'content')
+    && contentAllows('finance');
   const needsContent = domain === 'triathlon' || domain === 'secretary' || domain === 'finance' || domain === 'cooking';
-  const needsSecretary = domain === 'triathlon' || domain === 'cooking' || domain === 'content';
+  const needsSecretary = (domain === 'triathlon' || domain === 'cooking' || domain === 'content')
+    && contentAllows('secretary');
 
   const [training, cooking, finance, content, secretary] = await Promise.allSettled([
     needsTraining ? readTrainingMeshContext({ userId, tenantId }) : Promise.resolve(null),
@@ -191,6 +331,20 @@ async function readRelevantPeerContexts(domain: DomainName, userId: number, tena
     finance: finance.status === 'fulfilled' ? finance.value : null,
     content: content.status === 'fulfilled' ? content.value : null,
     secretary: secretary.status === 'fulfilled' ? secretary.value : null,
+  };
+}
+
+function filterBundleForContentPolicy(
+  bundle: MeshBundle,
+  policy: ContentCrossSkillContextPolicy,
+): MeshBundle {
+  const allows = (skill: ContentCrossSkillPeer): boolean => policy.allowedPeerSkills.includes(skill);
+  return {
+    training: allows('training') ? bundle.training : null,
+    cooking: allows('cooking') ? bundle.cooking : null,
+    finance: allows('finance') ? bundle.finance : null,
+    content: null,
+    secretary: allows('secretary') ? bundle.secretary : null,
   };
 }
 
@@ -239,6 +393,23 @@ function buildSourceAttributionLines(bundle: MeshBundle): string[] {
   return lines.sort();
 }
 
+/** Content prompts receive provenance without signal names or payloads. */
+function buildContentSourceAttributionLines(
+  bundle: MeshBundle,
+  policy: ContentCrossSkillContextPolicy,
+): string[] {
+  const lines: string[] = [];
+  for (const skill of policy.allowedPeerSkills) {
+    const context = bundle[skill];
+    if (!context || context.derivedSignals.length === 0) continue;
+    const sources = dedupeStrings(context.derivedSignals
+      .map((signal) => signal.sourceAgent?.trim() || 'unknown'))
+      .sort();
+    lines.push(`- ${skill}: presentation-safe derived constraint; sources=${sources.join(',')}`);
+  }
+  return lines;
+}
+
 function formatSourceAttributionLine(skill: PeerSkill, signal: MeshSignalDraft): string {
   const freshness = signalFreshness(signal);
   const confidence = estimateSignalConfidence(signal);
@@ -262,15 +433,45 @@ function buildStaleContextLines(staleSignals: Array<{ skill: PeerSkill; signal: 
   return lines.sort();
 }
 
-function buildSkillOwnershipLines(domain: DomainName): string[] {
+function buildContentStaleContextLines(
+  staleSignals: Array<{ skill: PeerSkill; signal: MeshSignalDraft }>,
+  policy: ContentCrossSkillContextPolicy,
+): string[] {
+  const staleSkills = dedupeStrings(staleSignals
+    .map(({ skill }) => skill)
+    .filter((skill): skill is ContentCrossSkillPeer =>
+      skill !== 'content' && policy.allowedPeerSkills.includes(skill as ContentCrossSkillPeer),
+    ));
+  return staleSkills.map((skill) => `- ${skill}: ignored stale derived constraints`);
+}
+
+function buildSkillOwnershipLines(
+  domain: DomainName,
+  allowedContentPeers?: ContentCrossSkillPeer[],
+): string[] {
   const target = domain === 'triathlon' ? 'training' : domain;
-  return [
+  const ownership = [
     '- Secretary owns schedule placement, agenda feasibility, reminders, reflow, and calendar arbitration.',
     '- Training owns workout content, recovery logic, and training-plan shape.',
     '- Cooking owns meals, groceries, meal prep, and fueling content.',
     '- Finance owns budget, bill, subscription, tax, and purchase constraints.',
     '- Content owns content workload, references, publishing cadence, and execution state.',
-    `- This context is advisory for ${target}; downstream writes still belong to the owning skill.`,
+  ];
+  if (domain !== 'content' || !allowedContentPeers) {
+    return [...ownership, `- This context is advisory for ${target}; downstream writes still belong to the owning skill.`];
+  }
+  const labels: Record<ContentCrossSkillPeer, string> = {
+    secretary: 'Secretary',
+    training: 'Training',
+    cooking: 'Cooking',
+    finance: 'Finance',
+  };
+  return [
+    ...ownership.filter((line) =>
+      line.startsWith('- Content owns')
+      || allowedContentPeers.some((skill) => line.startsWith(`- ${labels[skill]} owns`)),
+    ),
+    '- Peer facts are purpose-limited, presentation-safe constraints; they do not authorize cross-skill writes.',
   ];
 }
 
@@ -334,7 +535,11 @@ function stableSignalPayload(payload: Record<string, unknown>): string {
   }
 }
 
-function buildSectionsForDomain(domain: DomainName, bundle: MeshBundle): string[] {
+function buildSectionsForDomain(
+  domain: DomainName,
+  bundle: MeshBundle,
+  contentPolicy: ContentCrossSkillContextPolicy | null,
+): string[] {
   switch (domain) {
     case 'triathlon':
       return compact([
@@ -352,10 +557,10 @@ function buildSectionsForDomain(domain: DomainName, bundle: MeshBundle): string[
       ]);
     case 'content':
       return compact([
-        summarizeTrainingForContent(bundle.training),
-        summarizeSecretaryForContent(bundle.secretary),
-        summarizeFinanceForContent(bundle.finance),
-        summarizeCookingForContent(bundle.cooking),
+        summarizeTrainingForContent(bundle.training, contentPolicy?.disclosure ?? 'coarse'),
+        summarizeSecretaryForContent(bundle.secretary, contentPolicy?.disclosure ?? 'coarse'),
+        summarizeFinanceForContent(bundle.finance, contentPolicy?.disclosure ?? 'coarse'),
+        summarizeCookingForContent(bundle.cooking, contentPolicy?.disclosure ?? 'coarse'),
       ]);
     case 'finance':
       return compact([
@@ -375,7 +580,11 @@ function buildSectionsForDomain(domain: DomainName, bundle: MeshBundle): string[
   }
 }
 
-function buildContractsForDomain(domain: DomainName, bundle: MeshBundle): SharedDecisionContracts {
+function buildContractsForDomain(
+  domain: DomainName,
+  bundle: MeshBundle,
+  contentPolicy: ContentCrossSkillContextPolicy | null,
+): SharedDecisionContracts {
   switch (domain) {
     case 'secretary':
       return compactContracts({
@@ -400,10 +609,10 @@ function buildContractsForDomain(domain: DomainName, bundle: MeshBundle): Shared
       });
     case 'content':
       return compactContracts({
-        training: buildTrainingContractForContent(bundle.training),
-        secretary: buildSecretaryContractForContent(bundle.secretary),
-        finance: buildFinanceContractForContent(bundle.finance),
-        cooking: buildCookingContractForContent(bundle.cooking),
+        training: buildTrainingContractForContent(bundle.training, contentPolicy?.disclosure ?? 'coarse'),
+        secretary: buildSecretaryContractForContent(bundle.secretary, contentPolicy?.disclosure ?? 'coarse'),
+        finance: buildFinanceContractForContent(bundle.finance, contentPolicy?.disclosure ?? 'coarse'),
+        cooking: buildCookingContractForContent(bundle.cooking, contentPolicy?.disclosure ?? 'coarse'),
       });
     case 'finance':
       return compactContracts({
@@ -667,23 +876,35 @@ function summarizeContentForCooking(content: ContentMeshContext | null): string 
   return formatSection('Content', facts, 'Treat filming and shipping days as meal-support days, not as invisible obligations.');
 }
 
-function summarizeTrainingForContent(training: TrainingMeshContext | null): string {
+function summarizeTrainingForContent(
+  training: TrainingMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): string {
   if (!training) return '';
   const recovery = extractRecoveryState(training);
   const session = extractSessionPrescription(training);
   const immovability = extractSessionImmovability(training);
   const story = extractTrainingContentStory(training);
-  if (!recovery && !session && !immovability && !story) return '';
+  const hardDays = extractHardDayCount(training);
+  if (!recovery && !session && !immovability && !story && hardDays == null) return '';
 
-  const facts: string[] = [];
-  if (recovery) facts.push(`recovery is ${recovery.state}`);
-  if (session) facts.push(`next session is ${session.title} on ${session.date}`);
-  if (immovability) facts.push(`session immovability is ${immovability.level}`);
-  if (story) facts.push(`story angle is ${story.angle} around "${story.title}" on ${story.date}`);
-  return formatSection('Training', facts, 'Avoid suggesting demanding production around low-recovery or hard-session windows.');
+  const constrained = recovery?.state === 'critical'
+    || recovery?.state === 'strained'
+    || immovability?.level === 'high'
+    || (hardDays != null && hardDays > 0);
+  const fact = constrained
+    ? 'training-derived capacity is constrained; keep production light and flexible'
+    : 'training-derived capacity exists; preserve it when sizing production work';
+  const guidance = disclosure === 'presentation_safe'
+    ? 'Explicitly requested; underlying sessions and health facts withheld.'
+    : 'Underlying sessions and health facts withheld.';
+  return formatSection('Training', [fact], guidance);
 }
 
-function summarizeSecretaryForContent(secretary: SecretaryMeshContext | null): string {
+function summarizeSecretaryForContent(
+  secretary: SecretaryMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): string {
   if (!secretary) return '';
   const busy = extractSecretaryBusy(secretary);
   const travel = extractSecretaryTravel(secretary);
@@ -692,42 +913,67 @@ function summarizeSecretaryForContent(secretary: SecretaryMeshContext | null): s
   const criticality = extractSecretaryMeetingCriticality(secretary);
   if (!busy && !travel && !focus && !inbox && !criticality) return '';
 
-  const facts: string[] = [];
-  if (busy?.dates.length) facts.push(`calendar is busy on ${busy.dates.length} day(s) with ${busy.totalEvents} events`);
-  if (travel?.dates.length) facts.push(`travel is scheduled on ${travel.dates.join(', ')}`);
-  if (focus) facts.push(`focus protection is currently best on ${focus.date}`);
-  if (inbox && (inbox.overdueCount > 0 || inbox.dueTodayCount > 0)) {
-    facts.push(`admin pressure shows ${inbox.overdueCount} overdue and ${inbox.dueTodayCount} due today`);
-  }
-  if (criticality?.criticalEventCount) facts.push(`${criticality.criticalEventCount} critical meeting(s) already occupy the week`);
-  return formatSection('Secretary', facts, 'Respect calendar pressure before promising production or delivery blocks.');
+  const constrained = Boolean(
+    busy?.dates.length
+    || travel?.dates.length
+    || focus
+    || (inbox && (inbox.overdueCount > 0 || inbox.dueTodayCount > 0))
+    || criticality?.criticalEventCount,
+  );
+  const fact = constrained
+    ? 'schedule-derived availability is constrained; prefer short, movable production blocks'
+    : 'schedule-derived availability does not currently add a production constraint';
+  const guidance = disclosure === 'presentation_safe'
+    ? 'Explicitly requested; calendar and inbox details withheld.'
+    : 'Calendar and inbox details withheld.';
+  return formatSection('Secretary', [fact], guidance);
 }
 
-function summarizeFinanceForContent(finance: FinanceMeshContext | null): string {
+function summarizeFinanceForContent(
+  finance: FinanceMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): string {
   if (!finance) return '';
   const budget = extractBudget(finance);
   const taxDeadline = extractTaxDeadline(finance);
   if (!budget && !taxDeadline) return '';
 
-  const facts: string[] = [];
-  if (budget) {
-    const budgetHeadroom = formatBudgetRemainingFact(budget);
-    const mixedCurrency = formatMixedCurrencyBudgetFact(budget);
-    const recurringPressure = formatRecurringExpenseFact(budget);
-    if (budgetHeadroom) facts.push(budgetHeadroom);
-    if (mixedCurrency) facts.push(mixedCurrency);
-    if (recurringPressure) facts.push(recurringPressure);
-  }
-  if (budget?.contentSpendMode) facts.push(`content spend mode is ${budget.contentSpendMode}`);
-  if (taxDeadline) facts.push(`tax deadline lands on ${taxDeadline.reminderDate}`);
-  return formatSection('Finance', facts, 'Prefer lower-friction production asks during tighter admin or money weeks.');
+  const costConstrained = budget?.budgetMode === 'tight'
+    || budget?.integrity === 'mixed_currency'
+    || Boolean(taxDeadline);
+  const mode = budget?.contentSpendMode && /^[a-z_]+$/i.test(budget.contentSpendMode)
+    ? budget.contentSpendMode.replace(/_/g, ' ')
+    : null;
+  const fact = disclosure === 'presentation_safe' && mode
+    ? `finance-derived production mode is ${mode}; avoid unrequested spend`
+    : costConstrained
+      ? 'finance-derived constraints favor a cost-conscious production plan'
+      : 'finance-derived constraints do not justify additional production spend';
+  const guidance = disclosure === 'presentation_safe'
+    ? 'Explicitly requested; amounts, percentages, transactions, and tax details withheld.'
+    : 'Amounts, percentages, transactions, and tax details withheld.';
+  return formatSection('Finance', [fact], guidance);
 }
 
-function summarizeCookingForContent(cooking: CookingMeshContext | null): string {
+function summarizeCookingForContent(
+  cooking: CookingMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): string {
   if (!cooking) return '';
   const window = extractMealWindow(cooking);
-  if (!window || window.missingDates.length === 0) return '';
-  return `Cooking: ${window.missingDates.length} day(s) still have no meals planned. Keep content production realistic when the user's week still lacks food coverage.`;
+  const support = extractFuelingSupportStatus(cooking);
+  const readiness = extractMealExecutionReadiness(cooking);
+  if (!window && !support && !readiness) return '';
+  const constrained = Boolean(window?.missingDates.length)
+    || support?.status === 'at_risk'
+    || readiness?.status === 'partial';
+  const fact = constrained
+    ? 'meal-support-derived capacity is constrained; keep production low-friction'
+    : 'meal-support-derived capacity does not currently add a production constraint';
+  const guidance = disclosure === 'presentation_safe'
+    ? 'Explicitly requested; meal, grocery, and nutrition details withheld.'
+    : 'Meal, grocery, and nutrition details withheld.';
+  return formatSection('Cooking', [fact], guidance);
 }
 
 function summarizeTrainingForFinance(training: TrainingMeshContext | null): string {
@@ -1225,101 +1471,103 @@ function buildContentContractForCooking(content: ContentMeshContext | null): Pee
   });
 }
 
-function buildTrainingContractForContent(training: TrainingMeshContext | null): PeerDecisionContract | null {
+function buildTrainingContractForContent(
+  training: TrainingMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): PeerDecisionContract | null {
   if (!training) return null;
   const recovery = extractRecoveryState(training);
   const session = extractSessionPrescription(training);
-  // Explicit deprioritization guidance when recovery degrades. With
-  // only the `strained` fall-through, `critical` had no special handling
-  // and both states produced a single "avoid demanding production" line.
-  // The branches below emit concrete actions the content agent can
-  // apply without re-inferring from the state string.
+  const immovability = extractSessionImmovability(training);
   const recoveryCritical = recovery?.state === 'critical';
   const recoveryStrained = recovery?.state === 'strained';
+  const capacityConstrained = recoveryCritical || recoveryStrained || immovability?.level === 'high';
   return createContract({
     nonNegotiables: compact([
-      recoveryCritical
-        ? 'Defer filming and new capture asks — recovery is critical, protect it explicitly this week.'
-        : recoveryStrained
-          ? 'Avoid demanding production around strained recovery windows.'
-          : null,
-      session ? `Protect ${session.title} on ${session.date} before placing filming.` : null,
+      capacityConstrained ? 'Keep production light because training-derived capacity is constrained.' : null,
     ]),
     preferredWindows: [],
     fallbackIfDeferred: compact([
-      recoveryCritical
-        ? 'Move filming to a future recovered-state week; surface this to Secretary so the calendar slot re-opens.'
-        : null,
-      session ? 'Move content around training first; do not ask training to absorb creator load by default.' : null,
+      capacityConstrained ? 'Defer capture before asking the Training skill to absorb creator workload.' : null,
     ]),
     notes: compact([
-      recoveryCritical || recoveryStrained
-        ? 'Content-capture priority is currently deprioritized while recovery stabilizes.'
+      session || recovery || immovability
+        ? `${disclosure === 'presentation_safe' ? 'Explicitly requested' : 'Default coarse'} training constraint; underlying session and health details withheld.`
         : null,
     ]),
   });
 }
 
-function buildSecretaryContractForContent(secretary: SecretaryMeshContext | null): PeerDecisionContract | null {
+function buildSecretaryContractForContent(
+  secretary: SecretaryMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): PeerDecisionContract | null {
   if (!secretary) return null;
   const busy = extractSecretaryBusy(secretary);
   const focus = extractSecretaryFocus(secretary);
   const inbox = extractSecretaryInboxPressure(secretary);
-  // Secretary's focus window is binding on Content too. Filming or
-  // capture blocks landing on a protected focus day is a common
-  // failure mode where the weekly planner shows a conflict in the
-  // review step and the user has to arbitrate manually. Making the
-  // focus block a Content non-negotiable pushes the avoidance earlier
-  // in the agent loop.
+  const constrained = Boolean(busy?.dates.length || focus || (inbox && inbox.overdueCount > 0));
   return createContract({
     nonNegotiables: compact([
-      busy?.dates.length ? `Calendar pressure is already high on ${busy.dates.join(', ')}.` : null,
-      focus ? `Do not place filming or capture blocks on ${focus.date} — Secretary is protecting it as a focus block.` : null,
+      constrained ? 'Respect existing schedule and focus protection without exposing calendar details.' : null,
     ]),
     preferredWindows: [],
     fallbackIfDeferred: compact([
-      inbox && inbox.overdueCount > 0 ? 'If content slips, clear overdue admin before expanding production commitments.' : null,
+      constrained ? 'Use shorter, movable production blocks or request a Secretary scheduling preview.' : null,
     ]),
-    notes: [],
+    notes: compact([
+      constrained
+        ? `${disclosure === 'presentation_safe' ? 'Explicitly requested' : 'Default coarse'} availability constraint; calendar and inbox details withheld.`
+        : null,
+    ]),
   });
 }
 
-function buildFinanceContractForContent(finance: FinanceMeshContext | null): PeerDecisionContract | null {
+function buildFinanceContractForContent(
+  finance: FinanceMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): PeerDecisionContract | null {
   if (!finance) return null;
   const budget = extractBudget(finance);
+  const constrained = budget?.budgetMode === 'tight' || budget?.integrity === 'mixed_currency';
   return createContract({
     nonNegotiables: compact([
-      budget?.integrity === 'mixed_currency'
-        ? `Budget posture is provisional for ${budget.month} because currencies are mixed. Avoid assuming room for paid production upgrades.`
-        : null,
+      constrained ? 'Do not assume room for paid production upgrades.' : null,
     ]),
     preferredWindows: compact([
-      budget?.contentSpendMode ? `Content spend mode is ${budget.contentSpendMode}.` : null,
-    ]),
-    fallbackIfDeferred: compact([
-      budget?.budgetMode === 'tight' ? 'Prefer lower-friction production asks while the budget is tight.' : null,
-      budget?.recurringExpenseCount
-        ? `Recurring commitments still likely this month (${budget.recurringExpenseCount}) should push content toward lighter execution, not extra spending.`
+      disclosure === 'presentation_safe' && budget?.contentSpendMode
+        ? `Use the presentation-safe content spend mode: ${budget.contentSpendMode.replace(/_/g, ' ')}.`
         : null,
     ]),
-    budgetMode: budget?.budgetMode ?? null,
+    fallbackIfDeferred: compact([
+      constrained ? 'Prefer lower-friction production that does not add spend.' : null,
+    ]),
+    budgetMode: null,
     notes: compact([
-      budget ? buildBudgetContractNote(budget) : null,
-      formatRecurringExpenseContractNote(budget),
+      budget ? 'Underlying amounts, percentages, currencies, periods, transactions, and tax details withheld.' : null,
     ]),
   });
 }
 
-function buildCookingContractForContent(cooking: CookingMeshContext | null): PeerDecisionContract | null {
+function buildCookingContractForContent(
+  cooking: CookingMeshContext | null,
+  disclosure: ContentCrossSkillContextPolicy['disclosure'],
+): PeerDecisionContract | null {
   if (!cooking) return null;
   const support = extractFuelingSupportStatus(cooking);
+  const window = extractMealWindow(cooking);
+  const constrained = support?.status === 'at_risk' || Boolean(window?.missingDates.length);
   return createContract({
     nonNegotiables: [],
     preferredWindows: [],
     fallbackIfDeferred: compact([
-      support?.status === 'at_risk' ? 'Treat filming days as meal-support days, not as invisible obligations.' : null,
+      constrained ? 'Keep production low-friction so it does not displace meal support.' : null,
     ]),
-    notes: [],
+    notes: compact([
+      constrained
+        ? `${disclosure === 'presentation_safe' ? 'Explicitly requested' : 'Default coarse'} meal-support constraint; meal gaps and dates withheld.`
+        : null,
+    ]),
   });
 }
 

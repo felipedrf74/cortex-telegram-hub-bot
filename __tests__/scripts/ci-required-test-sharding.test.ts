@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+const nightlyWorkflow = readFileSync('.github/workflows/nightly.yml', 'utf8');
 const baseResolver = readFileSync('scripts/resolve-ci-change-base.sh', 'utf8');
 
 describe('required CI test sharding', () => {
@@ -28,6 +29,24 @@ describe('required CI test sharding', () => {
     expect(workflow).toContain('name: Project map freshness');
     expect(workflow).toContain('run: npm run project:map:check');
     expect(workflow).toMatch(/docs_and_secrets:[\s\S]*?- run: npm ci[\s\S]*?audit-docs\.mjs --strict/);
+  });
+
+  it('installs locked Node dependencies before migration rehearsals', () => {
+    const migrationJob = workflow.match(
+      /  migrations:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
+    )?.groups?.body ?? '';
+    const nightlyMigrationJob = nightlyWorkflow.match(
+      /  migration-rehearsal:\n(?<body>[\s\S]*?)(?=\n  [a-z_-]+:)/,
+    )?.groups?.body ?? '';
+
+    for (const job of [migrationJob, nightlyMigrationJob]) {
+      const setupNode = job.indexOf('actions/setup-node@');
+      const install = job.indexOf('- run: npm ci');
+      const migrationCheck = job.indexOf('node scripts/migration-safety-check.mjs');
+      expect(setupNode).toBeGreaterThan(-1);
+      expect(install).toBeGreaterThan(setupNode);
+      expect(migrationCheck).toBeGreaterThan(install);
+    }
   });
 
   it('classifies the complete pushed range and propagates one exact base', () => {

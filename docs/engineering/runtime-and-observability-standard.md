@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-07-15
+Last verified: 2026-07-17
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change, or when the release
 process model changes. Incident response and recovery detail lives in
@@ -129,6 +129,26 @@ The current metric surfaces are:
    category-coverage counts. Active/unexpired and historical/retired metrics
    are reported separately; only active, unexpired `golden` cases are counted
    as export eligible. It never returns case payloads or user ids.
+8. **Content workspace metrics**: the portal-admin-only
+   `/api/content-workspace-metrics` read model exposes global aggregate
+   reliability, operation-latency, closed failure-reason, product-funnel, and
+   quality counters. The five aggregate tables introduced by migration 245
+   contain no tenant or user identity, timestamps, prompts, content, source
+   URLs, hashes, payloads, or raw provider responses. Request-path recording
+   is best effort: an in-process delta is coalesced into a SQLite transaction,
+   read snapshots include unflushed deltas exactly once, and metric-storage
+   failure never fails a user operation. Because pending deltas are process
+   memory, an abrupt crash can lose only the not-yet-flushed aggregate delta;
+   the response declares whether totals are durable, durable with pending
+   writes, or process fallback rather than overstating durability.
+9. **Content rollout and legacy-exit evidence**: closed aggregate signals
+   record rollout-gate blocks plus legacy pipeline, ideas, topics, and
+   editorial compatibility reads/mutations. The cumulative totals contain no
+   identity or content and cannot alone prove a zero-traffic window; each
+   supported release records start/end snapshots in governed release evidence.
+   A gate may be removed only from observed zero deltas across two supported
+   release windows, no kill-switch activation, successful migration/readiness
+   rehearsal, and supported-client capability adoption.
 
 Training learning producers persist closed outcome codes plus tenant-scoped
 SHA-256 fingerprints only. They must not persist raw plan edits, exercise ids,
@@ -148,7 +168,7 @@ only case-specific, redacted operator audit metadata. Producers reject
 observation clocks more than five minutes in the future. Product learning
 never mutates prompts or starts provider-side training.
 
-A future improvement is to ship these as proper Prometheus-style metrics
+A future improvement is to ship these aggregates as proper Prometheus-style metrics
 with histograms instead of structured-log derivation. Until then, use
 pino-based dashboards.
 
@@ -187,7 +207,10 @@ Production rollback is **always available**. The default release contract is:
 3. **Back up the exact predecessor.** Immutable runtime content is prepared
    live. During the brief write drain, both independent PM2 apps stop, SQLite
    is checkpointed and integrity-checked, and the database snapshot is added
-   to the verified release backup.
+   to the verified release backup. For an irreversible migration, the helper's
+   archive path, SHA-256, size, versions, and timestamp are captured in the
+   ignored strict migration evidence record and revalidated before candidate
+   mutation begins.
 4. **Rollback restores exact bytes and state.** If symlink, PM2 identity,
    loopback health, public health, or snapshot-version readiness fails, restore
    the exact backup and previous release directory automatically. A changed or

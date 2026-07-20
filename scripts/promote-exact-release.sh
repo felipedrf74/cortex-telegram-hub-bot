@@ -97,11 +97,88 @@ REMOTE_ACTIVE_IDENTITY
 }
 verify_active_runtime
 
+PREDECESSOR_SHA="$("${SSH[@]}" "$SERVER" bash -s -- "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_PREDECESSOR_SHA'
+set -euo pipefail
+runtime="$1"; base_dir="$2"; pm2_bin="$3"
+if [ "$runtime" != "$base_dir" ]; then
+  node -e 'const x=require(process.argv[1]);process.stdout.write(x.runtimeSha||"")' "$runtime/.complete.json"
+  exit 0
+fi
+"$pm2_bin" jlist | node -e '
+const fs=require("fs");
+const rows=JSON.parse(fs.readFileSync(0,"utf8"));
+const row=rows.find((entry)=>entry?.name==="nexus-hub");
+process.stdout.write(row?.pm2_env?.NEXUS_RELEASE_SHA||row?.pm2_env?.GIT_COMMIT||"");'
+REMOTE_PREDECESSOR_SHA
+)"
+[[ "$PREDECESSOR_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "active predecessor runtime SHA is unavailable" >&2
+  exit 1
+}
+git -C "$ROOT" rev-parse --verify --quiet "${PREDECESSOR_SHA}^{commit}" >/dev/null || {
+  echo "active predecessor runtime SHA is absent from the release checkout" >&2
+  exit 1
+}
+git -C "$ROOT" merge-base --is-ancestor "$PREDECESSOR_SHA" "$RUNTIME_SHA" || {
+  echo "active predecessor is not an ancestor of the target runtime" >&2
+  exit 1
+}
+
+CONTENT_WORKSPACE_ROLLOUT_REQUIRED=false
+CONTENT_WORKSPACE_MIGRATIONS=()
+for migration_id in $(seq 239 253); do
+  while IFS= read -r migration_path; do
+    [ -n "$migration_path" ] && CONTENT_WORKSPACE_MIGRATIONS+=("$migration_path")
+  done < <(git -C "$ROOT" ls-files "migrations/${migration_id}_*.sql")
+done
+[ "${#CONTENT_WORKSPACE_MIGRATIONS[@]}" -eq 15 ] || {
+  echo "canonical Content workspace migration inventory is incomplete" >&2
+  exit 1
+}
+set +e
+git -C "$ROOT" diff --quiet "$PREDECESSOR_SHA" "$RUNTIME_SHA" -- "${CONTENT_WORKSPACE_MIGRATIONS[@]}"
+CONTENT_WORKSPACE_DIFF_STATUS=$?
+set -e
+case "$CONTENT_WORKSPACE_DIFF_STATUS" in
+  0) ;;
+  1) CONTENT_WORKSPACE_ROLLOUT_REQUIRED=true ;;
+  *) echo "unable to determine Content workspace rollout requirement" >&2; exit 1 ;;
+esac
+
+MIGRATION_REVIEW_EVIDENCE="${NEXUS_MIGRATION_REVIEW_EVIDENCE:-$ROOT/.local/release/migration-review/current.json}"
+MIGRATION_REVIEW_JSON="$(node "$ROOT/scripts/migration-safety-check.mjs" \
+  --base "$PREDECESSOR_SHA" \
+  --changed-only \
+  --approval-mode review \
+  --review-evidence "$MIGRATION_REVIEW_EVIDENCE" \
+  --json)"
+MIGRATION_REVIEW_COUNT="$(printf '%s' "$MIGRATION_REVIEW_JSON" | node -e '
+let body="";process.stdin.on("data",c=>body+=c);process.stdin.on("end",()=>{
+  const value=JSON.parse(body).irreversibleChangedMigrations;
+  if(!Array.isArray(value))process.exit(1);process.stdout.write(String(value.length));
+});')"
+MIGRATION_REVIEW_SHA256="$(printf '%s' "$MIGRATION_REVIEW_JSON" | node -e '
+let body="";process.stdin.on("data",c=>body+=c);process.stdin.on("end",()=>{
+  const value=JSON.parse(body).reviewEvidence?.sha256||"";
+  process.stdout.write(value);
+});')"
+MIGRATION_POLICY_SUBJECT_SHA256="$(printf '%s' "$MIGRATION_REVIEW_JSON" | node -e '
+let body="";process.stdin.on("data",c=>body+=c);process.stdin.on("end",()=>{
+  const value=JSON.parse(body).reviewEvidence?.policySubjectSha256||"";
+  process.stdout.write(value);
+});')"
+[[ "$MIGRATION_REVIEW_COUNT" =~ ^[0-9]+$ ]] || { echo "migration review count is invalid" >&2; exit 1; }
+if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
+  [[ "$MIGRATION_REVIEW_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "migration review evidence digest is invalid" >&2; exit 1; }
+  [[ "$MIGRATION_POLICY_SUBJECT_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "migration policy subject digest is invalid" >&2; exit 1; }
+fi
+
 RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
 STAGING_RELEASE="$STAGING_BASE/releases/$RELEASE_NAME"
 PROD_RELEASE="$PROD_BASE/releases/$RELEASE_NAME"
 BACKUP_DIR="/home/dominguez/backups/nexushub"
 PROMOTION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+PROMOTION_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$(node -e 'process.stdout.write(require("crypto").randomBytes(6).toString("hex"))')"
 
 # A lost client response after a successful cutover must never turn a retry
 # into an rsync over the live immutable runtime (including temporary removal
@@ -167,8 +244,79 @@ REMOTE_PREPARE
 # Run the candidate's owner-bootstrap and canonical environment preflight
 # against production data while the predecessor is still online. Failure here
 # cannot create downtime and never reaches the cutover recovery path.
-"${SSH[@]}" "$SERVER" bash "$PROD_RELEASE/scripts/remote-release-preflight.sh" \
+PRODUCTION_PREFLIGHT_ARGS=(
   --role production --base-dir "$PROD_BASE" --release-dir "$PROD_RELEASE" --node-bin /usr/bin/node
+)
+if [ "$CONTENT_WORKSPACE_ROLLOUT_REQUIRED" = true ]; then
+  PRODUCTION_PREFLIGHT_ARGS+=(--require-content-workspace-owner-write)
+fi
+"${SSH[@]}" "$SERVER" bash "$PROD_RELEASE/scripts/remote-release-preflight.sh" \
+  "${PRODUCTION_PREFLIGHT_ARGS[@]}"
+
+# State-coupled migrations must prove that the exact candidate can migrate a
+# consistent online backup of the live production-shaped database before the
+# first stop. The remote runner emits aggregate identities and pass/fail facts
+# only, after deleting its private clone and sidecars. Bind that fresh proof to
+# this one promotion invocation so an older successful rehearsal cannot replay.
+MIGRATION_REHEARSAL_EVIDENCE=""
+MIGRATION_REHEARSAL_SHA256=""
+MIGRATION_REHEARSAL_CLONE_SHA256=""
+MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256=""
+MIGRATION_REHEARSAL_PENDING_SET_SHA256=""
+MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256=""
+if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
+  set +e
+  MIGRATION_REHEARSAL_OUTPUT="$("${SSH[@]}" "$SERVER" \
+    bash "$PROD_RELEASE/scripts/remote-production-shape-migration-rehearsal.sh" \
+      "$PROD_RELEASE" "$PROD_BASE" "$CURRENT_RUNTIME" "$REMOTE_PM2" \
+      "$PREDECESSOR_SHA" "$RUNTIME_SHA" "$TARGET_VERSION" "$ARTIFACT_DIGEST" \
+      "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" "$PROMOTION_RUN_ID" \
+      online_pre_stop online 2>&1)"
+  MIGRATION_REHEARSAL_EXIT=$?
+  set -e
+  if [ "$MIGRATION_REHEARSAL_EXIT" -ne 0 ]; then
+    echo "production-shape migration rehearsal failed before production stop" >&2
+    exit "$MIGRATION_REHEARSAL_EXIT"
+  fi
+  MIGRATION_REHEARSAL_EVIDENCE="$ROOT/.local/release/production/${RUNTIME_SHA}-${ARTIFACT_DIGEST}-${PROMOTION_RUN_ID}.migration-rehearsal.json"
+  install -d -m 700 "$(dirname "$MIGRATION_REHEARSAL_EVIDENCE")"
+  printf '%s' "$MIGRATION_REHEARSAL_OUTPUT" | node -e '
+    const fs=require("fs");const output=process.argv[1];let raw="";
+    process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{
+      const parsed=JSON.parse(raw);const temporary=`${output}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temporary,`${JSON.stringify(parsed,null,2)}\n`,{mode:0o600,flag:"wx"});
+        fs.linkSync(temporary,output);fs.rmSync(temporary,{force:true});fs.chmodSync(output,0o600);
+      } finally { fs.rmSync(temporary,{force:true}); }
+    });' "$MIGRATION_REHEARSAL_EVIDENCE"
+  MIGRATION_REHEARSAL_VALIDATION="$(node "$ROOT/scripts/validate-production-shape-migration-rehearsal.mjs" \
+    --root "$ROOT" \
+    --evidence "$MIGRATION_REHEARSAL_EVIDENCE" \
+    --predecessor-runtime-sha "$PREDECESSOR_SHA" \
+    --target-runtime-sha "$RUNTIME_SHA" \
+    --target-version "$TARGET_VERSION" \
+    --artifact-digest "$ARTIFACT_DIGEST" \
+    --review-evidence-sha256 "$MIGRATION_REVIEW_SHA256" \
+    --migration-policy-subject-sha256 "$MIGRATION_POLICY_SUBJECT_SHA256" \
+    --promotion-run-id "$PROMOTION_RUN_ID" \
+    --phase online_pre_stop \
+    --database-owner-state online)"
+  read -r MIGRATION_REHEARSAL_SHA256 MIGRATION_REHEARSAL_CLONE_SHA256 \
+    MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256 MIGRATION_REHEARSAL_PENDING_SET_SHA256 \
+    MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256 \
+    < <(printf '%s' "$MIGRATION_REHEARSAL_VALIDATION" | node -e '
+      let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{
+        const value=JSON.parse(raw);process.stdout.write([
+          value.evidenceSha256,value.cloneSha256,value.migratedCloneSha256,
+          value.pendingMigrationSetSha256,value.sourceDatabaseSha256,
+        ].join(" "));
+      });')
+  for digest in "$MIGRATION_REHEARSAL_SHA256" "$MIGRATION_REHEARSAL_CLONE_SHA256" \
+      "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
+      "$MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256"; do
+    [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || { echo "migration rehearsal returned an invalid identity" >&2; exit 1; }
+  done
+fi
 
 # Prepare the immutable runtime portion of the rollback archive while the
 # current production services are still online. Only the quiescent SQLite
@@ -420,10 +568,177 @@ if [ "$BACKUP_EXIT" -ne 0 ]; then
   exit "$BACKUP_EXIT"
 fi
 BACKUP_FILE="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_FILE=//p' | tail -1)"
+BACKUP_SHA256="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_SHA256=//p' | tail -1)"
+BACKUP_SIZE_BYTES="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_SIZE_BYTES=//p' | tail -1)"
+BACKUP_ARCHIVED_VERSION="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_ARCHIVED_VERSION=//p' | tail -1)"
+BACKUP_TARGET_VERSION="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_TARGET_VERSION=//p' | tail -1)"
+BACKUP_CREATED_AT="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_CREATED_AT=//p' | tail -1)"
+BACKUP_DATABASE_SHA256="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^NEXUS_BACKUP_DATABASE_SHA256=//p' | tail -1)"
 case "$BACKUP_FILE" in
   /home/dominguez/backups/nexushub/v*.tar.gz) ;;
   *) echo "backup helper returned an unsafe path" >&2; exit 1 ;;
 esac
+[[ "$BACKUP_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "backup helper returned an invalid digest" >&2; exit 1; }
+[[ "$BACKUP_DATABASE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "backup helper returned an invalid database digest" >&2; exit 1; }
+[[ "$BACKUP_SIZE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo "backup helper returned an invalid byte size" >&2; exit 1; }
+[ "$BACKUP_TARGET_VERSION" = "$TARGET_VERSION" ] || { echo "backup helper target version mismatch" >&2; exit 1; }
+[[ "$BACKUP_CREATED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+  echo "backup helper returned an invalid timestamp" >&2
+  exit 1
+}
+
+if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
+  # Legitimate writes may have landed after the online rehearsal. With both
+  # owners now proved stopped and the exact snapshot archived, rerun the same
+  # candidate migration/readiness gate against a fresh clone of the quiescent
+  # source. Its source digest must match the archived database digest.
+  set +e
+  FINAL_MIGRATION_REHEARSAL_OUTPUT="$("${SSH[@]}" "$SERVER" \
+    bash "$PROD_RELEASE/scripts/remote-production-shape-migration-rehearsal.sh" \
+      "$PROD_RELEASE" "$PROD_BASE" "$CURRENT_RUNTIME" "$REMOTE_PM2" \
+      "$PREDECESSOR_SHA" "$RUNTIME_SHA" "$TARGET_VERSION" "$ARTIFACT_DIGEST" \
+      "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" "$PROMOTION_RUN_ID" \
+      stopped_final stopped 2>&1)"
+  FINAL_MIGRATION_REHEARSAL_EXIT=$?
+  set -e
+  if [ "$FINAL_MIGRATION_REHEARSAL_EXIT" -ne 0 ]; then
+    echo "final stopped-state migration rehearsal failed" >&2
+    exit "$FINAL_MIGRATION_REHEARSAL_EXIT"
+  fi
+  FINAL_MIGRATION_REHEARSAL_EVIDENCE="$ROOT/.local/release/production/${RUNTIME_SHA}-${ARTIFACT_DIGEST}-${PROMOTION_RUN_ID}.stopped-migration-rehearsal.json"
+  printf '%s' "$FINAL_MIGRATION_REHEARSAL_OUTPUT" | node -e '
+    const fs=require("fs");const output=process.argv[1];let raw="";
+    process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{
+      const parsed=JSON.parse(raw);const temporary=`${output}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temporary,`${JSON.stringify(parsed,null,2)}\n`,{mode:0o600,flag:"wx"});
+        fs.linkSync(temporary,output);fs.rmSync(temporary,{force:true});fs.chmodSync(output,0o600);
+      } finally { fs.rmSync(temporary,{force:true}); }
+    });' "$FINAL_MIGRATION_REHEARSAL_EVIDENCE"
+  FINAL_MIGRATION_REHEARSAL_VALIDATION="$(node "$ROOT/scripts/validate-production-shape-migration-rehearsal.mjs" \
+    --root "$ROOT" \
+    --evidence "$FINAL_MIGRATION_REHEARSAL_EVIDENCE" \
+    --predecessor-runtime-sha "$PREDECESSOR_SHA" \
+    --target-runtime-sha "$RUNTIME_SHA" \
+    --target-version "$TARGET_VERSION" \
+    --artifact-digest "$ARTIFACT_DIGEST" \
+    --review-evidence-sha256 "$MIGRATION_REVIEW_SHA256" \
+    --migration-policy-subject-sha256 "$MIGRATION_POLICY_SUBJECT_SHA256" \
+    --promotion-run-id "$PROMOTION_RUN_ID" \
+    --phase stopped_final \
+    --database-owner-state stopped)"
+  read -r FINAL_MIGRATION_REHEARSAL_SHA256 FINAL_MIGRATION_REHEARSAL_CLONE_SHA256 \
+    FINAL_MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256 FINAL_MIGRATION_REHEARSAL_PENDING_SET_SHA256 \
+    FINAL_MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256 \
+    < <(printf '%s' "$FINAL_MIGRATION_REHEARSAL_VALIDATION" | node -e '
+      let raw="";process.stdin.on("data",(chunk)=>raw+=chunk);process.stdin.on("end",()=>{
+        const value=JSON.parse(raw);process.stdout.write([
+          value.evidenceSha256,value.cloneSha256,value.migratedCloneSha256,
+          value.pendingMigrationSetSha256,value.sourceDatabaseSha256,
+        ].join(" "));
+      });')
+  for digest in "$FINAL_MIGRATION_REHEARSAL_SHA256" "$FINAL_MIGRATION_REHEARSAL_CLONE_SHA256" \
+      "$FINAL_MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$FINAL_MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
+      "$FINAL_MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256"; do
+    [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || { echo "final migration rehearsal returned an invalid identity" >&2; exit 1; }
+  done
+  [ "$FINAL_MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" = "$BACKUP_DATABASE_SHA256" ] || {
+    echo "final rehearsal source does not match the exact stopped-state backup" >&2
+    exit 1
+  }
+
+  MIGRATION_BACKUP_EVIDENCE="$ROOT/.local/release/production/${RUNTIME_SHA}-${ARTIFACT_DIGEST}-${PROMOTION_RUN_ID}.migration-backup.json"
+  install -d -m 700 "$(dirname "$MIGRATION_BACKUP_EVIDENCE")"
+  node - "$MIGRATION_BACKUP_EVIDENCE" "$BACKUP_CREATED_AT" "$PREDECESSOR_SHA" "$RUNTIME_SHA" \
+    "$TARGET_VERSION" "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" \
+    "$BACKUP_FILE" "$BACKUP_SHA256" "$BACKUP_SIZE_BYTES" "$BACKUP_ARCHIVED_VERSION" \
+    "$ARTIFACT_DIGEST" "$PROMOTION_RUN_ID" "$MIGRATION_REHEARSAL_SHA256" \
+    "$MIGRATION_REHEARSAL_CLONE_SHA256" "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" \
+    "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" "$MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" \
+    "$FINAL_MIGRATION_REHEARSAL_SHA256" "$FINAL_MIGRATION_REHEARSAL_CLONE_SHA256" \
+    "$FINAL_MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" \
+    "$FINAL_MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
+    "$FINAL_MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" "$BACKUP_DATABASE_SHA256" <<'NODE'
+const fs = require('fs');
+const [
+  output, createdAt, predecessorRuntimeSha, targetRuntimeSha, targetVersion,
+  reviewEvidenceSha256, migrationPolicySubjectSha256, remotePath, backupSha256,
+  sizeBytes, archivedVersion, artifactDigest, promotionRunId,
+  migrationRehearsalEvidenceSha256, sourceCloneSha256, migratedCloneSha256,
+  pendingMigrationSetSha256, onlineSourceDatabaseSha256,
+  finalMigrationRehearsalEvidenceSha256, finalSourceCloneSha256,
+  finalMigratedCloneSha256, finalPendingMigrationSetSha256,
+  finalSourceDatabaseSha256, backupDatabaseSha256,
+] = process.argv.slice(2);
+const evidence = {
+  schema: 'nexus.exact-migration-backup-evidence.v2',
+  status: 'verified',
+  createdAt,
+  promotionRunId,
+  predecessorRuntimeSha,
+  targetRuntimeSha,
+  targetVersion,
+  artifactDigest,
+  reviewEvidenceSha256,
+  migrationPolicySubjectSha256,
+  productionShapeRehearsals: {
+    onlinePreStop: {
+      evidenceSha256: migrationRehearsalEvidenceSha256,
+      sourceCloneSha256,
+      migratedCloneSha256,
+      pendingMigrationSetSha256,
+      sourceDatabaseSha256: onlineSourceDatabaseSha256,
+    },
+    stoppedFinal: {
+      evidenceSha256: finalMigrationRehearsalEvidenceSha256,
+      sourceCloneSha256: finalSourceCloneSha256,
+      migratedCloneSha256: finalMigratedCloneSha256,
+      pendingMigrationSetSha256: finalPendingMigrationSetSha256,
+      sourceDatabaseSha256: finalSourceDatabaseSha256,
+    },
+  },
+  backup: {
+    remotePath,
+    sha256: backupSha256,
+    sizeBytes: Number(sizeBytes),
+    archivedVersion,
+    targetVersion,
+    createdAt,
+    databaseSha256: backupDatabaseSha256,
+  },
+  verification: {
+    databaseOwnersStopped: true,
+    noOpenDatabaseHandles: true,
+    walCheckpointTruncated: true,
+    sqliteIntegrity: 'ok',
+    sqliteForeignKeys: 'ok',
+    archiveSha256Verified: true,
+  },
+};
+const temporary = `${output}.${process.pid}.tmp`;
+try {
+  fs.writeFileSync(temporary, `${JSON.stringify(evidence, null, 2)}\n`, {
+    mode: 0o600,
+    flag: 'wx',
+  });
+  fs.linkSync(temporary, output);
+  fs.rmSync(temporary, { force: true });
+} finally {
+  fs.rmSync(temporary, { force: true });
+}
+NODE
+  node "$ROOT/scripts/migration-safety-check.mjs" \
+    --base "$PREDECESSOR_SHA" \
+    --changed-only \
+    --approval-mode promotion \
+    --review-evidence "$MIGRATION_REVIEW_EVIDENCE" \
+    --rehearsal-evidence "$MIGRATION_REHEARSAL_EVIDENCE" \
+    --final-rehearsal-evidence "$FINAL_MIGRATION_REHEARSAL_EVIDENCE" \
+    --backup-evidence "$MIGRATION_BACKUP_EVIDENCE" \
+    --target-version "$TARGET_VERSION" \
+    --artifact-digest "$ARTIFACT_DIGEST" \
+    --promotion-run-id "$PROMOTION_RUN_ID"
+fi
 
 CANDIDATE_MUTATED=true
 set +e

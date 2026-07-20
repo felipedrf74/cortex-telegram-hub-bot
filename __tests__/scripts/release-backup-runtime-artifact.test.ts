@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -209,6 +210,22 @@ describe('release backup runtime artifact boundary', () => {
       /^v4\.14\.218_before-v4\.14\.219_[0-9]{8}_[0-9]{6}\.tar\.gz$/,
     );
     const archivePath = path.join(backups, archiveName);
+    const output = `${result.stdout}${result.stderr}`;
+    const reportedDigest = output.match(/NEXUS_BACKUP_SHA256=([a-f0-9]{64})/)?.[1];
+    const reportedDatabaseDigest = output.match(
+      /NEXUS_BACKUP_DATABASE_SHA256=([a-f0-9]{64})/,
+    )?.[1];
+    const reportedSize = Number(output.match(/NEXUS_BACKUP_SIZE_BYTES=([0-9]+)/)?.[1]);
+    expect(reportedDigest).toBe(
+      createHash('sha256').update(fs.readFileSync(archivePath)).digest('hex'),
+    );
+    expect(reportedSize).toBe(fs.statSync(archivePath).size);
+    expect(reportedDatabaseDigest).toBe(
+      createHash('sha256').update(fs.readFileSync(path.join(runtime, 'data/bot.db'))).digest('hex'),
+    );
+    expect(output).toContain('NEXUS_BACKUP_ARCHIVED_VERSION=4.14.218');
+    expect(output).toContain('NEXUS_BACKUP_TARGET_VERSION=4.14.219');
+    expect(output).toMatch(/NEXUS_BACKUP_CREATED_AT=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/);
     const listing = execFileSync('tar', ['tzf', archivePath], {
       encoding: 'utf8',
     });

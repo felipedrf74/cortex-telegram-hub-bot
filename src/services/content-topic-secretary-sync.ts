@@ -36,6 +36,14 @@ type LangLike = 'pt-BR' | 'pt-PT' | 'en' | string | undefined;
 
 export interface ContentTopicSecretarySyncOptions {
   language?: LangLike;
+  tenantId?: number;
+  /** Private titles/notes are never shared unless the caller collected explicit consent. */
+  shareContentTitle?: boolean;
+  sharePrivateNotes?: boolean;
+}
+
+export interface ContentTopicSecretaryCleanupOptions {
+  tenantId?: number;
 }
 
 export async function syncContentTopicSecretaryArtifactsById(
@@ -43,7 +51,8 @@ export async function syncContentTopicSecretaryArtifactsById(
   topicId: number,
   options: ContentTopicSecretarySyncOptions = {},
 ): Promise<ContentTopic | null> {
-  const topic = getTopicById(userId, topicId);
+  const tenantId = options.tenantId ?? userId;
+  const topic = getTopicById(userId, topicId, tenantId);
   if (!topic) return null;
   return syncContentTopicSecretaryArtifacts(userId, topic, options);
 }
@@ -53,10 +62,26 @@ export async function syncContentTopicSecretaryArtifacts(
   topic: ContentTopic,
   options: ContentTopicSecretarySyncOptions = {},
 ): Promise<ContentTopic> {
+  const tenantId = options.tenantId ?? userId;
+  assertContentTopicSecretaryScope(userId, tenantId, topic);
+  // Migration 247 routes topic CRUD into the canonical workspace. Its
+  // deadline is not permission to create a task/calendar event. Canonical
+  // scheduling now requires an explicit workspace preview + confirmation.
+  // This guard also makes already-queued legacy jobs harmless after rollout.
+  if (topic.workspace_item_id != null) {
+    logger.info(
+      { userId, topicId: topic.id, workspaceItemId: topic.workspace_item_id },
+      'Skipped retired content topic Secretary sync; workspace confirmation is required',
+    );
+    return topic;
+  }
   if (!topic.scheduled_date && !topic.scheduled_at) return topic;
 
-  const taskTitle = buildTaskTitle(topic.title, options.language);
-  const body = buildTaskBody(topic, options.language);
+  const taskTitle = buildTaskTitle(
+    options.shareContentTitle === true ? topic.title : null,
+    options.language,
+  );
+  const body = buildTaskBody(topic, options.language, options.sharePrivateNotes === true);
   const dueDateTime = taskDueDateTime(topic);
 
   const updates: Parameters<typeof updateTopic>[2] = {
@@ -65,7 +90,7 @@ export async function syncContentTopicSecretaryArtifacts(
   };
 
   try {
-    const taskRef = await upsertSecretaryTask(userId, topic, {
+    const taskRef = await upsertSecretaryTask(userId, tenantId, topic, {
       title: taskTitle,
       body,
       dueDateTime,
@@ -82,11 +107,11 @@ export async function syncContentTopicSecretaryArtifacts(
     );
     updates.secretary_sync_status = 'task_failed';
     updates.secretary_sync_error = 'task_sync_failed';
-    return updateTopic(userId, topic.id, updates) ?? topic;
+    return updateTopic(userId, topic.id, updates, tenantId) ?? topic;
   }
 
   if (!topic.scheduled_at) {
-    return updateTopic(userId, topic.id, updates) ?? topic;
+    return updateTopic(userId, topic.id, updates, tenantId) ?? topic;
   }
 
   try {
@@ -112,13 +137,16 @@ export async function syncContentTopicSecretaryArtifacts(
       : 'calendar_sync_failed';
   }
 
-  return updateTopic(userId, topic.id, updates) ?? topic;
+  return updateTopic(userId, topic.id, updates, tenantId) ?? topic;
 }
 
 export async function cleanupContentTopicSecretaryArtifacts(
   userId: number,
   topic: ContentTopic,
+  options: ContentTopicSecretaryCleanupOptions = {},
 ): Promise<{ taskDeleted: boolean; calendarDeleted: boolean; errors: string[] }> {
+  const tenantId = options.tenantId ?? userId;
+  assertContentTopicSecretaryScope(userId, tenantId, topic);
   const errors: string[] = [];
   let taskDeleted = false;
   let calendarDeleted = false;
@@ -130,7 +158,6 @@ export async function cleanupContentTopicSecretaryArtifacts(
       // rows; legacy rows stored provider ids, which the resolver bridges via
       // task_provider_links. An unresolvable id means the task is already
       // gone locally — treat the cleanup as converged.
-      const tenantId = userId;
       try {
         const nexusTaskId = resolveOfflineNexusTaskId(tenantId, userId, String(topic.secretary_task_external_id));
         if (nexusTaskId) {
@@ -185,11 +212,12 @@ export async function cleanupContentTopicSecretaryArtifacts(
 
 async function upsertSecretaryTask(
   userId: number,
+  tenantId: number,
   topic: ContentTopic,
   data: { title: string; body: string; dueDateTime: string },
 ): Promise<{ listId: string; listName: string; taskId: string }> {
   return isSingleWritePathEnabled()
-    ? upsertSecretaryTaskViaLedger(userId, topic, data)
+    ? upsertSecretaryTaskViaLedger(userId, tenantId, topic, data)
     : upsertSecretaryTaskViaProvider(userId, topic, data);
 }
 
@@ -203,12 +231,10 @@ async function upsertSecretaryTask(
  */
 async function upsertSecretaryTaskViaLedger(
   userId: number,
+  tenantId: number,
   topic: ContentTopic,
   data: { title: string; body: string; dueDateTime: string },
 ): Promise<{ listId: string; listName: string; taskId: string }> {
-  // Content-topic sync runs in single-user scope; tenant == user, matching
-  // the tenantId = userId default used across the task store.
-  const tenantId = userId;
   const existingTaskId = topic.secretary_task_external_id
     ? resolveOfflineNexusTaskId(tenantId, userId, String(topic.secretary_task_external_id))
     : null;
@@ -323,21 +349,24 @@ async function upsertCalendarAgenda(
   return { eventId: event.id, source: event.source };
 }
 
-function buildTaskTitle(title: string, language: LangLike): string {
+function buildTaskTitle(title: string | null, language: LangLike): string {
+  if (!title) return isPortuguese(language) ? 'Bloco de trabalho de conteúdo' : 'Content work block';
   return isPortuguese(language) ? `Conteúdo: ${title}` : `Content: ${title}`;
 }
 
-function buildTaskBody(topic: ContentTopic, language: LangLike): string {
+function buildTaskBody(topic: ContentTopic, language: LangLike, sharePrivateNotes: boolean): string {
   const date = topic.scheduled_at ?? topic.scheduled_date ?? '';
-  const notes = topic.notes?.trim();
+  const notes = sharePrivateNotes ? topic.notes?.trim() : null;
   const lines = isPortuguese(language)
     ? [
         'Criado pela Agenda de tópicos do Nexus Hub.',
+        `Referência privada: content-topic-${topic.id}`,
         date ? `Quando: ${date}` : '',
         notes ? `Notas: ${notes}` : '',
       ]
     : [
         'Created by Nexus Hub Topic Schedule.',
+        `Private reference: content-topic-${topic.id}`,
         date ? `When: ${date}` : '',
         notes ? `Notes: ${notes}` : '',
       ];
@@ -369,4 +398,17 @@ function calendarWindow(scheduledAt?: string | null): { start: string; end: stri
 
 function isPortuguese(language: LangLike): boolean {
   return String(language || '').toLowerCase().startsWith('pt');
+}
+
+function assertContentTopicSecretaryScope(
+  userId: number,
+  tenantId: number,
+  topic: ContentTopic,
+): void {
+  if (
+    (topic.tenant_id != null && Number(topic.tenant_id) !== tenantId)
+    || (topic.owner_user_id != null && Number(topic.owner_user_id) !== userId)
+  ) {
+    throw new Error('content_topic_secretary_sync_scope_mismatch');
+  }
 }

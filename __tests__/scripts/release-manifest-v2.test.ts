@@ -31,6 +31,36 @@ function canonicalJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
 
+function validDistributionBinding(iosSha: string, buildNumber: number) {
+  return {
+    result: 'passed',
+    attestationDigest: '1'.repeat(64),
+    payloadDigest: '2'.repeat(64),
+    sourceCommit: iosSha,
+    sourceTree: '3'.repeat(40),
+    release: {
+      bundleId: 'me.nexushub.app',
+      teamId: 'B6885R8NWM',
+      marketingVersion: '1.5.0',
+      buildNumber: String(buildNumber),
+      configuration: 'Release',
+    },
+    archive: { artifactDigest: '4'.repeat(64), appDigest: '5'.repeat(64) },
+    exportedArtifact: {
+      artifactDigest: '6'.repeat(64),
+      artifactSemantics: 'nexus.raw-file.v1',
+      appDigest: '7'.repeat(64),
+    },
+    toolchain: { xcodeVersion: '26.4', xcodeBuild: '17E300', sdkName: 'iphoneos26.4' },
+    ci: {
+      buildId: '123e4567-e89b-12d3-a456-426614174000',
+      buildNumber: '17',
+      workflow: 'App Store Release',
+      workflowId: '20e0adf7-2854-4207-98eb-8f3b5afcac60',
+    },
+  };
+}
+
 function ciReleaseResults({
   runtimeSha,
   policyDigest,
@@ -85,6 +115,45 @@ function ciReleaseResults({
     ci: { runId, runAttempt },
     ...(artifactDigest ? { artifactDigest } : {}),
   };
+}
+
+function createSharedManifestFixtureRoot(parent: string) {
+  const root = path.join(parent, 'source');
+  const fixture = {
+    schema: 'nexus.backend-ios-contract-fixtures.v1',
+    contracts: [
+      { id: 'dashboard.home.v1', method: 'GET', path: '/api/v1/dashboard/home', decoder: 'HomeViewState', payload: {} },
+      { id: 'training.home.v1', method: 'GET', path: '/api/v1/training/home', decoder: 'TrainingHomeViewState', payload: {} },
+      { id: 'content.home.v1', method: 'GET', path: '/api/v1/content/home', decoder: 'ContentHomeViewState', payload: {} },
+    ],
+  };
+  fs.mkdirSync(path.join(root, 'dist/release'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'config'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'migrations'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'catalog/training/exercise-media/v1/authored-content'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture","version":"4.14.224"}\n');
+  fs.writeFileSync(path.join(root, 'package-lock.json'), '{"name":"fixture","lockfileVersion":3}\n');
+  fs.copyFileSync('config/test-policy.json', path.join(root, 'config/test-policy.json'));
+  fs.writeFileSync(path.join(root, 'dist/index.js'), 'module.exports = {};\n');
+  fs.writeFileSync(
+    path.join(root, 'dist/release/backend-ios-contract-fixture.v1.json'),
+    `${JSON.stringify(fixture)}\n`,
+  );
+  fs.writeFileSync(path.join(root, 'migrations/001_fixture.sql'), 'SELECT 1;\n');
+  fs.writeFileSync(
+    path.join(root, 'catalog/training/exercise-media/v1/materialization-attestation.json'),
+    '{"releaseSubjectHash":"fixture-release-subject","status":"inactive"}\n',
+  );
+  fs.writeFileSync(
+    path.join(root, 'catalog/training/exercise-media/v1/authored-content/materialization-policy.json'),
+    '{"approvedOrigin":"fixture","activationState":"inactive"}\n',
+  );
+  execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'release-fixture@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Release Fixture'], { cwd: root });
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-m', 'fixture'], { cwd: root, stdio: 'ignore' });
+  return root;
 }
 
 afterEach(() => {
@@ -154,6 +223,7 @@ describe('ReleaseManifestV2', () => {
           artifactDigest: artifact.digest,
         }),
       },
+      ios: null,
     };
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     fs.writeFileSync(publicPath, publicKey.export({ format: 'pem', type: 'spki' }));
@@ -180,6 +250,22 @@ describe('ReleaseManifestV2', () => {
       env: { ...process.env, NODE_ENV: 'test' },
     }));
     expect(validated).toMatchObject({ ok: true, promotable: true, artifactDigest: artifact.digest });
+
+    const unboundEnvelope = structuredClone(envelope);
+    delete unboundEnvelope.payload.ios;
+    unboundEnvelope.signature = sign(
+      null,
+      Buffer.from(canonicalJson(unboundEnvelope.payload)),
+      privateKey,
+    ).toString('base64');
+    fs.writeFileSync(manifestPath, `${JSON.stringify(unboundEnvelope, null, 2)}\n`);
+    const unbound = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(unbound.status).toBe(1);
+    expect(JSON.parse(unbound.stdout).reasons).toContain('ios_contract_binding_missing');
+    fs.writeFileSync(manifestPath, manifestBody);
 
     fs.writeFileSync(manifestPath, `${JSON.stringify({ ...envelope, signature: 'AA==' }, null, 2)}\n`);
     const invalidSignature = spawnSync(process.execPath, args, {
@@ -213,7 +299,11 @@ describe('ReleaseManifestV2', () => {
     roots.push(temp);
     const resultsPath = path.join(temp, 'results.json');
     const manifestPath = path.join(temp, 'manifest.unsigned.json');
-    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const fixtureRoot = createSharedManifestFixtureRoot(temp);
+    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: fixtureRoot,
+      encoding: 'utf8',
+    }).trim();
     fs.writeFileSync(resultsPath, JSON.stringify({
       schema: 'nexus.release-test-results.v1',
       status: 'passed',
@@ -223,7 +313,35 @@ describe('ReleaseManifestV2', () => {
       commands: governedLocalCommands,
     }));
 
+    const unclassified = spawnSync(process.execPath, [script, 'write',
+      '--root', fixtureRoot,
+      '--allow-unsigned',
+      '--allow-dirty',
+      '--key-id', 'unsigned-release-candidate',
+      '--manifest', manifestPath,
+      '--test-results', resultsPath,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: localFixtureEnv });
+    expect(unclassified.status).not.toBe(0);
+    expect(unclassified.stderr).toContain('release contract scope must be explicit');
+    expect(fs.existsSync(manifestPath)).toBe(false);
+
+    const contradictory = spawnSync(process.execPath, [script, 'write',
+      '--root', fixtureRoot,
+      '--backend-only',
+      '--ios-sha', 'b'.repeat(40),
+      '--allow-unsigned',
+      '--allow-dirty',
+      '--key-id', 'unsigned-release-candidate',
+      '--manifest', manifestPath,
+      '--test-results', resultsPath,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: localFixtureEnv });
+    expect(contradictory.status).not.toBe(0);
+    expect(contradictory.stderr).toContain('backend-only release must not include iOS contract fields');
+    expect(fs.existsSync(manifestPath)).toBe(false);
+
     execFileSync(process.execPath, [script, 'write',
+      '--root', fixtureRoot,
+      '--backend-only',
       '--allow-unsigned',
       '--allow-dirty',
       '--key-id', 'unsigned-release-candidate',
@@ -231,6 +349,7 @@ describe('ReleaseManifestV2', () => {
       '--test-results', resultsPath,
     ], { cwd: process.cwd(), env: localFixtureEnv });
     const validation = JSON.parse(execFileSync(process.execPath, [script, 'validate-payload',
+      '--root', fixtureRoot,
       '--allow-dirty',
       '--manifest', manifestPath,
     ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } }));
@@ -239,6 +358,7 @@ describe('ReleaseManifestV2', () => {
     expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8'))).toMatchObject({
       keyId: 'unsigned-release-candidate',
       signature: null,
+      payload: { ios: null },
     });
   });
 
@@ -250,8 +370,11 @@ describe('ReleaseManifestV2', () => {
     const publicPath = path.join(temp, 'public.pem');
     const resultsPath = path.join(temp, 'results.json');
     const manifestPath = path.join(temp, 'manifest.json');
-    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const policyDigest = createHash('sha256').update(fs.readFileSync('config/test-policy.json')).digest('hex');
+    const fixtureRoot = createSharedManifestFixtureRoot(temp);
+    const runtimeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fixtureRoot, encoding: 'utf8' }).trim();
+    const policyDigest = createHash('sha256')
+      .update(fs.readFileSync(path.join(fixtureRoot, 'config/test-policy.json')))
+      .digest('hex');
     fs.writeFileSync(privatePath, privateKey.export({ format: 'pem', type: 'pkcs8' }));
     fs.writeFileSync(publicPath, publicKey.export({ format: 'pem', type: 'spki' }));
     fs.writeFileSync(resultsPath, JSON.stringify(ciReleaseResults({
@@ -260,7 +383,34 @@ describe('ReleaseManifestV2', () => {
       counts: { vitest: 13_512, pytest: 194 },
     })));
 
+    const incompleteIos = spawnSync(process.execPath, [script, 'write',
+      '--includes-ios',
+      '--root', fixtureRoot,
+      '--ios-sha', 'b'.repeat(40),
+      '--manifest', manifestPath,
+      '--test-results', resultsPath,
+      '--private-key', privatePath,
+      '--key-id', 'test-key',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_ACTIONS: 'true',
+        GITHUB_RUN_ID: '12345',
+        GITHUB_RUN_ATTEMPT: '1',
+      },
+    });
+    expect(incompleteIos.status).not.toBe(0);
+    expect(incompleteIos.stderr).toContain('iOS build number must be a positive integer');
+    expect(fs.existsSync(manifestPath)).toBe(false);
+
     execFileSync(process.execPath, [script, 'write',
+      '--includes-ios',
+      '--root', fixtureRoot,
+      '--ios-sha', 'b'.repeat(40),
+      '--ios-build-number', '59',
+      '--ios-contract-result', 'passed',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,
@@ -274,24 +424,149 @@ describe('ReleaseManifestV2', () => {
         GITHUB_RUN_ATTEMPT: '1',
       },
     });
-    const validated = JSON.parse(execFileSync(process.execPath, [script, 'validate',
+    const envelope = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    expect(envelope.payload.ios.distribution).toBeNull();
+    const missingDistribution = spawnSync(process.execPath, [script, 'validate',
       '--manifest', manifestPath,
+      '--root', fixtureRoot,
       '--public-key', publicPath,
       '--allow-dirty',
       '--allow-test-key',
+      '--require-ios-contract',
+      '--expect-ios-sha', 'b'.repeat(40),
+      '--expect-ios-build-number', '59',
+      '--expect-ios-contract-result', 'passed',
+    ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } });
+    expect(missingDistribution.status).toBe(1);
+    expect(JSON.parse(missingDistribution.stdout).reasons)
+      .toContain('ios_distribution_evidence_missing');
+
+    envelope.payload.ios.distribution = validDistributionBinding('b'.repeat(40), 59);
+    envelope.signature = sign(
+      null,
+      Buffer.from(canonicalJson(envelope.payload)),
+      privateKey,
+    ).toString('base64');
+    fs.writeFileSync(manifestPath, `${JSON.stringify(envelope, null, 2)}\n`);
+    const validated = JSON.parse(execFileSync(process.execPath, [script, 'validate',
+      '--manifest', manifestPath,
+      '--root', fixtureRoot,
+      '--public-key', publicPath,
+      '--allow-dirty',
+      '--allow-test-key',
+      '--require-ios-contract',
+      '--expect-ios-sha', 'b'.repeat(40),
+      '--expect-ios-build-number', '59',
+      '--expect-ios-contract-result', 'passed',
     ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } }));
-    const envelope = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
     expect(validated).toMatchObject({ ok: true, promotable: true });
+    expect(JSON.parse(execFileSync(process.execPath, [script, 'validate',
+      '--manifest', manifestPath,
+      '--root', fixtureRoot,
+      '--public-key', publicPath,
+      '--allow-dirty',
+      '--allow-test-key',
+      '--require-ios-contract',
+    ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } })))
+      .toMatchObject({ ok: true, contractScope: 'shared_backend_ios' });
     expect(envelope.schema).toBe('nexus.release-manifest.v2');
     expect(envelope.payload.runtimeSha).toMatch(/^[a-f0-9]{40}$/);
-    expect(envelope.payload.artifact.files.length).toBeGreaterThan(100);
+    expect(envelope.payload.artifact.files.length).toBeGreaterThan(5);
     expect(envelope.payload.migration.latestId).toMatch(/^\d{3}_/);
     expect(envelope.payload.trainingCatalog.packageDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(envelope.payload.testPolicy.results.status).toBe('passed');
     expect(envelope.payload.testPolicy.results.runtimeSha).toBe(envelope.payload.runtimeSha);
     expect(envelope.payload.testPolicy.results.artifactDigest).toBe(envelope.payload.artifact.digest);
     expect(envelope.payload.testPolicy.results.testPolicyDigest).toBe(envelope.payload.testPolicy.digest);
+    expect(envelope.payload.ios).toEqual({
+      sha: 'b'.repeat(40),
+      buildNumber: 59,
+      contractTestResult: 'passed',
+      fixtureDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      contractDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      distribution: validDistributionBinding('b'.repeat(40), 59),
+    });
+
+    const tamperedIos = structuredClone(envelope);
+    tamperedIos.payload.ios.buildNumber = '59';
+    tamperedIos.signature = sign(
+      null,
+      Buffer.from(canonicalJson(tamperedIos.payload)),
+      privateKey,
+    ).toString('base64');
+    fs.writeFileSync(manifestPath, `${JSON.stringify(tamperedIos, null, 2)}\n`);
+    const invalidIos = spawnSync(process.execPath, [script, 'validate',
+      '--manifest', manifestPath,
+      '--root', fixtureRoot,
+      '--public-key', publicPath,
+      '--allow-dirty',
+      '--allow-test-key',
+      '--require-ios-contract',
+      '--expect-ios-sha', 'b'.repeat(40),
+      '--expect-ios-build-number', '59',
+      '--expect-ios-contract-result', 'passed',
+    ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } });
+    expect(invalidIos.status).toBe(1);
+    expect(JSON.parse(invalidIos.stdout).reasons).toContain('ios_contract_build_number_invalid');
+
+    for (const [field, expectedReason] of [
+      ['fixtureDigest', 'ios_contract_fixture_digest_mismatch'],
+      ['contractDigest', 'ios_contract_digest_mismatch'],
+    ] as const) {
+      const drifted = structuredClone(envelope);
+      drifted.payload.ios[field] = '0'.repeat(64);
+      drifted.signature = sign(
+        null,
+        Buffer.from(canonicalJson(drifted.payload)),
+        privateKey,
+      ).toString('base64');
+      fs.writeFileSync(manifestPath, `${JSON.stringify(drifted, null, 2)}\n`);
+      const result = spawnSync(process.execPath, [script, 'validate',
+        '--manifest', manifestPath,
+        '--root', fixtureRoot,
+        '--public-key', publicPath,
+        '--allow-dirty',
+        '--allow-test-key',
+        '--require-ios-contract',
+      ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout).reasons).toContain(expectedReason);
+    }
+
+    for (const [mutate, expectedReason] of [
+      [
+        (value: any) => { value.sourceCommit = 'c'.repeat(40); },
+        'ios_distribution_sha_mismatch',
+      ],
+      [
+        (value: any) => { value.release.buildNumber = '60'; },
+        'ios_distribution_release_identity_mismatch',
+      ],
+      [
+        (value: any) => { value.ci.buildId = 'not-a-uuid'; },
+        'ios_distribution_ci_identity_invalid',
+      ],
+    ] as const) {
+      const drifted = structuredClone(envelope);
+      mutate(drifted.payload.ios.distribution);
+      drifted.signature = sign(
+        null,
+        Buffer.from(canonicalJson(drifted.payload)),
+        privateKey,
+      ).toString('base64');
+      fs.writeFileSync(manifestPath, `${JSON.stringify(drifted, null, 2)}\n`);
+      const result = spawnSync(process.execPath, [script, 'validate',
+        '--manifest', manifestPath,
+        '--root', fixtureRoot,
+        '--public-key', publicPath,
+        '--allow-dirty',
+        '--allow-test-key',
+        '--require-ios-contract',
+      ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout).reasons).toContain(expectedReason);
+    }
 
     envelope.keyId = 'github-environment-release-signing-2026-07';
     envelope.signature = sign(
@@ -302,6 +577,7 @@ describe('ReleaseManifestV2', () => {
     fs.writeFileSync(manifestPath, `${JSON.stringify(envelope, null, 2)}\n`);
     const override = spawnSync(process.execPath, [script, 'validate',
       '--manifest', manifestPath,
+      '--root', fixtureRoot,
       '--public-key', publicPath,
       '--allow-dirty',
     ], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } });
@@ -320,6 +596,7 @@ describe('ReleaseManifestV2', () => {
     fs.writeFileSync(resultsPath, JSON.stringify({ status: 'passed' }));
 
     const result = spawnSync(process.execPath, [script, 'write',
+      '--backend-only',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,
@@ -348,6 +625,7 @@ describe('ReleaseManifestV2', () => {
     }));
 
     const result = spawnSync(process.execPath, [script, 'write',
+      '--backend-only',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,
@@ -376,6 +654,7 @@ describe('ReleaseManifestV2', () => {
     })));
 
     const result = spawnSync(process.execPath, [script, 'write',
+      '--backend-only',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,
@@ -412,6 +691,7 @@ describe('ReleaseManifestV2', () => {
     }));
 
     const result = spawnSync(process.execPath, [script, 'write',
+      '--backend-only',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,
@@ -441,6 +721,7 @@ describe('ReleaseManifestV2', () => {
       commands: governedLocalCommands,
     }));
     execFileSync(process.execPath, [script, 'write',
+      '--backend-only',
       '--manifest', manifestPath,
       '--test-results', resultsPath,
       '--private-key', privatePath,

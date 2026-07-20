@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-07-15
+Last verified: 2026-07-17
 Update policy: update when a new canonical engineering standard is
 added under `docs/engineering/`. Removing a standard requires
 owner approval and a documented replacement.
@@ -38,6 +38,7 @@ non-trivial changes.
 | Release runbook | `../release/README.md` | Exact-artifact operator commands and production sequence. |
 | Current release summary | `../release/CURRENT_RELEASE_STATE.md` | Compact human pointer to the machine-readable runtime truth. |
 | Signed release evidence contract | `../release/release-evidence-contract.md` | Artifact-bound RC, signing, staging, promotion, and rollback evidence. |
+| State-coupled migration contract | `../release/migration-irreversible.md` | Snapshot rollback and rehearsal gates for irreversible or state-coupled schema cutovers. |
 
 ## Related cross-repo standards
 

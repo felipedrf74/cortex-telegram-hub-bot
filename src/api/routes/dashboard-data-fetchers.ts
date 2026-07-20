@@ -539,10 +539,19 @@ export async function fetchTraining(
   };
 }
 
-export async function fetchContent(userId?: number) {
+export const CONTENT_DASHBOARD_STAGE_TRACKING = {
+  ideas: { tracking: 'derived', source: 'artifact_phase' },
+  scripted: { tracking: 'derived', source: 'artifact_phase' },
+  filmed: { tracking: 'not_tracked', reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED' },
+  editing: { tracking: 'not_tracked', reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED' },
+  published: { tracking: 'derived', source: 'production_state' },
+} as const;
+
+export async function fetchContent(userId: number, tenantId: number) {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'fetchContent');
   try {
     const db = require('../../services/database').getDb();
-    const counts = queryContentPipelineCounts(db, userId);
+    const counts = queryContentPipelineCounts(db, userId, scopedTenantId);
 
     const pipelineCount = { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 };
     for (const row of counts) {
@@ -551,6 +560,7 @@ export async function fetchContent(userId?: number) {
     }
     return {
       pipelineCount,
+      stageTracking: CONTENT_DASHBOARD_STAGE_TRACKING,
       nextDeadline: null,
       status: 'ready' as const,
       warningCodes: [],
@@ -558,32 +568,44 @@ export async function fetchContent(userId?: number) {
     };
   } catch {
     return buildUnavailableSection(
-      { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+      {
+        pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 },
+        stageTracking: CONTENT_DASHBOARD_STAGE_TRACKING,
+        nextDeadline: null,
+      },
       ['CONTENT_UNAVAILABLE'],
       ['Content pipeline is unavailable right now.'],
     );
   }
 }
 
-export function queryContentPipelineCounts(db: any, userId?: number): { stage: string; count: number }[] {
-  try {
-    return userId
-      ? db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' AND user_id = ? GROUP BY stage`).all(userId) as { stage: string; count: number }[]
-      : db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' GROUP BY stage`).all() as { stage: string; count: number }[];
-  } catch (error: any) {
-    const message = String(error?.message || '').toLowerCase();
-    const missingStatusColumn = message.includes('no such column') && message.includes('status');
-    const missingContentIdeasTable = message.includes('no such table') && message.includes('content_ideas');
-    if (missingContentIdeasTable) {
-      return [];
-    }
-    if (!missingStatusColumn) {
-      throw error;
-    }
-    return userId
-      ? db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE user_id = ? GROUP BY stage`).all(userId) as { stage: string; count: number }[]
-      : db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas GROUP BY stage`).all() as { stage: string; count: number }[];
-  }
+export function queryContentPipelineCounts(
+  db: any,
+  userId: number,
+  tenantId: number,
+): { stage: 'ideas' | 'scripted' | 'published'; count: number }[] {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'queryContentPipelineCounts');
+  return db.prepare(`
+    SELECT CASE
+             WHEN production_state = 'published' THEN 'published'
+             WHEN artifact_phase IN ('idea', 'brief', 'outline') THEN 'ideas'
+             ELSE 'scripted'
+           END AS stage,
+           COUNT(*) AS count
+      FROM content_domain_objects
+     WHERE tenant_id = ?
+       AND owner_user_id = ?
+       AND visibility_scope = 'user_private'
+       AND scope_status = 'active'
+       AND object_type = 'content_item'
+       AND deleted_at IS NULL
+       AND production_state NOT IN ('archived', 'rejected')
+     GROUP BY CASE
+                WHEN production_state = 'published' THEN 'published'
+                WHEN artifact_phase IN ('idea', 'brief', 'outline') THEN 'ideas'
+                ELSE 'scripted'
+              END
+  `).all(scopedTenantId, userId) as { stage: 'ideas' | 'scripted' | 'published'; count: number }[];
 }
 
 function buildSectionHealth(

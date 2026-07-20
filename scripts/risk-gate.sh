@@ -242,7 +242,10 @@ if [ "$PYTHON_ENGINE" = "true" ] && [ "$SKIP_PYTHON" != "true" ]; then
 fi
 
 if [ "$MIGRATION_CHANGED" = "true" ] && [ "$SKIP_MIGRATIONS" != "true" ]; then
-  run_cmd node scripts/migration-safety-check.mjs --base "$BASE_FOR_CHANGED" --changed-only
+  run_cmd node scripts/migration-safety-check.mjs \
+    --base "$BASE_FOR_CHANGED" \
+    --changed-only \
+    --approval-mode scan
 fi
 
 if [ "${NEXUS_RISK_GATE_ASSERT_CANNOT_SKIP_DASHBOARD:-0}" = "1" ] && [ -n "$CANNOT_SKIP" ]; then

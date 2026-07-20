@@ -319,7 +319,7 @@ export function buildScriptSuccessResponse(params: {
     latencyMs: typeof result.duration_ms === 'number' ? result.duration_ms : Date.now() - startMs,
   });
   const claimLedger = buildClaimLedger({
-    text: scriptQuality.revisedScript,
+    text: result.script,
     sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
     voiceCard: creatorVoiceCard ?? null,
   });
@@ -345,7 +345,10 @@ export function buildScriptSuccessResponse(params: {
 
   return {
     topic: result.topic,
-    script: scriptQuality.revisedScript,
+    // The quality pass is advisory. Preserve the engine-owned document
+    // byte-for-byte so long scripts and user-visible tail sections cannot be
+    // replaced by the bounded structured quality summary.
+    script: result.script,
     hook: scriptQuality.structuredOutput.firstThreeSeconds || result.hook,
     titleOptions: result.title_options,
     sourcesUsed: sources.map((source) => ({
@@ -404,6 +407,10 @@ export function buildScriptSuccessResponse(params: {
       warnings: publicQualityWarnings,
       needsExpansion: (qualityGate?.needsExpansion ?? generationMode === 'draft') || lowTrustGeneration,
       needsResearchRefresh: (qualityGate?.needsResearchRefresh ?? false) || lowTrustGeneration || excludedMockSources > 0,
+    },
+    scriptSafety: {
+      blocked: scriptQuality.blockers.length > 0,
+      blockers: scriptQuality.blockers,
     },
     scriptQuality: lowTrustGeneration ? null : publicScriptQualityReport(scriptQuality),
     scriptStructure: scriptQuality.structuredOutput,
@@ -535,7 +542,12 @@ function defaultExpandOptions(mode: GenerationMode): Array<{ id: string; label: 
   ];
 }
 
-function publicScriptQualityReport(report: ScriptQualityReport): Omit<ScriptQualityReport, 'revisedScript' | 'structuredOutput'> {
+function publicScriptQualityReport(
+  report: ScriptQualityReport,
+): Omit<ScriptQualityReport, 'suggestedScript' | 'structuredOutput'> & {
+  suggestedActions: string[];
+  appliedChanges: string[];
+} {
   return {
     hookScore: report.hookScore,
     retentionScore: report.retentionScore,
@@ -547,6 +559,8 @@ function publicScriptQualityReport(report: ScriptQualityReport): Omit<ScriptQual
     overallScore: report.overallScore,
     complianceWarnings: report.complianceWarnings,
     revisionActions: report.revisionActions,
+    suggestedActions: report.revisionActions,
+    appliedChanges: [],
     blockers: report.blockers,
   };
 }

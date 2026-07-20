@@ -2,14 +2,47 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  irreversibleMigrationReason,
+  loadIrreversibleMigrationPolicy,
+} from './irreversible-migration-policy.mjs';
 
 const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
   'config/test-policy.json',
+  'config/irreversible-migrations.json',
   'scripts/changed-area-classifier.sh',
   'scripts/changed-area-classifier.mjs',
   'scripts/resolve-ci-change-base.sh',
   'scripts/lib/changed-area-classifier.mjs',
+  'scripts/lib/git-changed-paths.mjs',
+  'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/lib/test-policy.mjs',
+  'scripts/migration-safety-check.mjs',
+  'scripts/production-shape-migration-rehearsal.mjs',
+  'scripts/validate-production-shape-migration-rehearsal.mjs',
+  'scripts/release-test-gate.sh',
+  'scripts/release-verify.sh',
+]);
+
+const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set([
+  '.github/workflows/ci.yml',
+  '.husky/pre-commit',
+  'config/irreversible-migrations.json',
+  'scripts/changed-area-classifier.mjs',
+  'scripts/lib/changed-area-classifier.mjs',
+  'scripts/lib/git-changed-paths.mjs',
+  'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/migration-safety-check.mjs',
+  'scripts/promote-exact-release.sh',
+  'scripts/remote-create-release-backup.sh',
+  'scripts/remote-production-shape-migration-rehearsal.sh',
+  'scripts/production-shape-migration-rehearsal.mjs',
+  'scripts/validate-production-shape-migration-rehearsal.mjs',
+  'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
+  'scripts/risk-gate.sh',
+  'scripts/release-test-gate.sh',
+  'scripts/release-verify.sh',
 ]);
 
 export const CANNOT_SKIP_GATE_NAMES = Object.freeze([
@@ -120,7 +153,14 @@ function loadFullSuiteTriggers(root, policyPath) {
   return policy.fullSuiteTriggers;
 }
 
-function isIrreversibleMigration(files, root, fileExists, readText) {
+function isIrreversibleMigration(files, root, fileExists, readText, policyPath) {
+  const policy = loadIrreversibleMigrationPolicy({
+    root,
+    policyPath,
+    fileExists,
+    readText,
+  });
+  if (policy.integrityIssues.length > 0) return true;
   for (const file of files) {
     if (!/^migrations\/.*\.sql$/.test(file)) continue;
     const absolute = path.join(root, file);
@@ -129,8 +169,7 @@ function isIrreversibleMigration(files, root, fileExists, readText) {
     // contents must not make an additive forward migration irreversible; a
     // deleted or renamed rollback still fails closed through the check above.
     if (/^migrations\/down\//.test(file)) continue;
-    const stripped = readText(absolute).replace(/--.*$/gm, ' ').replace(/\n/g, ' ');
-    if (/\bDROP\s+TABLE\b|\bDROP\s+COLUMN\b|\bALTER\s+TABLE\b[^;]*\bRENAME\b|\bRENAME\s+TO\b/i.test(stripped)) {
+    if (irreversibleMigrationReason(file, readText(absolute), policy)) {
       return true;
     }
   }
@@ -151,8 +190,9 @@ export function classifyChangedFiles({
   generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   fullSuiteTriggers,
   policyPath,
+  irreversiblePolicyPath = path.join(root, 'config/irreversible-migrations.json'),
   fileExists = fs.existsSync,
-  readText = (file) => fs.readFileSync(file, 'utf8'),
+  readText = (file) => fs.readFileSync(file),
 } = {}) {
   if (!root) throw new Error('classifyChangedFiles requires root');
   const files = normalizeChangedFiles(rawFiles ?? []);
@@ -282,7 +322,8 @@ export function classifyChangedFiles({
   flags.secretary = has(/^src\/(?:domains\/secretary\/|services\/secretary-|api\/routes\/secretary|skills\/secretary\/)/)
     || has(/^__tests__\/services\/secretary-/);
   flags.portal = has(/^src\/portal\/|^__tests__\/portal\/|^scripts\/cooking-portal-browser-smoke\.ts$/);
-  flags.migration ||= has(/^migrations\//);
+  const irreversiblePolicyChanged = files.some((file) => MIGRATION_POLICY_GOVERNANCE_PATHS.has(file));
+  flags.migration ||= has(/^migrations\//) || irreversiblePolicyChanged;
   sciencePolicyJson = has(/^src\/services\/coach-kernel\/knowledge\/entities\/(?:training-principles\.json|\.science-policy-hash)$/)
     || has(/^scripts\/ci\/science-policy-version-check\.mjs$/);
   flags.pythonEngine ||= has(/^content-engine\//);
@@ -294,9 +335,9 @@ export function classifyChangedFiles({
   googleDriveTenantLeak = has(/^src\/services\/(?:google-drive|google-auth)\.ts$|^__tests__\/security\/google-drive-tenant-leak\.test\.ts$|^scripts\/cleanup-tainted-google-drive-sessions\.mjs$/);
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
-  flags.releaseOperator = has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-start-sanitized-pm2|rollback|restore)\.sh$/)
-    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|trusted-release-signer)\.mjs$/)
-    || has(/^scripts\/lib\/release-artifact-manifest\.mjs$/);
+  flags.releaseOperator = has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|rollback|restore)\.sh$/)
+    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|trusted-release-signer|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal)\.mjs$/)
+    || has(/^scripts\/lib\/(?:release-artifact-manifest|production-shape-migration-rehearsal-evidence)\.mjs$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
@@ -347,7 +388,8 @@ export function classifyChangedFiles({
   if (flags.iosNavigation || flags.iosDto || iosNotification) flags.iosSrc = true;
 
   flags.irreversibleMigration = flags.migration
-    && isIrreversibleMigration(files, root, fileExists, readText);
+    && (irreversiblePolicyChanged
+      || isIrreversibleMigration(files, root, fileExists, readText, irreversiblePolicyPath));
   try {
     const triggers = fullSuiteTriggers ?? loadFullSuiteTriggers(root, policyPath);
     const matchers = triggers.map(globToRegExp);
@@ -491,6 +533,7 @@ export function classifyChangedFiles({
         '__tests__/scripts/exact-promotion-operational-safety.test.ts',
         '__tests__/scripts/release-exact-attestations.test.ts',
         '__tests__/scripts/release-backup-runtime-artifact.test.ts',
+        '__tests__/scripts/production-shape-migration-rehearsal.test.ts',
         '__tests__/scripts/rollback-versioned-runtime.test.ts',
         '__tests__/scripts/pm2-sanitized-start.test.ts',
         '__tests__/scripts/release-evidence-container.test.ts',

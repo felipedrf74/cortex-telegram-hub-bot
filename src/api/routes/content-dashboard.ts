@@ -24,6 +24,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { getJobStatuses } from '../../portal/telemetry';
@@ -37,6 +38,11 @@ import {
 import { CronExpressionParser } from 'cron-parser';
 import { sendInternalError } from '../response-helpers';
 import { requirePortalToken } from '../secret-guards';
+import { getOwnerBootstrapTarget } from '../../services/user-service';
+import type { ContentWorkspaceScope } from '../../services/content-workspace';
+import { extractClientIp } from '../rate-limiter';
+
+export const CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE = 30;
 
 // ─── Static registries ──────────────────────────────────────────────
 
@@ -341,7 +347,11 @@ export interface ContentDashboardResponse {
     lastStatus: string;
   };
   pipeline: {
+    availability: 'available' | 'unavailable';
+    source: 'content_workspace';
+    reasonCode: string | null;
     stages: Record<string, number>;
+    stageTracking: Record<string, unknown>;
     bottleneck: { stage: string; count: number; avgDays: number } | null;
     publishedThisWeek: number;
     totalActive: number;
@@ -354,6 +364,9 @@ export interface ContentDashboardResponse {
       updatedAt: string;
       publishedUrl: string | null;
       publishedAt: string | null;
+      productionState: string;
+      artifactPhase: string;
+      publicationEvidence: string;
     }[];
   };
   knowledgeStats: { category: string; updatedAt: string; sources: number }[];
@@ -454,10 +467,32 @@ function nextFireAtIso(expr: string): string | null {
  */
 export function contentDashboardRoutes(): Router {
   const router = Router();
+  const dashboardRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many content dashboard requests. Slow down.',
+          retryAfter,
+        },
+      });
+    },
+  });
 
-  router.get('/', requirePortalToken, (_req: Request, res: Response) => {
+  router.get('/', dashboardRateLimitMiddleware, requirePortalToken, (_req: Request, res: Response) => {
     try {
-      const payload = buildContentDashboard();
+      const ownerTarget = getOwnerBootstrapTarget();
+      const payload = buildContentDashboard(ownerTarget ? {
+        tenantId: ownerTarget.tenantId,
+        userId: ownerTarget.tenantId,
+      } : undefined);
       // 10s edge cache so rapid polling from the portal doesn't hammer the DB
       res.set('Cache-Control', 'private, max-age=10');
       res.json(payload);
@@ -477,7 +512,7 @@ export function contentDashboardRoutes(): Router {
  * handler so it can be unit-tested in isolation and warm-called in
  * the future if we ever add a cache layer.
  */
-export function buildContentDashboard(): ContentDashboardResponse {
+export function buildContentDashboard(contentScope?: ContentWorkspaceScope): ContentDashboardResponse {
   const db = getDb();
 
   // ── Commands — call counts from api_usage ──────────────────────────
@@ -728,17 +763,26 @@ export function buildContentDashboard(): ContentDashboardResponse {
 
   // ── Pipeline — stage counts + recent items ─────────────────────────
   let pipeline: ContentDashboardResponse['pipeline'] = {
+    availability: 'unavailable',
+    source: 'content_workspace',
+    reasonCode: contentScope ? 'CONTENT_WORKSPACE_READ_FAILED' : 'CONTENT_WORKSPACE_SCOPE_UNAVAILABLE',
     stages: {},
+    stageTracking: {},
     bottleneck: null,
     publishedThisWeek: 0,
     totalActive: 0,
     recent: [],
   };
   try {
-    const stats = getPipelineStats();
-    const recent = getPipelineRecent(30, db);
+    if (!contentScope) throw new Error('Content workspace scope unavailable');
+    const stats = getPipelineStats(contentScope);
+    const recent = getPipelineRecent(contentScope, 30, db);
     pipeline = {
+      availability: stats.availability,
+      source: stats.source,
+      reasonCode: null,
       stages: stats.stages,
+      stageTracking: stats.stageTracking,
       bottleneck: stats.bottleneck,
       publishedThisWeek: stats.publishedThisWeek,
       totalActive: stats.totalActive,

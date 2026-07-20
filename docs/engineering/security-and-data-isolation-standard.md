@@ -185,6 +185,16 @@ gold-standard pattern. Copy that shape.
    password — no.
 3. **`audit_trail` rows are immutable and partitioned by user_id.**
    Reads are admin-scoped only.
+4. **Receipt AI-transfer consent is a durable authenticated-client assertion.**
+   Before receipt OCR leaves the request boundary, AI budget is reserved, or a
+   configured provider is called, the backend must commit one tenant/user-
+   scoped `privacy_consent` audit row for the current disclosure, transfer
+   scope, and a client-generated action UUID. Replays of that UUID in the same
+   scope produce no duplicate row; another tenant may use the same UUID without
+   collision. Persistence failure blocks analysis. Only a tenant-scoped hash of
+   the random UUID is retained; the row contains no raw UUID, image, OCR text,
+   merchant, amount, or provider response, and must be described as a client
+   assertion rather than proof of a physical tap.
 
 ## 7. Rate limits and abuse controls (must)
 

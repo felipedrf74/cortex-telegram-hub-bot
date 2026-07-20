@@ -1,10 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import dotenv from 'dotenv';
-dotenv.config({
-  quiet: true,
-  override: process.env.NODE_ENV !== 'test',
-});
+import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation-runtime';
+dotenv.config(contentLiveEvalDotenvOptions());
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
 // "production-only" required env vars (TELEGRAM_BOT_TOKEN, etc.) become
@@ -22,6 +20,7 @@ const IOS_JWT_PLACEHOLDER_PATTERN = /(change[-_ ]?me|changeme|stub)/i;
 const PORTAL_PUBLIC_BIND_ACK_VALUE = 'production-public-host-reviewed';
 const CONTENT_ENGINE_PORT = optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 });
 export type NotificationDeliveryMode = 'mock' | 'apns';
+type ContentWorkspaceRolloutConfigMode = 'off' | 'read_only' | 'recovery_only' | 'write';
 
 function required(key: string): string {
   const value = process.env[key];
@@ -67,6 +66,21 @@ function optionalFloat(key: string, fallback: number, options: NumericEnvOptions
     return fallback;
   }
   return validateNumericEnv(key, raw, Number.parseFloat(raw), options);
+}
+
+function optionalBoolean(key: string, fallback: boolean): boolean {
+  const raw = process.env[key]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  return false;
+}
+
+function contentWorkspaceRolloutMode(): ContentWorkspaceRolloutConfigMode {
+  const fallback: ContentWorkspaceRolloutConfigMode = IS_PRODUCTION ? 'read_only' : 'write';
+  const raw = process.env.CONTENT_WORKSPACE_V1_MODE?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === 'off' || raw === 'read_only' || raw === 'recovery_only' || raw === 'write') return raw;
+  return 'read_only';
 }
 
 function parseNotificationDeliveryMode(raw = process.env.NOTIFICATION_DELIVERY_MODE): NotificationDeliveryMode {
@@ -441,6 +455,23 @@ export const config = {
     port: CONTENT_ENGINE_PORT,
     baseUrl: optional('CONTENT_ENGINE_BASE_URL', `http://localhost:${CONTENT_ENGINE_PORT}`),
     internalApiSecret: process.env.INTERNAL_API_SECRET || '',
+  },
+  // Temporary canonical Content workspace rollout authority. Domain services
+  // still resolve the live environment at call time so an operator kill switch
+  // takes effect without constructing a second configuration authority.
+  contentWorkspaceRollout: {
+    mode: contentWorkspaceRolloutMode(),
+    globalWrite: optionalBoolean('CONTENT_WORKSPACE_V1_GLOBAL_WRITE', false),
+    userIds: process.env.CONTENT_WORKSPACE_V1_USER_IDS || '',
+    tenantIds: process.env.CONTENT_WORKSPACE_V1_TENANT_IDS || '',
+    slices: {
+      core: optionalBoolean('CONTENT_WORKSPACE_V1_CORE_WRITES', true),
+      revisions: optionalBoolean('CONTENT_WORKSPACE_V1_REVISION_WRITES', true),
+      lineage: optionalBoolean('CONTENT_WORKSPACE_V1_LINEAGE_WRITES', true),
+      agents: optionalBoolean('CONTENT_WORKSPACE_V1_AGENT_WRITES', true),
+      scheduling: optionalBoolean('CONTENT_WORKSPACE_V1_SCHEDULE_WRITES', true),
+      recovery: optionalBoolean('CONTENT_WORKSPACE_V1_RECOVERY_WRITES', true),
+    },
   },
   // ── Database Backup ─────────────────────────────────────────────────
   backup: {

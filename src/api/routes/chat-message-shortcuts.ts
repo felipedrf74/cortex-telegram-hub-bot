@@ -255,12 +255,18 @@ function tryBuildFinanceShortcutResponse(input: {
 export async function tryBuildTokenZeroChatMessageShortcutResponse(input: {
   normalizedText: string;
   userId: number;
+  tenantId: number;
   userLanguage: string;
 }): Promise<ChatShortcutRouteResult | null> {
   const contentStateShortcut = parseContentStateShortcut(input.normalizedText);
   if (contentStateShortcut) {
     const requestedLanguage = resolveContentShortcutLanguage(input.normalizedText, input.userLanguage);
-    const shortcut = await buildContentStateShortcutResponse(contentStateShortcut, input.userId, requestedLanguage);
+    const shortcut = await buildContentStateShortcutResponse(
+      contentStateShortcut,
+      input.userId,
+      requestedLanguage,
+      input.tenantId,
+    );
     return buildShortcutResponse({
       text: shortcut.text,
       domain: 'content',

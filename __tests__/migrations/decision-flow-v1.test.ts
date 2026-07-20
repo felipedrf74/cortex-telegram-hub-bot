@@ -104,7 +104,7 @@ describe('migration 227 — Decision flow v1', () => {
   });
 
   it('survives runtime self-healing before the production runner applies migration 227', () => {
-    const db = createMigratedTestDatabase({ excludeFiles: ['227_decision_flow_v1.sql'] });
+    const db = createMigratedTestDatabase({ stopBefore: '227_decision_flow_v1.sql' });
     try {
       withDatabaseForTest(db, () => ensureDecisionCenterTables());
 
@@ -119,9 +119,7 @@ describe('migration 227 — Decision flow v1', () => {
   });
 
   it('recovers when decision flow 227 is applied before upstream migration 226', () => {
-    const db = createMigratedTestDatabase({
-      excludeFiles: ['226_paid_ai_cost_controls.sql', '227_decision_flow_v1.sql'],
-    });
+    const db = createMigratedTestDatabase({ stopBefore: '226_paid_ai_cost_controls.sql' });
     try {
       applyMigrationFileForTest(db, '227_decision_flow_v1.sql');
       expect(() => applyMigrationFileForTest(db, '226_paid_ai_cost_controls.sql')).not.toThrow();

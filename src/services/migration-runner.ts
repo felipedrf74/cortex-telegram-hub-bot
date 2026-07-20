@@ -3,6 +3,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'node:crypto';
 
 type MigrationLogger = Pick<typeof import('../utils/logger').logger, 'info' | 'warn'>;
 
@@ -18,6 +19,22 @@ const LEGACY_MIGRATION_PREFIX_COLLISIONS: Record<string, string[]> = {
   '023': ['023_fitness_training_plans.sql', '023_onboarding.sql'],
   '024': ['024_cooking_tables.sql', '024_usage_metering.sql'],
 };
+
+const migrationFunctionsRegistered = new WeakSet<Database.Database>();
+
+/** Deterministic, non-secret hashing helpers used by data-copy migrations. */
+export function ensureMigrationSqlFunctions(database: Database.Database): void {
+  if (migrationFunctionsRegistered.has(database)) return;
+  database.function('nexus_sha256', { deterministic: true }, (value: unknown) => (
+    createHash('sha256').update(String(value ?? '')).digest('hex')
+  ));
+  database.function('nexus_plain_text_revision_hash', { deterministic: true }, (value: unknown) => (
+    createHash('sha256')
+      .update(JSON.stringify({ format: 'plain_text', text: String(value ?? '') }))
+      .digest('hex')
+  ));
+  migrationFunctionsRegistered.add(database);
+}
 
 function sameMembers(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
@@ -108,6 +125,7 @@ function applyMigration(
   rawSql: string,
   logger?: MigrationLogger,
 ): void {
+  ensureMigrationSqlFunctions(database);
   const needsForeignKeysOff = /\bPRAGMA\s+foreign_keys\s*=\s*OFF\b/i.test(rawSql);
   const priorForeignKeys = Number(database.pragma('foreign_keys', { simple: true })) === 1;
   const sql = filterAlreadyAppliedAddColumnStatements(
@@ -136,6 +154,10 @@ export function applyPendingMigrations(
     logger?: MigrationLogger;
   } = {},
 ): void {
+  // SQLite functions are connection-local. Register them even when every
+  // migration is already applied so runtime readiness views remain queryable
+  // after another process opens the same migrated database.
+  ensureMigrationSqlFunctions(database);
   const migrationsDir = path.resolve(__dirname, '../../migrations');
   if (!fs.existsSync(migrationsDir)) {
     options.logger?.warn('Migrations directory not found');

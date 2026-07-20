@@ -63,19 +63,25 @@ describe('saved ideas user scoping', () => {
     }
   });
 
-  it('scopes mark-used/promote/delete mutations by user id', () => {
-    const userA = saveIdea({ title: 'A idea', sourceDate: '2026-05-07', userId: 101 });
-    const userB = saveIdea({ title: 'B idea', sourceDate: '2026-05-07', userId: 202 });
+  it('keeps the compatibility archive readable by owner but freezes every mutation', () => {
+    testDb.prepare(`
+      INSERT INTO saved_ideas (title, source_date, user_id)
+      VALUES ('A idea', '2026-05-07', 101), ('B idea', '2026-05-07', 202)
+    `).run();
+    const userA = getSavedIdeas('saved', 101)[0];
+    const userB = getSavedIdeas('saved', 202)[0];
 
-    expect(markIdeaPromoted(userA.id, 202)).toBe(false);
-    expect(markIdeaPromoted(userA.id, 101)).toBe(true);
-    expect(markIdeaUsed(userB.id, 101)).toBe(false);
-    expect(markIdeaUsed(userB.id, 202)).toBe(true);
-    expect(deleteIdea(userB.id, 101)).toBe(false);
-
-    const a = testDb.prepare('SELECT status FROM saved_ideas WHERE id = ?').get(userA.id) as { status: string };
-    const b = testDb.prepare('SELECT status FROM saved_ideas WHERE id = ?').get(userB.id) as { status: string };
-    expect(a.status).toBe('promoted');
-    expect(b.status).toBe('used');
+    for (const mutation of [
+      () => saveIdea({ title: 'New orphan', sourceDate: '2026-05-07', userId: 101 }),
+      () => markIdeaPromoted(userA.id, 101),
+      () => markIdeaUsed(userB.id, 202),
+      () => deleteIdea(userB.id, 202),
+    ]) {
+      expect(mutation).toThrow(/read-only compatibility archive.*Content workspace/i);
+    }
+    expect(testDb.prepare('SELECT id, status FROM saved_ideas ORDER BY id').all()).toEqual([
+      { id: userA.id, status: 'saved' },
+      { id: userB.id, status: 'saved' },
+    ]);
   });
 });

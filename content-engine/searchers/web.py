@@ -1,5 +1,6 @@
 """
-Web search via SerpAPI.  Falls back to mock data when SERPAPI_API_KEY is empty.
+Web search via SerpAPI. Synthetic results are available only in explicit
+fixture mode; an unconfigured production/development searcher returns no data.
 
 SerpAPI returns Google results as structured JSON — no scraping needed.
 Free tier: 100 searches/month.
@@ -28,9 +29,15 @@ class WebSearcher:
     name = "web"
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        if not cfg.serpapi_key:
-            logger.debug("No SERPAPI_API_KEY — returning mock results")
+        if getattr(cfg, "fixture_mode", False):
+            logger.debug("Content-engine fixture mode — returning synthetic web results")
             return self._mock(query, max_results)
+        if getattr(cfg, "research_network_disabled", False):
+            logger.info("Web search disabled for this isolated runtime")
+            return []
+        if not cfg.serpapi_key:
+            logger.info("Web search unavailable because SERPAPI_API_KEY is not configured")
+            return []
 
         params = {
             "q": query,

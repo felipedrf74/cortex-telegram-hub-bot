@@ -54,6 +54,52 @@ EOF
 
 ensure_dirs() {
   mkdir -p "$STATE_DIR" "$LOG_DIR" "$ROOT/data"
+  if [[ "${NEXUS_CONTENT_LIVE_EVAL_RUNTIME:-0}" == "1" ]]; then
+    chmod 700 "$STATE_DIR" "$LOG_DIR"
+  fi
+}
+
+run_backend_process() {
+  if [[ "${NEXUS_CONTENT_LIVE_EVAL_RUNTIME:-0}" != "1" ]]; then
+    exec node dist/index.js
+  fi
+  exec env -i \
+    HOME="${HOME:-/tmp}" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+    NODE_ENV=development ENV=development STAGING=false \
+    NEXUS_CONTENT_LIVE_EVAL_RUNTIME=1 NEXUS_BACKGROUND_JOBS_ENABLED=0 \
+    CONTENT_LIVE_EVAL_ENABLED=1 NEXUS_LOCAL_ALLOW_MODEL_CALLS=1 \
+    PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED=true \
+    DATABASE_PATH="$DATABASE_PATH" PORTAL_ENABLED=true PORTAL_BIND=127.0.0.1 PORTAL_PORT="$PORTAL_PORT" \
+    PORTAL_ALLOW_LOCAL_BYPASS=true HEALTH_ALLOW_UNAUTHENTICATED=true IOS_API_ENABLED=true \
+    IOS_API_JWT_SECRET="$IOS_API_JWT_SECRET" IOS_INVITE_CODE="$IOS_INVITE_CODE" IOS_OWNER_CODE="$IOS_OWNER_CODE" \
+    PAYWALL_ENABLED=false OAUTH_ENCRYPTION_KEY="$OAUTH_ENCRYPTION_KEY" FINANCE_ENCRYPTION_ENABLED=false BACKUP_ENABLED=false \
+    CONTENT_ENGINE_ENABLED=true CONTENT_ENGINE_PORT="$CONTENT_ENGINE_PORT" CONTENT_ENGINE_BASE_URL="http://127.0.0.1:$CONTENT_ENGINE_PORT" \
+    INTERNAL_API_SECRET="$INTERNAL_API_SECRET" INTERNAL_ATTRIBUTION_SECRET="${INTERNAL_ATTRIBUTION_SECRET:-$INTERNAL_API_SECRET}" INTERNAL_REQUIRE_LOOPBACK=true \
+    TELEGRAM_LEGACY_DELIVERY=false TELEGRAM_BOT_TOKEN=content-live-eval-disabled \
+    LOG_LEVEL="${LOG_LEVEL:-info}" TIMEZONE="${TIMEZONE:-Europe/Lisbon}" AI_CALL_TIMEOUT_MS="${AI_CALL_TIMEOUT_MS:-15000}" \
+    GLOBAL_DAILY_COST_LIMIT="$GLOBAL_DAILY_COST_LIMIT" PER_USER_DAILY_USD_CAP="${PER_USER_DAILY_USD_CAP:-1.00}" \
+    OPENAI_API_KEY="${OPENAI_API_KEY:-}" OPENAI_MODEL="${OPENAI_MODEL:-}" OPENAI_CLASSIFIER_MODEL="${OPENAI_CLASSIFIER_MODEL:-}" \
+    GEMINI_API_KEY="${GEMINI_API_KEY:-}" GEMINI_MODEL="${GEMINI_MODEL:-}" GEMINI_CLASSIFIER_MODEL="${GEMINI_CLASSIFIER_MODEL:-}" GEMINI_FALLBACK_MODEL="${GEMINI_FALLBACK_MODEL:-}" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" ANTHROPIC_ENABLED="${ANTHROPIC_ENABLED:-false}" ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-}" ANTHROPIC_CLASSIFIER_MODEL="${ANTHROPIC_CLASSIFIER_MODEL:-}" \
+    AI_CLASSIFY_PRIMARY="${AI_CLASSIFY_PRIMARY:-}" AI_CLASSIFY_FALLBACK="${AI_CLASSIFY_FALLBACK:-}" \
+    AI_CHAT_PRIMARY="${AI_CHAT_PRIMARY:-}" AI_CHAT_FALLBACK="${AI_CHAT_FALLBACK:-}" \
+    AI_TOOL_USE_PRIMARY="${AI_TOOL_USE_PRIMARY:-}" AI_TOOL_USE_FALLBACK="${AI_TOOL_USE_FALLBACK:-}" \
+    AI_SCRIPT_GENERATION_PRIMARY="${AI_SCRIPT_GENERATION_PRIMARY:-}" AI_SCRIPT_GENERATION_FALLBACK="${AI_SCRIPT_GENERATION_FALLBACK:-}" \
+    node dist/index.js
+}
+
+run_content_engine_process() {
+  local python_bin="$1"
+  if [[ "${NEXUS_CONTENT_LIVE_EVAL_RUNTIME:-0}" != "1" ]]; then
+    exec "$python_bin" main.py
+  fi
+  exec env -i \
+    HOME="${HOME:-/tmp}" PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" \
+    PYTHONPATH="$ROOT/content-engine" NODE_ENV=development ENV=development \
+    NEXUS_CONTENT_LIVE_EVAL_RUNTIME=1 NEXUS_LOCAL_ALLOW_MODEL_CALLS=1 CONTENT_ENGINE_FIXTURE_MODE=0 CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED=1 \
+    CONTENT_ENGINE_PORT="$CONTENT_ENGINE_PORT" NEXUS_BACKEND_BASE_URL="$BASE_URL" \
+    INTERNAL_API_SECRET="$INTERNAL_API_SECRET" \
+    "$python_bin" main.py
 }
 
 source_env_file() {
@@ -175,7 +221,11 @@ start_backend() {
   echo "Starting local backend on ${PORTAL_BIND}:${PORTAL_PORT} with DB ${DATABASE_PATH}"
   (
     cd "$ROOT"
-    nohup node dist/index.js >"$LOG_DIR/backend.log" 2>&1 < /dev/null &
+    if [[ "${NEXUS_CONTENT_LIVE_EVAL_RUNTIME:-0}" == "1" ]]; then
+      run_backend_process >"$LOG_DIR/backend.log" 2>&1 < /dev/null &
+    else
+      nohup node dist/index.js >"$LOG_DIR/backend.log" 2>&1 < /dev/null &
+    fi
     echo $! > "$BACKEND_PID_FILE"
   )
   if ! wait_for_url "$BASE_URL/api/v1/" "iOS API"; then
@@ -210,7 +260,11 @@ start_content_engine() {
   echo "Starting content engine on 127.0.0.1:${CONTENT_ENGINE_PORT}"
   (
     cd "$ROOT/content-engine"
-    nohup "$python_bin" main.py >"$LOG_DIR/content-engine.log" 2>&1 < /dev/null &
+    if [[ "${NEXUS_CONTENT_LIVE_EVAL_RUNTIME:-0}" == "1" ]]; then
+      run_content_engine_process "$python_bin" >"$LOG_DIR/content-engine.log" 2>&1 < /dev/null &
+    else
+      nohup "$python_bin" main.py >"$LOG_DIR/content-engine.log" 2>&1 < /dev/null &
+    fi
     echo $! > "$CONTENT_PID_FILE"
   )
   wait_for_url "http://127.0.0.1:${CONTENT_ENGINE_PORT}/health" "content engine"
@@ -252,11 +306,35 @@ command_health() {
 command_auth_token() {
   ensure_dirs
   load_env
+  local legal_metadata
+  legal_metadata="$(mktemp)"
+  curl -fsS \
+    -H "Accept: application/json" \
+    "$BASE_URL/api/v1/legal/current" > "$legal_metadata"
   local payload
   payload="$(mktemp)"
-  cat > "$payload" <<EOF
-{"deviceId":"${LOCAL_DEVICE_ID}","deviceName":"Local Full Nexus Smoke","inviteCode":"${LOCAL_INVITE_CODE}"}
+  node - "$legal_metadata" "$payload" "$LOCAL_DEVICE_ID" "$LOCAL_INVITE_CODE" <<'EOF'
+const fs = require('fs');
+const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const legal = metadata.data || metadata;
+const termsVersion = legal.documents?.terms?.version;
+const privacyVersion = legal.documents?.privacy?.version;
+if (!termsVersion || !privacyVersion) {
+  console.error('Legal metadata did not contain current terms and privacy versions');
+  process.exit(1);
+}
+fs.writeFileSync(process.argv[3], JSON.stringify({
+  deviceId: process.argv[4],
+  deviceName: 'Local Full Nexus Smoke',
+  inviteCode: process.argv[5],
+  acceptedLegal: {
+    accepted: true,
+    termsVersion,
+    privacyVersion,
+  },
+}));
 EOF
+  rm -f "$legal_metadata"
   local response
   response="$(mktemp)"
   echo "Registering local sandbox iOS user at $BASE_URL/api/v1/auth/register"

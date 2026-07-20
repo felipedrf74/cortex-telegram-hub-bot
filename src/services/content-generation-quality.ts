@@ -50,6 +50,13 @@ export interface ContentGenerationPackageInput {
   previousContentPatterns?: string[];
   noveltyConstraints?: string[];
   outputVisibilityScope?: string | null;
+  /**
+   * Internal-only evaluation boundary. Builds a neutral package without
+   * reading references, creator memory, prior artifacts, or novelty history.
+   * Callers must separately enforce the fixed synthetic corpus and isolated
+   * runtime contract.
+   */
+  syntheticEvaluationIsolation?: boolean;
 }
 
 export interface ContentGenerationPackage {
@@ -166,39 +173,79 @@ export function normalizeContentGenerationFormat(value?: string | null): Content
 
 export function buildContentGenerationPackage(input: ContentGenerationPackageInput): ContentGenerationPackage {
   const tenantId = resolveContentTenantId(input.userId, input.tenantId);
+  const isolatedEvaluation = input.syntheticEvaluationIsolation === true;
   const formatId = normalizeContentGenerationFormat(input.formatId ?? input.platformId);
   const formatDefinition = getPlatformFormatDefinition(formatId);
   if (!formatDefinition) throw new Error(`Unsupported content format: ${formatId}`);
 
   const platformId = input.platformId?.trim()
     || String(formatDefinition.platforms[0] ?? 'generic');
-  const references = input.references ?? buildAuthorizedContentReferenceContext(input.userId, tenantId).references;
+  const references = input.references ?? (isolatedEvaluation
+    ? []
+    : buildAuthorizedContentReferenceContext(input.userId, tenantId).references);
   const selectedReferences = rankReferencesForTopic(references, input.topic).slice(0, 8);
-  const voiceContext = buildContentCreativeProfileContext({
-    tenantId,
-    userId: input.userId,
-    platform: platformId,
-    outputVisibilityScope: input.outputVisibilityScope ?? 'user_private',
-  });
+  const voiceContext: ContentCreativeProfileContext = isolatedEvaluation
+    ? {
+      tenantId,
+      userId: input.userId,
+      platform: platformId,
+      contextBlock: '',
+      memories: [],
+      appliedMemoryKeys: [],
+      omittedPrivateMemoryKeys: [],
+      warnings: ['profile_missing_critical_memory'],
+      followUpQuestions: [],
+      quality: {
+        completenessScore: 0,
+        confidenceScore: 0,
+        staleCount: 0,
+        missingCriticalKeys: ['voice.tone', 'brand.audience', 'brand.content_pillars'],
+      },
+    }
+    : buildContentCreativeProfileContext({
+      tenantId,
+      userId: input.userId,
+      platform: platformId,
+      outputVisibilityScope: input.outputVisibilityScope ?? 'user_private',
+    });
   const sourceConfidence = average(selectedReferences.map((ref) => Math.min(ref.confidence, ref.qualityScore)));
   const reviewWarnings = buildGenerationWarnings(selectedReferences, voiceContext, sourceConfidence, input);
   const sourceGrounding = selectedReferences.length === 0
     ? 'ungrounded'
     : selectedReferences.some((ref) => ref.needsReview) ? 'partially_grounded' : 'grounded';
-  const noveltyDecision = assessContentNovelty({
-    userId: input.userId,
-    tenantId,
-    visibilityScope: input.outputVisibilityScope === 'tenant_shared' ? 'tenant_shared' : 'user_private',
-    artifactType: String(formatDefinition.primaryObjectType),
-    title: input.topic,
-    topic: input.topic,
-    platformId,
-    formatId,
-    audience: input.audience,
-    contentPillar: input.contentPillar,
-    referenceIds: selectedReferences.map((ref) => ref.sourceId),
-    sourceRadarSignalId: input.radarSignalId,
-  });
+  const noveltyDecision: ContentNoveltyDecision = isolatedEvaluation
+    ? {
+      status: 'novel',
+      noveltyScore: 1,
+      duplicationRisk: 0,
+      reuseAllowed: false,
+      matchedCandidates: [],
+      reasonCodes: ['synthetic_evaluation_has_no_content_history'],
+      reviewWarnings: [],
+      strategicReuse: {
+        intent: 'none',
+        originalContentId: null,
+        transformationType: null,
+        platformChanged: false,
+        formatChanged: false,
+        angleChanged: false,
+        referenceChanged: false,
+      },
+    }
+    : assessContentNovelty({
+      userId: input.userId,
+      tenantId,
+      visibilityScope: input.outputVisibilityScope === 'tenant_shared' ? 'tenant_shared' : 'user_private',
+      artifactType: String(formatDefinition.primaryObjectType),
+      title: input.topic,
+      topic: input.topic,
+      platformId,
+      formatId,
+      audience: input.audience,
+      contentPillar: input.contentPillar,
+      referenceIds: selectedReferences.map((ref) => ref.sourceId),
+      sourceRadarSignalId: input.radarSignalId,
+    });
   const noveltyConstraints = input.noveltyConstraints?.length
     ? input.noveltyConstraints
     : buildContentNoveltyConstraintLines(noveltyDecision);

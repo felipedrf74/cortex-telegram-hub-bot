@@ -42,6 +42,11 @@ export function buildContentPipelineSummaryRoute(
   input: BuildChatCoreV2DeterministicReadRouteInput,
   routeGuess: ChatCoreV2ShadowRouteGuess,
 ): ChatCoreV2DeterministicReadRouteResult | null {
+  // The legacy desk, pillars, learning, and performance producers are still
+  // personal-tenant read models. Never mix those with tenant-aware signals or
+  // silently substitute userId for a distinct tenant. Until every producer is
+  // tenant-scoped, leave the request unhandled before reading any Content data.
+  if (input.tenantId !== input.userId) return null;
   const now = input.now ?? new Date();
   const topics = getTopics(input.userId, { includeTerminal: false, limit: CONTENT_TOPIC_SCAN_LIMIT });
   const deskItems = getContentDeskItems(input.userId, CONTENT_DESK_SCAN_LIMIT);

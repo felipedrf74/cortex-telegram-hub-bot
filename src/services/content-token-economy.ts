@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import type { ScriptGenerationMode, SourceReference, ScriptResponse } from './content-engine';
 import type { DailyQuotaStatus } from './cost-guardrail';
 import { contentBigramDice, contentTokenJaccard } from './content-text-utils';
+import { classifyContentClaimRisk } from './content-claim-safety';
 
 export type ExtendedScriptGenerationMode = ScriptGenerationMode | 'draft';
 export type ContentBudgetState = 'healthy' | 'watch' | 'constrained' | 'exhausted';
@@ -680,7 +681,19 @@ export function buildClaimLedger(input: {
   const sentences = input.text
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length > 24 && /(\d|%|research|study|estudo|dados|people|users|clientes|sempre|always|never|nunca)/i.test(sentence))
+    .map((sentence, index) => ({
+      sentence,
+      index,
+      highRisk: classifyContentClaimRisk(sentence) !== 'standard',
+    }))
+    .filter(({ sentence, highRisk }) => sentence.length > 24 && (
+      highRisk
+      || /(\d|%|research|study|estudo|dados|people|users|clientes|sempre|always|never|nunca)/i.test(sentence)
+    ))
+    // Never let low-risk provider text crowd a high-risk claim out of the
+    // bounded ledger. Preserve source order inside each safety tier.
+    .sort((left, right) => Number(right.highRisk) - Number(left.highRisk) || left.index - right.index)
+    .map(({ sentence }) => sentence)
     .slice(0, 12);
   const sourceText = (input.sourcePackage?.sourceSummaries ?? []).join(' ').toLowerCase();
   const voiceText = input.voiceCard?.promptText.toLowerCase() ?? '';

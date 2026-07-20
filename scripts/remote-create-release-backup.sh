@@ -206,6 +206,8 @@ if [ "$FINGERPRINT_BEFORE" != "$FINGERPRINT_AFTER" ]; then
   exit 1
 fi
 assert_no_database_handles
+DATABASE_SHA256="$(sha256sum "$REMOTE_DIR/data/bot.db" | awk '{print $1}')"
+[[ "$DATABASE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "database SHA-256 is invalid" >&2; exit 1; }
 
 catalog_present=false
 if [ -d "$REMOTE_DIR/catalog" ]; then
@@ -347,6 +349,11 @@ try {
   db.close();
 }
 NODE
+ARCHIVED_DATABASE_SHA256="$(sha256sum "$VERIFY_DIR/data/bot.db" | awk '{print $1}')"
+[ "$ARCHIVED_DATABASE_SHA256" = "$DATABASE_SHA256" ] || {
+  echo "archived database digest does not match the stopped source" >&2
+  exit 1
+}
 
 mv -f "$TMP_ARCHIVE" "$ARCHIVE"
 trap - EXIT
@@ -354,8 +361,23 @@ rm -rf "$META_DIR"
 [ -z "$PREPARED_RUNTIME_DIR" ] || rm -rf "$PREPARED_RUNTIME_DIR"
 
 SIZE="$(du -h "$ARCHIVE" | cut -f1)"
+if stat -c '%s' "$ARCHIVE" >/dev/null 2>&1; then
+  SIZE_BYTES="$(stat -c '%s' "$ARCHIVE")"
+else
+  SIZE_BYTES="$(stat -f '%z' "$ARCHIVE")"
+fi
+ARCHIVE_SHA256="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+BACKUP_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+[[ "$SIZE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo "backup byte size is invalid" >&2; exit 1; }
+[[ "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "backup SHA-256 is invalid" >&2; exit 1; }
 echo "   Backup created ($SIZE, archived version $ARCHIVED_VERSION, catalog: $catalog_present)"
 echo "NEXUS_BACKUP_FILE=$ARCHIVE"
+echo "NEXUS_BACKUP_SHA256=$ARCHIVE_SHA256"
+echo "NEXUS_BACKUP_SIZE_BYTES=$SIZE_BYTES"
+echo "NEXUS_BACKUP_ARCHIVED_VERSION=$ARCHIVED_VERSION"
+echo "NEXUS_BACKUP_TARGET_VERSION=$TARGET_VERSION"
+echo "NEXUS_BACKUP_CREATED_AT=$BACKUP_CREATED_AT"
+echo "NEXUS_BACKUP_DATABASE_SHA256=$DATABASE_SHA256"
 
 # Retention: keep the ten most recent deploy backups.
 while IFS= read -r stale_backup; do

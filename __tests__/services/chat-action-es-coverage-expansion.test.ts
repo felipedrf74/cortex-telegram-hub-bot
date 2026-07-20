@@ -100,8 +100,8 @@ const FIXTURES: EsFixture[] = [
   {
     text: 'Programa este video para mañana',
     expectedSkill: 'content',
-    expectedAction: 'content_schedule_work',
-    reason: 'Spanish "programa" + "video" — content scheduling intent.',
+    expectedAction: 'content_publish_now',
+    reason: 'Spanish scheduled-publication wording fails closed without a publishing provider.',
   },
   {
     text: 'Crea una campaña para Instagram sobre fitness',

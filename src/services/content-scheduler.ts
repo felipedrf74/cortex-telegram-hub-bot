@@ -14,20 +14,16 @@
  *   - content-scheduler.ts → user's OWN manually-entered topics with
  *     optional publish dates, edited and reviewed interactively
  *
- * Both feed into the broader "content pipeline" concept but have
- * different data shapes and lifecycles, so they live in separate
- * tables (content_topic_feedback vs content_topics) and separate
- * service files.
+ * Migration 247 keeps this public API as a compatibility facade while all
+ * topic CRUD persists through the canonical Content workspace. The retired
+ * content_topics table is read-only and no longer a runtime write path.
  *
  * Status lifecycle:
  *   planned   → drafting → ready → published  (forward, happy path)
  *                                  → cancelled (abandoned, terminal)
  *
- * The service is deliberately boring: thin CRUD + one helper for the
- * "upcoming within N days" query the iOS landing page needs to show a
- * preview count. Anything smarter (AI prompts, calendar integration,
- * topic → pipeline advance) is intentionally out of scope for this
- * module.
+ * Scheduling here means a private workspace deadline only. Secretary work
+ * blocks use the separate preview + explicit-confirmation contract.
  */
 
 import { DateTime } from 'luxon';
@@ -46,7 +42,17 @@ import {
   type TrainingWeek,
 } from './training-plans';
 import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from './unified-calendar';
-import { contentScopeForInsert } from './content-tenant-scope';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import {
+  countUpcomingContentTopicCompatibility,
+  createContentTopicCompatibility,
+  deleteContentTopicCompatibility,
+  findContentTopicCompatibilityByClientRequestId,
+  getContentTopicCompatibility,
+  listContentTopicCompatibility,
+  updateContentTopicCompatibility,
+  type ContentTopicCompatibilityCreatePayload,
+} from './content-topic-workspace-compat';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -79,6 +85,12 @@ export interface ContentTopic {
   secretary_sync_error?: string | null;
   created_at: string;
   updated_at: string;
+  /** Canonical workspace identity exposed additively during legacy API exit. */
+  workspace_item_id?: number;
+  compatibility_artifact_id?: number;
+  compatibility_schema_version?: string;
+  compatibility_mode?: string;
+  schedule_semantics?: string;
 }
 
 export interface ContentFilmingRecommendation {
@@ -106,102 +118,35 @@ export const CONTENT_TOPIC_STATUSES: ContentTopicStatus[] = [
 
 // ─── Create ─────────────────────────────────────────────────────────
 
+export interface ContentTopicCreateOptions {
+  notes?: string | null;
+  scheduledDate?: string | null;
+  scheduledAt?: string | null;
+  status?: ContentTopicStatus;
+  tenantId?: number | null;
+  /**
+   * BE-2/BE-3 (Content Studio): creation provenance recorded on the
+   * immutable canonical idea revision. `clientRequestId` is the retry-safe
+   * mutation identity used by supported clients.
+   */
+  provenance?: { source?: string | null; clientRequestId?: string | null } | null;
+}
+
 export function addTopic(
   userId: number,
   title: string,
-  opts?: {
-    notes?: string | null;
-    scheduledDate?: string | null;
-    scheduledAt?: string | null;
-    status?: ContentTopicStatus;
-    tenantId?: number | null;
-    /**
-     * BE-2/BE-3 (Content Studio): creation provenance recorded inside
-     * audit_metadata_json — `source` distinguishes quick-capture topics
-     * ("capture") from deliberate creation, and `clientRequestId` is the
-     * idempotency anchor for retry-safe creates. Additive: absent on
-     * legacy callers, and skipped entirely on pre-scope-column databases.
-     */
-    provenance?: { source?: string | null; clientRequestId?: string | null } | null;
-  },
+  opts?: ContentTopicCreateOptions,
 ): ContentTopic {
-  const db = getDb();
-  const status = opts?.status ?? 'planned';
-  const scope = contentScopeForInsert(userId, opts?.tenantId, 'user_private', status);
-  const hasScopeColumns = hasColumn('content_topics', 'tenant_id')
-    && hasColumn('content_topics', 'owner_user_id')
-    && hasColumn('content_topics', 'scope_status');
-  let auditMetadataJson = scope.auditMetadataJson;
-  const provenanceSource = opts?.provenance?.source ?? null;
-  const provenanceRequestId = opts?.provenance?.clientRequestId ?? null;
-  if (provenanceSource != null || provenanceRequestId != null) {
-    try {
-      const audit = JSON.parse(auditMetadataJson || '{}') as Record<string, unknown>;
-      audit.provenance = {
-        ...(provenanceSource != null ? { source: provenanceSource } : {}),
-        ...(provenanceRequestId != null ? { clientRequestId: provenanceRequestId } : {}),
-      };
-      auditMetadataJson = JSON.stringify(audit);
-    } catch {
-      // Never let malformed scope metadata block a topic create.
-    }
-  }
-  const result = hasScopeColumns
-    ? db
-      .prepare(
-        `INSERT INTO content_topics (
-           user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
-           scope_status, created_by, updated_by, audit_metadata_json,
-           title, notes, scheduled_date, status
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        userId,
-        scope.tenantId,
-        scope.ownerUserId,
-        scope.visibilityScope,
-        scope.lifecycleState,
-        scope.scopeStatus,
-        scope.createdBy,
-        scope.updatedBy,
-        auditMetadataJson,
-        title,
-        opts?.notes ?? null,
-        opts?.scheduledDate ?? null,
-        status,
-      )
-    : db
-      .prepare(
-        `INSERT INTO content_topics (user_id, title, notes, scheduled_date, status)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        userId,
-        title,
-        opts?.notes ?? null,
-        opts?.scheduledDate ?? null,
-        status,
-      );
-
-  if (opts?.scheduledAt !== undefined || hasColumn('content_topics', 'scheduled_at')) {
-    try {
-      db.prepare('UPDATE content_topics SET scheduled_at = ? WHERE id = ?')
-        .run(opts?.scheduledAt ?? null, result.lastInsertRowid);
-    } catch {
-      // Older local databases/tests may not have migration 078 applied.
-    }
-  }
-
-  const row = db
-    .prepare('SELECT * FROM content_topics WHERE id = ?')
-    .get(result.lastInsertRowid) as ContentTopic;
-
-  logger.info(
-    { userId, topicId: row.id, title, status: row.status, scheduledDate: row.scheduled_date },
-    'Content topic created',
-  );
-  return row;
+  return createContentTopicCompatibility({
+    scope: { tenantId: opts?.tenantId ?? userId, userId },
+    title,
+    notes: opts?.notes,
+    scheduledDate: opts?.scheduledDate,
+    scheduledAt: opts?.scheduledAt,
+    status: opts?.status,
+    source: opts?.provenance?.source,
+    idempotencyKey: opts?.provenance?.clientRequestId,
+  }).topic;
 }
 
 /**
@@ -213,24 +158,18 @@ export function addTopic(
  * Gracefully returns null on databases without the audit column or
  * json_extract support.
  */
-export function findTopicByClientRequestId(userId: number, clientRequestId: string): ContentTopic | null {
-  const trimmed = clientRequestId.trim();
-  if (!trimmed) return null;
-  if (!hasColumn('content_topics', 'audit_metadata_json')) return null;
-  try {
-    const row = getDb()
-      .prepare(
-        `SELECT * FROM content_topics
-         WHERE user_id = ?
-           AND json_extract(audit_metadata_json, '$.provenance.clientRequestId') = ?
-         ORDER BY id DESC
-         LIMIT 1`,
-      )
-      .get(userId, trimmed) as ContentTopic | undefined;
-    return row ?? null;
-  } catch {
-    return null;
-  }
+export function findTopicByClientRequestId(
+  userId: number,
+  clientRequestId: string,
+  tenantId: number = userId,
+  expected?: ContentTopicCompatibilityCreatePayload,
+): ContentTopic | null {
+  return findContentTopicCompatibilityByClientRequestId(
+    { tenantId, userId },
+    clientRequestId,
+    undefined,
+    expected,
+  );
 }
 
 // ─── Read ───────────────────────────────────────────────────────────
@@ -256,60 +195,24 @@ export function getTopics(
     /** Exclude cancelled + published by default — caller can opt in. */
     includeTerminal?: boolean;
     limit?: number;
+    /** Required scope for internal/cross-skill callers; defaults to owner tenant for compatibility. */
+    tenantId?: number;
   },
 ): ContentTopic[] {
-  const db = getDb();
-  const conditions: string[] = ['user_id = ?'];
-  const params: any[] = [userId];
-
-  if (filters?.status) {
-    conditions.push('status = ?');
-    params.push(filters.status);
-  } else if (!filters?.includeTerminal) {
-    // Default: hide cancelled topics. Published topics stay visible
-    // because the user often wants to see "what did I ship lately?"
-    // immediately after a publish.
-    conditions.push("status != 'cancelled'");
-  }
-
-  if (filters?.scheduledOnly) {
-    conditions.push('scheduled_date IS NOT NULL');
-  }
-
-  if (filters?.from) {
-    conditions.push('(scheduled_date IS NULL OR scheduled_date >= ?)');
-    params.push(filters.from);
-  }
-
-  if (filters?.to) {
-    conditions.push('(scheduled_date IS NULL OR scheduled_date <= ?)');
-    params.push(filters.to);
-  }
-
-  // Composite sort: scheduled topics first by date, unscheduled last
-  // by updated_at descending.
-  const sql = `
-    SELECT *
-    FROM content_topics
-    WHERE ${conditions.join(' AND ')}
-    ORDER BY
-      CASE WHEN scheduled_date IS NULL THEN 1 ELSE 0 END,
-      scheduled_date ASC,
-      updated_at DESC
-    LIMIT ?
-  `;
-  params.push(filters?.limit ?? 100);
-
-  return db.prepare(sql).all(...params) as ContentTopic[];
+  return listContentTopicCompatibility({
+    scope: { tenantId: filters?.tenantId ?? userId, userId },
+    status: filters?.status,
+    from: filters?.from,
+    to: filters?.to,
+    scheduledOnly: filters?.scheduledOnly,
+    includeTerminal: filters?.includeTerminal,
+    limit: filters?.limit,
+  });
 }
 
 /** Fetch a single topic by id, scoped to user_id. Returns null on miss. */
-export function getTopicById(userId: number, topicId: number): ContentTopic | null {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT * FROM content_topics WHERE id = ? AND user_id = ?')
-    .get(topicId, userId) as ContentTopic | undefined;
-  return row ?? null;
+export function getTopicById(userId: number, topicId: number, tenantId: number = userId): ContentTopic | null {
+  return getContentTopicCompatibility({ tenantId, userId }, topicId);
 }
 
 /**
@@ -320,22 +223,9 @@ export function getTopicById(userId: number, topicId: number): ContentTopic | nu
 export function getUpcomingTopicCount(
   userId: number,
   daysAhead: number = 14,
+  tenantId: number = userId,
 ): number {
-  const db = getDb();
-  const today = DateTime.now().setZone(config.app.timezone).startOf('day');
-  const future = today.plus({ days: daysAhead });
-  const result = db
-    .prepare(
-      `SELECT COUNT(*) as count
-       FROM content_topics
-       WHERE user_id = ?
-         AND scheduled_date IS NOT NULL
-         AND scheduled_date >= ?
-         AND scheduled_date <= ?
-         AND status NOT IN ('cancelled', 'published')`,
-    )
-    .get(userId, today.toISODate(), future.toISODate()) as { count: number };
-  return result.count;
+  return countUpcomingContentTopicCompatibility({ tenantId, userId }, daysAhead);
 }
 
 // ─── Cross-skill filming recommendation ────────────────────────────
@@ -354,9 +244,30 @@ export function getUpcomingTopicCount(
  */
 export async function getFilmingRecommendation(
   userId: number,
-  topics: ContentTopic[] = getTopics(userId, { includeTerminal: false, limit: 100 }),
+  topics: ContentTopic[] | undefined = undefined,
   tenantId?: number,
 ): Promise<ContentFilmingRecommendation | null> {
+  const resolvedTenantId = tenantId ?? userId;
+  if (
+    !isValidTenantUserId(userId)
+    || !isValidTenantUserId(resolvedTenantId)
+    || resolvedTenantId !== userId
+  ) {
+    recordTenantScopeAnomaly({
+      layer: 'service',
+      operation: 'get_content_filming_recommendation',
+      reason: resolvedTenantId !== userId ? 'tenant_mismatch' : 'invalid_user_scope',
+      userId: isValidTenantUserId(userId) ? userId : null,
+      details: { tenantId: resolvedTenantId },
+    });
+    return null;
+  }
+
+  const scopedTopics = topics ?? getTopics(userId, {
+    includeTerminal: false,
+    limit: 100,
+    tenantId: resolvedTenantId,
+  });
   const zone = config.app.timezone;
   const today = DateTime.now().setZone(zone).startOf('day');
   const windowDays = 7;
@@ -383,7 +294,7 @@ export async function getFilmingRecommendation(
   }
 
   const activeTopicDates = new Set(
-    topics
+    scopedTopics
       .filter((topic) => topic.status !== 'cancelled' && topic.status !== 'published')
       .map((topic) => topic.scheduled_date)
       .filter((date): date is string => Boolean(date)),
@@ -508,88 +419,53 @@ export function updateTopic(
     secretary_sync_status?: string | null;
     secretary_sync_error?: string | null;
   },
+  tenantId: number = userId,
+  idempotencyKey?: string,
+  compatibilityOptions: { retireLegacySchedule?: boolean } = {},
 ): ContentTopic | null {
-  const db = getDb();
-
-  const setParts: string[] = [];
-  const params: any[] = [];
-
-  if (updates.title !== undefined) {
-    setParts.push('title = ?');
-    params.push(updates.title);
+  const retiredSecretaryWrite = [
+    updates.secretary_task_list_id,
+    updates.secretary_task_list_name,
+    updates.secretary_task_external_id,
+    updates.calendar_event_id,
+    updates.calendar_source,
+    updates.secretary_sync_status,
+    updates.secretary_sync_error,
+  ].some((value) => value !== undefined);
+  if (retiredSecretaryWrite) {
+    throw new Error('content_topic_legacy_secretary_sync_is_retired');
   }
-  if (updates.notes !== undefined) {
-    setParts.push('notes = ?');
-    params.push(updates.notes);
-  }
-  if (updates.scheduled_date !== undefined) {
-    setParts.push('scheduled_date = ?');
-    params.push(updates.scheduled_date);
-  }
-  for (const [column, value] of Object.entries({
-    scheduled_at: updates.scheduled_at,
-    secretary_task_list_id: updates.secretary_task_list_id,
-    secretary_task_list_name: updates.secretary_task_list_name,
-    secretary_task_external_id: updates.secretary_task_external_id,
-    calendar_event_id: updates.calendar_event_id,
-    calendar_source: updates.calendar_source,
-    secretary_sync_status: updates.secretary_sync_status,
-    secretary_sync_error: updates.secretary_sync_error,
-  })) {
-    if (value !== undefined && hasColumn('content_topics', column)) {
-      setParts.push(`${column} = ?`);
-      params.push(value);
-    }
-  }
-  if (updates.status !== undefined) {
-    if (!CONTENT_TOPIC_STATUSES.includes(updates.status)) {
-      throw new Error(`Invalid status: ${updates.status}`);
-    }
-    setParts.push('status = ?');
-    params.push(updates.status);
-  }
-
-  if (setParts.length > 0) {
-    // Always bump updated_at on any write — drives the "last touched"
-    // sort order for unscheduled topics.
-    setParts.push("updated_at = datetime('now')");
-
-    const sql = `UPDATE content_topics SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`;
-    params.push(topicId, userId);
-    const result = db.prepare(sql).run(...params);
-    if (result.changes === 0) return null;
-    logger.info({ userId, topicId, updates }, 'Content topic updated');
-  }
-
-  return getTopicById(userId, topicId);
-}
-
-function hasColumn(table: string, column: string): boolean {
-  try {
-    const rows = getDb().prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    return rows.some((row) => row.name === column);
-  } catch {
-    return false;
-  }
+  return updateContentTopicCompatibility({
+    scope: { tenantId, userId },
+    compatTopicId: topicId,
+    title: updates.title,
+    notes: updates.notes,
+    scheduledDate: updates.scheduled_date,
+    scheduledAt: updates.scheduled_at,
+    status: updates.status,
+    retireLegacySchedule: compatibilityOptions.retireLegacySchedule,
+    idempotencyKey,
+  });
 }
 
 // ─── Delete ─────────────────────────────────────────────────────────
 
 /**
- * Hard-delete a topic. Returns true if a row was removed.
- * Note: the UI can also "cancel" (soft-delete) via updateTopic with
- * status='cancelled' — that preserves history for later review.
+ * Soft-delete the canonical item while preserving recovery history. The
+ * legacy DELETE contract still returns a boolean for older clients.
  */
-export function deleteTopic(userId: number, topicId: number): boolean {
-  const db = getDb();
-  const result = db
-    .prepare('DELETE FROM content_topics WHERE id = ? AND user_id = ?')
-    .run(topicId, userId);
-  if (result.changes > 0) {
-    logger.info({ userId, topicId }, 'Content topic deleted');
-    return true;
-  }
-  return false;
+export function deleteTopic(
+  userId: number,
+  topicId: number,
+  tenantId: number = userId,
+  idempotencyKey?: string,
+  compatibilityOptions: { retireLegacySchedule?: boolean } = {},
+): boolean {
+  return deleteContentTopicCompatibility(
+    { tenantId, userId },
+    topicId,
+    { idempotencyKey, retireLegacySchedule: compatibilityOptions.retireLegacySchedule },
+  );
 }
 
 // ─── Recommendation helpers ────────────────────────────────────────

@@ -5,11 +5,12 @@ const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (userId: number) =>
   ideas: ['Creator operating system'],
   provider: 'gemini',
   fullContent: '# Content Ideas',
-  filePath: `/tmp/content-${userId}.md`,
+  filePath: null,
+  storage: 'content_workspace',
   searchCount: 1,
 })));
 
-const mockSaveIdea = vi.hoisted(() => vi.fn());
+const mockCaptureDiscoveredIdea = vi.hoisted(() => vi.fn(() => ({ replayed: false })));
 const mockIsDuplicateIdea = vi.hoisted(() => vi.fn(async () => ({ isDuplicate: false, confidence: 0 })));
 const mockGetContentRadarPreferences = vi.hoisted(() => vi.fn(() => ({ topics: [], updatedAt: null })));
 const mockGetCachedSWR = vi.hoisted(() => vi.fn(() => null));
@@ -46,8 +47,8 @@ vi.mock('../../src/services/content-discovery', () => ({
   runContentDiscovery: mockRunContentDiscovery,
 }));
 
-vi.mock('../../src/state/saved-ideas', () => ({
-  saveIdea: (...args: unknown[]) => mockSaveIdea(...args),
+vi.mock('../../src/services/content-workspace-capture', () => ({
+  captureDiscoveredIdea: (...args: unknown[]) => mockCaptureDiscoveredIdea(...args),
 }));
 
 vi.mock('../../src/services/content-dedup', () => ({
@@ -296,7 +297,8 @@ describe('Content API — home route', () => {
       ideas: ['Creator operating system'],
       provider: 'gemini',
       fullContent: '# Content Ideas',
-      filePath: '/tmp/content-12.md',
+      filePath: null,
+      storage: 'content_workspace',
       searchCount: 1,
     });
     mockIsDuplicateIdea.mockResolvedValue({ isDuplicate: false, confidence: 0 });
@@ -357,7 +359,8 @@ describe('Content API — home route', () => {
       ideas: ['AI automation sprint', 'Training creator stack'],
       provider: 'gemini',
       fullContent: '# Content Ideas',
-      filePath: '/tmp/content-12.md',
+      filePath: null,
+      storage: 'content_workspace',
       searchCount: 2,
     });
 
@@ -396,6 +399,9 @@ describe('Content API — home route', () => {
       title: expect.stringContaining('AI automation'),
       workflowBlockers: ['Sem pesquisa ao vivo'],
     });
-    expect(mockSaveIdea).toHaveBeenCalled();
+    expect(mockCaptureDiscoveredIdea).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { tenantId: 12, userId: 12 },
+      provider: 'local-fallback',
+    }));
   });
 });

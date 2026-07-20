@@ -1,26 +1,28 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, type Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
-  canTransitionContent,
-  buildContentSecretarySchedulingIntent,
+  CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+  CONTENT_EDITORIAL_WORKFLOW_EXIT,
+  ContentEditorialCompatibilityError,
   decideContentApproval,
-  evaluateContentApprovalRequirements,
+  getContentEditorialCompatibility,
   getContentWorkflowObject,
   listContentApprovalRecords,
   listContentWorkflowEvents,
   repurposeContentWorkflowObject,
-  requestContentScheduleThroughSecretary,
   reviewContentSources,
   transitionContentWorkflow,
+  type ContentApprovalType,
+  type ContentWorkflowObject,
   type ContentWorkflowAction,
+  type ContentWorkflowReplacement,
 } from '../../services/content-editorial-workflow';
-import type { SecretaryIntentFlexibility, SecretaryIntentPriority, SecretaryTimeWindow } from '../../services/secretary-scheduling-arbitrator';
+import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
 import { logger } from '../../utils/logger';
-import { loadLiveCalendarBusyWindowsForSecretaryIntent } from '../../services/secretary-live-calendar-busy';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -29,342 +31,339 @@ type EnsureValidContentRouteScope = (
   details?: Record<string, unknown>,
 ) => userId is number;
 
+const ACTIONS = new Set<ContentWorkflowAction>([
+  'convert_radar_to_idea',
+  'convert_radar_to_script',
+  'convert_idea_to_outline',
+  'convert_outline_to_script',
+  'refine_script',
+  'approve_draft',
+  'schedule_content',
+  'mark_published',
+  'archive',
+  'reject',
+  'repurpose_content',
+  'delete_draft',
+  'mark_stale',
+]);
+
 export function registerContentEditorialRoutes(
   router: Router,
   ensureValidContentRouteScope: EnsureValidContentRouteScope,
 ): void {
-  /** GET /api/v1/content/workflow/:id — inspect an authorized editorial object */
-  router.get('/workflow/:id', async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+  /** Deprecated read adapter. Canonical ids are preserved; legacy ledgers are history only. */
+  router.get('/workflow/:id', (req, res: Response) => {
+    const scope = resolveScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_route_workflow_get');
+    if (!scope) return;
     const { id } = req.params;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_workflow_get', { objectId: id })) return;
-
     try {
-      const object = getContentWorkflowObject(userId, id, tenantId);
+      const object = getContentWorkflowObject(scope.userId, id, scope.tenantId);
       if (!object) {
-        sendError(res, 'NOT_FOUND', 'Content object not found', 404);
+        sendError(res, 'CONTENT_ITEM_NOT_FOUND', 'Content item not found.', 404);
         return;
       }
-      sendSuccess(res, {
-        object,
-        events: listContentWorkflowEvents({ userId, tenantId, objectType: object.objectType, objectId: object.id }),
-        approvals: listContentApprovalRecords({ userId, tenantId, objectType: object.objectType, objectId: object.id }),
+      const historicalApprovals = listContentApprovalRecords({
+        userId: scope.userId,
+        tenantId: scope.tenantId,
+        objectId: object.id,
       });
-    } catch (err) {
-      logger.error({ err, userId, objectId: id }, 'content workflow inspect failed');
-      sendInternalError(res, 'Failed to inspect content workflow object');
+      sendSuccess(res, {
+        schemaVersion: CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+        compatibility: getContentEditorialCompatibility(object.id),
+        object: presentContentObject(object),
+        events: listContentWorkflowEvents({ userId: scope.userId, tenantId: scope.tenantId, objectId: object.id })
+          .map(presentWorkflowEvent),
+        approvals: historicalApprovals.map(presentHistoricalApproval),
+        historicalApprovals: historicalApprovals.map(presentHistoricalApproval),
+      });
+    } catch (error) {
+      sendEditorialError(res, error, scope, 'content workflow compatibility read failed');
     }
   });
 
-  /** POST /api/v1/content/workflow/:id/actions — run a lifecycle/editorial action */
-  router.post('/workflow/:id/actions', async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const { id } = req.params;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_workflow_action', { objectId: id })) return;
-
+  /** Deprecated mutation adapter. Only canonical review approval/archive/reject can mutate. */
+  router.post('/workflow/:id/actions', (req, res: Response) => {
+    const scope = resolveScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_route_workflow_action');
+    if (!scope) return;
     const action = typeof req.body?.action === 'string' ? req.body.action.trim() : '';
-    if (!action) {
-      sendError(res, 'BAD_REQUEST', 'action is required', 400);
+    if (!ACTIONS.has(action as ContentWorkflowAction)) {
+      sendError(res, 'CONTENT_WORKFLOW_ACTION_INVALID', 'A supported action is required.', 400, {
+        compatibilitySchemaVersion: CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+      });
       return;
     }
-
     try {
-      if (action === 'schedule_content') {
-        const object = getContentWorkflowObject(userId, id, tenantId);
-        if (!object) {
-          sendError(res, 'NOT_FOUND', 'Content object not found', 404);
-          return;
-        }
-        if (object.editorialState !== 'scheduled' && !canTransitionContent(object.editorialState, 'scheduled')) {
-          sendError(res, 'CONFLICT', 'Invalid content workflow transition', 409, {
-            fromState: object.editorialState,
-            toState: 'scheduled',
-            reasonCodes: ['invalid_lifecycle_transition'],
-          });
-          return;
-        }
-
-        const approval = evaluateContentApprovalRequirements({
-          action: 'schedule_content',
-          targetState: 'scheduled',
-          currentState: object.editorialState,
-          visibilityScope: object.visibilityScope,
-        });
-        if (approval.approvalRequired && req.body?.approvalConfirmed !== true) {
-          const result = transitionContentWorkflow({
-            userId,
-            tenantId,
-            objectId: id,
-            action: 'schedule_content',
-            reason: typeof req.body?.reason === 'string' ? req.body.reason : null,
-            metadata: isRecord(req.body?.metadata) ? req.body.metadata : {},
-          });
-          sendSuccess(res, {
-            workflow: result,
-            object: result.object,
-            approval: result.approval,
-          }, { status: 202 });
-          return;
-        }
-
-        const scheduleInput = {
-          userId,
-          tenantId,
-          objectId: id,
-          title: object.title,
-          durationMinutes: normalizePositiveNumber(req.body?.durationMinutes),
-          minimumDurationMinutes: normalizePositiveNumber(req.body?.minimumDurationMinutes),
-          preferredWindows: normalizeScheduleWindows(req.body?.preferredWindows),
-          unavailableWindows: normalizeScheduleWindows(req.body?.unavailableWindows ?? (isRecord(req.body?.hardConstraints) ? req.body.hardConstraints.unavailableWindows : undefined)),
-          protectedWindows: normalizeScheduleWindows(req.body?.protectedWindows ?? (isRecord(req.body?.hardConstraints) ? req.body.hardConstraints.protectedWindows : undefined)),
-          deadline: typeof req.body?.deadline === 'string' ? req.body.deadline : null,
-          priority: normalizeSchedulePriority(req.body?.priority),
-          flexibility: normalizeScheduleFlexibility(req.body?.flexibility),
-          reason: typeof req.body?.reason === 'string' ? req.body.reason : null,
-          approvalConfirmed: req.body?.approvalConfirmed === true,
-        };
-        const busyWindows = await loadLiveCalendarBusyWindowsForSecretaryIntent(
-          buildContentSecretarySchedulingIntent(scheduleInput),
-        );
-        if (busyWindows.degraded) {
-          sendError(
-            res,
-            'CONTENT_SECRETARY_CALENDAR_UNAVAILABLE',
-            'Calendar availability could not be checked right now.',
-            503,
-            { warningCodes: busyWindows.warningCodes },
-          );
-          return;
-        }
-        const decision = requestContentScheduleThroughSecretary({
-          ...scheduleInput,
-          additionalBusyWindows: busyWindows.windows,
-        });
-        const updated = getContentWorkflowObject(userId, id, tenantId);
-        invalidateContentDerivedCaches(userId);
-        sendSuccess(res, {
-          workflow: {
-            ok: ['scheduled', 'reflowed', 'compressed'].includes(decision.status),
-            status: decision.status,
-            object: updated,
-            reasonCodes: decision.reasonCodes,
-            secretaryIntentId: updated?.secretaryIntentId ?? `content:${id}:schedule`,
-            secretaryAgendaItemId: updated?.secretaryAgendaItemId ?? decision.agendaItem.agendaItemId,
-          },
-          object: updated,
-          scheduling: decision,
-          agendaItem: decision.agendaItem,
-          feedback: decision.feedback,
-        }, { status: ['scheduled', 'reflowed', 'compressed'].includes(decision.status) ? 200 : 202 });
-        return;
-      }
-
       const result = transitionContentWorkflow({
-        userId,
-        tenantId,
-        objectId: id,
+        userId: scope.userId,
+        tenantId: scope.tenantId,
+        objectId: req.params.id,
         action: action as ContentWorkflowAction,
-        targetState: typeof req.body?.targetState === 'string' ? req.body.targetState : undefined,
+        actorUserId: scope.userId,
         approvalConfirmed: req.body?.approvalConfirmed === true,
-        reason: typeof req.body?.reason === 'string' ? req.body.reason : null,
-        metadata: isRecord(req.body?.metadata) ? req.body.metadata : {},
+        expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
+        idempotencyKey: readIdempotencyKey(req),
       });
-      if (result.status === 'not_found') {
-        sendError(res, 'NOT_FOUND', 'Content object not found', 404, { reasonCodes: result.reasonCodes });
-        return;
-      }
-      if (result.status === 'invalid_transition') {
-        sendError(res, 'CONFLICT', 'Invalid content workflow transition', 409, {
+      if (!result.ok) {
+        sendTransitionResult(res, result.status, result.reasonCodes, result.replacement, {
           fromState: result.fromState,
           toState: result.toState,
-          reasonCodes: result.reasonCodes,
+          object: presentContentObject(result.object),
         });
         return;
       }
-      invalidateContentDerivedCaches(userId);
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
-        workflow: result,
-        object: result.object,
+        schemaVersion: CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+        compatibility: getContentEditorialCompatibility(result.object!.id),
+        workflow: { ...result, object: presentContentObject(result.object) },
+        object: presentContentObject(result.object),
         approval: result.approval,
-      }, { status: result.status === 'approval_required' ? 202 : 200 });
-    } catch (err) {
-      logger.error({ err, userId, objectId: id, action }, 'content workflow action failed');
-      sendInternalError(res, 'Failed to mutate content workflow object');
+      });
+    } catch (error) {
+      sendEditorialError(res, error, scope, 'content workflow compatibility action failed');
     }
   });
 
-  /** POST /api/v1/content/workflow/:id/source-review — review sources/claims before approval or publish */
-  router.post('/workflow/:id/source-review', async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const { id } = req.params;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_workflow_source_review', { objectId: id })) return;
-
+  /** Raw legacy references cannot be attached to an unpinned output anymore. */
+  router.post('/workflow/:id/source-review', (req, res: Response) => {
+    const scope = resolveScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_route_workflow_source_review');
+    if (!scope) return;
     try {
       const result = reviewContentSources({
-        userId,
-        tenantId,
-        objectId: id,
+        userId: scope.userId,
+        tenantId: scope.tenantId,
+        objectId: req.params.id,
         objectType: typeof req.body?.objectType === 'string' ? req.body.objectType : undefined,
-        decision: normalizeSourceReviewDecision(req.body?.decision),
         references: Array.isArray(req.body?.references) ? req.body.references : undefined,
         claims: Array.isArray(req.body?.claims) ? req.body.claims : undefined,
-        sourceSummaries: Array.isArray(req.body?.sourceSummaries) ? req.body.sourceSummaries.filter((value: unknown): value is string => typeof value === 'string') : undefined,
-        notes: typeof req.body?.notes === 'string' ? req.body.notes : null,
-        metadata: isRecord(req.body?.metadata) ? req.body.metadata : {},
       });
       if (result.status === 'not_found') {
-        sendError(res, 'NOT_FOUND', 'Content object not found', 404, { reasonCodes: result.reasonCodes });
+        sendError(res, 'CONTENT_ITEM_NOT_FOUND', 'Content item not found.', 404, { reasonCodes: result.reasonCodes });
         return;
       }
       if (result.status === 'unauthorized_reference') {
-        sendError(res, 'FORBIDDEN', 'Source review includes an unauthorized reference', 403, { reasonCodes: result.reasonCodes });
+        sendError(res, 'CONTENT_SOURCE_SCOPE_FORBIDDEN', 'A source is outside the active private scope.', 403, { reasonCodes: result.reasonCodes });
         return;
       }
-      invalidateContentDerivedCaches(userId);
-      sendSuccess(res, {
-        sourceReview: result,
-        object: result.object,
-        provenance: result.provenance,
-        approval: result.approval,
-      }, { status: result.ok ? 200 : 202 });
-    } catch (err) {
-      logger.error({ err, userId, objectId: id }, 'content source review failed');
-      sendInternalError(res, 'Failed to review content sources');
+      sendReplacement(res, result.replacement!, result.reasonCodes);
+    } catch (error) {
+      sendEditorialError(res, error, scope, 'content source lineage compatibility action failed');
     }
   });
 
-  /** POST /api/v1/content/workflow/:id/approval — approve/reject a pending workflow gate */
-  router.post('/workflow/:id/approval', async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const { id } = req.params;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_workflow_approval', { objectId: id })) return;
-
-    const decision = req.body?.decision === 'rejected' ? 'rejected' : req.body?.decision === 'approved' ? 'approved' : null;
+  /** Decision Center may bridge explicit content_review decisions with CAS/idempotency. */
+  router.post('/workflow/:id/approval', (req, res: Response) => {
+    const scope = resolveScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_route_workflow_approval');
+    if (!scope) return;
+    const decision = req.body?.decision === 'approved' || req.body?.decision === 'rejected'
+      ? req.body.decision
+      : null;
     if (!decision) {
-      sendError(res, 'BAD_REQUEST', 'decision must be approved or rejected', 400);
+      sendError(res, 'CONTENT_APPROVAL_DECISION_INVALID', 'decision must be approved or rejected.', 400);
       return;
     }
-
+    if (typeof req.body?.approvalType !== 'string' || !req.body.approvalType.trim()) {
+      sendError(res, 'CONTENT_APPROVAL_TYPE_REQUIRED', 'approvalType must be explicit.', 400, {
+        supportedApprovalType: 'content_review',
+        publicationExecution: 'not_performed',
+      });
+      return;
+    }
     try {
       const result = decideContentApproval({
-        userId,
-        tenantId,
-        objectId: id,
-        approvalType: typeof req.body?.approvalType === 'string' ? req.body.approvalType : undefined,
+        userId: scope.userId,
+        tenantId: scope.tenantId,
+        objectId: req.params.id,
+        approvalType: req.body.approvalType as ContentApprovalType,
         decision,
+        actorUserId: scope.userId,
         reason: typeof req.body?.reason === 'string' ? req.body.reason : null,
         metadata: isRecord(req.body?.metadata) ? req.body.metadata : {},
+        expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
+        idempotencyKey: readIdempotencyKey(req),
       });
-      if (result.status === 'not_found') {
-        sendError(res, 'NOT_FOUND', 'Content object not found', 404, { reasonCodes: result.reasonCodes });
+      if (!result.ok) {
+        sendTransitionResult(res, result.status, result.reasonCodes, result.replacement, {
+          object: presentContentObject(result.object),
+        });
         return;
       }
-      invalidateContentDerivedCaches(userId);
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
-        approval: result,
-        object: result.object,
-        approvalRecords: result.approvalRecords,
+        schemaVersion: CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+        compatibility: getContentEditorialCompatibility(result.object!.id),
+        approval: { ...result, object: presentContentObject(result.object), approvalRecords: undefined },
+        object: presentContentObject(result.object),
+        historicalApprovalRecords: result.approvalRecords.map(presentHistoricalApproval),
       });
-    } catch (err) {
-      logger.error({ err, userId, objectId: id }, 'content approval decision failed');
-      sendInternalError(res, 'Failed to update content approval');
+    } catch (error) {
+      sendEditorialError(res, error, scope, 'content approval compatibility action failed');
     }
   });
 
-  /** POST /api/v1/content/workflow/:id/repurpose — create a derived content object with reuse lineage */
-  router.post('/workflow/:id/repurpose', async (req, res: Response) => {
-    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const { id } = req.params;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_workflow_repurpose', { objectId: id })) return;
-
-    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
-    const transformationType = typeof req.body?.transformationType === 'string' ? req.body.transformationType.trim() : '';
-    if (!title || !transformationType) {
-      sendError(res, 'BAD_REQUEST', 'title and transformationType are required', 400);
-      return;
-    }
-
+  /** Old repurpose payloads cannot pin a source revision or preserve edits safely. */
+  router.post('/workflow/:id/repurpose', (req, res: Response) => {
+    const scope = resolveScope(req as unknown as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_route_workflow_repurpose');
+    if (!scope) return;
     try {
       const result = repurposeContentWorkflowObject({
-        userId,
-        tenantId,
-        sourceObjectId: id,
-        title,
-        summary: typeof req.body?.summary === 'string' ? req.body.summary : null,
-        targetObjectType: typeof req.body?.targetObjectType === 'string' ? req.body.targetObjectType : undefined,
-        transformationType,
-        fromPlatformId: typeof req.body?.fromPlatformId === 'string' ? req.body.fromPlatformId : null,
-        toPlatformId: typeof req.body?.toPlatformId === 'string' ? req.body.toPlatformId : null,
-        referencesPreserved: Array.isArray(req.body?.referencesPreserved) ? req.body.referencesPreserved : [],
-        referencesChanged: Array.isArray(req.body?.referencesChanged) ? req.body.referencesChanged : [],
-        noveltyScore: typeof req.body?.noveltyScore === 'number' ? req.body.noveltyScore : undefined,
-        reasonCodes: Array.isArray(req.body?.reasonCodes) ? req.body.reasonCodes.filter((value: unknown): value is string => typeof value === 'string') : undefined,
-        approvalConfirmed: req.body?.approvalConfirmed === true,
-        metadata: isRecord(req.body?.metadata) ? req.body.metadata : {},
+        userId: scope.userId,
+        tenantId: scope.tenantId,
+        sourceObjectId: req.params.id,
+        title: typeof req.body?.title === 'string' ? req.body.title : '',
+        transformationType: typeof req.body?.transformationType === 'string' ? req.body.transformationType : 'legacy_unspecified',
       });
       if (result.status === 'not_found') {
-        sendError(res, 'NOT_FOUND', 'Content object not found', 404, { reasonCodes: result.reasonCodes });
+        sendError(res, 'CONTENT_ITEM_NOT_FOUND', 'Content item not found.', 404, { reasonCodes: result.reasonCodes });
         return;
       }
-      if (result.status === 'invalid_transition') {
-        sendError(res, 'CONFLICT', 'Content object cannot be repurposed from its current state', 409, { reasonCodes: result.reasonCodes });
-        return;
-      }
-      invalidateContentDerivedCaches(userId);
-      sendSuccess(res, {
-        repurpose: result,
-        sourceObject: result.sourceObject,
-        reusedObject: result.reusedObject,
-        reuseRecord: result.reuseRecord,
-      }, { status: 201 });
-    } catch (err) {
-      logger.error({ err, userId, objectId: id }, 'content repurpose failed');
-      sendInternalError(res, 'Failed to repurpose content object');
+      sendReplacement(res, result.replacement!, result.reasonCodes);
+    } catch (error) {
+      sendEditorialError(res, error, scope, 'content repurpose compatibility action failed');
     }
   });
 }
 
-function normalizeSourceReviewDecision(value: unknown): 'approved' | 'needs_revision' | 'rejected' {
-  if (value === 'rejected') return 'rejected';
-  if (value === 'needs_revision') return 'needs_revision';
-  return 'approved';
+function sendTransitionResult(
+  res: Response,
+  status: string,
+  reasonCodes: string[],
+  replacement?: ContentWorkflowReplacement,
+  details: Record<string, unknown> = {},
+): void {
+  if (status === 'not_found') {
+    sendError(res, 'CONTENT_ITEM_NOT_FOUND', 'Content item not found.', 404, { reasonCodes });
+    return;
+  }
+  if (status === 'version_conflict') {
+    sendError(res, 'CONTENT_WORKFLOW_VERSION_CONFLICT', 'This item changed after it was loaded.', 409, {
+      ...details,
+      reasonCodes,
+      recovery: 'reload_and_retry',
+      publicationExecution: 'not_performed',
+    });
+    return;
+  }
+  if (status === 'approval_required') {
+    sendError(res, 'CONTENT_APPROVAL_REQUIRED', 'Explicit confirmation is required for this destructive Content action.', 409, {
+      ...details,
+      reasonCodes,
+      recovery: 'review_then_retry_with_approvalConfirmed',
+      publicationExecution: 'not_performed',
+    });
+    return;
+  }
+  if (replacement) {
+    sendReplacement(res, replacement, reasonCodes, details);
+    return;
+  }
+  sendError(res, 'CONTENT_STATE_TRANSITION_INVALID', 'This Content state transition is not allowed.', 409, {
+    ...details,
+    reasonCodes,
+    publicationExecution: 'not_performed',
+  });
+}
+
+function sendReplacement(
+  res: Response,
+  replacement: ContentWorkflowReplacement,
+  reasonCodes: string[],
+  details: Record<string, unknown> = {},
+): void {
+  const status = replacement.code === 'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED'
+    || replacement.code === 'CONTENT_WORKFLOW_CANONICAL_CONCURRENCY_REQUIRED'
+    ? 409
+    : 426;
+  sendError(res, replacement.code, replacement.message, status, {
+    ...details,
+    compatibilitySchemaVersion: CONTENT_EDITORIAL_COMPATIBILITY_SCHEMA_VERSION,
+    deprecated: true,
+    reasonCodes,
+    canonicalRoutes: replacement.canonicalRoutes,
+    recovery: replacement.recovery,
+    publicationExecution: 'not_performed',
+  });
+}
+
+function resolveScope(
+  req: AuthenticatedRequest,
+  res: Response,
+  ensureValidContentRouteScope: EnsureValidContentRouteScope,
+  operation: string,
+): { userId: number; tenantId: number } | null {
+  if (!ensureValidContentRouteScope(res, req.userId, operation)) return null;
+  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+    sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
+    return null;
+  }
+  return { userId: req.userId, tenantId: Number(req.tenantId) };
+}
+
+function readIdempotencyKey(req: { body?: any; header(name: string): string | undefined }): string {
+  if (typeof req.body?.idempotencyKey === 'string') return req.body.idempotencyKey;
+  return req.header('x-idempotency-key') ?? '';
+}
+
+function sendEditorialError(
+  res: Response,
+  error: unknown,
+  scope: { userId: number; tenantId: number },
+  message: string,
+): void {
+  if (error instanceof ContentEditorialCompatibilityError || error instanceof ContentWorkspaceWriteDisabledError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
+  logger.error({ err: error, userId: scope.userId, tenantId: scope.tenantId }, message);
+  sendInternalError(res, 'The Content workspace action could not be completed. Existing content was preserved.');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function normalizePositiveNumber(value: unknown): number | undefined {
-  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
-  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
-  return Math.round(numeric);
+function presentContentObject(object: ContentWorkflowObject | null): Omit<
+  ContentWorkflowObject,
+  'tenantId' | 'ownerUserId' | 'metadata'
+> | null {
+  if (!object) return null;
+  const { tenantId: _tenantId, ownerUserId: _ownerUserId, metadata: _metadata, ...presentation } = object;
+  return presentation;
 }
 
-function normalizeSchedulePriority(value: unknown): SecretaryIntentPriority | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (value === 'low' || value === 'normal' || value === 'high' || value === 'urgent') return value;
-  return undefined;
+function presentWorkflowEvent(event: Record<string, unknown>): Record<string, unknown> {
+  return {
+    action: event.action,
+    fromState: event.from_state ?? null,
+    toState: event.to_state ?? null,
+    reviewRequired: event.review_required === 1,
+    reasonCodes: parseStringArray(event.reason_codes_json),
+    occurredAt: event.created_at ?? null,
+  };
 }
 
-function normalizeScheduleFlexibility(value: unknown): SecretaryIntentFlexibility | undefined {
-  if (value === 'fixed' || value === 'flexible' || value === 'compressible' || value === 'splittable') return value;
-  return undefined;
+function presentHistoricalApproval(record: Record<string, unknown>): Record<string, unknown> {
+  return {
+    historical: true,
+    authoritative: false,
+    approvalType: record.approval_type,
+    historicalState: record.approval_state,
+    reasonCodes: parseStringArray(record.required_reason_codes_json),
+    requestedAt: record.requested_at ?? null,
+    resolvedAt: record.approved_at ?? record.rejected_at ?? null,
+  };
 }
 
-function normalizeScheduleWindows(value: unknown): SecretaryTimeWindow[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const windows = value.flatMap((entry): SecretaryTimeWindow[] => {
-    if (!isRecord(entry)) return [];
-    if (typeof entry.start !== 'string' || typeof entry.end !== 'string') return [];
-    const startMs = Date.parse(entry.start);
-    const endMs = Date.parse(entry.end);
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return [];
-    return [{
-      start: new Date(startMs).toISOString(),
-      end: new Date(endMs).toISOString(),
-      ...(typeof entry.label === 'string' ? { label: entry.label } : {}),
-      ...(entry.hard === true ? { hard: true } : {}),
-    }];
-  });
-  return windows.length > 0 ? windows : undefined;
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === 'string');
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+  } catch {
+    return [];
+  }
 }
+
+// Keep the exit contract referenced in the generated declaration surface.
+void CONTENT_EDITORIAL_WORKFLOW_EXIT;

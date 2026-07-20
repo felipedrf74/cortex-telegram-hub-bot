@@ -42,7 +42,20 @@ function baseEnv(role: 'staging' | 'production', overrides: string[] = []) {
     'OPENAI_API_KEY=do-not-print-provider',
     'PORTAL_REQUIRE_SESSION_AUTH=true',
     'PORTAL_SESSION_SECRET=do-not-print-portal',
-    ...(role === 'production' ? ['BACKUP_ENCRYPT=true', 'BACKUP_KEY=do-not-print-backup'] : []),
+    ...(role === 'production' ? [
+      'BACKUP_ENCRYPT=true',
+      'BACKUP_KEY=do-not-print-backup',
+      'CONTENT_WORKSPACE_V1_MODE=write',
+      'CONTENT_WORKSPACE_V1_GLOBAL_WRITE=false',
+      'CONTENT_WORKSPACE_V1_USER_IDS=41',
+      'CONTENT_WORKSPACE_V1_TENANT_IDS=',
+      'CONTENT_WORKSPACE_V1_CORE_WRITES=true',
+      'CONTENT_WORKSPACE_V1_REVISION_WRITES=true',
+      'CONTENT_WORKSPACE_V1_LINEAGE_WRITES=true',
+      'CONTENT_WORKSPACE_V1_AGENT_WRITES=true',
+      'CONTENT_WORKSPACE_V1_SCHEDULE_WRITES=true',
+      'CONTENT_WORKSPACE_V1_RECOVERY_WRITES=true',
+    ] : []),
     ...overrides,
   ];
   return `${lines.join('\n')}\n`;
@@ -64,20 +77,36 @@ if (process.env.FAIL_OWNER_PREFLIGHT === '1') process.exit(9);
 console.log('fixture owner=' + (process.env.OWNER_TELEGRAM_USER_IDS || 'private-owner'));
 console.log('fixture database=' + process.env.DATABASE_PATH);
 `);
+  writeFileSync(join(release, 'dist', 'tools', 'content-workspace-rollout-preflight.js'), `
+if (process.env.CONTENT_WORKSPACE_V1_MODE !== 'write'
+  || process.env.CONTENT_WORKSPACE_V1_USER_IDS !== '41'
+  || process.env.CONTENT_WORKSPACE_V1_GLOBAL_WRITE !== 'false') {
+  console.error('fixture-private-rollout-value=' + process.env.CONTENT_WORKSPACE_V1_USER_IDS);
+  process.exit(8);
+}
+console.log('fixture-private-owner=41');
+`);
   const db = new Database(join(data, 'bot.db'));
   db.exec('CREATE TABLE fixture (id INTEGER PRIMARY KEY)');
   db.close();
   return { root, base, release, data };
 }
 
-function runPreflight(fixture: ReturnType<typeof releaseFixture>, role: 'staging' | 'production', env = process.env) {
-  return spawnSync('bash', [
+function runPreflight(
+  fixture: ReturnType<typeof releaseFixture>,
+  role: 'staging' | 'production',
+  env = process.env,
+  requireContentWorkspaceOwnerWrite = false,
+) {
+  const args = [
     PREFLIGHT,
     '--role', role,
     '--base-dir', fixture.base,
     '--release-dir', fixture.release,
     '--node-bin', process.execPath,
-  ], { cwd: ROOT, encoding: 'utf8', env: { ...env } });
+  ];
+  if (requireContentWorkspaceOwnerWrite) args.push('--require-content-workspace-owner-write');
+  return spawnSync('bash', args, { cwd: ROOT, encoding: 'utf8', env: { ...env } });
 }
 
 function writeCurl(bin: string, fixture: ReturnType<typeof releaseFixture>) {
@@ -207,6 +236,24 @@ describe('exact release remote preflight', () => {
     const tampered = runPreflight(fixture, 'production');
     expect(tampered.status).not.toBe(0);
     expect(tampered.stderr).toContain('does not resolve to the canonical');
+  });
+
+  it('requires a privacy-safe scoped owner cohort when the canonical Content cutover asks for it', () => {
+    const fixture = releaseFixture('production');
+    const accepted = runPreflight(fixture, 'production', process.env, true);
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(accepted.stdout).toContain('contentWorkspace=scoped_owner_write');
+    expect(`${accepted.stdout}${accepted.stderr}`).not.toContain('fixture-private-owner');
+    expect(`${accepted.stdout}${accepted.stderr}`).not.toContain('41');
+
+    writeFileSync(join(fixture.base, '.env'), baseEnv('production', [
+      'CONTENT_WORKSPACE_V1_USER_IDS=99',
+    ]), { mode: 0o600 });
+    const rejected = runPreflight(fixture, 'production', process.env, true);
+    expect(rejected.status).toBe(8);
+    expect(rejected.stderr).toContain('scoped-owner write preflight failed');
+    expect(`${rejected.stdout}${rejected.stderr}`).not.toContain('99');
+    expect(`${rejected.stdout}${rejected.stderr}`).not.toContain('fixture-private-rollout-value');
   });
 });
 

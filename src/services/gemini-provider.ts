@@ -351,6 +351,8 @@ type OneShotOptions = {
   tenantId?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
+  /** Optional caller-specific retry cap; bounded by the global safety cap. */
+  maxRetries?: number;
 };
 
 const SEARCH_PROMPT_PRIVACY_PATTERNS: Array<[RegExp, string]> = [
@@ -404,6 +406,8 @@ export async function completeOneShot(
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
+    provider: 'gemini',
+    model,
     maxCostUsd,
   });
   const start = Date.now();
@@ -473,6 +477,13 @@ function extractGeminiErrorInfo(err: unknown): GeminiErrorInfo {
   return { status, code, message };
 }
 
+/** Provider logs keep only a bounded machine code, never SDK error objects or messages. */
+function safeProviderFailureCode(code: string | undefined): string | undefined {
+  if (!code) return undefined;
+  const normalized = code.trim().toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,63}$/.test(normalized) ? normalized : undefined;
+}
+
 /**
  * Shared retryable-error predicate for Gemini calls — used by BOTH the
  * chat-path GeminiProvider.withRetry and the one-shot primary retry so
@@ -512,9 +523,14 @@ function parseNonNegativeIntEnv(name: string, defaultValue: number): number {
  * retry (single attempt — the pre-2026-07 behavior). Read at call time so
  * operators can flip it without a redeploy-triggering config change.
  */
-function resolveOneShotMaxRetries(): number {
+function resolveOneShotMaxRetries(override?: number): number {
+  const requested = override == null
+    ? parseNonNegativeIntEnv('GEMINI_ONESHOT_MAX_RETRIES', ONESHOT_RETRY_DEFAULT_MAX_RETRIES)
+    : Number.isFinite(override) && override >= 0
+      ? Math.floor(override)
+      : ONESHOT_RETRY_DEFAULT_MAX_RETRIES;
   return Math.min(
-    parseNonNegativeIntEnv('GEMINI_ONESHOT_MAX_RETRIES', ONESHOT_RETRY_DEFAULT_MAX_RETRIES),
+    requested,
     ONESHOT_RETRY_MAX_RETRIES_CAP,
   );
 }
@@ -548,8 +564,9 @@ function oneShotBackoffMs(retryIndex: number): number {
 async function withOneShotPrimaryRetry<T>(
   fn: () => Promise<T>,
   logContext: { category: string; model: string },
+  maxRetriesOverride?: number,
 ): Promise<T> {
-  const maxRetries = resolveOneShotMaxRetries();
+  const maxRetries = resolveOneShotMaxRetries(maxRetriesOverride);
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
@@ -568,9 +585,8 @@ async function withOneShotPrimaryRetry<T>(
         attempt,
         maxAttempts: maxRetries + 1,
         status: info.status,
-        code: info.code,
+        code: safeProviderFailureCode(info.code),
         backoffMs,
-        message: info.message.slice(0, 100),
       }, 'Gemini one-shot primary retrying after transient error');
       await _sleep.fn(backoffMs);
     }
@@ -636,6 +652,8 @@ export async function completeOneShotWithSearch(
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
+    provider: 'gemini',
+    model,
     hasUnboundedProviderInjectedContext: true,
     maxCostUsd,
   });
@@ -750,6 +768,8 @@ export async function completeVisionOneShot(
   assertAiBudgetReservationForProvider({
     userId: options?.userId ?? 0,
     category,
+    provider: 'gemini',
+    model,
     maxCostUsd,
   });
   const start = Date.now();
@@ -826,7 +846,15 @@ export async function completeVisionOneShotWithFallback(
       rethrowUsagePersistenceFailure(err);
       const { status, code } = extractGeminiErrorInfo(err);
       const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
-      logger.warn({ err, category, primaryModel, status, code, attempts }, 'Gemini vision one-shot failed, trying OpenAI fallback');
+      logger.warn({
+        provider: 'gemini',
+        category,
+        model: primaryModel,
+        status,
+        code: safeProviderFailureCode(code),
+        attempt: attempts,
+        failureCategory: 'provider_call_failed',
+      }, 'Gemini vision one-shot failed, trying OpenAI fallback');
     }
   }
 
@@ -847,7 +875,15 @@ export async function completeVisionOneShotWithFallback(
     }
   } catch (err) {
     rethrowUsagePersistenceFailure(err);
-    logger.warn({ err, category }, 'OpenAI vision fallback also failed, trying Anthropic (if enabled)');
+    const { status, code } = extractGeminiErrorInfo(err);
+    logger.warn({
+      provider: 'openai',
+      category,
+      status,
+      code: safeProviderFailureCode(code),
+      attempt: 1,
+      failureCategory: 'provider_call_failed',
+    }, 'OpenAI vision fallback also failed, trying Anthropic (if enabled)');
   }
 
   // Stage 3: Anthropic thunk — only if the operator has explicitly
@@ -906,6 +942,7 @@ export async function completeOneShotWithFallback(
       const text = await withOneShotPrimaryRetry(
         () => completeOneShot(systemPrompt, userPrompt, category, options),
         { category, model: primaryModel },
+        options?.maxRetries,
       );
       return { text, provider: 'gemini' };
     } catch (err) {
@@ -1141,7 +1178,12 @@ export class GeminiProvider implements AIProvider {
         }
 
         const backoffMs = 1000 * Math.pow(2, attempt);
-        logger.warn({ attempt, status: info.status, code: info.code, backoffMs, message: info.message.slice(0, 100) }, 'Gemini retrying after error');
+        logger.warn({
+          attempt,
+          status: info.status,
+          code: safeProviderFailureCode(info.code),
+          backoffMs,
+        }, 'Gemini retrying after error');
         await _sleep.fn(backoffMs);
       }
     }
@@ -1201,6 +1243,8 @@ export class GeminiProvider implements AIProvider {
       assertAiBudgetReservationForProvider({
         userId: usageContext?.userId ?? 0,
         category: usageCategory,
+        provider: 'gemini',
+        model: routing.model,
         maxCostUsd,
       });
       return model.generateContent(request);
@@ -1267,6 +1311,8 @@ ${message}`;
         assertAiBudgetReservationForProvider({
           userId: usageUserId,
           category: 'gemini_classify',
+          provider: 'gemini',
+          model: config.gemini.classifierModel,
           maxCostUsd,
         });
         return model.generateContent(userContent);

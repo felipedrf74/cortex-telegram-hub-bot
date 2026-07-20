@@ -71,6 +71,7 @@ import {
 } from '../../src/services/context-engine';
 import { upsertTask } from '../../src/services/task-store/unified-task-store';
 import { NormalizedTask } from '../../src/services/task-store/types';
+import { captureDiscoveredIdea } from '../../src/services/content-workspace-capture';
 
 const USER_ID = 99;
 
@@ -86,6 +87,7 @@ function makeTask(overrides: Partial<NormalizedTask> = {}): NormalizedTask {
 }
 
 beforeEach(() => {
+  vi.stubEnv('CONTENT_WORKSPACE_V1_MODE', 'write');
   testDb = createMigratedTestDatabase();
   const seedUser = testDb.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
   for (let id = 1; id <= 1000; id += 1) seedUser.run(id, id);
@@ -108,6 +110,7 @@ afterEach(() => {
   mockIsGoogleCalendarConfigured.mockReset();
   mockIsOutlookCalendarConfigured.mockReset();
   mockOauthIsConnected.mockReset();
+  vi.unstubAllEnvs();
 });
 
 // ── buildDailyContext ──────────────────────────────────────────────
@@ -137,6 +140,57 @@ describe('buildDailyContext', () => {
     expect(summary).toMatch(/Lunch with X/);
   });
 
+  it('isolates task counts and due-title context by tenant for the same user', async () => {
+    const today = testDb.prepare("SELECT date('now') AS d").get() as { d: string };
+    upsertTask(USER_ID, makeTask({ title: 'Tenant 901 private task', dueDate: today.d, priority: 2 }));
+    upsertTask(USER_ID, makeTask({ title: 'Tenant 902 private task A', dueDate: today.d, priority: 2 }));
+    upsertTask(USER_ID, makeTask({ title: 'Tenant 902 private task B', dueDate: today.d, priority: 3 }));
+    testDb.prepare('UPDATE unified_tasks SET tenant_id = ? WHERE user_id = ? AND title = ?')
+      .run(901, USER_ID, 'Tenant 901 private task');
+    testDb.prepare("UPDATE unified_tasks SET tenant_id = 902 WHERE user_id = ? AND title LIKE 'Tenant 902 private task%'")
+      .run(USER_ID);
+
+    const tenant901 = await buildDailyContext(USER_ID, 901);
+    const tenant902 = await buildDailyContext(USER_ID, 902);
+
+    expect(tenant901).toContain('TASKS: 0 overdue, 1 due today, 1 total pending');
+    expect(tenant901).toContain('Tenant 901 private task');
+    expect(tenant901).not.toContain('Tenant 902 private task');
+    expect(tenant902).toContain('TASKS: 0 overdue, 2 due today, 2 total pending');
+    expect(tenant902).toContain('Tenant 902 private task A');
+    expect(tenant902).toContain('Tenant 902 private task B');
+    expect(tenant902).not.toContain('Tenant 901 private task');
+  });
+
+  it('keeps legacy unscoped tasks in the personal tenant and isolates both persisted caches', async () => {
+    const today = testDb.prepare("SELECT date('now') AS d").get() as { d: string };
+    upsertTask(USER_ID, makeTask({ title: 'Legacy personal task', dueDate: today.d, priority: 2 }));
+    upsertTask(USER_ID, makeTask({ title: 'Tenant 901 scoped task', dueDate: today.d, priority: 3 }));
+    testDb.prepare('UPDATE unified_tasks SET tenant_id = NULL WHERE user_id = ? AND title = ?')
+      .run(USER_ID, 'Legacy personal task');
+    testDb.prepare('UPDATE unified_tasks SET tenant_id = 901 WHERE user_id = ? AND title = ?')
+      .run(USER_ID, 'Tenant 901 scoped task');
+
+    const personal = await buildDailyContext(USER_ID, USER_ID);
+    const tenant901 = await buildDailyContext(USER_ID, 901);
+
+    expect(personal).toContain('TASKS: 0 overdue, 1 due today, 1 total pending');
+    expect(personal).toContain('Legacy personal task');
+    expect(personal).not.toContain('Tenant 901 scoped task');
+    expect(tenant901).toContain('TASKS: 0 overdue, 1 due today, 1 total pending');
+    expect(tenant901).toContain('Tenant 901 scoped task');
+    expect(tenant901).not.toContain('Legacy personal task');
+
+    const cachedPersonal = getDailyContext(USER_ID, USER_ID);
+    const cachedTenant901 = getDailyContext(USER_ID, 901);
+    expect(cachedPersonal).toBe(personal);
+    expect(cachedPersonal).toContain('Legacy personal task');
+    expect(cachedPersonal).not.toContain('Tenant 901 scoped task');
+    expect(cachedTenant901).toBe(tenant901);
+    expect(cachedTenant901).toContain('Tenant 901 scoped task');
+    expect(cachedTenant901).not.toContain('Legacy personal task');
+  });
+
   it('reports overdue counts', async () => {
     upsertTask(USER_ID, makeTask({ title: 'Old', dueDate: '2020-01-01' }));
     const summary = await buildDailyContext(USER_ID);
@@ -153,6 +207,62 @@ describe('buildDailyContext', () => {
     const summary = await buildDailyContext(USER_ID);
     expect(summary).toMatch(/READINESS: 75\/100 \(green\)/);
     expect(summary).toMatch(/Train hard/);
+  });
+
+  it('counts only private active canonical Content workspace items', async () => {
+    captureDiscoveredIdea({
+      scope: { tenantId: USER_ID, userId: USER_ID },
+      title: 'Canonical idea in progress',
+      sourceDate: '2026-07-17',
+      score: 0.8,
+      workflowEligible: true,
+    }, testDb);
+    const archived = captureDiscoveredIdea({
+      scope: { tenantId: USER_ID, userId: USER_ID },
+      title: 'Archived canonical idea',
+      sourceDate: '2026-07-17',
+      score: 0.4,
+      workflowEligible: false,
+    }, testDb);
+    testDb.prepare(`
+      UPDATE content_domain_objects
+         SET production_state = 'archived'
+       WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+    `).run(archived.item.id, USER_ID, USER_ID);
+
+    const summary = await buildDailyContext(USER_ID, USER_ID);
+
+    expect(summary).toContain('CONTENT: 1 active items in workspace');
+    expect(summary).not.toContain('ideas saved in pipeline');
+  });
+
+  it('isolates the canonical Content count by tenant for the same user', async () => {
+    captureDiscoveredIdea({
+      scope: { tenantId: 901, userId: USER_ID },
+      title: 'Tenant 901 private idea',
+      sourceDate: '2026-07-17',
+      score: 0.8,
+      workflowEligible: true,
+    }, testDb);
+    captureDiscoveredIdea({
+      scope: { tenantId: 902, userId: USER_ID },
+      title: 'Tenant 902 private idea one',
+      sourceDate: '2026-07-17',
+      score: 0.8,
+      workflowEligible: true,
+    }, testDb);
+    captureDiscoveredIdea({
+      scope: { tenantId: 902, userId: USER_ID },
+      title: 'Tenant 902 private idea two',
+      sourceDate: '2026-07-17',
+      score: 0.8,
+      workflowEligible: true,
+    }, testDb);
+
+    const summary = await buildDailyContext(USER_ID, 901);
+
+    expect(summary).toContain('CONTENT: 1 active items in workspace');
+    expect(summary).not.toContain('CONTENT: 2 active items');
   });
 
   it('classifies readiness 50 as yellow', async () => {
@@ -282,6 +392,8 @@ describe('getDailyContext cache', () => {
 
   it('cache is isolated by tenant for the same user', async () => {
     upsertTask(USER_ID, makeTask({ title: 'Tenant scoped' }));
+    testDb.prepare('UPDATE unified_tasks SET tenant_id = 901 WHERE user_id = ? AND title = ?')
+      .run(USER_ID, 'Tenant scoped');
     await buildDailyContext(USER_ID, 901);
 
     expect(getDailyContext(USER_ID, 902)).toBe('');

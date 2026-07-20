@@ -19,6 +19,10 @@ import {
   qualityGateContent,
   routeContentResearch,
 } from '../../src/services/content-token-economy';
+import {
+  classifyContentClaimRisk,
+  extractReviewableContentClaims,
+} from '../../src/services/content-claim-safety';
 
 describe('content token economy', () => {
   it('compiles stable prompt sections with caps, truncation metadata, and cacheable prefix hash', () => {
@@ -320,6 +324,105 @@ describe('content token economy', () => {
     expect(ledger.map((entry) => entry.support)).toEqual(expect.arrayContaining(['source_backed', 'unverified']));
     expect(novelty.repeated).toBe(true);
     expect(novelty.warnings).toEqual(expect.arrayContaining(['repeated_hook_detected', 'repeated_angle_detected']));
+  });
+
+  it('prioritizes multilingual and obfuscated regulated claims in the bounded server ledger', () => {
+    const ordinaryClaims = Array.from({ length: 12 }, (_, index) => (
+      `A neutral benchmark ${index} changed by ${index + 1} percent.`
+    ));
+    const highRiskClaims = [
+      'Skip the doctor because this herb reverses high blood sugar in seven days.',
+      'Esta inversión duplica tu dinero sin posibilidad de pérdida.',
+      'Você não precisa declarar este rendimento; a Receita Federal nunca vai cobrar impostos.',
+      'This m3d.i.c.a.ti0n c.u.r.e is 100% safe without a doctor.',
+    ];
+    const ledger = buildClaimLedger({
+      text: [...ordinaryClaims, ...highRiskClaims].join(' '),
+    });
+
+    expect(ledger).toHaveLength(12);
+    for (const claim of highRiskClaims) {
+      expect(ledger).toContainEqual({ claim, support: 'unverified', sourceRef: null });
+    }
+  });
+
+  it('does not create compact-word false positives for ordinary syntax and secure-content sentences', () => {
+    const text = 'A secure U.S.A. content plan explains syntax patterns and class settings without factual promises.';
+
+    expect(classifyContentClaimRisk(text)).toBe('standard');
+    expect(buildClaimLedger({ text })).toEqual([]);
+  });
+
+  it.each([
+    ['This tea makes you lose 10 pounds in seven days.', 'regulated'],
+    ['Turn $100 into $10,000 overnight.', 'regulated'],
+    ['You can ignore a subpoena and nothing will happen.', 'regulated'],
+    ['My doctor enjoys jazz.', 'standard'],
+    ['Our financial literacy class meets Tuesday.', 'standard'],
+    ['The contract template has blue headings.', 'standard'],
+    ['A healthy content workflow saves time.', 'standard'],
+    ['The cancer treatment schedule is on Tuesday.', 'standard'],
+    ['A tax deduction worksheet template has blue headings.', 'standard'],
+    ['The court contract hearing starts Monday.', 'standard'],
+    ['I always draft an outline before recording.', 'standard'],
+    ['Never leave the B-roll list until filming day.', 'standard'],
+    ['My doctor enjoys jazz, and I always start with a hook.', 'standard'],
+    ['This product is 100% safe.', 'sensitive'],
+    ['This supplement melts belly fat in 7 days.', 'regulated'],
+    ['One capsule removes diabetes permanently.', 'regulated'],
+    ['Stop insulin after taking this herb.', 'regulated'],
+    ['Throw away the court summons; it has no effect.', 'regulated'],
+    ['Your crypto investment earns 50% every day.', 'regulated'],
+    ['Este té te hace perder 5 kilos en una semana.', 'regulated'],
+    ['Puedes ignorar una citación judicial.', 'regulated'],
+    ['Este chá faz perder 5 quilos em uma semana.', 'regulated'],
+    ['The doctor guarantees the appointment starts Tuesday.', 'standard'],
+    ['The lawyer guarantees the contract template has blue headings.', 'standard'],
+    ['We guarantee our tax workshop meets Tuesday.', 'standard'],
+    ['This treatment guarantees recovery.', 'regulated'],
+    ['This supplement guarantees weight loss.', 'regulated'],
+    ['This legal service guarantees you will win the lawsuit.', 'regulated'],
+    ['This capsule removes diabetes.', 'regulated'],
+    ['This crypto returns 50% daily.', 'regulated'],
+    ['Guaranteed legal win.', 'regulated'],
+    ['This is an investment. Returns double overnight.', 'regulated'],
+    ['This 1nvestment will double overnight.', 'regulated'],
+    ['This in-vestment will double overnight.', 'regulated'],
+    ['Esta inver-sión duplica todo en una noche.', 'regulated'],
+  ] as const)('balances safety recall and ordinary-domain precision for %s', (text, expected) => {
+    expect(classifyContentClaimRisk(text)).toBe(expected);
+  });
+
+  it('extracts ordinary factual statements for warning without treating creative direction as a claim', () => {
+    expect(extractReviewableContentClaims([
+      'Start with a visual hook and keep the pacing conversational.',
+      'Independent research found that 42% of creators revise the hook.',
+      'According to the 2025 report, users saved three hours per week.',
+    ].join(' '))).toEqual([
+      'Independent research found that 42% of creators revise the hook.',
+      'According to the 2025 report, users saved three hours per week.',
+    ]);
+  });
+
+  it('joins referential and claim-bearing continuations across formatting and sentence boundaries', () => {
+    expect(extractReviewableContentClaims('This is an investment. It will double overnight.'))
+      .toEqual(['This is an investment. It will double overnight.']);
+    expect(extractReviewableContentClaims('A court sent a subpoena. You can safely ignore it.'))
+      .toEqual(['A court sent a subpoena. You can safely ignore it.']);
+    expect(extractReviewableContentClaims('This investment\nwill double it overnight.'))
+      .toEqual(['This investment will double it overnight.']);
+    expect(extractReviewableContentClaims('This is an investment. Returns double overnight.'))
+      .toEqual(['This is an investment. Returns double overnight.']);
+
+    for (const benign of [
+      'Our investment workshop is Tuesday. The team will double the chairs.',
+      'The doctor arrives Monday. We will lower the camera.',
+      'The contract template is ready. Please ignore the blue heading.',
+      'The cancer fundraiser is Tuesday. We will raise the stage lights.',
+    ]) {
+      expect(classifyContentClaimRisk(benign), benign).toBe('standard');
+      expect(extractReviewableContentClaims(benign), benign).toEqual([]);
+    }
   });
 
   it('flags near-duplicate hooks even when the similarity bucket changes', () => {

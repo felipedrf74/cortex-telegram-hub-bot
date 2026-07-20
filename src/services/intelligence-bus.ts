@@ -433,8 +433,9 @@ const GLOBAL_SIGNAL_TYPES = new Set<SignalType>([
   'competitor_upload',
   'keyword_rank_change',
   'keyword_opportunity',
-  'pipeline_bottleneck',
-  'pipeline_capacity',
+  // Pipeline guidance is derived from one creator's private workspace and
+  // therefore requires explicit tenant/user scope. It must never be promoted
+  // into a platform-global signal.
   'content_sprint_mode',
   'reaction_opportunity',
   'content_published',

@@ -38,6 +38,25 @@ function git(cwd: string, ...args: string[]) {
   }).trim();
 }
 
+function installIrreversibleMigrationPolicyFixture(repo: string): void {
+  const policyRelative = 'config/irreversible-migrations.json';
+  const policy = JSON.parse(fs.readFileSync(policyRelative, 'utf8')) as {
+    migrations: Array<{ file: string }>;
+    syntaxExemptions: Array<{ file: string }>;
+  };
+  for (const relative of [
+    'scripts/lib/git-changed-paths.mjs',
+    'scripts/lib/irreversible-migration-policy.mjs',
+    policyRelative,
+    ...policy.migrations.map((entry) => entry.file),
+    ...policy.syntaxExemptions.map((entry) => entry.file),
+  ]) {
+    const destination = path.join(repo, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(relative, destination);
+  }
+}
+
 const headSha = git(process.cwd(), 'rev-parse', 'HEAD');
 const policyBody = fs.readFileSync('config/test-policy.json');
 const policyDigest = createHash('sha256').update(policyBody).digest('hex');
@@ -292,6 +311,7 @@ describe('release test evidence policy', () => {
     ]) {
       fs.copyFileSync(relative, path.join(temp, relative));
     }
+    installIrreversibleMigrationPolicyFixture(temp);
     fs.writeFileSync(path.join(temp, '__tests__/security/critical.test.ts'), 'export {};\n');
     git(temp, 'init', '-q');
     git(temp, 'config', 'user.email', 'fixture@example.com');
@@ -359,6 +379,7 @@ describe('release test evidence policy', () => {
     ]) {
       fs.copyFileSync(relative, path.join(temp, relative));
     }
+    installIrreversibleMigrationPolicyFixture(temp);
     const critical = '__tests__/security/critical.test.ts';
     const retired = '__tests__/services/retired.test.ts';
     fs.writeFileSync(path.join(temp, critical), 'export {};\n');

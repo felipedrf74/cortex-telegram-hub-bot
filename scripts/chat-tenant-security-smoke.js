@@ -88,12 +88,33 @@ async function request(method, urlPath, { token, body, headers = {} } = {}) {
   return { status: response.status, ok: response.ok, json, text };
 }
 
+let legalAcceptancePromise;
+
+async function currentLegalAcceptance() {
+  legalAcceptancePromise ||= request('GET', '/api/v1/legal/current').then((response) => {
+    const documents = response.json?.data?.documents;
+    const termsVersion = documents?.terms?.version;
+    const privacyVersion = documents?.privacy?.version;
+    if (!response.ok || !termsVersion || !privacyVersion) {
+      throw new Error(`failed to load current legal metadata: ${response.status} ${response.text}`);
+    }
+    return {
+      accepted: true,
+      termsVersion,
+      privacyVersion,
+    };
+  });
+  return legalAcceptancePromise;
+}
+
 async function registerUser(label) {
+  const acceptedLegal = await currentLegalAcceptance();
   const response = await request('POST', '/api/v1/auth/register', {
     body: {
       deviceId: `${runId}-${label}`,
       deviceName: `Local Chat Tenant Smoke ${label}`,
       inviteCode: args.inviteCode,
+      acceptedLegal,
     },
   });
   if (!response.ok || !response.json?.data?.accessToken) {

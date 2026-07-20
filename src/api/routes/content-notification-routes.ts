@@ -25,7 +25,7 @@ export function registerContentNotificationRoutes(
    * artifact/action target for iOS and portal clients.
    */
   router.get('/notifications/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_notification_resolve', {
       notificationId: req.params.id,
     })) return;
@@ -36,7 +36,7 @@ export function registerContentNotificationRoutes(
       return;
     }
 
-    const resolution = resolveContentNotificationDeepLink(notificationId, userId);
+    const resolution = resolveContentNotificationDeepLink(notificationId, userId, tenantId);
     if (!resolution) {
       sendError(res, 'NOT_FOUND', 'Content notification not found', 404);
       return;

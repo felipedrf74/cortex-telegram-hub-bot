@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { createHash } from 'node:crypto';
-import { getContentWorkflowObject } from './content-editorial-workflow';
+import { getContentDecisionWorkspaceObject as getContentWorkflowObject } from './content-workspace-decision-adapter';
 import { getDb } from './database';
 
 export interface DecisionDomainStateScope {

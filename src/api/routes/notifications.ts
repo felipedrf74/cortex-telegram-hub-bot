@@ -520,7 +520,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
       warning: 'Content notifications are temporarily unavailable.',
       run: async () => {
-        const notifications = getNotifications(userId, { limit })
+        const notifications = getNotifications(userId, { limit, tenantId })
           .filter((n: any) => !bridgedContentNotificationIdSet.has(Number(n.id)));
         const items = notifications.map((n: any) => ({
           kind: 'notification' as const,
@@ -536,7 +536,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
           action: 'open_content' as const,
           metadata: normalizeInboxMetadata(n.data || {}),
         }));
-        return { items, unreadCount: getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds) };
+        return { items, unreadCount: getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds, tenantId) };
       },
     },
     {
@@ -837,7 +837,7 @@ async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promi
       key: 'notifications',
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
       warning: 'Content notifications are temporarily unavailable.',
-      run: async () => getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds),
+      run: async () => getUnreadCountExcludingNotificationIds(userId, bridgedContentNotificationIds, tenantId),
     },
     {
       key: 'reports',
@@ -925,17 +925,18 @@ export function notificationRoutes(): Router {
    * Query: ?status=unread (default: unread), ?type=topic_candidates_ready, ?limit=20
    */
   router.get('/', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const authReq = req as unknown as AuthenticatedRequest;
+    const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_list')) return;
+    const tenantId = routeTenantId(authReq, userId);
     const status = (req.query.status as NotificationStatus | undefined) || undefined;
     const type = (req.query.type as NotificationType | undefined) || undefined;
     const limit = parseInt(String(req.query.limit || '20'), 10);
 
     const notifications = status === undefined
-      ? getNotifications(userId, { limit })
-      : getNotifications(userId, { status, type, limit });
+      ? getNotifications(userId, { limit, tenantId })
+      : getNotifications(userId, { status, type, limit, tenantId });
 
-    const tenantId = routeTenantId(req as unknown as AuthenticatedRequest, userId);
     const warnings: Array<{ code: string; message: string }> = [];
     let centerItems: NotificationCenterItem[] = [];
     let centerUnreadCount = 0;
@@ -1338,7 +1339,7 @@ export function notificationRoutes(): Router {
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_read', { notificationId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, userId);
     const { id } = req.params;
-    const success = markRead(parseInt(id, 10), userId);
+    const success = markRead(parseInt(id, 10), userId, tenantId);
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
@@ -1357,7 +1358,7 @@ export function notificationRoutes(): Router {
     const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_all_read')) return;
     const tenantId = routeTenantId(authReq, userId);
-    const count = markAllRead(userId);
+    const count = markAllRead(userId, tenantId);
     invalidateNotificationInboxCaches(userId, tenantId);
     sendSuccess(res, { markedCount: count });
   }));
@@ -1373,7 +1374,7 @@ export function notificationRoutes(): Router {
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_resolve', { notificationId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, userId);
     const { id } = req.params;
-    const success = resolveNotification(parseInt(id, 10), userId);
+    const success = resolveNotification(parseInt(id, 10), userId, tenantId);
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;

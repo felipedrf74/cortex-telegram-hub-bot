@@ -74,7 +74,7 @@ function hasPastTenseInSingleScope(text: string): boolean {
   // Strong constructs — past-tense modifier directly attached to a verb.
   // "I just paid the bill" / "I already paid the bill" / "Já paguei a fatura" /
   // "Acabei de pagar a fatura".
-  if (/\bi\s+(?:just|already)\s+(?:paid|sent|scheduled|emailed|drafted|cancelled|canceled|deleted|created|added|moved|rewrote|wrote|made|set\s+up|booked|blocked\s+off|completed|finished)\b/.test(folded)) {
+  if (/\bi\s+(?:just|already)\s+(?:paid|sent|scheduled|emailed|drafted|cancelled|canceled|deleted|created|added|moved|rewrote|wrote|made|set\s+up|booked|blocked\s+off|completed|finished|published|posted|uploaded)\b/.test(folded)) {
     return true;
   }
   if (/\bj[aá]\s+(?:paguei|enviei|mandei|marquei|agendei|criei|coloquei|adicionei|deletei|exclu[ií]|cancelei|apaguei|comi|fiz|terminei|conclu[ií])\b/.test(folded)) {

@@ -9,7 +9,10 @@ import { buildCurrentCreatorProfilePayload } from './content-engine-profile-payl
 import { createInternalAttributionToken } from './internal-attribution';
 import { requireTenantIdParam } from './tenant-scope';
 import { ForwardedAiBudgetError, parseForwardedAiBudgetError } from './content-engine-error-contract';
+import { buildContentEngineCacheLogContext } from './content-engine-log-context';
+import { DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY, SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY, type ScriptGenerationExecutionPolicy } from './content-script-execution-policy';
 export { ForwardedAiBudgetError, parseForwardedAiBudgetError, type ForwardedAiBudgetCode } from './content-engine-error-contract';
+export { DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY, SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY, type ScriptGenerationExecutionPolicy } from './content-script-execution-policy';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
 
@@ -492,21 +495,18 @@ export function buildScriptCacheKey(
 
 export async function getScript(
   topic: string, niche = 'general', maxDuration = 8, format = 'YouTube',
-  mode: ScriptGenerationMode = 'draft',
-  brandVoice?: string | null,
-  language = 'pt-BR',
-  renderMode: ScriptRenderMode = 'structured',
-  userId?: number,
-  targetDurationSeconds?: number | null,
-  scriptContext?: ScriptTopicContext | null,
-  scriptStyle: ScriptStyle = 'detailed',
-  forceRefresh = false,
-  regenerationSeed?: string | null,
-  creatorProfile?: string | null,
-  tenantId?: number,
+  mode: ScriptGenerationMode = 'draft', brandVoice?: string | null,
+  language = 'pt-BR', renderMode: ScriptRenderMode = 'structured', userId?: number,
+  targetDurationSeconds?: number | null, scriptContext?: ScriptTopicContext | null,
+  scriptStyle: ScriptStyle = 'detailed', forceRefresh = false,
+  regenerationSeed?: string | null, creatorProfile?: string | null, tenantId?: number,
   providerBoundary?: ScriptProviderBoundary,
+  executionPolicy: ScriptGenerationExecutionPolicy = DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
+  const requestTimeoutMs = executionPolicy === SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY
+    ? Math.min(cfg.timeoutMs, 85_000)
+    : cfg.timeoutMs;
   const normalizedLanguage = normalizeScriptLanguage(language);
   const normalizedRenderMode = normalizeScriptRenderMode(renderMode);
   const normalizedScriptStyle = normalizeScriptStyle(scriptStyle);
@@ -528,12 +528,12 @@ export async function getScript(
   );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
-  if (cfg.cacheTtl > 0 && !forceRefresh) {
+  if (executionPolicy.cache === 'default' && cfg.cacheTtl > 0 && !forceRefresh) {
     try {
       const { getCached } = await import('./cache-store');
       const cached = getCached<ScriptResponse>(normalizedKey);
       if (cached) {
-        logger.info({ topic, mode, cacheHit: true }, 'Script cache hit — returning cached result');
+        logger.info(buildContentEngineCacheLogContext(topic, mode, true), 'Script cache hit — returning cached result');
         return cached;
       }
     } catch { /* cache unavailable — generate fresh */ }
@@ -541,7 +541,7 @@ export async function getScript(
 
   // ── Intelligence bus signals (skip for quick mode) ──────────────
   let contextSignals: any[] = [];
-  if (cfg.signalDays > 0) {
+  if (executionPolicy.intelligenceSignals === 'default' && cfg.signalDays > 0) {
     try {
       const { readSignals } = await import('./intelligence-bus');
       const signalTypes = [
@@ -594,17 +594,17 @@ export async function getScript(
       force_refresh: forceRefresh || undefined,
       regeneration_seed: regenerationSeed || undefined,
     }),
-  }, cfg.timeoutMs);
+  }, requestTimeoutMs);
   const result = providerBoundary
     ? await providerBoundary(invokeFreshProviderPath)
     : await invokeFreshProviderPath();
 
   // ── Cache store (skip for deep mode) ───────────────────────────
-  if (cfg.cacheTtl > 0 && (!forceRefresh || Boolean(regenerationSeed?.trim()))) {
+  if (executionPolicy.cache === 'default' && cfg.cacheTtl > 0 && (!forceRefresh || Boolean(regenerationSeed?.trim()))) {
     try {
       const { setCache } = await import('./cache-store');
       setCache(normalizedKey, result, cfg.cacheTtl);
-      logger.info({ topic, mode, cacheHit: false, cacheTtl: cfg.cacheTtl }, 'Script cached');
+      logger.info(buildContentEngineCacheLogContext(topic, mode, false, cfg.cacheTtl), 'Script cached');
     } catch { /* cache store failed — non-fatal */ }
   }
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Router, type Request, type Response } from 'express';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
+import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database;
 
@@ -124,8 +125,7 @@ function expectAgencyContract(contract: any, overrides: Record<string, unknown> 
 describe('content agency routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    testDb = new Database(':memory:');
-    testDb.pragma('foreign_keys = ON');
+    testDb = createMigratedTestDatabase();
     ensureContentAgencyTables(testDb);
   });
 
@@ -288,7 +288,7 @@ describe('content agency routes', () => {
     });
   });
 
-  it('moves an approved agency package into the existing content pipeline once and with scope', async () => {
+  it('moves an approved agency package into the canonical Content workspace once and with scope', async () => {
     const create = await dispatch('POST', '/agency/package', {
       brief: {
         goal: 'create a YouTube series for founder operations',
@@ -316,31 +316,60 @@ describe('content agency routes', () => {
     expectAgencyContract(handoff.response.body.data.contract, {
       tenantId: 101,
       userId: 501,
-      reviewRequired: false,
+      reviewRequired: true,
     });
-    expect(handoff.response.body.data.handoff.pipelineId).toEqual(expect.any(Number));
-    expect(handoff.response.body.data.handoff.sourceTrace).toContain('content_pipeline read-back verified');
+    expect(handoff.response.body.data.handoff.packageHash).toBe(pkg.contentHash);
+    expect(handoff.response.body.data.handoff).toMatchObject({
+      pipelineId: expect.any(Number),
+      workspaceItemId: expect.any(Number),
+      workspaceArtifactId: expect.any(Number),
+      workspaceRevisionId: expect.any(Number),
+      persistence: 'content_workspace',
+    });
+    expect(handoff.response.body.data.handoff.pipelineId)
+      .toBe(handoff.response.body.data.handoff.workspaceItemId);
+    expect(handoff.response.body.data.handoff.sourceTrace)
+      .toContain('Canonical Content workspace read-back verified');
 
     const rows = testDb.prepare(`
-      SELECT topic_title, user_id, tenant_id, owner_user_id, visibility_scope, approval_state, source_agency_package_id
-        FROM content_pipeline
+      SELECT title, tenant_id, owner_user_id, visibility_scope,
+             production_state, approval_state, review_required, approved_by,
+             approved_at, current_artifact_id
+        FROM content_domain_objects
+       WHERE object_type = 'content_item'
     `).all() as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      user_id: 501,
       tenant_id: 101,
       owner_user_id: 501,
       visibility_scope: 'user_private',
-      approval_state: 'approved',
-      source_agency_package_id: pkg.id,
+      production_state: 'review',
+      approval_state: 'required',
+      review_required: 1,
+      approved_by: null,
+      approved_at: null,
+      current_artifact_id: handoff.response.body.data.handoff.workspaceArtifactId,
     });
-    expect(rows[0].topic_title).toContain('Agency:');
+    expect(rows[0].title).toBe(pkg.objective);
+    expect(testDb.prepare(`
+      SELECT source_hash, item_id, artifact_id, revision_id, content_parity_status
+        FROM content_workspace_ingress_bindings
+       WHERE source_kind = 'content_agency_package' AND source_id = ?
+    `).get(pkg.id)).toEqual({
+      source_hash: pkg.contentHash,
+      item_id: handoff.response.body.data.handoff.workspaceItemId,
+      artifact_id: handoff.response.body.data.handoff.workspaceArtifactId,
+      revision_id: handoff.response.body.data.handoff.workspaceRevisionId,
+      content_parity_status: 'artifact_pinned',
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_pipeline').get()).toEqual({ count: 0 });
 
     const again = await dispatch('POST', `/agency/projects/${pkg.id}/handoff`);
     expect(again.response.statusCode).toBe(200);
     expect(again.response.body.data.handoff).toMatchObject({
       status: 'already_exists',
       pipelineId: handoff.response.body.data.handoff.pipelineId,
+      workspaceItemId: handoff.response.body.data.handoff.workspaceItemId,
     });
   });
 
@@ -366,6 +395,7 @@ describe('content agency routes', () => {
       reviewRequired: true,
     });
     expect(handoff.response.body.error.details.contract.blockers).toContain('sponsored_or_branded_content_requires_clear_disclosure');
-    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_pipeline').get()).toMatchObject({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_domain_objects WHERE object_type = ?')
+      .get('content_item')).toMatchObject({ count: 0 });
   });
 });

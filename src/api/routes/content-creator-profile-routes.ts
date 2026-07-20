@@ -18,6 +18,14 @@ import {
   isValidRadarFeedbackAction,
 } from '../../state/content-radar-feedback';
 import { summarizeCanonicalLifecycle } from '../../state/content-lifecycle';
+import {
+  ContentWorkspaceError,
+} from '../../services/content-workspace';
+import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
+import {
+  recordContentRadarWorkspaceAction,
+  type ContentRadarBriefDraft,
+} from '../../services/content-radar-workspace-actions';
 import { logger } from '../../utils/logger';
 
 // CONTENT-UI-O1 (2026-05-04): unified per-tenant ContentCreatorProfile.
@@ -135,6 +143,49 @@ export function registerContentCreatorProfileRoutes(
       logger.warn({ err, userId, tenantId, signalId, action },
         'content-radar-feedback.write failed');
       sendError(res, 'INTERNAL', 'Failed to record radar feedback', 500);
+    }
+  }));
+
+  /** POST /api/v1/content/radar/workspace-actions
+   *  Atomically records save/create_brief feedback and materializes the
+   *  canonical item + typed artifact + initial immutable revision.
+   *  Body: { signalId, action: 'save'|'create_brief', signalTopic,
+   *          signalSummary?, reason?, brief? } */
+  router.post('/radar/workspace-actions', asyncHandler(async (req, res: Response) => {
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidContentRouteScope(res, userId, 'content_radar_workspace_action')) return;
+    if (!Number.isInteger(tenantId) || Number(tenantId) <= 0) {
+      sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
+      return;
+    }
+
+    const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
+      ? req.body as Record<string, unknown>
+      : {};
+    if (body.action !== 'save' && body.action !== 'create_brief') {
+      sendError(res, 'VALIDATION', 'action must be save or create_brief', 400);
+      return;
+    }
+
+    try {
+      const result = recordContentRadarWorkspaceAction({
+        scope: { userId, tenantId: Number(tenantId) },
+        signalId: body.signalId as string,
+        action: body.action,
+        signalTopic: body.signalTopic as string,
+        signalSummary: body.signalSummary as string | null | undefined,
+        reason: body.reason as string | null | undefined,
+        brief: body.brief as ContentRadarBriefDraft | null | undefined,
+      });
+      sendSuccess(res, result);
+    } catch (error) {
+      if (error instanceof ContentWorkspaceWriteDisabledError || error instanceof ContentWorkspaceError) {
+        sendError(res, error.code, error.message, error.status, error.details);
+        return;
+      }
+      logger.error({ err: error, userId, tenantId, action: body.action },
+        'content-radar-workspace-action failed');
+      sendError(res, 'INTERNAL', 'Failed to save this radar action. Existing content was preserved.', 500);
     }
   }));
 

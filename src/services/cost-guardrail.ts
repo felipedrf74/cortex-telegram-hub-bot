@@ -52,6 +52,10 @@ import {
   tryRecoverApiUsagePersistenceFailure,
 } from './api-usage-fallback';
 import { getCurrentRequestId } from '../utils/request-context';
+import {
+  isContentLiveEvalProviderCategory,
+  isContentLiveEvalRegisteredModel,
+} from './content-live-evaluation-artifact';
 
 export type { AiRequestSource } from './api-usage-attribution';
 
@@ -110,6 +114,18 @@ export interface AiBudgetRequest {
   runId?: string | null;
   /** Pre-multiplier expected provider cost. Rolling p95 is used when absent. */
   estimatedCostUsd?: number;
+  /**
+   * Optional signed, run-scoped hard ceiling used by explicitly authorized
+   * local evaluation workloads. Unlike quota forecasts, this is rechecked
+   * against durable api_usage before every concrete provider attempt.
+   */
+  hardRunCostLimitUsd?: number;
+  /**
+   * Optional signed per-job ceiling. Live evaluation uses one immutable job
+   * per corpus sample so retries/fallbacks cannot consume a later sample's
+   * reserved slice.
+   */
+  hardJobCostLimitUsd?: number;
   automationPriority?: AiAutomationPriority;
 }
 
@@ -125,6 +141,8 @@ export interface SignedOuterAiBudgetReservation {
   baseCategory: string;
   jobName: string | null;
   runId: string | null;
+  hardRunCostLimitUsd?: number;
+  hardJobCostLimitUsd?: number;
 }
 
 interface ActiveAiBudgetReservationContext extends SignedOuterAiBudgetReservation {
@@ -695,7 +713,7 @@ function getRollingP95CostUsd(request: AiBudgetRequest): number | null {
   }
 }
 
-function getCurrentRunSpentUsd(request: AiBudgetRequest): number {
+function tryGetCurrentRunSpentUsd(request: AiBudgetRequest): number | null {
   if (!request.runId) return 0;
   try {
     const systemPool = request.requestSource === 'system';
@@ -713,11 +731,194 @@ function getCurrentRunSpentUsd(request: AiBudgetRequest): number {
         AND cost_usd > 0
     `).get(...params) as { cost_usd?: number } | undefined;
     const value = Number(row?.cost_usd ?? 0);
-    return Number.isFinite(value) && value > 0 ? value : 0;
+    if (!Number.isFinite(value)) return null;
+    const reserved = request.hardRunCostLimitUsd !== undefined || request.hardJobCostLimitUsd !== undefined
+      ? tryGetHardAttemptReservedUsd(request, false)
+      : 0;
+    return reserved == null ? null : Math.max(0, value) + reserved;
   } catch {
-    // Failing to read current-run spend must not reduce the reservation.
-    return 0;
+    return null;
   }
+}
+
+function tryGetCurrentJobSpentUsd(request: AiBudgetRequest): number | null {
+  if (!request.runId || !request.jobName) return null;
+  try {
+    const systemPool = request.requestSource === 'system';
+    const userPredicate = systemPool ? '' : 'AND user_id = ?';
+    const params = systemPool
+      ? [request.requestSource, request.baseCategory, request.runId, request.jobName]
+      : [request.requestSource, request.baseCategory, request.runId, request.jobName, request.userId];
+    const row = getDb().prepare(`
+      SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd
+      FROM api_usage
+      WHERE request_source = ?
+        AND base_category = ?
+        AND run_id = ?
+        AND job_name = ?
+        ${userPredicate}
+        AND cost_usd > 0
+    `).get(...params) as { cost_usd?: number } | undefined;
+    const value = Number(row?.cost_usd ?? 0);
+    if (!Number.isFinite(value)) return null;
+    const reserved = tryGetHardAttemptReservedUsd(request, true);
+    return reserved == null ? null : Math.max(0, value) + reserved;
+  } catch {
+    return null;
+  }
+}
+
+function ensureHardAttemptReservationTable(db: ReturnType<typeof getDb>): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_provider_attempt_reservations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      request_source TEXT NOT NULL,
+      base_category TEXT NOT NULL,
+      job_name TEXT,
+      run_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      provider_category TEXT NOT NULL,
+      reserved_cost_usd REAL NOT NULL CHECK (reserved_cost_usd >= 0),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_provider_attempt_reservations_run
+      ON ai_provider_attempt_reservations(request_source, base_category, run_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_provider_attempt_reservations_job
+      ON ai_provider_attempt_reservations(request_source, base_category, run_id, job_name, user_id);
+  `);
+}
+
+function tryGetHardAttemptReservedUsd(request: AiBudgetRequest, jobScoped: boolean): number | null {
+  if (!request.runId || (jobScoped && !request.jobName)) return null;
+  try {
+    const db = getDb();
+    ensureHardAttemptReservationTable(db);
+    const systemPool = request.requestSource === 'system';
+    const userPredicate = systemPool ? '' : 'AND user_id = ?';
+    const jobPredicate = jobScoped ? 'AND job_name = ?' : '';
+    const params: unknown[] = [request.requestSource, request.baseCategory, request.runId];
+    if (jobScoped) params.push(request.jobName);
+    if (!systemPool) params.push(request.userId);
+    const row = db.prepare(`
+      SELECT COALESCE(SUM(reserved_cost_usd), 0) AS reserved_cost_usd
+        FROM ai_provider_attempt_reservations
+       WHERE request_source = ?
+         AND base_category = ?
+         AND run_id = ?
+         ${jobPredicate}
+         ${userPredicate}
+    `).get(...params) as { reserved_cost_usd?: number } | undefined;
+    const value = Number(row?.reserved_cost_usd ?? 0);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+type HardProviderAttemptReservationResult = 'reserved' | 'limit_exceeded' | 'failed';
+
+function hardScopeCommittedUsd(
+  db: ReturnType<typeof getDb>,
+  request: AiBudgetRequest,
+  jobScoped: boolean,
+): number {
+  const systemPool = request.requestSource === 'system';
+  const userPredicate = systemPool ? '' : 'AND user_id = ?';
+  const jobPredicate = jobScoped ? 'AND job_name = ?' : '';
+  const params: Array<string | number> = [request.requestSource, request.baseCategory, request.runId!];
+  if (jobScoped) params.push(request.jobName!);
+  if (!systemPool) params.push(request.userId);
+  const usage = db.prepare(`
+    SELECT COALESCE(SUM(cost_usd), 0) AS amount
+      FROM api_usage
+     WHERE request_source = ?
+       AND base_category = ?
+       AND run_id = ?
+       ${jobPredicate}
+       ${userPredicate}
+       AND cost_usd > 0
+  `).get(...params) as { amount?: number } | undefined;
+  const reserved = db.prepare(`
+    SELECT COALESCE(SUM(reserved_cost_usd), 0) AS amount
+      FROM ai_provider_attempt_reservations
+     WHERE request_source = ?
+       AND base_category = ?
+       AND run_id = ?
+       ${jobPredicate}
+       ${userPredicate}
+  `).get(...params) as { amount?: number } | undefined;
+  const usageUsd = Number(usage?.amount ?? 0);
+  const reservedUsd = Number(reserved?.amount ?? 0);
+  if (!Number.isFinite(usageUsd) || usageUsd < 0 || !Number.isFinite(reservedUsd) || reservedUsd < 0) {
+    throw new Error('invalid hard-cost scope');
+  }
+  // Retaining both values is intentionally pessimistic. A timed-out provider
+  // can be billed after the caller has abandoned it; its maximum reservation
+  // therefore remains committed even when a late/estimated usage row exists.
+  return usageUsd + reservedUsd;
+}
+
+function reserveHardProviderAttempt(input: {
+  request: AiBudgetRequest;
+  provider: string;
+  model: string;
+  providerCategory: string;
+  maxCostUsd: number;
+}): HardProviderAttemptReservationResult {
+  try {
+    const db = getDb();
+    ensureHardAttemptReservationTable(db);
+    if (!input.request.runId) return 'failed';
+    const reserve = db.transaction((): HardProviderAttemptReservationResult => {
+      if (input.request.hardRunCostLimitUsd !== undefined) {
+        const hardRunLimitUsd = Number(input.request.hardRunCostLimitUsd);
+        if (
+          !Number.isFinite(hardRunLimitUsd)
+          || hardRunLimitUsd <= 0
+          || hardScopeCommittedUsd(db, input.request, false) + input.maxCostUsd > hardRunLimitUsd + Number.EPSILON
+        ) return 'limit_exceeded';
+      }
+      if (input.request.hardJobCostLimitUsd !== undefined) {
+        const hardJobLimitUsd = Number(input.request.hardJobCostLimitUsd);
+        if (
+          !input.request.jobName
+          || !Number.isFinite(hardJobLimitUsd)
+          || hardJobLimitUsd <= 0
+          || hardScopeCommittedUsd(db, input.request, true) + input.maxCostUsd > hardJobLimitUsd + Number.EPSILON
+        ) return 'limit_exceeded';
+      }
+      db.prepare(`
+        INSERT INTO ai_provider_attempt_reservations (
+          user_id, request_source, base_category, job_name, run_id,
+          provider, model, provider_category, reserved_cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.request.userId,
+        input.request.requestSource,
+        input.request.baseCategory,
+        input.request.jobName ?? null,
+        input.request.runId,
+        input.provider,
+        input.model,
+        input.providerCategory,
+        input.maxCostUsd,
+      );
+      return 'reserved';
+    });
+    // SQLite serializes competing writers before the in-transaction re-read,
+    // so replayed/concurrent signed boundaries cannot both spend stale headroom.
+    return reserve.immediate();
+  } catch {
+    return 'failed';
+  }
+}
+
+function getCurrentRunSpentUsd(request: AiBudgetRequest): number {
+  // Forecast-only callers retain the conservative historical behavior. A
+  // hard run ceiling uses tryGetCurrentRunSpentUsd directly and fails closed.
+  return tryGetCurrentRunSpentUsd(request) ?? 0;
 }
 
 export function estimateAiBudgetReservationUsd(request: AiBudgetRequest): number {
@@ -866,11 +1067,27 @@ function scheduledContentWorkNeeded(userId: number, slot: ScheduledContentPriori
              )
         )
         OR EXISTS(
-          SELECT 1 FROM content_scripts
-           WHERE user_id = ?
-             AND COALESCE(tenant_id, user_id) = ?
-             AND COALESCE(scope_status, 'active') = 'active'
-             AND created_at >= datetime('now', '-30 days')
+          SELECT 1
+            FROM content_domain_objects content_item
+            JOIN content_artifacts content_artifact
+              ON content_artifact.item_id = content_item.id
+             AND content_artifact.tenant_id = content_item.tenant_id
+             AND content_artifact.owner_user_id = content_item.owner_user_id
+            JOIN content_revisions content_revision
+              ON content_revision.id = content_artifact.current_revision_id
+             AND content_revision.artifact_id = content_artifact.id
+             AND content_revision.tenant_id = content_artifact.tenant_id
+             AND content_revision.owner_user_id = content_artifact.owner_user_id
+           WHERE content_item.owner_user_id = ?
+             AND content_item.tenant_id = ?
+             AND content_item.visibility_scope = 'user_private'
+             AND content_item.scope_status = 'active'
+             AND content_item.deleted_at IS NULL
+             AND content_item.object_type = 'content_item'
+             AND content_artifact.visibility_scope = 'user_private'
+             AND content_artifact.scope_status = 'active'
+             AND content_artifact.artifact_type IN ('script', 'platform_variant')
+             AND content_revision.created_at >= datetime('now', '-30 days')
         )
       ) AS engaged
     `).get(userId, userId, userId, userId) as { engaged?: number };
@@ -946,8 +1163,8 @@ function hasSuccessfulCoachDeliveryInWindow(userId: number, start: string, end: 
       WHERE user_id = ?
         AND type = 'coach_briefing'
         AND source_job = 'garmin_coach'
-        AND created_at >= datetime(?)
-        AND created_at < datetime(?)
+        AND datetime(created_at) >= datetime(?)
+        AND datetime(created_at) < datetime(?)
         AND length(trim(COALESCE(document_json, ''))) > 2
       LIMIT 1
     `).get(userId, start, end) as { delivered?: number } | undefined;
@@ -1088,6 +1305,47 @@ export function checkAiBudget(request: AiBudgetRequest): AiBudgetDecision {
     });
   }
 
+  if (request.hardRunCostLimitUsd !== undefined) {
+    const hardLimitUsd = Number(request.hardRunCostLimitUsd);
+    const runSpentUsd = tryGetCurrentRunSpentUsd(request);
+    if (
+      !request.runId
+      || !Number.isFinite(hardLimitUsd)
+      || hardLimitUsd <= 0
+      || runSpentUsd == null
+      || runSpentUsd + reservedCostUsd > hardLimitUsd + Number.EPSILON
+    ) {
+      return deniedDecision(quota, reservedCostUsd, {
+        code: 'SERVICE_DEGRADED',
+        status: 429,
+        window: 'global',
+        message: 'AI work was stopped because its explicit run cost ceiling could not safely cover the next provider attempt. No additional model call was made.',
+        unblocksAt: null,
+      });
+    }
+  }
+
+  if (request.hardJobCostLimitUsd !== undefined) {
+    const hardLimitUsd = Number(request.hardJobCostLimitUsd);
+    const jobSpentUsd = tryGetCurrentJobSpentUsd(request);
+    if (
+      !request.runId
+      || !request.jobName
+      || !Number.isFinite(hardLimitUsd)
+      || hardLimitUsd <= 0
+      || jobSpentUsd == null
+      || jobSpentUsd + reservedCostUsd > hardLimitUsd + Number.EPSILON
+    ) {
+      return deniedDecision(quota, reservedCostUsd, {
+        code: 'SERVICE_DEGRADED',
+        status: 429,
+        window: 'global',
+        message: 'AI work was stopped because its explicit job cost ceiling could not safely cover the next provider attempt. No additional model call was made.',
+        unblocksAt: null,
+      });
+    }
+  }
+
   if (quota.blockReason === 'entitlement_error') {
     return deniedDecision(quota, reservedCostUsd, {
       code: 'SERVICE_DEGRADED',
@@ -1223,7 +1481,7 @@ export class AiBudgetError extends Error {
 function createActiveReservationContext(
   lease: SqliteCostLockLease,
   userId: number,
-  input: Partial<Pick<AiBudgetRequest, 'requestSource' | 'baseCategory' | 'jobName' | 'runId'>> = {},
+  input: Partial<Pick<AiBudgetRequest, 'requestSource' | 'baseCategory' | 'jobName' | 'runId' | 'hardRunCostLimitUsd' | 'hardJobCostLimitUsd'>> = {},
 ): ActiveAiBudgetReservationContext {
   return {
     userId,
@@ -1232,6 +1490,8 @@ function createActiveReservationContext(
     baseCategory: input.baseCategory ?? 'interactive',
     jobName: input.jobName ?? null,
     runId: input.runId ?? crypto.randomUUID(),
+    ...(input.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: input.hardRunCostLimitUsd } : {}),
+    ...(input.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: input.hardJobCostLimitUsd } : {}),
     active: true,
     approved: false,
   };
@@ -1265,6 +1525,8 @@ export function getActiveAiBudgetReservationMarker(
     baseCategory: active.baseCategory,
     jobName: active.jobName,
     runId: active.runId,
+    ...(active.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: active.hardRunCostLimitUsd } : {}),
+    ...(active.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: active.hardJobCostLimitUsd } : {}),
   };
 }
 
@@ -1279,6 +1541,8 @@ export function assertAiBudgetReservationForProvider(input: {
   category: string;
   /** Worst-case cost of this concrete request at its hard provider token cap. */
   maxCostUsd: number;
+  provider?: string;
+  model?: string;
   /** Provider can inject tokenized context without an exact request cap. */
   hasUnboundedProviderInjectedContext?: boolean;
 }): void {
@@ -1315,11 +1579,30 @@ export function assertAiBudgetReservationForProvider(input: {
     baseCategory: active.baseCategory,
     jobName: active.jobName,
     runId: active.runId,
+    ...(active.hardRunCostLimitUsd !== undefined ? { hardRunCostLimitUsd: active.hardRunCostLimitUsd } : {}),
+    ...(active.hardJobCostLimitUsd !== undefined ? { hardJobCostLimitUsd: active.hardJobCostLimitUsd } : {}),
   };
+  if (active.baseCategory === 'content_live_eval') {
+    const provider = String(input.provider || '').trim().toLowerCase();
+    const model = String(input.model || '').trim();
+    if (
+      !isContentLiveEvalProviderCategory(input.category)
+      || !provider
+      || !model
+      || !isContentLiveEvalRegisteredModel(provider, model)
+    ) {
+      const decision = serviceDegradedDecision(
+        request,
+        'Content live evaluation was stopped because the exact reviewed provider, model, or standard-script route did not match. No model call was made.',
+      );
+      recordAiBudgetDeferral(request, decision);
+      throw new AiBudgetError(decision);
+    }
+  }
   if (input.hasUnboundedProviderInjectedContext && active.requestSource !== 'interactive') {
     const decision = serviceDegradedDecision(
       request,
-      'Background AI search was deferred because the provider cannot expose an exact all-in context-cost ceiling. No model call was made.',
+      'Background AI search was deferred because the request context could not be bounded for conservative cost preauthorization. No model call was made.',
     );
     recordAiBudgetDeferral(request, decision);
     throw new AiBudgetError(decision);
@@ -1328,20 +1611,45 @@ export function assertAiBudgetReservationForProvider(input: {
   if (!Number.isFinite(hardMaximum) || hardMaximum < 0) {
     const decision = serviceDegradedDecision(
       request,
-      'AI work was deferred because the provider request did not expose resolved pricing and a verifiable maximum cost. No model call was made.',
+      'AI work was deferred because the provider request did not expose resolved pricing and a conservative preauthorization amount. No model call was made.',
     );
     recordAiBudgetDeferral(request, decision);
     throw new AiBudgetError(decision);
   }
-  // A provider-enforced output cap plus a conservative serialized-input
-  // ceiling makes this an actual upper bound, not a forecast. Feed it into
-  // the canonical estimator for every source. Provider hard maxima are not
+  // A provider-enforced output cap plus a conservative serialized-input limit
+  // yields the accounting reservation under the reviewed registry. It limits
+  // Nexus preauthorization but is not an external invoice guarantee. Feed it
+  // into the canonical estimator for every source. These reservations are not
   // multiplied again; rolling p95/default forecasts retain the 125% reserve.
   request.estimatedCostUsd = hardMaximum;
   const decision = checkAiBudget(request);
   if (!decision.allowed) {
     recordAiBudgetDeferral(request, decision);
     throw new AiBudgetError(decision);
+  }
+  if (active.hardRunCostLimitUsd !== undefined || active.hardJobCostLimitUsd !== undefined) {
+    const provider = String(input.provider || '').trim().toLowerCase();
+    const model = String(input.model || '').trim();
+    const attemptReservation = provider && model
+      ? reserveHardProviderAttempt({
+        request,
+        provider,
+        model,
+        providerCategory: input.category,
+        maxCostUsd: hardMaximum,
+      })
+      : 'failed';
+    if (attemptReservation !== 'reserved') {
+      const reservationFailure = serviceDegradedDecision(
+        request,
+        attemptReservation === 'limit_exceeded'
+          ? 'AI work was stopped because another provider attempt already committed the remaining explicit cost ceiling. No model call was made.'
+          : 'AI work was stopped because its durable provider-attempt reservation could not be recorded. No model call was made.',
+        attemptReservation === 'failed' ? 'metering_unavailable' : undefined,
+      );
+      recordAiBudgetDeferral(request, reservationFailure);
+      throw new AiBudgetError(reservationFailure);
+    }
   }
 }
 
@@ -1396,6 +1704,8 @@ export async function withSignedOuterAiBudgetReservation<T>(
     && marker.baseCategory === request.baseCategory
     && (marker.jobName ?? null) === (request.jobName ?? null)
     && (marker.runId ?? null) === (request.runId ?? null)
+    && (marker.hardRunCostLimitUsd ?? null) === (request.hardRunCostLimitUsd ?? null)
+    && (marker.hardJobCostLimitUsd ?? null) === (request.hardJobCostLimitUsd ?? null)
     && typeof marker.reservationId === 'string'
     && marker.reservationId.length >= 16;
   if (!markerMatchesRequest || !isLiveOuterReservation(lockUserId, marker.reservationId)) {

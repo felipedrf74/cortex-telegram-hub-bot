@@ -17,6 +17,13 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { dismissSignal, writeGovernedSignal } from './intelligence-bus';
 import {
+  getContentWorkspaceRecentItems,
+  type ContentWorkspaceRecentItem,
+} from './content-workspace-read-models';
+import type { ContentWorkspaceScope } from './content-workspace';
+import {
+  contentPrivateScopeParams,
+  contentPrivateScopePredicate,
   contentScopeOrderExpr,
   contentScopeParams,
   contentScopePredicate,
@@ -187,11 +194,11 @@ export function getVoiceDna(dbOverride?: any, userId?: number, tenantId?: number
           `SELECT id, category, synthesized_text, source_channels, version, updated_at,
                   user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
              FROM content_knowledge
-            WHERE ${contentScopePredicate()}
+            WHERE ${contentPrivateScopePredicate()}
             ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                      category ASC,
                      updated_at DESC`,
-        ).all(...contentScopeParams(userId, tenantId)) as any[]
+        ).all(...contentPrivateScopeParams(userId, tenantId)) as any[]
       : d.prepare(
           `SELECT id, category, synthesized_text, source_channels, version, updated_at,
                   user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
@@ -251,10 +258,10 @@ export function getKnowledgeStats(dbOverride?: any, userId?: number, tenantId?: 
           d.prepare(
             `SELECT channel_url, user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
                FROM content_ref_channels
-              WHERE ${contentScopePredicate()}
+              WHERE ${contentPrivateScopePredicate()}
               ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                        channel_url ASC`,
-          ).all(...contentScopeParams(userId, tenantId)) as any[],
+          ).all(...contentPrivateScopeParams(userId, tenantId)) as any[],
           (row) => row.channel_url,
           userId,
         ).length
@@ -282,46 +289,18 @@ export function getKnowledgeStats(dbOverride?: any, userId?: number, tenantId?: 
 // Pipeline Recent Items
 // ═══════════════════════════════════════════════════════════════════
 
-export interface PipelineRecentItem {
-  id: number;
-  topicTitle: string;
-  niche: string | null;
-  stage: string;
-  createdAt: string;
-  updatedAt: string;
-  publishedUrl: string | null;
-  publishedAt: string | null;
-}
+export type PipelineRecentItem = ContentWorkspaceRecentItem;
 
 /**
  * Get recent pipeline items. Complements getPipelineStats() (aggregates)
  * with the actual item list for the portal pipeline table.
  */
-export function getPipelineRecent(limit = 30, dbOverride?: any): PipelineRecentItem[] {
-  const d = dbOverride || db();
-  try {
-    const rows = d.prepare(`
-      SELECT id, topic_title, niche, stage, created_at, updated_at,
-             published_url, published_at
-      FROM content_pipeline
-      ORDER BY updated_at DESC
-      LIMIT ?
-    `).all(limit) as any[];
-
-    return rows.map(r => ({
-      id: r.id,
-      topicTitle: r.topic_title,
-      niche: r.niche,
-      stage: r.stage,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-      publishedUrl: r.published_url,
-      publishedAt: r.published_at,
-    }));
-  } catch (err) {
-    logger.debug({ err }, 'getPipelineRecent failed');
-    return [];
-  }
+export function getPipelineRecent(
+  scope: ContentWorkspaceScope,
+  limit = 30,
+  dbOverride?: any,
+): PipelineRecentItem[] {
+  return getContentWorkspaceRecentItems(scope, limit, dbOverride || db());
 }
 
 // ═══════════════════════════════════════════════════════════════════

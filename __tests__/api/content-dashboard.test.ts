@@ -14,7 +14,7 @@
  *     explicit via PORTAL_ALLOW_LOCAL_BYPASS=true.
  *   - Shape: returns the expected top-level keys.
  *   - Books: reflects seeded book_library rows with their status totals.
- *   - Pipeline: reflects seeded content_pipeline rows + stage bucketing.
+ *   - Pipeline: reflects tenant-scoped canonical workspace projections.
  *   - Commands: includes a row for every known content command and fills
  *               calls7d from matching api_usage categories.
  *   - Agent graph: includes the static nodes and overlays zero runs
@@ -28,6 +28,11 @@ import { createMigratedTestDatabase } from '../../src/testing/migrated-test-data
 import Database from 'better-sqlite3';
 import express from 'express';
 import http from 'http';
+import {
+  createContentArtifact,
+  createContentWorkspaceItem,
+} from '../../src/services/content-workspace';
+import { getDb } from '../../src/services/database';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -50,7 +55,7 @@ let portalAllowLocalBypass = false;
 // all together.
 
 vi.mock('../../src/services/database', () => ({
-  getDb: () => testDb,
+  getDb: vi.fn(() => testDb),
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
@@ -191,9 +196,8 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   writeGovernedSignal: vi.fn(() => 1),
 }));
 
-// Pipeline stats come from src/agents/pipeline-agent — it reads the DB
-// directly. We keep the real implementation so it exercises the seeded
-// content_pipeline rows.
+// Pipeline stats come from the canonical workspace read model through the
+// real pipeline agent implementation.
 
 // ── Seed helpers ─────────────────────────────────────────────────────
 
@@ -233,15 +237,51 @@ function seedBooks() {
 }
 
 function seedPipeline() {
-  const insert = testDb.prepare(`
-    INSERT INTO content_pipeline (topic_title, niche, stage, stage_history,
-      created_at, updated_at, published_url, published_at)
-    VALUES (?, ?, ?, '[]', datetime('now'), datetime('now'), ?, ?)
-  `);
-  insert.run('Idea A', 'politics', 'approved', null, null);
-  insert.run('Idea B', 'politics', 'scripted', null, null);
-  insert.run('Idea C', 'fitness', 'filming', null, null);
-  insert.run('Idea D', 'politics', 'published', 'https://youtu.be/abc', '2026-04-09T12:00:00Z');
+  const scope = { tenantId: 1, userId: 1 };
+  createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: 'Idea A',
+    idempotencyKey: 'dashboard-idea-approved',
+  }, testDb).value;
+  const scripted = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: 'Idea B',
+    idempotencyKey: 'dashboard-idea-scripted',
+  }, testDb).value;
+  createContentArtifact({
+    scope,
+    itemId: scripted.id,
+    expectedWorkflowVersion: scripted.workflowVersion,
+    artifactType: 'script',
+    title: 'Idea B script',
+    initialContent: { format: 'plain_text', text: 'Canonical script fixture.' },
+    idempotencyKey: 'dashboard-script-artifact',
+  }, testDb);
+  const published = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: 'Idea C',
+    idempotencyKey: 'dashboard-idea-published',
+  }, testDb).value;
+
+  testDb.prepare(`
+    UPDATE content_domain_objects
+       SET production_state = 'published', lifecycle_state = 'published', updated_at = datetime('now')
+     WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+  `).run(published.id, scope.tenantId, scope.userId);
+  testDb.prepare(`
+    INSERT INTO content_workflow_events (
+      tenant_id, owner_user_id, visibility_scope, scope_status,
+      object_type, object_id, action, from_state, to_state,
+      approval_state, review_required, reason_codes_json,
+      actor_user_id, metadata_json, created_at
+    ) VALUES (?, ?, 'user_private', 'active', 'content_item', ?,
+      'workspace_state_changed', 'approved', 'published', 'approved', 0,
+      '[]', ?, '{}', datetime('now'))
+  `).run(scope.tenantId, scope.userId, String(published.id), scope.userId);
+
 }
 
 function seedYouTube() {
@@ -367,7 +407,7 @@ describe('content-dashboard route', () => {
 
     // Unit-call the builder directly so we can assert the shape without
     // going through Express.
-    const data = buildContentDashboard();
+    const data = buildContentDashboard({ tenantId: 1, userId: 1 });
     expect(data.ok).toBe(true);
     expect(typeof data.generatedAt).toBe('string');
 
@@ -384,11 +424,16 @@ describe('content-dashboard route', () => {
     // Pipeline — stages + totalActive
     expect(data.pipeline.stages.approved).toBe(1);
     expect(data.pipeline.stages.scripted).toBe(1);
-    expect(data.pipeline.stages.filming).toBe(1);
+    expect(data.pipeline.stages.filming).toBe(0);
+    expect(data.pipeline.stageTracking.filming).toMatchObject({
+      tracking: 'not_modeled',
+      reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED',
+    });
+    expect(data.pipeline.stages.editing).toBe(0);
     expect(data.pipeline.stages.published).toBe(1);
-    expect(data.pipeline.totalActive).toBe(3); // approved + scripted + filming
+    expect(data.pipeline.totalActive).toBe(2); // approved + scripted
     expect(data.pipeline.publishedThisWeek).toBe(1);
-    expect(data.pipeline.recent.length).toBe(4);
+    expect(data.pipeline.recent.length).toBe(3);
 
     // YouTube — channels + videos + totals
     expect(data.youtube.totals.channels).toBe(3);
@@ -509,6 +554,40 @@ describe('content-dashboard route', () => {
       Authorization: 'Bearer wrong-token',
     });
     expect(badAuth.status).toBe(401);
+  });
+
+  it('rate-limits unauthorized and authorized bursts before additional dashboard database work', async () => {
+    portalTokenValue = 'test-secret-123';
+    const {
+      contentDashboardRoutes,
+      CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE,
+    } = await import('../../src/api/routes/content-dashboard');
+
+    const unauthorizedApp = express();
+    unauthorizedApp.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+    for (let index = 0; index < CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE; index += 1) {
+      const response = await fetchJson(unauthorizedApp, '/api/v1/admin/content-dashboard');
+      expect(response.status).toBe(401);
+    }
+    const unauthorizedBlocked = await fetchJson(unauthorizedApp, '/api/v1/admin/content-dashboard');
+    expect(unauthorizedBlocked.status).toBe(429);
+    expect(unauthorizedBlocked.body.error.code).toBe('RATE_LIMITED');
+
+    const authorizedApp = express();
+    authorizedApp.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+    for (let index = 0; index < CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE; index += 1) {
+      const response = await fetchJson(authorizedApp, '/api/v1/admin/content-dashboard', {
+        Authorization: 'Bearer test-secret-123',
+      });
+      expect(response.status).toBe(200);
+    }
+    const databaseCallsBeforeBlock = vi.mocked(getDb).mock.calls.length;
+    const authorizedBlocked = await fetchJson(authorizedApp, '/api/v1/admin/content-dashboard', {
+      Authorization: 'Bearer test-secret-123',
+    });
+    expect(authorizedBlocked.status).toBe(429);
+    expect(authorizedBlocked.body.error.code).toBe('RATE_LIMITED');
+    expect(getDb).toHaveBeenCalledTimes(databaseCallsBeforeBlock);
   });
 
   it('rejects access when no portal token is configured and bypass is disabled', async () => {

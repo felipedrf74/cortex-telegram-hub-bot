@@ -12,6 +12,22 @@ on:
         description: Successful RC workflow run ID for the exact runtime SHA
         required: true
         type: string
+      contract_scope:
+        description: Must match the RC candidate contract scope
+        required: true
+        type: choice
+        options:
+          - select_contract_scope
+          - backend_only
+          - shared_backend_ios
+      ios_attestation_base64:
+        description: Signed iOS compatibility attestation JSON encoded as base64 (shared releases only)
+        required: false
+        type: string
+      ios_distribution_attestation_base64:
+        description: Signed Xcode Cloud distribution attestation JSON encoded as base64 (shared releases only)
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -26,6 +42,9 @@ jobs:
     env:
       RUNTIME_SHA: ${{ inputs.runtime_sha }}
       CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      CONTRACT_SCOPE: ${{ inputs.contract_scope }}
+      IOS_ATTESTATION_BASE64: ${{ inputs.ios_attestation_base64 }}
+      IOS_DISTRIBUTION_ATTESTATION_BASE64: ${{ inputs.ios_distribution_attestation_base64 }}
     steps:
       - name: Validate workflow dispatch identity
         run: |
@@ -37,6 +56,36 @@ jobs:
             echo "candidate_run_id must contain decimal digits only" >&2
             exit 64
           }
+          case "$CONTRACT_SCOPE" in
+            backend_only)
+              [[ -z "$IOS_ATTESTATION_BASE64" && -z "$IOS_DISTRIBUTION_ATTESTATION_BASE64" ]] || {
+                echo "backend_only signing must not include iOS evidence" >&2
+                exit 64
+              }
+              ;;
+            shared_backend_ios)
+              [[ -n "$IOS_ATTESTATION_BASE64" && ${#IOS_ATTESTATION_BASE64} -le 32768 ]] || {
+                echo "ios_attestation_base64 must be present and bounded" >&2
+                exit 64
+              }
+              [[ "$IOS_ATTESTATION_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
+                echo "ios_attestation_base64 is not canonical base64" >&2
+                exit 64
+              }
+              [[ -n "$IOS_DISTRIBUTION_ATTESTATION_BASE64" && ${#IOS_DISTRIBUTION_ATTESTATION_BASE64} -le 131072 ]] || {
+                echo "ios_distribution_attestation_base64 must be present and bounded" >&2
+                exit 64
+              }
+              [[ "$IOS_DISTRIBUTION_ATTESTATION_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
+                echo "ios_distribution_attestation_base64 is not canonical base64" >&2
+                exit 64
+              }
+              ;;
+            *)
+              echo "contract_scope must be explicitly selected" >&2
+              exit 64
+              ;;
+          esac
 
       - name: Check out protected main signing tooling
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -116,8 +165,33 @@ jobs:
             --name "$NEXUS_NIGHTLY_ARTIFACT_NAME" \
             --dir trusted-input/nightly-evidence
 
+      - name: Materialize untrusted signed iOS contract evidence
+        if: ${{ env.CONTRACT_SCOPE == 'shared_backend_ios' }}
+        run: |
+          install -d -m 700 trusted-input/ios-evidence
+          printf '%s' "$IOS_ATTESTATION_BASE64" \
+            | base64 --decode \
+            > trusted-input/ios-evidence/ios-contract-attestation.json
+          chmod 600 trusted-input/ios-evidence/ios-contract-attestation.json
+
+      - name: Materialize untrusted signed iOS distribution evidence
+        if: ${{ env.CONTRACT_SCOPE == 'shared_backend_ios' }}
+        run: |
+          install -d -m 700 trusted-input/ios-distribution-evidence
+          printf '%s' "$IOS_DISTRIBUTION_ATTESTATION_BASE64" \
+            | base64 --decode \
+            > trusted-input/ios-distribution-evidence/ios-distribution-attestation.json
+          chmod 600 trusted-input/ios-distribution-evidence/ios-distribution-attestation.json
+
       - name: Verify candidate without executing candidate code
         run: |
+          contract_args=(--contract-scope "$CONTRACT_SCOPE")
+          if [[ "$CONTRACT_SCOPE" == 'shared_backend_ios' ]]; then
+            contract_args+=(
+              --ios-evidence-root trusted-input/ios-evidence
+              --ios-distribution-evidence-root trusted-input/ios-distribution-evidence
+            )
+          fi
           nightly_args=()
           if [[ "$NEXUS_NIGHTLY_EVIDENCE_REQUIRED" == 'true' ]]; then
             nightly_args=(
@@ -136,12 +210,20 @@ jobs:
             --repository "${GITHUB_REPOSITORY}" \
             --runtime-sha "$RUNTIME_SHA" \
             --candidate-run-id "$CANDIDATE_RUN_ID" \
+            "${contract_args[@]}" \
             "${nightly_args[@]}"
 
       - name: Sign exact ReleaseManifestV2 with protected-main tooling
         env:
           NEXUS_RELEASE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
         run: |
+          contract_args=(--contract-scope "$CONTRACT_SCOPE")
+          if [[ "$CONTRACT_SCOPE" == 'shared_backend_ios' ]]; then
+            contract_args+=(
+              --ios-evidence-root trusted-input/ios-evidence
+              --ios-distribution-evidence-root trusted-input/ios-distribution-evidence
+            )
+          fi
           nightly_args=()
           if [[ "$NEXUS_NIGHTLY_EVIDENCE_REQUIRED" == 'true' ]]; then
             nightly_args=(
@@ -160,6 +242,7 @@ jobs:
             --repository "${GITHUB_REPOSITORY}" \
             --runtime-sha "$RUNTIME_SHA" \
             --candidate-run-id "$CANDIDATE_RUN_ID" \
+            "${contract_args[@]}" \
             "${nightly_args[@]}" \
             --output-root signed-artifact
 

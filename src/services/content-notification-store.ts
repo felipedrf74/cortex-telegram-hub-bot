@@ -28,6 +28,11 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import {
+  contentPrivateScopeParams,
+  contentPrivateScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 
 // ═══════════════════════════════════════════════════════════════════
 // Types
@@ -113,6 +118,18 @@ function reportInvalidNotificationScope(
   });
 }
 
+/**
+ * Legacy notification fixtures and pre-scope databases may still expose the
+ * migration-061 table shape. Prepare/backfill its tenant columns before any
+ * query embeds a tenant-scope predicate so compatibility reads fail closed
+ * instead of degrading badge or inbox results.
+ */
+function getScopedContentNotificationDb(): ReturnType<typeof getDb> {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  return db;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Create
 // ═══════════════════════════════════════════════════════════════════
@@ -166,19 +183,21 @@ export function createNotification(opts: {
 export function getUnreadNotifications(
   userId: number,
   limit = 20,
+  tenantId: number = userId,
 ): ContentNotification[] {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidNotificationScope('get_unread_content_notifications', userId, { limit });
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidNotificationScope('get_unread_content_notifications', userId, { limit, tenantId });
     return [];
   }
 
-  const db = getDb();
+  const db = getScopedContentNotificationDb();
   const rows = db.prepare(`
     SELECT * FROM content_notifications
-    WHERE user_id = ? AND status = 'unread'
+    WHERE status = 'unread'
+      AND ${contentPrivateScopePredicate()}
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(userId, limit) as any[];
+  `).all(...contentPrivateScopeParams(userId, tenantId), limit) as any[];
   return rows.map(mapNotification);
 }
 
@@ -187,20 +206,22 @@ export function getUnreadNotifications(
  */
 export function getNotifications(
   userId: number,
-  opts: { status?: NotificationStatus; type?: NotificationType; limit?: number } = {},
+  opts: { status?: NotificationStatus; type?: NotificationType; limit?: number; tenantId?: number } = {},
 ): ContentNotification[] {
-  if (!isValidTenantUserId(userId)) {
+  const tenantId = opts.tenantId ?? userId;
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidNotificationScope('get_content_notifications', userId, {
       status: opts.status ?? null,
       notificationType: opts.type ?? null,
       limit: opts.limit ?? null,
+      tenantId,
     });
     return [];
   }
 
-  const db = getDb();
-  const clauses = ['user_id = ?'];
-  const params: any[] = [userId];
+  const db = getScopedContentNotificationDb();
+  const clauses = [contentPrivateScopePredicate()];
+  const params: any[] = [...contentPrivateScopeParams(userId, tenantId)];
 
   if (opts.status) {
     clauses.push('status = ?');
@@ -225,16 +246,19 @@ export function getNotifications(
 /**
  * Get unread count for badge display.
  */
-export function getUnreadCount(userId: number): number {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidNotificationScope('get_unread_content_notification_count', userId);
+export function getUnreadCount(userId: number, tenantId: number = userId): number {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidNotificationScope('get_unread_content_notification_count', userId, { tenantId });
     return 0;
   }
 
-  const db = getDb();
-  const row = db.prepare(
-    "SELECT COUNT(*) as cnt FROM content_notifications WHERE user_id = ? AND status = 'unread'",
-  ).get(userId) as any;
+  const db = getScopedContentNotificationDb();
+  const row = db.prepare(`
+    SELECT COUNT(*) as cnt
+    FROM content_notifications
+    WHERE status = 'unread'
+      AND ${contentPrivateScopePredicate()}
+  `).get(...contentPrivateScopeParams(userId, tenantId)) as any;
   return row?.cnt ?? 0;
 }
 
@@ -248,10 +272,12 @@ export function getUnreadCount(userId: number): number {
 export function listUnreadContentNotificationIdsByTypes(
   userId: number,
   types: string[],
+  tenantId: number = userId,
 ): number[] {
-  if (!isValidTenantUserId(userId)) {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidNotificationScope('list_unread_content_notification_ids_by_types', userId, {
       typeCount: types.length,
+      tenantId,
     });
     return [];
   }
@@ -262,13 +288,13 @@ export function listUnreadContentNotificationIdsByTypes(
   if (validTypes.length === 0) return [];
 
   const placeholders = validTypes.map(() => '?').join(',');
-  const rows = getDb().prepare(`
+  const rows = getScopedContentNotificationDb().prepare(`
     SELECT id
     FROM content_notifications
-    WHERE user_id = ?
-      AND status = 'unread'
+    WHERE status = 'unread'
+      AND ${contentPrivateScopePredicate()}
       AND type IN (${placeholders})
-  `).all(userId, ...validTypes) as Array<{ id: number }>;
+  `).all(...contentPrivateScopeParams(userId, tenantId), ...validTypes) as Array<{ id: number }>;
   return rows.map((row) => row.id);
 }
 
@@ -284,39 +310,46 @@ export function listUnreadContentNotificationIdsByTypes(
 export function getUnreadCountExcludingNotificationIds(
   userId: number,
   excludedIds: number[],
+  tenantId: number = userId,
 ): number {
-  if (!isValidTenantUserId(userId)) {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidNotificationScope('get_unread_content_notification_count_excluding_ids', userId, {
       excludedCount: excludedIds.length,
+      tenantId,
     });
     return 0;
   }
 
   const ids = normalizePositiveIds(excludedIds);
-  if (ids.length === 0) return getUnreadCount(userId);
+  if (ids.length === 0) return getUnreadCount(userId, tenantId);
 
   const placeholders = ids.map(() => '?').join(',');
-  const row = getDb().prepare(`
+  const row = getScopedContentNotificationDb().prepare(`
     SELECT COUNT(*) as cnt
     FROM content_notifications
-    WHERE user_id = ?
-      AND status = 'unread'
+    WHERE status = 'unread'
+      AND ${contentPrivateScopePredicate()}
       AND id NOT IN (${placeholders})
-  `).get(userId, ...ids) as any;
+  `).get(...contentPrivateScopeParams(userId, tenantId), ...ids) as any;
   return row?.cnt ?? 0;
 }
 
 /**
  * Read one notification for an authenticated user.
  *
- * This is intentionally scoped by user before any resolver data is returned.
- * Content notifications do not yet carry tenant_id, so user ownership remains
- * the hard security boundary for this legacy table.
+ * This is intentionally scoped by effective tenant and private owner before
+ * any resolver data is returned. NULL legacy scope falls back to user_id only
+ * inside that user's personal tenant.
  */
-export function getNotificationById(notificationId: number, userId: number): ContentNotification | null {
-  if (!isValidTenantUserId(userId)) {
+export function getNotificationById(
+  notificationId: number,
+  userId: number,
+  tenantId: number = userId,
+): ContentNotification | null {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidNotificationScope('get_content_notification_by_id', userId, {
       notificationId,
+      tenantId,
     });
     return null;
   }
@@ -324,12 +357,13 @@ export function getNotificationById(notificationId: number, userId: number): Con
     return null;
   }
 
-  const db = getDb();
+  const db = getScopedContentNotificationDb();
   const row = db.prepare(`
     SELECT * FROM content_notifications
-    WHERE id = ? AND user_id = ?
+    WHERE id = ?
+      AND ${contentPrivateScopePredicate()}
     LIMIT 1
-  `).get(notificationId, userId) as any;
+  `).get(notificationId, ...contentPrivateScopeParams(userId, tenantId)) as any;
 
   return row ? mapNotification(row) : null;
 }
@@ -343,8 +377,9 @@ export function getNotificationById(notificationId: number, userId: number): Con
 export function resolveContentNotificationDeepLink(
   notificationId: number,
   userId: number,
+  tenantId: number = userId,
 ): ContentNotificationResolution | null {
-  const notification = getNotificationById(notificationId, userId);
+  const notification = getNotificationById(notificationId, userId, tenantId);
   if (!notification) return null;
 
   return {
@@ -361,52 +396,63 @@ export function resolveContentNotificationDeepLink(
 /**
  * Mark a notification as read.
  */
-export function markRead(notificationId: number, userId: number): boolean {
-  if (!isValidTenantUserId(userId)) {
+export function markRead(notificationId: number, userId: number, tenantId: number = userId): boolean {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidNotificationScope('mark_content_notification_read', userId, {
       notificationId,
+      tenantId,
     });
     return false;
   }
 
-  const db = getDb();
-  const result = db.prepare(
-    "UPDATE content_notifications SET status = 'read' WHERE id = ? AND user_id = ?",
-  ).run(notificationId, userId);
+  const db = getScopedContentNotificationDb();
+  const result = db.prepare(`
+    UPDATE content_notifications
+    SET status = 'read'
+    WHERE id = ?
+      AND ${contentPrivateScopePredicate()}
+  `).run(notificationId, ...contentPrivateScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
 /**
  * Mark all unread notifications as read for a user.
  */
-export function markAllRead(userId: number): number {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidNotificationScope('mark_all_content_notifications_read', userId);
+export function markAllRead(userId: number, tenantId: number = userId): number {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidNotificationScope('mark_all_content_notifications_read', userId, { tenantId });
     return 0;
   }
 
-  const db = getDb();
-  const result = db.prepare(
-    "UPDATE content_notifications SET status = 'read' WHERE user_id = ? AND status = 'unread'",
-  ).run(userId);
+  const db = getScopedContentNotificationDb();
+  const result = db.prepare(`
+    UPDATE content_notifications
+    SET status = 'read'
+    WHERE status = 'unread'
+      AND ${contentPrivateScopePredicate()}
+  `).run(...contentPrivateScopeParams(userId, tenantId));
   return result.changes;
 }
 
 /**
  * Resolve a notification (action completed).
  */
-export function resolveNotification(notificationId: number, userId: number): boolean {
-  if (!isValidTenantUserId(userId)) {
+export function resolveNotification(notificationId: number, userId: number, tenantId: number = userId): boolean {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidNotificationScope('resolve_content_notification', userId, {
       notificationId,
+      tenantId,
     });
     return false;
   }
 
-  const db = getDb();
-  const result = db.prepare(
-    "UPDATE content_notifications SET status = 'resolved', resolved_at = datetime('now') WHERE id = ? AND user_id = ?",
-  ).run(notificationId, userId);
+  const db = getScopedContentNotificationDb();
+  const result = db.prepare(`
+    UPDATE content_notifications
+    SET status = 'resolved', resolved_at = datetime('now')
+    WHERE id = ?
+      AND ${contentPrivateScopePredicate()}
+  `).run(notificationId, ...contentPrivateScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
@@ -438,13 +484,13 @@ export function getAllNotifications(
     });
     throw new Error('notification tenant scope required');
   }
-  const db = getDb();
+  const db = getScopedContentNotificationDb();
   const rows = db.prepare(`
     SELECT * FROM content_notifications
-    WHERE user_id = ? AND COALESCE(tenant_id, user_id) = ?
+    WHERE ${contentPrivateScopePredicate()}
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(scope.userId, scope.tenantId, limit) as any[];
+  `).all(...contentPrivateScopeParams(scope.userId, scope.tenantId), limit) as any[];
   return rows.map(mapNotification);
 }
 

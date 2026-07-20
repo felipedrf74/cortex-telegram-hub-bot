@@ -353,6 +353,17 @@ export const contentBriefSlotExtractor: SlotExtractor = {
   },
 };
 
+export const contentPublicationRequestSlotExtractor: SlotExtractor = {
+  name: 'content_publication_request',
+  label: 'captures the publication request for an explicit fail-closed response',
+  extract(text) {
+    const publicationRequest = text.trim();
+    return publicationRequest
+      ? { slots: { publicationRequest }, confidence: 0.95 }
+      : { slots: {} };
+  },
+};
+
 export const contentPipelineStageSlotExtractor: SlotExtractor = {
   name: 'content_pipeline_stage_transition',
   label: 'extracts target stage and content title from content pipeline stage phrasings',

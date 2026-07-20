@@ -28,19 +28,28 @@ import { init as initSentry, flush as flushSentry } from './services/error-track
 import type http from 'http';
 import { registerGarminMfaNotifier } from './services/garmin-mfa-notifier';
 import { validateIosApiSecurityConfiguration } from './services/ios-api-security';
+import {
+  assertContentLiveEvalRuntimeEnvironment,
+  shouldStartContentLiveEvalBackgroundServices,
+} from './services/content-live-evaluation-runtime';
+import { pruneExpiredReceiptAiTransferResponses } from './services/receipt-ai-transfer-consent';
 
 async function main(): Promise<void> {
+  const liveEvalRuntime = assertContentLiveEvalRuntimeEnvironment();
+  const backgroundServicesEnabled = shouldStartContentLiveEvalBackgroundServices();
   logger.info('Starting Nexus Hub...');
 
   // Initialize Sentry FIRST — must be before any other init so it can
   // capture startup errors (DB open failure, missing env vars, etc.).
   // No-ops gracefully if SENTRY_DSN is empty, so local/staging work.
-  initSentry({
-    dsn: config.sentry.dsn,
-    environment: config.sentry.environment,
-    release: config.sentry.release || undefined,
-    tracesSampleRate: config.sentry.tracesSampleRate,
-  });
+  if (backgroundServicesEnabled) {
+    initSentry({
+      dsn: config.sentry.dsn,
+      environment: config.sentry.environment,
+      release: config.sentry.release || undefined,
+      tracesSampleRate: config.sentry.tracesSampleRate,
+    });
+  }
 
   // Fail after error tracking is ready, but before opening the database or
   // accepting traffic, if the iOS JWT keyring or lifetime is unsafe.
@@ -48,6 +57,24 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase();
+
+  // Encrypted receipt-analysis replay payloads are intentionally short-lived.
+  // Scrub every expired payload at startup while retaining the terminal row
+  // that prevents duplicate provider/quota spend for an old consent UUID.
+  try {
+    const expiredResponseCount = pruneExpiredReceiptAiTransferResponses();
+    if (expiredResponseCount > 0) {
+      logger.info(
+        { expiredResponseCount },
+        'Expired receipt AI replay responses scrubbed at startup',
+      );
+    }
+  } catch {
+    logger.warn(
+      { failureCategory: 'receipt_ai_replay_retention_housekeeping_failed' },
+      'Receipt AI replay retention housekeeping failed at startup',
+    );
+  }
 
   // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());
@@ -86,7 +113,7 @@ async function main(): Promise<void> {
   // Adapters self-register into the sync engine's in-memory registry; the
   // 15-minute task_sync cron and the webhook router both look them up here.
   // Wrapped in try/catch so a broken adapter never blocks app boot.
-  try {
+  if (backgroundServicesEnabled) try {
     const { registerAdapter } = require('./services/task-store/sync-engine');
     const { TodoistAdapter } = require('./services/task-store/todoist-adapter');
     const { NotionAdapter } = require('./services/task-store/notion-adapter');
@@ -111,7 +138,7 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'Prompt validation check threw — continuing boot');
   }
 
-  try {
+  if (backgroundServicesEnabled) try {
     const activeProvider = ensureActiveProvider();
     if (activeProvider) {
       logger.info({ provider: activeProvider.name }, 'AI provider router cold-started');
@@ -125,7 +152,7 @@ async function main(): Promise<void> {
   // already accumulated any boot-phase errors and setErrorDbProvider() above
   // flushed them to error_log.
 
-  registerGarminMfaNotifier();
+  if (backgroundServicesEnabled) registerGarminMfaNotifier();
 
   // ── Telegram delivery REMOVED (July 2026) ───────────────────────
   // The iOS app is the primary user experience. All delivery goes
@@ -141,7 +168,18 @@ async function main(): Promise<void> {
   });
 
   // Start scheduler
-  startScheduler();
+  if (backgroundServicesEnabled) {
+    startScheduler();
+  } else {
+    logger.info(
+      {
+        runtime: 'content_live_eval',
+        databasePath: liveEvalRuntime?.databasePath,
+        backgroundServicesEnabled: false,
+      },
+      'Content live-evaluation runtime started without schedulers, connectors, or outbound telemetry',
+    );
+  }
 
   // Start status portal (Express on :8200)
   let portalServer: http.Server | undefined;

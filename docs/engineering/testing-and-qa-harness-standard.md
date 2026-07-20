@@ -351,6 +351,254 @@ global owner refresh-token env vars empty inside the container. Cleanup must
 query provider calendars by the run marker and fail if any run-owned event
 remains.
 
+## 13A. Isolated Content real-provider evaluation lane
+
+Content provider quality is never inferred from fixture mode, a requested
+provider name, or an operator-entered score. The only qualifying evidence is
+the redacted `nexus.content-live-eval.v2` artifact produced by the fixed
+five-sample corpus through the canonical `POST /api/v1/content/script` route,
+authenticated with an externally provisioned operator HMAC key, and verified
+against a trusted key fingerprint pinned independently by the release
+environment. This is operator-attested evidence, not provider-signed evidence.
+The launcher and verifier require the repository's pinned Node `22.23.x`
+runtime; evidence produced with another Node line is not release evidence.
+
+The one-shot launcher creates the migrated database, starts loopback backend
+and Content engine processes, registers exactly one `@synthetic.invalid`
+user, runs the corpus, validates the artifact, stops both processes, and
+deletes the database, auth token, and runtime logs. It refuses a live stale
+runtime, removes dead stale runtime directories, will not overwrite an
+artifact, and keeps runtime directories at mode `0700` and sensitive files at
+mode `0600`. Only the redacted artifact is retained:
+
+```bash
+CONTENT_EVAL_TRUSTED_ATTESTATION_KEY_SHA256="$PINNED_OPERATOR_KEY_SHA256" \
+scripts/content-live-eval-local.sh \
+  --opt-in I_ACCEPT_LIVE_PROVIDER_COSTS \
+  --budget-usd 1.00 \
+  --attestation-key-file "$CONTENT_EVAL_OPERATOR_KEY_FILE"
+```
+
+The key must be a separately provisioned regular file with mode `0600`. The
+trusted SHA-256 fingerprint must come from operator/CI configuration; deriving
+it from the artifact or launcher output does not establish release trust. A
+locally generated key without that independent fingerprint still gives HMAC
+integrity for diagnosis, but its artifact is advisory and cannot make the
+release lane pass.
+
+Provider credentials must already be exported in the invoking shell. The
+launcher builds both server processes with `env -i` and an explicit allowlist,
+so root dotenv loading, Sentry, schedulers, task adapters, Garmin notification,
+calendar/mail/document/finance connectors, cache warming, backups, Telegram
+delivery, and the Content engine reloader remain disabled. The launcher
+refuses production mode and remote URLs. It does not read an operator/user
+Content database. The server independently verifies that its open database is
+a disposable `content-live-eval-*.db` under an approved temporary root,
+contains exactly one authenticated `.invalid` user, and has no Content
+records. The route bypasses creator memory and intelligence-bus signals,
+references, novelty history, recent ideas, source-package persistence,
+workspace saves, and script cache reads/writes.
+
+The launcher also requires the candidate generator surface (`src/`,
+`scripts/`, `content-engine/`, `migrations/`, `package.json`,
+`package-lock.json`, and `tsconfig.json`) to be clean, including untracked
+files. The artifact binds the full 40-character
+source commit, deterministic digests of the prompt, route, provider, pricing,
+and isolated-runtime contracts, and the reviewed pricing-snapshot digest and
+review date. Validation re-resolves all of those values from the evaluator's
+current clean checkout; copied or source-drifted evidence fails closed.
+
+`1.00 USD` is the only accepted local accounting envelope: all five fixed
+samples reserve `0.20 USD` of local headroom per sample under the reviewed
+pricing snapshot. Every concrete provider/fallback attempt first performs a
+serialized SQLite `IMMEDIATE` transaction that re-reads run and sample
+headroom and durably inserts its conservative reservation before network I/O.
+A failure or timeout with no `api_usage` row retains that reservation; a late
+or timeout-estimate row is counted in addition, intentionally preferring early
+stop over ambiguous accounting. Replayed or concurrent signed attempts cannot
+both reserve stale headroom. The signed internal proxy also limits each
+evaluator request to 16,000 combined prompt/system bytes and 1,800 output
+tokens, and the evaluator applies a 90-second sample timeout plus an eight-
+minute whole-run deadline.
+
+These controls limit what Nexus authorizes according to its pinned pricing
+table; they are not an absolute guarantee of a provider's final invoice.
+Release validation therefore rejects unknown models, unresolved successful-
+call pricing, a changed pricing digest, or a pricing review older than 45 days.
+The only authorized provider-category values are
+`content_engine_script_standard`,
+`content_engine_script_standard_gemini_model_fallback`, and
+`content_engine_script_standard_openai_fallback`. Requested model names must
+resolve through the finite reviewed model map; a free-form suffix or unknown
+resolved model cannot inherit live-evaluation authority.
+The operator remains responsible for provider-side spend controls and for
+refreshing and reviewing pricing before the freshness window expires.
+
+The evaluator consumes the artifact directly; its bound score is
+authoritative:
+
+```bash
+npx tsx src/tools/content-evaluation-harness.ts \
+  --mode real_provider \
+  --real-provider-artifact .local/content-eval/artifacts/<artifact>.json \
+  --real-provider-attestation-key-file "$CONTENT_EVAL_OPERATOR_KEY_FILE"
+```
+
+The evaluator must receive the same independently pinned
+`CONTENT_EVAL_TRUSTED_ATTESTATION_KEY_SHA256`. It validates the HMAC before it
+trusts public binding digests, accepts only the exact strict schema, and only
+passes the exact artifact object it validated into the day-to-day evaluator.
+Missing/failed/unbound invocations, routing/model/usage mismatch, score or
+output tampering, rubric/scorer/source/pricing drift, stale or future times,
+unknown fields, raw content fields, and reservation mismatch invalidate the
+lane. A successful PASS writes an exclusive owner-only local consumption
+receipt whose claimed pre-gate artifact digest is rechecked at finalization;
+that receipt is a fail-closed replay control for this release workspace, not
+an immutable external transparency ledger.
+
+The deterministic scorer uses actual script word count rather than a declared
+duration and checks objective fit, format/platform fit, structure for the
+scenario, repetition, specific hooks, actionable CTAs, distinct titles,
+unsupported claims, source expectations, prompt-injection resistance, safety,
+and absence of internal artifacts. Model-supplied `qualityScore` can penalize a
+poor result but cannot make failed objective checks pass. The permanent corpus
+includes negative controls for keyword stuffing, generic hooks and CTAs,
+duration gaming, unsupported claims, and injection text placed in any visible
+field.
+
+The artifact contains only scenario/output digests, bounded structural
+observations, provider/model/token/actual-cost/reserved-accounting provenance,
+contract/source/pricing identity, and scorer/rubric digests; it never contains
+prompts, topics, scripts, responses, source text, auth material, or raw user
+content. HMAC-SHA-256 authenticates the complete artifact to the externally
+held operator key. The public SHA-256 digests provide deterministic field and
+contract binding, but are not independently an identity proof.
+
+The fixed provider corpus runs with research network access disabled. Outside
+explicit fixture mode, missing search credentials produce an empty source set,
+never mock articles or videos. The current scorer therefore proves honest
+no-source degradation, claim restraint, visible review warnings, structure,
+and safe rendering. It does **not** yet prove positive source retrieval,
+citation-to-claim support, freshness, or citation correctness. Those remain a
+separate positive-grounding evaluation requirement and must not be described
+as passed merely because the safe-degradation corpus passes.
+
+## 13B. Content iOS extraction evidence lane
+
+The iOS lane accepts only a typed `nexus.content-ios-extraction.v1` artifact.
+Raw numeric scores and generic `runId`/`source`/`sampleCount` metadata are
+diagnostic inputs only and cannot qualify a release. The artifact binds one
+clean iOS Git commit and its complete Git-tree digest; the byte-level digest of
+one `.xcresult`; Apple tests, summary, and exported-attachment digests; the
+fixed corpus/version and five XCTest identifiers; Apple-reported statuses,
+durations, and finish time; and a metric/score derived from fixed evidence
+checks.
+
+Every required XCTest must add exactly one keep-always `public.json`
+`XCTAttachment` named `nexus-content-eval-v2.json`. Its exact schema is:
+
+```json
+{
+  "schemaVersion": "nexus.content-ios-test-evidence.v2",
+  "corpus": "content-workspace-critical-user",
+  "fixtureVersion": "2026-07-19.v2",
+  "testIdentifier": "<fixed class/method identifier>",
+  "buildIdentity": {
+    "gitCommit": "<40-hex commit embedded in the UI-test bundle at build time>",
+    "sourceTreeDigest": "<64-hex clean Git-tree digest embedded at build time>",
+    "scheme": "Nexus Hub Debug UI Smoke",
+    "buildConfiguration": "Debug",
+    "evidenceScope": "behavioral_not_archive_equivalence"
+  },
+  "checks": [
+    { "id": "<fixed semantic check id>", "kind": "required_visible_signal|forbidden_absent|actionable_control|recovery", "passed": true }
+  ]
+}
+```
+
+The ordered check IDs and kinds are code-owned by
+`CONTENT_IOS_TEST_EVIDENCE_CONTRACT`; an attachment cannot add, omit, reorder,
+rename, or fail a check. The producer derives fixed denominators (29 visible,
+13 forbidden, 7 actionable, 7 recovery) from that contract and derives
+observed values only from verified attachments exported from the result
+bundle. All five attachments must carry the same build-time identity, and the
+producer compares it to the independently recomputed clean current iOS tree.
+The run ID derives from that source identity plus the bundle/tests/summary/
+attachment digests and contract, so two different bundles cannot collide only
+because their Apple summaries match. No operator-entered count is accepted.
+The Debug-only secure local authentication/import seam is intentionally absent
+from Release and App Store builds. Therefore this lane is explicitly scoped to
+behavioral recovery and visible-UI evidence under the `Nexus Hub Debug UI
+Smoke` scheme. It is not App Store archive-equivalence evidence, and the
+scheme, `Debug` configuration, and `behavioral_not_archive_equivalence` scope
+are repeated in every attachment and the signed artifact so that limitation
+cannot be omitted or relabeled. The producer also requires the Apple-generated
+xcresult summary title `Test - Nexus Hub Debug UI Smoke`; attachments cannot
+self-label a result bundle produced by another scheme.
+
+The executable producer invokes `/usr/bin/xcrun xcresulttool` itself for the
+tests document, summary document, and attachment export. It rejects dirty iOS
+worktrees, partial/extra runs, failed, skipped, duplicated, or missing tests,
+missing/duplicate/failure-associated attachments, stale runs, result-bundle
+symlinks/special files, result or source changes during extraction, existing
+output paths, and non-`0600` keys:
+
+```bash
+npm run eval:content:ios-extraction -- \
+  --xcresult /private/tmp/ContentExtraction.xcresult \
+  --ios-repo /absolute/path/to/clean/ios/release-candidate \
+  --artifact .local/content-eval/content-ios-extraction.json \
+  --tests-out .local/content-eval/content-ios-tests.json \
+  --summary-out .local/content-eval/content-ios-summary.json \
+  --attachments-out .local/content-eval/content-ios-attachments.json \
+  --attestation-key-file "$CONTENT_EVAL_IOS_OPERATOR_KEY_FILE"
+```
+
+The four direct-CLI outputs must share one directory. They are written to a
+private staging directory, published without overwriting existing paths, and
+rolled back together on a normal late failure, with the signed artifact last.
+An abrupt process or machine termination can still interrupt publication;
+release evidence must therefore use the iOS wrapper's staging directory plus
+`COMPLETE` marker as the authoritative completion boundary.
+
+Create the result bundle with `xcodebuild test`, one unique
+`-resultBundlePath`, and five explicit
+`-only-testing:Nexus HubUITests/<class>/<method>` selectors. Store the bundle,
+Apple JSON, attachment evidence, and typed artifact only under ignored local
+release evidence. The Apple outputs can contain device/environment metadata;
+do not publish them by default.
+
+Use the iOS atomic wrapper for release evidence. It must require a clean tree,
+compute commit/tree identity before the build, inject those values into the UI
+test target as `NEXUS_CONTENT_EVAL_GIT_COMMIT` and
+`NEXUS_CONTENT_EVAL_SOURCE_TREE_DIGEST` build settings, run the five tests,
+then prove status, commit, and tree digest are unchanged before invoking the
+producer. An arbitrary old `.xcresult` relabeled with the current checkout is
+invalid evidence.
+
+The evaluator must receive independently reviewed pins, not values copied from
+an unreviewed artifact:
+
+```bash
+CONTENT_EVAL_TRUSTED_IOS_ATTESTATION_KEY_SHA256=<reviewed-key-sha256> \
+CONTENT_EVAL_EXPECTED_IOS_GIT_COMMIT=<reviewed-40-char-ios-sha> \
+CONTENT_EVAL_EXPECTED_IOS_SOURCE_TREE_DIGEST=<reviewed-64-char-tree-digest> \
+npx tsx src/tools/content-evaluation-harness.ts \
+  --mode real_provider \
+  --ios-extraction-artifact .local/content-eval/content-ios-extraction.json \
+  --ios-extraction-attestation-key-file "$CONTENT_EVAL_IOS_OPERATOR_KEY_FILE" \
+  --real-provider-artifact .local/content-eval/artifacts/<artifact>.json \
+  --real-provider-attestation-key-file "$CONTENT_EVAL_OPERATOR_KEY_FILE"
+```
+
+Until the canonical iOS candidate contains all five exact tests, all five
+attachments, and one fresh clean result bundle, the producer must fail closed
+and the iOS lane is not release-qualified. The final three journeys must prove
+durable outbox recovery with idempotent retry, cancel-preserved visible draft,
+and status/next-action rendering that matches backend truth; substitute
+launch-only, fail-closed, or retired lifecycle-disclosure tests are not
+equivalent evidence.
+
 ## 14. Smoke matrix
 
 The closed-beta smoke matrix is the umbrella that aggregates per-domain

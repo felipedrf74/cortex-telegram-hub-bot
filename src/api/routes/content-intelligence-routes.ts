@@ -81,8 +81,8 @@ export function registerContentIntelligenceRoutes(
     );
     const monitoredPillars = context.radarPreferences.topics.length > 0
       ? buildRadarTopicSummaries(context.radarPreferences.topics, context.discoverySignals)
-      : getActiveContentPillars(userId);
-    const deskItems = getContentDeskItems(userId, 3);
+      : getActiveContentPillars(userId, tenantId);
+    const deskItems = getContentDeskItems(userId, 3, tenantId);
 
     sendSuccess(res, buildContentIntelligenceDetail({
       language,
@@ -159,8 +159,8 @@ function readContentIntelligenceContext(
     discoverySignals,
     optimizationSignals,
     performanceSummary,
-    voiceEntries: getVoiceDna(undefined, userId),
-    knowledgeStats: getKnowledgeStats(undefined, userId),
+    voiceEntries: getVoiceDna(undefined, userId, validatedTenantId),
+    knowledgeStats: getKnowledgeStats(undefined, userId, validatedTenantId),
   };
 }
 

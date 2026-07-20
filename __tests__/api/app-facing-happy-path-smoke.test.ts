@@ -761,6 +761,15 @@ describe('app-facing happy path smoke', () => {
       if (sql.includes('FROM garmin_user_tokens')) return undefined;
       if (sql.includes('SELECT 1 as ok')) return { ok: 1 };
       if (sql.includes('FROM task_mutations')) return undefined;
+      if (sql.includes('COALESCE(MAX(id), 0)') && sql.includes('FROM content_domain_objects')) {
+        return { max_id: 3 };
+      }
+      if (sql.includes('FROM sqlite_master') && sql.includes('content_schedule_bindings')) {
+        return { count: 0 };
+      }
+      if (sql.includes('FROM content_workflow_events') && sql.includes('workspace_state_changed')) {
+        return { count: 1 };
+      }
       if (sql.includes('FROM unified_projects')) {
         // M5 ledger list create: the by-name lookup for the new 'Recibos'
         // list must MISS (so the route creates it), and the post-insert
@@ -825,17 +834,37 @@ describe('app-facing happy path smoke', () => {
     });
     mockDbRun.mockReturnValue({ changes: 1 });
     mockDbAll.mockImplementation((sql: string) => {
-      if (sql.includes("FROM content_ideas WHERE stage = 'ideas'")) {
-        return [{ id: 1, title: 'Ideia de recuperação', score: 88, created_at: `${todayIso}T10:00:00.000Z` }];
+      if (sql.includes('FROM content_domain_objects')) {
+        return [
+          {
+            id: 1, tenant_id: 7001, owner_user_id: 7001, object_type: 'content_item',
+            visibility_scope: 'user_private', scope_status: 'active', title: 'Ideia de recuperação',
+            summary: null, artifact_phase: 'idea', production_state: 'inbox', platform_id: null,
+            format_id: null, workspace_priority: 3, deadline_at: null, is_favorite: 0,
+            workflow_version: 1, current_artifact_id: null, archived_at: null, deleted_at: null,
+            created_at: `${todayIso}T10:00:00.000Z`, updated_at: `${todayIso}T10:00:00.000Z`,
+            artifact_count: 0,
+          },
+          {
+            id: 2, tenant_id: 7001, owner_user_id: 7001, object_type: 'content_item',
+            visibility_scope: 'user_private', scope_status: 'active', title: 'Roteiro pronto',
+            summary: null, artifact_phase: 'draft', production_state: 'active', platform_id: null,
+            format_id: null, workspace_priority: 3, deadline_at: null, is_favorite: 0,
+            workflow_version: 1, current_artifact_id: null, archived_at: null, deleted_at: null,
+            created_at: `${todayIso}T09:00:00.000Z`, updated_at: `${todayIso}T09:00:00.000Z`,
+            artifact_count: 0,
+          },
+          {
+            id: 3, tenant_id: 7001, owner_user_id: 7001, object_type: 'content_item',
+            visibility_scope: 'user_private', scope_status: 'active', title: 'Publicado ontem',
+            summary: null, artifact_phase: 'final', production_state: 'published', platform_id: null,
+            format_id: null, workspace_priority: 3, deadline_at: null, is_favorite: 0,
+            workflow_version: 1, current_artifact_id: null, archived_at: null, deleted_at: null,
+            created_at: new Date().toISOString(), updated_at: new Date().toISOString(), artifact_count: 0,
+          },
+        ];
       }
-      if (sql.includes("FROM content_ideas WHERE stage = 'scripted'")) {
-        return [{ id: 2, title: 'Roteiro pronto', score: 80, created_at: `${todayIso}T09:00:00.000Z` }];
-      }
-      if (sql.includes("FROM content_ideas WHERE stage = 'filmed'")) return [];
-      if (sql.includes("FROM content_ideas WHERE stage = 'editing'")) return [];
-      if (sql.includes("FROM content_ideas WHERE stage = 'published'")) {
-        return [{ id: 3, title: 'Publicado ontem', score: 70, created_at: new Date().toISOString() }];
-      }
+      if (sql.includes('FROM content_item_tags')) return [];
       if (sql.includes('FROM unified_projects')) {
         return [{ id: 1, name: 'Tasks' }];
       }
@@ -1238,7 +1267,7 @@ describe('app-facing happy path smoke', () => {
         path: '/notifications/301/read',
         assert: (body) => {
           expect(body.data).toMatchObject({ marked: true });
-          expect(mockMarkNotificationRead).toHaveBeenCalledWith(301, 7001);
+          expect(mockMarkNotificationRead).toHaveBeenCalledWith(301, 7001, 7001);
         },
       },
       {
@@ -1248,7 +1277,7 @@ describe('app-facing happy path smoke', () => {
         path: '/notifications/read-all',
         assert: (body) => {
           expect(body.data).toMatchObject({ markedCount: 1 });
-          expect(mockMarkAllNotificationsRead).toHaveBeenCalledWith(7001);
+          expect(mockMarkAllNotificationsRead).toHaveBeenCalledWith(7001, 7001);
         },
       },
       {

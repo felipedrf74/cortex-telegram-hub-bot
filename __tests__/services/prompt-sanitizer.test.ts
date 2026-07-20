@@ -61,4 +61,17 @@ describe('prompt sanitizer', () => {
     expect(summary).not.toContain('\n[SYSTEM]');
     expect(summary).toContain('"reveal tokens"');
   });
+
+  it('does not project legacy unscoped tasks into a distinct tenant', async () => {
+    const { buildDailyContext } = await import('../../src/services/context-engine');
+    testDb.prepare(`
+      INSERT INTO unified_tasks (user_id, title, status, is_deleted, due_date, priority)
+      VALUES (7, 'Personal tenant only', 'pending', 0, date('now'), 10)
+    `).run();
+
+    const summary = await buildDailyContext(7, 70);
+
+    expect(summary).not.toContain('TASKS:');
+    expect(summary).not.toContain('Personal tenant only');
+  });
 });

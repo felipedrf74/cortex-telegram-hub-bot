@@ -35,7 +35,7 @@ export function saveIdea(
   titleOrOpts: string | SaveIdeaOptions,
   sourceDateArg?: string,
 ): SavedIdea {
-  const db = getDb();
+  void sourceDateArg;
 
   // Legacy 2-arg signature
   if (typeof titleOrOpts === 'string') {
@@ -47,22 +47,7 @@ export function saveIdea(
   if (!Number.isSafeInteger(opts.userId) || opts.userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
-  const result = db.prepare(`
-    INSERT INTO saved_ideas (title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    opts.title,
-    opts.sourceDate,
-    opts.source || 'manual',
-    opts.score || 0,
-    opts.workflowEligible ? 1 : 0,
-    opts.angleTag || null,
-    opts.niche || null,
-    opts.hookIdea || null,
-    opts.whyNow || null,
-    opts.userId,
-  );
-  return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
+  throw legacySavedIdeasReadOnlyError();
 }
 
 /**
@@ -136,29 +121,29 @@ export function markIdeaPromoted(id: number, userId: number): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
-  const db = getDb();
-  const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'promoted' WHERE id = ? AND user_id = ?"
-  ).run(id, userId);
-  return result.changes > 0;
+  void id;
+  throw legacySavedIdeasReadOnlyError();
 }
 
 export function markIdeaUsed(id: number, userId: number): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
-  const db = getDb();
-  const result = db.prepare(
-    "UPDATE saved_ideas SET status = 'used' WHERE id = ? AND user_id = ?"
-  ).run(id, userId);
-  return result.changes > 0;
+  void id;
+  throw legacySavedIdeasReadOnlyError();
 }
 
 export function deleteIdea(id: number, userId: number): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
     throw new Error('userId required: must be a positive integer');
   }
-  const db = getDb();
-  const result = db.prepare('DELETE FROM saved_ideas WHERE id = ? AND user_id = ?').run(id, userId);
-  return result.changes > 0;
+  void id;
+  throw legacySavedIdeasReadOnlyError();
+}
+
+function legacySavedIdeasReadOnlyError(): Error & { code: string } {
+  return Object.assign(
+    new Error('saved_ideas is a read-only compatibility archive; use the Content workspace'),
+    { code: 'CONTENT_LEGACY_SAVED_IDEAS_READ_ONLY' },
+  );
 }

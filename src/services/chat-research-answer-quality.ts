@@ -6,6 +6,56 @@ export type ChatResearchAnswerCompleteness =
 
 const TERMINAL_PUNCTUATION_RE = /[.!?。！？)\]"'’”]$/u;
 const HANGING_END_RE = /(?:[,;:—-]|\b(?:and|or|of|for|with|to|in|on|at|about|because|when|where|as|the|a|an|e|ou|de|do|da|dos|das|para|por|com|que|quando|onde|como|y|o|del|de la|para|por|con|cuando|donde|como)\b)$/iu;
+const RESEARCH_SOURCE_FOOTER_LABELS = new Set([
+  'sources consulted',
+  'fuentes consultadas',
+  'fontes consultadas',
+  'sources',
+  'fuentes',
+  'fontes',
+]);
+
+/**
+ * Remove the single-line source footer emitted by a research provider.
+ *
+ * Parsing from the final line keeps this operation linear in the response
+ * length and avoids a nested, user-controlled URL regex. Nexus appends its own
+ * normalized source footer after this step.
+ */
+export function stripResearchSourceFooter(text: string): string {
+  const trimmedEnd = text.trimEnd();
+  const footerStart = trimmedEnd.lastIndexOf('\n');
+  if (footerStart < 0) return text;
+
+  const footer = trimmedEnd.slice(footerStart + 1).trim();
+  const separator = footer.indexOf(':');
+  if (separator <= 0) return text;
+
+  const label = footer.slice(0, separator).trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+  if (!RESEARCH_SOURCE_FOOTER_LABELS.has(label)) return text;
+
+  const sources = footer
+    .slice(separator + 1)
+    .split(/,\s*(?=https?:\/\/)/iu)
+    .map((source) => source.trim())
+    .filter(Boolean);
+  if (
+    sources.length === 0
+    || sources.some((source) => {
+      const normalizedSource = source.toLocaleLowerCase('en-US');
+      const schemeLength = normalizedSource.startsWith('https://')
+        ? 'https://'.length
+        : normalizedSource.startsWith('http://')
+          ? 'http://'.length
+          : 0;
+      return schemeLength === 0 || source.length <= schemeLength || /\s/u.test(source);
+    })
+  ) {
+    return text;
+  }
+
+  return trimmedEnd.slice(0, footerStart).trimEnd();
+}
 
 export function assessChatResearchAnswerCompleteness(text: string): ChatResearchAnswerCompleteness {
   const normalized = normalizeResearchAnswerForQuality(text);
@@ -29,11 +79,7 @@ export function isChatResearchAnswerIncomplete(text: string): boolean {
 }
 
 function normalizeResearchAnswerForQuality(text: string): string {
-  return text
-    .replace(
-      /\n{1,3}\s*(?:Sources consulted|Fuentes consultadas|Fontes consultadas|Sources|Fuentes|Fontes)\s*:\s*(?:https?:\/\/\S+(?:\s*,\s*)?)+\s*$/iu,
-      '',
-    )
+  return stripResearchSourceFooter(text)
     .replace(/\s+/g, ' ')
     .trim();
 }

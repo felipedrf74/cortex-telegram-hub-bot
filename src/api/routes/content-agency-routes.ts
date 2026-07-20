@@ -11,7 +11,7 @@ import {
   buildContentAgencyTranscriptStudy,
   evaluateContentAgencyPackage,
   getContentAgencyProject,
-  handoffContentAgencyPackageToPipeline,
+  handoffContentAgencyPackageToWorkspace,
   persistContentAgencyArtifact,
   validateContentAgencyReadiness,
 } from '../../services/content-agency';
@@ -21,6 +21,7 @@ import {
   validateContentAgencyRuntimeRuleCoverage,
 } from '../../services/content-agency-rules';
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
+import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
 
 interface ContentAgencyResponseContract {
   tenantId: number | null;
@@ -332,12 +333,12 @@ export function registerContentAgencyRoutes(
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     const projectId = req.params.id;
-    if (!ensureValidContentRouteScope(res, userId, 'content_agency_pipeline_handoff', { projectId })) return;
-    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_pipeline_handoff', 'content_pipeline');
+    if (!ensureValidContentRouteScope(res, userId, 'content_agency_workspace_handoff', { projectId })) return;
+    const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_workspace_handoff', 'content_domain_objects');
     if (tenantId == null) return;
 
     try {
-      const result = handoffContentAgencyPackageToPipeline({
+      const result = handoffContentAgencyPackageToWorkspace({
         userId,
         tenantId,
         packageId: projectId,
@@ -358,7 +359,7 @@ export function registerContentAgencyRoutes(
         return;
       }
       if (result.status === 'blocked') {
-        sendError(res, 'CONTENT_AGENCY_HANDOFF_BLOCKED', 'Resolve blockers before moving this package to the pipeline.', 409, {
+        sendError(res, 'CONTENT_AGENCY_HANDOFF_BLOCKED', 'Resolve blockers before adding this package to the Content workspace.', 409, {
           handoff: result,
           contract: buildResponseContract(result, {
             tenantId,
@@ -382,12 +383,16 @@ export function registerContentAgencyRoutes(
           blockers: result.blockers,
           nextBestActions: result.nextBestActions,
           sourceTrace: result.sourceTrace,
-          reviewRequired: result.blockers.length > 0,
+          reviewRequired: true,
         }),
       }, { status: result.status === 'created' ? 201 : 200 });
     } catch (err) {
-      logger.error({ err, userId, tenantId, projectId }, 'content agency pipeline handoff failed');
-      sendInternalError(res, 'Failed to move content agency package to pipeline');
+      if (err instanceof ContentWorkspaceWriteDisabledError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      logger.error({ err, userId, tenantId, projectId }, 'content agency workspace handoff failed');
+      sendInternalError(res, 'Failed to add content agency package to the Content workspace');
     }
   }));
 }

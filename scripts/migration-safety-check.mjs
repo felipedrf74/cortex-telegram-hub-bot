@@ -1,8 +1,23 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
+import {
+  IRREVERSIBLE_MIGRATION_REVIEW_APPROVAL_SCHEMA,
+  irreversibleMigrationReason,
+  loadIrreversibleMigrationPolicy,
+  sha256Text,
+} from './lib/irreversible-migration-policy.mjs';
+import {
+  parseGitNameStatusZ,
+  parseGitPathsZ,
+} from './lib/git-changed-paths.mjs';
+import {
+  validateProductionShapeMigrationRehearsalEvidence,
+} from './lib/production-shape-migration-rehearsal-evidence.mjs';
 
 const args = process.argv.slice(2);
 
@@ -21,6 +36,55 @@ const baseRef = readArg('--base', '');
 const explicitFiles = readArg('--files', '');
 const changedOnly = hasArg('--changed-only');
 const outputJson = hasArg('--json');
+const approvalMode = readArg('--approval-mode', changedOnly ? 'review' : 'none');
+const reviewEvidenceInput = readArg(
+  '--review-evidence',
+  process.env.NEXUS_MIGRATION_REVIEW_EVIDENCE || '',
+);
+const backupEvidenceInput = readArg(
+  '--backup-evidence',
+  process.env.NEXUS_MIGRATION_BACKUP_EVIDENCE || '',
+);
+const rehearsalEvidenceInput = readArg(
+  '--rehearsal-evidence',
+  process.env.NEXUS_MIGRATION_REHEARSAL_EVIDENCE || '',
+);
+const finalRehearsalEvidenceInput = readArg(
+  '--final-rehearsal-evidence',
+  process.env.NEXUS_MIGRATION_FINAL_REHEARSAL_EVIDENCE || '',
+);
+const expectedTargetVersion = readArg('--target-version', '');
+const expectedArtifactDigest = readArg('--artifact-digest', '');
+const expectedPromotionRunId = readArg('--promotion-run-id', '');
+if (!['none', 'scan', 'review', 'promotion'].includes(approvalMode)) {
+  process.stderr.write(`Unsupported migration approval mode: ${approvalMode}\n`);
+  process.exit(64);
+}
+const irreversiblePolicy = loadIrreversibleMigrationPolicy({ root });
+const irreversiblePolicyGovernanceReasons = new Map([
+  ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
+  ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
+  ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
+  ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
+  ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
+  ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
+  ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
+  ['scripts/lib/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
+  ['scripts/risk-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
+  ['scripts/release-verify.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
+  ['scripts/release-test-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
+  ['scripts/promote-exact-release.sh', 'POLICY_PROMOTION_ENTRYPOINT_CHANGED'],
+  ['scripts/remote-create-release-backup.sh', 'POLICY_BACKUP_EVIDENCE_CHANGED'],
+  ['scripts/remote-production-shape-migration-rehearsal.sh', 'POLICY_REHEARSAL_ENTRYPOINT_CHANGED'],
+  ['scripts/production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_CHANGED'],
+  ['scripts/validate-production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
+  ['scripts/lib/production-shape-migration-rehearsal-evidence.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
+]);
+
+const REVIEW_EVIDENCE_SCHEMA = IRREVERSIBLE_MIGRATION_REVIEW_APPROVAL_SCHEMA;
+const BACKUP_EVIDENCE_SCHEMA = 'nexus.exact-migration-backup-evidence.v2';
+const REVIEW_SUBJECT_SCHEMA = 'nexus.migration-review-subject.v1';
+const MAX_BACKUP_EVIDENCE_AGE_MS = 15 * 60 * 1000;
 
 const knownHistoricalGaps = new Set([
   142,
@@ -50,15 +114,17 @@ function git(commandArgs) {
   return execFileSync('git', commandArgs, { cwd: root, encoding: 'utf8' }).trim();
 }
 
+function gitRaw(commandArgs) {
+  return execFileSync('git', commandArgs, { cwd: root, encoding: 'utf8' });
+}
+
 function resolveBase() {
   if (baseRef) {
-    git(['rev-parse', '--verify', `${baseRef}^{commit}`]);
-    return baseRef;
+    return git(['rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`]);
   }
   for (const ref of ['origin/main', 'main', 'HEAD~1']) {
     try {
-      git(['rev-parse', '--verify', `${ref}^{commit}`]);
-      return ref;
+      return git(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
     } catch {
       // Try the next candidate.
     }
@@ -84,44 +150,229 @@ function changedFiles() {
     return explicitFiles.split(',').map((file) => file.trim()).filter(Boolean);
   }
   const resolved = resolveBase();
-  const committed = execFileSync(
-    'git',
-    ['diff', '--name-only', `${resolved}...HEAD`],
-    { cwd: root, encoding: 'utf8' },
-  ).trim();
-  const dirty = execFileSync(
-    'git',
-    ['status', '--porcelain'],
-    { cwd: root, encoding: 'utf8' },
-  )
-    .split('\n')
-    .map((line) => line.replace(/^[ MADRCU?!]{2} /, '').replace(/^"|"$/g, ''))
-    .filter(Boolean);
+  const committed = parseGitNameStatusZ(gitRaw([
+    'diff', '--name-status', '-z', `${resolved}...HEAD`,
+  ]));
+  const staged = parseGitNameStatusZ(gitRaw([
+    'diff', '--cached', '--name-status', '-z',
+  ]));
+  const unstaged = parseGitNameStatusZ(gitRaw([
+    'diff', '--name-status', '-z',
+  ]));
+  const untracked = parseGitPathsZ(gitRaw([
+    'ls-files', '--others', '--exclude-standard', '-z',
+  ]));
   return [...new Set([
-    ...committed.split('\n').filter(Boolean),
-    ...dirty,
+    ...committed,
+    ...staged,
+    ...unstaged,
+    ...untracked,
   ])].sort();
 }
 
-function stripSqlComments(sql) {
-  return sql
-    .split('\n')
-    .map((line) => line.replace(/--.*$/, ''))
-    .join('\n');
+function isIsoTimestamp(value) {
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)
+    && Number.isFinite(Date.parse(value));
 }
 
-function irreversibleReason(sql) {
-  const stripped = stripSqlComments(sql);
-  const checks = [
-    ['DROP TABLE', /\bDROP\s+TABLE\b/i],
-    ['DROP COLUMN', /\bDROP\s+COLUMN\b/i],
-    ['ALTER TABLE RENAME', /\bALTER\s+TABLE\b[^;]*\bRENAME\b/i],
-    ['RENAME TO', /\bRENAME\s+TO\b/i],
-  ];
-  for (const [label, pattern] of checks) {
-    if (pattern.test(stripped)) return label;
+function evidencePath(input, directory) {
+  if (!input) return null;
+  const absolute = path.resolve(root, input);
+  const allowedRoot = path.resolve(root, '.local', 'release', directory);
+  if (absolute !== allowedRoot && !absolute.startsWith(`${allowedRoot}${path.sep}`)) {
+    return null;
   }
-  return null;
+  try {
+    for (const governedDirectory of [
+      path.resolve(root, '.local'),
+      path.resolve(root, '.local', 'release'),
+      allowedRoot,
+    ]) {
+      const directoryStat = fs.lstatSync(governedDirectory);
+      if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()
+        || (directoryStat.mode & 0o022) !== 0
+        || fs.realpathSync(governedDirectory) !== governedDirectory) return null;
+    }
+    const stat = fs.lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o600) return null;
+    const realAllowedRoot = fs.realpathSync(allowedRoot);
+    const realEvidence = fs.realpathSync(absolute);
+    if (realEvidence !== realAllowedRoot
+      && !realEvidence.startsWith(`${realAllowedRoot}${path.sep}`)) return null;
+  } catch {
+    return null;
+  }
+  return absolute;
+}
+
+function readJsonEvidence(input, directory) {
+  const absolute = evidencePath(input, directory);
+  if (!absolute) return { absolute: null, raw: null, parsed: null };
+  try {
+    const raw = fs.readFileSync(absolute);
+    return { absolute, raw, parsed: JSON.parse(raw.toString('utf8')) };
+  } catch {
+    return { absolute, raw: null, parsed: null };
+  }
+}
+
+function reviewSubject(irreversible) {
+  const value = {
+    schema: REVIEW_SUBJECT_SCHEMA,
+    policySubjectSha256: irreversiblePolicy.reviewSubjectSha256,
+    irreversibleChanges: irreversible.map(({ file, reason }) => {
+      const absolute = path.join(root, file);
+      return {
+        file,
+        reason,
+        sha256: fs.existsSync(absolute) ? sha256Text(fs.readFileSync(absolute)) : null,
+      };
+    }),
+  };
+  return Object.freeze({
+    ...value,
+    sha256: sha256Text(JSON.stringify(value)),
+  });
+}
+
+function validateReviewEvidence(errors, irreversible) {
+  const subject = reviewSubject(irreversible);
+  const evidence = readJsonEvidence(reviewEvidenceInput, 'migration-review');
+  const parsed = evidence.parsed;
+  let reason = null;
+  if (!evidence.absolute) reason = 'path_missing_or_outside_governed_directory';
+  else if (!parsed) reason = 'invalid_json';
+  else if (parsed.schema !== REVIEW_EVIDENCE_SCHEMA) reason = 'invalid_schema';
+  else if (parsed.status !== 'approved') reason = 'status_not_approved';
+  else if (typeof parsed.approvedBy !== 'string' || parsed.approvedBy.trim().length === 0) reason = 'approver_missing';
+  else if (!isIsoTimestamp(parsed.approvedAt)) reason = 'approval_timestamp_invalid';
+  else if (Date.parse(parsed.approvedAt) > Date.now() + 60_000) reason = 'approval_timestamp_in_future';
+  else if (parsed.subjectSha256 !== subject.sha256) reason = 'review_subject_mismatch';
+  if (reason) errors.push(`irreversible_migration_review_evidence_invalid:${reason}`);
+  return {
+    valid: reason === null,
+    path: evidence.absolute ? path.relative(root, evidence.absolute) : null,
+    sha256: evidence.raw ? sha256Text(evidence.raw) : null,
+    approvedBy: reason === null ? parsed.approvedBy.trim() : null,
+    approvedAt: reason === null ? parsed.approvedAt : null,
+    subjectSha256: subject.sha256,
+    policySubjectSha256: subject.policySubjectSha256,
+  };
+}
+
+function parseBackupArchivePath(value) {
+  if (typeof value !== 'string') return null;
+  const match = value.match(
+    /^\/home\/dominguez\/backups\/nexushub\/v([0-9A-Za-z.+-]+)_before-v([0-9A-Za-z.+-]+)_[0-9]{8}_[0-9]{6}\.tar\.gz$/,
+  );
+  return match ? { archivedVersion: match[1], targetVersion: match[2] } : null;
+}
+
+function validateRehearsalEvidence(errors, reviewEvidence, {
+  input,
+  phase,
+  databaseOwnerState,
+  errorPrefix,
+}) {
+  const predecessorRuntimeSha = resolveBase();
+  const targetRuntimeSha = git(['rev-parse', '--verify', 'HEAD^{commit}']);
+  const result = validateProductionShapeMigrationRehearsalEvidence({
+    root,
+    input,
+    expectedPredecessorRuntimeSha: predecessorRuntimeSha,
+    expectedTargetRuntimeSha: targetRuntimeSha,
+    expectedTargetVersion,
+    expectedArtifactDigest,
+    expectedReviewEvidenceSha256: reviewEvidence.sha256,
+    expectedMigrationPolicySubjectSha256: reviewEvidence.policySubjectSha256,
+    expectedPromotionRunId,
+    expectedPhase: phase,
+    expectedDatabaseOwnerState: databaseOwnerState,
+  });
+  if (!result.valid) {
+    errors.push(`${errorPrefix}:${result.reason}`);
+  }
+  return {
+    valid: result.valid,
+    path: result.path,
+    sha256: result.sha256,
+    parsed: result.parsed,
+    predecessorRuntimeSha,
+    targetRuntimeSha,
+  };
+}
+
+function validateBackupEvidence(errors, reviewEvidence, rehearsalEvidence, finalRehearsalEvidence) {
+  const evidence = readJsonEvidence(backupEvidenceInput, 'production');
+  const parsed = evidence.parsed;
+  const predecessorRuntimeSha = resolveBase();
+  const targetRuntimeSha = git(['rev-parse', '--verify', 'HEAD^{commit}']);
+  const archiveIdentity = parseBackupArchivePath(parsed?.backup?.remotePath);
+  let reason = null;
+  if (!evidence.absolute) reason = 'path_missing_or_outside_governed_directory';
+  else if (!parsed) reason = 'invalid_json';
+  else if (parsed.schema !== BACKUP_EVIDENCE_SCHEMA) reason = 'invalid_schema';
+  else if (parsed.status !== 'verified') reason = 'status_not_verified';
+  else if (!isIsoTimestamp(parsed.createdAt)) reason = 'created_at_invalid';
+  else if (Date.parse(parsed.createdAt) > Date.now() + 60_000) reason = 'created_at_in_future';
+  else if (Date.now() - Date.parse(parsed.createdAt) > MAX_BACKUP_EVIDENCE_AGE_MS) reason = 'evidence_stale';
+  else if (parsed.predecessorRuntimeSha !== predecessorRuntimeSha) reason = 'predecessor_runtime_mismatch';
+  else if (parsed.targetRuntimeSha !== targetRuntimeSha) reason = 'target_runtime_mismatch';
+  else if (!expectedTargetVersion || parsed.targetVersion !== expectedTargetVersion) reason = 'target_version_mismatch';
+  else if (!/^[a-f0-9]{64}$/.test(expectedArtifactDigest)
+    || parsed.artifactDigest !== expectedArtifactDigest) reason = 'artifact_digest_mismatch';
+  else if (!expectedPromotionRunId || parsed.promotionRunId !== expectedPromotionRunId) reason = 'promotion_run_mismatch';
+  else if (parsed.reviewEvidenceSha256 !== reviewEvidence.sha256) reason = 'review_evidence_mismatch';
+  else if (parsed.migrationPolicySubjectSha256 !== reviewEvidence.policySubjectSha256) reason = 'migration_policy_subject_mismatch';
+  else if (!rehearsalEvidence.valid) reason = 'production_shape_rehearsal_invalid';
+  else if (!finalRehearsalEvidence.valid) reason = 'production_shape_final_rehearsal_invalid';
+  else if (parsed.productionShapeRehearsals?.onlinePreStop?.evidenceSha256 !== rehearsalEvidence.sha256) reason = 'production_shape_rehearsal_evidence_mismatch';
+  else if (parsed.productionShapeRehearsals?.onlinePreStop?.sourceCloneSha256
+    !== rehearsalEvidence.parsed?.clone?.sourceSha256) reason = 'production_shape_source_clone_mismatch';
+  else if (parsed.productionShapeRehearsals?.onlinePreStop?.migratedCloneSha256
+    !== rehearsalEvidence.parsed?.clone?.migratedSha256) reason = 'production_shape_migrated_clone_mismatch';
+  else if (parsed.productionShapeRehearsals?.onlinePreStop?.pendingMigrationSetSha256
+    !== rehearsalEvidence.parsed?.candidate?.pendingMigrationSetSha256) reason = 'production_shape_pending_migration_set_mismatch';
+  else if (parsed.productionShapeRehearsals?.onlinePreStop?.sourceDatabaseSha256
+    !== rehearsalEvidence.parsed?.source?.databaseSha256) reason = 'production_shape_online_source_database_mismatch';
+  else if (parsed.productionShapeRehearsals?.stoppedFinal?.evidenceSha256
+    !== finalRehearsalEvidence.sha256) reason = 'production_shape_final_rehearsal_evidence_mismatch';
+  else if (parsed.productionShapeRehearsals?.stoppedFinal?.sourceCloneSha256
+    !== finalRehearsalEvidence.parsed?.clone?.sourceSha256) reason = 'production_shape_final_source_clone_mismatch';
+  else if (parsed.productionShapeRehearsals?.stoppedFinal?.migratedCloneSha256
+    !== finalRehearsalEvidence.parsed?.clone?.migratedSha256) reason = 'production_shape_final_migrated_clone_mismatch';
+  else if (parsed.productionShapeRehearsals?.stoppedFinal?.pendingMigrationSetSha256
+    !== finalRehearsalEvidence.parsed?.candidate?.pendingMigrationSetSha256) reason = 'production_shape_final_pending_migration_set_mismatch';
+  else if (parsed.productionShapeRehearsals?.stoppedFinal?.sourceDatabaseSha256
+    !== finalRehearsalEvidence.parsed?.source?.databaseSha256) reason = 'production_shape_final_source_database_mismatch';
+  else if (parsed.backup?.databaseSha256
+    !== finalRehearsalEvidence.parsed?.source?.databaseSha256) reason = 'backup_database_final_rehearsal_mismatch';
+  else if (Date.parse(parsed.createdAt) < Date.parse(rehearsalEvidence.parsed?.createdAt || '')) reason = 'backup_predates_online_rehearsal';
+  else if (Date.parse(finalRehearsalEvidence.parsed?.createdAt || '') < Date.parse(parsed.createdAt)) reason = 'final_rehearsal_predates_backup';
+  else if (!archiveIdentity) reason = 'backup_path_invalid';
+  else if (!/^[a-f0-9]{64}$/.test(parsed.backup?.sha256 || '')) reason = 'backup_digest_invalid';
+  else if (!Number.isSafeInteger(parsed.backup?.sizeBytes) || parsed.backup.sizeBytes <= 0) reason = 'backup_size_invalid';
+  else if (typeof parsed.backup?.archivedVersion !== 'string' || parsed.backup.archivedVersion.length === 0) reason = 'archived_version_missing';
+  else if (archiveIdentity.archivedVersion !== parsed.backup.archivedVersion) reason = 'backup_archived_version_path_mismatch';
+  else if (archiveIdentity.targetVersion !== expectedTargetVersion) reason = 'backup_target_version_path_mismatch';
+  else if (parsed.backup?.targetVersion !== expectedTargetVersion) reason = 'backup_target_version_mismatch';
+  else if (parsed.backup?.createdAt !== parsed.createdAt) reason = 'backup_timestamp_mismatch';
+  else if (parsed.verification?.databaseOwnersStopped !== true) reason = 'database_owners_not_stopped';
+  else if (parsed.verification?.noOpenDatabaseHandles !== true) reason = 'database_handles_not_proved_closed';
+  else if (parsed.verification?.walCheckpointTruncated !== true) reason = 'wal_checkpoint_not_proved';
+  else if (parsed.verification?.sqliteIntegrity !== 'ok') reason = 'sqlite_integrity_not_proved';
+  else if (parsed.verification?.sqliteForeignKeys !== 'ok') reason = 'sqlite_foreign_keys_not_proved';
+  else if (parsed.verification?.archiveSha256Verified !== true) reason = 'archive_digest_not_proved';
+  if (reason) errors.push(`irreversible_migration_backup_evidence_invalid:${reason}`);
+  return {
+    valid: reason === null,
+    path: evidence.absolute ? path.relative(root, evidence.absolute) : null,
+    sha256: evidence.raw ? sha256Text(evidence.raw) : null,
+    remotePath: reason === null ? parsed.backup.remotePath : null,
+    predecessorRuntimeSha,
+    targetRuntimeSha,
+  };
 }
 
 function verifySequence(files, errors) {
@@ -155,21 +406,32 @@ function verifyDuplicates(files, errors) {
 
 function runCumulativeRehearsal(files, errors) {
   const dbPath = path.join(os.tmpdir(), `nexus-migration-rehearsal-${process.pid}-${Date.now()}.db`);
+  let db;
   try {
+    db = new Database(dbPath);
+    // Keep release rehearsal aligned with the production migration runner.
+    // These deterministic helpers let data-copy migrations prove byte/hash
+    // parity without weakening canonical revision hashes.
+    db.function('nexus_sha256', { deterministic: true }, (value) => (
+      createHash('sha256').update(String(value ?? '')).digest('hex')
+    ));
+    db.function('nexus_plain_text_revision_hash', { deterministic: true }, (value) => (
+      createHash('sha256')
+        .update(JSON.stringify({ format: 'plain_text', text: String(value ?? '') }))
+        .digest('hex')
+    ));
     for (const file of files) {
       const sqlPath = path.join(root, 'migrations', file);
-      const result = spawnSync('sqlite3', [dbPath], {
-        cwd: root,
-        input: fs.readFileSync(sqlPath),
-        encoding: 'utf8',
-      });
-      if (result.status !== 0) {
-        const detail = (result.stderr || result.stdout || '').trim().replace(/\s+/g, ' ');
-        errors.push(`migration_rehearsal_failed:${file}:${detail || `exit_${result.status}`}`);
+      try {
+        db.exec(fs.readFileSync(sqlPath, 'utf8'));
+      } catch (error) {
+        const detail = String(error instanceof Error ? error.message : error).trim().replace(/\s+/g, ' ');
+        errors.push(`migration_rehearsal_failed:${file}:${detail || 'unknown_error'}`);
         return;
       }
     }
   } finally {
+    db?.close();
     for (const suffix of ['', '-wal', '-shm']) {
       fs.rmSync(`${dbPath}${suffix}`, { force: true });
     }
@@ -178,38 +440,98 @@ function runCumulativeRehearsal(files, errors) {
 
 function checkChangedIrreversible(errors) {
   if (!changedOnly) {
-    return [];
+    return { irreversible: [], reviewEvidence: null, rehearsalEvidence: null, finalRehearsalEvidence: null, backupEvidence: null };
   }
   const changed = changedFiles()
-    .filter((file) => /^migrations\/\d{3}_.*\.sql$/.test(file))
-    .filter((file) => fs.existsSync(path.join(root, file)));
-  const irreversible = [];
+    .filter((file) => /^migrations\/\d{3}_.*\.sql$/.test(file)
+      || irreversiblePolicyGovernanceReasons.has(file));
+  const irreversibleByFile = new Map();
+  for (const issue of irreversiblePolicy.integrityIssues) {
+    const identityReason = issue.type === 'missing'
+      ? 'POLICY_IDENTITY_MISSING'
+      : 'POLICY_DIGEST_DRIFT';
+    irreversibleByFile.set(issue.file, { file: issue.file, reason: identityReason });
+  }
   for (const file of changed) {
-    const reason = irreversibleReason(fs.readFileSync(path.join(root, file), 'utf8'));
+    const governanceReason = irreversiblePolicyGovernanceReasons.get(file);
+    if (governanceReason) {
+      irreversibleByFile.set(file, { file, reason: governanceReason });
+      continue;
+    }
+    const migrationPath = path.join(root, file);
+    const reason = fs.existsSync(migrationPath)
+      ? irreversibleMigrationReason(file, fs.readFileSync(migrationPath, 'utf8'), irreversiblePolicy)
+      : 'DELETED_OR_RENAMED';
     if (reason) {
-      irreversible.push({ file, reason });
+      if (!irreversibleByFile.has(file)) {
+        irreversibleByFile.set(file, { file, reason });
+      }
     }
   }
+  const irreversible = [...irreversibleByFile.values()]
+    .sort((left, right) => left.file.localeCompare(right.file));
   if (irreversible.length === 0) {
-    return irreversible;
+    return { irreversible, reviewEvidence: null, rehearsalEvidence: null, finalRehearsalEvidence: null, backupEvidence: null };
   }
 
-  const approver = process.env.NEXUS_MIGRATION_APPROVER || '';
-  const backupEvidence = process.env.NEXUS_MIGRATION_BACKUP_EVIDENCE || '';
-  if (!approver || !backupEvidence) {
-    errors.push(
-      `irreversible_migration_fast_path_blocked:${irreversible.map(({ file, reason }) => `${file}:${reason}`).join('|')}`,
-    );
+  const unregistered = irreversible.filter(({ file, reason }) => (
+    /^migrations\/\d{3}_.*\.sql$/.test(file)
+      && !reason.startsWith('POLICY:')
+      && !reason.startsWith('POLICY_IDENTITY_')
+      && reason !== 'POLICY_DIGEST_DRIFT'
+  ));
+  if (unregistered.length > 0) {
+    errors.push(`irreversible_migration_unregistered:${unregistered.map(({ file, reason }) => `${file}:${reason}`).join('|')}`);
   }
-  return irreversible;
+  if (approvalMode === 'none') {
+    errors.push('irreversible_migration_approval_mode_required');
+    return { irreversible, reviewEvidence: null, rehearsalEvidence: null, finalRehearsalEvidence: null, backupEvidence: null };
+  }
+  if (approvalMode === 'scan') {
+    return { irreversible, reviewEvidence: null, rehearsalEvidence: null, finalRehearsalEvidence: null, backupEvidence: null };
+  }
+  const reviewEvidence = validateReviewEvidence(errors, irreversible);
+  const rehearsalEvidence = approvalMode === 'promotion'
+    ? validateRehearsalEvidence(errors, reviewEvidence, {
+      input: rehearsalEvidenceInput,
+      phase: 'online_pre_stop',
+      databaseOwnerState: 'online',
+      errorPrefix: 'irreversible_migration_rehearsal_evidence_invalid',
+    })
+    : null;
+  const finalRehearsalEvidence = approvalMode === 'promotion'
+    ? validateRehearsalEvidence(errors, reviewEvidence, {
+      input: finalRehearsalEvidenceInput,
+      phase: 'stopped_final',
+      databaseOwnerState: 'stopped',
+      errorPrefix: 'irreversible_migration_final_rehearsal_evidence_invalid',
+    })
+    : null;
+  const backupEvidence = approvalMode === 'promotion'
+    ? validateBackupEvidence(errors, reviewEvidence, rehearsalEvidence, finalRehearsalEvidence)
+    : null;
+  return { irreversible, reviewEvidence, rehearsalEvidence, finalRehearsalEvidence, backupEvidence };
+}
+
+function verifyPolicyIdentity(errors) {
+  for (const issue of irreversiblePolicy.integrityIssues) {
+    errors.push(`irreversible_migration_policy_identity_invalid:${issue.file}:${issue.type}`);
+  }
 }
 
 const errors = [];
 const files = migrationFiles();
+verifyPolicyIdentity(errors);
 verifySequence(files, errors);
 verifyDuplicates(files, errors);
 runCumulativeRehearsal(files, errors);
-const irreversible = checkChangedIrreversible(errors);
+const {
+  irreversible,
+  reviewEvidence,
+  rehearsalEvidence,
+  finalRehearsalEvidence,
+  backupEvidence,
+} = checkChangedIrreversible(errors);
 
 const payload = {
   ok: errors.length === 0,
@@ -219,14 +541,37 @@ const payload = {
     sequence: !errors.some((error) => error.startsWith('migration_sequence_gap')),
     duplicates: !errors.some((error) => error.startsWith('migration_duplicate_prefix')),
     cumulativeRehearsal: !errors.some((error) => error.startsWith('migration_rehearsal_failed')),
-    changedIrreversiblePolicy: !errors.some((error) => error.startsWith('irreversible_migration_fast_path_blocked')),
+    policyIdentity: !errors.some((error) => error.startsWith('irreversible_migration_policy_identity_invalid')),
+    changedIrreversiblePolicy: !errors.some((error) => error.startsWith('irreversible_migration_')),
+    reviewApproval: approvalMode === 'scan' || irreversible.length === 0
+      ? null
+      : !errors.some((error) => error.startsWith('irreversible_migration_review_evidence_invalid')),
+    productionShapeRehearsal: approvalMode !== 'promotion' || irreversible.length === 0
+      ? null
+      : !errors.some((error) => error.startsWith('irreversible_migration_rehearsal_evidence_invalid')),
+    finalProductionShapeRehearsal: approvalMode !== 'promotion' || irreversible.length === 0
+      ? null
+      : !errors.some((error) => error.startsWith('irreversible_migration_final_rehearsal_evidence_invalid')),
+    exactBackupEvidence: approvalMode !== 'promotion' || irreversible.length === 0
+      ? null
+      : !errors.some((error) => error.startsWith('irreversible_migration_backup_evidence_invalid')),
   },
   changedOnly,
+  approvalMode,
   irreversibleChangedMigrations: irreversible,
-  manualApproval: {
-    approver: process.env.NEXUS_MIGRATION_APPROVER || null,
-    backupEvidence: process.env.NEXUS_MIGRATION_BACKUP_EVIDENCE || null,
+  policyIdentityIssues: irreversiblePolicy.integrityIssues,
+  requiredReviewSubject: irreversible.length > 0 ? reviewSubject(irreversible) : null,
+  authorization: {
+    approvalRequired: irreversible.length > 0,
+    backupRequired: irreversible.length > 0,
+    authorizesPromotion: irreversible.length > 0
+      && approvalMode === 'promotion'
+      && errors.length === 0,
   },
+  reviewEvidence,
+  rehearsalEvidence,
+  finalRehearsalEvidence,
+  backupEvidence,
   errors,
 };
 
@@ -235,7 +580,14 @@ if (outputJson) {
 } else if (payload.ok) {
   process.stdout.write(`✅ Migration safety checks passed (${files.length} migrations)\n`);
   if (irreversible.length > 0) {
-    process.stdout.write(`   Irreversible migration approved by ${payload.manualApproval.approver}\n`);
+    if (approvalMode === 'scan') {
+      process.stdout.write(`   Approval required for review subject ${payload.requiredReviewSubject.sha256}\n`);
+    } else {
+      process.stdout.write(`   Irreversible migration review approved by ${payload.reviewEvidence.approvedBy}\n`);
+    }
+    if (approvalMode === 'promotion') {
+      process.stdout.write(`   Exact migration backup verified: ${payload.backupEvidence.remotePath}\n`);
+    }
   }
 } else {
   for (const error of errors) {

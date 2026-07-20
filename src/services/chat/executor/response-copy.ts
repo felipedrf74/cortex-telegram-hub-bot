@@ -116,18 +116,22 @@ export function successCopy(
   }
   if (first?.step.action === 'content_schedule_work') {
     const title = String((first.step.args as any).title || 'content work');
-    return input.locale?.startsWith('pt') ? `Feito — agendei “${title}” no Content e verifiquei a gravação.` : `Done — I scheduled “${title}” in Content and verified it was saved.`;
+    if (input.locale?.startsWith('pt')) return `Feito — guardei “${title}” como alvo local de trabalho no Content. Não criei um evento de calendário nem executei publicação.`;
+    if (input.locale?.startsWith('es')) return `Listo: guardé “${title}” como objetivo local de trabajo en Content. No creé un evento de calendario ni ejecuté una publicación.`;
+    return `Done — I saved “${title}” as a local Content work target. I did not create a calendar event or execute publication.`;
   }
   if (first?.step.action === 'content_pipeline_handoff') {
-    return input.locale?.startsWith('pt') ? 'Feito — movi o pacote para o pipeline de Content e verifiquei o read-back.' : 'Done — I moved the package into the Content pipeline and verified the read-back.';
+    return input.locale?.startsWith('pt')
+      ? 'Feito — guardei o pacote como item versionado no workspace de Content e confirmei o read-back.'
+      : 'Done — I saved the package as a versioned Content workspace item and verified the read-back.';
   }
   if (first?.step.action === 'content_pipeline_stage_transition') {
     const result = first.result as any;
     const title = String(result?.topicTitle || (first.step.args as any).topicTitle || 'content item');
     const stage = String(result?.stage || (first.step.args as any).targetStage || 'the requested stage');
     return input.locale?.startsWith('pt')
-      ? `Feito — movi “${title}” para ${localizePipelineStage(stage, true)} e verifiquei no pipeline.`
-      : `Done — I moved “${title}” to ${localizePipelineStage(stage, false)} and verified it in the pipeline.`;
+      ? `Feito — confirmei que “${title}” tem ${localizePipelineStage(stage, true)} guardado e versionado no workspace de Content.`
+      : `Done — I verified that “${title}” has a saved, versioned ${localizePipelineStage(stage, false)} artifact in the Content workspace.`;
   }
   if (first?.step.action === 'cooking_grocery_list') {
     const itemCount = Number((first.result as any)?.itemCount ?? 0);
@@ -241,12 +245,22 @@ export function verifiedPendingCopy(
       ? 'Rascunho pronto — posso abrir o Training Plan Builder com estes dados.'
       : 'Draft ready — I can open the Training Plan Builder with these details.';
   }
+  if (result.step.action === 'content_schedule_work') {
+    if (input.locale?.startsWith('pt')) {
+      return 'Preparei uma proposta de horário no Content. Abre o item para rever e confirmar o bloco privado; ainda não marquei nada no calendário nem publiquei conteúdo.';
+    }
+    if (input.locale?.startsWith('es')) {
+      return 'Preparé una propuesta de horario en Content. Abre el elemento para revisarla y confirmar el bloque privado; todavía no programé nada ni publiqué contenido.';
+    }
+    return 'I prepared a time proposal in Content. Open the item to review and confirm the private work block; nothing has been scheduled or published yet.';
+  }
   return input.locale?.startsWith('pt')
     ? 'Guardei o estado e deixei pronto para continuar.'
     : 'I saved the state and it is ready to continue.';
 }
 
 export function failureCopy(input: ChatPlannerInput, reason?: string): string {
+  if (reason?.includes('content_publication_')) return contentPublicationUnsupportedCopy(input);
   if (input.locale?.startsWith('pt')) {
     if (reason?.includes('google_calendar_not_connected')) return 'Não consigo criar o evento ainda porque a tua conta Google Calendar não está ligada com permissão de escrita.';
     if (reason?.includes('outlook_calendar_not_connected')) return 'Não consigo criar o evento ainda porque a tua conta Outlook Calendar não está ligada com permissão de escrita.';
@@ -290,6 +304,18 @@ export function unsupportedChatExecutorReason(step: ChatPlanStep): string {
 
 export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput): string {
   const first = plan.steps[0];
+  if (first?.action === 'content_schedule_work') {
+    const args = first.args as any;
+    const start = DateTime.fromISO(String(args.dateTime), { zone: input.timezone }).setZone(input.timezone);
+    const title = typeof args.title === 'string' ? args.title : 'content work';
+    if (input.locale?.startsWith('pt')) {
+      return `Confirma que queres preparar uma proposta de horário para “${title}” em ${start.setLocale('pt').toFormat("cccc, d 'de' LLLL 'às' HH:mm")}? Ainda vais rever e confirmar o bloco exato no Content antes de qualquer marcação.`;
+    }
+    if (input.locale?.startsWith('es')) {
+      return `¿Confirmas que quieres preparar una propuesta de horario para “${title}” el ${start.setLocale('es').toFormat("cccc, d 'de' LLLL 'a las' HH:mm")}? Revisarás y confirmarás el bloque exacto en Content antes de programarlo.`;
+    }
+    return `Confirm that you want to prepare a time proposal for “${title}” on ${start.toFormat('cccc, LLL d')} at ${start.toFormat('HH:mm')}? You will still review and confirm the exact block in Content before anything is scheduled.`;
+  }
   if (first?.action === 'schedule_event') {
     const args = first.args as any;
     const provider = args.provider === 'outlook_calendar' ? 'Outlook Calendar' : 'Google Calendar';
@@ -356,6 +382,9 @@ export function refusalCopyForReason(reason: string, input: ChatPlannerInput): s
   const locale = input.locale ?? 'en-US';
   const isPt = locale.startsWith('pt');
   const isEs = locale.startsWith('es');
+  if (reason === 'content_publication_execution_not_supported' || reason === 'content_publication_tracking_not_supported') {
+    return contentPublicationUnsupportedCopy(input);
+  }
   if (reason === 'prompt_injection_marker_detected') {
     if (isPt) return 'Não vou seguir instruções embutidas em mensagens. Reformule o pedido sem usar comandos como "ignore o anterior".';
     if (isEs) return 'No voy a seguir instrucciones embebidas en mensajes. Reformula la solicitud sin comandos como "ignora lo anterior".';
@@ -376,6 +405,16 @@ export function refusalCopyForReason(reason: string, input: ChatPlannerInput): s
   return "I can't proceed with that request.";
 }
 
+function contentPublicationUnsupportedCopy(input: ChatPlannerInput): string {
+  if (input.locale?.startsWith('pt')) {
+    return 'Não consigo publicar, carregar, colocar conteúdo numa fila externa ou confirmar publicação pelo chat. Não fiz alterações. Posso guardar um alvo de trabalho no Content.';
+  }
+  if (input.locale?.startsWith('es')) {
+    return 'No puedo publicar, subir, poner contenido en una cola externa ni confirmar una publicación desde el chat. No hice cambios. Puedo guardar un objetivo de trabajo en Content.';
+  }
+  return 'I cannot publish, upload, queue content externally, or confirm publication from chat. I made no changes. I can save a Content work target instead.';
+}
+
 function friendlyActionLabel(step: ChatPlanStep, input: ChatPlannerInput): string {
   switch (step.action) {
     case 'create_task':
@@ -385,7 +424,7 @@ function friendlyActionLabel(step: ChatPlanStep, input: ChatPlannerInput): strin
     case 'set_reminder':
       return input.locale?.startsWith('pt') ? `Criei o lembrete “${String((step.args as any).message || 'lembrete')}”` : `Created reminder “${String((step.args as any).message || 'reminder')}”`;
     case 'content_pipeline_stage_transition':
-      return input.locale?.startsWith('pt') ? 'Atualizei o estado no pipeline de Content' : 'Updated the Content pipeline stage';
+      return input.locale?.startsWith('pt') ? 'Confirmei o estado no workspace de Content' : 'Verified the Content workspace state';
     case 'cooking_substitute_ingredient':
       return input.locale?.startsWith('pt') ? 'Atualizei a substituição na refeição' : 'Updated the meal substitution';
     default:

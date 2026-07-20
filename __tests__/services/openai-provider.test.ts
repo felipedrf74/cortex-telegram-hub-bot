@@ -825,6 +825,18 @@ describe('OpenAIProvider', () => {
       expect(call.max_tokens).toBeUndefined();
     });
 
+    it('honors a latency-bounded one-shot retry override', async () => {
+      const unavailable = Object.assign(new Error('Provider unavailable'), { status: 503 });
+      mockCreate.mockRejectedValue(unavailable);
+
+      await expect(completeOneShot('system', 'user', 'content_agent_strategy', {
+        maxTokens: 321,
+        maxRetries: 0,
+      })).rejects.toBe(unavailable);
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+    });
+
     it('bounds hosted web search, reserves unbounded context, and meters actual provider tool usage', async () => {
       const originalMaxCalls = process.env.OPENAI_WEB_SEARCH_MAX_CALLS;
       const originalSearchFee = process.env.OPENAI_WEB_SEARCH_COST_USD_PER_CALL;
@@ -889,6 +901,8 @@ describe('OpenAIProvider', () => {
         expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith({
           userId: 42,
           category: 'content_discovery',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
           hasUnboundedProviderInjectedContext: true,
           maxCostUsd: expect.any(Number),
         });

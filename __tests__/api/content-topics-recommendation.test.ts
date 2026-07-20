@@ -123,17 +123,35 @@ describe('Content API — filming recommendation', () => {
     const tomorrow = today.plus({ days: 1 });
     const dayAfterTomorrow = today.plus({ days: 2 });
 
-    addTopic(user.id, 'VO2 recap', { scheduledDate: tomorrow.toISODate()! });
+    const topic = addTopic(user.id, 'VO2 recap', { scheduledDate: tomorrow.toISODate()! });
     const topicScope = testDb.prepare(`
-      SELECT tenant_id, owner_user_id, scope_status
-      FROM content_topics
-      WHERE user_id = ? AND title = 'VO2 recap'
-    `).get(user.id) as { tenant_id: number; owner_user_id: number; scope_status: string };
-    expect(topicScope).toEqual({
+      SELECT item.tenant_id,
+             item.owner_user_id,
+             item.scope_status,
+             item.deadline_at,
+             link.compat_topic_id
+        FROM content_domain_objects item
+        JOIN content_topic_workspace_links link
+          ON link.workspace_item_id = item.id
+         AND link.tenant_id = item.tenant_id
+         AND link.owner_user_id = item.owner_user_id
+       WHERE item.id = ?
+         AND item.title = 'VO2 recap'
+    `).get(topic.workspace_item_id) as {
+      tenant_id: number;
+      owner_user_id: number;
+      scope_status: string;
+      deadline_at: string;
+      compat_topic_id: number;
+    };
+    expect(topicScope).toMatchObject({
       tenant_id: user.id,
       owner_user_id: user.id,
       scope_status: 'active',
+      compat_topic_id: topic.id,
     });
+    expect(DateTime.fromISO(topicScope.deadline_at, { zone: 'utc' }).toISODate()).toBe(tomorrow.toISODate());
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_topics').get()).toEqual({ count: 0 });
 
     const plan = createPlan({
       user_id: user.id,

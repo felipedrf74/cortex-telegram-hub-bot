@@ -117,6 +117,7 @@ const TRAINING_MODIFY_SESSION_CAPABILITY = 'training.modify_session_preview';
 const COOKING_GROCERY_ITEM_CAPABILITY = 'cooking.grocery_item_preview';
 const CONTENT_BRIEF_DRAFT_CAPABILITY = 'content.brief_draft_preview';
 const COMMAND_TTL_MS = 10 * 60 * 1000;
+const MAX_COMMAND_PREVIEW_PARSE_CHARS = 20_000;
 const NOTIFICATION_SNOOZE_DEFAULT_MINUTES = 60;
 const ACTIVE_TRAINING_SESSION_STATUSES = new Set([
   'pending',
@@ -140,6 +141,7 @@ type ChatCoreV2ResolvableTask = NormalizedTask & {
 export function tryBuildChatCoreV2CommandPreviewRoute(
   input: BuildChatCoreV2CommandPreviewRouteInput,
 ): ChatCoreV2CommandPreviewRouteResult | null {
+  if (input.normalizedText.length > MAX_COMMAND_PREVIEW_PARSE_CHARS) return null;
   const routeGuess = classifyShadowRoute(input.normalizedText);
   if (routeGuess.domains[0] === 'tasks') {
     if (routeGuess.intent === 'create_action' && routeGuess.capabilityIds.includes(TASK_CREATE_CAPABILITY)) {
@@ -2092,6 +2094,9 @@ function extractDecisionDismissReference(text: string): string | null {
 }
 
 function extractDecisionSnoozeRequest(text: string): { referencePhrase: string | null; snoozeMinutes: number } {
+  if (text.length > MAX_COMMAND_PREVIEW_PARSE_CHARS) {
+    return { referencePhrase: null, snoozeMinutes: NOTIFICATION_SNOOZE_DEFAULT_MINUTES };
+  }
   const snoozeMinutes = normalizeSnoozeMinutes(extractSnoozeMinutes(text));
   const withoutDuration = text
     .replace(/\b(?:for|durante|por|until|ate|até|hasta)\s+.+$/i, ' ')
@@ -2410,6 +2415,7 @@ interface ContentBriefDraft {
 }
 
 function extractContentBriefDraft(text: string): ContentBriefDraft | null {
+  if (text.length > MAX_COMMAND_PREVIEW_PARSE_CHARS) return null;
   const patterns = [
     /\b(?:create|draft|write|prepare)\s+(?:a\s+)?(?:content\s+)?brief(?:ing)?(?:\s+draft)?\s+(?:for|about|on)\s+(.+?)(?=$|[.!?])/i,
     /\b(?:create|draft|write|prepare)\s+(?:a\s+)?brief(?:ing)?\s+(?:for|about|on)\s+(?:a\s+)?(?:content\s+|post\s+|script\s+|reel\s+|video\s+|newsletter\s+)?(.+?)(?=$|[.!?])/i,
@@ -2450,6 +2456,7 @@ function inferContentBriefFormat(text: string): ContentBriefDraft['format'] {
 }
 
 function extractCookingGroceryItems(text: string): string[] {
+  if (text.length > MAX_COMMAND_PREVIEW_PARSE_CHARS) return [];
   const patterns = [
     /\b(?:add|buy|get)\s+(.+?)\s+(?:to|for|on|in)\s+(?:my\s+)?(?:grocery|groceries|shopping)(?:\s+list)?\b/i,
     /\b(?:create|make|prepare)\s+(?:a\s+)?(?:grocery|shopping)(?:\s+list)?\s+(?:with|for|of)\s+(.+?)(?=$|[.!?])/i,
@@ -2515,6 +2522,7 @@ function addDays(date: string, days: number): string {
 }
 
 function extractTaskCompletionReference(text: string): string | null {
+  if (text.length > MAX_COMMAND_PREVIEW_PARSE_CHARS) return null;
   const patterns = [
     /\b(?:complete|finish)\s+(?:the\s+|my\s+)?(.+?)\s+(?:task|todo|to-do)\b/i,
     /\b(?:mark|set)\s+(?:the\s+|my\s+)?(.+?)\s+(?:task|todo|to-do)\s+(?:as\s+)?(?:done|complete[d]?)\b/i,

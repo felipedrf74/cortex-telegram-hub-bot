@@ -16,7 +16,10 @@ import { canUseAnthropicRuntimeFallback } from './runtime-flags';
 import { logger } from '../utils/logger';
 import { completeOneShotWithWebSearch, isOpenAIConfigured } from './openai-provider';
 import { isResearchProviderRefusal } from './chat-research-refusal-policy';
-import { assessChatResearchAnswerCompleteness } from './chat-research-answer-quality';
+import {
+  assessChatResearchAnswerCompleteness,
+  stripResearchSourceFooter,
+} from './chat-research-answer-quality';
 import { ApiUsagePersistenceError } from './api-usage-fallback';
 import { isPaidAiCostControlsEnforcementEnabled } from './entitlement';
 
@@ -354,28 +357,19 @@ export function buildChatInternetResearchSafeQueryPacket(
 }
 
 function appendSourceNote(text: string, sources: string[], sourceLabel: string): string {
-  const trimmed = stripProviderSourceFooter(text).trim();
+  const trimmed = stripResearchSourceFooter(text).trim();
   const uniqueSources = dedupeSources(sources).slice(0, 3);
   if (uniqueSources.length === 0) return trimmed;
   return `${trimmed}\n\n${sourceLabel}: ${uniqueSources.join(', ')}`;
 }
 
 export function normalizeResearchAnswerText(text: string, language: NexusChatLanguage): string {
-  return stripProviderSourceFooter(text)
+  return stripResearchSourceFooter(text)
     .replace(/\s{3,}/g, ' ')
     .trim();
 }
 
 export { isResearchProviderRefusal } from './chat-research-refusal-policy';
-
-function stripProviderSourceFooter(text: string): string {
-  return text
-    .replace(
-      /\n{1,3}\s*(?:Sources consulted|Fuentes consultadas|Fontes consultadas|Sources|Fuentes|Fontes)\s*:\s*(?:https?:\/\/\S+(?:\s*,\s*)?)+\s*$/iu,
-      '',
-    )
-    .trim();
-}
 
 function researchLocalization(language: NexusChatLanguage): {
   sourceLabel: string;
@@ -420,7 +414,8 @@ function maxTokensForShape(shape: NexusChatExpectedResponseShape): number {
   return 2_400;
 }
 
-const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const EMAIL_RE = /(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+const MAX_PUBLIC_QUERY_PARSE_CHARS = 20_000;
 const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/;
 const PRIVATE_CONTEXT_RE = /\b(my|meu|minha|minhas|meus|mi|mis|mine|our|nosso|nossa)\b.{0,80}\b(calendar|agenda|task|tasks|tarefa|tarefas|email|e-mail|mail|inbox|conta|account|saldo|balance|invoice|fatura|client|cliente|meeting|reuni[aã]o|evento|event|treino|training plan|plano de treino)\b/i;
 const HEALTH_TRAINING_RE = /\b(knee|joelho|pain|dor|injury|les[aã]o|train|treinar|workout|treino|exercise|exerc[ií]cio)\b/i;
@@ -431,6 +426,7 @@ const PERSONAL_PRONOUN_RE = /\b(?:i|me|my|mine|eu|meu|minha|minhas|meus|yo|mi|mi
 const QUESTION_WORD_RE = /\b(?:should|can|could|devo|posso|puedo|deber[ií]a)\b/giu;
 
 function canUseGenericPublicQuery(message: string, skill: NexusChatOwnerSkill): boolean {
+  if (message.length > MAX_PUBLIC_QUERY_PARSE_CHARS) return false;
   if (EMAIL_RE.test(message) || PHONE_RE.test(message)) return false;
   if (skill === 'training' && HEALTH_TRAINING_RE.test(message)) {
     return Boolean(buildPublicHealthTrainingQuery(message));
@@ -444,6 +440,7 @@ function toGenericPublicQuery(
   skill: NexusChatOwnerSkill,
   shape: NexusChatExpectedResponseShape,
 ): string {
+  if (message.length > MAX_PUBLIC_QUERY_PARSE_CHARS) return '';
   const normalized = message
     .replace(EMAIL_RE, ' ')
     .replace(PHONE_RE, ' ')
@@ -463,6 +460,7 @@ function toGenericPublicQuery(
 }
 
 function buildPublicHealthTrainingQuery(message: string): string {
+  if (message.length > MAX_PUBLIC_QUERY_PARSE_CHARS) return '';
   const topic = message
     .replace(EMAIL_RE, ' ')
     .replace(PHONE_RE, ' ')

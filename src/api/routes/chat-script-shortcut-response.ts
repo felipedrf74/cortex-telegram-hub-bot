@@ -77,7 +77,19 @@ export function buildScriptShortcutText(
       sources: result.sources_used,
     }),
   });
-  const sanitizedScript = makeChatSafeScriptText(sanitizeScriptBody(scriptQuality.revisedScript || inputScript), isPT);
+  if (scriptQuality.blockers.length > 0) {
+    if (language === 'en-US') {
+      return 'I withheld this script because the generated response contained unsafe or internal output. Please try again.';
+    }
+    if (language === 'pt-PT') {
+      return 'Ocultei este roteiro porque a resposta gerada continha conteúdo inseguro ou interno. Tenta novamente.';
+    }
+    return 'Ocultei este roteiro porque a resposta gerada continha conteúdo inseguro ou interno. Tenta de novo.';
+  }
+  // Script quality is advisory. The chat presentation may sanitize metadata,
+  // but it must not substitute the engine output with a bounded quality
+  // scaffold.
+  const sanitizedScript = makeChatSafeScriptText(inputScript, isPT);
   const normalizedScript = sanitizedScript || result.hook?.trim() || '';
   const normalizedCta = (result.cta || scriptQuality.structuredOutput.cta)?.trim() || '';
   const lowerScript = normalizedScript.toLowerCase();
@@ -146,6 +158,17 @@ export function buildScriptShortcutMetadata(
     format,
   });
 
+  if (scriptQuality.blockers.length > 0) {
+    return {
+      type: 'content_script_blocked',
+      format,
+      blocked: true,
+      displayWithheld: true,
+      retryable: true,
+      reasonCodes: scriptQuality.blockers,
+    };
+  }
+
   return {
     type: 'content_script',
     topic: result.topic,
@@ -169,6 +192,8 @@ export function buildScriptShortcutMetadata(
       overallScore: scriptQuality.overallScore,
       complianceWarnings: scriptQuality.complianceWarnings,
       revisionActions: scriptQuality.revisionActions,
+      suggestedActions: scriptQuality.revisionActions,
+      appliedChanges: [],
       blockers: scriptQuality.blockers,
     },
     sourcesUsed: sources.map((source) => ({

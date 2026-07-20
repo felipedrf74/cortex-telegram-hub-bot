@@ -13,8 +13,16 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { createMigratedDatabaseWithLegacySavedIdeas } from '../helpers/legacy-saved-ideas-fixture';
 import Database from 'better-sqlite3';
 import { vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const CONTENT_TOPICS_WORKSPACE_EXIT_UP = readFileSync(
+  resolve(process.cwd(), 'migrations/247_content_topics_workspace_exit.sql'),
+  'utf8',
+);
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -63,6 +71,55 @@ import {
 } from '../../src/services/user-data-export';
 import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
 import { encryptTrainingProfileSnapshot } from '../../src/services/training-profile-snapshot-encryption';
+import { createContentArtifact, createContentWorkspaceItem } from '../../src/services/content-workspace';
+import { recordContentPerformanceOutcome } from '../../src/services/content-performance-lineage';
+
+function seedCanonicalContentItem(input: {
+  tenantId: number;
+  userId: number;
+  title: string;
+}): number {
+  return createContentWorkspaceItem({
+    scope: { tenantId: input.tenantId, userId: input.userId },
+    itemType: 'content_item',
+    title: input.title,
+    idempotencyKey: `export-fixture:${input.tenantId}:${input.userId}:${input.title}`,
+  }, testDb).value.id;
+}
+
+function replaceTestDatabaseWithLegacySavedIdeas(
+  seed: (database: Database.Database) => void,
+): void {
+  testDb.close();
+  testDb = createMigratedDatabaseWithLegacySavedIdeas(seed);
+}
+
+function seedCanonicalPerformanceTarget(input: {
+  tenantId: number;
+  userId: number;
+  suffix: string;
+}): { itemId: number; artifactId: number; revisionId: number } {
+  const scope = { tenantId: input.tenantId, userId: input.userId };
+  const item = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: `Performance ${input.suffix}`,
+    idempotencyKey: `performance-export-item-${input.suffix}-001`,
+  }, testDb).value;
+  const artifact = createContentArtifact({
+    scope,
+    itemId: item.id,
+    expectedWorkflowVersion: item.workflowVersion,
+    artifactType: 'script',
+    initialContent: { format: 'markdown', text: `Script ${input.suffix}` },
+    idempotencyKey: `performance-export-artifact-${input.suffix}-001`,
+  }, testDb).value;
+  return {
+    itemId: item.id,
+    artifactId: artifact.id,
+    revisionId: artifact.currentRevisionId!,
+  };
+}
 
 // ── Helper: seed a user record ──
 function seedUser(db: Database.Database, telegramId: number, opts?: { username?: string; language?: string }) {
@@ -288,6 +345,158 @@ describe('exportAllUserData', () => {
     expect(exported.notes[0].content).toBe('Meeting notes');
     expect(exported.sharedMemory).toHaveLength(1);
     expect(exported.sharedMemory[0].key).toContain('preference');
+  });
+
+  it('exports saved ideas from the real title column while preserving the legacy content alias', () => {
+    replaceTestDatabaseWithLegacySavedIdeas((database) => {
+      database.prepare(`
+        INSERT INTO saved_ideas (
+          title, source_date, user_id, tenant_id, owner_user_id,
+          visibility_scope, scope_status, created_by, updated_by
+        ) VALUES (
+          'A durable idea', '2026-07-17', 1, 1, 1,
+          'user_private', 'active', 1, 1
+        )
+      `).run();
+    });
+
+    const exported = exportAllUserData(1);
+
+    expect(exported.savedIdeas).toEqual([
+      expect.objectContaining({
+        title: 'A durable idea',
+        content: 'A durable idea',
+      }),
+    ]);
+  });
+
+  it('treats canonical owner_user_id as authoritative when legacy user_id conflicts', () => {
+    replaceTestDatabaseWithLegacySavedIdeas((database) => {
+      seedUser(database, 1);
+      seedUser(database, 2, { username: 'canonical-owner' });
+      database.prepare(`
+        INSERT INTO saved_ideas (
+          title, source_date, user_id, tenant_id, owner_user_id,
+          visibility_scope, scope_status, created_by, updated_by
+        ) VALUES (
+          'Canonical owner two only', '2026-07-17', 1, 2, 2,
+          'user_private', 'active', 2, 2
+        )
+      `).run();
+    });
+
+    expect(exportAllUserData(1).savedIdeas).toEqual([]);
+    expect(getAccountDeletionInventoryForUser(1).deletableTables.saved_ideas).toBe(0);
+    expect(exportAllUserData(2).savedIdeas).toEqual([
+      expect.objectContaining({ title: 'Canonical owner two only' }),
+    ]);
+
+    deleteAllUserData(1);
+    expect(testDb.prepare('SELECT title FROM saved_ideas WHERE owner_user_id = 2').get())
+      .toMatchObject({ title: 'Canonical owner two only' });
+  });
+
+  it('exports previously omitted Content workspace groups with strict owner and tenant scope', () => {
+    seedCanonicalContentItem({ tenantId: 1, userId: 1, title: 'User one idea' });
+    seedCanonicalContentItem({ tenantId: 2, userId: 2, title: 'User two idea' });
+    testDb.prepare(`
+      INSERT INTO content_reference_registry (
+        tenant_id, owner_user_id, reference_type, source_identifier,
+        title, created_by, updated_by
+      ) VALUES
+        (1, 1, 'url', 'https://example.test/user-one', 'User one source', 1, 1),
+        (2, 2, 'url', 'https://example.test/user-two', 'User two source', 2, 2)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO content_agency_packages (
+        agency_id, user_id, tenant_id, payload_json
+      ) VALUES
+        ('agency-user-one', 1, 1, '{"topic":"user one"}'),
+        ('agency-user-two', 2, 2, '{"topic":"user two"}')
+    `).run();
+
+    const workspace = exportAllUserData(1).contentWorkspace;
+    const records = (name: string) => workspace.tables.find((table) => table.name === name)?.records;
+
+    expect(workspace.schemaVersion).toBe('content-workspace-export-v1');
+    expect(records('content_domain_objects')).toEqual([
+      expect.objectContaining({ title: 'User one idea', owner_user_id: 1, tenant_id: 1 }),
+    ]);
+    expect(records('content_reference_registry')).toEqual([
+      expect.objectContaining({ title: 'User one source', owner_user_id: 1, tenant_id: 1 }),
+    ]);
+    expect(records('content_agency_packages')).toEqual([
+      expect.objectContaining({ agency_id: 'agency-user-one', user_id: 1, tenant_id: 1 }),
+    ]);
+    expect(JSON.stringify(workspace)).not.toContain('User two');
+    expect(JSON.stringify(workspace)).not.toContain('agency-user-two');
+  });
+
+  it('exports all canonically owned Content tenants when no authenticated tenant boundary is supplied', () => {
+    seedCanonicalContentItem({ tenantId: 44, userId: 1, title: 'Tenant 44 account export' });
+    seedCanonicalContentItem({ tenantId: 55, userId: 1, title: 'Tenant 55 account export' });
+    seedCanonicalContentItem({ tenantId: 55, userId: 2, title: 'Another owner' });
+
+    const workspace = exportAllUserData(1).contentWorkspace;
+    const records = workspace.tables.find((table) => table.name === 'content_domain_objects')?.records;
+
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: 'Tenant 44 account export', tenant_id: 44, owner_user_id: 1 }),
+      expect.objectContaining({ title: 'Tenant 55 account export', tenant_id: 55, owner_user_id: 1 }),
+    ]));
+    expect(JSON.stringify(records)).not.toContain('Another owner');
+  });
+
+  it('exports canonical performance outcome lineage without crossing owner scope', () => {
+    const owner = seedCanonicalPerformanceTarget({ tenantId: 1, userId: 1, suffix: 'export-owner' });
+    const other = seedCanonicalPerformanceTarget({ tenantId: 2, userId: 2, suffix: 'export-other' });
+    recordContentPerformanceOutcome({
+      scope: { tenantId: 1, userId: 1 },
+      ...owner,
+      idempotencyKey: 'performance-export-owner-001',
+      views: 100,
+      retentionPct: 40,
+    }, testDb);
+    recordContentPerformanceOutcome({
+      scope: { tenantId: 2, userId: 2 },
+      ...other,
+      idempotencyKey: 'performance-export-other-001',
+      views: 200,
+      retentionPct: 50,
+    }, testDb);
+
+    const workspace = exportAllUserData(1).contentWorkspace;
+    const outcomes = workspace.tables.find(({ name }) => name === 'content_performance')?.records ?? [];
+    const links = workspace.tables.find(({ name }) => name === 'content_performance_workspace_links')?.records ?? [];
+
+    expect(outcomes).toEqual([expect.objectContaining({ tenant_id: 1, owner_user_id: 1, pipeline_id: null })]);
+    expect(links).toEqual([expect.objectContaining({
+      tenant_id: 1,
+      owner_user_id: 1,
+      item_id: owner.itemId,
+      artifact_id: owner.artifactId,
+      revision_id: owner.revisionId,
+      origin: 'canonical_api',
+    })]);
+    expect(JSON.stringify(workspace)).not.toContain('performance-export-other-001');
+    expect(JSON.stringify(links)).not.toContain(`"item_id":${other.itemId}`);
+  });
+
+  it('fails instead of returning a successful partial Content workspace export', () => {
+    const originalPrepare = testDb.prepare.bind(testDb);
+    const prepareSpy = vi.spyOn(testDb, 'prepare');
+    prepareSpy.mockImplementation(((sql: string) => {
+      if (sql.includes('SELECT * FROM "content_domain_objects"')) {
+        throw new Error('injected Content export failure');
+      }
+      return originalPrepare(sql);
+    }) as any);
+
+    try {
+      expect(() => exportAllUserData(1)).toThrow('injected Content export failure');
+    } finally {
+      prepareSpy.mockRestore();
+    }
   });
 
   it('exports finance data with decrypted amounts', () => {
@@ -546,6 +755,174 @@ describe('deleteAllUserData', () => {
     expect(counts['shared_memory']).toBe(1);
     expect(counts['finance_transactions']).toBe(1);
     expect(counts['users']).toBe(1);
+  });
+
+  it('discovers and erases receipt AI execution rows by user across tenant scopes', () => {
+    testDb.prepare(`
+      INSERT INTO receipt_ai_transfer_executions (
+        tenant_id, user_id, consent_receipt_key_hash,
+        transfer_binding_hash, status
+      ) VALUES (?, ?, ?, ?, 'in_progress')
+    `).run(901, 1, 'a'.repeat(64), 'b'.repeat(64));
+    testDb.prepare(`
+      INSERT INTO receipt_ai_transfer_executions (
+        tenant_id, user_id, consent_receipt_key_hash,
+        transfer_binding_hash, status
+      ) VALUES (?, ?, ?, ?, 'in_progress')
+    `).run(901, 2, 'c'.repeat(64), 'd'.repeat(64));
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.receipt_ai_transfer_executions).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.receipt_ai_transfer_executions).toBe(1);
+    expect(testDb.prepare(`
+      SELECT tenant_id AS tenantId, user_id AS userId
+        FROM receipt_ai_transfer_executions
+    `).all()).toEqual([{ tenantId: 901, userId: 2 }]);
+  });
+
+  it('erases a migrated legacy topic through the scoped legal-erasure gate', () => {
+    testDb.close();
+    testDb = createMigratedTestDatabase({ stopBefore: '247_content_topics_workspace_exit.sql' });
+    seedUser(testDb, 1);
+    testDb.prepare(`
+      INSERT INTO content_topics (
+        user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+        scope_status, created_by, updated_by, title, notes, status,
+        audit_metadata_json
+      ) VALUES (1, 1, 1, 'user_private', 'planned', 'active', 1, 1,
+        'Erase this migrated idea', 'Private content', 'planned', '{}')
+    `).run();
+    testDb.exec(CONTENT_TOPICS_WORKSPACE_EXIT_UP);
+
+    const counts = deleteAllUserData(1);
+
+    expect(counts.content_topics).toBe(1);
+    expect(counts.content_domain_objects).toBe(1);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_topics WHERE user_id = 1').get())
+      .toEqual({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_topic_workspace_links WHERE owner_user_id = 1').get())
+      .toEqual({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM training_revision_erasure_authorizations WHERE subject_user_id = 1').get())
+      .toEqual({ count: 0 });
+  });
+
+  it('inventories and deletes owner_user_id-only Content tables without affecting another owner', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    testDb.prepare(`
+      INSERT INTO content_pillars (
+        tenant_id, owner_user_id, pillar_key, name, created_by, updated_by
+      ) VALUES
+        (1, 1, 'owner-one', 'Owner one pillar', 1, 1),
+        (2, 2, 'owner-two', 'Owner two pillar', 2, 2)
+    `).run();
+    seedCanonicalContentItem({ tenantId: 1, userId: 1, title: 'Owner one script' });
+    seedCanonicalContentItem({ tenantId: 2, userId: 2, title: 'Owner two script' });
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.content_pillars).toBe(1);
+    expect(inventory.deletableTables.content_domain_objects).toBe(1);
+
+    const counts = deleteAllUserData(1);
+    expect(counts.content_pillars).toBe(1);
+    expect(counts.content_domain_objects).toBe(1);
+    expect(testDb.prepare('SELECT name FROM content_pillars WHERE owner_user_id = 2').get())
+      .toMatchObject({ name: 'Owner two pillar' });
+    expect(testDb.prepare('SELECT title FROM content_domain_objects WHERE owner_user_id = 2').get())
+      .toMatchObject({ title: 'Owner two script' });
+  });
+
+  it('erases canonical performance outcomes, links, and receipts while preserving another owner', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    const owner = seedCanonicalPerformanceTarget({ tenantId: 1, userId: 1, suffix: 'erase-owner' });
+    const other = seedCanonicalPerformanceTarget({ tenantId: 2, userId: 2, suffix: 'erase-other' });
+    const ownerOutcome = recordContentPerformanceOutcome({
+      scope: { tenantId: 1, userId: 1 },
+      ...owner,
+      idempotencyKey: 'performance-erase-owner-001',
+      views: 100,
+      retentionPct: 40,
+    }, testDb).value;
+    const otherOutcome = recordContentPerformanceOutcome({
+      scope: { tenantId: 2, userId: 2 },
+      ...other,
+      idempotencyKey: 'performance-erase-other-001',
+      views: 200,
+      retentionPct: 50,
+    }, testDb).value;
+
+    const inventory = getAccountDeletionInventoryForUser(1);
+    expect(inventory.deletableTables.content_performance).toBe(1);
+    expect(inventory.deletableTables.content_performance_workspace_links).toBe(1);
+    expect(inventory.deletableTables.content_mutation_receipts).toBeGreaterThanOrEqual(1);
+
+    deleteAllUserData(1);
+
+    expect(testDb.prepare('SELECT id FROM content_performance WHERE id = ?').get(ownerOutcome.id)).toBeUndefined();
+    expect(testDb.prepare('SELECT id FROM content_performance_workspace_links WHERE performance_id = ?').get(ownerOutcome.id)).toBeUndefined();
+    expect(testDb.prepare(`
+      SELECT id FROM content_mutation_receipts
+       WHERE owner_user_id = 1 AND operation = 'record_content_performance'
+    `).get()).toBeUndefined();
+    expect(testDb.prepare('SELECT id FROM content_performance WHERE id = ?').get(otherOutcome.id)).toBeTruthy();
+    expect(testDb.prepare('SELECT id FROM content_performance_workspace_links WHERE performance_id = ?').get(otherOutcome.id)).toBeTruthy();
+  });
+
+  it('fails the deletion inventory instead of converting a count query failure to zero', () => {
+    seedCanonicalContentItem({ tenantId: 1, userId: 1, title: 'Must not be hidden' });
+    const originalPrepare = testDb.prepare.bind(testDb);
+    const prepareSpy = vi.spyOn(testDb, 'prepare');
+    prepareSpy.mockImplementation(((sql: string) => {
+      if (sql.includes('SELECT COUNT(*) AS count FROM "content_domain_objects"')) {
+        throw new Error('injected inventory failure');
+      }
+      return originalPrepare(sql);
+    }) as any);
+
+    try {
+      expect(() => getAccountDeletionInventoryForUser(1)).toThrow('injected inventory failure');
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+
+  it('rolls back all account erasure work when a Content delete statement fails', () => {
+    replaceTestDatabaseWithLegacySavedIdeas((database) => {
+      seedUser(database, 1);
+      database.prepare(`
+        INSERT INTO saved_ideas (
+          title, source_date, user_id, tenant_id, owner_user_id,
+          visibility_scope, scope_status, created_by, updated_by
+        ) VALUES (
+          'Must survive rollback', '2026-07-17', 1, 1, 1,
+          'user_private', 'active', 1, 1
+        )
+      `).run();
+    });
+    seedCanonicalContentItem({ tenantId: 1, userId: 1, title: 'Delete should fail' });
+    testDb.exec(`
+      CREATE TRIGGER fail_content_domain_object_delete
+      BEFORE DELETE ON content_domain_objects
+      WHEN OLD.owner_user_id = 1
+      BEGIN
+        SELECT RAISE(ABORT, 'injected Content deletion failure');
+      END
+    `);
+
+    expect(() => deleteAllUserData(1)).toThrow('injected Content deletion failure');
+    expect(testDb.prepare('SELECT id FROM users WHERE telegram_id = 1').get()).toBeTruthy();
+    expect(testDb.prepare('SELECT title FROM saved_ideas WHERE user_id = 1').get())
+      .toMatchObject({ title: 'Must survive rollback' });
+    expect(testDb.prepare(`
+      SELECT title
+        FROM content_domain_objects
+       WHERE owner_user_id = 1
+         AND title = 'Delete should fail'
+    `).get())
+      .toMatchObject({ title: 'Delete should fail' });
   });
 
   it('runs in a transaction — other users unaffected', () => {

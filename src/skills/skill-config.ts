@@ -275,7 +275,7 @@ const TRIATHLON_SKILL: SkillDefinition = {
 
 const CONTENT_SKILL: SkillDefinition = {
   ...CAPABILITY_SKILL_METADATA.content,
-  description: 'Content creation — YouTube, Reels, scripts, research, autonomous agents',
+  description: 'Content workspace with user-controlled ideas, briefs, outlines, scripts, revisions, sources, specialist proposals, and schedules',
   routing: {
     patternRoutes: [
       /^\/(content|video|reel|script|caption|thumbnail|trend|ideas|discover|deepsearch|sources|hotnews)\b/i,
@@ -292,13 +292,13 @@ const CONTENT_SKILL: SkillDefinition = {
   subSkills: [
     {
       name: 'notes',
-      description: 'Content ideas and research notes',
+      description: 'Explicit Content idea capture and private research-note search',
       enabledByDefault: true,
       tools: ['save_note', 'search_notes'],
     },
     {
       name: 'shared-memory',
-      description: 'Cross-domain shared facts (filming days, content calendar)',
+      description: 'Explicitly approved shared facts such as filming constraints and calendar preferences',
       enabledByDefault: true,
       tools: ['shared_memory_set', 'shared_memory_remove'],
     },
@@ -311,7 +311,7 @@ const CONTENT_SKILL: SkillDefinition = {
     },
     {
       name: 'script-generator',
-      description: 'AI script generation from approved topics',
+      description: 'Canonical brief-to-outline-to-script generation with immutable capture and safe revision',
       enabledByDefault: true,
       tools: [],
     },
@@ -345,7 +345,7 @@ const CONTENT_SKILL: SkillDefinition = {
     },
     {
       name: 'pipeline-tracker',
-      description: 'Monitors content pipeline stages and detects bottlenecks',
+      description: 'Monitors canonical Content workspace status and legacy compatibility bottlenecks',
       enabledByDefault: true,
       tools: [],
       cronJobs: ['pipeline_agent'],
@@ -359,7 +359,7 @@ const CONTENT_SKILL: SkillDefinition = {
     },
     {
       name: 'creator-agency',
-      description: 'Structured creator-agency strategy, competitor study, script, creative direction, compliance, and experiment planning',
+      description: 'Structured strategy packages and approval-gated specialist proposals with provenance',
       enabledByDefault: true,
       tools: [],
     },

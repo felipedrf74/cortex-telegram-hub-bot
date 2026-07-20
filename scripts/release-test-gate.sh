@@ -24,6 +24,25 @@ resolve_content_engine_python() {
 }
 
 BASE_REF="origin/main"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "--base requires a ref" >&2; exit 64; }
+      BASE_REF="$2"; shift 2
+      ;;
+    -h|--help)
+      echo "Usage: scripts/release-test-gate.sh [--base <sha>]"
+      exit 0
+      ;;
+    *) echo "Unknown argument: $1" >&2; exit 64 ;;
+  esac
+done
+
+BASE_SHA="$(git rev-parse --verify --quiet --end-of-options "${BASE_REF}^{commit}")" || {
+  echo "Release test base does not resolve: $BASE_REF" >&2
+  exit 64
+}
+
 RESULT_PATH="$ROOT/.local/release/test-results.json"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$(dirname "$RESULT_PATH")"
@@ -38,7 +57,7 @@ fi
 write_result() {
   local status="$1"
   local exit_code="$2"
-  RESULT_STATUS="$status" RESULT_EXIT_CODE="$exit_code" RESULT_BASE="$BASE_REF" \
+  RESULT_STATUS="$status" RESULT_EXIT_CODE="$exit_code" RESULT_BASE_SHA="$BASE_SHA" \
     RESULT_STARTED_AT="$STARTED_AT" RESULT_PATH="$RESULT_PATH" node - <<'NODE'
 const fs = require('fs');
 const cp = require('child_process');
@@ -48,7 +67,7 @@ const result = {
   status: process.env.RESULT_STATUS,
   exitCode: Number(process.env.RESULT_EXIT_CODE),
   runtimeSha: cp.execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-  baseSha: cp.execFileSync('git', ['rev-parse', process.env.RESULT_BASE], { encoding: 'utf8' }).trim(),
+  baseSha: process.env.RESULT_BASE_SHA,
   startedAt: process.env.RESULT_STARTED_AT,
   completedAt: new Date().toISOString(),
   toolchain: {
@@ -70,29 +89,18 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --base) BASE_REF="$2"; shift 2 ;;
-    -h|--help)
-      echo "Usage: scripts/release-test-gate.sh [--base <sha>]"
-      exit 0
-      ;;
-    *) echo "Unknown argument: $1" >&2; exit 64 ;;
-  esac
-done
-
-git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null || {
-  echo "Release test base does not resolve: $BASE_REF" >&2
-  exit 64
-}
 
 PYTHON_BIN="$(resolve_content_engine_python)"
 export RESULT_PYTHON_BIN="$PYTHON_BIN"
 
 npm run typecheck
 npm run build
-node scripts/migration-safety-check.mjs
-node scripts/run-test-tier.mjs changed --base "$BASE_REF"
+node scripts/migration-safety-check.mjs \
+  --base "$BASE_SHA" \
+  --changed-only \
+  --approval-mode review \
+  --review-evidence "${NEXUS_MIGRATION_REVIEW_EVIDENCE:-.local/release/migration-review/current.json}"
+node scripts/run-test-tier.mjs changed --base "$BASE_SHA"
 "$PYTHON_BIN" -m pytest --version >/dev/null
 (cd content-engine && "$PYTHON_BIN" -m pytest tests/ -q)
 mkdir -p .local/release
