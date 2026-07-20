@@ -14,14 +14,14 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import {
-  assertContentWorkspaceBootReadiness,
-  ensureMigrationSqlFunctions,
   getDb,
   runMigrationsForTest,
   stripWrappingTransactionStatements,
   withDatabaseForTest,
   withDatabaseForTestAsync,
 } from '../../src/services/database';
+import { ensureMigrationSqlFunctions } from '../../src/services/migration-runner';
+import { assertContentWorkspaceBootReadiness } from '../../src/services/content-workspace-boot-readiness';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 

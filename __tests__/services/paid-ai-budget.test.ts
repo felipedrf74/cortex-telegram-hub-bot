@@ -158,6 +158,32 @@ function createSchema(): void {
       scope_status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE content_domain_objects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      visibility_scope TEXT NOT NULL DEFAULT 'user_private',
+      scope_status TEXT NOT NULL DEFAULT 'active',
+      deleted_at TEXT,
+      object_type TEXT NOT NULL DEFAULT 'content_item'
+    );
+    CREATE TABLE content_artifacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      owner_user_id INTEGER NOT NULL,
+      current_revision_id INTEGER,
+      visibility_scope TEXT NOT NULL DEFAULT 'user_private',
+      scope_status TEXT NOT NULL DEFAULT 'active',
+      artifact_type TEXT NOT NULL
+    );
+    CREATE TABLE content_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      artifact_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      owner_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE fitness_training_plans (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -615,7 +641,9 @@ describe('paid AI budget enforcement', () => {
     makeCoachEligible(66);
     db.prepare(`
       INSERT INTO api_usage (ts, category, user_id, cost_usd, request_source, job_name, base_category)
-      VALUES ('2026-07-09T08:00:00.000Z', 'coach_analysis', 66, 0.002, 'automation', 'daily_coach', 'coach_analysis')
+      VALUES
+        ('2026-07-09T08:00:00.000Z', 'coach_analysis', 66, 0.0001, 'automation', 'daily_coach', 'coach_analysis'),
+        ('2026-07-02T09:00:00.000Z', 'scheduled_content', 66, 0.3469, 'automation', 'scheduled_content', 'scheduled_content')
     `).run();
     db.prepare(`
       INSERT INTO report_documents (user_id, type, source_job, document_json, created_at)

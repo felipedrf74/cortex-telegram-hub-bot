@@ -1163,8 +1163,8 @@ function hasSuccessfulCoachDeliveryInWindow(userId: number, start: string, end: 
       WHERE user_id = ?
         AND type = 'coach_briefing'
         AND source_job = 'garmin_coach'
-        AND created_at >= datetime(?)
-        AND created_at < datetime(?)
+        AND datetime(created_at) >= datetime(?)
+        AND datetime(created_at) < datetime(?)
         AND length(trim(COALESCE(document_json, ''))) > 2
       LIMIT 1
     `).get(userId, start, end) as { delivered?: number } | undefined;
