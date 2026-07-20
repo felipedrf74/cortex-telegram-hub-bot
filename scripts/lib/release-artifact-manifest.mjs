@@ -39,6 +39,7 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'scripts/remote-production-shape-migration-rehearsal.sh',
   'scripts/production-shape-migration-rehearsal.mjs',
   'scripts/validate-production-shape-migration-rehearsal.mjs',
+  'scripts/lib/irreversible-migration-policy.mjs',
   'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/remote-prepare-release-backup.sh',
   'scripts/remote-start-sanitized-pm2.sh',
@@ -162,6 +163,95 @@ function walkRuntime(root, dir, files) {
   }
 }
 
+function staticRelativeEsmModuleSpecifiers(source, importer) {
+  const parser = [
+    "const fs = require('node:fs');",
+    "const vm = require('node:vm');",
+    'try {',
+    '  const source = fs.readFileSync(0, \'utf8\');',
+    `  const parsed = new vm.SourceTextModule(source, { identifier: ${JSON.stringify(importer)} });`,
+    '  process.stdout.write(JSON.stringify(parsed.moduleRequests.map((request) => request.specifier)));',
+    '} catch {',
+    '  process.exitCode = 1;',
+    '}',
+  ].join('\n');
+  let parsed;
+  try {
+    parsed = JSON.parse(execFileSync(process.execPath, [
+      '--no-warnings',
+      '--experimental-vm-modules',
+      '-e',
+      parser,
+    ], {
+      input: source,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    }));
+  } catch {
+    throw new Error(`release runtime script cannot be parsed: ${importer}`);
+  }
+  const relative = new Set();
+  for (const specifier of parsed) {
+    if (/^\.\.?\//.test(specifier)) {
+      relative.add(specifier);
+      continue;
+    }
+    if (path.posix.isAbsolute(specifier)
+        || (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier) && !specifier.startsWith('node:'))) {
+      throw new Error(`release runtime dependency is unsafe: ${importer} -> ${specifier}`);
+    }
+  }
+  return [...relative];
+}
+
+function resolveRelativeRuntimeDependency(root, importer, specifier) {
+  const unresolved = path.posix.normalize(path.posix.join(path.posix.dirname(importer), specifier));
+  if (!safeRelativePath(unresolved)) {
+    throw new Error(`release runtime dependency escapes its root: ${importer} -> ${specifier}`);
+  }
+  const candidates = path.posix.extname(unresolved)
+    ? [unresolved]
+    : [
+      unresolved,
+      `${unresolved}.js`,
+      `${unresolved}.mjs`,
+      `${unresolved}.cjs`,
+      `${unresolved}.json`,
+      `${unresolved}/index.js`,
+      `${unresolved}/index.mjs`,
+      `${unresolved}/index.cjs`,
+      `${unresolved}/index.json`,
+    ];
+  for (const candidate of candidates) {
+    const fullPath = path.resolve(root, candidate);
+    if (!fullPath.startsWith(`${root}${path.sep}`)) continue;
+    let stat;
+    try {
+      stat = fs.lstatSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`release runtime dependency is not a regular file: ${importer} -> ${specifier}`);
+    }
+    return candidate;
+  }
+  throw new Error(`release runtime dependency is missing: ${importer} -> ${specifier}`);
+}
+
+function validateReleaseScriptStaticEsmDependencyClosure(root, files) {
+  for (const importer of files) {
+    if (!/^scripts\/.*\.mjs$/.test(importer)) continue;
+    const source = fs.readFileSync(path.join(root, importer), 'utf8');
+    for (const specifier of staticRelativeEsmModuleSpecifiers(source, importer)) {
+      const dependency = resolveRelativeRuntimeDependency(root, importer, specifier);
+      if (!files.has(dependency)) {
+        throw new Error(`release runtime dependency is not declared: ${importer} -> ${dependency}`);
+      }
+    }
+  }
+}
+
 export function releaseArtifactDigest(files) {
   const digestInput = JSON.stringify({
     schema: RELEASE_ARTIFACT_SCHEMA,
@@ -188,6 +278,7 @@ export function buildReleaseArtifactManifest(rootInput = process.cwd()) {
       walkRuntime(root, fullPath, fileSet);
     }
   }
+  validateReleaseScriptStaticEsmDependencyClosure(root, fileSet);
   const files = [...fileSet].sort().map((relativePath) => {
     if (!safeRelativePath(relativePath)) throw new Error(`unsafe release artifact path: ${relativePath}`);
     const content = fs.readFileSync(path.join(root, relativePath));
@@ -241,6 +332,7 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
     }
     return { path: relativePath, size: body.length, sha256: sha256(body) };
   });
+  validateReleaseScriptStaticEsmDependencyClosure(bundleRoot, seen);
   if (canonicalJson(files) !== canonicalJson([...files].sort((a, b) => a.path.localeCompare(b.path)))) {
     throw new Error('release bundle artifact file list is not sorted');
   }

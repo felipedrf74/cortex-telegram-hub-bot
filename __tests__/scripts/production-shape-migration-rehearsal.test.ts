@@ -21,10 +21,10 @@ import {
   validateProductionShapeMigrationRehearsalEvidence,
 } from '../../scripts/lib/production-shape-migration-rehearsal-evidence.mjs';
 import { loadIrreversibleMigrationPolicy } from '../../scripts/lib/irreversible-migration-policy.mjs';
+import { RELEASE_RUNTIME_FILES } from '../../scripts/lib/release-artifact-manifest.mjs';
 import { applyPendingMigrations } from '../../src/services/migration-runner';
 
 const ROOT = resolve(process.cwd());
-const REHEARSAL = join(ROOT, 'scripts/production-shape-migration-rehearsal.mjs');
 const PREDECESSOR_SHA = '1'.repeat(40);
 const TARGET_SHA = '2'.repeat(40);
 const ARTIFACT_DIGEST = '3'.repeat(64);
@@ -54,6 +54,11 @@ describe('production-shape migration rehearsal', () => {
     cpSync(join(ROOT, 'migrations'), join(release, 'migrations'), { recursive: true });
     cpSync(join(ROOT, 'config'), join(release, 'config'), { recursive: true });
     cpSync(join(ROOT, 'package.json'), join(release, 'package.json'));
+    for (const relativePath of RELEASE_RUNTIME_FILES.filter((entry) => entry.startsWith('scripts/'))) {
+      const destination = join(release, relativePath);
+      mkdirSync(join(destination, '..'), { recursive: true });
+      cpSync(join(ROOT, relativePath), destination);
+    }
     writeFileSync(join(release, '.complete.json'), `${JSON.stringify({
       schema: 'nexus.release-bundle.v1', runtimeSha: TARGET_SHA,
       artifactDigest: ARTIFACT_DIGEST,
@@ -86,7 +91,7 @@ describe('production-shape migration rehearsal', () => {
 
   function invoke(source: string, overrides: string[] = []) {
     const invocation = [
-      REHEARSAL,
+      join(release, 'scripts/production-shape-migration-rehearsal.mjs'),
       '--release-dir', release,
       '--production-base', base,
       '--source-database', source,
@@ -108,7 +113,7 @@ describe('production-shape migration rehearsal', () => {
       invocation[argumentIndex + 1] = overrides[index + 1];
     }
     return spawnSync(process.execPath, invocation, {
-      cwd: ROOT, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' },
+      cwd: release, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' },
     });
   }
 
@@ -164,7 +169,7 @@ describe('production-shape migration rehearsal', () => {
   });
 
   it('governs rollback-journal and residual-sidecar cleanup inside only the private clone directory', () => {
-    const source = readFileSync(REHEARSAL, 'utf8');
+    const source = readFileSync(join(release, 'scripts/production-shape-migration-rehearsal.mjs'), 'utf8');
     const cleanup = source.slice(source.indexOf('function cleanupClone'), source.indexOf('async function run'));
     expect(cleanup).toContain("'-journal'");
     expect(cleanup).toContain('fs.rmSync(cloneDir, { recursive: true, force: true })');
@@ -238,7 +243,8 @@ describe('production-shape migration rehearsal', () => {
     writeFileSync(join(realData, 'bot.db'), '', { mode: 0o600 });
     symlinkSync(realData, join(linkedBase, 'data'));
     const result = spawnSync(process.execPath, [
-      REHEARSAL, '--release-dir', linkedRelease, '--production-base', linkedBase,
+      join(linkedRelease, 'scripts/production-shape-migration-rehearsal.mjs'),
+      '--release-dir', linkedRelease, '--production-base', linkedBase,
       '--source-database', join(linkedBase, 'data', 'bot.db'),
       '--predecessor-runtime-sha', PREDECESSOR_SHA, '--target-runtime-sha', TARGET_SHA,
       '--target-version', VERSION, '--artifact-digest', ARTIFACT_DIGEST,
