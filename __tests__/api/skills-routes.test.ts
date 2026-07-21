@@ -181,6 +181,19 @@ async function dispatch(
   return res;
 }
 
+
+/**
+ * M21: dispatch() callers must be the canonical users.id (verified-JWT
+ * semantics — the route-level getUserByTelegramId fallback was removed).
+ * Fixtures are still seeded through the legacy telegram_id key, so this
+ * resolves the canonical id for a seeded fixture user.
+ */
+function callerId(fixtureKey: number): number {
+  const row = testDb.prepare('SELECT id FROM users WHERE telegram_id = ?').get(fixtureKey) as { id: number } | undefined;
+  if (!row) throw new Error(`fixture user ${fixtureKey} not seeded`);
+  return row.id;
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 describe('Skills API — GET /catalog', () => {
@@ -220,7 +233,7 @@ describe('Skills API — GET /catalog', () => {
     grantFounderEntitlement(user);
     expect(user.tier).toBe('pro'); // Phase 1 default
 
-    const res = await dispatch('GET', '/catalog', 1001);
+    const res = await dispatch('GET', '/catalog', callerId(1001));
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
 
@@ -236,14 +249,14 @@ describe('Skills API — GET /catalog', () => {
 
   it('secretary sorts first in the response (free tier anchor)', async () => {
     getOrCreateUser(1002, { username: 'pro2' });
-    const res = await dispatch('GET', '/catalog', 1002);
+    const res = await dispatch('GET', '/catalog', callerId(1002));
     expect(res.body.data.skills[0].name).toBe('secretary');
   });
 
   it('triathlon exposes 4 sport persona sub-skills + 6 capability sub-skills', async () => {
     const user = getOrCreateUser(1003, { username: 'pro3' });
     grantFounderEntitlement(user);
-    const res = await dispatch('GET', '/catalog', 1003);
+    const res = await dispatch('GET', '/catalog', callerId(1003));
     const triathlon = res.body.data.skills.find((s: any) => s.name === 'triathlon');
     expect(triathlon).toBeDefined();
     expect(triathlon.subSkills).toHaveLength(10);
@@ -270,7 +283,7 @@ describe('Skills API — GET /catalog', () => {
     const user = getOrCreateUser(1004, { username: 'free' });
     setUserTier(1004, 'free'); // downgrade from Phase 1 default
 
-    const res = await dispatch('GET', '/catalog', 1004);
+    const res = await dispatch('GET', '/catalog', callerId(1004));
     expect(res.body.data.userTier).toBe('free');
 
     const secretary = res.body.data.skills.find((s: any) => s.name === 'secretary');
@@ -290,14 +303,14 @@ describe('Skills API — GET /catalog', () => {
 
   it('response includes catalogRowCount > 20 (seeded via migration 045)', async () => {
     getOrCreateUser(1005, { username: 'cnt' });
-    const res = await dispatch('GET', '/catalog', 1005);
+    const res = await dispatch('GET', '/catalog', callerId(1005));
     expect(res.body.data.catalogRowCount).toBeGreaterThan(20);
   });
 
   it('supports private ETag validation for repeated catalog reads', async () => {
     getOrCreateUser(1006, { username: 'etag-reader' });
 
-    const first = await dispatch('GET', '/catalog', 1006);
+    const first = await dispatch('GET', '/catalog', callerId(1006));
     expect(first.statusCode).toBe(200);
     expect(first.body.ok).toBe(true);
     expect(first.getHeader('cache-control')).toBe('private, max-age=30');
@@ -305,7 +318,7 @@ describe('Skills API — GET /catalog', () => {
     const etag = first.getHeader('etag');
     expect(etag).toEqual(expect.stringMatching(/^"skills-catalog-[a-f0-9]{32}"$/));
 
-    const second = await dispatch('GET', '/catalog', 1006, undefined, {
+    const second = await dispatch('GET', '/catalog', callerId(1006), undefined, {
       headers: { 'If-None-Match': String(etag) },
     });
     expect(second.statusCode).toBe(304);
@@ -329,7 +342,7 @@ describe('Skills API — version registry', () => {
   it('returns current skill version metadata for an authenticated user', async () => {
     getOrCreateUser(1501, { username: 'version-reader' });
 
-    const res = await dispatch('GET', '/versions', 1501);
+    const res = await dispatch('GET', '/versions', callerId(1501));
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -347,7 +360,7 @@ describe('Skills API — version registry', () => {
   it('returns one skill metadata and supports the triathlon training alias', async () => {
     getOrCreateUser(1502, { username: 'version-reader-2' });
 
-    const res = await dispatch('GET', '/versions/triathlon', 1502);
+    const res = await dispatch('GET', '/versions/triathlon', callerId(1502));
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -358,7 +371,7 @@ describe('Skills API — version registry', () => {
   it('denies version mutation to non-owner users', async () => {
     getOrCreateUser(1503, { username: 'pro' });
 
-    const res = await dispatch('POST', '/versions', 1503, {
+    const res = await dispatch('POST', '/versions', callerId(1503), {
       skillId: 'content',
       skillName: 'Content Creation',
       version: '2.1.0',
@@ -377,7 +390,7 @@ describe('Skills API — version registry', () => {
     setUserTier(1510, 'owner');
     delete process.env.OWNER_TELEGRAM_ID;
 
-    const res = await dispatch('POST', '/versions', 1510, {
+    const res = await dispatch('POST', '/versions', callerId(1510), {
       skillId: 'content',
       skillName: 'Content Creation',
       version: '2.1.0',
@@ -394,7 +407,7 @@ describe('Skills API — version registry', () => {
     getOrCreateUser(1504, { username: 'owner' });
     configureCanonicalOwner(1504);
 
-    const createRes = await dispatch('POST', '/versions', 1504, {
+    const createRes = await dispatch('POST', '/versions', callerId(1504), {
       skillId: 'content',
       skillName: 'Content Creation',
       version: '2.1.0',
@@ -412,7 +425,7 @@ describe('Skills API — version registry', () => {
     expect(createRes.body.data.skillId).toBe('content');
     expect(JSON.stringify(createRes.body)).not.toContain('private security investigation details');
 
-    const historyRes = await dispatch('GET', '/versions/content/history', 1504);
+    const historyRes = await dispatch('GET', '/versions/content/history', callerId(1504));
     expect(historyRes.statusCode).toBe(200);
     expect(historyRes.body.data.versions.map((version: any) => version.version)).toContain('2.1.0');
     expect(JSON.stringify(historyRes.body)).not.toContain('private security investigation details');
@@ -422,7 +435,7 @@ describe('Skills API — version registry', () => {
     getOrCreateUser(1505, { username: 'owner' });
     configureCanonicalOwner(1505);
 
-    await dispatch('POST', '/versions', 1505, {
+    await dispatch('POST', '/versions', callerId(1505), {
       skillId: 'secretary',
       skillName: 'Secretary',
       version: '2.1.0',
@@ -435,18 +448,18 @@ describe('Skills API — version registry', () => {
       rolloutScope: 'tenant',
     });
 
-    const activateRes = await dispatch('POST', '/versions/secretary/2.1.0/activate', 1505, {
+    const canary = getOrCreateUser(1506, { username: 'tenant-canary' });
+    getOrCreateUser(1507, { username: 'ordinary' });
+
+    const activateRes = await dispatch('POST', '/versions/secretary/2.1.0/activate', callerId(1505), {
       scopeType: 'tenant',
-      tenantId: 1506,
+      tenantId: canary.id,
     });
     expect(activateRes.statusCode).toBe(200);
     expect(activateRes.body.data.version).toBe('2.1.0');
 
-    getOrCreateUser(1506, { username: 'tenant-canary' });
-    getOrCreateUser(1507, { username: 'ordinary' });
-
-    const canaryRes = await dispatch('GET', '/versions/secretary', 1506);
-    const ordinaryRes = await dispatch('GET', '/versions/secretary', 1507);
+    const canaryRes = await dispatch('GET', '/versions/secretary', callerId(1506));
+    const ordinaryRes = await dispatch('GET', '/versions/secretary', callerId(1507));
     expect(canaryRes.body.data.currentVersion).toBe('2.1.0');
     expect(ordinaryRes.body.data.currentVersion).toBe('2.0.0');
   });
@@ -467,7 +480,7 @@ describe('Skills API — POST /override', () => {
   it('returns 403 for non-owner caller', async () => {
     getOrCreateUser(2001, { username: 'pro' }); // defaults to pro
     getOrCreateUser(2002, { username: 'target' });
-    const res = await dispatch('POST', '/override', 2001, {
+    const res = await dispatch('POST', '/override', callerId(2001), {
       targetUserId: 2002,
       skillId: 'triathlon.gym',
     });
@@ -478,7 +491,7 @@ describe('Skills API — POST /override', () => {
   it('returns 400 for missing body fields', async () => {
     getOrCreateUser(2003, { username: 'owner' });
     configureCanonicalOwner(2003);
-    const res = await dispatch('POST', '/override', 2003, {});
+    const res = await dispatch('POST', '/override', callerId(2003), {});
     expect(res.statusCode).toBe(400);
     expect(res.body.error.code).toBe('BAD_REQUEST');
   });
@@ -486,7 +499,7 @@ describe('Skills API — POST /override', () => {
   it('returns 404 when target user does not exist', async () => {
     getOrCreateUser(2004, { username: 'owner' });
     configureCanonicalOwner(2004);
-    const res = await dispatch('POST', '/override', 2004, {
+    const res = await dispatch('POST', '/override', callerId(2004), {
       targetUserId: 99999,
       skillId: 'triathlon.gym',
     });
@@ -500,13 +513,13 @@ describe('Skills API — POST /override', () => {
     setUserTier(2006, 'free');
 
     // Before: free user can't access triathlon.gym
-    const beforeRes = await dispatch('GET', '/catalog', 2006);
+    const beforeRes = await dispatch('GET', '/catalog', callerId(2006));
     const beforeTri = beforeRes.body.data.skills.find((s: any) => s.name === 'triathlon');
     const beforeGym = beforeTri.subSkills.find((s: any) => s.name === 'gym');
     expect(beforeGym.accessible).toBe(false);
 
     // Owner grants override
-    const grantRes = await dispatch('POST', '/override', 2005, {
+    const grantRes = await dispatch('POST', '/override', callerId(2005), {
       targetUserId: 2006,
       skillId: 'triathlon.gym',
       reason: 'beta tester',
@@ -516,7 +529,7 @@ describe('Skills API — POST /override', () => {
     expect(cacheMocks.invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(target.id);
 
     // After: free user CAN access triathlon.gym via override
-    const afterRes = await dispatch('GET', '/catalog', 2006);
+    const afterRes = await dispatch('GET', '/catalog', callerId(2006));
     const afterTri = afterRes.body.data.skills.find((s: any) => s.name === 'triathlon');
     const afterGym = afterTri.subSkills.find((s: any) => s.name === 'gym');
     expect(afterGym.accessible).toBe(true);
@@ -536,7 +549,7 @@ describe('Skills API — POST /override', () => {
       return originalPrepare(sql);
     }) as typeof testDb.prepare);
 
-    const res = await dispatch('POST', '/override', 2007, {
+    const res = await dispatch('POST', '/override', callerId(2007), {
       targetUserId: 2008,
       skillId: 'triathlon.gym',
     });
@@ -564,7 +577,7 @@ describe('Skills API — DELETE /override', () => {
 
   it('returns 403 for non-owner caller', async () => {
     getOrCreateUser(3001, { username: 'pro' });
-    const res = await dispatch('DELETE', '/override', 3001, {
+    const res = await dispatch('DELETE', '/override', callerId(3001), {
       targetUserId: 3002,
       skillId: 'triathlon.gym',
     });
@@ -578,11 +591,11 @@ describe('Skills API — DELETE /override', () => {
     setUserTier(3004, 'free');
 
     // Grant then revoke
-    await dispatch('POST', '/override', 3003, {
+    await dispatch('POST', '/override', callerId(3003), {
       targetUserId: 3004,
       skillId: 'triathlon.gym',
     });
-    const revokeRes = await dispatch('DELETE', '/override', 3003, {
+    const revokeRes = await dispatch('DELETE', '/override', callerId(3003), {
       targetUserId: 3004,
       skillId: 'triathlon.gym',
     });
@@ -591,7 +604,7 @@ describe('Skills API — DELETE /override', () => {
     expect(cacheMocks.invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(target.id);
 
     // Target user should now be blocked again
-    const afterRes = await dispatch('GET', '/catalog', 3004);
+    const afterRes = await dispatch('GET', '/catalog', callerId(3004));
     const afterTri = afterRes.body.data.skills.find((s: any) => s.name === 'triathlon');
     const afterGym = afterTri.subSkills.find((s: any) => s.name === 'gym');
     expect(afterGym.accessible).toBe(false);
@@ -606,14 +619,14 @@ describe('Skills API — DELETE /override', () => {
     const target = getOrCreateUser(3006, { username: 'free' });
     setUserTier(3006, 'free');
 
-    await dispatch('POST', '/override', 3005, {
+    await dispatch('POST', '/override', callerId(3005), {
       targetUserId: 3006,
       skillId: 'triathlon.swim',
     });
 
     // Dispatch with NO body — identifiers come via `req.query` only.
     const router = skillsRoutes();
-    const req = { userId: 3005, body: {}, query: { targetUserId: '3006', skillId: 'triathlon.swim' } } as any;
+    const req = { userId: callerId(3005), body: {}, query: { targetUserId: '3006', skillId: 'triathlon.swim' } } as any;
     req.method = 'DELETE';
     req.url = '/override';
     req.originalUrl = '/override';

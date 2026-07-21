@@ -1341,9 +1341,18 @@ ${message}`;
       const parsed = JSON.parse(text);
       const domain = parsed.domain as DomainName;
       const confidence = parsed.confidence as number;
+      // M15: tolerate BOTH output shapes — {domain, confidence} (legacy
+      // prompt) and {domain, skill, confidence} (manifest prompt, flag
+      // AI_CLASSIFY_MANIFEST_PROMPT). Raw passthrough; classifyWithClaude
+      // validates the skill against the manifest.
+      const skill = typeof parsed.skill === 'string' && parsed.skill.trim().length > 0
+        ? parsed.skill.trim()
+        : undefined;
 
+      // Low-confidence secretary fallback deliberately drops the proposed
+      // skill: it belonged to the rejected domain.
       if (confidence < 0.6) return { domain: 'secretary', confidence };
-      return { domain, confidence };
+      return skill !== undefined ? { domain, confidence, skill } : { domain, confidence };
     } catch (err: unknown) {
       rethrowUsagePersistenceFailure(err);
       const e = err as { provider?: string; status?: number; retryable?: boolean };

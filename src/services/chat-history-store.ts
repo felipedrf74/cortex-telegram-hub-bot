@@ -256,6 +256,31 @@ export function getChatMessageById(
   };
 }
 
+/**
+ * M17: metadata point read for previous-turn grounding feedback. Returns the
+ * parsed metadata_json of the active-scope message with the given
+ * message_uuid (e.g. the metadata.qualityGate stamp persisted by M8), or
+ * null when the row, scope, or metadata is unavailable. Pure local read —
+ * no provider calls.
+ */
+export function getChatMessageMetadataById(
+  userId: number,
+  messageId: string,
+  tenantId?: number,
+): Record<string, unknown> | null {
+  const scope = resolveChatTenantScope({
+    userId,
+    tenantId,
+    operation: 'chat_history_get_message_metadata',
+    layer: 'delivery',
+  });
+  if (!scope) return null;
+  const row = getExistingMessage(scope, userId, messageId);
+  if (!row) return null;
+  const parsed = parseJSON<Record<string, unknown>>(row.metadata_json);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+}
+
 export function updateAssistantMessage(
   userId: number,
   messageId: string,

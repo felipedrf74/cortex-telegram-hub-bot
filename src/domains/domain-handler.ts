@@ -11,7 +11,7 @@ import { ensureActiveProvider, getActiveProvider } from '../services/provider-re
 import { getOrBuildDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
-import { inferChatTurnContract } from '../services/chat-turn-contract';
+import { assessChatTurnGroundingCertainty, inferChatTurnContract } from '../services/chat-turn-contract';
 import { isChatContextCompilerEnabled } from '../services/runtime-flags';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
 // Phase 13 batch 71 (2026-05-16): training intent detector moved to the
@@ -470,7 +470,13 @@ function shouldIncludeScopedStateContext(domain: DomainName, hasUserScope: boole
   if (!message || !message.trim()) return true;
   if (domain === 'triathlon' && isTrainingPrescriptionIntent(message)) return true;
   const contract = inferChatTurnContract({ message, routedDomain: domain });
-  return contract.groundingRequired !== 'none';
+  if (contract.groundingRequired !== 'none') return true;
+  // M17 fail-safe grounding: when the contract itself signals uncertainty
+  // (ambiguity reasons, low calibrated confidence, or a clarification
+  // route), include the scoped state inside the SAME budget instead of
+  // answering blind. HIGH-certainty groundingRequired='none' turns keep
+  // today's exclusion byte-for-byte.
+  return assessChatTurnGroundingCertainty(contract).uncertain;
 }
 
 /**

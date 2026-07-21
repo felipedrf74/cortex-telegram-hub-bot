@@ -5,10 +5,9 @@ import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation
 dotenv.config(contentLiveEvalDotenvOptions());
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
-// "production-only" required env vars (TELEGRAM_BOT_TOKEN, etc.) become
-// optional so the staging install can boot without a second bot. The bot
-// startup code in src/index.ts checks isStaging() and skips bot.start()
-// when there's no token. Quarter audit item: staging environment.
+// "production-only" required env vars become optional so the staging
+// install can boot with a reduced credential set.
+// Quarter audit item: staging environment.
 const IS_STAGING = process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
 const IS_TEST = process.env.NODE_ENV === 'test';
 const IS_DEVELOPMENT = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
@@ -405,7 +404,7 @@ export const config = {
     },
   },
   // ── Sentry Error Tracking ────────────────────────────────────────────
-  // Cloud-based error monitoring alongside our existing SQLite + Telegram
+  // Cloud-based error monitoring alongside our existing SQLite + operator
   // alerting. Free tier gives 5K errors/month which is plenty. Set SENTRY_DSN
   // in prod .env to enable; leave empty for local/staging to run without it.
   // tracesSampleRate defaults to 0 (errors only, no APM traces) to preserve

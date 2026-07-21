@@ -10,6 +10,10 @@ import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';
 import { readTrainingContextAll, formatTrainingContextForPrompt } from './training-signals';
 import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
+import {
+  buildManifestClassifierPrompt,
+  isManifestClassifierPromptEnabled,
+} from '../router/classifier-prompt-builder';
 import { buildScopedStateContextPrefix } from './provider-state-context';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { trainingExerciseToolJsonDescription } from './training-exercise-identity';
@@ -436,6 +440,20 @@ export function getOllamaClassifierSystemPromptCompact(): string | null {
 }
 
 export function getClassifierSystemPrompt(): string {
+  // M15 (flag AI_CLASSIFY_MANIFEST_PROMPT, default OFF; master kill
+  // respected): serve the manifest-generated full-skill classifier prompt.
+  // The checked-in build artifact (prompts/classifier-manifest.md, regenerated
+  // via `npm run classifier:prompt`) is preferred so ops can inspect/hot-fix
+  // the exact deployed prompt; if the file is missing (fresh checkout before
+  // generation) the prompt is built in-memory from the manifest — the
+  // regeneration-clean test guarantees both are byte-identical.
+  if (isManifestClassifierPromptEnabled()) {
+    try {
+      return loadPrompt('classifier-manifest');
+    } catch {
+      return buildManifestClassifierPrompt();
+    }
+  }
   const basePrompt = loadPrompt('classifier');
   // Append skill-defined classification examples so the per-skill
   // example strings registered in skill-config reach the model. The
@@ -1177,7 +1195,7 @@ export async function classifyMessage(
   activeConversationContext?: { domain: DomainName; lastAssistantMessage: string } | null,
   userId?: number,
   tenantId?: number,
-): Promise<{ domain: DomainName; confidence: number }> {
+): Promise<{ domain: DomainName; confidence: number; skill?: string }> {
   function inferFallbackDomain(): DomainName {
     if (activeConversationContext?.domain) {
       return activeConversationContext.domain;
@@ -1253,6 +1271,12 @@ ${message}`;
     const parsed = JSON.parse(text);
     const domain = parsed.domain as DomainName;
     const confidence = parsed.confidence as number;
+    // M15: tolerate BOTH output shapes — {domain, confidence} (legacy prompt)
+    // and {domain, skill, confidence} (manifest prompt). The skill is passed
+    // through raw here; classifyWithClaude validates it against the manifest.
+    const skill = typeof parsed.skill === 'string' && parsed.skill.trim().length > 0
+      ? parsed.skill.trim()
+      : undefined;
 
     if (confidence < 0.6) {
       logger.warn(
@@ -1264,7 +1288,7 @@ ${message}`;
         'Low-confidence classifier result — keeping requested domain instead of forcing secretary',
       );
     }
-    return { domain, confidence };
+    return skill !== undefined ? { domain, confidence, skill } : { domain, confidence };
   } catch (err) {
     rethrowAiUsageFailClosedError(err);
     const fallbackDomain = inferFallbackDomain();

@@ -41,6 +41,12 @@ export interface ChatActionPlan {
   clarificationQuestion?: string;
   clarificationReason?: ChatClarificationReason;
   intentClass?: string;
+  /**
+   * M16: actionable requests found beyond the multi-step segment cap. When
+   * set (> 0), response copy must disclose that only the first N segments
+   * are being run — the overflow is never silently dropped.
+   */
+  multiStepOverflowCount?: number;
   confidence: number;
   effectiveConfidence?: number;
   telemetry?: ChatActionTelemetry;

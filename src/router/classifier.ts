@@ -16,6 +16,11 @@ import {
   getClassifierLowConfidenceFloor,
   getClassifierPinnedConfidenceMin,
 } from '../services/intent-resolution/confidence';
+import {
+  buildClassifierCandidateShortlist,
+  isManifestClassifierPromptEnabled,
+  resolveManifestSkillForDomain,
+} from './classifier-prompt-builder';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -293,6 +298,20 @@ export async function classifyWithClaude(
   // provider is initialized (early boot, tests, scheduled jobs running
   // before provider-registry init).
   let result: ClassificationResult;
+  // M15 (flag AI_CLASSIFY_MANIFEST_PROMPT, default OFF): append the
+  // deterministic candidate shortlist (resolveIntent top-k with matched
+  // evidence) to the LIVE classify input only. Kept small — the approved
+  // cost waiver covers the static manifest prompt expansion plus this
+  // shortlist. The shadow path below still receives the ORIGINAL message so
+  // shadow telemetry stays comparable across flag states.
+  let liveMessage = message;
+  if (isManifestClassifierPromptEnabled()) {
+    const shortlist = buildClassifierCandidateShortlist(
+      message,
+      { activeDomain: activeContext?.domain ?? null },
+    );
+    if (shortlist) liveMessage = `${message}\n\n${shortlist}`;
+  }
   // Option 3: measure live classify duration so the shadow path can
   // compare it to the small-model Ollama latency. Captured even when
   // shadow is disabled (cheap; harmless).
@@ -301,7 +320,7 @@ export async function classifyWithClaude(
   if (routingProvider) {
     try {
       const raw = await routingProvider.classify(
-        message,
+        liveMessage,
         activeContext ?? undefined,
         // O3-A19: explicit live source on the user-facing path so any
         // future code that reads ClassifyOptions sees a default-safe
@@ -328,12 +347,35 @@ export async function classifyWithClaude(
         { err: err instanceof Error ? err.message : String(err) },
         'Routing-provider classify failed — falling back to legacy classifyMessage',
       );
-      result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+      result = await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
     }
   } else {
-    result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
+    result = await classifyMessage(liveMessage, activeContext ?? undefined, userId, tenantId);
   }
   const liveDurationMs = Date.now() - liveStart;
+
+  // M15 output validation: keep the optional skill field ONLY when the
+  // manifest prompt flag is on AND the skill is a manifest chatActionSkill of
+  // the classified domain. Providers pass the model's skill through raw; this
+  // is the single sanitization point. With the flag OFF the skill is stripped
+  // unconditionally (the legacy prompt never asks for one, and a stray value
+  // must not leak into the orchestrator hint), so flag-off results stay
+  // byte-identical to pre-M15 behavior.
+  if (result.skill !== undefined) {
+    const validSkill = isManifestClassifierPromptEnabled() && typeof result.skill === 'string'
+      ? resolveManifestSkillForDomain(result.domain, result.skill)
+      : null;
+    if (validSkill) {
+      result = { ...result, skill: validSkill };
+    } else {
+      logger.debug(
+        { domain: result.domain, rejectedSkill: result.skill },
+        'Dropping classifier skill field (flag off or not a manifest chatActionSkill of the domain)',
+      );
+      const { skill: _invalidSkill, ...rest } = result;
+      result = rest;
+    }
+  }
 
   // Option 3 (O3-A1): fire-and-forget Ollama shadow classify.
   //

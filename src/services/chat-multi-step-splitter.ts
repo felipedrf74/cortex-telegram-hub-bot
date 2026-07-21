@@ -17,15 +17,23 @@ export interface ChatMultiStepSplitResult {
   confidence: number;
   segments: ChatMultiStepSegment[];
   reason: string;
+  /**
+   * M16: number of actionable segments beyond MAX_SEGMENTS that were found
+   * but NOT included in `segments`. The response layer must disclose the
+   * overflow instead of silently dropping the extra requests.
+   */
+  overflowCount: number;
 }
 
 const MAX_SEGMENTS = 5;
-const CONNECTIVE_PATTERN = /\s*(?:;|,|\+|\b(?:and then|then|also|plus|and|e depois|depois|tamb[eé]m|e|y luego|luego|tambi[eé]n|y)\b)\s*/gi;
-const CONNECTIVE_CAPTURE_PATTERN = /^(?:;|,|\+|and then|then|also|plus|and|e depois|depois|tamb[eé]m|e|y luego|luego|tambi[eé]n|y)$/i;
+// M16 adversarial fix: '&' is live splitter vocabulary (relaxed semantics,
+// matching the DAG's RELAXED_CONNECTIVES) — 'A & B' must actually split.
+const CONNECTIVE_PATTERN = /\s*(?:;|,|\+|&|\b(?:and then|then|also|plus|and|e depois|depois|tamb[eé]m|e|y luego|luego|tambi[eé]n|y)\b)\s*/gi;
+const CONNECTIVE_CAPTURE_PATTERN = /^(?:;|,|\+|&|and then|then|also|plus|and|e depois|depois|tamb[eé]m|e|y luego|luego|tambi[eé]n|y)$/i;
 
 export function splitChatMultiStepRequest(text: string): ChatMultiStepSplitResult {
   const original = text.trim();
-  if (!original) return { classification: 'single', confidence: 0, segments: [], reason: 'empty' };
+  if (!original) return { classification: 'single', confidence: 0, segments: [], reason: 'empty', overflowCount: 0 };
 
   const quoted = liftQuotedSpans(original);
   const sentenceParts = splitSentenceScopes(quoted.masked);
@@ -41,13 +49,17 @@ export function splitChatMultiStepRequest(text: string): ChatMultiStepSplitResul
     }))
     .filter((piece) => piece.text.length > 0);
 
-  const actionable = restored.filter((piece) => isActionableSegment(piece.text)).slice(0, MAX_SEGMENTS);
+  const actionableAll = restored.filter((piece) => isActionableSegment(piece.text));
+  const actionable = actionableAll.slice(0, MAX_SEGMENTS);
+  // M16: segments beyond the cap are DISCLOSED, never silently dropped.
+  const overflowCount = Math.max(0, actionableAll.length - actionable.length);
   if (actionable.length < 2) {
     return {
       classification: 'single',
       confidence: 0.35,
       segments: segmentRecords(restored.length > 0 ? [restored[0]] : [{ text: original, connective: null }]),
       reason: 'fewer_than_two_actionable_segments',
+      overflowCount: 0,
     };
   }
 
@@ -65,6 +77,7 @@ export function splitChatMultiStepRequest(text: string): ChatMultiStepSplitResul
     confidence,
     segments: segmentRecords(actionable),
     reason: strongSequential ? 'sequential_connective' : crossSkillHint ? 'cross_skill_action_segments' : 'action_connective',
+    overflowCount,
   };
 }
 
@@ -142,10 +155,38 @@ function inferLanguageHint(text: string): 'en' | 'pt' | 'es' | undefined {
   return undefined;
 }
 
+// M16 adversarial fix: relaxed connectives ('and'/'e'/'y') only stay
+// independent when NO anaphora links the segments, so the extraction
+// vocabulary must cover the common PT contracted forms ('nela', 'dele', …),
+// ES clitics ('la'/'lo'/'le' standalone plus 'agrégale'-style verb+clitic),
+// and EN definite anaphora phrases ('the list', 'that one'). All patterns
+// are word-boundary safe; over-matching (e.g. an ES article 'la') is
+// accepted as CONSERVATIVE — an extracted mention can only cause chaining
+// or $ref wiring, never an unsafe independent execution.
+const FOLDED_ANAPHORA_PATTERN = new RegExp(
+  [
+    // EN pronouns + definite anaphora phrases (longer phrases first).
+    String.raw`that one`,
+    String.raw`the (?:list|task|event|reminder)`,
+    String.raw`it|that|this`,
+    // PT pronouns + contracted anaphora.
+    String.raw`isso|isto|essa|esta|ele|ela|nela|nele|dela|dele|nisso|nisto`,
+    // ES demonstratives + standalone clitics.
+    String.raw`eso|esto|ese|esa|la|lo|le`,
+  ].map((part) => `\\b(?:${part})\\b`).join('|'),
+  'g',
+);
+// ES verb+enclitic ('agrégale', 'bórrala', 'complétalo', …): detected on the
+// RAW lowercased text because the stressed-stem accent is the conservative
+// signal that the trailing la/lo/le is a clitic and not a word ending —
+// foldCalendarText strips accents, so this cannot run on the folded text.
+const ES_VERB_CLITIC_SUFFIX_PATTERN = /\b[a-zñ]*[áéíóú][a-zñ]*(?:la|lo|le|las|los|les)\b/g;
+
 function extractPronounMentions(text: string): string[] {
   const folded = foldCalendarText(text);
-  const matches = folded.match(/\b(?:it|that|this|isso|isto|essa|esta|ele|ela|eso|esto|ese|esa)\b/g);
-  return matches ? [...new Set(matches)] : [];
+  const matches = folded.match(FOLDED_ANAPHORA_PATTERN) ?? [];
+  const cliticMatches = text.normalize('NFC').toLowerCase().match(ES_VERB_CLITIC_SUFFIX_PATTERN) ?? [];
+  return [...new Set([...matches, ...cliticMatches])];
 }
 
 function countSkillHints(texts: string[]): number {

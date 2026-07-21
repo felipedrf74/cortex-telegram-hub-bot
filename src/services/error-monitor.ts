@@ -1,14 +1,16 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Error Monitor — persistent error tracking, Telegram alerting, and trend queries.
+ * Error Monitor — persistent error tracking, operator alerting, and trend queries.
  *
  * Captures:
  *  - Unhandled promise rejections
  *  - Uncaught exceptions
- *  - Explicit error reports from bot, jobs, and API calls
+ *  - Explicit error reports from jobs, API calls, and the portal
  *
- * Alerts via Telegram on critical errors (rate-limited to avoid spam).
+ * Alertable errors flow through recordOperatorAlert (durable operator_alerts
+ * queue → OPERATOR_ALERT_WEBHOOK_URL delivery, see operator-alerts.ts) plus
+ * an optional in-process alert callback (rate-limited to avoid spam).
  * Persists to SQLite for trend analysis via the portal.
  */
 
@@ -147,12 +149,14 @@ function persistToDb(record: ErrorRecord): void {
   );
 }
 
-// ── Telegram Alert Callback ──────────────────────────────────────
+// ── In-Process Alert Callback ────────────────────────────────────
+// Legacy chat-delivery era hook; index.ts now wires it to a structured
+// logger. The durable operator paging path is recordOperatorAlert below.
 
 type AlertCallback = (message: string) => Promise<void>;
 let _alertFn: AlertCallback | null = null;
 
-/** Register Telegram alert sender. Called once during startup. */
+/** Register the in-process alert callback. Called once during startup. */
 export function setAlertCallback(fn: AlertCallback): void {
   _alertFn = fn;
 }
@@ -182,10 +186,10 @@ function shouldAlert(key: string): boolean {
 // ── Core: Record Error ───────────────────────────────────────────
 
 /**
- * Record an error to the persistent log and optionally alert via Telegram.
+ * Record an error to the persistent log and optionally raise operator alerts.
  *
  * @param record - Error details
- * @param alert - Whether to send a Telegram alert (default: true for error/fatal)
+ * @param alert - Whether to raise operator alerts (default: true for error/fatal)
  */
 export function captureError(record: ErrorRecord, alert?: boolean): void {
   const shouldSendAlert = alert ?? (record.level !== 'warning');
@@ -242,7 +246,7 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
     });
   }
 
-  // Send Telegram alert (rate-limited)
+  // Invoke the in-process alert callback (rate-limited)
   if (shouldSendAlert && alerted && _alertFn) {
       const alertKey = `${record.source}:${safeMessage.slice(0, 100)}`;
       if (shouldAlert(alertKey)) {
@@ -254,7 +258,7 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
 
   // Forward to Sentry (if SENTRY_DSN is configured). No-ops silently
   // when Sentry isn't initialized, so local/staging without a DSN just
-  // keeps the SQLite + Telegram alerting behavior and nothing else.
+  // keeps the SQLite + operator alerting behavior and nothing else.
   //
   // We map ErrorLevel → Sentry's SeverityLevel: 'fatal' stays 'fatal',
   // 'warning' stays 'warning', everything else is 'error'. The record's

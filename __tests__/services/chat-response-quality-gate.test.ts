@@ -718,3 +718,122 @@ describe('token-zero verification requires turn recency', () => {
     expect(result.contract.verificationStatus).not.toBe('verified');
   });
 });
+
+// ─── M16: honest partial multi-step reports pass the gate ──────────
+
+describe('M16 — partial-failure multi-step answers are not clobbered by the gate', () => {
+  it('e2e: a LIVE partial_success planner envelope survives the gate through the PRODUCTION mapping', async () => {
+    // Adversarial-review fix (M16/M8 seam): this test drives the REAL
+    // mapping layers instead of a hand-built contract. The executor
+    // (buildExecutedChatActionResponse) composes the honest partial answer
+    // and stamps metadata; the pipeline seam
+    // (actionabilityForReasoningStatus / verificationForReasoningMetadata)
+    // derives the contract fields the finalizer passes to the full gate.
+    // Before the fix, 'partial_success' fell through to
+    // answer_only/not_required and the gate rewrote the live partial answer.
+    const { buildExecutedChatActionResponse } = await import('../../src/services/chat/executor/result-response');
+    const { actionabilityForReasoningStatus, verificationForReasoningMetadata } = await import('../../src/api/routes/chat-pipeline/support');
+
+    const step = (stepId: string, title: string) => ({
+      stepId,
+      skill: 'tasks',
+      type: 'provider_write',
+      action: 'create_task',
+      risk: 'safe_write',
+      provider: 'nexus',
+      args: { title },
+      requiredArgsPresent: true,
+      idempotencyKey: `idem-${stepId}`,
+      verification: { required: true, method: 'local_read_back', expectedFields: {} },
+    }) as never;
+    const plan = {
+      schemaVersion: 1,
+      userId: String(USER_ID),
+      tenantId: String(TENANT_ID),
+      conversationId: 'conv-gate-e2e',
+      messageId: 'msg-gate-e2e',
+      locale: 'en-US',
+      timezone: 'UTC',
+      channel: 'ios',
+      createdAt: '2026-07-20T12:00:00.000Z',
+      planner: 'deterministic',
+      steps: [step('step_1', 'alpha'), step('step_2', 'beta'), step('step_3', 'gamma')],
+      requiresConfirmation: true,
+      confidence: 0.9,
+    } as never;
+    const input = {
+      text: 'create task alpha, create task beta and create task gamma',
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      conversationId: 'conv-gate-e2e',
+      messageId: 'msg-gate-e2e',
+      channel: 'ios',
+      locale: 'en-US',
+      timezone: 'UTC',
+      persistRuns: false,
+    } as never;
+    const planSteps = (plan as { steps: unknown[] }).steps;
+    const results = [
+      { step: planSteps[0], status: 'verified_success', result: { task: { id: 't-1' } } },
+      { step: planSteps[1], status: 'failed', error: 'provider_rejected' },
+      { step: planSteps[2], status: 'verified_success', result: { task: { id: 't-3' } } },
+    ] as never;
+
+    const envelope = buildExecutedChatActionResponse(input, plan, results);
+    const metadata = envelope.metadata as Record<string, unknown>;
+    const status = String(metadata.actionStatus);
+    expect(status).toBe('partial_success');
+    // The executor stamps the contract verification vocabulary so both
+    // mapping layers agree.
+    expect(metadata.verificationStatus).toBe('partial_failure');
+
+    const actionability = actionabilityForReasoningStatus(status);
+    const verificationStatus = verificationForReasoningMetadata(metadata, status);
+    expect(actionability).toBe('execute');
+    expect(verificationStatus).toBe('partial_failure');
+
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      intent: 'tasks.create',
+      language: 'en',
+      actionability,
+      verificationStatus,
+    });
+
+    const result = applyChatResponseQualityGate({ text: envelope.text, contract });
+
+    expect(result.status).toBe('pass');
+    expect(result.issues).not.toContain('unverified_success_claim');
+    expect(result.text).toBe(envelope.text);
+    // The succeeded-step lines survive verbatim.
+    expect(result.text).toContain('done and verified');
+    expect(result.text).toContain('2 of 3 steps verified');
+  });
+
+  it('e2e: a LIVE verified_success planner status maps to execute/verified (never answer_only/not_required)', async () => {
+    const { actionabilityForReasoningStatus, verificationForReasoningMetadata } = await import('../../src/api/routes/chat-pipeline/support');
+    expect(actionabilityForReasoningStatus('verified_success')).toBe('execute');
+    // Envelope value ('verified_success') and status fallback both resolve
+    // to the contract vocabulary 'verified'.
+    expect(verificationForReasoningMetadata({ verificationStatus: 'verified_success' }, 'verified_success')).toBe('verified');
+    expect(verificationForReasoningMetadata(undefined, 'verified_success')).toBe('verified');
+  });
+
+  it('still trips on a FULL success claim when verification reports pending', () => {
+    // Control: the partial_failure exemption is narrow. The same claim
+    // language without the partial_failure verification status still trips.
+    const text = 'Done — I completed 3 steps and verified the result.';
+    const contract = makeContract({
+      ownerSkill: 'tasks',
+      actionability: 'execute',
+      intent: 'tasks.create',
+      language: 'en',
+      verificationStatus: 'pending',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.issues).toContain('unverified_success_claim');
+    expect(result.text).not.toBe(text);
+  });
+});

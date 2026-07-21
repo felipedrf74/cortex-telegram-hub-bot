@@ -32,6 +32,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       risk: 'safe_write',
       confirmationPolicy: 'none',
       executor: 'task_store.createTask',
+      // M16: declared result entities for cross-step $ref chaining
+      // ("create a task ... and complete IT"). Paths match the ledger
+      // executor's result shape ({ task: { id, listId, title } }).
+      outputRefs: { taskId: 'task.id', listId: 'task.listId', title: 'task.title' },
       verifier: 'local_read_back',
       // Phase 12 batch 63: typed extractor reads the task title from explicit
       // markers ("called X" / "chamada X" / "llamada X") or a quoted string.
@@ -131,6 +135,9 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       risk: 'safe_write',
       confirmationPolicy: 'none',
       executor: 'task_store.createTaskWithChecklist',
+      // M16: task-creation producer — same chainable result entities as
+      // create_task (ledger result shape { task: { id, listId, title } }).
+      outputRefs: { taskId: 'task.id', listId: 'task.listId', title: 'task.title' },
       verifier: 'local_read_back',
       typedSlotExtractors: [taskWithSubtasksSlotExtractor],
       typedSlotValidators: [REQUIRED_SUBTASK_FIELDS],
@@ -230,7 +237,7 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       action: 'update_task',
       readableIntents: ['update task', 'change task', 'altera a tarefa', 'muda a tarefa'],
       requiredFields: ['taskId', 'changedFields'],
-      optionalFields: [],
+      optionalFields: ['listId'],
       providerDependencies: ['nexus'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',
@@ -276,7 +283,7 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       action: 'complete_task',
       readableIntents: ['complete task', 'mark task done', 'mark this task as done', 'tarefa concluída', 'marcar como feito'],
       requiredFields: ['taskId'],
-      optionalFields: [],
+      optionalFields: ['listId'],
       providerDependencies: ['nexus'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',
@@ -339,7 +346,7 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       action: 'delete_task',
       readableIntents: ['delete task', 'remove task', 'apaga a tarefa', 'deleta a tarefa'],
       requiredFields: ['taskId'],
-      optionalFields: [],
+      optionalFields: ['listId'],
       providerDependencies: ['nexus'],
       risk: 'destructive',
       confirmationPolicy: 'confirm',
@@ -450,6 +457,9 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       risk: 'safe_write',
       confirmationPolicy: 'none',
       executor: 'task_store.createTaskWithChecklist',
+      // M16: checklist creation exposes the created task for $ref chaining
+      // (result shape { task: { id, listId, title } }).
+      outputRefs: { taskId: 'task.id', listId: 'task.listId', title: 'task.title' },
       verifier: 'local_read_back',
       // Phase 13 batch 67: typed extractor parses checklist title +
       // comma/conjunction-separated items list.
@@ -483,7 +493,7 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       action: 'set_task_reminder',
       readableIntents: ['set task reminder', 'add a reminder on a task', 'define um lembrete', 'lembrete na tarefa'],
       requiredFields: ['taskId', 'reminderAt'],
-      optionalFields: [],
+      optionalFields: ['listId'],
       providerDependencies: ['nexus'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',

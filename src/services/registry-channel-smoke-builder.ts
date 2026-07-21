@@ -18,7 +18,6 @@ import {
   createOpsgenieChannel,
   createPagerDutyChannel,
   createSlackChannel,
-  createTelegramChannel,
 } from './registry-cross-tenant-alert-channels';
 
 export const SMOKE_REGIONS = ['US', 'EU', 'APAC', 'GLOBAL'] as const;
@@ -89,14 +88,6 @@ export function buildSmokeChannelSetFromEnv(env: EnvLike): AlertChannel[] {
   for (const { region, values } of pickRegionalEnv<{ SMOKE_SLACK_WEBHOOK_URL: string }>(env, ['SMOKE_SLACK_WEBHOOK_URL'])) {
     channels.push(withRegionalChannelId(createSlackChannel({
       webhookUrl: values.SMOKE_SLACK_WEBHOOK_URL,
-      minSeverity: 'info',
-    }), region));
-  }
-
-  for (const { region, values } of pickRegionalEnv<{ SMOKE_TELEGRAM_BOT_TOKEN: string; SMOKE_TELEGRAM_CHAT_ID: string }>(env, ['SMOKE_TELEGRAM_BOT_TOKEN', 'SMOKE_TELEGRAM_CHAT_ID'])) {
-    channels.push(withRegionalChannelId(createTelegramChannel({
-      botToken: values.SMOKE_TELEGRAM_BOT_TOKEN,
-      chatId: values.SMOKE_TELEGRAM_CHAT_ID,
       minSeverity: 'info',
     }), region));
   }

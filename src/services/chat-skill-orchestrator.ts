@@ -129,6 +129,23 @@ const V2_DOMAIN_TO_LEGACY_DOMAIN: Record<string, DomainName> = {
   content: 'content',
 };
 
+// M15: manifest chatActionSkill → orchestrator skill vocabulary. The
+// classifier's skill hint lives in the manifest action-skill space
+// (secretary_calendar, mail, tasks, …); the orchestrator reasons in
+// NexusSkillId space. Action skills without an orchestrator counterpart
+// (connections, notifications, decision_center) are deliberately unmapped —
+// the hint is ignored for them (their routing is domain-level only).
+const CLASSIFIER_ACTION_SKILL_TO_ORCHESTRATOR_SKILL: Record<string, NexusSkillId> = {
+  secretary_calendar: 'secretary',
+  secretary_reminders: 'secretary',
+  mail: 'secretary',
+  tasks: 'secretary',
+  training: 'training',
+  content: 'content',
+  cooking: 'cooking',
+  finance: 'finance',
+};
+
 const SKILL_PATTERNS: Array<{ skill: NexusSkillId; pattern: RegExp }> = [
   {
     skill: 'training',
@@ -207,9 +224,22 @@ export function analyzeChatSkillOrchestration(input: {
    * offline/duplicate evaluations can never skew the ≤10% budget telemetry.
    */
   countClarifyTelemetry?: boolean;
+  /**
+   * M15 (flag AI_CLASSIFY_MANIFEST_PROMPT): manifest-validated
+   * chatActionSkill hint from the classifier ({domain, skill, confidence}
+   * output shape). Consumed as an OWNERSHIP hint only: when present and it
+   * maps to an orchestrator skill, that skill joins involvedSkills and a
+   * reason code records the hint. Absent (the flag-off default) → byte
+   * identical behavior.
+   */
+  classifierSkillHint?: string | null;
 }): ChatSkillRoutingDecision {
   const message = input.message.trim();
   const involved = resolveInvolvedSkills(message, input.activeContext, input.routedDomain);
+  const hintedSkill = input.classifierSkillHint
+    ? CLASSIFIER_ACTION_SKILL_TO_ORCHESTRATOR_SKILL[input.classifierSkillHint] ?? null
+    : null;
+  if (hintedSkill && !involved.includes(hintedSkill)) involved.push(hintedSkill);
   const intentKinds = resolveIntentKinds(message, involved);
   const destructive = DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(message));
   const explicitConfirmation = destructive && EXPLICIT_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(message));
@@ -221,6 +251,7 @@ export function analyzeChatSkillOrchestration(input: {
   const crossSkill = involved.filter((skill) => skill !== 'shared_context' && skill !== 'tools').length > 1;
   let primaryDomain = resolvePrimaryDomain({ message, involved, scheduling, routedDomain: input.routedDomain });
   const reasonCodes = buildReasonCodes({ scheduling, crossSkill, destructive, staleContextRisk, ambiguousReference, tenantBoundaryMention });
+  if (hintedSkill) reasonCodes.push('classifier_skill_ownership_hint');
 
   if (tenantBoundaryMention) {
     reasonCodes.push('tenant_boundary_requires_confirmation');

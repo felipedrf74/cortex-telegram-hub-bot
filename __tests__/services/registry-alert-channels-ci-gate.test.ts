@@ -19,7 +19,6 @@ import {
 import {
   createPagerDutyChannel,
   createSlackChannel,
-  createTelegramChannel,
   createDiscordChannel,
   createDatadogChannel,
   createOpsgenieChannel,
@@ -62,7 +61,7 @@ const okTransport: AlertHttpTransport = async () => ({ ok: true, status: 200, st
 const failTransport: AlertHttpTransport = async () => ({ ok: false, status: 500, statusText: 'Internal Server Error' });
 
 const VALID_CHANNEL_IDS = new Set([
-  'pagerduty', 'slack', 'telegram', 'discord', 'email', 'datadog', 'opsgenie',
+  'pagerduty', 'slack', 'discord', 'email', 'datadog', 'opsgenie',
 ]);
 const VALID_SEVERITIES = new Set<CrossTenantSeverity>([
   'critical', 'high', 'medium', 'info',
@@ -72,7 +71,6 @@ describe('alert channels — CI contract gate (Phase 9 batch 47)', () => {
   const channels = [
     createPagerDutyChannel({ routingKey: 'k', transport: okTransport }),
     createSlackChannel({ webhookUrl: 'https://slack/x', transport: okTransport }),
-    createTelegramChannel({ botToken: 'k', chatId: 1, transport: okTransport }),
     createDiscordChannel({ webhookUrl: 'https://d/x', transport: okTransport }),
     createDatadogChannel({ apiKey: 'k', transport: okTransport }),
     createOpsgenieChannel({ apiKey: 'k', transport: okTransport }),
@@ -109,7 +107,6 @@ describe('alert channels — error surfacing CI gate (Phase 9 batch 47)', () => 
   const httpBackedChannels = [
     () => createPagerDutyChannel({ routingKey: 'k', transport: failTransport }),
     () => createSlackChannel({ webhookUrl: 'https://slack/x', transport: failTransport }),
-    () => createTelegramChannel({ botToken: 'k', chatId: 1, transport: failTransport }),
     () => createDiscordChannel({ webhookUrl: 'https://d/x', transport: failTransport }),
     () => createDatadogChannel({ apiKey: 'k', transport: failTransport }),
     () => createOpsgenieChannel({ apiKey: 'k', transport: failTransport }),
@@ -124,7 +121,7 @@ describe('alert channels — error surfacing CI gate (Phase 9 batch 47)', () => 
 });
 
 describe('alert channels — dispatcher integration (Phase 9 batch 47)', () => {
-  it('all 7 channels can be registered together and dispatched in parallel', async () => {
+  it('all 6 channels can be registered together and dispatched in parallel', async () => {
     const dispatched: string[] = [];
     const trackingTransport: AlertHttpTransport = async (url) => {
       dispatched.push(url);
@@ -134,16 +131,15 @@ describe('alert channels — dispatcher integration (Phase 9 batch 47)', () => {
     const channels = [
       createPagerDutyChannel({ routingKey: 'k', transport: trackingTransport, minSeverity: 'medium' }),
       createSlackChannel({ webhookUrl: 'https://slack/x', transport: trackingTransport, minSeverity: 'medium' }),
-      createTelegramChannel({ botToken: 'k', chatId: 1, transport: trackingTransport, minSeverity: 'medium' }),
       createDiscordChannel({ webhookUrl: 'https://d/x', transport: trackingTransport, minSeverity: 'medium' }),
       createDatadogChannel({ apiKey: 'k', transport: trackingTransport, minSeverity: 'medium' }),
       createOpsgenieChannel({ apiKey: 'k', transport: trackingTransport, minSeverity: 'medium' }),
       createEmailChannel({ from: 'a@b', to: 'c@d', sender: (m) => { emailReceived.push(m.subject); }, minSeverity: 'medium' }),
     ];
     const result = await dispatchCrossTenantAlerts([buildPattern('critical')], channels);
-    // 6 HTTP-backed channels + 1 email channel = 7 dispatches
-    expect(result.alertsSent).toBe(7);
-    expect(dispatched).toHaveLength(6);
+    // 5 HTTP-backed channels + 1 email channel = 6 dispatches
+    expect(result.alertsSent).toBe(6);
+    expect(dispatched).toHaveLength(5);
     expect(emailReceived).toHaveLength(1);
   });
 

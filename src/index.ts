@@ -33,6 +33,7 @@ import {
   shouldStartContentLiveEvalBackgroundServices,
 } from './services/content-live-evaluation-runtime';
 import { pruneExpiredReceiptAiTransferResponses } from './services/receipt-ai-transfer-consent';
+import { enforceManifestClassifierRuntimeGuard } from './router/classifier-manifest-runtime-guard';
 
 async function main(): Promise<void> {
   const liveEvalRuntime = assertContentLiveEvalRuntimeEnvironment();
@@ -75,6 +76,14 @@ async function main(): Promise<void> {
       'Receipt AI replay retention housekeeping failed at startup',
     );
   }
+
+  // M15 hard runtime guard (adversarial fix): if AI_CLASSIFY_MANIFEST_PROMPT
+  // was flipped on while the documented flag-flip blockers are still open
+  // (missing step executors / missing legacy domain handlers), force the
+  // flag off for this process and record a deduped operator alert. Zero
+  // cost when the flag is off. Runs after initDatabase so the alert can
+  // persist; boot never blocks on it.
+  enforceManifestClassifierRuntimeGuard();
 
   // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());

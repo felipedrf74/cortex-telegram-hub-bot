@@ -142,6 +142,22 @@ export async function executeChatActionPlan(
     });
   }
 
+  // M16 (multi-step upgrade): topological, bounded-sequential execution.
+  // A failed/blocked step blocks ONLY its dependents (status 'blocked' with
+  // reason 'dependency_failed'); independent branches keep executing. There
+  // is deliberately NO parallelism. Steps that require user input mid-run
+  // (needs_clarification / needs_confirmation) still stop the whole loop —
+  // continuing past a pending user decision would be unsafe.
+  //
+  // M1/ADV-3 interaction — honest bound: the registry-executor path below
+  // dispatches steps directly (getChatStepExecutor), which BYPASSES
+  // authorizeChatToolCall, so the per-target grants installed above
+  // (confirmedDestructiveTargetsForPlan) are NOT consumed on this path
+  // today. The REAL bound is structural: this loop executes only the steps
+  // of the previewed plan, each at most once — continue-on-failure can
+  // never add steps beyond the preview. The grants become live enforcement
+  // if/when step executors route their provider calls through
+  // tool-executor (which does call authorizeChatToolCall).
   const results: ChatStepExecutionResult[] = [];
   for (const step of plan.steps) {
     if (step.dependsOnStepIds?.some((dep) => {
@@ -149,7 +165,7 @@ export async function executeChatActionPlan(
       return !depResult || depResult.status !== 'verified_success';
     })) {
       results.push({ step, status: 'blocked', error: 'dependency_failed' });
-      break;
+      continue;
     }
     if (step.type === 'answer') {
       results.push({ step, status: 'verified_success', result: { text: String((step.args as any).text || '') } });
@@ -175,7 +191,7 @@ export async function executeChatActionPlan(
           ? 'content_publication_execution_not_supported'
           : 'execution_policy_blocked',
       });
-      break;
+      continue;
     }
     const runtimeStep: ChatPlanStep = { ...step, args: resolveStepRefs(step.args, results) };
     const result = await executeStepWithReliability(runtimeStep, {
@@ -186,7 +202,9 @@ export async function executeChatActionPlan(
       confirmed: options.confirmed === true,
     });
     results.push(result);
-    if (result.status !== 'verified_success') break;
+    // Pending-user-decision statuses stop the run; anything else (failed,
+    // blocked, partial_success, verified_pending) only blocks dependents.
+    if (result.status === 'needs_confirmation' || result.status === 'needs_clarification') break;
   }
 
   requeuePartialSuccessPendingParents(input, plan, results);

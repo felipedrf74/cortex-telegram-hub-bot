@@ -17,8 +17,8 @@
 // Example policy:
 //
 //   const policy: ChannelRoutingPolicy = {
-//     critical: ['pagerduty-primary', 'slack-oncall', 'telegram-felipe'],
-//     high:     ['slack-oncall', 'telegram-felipe'],
+//     critical: ['pagerduty-primary', 'slack-oncall'],
+//     high:     ['slack-oncall'],
 //     medium:   ['slack-oncall'],
 //     info:     ['email-weekly-digest'],
 //   };
@@ -61,8 +61,8 @@ export interface ChannelRoutingValidationResult {
  * with these IDs (or override the policy) to wire the policy up.
  */
 export const DEFAULT_ROUTING_POLICY: ChannelRoutingPolicy = {
-  critical: ['pagerduty-primary', 'slack-oncall', 'telegram-felipe'],
-  high: ['slack-oncall', 'telegram-felipe'],
+  critical: ['pagerduty-primary', 'slack-oncall'],
+  high: ['slack-oncall'],
   medium: ['slack-oncall'],
   info: ['email-weekly-digest'],
 };

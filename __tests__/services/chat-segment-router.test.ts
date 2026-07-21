@@ -1,11 +1,12 @@
 /**
- * CHARACTERIZATION test for chat-segment-router (M6 reliability backfill).
+ * CHARACTERIZATION test for chat-segment-router (M6 reliability backfill,
+ * updated by M16 multi-step upgrade).
  *
- * These are pins of CURRENT behavior, including known limitations —
- * most importantly the tasks-only $ref resolution inside
- * resolvePronounReferenceForStep. M16 (multi-step upgrade) is expected to
- * change several of these pins deliberately; when it does, update the pins
- * with intent instead of treating a diff here as a regression.
+ * M16 replaced the tasks-only hardcoded $ref action list inside
+ * resolvePronounReferenceForStep with registry-declared outputRefs
+ * (schema-driven producer/consumer matching). Pins that documented the
+ * tasks-only limitation were deliberately flipped — see the per-test
+ * justification comments referencing M16.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -155,7 +156,7 @@ describe('chat-segment-router (characterization pins)', () => {
     expect(result.plan).toBe(refusedPlan);
   });
 
-  it('CURRENT LIMITATION: pronoun $ref resolution only targets prior TASKS creation steps', async () => {
+  it('M16: pronoun $ref resolution wires taskId/listId from the prior task-creation producer', async () => {
     const { builder } = plannerReturning([
       makePlan([makeStep()]),
       makePlan([makeStep({
@@ -179,10 +180,12 @@ describe('chat-segment-router (characterization pins)', () => {
     expect(result.plan?.clarificationQuestion).toBeUndefined();
   });
 
-  it('CURRENT LIMITATION: a calendar follow-up with a pronoun gets NO $ref wiring', async () => {
-    // "schedule an event, then move it" — move_event is not in the
-    // tasks-only action list, so the pronoun is silently ignored and the
-    // step stays missing its required args. M16 owns fixing this.
+  it('M16 pin flip: a calendar follow-up with a pronoun now gets eventId $ref wiring', async () => {
+    // Pre-M16 this pin documented the tasks-only limitation: "schedule an
+    // event, then move it" got NO wiring. M16's registry-declared
+    // outputRefs (schedule_event -> { eventId: 'event.id' }) fix exactly
+    // this case: eventId is wired, while the still-missing start/end times
+    // keep the plan in clarification.
     const { builder } = plannerReturning([
       makePlan([makeStep({ skill: 'secretary_calendar' as ChatPlanStep['skill'], action: 'schedule_event', args: { title: 'standup' } })]),
       makePlan([makeStep({
@@ -200,13 +203,150 @@ describe('chat-segment-router (characterization pins)', () => {
     const result = await routeChatMultiStepSegments(PLANNER_INPUT, segments, builder);
 
     const followup = result.plan?.steps[1];
+    expect(followup?.args.eventId).toEqual({ $ref: 'step_1.result.event.id' });
     expect(followup?.args.taskId).toBeUndefined();
-    expect(followup?.args.$ref).toBeUndefined();
+    // startDateTime/endDateTime remain unresolved — the step is wired but
+    // still not executable, so the clarification flow is preserved.
     expect(followup?.requiredArgsPresent).toBe(false);
     expect(result.plan?.clarificationReason).toBe('missing_required_fields');
     expect(result.plan?.clarificationQuestion).toBe(
       'I need one more detail for secretary_calendar.move_event before I run the full plan.',
     );
+  });
+
+  it('M16: cross-domain chaining — create the workout task and add IT to my calendar', async () => {
+    // tasks -> secretary_calendar: schedule_event is missing its title;
+    // create_task declares outputRefs { title: 'task.title' }, so the
+    // pronoun wires the calendar step's title from the created task and the
+    // step becomes executable (times/provider were parsed from the text).
+    const { builder } = plannerReturning([
+      makePlan([makeStep({ args: { title: 'Workout' } })]),
+      makePlan([makeStep({
+        skill: 'secretary_calendar' as ChatPlanStep['skill'],
+        action: 'schedule_event',
+        args: {
+          startDateTime: '2026-07-21T18:00:00+01:00',
+          endDateTime: '2026-07-21T19:00:00+01:00',
+          timezone: 'UTC',
+          provider: 'google_calendar',
+        },
+        requiredArgsPresent: false,
+      })]),
+    ]);
+    const segments = [
+      makeSegment(0, 'create the workout task'),
+      makeSegment(1, 'add it to my calendar at 6pm', { connective: 'and', pronounMentions: ['it'] }),
+    ];
+
+    const result = await routeChatMultiStepSegments(PLANNER_INPUT, segments, builder);
+
+    const followup = result.plan?.steps[1];
+    expect(followup?.args.title).toEqual({ $ref: 'step_1.result.task.title' });
+    expect(followup?.requiredArgsPresent).toBe(true);
+    // The wired $ref is data flow — the DAG chains the calendar step onto
+    // the task creation even though the connective is a relaxed 'and'.
+    expect(followup?.dependsOnStepIds).toEqual(['step_1']);
+    expect(result.plan?.clarificationQuestion).toBeUndefined();
+  });
+
+  it("M16 adversarial fix (PT repro): 'cria a lista mercado e adiciona leite nela' chains step 2 onto step 1 and wires listId", async () => {
+    // Segments come from the REAL splitter so the fix is proven end-to-end:
+    // the PT contracted anaphora 'nela' must be extracted and wired through
+    // the registry outputRefs of the list-producing step.
+    const { splitChatMultiStepRequest } = await import('../../src/services/chat-multi-step-splitter');
+    const split = splitChatMultiStepRequest('cria a lista mercado e adiciona leite nela');
+    expect(split.segments.map((segment) => segment.text)).toEqual([
+      'cria a lista mercado',
+      'adiciona leite nela',
+    ]);
+
+    const { builder } = plannerReturning([
+      makePlan([makeStep({ action: 'create_checklist', args: { title: 'mercado', items: [] } })]),
+      makePlan([makeStep({
+        action: 'add_subtasks_to_task',
+        args: { title: 'mercado', subtasks: ['leite'] },
+        requiredArgsPresent: true,
+      })]),
+    ]);
+
+    const result = await routeChatMultiStepSegments(PLANNER_INPUT, split.segments, builder);
+
+    const followup = result.plan?.steps[1];
+    expect(followup?.args.listId).toEqual({ $ref: 'step_1.result.task.listId' });
+    expect(followup?.args.taskId).toEqual({ $ref: 'step_1.result.task.id' });
+    expect(followup?.dependsOnStepIds).toEqual(['step_1']);
+  });
+
+  it("M16 adversarial fix (EN repro): 'create a grocery list and add milk to the list' chains via 'the list' anaphora", async () => {
+    const { splitChatMultiStepRequest } = await import('../../src/services/chat-multi-step-splitter');
+    const split = splitChatMultiStepRequest('create a grocery list and add milk to the list');
+    expect(split.segments.map((segment) => segment.text)).toEqual([
+      'create a grocery list',
+      'add milk to the list',
+    ]);
+
+    const { builder } = plannerReturning([
+      makePlan([makeStep({ action: 'create_checklist', args: { title: 'grocery', items: [] } })]),
+      makePlan([makeStep({
+        action: 'add_subtasks_to_task',
+        args: { title: 'milk', subtasks: ['milk'] },
+        requiredArgsPresent: true,
+      })]),
+    ]);
+
+    const result = await routeChatMultiStepSegments(PLANNER_INPUT, split.segments, builder);
+
+    const followup = result.plan?.steps[1];
+    expect(followup?.args.listId).toEqual({ $ref: 'step_1.result.task.listId' });
+    expect(followup?.dependsOnStepIds).toEqual(['step_1']);
+  });
+
+  it('M16 adversarial fix (data-need chaining): a relaxed segment with NO recognized anaphora still wires a missing REQUIRED field a prior producer can supply', async () => {
+    // 'and' segments used to run independently whenever pronoun extraction
+    // failed — the consumer step then stalled in clarification even though
+    // the producer's registry outputRefs could satisfy its required field.
+    const { builder } = plannerReturning([
+      makePlan([makeStep({ args: { title: 'buy milk' } })]),
+      makePlan([makeStep({
+        action: 'complete_task',
+        args: {},
+        requiredArgsPresent: false,
+      })]),
+    ]);
+    const segments = [
+      makeSegment(0, 'create a task to buy milk'),
+      // Deliberately NO pronounMentions: unrecognized anaphora ('the thing').
+      makeSegment(1, 'mark the thing done', { connective: 'and', pronounMentions: [] }),
+    ];
+
+    const result = await routeChatMultiStepSegments(PLANNER_INPUT, segments, builder);
+
+    const followup = result.plan?.steps[1];
+    expect(followup?.args.taskId).toEqual({ $ref: 'step_1.result.task.id' });
+    expect(followup?.requiredArgsPresent).toBe(true);
+    expect(followup?.dependsOnStepIds).toEqual(['step_1']);
+    expect(result.plan?.clarificationQuestion).toBeUndefined();
+  });
+
+  it('M16 data-need chaining stays conservative: no producer for the missing field means no wiring', async () => {
+    const { builder } = plannerReturning([
+      makePlan([makeStep({ skill: 'secretary_calendar' as ChatPlanStep['skill'], action: 'check_calendar_conflicts', args: {} })]),
+      makePlan([makeStep({
+        action: 'complete_task',
+        args: {},
+        requiredArgsPresent: false,
+      })]),
+    ]);
+    const segments = [
+      makeSegment(0, 'check my calendar for conflicts'),
+      makeSegment(1, 'mark the thing done', { connective: 'and', pronounMentions: [] }),
+    ];
+
+    const result = await routeChatMultiStepSegments(PLANNER_INPUT, segments, builder);
+
+    const followup = result.plan?.steps[1];
+    expect(followup?.args.taskId).toBeUndefined();
+    expect(followup?.requiredArgsPresent).toBe(false);
   });
 
   it('CURRENT LIMITATION: a task follow-up with a pronoun but no prior task-creation step stays unresolved', async () => {

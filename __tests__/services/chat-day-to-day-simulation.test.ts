@@ -288,6 +288,71 @@ describe('chat day-to-day simulation harness', () => {
       expect(runC.filter((id) => runD.includes(id))).toEqual([]);
     });
 
+    // M16 — silent-drop regression net: a single message carrying several
+    // requests must never lose one silently. The honest-partial shape
+    // (per-step enumeration, no first-person full-success claim) passes;
+    // an answer that only mentions a subset of the requests fails
+    // semantic coverage as insufficient_answer.
+    it('flags multi-request answers that silently drop one of the requests', async () => {
+      const multiScenario: DayToDayScenario = {
+        id: 'morning_planning',
+        title: 'Multi-request silent-drop net',
+        personaId: 'busy_professional',
+        description: 'Multi-request turns must account for every request in the answer.',
+        turns: [
+          {
+            id: 'm1-honest-partial',
+            userMessage: 'Create task alpha, create task beta, and create task gamma.',
+            expectation: { semanticMustInclude: ['alpha', 'beta', 'gamma', 'failed'] },
+          },
+          {
+            id: 'm2-silent-drop',
+            userMessage: 'Create task delta, create task epsilon, and create task zeta.',
+            expectation: { semanticMustInclude: ['delta', 'epsilon', 'zeta'] },
+          },
+        ],
+      };
+      const replies: Record<string, ChatEvalTurnResult> = {
+        'Create task alpha, create task beta, and create task gamma.': liveEnvelopeResult({
+          text: [
+            "Here's the outcome — 2 of 3 steps verified:",
+            '1. Create task “alpha” — done and verified',
+            '2. Create task “beta” — failed',
+            '3. Create task “gamma” — done and verified',
+          ].join('\n'),
+          actionStatus: 'partial_success',
+        }),
+        'Create task delta, create task epsilon, and create task zeta.': liveEnvelopeResult({
+          // Silent drop: zeta vanished from the answer entirely.
+          text: 'Done — I created the tasks “delta” and “epsilon”.',
+          actionStatus: 'verified_success',
+        }),
+      };
+      const executor: ChatTurnExecutor = {
+        mode: 'local_engine',
+        executeTurn: async (req: ChatEvalTurnRequest) => {
+          const result = replies[req.text];
+          if (!result) throw new Error(`No scripted live reply for "${req.text}"`);
+          return result;
+        },
+      };
+
+      const suite = await runDayToDaySimulationSuite({ scenarios: [multiScenario], executor, runNonce: 'm16-nonce' });
+      const byId = new Map(suite.scenarios[0]!.turns.map((turn) => [turn.turnId, turn]));
+
+      const honest = byId.get('m1-honest-partial')!;
+      expect(honest.response.actionStatus).toBe('partial');
+      const honestSemantic = honest.scorerDimensions?.find((entry) => entry.dimension === 'semantic_coverage');
+      expect(honestSemantic?.passed).toBe(true);
+      // The honest partial never reads as a full-success claim.
+      const honestClaim = honest.scorerDimensions?.find((entry) => entry.dimension === 'success_claim_verification');
+      expect(honestClaim?.passed).toBe(true);
+
+      const dropped = byId.get('m2-silent-drop')!;
+      expect(dropped.passed).toBe(false);
+      expect(dropped.failures.some((failure) => failure.type === 'insufficient_answer' && failure.detail.includes('zeta'))).toBe(true);
+    });
+
     it('keeps fixture clientMessageIds nonce-free and deterministic', async () => {
       const captured: string[] = [];
       const fixtureCapture: ChatTurnExecutor = {

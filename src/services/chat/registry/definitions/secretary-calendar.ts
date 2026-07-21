@@ -19,6 +19,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
       risk: 'safe_write',
       confirmationPolicy: 'none',
       executor: 'unified_calendar.createEvent',
+      // M16: declared result entities for cross-step $ref chaining
+      // ("schedule X and then move IT"). Paths match the calendar executor's
+      // verified result shape ({ event: { id, title, ... } }).
+      outputRefs: { eventId: 'event.id', title: 'event.title' },
       verifier: 'provider_read_back',
       // Phase 12 batch 63 (2026-05-16): typed slot extractor + validator
       // adopted. Reads ISO start/end / title / provider from natural-language

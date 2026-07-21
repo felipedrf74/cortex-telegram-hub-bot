@@ -9,7 +9,7 @@
  * Plus full integration tests for routeMessage()
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { patternMatch, keywordMatch, classifyWithClaude } from '../../src/router/classifier';
 import { routeMessage, isSystemCommand } from '../../src/router/index';
 
@@ -465,10 +465,23 @@ import { classifyMessage } from '../../src/services/anthropic';
 const mockClassifyMessage = vi.mocked(classifyMessage);
 
 describe('classifyWithClaude — Tier 3 AI Classification', () => {
+  // M15: this suite pins the LEGACY (flag-off) classify behavior — verbatim
+  // classify input, no candidate shortlist, no skill field. Force the flag
+  // off so the pins stay deterministic when the environment runs with
+  // AI_CLASSIFY_MANIFEST_PROMPT=true (flag-on behavior is covered by
+  // classifier-manifest-skill-flag.test.ts).
+  let savedManifestPromptFlag: string | undefined;
   beforeEach(() => {
+    savedManifestPromptFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
     mockClassifyMessage.mockReset();
     mockGetActiveChatDomain.mockReset();
     mockGetActiveChatDomain.mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    if (savedManifestPromptFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedManifestPromptFlag;
   });
 
   it('returns the domain and confidence from the Claude classifier', async () => {

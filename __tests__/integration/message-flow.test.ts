@@ -867,13 +867,25 @@ describe('Integration: Classification tier priority', () => {
   });
 
   it('Claude classifier is the last resort for non-matching messages', async () => {
-    mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.6 });
+    // M15: pin the LEGACY (flag-off) verbatim classify input — with
+    // AI_CLASSIFY_MANIFEST_PROMPT on, classifyWithClaude appends the
+    // deterministic candidate shortlist (covered by
+    // __tests__/router/classifier-manifest-skill-flag.test.ts). Force the
+    // flag off so this pin stays deterministic under any environment.
+    const savedManifestPromptFlag = process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+    try {
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.6 });
 
-    const route = await routeMessage('I feel creative today');
-    expect(route.method).toBe('classifier');
-    expect(route.domain).toBe('content');
-    // Third/fourth args carry optional user and tenant scope.
-    expect(mockClassifyMessage).toHaveBeenCalledWith('I feel creative today', undefined, undefined, undefined);
+      const route = await routeMessage('I feel creative today');
+      expect(route.method).toBe('classifier');
+      expect(route.domain).toBe('content');
+      // Third/fourth args carry optional user and tenant scope.
+      expect(mockClassifyMessage).toHaveBeenCalledWith('I feel creative today', undefined, undefined, undefined);
+    } finally {
+      if (savedManifestPromptFlag === undefined) delete process.env.AI_CLASSIFY_MANIFEST_PROMPT;
+      else process.env.AI_CLASSIFY_MANIFEST_PROMPT = savedManifestPromptFlag;
+    }
   });
 });
 

@@ -3,16 +3,19 @@
 // Phase 8 batch 42 (2026-05-15): cross-tenant alert channel implementations.
 //
 // Phase 7 batch 37 shipped the AlertChannel interface + dispatcher. This
-// module adds concrete channel adapters for the three primary alert
-// destinations Felipe uses operationally:
+// module adds concrete channel adapters for the primary alert
+// destinations used operationally:
 //
 //   • PagerDuty — Events API v2 (incident-grade severity routing)
 //   • Slack — Incoming Webhook (operator visibility)
-//   • Telegram — Bot API (Felipe's personal notification path)
+//
+// (The legacy chat-bot channel was removed in the M21 messaging purge,
+// 2026-07 — the durable operator paging path is the
+// OPERATOR_ALERT_WEBHOOK_URL queue in operator-alerts.ts.)
 //
 // Each adapter exposes:
 //   • A factory function (createPagerDutyChannel, createSlackChannel,
-//     createTelegramChannel) — takes config + minSeverity
+//     etc.) — takes config + minSeverity
 //   • A pure payload-formatter (formatPagerDutyPayload, etc.) — useful
 //     for testing and shadow-mode validation
 //
@@ -170,59 +173,6 @@ export function createSlackChannel(config: SlackChannelConfig): AlertChannel {
   };
 }
 
-// ──────────────────────────── Telegram ─────────────────────────────
-
-export interface TelegramChannelConfig {
-  botToken: string;
-  chatId: string | number;
-  minSeverity?: CrossTenantSeverity;
-  transport?: AlertHttpTransport;
-}
-
-/** Builds a Telegram sendMessage payload with HTML formatting. */
-export function formatTelegramPayload(payload: AlertPayload, chatId: string | number): unknown {
-  const severityEmoji =
-    payload.severity === 'critical' ? '🚨' :
-    payload.severity === 'high' ? '⚠️' :
-    payload.severity === 'medium' ? '🟡' : 'ℹ️';
-  const lines: string[] = [];
-  lines.push(`${severityEmoji} <b>${escapeHtml(payload.title)}</b>`);
-  lines.push('');
-  lines.push(escapeHtml(payload.description));
-  lines.push('');
-  lines.push(`<i>Generated at ${payload.generatedAt}</i>`);
-  return {
-    chat_id: chatId,
-    text: lines.join('\n'),
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
-  };
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-export function createTelegramChannel(config: TelegramChannelConfig): AlertChannel {
-  const transport = config.transport ?? DEFAULT_TRANSPORT;
-  const url = `https://api.telegram.org/bot${config.botToken}/sendMessage`;
-  return {
-    id: 'telegram',
-    minSeverity: config.minSeverity ?? 'high',
-    send: async (payload) => {
-      const body = JSON.stringify(formatTelegramPayload(payload, config.chatId));
-      const res = await transport(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      });
-      if (!res.ok) {
-        throw new Error(`Telegram rejected: ${res.status} ${res.statusText}`);
-      }
-    },
-  };
-}
-
 // ──────────────────────────── Discord ──────────────────────────────
 // Phase 9 batch 46 (2026-05-16): Discord webhook channel.
 
@@ -287,6 +237,10 @@ export function createDiscordChannel(config: DiscordChannelConfig): AlertChannel
 // Phase 9 batch 46: Email channel via an injectable mail-sender adapter.
 // The adapter is provider-agnostic (SendGrid, Postmark, SES) — channel
 // only knows the contract.
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 export interface EmailSender {
   (input: {

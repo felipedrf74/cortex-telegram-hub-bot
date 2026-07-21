@@ -22,6 +22,8 @@ import {
 import {
   confirmationCopy,
   failureCopy,
+  multiStepOutcomeCopy,
+  overflowDisclosureCopy,
   partialCopy,
   successCopy,
   verifiedPendingCopy,
@@ -70,6 +72,25 @@ export function buildExecutedChatActionResponse(
   }
   const failed = results.find((result) => result.status === 'failed' || result.status === 'blocked');
   const partial = results.some((result) => result.status !== 'verified_success');
+  // M16 honest partial composition: when a multi-step run has BOTH completed
+  // and failed/blocked branches, enumerate done/failed/blocked with
+  // per-branch reasons instead of collapsing to the first failure. The
+  // answer never claims success for a failed or blocked step.
+  const succeededCount = results.filter((result) => result.status === 'verified_success').length;
+  if (failed && plan.steps.length > 1 && succeededCount > 0) {
+    return buildActionResponse(input, plan, 'partial_success', multiStepOutcomeCopy(input, plan, results), {
+      type: multiStepType(plan, 'chat_action_partial_success'),
+      actionStatus: 'partial_success',
+      // M16/M8 seam fix: stamp the contract verification vocabulary so the
+      // pipeline mapping layer (verificationForReasoningMetadata) and this
+      // envelope agree — the quality gate exempts honest partial reports on
+      // verificationStatus 'partial_failure'.
+      verificationStatus: 'partial_failure',
+      error: { message: failureCopy(input, failed.error), retryable: results.some((result) => result.status === 'failed') },
+      actionResults: sanitizeActionResults(results),
+      ...multiStepMetadata(plan, results),
+    });
+  }
   if (failed) {
     return buildActionResponse(input, plan, failed.status, failureCopy(input, failed.error), {
       type: multiStepType(plan, failed.status === 'blocked' ? 'chat_action_blocked' : 'chat_action_failed'),
@@ -94,11 +115,20 @@ export function buildExecutedChatActionResponse(
     return buildActionResponse(input, plan, 'partial_success', partialCopy(input), {
       type: multiStepType(plan, 'chat_action_partial_success'),
       actionStatus: 'partial_success',
+      // See the partial branch above — keep both mapping layers agreeing.
+      verificationStatus: 'partial_failure',
       actionResults: sanitizeActionResults(results),
       ...multiStepMetadata(plan, results),
     });
   }
-  return buildActionResponse(input, plan, 'verified_success', successCopy(input, results), {
+  // M16: keep the overflow disclosure on the executed answer too — the
+  // segments beyond the splitter cap were not run and must never be
+  // silently absorbed into a success claim.
+  const overflowLine = overflowDisclosureCopy(plan, input);
+  const successText = overflowLine
+    ? `${successCopy(input, results)}\n\n${overflowLine}`
+    : successCopy(input, results);
+  return buildActionResponse(input, plan, 'verified_success', successText, {
     type: multiStepType(plan, 'chat_action_verified_success'),
     actionStatus: 'verified_success',
     verificationStatus: 'verified_success',

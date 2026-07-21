@@ -10,7 +10,7 @@ import {
   type SkillAvailabilityModel,
 } from '../../services/dashboard-home-view-state';
 import { checkSkillAccess } from '../../services/skill-tiers';
-import { getUserById, getUserByTelegramId } from '../../services/user-service';
+import { getUserById } from '../../services/user-service';
 import {
   entitlementPlanToSkillTier,
   getEffectiveEntitlement,
@@ -135,7 +135,9 @@ export function buildDashboardHomeInput(opts: {
 }
 
 function buildHomeSkillAvailability(userId: number): SkillAvailabilityModel {
-  const user = getUserById(userId) || getUserByTelegramId(userId);
+  // userId is the verified canonical users.id from the iOS JWT — no legacy
+  // identity fallback (M21 purge; same rationale as the chat/WS removals).
+  const user = getUserById(userId);
   const skills: HomeImpactDomain[] = ['secretary', 'training', 'cooking', 'content', 'finance'];
   const entitlement = user ? getEffectiveEntitlement(user.id) : null;
   const effectiveUser = user && entitlement

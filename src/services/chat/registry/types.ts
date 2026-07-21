@@ -171,6 +171,18 @@ export interface ChatActionDefinition {
   confirmationPolicy: 'none' | 'clarify' | 'confirm' | 'strong_confirm';
   executionPolicy?: 'read_only' | 'idempotent_write' | 'preview_then_confirm' | 'blocked';
   executor: string;
+  /**
+   * M16 (multi-step upgrade): entity fields this action's RESULT exposes for
+   * cross-step `$ref` chaining, mapped to their path inside the executor's
+   * result object (e.g. create_task -> { taskId: 'task.id' } means a later
+   * step may reference `step_N.result.task.id`). The segment router uses
+   * these declarations — instead of a hardcoded action list — to wire
+   * pronoun references ("create X and add IT to my calendar") into $refs,
+   * matching a producer's declared outputs against the consumer action's
+   * missing required/optional fields. Absent = this action's result exposes
+   * no chainable entities.
+   */
+  outputRefs?: Record<string, string>;
   verifier: 'provider_read_back' | 'local_read_back' | 'none';
   verificationPolicy?: 'provider_readback_required' | 'local_readback_required' | 'not_required';
   uiSurfaces?: string[];

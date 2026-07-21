@@ -3,20 +3,40 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Telegram purge Stage A — CI grep gate (M9, 2026-07).
+ * Telegram purge — CI grep gate.
  *
- * Telegram inbound was removed upstream (src/bot.ts and src/handlers/ no
- * longer exist). Stage A purged the dead telegram chat-path code from the
- * files below. This gate pins those files at ZERO live "telegram"
- * references so new ones cannot silently reappear.
+ * Stage A (M9, 2026-07): Telegram inbound was removed upstream (src/bot.ts
+ * and src/handlers/ no longer exist) and the dead telegram chat-path code
+ * was purged from the Stage-A files below.
  *
- * Scope notes (deliberate, keep in sync with the M21 milestone):
- * - Config/env/DB columns (`users.telegram_id`, `config.telegram.*`) are
- *   M21 Stage B–C work and are NOT covered by this gate.
- * - Notification-OUT surfaces (error-monitor / notification-contracts /
- *   scheduler alerting) still reference Telegram and are owned by M21.
- * - `src/services/user-service.ts` keeps `getUserByTelegramId` for the
- *   persisted `telegram_id` identity column until the M21 data migration.
+ * Stage B–C (M21, 2026-07): config/env surfaces (src/config.ts,
+ * .env.example TELEGRAM_*, package.json eval:training wrapper), the
+ * notification-out Telegram channel (registry alert channels + smoke
+ * builder + notification-contracts 'legacy_telegram'), the error-monitor
+ * Telegram wording, and the JWT-userId telegram-id identity fallbacks
+ * (dashboard-home-input / skills getCaller / onboarding) were purged.
+ * Stage C added migration 258 (archive-first copy of users.telegram_id
+ * into telegram_identity_archive; the live column is intentionally KEPT
+ * this release because the owner bootstrap still reads it).
+ *
+ * Deliberate remnants (NOT gated — keep in sync with scripts/telegram-audit.sh):
+ * - Owner bootstrap identity: OWNER_TELEGRAM_ID env + users.telegram_id
+ *   reads in src/services/user-service.ts (seedOwnerUser and friends) and
+ *   src/services/owner-bootstrap-preflight.ts. Production's owner row is
+ *   keyed by telegram_id; refactoring to a non-telegram key is a separate
+ *   owner-gated identity migration.
+ * - skills.ts override target lookups + garmin-session-store byTelegram
+ *   fallback: legacy request contracts still keyed to the telegram_id
+ *   column; removal is blocked on the same identity migration.
+ * - LIVE TELEGRAM_* disable-sentinel contract:
+ *   src/services/content-live-evaluation-runtime.ts refuses to boot the
+ *   content live-eval runtime unless TELEGRAM_LEGACY_DELIVERY='false' AND
+ *   TELEGRAM_BOT_TOKEN='content-live-eval-disabled'; the sentinels are
+ *   exported by scripts/content-live-eval-local.sh,
+ *   scripts/full-nexus-local-engine.sh, scripts/decision-center-ios-smoke.sh
+ *   and scripts/chat-tenant-security-smoke.js. A live safety contract, not
+ *   dead vocabulary — retiring it means renaming the sentinel pair in the
+ *   runtime assert and every setter script in the same change.
  *
  * ALLOWLIST: entries here are the only permitted matches inside gated
  * files. Additions require explicit justification in the commit message.
@@ -35,12 +55,34 @@ const GATED_FILES = [
   'src/api/websocket.ts',
 ];
 
+/** Files purged by M21 Stage B — must contain zero case-insensitive telegram refs. */
+const STAGE_B_GATED_FILES = [
+  'src/config.ts',
+  '.env.example',
+  'src/services/error-monitor.ts',
+  'src/services/notification-contracts.ts',
+  'src/services/registry-cross-tenant-alert-channels.ts',
+  'src/services/registry-channel-smoke-builder.ts',
+  'src/services/registry-channel-routing-policy.ts',
+  'src/api/routes/dashboard-home-input.ts',
+  'src/services/onboarding.ts',
+  'ecosystem.config.js',
+  'ecosystem.staging.config.js',
+];
+
 /**
- * Allowed matches inside gated files. Currently empty on purpose: every
- * gated file is fully clean. If a schema/API-contract type member must be
- * kept for M21 compat, add a `{ file, pattern }` entry here with a comment.
+ * Allowed matches inside gated files. Each entry needs a justification:
+ * - ecosystem.staging.config.js: `/home/dominguez/telegram-hub-bot*` is the
+ *   HISTORICAL deploy directory name on the VPS. Renaming the server
+ *   directory is a deploy-infrastructure change outside the code purge;
+ *   the path string is not live Telegram behavior.
  */
-const ALLOWLIST: { file: string; pattern: RegExp }[] = [];
+const ALLOWLIST: { file: string; pattern: RegExp }[] = [
+  { file: 'ecosystem.staging.config.js', pattern: /telegram-hub-bot/ },
+  // Owner bootstrap identity remnant — see the header note and the dedicated
+  // .env.example test below.
+  { file: '.env.example', pattern: /OWNER_TELEGRAM_ID/ },
+];
 
 function liveTelegramMatches(file: string): string[] {
   const source = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
@@ -73,5 +115,85 @@ describe('telegram purge gate (Stage A)', () => {
     const script = path.join(REPO_ROOT, 'scripts', 'telegram-audit.sh');
     expect(fs.existsSync(script)).toBe(true);
     expect(fs.readFileSync(script, 'utf8')).toContain('grep -ril');
+  });
+});
+
+describe('telegram purge gate (Stage B — config/env + notification-out + identity fallbacks)', () => {
+  it('Stage-B purged files contain no live telegram references', () => {
+    const offenders = STAGE_B_GATED_FILES.flatMap(liveTelegramMatches);
+    expect(offenders, `New telegram references appeared in M21 Stage-B purged files:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('.env.example carries no TELEGRAM_* variables; OWNER_TELEGRAM_ID stays documented as the bootstrap remnant', () => {
+    const env = fs.readFileSync(path.join(REPO_ROOT, '.env.example'), 'utf8');
+    expect(env).not.toMatch(/^TELEGRAM_/m);
+    // The owner bootstrap (seedOwnerUser / assertOwnerBootstrapReadyForRuntime)
+    // still resolves the owner identity from OWNER_TELEGRAM_ID + the persisted
+    // users.telegram_id row, so the variable must remain documented until the
+    // owner-gated identity migration replaces it.
+    expect(env).toMatch(/^OWNER_TELEGRAM_ID/m);
+  });
+
+  it('package.json eval:training no longer wraps TELEGRAM_* env and drops the telegram keyword', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    expect(String(pkg.scripts['eval:training'])).not.toMatch(/TELEGRAM/i);
+    expect(pkg.keywords ?? []).not.toContain('telegram');
+  });
+
+  it('skills/dashboard-home/onboarding JWT-userId paths no longer fall back to getUserByTelegramId', () => {
+    for (const file of [
+      'src/api/routes/dashboard-home-input.ts',
+      'src/services/onboarding.ts',
+    ]) {
+      const source = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      expect(source, `${file} must not reference getUserByTelegramId`).not.toContain('getUserByTelegramId');
+    }
+    // skills.ts getCaller (JWT userId) must be canonical-id only; the
+    // owner-gated override TARGET lookups legitimately remain telegram-keyed
+    // until the identity migration, so the file is not fully gated.
+    const skills = fs.readFileSync(path.join(REPO_ROOT, 'src/api/routes/skills.ts'), 'utf8');
+    expect(skills).not.toMatch(/getUserById\(userId\)\s*\|\|\s*getUserByTelegramId\(userId\)/);
+  });
+});
+
+describe('telegram purge gate (Stage C — archive-first data migration)', () => {
+  const up = path.join(REPO_ROOT, 'migrations', '258_telegram_identity_archive.sql');
+  const down = path.join(REPO_ROOT, 'migrations', 'down', '258_telegram_identity_archive.sql');
+
+  it('migration 258 exists with a reversible down migration', () => {
+    expect(fs.existsSync(up)).toBe(true);
+    expect(fs.existsSync(down)).toBe(true);
+  });
+
+  it('migration 258 is archive-first and SCHEMA-ONLY: never drops, nulls, or references the live column in SQL', () => {
+    const sql = fs.readFileSync(up, 'utf8');
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS telegram_identity_archive/);
+    // The backfill deliberately does NOT live in SQL: migration rehearsals
+    // replay this file against historically-divergent users schemas (the 226
+    // repair rehearsal rebuilds users without telegram_id), and SQLite cannot
+    // reference a column conditionally. The runtime backfill owns the copy.
+    expect(sql).not.toMatch(/INSERT\s+OR\s+IGNORE\s+INTO\s+telegram_identity_archive/i);
+    expect(sql).toMatch(/backfillTelegramIdentityArchive/);
+    // NEVER DROP in this migration; the owner bootstrap still reads the column.
+    expect(sql).not.toMatch(/DROP\s+COLUMN/i);
+    expect(sql).not.toMatch(/ALTER\s+TABLE\s+users/i);
+    expect(sql).not.toMatch(/UPDATE\s+users\s+SET\s+telegram_id/i);
+    // One-release-cycle soak documented in the header before any future DROP.
+    expect(sql).toMatch(/soak/i);
+  });
+
+  it('the runtime backfill is pragma-guarded, idempotent, and wired into initDatabase', () => {
+    const userService = fs.readFileSync(path.join(REPO_ROOT, 'src/services/user-service.ts'), 'utf8');
+    expect(userService).toMatch(/export function backfillTelegramIdentityArchive/);
+    expect(userService).toMatch(/pragma_table_info\('users'\)/);
+    expect(userService).toMatch(/INSERT OR IGNORE INTO telegram_identity_archive/);
+    const database = fs.readFileSync(path.join(REPO_ROOT, 'src/services/database.ts'), 'utf8');
+    expect(database).toMatch(/backfillTelegramIdentityArchive/);
+  });
+
+  it('down migration only removes the archive table', () => {
+    const sql = fs.readFileSync(down, 'utf8');
+    expect(sql).toMatch(/DROP TABLE IF EXISTS telegram_identity_archive/);
+    expect(sql).not.toMatch(/users/i);
   });
 });

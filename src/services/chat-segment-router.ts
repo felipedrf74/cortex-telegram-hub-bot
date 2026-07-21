@@ -2,7 +2,8 @@
 
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from './chat/types';
 import type { ChatMultiStepSegment } from './chat-multi-step-splitter';
-import { buildChatMultiStepDag } from './chat-multi-step-dag';
+import { buildChatMultiStepDag, isRelaxedChatMultiStepConnective } from './chat-multi-step-dag';
+import { findChatActionDefinition } from './chat/registry';
 
 export type ChatSegmentPlanBuilder = (input: ChatPlannerInput) => Promise<ChatActionPlan | null>;
 
@@ -86,25 +87,56 @@ function buildSegmentClarification(input: ChatPlannerInput, steps: ChatPlanStep[
     : `I need one more detail for ${label} before I run the full plan.`;
 }
 
+// M16 (multi-step upgrade): pronoun -> $ref wiring is registry-driven.
+//
+// Before M16 this function held a hardcoded tasks-only action list; now a
+// producer step DECLARES its chainable result entities via
+// ChatActionDefinition.outputRefs (e.g. create_task -> { taskId: 'task.id' },
+// schedule_event -> { eventId: 'event.id' }) and a consumer step's missing
+// required/optional fields are matched against those declarations. This is
+// what makes the cross-domain chain ("create the workout task and add it to
+// my calendar") resolvable without per-action branches.
 function resolvePronounReferenceForStep(
   step: ChatPlanStep,
   segment: ChatMultiStepSegment,
   priorSteps: ChatPlanStep[],
 ): ChatPlanStep {
-  if (segment.pronounMentions.length === 0) return step;
-  if (!['complete_task', 'delete_task', 'update_task', 'set_task_reminder'].includes(step.action)) return step;
-  const previousTaskIndex = findPreviousTaskCreationIndex(priorSteps);
-  if (previousTaskIndex < 0) return step;
+  if (step.type === 'answer' || step.type === 'clarification') return step;
+  const definition = findChatActionDefinition(step.skill, step.action);
+  if (!definition) return step;
+  const pronounAnchored = segment.pronounMentions.length > 0;
+  // M16 adversarial fix (data-need chaining): a relaxed-connective segment
+  // ('and'/'e'/'y'/','/…) whose action is missing a REQUIRED field that a
+  // prior step's registry outputRefs can produce is data-linked even when
+  // pronoun extraction recognized nothing ("add milk" after "create a
+  // grocery list"). Only required fields are wired on this path — optional
+  // fields still need an explicit anaphora signal.
+  const dataNeedEligible = !pronounAnchored
+    && priorSteps.length > 0
+    && isRelaxedChatMultiStepConnective(segment.connective)
+    && definition.requiredFields.some((field) => isMissingArg(step.args[field]));
+  if (!pronounAnchored && !dataNeedEligible) return step;
+  const wirableFields = (pronounAnchored
+    ? [...definition.requiredFields, ...definition.optionalFields]
+    : definition.requiredFields
+  ).filter((field) => isMissingArg(step.args[field]));
+  if (wirableFields.length === 0) return step;
+
+  const producer = findLatestProducerForFields(priorSteps, wirableFields);
+  if (!producer) return step;
+
   const args = { ...step.args };
-  if (args.taskId == null || args.taskId === '') {
-    args.taskId = { $ref: `step_${previousTaskIndex + 1}.result.task.id` };
+  for (const field of wirableFields) {
+    const resultPath = producer.outputRefs[field];
+    if (!resultPath) continue;
+    args[field] = { $ref: `step_${producer.index + 1}.result.${resultPath}` };
   }
-  if (args.listId == null || args.listId === '') {
-    args.listId = { $ref: `step_${previousTaskIndex + 1}.result.task.listId` };
-  }
-  const requiredArgsPresent = step.action === 'complete_task' || step.action === 'delete_task'
-    ? true
-    : step.requiredArgsPresent;
+
+  // A step becomes executable once every REQUIRED field is satisfied by a
+  // concrete arg or a wired $ref. (Generalizes the pre-M16 force-ready rule
+  // for complete_task/delete_task to every action, schema-driven.)
+  const requiredArgsPresent = step.requiredArgsPresent
+    || definition.requiredFields.every((field) => !isMissingArg(args[field]));
   return {
     ...step,
     args,
@@ -112,12 +144,23 @@ function resolvePronounReferenceForStep(
   };
 }
 
-function findPreviousTaskCreationIndex(priorSteps: ChatPlanStep[]): number {
+function isMissingArg(value: unknown): boolean {
+  return value === null || value === undefined || value === '';
+}
+
+function findLatestProducerForFields(
+  priorSteps: ChatPlanStep[],
+  fields: string[],
+): { index: number; outputRefs: Record<string, string> } | null {
   for (let index = priorSteps.length - 1; index >= 0; index -= 1) {
-    const step = priorSteps[index];
-    if (step.skill === 'tasks' && ['create_task', 'create_task_with_subtasks', 'create_checklist'].includes(step.action)) {
-      return index;
+    const prior = priorSteps[index];
+    if (prior.type === 'answer' || prior.type === 'clarification') continue;
+    const definition = findChatActionDefinition(prior.skill, prior.action);
+    const outputRefs = definition?.outputRefs;
+    if (!outputRefs) continue;
+    if (fields.some((field) => outputRefs[field] !== undefined)) {
+      return { index, outputRefs };
     }
   }
-  return -1;
+  return null;
 }

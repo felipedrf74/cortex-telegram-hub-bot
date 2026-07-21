@@ -120,7 +120,9 @@ function skillToCatalog(
 }
 
 function getCaller(userId: number) {
-  return getUserById(userId) || getUserByTelegramId(userId);
+  // userId is the verified canonical users.id from the iOS JWT — no legacy
+  // identity fallback (M21 purge; same rationale as the chat/WS removals).
+  return getUserById(userId);
 }
 
 function requireOwner(res: Response, userId: number): boolean {
@@ -238,8 +240,7 @@ export function skillsRoutes(): Router {
    */
   router.get('/catalog', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    // userId from JWT is now always users.id (since v4.12.0).
-    // Telegram ID fallback kept for legacy sessions (7-day JWT expiry).
+    // userId from JWT is always the canonical users.id (since v4.12.0).
     const user = getCaller(userId);
     if (!user) {
       sendError(res, 'USER_NOT_FOUND', `User ${userId} not registered`, 404);
@@ -406,6 +407,10 @@ export function skillsRoutes(): Router {
       return;
     }
 
+    // DEPRECATED REMNANT (M21): the owner-only override contract still keys
+    // targets by the legacy users.telegram_id column. Migrating this admin
+    // request contract to canonical users.id is part of the owner-gated
+    // identity migration (see migrations/258_telegram_identity_archive.sql).
     const target = getUserByTelegramId(targetUserId);
     if (!target) {
       sendError(res, 'USER_NOT_FOUND', `Target user ${targetUserId} not found`, 404);
@@ -433,9 +438,12 @@ export function skillsRoutes(): Router {
    * Admin revokes a per-user skill override.
    *
    * The iOS client sends identifiers as query params because the
-   * HTTP client's DELETE helper doesn't carry a body. The Telegram
-   * portal sends them in the body. Both paths are accepted here —
-   * the body wins if both are present.
+   * HTTP client's DELETE helper doesn't carry a body. The body path
+   * has no in-repo caller anymore (the Telegram portal that used it
+   * is gone; the admin portal manages overrides via
+   * /api/users/:id/skills) — it is kept for owner curl/REST tooling
+   * that sends a DELETE body. Both paths are accepted here — the
+   * body wins if both are present.
    *
    * Query params:   ?targetUserId=123&skillId=triathlon.gym
    * Request body:   { targetUserId: 123, skillId: 'triathlon.gym' }
@@ -457,6 +465,8 @@ export function skillsRoutes(): Router {
       return;
     }
 
+    // DEPRECATED REMNANT (M21): legacy telegram_id-keyed target contract —
+    // see the grant route above.
     const target = getUserByTelegramId(targetUserId);
     if (!target) {
       sendError(res, 'USER_NOT_FOUND', `Target user ${targetUserId} not found`, 404);

@@ -71,6 +71,9 @@ export const legacyTailStage: ChatStage = {
       routedDomain: contractAwareRoute.domain,
       userId,
       tenantId,
+      // M15: manifest-validated classifier skill hint (only ever set on
+      // classifier routes with AI_CLASSIFY_MANIFEST_PROMPT on).
+      classifierSkillHint: rawRoute.skill ?? null,
     });
     const pendingConfirmation = routingDecision.safety.explicitConfirmation
       ? getPendingChatConfirmation(userId, tenantId)

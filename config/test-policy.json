@@ -941,6 +941,41 @@
       "reason": "M14 deterministic clarify terminal: templated EN/PT/ES response, e2e loop prevention via durable continuity, reads never clarify, flag/kill gating."
     },
     {
+      "pattern": "__tests__/router/classifier-prompt-builder.test.ts",
+      "disposition": "keep",
+      "reason": "M15 manifest prompt builder: every domain/skill present, synthetic-entry extensibility, exclusion table, token-delta waiver ceiling."
+    },
+    {
+      "pattern": "__tests__/router/classifier-manifest-skill-flag.test.ts",
+      "disposition": "keep",
+      "reason": "M15 flag gating: flag-off byte parity, flag-on skill parsing incl. legacy shape tolerance, master kill."
+    },
+    {
+      "pattern": "__tests__/services/anthropic-classifier-manifest-prompt.test.ts",
+      "disposition": "keep",
+      "reason": "M15 provider prompt selection under the manifest-classifier flag."
+    },
+    {
+      "pattern": "__tests__/services/chat-skill-orchestrator-skill-hint.test.ts",
+      "disposition": "keep",
+      "reason": "M15 classifier skill hint consumed as additive ownership evidence."
+    },
+    {
+      "pattern": "__tests__/services/chat-manifest-newly-reachable-skill-execution.test.ts",
+      "disposition": "keep",
+      "reason": "M15 execution hardening for newly NL-reachable skills incl. pinned executor gaps (flag-flip blockers)."
+    },
+    {
+      "pattern": "__tests__/services/chat/executor/plan-executor.test.ts",
+      "disposition": "keep",
+      "reason": "M16 topological execution: independent branches continue, dependents block, M1 grant cap, honest partial copy, overflow disclosure."
+    },
+    {
+      "pattern": "__tests__/router/classifier-manifest-runtime-guard.test.ts",
+      "disposition": "keep",
+      "reason": "M15 flag-flip hard guard: force-disables the manifest classifier flag + operator alert while executor/domain-handler gaps exist; real-deps pin that the flag cannot go live today."
+    },
+    {
       "pattern": "__tests__/**/*.test.ts",
       "disposition": "keep",
       "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion."

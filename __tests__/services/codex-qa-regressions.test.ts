@@ -2,7 +2,7 @@
 // adversarial review. The tests pin the fixed behavior so a future
 // edit can't silently re-introduce the bug.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../src/services/anthropic', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/anthropic')>('../../src/services/anthropic');
@@ -71,20 +71,48 @@ describe('Codex QA — Issue 1: fresh secretary intents escape stale context', (
 });
 
 describe('Codex QA — Issue 2: classifier hints filtered to chat-routable domains', () => {
-  it('drops platform skills (connections, notifications, decision_center) from the classifier prompt', () => {
+  // M15 pin scope change (justified): the original pin asserted the prompt
+  // NEVER lists platform domains, because a confident platform-domain pick
+  // hit UNKNOWN_DOMAIN in the chat tail. M15's manifest prompt (flag
+  // AI_CLASSIFY_MANIFEST_PROMPT, default OFF) deliberately makes those
+  // domains classifiable behind the flag, with execution hardening tracked in
+  // chat-manifest-newly-reachable-skill-execution.test.ts as the pre-flip
+  // gate. The pin therefore now FORCES the legacy (flag-off) prompt so it
+  // keeps guarding the production default in any environment, and a
+  // companion pin covers the flag-on contract.
+  const FLAG = 'AI_CLASSIFY_MANIFEST_PROMPT';
+  let savedFlag: string | undefined;
+  beforeEach(() => {
+    savedFlag = process.env[FLAG];
+    delete process.env[FLAG];
+  });
+  afterEach(() => {
+    if (savedFlag === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = savedFlag;
+  });
+
+  it('drops platform skills (connections, notifications, decision_center) from the legacy classifier prompt', () => {
     const prompt = getClassifierSystemPrompt();
     expect(prompt).not.toMatch(/^- "connections"/m);
     expect(prompt).not.toMatch(/^- "notifications"/m);
     expect(prompt).not.toMatch(/^- "decision_center"/m);
   });
 
-  it('keeps the 5 chat-routable domains in the classifier prompt', () => {
+  it('keeps the 5 chat-routable domains in the legacy classifier prompt', () => {
     const prompt = getClassifierSystemPrompt();
     expect(prompt).toMatch(/^- "secretary"/m);
     expect(prompt).toMatch(/^- "triathlon"/m);
     expect(prompt).toMatch(/^- "content"/m);
     expect(prompt).toMatch(/^- "finance"/m);
     expect(prompt).toMatch(/^- "cooking"/m);
+  });
+
+  it('M15 flag-on companion: the manifest prompt lists platform domains AND still keeps the 5 legacy domains', () => {
+    process.env[FLAG] = 'true';
+    const prompt = getClassifierSystemPrompt();
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking', 'connections', 'notifications', 'decision_center']) {
+      expect(prompt).toMatch(new RegExp(`^- "${domain}"`, 'm'));
+    }
   });
 });
 

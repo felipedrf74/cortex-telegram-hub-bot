@@ -591,9 +591,16 @@ export function actionGatewayActionability(
   return result.kind === 'needs_clarification' || result.kind === 'blocked_legacy_fallback' ? 'clarify' : 'blocked';
 }
 
+// M16/M8 adversarial fix: the planner emits the ChatActionRunStatus
+// vocabulary ('verified_success' / 'partial_success' / …). Both statuses are
+// EXECUTED action turns — mapping them to the default 'answer_only' /
+// 'not_required' made the full quality gate treat honest per-step completion
+// lines as unverified success claims and rewrite live partial answers.
 export function actionabilityForReasoningStatus(status: string): NexusChatActionability {
   switch (status) {
     case 'completed':
+    case 'verified_success':
+    case 'partial_success':
     case 'partial_failure':
     case 'failed':
       return 'execute';
@@ -612,11 +619,14 @@ export function actionabilityForReasoningStatus(status: string): NexusChatAction
 
 export function verificationForReasoningMetadata(metadata: Record<string, unknown> | undefined, status: string): NexusChatVerificationStatus {
   const verification = typeof metadata?.verificationStatus === 'string' ? metadata.verificationStatus : undefined;
-  if (verification === 'verified') return 'verified';
+  // 'verified_success' is the executor envelope value (result-response.ts);
+  // 'verified' is the contract vocabulary — both mean read-back verified.
+  if (verification === 'verified' || verification === 'verified_success') return 'verified';
   if (verification === 'partial_failure') return 'partial_failure';
   if (status === 'failed') return 'failed';
   if (status === 'needs_confirmation' || status === 'needs_clarification') return 'pending';
   if (status === 'deferred') return 'blocked';
-  if (status === 'completed') return 'verified';
+  if (status === 'completed' || status === 'verified_success') return 'verified';
+  if (status === 'partial_success') return 'partial_failure';
   return 'not_required';
 }

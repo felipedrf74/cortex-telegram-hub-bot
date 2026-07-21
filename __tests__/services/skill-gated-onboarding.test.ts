@@ -189,7 +189,7 @@ describe('skill-gated onboarding', () => {
   describe('getEnabledQuestionnaires', () => {
     it('returns fitness (+ sport-specific) and diet when all skills enabled (default)', () => {
       createUser(testDb, 100);
-      const result = getEnabledQuestionnaires(100);
+      const result = getEnabledQuestionnaires(internalUserId(100));
       // Default: all skills enabled, so skill-linked questionnaires returned.
       // Phase 2 Slice B adds 4 sport-specific sheets under triathlon.
       expect(result).toContain('fitness');
@@ -205,7 +205,7 @@ describe('skill-gated onboarding', () => {
     it('excludes all triathlon sheets when triathlon skill is disabled', () => {
       createUser(testDb, 101);
       setSkillAccess(internalUserId(101), 'triathlon', false);
-      const result = getEnabledQuestionnaires(101);
+      const result = getEnabledQuestionnaires(internalUserId(101));
       expect(result).not.toContain('fitness');
       expect(result).not.toContain('triathlon-gym');
       expect(result).not.toContain('triathlon-running');
@@ -217,7 +217,7 @@ describe('skill-gated onboarding', () => {
     it('excludes diet when cooking skill is disabled', () => {
       createUser(testDb, 102);
       setSkillAccess(internalUserId(102), 'cooking', false);
-      const result = getEnabledQuestionnaires(102);
+      const result = getEnabledQuestionnaires(internalUserId(102));
       // triathlon still enabled → fitness + sport-specific sheets all present
       expect(result).toContain('fitness');
       expect(result).toContain('triathlon-gym');
@@ -229,7 +229,7 @@ describe('skill-gated onboarding', () => {
       createUser(testDb, 103);
       setSkillAccess(internalUserId(103), 'triathlon', false);
       setSkillAccess(internalUserId(103), 'cooking', false);
-      const result = getEnabledQuestionnaires(103);
+      const result = getEnabledQuestionnaires(internalUserId(103));
       expect(result).toHaveLength(0);
     });
 
@@ -237,7 +237,7 @@ describe('skill-gated onboarding', () => {
       createUser(testDb, 104, 'owner');
       setSkillAccess(internalUserId(104), 'triathlon', false);
       setSkillAccess(internalUserId(104), 'cooking', false);
-      const result = getEnabledQuestionnaires(104);
+      const result = getEnabledQuestionnaires(internalUserId(104));
       // Owner bypasses skill restrictions and gets all available
       const allAvailable = getAvailableQuestionnaires();
       expect(result).toEqual(allAvailable);
@@ -250,16 +250,16 @@ describe('skill-gated onboarding', () => {
   describe('getPendingOnboardings', () => {
     it('returns all enabled questionnaires when none completed', () => {
       createUser(testDb, 200);
-      const pending = getPendingOnboardings(200);
+      const pending = getPendingOnboardings(internalUserId(200));
       expect(pending).toContain('fitness');
       expect(pending).toContain('diet');
     });
 
     it('excludes already-completed profiles', () => {
       createUser(testDb, 201);
-      completeQuestionnaire(201, 'fitness');
+      completeQuestionnaire(internalUserId(201), 'fitness');
 
-      const pending = getPendingOnboardings(201);
+      const pending = getPendingOnboardings(internalUserId(201));
       expect(pending).not.toContain('fitness');
       expect(pending).toContain('diet');
     });
@@ -269,14 +269,14 @@ describe('skill-gated onboarding', () => {
       // Phase 2 Slice B: triathlon now has 5 sheets (fitness + 4 sport
       // profiles). We must complete all of them alongside diet for
       // pending to drain to zero.
-      completeQuestionnaire(202, 'fitness');
-      completeQuestionnaire(202, 'triathlon-gym');
-      completeQuestionnaire(202, 'triathlon-running');
-      completeQuestionnaire(202, 'triathlon-cycling');
-      completeQuestionnaire(202, 'triathlon-swim');
-      completeQuestionnaire(202, 'diet');
+      completeQuestionnaire(internalUserId(202), 'fitness');
+      completeQuestionnaire(internalUserId(202), 'triathlon-gym');
+      completeQuestionnaire(internalUserId(202), 'triathlon-running');
+      completeQuestionnaire(internalUserId(202), 'triathlon-cycling');
+      completeQuestionnaire(internalUserId(202), 'triathlon-swim');
+      completeQuestionnaire(internalUserId(202), 'diet');
 
-      const pending = getPendingOnboardings(202);
+      const pending = getPendingOnboardings(internalUserId(202));
       expect(pending).toHaveLength(0);
     });
 
@@ -285,7 +285,7 @@ describe('skill-gated onboarding', () => {
       setSkillAccess(internalUserId(203), 'triathlon', false);
       setSkillAccess(internalUserId(203), 'cooking', false);
 
-      const pending = getPendingOnboardings(203);
+      const pending = getPendingOnboardings(internalUserId(203));
       expect(pending).toHaveLength(0);
     });
 
@@ -293,7 +293,7 @@ describe('skill-gated onboarding', () => {
       createUser(testDb, 204);
       setSkillAccess(internalUserId(204), 'triathlon', false);
       // cooking still enabled, diet not completed
-      const pending = getPendingOnboardings(204);
+      const pending = getPendingOnboardings(internalUserId(204));
       expect(pending).toEqual(['diet']);
     });
   });
@@ -322,7 +322,7 @@ describe('skill-gated onboarding', () => {
       createUser(testDb, 301);
       applySkillPreset(internalUserId(301), { cooking: false });
 
-      const result = getEnabledQuestionnaires(301);
+      const result = getEnabledQuestionnaires(internalUserId(301));
       expect(result).toContain('fitness'); // triathlon not disabled
       expect(result).not.toContain('diet'); // cooking disabled
     });
