@@ -425,57 +425,95 @@ describe('gate outcome counters', () => {
   });
 });
 
-describe('governance — chat-message-routes.ts has ONE terminal pipeline', () => {
+describe('governance — the /message stage pipeline has ONE terminal pipeline', () => {
+  // M10: the /message terminals moved from the monolithic
+  // chat-message-routes.ts into src/api/routes/chat-pipeline/stages/*.ts.
+  // The governance intent is unchanged — every non-error terminal flows
+  // through the finalizer and nobody touches the gate/composer primitives
+  // directly — so the scan now covers the routes file PLUS every pipeline
+  // module.
   const routesSource = fs.readFileSync(
     path.join(__dirname, '../../src/api/routes/chat-message-routes.ts'),
     'utf8',
   );
+  const pipelineDir = path.join(__dirname, '../../src/api/routes/chat-pipeline');
+  const pipelineFiles: Array<{ name: string; source: string }> = [];
+  for (const entry of fs.readdirSync(pipelineDir)) {
+    const full = path.join(pipelineDir, entry);
+    if (entry.endsWith('.ts')) pipelineFiles.push({ name: entry, source: fs.readFileSync(full, 'utf8') });
+  }
+  for (const entry of fs.readdirSync(path.join(pipelineDir, 'stages'))) {
+    if (entry.endsWith('.ts')) {
+      pipelineFiles.push({
+        name: `stages/${entry}`,
+        source: fs.readFileSync(path.join(pipelineDir, 'stages', entry), 'utf8'),
+      });
+    }
+  }
 
-  it('routes file no longer references the gate/composer/enrichment primitives directly', () => {
-    expect(routesSource).not.toContain('applyChatResponseQualityGate');
-    expect(routesSource).not.toContain('composeNexusFinalAnswer');
-    expect(routesSource).not.toContain('buildNexusComposedAnswerDraft');
-    expect(routesSource).not.toContain('enrichChatResponseForContract');
-    expect(routesSource).not.toMatch(/function buildChatAnswerMetadata/);
-    expect(routesSource).toContain("from './chat-message-finalizer'");
+  it('routes + pipeline files never reference the gate/composer/enrichment primitives directly', () => {
+    for (const { source } of [{ name: 'chat-message-routes.ts', source: routesSource }, ...pipelineFiles]) {
+      expect(source).not.toContain('applyChatResponseQualityGate');
+      expect(source).not.toContain('composeNexusFinalAnswer');
+      expect(source).not.toContain('buildNexusComposedAnswerDraft');
+      expect(source).not.toContain('enrichChatResponseForContract');
+      expect(source).not.toMatch(/function buildChatAnswerMetadata/);
+    }
+    // Every stage that writes a chat envelope imports the finalizer.
+    const finalizerImporters = pipelineFiles.filter(({ source }) => source.includes("from '../../chat-message-finalizer'"));
+    expect(finalizerImporters.length).toBeGreaterThanOrEqual(15);
   });
 
-  it('every non-error terminal res.json in the /message handler returns a finalized identifier', () => {
+  it('every non-error terminal res.json in the stage pipeline returns a finalized identifier', () => {
+    // The routes file /message handler now only assembles ctx and runs the
+    // pipeline; scan it plus every stage module with the same rule.
     const handlerStart = routesSource.indexOf("router.post('/message'");
     expect(handlerStart).toBeGreaterThan(-1);
-    const handler = routesSource.slice(handlerStart);
+    const sources = [
+      { name: 'chat-message-routes.ts#/message', source: routesSource.slice(handlerStart) },
+      ...pipelineFiles,
+    ];
 
-    // Identifiers produced by the finalizer inside the handler.
-    const finalized = new Set<string>();
-    const finalizeCalls = [...handler.matchAll(/const (\w+) = finalizeChatMessageResponse\(/g)];
-    for (const match of finalizeCalls) {
-      finalized.add(match[1]!);
+    let totalFinalizeCalls = 0;
+    const offenders: string[] = [];
+    let totalTerminalCalls = 0;
+    for (const { name, source } of sources) {
+      // Identifiers produced by the finalizer inside this module.
+      const finalized = new Set<string>();
+      const finalizeCalls = [...source.matchAll(/const (\w+) = finalizeChatMessageResponse\(/g)];
+      for (const match of finalizeCalls) {
+        finalized.add(match[1]!);
+      }
+      // Ternary form (shared planner stage finalizes per variant).
+      for (const match of source.matchAll(/const (\w+) = variant === '\w+'\s*\?\s*finalizeChatMessageResponse\(/g)) {
+        finalized.add(match[1]!);
+      }
+      totalFinalizeCalls += finalizeCalls.length
+        + [...source.matchAll(/\?\s*finalizeChatMessageResponse\(|:\s*finalizeChatMessageResponse\(/g)].length;
+      // The legacy site builds the envelope from finalizeChatAnswerMetadata.
+      const legacy = source.match(/const enriched = finalizeChatAnswerMetadata\(\{[\s\S]*?const (\w+) = buildChatHandlerResponseEnvelope\(/);
+      if (legacy) finalized.add(legacy[1]!);
+
+      // Every res.json(<identifier>) / res.status(...).json(<identifier>)
+      // must use a finalized identifier. Inline object literals are allowed
+      // ONLY for error envelopes ({ error: ... }).
+      const terminalCalls = [...source.matchAll(/res(?:\.status\((?:\d+|[A-Za-z][\w.]*(?:\([^)]*\))?)\))?\.json\(([^)]*)\)/g)];
+      totalTerminalCalls += terminalCalls.length;
+      for (const call of terminalCalls) {
+        const arg = call[1]!.trim();
+        if (arg.startsWith('{')) {
+          // Inline literal: must be an error envelope.
+          if (!/^\{\s*\n?\s*error\s*:/.test(arg) && !arg.startsWith('{ error')) offenders.push(`${name}: ${arg.slice(0, 60)}`);
+          continue;
+        }
+        const identifier = arg.replace(/\.[\w.]+$/, '').trim();
+        if (!finalized.has(identifier)) offenders.push(`${name}: ${arg.slice(0, 60)}`);
+      }
     }
     // Every terminal family must flow through the finalizer — pin the number
     // of finalize call sites so a new raw res.json family cannot slip in.
-    expect(finalizeCalls.length).toBeGreaterThanOrEqual(20);
-    // The legacy site builds the envelope from finalizeChatAnswerMetadata.
-    if (/const enriched = finalizeChatAnswerMetadata\(\{[\s\S]*?const (\w+) = buildChatHandlerResponseEnvelope\(/.test(handler)) {
-      const legacy = handler.match(/const enriched = finalizeChatAnswerMetadata\(\{[\s\S]*?const (\w+) = buildChatHandlerResponseEnvelope\(/);
-      if (legacy) finalized.add(legacy[1]!);
-    }
-
-    // Every res.json(<identifier>) / res.status(...).json(<identifier>) must
-    // use a finalized identifier. Inline object literals are allowed ONLY for
-    // error envelopes ({ error: ... }).
-    const terminalCalls = [...handler.matchAll(/res(?:\.status\((?:\d+|[A-Za-z][\w.]*(?:\([^)]*\))?)\))?\.json\(([^)]*)\)/g)];
-    expect(terminalCalls.length).toBeGreaterThan(10);
-    const offenders: string[] = [];
-    for (const call of terminalCalls) {
-      const arg = call[1]!.trim();
-      if (arg.startsWith('{')) {
-        // Inline literal: must be an error envelope.
-        if (!/^\{\s*\n?\s*error\s*:/.test(arg) && !arg.startsWith('{ error')) offenders.push(arg.slice(0, 60));
-        continue;
-      }
-      const identifier = arg.replace(/\.[\w.]+$/, '').trim();
-      if (!finalized.has(identifier)) offenders.push(arg.slice(0, 60));
-    }
+    expect(totalFinalizeCalls).toBeGreaterThanOrEqual(20);
+    expect(totalTerminalCalls).toBeGreaterThan(10);
     expect(offenders).toEqual([]);
   });
 

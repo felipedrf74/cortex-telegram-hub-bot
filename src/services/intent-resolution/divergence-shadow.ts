@@ -21,8 +21,12 @@ import { resolveIntent, INTENT_RESOLVER_VERSION, type IntentCandidate } from './
 
 export const ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@1.0.0';
 
-/** Chat Core v2 domain space → legacy runtime domain space. */
-const V2_TO_LEGACY_DOMAIN: Record<string, string> = {
+/**
+ * Chat Core v2 domain space → legacy runtime domain space. Exported so the
+ * M20 route-exit sampler derives its legacy-vs-v2 comparison with the same
+ * mapping this record was built with.
+ */
+export const V2_TO_LEGACY_DOMAIN: Record<string, string> = {
   secretary: 'secretary',
   tasks: 'secretary',
   training: 'triathlon',

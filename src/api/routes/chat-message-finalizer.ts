@@ -93,6 +93,9 @@ const STAGE_FAMILY_GATE_POLICIES: Readonly<Record<string, ChatFinalizerGatePolic
   training_plan_shortcut: 'contract_only',
   decision_confirmation_templated: 'contract_only',
   destructive_confirmation_hold: 'contract_only',
+  // M14: deterministic routing-clarify terminal — fixed templated question,
+  // cannot hallucinate.
+  routing_clarify: 'contract_only',
   chat_core_v2_unsupported_fallback: 'contract_only',
   // NOTE: domain_shortcut is intentionally ABSENT from this table. The
   // family is mixed (deterministic state shortcuts AND model-authored
@@ -132,6 +135,7 @@ const DETERMINISTIC_ROUTE_METHOD_POLICIES: ReadonlySet<string> = new Set([
   'training-plan-shortcut',
   'plan-shortcut',
   'confirmation-required',
+  'routing-clarify',
   'decision-center-action',
   'unsupported',
   'finance-state-shortcut',

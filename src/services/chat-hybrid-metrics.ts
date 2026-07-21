@@ -244,6 +244,38 @@ export function resetChatQualityGateOutcomeCountersForTests(): void {
   }
 }
 
+// ─── M14: routing clarify budget counters (additive) ───────────────
+//
+// In-process counters for the flag-gated deterministic clarify policy so the
+// approved ≤10% clarify budget is observable: clarifiedTurns/evaluatedTurns.
+// evaluatedTurns counts routed-overlay orchestrator evaluations (the call
+// that carries routedDomain — once per chat turn); pre-routing overlay calls
+// and offline replays are not counted. Deterministic, no I/O.
+
+export interface RoutingClarifyCounters {
+  evaluatedTurns: number;
+  clarifiedTurns: number;
+}
+
+const routingClarifyCounters: RoutingClarifyCounters = {
+  evaluatedTurns: 0,
+  clarifiedTurns: 0,
+};
+
+export function recordRoutingClarifyDecision(clarified: boolean): void {
+  routingClarifyCounters.evaluatedTurns += 1;
+  if (clarified) routingClarifyCounters.clarifiedTurns += 1;
+}
+
+export function getRoutingClarifyCounters(): Readonly<RoutingClarifyCounters> {
+  return { ...routingClarifyCounters };
+}
+
+export function resetRoutingClarifyCountersForTests(): void {
+  routingClarifyCounters.evaluatedTurns = 0;
+  routingClarifyCounters.clarifiedTurns = 0;
+}
+
 function valuesEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

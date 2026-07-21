@@ -12,6 +12,10 @@ import { getActiveChatDomain } from '../services/chat-conversation-state';
 import { getCurrentContext } from '../utils/request-context';
 import { isManifestRoutingEnabled } from '../services/intent-resolution/manifest-routing-flags';
 import { resolveIntent } from '../services/intent-resolution/intent-resolver';
+import {
+  getClassifierLowConfidenceFloor,
+  getClassifierPinnedConfidenceMin,
+} from '../services/intent-resolution/confidence';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -371,7 +375,10 @@ export async function classifyWithClaude(
     );
   }
 
-  if (result.confidence < 0.6) {
+  // M14: the low-confidence floor (legacy 0.6) and the pinned-domain minimum
+  // (legacy 0.51) now route through the calibration table; the bootstrap
+  // table reproduces both constants exactly.
+  if (result.confidence < getClassifierLowConfidenceFloor()) {
     // M13 read-site swap: the low-confidence pin now reads the durable-backed
     // active-domain store. Within the TTL this is identical to the legacy
     // in-arg activeContext (callers derive it from the same store); after a
@@ -387,7 +394,7 @@ export async function classifyWithClaude(
         { requested: result.domain, confidence: result.confidence, fallbackDomain: pinnedDomain },
         'Low-confidence classifier result — preserving active conversation domain',
       );
-      return { domain: pinnedDomain, confidence: Math.max(result.confidence, 0.51) };
+      return { domain: pinnedDomain, confidence: Math.max(result.confidence, getClassifierPinnedConfidenceMin()) };
     }
   }
   logger.debug({ result }, 'Routing-provider classification result');

@@ -227,8 +227,12 @@ describe('M12 manifest routing parity across flag states', () => {
 
       it('master kill flag restores byte-identical legacy decisions', () => {
         for (const message of CORPUS) {
+          // M14: pin AI_ROUTING_CLARIFY off in the LEGACY baseline so the
+          // suite stays correct in a dedicated flags-on run — the master kill
+          // must suppress the clarify overlay too (left unpinned on the
+          // killed side deliberately to prove exactly that).
           const off = withEnv(
-            { [surface.envVar]: 'false', AI_ROUTING_MANIFEST_KILL: 'false' },
+            { [surface.envVar]: 'false', AI_ROUTING_MANIFEST_KILL: 'false', AI_ROUTING_CLARIFY: 'false' },
             () => surface.full(message),
           );
           const killed = withEnv(
