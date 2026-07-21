@@ -309,7 +309,7 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
         const value=JSON.parse(raw);process.stdout.write([
           value.evidenceSha256,value.cloneSha256,value.migratedCloneSha256,
           value.pendingMigrationSetSha256,value.sourceDatabaseSha256,
-        ].join(" "));
+        ].join(" ") + "\n");
       });')
   for digest in "$MIGRATION_REHEARSAL_SHA256" "$MIGRATION_REHEARSAL_CLONE_SHA256" \
       "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
@@ -635,7 +635,7 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
         const value=JSON.parse(raw);process.stdout.write([
           value.evidenceSha256,value.cloneSha256,value.migratedCloneSha256,
           value.pendingMigrationSetSha256,value.sourceDatabaseSha256,
-        ].join(" "));
+        ].join(" ") + "\n");
       });')
   for digest in "$FINAL_MIGRATION_REHEARSAL_SHA256" "$FINAL_MIGRATION_REHEARSAL_CLONE_SHA256" \
       "$FINAL_MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$FINAL_MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
