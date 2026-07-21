@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-19.2",
+  "version": "2026-07-21.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -178,6 +178,7 @@
     }
   },
   "dispositionRules": [
+    { "pattern": "__tests__/scripts/pm2-memory-policy.test.ts", "disposition": "keep", "reason": "Protects RSS-versus-V8 headroom, unchanged Content Engine ceilings, and full PM2 stability observation across canonical release paths." },
     { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
     { "pattern": "__tests__/scripts/production-migration-lineage.test.ts", "disposition": "keep", "reason": "Protects the signed retired-migration inventory, exact lineage matching, replacement identities, and fail-closed malformed-policy handling." },
     { "pattern": "__tests__/migrations/training-session-schedule-truth-reconciliation.test.ts", "disposition": "keep", "reason": "Protects fresh and historical-lineage convergence for Training schedule truth without replaying retired SQL or duplicating columns." },

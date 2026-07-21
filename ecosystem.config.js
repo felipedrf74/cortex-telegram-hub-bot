@@ -9,8 +9,10 @@ module.exports = {
     instances: 1,           // CRITICAL: only 1 instance — Telegram long-polling allows only one
     autorestart: true,
     watch: false,
-    max_memory_restart: '750M',  // Raised from 500M — bot was hitting 94% heap at 500M
-    node_args: '--max-old-space-size=768',  // Match the memory limit
+    // PM2 measures total RSS. Leave 256 MiB above V8 old space for native
+    // addons, code, buffers, and other external allocations.
+    max_memory_restart: '1G',
+    node_args: '--max-old-space-size=768',
     env: {
       NODE_ENV: 'production',
       GIT_COMMIT: process.env.GIT_COMMIT || 'unknown',

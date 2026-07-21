@@ -744,7 +744,7 @@ CANDIDATE_MUTATED=true
 set +e
 CUTOVER_OUTPUT="$("${SSH[@]}" "$SERVER" bash -s -- \
   "$PROD_RELEASE" "$PROD_BASE" "$REMOTE_PM2" "$RUNTIME_SHA" "$TARGET_VERSION" "$PUBLIC_BASE_URL" \
-  "${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-10}" <<'REMOTE_CUTOVER'
+  "${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-60}" <<'REMOTE_CUTOVER'
 set -euo pipefail
 release_dir="$1"; base_dir="$2"; pm2_bin="$3"; runtime_sha="$4"; target_version="$5"; public_base_url="$6"; stability_seconds="$7"
 rm -f "$base_dir/current.next"

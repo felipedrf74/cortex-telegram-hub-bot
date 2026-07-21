@@ -232,7 +232,7 @@ REMOTE_ACTIVE_STAGING
     ssh "$SERVER" "mkdir -p '$RELEASE_DIR' '$BASE_DIR/releases' '$BASE_DIR/data' '$BASE_DIR/logs'"
     rsync -az --delete --chmod=D700,Fu+rw,go-rwx "$BUNDLE/" "$SERVER:$RELEASE_DIR/"
     ssh "$SERVER" bash -s -- "$RELEASE_DIR" "$BASE_DIR" "$RUNTIME_SHA" "$DIGEST" "$REMOTE_PM2" \
-      "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-5}" <<'REMOTE'
+      "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-60}" <<'REMOTE'
 set -euo pipefail
 release_dir="$1"; base_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; pm2_bin="$5"; stability_seconds="$6"
 [ -x "$pm2_bin" ] || { echo "resolved PM2 binary is no longer executable" >&2; exit 1; }

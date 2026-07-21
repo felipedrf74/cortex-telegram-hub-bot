@@ -43,11 +43,10 @@ module.exports = {
       instances: 1,
       autorestart: true,
       watch: false,
-      // Keep the backend ceiling aligned with production. The public-beta
-      // route/catalog set now crosses the former 512M staging ceiling during
-      // the canonical smoke suite, which caused graceful PM2 restarts and
-      // intermittent false-negative portal reads.
-      max_memory_restart: '750M',
+      // PM2 measures total RSS, while V8's old-space flag limits only one
+      // part of the process. Keep 256 MiB above the 768 MiB heap for native
+      // addons, code, buffers, and other external allocations.
+      max_memory_restart: '1G',
       node_args: '--max-old-space-size=768',
       env: {
         NODE_ENV: 'staging',
