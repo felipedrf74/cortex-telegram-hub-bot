@@ -741,6 +741,46 @@
       "reason": "Mirror suite for cancelAllPendingChatWork: full multi-store fan-out, partial-store-failure isolation, and tenant scoping."
     },
     {
+      "pattern": "__tests__/services/chat-eval-executor.test.ts",
+      "disposition": "keep",
+      "reason": "M2 ChatTurnExecutor contract: fixture echo parity, header/auth injection, multi-turn state carry, blocked-shape on non-200/transport error, side-effect readback."
+    },
+    {
+      "pattern": "__tests__/services/chat-eval-scorer.test.ts",
+      "disposition": "keep",
+      "reason": "M2 deterministic scorer contract: one case per dimension with DayToDayFailureType mapping, llm_judge null pins, blocked-turn honesty, default language-detector wiring."
+    },
+    {
+      "pattern": "__tests__/services/chat-eval-judge.test.ts",
+      "disposition": "keep",
+      "reason": "M2 bounded judge contract: one flash-lite call per scenario, malformed-JSON blocked not crashed, budget abort, zero calls outside real_provider."
+    },
+    {
+      "pattern": "__tests__/services/chat-language-detector.test.ts",
+      "disposition": "keep",
+      "reason": "M3 locale gate: es/pt/en confusable detection, fail-open on short/mixed text, pinned es-419-answered-in-Portuguese live regression shape."
+    },
+    {
+      "pattern": "__tests__/services/chat-hybrid-metrics.test.ts",
+      "disposition": "keep",
+      "reason": "M3 detector-derived portugueseLocalizationLeakage path with legacy explicit-boolean behavior preserved."
+    },
+    {
+      "pattern": "__tests__/services/intent-resolution/intent-resolver.test.ts",
+      "disposition": "keep",
+      "reason": "M4 manifest-driven resolver: every capability's example utterances resolve generically (no hardcoding), synthetic-entry extensibility."
+    },
+    {
+      "pattern": "__tests__/services/intent-resolution/vocabulary-parity.test.ts",
+      "disposition": "keep",
+      "reason": "M4 zero-behavior-change pin: extracted manifest vocabulary reproduces each live routing surface's decisions on the parity corpus."
+    },
+    {
+      "pattern": "__tests__/scripts/run-chat-eval-live.test.ts",
+      "disposition": "keep",
+      "reason": "M2 eval CLI guard contract: fixture default mode, base-url requirement for live modes, auth via env var only, judge armed only with a live executor."
+    },
+    {
       "pattern": "__tests__/**/*.test.ts",
       "disposition": "keep",
       "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion."

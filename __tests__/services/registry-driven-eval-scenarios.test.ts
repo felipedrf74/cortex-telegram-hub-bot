@@ -115,13 +115,13 @@ describe('registry-driven eval scenarios — shape and coverage', () => {
 });
 
 describe('registry-driven scenarios — integration with runChatEvaluationSuite', () => {
-  it('the harness accepts registry-driven scenarios and produces a result envelope', () => {
+  it('the harness accepts registry-driven scenarios and produces a result envelope', async () => {
     const scenarios = buildRegistryDrivenEvalScenarios({
       tags: ['golden'],
       perActionMax: 1,
     });
     expect(scenarios.length).toBeGreaterThan(0);
-    const result = runChatEvaluationSuite({ scenarios });
+    const result = await runChatEvaluationSuite({ scenarios });
     expect(result.scenarioCount).toBe(scenarios.length);
     expect(result.scenarios.length).toBe(scenarios.length);
     expect(typeof result.averageScore).toBe('number');

@@ -1,11 +1,32 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'node:crypto';
 import type { ChatMessageResponseEnvelope } from '../api/routes/chat-message-execution';
 import type { DomainName } from '../domains/types';
 import {
   analyzeChatSkillOrchestration,
   type NexusSkillId,
 } from './chat-skill-orchestrator';
+import {
+  FixtureExecutor,
+  type ChatEvalTurnRequest,
+  type ChatEvalTurnResult,
+  type ChatTurnExecutor,
+} from './chat-eval-executor';
+import {
+  CHAT_EVAL_SCORER_DIMENSIONS,
+  normalizeObservedActionStatus,
+  scoreChatEvalTurn,
+  type ChatEvalDimensionScore,
+  type ChatEvalScorerOptions,
+} from './chat-eval-scorer';
+import {
+  judgeChatEvalScenarios,
+  type ChatEvalJudgeDimensionId,
+  type ChatEvalJudgeOptions,
+  type ChatEvalJudgeRunReport,
+  type ChatEvalJudgeScenarioResult,
+} from './chat-eval-judge';
 
 export type DayToDayPersonaId =
   | 'busy_professional'
@@ -148,7 +169,14 @@ export interface DayToDayAssistantResponse {
   iosEnvelope: ChatMessageResponseEnvelope;
   domain: DomainName;
   skillsUsed: NexusSkillId[];
-  actionStatus: 'none' | 'needs_confirmation' | 'clarification' | 'refused' | 'succeeded' | 'failed' | 'deduped';
+  /**
+   * Expectation-space action status. Fixture scenarios only emit the original
+   * seven values; `partial`/`pending` appear only on live turns whose real
+   * envelope reported partial_success/verified_pending (normalized via
+   * normalizeObservedActionStatus) — they are distinct states and never count
+   * as full success.
+   */
+  actionStatus: 'none' | 'needs_confirmation' | 'clarification' | 'refused' | 'succeeded' | 'partial' | 'pending' | 'failed' | 'deduped';
   contextUsed: DayToDayContextRecord[];
   toolCalls: DayToDayToolCallRecord[];
   providerTrace: DayToDayProviderTrace;
@@ -165,6 +193,8 @@ export interface DayToDayTurnResult {
   averageScore: number;
   failures: Array<{ type: DayToDayFailureType; detail: string }>;
   passed: boolean;
+  /** Live (non-fixture) executors only: deterministic scorer evidence. */
+  scorerDimensions?: ChatEvalDimensionScore[];
 }
 
 export interface DayToDayScenarioResult {
@@ -183,6 +213,8 @@ export interface DayToDaySimulationSuiteResult {
   passed: boolean;
   averageScore: number;
   failureSummary: Record<DayToDayFailureType, number>;
+  /** Present only when the bounded llm judge ran (real_provider mode). */
+  judge?: ChatEvalJudgeRunReport;
 }
 
 interface SimulationContextIntent {
@@ -755,32 +787,120 @@ const DEFAULT_PROVIDER_TRACE: DayToDayProviderTrace = {
   fallbackUsed: false,
 };
 
-export function runDayToDaySimulationSuite(input: {
+export async function runDayToDaySimulationSuite(input: {
   mode?: ProviderTraceMode;
   scenarios?: DayToDayScenario[];
   personas?: DayToDayPersona[];
   generatedAt?: string;
-} = {}): DayToDaySimulationSuiteResult {
+  executor?: ChatTurnExecutor;
+  scorerOptions?: ChatEvalScorerOptions;
+  /** Bounded llm judge; only honored in real_provider mode (cost law). */
+  judge?: ChatEvalJudgeOptions;
+  /**
+   * Per-run nonce mixed into live clientMessageIds so repeated live runs
+   * never collide with server idempotency (idempotent-replay/409). Defaults
+   * to one crypto.randomUUID() per non-fixture suite run; fixture runs never
+   * generate or use a nonce so fixture output stays fully deterministic.
+   */
+  runNonce?: string;
+} = {}): Promise<DayToDaySimulationSuiteResult> {
   const scenarios = input.scenarios ?? DAY_TO_DAY_SCENARIOS;
   const personas = input.personas ?? DAY_TO_DAY_PERSONAS;
+  const executor = input.executor ?? new FixtureExecutor();
+  const mode = input.mode ?? 'fixture';
+  const runNonce = executor.mode === 'fixture' ? null : (input.runNonce ?? randomUUID());
   const personaById = new Map<DayToDayPersonaId, DayToDayPersona>(personas.map((persona) => [persona.id, persona]));
-  const scenarioResults = scenarios.map((scenario) => {
+  const scenarioResults: DayToDayScenarioResult[] = [];
+  for (const scenario of scenarios) {
     const persona = personaById.get(scenario.personaId);
     if (!persona) {
       throw new Error(`Missing persona ${scenario.personaId} for scenario ${scenario.id}`);
     }
-    return runScenario(scenario, persona, input.mode ?? 'fixture');
-  });
+    scenarioResults.push(await runScenario(scenario, persona, mode, executor, input.scorerOptions, runNonce));
+  }
+  // Judge merge happens BEFORE failure-summary/pass aggregation so the suite
+  // stays internally consistent. Fixture runs never reach this branch and the
+  // `judge` field is omitted entirely, keeping fixture output bit-identical.
+  let judgeReport: ChatEvalJudgeRunReport | undefined;
+  if (input.judge && mode === 'real_provider') {
+    judgeReport = await applyChatEvalJudge(scenarioResults, input.judge);
+  }
   const failureSummary = buildFailureSummary(scenarioResults);
   const averageScore = average(scenarioResults.map((scenario) => scenario.averageScore));
   return {
     generatedAt: input.generatedAt ?? new Date().toISOString(),
-    mode: input.mode ?? 'fixture',
+    mode,
     scenarios: scenarioResults,
     passed: scenarioResults.every((scenario) => scenario.passed),
     averageScore,
     failureSummary,
+    ...(judgeReport ? { judge: judgeReport } : {}),
   };
+}
+
+// One bounded judge call per scenario; scenario-level scores are merged into
+// each turn's llm_judge scorer placeholders (when present) and failing judged
+// dims become turn failures using the scorer's failure-type mapping.
+async function applyChatEvalJudge(
+  scenarioResults: DayToDayScenarioResult[],
+  options: ChatEvalJudgeOptions,
+): Promise<ChatEvalJudgeRunReport> {
+  const report = await judgeChatEvalScenarios(
+    scenarioResults.map((scenario) => ({
+      scenario: { id: scenario.scenarioId, title: scenario.title },
+      turns: scenario.turns.map((turn) => ({
+        turnId: turn.turnId,
+        userMessage: turn.userMessage,
+        assistantText: turn.response.text,
+      })),
+    })),
+    { ...options, mode: 'real_provider' },
+  );
+  const byScenarioId = new Map(report.scenarios.map((entry) => [entry.scenarioId, entry]));
+  for (const scenarioResult of scenarioResults) {
+    const judged = byScenarioId.get(scenarioResult.scenarioId);
+    if (!judged) continue;
+    for (const turn of scenarioResult.turns) {
+      mergeJudgeIntoTurn(turn, judged);
+    }
+    scenarioResult.passed = scenarioResult.turns.every((turn) => turn.passed);
+  }
+  return report;
+}
+
+function mergeJudgeIntoTurn(turn: DayToDayTurnResult, judged: ChatEvalJudgeScenarioResult): void {
+  for (const entry of turn.scorerDimensions ?? []) {
+    if (entry.source !== 'llm_judge') continue;
+    const dimResult = judged.scores?.[entry.dimension as ChatEvalJudgeDimensionId];
+    if (judged.status === 'scored' && dimResult) {
+      entry.score = dimResult.score;
+      entry.passed = dimResult.passed;
+      entry.detail = `scenario-level judge score ${dimResult.score}/2${dimResult.rationale ? `: ${dimResult.rationale}` : ''}`;
+    } else if (judged.status === 'blocked') {
+      // A blocked judge (provider outage / malformed JSON) is an honest skip:
+      // it must not fail the turn while never counting toward suite failure.
+      // The outage stays visible via the suite-level judge report status.
+      entry.score = null;
+      entry.passed = null;
+      entry.detail = `judge blocked: ${judged.detail}`;
+    } else {
+      entry.score = null;
+      entry.passed = null;
+      entry.detail = `judge ${judged.status}: ${judged.detail}`;
+    }
+  }
+  if (judged.status !== 'scored' || !judged.scores) return;
+  for (const [dimension, dimResult] of Object.entries(judged.scores) as Array<[ChatEvalJudgeDimensionId, NonNullable<ChatEvalJudgeScenarioResult['scores']>[ChatEvalJudgeDimensionId]]>) {
+    if (dimResult.passed) continue;
+    const failure = {
+      type: CHAT_EVAL_SCORER_DIMENSIONS[dimension].failureType,
+      detail: `[${dimension}] scenario judge score ${dimResult.score}/2${dimResult.rationale ? `: ${dimResult.rationale}` : ''}`,
+    };
+    if (!turn.failures.some((existing) => existing.type === failure.type && existing.detail === failure.detail)) {
+      turn.failures.push(failure);
+    }
+  }
+  turn.passed = turn.failures.length === 0;
 }
 
 export function formatDayToDaySimulationResultsMarkdown(result: DayToDaySimulationSuiteResult): string {
@@ -814,7 +934,14 @@ export function formatDayToDaySimulationResultsMarkdown(result: DayToDaySimulati
   return lines.join('\n');
 }
 
-function runScenario(scenario: DayToDayScenario, persona: DayToDayPersona, mode: ProviderTraceMode): DayToDayScenarioResult {
+async function runScenario(
+  scenario: DayToDayScenario,
+  persona: DayToDayPersona,
+  mode: ProviderTraceMode,
+  executor: ChatTurnExecutor,
+  scorerOptions?: ChatEvalScorerOptions,
+  runNonce: string | null = null,
+): Promise<DayToDayScenarioResult> {
   const state: ScenarioState = {
     persona,
     scenario,
@@ -830,16 +957,43 @@ function runScenario(scenario: DayToDayScenario, persona: DayToDayPersona, mode:
     state.memoryByTenant.set(persona.alternateTenantId, [`${persona.name}: alternate tenant context seed`]);
   }
 
-  const turns = scenario.turns.map((turn) => {
+  const turns: DayToDayTurnResult[] = [];
+  for (const turn of scenario.turns) {
     if (typeof turn.activeTenantId === 'number' && turn.activeTenantId !== state.activeTenantId) {
       state.previousTenantId = state.activeTenantId;
       state.activeTenantId = turn.activeTenantId;
     }
-    const response = simulateAssistantResponse(state, turn, mode);
-    const evaluation = evaluateTurn(turn, response, state);
+    if (executor.mode === 'fixture') {
+      const response = await executeFixtureTurn(state, turn, mode, executor);
+      const evaluation = evaluateTurn(turn, response, state);
+      applyPostTurnState(state, turn, response);
+      turns.push(evaluation);
+      continue;
+    }
+    // Non-fixture executors: layer the deterministic scorer on top of the
+    // existing expectation checks. Fixture mode above stays bit-identical.
+    const { response, liveResult } = await executeLiveTurn(state, turn, executor, runNonce);
+    // Observability policy for live turns: the real envelope never carries
+    // toolCalls, and skillsUsed only when metadata provides it. Missing
+    // evidence must not fail expectation checks — only contradictions do.
+    const liveMetadata = liveResult.metadata && typeof liveResult.metadata === 'object'
+      ? liveResult.metadata as Record<string, unknown>
+      : {};
+    const evaluation = evaluateTurn(turn, response, state, {
+      toolCallsObservable: false,
+      skillsObservable: Array.isArray(liveMetadata.skillsUsed),
+    });
+    const turnScore = scoreChatEvalTurn(turn.expectation, liveResult, undefined, scorerOptions ?? {});
+    evaluation.scorerDimensions = turnScore.dimensions;
+    for (const failure of turnScore.failures) {
+      if (!evaluation.failures.some((existing) => existing.type === failure.type && existing.detail === failure.detail)) {
+        evaluation.failures.push(failure);
+      }
+    }
+    evaluation.passed = evaluation.failures.length === 0;
     applyPostTurnState(state, turn, response);
-    return evaluation;
-  });
+    turns.push(evaluation);
+  }
 
   return {
     scenarioId: scenario.id,
@@ -848,6 +1002,123 @@ function runScenario(scenario: DayToDayScenario, persona: DayToDayPersona, mode:
     turns,
     passed: turns.every((turn) => turn.passed),
     averageScore: average(turns.map((turn) => turn.averageScore)),
+  };
+}
+
+function buildTurnRequest(state: ScenarioState, turn: DayToDayTurn, runNonce: string | null = null): ChatEvalTurnRequest {
+  return {
+    text: turn.userMessage,
+    conversationId: `d2d-${state.scenario.id}`,
+    userId: state.persona.userId,
+    tenantId: state.activeTenantId,
+    // Live runs mix in a per-run nonce so a second suite run (or an edited
+    // scenario text) never hits server idempotency replay/conflict for the
+    // same scenario/turn identity. Fixture runs keep the historical id.
+    clientMessageId: runNonce
+      ? `${state.scenario.id}-${turn.id}-${runNonce}`
+      : `${state.scenario.id}-${turn.id}`,
+    dayOffset: turn.dayOffset,
+  };
+}
+
+// Fixture path: the synthetic turn is built exactly as before and echoed
+// through the FixtureExecutor so both modes share the executor seam while
+// fixture output stays bit-identical.
+async function executeFixtureTurn(
+  state: ScenarioState,
+  turn: DayToDayTurn,
+  mode: ProviderTraceMode,
+  executor: ChatTurnExecutor,
+): Promise<DayToDayAssistantResponse> {
+  const response = simulateAssistantResponse(state, turn, mode);
+  const fixtureResult: ChatEvalTurnResult = {
+    ok: true,
+    statusCode: 200,
+    text: response.text,
+    domain: response.domain,
+    routeMethod: response.iosEnvelope.routeMethod,
+    metadata: null,
+    envelope: response.iosEnvelope,
+    latencyMs: 0,
+    providerTrace: { ...response.providerTrace },
+  };
+  await executor.executeTurn({ ...buildTurnRequest(state, turn), fixtureResult });
+  return response;
+}
+
+// Live path: replay the same scenario turn through the real POST /message
+// pipeline (or local engine) and adapt the returned envelope into the
+// simulation response shape. Deterministic scoring of live turns is layered
+// on top by the eval scorer; a non-2xx result renders a scenario-blocked
+// shape that fails the turn expectations honestly instead of fake-passing.
+// Real envelope actionStatus values (needs_clarification, verified_success,
+// partial_success, verified_pending, blocked, confirmation_acknowledged) are
+// preserved through normalizeObservedActionStatus instead of being coerced
+// to 'none'.
+async function executeLiveTurn(
+  state: ScenarioState,
+  turn: DayToDayTurn,
+  executor: ChatTurnExecutor,
+  runNonce: string | null = null,
+): Promise<{ response: DayToDayAssistantResponse; liveResult: ChatEvalTurnResult }> {
+  const result = await executor.executeTurn(buildTurnRequest(state, turn, runNonce));
+  const envelope = coerceLiveEnvelope(result, state, turn);
+  const metadata = result.metadata ?? {};
+  const metadataSkills = Array.isArray((metadata as Record<string, unknown>).skillsUsed)
+    ? ((metadata as Record<string, unknown>).skillsUsed as unknown[]).filter((skill): skill is NexusSkillId => typeof skill === 'string')
+    : [];
+  const metadataActionStatus = (metadata as Record<string, unknown>).actionStatus;
+  const actionStatus: DayToDayAssistantResponse['actionStatus'] = !result.ok
+    ? 'failed'
+    : normalizeObservedActionStatus(metadataActionStatus) ?? 'none';
+  const response: DayToDayAssistantResponse = {
+    text: result.ok ? result.text : `[scenario-blocked] ${result.blockedReason ?? `http_${result.statusCode}`}`,
+    iosEnvelope: envelope,
+    domain: envelope.domain,
+    skillsUsed: metadataSkills,
+    actionStatus,
+    contextUsed: [],
+    toolCalls: [],
+    providerTrace: {
+      mode: executor.mode === 'real_provider' ? 'real_provider' : 'fixture',
+      provider: 'gemini',
+      model: typeof (metadata as Record<string, unknown>).model === 'string'
+        ? (metadata as Record<string, unknown>).model as string
+        : 'live-routing-configured-model',
+      tier: 'chat',
+      category: 'chat_day_to_day_simulation',
+      fallbackUsed: (metadata as Record<string, unknown>).fallbackUsed === true,
+    },
+    safetyNotes: [
+      `executor_mode=${executor.mode}`,
+      `status_code=${result.statusCode}`,
+      `latency_ms=${result.latencyMs}`,
+      `tenant_id=${state.activeTenantId}`,
+      `user_id=${state.persona.userId}`,
+    ],
+  };
+  return { response, liveResult: result };
+}
+
+function coerceLiveEnvelope(
+  result: ChatEvalTurnResult,
+  state: ScenarioState,
+  turn: DayToDayTurn,
+): ChatMessageResponseEnvelope {
+  const raw = result.envelope && typeof result.envelope === 'object'
+    ? result.envelope as Partial<ChatMessageResponseEnvelope>
+    : {};
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : `live-${state.scenario.id}-${turn.id}`,
+    text: typeof raw.text === 'string' && raw.text ? raw.text : (result.text || `[scenario-blocked] ${result.blockedReason ?? 'empty_response'}`),
+    domain: (typeof raw.domain === 'string' && raw.domain ? raw.domain : 'secretary') as DomainName,
+    routeMethod: (typeof raw.routeMethod === 'string' && raw.routeMethod ? raw.routeMethod : 'context') as ChatMessageResponseEnvelope['routeMethod'],
+    confidence: typeof raw.confidence === 'number' ? raw.confidence : 0,
+    buttons: Array.isArray(raw.buttons) ? raw.buttons : null,
+    metadata: null,
+    timestamp: typeof raw.timestamp === 'string' && !Number.isNaN(Date.parse(raw.timestamp))
+      ? raw.timestamp
+      : new Date(0).toISOString(),
   };
 }
 
@@ -1042,18 +1313,38 @@ function response(
   };
 }
 
+interface TurnEvidenceObservability {
+  /** False when the executor cannot observe tool calls (live /message envelope). */
+  toolCallsObservable: boolean;
+  /** False when the envelope metadata carried no skillsUsed field. */
+  skillsObservable: boolean;
+}
+
+const FULLY_OBSERVABLE_EVIDENCE: TurnEvidenceObservability = {
+  toolCallsObservable: true,
+  skillsObservable: true,
+};
+
 function evaluateTurn(
   turn: DayToDayTurn,
   response: DayToDayAssistantResponse,
   state: ScenarioState,
+  evidence: TurnEvidenceObservability = FULLY_OBSERVABLE_EVIDENCE,
 ): DayToDayTurnResult {
   const failures: DayToDayTurnResult['failures'] = [];
   const expectation = turn.expectation;
   const lowerText = response.text.toLowerCase();
 
-  for (const skill of expectation.expectedSkills ?? []) {
-    if (!response.skillsUsed.includes(skill)) {
-      failures.push({ type: 'wrong_skill_routing', detail: `Expected skill ${skill} was not used.` });
+  // Observability policy: checks fail only on CONTRADICTING evidence. When a
+  // live envelope does not expose skills/tool calls, the corresponding
+  // expectations record an honest pass ("not observable in live envelope")
+  // by skipping instead of fabricating a failure. Fixture mode keeps full
+  // strictness because it fabricates (and therefore observes) those fields.
+  if (evidence.skillsObservable) {
+    for (const skill of expectation.expectedSkills ?? []) {
+      if (!response.skillsUsed.includes(skill)) {
+        failures.push({ type: 'wrong_skill_routing', detail: `Expected skill ${skill} was not used.` });
+      }
     }
   }
   if (expectation.expectedDomain && response.domain !== expectation.expectedDomain) {
@@ -1078,15 +1369,17 @@ function evaluateTurn(
   if (expectation.requiresRefusal && response.actionStatus !== 'refused') {
     failures.push({ type: 'unauthorized_tool_call', detail: 'Expected refusal for unsafe request.' });
   }
-  if (expectation.requiresToolCall && response.toolCalls.length === 0) {
+  if (evidence.toolCallsObservable && expectation.requiresToolCall && response.toolCalls.length === 0) {
     failures.push({ type: 'missing_tool_call', detail: 'Expected a simulated authorized tool call.' });
   }
   if (expectation.forbidsToolCall && response.toolCalls.length > 0) {
     failures.push({ type: 'unauthorized_tool_call', detail: 'Tool call was made despite expectation forbidding it.' });
   }
-  for (const status of expectation.expectedToolStatuses ?? []) {
-    if (!response.toolCalls.some((tool) => tool.status === status)) {
-      failures.push({ type: status === 'failed' ? 'bad_recovery_after_failure' : 'missing_tool_call', detail: `Expected tool status ${status}.` });
+  if (evidence.toolCallsObservable) {
+    for (const status of expectation.expectedToolStatuses ?? []) {
+      if (!response.toolCalls.some((tool) => tool.status === status)) {
+        failures.push({ type: status === 'failed' ? 'bad_recovery_after_failure' : 'missing_tool_call', detail: `Expected tool status ${status}.` });
+      }
     }
   }
   if (!isIosCompatible(response.iosEnvelope)) {
@@ -1099,7 +1392,7 @@ function evaluateTurn(
     failures.push({ type: 'model_routing_fallback_issue', detail: 'Provider trace category is missing for simulation.' });
   }
 
-  const scores = scoreTurn(response, expectation, failures);
+  const scores = scoreTurn(response, expectation, failures, evidence);
   const averageScore = average(Object.values(scores));
   if (averageScore < (expectation.minAverageScore ?? 1.65)) {
     failures.push({ type: 'insufficient_answer', detail: `Average score ${averageScore.toFixed(2)} below threshold.` });
@@ -1122,10 +1415,13 @@ function scoreTurn(
   response: DayToDayAssistantResponse,
   expectation: DayToDayTurnExpectation,
   failures: DayToDayTurnResult['failures'],
+  evidence: TurnEvidenceObservability = FULLY_OBSERVABLE_EVIDENCE,
 ): ResponseSufficiencyScores {
   const hasFailure = (type: DayToDayFailureType) => failures.some((failure) => failure.type === type);
   const expectedSkills = expectation.expectedSkills ?? [];
-  const allExpectedSkillsUsed = expectedSkills.every((skill) => response.skillsUsed.includes(skill));
+  // Unobservable skill evidence never contradicts the expectation.
+  const allExpectedSkillsUsed = !evidence.skillsObservable
+    || expectedSkills.every((skill) => response.skillsUsed.includes(skill));
   const hasTool = response.toolCalls.length > 0;
   const expectedTextLength = response.text.length;
   return {

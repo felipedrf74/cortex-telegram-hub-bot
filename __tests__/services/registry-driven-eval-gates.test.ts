@@ -35,31 +35,31 @@ const PER_SKILL_PASS_RATE_THRESHOLD = 0.90;
 const MACRO_PASS_RATE_THRESHOLD = 0.95;
 
 describe('registry-driven eval gates (Phase 5 batch 24)', () => {
-  it('macro pass rate across the full registry-driven suite meets threshold', () => {
+  it('macro pass rate across the full registry-driven suite meets threshold', async () => {
     const scenarios = buildRegistryDrivenEvalScenarios({
       tags: ['golden', 'ambiguous', 'negative', 'prompt_injection', 'adversarial'],
     });
     expect(scenarios.length).toBeGreaterThanOrEqual(150);
-    const result = runChatEvaluationSuite({ scenarios });
+    const result = await runChatEvaluationSuite({ scenarios });
     const passOrPartial = result.statusCounts.pass + result.statusCounts.partial;
     const macroRate = passOrPartial / result.scenarioCount;
     expect(macroRate, `macro pass rate ${(macroRate * 100).toFixed(1)}% < ${(MACRO_PASS_RATE_THRESHOLD * 100).toFixed(0)}%`).toBeGreaterThanOrEqual(MACRO_PASS_RATE_THRESHOLD);
   });
 
   for (const [tag, threshold] of Object.entries(PASS_RATE_THRESHOLD_BY_TAG)) {
-    it(`tag class "${tag}" pass rate >= ${(threshold * 100).toFixed(0)}%`, () => {
+    it(`tag class "${tag}" pass rate >= ${(threshold * 100).toFixed(0)}%`, async () => {
       const scenarios = buildRegistryDrivenEvalScenarios({ tags: [tag as any] });
       if (scenarios.length === 0) return; // Skip when this tag has no examples.
-      const result = runChatEvaluationSuite({ scenarios });
+      const result = await runChatEvaluationSuite({ scenarios });
       const passOrPartial = result.statusCounts.pass + result.statusCounts.partial;
       const rate = passOrPartial / result.scenarioCount;
       expect(rate, `${tag}: ${(rate * 100).toFixed(1)}% < ${(threshold * 100).toFixed(0)}% (${result.statusCounts.fail} failed of ${result.scenarioCount})`).toBeGreaterThanOrEqual(threshold);
     });
   }
 
-  it('every registered skill achieves the per-skill pass threshold', () => {
+  it('every registered skill achieves the per-skill pass threshold', async () => {
     const scenarios = buildRegistryDrivenEvalScenarios({ tags: ['golden'] });
-    const result = runChatEvaluationSuite({ scenarios });
+    const result = await runChatEvaluationSuite({ scenarios });
     // Group results by skill — title format is "<skill>.<action> — <snippet>"
     const bySkill: Record<string, { total: number; passOrPartial: number }> = {};
     for (const scenarioResult of result.scenarios) {
@@ -76,9 +76,9 @@ describe('registry-driven eval gates (Phase 5 batch 24)', () => {
     }
   });
 
-  it('aggregates a non-zero scenario count and provides averageScore', () => {
+  it('aggregates a non-zero scenario count and provides averageScore', async () => {
     const scenarios = buildRegistryDrivenEvalScenarios({ tags: ['golden'] });
-    const result = runChatEvaluationSuite({ scenarios });
+    const result = await runChatEvaluationSuite({ scenarios });
     expect(result.scenarioCount).toBeGreaterThanOrEqual(45);
     expect(result.averageScore).toBeGreaterThan(0);
     expect(result.averageScore).toBeLessThanOrEqual(2);

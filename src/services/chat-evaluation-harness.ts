@@ -4,6 +4,9 @@ import {
   runDayToDaySimulationSuite,
   type DayToDaySimulationSuiteResult,
 } from './chat-day-to-day-simulation';
+import { FixtureExecutor, type ChatTurnExecutor } from './chat-eval-executor';
+import { CHAT_EVAL_SCORER_DIMENSIONS, type ChatEvalScorerOptions } from './chat-eval-scorer';
+import type { ChatEvalJudgeOptions, ChatEvalJudgeRunReport } from './chat-eval-judge';
 
 export type ChatEvalMode = 'fixture' | 'local_engine' | 'real_provider';
 
@@ -171,6 +174,8 @@ export interface ChatEvaluationSuiteResult {
   qualityMetrics: ChatQualityMetricDefinition[];
   dayToDay: DayToDaySimulationSuiteResult;
   scenarios: ChatEvalScenarioResult[];
+  /** Present only when the bounded llm judge ran (real_provider mode). */
+  judge?: ChatEvalJudgeRunReport;
 }
 
 export interface ChatHybridActionGateMetrics {
@@ -653,15 +658,29 @@ function scenario(
   };
 }
 
-export function runChatEvaluationSuite(input: {
+export async function runChatEvaluationSuite(input: {
   mode?: ChatEvalMode;
   generatedAt?: string;
   scenarios?: ChatEvalScenario[];
-} = {}): ChatEvaluationSuiteResult {
+  executor?: ChatTurnExecutor;
+  scorerOptions?: ChatEvalScorerOptions;
+  /** Bounded llm judge; cost law: only ever invoked in real_provider mode. */
+  judgeOptions?: ChatEvalJudgeOptions;
+  /** Per-run nonce for live clientMessageIds (idempotency collision guard). */
+  runNonce?: string;
+} = {}): Promise<ChatEvaluationSuiteResult> {
   const mode = input.mode ?? 'fixture';
   const scenarios = input.scenarios ?? CHAT_EVAL_SCENARIOS;
+  const executor = input.executor ?? new FixtureExecutor();
   const dayToDayMode = mode === 'real_provider' ? 'real_provider' : 'fixture';
-  const dayToDay = runDayToDaySimulationSuite({ generatedAt: input.generatedAt, mode: dayToDayMode });
+  const dayToDay = await runDayToDaySimulationSuite({
+    generatedAt: input.generatedAt,
+    mode: dayToDayMode,
+    executor,
+    scorerOptions: input.scorerOptions,
+    judge: mode === 'real_provider' ? input.judgeOptions : undefined,
+    runNonce: input.runNonce,
+  });
   const results = scenarios.map((scenario) => evaluateScenario(scenario, mode, dayToDay));
   const statusCounts = {
     pass: results.filter((result) => result.status === 'pass').length,
@@ -680,6 +699,7 @@ export function runChatEvaluationSuite(input: {
     qualityMetrics: CHAT_QUALITY_METRICS,
     dayToDay,
     scenarios: results,
+    ...(dayToDay.judge ? { judge: dayToDay.judge } : {}),
   };
 }
 
@@ -778,6 +798,29 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
   lines.push('');
   lines.push(`Day-to-day result: ${result.dayToDay.passed ? 'PASS' : 'FAIL'} (${result.dayToDay.scenarios.length} scenarios, average ${result.dayToDay.averageScore.toFixed(2)})`);
   lines.push('');
+  if (result.judge) {
+    const judge = result.judge;
+    lines.push('## LLM Judge (bounded flash-lite)');
+    lines.push('');
+    lines.push(`Model: ${judge.model}`);
+    lines.push(`Calls: ${judge.calls} / ${judge.callBudget} (one call per scenario maximum)`);
+    lines.push(`Estimated spend: $${judge.estimatedSpendUsd.toFixed(6)} of $${judge.maxUsd.toFixed(2)} budget${judge.aborted ? ' — budget abort triggered; remaining scenarios skipped' : ''}`);
+    lines.push('');
+    lines.push('| Scenario | Status | Est. cost (USD) | Detail |');
+    lines.push('| --- | --- | ---: | --- |');
+    for (const scenario of judge.scenarios) {
+      lines.push(`| ${scenario.scenarioId} | ${scenario.status} | ${scenario.estimatedCostUsd.toFixed(6)} | ${scenario.detail.replace(/\|/g, '\\|')} |`);
+    }
+    lines.push('');
+    lines.push('### Scorer Dimension Sources');
+    lines.push('');
+    lines.push('| Dimension | Source |');
+    lines.push('| --- | --- |');
+    for (const [dimension, meta] of Object.entries(CHAT_EVAL_SCORER_DIMENSIONS)) {
+      lines.push(`| ${dimension} | ${meta.source} |`);
+    }
+    lines.push('');
+  }
   lines.push('## Safety Interpretation');
   lines.push('');
   lines.push('Fixture pass means the evaluation harness, scenario bank, rubric, and deterministic safety expectations are wired. It does not by itself prove live provider quality, local-engine streaming behavior, or production readiness.');

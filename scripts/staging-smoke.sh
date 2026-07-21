@@ -605,6 +605,176 @@ NODE
 fi
 
 echo ""
+echo "🌐 Locale-fidelity chat smoke (es-419 + pt-BR canned turns)"
+# Milestone 3 locale-fidelity gate: send one es-419 and one pt-BR canned chat
+# turn through the real staging chat endpoint and assert the reply language
+# with the deterministic detector shipped in dist/services/chat-language-
+# detector.js (zero-LLM check; the reply itself may spend planner tokens on
+# staging, which is acceptable for this gate). The check fails OPEN on
+# 'unknown' detections (short acks like "OK") — it only fails the smoke when
+# the detector confidently names a language that contradicts the prompt
+# locale (the recurring es-419 → Portuguese leak). Uses an isolated staging
+# fixture user like the training preview E2E. Disable with
+# NEXUS_SMOKE_LOCALE_FIDELITY=0.
+LOCALE_FIDELITY_ENABLED="${NEXUS_SMOKE_LOCALE_FIDELITY:-1}"
+if [ "$LOCALE_FIDELITY_ENABLED" = "0" ]; then
+  echo "  ⚠️  Locale-fidelity chat smoke skipped by NEXUS_SMOKE_LOCALE_FIDELITY=0"
+  PASS=$((PASS + 1))
+  evidence_record "locale fidelity chat smoke" "passed" "skipped_by_kill_switch"
+else
+  LOCALE_SMOKE_RESULT=""
+  LOCALE_SMOKE_RC=0
+  LOCALE_SMOKE_RESULT=$(ssh "$SERVER" "
+    set -e
+    cd $STAGING_DIR
+    set -a
+    . ./.env
+    set +a
+    node <<'NODE'
+const Database = require('better-sqlite3');
+const { signIosJwt } = require('./dist/services/ios-jwt');
+const { checkResponseLocaleFidelity } = require('./dist/services/chat-language-detector');
+
+const userId = Number(process.env.NEXUS_SMOKE_LOCALE_FIDELITY_USER_ID || '1000016');
+if (!Number.isInteger(userId) || userId < 1000000 || userId > 1099999) {
+  throw new Error('NEXUS_SMOKE_LOCALE_FIDELITY_USER_ID must be an isolated staging fixture user id in 1000000-1099999');
+}
+
+const deviceId = process.env.NEXUS_SMOKE_LOCALE_FIDELITY_DEVICE_ID || 'locale-fidelity-smoke-device-' + userId;
+const db = new Database(process.env.DATABASE_PATH || process.env.DB_PATH || './data/bot.db');
+const now = new Date().toISOString();
+
+function columnsFor(name) {
+  const exists = db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?\").get(name);
+  if (!exists) return new Set();
+  return new Set(db.prepare('PRAGMA table_info(' + name + ')').all().map((row) => row.name));
+}
+
+function insert(table, values, mode = 'INSERT OR REPLACE') {
+  const columns = columnsFor(table);
+  if (columns.size === 0) return;
+  const entries = Object.entries(values).filter(([column]) => columns.has(column));
+  if (entries.length === 0) return;
+  const names = entries.map(([column]) => column);
+  const placeholders = names.map(() => '?').join(', ');
+  db.prepare(mode + ' INTO ' + table + ' (' + names.join(', ') + ') VALUES (' + placeholders + ')')
+    .run(...entries.map(([, value]) => value));
+}
+
+db.transaction(() => {
+  insert('users', {
+    id: userId,
+    telegram_id: 910000000 + userId,
+    email: 'locale-fidelity-smoke-' + userId + '@nexushub.test',
+    email_verified: 1,
+    username: 'locale_fidelity_smoke_' + userId,
+    first_name: 'Locale',
+    last_name: 'Smoke',
+    language: 'es-ES',
+    timezone: 'Europe/Lisbon',
+    tier: 'max',
+    status: 'active',
+    auth_provider: 'email',
+    daily_message_limit: 500,
+    daily_token_limit: 1000000,
+    daily_cost_limit_usd: 25,
+    created_at: now,
+    last_active_at: now,
+  });
+  insert('ios_devices', {
+    user_id: userId,
+    device_id: deviceId,
+    device_name: 'Locale Fidelity Smoke',
+    refresh_token: 'locale-fidelity-smoke-refresh-' + userId,
+    refresh_token_hash: 'locale-fidelity-smoke-refresh-hash-' + userId,
+    last_active_at: now,
+    created_at: now,
+  }, 'INSERT OR IGNORE');
+  insert('subscriptions', {
+    user_id: userId,
+    plan: 'max',
+    period: 'monthly',
+    status: 'active',
+    provider: 'founder',
+    provider_subscription_id: 'locale-fidelity-smoke-subscription-' + userId,
+    current_period_start: now,
+    current_period_end: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    created_at: now,
+    updated_at: now,
+  });
+})();
+
+const TURNS = [
+  { locale: 'es-419', text: 'Crea una tarea llamada revisión del planificador de humo' },
+  { locale: 'pt-BR', text: 'Cria uma tarefa chamada revisão do planejador de fumaça' },
+];
+
+async function runTurn(turn) {
+  const token = signIosJwt({
+    userId,
+    deviceId,
+    staging_fixture: true,
+    fixture: 'locale-fidelity-smoke',
+  }, { expiresIn: '15m' });
+  const response = await fetch('http://localhost:8201/api/v1/chat/message', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ' + token,
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'x-language': turn.locale,
+      'x-idempotency-key': 'locale-fidelity-smoke-' + turn.locale + '-' + Date.now(),
+    },
+    body: JSON.stringify({ text: turn.text }),
+  });
+  const raw = await response.text();
+  let json = null;
+  try { json = raw ? JSON.parse(raw) : null; } catch {}
+  const replyText = typeof json?.text === 'string' ? json.text
+    : typeof json?.data?.text === 'string' ? json.data.text
+    : '';
+  const fidelity = checkResponseLocaleFidelity(turn.locale, replyText);
+  return {
+    locale: turn.locale,
+    httpStatus: response.status,
+    ok: response.status === 200 && replyText.length > 0 && fidelity.ok,
+    expected: fidelity.expected,
+    detected: fidelity.detected,
+    confidence: Number(fidelity.confidence.toFixed(3)),
+    replyPreview: replyText.slice(0, 120),
+  };
+}
+
+async function main() {
+  const turns = [];
+  for (const turn of TURNS) turns.push(await runTurn(turn));
+  const ok = turns.every((result) => result.ok);
+  process.stdout.write(JSON.stringify({ ok, userId, turns }));
+  if (!ok) process.exit(1);
+}
+
+main().catch((err) => {
+  process.stdout.write(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+  process.exit(1);
+});
+NODE
+  " 2>&1) || LOCALE_SMOKE_RC=$?
+
+  LOCALE_SMOKE_DETAIL="$(printf '%s' "$LOCALE_SMOKE_RESULT" | tail -c 700 | tr '\n' ' ')"
+  if [ "$LOCALE_SMOKE_RC" -eq 0 ]; then
+    echo "  ✅ Locale-fidelity chat smoke — es-419 and pt-BR replies match prompt locale"
+    PASS=$((PASS + 1))
+    evidence_record "locale fidelity chat smoke" "passed" "$LOCALE_SMOKE_DETAIL"
+  else
+    echo "  ❌ Locale-fidelity chat smoke — reply language mismatch or request failed"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("locale fidelity chat smoke")
+    evidence_record "locale fidelity chat smoke" "failed" "$LOCALE_SMOKE_DETAIL"
+    [ "$VERBOSE" = true ] && echo "     Detail: $LOCALE_SMOKE_RESULT"
+  fi
+fi
+
+echo ""
 echo "🗃  6/6 — DB integrity"
 DB_CHECK=$(ssh "$SERVER" "
   cd /home/dominguez/telegram-hub-bot-staging

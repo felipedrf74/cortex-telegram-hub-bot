@@ -77,6 +77,30 @@ export interface TrainingCapabilityMetadata {
   };
 }
 
+/**
+ * Shadow-mode shared routing vocabulary (Milestone 4).
+ *
+ * Mechanically extracted from the four live routing surfaces
+ * (router/classifier keywordMatch + intent regexes, chat-skill-orchestrator
+ * SKILL_PATTERNS/SCHEDULING_PATTERNS, chat-core-v2 shadow-route-classifier
+ * guessDomains + per-domain regexes, chat registry
+ * selectRegistrySubsetForMessage). Nothing consumes this for live routing —
+ * only the deterministic shadow intent resolver
+ * (src/services/intent-resolution) reads it for divergence telemetry.
+ *
+ * Safety/policy filters (FINANCE_RESTRICTED_ACTION_RE, unsafe access-control
+ * detection, destructive-action confirmation patterns) are deliberately NOT
+ * part of this vocabulary; they stay owned by their surfaces.
+ */
+export interface CapabilityRoutingVocabulary {
+  /** Locale-split keyword alternation terms (regex-alternate syntax allowed). */
+  locales: { en?: string[]; pt?: string[]; es?: string[] };
+  /** Verbatim regex sources extracted from the routing surfaces. */
+  regexFragments?: string[];
+  /** Canonical utterances (from existing routing tests) that must resolve to this capability. */
+  exampleUtterances?: string[];
+}
+
 export interface CapabilityManifestEntry {
   id: string;
   aliases: string[];
@@ -104,6 +128,7 @@ export interface CapabilityManifestEntry {
   responsePolicies: CapabilityResponsePolicy[];
   uiSkillMetadata: CapabilityUiSkillMetadata[];
   trainingCapabilities?: TrainingCapabilityMetadata;
+  routingVocabulary?: CapabilityRoutingVocabulary;
 }
 
 export interface CapabilityManifest {
@@ -206,6 +231,53 @@ function validateTrainingCapabilities(entryId: string, metadata: TrainingCapabil
   }
 }
 
+const ROUTING_VOCABULARY_LOCALES = ['en', 'pt', 'es'] as const;
+
+function validateRoutingVocabulary(entryId: string, vocabulary: CapabilityRoutingVocabulary): void {
+  if (!vocabulary.locales || typeof vocabulary.locales !== 'object' || Array.isArray(vocabulary.locales)) {
+    throw new Error(`invalid capability routing vocabulary locales: ${entryId}`);
+  }
+  const localeKeys = Object.keys(vocabulary.locales);
+  if (localeKeys.some((key) => !(ROUTING_VOCABULARY_LOCALES as readonly string[]).includes(key))) {
+    throw new Error(`unsupported capability routing vocabulary locale: ${entryId}`);
+  }
+  let matcherCount = 0;
+  for (const locale of localeKeys) {
+    const terms = vocabulary.locales[locale as typeof ROUTING_VOCABULARY_LOCALES[number]];
+    if (!isStringArray(terms) || terms.length === 0) {
+      throw new Error(`invalid capability routing vocabulary terms: ${entryId}/${locale}`);
+    }
+    for (const term of terms) {
+      try {
+        void new RegExp(`\\b(?:${term})\\b`, 'i');
+      } catch {
+        throw new Error(`capability routing vocabulary term does not compile: ${entryId}/${locale}/${term}`);
+      }
+      matcherCount += 1;
+    }
+  }
+  if (vocabulary.regexFragments !== undefined) {
+    if (!isStringArray(vocabulary.regexFragments)) {
+      throw new Error(`invalid capability routing vocabulary regex fragments: ${entryId}`);
+    }
+    for (const fragment of vocabulary.regexFragments) {
+      try {
+        void new RegExp(fragment, 'i');
+      } catch {
+        throw new Error(`capability routing vocabulary fragment does not compile: ${entryId}`);
+      }
+      matcherCount += 1;
+    }
+  }
+  if (matcherCount === 0) {
+    throw new Error(`capability routing vocabulary has no matchers: ${entryId}`);
+  }
+  if (vocabulary.exampleUtterances !== undefined
+      && (!isStringArray(vocabulary.exampleUtterances) || vocabulary.exampleUtterances.length === 0)) {
+    throw new Error(`invalid capability routing vocabulary examples: ${entryId}`);
+  }
+}
+
 export function loadCapabilityManifest(): CapabilityManifest {
   if (cached) return cached;
   const manifestPath = path.resolve(process.cwd(), 'config/capability-manifest.json');
@@ -235,6 +307,7 @@ export function loadCapabilityManifest(): CapabilityManifest {
   const requiredEvaluations = new Set<string>();
   const onboardingQuestionnaires = new Set<string>();
   const referencedSchemas = new Set<string>();
+  const routingVocabularyExamples = new Set<string>();
   for (const entry of parsed.capabilities) {
     if (!entry.id || ids.has(entry.id)) throw new Error(`invalid duplicate capability: ${entry.id}`);
     if (!entry.owner || !entry.version || entry.requiredEvaluations.length === 0
@@ -325,6 +398,20 @@ export function loadCapabilityManifest(): CapabilityManifest {
       }
     }
     if (entry.trainingCapabilities) validateTrainingCapabilities(entry.id, entry.trainingCapabilities);
+    if (entry.routingVocabulary) {
+      validateRoutingVocabulary(entry.id, entry.routingVocabulary);
+      for (const utterance of entry.routingVocabulary.exampleUtterances ?? []) {
+        // Must stay aligned with intent-resolution/vocabulary.ts
+        // normalizeUtterance (trim + lowercase + collapse internal
+        // whitespace) so dedupe and the shadow resolver agree on identity.
+        // Not imported directly: vocabulary.ts imports this module.
+        const normalized = utterance.trim().toLowerCase().replace(/\s+/g, ' ');
+        if (routingVocabularyExamples.has(normalized)) {
+          throw new Error(`duplicate capability routing vocabulary example: ${entry.id}`);
+        }
+        routingVocabularyExamples.add(normalized);
+      }
+    }
   }
   for (const evaluation of requiredEvaluations) {
     if (!isStringArray(parsed.evaluationCoverage[evaluation]) || parsed.evaluationCoverage[evaluation].length === 0) {

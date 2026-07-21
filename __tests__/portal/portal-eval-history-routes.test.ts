@@ -109,10 +109,10 @@ describe('portal eval history routes', () => {
     expect(payload.body).toEqual({ ok: true, runs: [{ runId: 'chat-eval-1' }] });
   });
 
-  it('persists a wrapped eval result', () => {
+  it('persists a wrapped eval result', async () => {
     const { routes, app } = makeApp();
     registerPortalEvalHistoryRoutes(app as any);
-    const result = runChatEvaluationSuite({ mode: 'fixture', generatedAt: '2026-04-29T12:00:00.000Z' });
+    const result = await runChatEvaluationSuite({ mode: 'fixture', generatedAt: '2026-04-29T12:00:00.000Z' });
     mocks.persistChatEvalRun.mockReturnValue({ runId: 'chat-eval-route', runRowId: 42, scenarioCount: result.scenarioCount });
 
     const { payload, res } = makeResponse();

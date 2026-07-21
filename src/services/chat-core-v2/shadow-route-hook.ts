@@ -29,6 +29,11 @@ import {
   type ChatCoreV2ShadowReplayResponse,
 } from './shadow-replay';
 import { classifyShadowRoute, type ChatCoreV2ShadowRouteGuess } from './shadow-route-classifier';
+import {
+  buildRoutingDivergenceShadowRecord,
+  type RoutingDivergenceShadowDeps,
+  type RoutingDivergenceShadowRecord,
+} from '../intent-resolution/divergence-shadow';
 import { maybeEmitPrepassRecallMiss } from './prepass-miss-store';
 import {
   resolveChatCoreV2ActivationConfig,
@@ -72,6 +77,12 @@ export interface RunChatCoreV2ShadowRouteHookInput {
    */
   shadowPlannerDeps?: ShadowPlannerSideEffectDeps;
   onShadowPlannerSettled?: (promise: Promise<void>) => void;
+  /**
+   * Milestone 4 TESTABILITY SEAM (default undefined => production behavior).
+   * The live route never sets this; tests inject a broken/fake resolver to
+   * prove a resolver throw can never affect the recorded turn.
+   */
+  routingDivergenceDeps?: RoutingDivergenceShadowDeps;
 }
 
 /**
@@ -139,9 +150,16 @@ export function runChatCoreV2ShadowRouteHook(
       unsupportedReason: guess.unsupportedReason,
       now: input.now,
     });
+    // Milestone 4: additive resolver-vs-surface divergence telemetry. Computed
+    // in its own try/catch (never blocks or mutates the live turn) and merged
+    // additively into the existing replay contextPack row shape.
+    const routingDivergence = buildRoutingDivergenceSafely(input, guess);
     const replayInput = {
       result,
-      contextPack: buildShadowRouteContextPack(input, guess, hmacSecret),
+      contextPack: {
+        ...buildShadowRouteContextPack(input, guess, hmacSecret),
+        ...(routingDivergence ? { routingDivergence } : {}),
+      },
       response: buildShadowRouteResponse(result),
       createdAt: input.now?.toISOString(),
     };
@@ -180,6 +198,37 @@ export function runChatCoreV2ShadowRouteHook(
       'Chat Core v2 shadow route hook failed without affecting live chat',
     );
     return { enabled: true, recorded: false, errorCode: 'shadow_route_hook_failed' };
+  }
+}
+
+/**
+ * Milestone 4: build the resolver-vs-surface divergence record without ever
+ * being able to affect the live turn.
+ *
+ * The deterministic resolver + surface calls run inside try/catch; any throw
+ * is swallowed (debug-logged) and the hook records the turn exactly as
+ * before, minus the additive field.
+ */
+function buildRoutingDivergenceSafely(
+  input: RunChatCoreV2ShadowRouteHookInput,
+  guess: ChatCoreV2ShadowRouteGuess,
+): RoutingDivergenceShadowRecord | undefined {
+  try {
+    return buildRoutingDivergenceShadowRecord(
+      input.normalizedText,
+      { intent: guess.intent, domains: guess.domains },
+      input.routingDivergenceDeps ?? {},
+    );
+  } catch (err) {
+    logger.debug(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        chatRequestId: input.chatRequestId,
+        shadowRouteHookVersion: CHAT_CORE_V2_SHADOW_ROUTE_HOOK_VERSION,
+      },
+      'Chat Core v2 shadow routing-divergence telemetry skipped (resolver failed; live turn unaffected)',
+    );
+    return undefined;
   }
 }
 

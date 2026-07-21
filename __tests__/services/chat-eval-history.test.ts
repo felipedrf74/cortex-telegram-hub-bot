@@ -32,8 +32,8 @@ describe('Chat eval history', () => {
     expect(scenarioColumns.map((column) => column.name)).not.toContain('provider_payload_json');
   });
 
-  it('persists aggregate score, report metadata, and per-scenario results', () => {
-    const result = runChatEvaluationSuite({
+  it('persists aggregate score, report metadata, and per-scenario results', async () => {
+    const result = await runChatEvaluationSuite({
       mode: 'fixture',
       generatedAt: '2026-04-29T12:00:00.000Z',
     });
@@ -83,12 +83,12 @@ describe('Chat eval history', () => {
     expect(JSON.parse(firstScenario.scores_json)).toHaveProperty('tenantIsolation');
   });
 
-  it('updates an existing run idempotently instead of duplicating scenario rows', () => {
-    const first = runChatEvaluationSuite({
+  it('updates an existing run idempotently instead of duplicating scenario rows', async () => {
+    const first = await runChatEvaluationSuite({
       mode: 'fixture',
       generatedAt: '2026-04-29T12:00:00.000Z',
     });
-    const second = runChatEvaluationSuite({
+    const second = await runChatEvaluationSuite({
       mode: 'real_provider',
       generatedAt: '2026-04-29T12:30:00.000Z',
     });
@@ -108,12 +108,12 @@ describe('Chat eval history', () => {
     expect(run.real_provider_calls).toBe(7);
   });
 
-  it('lists recent runs with parsed metadata only', () => {
-    const first = runChatEvaluationSuite({
+  it('lists recent runs with parsed metadata only', async () => {
+    const first = await runChatEvaluationSuite({
       mode: 'fixture',
       generatedAt: '2026-04-29T12:00:00.000Z',
     });
-    const second = runChatEvaluationSuite({
+    const second = await runChatEvaluationSuite({
       mode: 'real_provider',
       generatedAt: '2026-04-30T12:00:00.000Z',
     });

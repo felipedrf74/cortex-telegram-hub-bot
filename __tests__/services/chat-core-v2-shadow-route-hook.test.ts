@@ -268,6 +268,69 @@ describe('Chat Core v2 shadow route hook', () => {
     });
   });
 
+  it('records resolver-vs-surface routing divergence telemetry additively in the replay row', () => {
+    const result = runChatCoreV2ShadowRouteHook({
+      ...BASE,
+      chatRequestId: 'chat-shadow-hook-divergence',
+      env: ENABLED_ENV,
+      db,
+    });
+    expect(result.recorded).toBe(true);
+
+    const bundles = listChatV2ReplayBundlesForTurn('chat-shadow-hook-divergence', db);
+    expect(bundles).toHaveLength(1);
+    const contextPack = bundles[0].bundle?.contextPack as {
+      routingDivergence?: {
+        divergenceVersion: string;
+        resolverVersion: string;
+        topCandidate: { capabilityId: string; domain: string; skill: string; rawScore: number; matchedEvidenceCount: number } | null;
+        candidateCount: number;
+        surfaces: { shadowRouteIntent: string; shadowRouteDomains: string[]; registryActionSkills: string[] };
+        agreement: { shadowRoute: boolean | null; registrySubset: boolean | null };
+      };
+      messageHash?: string;
+    };
+    const divergence = contextPack.routingDivergence;
+    expect(divergence).toBeDefined();
+    expect(divergence!.divergenceVersion).toBe('routing_divergence_shadow@1.0.0');
+    expect(divergence!.resolverVersion).toBe('manifest-intent-resolver@1.0.0');
+    // "Create a task to buy milk tomorrow" — resolver and shadow route agree on secretary/tasks.
+    expect(divergence!.topCandidate).toMatchObject({ capabilityId: 'secretary', domain: 'secretary' });
+    expect(divergence!.topCandidate!.rawScore).toBeGreaterThan(0);
+    expect(divergence!.topCandidate!.matchedEvidenceCount).toBeGreaterThan(0);
+    expect(divergence!.surfaces.shadowRouteDomains).toEqual(['tasks']);
+    expect(divergence!.agreement.shadowRoute).toBe(true);
+    // Privacy posture unchanged: raw text never appears in the serialized row.
+    const serialized = JSON.stringify(bundles[0].bundle);
+    expect(serialized).not.toContain(BASE.normalizedText);
+    // Additive: the pre-existing row fields are untouched.
+    expect(contextPack.messageHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('never lets a resolver throw break the recorded turn (fail-open divergence telemetry)', () => {
+    const result = runChatCoreV2ShadowRouteHook({
+      ...BASE,
+      chatRequestId: 'chat-shadow-hook-divergence-throw',
+      env: ENABLED_ENV,
+      db,
+      routingDivergenceDeps: {
+        resolveIntent: () => {
+          throw new Error('synthetic resolver failure');
+        },
+      },
+    });
+
+    // The turn is recorded exactly as before — divergence telemetry is simply absent.
+    expect(result.enabled).toBe(true);
+    expect(result.recorded).toBe(true);
+    expect(result.result?.wouldExecute).toBe(false);
+    const bundles = listChatV2ReplayBundlesForTurn('chat-shadow-hook-divergence-throw', db);
+    expect(bundles).toHaveLength(1);
+    const contextPack = bundles[0].bundle?.contextPack as { routingDivergence?: unknown; messageHash?: string };
+    expect(contextPack.routingDivergence).toBeUndefined();
+    expect(contextPack.messageHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('classifies mixed-language task creation as a task create action', () => {
     expect(classifyShadowRoute('Create uma tarefa chamada parity planner check')).toMatchObject({
       intent: 'create_action',

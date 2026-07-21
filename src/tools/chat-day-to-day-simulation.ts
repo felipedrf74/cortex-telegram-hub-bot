@@ -5,9 +5,16 @@ import {
   runDayToDaySimulationSuite,
 } from '../services/chat-day-to-day-simulation';
 
-const result = runDayToDaySimulationSuite();
-console.log(formatDayToDaySimulationResultsMarkdown(result));
+async function main(): Promise<void> {
+  const result = await runDayToDaySimulationSuite();
+  console.log(formatDayToDaySimulationResultsMarkdown(result));
 
-if (!result.passed) {
-  process.exitCode = 1;
+  if (!result.passed) {
+    process.exitCode = 1;
+  }
 }
+
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exitCode = 1;
+});
