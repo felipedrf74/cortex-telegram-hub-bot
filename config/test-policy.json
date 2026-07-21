@@ -179,6 +179,8 @@
   },
   "dispositionRules": [
     { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
+    { "pattern": "__tests__/scripts/production-migration-lineage.test.ts", "disposition": "keep", "reason": "Protects the signed retired-migration inventory, exact lineage matching, replacement identities, and fail-closed malformed-policy handling." },
+    { "pattern": "__tests__/migrations/training-session-schedule-truth-reconciliation.test.ts", "disposition": "keep", "reason": "Protects fresh and historical-lineage convergence for Training schedule truth without replaying retired SQL or duplicating columns." },
     { "pattern": "__tests__/services/calendar-dedup-qa-validation.test.ts", "disposition": "delete", "reason": "The QA file repeated the primary fingerprint and merge matrix; its only distinct richness branch is now a public-behavior case in calendar-dedup.test.ts." },
     { "pattern": "__tests__/services/calendar-dedup.test.ts", "disposition": "keep", "reason": "Primary calendar deduplication contract covers provider order, conservative interval union, all-day normalization, source preservation, and same-provider cleanup visibility." },
     { "pattern": "__tests__/adapters/whatsapp-adapter-qa-validation.test.ts", "disposition": "delete", "reason": "Fragmented QA assertions repeated the same HTTP calls and compile-time export checks; unique MIME, API-version, and post-upload failure contracts were merged into the primary suite." },

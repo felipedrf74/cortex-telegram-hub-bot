@@ -40,6 +40,7 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'scripts/production-shape-migration-rehearsal.mjs',
   'scripts/validate-production-shape-migration-rehearsal.mjs',
   'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/lib/production-migration-lineage.mjs',
   'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/remote-prepare-release-backup.sh',
   'scripts/remote-start-sanitized-pm2.sh',

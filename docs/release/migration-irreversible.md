@@ -74,7 +74,7 @@ The changed-only migration gate has three deliberately distinct modes:
   rejected even when an approval artifact is present.
 - `--approval-mode promotion` revalidates that same approval artifact and also
   requires fresh online and stopped-final
-  `nexus.production-shape-migration-rehearsal.v1` records plus
+  `nexus.production-shape-migration-rehearsal.v2` records plus
   a later `nexus.exact-migration-backup-evidence.v2` record under
   `.local/release/production/`. The record binds the predecessor and target
   runtime SHAs, target version and artifact, one-time promotion run, policy
@@ -82,6 +82,15 @@ The changed-only migration gate has three deliberately distinct modes:
   remote archive path, archive SHA-256 and size, and the stopped-owner, closed-
   handle, WAL-checkpoint, SQLite-integrity, foreign-key, and archive-digest
   proofs.
+
+The rehearsal also validates `config/production-migration-lineages.json`.
+Databases with no retired rows use the canonical lineage. A deployed lineage
+may retain only an exact, artifact-signed set of historical filenames whose
+original SQL identity, provenance, and canonical replacement are recorded in
+that policy. Unknown extras, partial retired sets, executable retired SQL,
+replacement drift, or a gap in the remaining canonical prefix fail before the
+production stop. Rehearsal evidence binds the policy digest and selected
+lineage; production ledger rows are never deleted to manufacture compatibility.
 
 The canonical promotion script creates and validates one production-shape
 rehearsal while both database owners remain online and before its stop marker.

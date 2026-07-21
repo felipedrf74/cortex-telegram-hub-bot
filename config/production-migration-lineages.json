@@ -1,0 +1,201 @@
+{
+  "schema": "nexus.production-migration-lineages.v1",
+  "lineages": [
+    {
+      "id": "production-2026-05-branch-history",
+      "reason": "retain_verified_deployed_branch_history_without_replaying_retired_sql",
+      "migrations": [
+        {
+          "file": "136_nexus_points_usage_limits.sql",
+          "sha256": "75c6468e297e17d164af19bea2534898a5e038febf5d4b9182839b6c7bbd211c",
+          "sourceCommit": "48b0769a0cfc48c56662bad04fe9c09b4b1a4c1a",
+          "replacement": {
+            "file": "150_nexus_points_usage_limits.sql",
+            "sha256": "3954b123a915d40a87449375607947d789694ee76b49184e8beed0659379c245",
+            "relationship": "comment_only_renumber"
+          }
+        },
+        {
+          "file": "136_training_session_schedule_truth.sql",
+          "sha256": "56924b85dab1ffb1513103f4a2a16cac5562b135fdf4468077fbcd42e16fc7d1",
+          "sourceCommit": "cb2c262ff1f77f55ccee6267e7cf1d1970b1ff05",
+          "replacement": {
+            "file": "255_training_session_schedule_truth_reconciliation.sql",
+            "sha256": "85b63a55bcbf60617bc5107d2fd6612ed944b97f63411f23d13d55349762a2fa",
+            "relationship": "schema_reconciliation"
+          }
+        },
+        {
+          "file": "137_nexus_points_settlement_hardening.sql",
+          "sha256": "ac25f14d3ad20ff76f17c32e905ad39d30a29b23162ca38030ff7c1a213c9a58",
+          "sourceCommit": "48b0769a0cfc48c56662bad04fe9c09b4b1a4c1a",
+          "replacement": {
+            "file": "151_nexus_points_settlement_hardening.sql",
+            "sha256": "df9f1c1a9586088e4ea947c6162f34c2ab4b75b92d1342e32979338407f395cf",
+            "relationship": "comment_only_renumber"
+          }
+        },
+        {
+          "file": "155_plan_adaptation_revision.sql",
+          "sha256": "7196d2a4c76e47b68213c51c82e11a9076e53a09822cb9720843ec0cbac1a024",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "180_plan_adaptation_revision.sql",
+            "sha256": "7196d2a4c76e47b68213c51c82e11a9076e53a09822cb9720843ec0cbac1a024",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "156_chat_eval_history.sql",
+          "sha256": "dcf9fb28e695d56c6d75aefeaf9cab933f758197a337148047705ff87a0541ba",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "181_chat_eval_history.sql",
+            "sha256": "dcf9fb28e695d56c6d75aefeaf9cab933f758197a337148047705ff87a0541ba",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "157_chat_core_v2_model_audit.sql",
+          "sha256": "8683720c82bc5ce1c0111df2f288bdc4cc9f22a705a308cb871518a0bbce0b8b",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "178_chat_core_v2_model_audit.sql",
+            "sha256": "8683720c82bc5ce1c0111df2f288bdc4cc9f22a705a308cb871518a0bbce0b8b",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "158_chat_core_v2_memory.sql",
+          "sha256": "4e22201440f8fa23be5485b644c3b2917eb8fc9e919ef352ed6da384effc218f",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "182_chat_core_v2_memory.sql",
+            "sha256": "4e22201440f8fa23be5485b644c3b2917eb8fc9e919ef352ed6da384effc218f",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "159_chat_core_v2_command_events.sql",
+          "sha256": "005176b00dba2c5b0c6ca477ca578aeef4826242c925c7ede3e0652e483509c0",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "183_chat_core_v2_command_events.sql",
+            "sha256": "005176b00dba2c5b0c6ca477ca578aeef4826242c925c7ede3e0652e483509c0",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "160_chat_core_v2_human_reviews.sql",
+          "sha256": "74a8f40c3cad791c318768e64f28e4512d3ff2b38610332838c4cf2fcebd6eef",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "184_chat_core_v2_human_reviews.sql",
+            "sha256": "74a8f40c3cad791c318768e64f28e4512d3ff2b38610332838c4cf2fcebd6eef",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "162_chat_core_v2_online_eval_samples.sql",
+          "sha256": "e87d310f85996f91e31b918c38e08ea8a74826ccc04fca71dd54664f0cd933c9",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "185_chat_core_v2_online_eval_samples.sql",
+            "sha256": "e87d310f85996f91e31b918c38e08ea8a74826ccc04fca71dd54664f0cd933c9",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "163_training_plan_adaptations.sql",
+          "sha256": "2fc9d5954c5f64d373227e2c0910c5a8e852cc27905ee8560cc653c6d5f3fbcb",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "186_training_plan_adaptations.sql",
+            "sha256": "2fc9d5954c5f64d373227e2c0910c5a8e852cc27905ee8560cc653c6d5f3fbcb",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "164_completion_feedback_v2.sql",
+          "sha256": "6aa290837242d8176c0517cf430d607249e21686bc1408847d634a5c7cca1305",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "187_completion_feedback_v2.sql",
+            "sha256": "6aa290837242d8176c0517cf430d607249e21686bc1408847d634a5c7cca1305",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "165_athlete_readiness_and_health_events.sql",
+          "sha256": "139ea2bc60c21fd60050ead280ea0c5d2c87b8e2b117cb89b062d933ca682f15",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "188_athlete_readiness_and_health_events.sql",
+            "sha256": "139ea2bc60c21fd60050ead280ea0c5d2c87b8e2b117cb89b062d933ca682f15",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "166_coach_plan_policy.sql",
+          "sha256": "05d16ad0a283c7b2edfc3bf9b512528965589dab4b01e794f9e2eca761c65cb6",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "189_coach_plan_policy.sql",
+            "sha256": "05d16ad0a283c7b2edfc3bf9b512528965589dab4b01e794f9e2eca761c65cb6",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "167_athlete_session_preferences.sql",
+          "sha256": "0253b68fb4688a508677786dd826c936bb22e323b9ffca45b1b57ad2ce7ab3ce",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "190_athlete_session_preferences.sql",
+            "sha256": "0253b68fb4688a508677786dd826c936bb22e323b9ffca45b1b57ad2ce7ab3ce",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "168_travel_windows_and_equipment_overrides.sql",
+          "sha256": "a570aad4bb3dc1d61619dffadc2033f6c7c405a2872ab4e5c8bff558bd03df5f",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "191_travel_windows_and_equipment_overrides.sql",
+            "sha256": "4652af6dc59179d489fd56d2ce7e478f3fe6129b007c56f39636adfdc4e98420",
+            "relationship": "comment_only_renumber"
+          }
+        },
+        {
+          "file": "169_local_request_units.sql",
+          "sha256": "93e1918defbb8d9e33be80afa1bcddc81d9f2f736f1ce788b11fda20156e142e",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "192_local_request_units.sql",
+            "sha256": "93e1918defbb8d9e33be80afa1bcddc81d9f2f736f1ce788b11fda20156e142e",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "170_script_generation_runs.sql",
+          "sha256": "30b88051907e6d4f693b6a8298d8037d7980659705831917871c2450c38090f8",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "193_script_generation_runs.sql",
+            "sha256": "30b88051907e6d4f693b6a8298d8037d7980659705831917871c2450c38090f8",
+            "relationship": "byte_identical_renumber"
+          }
+        },
+        {
+          "file": "171_classify_shadow_runs.sql",
+          "sha256": "18b8609704407c5e432eb105157329d1362fde66f93cfc6507154681e86b7dce",
+          "sourceCommit": "8b8148bc573ab0429e2550f42d1856dd162b6bca",
+          "replacement": {
+            "file": "194_classify_shadow_runs.sql",
+            "sha256": "18b8609704407c5e432eb105157329d1362fde66f93cfc6507154681e86b7dce",
+            "relationship": "byte_identical_renumber"
+          }
+        }
+      ]
+    }
+  ]
+}
