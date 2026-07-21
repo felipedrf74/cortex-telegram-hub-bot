@@ -129,13 +129,17 @@ atomically selects it and records native/database, authenticated Content
 Engine, stable PM2 identity, and smoke evidence against the exact digest.
 `release:promote` requires a matching staging proof and explicit owner
 authorization. State-coupled migrations additionally require a fresh,
-aggregate-only `nexus.production-shape-migration-rehearsal.v1` proof created
+aggregate-only `nexus.production-shape-migration-rehearsal.v2` proof created
 from a same-host SQLite online backup while the predecessor stays online. After
 the exact stopped-state archive exists, promotion reruns the same proof against
 the quiescent source and requires its source digest to equal the archived
 database digest. The later `nexus.exact-migration-backup-evidence.v2` record
 binds both rehearsals before candidate mutation; all three local records are
 private, promotion-run-bound, and fail rather than overwrite an existing path.
+Each rehearsal binds the signed retired-migration policy and either the empty
+canonical lineage or one exact historical ledger set. It rejects unknown or
+partial retired rows while requiring all non-retired rows to remain an exact
+candidate prefix; no production ledger mutation is used as a release shortcut.
 A candidate introducing the
 canonical Content workspace migrations also proves, without logging any
 identifier, that exactly one persisted active owner belongs to an explicitly scoped

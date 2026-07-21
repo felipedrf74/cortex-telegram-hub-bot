@@ -63,9 +63,11 @@ if (!['none', 'scan', 'review', 'promotion'].includes(approvalMode)) {
 const irreversiblePolicy = loadIrreversibleMigrationPolicy({ root });
 const irreversiblePolicyGovernanceReasons = new Map([
   ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
+  ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
   ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
   ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
   ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
+  ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
   ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
   ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
   ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],

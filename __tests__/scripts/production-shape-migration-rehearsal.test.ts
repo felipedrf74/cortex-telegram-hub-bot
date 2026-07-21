@@ -21,6 +21,10 @@ import {
   validateProductionShapeMigrationRehearsalEvidence,
 } from '../../scripts/lib/production-shape-migration-rehearsal-evidence.mjs';
 import { loadIrreversibleMigrationPolicy } from '../../scripts/lib/irreversible-migration-policy.mjs';
+import {
+  loadProductionMigrationLineagePolicy,
+  resolveProductionMigrationLineage,
+} from '../../scripts/lib/production-migration-lineage.mjs';
 import { RELEASE_RUNTIME_FILES } from '../../scripts/lib/release-artifact-manifest.mjs';
 import { applyPendingMigrations } from '../../src/services/migration-runner';
 
@@ -117,6 +121,21 @@ describe('production-shape migration rehearsal', () => {
     });
   }
 
+  function seedRetiredProductionLineage(db: Database.Database): string[] {
+    const lineage = loadProductionMigrationLineagePolicy({ root: ROOT }).lineages[0];
+    db.exec(`
+      ALTER TABLE training_sessions ADD COLUMN scheduled_start_at TEXT;
+      ALTER TABLE training_sessions ADD COLUMN scheduled_end_at TEXT;
+      ALTER TABLE training_sessions ADD COLUMN schedule_status TEXT;
+      ALTER TABLE training_sessions ADD COLUMN schedule_reason_code TEXT;
+      CREATE INDEX idx_training_sessions_schedule_truth
+        ON training_sessions(plan_id, scheduled_start_at, schedule_status);
+    `);
+    const record = db.prepare('INSERT INTO _migrations (filename) VALUES (?)');
+    for (const file of lineage.migrationFiles) record.run(file);
+    return [...lineage.migrationFiles];
+  }
+
   function expectNoClone(): void {
     const temporary = join(base, '.local', 'release');
     const remaining = existsSync(temporary)
@@ -207,6 +226,47 @@ describe('production-shape migration rehearsal', () => {
     expectNoClone();
   });
 
+  it('accepts the exact retired production lineage without changing the source ledger', { timeout: 60_000 }, () => {
+    const { db, source } = createSource({ seedPipeline: false });
+    try {
+      const retiredFiles = seedRetiredProductionLineage(db);
+      const before = db.prepare('SELECT filename FROM _migrations ORDER BY filename').all();
+      const result = invoke(source);
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      const policy = loadProductionMigrationLineagePolicy({ root: ROOT });
+      expect(evidence.source).toMatchObject({
+        migrationLineageId: 'production-2026-05-branch-history',
+        retiredMigrationCount: 19,
+        retiredMigrationSetSha256: policy.lineages[0].migrationSetSha256,
+        retiredMigrationPolicySha256: policy.sha256,
+      });
+      expect(retiredFiles).toHaveLength(19);
+      expect(db.prepare('SELECT filename FROM _migrations ORDER BY filename').all()).toEqual(before);
+      expect(db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(
+        '255_training_session_schedule_truth_reconciliation.sql',
+      )).toBeUndefined();
+    } finally { db.close(); }
+    expectNoClone();
+  });
+
+  it('rejects missing or unknown retired lineage rows', { timeout: 60_000 }, () => {
+    const { db, source } = createSource({ seedPipeline: false });
+    try {
+      const retiredFiles = seedRetiredProductionLineage(db);
+      db.prepare('DELETE FROM _migrations WHERE filename = ?').run(retiredFiles[0]);
+      let result = invoke(source);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('source_retired_migration_lineage_unrecognized');
+      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(retiredFiles[0]);
+      db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run('999_unknown.sql');
+      result = invoke(source);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('source_retired_migration_lineage_unrecognized');
+    } finally { db.close(); }
+    expectNoClone();
+  });
+
   it('rejects a wrong source path before creating a clone', () => {
     const wrong = join(base, 'wrong.db');
     writeFileSync(wrong, 'not a database', { mode: 0o600 });
@@ -269,6 +329,8 @@ describe('production-shape rehearsal evidence validation', () => {
   const policy = '9'.repeat(64);
   const runId = '20260718T231000Z-5252-fedcba654321';
   const candidate = candidateMigrationIdentity(ROOT);
+  const lineagePolicy = loadProductionMigrationLineagePolicy({ root: ROOT });
+  const canonicalLineage = resolveProductionMigrationLineage(lineagePolicy, []);
 
   function validEvidence(createdAt = new Date().toISOString()) {
     return {
@@ -283,6 +345,10 @@ describe('production-shape rehearsal evidence validation', () => {
         readOnlyConnection: true, onlineBackup: true, alreadyMigrated: false,
         appliedMigrationCount: 233, migrationSetSha256: 'a'.repeat(64),
         databaseSha256: 'e'.repeat(64),
+        migrationLineageId: canonicalLineage.id,
+        retiredMigrationCount: canonicalLineage.migrationCount,
+        retiredMigrationSetSha256: canonicalLineage.migrationSetSha256,
+        retiredMigrationPolicySha256: lineagePolicy.sha256,
       },
       candidate: {
         migrationCount: candidate.migrationCount,
@@ -332,6 +398,10 @@ describe('production-shape rehearsal evidence validation', () => {
         [(value: any) => { value.migrationPolicySubjectSha256 = '0'.repeat(64); }, 'migration_policy_subject_mismatch'],
         [(value: any) => { value.candidate.migrationSetSha256 = '0'.repeat(64); }, 'candidate_migration_set_mismatch'],
         [(value: any) => { value.source.databaseRelativePath = 'other.db'; }, 'source_database_identity_invalid'],
+        [(value: any) => { value.source.retiredMigrationPolicySha256 = '0'.repeat(64); }, 'retired_migration_policy_mismatch'],
+        [(value: any) => { value.source.migrationLineageId = 'unknown'; }, 'source_migration_lineage_invalid'],
+        [(value: any) => { value.source.retiredMigrationCount = 1; }, 'retired_migration_count_mismatch'],
+        [(value: any) => { value.source.retiredMigrationSetSha256 = '0'.repeat(64); }, 'retired_migration_set_mismatch'],
         [(value: any) => { value.checks.temporaryCloneCleanup = 'pending'; }, 'clone_cleanup_not_proved'],
       ] as Array<[(value: any) => void, string]>) {
         const tampered = validEvidence();
