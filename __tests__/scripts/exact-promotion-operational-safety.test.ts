@@ -302,6 +302,54 @@ node -e 'const x=JSON.parse(process.argv[1]);if(x.ok!==true)process.exit(1)' "$j
     expect(fixture.stderr).toContain('[production launch warning] fixture');
   });
 
+  it('terminates both rehearsal digest records so strict Bash reads do not fail at EOF', () => {
+    const raw = source(PROMOTE);
+    expect(raw.split('].join(" ") + "\\n"').length - 1).toBe(2);
+    const digest = 'a'.repeat(64);
+    const valid = {
+      evidenceSha256: digest,
+      cloneSha256: digest,
+      migratedCloneSha256: digest,
+      pendingMigrationSetSha256: digest,
+      sourceDatabaseSha256: digest,
+    };
+    const phases = [
+      {
+        prefix: 'MIGRATION_REHEARSAL',
+        invalidError: 'migration rehearsal returned an invalid identity',
+      },
+      {
+        prefix: 'FINAL_MIGRATION_REHEARSAL',
+        invalidError: 'final migration rehearsal returned an invalid identity',
+      },
+    ];
+
+    for (const phase of phases) {
+      const start = raw.indexOf(`  read -r ${phase.prefix}_SHA256`);
+      const endMarker = '\n  done';
+      const end = raw.indexOf(endMarker, start) + endMarker.length;
+      expect(start, `${phase.prefix} digest reader`).toBeGreaterThan(-1);
+      expect(end, `${phase.prefix} digest validator`).toBeGreaterThan(start);
+      const block = raw.slice(start, end);
+      const run = (payload: typeof valid) => spawnSync(
+        'bash',
+        ['-c', `set -euo pipefail
+${phase.prefix}_VALIDATION='${JSON.stringify(payload)}'
+${block}
+printf 'parser_completed\\n'`],
+        { cwd: ROOT, encoding: 'utf8' },
+      );
+
+      const success = run(valid);
+      expect(success.status, success.stderr).toBe(0);
+      expect(success.stdout).toBe('parser_completed\n');
+
+      const malformed = run({ ...valid, sourceDatabaseSha256: 'bad' });
+      expect(malformed.status).toBe(1);
+      expect(malformed.stderr).toContain(phase.invalidError);
+    }
+  });
+
   it('restarts the untouched predecessor when final rehearsal fails after backup but before mutation', () => {
     const raw = source(PROMOTE);
     const finalRehearsal = raw.indexOf('stopped_final stopped');

@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "29c74cba3e99a6d922c6a45fb60cc5caef030f9de29a6e041a17618ac448eaf0",
-    "baseCommit": "5a02ac44deb96a0ebeaa2e7d39abd9fb85e08ebe",
-    "baseCommitTimestamp": "2026-07-21T18:51:56+01:00",
+    "sourceDigest": "a88a3db397d77267ac8c2cfc614173d951176df401d0442efdc13771b40b88c2",
+    "baseCommit": "28ac61759b2a26177697181661c634c82f6ac31c",
+    "baseCommitTimestamp": "2026-07-21T23:43:04+01:00",
     "trackedFiles": 2749,
     "sourceFiles": 1022
   },
@@ -5426,7 +5426,7 @@
     },
     {
       "path": "package-lock.json",
-      "bytes": 340642,
+      "bytes": 342460,
       "generated": false
     },
     {
