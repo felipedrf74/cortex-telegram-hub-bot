@@ -12,7 +12,7 @@ import * as msTodo from './microsoft-todo';
 import type { TodoTask } from './microsoft-todo';
 import { getEvents, getEventsWithDiagnostics, hasConnectedCalendarForUser, isAnyCalendarConfigured, type UnifiedCalendarEvent, type UnifiedCalendarFetchStatus } from './unified-calendar';
 import { getUnreadCountForUser, isOutlookMailConfiguredForUser, isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
-import { DailyBriefingData, escapeHtml } from '../utils/telegram-formatter';
+import { DailyBriefingData, escapeHtml } from '../utils/chat-html-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 // content-discovery.ts still exists for manual /discover but removed from scheduler
 import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
@@ -1303,6 +1303,7 @@ export function startScheduler(): void {
     registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
   }
   registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
+  registerJob('chat_quality_weekly_digest', 'Chat Quality Weekly Digest', '30 7 * * 1', 'system');
   registerJob('dst_watchdog', 'DST Watchdog', '2,17,32,47 * * * *', 'system');
   registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
   registerJob('decision_center_smoke_cleanup', 'Decision Center Smoke Cleanup', '7,37 * * * *', 'system');
@@ -2604,6 +2605,32 @@ export function startScheduler(): void {
         'classify_shadow_prune: skipped (table missing or query failed)',
       );
     }
+  }), { timezone: 'UTC' });
+
+  // ── M22: chat quality weekly digest (Mon 07:30 UTC) ────────────────
+  // Builds the weekly chat-quality digest (eval trend, sampler captures,
+  // corpus labeling progress, readiness) and records it as ONE info-severity
+  // operator alert; parity/fallback readiness regressions are recorded
+  // immediately at their own severity. Delivery stays with the existing
+  // operator_alert_delivery job. Default ON (event-backbone kill-switch
+  // precedent): set CHAT_QUALITY_WEEKLY_DIGEST_DISABLED=1 to skip.
+  cron.schedule('30 7 * * 1', wrapJob('chat_quality_weekly_digest', async () => {
+    if (process.env.CHAT_QUALITY_WEEKLY_DIGEST_DISABLED === '1') {
+      return 'skipped';
+    }
+    const { runChatQualityWeeklyDigest } = await import('./chat-quality-digest');
+    const result = await runChatQualityWeeklyDigest();
+    logger.info(
+      {
+        digestRecorded: result.digestRecorded,
+        regressionAlertCount: result.regressionAlertCount,
+        weekStart: result.digest.weekStart,
+        weekEnd: result.digest.weekEnd,
+        evalRunCount: result.digest.eval.current.runCount,
+        sampledCount: result.digest.sampler.current.sampledCount,
+      },
+      'Chat quality weekly digest recorded',
+    );
   }), { timezone: 'UTC' });
 
   // Seed SEO keywords (only if table is empty)

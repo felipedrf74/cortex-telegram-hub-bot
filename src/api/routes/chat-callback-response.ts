@@ -2,7 +2,7 @@
 
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { TodoTask } from '../../services/microsoft-todo';
-import { escapeHtml, formatMsTodoTasks } from '../../utils/telegram-formatter';
+import { escapeHtml, formatMsTodoTasks } from '../../utils/chat-html-formatter';
 import {
   buildDeleteConfirmationButtons,
   buildTaskActionButtons,

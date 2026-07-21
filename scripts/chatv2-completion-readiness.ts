@@ -37,44 +37,73 @@ import type { NexusAnswerCompositionMode } from '../src/services/chat-final-answ
 
 dotenv.config({ quiet: true });
 
-const limit = parsePositiveInt(readArg('--limit')) ?? 500;
-const dbPath = readArg('--db') ?? process.env.DATABASE_PATH ?? './data/bot.db';
-const failOnBlocked = hasFlag('--fail-on-blocked');
-const evidenceSources = parseEvidenceSources(readArg('--source') ?? readArg('--sources'));
 const PHASE7_REQUIRED_ROUTE_IDS = CHAT_V2_LEGACY_PARITY_ROUTE_PROMPTS.map((route) => route.routeId);
 
-const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-const legacyRetirementInput = loadLegacyRetirementInput(db, limit, evidenceSources);
-const result = {
-  schemaVersion: 'chat_v2_completion_readiness_report.v1',
-  generatedAt: new Date().toISOString(),
-  dbPath,
-  limit,
-  evidenceSources,
-  shadow: evaluateChatShadowGateReadiness({ samples: loadShadowSamples(db, limit, evidenceSources) }),
-  answerCanary: evaluateChatAnswerCanaryExit(loadAnswerCanaryInput(db, limit, evidenceSources)),
-  deterministicRead: evaluateChatDeterministicReadReadiness(
-    loadDeterministicReadInput(db, limit, evidenceSources),
-  ),
-  writePreview: evaluateChatWriteReadiness(loadWriteInput(db, 'write_preview', limit, evidenceSources)),
-  confirmedWrites: evaluateChatWriteReadiness(loadWriteInput(db, 'confirmed_writes', limit, evidenceSources)),
-  cloudAllowlist: evaluateChatCloudAllowlistReadiness(loadCloudAllowlistInput(db, limit, evidenceSources)),
-  legacyRetirement: evaluateChatLegacyRetirementReadiness(legacyRetirementInput),
-  legacyRetirementBlockers: buildLegacyRetirementBlockers(legacyRetirementInput),
-};
+export interface BuildChatV2CompletionReadinessReportOptions {
+  limit?: number;
+  evidenceSources?: readonly ChatV2ReadinessEvidenceSource[];
+  /** Informational only — recorded in the report for provenance. */
+  dbPath?: string;
+}
 
-console.log(JSON.stringify(result, null, 2));
+/**
+ * Builds the readiness artifact consumed by the chat-quality dashboard and
+ * weekly digest (loadChatV2ReadinessReportFromFile requires exactly this
+ * `chat_v2_completion_readiness_report*` schema — pinned by the contract test
+ * in __tests__/services/chatv2-readiness-alerts.test.ts). The CLI below is a
+ * thin wrapper; import this function instead of spawning the script.
+ */
+export function buildChatV2CompletionReadinessReport(
+  db: Database.Database,
+  options: BuildChatV2CompletionReadinessReportOptions = {},
+) {
+  const limit = options.limit ?? 500;
+  const evidenceSources: ChatV2ReadinessEvidenceSource[] =
+    options.evidenceSources && options.evidenceSources.length > 0
+      ? [...new Set(options.evidenceSources)]
+      : ['runtime_route'];
+  const legacyRetirementInput = loadLegacyRetirementInput(db, limit, evidenceSources);
+  return {
+    schemaVersion: 'chat_v2_completion_readiness_report.v1' as const,
+    generatedAt: new Date().toISOString(),
+    dbPath: options.dbPath ?? null,
+    limit,
+    evidenceSources,
+    shadow: evaluateChatShadowGateReadiness({ samples: loadShadowSamples(db, limit, evidenceSources) }),
+    answerCanary: evaluateChatAnswerCanaryExit(loadAnswerCanaryInput(db, limit, evidenceSources)),
+    deterministicRead: evaluateChatDeterministicReadReadiness(
+      loadDeterministicReadInput(db, limit, evidenceSources),
+    ),
+    writePreview: evaluateChatWriteReadiness(loadWriteInput(db, 'write_preview', limit, evidenceSources)),
+    confirmedWrites: evaluateChatWriteReadiness(loadWriteInput(db, 'confirmed_writes', limit, evidenceSources)),
+    cloudAllowlist: evaluateChatCloudAllowlistReadiness(loadCloudAllowlistInput(db, limit, evidenceSources)),
+    legacyRetirement: evaluateChatLegacyRetirementReadiness(legacyRetirementInput),
+    legacyRetirementBlockers: buildLegacyRetirementBlockers(legacyRetirementInput),
+  };
+}
 
-if (failOnBlocked && (
-  !result.shadow.passed
-  || !result.answerCanary.passed
-  || !result.deterministicRead.passed
-  || !result.writePreview.passed
-  || !result.confirmedWrites.passed
-  || !result.cloudAllowlist.passed
-  || !result.legacyRetirement.passed
-)) {
-  process.exitCode = 1;
+if (require.main === module) {
+  const limit = parsePositiveInt(readArg('--limit')) ?? 500;
+  const dbPath = readArg('--db') ?? process.env.DATABASE_PATH ?? './data/bot.db';
+  const failOnBlocked = hasFlag('--fail-on-blocked');
+  const evidenceSources = parseEvidenceSources(readArg('--source') ?? readArg('--sources'));
+
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const result = buildChatV2CompletionReadinessReport(db, { limit, evidenceSources, dbPath });
+
+  console.log(JSON.stringify(result, null, 2));
+
+  if (failOnBlocked && (
+    !result.shadow.passed
+    || !result.answerCanary.passed
+    || !result.deterministicRead.passed
+    || !result.writePreview.passed
+    || !result.confirmedWrites.passed
+    || !result.cloudAllowlist.passed
+    || !result.legacyRetirement.passed
+  )) {
+    process.exitCode = 1;
+  }
 }
 
 function loadShadowSamples(

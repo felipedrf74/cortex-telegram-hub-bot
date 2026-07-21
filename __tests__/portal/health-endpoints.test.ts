@@ -219,7 +219,7 @@ vi.mock('../../src/services/channel-learner', () => ({
   addAndAnalyzeChannel: vi.fn(),
   synthesizeKnowledge: vi.fn(),
 }));
-vi.mock('../../src/utils/telegram-formatter', () => ({
+vi.mock('../../src/utils/chat-html-formatter', () => ({
   escapeHtml: (s: string) => s,
   splitMessage: (s: string) => [s],
 }));

@@ -30,6 +30,8 @@ import { CONNECTIONS_ACTIONS } from './definitions/connections';
 import { NOTIFICATION_ACTIONS } from './definitions/notifications';
 import { DECISION_CENTER_ACTIONS } from './definitions/decision-center';
 import { getCapabilityUiSkillMetadata } from '../../capability-manifest';
+import { isManifestRoutingEnabled } from '../../intent-resolution/manifest-routing-flags';
+import { manifestDecisiveDomains } from '../../intent-resolution/manifest-projections';
 
 export type {
   ChatActionDefinition,
@@ -134,8 +136,36 @@ export function findChatActionDefinition(skill: ChatActionSkill, action: ChatAct
   return CHAT_ACTION_REGISTRY.find((entry) => entry.skill === skill && entry.action === action) ?? null;
 }
 
+// ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_REGISTRY) ─
+//
+// MISROUTE-FIX CONVENTION (flag on): fix a misroute with ONE manifest
+// vocabulary edit (config/capability-manifest.json routingVocabulary) plus ONE
+// corpus fixture — never by adding a new inline regex to this file. The inline
+// per-skill regexes below remain the flag-OFF legacy path only.
+//
+// Flag-on scope: the 1:1 skills (training/content/cooking/finance/connections/
+// notifications/decision_center) ALSO select from the shared manifest
+// resolver's candidates with DECISIVE evidence (see
+// MANIFEST_DECISIVE_EVIDENCE_MIN_SCORE — weak fragment-union hits measurably
+// over-select). The inline per-skill regexes stay as the frozen legacy floor
+// in both states so flag-on can only widen selection via manifest vocabulary,
+// never silently drop a skill the legacy path selected. The secretary-family
+// granularity (calendar vs reminders vs mail vs tasks) is finer than the
+// manifest's domain axis, so those four skills keep their code-owned
+// discriminators in BOTH flag states.
+const REGISTRY_SKILL_TO_MANIFEST_DOMAIN: Partial<Record<ChatActionSkill, string>> = {
+  training: 'triathlon',
+  content: 'content',
+  cooking: 'cooking',
+  finance: 'finance',
+  connections: 'connections',
+  notifications: 'notifications',
+  decision_center: 'decision_center',
+};
+
 export function selectRegistrySubsetForMessage(text: string): ChatActionDefinition[] {
   const folded = foldCalendarText(text);
+  const useManifest = isManifestRoutingEnabled('registry');
   const selected = new Set<ChatActionSkill>();
   if (hasCalendarWriteIntent(text) || /\b(calendar|calendario|agenda|evento|event)\b/.test(folded)) selected.add('secretary_calendar');
   if (/\b(remind\s+me|reminder|lembrete|lembra-?me|lembre-?me|lembrar|avisa-?me|avise-?me|avisame|alerta-?me|recordatorio|recuerdame|recu[eé]rdame)\b/.test(folded)
@@ -149,6 +179,12 @@ export function selectRegistrySubsetForMessage(text: string): ChatActionDefiniti
   if (/\b(connection|conexao|ligacao|google|outlook|garmin|health)\b/.test(folded)) selected.add('connections');
   if (/\b(notification|notificacao|notificacoes|alerta|push)\b/.test(folded)) selected.add('notifications');
   if (/\b(decision|decisao|escolha|snooze|adiar)\b/.test(folded)) selected.add('decision_center');
+  if (useManifest) {
+    const candidates = manifestDecisiveDomains(text);
+    for (const [skill, domain] of Object.entries(REGISTRY_SKILL_TO_MANIFEST_DOMAIN) as Array<[ChatActionSkill, string]>) {
+      if (candidates.has(domain)) selected.add(skill);
+    }
+  }
   if (selected.size === 0) return [];
   return getChatActionRegistry().filter(
     (entry) => selected.has(entry.skill) && entry.status === 'active',

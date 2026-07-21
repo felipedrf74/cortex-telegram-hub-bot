@@ -110,8 +110,7 @@ vi.mock('../../src/utils/date-parser', () => ({
   formatDateTime: (iso: string) => DateTime.fromISO(iso).toFormat('LLL dd HH:mm'),
 }));
 
-vi.mock('../../src/utils/telegram-formatter', () => ({
-  formatDailyBriefing: vi.fn((data: any) => `briefing:${data.date}:${data.events.length}:${data.dueTodayTasks.length}`),
+vi.mock('../../src/utils/chat-html-formatter', () => ({
   escapeHtml: (value: string) => value,
   splitMessage: (message: string) => [message],
 }));

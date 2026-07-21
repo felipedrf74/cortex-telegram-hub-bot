@@ -673,10 +673,13 @@ export function attachWebSocket(server: http.Server): void {
         // prompt, then close the message flow without invoking the
         // domain handler (so no tokens are spent on blocked users).
             try {
-              const { getUserById, getUserByTelegramId } = require('../services/user-service');
+              const { getUserById } = require('../services/user-service');
               const { checkSkillAccess } = require('../services/skill-tiers');
               const { entitlementPlanToSkillTier, getEffectiveEntitlement } = require('../services/entitlement');
-              const user = getUserById(userId) || getUserByTelegramId(userId);
+              // iOS WebSocket auth resolves the internal user id directly;
+              // the legacy platform-id fallback lookup was removed in the
+              // 2026-07 messaging-platform purge (Stage A).
+              const user = getUserById(userId);
               if (user) {
                 const entitlement = getEffectiveEntitlement(user.id);
                 const tierResult = checkSkillAccess(

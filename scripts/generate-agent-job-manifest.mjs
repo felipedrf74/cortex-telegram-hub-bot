@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-07-17.2';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-07-21.1';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -98,7 +98,7 @@ const providerCapableHandler = (policyOwner, tenantScope, inputFingerprint, over
   ...overrides,
 });
 
-// This is intentionally an explicit 55-job audit, not a domain-wide default.
+// This is intentionally an explicit 56-job audit, not a domain-wide default.
 // Adding a scheduler registration without a reviewed policy makes generation
 // fail. Provider usage means model-provider capability; calendar, mail, task,
 // Garmin, and invoice integrations remain described by their job policies but
@@ -141,6 +141,7 @@ export const JOB_POLICIES = Object.freeze({
   chat_action_run_retention: noProvider('chat-reliability', 'platform-tenant-scoped-rows'),
   chat_action_run_zombie_reaper: noProvider('chat-reliability', 'durable-queue-tenant-user', { retryPolicy: 'next-scheduled-run-after-lease-reap' }),
   chat_v2_auto_revert_eval: noProvider('chat-core-v2', 'active-chat-v2-tenant-loop', { outputPolicy: 'deterministic-policy-and-audited-mode-write' }),
+  chat_quality_weekly_digest: noProvider('ai-quality', 'platform-quality-metrics', { retryPolicy: 'next-scheduled-run', outputPolicy: 'deduped-info-operator-alert' }),
   chat_v2_gate_check: noProvider('chat-core-v2', 'platform-shadow-metrics'),
   classify_shadow_prune: noProvider('chat-core-v2', 'platform-retention'),
   conflict_detection: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'tenant-scoped-decision-intent' }),

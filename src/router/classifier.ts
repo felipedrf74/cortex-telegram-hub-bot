@@ -10,6 +10,8 @@ import { runOllamaShadowClassification } from '../services/classify-shadow';
 import { rethrowAiUsageFailClosedError } from '../services/api-usage-fallback';
 import { getActiveChatDomain } from '../services/chat-conversation-state';
 import { getCurrentContext } from '../utils/request-context';
+import { isManifestRoutingEnabled } from '../services/intent-resolution/manifest-routing-flags';
+import { resolveIntent } from '../services/intent-resolution/intent-resolver';
 
 export interface ConversationContext {
   domain: DomainName;
@@ -132,7 +134,41 @@ const TRAINING_INTENT_PATTERNS: RegExp[] = [
   /\b(dieta\s+carn[ií]vora|macros?\s+para\s+(?:cut|bulk|ganhar\s+massa|secar)|calorias?\s+de\s+manuten[çc][aã]o|nutri[çc][aã]o\s+esportiva|nutri[çc][aã]o\s+de\s+performance)\b/i,
 ];
 
+// ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_CLASSIFIER) ─
+//
+// MISROUTE-FIX CONVENTION (flag on): fix a misroute with ONE manifest
+// vocabulary edit (config/capability-manifest.json routingVocabulary —
+// for this surface: an exampleUtterance) plus ONE corpus fixture — never a
+// new inline regex.
+//
+// Flag-on scope (measured, deliberate): the manifest resolver decides the
+// domain whenever its evidence is DECISIVE — the message normalizes to a
+// seeded example utterance. Below that bar the legacy tiers still decide,
+// because M12 parity measurement showed the fragment-union evidence cannot
+// reproduce keywordMatch's tier interleaving at weak scores (identical
+// resolver scores map to different legacy outcomes, e.g. cooking:2 is a
+// legacy cooking hit for "how should i fuel after a long ride?" but a legacy
+// null for "Do not warn me twice if it is the same fueling issue."). Full
+// keyword delegation needs per-surface vocabulary tiers in the manifest
+// schema — out of M12 scope.
+const MANIFEST_KEYWORD_DOMAINS = new Set<string>(['content', 'secretary', 'finance', 'cooking', 'triathlon']);
+
+function keywordMatchViaManifestExample(message: string): DomainName | null {
+  const exampleCandidate = resolveIntent(message).find(
+    (candidate) => candidate.matchedEvidence.includes('example_utterance'),
+  );
+  if (exampleCandidate && MANIFEST_KEYWORD_DOMAINS.has(exampleCandidate.domain)) {
+    return exampleCandidate.domain as DomainName;
+  }
+  return null;
+}
+
 export function keywordMatch(message: string): DomainName | null {
+  if (isManifestRoutingEnabled('classifier')) {
+    const manifestDecision = keywordMatchViaManifestExample(message);
+    if (manifestDecision) return manifestDecision;
+    // Fall through: legacy tiers keep deciding sub-decisive evidence.
+  }
   // Explicit "make content" asks should beat subject-matter vocabulary
   // from other domains, e.g. "Write a script about recovery intervals".
   if (CONTENT_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {

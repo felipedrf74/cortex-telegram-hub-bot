@@ -1367,7 +1367,7 @@ export function registerChatMessageRoutes(
 
   /**
    * POST /api/v1/chat/message
-   * Send a message — equivalent to typing in Telegram.
+   * Send a message — the iOS chat input entrypoint.
    * Routes through Router → Domain Handler → returns AI response.
    *
    * For system commands (/day, /tasks, etc.), we route them through the
@@ -3157,7 +3157,7 @@ export function registerChatMessageRoutes(
       rememberChatActiveDomain(userId, route.domain, Date.now(), tenantId);
 
       // ─── Phase 1 Slice C — Tier gate for iOS chat entrypoint ───
-      // Same two-layer check as the Telegram handler: explicit disable
+      // Two-layer check (legacy chat-handler parity): explicit disable
       // first, then tier requirement. Fail-open on errors so a bus of
       // signal service issue never locks users out of their data.
       if (sendChatTierRequiredIfNeeded(res, userId, route.domain)) return;

@@ -33,6 +33,7 @@ import {
 } from './security';
 import { registerPortalAdminDataRoutes } from './admin-data-routes';
 import { registerPortalActionRoutes } from './action-routes';
+import { registerPortalChatQualityRoutes } from './chat-quality-routes';
 import { registerPortalChatRoutes } from './chat-routes';
 import { registerPortalContentRoutes } from './content-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
@@ -407,6 +408,8 @@ export function createPortalServer(): http.Server {
   registerPortalChatRoutes(app);
 
   registerPortalEvalHistoryRoutes(app);
+
+  registerPortalChatQualityRoutes(app);
 
   registerPortalRoutingCorpusRoutes(app);
 

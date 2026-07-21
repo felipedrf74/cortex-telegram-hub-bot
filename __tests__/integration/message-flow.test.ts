@@ -107,7 +107,7 @@ import { handleContent } from '../../src/domains/content-creator';
 import { callDomain, continueWithToolResults, classifyMessage } from '../../src/services/anthropic';
 import { addToConversation, getConversationHistory } from '../../src/state/conversation';
 import { executeToolCall } from '../../src/services/tool-executor';
-import { splitMessage } from '../../src/utils/telegram-formatter';
+import { splitMessage } from '../../src/utils/chat-html-formatter';
 
 // ─── Typed mock references ─────────────────────────────────────────
 

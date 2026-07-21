@@ -99,3 +99,14 @@ export function getCompiledIntentVocabulary(): CompiledCapabilityVocabulary[] {
 export function resetIntentVocabularyForTests(): void {
   cached = null;
 }
+
+/**
+ * Test-only seam (M12): replace the compiled vocabulary singleton with a
+ * synthetic set (e.g. an EMPTY vocabulary) so tests can prove which behaviors
+ * are manifest-driven and which are code-owned policy (safety filters must
+ * keep working with an empty vocabulary). Pair with
+ * resetIntentVocabularyForTests() in afterEach.
+ */
+export function _setCompiledIntentVocabularyForTests(entries: CompiledCapabilityVocabulary[]): void {
+  cached = entries;
+}

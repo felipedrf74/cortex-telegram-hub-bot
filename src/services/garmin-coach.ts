@@ -13,7 +13,7 @@ import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now, startOfDay, endOfDay } from '../utils/date-parser';
-import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
+import { escapeHtml, splitMessage } from '../utils/chat-html-formatter';
 import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActivityDetails } from './garmin';
 import {
   getEvents,

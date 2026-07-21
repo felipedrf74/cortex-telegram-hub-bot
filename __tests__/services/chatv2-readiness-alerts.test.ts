@@ -62,6 +62,58 @@ describe('chatv2-readiness-alerts', () => {
     expect(JSON.stringify(alerts)).not.toMatch(/raw user text|customer@example\.com|comprar suplementos/i);
   });
 
+  // M22 — producer/loader schema contract. The runbook + dashboard docstring
+  // tell the owner to produce reports/chatv2-readiness/latest.json with
+  // scripts/chatv2-completion-readiness.ts; this pins that the report that
+  // producer BUILDS is exactly what loadChatV2ReadinessReportFromFile ACCEPTS,
+  // so the regression-alert path can never be dead-wired by a schema drift.
+  it('the documented artifact producer emits a schemaVersion the dashboard loader accepts', async () => {
+    const { buildChatV2CompletionReadinessReport } = await import('../../scripts/chatv2-completion-readiness');
+    const { loadChatV2ReadinessReportFromFile } = await import('../../src/services/chat-quality-dashboard');
+    const Database = (await import('better-sqlite3')).default;
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+
+    const db = new Database(':memory:');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-readiness-contract-'));
+    try {
+      const produced = buildChatV2CompletionReadinessReport(db, { limit: 25 });
+      expect(produced.schemaVersion).toBe('chat_v2_completion_readiness_report.v1');
+
+      const artifact = path.join(dir, 'latest.json');
+      fs.writeFileSync(artifact, JSON.stringify(produced, null, 2));
+      const loaded = loadChatV2ReadinessReportFromFile(artifact);
+      expect(loaded.reason).toBeNull();
+      expect(loaded.report?.schemaVersion).toBe(produced.schemaVersion);
+    } finally {
+      db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the loader rejection reason names expected vs found schema (self-diagnosing)', async () => {
+    const { loadChatV2ReadinessReportFromFile } = await import('../../src/services/chat-quality-dashboard');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-readiness-contract-'));
+    try {
+      // The chatv2-readiness-alerts CLI --json output is an ALERTS report,
+      // not the dashboard artifact — pointing the artifact at it must fail
+      // with a reason that names both schemas.
+      const wrong = path.join(dir, 'latest.json');
+      fs.writeFileSync(wrong, JSON.stringify({ schemaVersion: 'chat_v2_readiness_alerts_report.v1' }));
+      const rejected = loadChatV2ReadinessReportFromFile(wrong);
+      expect(rejected.report).toBeNull();
+      expect(rejected.reason).toContain('chat_v2_completion_readiness_report');
+      expect(rejected.reason).toContain('chat_v2_readiness_alerts_report.v1');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('records the generated alert inputs through the durable operator-alert service', async () => {
     const { recordChatV2ReadinessOperatorAlerts } = await import('../../src/services/chatv2-readiness-alerts');
     mockRecordOperatorAlert.mockClear();

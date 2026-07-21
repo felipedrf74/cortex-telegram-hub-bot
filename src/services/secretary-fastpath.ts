@@ -34,7 +34,7 @@ import {
 import type { TodoTask } from './microsoft-todo';
 import { getRemindersForToday } from '../state/reminders';
 import { formatTime } from '../utils/date-parser';
-import { escapeHtml } from '../utils/telegram-formatter';
+import { escapeHtml } from '../utils/chat-html-formatter';
 import type { DomainName, DomainResponse } from '../domains/types';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';

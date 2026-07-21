@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "654b65a8fbb98083da725a3f9ee2791d38f793823a73236b5f270496434c2ee5",
-    "baseCommit": "8e352ff78cca685d9c6409cddf84d84a886f7fb0",
-    "baseCommitTimestamp": "2026-07-21T10:22:26+01:00",
-    "trackedFiles": 2791,
-    "sourceFiles": 1035
+    "sourceDigest": "fac50da2158d7c58a687d3293a4909c1fbb56981b9a832262711139876b3c622",
+    "baseCommit": "25d2f3e778522d0d6c3c32ebe82c2089964b2523",
+    "baseCommitTimestamp": "2026-07-21T11:35:52+01:00",
+    "trackedFiles": 2806,
+    "sourceFiles": 1040
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -74,7 +74,7 @@
     {
       "path": "src/portal",
       "owner": "backend",
-      "files": 44
+      "files": 45
     },
     {
       "path": "src/release",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 762
+      "files": 766
     },
     {
       "path": "src/skills",
@@ -443,6 +443,14 @@
       "localPath": "/api/plans/:planId",
       "mountPath": "/",
       "source": "src/portal/plan-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/portal/chat-quality",
+      "localPath": "/api/portal/chat-quality",
+      "mountPath": "/",
+      "source": "src/portal/chat-quality-routes.ts",
       "owner": "backend"
     },
     {
@@ -4239,6 +4247,14 @@
     },
     {
       "method": "GET",
+      "path": "/chat-quality",
+      "localPath": "/chat-quality",
+      "mountPath": "/",
+      "source": "src/portal/chat-quality-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
       "path": "/health",
       "localPath": "/health",
       "mountPath": "/",
@@ -4773,7 +4789,7 @@
     }
   ],
   "tests": {
-    "files": 1030,
+    "files": 1038,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4788,14 +4804,14 @@
       "integration": 2,
       "lib": 1,
       "migrations": 22,
-      "portal": 57,
+      "portal": 58,
       "regression": 1,
       "router": 3,
       "scope": 1,
-      "scripts": 56,
+      "scripts": 57,
       "sdk": 1,
       "security": 22,
-      "services": 652,
+      "services": 658,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -4808,10 +4824,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-07-15.1",
-    "count": 66,
-    "active": 66,
+    "count": 67,
+    "active": 67,
     "statusCounts": {
-      "canonical": 29,
+      "canonical": 30,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5116,6 +5132,15 @@
         "reviewedOn": "2026-07-16",
         "reviewDueOn": "2026-10-14",
         "canonicalPath": "docs/release/README.md"
+      },
+      {
+        "path": "docs/release/chat-quality-operations.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "release owner",
+        "reviewedOn": "2026-07-16",
+        "reviewDueOn": "2026-10-14",
+        "canonicalPath": "docs/release/chat-quality-operations.md"
       },
       {
         "path": "docs/release/migration-irreversible.md",

@@ -348,7 +348,7 @@ export function sendInternalError(
  * no log — and leaked `err.message` to the client. Route-level
  * failures were invisible outside raw 500 metrics. The wrapper now:
  *   - captures the error via `errorMonitor` so it persists to
- *     `error_log` + reaches Sentry + Telegram alert
+ *     `error_log` + reaches Sentry + operator alert channels
  *   - logs with the current request context so `reqId` correlates
  *   - emits a stable client-safe `INTERNAL` message while preserving
  *     the real cause in telemetry
@@ -383,7 +383,7 @@ export function asyncHandler<T extends (req: any, res: Response) => Promise<void
         return;
       }
 
-      // Record in error_log + Sentry + Telegram before responding. We
+      // Record in error_log + Sentry + operator alert channels before responding. We
       // intentionally swallow errors from `captureError` itself to avoid
       // an observability bug blocking a normal error response.
       try {

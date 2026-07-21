@@ -3,6 +3,24 @@
 import type { DomainName } from '../domains/types';
 import type { RouteResult } from '../router';
 import type { ConversationContext } from '../router/classifier';
+import { isManifestRoutingEnabled } from './intent-resolution/manifest-routing-flags';
+import { manifestDomainMatches } from './intent-resolution/manifest-projections';
+
+// ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_ORCHESTRATOR) ─
+//
+// MISROUTE-FIX CONVENTION (flag on): fix a misroute with ONE manifest
+// vocabulary edit (config/capability-manifest.json routingVocabulary) plus ONE
+// corpus fixture — never by adding a new inline regex to this file. The inline
+// SKILL_PATTERNS below remain the flag-OFF legacy path only.
+//
+// Flag-on scope (deliberate): SKILL_PATTERNS (domain vocabulary) become
+// projections of the compiled manifest vocabulary. SCHEDULING_PATTERNS,
+// ACTION/DESTRUCTIVE/EXPLANATION/etc. remain code-owned INTENT-KIND policy
+// matchers — the manifest's axis is capability/domain vocabulary and has no
+// intent-kind dimension, so projecting scheduling from it would collapse
+// "any secretary term" into "scheduling intent" and break routing parity.
+// The >=0.86 override semantics and all thresholds are unchanged (M14 owns
+// thresholds).
 
 export type NexusSkillId =
   | 'secretary'
@@ -311,8 +329,16 @@ function resolveInvolvedSkills(
   routedDomain?: DomainName | null,
 ): NexusSkillId[] {
   const skills = new Set<NexusSkillId>();
-  for (const { skill, pattern } of SKILL_PATTERNS) {
-    if (pattern.test(message)) skills.add(skill);
+  if (isManifestRoutingEnabled('orchestrator')) {
+    // Same skill set, evidence sourced from the shared manifest vocabulary.
+    for (const { skill } of SKILL_PATTERNS) {
+      const domain = SKILL_TO_DOMAIN[skill];
+      if (domain && manifestDomainMatches(domain, message)) skills.add(skill);
+    }
+  } else {
+    for (const { skill, pattern } of SKILL_PATTERNS) {
+      if (pattern.test(message)) skills.add(skill);
+    }
   }
   if (activeContext?.domain && DOMAIN_TO_SKILL[activeContext.domain]) {
     skills.add(DOMAIN_TO_SKILL[activeContext.domain]);

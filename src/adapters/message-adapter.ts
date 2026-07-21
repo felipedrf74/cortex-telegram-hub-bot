@@ -62,12 +62,12 @@ export interface SendVoiceOptions {
 /**
  * Platform-agnostic messaging interface.
  *
- * Concrete adapters (TelegramAdapter, WhatsAppAdapter, DiscordAdapter)
+ * Concrete adapters (IOSAdapter, WhatsAppAdapter)
  * implement this contract so the Hub Core and skills can send messages
  * without knowing which platform they're running on.
  */
 export interface MessageAdapter {
-  /** Platform identifier (e.g. 'telegram', 'whatsapp', 'discord') */
+  /** Platform identifier (e.g. 'ios', 'whatsapp') */
   readonly platform: string;
 
   /**

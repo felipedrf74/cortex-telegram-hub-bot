@@ -35,7 +35,7 @@ type FetchFn = (url: string, init: RequestInit) => Promise<{ ok: boolean; status
  * Uses Node's built-in fetch (Node 20+) or an injected fetch function.
  * Each instance is scoped to a single recipient phone number.
  *
- * WhatsApp limitations vs Telegram:
+ * WhatsApp Cloud API limitations:
  * - Interactive buttons are limited to 3 per message
  * - Messages cannot be edited after sending (editMessage throws)
  * - Messages cannot be deleted for recipients (deleteMessage throws)

@@ -68,48 +68,31 @@ describe('P0 identity: creator-config.md is a NEUTRAL template', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 3. Daily-briefing greeting is parameterized — never hardcoded "Felipe"
+// 3. Chat HTML formatter never hardcodes a founder greeting
 // ═══════════════════════════════════════════════════════════════════
+//
+// 2026-07 Telegram purge (Stage A): the legacy `telegram-formatter` module
+// and its `formatDailyBriefing` greeting (the original hardcoded-"Felipe"
+// risk surface) were removed. The surviving live formatters moved to
+// `chat-html-formatter`; this pin keeps the identity guarantee on the
+// successor module and ensures the legacy module does not come back.
 
-describe('P0 identity: daily briefing greeting is recipient-scoped', () => {
-  it('telegram-formatter does NOT contain a hardcoded "Felipe" greeting', () => {
+describe('P0 identity: chat formatter is founder-name free', () => {
+  it('chat-html-formatter does NOT contain a hardcoded "Felipe" greeting', () => {
     const source = fs.readFileSync(
-      path.join(REPO_ROOT, 'src/utils/telegram-formatter.ts'),
+      path.join(REPO_ROOT, 'src/utils/chat-html-formatter.ts'),
       'utf8',
     );
     expect(source).not.toContain('Good morning, Felipe!');
     expect(source).not.toContain('Bom dia, Felipe!');
+    // No greeting copy at all may bake in a name (license header excluded).
+    expect(source).not.toMatch(/(Good morning|Bom dia), [A-Z]/);
   });
 
-  it('formatDailyBriefing accepts a recipientDisplayName parameter', async () => {
-    const mod = await import('../../src/utils/telegram-formatter');
-    const data = {
-      date: 'Tuesday',
-      events: [],
-      training: undefined,
-      highPriorityTasks: [],
-      dueTodayTasks: [],
-      overdueTasks: [],
-      reminders: [],
-      unreadEmails: 0,
-      yesterdayCompleted: 0,
-    };
-
-    // Recipient name = 'Jaqueline' must produce a "Good morning, Jaqueline!"
-    // greeting and never default to Felipe.
-    const englishOutput = mod.formatDailyBriefing(data as any, 'en-US', 'Jaqueline');
-    expect(englishOutput).toContain('Good morning, Jaqueline!');
-    expect(englishOutput).not.toContain('Felipe');
-
-    const portugueseOutput = mod.formatDailyBriefing(data as any, 'pt-PT', 'Jaqueline');
-    expect(portugueseOutput).toContain('Bom dia, Jaqueline!');
-    expect(portugueseOutput).not.toContain('Felipe');
-
-    // Empty recipient → name-less greeting, NEVER substitute a default name.
-    const emptyOutput = mod.formatDailyBriefing(data as any, 'en-US', '');
-    expect(emptyOutput).toContain('Good morning!');
-    expect(emptyOutput).not.toContain('Felipe');
-    expect(emptyOutput).not.toContain('Jaqueline');
+  it('the legacy telegram-formatter module (hardcoded-greeting surface) is gone', async () => {
+    expect(fs.existsSync(path.join(REPO_ROOT, 'src/utils/telegram-formatter.ts'))).toBe(false);
+    const mod = await import('../../src/utils/chat-html-formatter');
+    expect((mod as any).formatDailyBriefing).toBeUndefined();
   });
 });
 
