@@ -272,6 +272,36 @@ describe('exact production promotion operational safety', () => {
     expect(raw.slice(strictGate, candidateMutation)).toContain('--final-rehearsal-evidence');
   });
 
+  it('keeps rehearsal diagnostics separate from JSON evidence in both phases', () => {
+    const raw = source(PROMOTE);
+    const captures = [
+      ['MIGRATION_REHEARSAL_OUTPUT="$(', 'MIGRATION_REHEARSAL_EXIT=$?'],
+      ['FINAL_MIGRATION_REHEARSAL_OUTPUT="$(', 'FINAL_MIGRATION_REHEARSAL_EXIT=$?'],
+    ] as const;
+
+    for (const [startMarker, endMarker] of captures) {
+      const start = raw.indexOf(startMarker);
+      const end = raw.indexOf(endMarker, start);
+      const capture = raw.slice(start, end);
+
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      expect(capture).toContain('remote-production-shape-migration-rehearsal.sh');
+      expect(capture).not.toContain('2>&1');
+      expect(capture).not.toContain('2>/dev/null');
+    }
+
+    const fixture = spawnSync(
+      'bash',
+      ['-c', `set -euo pipefail
+json="$(node -e 'process.stderr.write("[production launch warning] fixture\\n");process.stdout.write("{\\"ok\\":true}")')"
+node -e 'const x=JSON.parse(process.argv[1]);if(x.ok!==true)process.exit(1)' "$json"`],
+      { cwd: ROOT, encoding: 'utf8' },
+    );
+    expect(fixture.status, fixture.stderr).toBe(0);
+    expect(fixture.stderr).toContain('[production launch warning] fixture');
+  });
+
   it('restarts the untouched predecessor when final rehearsal fails after backup but before mutation', () => {
     const raw = source(PROMOTE);
     const finalRehearsal = raw.indexOf('stopped_final stopped');

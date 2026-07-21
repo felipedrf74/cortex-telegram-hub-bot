@@ -93,7 +93,11 @@ describe('production-shape migration rehearsal', () => {
     return { db, source };
   }
 
-  function invoke(source: string, overrides: string[] = []) {
+  function invoke(
+    source: string,
+    overrides: string[] = [],
+    envOverrides: NodeJS.ProcessEnv = {},
+  ) {
     const invocation = [
       join(release, 'scripts/production-shape-migration-rehearsal.mjs'),
       '--release-dir', release,
@@ -117,7 +121,9 @@ describe('production-shape migration rehearsal', () => {
       invocation[argumentIndex + 1] = overrides[index + 1];
     }
     return spawnSync(process.execPath, invocation, {
-      cwd: release, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' },
+      cwd: release,
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test', ...envOverrides },
     });
   }
 
@@ -171,6 +177,35 @@ describe('production-shape migration rehearsal', () => {
       expect(readFileSync(source)).toBeDefined();
       expect(db.prepare("SELECT COUNT(*) AS count FROM _migrations WHERE filename LIKE '24%'").get())
         .toEqual({ count: 0 });
+    } finally { db.close(); }
+    expectNoClone();
+  });
+
+  it('keeps production launch warnings on stderr and emits only evidence JSON on stdout', { timeout: 60_000 }, () => {
+    const { db, source } = createSource({ seedPipeline: false });
+    try {
+      const result = invoke(source, [], {
+        NODE_ENV: 'production',
+        STAGING: 'false',
+        FINANCE_ENCRYPTION_ENABLED: 'true',
+        FINANCE_ENCRYPTION_KEY: 'prod-finance-key-at-least-32-chars',
+        BACKUP_ENABLED: 'true',
+        BACKUP_ENCRYPT: 'true',
+        BACKUP_KEY: 'prod-backup-key-at-least-32-chars',
+        NOTIFICATION_DELIVERY_MODE: 'apns',
+        APNS_ENABLED: 'false',
+        OPERATOR_ALERT_WEBHOOK_URL: 'https://example.test/operator-alerts',
+        SENTRY_DSN: '',
+      });
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(result.stderr).toContain(
+        '[production launch warning] SENTRY_DSN is not set; production error reporting will rely on local logs only.',
+      );
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schema: PRODUCTION_SHAPE_MIGRATION_REHEARSAL_SCHEMA,
+        status: 'verified',
+      });
     } finally { db.close(); }
     expectNoClone();
   });
