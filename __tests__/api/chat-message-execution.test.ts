@@ -2,15 +2,29 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RouteResult } from '../../src/router';
+
+const hoisted = vi.hoisted(() => ({
+  listLegacyToolLoopCheckpoints: vi.fn(() => [] as Array<{ toolName: string; sequence: number; completedAt: string }>),
+}));
+
+// M18: the timeout path lazily reads checkpointed tool progress from the
+// run store. Mocked so this suite needs no database.
+vi.mock('../../src/services/chat-action-run-store', () => ({
+  listLegacyToolLoopCheckpoints: (...args: unknown[]) => hoisted.listLegacyToolLoopCheckpoints(...args as []),
+}));
+
 import {
   CHAT_DOMAIN_HANDLER_TIMEOUT_MS,
+  ChatDomainTimeoutError,
   buildChatHandlerResponseEnvelope,
+  buildChatTimeoutPartialReplyText,
   executeChatDomainHandler,
 } from '../../src/api/routes/chat-message-execution';
 
 describe('chat message execution helpers', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.clearAllMocks();
   });
 
   it('executes the routed domain handler with the stripped message and user scope', async () => {
@@ -39,6 +53,92 @@ describe('chat message execution helpers', () => {
 
     await timeoutExpectation;
     expect(handler).toHaveBeenCalledWith('slow request', 42, undefined);
+  });
+
+  // ─── M18: typed timeout + checkpointed partial progress ───────────
+  it('rejects with ChatDomainTimeoutError carrying the run id and checkpointed tool summaries', async () => {
+    vi.useFakeTimers();
+    hoisted.listLegacyToolLoopCheckpoints.mockReturnValue([
+      { toolName: 'ms_todo_get_tasks', sequence: 1, completedAt: '2026-07-21T10:00:00.000Z' },
+      { toolName: 'get_calendar_events', sequence: 2, completedAt: '2026-07-21T10:00:01.000Z' },
+    ]);
+    const handler = vi.fn(() => new Promise<never>(() => {}));
+
+    const execution = executeChatDomainHandler(handler, 'slow request', 42, 1001, undefined, 'req-m18');
+    const expectation = execution.then(
+      () => { throw new Error('expected timeout rejection'); },
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
+
+    const err = await expectation as ChatDomainTimeoutError;
+    expect(err).toBeInstanceOf(ChatDomainTimeoutError);
+    // Message parity with the pre-M18 timeout error — zero-checkpoint turns
+    // keep the exact degraded behavior downstream.
+    expect(err.message).toBe('Response timeout — AI is taking too long');
+    expect(err.runId).toBe('req-m18');
+    expect(err.checkpoints.map((c) => c.toolName)).toEqual(['ms_todo_get_tasks', 'get_calendar_events']);
+    // The typed timeout must NOT look retryable: the zero-checkpoint path
+    // relies on the route's existing non-retryable handling staying put.
+    expect((err as unknown as { retryable?: boolean }).retryable).toBeUndefined();
+    expect(hoisted.listLegacyToolLoopCheckpoints).toHaveBeenCalledWith({ runId: 'req-m18', userId: 42, tenantId: 1001 });
+  });
+
+  it('carries zero checkpoints when the turn has no chatRequestId (degraded behavior unchanged)', async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn(() => new Promise<never>(() => {}));
+
+    const execution = executeChatDomainHandler(handler, 'slow request', 42);
+    const expectation = execution.then(
+      () => { throw new Error('expected timeout rejection'); },
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
+
+    const err = await expectation as ChatDomainTimeoutError;
+    expect(err).toBeInstanceOf(ChatDomainTimeoutError);
+    expect(err.checkpoints).toEqual([]);
+    expect(hoisted.listLegacyToolLoopCheckpoints).not.toHaveBeenCalled();
+  });
+
+  it('fails open to zero checkpoints when the run store read throws at timeout time', async () => {
+    vi.useFakeTimers();
+    hoisted.listLegacyToolLoopCheckpoints.mockImplementation(() => {
+      throw new Error('db unavailable');
+    });
+    const handler = vi.fn(() => new Promise<never>(() => {}));
+
+    const execution = executeChatDomainHandler(handler, 'slow request', 42, 1001, undefined, 'req-m18');
+    const expectation = execution.then(
+      () => { throw new Error('expected timeout rejection'); },
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
+
+    const err = await expectation as ChatDomainTimeoutError;
+    expect(err).toBeInstanceOf(ChatDomainTimeoutError);
+    expect(err.message).toBe('Response timeout — AI is taking too long');
+    expect(err.checkpoints).toEqual([]);
+  });
+
+  it('builds a deterministic, locale-aware partial-progress reply naming the completed tools', () => {
+    const en = buildChatTimeoutPartialReplyText('en-US', ['ms_todo_get_tasks', 'get_calendar_events', 'ms_todo_get_tasks']);
+    expect(en).toContain('ms todo get tasks');
+    expect(en).toContain('get calendar events');
+    // Deduplicated: the repeated tool appears once.
+    expect(en.match(/ms todo get tasks/g)).toHaveLength(1);
+    expect(en.toLowerCase()).toContain('continue');
+
+    const pt = buildChatTimeoutPartialReplyText('pt-PT', ['search_notes']);
+    expect(pt).toContain('search notes');
+    expect(pt).toContain('continuar');
+
+    const es = buildChatTimeoutPartialReplyText('es-419', ['search_notes']);
+    expect(es).toContain('search notes');
+    expect(es).toContain('continuar');
+
+    // Unknown locale falls back to English.
+    expect(buildChatTimeoutPartialReplyText(null, ['search_notes'])).toContain('search notes');
   });
 
   it('builds the stable chat response envelope from route and handler output', () => {

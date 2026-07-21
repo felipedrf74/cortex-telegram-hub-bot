@@ -108,7 +108,23 @@ export interface CapabilityManifestEntry {
   lifecycle: CapabilityLifecycle;
   owner: string;
   /** Existing runtime domain and its legacy Chat owner mapping. Null preserves no implicit route owner. */
-  runtimeRouting: { domain: string; chatOwnerSkill: string | null };
+  runtimeRouting: {
+    domain: string;
+    chatOwnerSkill: string | null;
+    /**
+     * M19 — plan-level action ownership rows. Declares action categories this
+     * capability OWNS at the chat-plan level: a plan step originating from
+     * another skill whose segment text matches `evidence` is rewritten to
+     * `ownerSkill`/`ownerAction` (see chat/planner/cross-skill-ownership.ts).
+     * Optional and additive; consumed only behind AI_CROSS_SKILL_EXECUTION.
+     */
+    chatActionOwnership?: Array<{
+      category: string;
+      ownerSkill: string;
+      ownerAction: string;
+      evidence: string[];
+    }>;
+  };
   /** Shared high-level routing contracts. Granular REST/action DTOs remain owned by their route registries. */
   schemas: CapabilityContractSchemas;
   requiredTier: 'free' | 'pro' | 'max' | 'owner';
@@ -340,6 +356,29 @@ export function loadCapabilityManifest(): CapabilityManifest {
     if (entry.runtimeRouting.chatOwnerSkill !== null
         && !entry.chatOwnerSkills.includes(entry.runtimeRouting.chatOwnerSkill)) {
       throw new Error(`runtime route owner is not governed by capability: ${entry.id}`);
+    }
+    if (entry.runtimeRouting.chatActionOwnership !== undefined) {
+      if (!Array.isArray(entry.runtimeRouting.chatActionOwnership) || entry.runtimeRouting.chatActionOwnership.length === 0) {
+        throw new Error(`invalid chatActionOwnership rows: ${entry.id}`);
+      }
+      for (const row of entry.runtimeRouting.chatActionOwnership) {
+        if (!isNonEmptyString(row.category) || !isNonEmptyString(row.ownerSkill)
+            || !isNonEmptyString(row.ownerAction)
+            || !isStringArray(row.evidence) || row.evidence.length === 0) {
+          throw new Error(`invalid chatActionOwnership row: ${entry.id}/${row?.category ?? 'unknown'}`);
+        }
+        if (!entry.chatActionSkills.includes(row.ownerSkill)) {
+          throw new Error(`chatActionOwnership owner skill is not governed by capability: ${entry.id}/${row.ownerSkill}`);
+        }
+        for (const source of row.evidence) {
+          try {
+            // eslint-disable-next-line no-new
+            new RegExp(source, 'i');
+          } catch {
+            throw new Error(`chatActionOwnership evidence is not a valid regex: ${entry.id}/${row.category}`);
+          }
+        }
+      }
     }
     if (new Set(entry.chatOwnerSkills).size !== entry.chatOwnerSkills.length
         || new Set(entry.chatActionSkills).size !== entry.chatActionSkills.length

@@ -4,6 +4,10 @@ import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from './chat/type
 import type { ChatMultiStepSegment } from './chat-multi-step-splitter';
 import { buildChatMultiStepDag, isRelaxedChatMultiStepConnective } from './chat-multi-step-dag';
 import { findChatActionDefinition } from './chat/registry';
+import {
+  applyCrossSkillOwnershipToSteps,
+  isCrossSkillExecutionEnabled,
+} from './chat/planner/cross-skill-ownership';
 
 export type ChatSegmentPlanBuilder = (input: ChatPlannerInput) => Promise<ChatActionPlan | null>;
 
@@ -34,7 +38,22 @@ export async function routeChatMultiStepSegments(
     if (segmentPlan.steps.some((step) => typeof step.args?.rejectionReason === 'string')) {
       return { plan: segmentPlan, blockedReason: 'segment_refused' };
     }
-    const resolvedSegmentSteps = segmentPlan.steps.map((step) => resolvePronounReferenceForStep(step, segment, steps));
+    // M19 (flag AI_CROSS_SKILL_EXECUTION, default OFF → byte-identical):
+    // manifest-driven ownership rewrite runs after the segment's plan build
+    // and before pronoun/$ref resolution + DAG construction, so a step that
+    // targets a capability another skill OWNS (e.g. "add it to my calendar"
+    // — agenda placement is Secretary's) executes through the owner action
+    // instead of a misrouted lookalike. The step is REWRITTEN, never
+    // duplicated.
+    let segmentSteps = segmentPlan.steps;
+    if (isCrossSkillExecutionEnabled()) {
+      const owned = applyCrossSkillOwnershipToSteps(segmentSteps, segment.text, input);
+      segmentSteps = owned.steps;
+      for (const rewrite of owned.rewrites) {
+        signals.push(`cross_skill_ownership_rewrite:${rewrite.fromSkill}.${rewrite.fromAction}->${rewrite.toSkill}.${rewrite.toAction}`);
+      }
+    }
+    const resolvedSegmentSteps = segmentSteps.map((step) => resolvePronounReferenceForStep(step, segment, steps));
     steps.push(...resolvedSegmentSteps);
     confidence = Math.min(confidence, segmentPlan.effectiveConfidence ?? segmentPlan.confidence);
     requiresConfirmation = requiresConfirmation || segmentPlan.requiresConfirmation;

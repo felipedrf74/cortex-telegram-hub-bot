@@ -301,6 +301,11 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     userId: input.userId,
     tenantId: input.tenantId,
   });
+  // M19 remediation (2026-07-21): the former crossSkillPlanCoverage signal
+  // (splitter-coverage proxy) was deleted. It suppressed the
+  // cross_skill_bridge prompt block, but that block only renders on turns
+  // the planner DECLINED — suppression therefore silently dropped the
+  // second intent. The bridge now always renders on cross-skill turns.
   const scope = resolveChatTenantScope({
     userId: input.userId,
     tenantId: input.tenantId,

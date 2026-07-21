@@ -97,6 +97,10 @@ const STAGE_FAMILY_GATE_POLICIES: Readonly<Record<string, ChatFinalizerGatePolic
   // cannot hallucinate.
   routing_clarify: 'contract_only',
   chat_core_v2_unsupported_fallback: 'contract_only',
+  // M18: deterministic partial-progress template after a domain-handler
+  // timeout with checkpointed tool work — fixed localized string listing
+  // completed tools, cannot hallucinate, honestly tagged partial_failure.
+  legacy_timeout_partial: 'contract_only',
   // NOTE: domain_shortcut is intentionally ABSENT from this table. The
   // family is mixed (deterministic state shortcuts AND model-authored
   // refinement/script outputs share the stage checkpoint), so it is

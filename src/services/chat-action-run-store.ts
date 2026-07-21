@@ -301,6 +301,124 @@ export function pruneCompletedChatActionRuns(input: {
   return Number(result.changes ?? 0);
 }
 
+// ─── M18: legacy tool-loop checkpoints ──────────────────────────────
+//
+// The legacy domain-handler tool loop persists each COMPLETED (non-blocked,
+// non-failed, read-risk) tool call as a terminal `verified_success` row keyed by the
+// turn's chatRequestId. On a turn timeout the route reads these back to
+// build an honest partial-progress reply.
+//
+// Spike verdict (M18): no auto-resume for the legacy loop — the detached
+// loop keeps running in-process after the Promise.race timeout, ADV-2
+// provider pinning cannot be guaranteed from a later worker process, and
+// sliced-history shape stability breaks open tool_use_id scope. Checkpoints
+// are therefore EVIDENCE for an honest reply, never a resume payload. Being
+// terminal rows, they are invisible to listPendingChatActionRuns and
+// untouched by cancelPendingChatActionRuns / cancelAllPendingChatWork, so a
+// timed-out turn leaves zero queued continuation work behind.
+
+export const LEGACY_TOOL_LOOP_CHECKPOINT_ACTION_PREFIX = 'legacy_tool_loop_checkpoint';
+
+export interface RecordLegacyToolLoopCheckpointInput {
+  /** The turn's chatRequestId — scopes all checkpoints of one turn. */
+  runId: string;
+  userId: number;
+  tenantId: number;
+  domain: string;
+  toolName: string;
+  toolInput: unknown;
+  /** Truncated JSON summary of the tool result (evidence, not replay data). */
+  resultSummary?: string | null;
+  /** 1-based position of this completed tool call within the turn. */
+  sequence: number;
+  nowIso?: string;
+}
+
+export interface LegacyToolLoopCheckpoint {
+  toolName: string;
+  sequence: number;
+  completedAt: string;
+}
+
+/** Zero-pad so lexicographic message_id order matches numeric sequence order. */
+function checkpointMessageId(sequence: number): string {
+  return `checkpoint-${String(Math.max(0, Math.trunc(sequence))).padStart(6, '0')}`;
+}
+
+/**
+ * Idempotently record one completed legacy tool call. Returns true when a new
+ * row was inserted, false when the (run, sequence, tool) checkpoint already
+ * existed. Terminal from birth: status `verified_success`, completed_at set.
+ */
+export function recordLegacyToolLoopCheckpoint(input: RecordLegacyToolLoopCheckpointInput): boolean {
+  const db = getDb();
+  const now = input.nowIso ?? new Date().toISOString();
+  const id = `chat-action-${randomUUID()}`;
+  const hash = buildNormalizedActionHash({
+    checkpoint: LEGACY_TOOL_LOOP_CHECKPOINT_ACTION_PREFIX,
+    sequence: input.sequence,
+    tool: input.toolName,
+    input: input.toolInput ?? null,
+  });
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO chat_action_runs (
+      id, user_id, tenant_id, account_id, conversation_id, message_id,
+      normalized_action_hash, provider, action_type, status, risk, request_json,
+      result_json, created_at, updated_at, completed_at
+    )
+    VALUES (?, ?, ?, NULL, ?, ?, ?, NULL, ?, 'verified_success', 'read_only', ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.userId,
+    input.tenantId,
+    input.runId,
+    checkpointMessageId(input.sequence),
+    hash,
+    `${LEGACY_TOOL_LOOP_CHECKPOINT_ACTION_PREFIX}:${input.toolName}`,
+    JSON.stringify({ domain: input.domain, tool: input.toolName, input: input.toolInput ?? null }),
+    JSON.stringify({
+      status: 'verified_success',
+      resultType: 'tool_checkpoint',
+      tool: input.toolName,
+      completed: true,
+      summary: typeof input.resultSummary === 'string' ? input.resultSummary.slice(0, 300) : null,
+      replaySafe: true,
+    }),
+    now,
+    now,
+    now,
+  );
+  return Number(result.changes ?? 0) > 0;
+}
+
+/** Ordered (by sequence) checkpoints for one turn, tenant-scoped. */
+export function listLegacyToolLoopCheckpoints(input: {
+  runId: string;
+  userId: number;
+  tenantId: number;
+}): LegacyToolLoopCheckpoint[] {
+  const rows = getDb().prepare(`
+    SELECT action_type, message_id, completed_at
+    FROM chat_action_runs
+    WHERE user_id = ?
+      AND tenant_id = ?
+      AND conversation_id = ?
+      AND action_type LIKE ?
+    ORDER BY message_id ASC, created_at ASC
+    LIMIT 100
+  `).all(
+    input.userId,
+    input.tenantId,
+    input.runId,
+    `${LEGACY_TOOL_LOOP_CHECKPOINT_ACTION_PREFIX}:%`,
+  ) as Array<{ action_type: string; message_id: string; completed_at: string | null }>;
+  return rows.map((row) => ({
+    toolName: row.action_type.slice(LEGACY_TOOL_LOOP_CHECKPOINT_ACTION_PREFIX.length + 1),
+    sequence: Number.parseInt(row.message_id.replace(/^checkpoint-0*/, ''), 10) || 0,
+    completedAt: row.completed_at ?? '',
+  }));
+}
+
 function stableJson(value: unknown): string {
   if (value == null) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;

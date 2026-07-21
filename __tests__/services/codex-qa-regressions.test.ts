@@ -680,3 +680,91 @@ describe('Codex QA — Issue 4: missing_facts emitted for non-secretary scheduli
     expect(envelope.missingFacts).toEqual([]);
   });
 });
+
+describe('Codex QA — M19 remediation: training outputRefs flag-off parity', () => {
+  // Adversarial finding (2026-07-21): shipping outputRefs on
+  // training_plan_create changed DEFAULT multi-step behavior, because M16's
+  // data-need chaining consumes registry outputRefs unconditionally — the PT
+  // repro "cria um plano de treino e adiciona à minha lista" auto-titled the
+  // list entry from the training plan instead of clarifying the missing
+  // title. The live registry must not declare training outputRefs while
+  // AI_CROSS_SKILL_EXECUTION defaults OFF; the $ref chaining is exercised in
+  // chat-segment-router.test.ts through a definition mock, and shipping the
+  // row is a flag-flip-time decision.
+  it('live registry declares NO outputRefs on training_plan_create', async () => {
+    const { findChatActionDefinition } = await import('../../src/services/chat/registry');
+    const definition = findChatActionDefinition('training', 'training_plan_create');
+    expect(definition).not.toBeNull();
+    expect(definition?.outputRefs).toBeUndefined();
+  });
+
+  it('PT repro: "cria um plano de treino e adiciona à minha lista" keeps the missing-title clarification (flag unset)', async () => {
+    const { routeChatMultiStepSegments } = await import('../../src/services/chat-segment-router');
+    const trainingStep = {
+      stepId: 'step_x',
+      skill: 'training' as const,
+      type: 'provider_write' as const,
+      action: 'training_plan_create' as const,
+      risk: 'safe_write' as const,
+      provider: 'nexus' as const,
+      args: { sport: 'running', goal: '10k', durationWeeks: 12, startDate: '2026-07-27', weeklyVolumeKm: 20 },
+      requiredArgsPresent: true,
+      idempotencyKey: 'idem-train',
+      verification: { required: false, method: 'none' as const },
+    };
+    const taskStep = {
+      ...trainingStep,
+      skill: 'tasks' as const,
+      action: 'create_task' as const,
+      args: { title: null },
+      requiredArgsPresent: false,
+      idempotencyKey: 'idem-task',
+    };
+    const makeSegmentPlan = (steps: unknown[]) => ({
+      schemaVersion: 1,
+      userId: '7',
+      tenantId: '7',
+      conversationId: 'conv-qa',
+      messageId: 'msg-qa',
+      locale: 'pt-BR',
+      timezone: 'Europe/Lisbon',
+      channel: 'ios' as const,
+      createdAt: '2026-07-21T12:00:00.000Z',
+      planner: 'deterministic' as const,
+      steps,
+      requiresConfirmation: false,
+      confidence: 0.9,
+    });
+    const plans = [
+      makeSegmentPlan([trainingStep]),
+      makeSegmentPlan([taskStep]),
+    ];
+    const builder = vi.fn(async () => plans.shift() ?? null);
+    const result = await routeChatMultiStepSegments(
+      {
+        text: 'cria um plano de treino para 10K em 12 semanas e adiciona à minha lista',
+        userId: 7,
+        tenantId: 7,
+        conversationId: 'conv-qa',
+        messageId: 'msg-qa',
+        channel: 'ios',
+        locale: 'pt-BR',
+        timezone: 'Europe/Lisbon',
+        nowIso: '2026-07-21T12:00:00.000Z',
+      } as never,
+      [
+        { index: 0, text: 'cria um plano de treino para 10K em 12 semanas', connective: null, pronounMentions: [] },
+        { index: 1, text: 'adiciona à minha lista', connective: 'e', pronounMentions: [] },
+      ],
+      builder as never,
+    );
+
+    const followup = result.plan?.steps[1];
+    // NO auto-title: the title is not wired from the training step, so the
+    // step stays not-ready and the plan clarifies the missing title.
+    expect(followup?.args.title).toBeNull();
+    expect(followup?.requiredArgsPresent).toBe(false);
+    expect(result.plan?.clarificationReason).toBe('missing_required_fields');
+    expect(result.plan?.clarificationQuestion).toContain('tasks.create_task');
+  });
+});

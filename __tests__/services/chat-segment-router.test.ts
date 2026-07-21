@@ -23,6 +23,25 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+// M19 remediation (flag-off parity): the LIVE registry must NOT declare
+// outputRefs on training_plan_create while AI_CROSS_SKILL_EXECUTION defaults
+// OFF — M16's data-need chaining consumes outputRefs unconditionally, so a
+// live declaration changes default multi-step behavior (auto-titling instead
+// of the missing-title clarification; pinned by the codex-qa regression
+// "PT flag-off parity"). The cross-skill $ref chaining below is exercised
+// through this test-seam mock of the definition instead; shipping the
+// training outputRefs row is a flag-flip-time decision.
+vi.mock('../../src/services/chat/registry/definitions/training', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/chat/registry/definitions/training')>();
+  return {
+    TRAINING_ACTIONS: actual.TRAINING_ACTIONS.map((entry) => (
+      entry.action === 'training_plan_create'
+        ? { ...entry, outputRefs: { title: 'plan.title' } }
+        : entry
+    )),
+  };
+});
+
 import { routeChatMultiStepSegments } from '../../src/services/chat-segment-router';
 import type { ChatMultiStepSegment } from '../../src/services/chat-multi-step-splitter';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../src/services/chat/types';
@@ -445,5 +464,120 @@ describe('chat-segment-router (characterization pins)', () => {
       verifierStatus: 'not_required',
     });
     expect(result.plan?.locale).toBe('en-US');
+  });
+});
+
+// ─── M19: plan-level cross-skill execution + ownership ──────────────
+//
+// Failing-first evidence (pre-M19 probe, 2026-07-20): for the fixture
+// "create this week's workout plan and add it to my calendar" the second
+// segment planned as tasks.add_subtasks_to_task (title "calendar",
+// subtasks ["it"]). Flag ON rewrites that step to the secretary-owned
+// schedule_event and wires the plan title via registry outputRefs; flag
+// OFF must stay byte-identical to the pre-M19 composition.
+
+import { splitChatMultiStepRequest } from '../../src/services/chat-multi-step-splitter';
+import { _resetCrossSkillOwnershipForTests, CROSS_SKILL_EXECUTION_ENV_VAR } from '../../src/services/chat/planner/cross-skill-ownership';
+import { afterEach, beforeEach } from 'vitest';
+
+describe('M19 cross-skill ownership on the segment router', () => {
+  beforeEach(() => {
+    _resetCrossSkillOwnershipForTests();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const FIXTURE_TEXT = "create this week's workout plan and add it to my calendar";
+  const FIXTURE_INPUT: ChatPlannerInput = { ...PLANNER_INPUT, text: FIXTURE_TEXT };
+
+  function fixtureSegments(): ChatMultiStepSegment[] {
+    const split = splitChatMultiStepRequest(FIXTURE_TEXT);
+    expect(split.classification).toBe('multi');
+    expect(split.segments.map((segment) => segment.text)).toEqual([
+      "create this week's workout plan",
+      'add it to my calendar',
+    ]);
+    return split.segments;
+  }
+
+  function fixtureSegmentPlans(): Array<ChatActionPlan> {
+    return [
+      makePlan([makeStep({
+        skill: 'training',
+        action: 'training_plan_create',
+        args: { sport: 'running', goal: 'weekly workout plan', durationWeeks: 1, startDate: '2026-07-20', weeklyVolumeKm: 20 },
+        requiredArgsPresent: true,
+      })]),
+      // Pre-M19 real-world misroute for "add it to my calendar".
+      makePlan([makeStep({
+        skill: 'tasks',
+        action: 'add_subtasks_to_task',
+        args: { title: 'calendar', subtasks: ['it'] },
+        requiredArgsPresent: true,
+      })], { confidence: 0.88 }),
+    ];
+  }
+
+  it('flag ON: rewrites the calendar-placement segment to the secretary-owned action with per-step skills + $ref', async () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    const { builder } = plannerReturning(fixtureSegmentPlans());
+
+    const result = await routeChatMultiStepSegments(FIXTURE_INPUT, fixtureSegments(), builder);
+
+    expect(result.blockedReason).toBeUndefined();
+    const steps = result.plan?.steps ?? [];
+    // Per-step skills: each step carries its own skill; no single-primary-
+    // domain flattening.
+    expect(steps.map((step) => `${step.skill}.${step.action}`)).toEqual([
+      'training.training_plan_create',
+      'secretary_calendar.schedule_event',
+    ]);
+    // $ref: the calendar title chains from the training plan's declared
+    // outputRefs ({ title: 'plan.title' }).
+    expect(steps[1]?.args.title).toEqual({ $ref: 'step_1.result.plan.title' });
+    expect(steps[1]?.dependsOnStepIds).toEqual(['step_1']);
+    // ONE confirmation for the whole plan.
+    expect(result.plan?.requiresConfirmation).toBe(true);
+    // Honest readiness: the segment names no time, so the calendar step
+    // still needs input instead of inventing a slot.
+    expect(steps[1]?.requiredArgsPresent).toBe(false);
+    expect(result.plan?.debug?.routingSignals).toEqual(expect.arrayContaining([
+      'cross_skill_ownership_rewrite:tasks.add_subtasks_to_task->secretary_calendar.schedule_event',
+    ]));
+  });
+
+  it('flag OFF: byte-identical composition (misrouted step preserved, no rewrite signal)', async () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, '');
+    const { builder } = plannerReturning(fixtureSegmentPlans());
+
+    const result = await routeChatMultiStepSegments(FIXTURE_INPUT, fixtureSegments(), builder);
+
+    const steps = result.plan?.steps ?? [];
+    expect(steps.map((step) => `${step.skill}.${step.action}`)).toEqual([
+      'training.training_plan_create',
+      'tasks.add_subtasks_to_task',
+    ]);
+    expect(result.plan?.debug?.routingSignals?.some((signal) => signal.startsWith('cross_skill_ownership_rewrite'))).toBe(false);
+  });
+
+  it('flag ON: single-skill segment plans flow through byte-identical (no rewrite, same steps)', async () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    const { builder } = plannerReturning([
+      makePlan([makeStep()]),
+      makePlan([makeStep({ action: 'complete_task', args: { taskId: 'task-1' } })]),
+    ]);
+    const segments = [
+      makeSegment(0, 'create a task to buy milk'),
+      makeSegment(1, 'complete it'),
+    ];
+
+    const result = await routeChatMultiStepSegments(PLANNER_INPUT, segments, builder);
+
+    expect(result.plan?.steps.map((step) => `${step.skill}.${step.action}`)).toEqual([
+      'tasks.create_task',
+      'tasks.complete_task',
+    ]);
+    expect(result.plan?.debug?.routingSignals?.some((signal) => signal.startsWith('cross_skill_ownership_rewrite'))).toBe(false);
   });
 });

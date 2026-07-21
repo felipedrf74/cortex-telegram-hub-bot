@@ -412,7 +412,9 @@ export function applyChatSkillRoutingDecision(
   };
 }
 
-export function buildChatSkillRoutingPromptBlock(decision: ChatSkillRoutingDecision): string {
+export function buildChatSkillRoutingPromptBlock(
+  decision: ChatSkillRoutingDecision,
+): string {
   const lines: string[] = [];
   lines.push(`<chat_skill_routing primary_domain="${decision.primaryDomain ?? 'none'}" confidence="${decision.confidence.toFixed(2)}">`);
   lines.push(`<intent kinds="${decision.intentKinds.join(',')}" involved_skills="${decision.involvedSkills.join(',')}" reason_codes="${decision.reasonCodes.join(',')}" />`);
@@ -435,8 +437,17 @@ export function buildChatSkillRoutingPromptBlock(decision: ChatSkillRoutingDecis
   // Codex QA round 9: explicit prompt bridge for split-intent turns.
   // Even though the model only has the routed domain's tools, it can
   // still NAME the action the other skill should perform and ask the
-  // user to confirm or queue it. This is a stopgap behavior bridge
-  // until the architectural handoff_to_domain tool lands.
+  // user to confirm or queue it.
+  //
+  // M19 remediation (2026-07-21): this block ALWAYS renders on cross-skill
+  // turns. It only ever reaches the model on turns the PLANNER DECLINED
+  // (the legacy/model path), so any suppression here — the retired
+  // coverage-proxy included — guaranteed the un-handled second intent got
+  // neither plan execution nor the bridge: a silent drop. The
+  // AI_CROSS_SKILL_EXECUTION flag's benefit lives entirely on the PLAN
+  // path (ownership rewrite + grouped preview + per-segment skill
+  // execution); this prompt bridge is the honest fallback when that path
+  // does not take the turn.
   const crossSkill = decision.intentKinds.includes('cross_skill');
   if (crossSkill && decision.involvedSkills.length > 1) {
     const otherSkills = decision.involvedSkills

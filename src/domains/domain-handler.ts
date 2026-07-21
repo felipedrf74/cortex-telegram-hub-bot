@@ -51,6 +51,8 @@ import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
 import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach-state';
 import { getChatToolRisk } from '../services/chat-tool-authorization';
+import { getCurrentRequestId } from '../utils/request-context';
+import { recordLegacyToolLoopCheckpoint } from '../services/chat-action-run-store';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -222,6 +224,90 @@ function buildLegacyDomainWriteBlockedToolResult(name: string): Record<string, u
 
 function buildLegacyDomainWriteBlockedReply(): string {
   return 'This action needs confirmation in the app before I change anything.';
+}
+
+/**
+ * M18 remediation: executeToolCall NEVER throws on failure — it RETURNS
+ * failure-shaped objects. The real shapes (tool-executor.ts +
+ * formatToolAuthorizationFailure in chat-tool-authorization.ts) are:
+ *   - `{ success: false, error, code?, ... }` (executor errors, allowlist
+ *     blocks, TrainingPlanRevisionError, authorization failures), and
+ *   - `{ error: '...' }` with no `success` field (scope failures, unknown
+ *     tools, the catch-all 'Tool execution failed').
+ * A top-level `code` only ever accompanies those failure shapes; successful
+ * results either set `success: true` or carry plain data with none of these
+ * fields. Unparseable content means the 2000-char truncation hit a LARGE
+ * payload — failure shapes are compact and always parse — so truncated
+ * content counts as completed work.
+ */
+function isFailedLegacyToolResultContent(content: string | undefined): boolean {
+  if (typeof content !== 'string' || content.length === 0) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return false; // truncated large success payload
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const record = parsed as Record<string, unknown>;
+  if (record.success === false) return true;
+  if (record.success === true) return false;
+  return record.error !== undefined || record.code !== undefined;
+}
+
+/**
+ * M18 tool-loop checkpoint hook — write-behind, fail-open, NEVER blocking.
+ *
+ * Persists each COMPLETED (executed, non-blocked, non-failed) tool call of
+ * the current turn into chat-action-run-store, keyed by the turn's
+ * chatRequestId (AsyncLocalStorage). On a route-level timeout the
+ * legacy-tail stage reads these back to build an honest partial-progress
+ * reply.
+ *
+ * Spike verdict (M18): the checkpoints are evidence only — the legacy loop
+ * is never auto-resumed, so nothing here needs to be replayable. Blocked
+ * write tools are skipped (they did no work); FAILED tool results are
+ * skipped (executeToolCall returns failure objects instead of throwing, and
+ * a failed call is not completed work — a verified_success row for it would
+ * make the partial reply claim work that never happened); missing
+ * request/tenant scope skips silently; any store error is swallowed so
+ * checkpointing can never affect the live loop.
+ *
+ * Returns the advanced sequence counter (monotonic per turn).
+ */
+function checkpointCompletedLegacyToolCalls(
+  domain: DomainName,
+  toolCalls: ReadonlyArray<{ name: string; input?: Record<string, unknown> }>,
+  toolResults: ReadonlyArray<{ content?: string }>,
+  startSequence: number,
+  userId?: number,
+  tenantId?: number,
+): number {
+  let sequence = startSequence;
+  for (let i = 0; i < toolCalls.length; i++) {
+    const toolCall = toolCalls[i];
+    try {
+      if (isLegacyDomainWriteTool(toolCall.name)) continue; // blocked → no completed work
+      if (isFailedLegacyToolResultContent(toolResults[i]?.content)) continue; // failed → not completed work
+      sequence += 1;
+      if (typeof userId !== 'number' || typeof tenantId !== 'number') continue;
+      const runId = getCurrentRequestId();
+      if (!runId) continue;
+      recordLegacyToolLoopCheckpoint({
+        runId,
+        userId,
+        tenantId,
+        domain,
+        toolName: toolCall.name,
+        toolInput: toolCall.input ?? {},
+        resultSummary: typeof toolResults[i]?.content === 'string' ? toolResults[i].content : null,
+        sequence,
+      });
+    } catch (err) {
+      logger.debug({ err, domain, tool: toolCall.name }, 'M18 tool-loop checkpoint write failed — continuing (fail-open)');
+    }
+  }
+  return sequence;
 }
 
 /**
@@ -564,6 +650,7 @@ export async function handleSimpleDomain(
     const toolsUsed: string[] = [];
     let legacyWriteBlocked = false;
     let iterations = 0;
+    let checkpointSequence = 0;
 
     while (result.toolCalls.length > 0 && iterations < maxIterations) {
       iterations++;
@@ -595,6 +682,18 @@ export async function handleSimpleDomain(
           if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
           return { type: 'tool_result' as const, tool_use_id: tc.id, content };
         }),
+      );
+
+      // M18: write-behind checkpoint of the completed tool calls so a turn
+      // that later times out can report honest partial progress. Fail-open —
+      // this can never block or fail the loop.
+      checkpointSequence = checkpointCompletedLegacyToolCalls(
+        domain,
+        result.toolCalls,
+        toolResults,
+        checkpointSequence,
+        userId,
+        tenantId,
       );
 
       // Build tool conversation in provider-agnostic format
@@ -679,6 +778,7 @@ async function handleWithDirectCalls(
   const toolsUsed: string[] = [];
   let legacyWriteBlocked = false;
   let iterations = 0;
+  let checkpointSequence = 0;
 
   while (result.toolCalls.length > 0 && iterations < maxIterations) {
     iterations++;
@@ -707,6 +807,15 @@ async function handleWithDirectCalls(
         if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
         return { type: 'tool_result' as const, tool_use_id: tc.id, content };
       }),
+    );
+    // M18: parity with the primary path — write-behind checkpoints, fail-open.
+    checkpointSequence = checkpointCompletedLegacyToolCalls(
+      domain,
+      result.toolCalls,
+      toolResults,
+      checkpointSequence,
+      userId,
+      tenantId,
     );
     toolConversation.push(
       { role: 'assistant' as const, content: assistantContent },

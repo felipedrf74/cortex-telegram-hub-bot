@@ -275,3 +275,112 @@ describe('M16 plan-executor topological execution', () => {
     expect(response.metadata.actionStatus).toBe('needs_confirmation');
   });
 });
+
+// ─── M19: plan-level cross-skill execution ──────────────────────────
+
+import { afterEach } from 'vitest';
+import { getCurrentChatToolAuthorizationContext as authContextForGrants } from '../../../../src/services/chat-tool-authorization';
+import { CROSS_SKILL_EXECUTION_ENV_VAR } from '../../../../src/services/chat/planner/cross-skill-ownership';
+import { multiStepPreviewCopy } from '../../../../src/services/chat/executor/response-copy';
+
+describe('M19 cross-skill plan execution', () => {
+  beforeEach(() => {
+    executeStepMock.mockReset();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function crossSkillFixturePlan(): ChatActionPlan {
+    return makePlan([
+      makeStep({
+        stepId: 'step_1',
+        skill: 'training',
+        type: 'provider_write',
+        action: 'training_plan_create',
+        args: { sport: 'running', goal: 'weekly workout plan', durationWeeks: 1, startDate: '2026-07-20', weeklyVolumeKm: 20 },
+      }),
+      makeStep({
+        stepId: 'step_2',
+        skill: 'secretary_calendar',
+        type: 'provider_write',
+        action: 'schedule_event',
+        args: {
+          title: { $ref: 'step_1.result.plan.title' },
+          startDateTime: '2026-07-21T07:00:00.000Z',
+          endDateTime: '2026-07-21T08:00:00.000Z',
+          timezone: 'UTC',
+          provider: 'google_calendar',
+        },
+        dependsOnStepIds: ['step_1'],
+      }),
+    ], { requiresConfirmation: true });
+  }
+
+  it('fixture executes BOTH steps with per-step skill dispatch and the $ref resolved from the training result', async () => {
+    executeStepMock.mockImplementation(async (step) => ({
+      step,
+      status: 'verified_success' as const,
+      result: step.stepId === 'step_1'
+        ? { plan: { title: "This week's workout plan" } }
+        : { event: { id: 'evt-1' } },
+    }));
+
+    const response = await executeChatActionPlan(crossSkillFixturePlan(), INPUT, {} as never, { confirmed: true });
+
+    expect(executeStepMock).toHaveBeenCalledTimes(2);
+    const dispatched = executeStepMock.mock.calls.map(([step]) => `${step.skill}.${step.action}`);
+    expect(dispatched).toEqual(['training.training_plan_create', 'secretary_calendar.schedule_event']);
+    // $ref resolved at execution time against the producer's result.
+    expect(executeStepMock.mock.calls[1][0].args.title).toBe("This week's workout plan");
+    expect(response.metadata.multiStepSummary).toMatchObject({ totalSteps: 2, succeeded: 2, failed: 0, blocked: 0 });
+  });
+
+  it('asks for exactly ONE confirmation before running the cross-skill plan (no per-step confirmations)', async () => {
+    const preview = await executeChatActionPlan(crossSkillFixturePlan(), INPUT, {} as never, {});
+    expect(preview.metadata.actionStatus).toBe('needs_confirmation');
+    expect(executeStepMock).not.toHaveBeenCalled();
+  });
+
+  it('preview is grouped by skill when the flag is on', () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, 'true');
+    const copy = multiStepPreviewCopy(crossSkillFixturePlan(), INPUT);
+    expect(copy).toContain('I understood 2 steps:');
+    expect(copy).toContain('Training:');
+    expect(copy).toContain('Secretary — Calendar:');
+  });
+
+  it('preview stays the flat numbered list (byte-identical shape) when the flag is off', () => {
+    vi.stubEnv(CROSS_SKILL_EXECUTION_ENV_VAR, '');
+    const copy = multiStepPreviewCopy(crossSkillFixturePlan(), INPUT);
+    expect(copy).toContain('I understood 2 steps:');
+    expect(copy).not.toContain('Training:');
+    expect(copy).not.toContain('Secretary — Calendar:');
+  });
+
+  it('M1 grants still cap risky steps in a cross-skill plan: one grant per previewed risky step', async () => {
+    const observedGrantCounts: Array<number | null> = [];
+    executeStepMock.mockImplementation(async (step) => {
+      const context = authContextForGrants();
+      observedGrantCounts.push(context?.confirmedDestructiveTargets?.length ?? null);
+      return { step, status: 'verified_success' as const, result: {} };
+    });
+    const plan = makePlan([
+      makeStep({ stepId: 'step_1', skill: 'training', action: 'training_plan_create', args: { sport: 'running' } }),
+      makeStep({
+        stepId: 'step_2',
+        skill: 'secretary_calendar',
+        action: 'delete_event',
+        risk: 'destructive',
+        args: { eventId: 'evt-9', provider: 'google_calendar' },
+      }),
+    ], { requiresConfirmation: true });
+
+    const response = await executeChatActionPlan(plan, INPUT, {} as never, { confirmed: true });
+
+    expect(response.metadata.actionStatus).toBe('verified_success');
+    // Exactly ONE grant (the single previewed destructive step) — never a
+    // turn-wide blank check across skills.
+    expect(observedGrantCounts).toEqual([1, 1]);
+  });
+});

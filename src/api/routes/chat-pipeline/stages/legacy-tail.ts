@@ -25,9 +25,12 @@ import {
   rememberChatActiveDomain,
 } from '../../chat-message-context';
 import {
+  ChatDomainTimeoutError,
   buildChatHandlerResponseEnvelope,
+  buildChatTimeoutPartialReplyText,
   executeChatDomainHandler,
 } from '../../chat-message-execution';
+import type { ChatDomainExecutionResult } from '../../chat-message-execution';
 import { finalizeChatAnswerMetadata, finalizeChatMessageResponse } from '../../chat-message-finalizer';
 import { maybeCacheChatCommandResponse } from '../../chat-message-local-responses';
 import { sendChatTierRequiredIfNeeded } from '../../chat-message-tier-gate';
@@ -151,30 +154,76 @@ export const legacyTailStage: ChatStage = {
       return { kind: 'respond' };
     }
 
-    const result = await runWithChatToolAuthorization({
-      userId,
-      tenantId,
-      confirmedDestructiveAction: routingDecision.safety.explicitConfirmation,
-      // ADV-3: an accepted staged confirmation authorizes exactly the
-      // targets it was staged with; a free-text confirmation collapses to a
-      // single untyped grant (undefined) inside the authorization layer.
-      confirmedDestructiveTargets: routingDecision.safety.explicitConfirmation
-        ? pendingConfirmation?.confirmedTargets
-        : undefined,
-      confirmationSource: routingDecision.safety.explicitConfirmation
-        ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
-        : 'none',
-      requireConfirmationForWrites: true,
-      contentIdeaCaptureConsent: issueContentIdeaCaptureConsent({
-        tenantId,
+    // M18: catch the typed domain-handler timeout. Per the recorded spike
+    // verdict the legacy tool loop gets NO auto-resume (the detached loop
+    // keeps running after Promise.race; ADV-2 provider pinning + sliced-
+    // history shape stability cannot be guaranteed from a later worker), so
+    // a timeout WITH checkpointed tool work becomes a deterministic,
+    // locale-aware, honest partial-progress reply ("ask me to continue") —
+    // template only, zero further model calls, nothing enqueued. A timeout
+    // with ZERO completed tools rethrows: the route's pre-M18 degraded
+    // behavior stays byte-identical.
+    let result: ChatDomainExecutionResult;
+    let timeoutPartial: ChatDomainTimeoutError | null = null;
+    try {
+      result = await runWithChatToolAuthorization({
         userId,
-        sourceMessageId: userMessageId,
-        message: normalizedText,
-      }),
-    }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
+        tenantId,
+        confirmedDestructiveAction: routingDecision.safety.explicitConfirmation,
+        // ADV-3: an accepted staged confirmation authorizes exactly the
+        // targets it was staged with; a free-text confirmation collapses to a
+        // single untyped grant (undefined) inside the authorization layer.
+        confirmedDestructiveTargets: routingDecision.safety.explicitConfirmation
+          ? pendingConfirmation?.confirmedTargets
+          : undefined,
+        confirmationSource: routingDecision.safety.explicitConfirmation
+          ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
+          : 'none',
+        requireConfirmationForWrites: true,
+        contentIdeaCaptureConsent: issueContentIdeaCaptureConsent({
+          tenantId,
+          userId,
+          sourceMessageId: userMessageId,
+          message: normalizedText,
+        }),
+      }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId, undefined, chatRequestId));
+    } catch (err) {
+      if (!(err instanceof ChatDomainTimeoutError) || err.checkpoints.length === 0) throw err;
+      timeoutPartial = err;
+      logger.warn(
+        {
+          chatRequestId,
+          userId,
+          tenantId,
+          domain: route.domain,
+          completedTools: err.checkpoints.map((c) => c.toolName),
+        },
+        'iOS chat domain handler timed out with checkpointed tool work — returning honest partial-progress reply (no auto-resume)',
+      );
+      result = {
+        text: buildChatTimeoutPartialReplyText(chatCoreV2RouteLocale, err.checkpoints.map((c) => c.toolName)),
+        domain: route.domain,
+        metadata: {
+          type: 'chat_timeout_partial',
+          timeoutPartial: {
+            runId: err.runId,
+            completedTools: err.checkpoints.map((c) => c.toolName),
+            completedToolCount: err.checkpoints.length,
+            // Spike verdict: legacy tool loops are never auto-resumed.
+            autoResume: false,
+            continuation: 'ask_to_continue',
+          },
+        },
+      };
+    }
     latency.mark('domain_handler_completed');
     recordChatStage(chatRequestId, 'legacy_response');
-    if (routingDecision.safety.explicitConfirmation) {
+    // M18 remediation (2026-07-21): on a timeout partial NOTHING destructive
+    // executed (checkpoints are read-risk only), so the staged confirmation
+    // must survive for the retry — clearing it would force the user to
+    // re-confirm work that never happened. Completed confirmed turns still
+    // consume the staged confirmation exactly as before.
+    if (routingDecision.safety.explicitConfirmation && !timeoutPartial) {
       clearPendingChatConfirmation(userId, tenantId);
     }
 
@@ -195,7 +244,11 @@ export const legacyTailStage: ChatStage = {
       domain: result.domain || route.domain,
       confidence: route.confidence,
       tracker: latency,
-      latencyTier: 'tier3_model_assisted',
+      // M18: the partial-progress reply is a fixed template (cannot
+      // hallucinate) → contract_only family, honestly tagged as a partial
+      // outcome with a retryable user-action fallback. Normal turns keep the
+      // pre-M18 full-gate path byte-identical.
+      latencyTier: timeoutPartial ? 'tier4_long_running' : 'tier3_model_assisted',
       activeContext,
       route,
       routingDecision,
@@ -203,7 +256,20 @@ export const legacyTailStage: ChatStage = {
       existingMetadata: result.metadata && typeof result.metadata === 'object'
         ? result.metadata as Record<string, unknown>
         : null,
-      stageFamily: 'legacy_response',
+      stageFamily: timeoutPartial ? 'legacy_timeout_partial' : 'legacy_response',
+      ...(timeoutPartial
+        ? {
+          actionability: 'answer_only' as const,
+          verificationStatus: 'partial_failure' as const,
+          fallback: {
+            fallbackType: 'deterministic_summary' as const,
+            fallbackReason: 'domain_handler_timeout_partial_progress',
+            retryable: true,
+            userActionRequired: true,
+            operatorActionRequired: false,
+          },
+        }
+        : {}),
       requestStartedAt,
     });
     const response = buildChatHandlerResponseEnvelope({

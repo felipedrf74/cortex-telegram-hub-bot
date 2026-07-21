@@ -42,9 +42,11 @@ import {
   claimChatActionRun,
   claimChatActionRunForExecution,
   getChatActionRun,
+  listLegacyToolLoopCheckpoints,
   listPendingChatActionRuns,
   pruneCompletedChatActionRuns,
   reapZombieChatActionRuns,
+  recordLegacyToolLoopCheckpoint,
   updateChatActionRun,
 } from '../../src/services/chat-action-run-store';
 
@@ -323,6 +325,72 @@ describe('chat-action-run-store', () => {
       expect(getChatActionRun(old.id)).toBeNull();
       expect(getChatActionRun(recent.id)?.status).toBe('failed');
       expect(getChatActionRun(active.id)?.status).toBe('planned');
+    });
+  });
+
+  // ─── M18: legacy tool-loop checkpoints ────────────────────────────
+  describe('legacy tool-loop checkpoints (M18)', () => {
+    const RUN_ID = 'req-m18-run-1';
+
+    function checkpoint(sequence: number, toolName: string, overrides: Partial<Parameters<typeof recordLegacyToolLoopCheckpoint>[0]> = {}) {
+      return recordLegacyToolLoopCheckpoint({
+        runId: RUN_ID,
+        userId: USER_ID,
+        tenantId: TENANT_A,
+        domain: 'secretary',
+        toolName,
+        toolInput: { q: toolName },
+        resultSummary: `{"ok":true,"tool":"${toolName}"}`,
+        sequence,
+        nowIso: NOW_ISO,
+        ...overrides,
+      });
+    }
+
+    it('records completed tool calls as terminal rows and lists them in sequence order', () => {
+      expect(checkpoint(1, 'ms_todo_get_tasks')).toBe(true);
+      expect(checkpoint(2, 'get_calendar_events')).toBe(true);
+
+      const listed = listLegacyToolLoopCheckpoints({ runId: RUN_ID, userId: USER_ID, tenantId: TENANT_A });
+      expect(listed.map((c) => c.toolName)).toEqual(['ms_todo_get_tasks', 'get_calendar_events']);
+      expect(listed.map((c) => c.sequence)).toEqual([1, 2]);
+      expect(listed.every((c) => c.completedAt === NOW_ISO)).toBe(true);
+    });
+
+    it('is idempotent per (run, sequence, tool) — a re-recorded checkpoint is ignored', () => {
+      expect(checkpoint(1, 'ms_todo_get_tasks')).toBe(true);
+      expect(checkpoint(1, 'ms_todo_get_tasks')).toBe(false);
+      expect(listLegacyToolLoopCheckpoints({ runId: RUN_ID, userId: USER_ID, tenantId: TENANT_A })).toHaveLength(1);
+    });
+
+    it('orders sequences numerically past single digits', () => {
+      for (let seq = 1; seq <= 11; seq++) checkpoint(seq, `tool_${seq}`);
+      const listed = listLegacyToolLoopCheckpoints({ runId: RUN_ID, userId: USER_ID, tenantId: TENANT_A });
+      expect(listed.map((c) => c.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    });
+
+    it('scopes checkpoints by tenant and run id', () => {
+      checkpoint(1, 'ms_todo_get_tasks');
+      checkpoint(1, 'finance_get_transactions', { tenantId: TENANT_B });
+      checkpoint(1, 'search_notes', { runId: 'req-other' });
+
+      expect(listLegacyToolLoopCheckpoints({ runId: RUN_ID, userId: USER_ID, tenantId: TENANT_A }).map((c) => c.toolName)).toEqual(['ms_todo_get_tasks']);
+      expect(listLegacyToolLoopCheckpoints({ runId: RUN_ID, userId: USER_ID, tenantId: TENANT_B }).map((c) => c.toolName)).toEqual(['finance_get_transactions']);
+      expect(listLegacyToolLoopCheckpoints({ runId: 'req-other', userId: USER_ID, tenantId: TENANT_A }).map((c) => c.toolName)).toEqual(['search_notes']);
+    });
+
+    it('never leaves queued continuation work behind: checkpoints are not pending and cancellation is a no-op on them', () => {
+      // Spike verdict (M18): the legacy tool loop gets NO auto-resume, so a
+      // timed-out turn must leave zero pending rows for the cancellation
+      // cascade (cancelAllPendingChatWork → cancelPendingChatActionRuns).
+      checkpoint(1, 'ms_todo_get_tasks');
+      checkpoint(2, 'get_calendar_events');
+
+      expect(listPendingChatActionRuns({ userId: USER_ID, tenantId: TENANT_A })).toHaveLength(0);
+      expect(cancelPendingChatActionRuns({ userId: USER_ID, tenantId: TENANT_A, nowIso: NOW_ISO })).toBe(0);
+      // The historical evidence rows survive cancellation untouched.
+      const listed = listLegacyToolLoopCheckpoints({ runId: RUN_ID, userId: USER_ID, tenantId: TENANT_A });
+      expect(listed).toHaveLength(2);
     });
   });
 });

@@ -7,6 +7,11 @@ import type {
   ChatPlannerInput,
 } from '../types';
 import { buildClarificationPlan } from './plan-builder';
+import {
+  enforceCrossSkillPreview,
+  executableSkillsForPlan,
+  isCrossSkillExecutionEnabled,
+} from './cross-skill-ownership';
 
 export type SingleActionPlanBuilder = (input: ChatPlannerInput) => Promise<ChatActionPlan | null>;
 
@@ -24,9 +29,19 @@ export async function tryBuildMultiStepChatActionPlan(
     // preview. The confirmation preview enumerates the interpreted steps
     // (see multiStepPreviewCopy in executor/response-copy.ts).
     const lowConfidence = split.classification === 'low_confidence_multi';
+    // M19 (flag AI_CROSS_SKILL_EXECUTION, default OFF → byte-identical):
+    // any plan spanning >=2 skills is preview-first, and the splitter's own
+    // cross-skill detection ('cross_skill_action_segments') is recorded as
+    // a planner input signal. M19 remediation (2026-07-21): the
+    // orchestrator's cross_skill_bridge prompt block is NOT suppressed by
+    // this path — it renders only on turns the planner declined, so it
+    // stays as the honest fallback there; when THIS plan path takes the
+    // turn, the prompt block never reaches the model anyway.
+    const crossSkillActive = isCrossSkillExecutionEnabled();
+    const spansSkills = crossSkillActive && executableSkillsForPlan(routed.plan.steps).length >= 2;
     return {
-      ...routed.plan,
-      requiresConfirmation: routed.plan.requiresConfirmation || lowConfidence,
+      ...(crossSkillActive ? enforceCrossSkillPreview(routed.plan) : routed.plan),
+      requiresConfirmation: routed.plan.requiresConfirmation || lowConfidence || spansSkills,
       // M16: segments beyond the splitter cap are disclosed in response copy.
       ...(split.overflowCount > 0 ? { multiStepOverflowCount: split.overflowCount } : {}),
       confidence: Math.min(routed.plan.confidence, split.confidence),
@@ -41,6 +56,9 @@ export async function tryBuildMultiStepChatActionPlan(
         routingSignals: [
           ...(routed.plan.debug?.routingSignals ?? []),
           `multi_step_split_reason:${split.reason}`,
+          ...(crossSkillActive && split.reason === 'cross_skill_action_segments'
+            ? ['cross_skill_intent_plan_input']
+            : []),
           ...(lowConfidence ? ['multi_step_low_confidence_preview'] : []),
           ...(split.overflowCount > 0 ? [`multi_step_overflow:${split.overflowCount}`] : []),
         ],

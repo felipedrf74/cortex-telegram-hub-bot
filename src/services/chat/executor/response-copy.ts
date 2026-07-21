@@ -5,6 +5,10 @@ import { DateTime } from 'luxon';
 import type { ChatActionRunStatus } from '../../chat-action-run-store';
 import { formatCurrencyAmount } from '../../finance-tracker';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../types';
+import {
+  executableSkillsForPlan,
+  isCrossSkillExecutionEnabled,
+} from '../planner/cross-skill-ownership';
 
 export function successCopy(
   input: ChatPlannerInput,
@@ -312,7 +316,56 @@ export function overflowDisclosureCopy(plan: ChatActionPlan, input: ChatPlannerI
  * anything executes.
  */
 export function multiStepPreviewCopy(plan: ChatActionPlan, input: ChatPlannerInput): string {
+  // M19 (flag AI_CROSS_SKILL_EXECUTION, default OFF → byte-identical copy):
+  // a plan spanning >=2 skills renders its preview GROUPED by skill so the
+  // one confirmation shows which skill runs which step.
+  if (isCrossSkillExecutionEnabled()) {
+    const grouped = crossSkillGroupedPreviewLines(plan, input);
+    if (grouped) return renderMultiStepPreview(plan, input, grouped);
+  }
   const lines = plan.steps.map((step, index) => `${index + 1}. ${plannedActionLabel(step, input)}`);
+  return renderMultiStepPreview(plan, input, lines);
+}
+
+function crossSkillGroupedPreviewLines(plan: ChatActionPlan, input: ChatPlannerInput): string[] | null {
+  const skills = executableSkillsForPlan(plan.steps);
+  if (skills.length < 2) return null;
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const skill of plan.steps.map((step) => step.skill)) {
+    if (seen.has(skill)) continue;
+    seen.add(skill);
+    lines.push(`${skillGroupLabel(skill, input)}:`);
+    plan.steps.forEach((step, index) => {
+      if (step.skill !== skill) return;
+      lines.push(`${index + 1}. ${plannedActionLabel(step, input)}`);
+    });
+  }
+  return lines;
+}
+
+function skillGroupLabel(skill: string, input: ChatPlannerInput): string {
+  const isPt = input.locale?.startsWith('pt');
+  const isEs = input.locale?.startsWith('es');
+  const labels: Record<string, { en: string; pt: string; es: string }> = {
+    secretary_calendar: { en: 'Secretary — Calendar', pt: 'Secretária — Agenda', es: 'Secretaría — Agenda' },
+    secretary_reminders: { en: 'Secretary — Reminders', pt: 'Secretária — Lembretes', es: 'Secretaría — Recordatorios' },
+    mail: { en: 'Secretary — Mail', pt: 'Secretária — Email', es: 'Secretaría — Correo' },
+    tasks: { en: 'Secretary — Tasks', pt: 'Secretária — Tarefas', es: 'Secretaría — Tareas' },
+    training: { en: 'Training', pt: 'Treino', es: 'Entrenamiento' },
+    content: { en: 'Content', pt: 'Conteúdo', es: 'Contenido' },
+    cooking: { en: 'Cooking', pt: 'Cozinha', es: 'Cocina' },
+    finance: { en: 'Finance', pt: 'Finanças', es: 'Finanzas' },
+    connections: { en: 'Connections', pt: 'Ligações', es: 'Conexiones' },
+    notifications: { en: 'Notifications', pt: 'Notificações', es: 'Notificaciones' },
+    decision_center: { en: 'Decision Center', pt: 'Central de Decisões', es: 'Centro de Decisiones' },
+  };
+  const entry = labels[skill];
+  if (!entry) return skill;
+  return isPt ? entry.pt : isEs ? entry.es : entry.en;
+}
+
+function renderMultiStepPreview(plan: ChatActionPlan, input: ChatPlannerInput, lines: string[]): string {
   const overflow = overflowDisclosureCopy(plan, input);
   if (input.locale?.startsWith('pt')) {
     return [

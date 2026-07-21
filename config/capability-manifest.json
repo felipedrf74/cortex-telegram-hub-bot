@@ -106,7 +106,19 @@
       "owner": "secretary",
       "runtimeRouting": {
         "domain": "secretary",
-        "chatOwnerSkill": "secretary"
+        "chatOwnerSkill": "secretary",
+        "chatActionOwnership": [
+          {
+            "category": "calendar_placement",
+            "ownerSkill": "secretary_calendar",
+            "ownerAction": "schedule_event",
+            "evidence": [
+              "\\b(?:add|put|place|book|schedule|move|drop)\\b[\\s\\S]{0,60}\\b(?:to|on|in|into|onto)\\s+(?:my\\s+|the\\s+)?(?:calendar|agenda)\\b",
+              "\\b(?:adiciona[r]?|p[oõ]e|poe|mete[r]?|coloca[r]?|marca[r]?|agenda[r]?|move[r]?)\\b[\\s\\S]{0,60}\\b(?:na|no|para\\s+a|para\\s+o|à|ao)\\s+(?:minha\\s+|meu\\s+)?(?:agenda|calend[aá]rio)\\b",
+              "\\b(?:agrega[r]?|añade|anade|pon(?:er)?|mete[r]?|programa[r]?|apunta[r]?)\\b[\\s\\S]{0,60}\\b(?:a|en)\\s+(?:mi\\s+|el\\s+|la\\s+)?(?:calendario|agenda)\\b"
+            ]
+          }
+        ]
       },
       "schemas": {
         "input": "nexus.chat-turn.input.v1",
