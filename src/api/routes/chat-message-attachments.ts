@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { DomainName } from '../../domains/types';
 import {
   extractPhotoAttachment,
@@ -63,7 +65,7 @@ export async function buildChatAttachmentResponse({
   classifier,
   timeoutMs = CHAT_ATTACHMENT_CLASSIFICATION_TIMEOUT_MS,
   timestamp = new Date().toISOString(),
-  id = `msg-${Date.now()}`,
+  id = `msg-${randomUUID()}`,
 }: {
   attachment: ChatImageAttachment;
   normalizedText: string;

@@ -424,6 +424,10 @@ function normalizeString(value: string): string {
     .replace(/pending-\d+-\d+-\d{10,}/g, '<pendingId>')
     .replace(/chat-pending-[0-9a-f-]{36}/g, '<pendingActionId>')
     .replace(/chat-action-[0-9a-f-]{36}/g, '<actionRunId>')
+    // M11: message ids moved from Date.now() to crypto.randomUUID(); both
+    // forms normalize to the same placeholder so envelope bodies stay
+    // byte-identical across the id-generation change.
+    .replace(/msg-(user-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, 'msg-$1<ts>')
     .replace(/msg-\d{10,}/g, 'msg-<ts>')
     .replace(/chat-\d{10,}/g, 'chat-<ts>')
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, '<iso>')

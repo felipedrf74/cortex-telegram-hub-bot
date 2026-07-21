@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { ChatCoreV2DeterministicReadRouteResult } from '../../services/chat-core-v2';
 import type { DomainName } from '../../domains/types';
 
@@ -78,7 +80,7 @@ export function buildChatCoreV2DeterministicReadShortcutResponse(
   return {
     conversationDomain,
     response: {
-      id: `msg-${requestStartedAt}`,
+      id: `msg-${randomUUID()}`,
       text: result.response.text,
       domain: conversationDomain,
       routeMethod: 'chat-core-v2-deterministic-read',

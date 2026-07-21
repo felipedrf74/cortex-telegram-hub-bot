@@ -251,6 +251,68 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     );
   });
 
+  it('M8: never ships clipped text when a non-recipe local answer stops on "length"', async () => {
+    // June parity review root cause: stopReason/hitOutputCap were only
+    // consulted on the RECIPE repair path. A non-recipe answer that hit the
+    // 80-token numPredict cap shipped the clipped text mid-sentence. The
+    // truncation guard must surface the existing degraded fallback instead.
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Uma boa estratégia é escolher uma prioridade pequena e depois',
+      stopReason: 'length',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+      },
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Como posso manter foco hoje?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-truncated-length',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.degraded).toBe(true);
+    expect(result?.response.routeMethod).toBe('chat-core-v2-local-llm-degraded');
+    expect(result?.response.text).not.toContain('e depois');
+    expect(result?.response.metadata).toEqual(expect.objectContaining({
+      degraded: true,
+      reason: 'local_answer_truncated',
+    }));
+  });
+
+  it('M8: treats hitting the numPredict output cap as truncation even without stopReason', async () => {
+    mocks.dispatchLocalReasoning.mockResolvedValue({
+      text: 'Uma boa estratégia é escolher uma prioridade pequena e depois seguir com',
+      providerMetadata: {
+        providerUsed: 'ollama',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
+        fallbackUsed: false,
+        evalCount: 80,
+      },
+    });
+
+    const result = await runChatCoreV2LocalChatTurn({
+      normalizedText: 'Como posso manter foco hoje?',
+      userId: 42,
+      tenantId: 84,
+      requestId: 'req-truncated-cap',
+      locale: 'pt-BR',
+      surface: 'ios',
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off' }),
+    });
+
+    expect(result?.degraded).toBe(true);
+    expect(result?.response.metadata).toEqual(expect.objectContaining({
+      degraded: true,
+      reason: 'local_answer_truncated',
+    }));
+  });
+
   it('answers simple cooking-idea prompts through a templated non-degraded path', async () => {
     const result = await runChatCoreV2LocalChatTurn({
       normalizedText: 'Me dê uma ideia simples de receita para duas pessoas',

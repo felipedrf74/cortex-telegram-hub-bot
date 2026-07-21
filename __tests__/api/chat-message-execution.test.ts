@@ -66,4 +66,29 @@ describe('chat message execution helpers', () => {
       timestamp: '2026-04-24T12:00:00.000Z',
     });
   });
+
+  it('generates collision-free default ids under 100 concurrent envelope builds (M11)', () => {
+    // Freeze the clock: the old `msg-${Date.now()}` default collides for any
+    // two envelopes built in the same millisecond.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-21T10:00:00Z'));
+    const route: RouteResult = {
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.8,
+      strippedMessage: 'hello',
+    };
+
+    const ids = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      const envelope = buildChatHandlerResponseEnvelope({
+        route,
+        result: { text: 'ok', domain: 'secretary' },
+        buttons: null,
+      });
+      expect(envelope.id).toMatch(/^msg-/);
+      ids.add(envelope.id);
+    }
+    expect(ids.size).toBe(100);
+  });
 });

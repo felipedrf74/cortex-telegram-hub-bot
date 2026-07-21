@@ -8,6 +8,15 @@ import { getLastCoachState } from '../../domains/domain-handler';
 import { handleSecretary } from '../../domains/secretary';
 import { handleTriathlon } from '../../domains/triathlon';
 import type { DomainName } from '../../domains/types';
+import { getChatMessageById } from '../../services/chat-history-store';
+import {
+  clearActiveChatDomain,
+  getActiveChatDomain,
+  getDurableChatContinuity,
+  rememberActiveChatDomain,
+  resetChatConversationStateForTests,
+  type ChatContinuityWriteExtras,
+} from '../../services/chat-conversation-state';
 import { getLastAssistantMessage } from '../../state/conversation';
 import {
   buildCoachRecommendationButtons,
@@ -15,7 +24,19 @@ import {
   labelsForLanguage,
 } from './chat-inline-buttons';
 
-export const CHAT_ACTIVE_DOMAIN_TTL_MS = 5 * 60 * 1000;
+// M13: the active-domain pin is now durable (chat_conversation_state via
+// services/chat-conversation-state) with the old in-process Map demoted to a
+// private read cache inside that module. The exported interface here stays
+// call-compatible; the TTL constant keeps its historical home and value.
+export {
+  CHAT_ACTIVE_DOMAIN_TTL_MS,
+  getDurableChatContinuity,
+} from '../../services/chat-conversation-state';
+export type {
+  ChatAnchorEntity,
+  ChatContinuityWriteExtras,
+  DurableChatContinuity,
+} from '../../services/chat-conversation-state';
 
 export interface ChatActiveContext {
   domain: DomainName;
@@ -23,8 +44,6 @@ export interface ChatActiveContext {
 }
 
 export type ChatDomainHandler = (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>;
-
-const lastActiveDomain = new Map<string, { domain: DomainName; timestamp: number }>();
 
 const domainHandlers: Record<string, ChatDomainHandler> = {
   secretary: handleSecretary,
@@ -34,20 +53,14 @@ const domainHandlers: Record<string, ChatDomainHandler> = {
   cooking: handleCooking,
 };
 
-function activeDomainKey(userId: number, tenantId?: number): string {
-  const scopedTenantId = typeof tenantId === 'number' && Number.isFinite(tenantId) && tenantId > 0
-    ? tenantId
-    : userId;
-  return `${scopedTenantId}:${userId}`;
-}
-
 export function rememberChatActiveDomain(
   userId: number,
   domain: DomainName,
   timestamp = Date.now(),
   tenantId?: number,
+  continuity?: ChatContinuityWriteExtras,
 ): void {
-  lastActiveDomain.set(activeDomainKey(userId, tenantId), { domain, timestamp });
+  rememberActiveChatDomain(userId, domain, timestamp, tenantId, continuity);
 }
 
 /**
@@ -60,13 +73,11 @@ export function setLastActiveDomain(userId: number, domain: DomainName, tenantId
 }
 
 export function clearChatActiveDomain(userId: number, tenantId?: number): void {
-  lastActiveDomain.delete(activeDomainKey(userId, tenantId));
+  clearActiveChatDomain(userId, tenantId);
 }
 
 export function getLastChatActiveDomain(userId: number, now = Date.now(), tenantId?: number): DomainName | null {
-  const lastState = lastActiveDomain.get(activeDomainKey(userId, tenantId));
-  if (!lastState || now - lastState.timestamp >= CHAT_ACTIVE_DOMAIN_TTL_MS) return null;
-  return lastState.domain;
+  return getActiveChatDomain(userId, now, tenantId);
 }
 
 export function resolveChatActiveContext(userId: number, now = Date.now(), tenantId?: number): ChatActiveContext | null {
@@ -77,7 +88,24 @@ export function resolveChatActiveContext(userId: number, now = Date.now(), tenan
     const lastAssistantMessage = tenantId
       ? getLastAssistantMessage(userId, domain, tenantId)
       : getLastAssistantMessage(userId, domain);
-    return lastAssistantMessage ? { domain, lastAssistantMessage } : null;
+    if (lastAssistantMessage) return { domain, lastAssistantMessage };
+  } catch {
+    // Fall through to durable recovery below.
+  }
+
+  // M13: after a restart (or when the pruned conversations table misses),
+  // recover the last assistant reply from chat-history-store via the durable
+  // last_assistant_message_id pointer. Fail closed on any error, matching
+  // the historical contract of this function.
+  try {
+    const continuity = getDurableChatContinuity(userId, tenantId, now);
+    const messageId = continuity?.lastAssistantMessageId;
+    if (!messageId) return null;
+    const message = getChatMessageById(userId, messageId, tenantId);
+    if (message && message.role === 'assistant' && message.text) {
+      return { domain, lastAssistantMessage: message.text };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -114,6 +142,11 @@ export function buildDefaultButtonsForChatDomain(
   return null;
 }
 
+/**
+ * Test seam: clears ONLY the in-process read cache — durable
+ * chat_conversation_state rows survive, which lets tests simulate a
+ * process restart.
+ */
 export function resetChatMessageContextForTests(): void {
-  lastActiveDomain.clear();
+  resetChatConversationStateForTests();
 }

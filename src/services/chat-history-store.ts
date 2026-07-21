@@ -219,6 +219,43 @@ export function storeChatMessage(entry: ChatHistoryWrite): void {
     );
 }
 
+export interface ChatStoredMessageSummary {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  domain: string | null;
+  timestamp: string;
+}
+
+/**
+ * M13: point read for durable continuity recovery. Returns the active-scope
+ * message with the given message_uuid for this tenant/user, or null. Used by
+ * chat-message-context to recover the last assistant reply after a restart
+ * via chat_conversation_state.last_assistant_message_id.
+ */
+export function getChatMessageById(
+  userId: number,
+  messageId: string,
+  tenantId?: number,
+): ChatStoredMessageSummary | null {
+  const scope = resolveChatTenantScope({
+    userId,
+    tenantId,
+    operation: 'chat_history_get_message_by_id',
+    layer: 'delivery',
+  });
+  if (!scope) return null;
+  const row = getExistingMessage(scope, userId, messageId);
+  if (!row) return null;
+  return {
+    id: row.message_uuid,
+    role: row.role,
+    text: row.text,
+    domain: row.domain,
+    timestamp: row.created_at,
+  };
+}
+
 export function updateAssistantMessage(
   userId: number,
   messageId: string,

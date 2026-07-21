@@ -9,12 +9,29 @@ import path from 'path';
 
 const PROMPTS_DIR = path.resolve(__dirname, '..', '..', 'prompts');
 
+/**
+ * M11 perf hygiene: how long a cached prompt is served WITHOUT re-statting
+ * the file. Prompt edits are picked up within this window at worst; the chat
+ * /message hot path no longer pays a statSync per prompt per request.
+ */
+export const PROMPT_STAT_TTL_MS = 30_000;
+
 interface CacheEntry {
   content: string;
   mtimeMs: number;
+  /** Last time we fs.statSync'd this file (epoch ms). */
+  lastStatMs: number;
 }
 
 const cache = new Map<string, CacheEntry>();
+
+/**
+ * Clears the content cache and TTL clocks so hot-reload tests observe file
+ * edits instantly instead of waiting out PROMPT_STAT_TTL_MS.
+ */
+export function resetPromptLoaderForTests(): void {
+  cache.clear();
+}
 
 /**
  * Returns the absolute path for a named prompt file.
@@ -24,20 +41,29 @@ export function getPromptPath(name: string): string {
 }
 
 /**
- * Loads a prompt from prompts/<name>.md with mtime-based caching.
- * Re-reads the file only when its modification time changes.
+ * Loads a prompt from prompts/<name>.md with TTL-throttled mtime caching.
+ * Within PROMPT_STAT_TTL_MS of the last stat, cached content is returned
+ * without touching the filesystem. After the TTL, the mtime is re-checked
+ * and the file re-read only if it changed.
  */
 export function loadPrompt(name: string): string {
-  const filePath = getPromptPath(name);
-  const stat = fs.statSync(filePath);
+  const now = Date.now();
   const cached = cache.get(name);
 
+  if (cached && now - cached.lastStatMs < PROMPT_STAT_TTL_MS) {
+    return cached.content;
+  }
+
+  const filePath = getPromptPath(name);
+  const stat = fs.statSync(filePath);
+
   if (cached && cached.mtimeMs === stat.mtimeMs) {
+    cached.lastStatMs = now;
     return cached.content;
   }
 
   const content = fs.readFileSync(filePath, 'utf-8');
-  cache.set(name, { content, mtimeMs: stat.mtimeMs });
+  cache.set(name, { content, mtimeMs: stat.mtimeMs, lastStatMs: now });
   return content;
 }
 
@@ -91,9 +117,21 @@ export function loadPromptWithConfig(
 
 /**
  * Writes content back to a prompt file (for mutations / auto-research updates).
- * Also invalidates the cache entry.
+ * Also invalidates the cache entry so the next loadPrompt re-reads immediately.
+ *
+ * Production guard (M11): prompt files are release artifacts in production —
+ * runtime mutation is a warned no-op there. The only runtime caller is the
+ * auto-research prompt updater (src/services/autoresearch.ts apply/rollback),
+ * which keeps working in non-production environments.
  */
 export function writePrompt(name: string, content: string): void {
+  if (process.env.NODE_ENV === 'production') {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[prompt-loader] writePrompt('${name}') ignored: prompt mutation is disabled in production`,
+    );
+    return;
+  }
   const filePath = getPromptPath(name);
   fs.writeFileSync(filePath, content, 'utf-8');
   cache.delete(name);

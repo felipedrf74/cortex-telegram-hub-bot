@@ -100,8 +100,9 @@ describe('Chat Core v2 command preview API adapter', () => {
       capabilityId: 'tasks.create',
       commandId: 'cmd_abc123',
     });
+    // M11 id sweep: assistant message ids are collision-free uuids now.
+    expect(built.response.id).toMatch(/^msg-[0-9a-f-]{36}$/);
     expect(built.response).toMatchObject({
-      id: `msg-${requestStartedAt}`,
       text: 'I would prepare the task "Buy milk".',
       domain: 'secretary',
       routeMethod: 'chat-core-v2-command-preview',

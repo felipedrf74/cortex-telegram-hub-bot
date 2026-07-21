@@ -1074,6 +1074,27 @@ export function getTaskById(taskId: number): NormalizedTask | null {
   return row ? rowToTask(row) : null;
 }
 
+/**
+ * Row write timestamps for a user-scoped task. Used by the chat quality
+ * gate's token-zero claim verification to turn-scope `verified_kept`
+ * outcomes (a claim can only be confirmed by a row written during the
+ * current request window). Kept separate from NormalizedTask so provider
+ * adapters and API serializers are untouched.
+ */
+export function getTaskTimestampsById(
+  userId: number,
+  taskId: number,
+  tenantId = userId,
+): { createdAt: string | null; updatedAt: string | null } | null {
+  const db = getDb();
+  const row = db.prepare(
+    `SELECT created_at, updated_at FROM unified_tasks
+     WHERE id = ? AND user_id = ? AND COALESCE(tenant_id, user_id) = ? AND is_deleted = 0`,
+  ).get(taskId, userId, tenantId) as { created_at: string | null; updated_at: string | null } | undefined;
+  if (!row) return null;
+  return { createdAt: row.created_at ?? null, updatedAt: row.updated_at ?? null };
+}
+
 export function getTaskByIdForUser(userId: number, taskId: number, tenantId = userId): NormalizedTask | null {
   const db = getDb();
   const row = db.prepare(

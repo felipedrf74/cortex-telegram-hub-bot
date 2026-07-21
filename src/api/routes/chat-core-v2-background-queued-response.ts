@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 /**
  * WP-15 — the "working on it" acknowledgement response returned when a chat write
  * command is queued for background execution. This is the synchronous reply the
@@ -70,7 +72,7 @@ export function buildChatCoreV2BackgroundQueuedShortcutResponse(
   return {
     conversationDomain,
     response: {
-      id: `msg-${requestStartedAt}`,
+      id: `msg-${randomUUID()}`,
       text,
       domain: conversationDomain,
       routeMethod: 'chat-core-v2-background-queued',

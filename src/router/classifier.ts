@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import { config } from '../config';
 import { runOllamaShadowClassification } from '../services/classify-shadow';
 import { rethrowAiUsageFailClosedError } from '../services/api-usage-fallback';
+import { getActiveChatDomain } from '../services/chat-conversation-state';
 import { getCurrentContext } from '../utils/request-context';
 
 export interface ConversationContext {
@@ -208,11 +209,31 @@ export function buildClassifierHints(): string {
  * have a user in scope (tests, scheduled jobs) can omit it and the
  * row falls back to `user_id = 0` as before.
  */
+export interface ClassifyWithClaudeOptions {
+  /**
+   * M13 durable-pin scope decision (adversarial-review follow-up, 2026-07):
+   * the low-confidence fallback below may consult the DURABLE per-user
+   * active-domain pin (chat_conversation_state) when the caller passed no
+   * in-arg activeContext. Surfaces that reach routeMessage today are the
+   * iOS chat route (src/api/routes/chat-message-routes.ts) and the iOS
+   * websocket chat path (src/api/websocket.ts) — both are the same
+   * user-facing chat surface, so the durable pin applies to the shared
+   * router fallback. Telegram inbound was removed (Phase 0/Telegram
+   * deprecation), so no non-chat surface reaches this today. A future
+   * non-chat surface (scheduler, batch classification, admin tooling) can
+   * opt out by passing `allowDurableDomainPinFallback: false` so a stale
+   * interactive-chat pin never bleeds into non-chat classification.
+   * Defaults to true (current chat behavior).
+   */
+  allowDurableDomainPinFallback?: boolean;
+}
+
 export async function classifyWithClaude(
   message: string,
   activeContext?: ConversationContext | null,
   userId?: number,
   tenantId?: number,
+  options?: ClassifyWithClaudeOptions,
 ): Promise<ClassificationResult> {
   // Phase K Codex round-11 fix (F-new-4): the legacy
   // services/anthropic.classifyMessage path uses
@@ -314,12 +335,24 @@ export async function classifyWithClaude(
     );
   }
 
-  if (activeContext && result.confidence < 0.6) {
-    logger.warn(
-      { requested: result.domain, confidence: result.confidence, fallbackDomain: activeContext.domain },
-      'Low-confidence classifier result — preserving active conversation domain',
-    );
-    return { domain: activeContext.domain, confidence: Math.max(result.confidence, 0.51) };
+  if (result.confidence < 0.6) {
+    // M13 read-site swap: the low-confidence pin now reads the durable-backed
+    // active-domain store. Within the TTL this is identical to the legacy
+    // in-arg activeContext (callers derive it from the same store); after a
+    // restart the durable row keeps the pin alive even when callers could not
+    // rebuild activeContext. The explicit in-arg still wins when provided.
+    // Durable fallback is gated on userId presence AND the opt-out flag —
+    // see ClassifyWithClaudeOptions.allowDurableDomainPinFallback.
+    const allowDurablePin = options?.allowDurableDomainPinFallback ?? true;
+    const pinnedDomain = activeContext?.domain
+      ?? (allowDurablePin && typeof userId === 'number' ? getActiveChatDomain(userId, Date.now(), tenantId) : null);
+    if (pinnedDomain) {
+      logger.warn(
+        { requested: result.domain, confidence: result.confidence, fallbackDomain: pinnedDomain },
+        'Low-confidence classifier result — preserving active conversation domain',
+      );
+      return { domain: pinnedDomain, confidence: Math.max(result.confidence, 0.51) };
+    }
   }
   logger.debug({ result }, 'Routing-provider classification result');
   return result;

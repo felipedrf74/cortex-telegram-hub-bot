@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { rethrowAiUsageFailClosedError } from '../api-usage-fallback';
@@ -328,7 +330,7 @@ export async function runChatCoreV2LocalChatTurn(
       recordAnswerCanaryTurn(input, 'chat-core-v2-cloud-allowlist', 'queue_fallback', guarded.rewritten ? 0.65 : 0.82);
       return {
         response: {
-          id: `msg-${Date.now()}`,
+          id: `msg-${randomUUID()}`,
           text: composed.response.text,
           domain: cloudAllowlistPacket.packet.domain ?? 'chat',
           routeMethod: 'chat-core-v2-cloud-allowlist',
@@ -436,6 +438,28 @@ export async function runChatCoreV2LocalChatTurn(
       fullDraftTextForSafety = repaired.text;
       draft.text = truncate(repaired.text, 1600);
       draft.reasonCodes = [...draft.reasonCodes, 'recipe_model_repair'];
+    } else if (!recipeRequest && (stopReason === 'length' || hitOutputCap)) {
+      // (Recipe turns are excluded: shouldRepairRecipeDraft above already
+      // owns their truncation handling, including the pinned "complete
+      // recipe at the token cap still ships" case.)
+      // M8 truncation guard (June parity review root cause): stopReason /
+      // hitOutputCap were only consulted on the recipe repair path above, so a
+      // NON-recipe answer that hit the numPredict output cap shipped clipped
+      // text mid-sentence. Truncated output must surface the existing degraded
+      // fallback path instead — never ship clipped text. No extra model call
+      // (zero-cost law); the deterministic helpful fallback owns the turn.
+      logger.warn(
+        {
+          requestId: input.requestId,
+          userId: input.userId,
+          tenantId: input.tenantId,
+          stopReason,
+          hitOutputCap,
+          textChars: draft.text.length,
+        },
+        'Chat Core v2 local answer truncated — surfacing degraded fallback instead of clipped text',
+      );
+      return buildHelpfulFallbackResponse(input, 'local_answer_truncated', result.providerMetadata);
     }
     const safetySurface = resolveCookingSafetySurfaceForAnswer({
       userId: input.userId,
@@ -484,7 +508,7 @@ export async function runChatCoreV2LocalChatTurn(
     recordAnswerCanaryTurn(input, 'chat-core-v2-local-llm', reasoningTier, guarded.rewritten ? 0.7 : 0.9);
     return {
       response: {
-        id: `msg-${Date.now()}`,
+        id: `msg-${randomUUID()}`,
         text: composed.response.text,
         domain: resolveLocalAnswerResponseDomain(input, recipeRequest),
         routeMethod: 'chat-core-v2-local-llm',
@@ -586,7 +610,7 @@ function buildTemplatedCookingIdeaResponse(
   recordAnswerCanaryTurn(input, 'chat-core-v2-local-llm', 'none', 0.86);
   return {
     response: {
-      id: `msg-${Date.now()}`,
+      id: `msg-${randomUUID()}`,
       text: composed.response.text,
       domain: 'cooking',
       routeMethod: 'chat-core-v2-local-llm',
@@ -692,7 +716,7 @@ function buildCookingSafetyBlockedLocalResponse(
   const responseText = composed.ok && composed.response ? composed.response.text : text;
   return {
     response: {
-      id: `msg-${Date.now()}`,
+      id: `msg-${randomUUID()}`,
       text: responseText,
       domain: 'cooking',
       routeMethod: 'chat-core-v2-local-llm',
@@ -1066,7 +1090,7 @@ function buildDegradedResponse(
       : 'Local reasoning could not answer this message safely right now. Try rephrasing or ask for a specific action.';
   return {
     response: {
-      id: `msg-${Date.now()}`,
+      id: `msg-${randomUUID()}`,
       text,
       domain: resolveLocalAnswerResponseDomain(input, false),
       routeMethod: 'chat-core-v2-local-llm-degraded',
@@ -1213,7 +1237,7 @@ function buildHelpfulFallbackResponse(
   const text = helpfulFallbackText(input.normalizedText, locale);
   return {
     response: {
-      id: `msg-${Date.now()}`,
+      id: `msg-${randomUUID()}`,
       text,
       domain: resolveLocalAnswerResponseDomain(input, recipeRequest),
       routeMethod: 'chat-core-v2-local-llm-degraded',

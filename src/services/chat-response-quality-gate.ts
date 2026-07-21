@@ -5,8 +5,39 @@ import {
   textClaimsUnverifiedAction,
   textHasBareAppSuccessMarker,
 } from './chat-success-claim-policy';
+import { verifyWriteClaimAgainstLocalState } from './chat-grounding-layer';
 
 export type ChatResponseQualityStatus = 'pass' | 'repaired' | 'blocked';
+
+// M8 on-trip redesign: what the gate actually DID with a detected issue.
+//   'pass'                — no issue detected, text untouched.
+//   'verified_kept'       — claim confirmed by a deterministic SQLite read;
+//                           original text kept, verificationStatus 'verified'.
+//   'surgical_downgrade'  — only the offending claim sentence(s) removed.
+//   'replaced'            — the entire answer was claim material; canned repair.
+//   'sanitized'           — non-claim trip (raw internal content / generic
+//                           retry) — debug patterns masked, no claim rewrite.
+//   'recipe_restructured' — recipe-shape repair; details preserved, only the
+//                           structure was rebuilt.
+export type ChatResponseQualityGateAction =
+  | 'pass'
+  | 'verified_kept'
+  | 'surgical_downgrade'
+  | 'replaced'
+  | 'sanitized'
+  | 'recipe_restructured';
+
+export interface ChatResponseQualityGateVerificationScope {
+  userId: number;
+  tenantId: number;
+  /**
+   * Request start (ms epoch). Verification is turn-scoped: only rows written
+   * within this request window (small clock-skew allowance) can confirm a
+   * write claim. Absent → the grounding layer uses verification-time
+   * Date.now(), which is a strictly tighter window.
+   */
+  requestStartedAt?: number;
+}
 
 export interface ChatResponseQualityGateResult {
   status: ChatResponseQualityStatus;
@@ -19,6 +50,13 @@ export interface ChatResponseQualityGateResult {
   // was suppressed for a creative-text owner (cooking / content).
   qualityGateSkipped?: boolean;
   qualityGateReason?: string;
+  // M8 — on-trip metadata. `action` is always set; the other fields are
+  // present only when the gate tripped (action !== 'pass') so the caller
+  // can persist { originalText, issues, action } under metadata.qualityGate.
+  action?: ChatResponseQualityGateAction;
+  originalText?: string;
+  tripIssues?: string[];
+  verifiedEntity?: { kind: 'task'; id: number; title: string };
 }
 
 // Phase K (Operator A3 + amendment item 3 in second review pass):
@@ -136,6 +174,9 @@ const IMPLIED_SUCCESS_PATTERNS = [
 export function applyChatResponseQualityGate(input: {
   text: string;
   contract: NexusAnswerContract;
+  // M8: when present, an 'unverified_success_claim' about an identifiable
+  // entity is first checked against local SQLite state (token-zero read).
+  verification?: ChatResponseQualityGateVerificationScope;
 }): ChatResponseQualityGateResult {
   const detect = detectChatResponseQualityIssuesWithSkipInfo(input.text, input.contract);
   const issues = detect.issues;
@@ -149,6 +190,7 @@ export function applyChatResponseQualityGate(input: {
       score: 1,
       qualityGateSkipped: !!phaseKSkipReason,
       qualityGateReason: phaseKSkipReason ?? 'pass',
+      action: 'pass',
     };
   }
 
@@ -157,6 +199,34 @@ export function applyChatResponseQualityGate(input: {
   const hasUnsupportedSpecifics = issues.includes('unsupported_specific_state_claim')
     || issues.includes('state_claim_without_grounding');
   const hasRecipeStructureIssue = issues.includes('recipe_missing_structure');
+
+  // M8 (a) — token-zero verification first. A confirmed claim keeps the
+  // ORIGINAL text and upgrades the contract instead of destroying a true
+  // answer. Id-or-exact-title match only; ambiguity falls through to (b).
+  if (hasFakeSuccess && input.verification) {
+    const verification = verifyWriteClaimAgainstLocalState({
+      text: input.text,
+      userId: input.verification.userId,
+      tenantId: input.verification.tenantId,
+      requestStartedAt: input.verification.requestStartedAt,
+    });
+    if (verification.verified) {
+      return {
+        status: 'pass',
+        text: input.text,
+        contract: { ...input.contract, verificationStatus: 'verified' },
+        issues: [],
+        score: 1,
+        qualityGateSkipped: false,
+        qualityGateReason: `verified_kept:${verification.reason}`,
+        action: 'verified_kept',
+        originalText: input.text,
+        tripIssues: issues,
+        ...(verification.entity ? { verifiedEntity: verification.entity } : {}),
+      };
+    }
+  }
+
   const contract: NexusAnswerContract = {
     ...input.contract,
     verificationStatus: hasFakeSuccess || hasUnsupportedSpecifics ? 'pending' : input.contract.verificationStatus,
@@ -173,13 +243,31 @@ export function applyChatResponseQualityGate(input: {
         : input.contract.userFacingSummary,
   };
 
-  const repairedText = hasFakeSuccess
-    ? unverifiedActionRepairText(input.contract.language)
-    : hasUnsupportedSpecifics
-      ? scopedReadRepairText(input.contract.language)
-    : hasRecipeStructureIssue
-      ? repairRecipeStructure(sanitized, input.contract.language)
-    : sanitized;
+  // M8 (b)/(c) — surgical downgrade first; full canned repair only when
+  // the entire answer is claim material.
+  let repairedText: string;
+  let action: ChatResponseQualityGateAction;
+  if (hasFakeSuccess || hasUnsupportedSpecifics) {
+    const surgical = attemptSurgicalDowngrade(sanitized, input.contract, issues);
+    if (surgical) {
+      repairedText = surgical;
+      action = 'surgical_downgrade';
+    } else {
+      repairedText = hasFakeSuccess
+        ? unverifiedActionRepairText(input.contract.language)
+        : scopedReadRepairText(input.contract.language);
+      action = 'replaced';
+    }
+  } else if (hasRecipeStructureIssue) {
+    // Non-claim trip: shape repair, not a claim rewrite — distinct label so
+    // counters/metadata do not conflate it with claim downgrades.
+    repairedText = repairRecipeStructure(sanitized, input.contract.language);
+    action = 'recipe_restructured';
+  } else {
+    // Non-claim trip: only raw-internal-content / generic-retry masking ran.
+    repairedText = sanitized;
+    action = 'sanitized';
+  }
 
   const firstIssue = issues[0] ?? 'unknown';
   return {
@@ -191,7 +279,97 @@ export function applyChatResponseQualityGate(input: {
     qualityGateSkipped: !!phaseKSkipReason,
     qualityGateReason: phaseKSkipReason
       ?? (hasOnlyRepairableIssues(issues) ? `repaired:${firstIssue}` : `blocked:${firstIssue}`),
+    action,
+    originalText: input.text,
+    tripIssues: issues,
   };
+}
+
+// ─── M8 (b): sentence-level surgical downgrade ─────────────────────
+//
+// Re-runs the SAME detectors per sentence and removes only the sentences
+// that trip one of the claim issues the full text tripped. Returns null
+// when a surgical repair is not possible (single sentence, everything
+// offends, or nothing offends at sentence level — patterns that only
+// matched across sentence boundaries), in which case the caller falls
+// back to the canned full repair.
+//
+// Adversarial-review fix (2026-07): the repair is LINE-AWARE. The text is
+// split per line FIRST, sentences are split within each line, and the kept
+// sentences are rejoined preserving the original line structure (markdown
+// lists, headings, paragraph breaks). Offending sentences are removed
+// within their line; lines whose every sentence offends are dropped and
+// the resulting empty-line runs collapse.
+
+const CLAIM_TRIP_ISSUES: ReadonlySet<string> = new Set([
+  'unverified_success_claim',
+  'unsupported_specific_state_claim',
+  'state_claim_without_grounding',
+]);
+
+// Markdown list/heading markers preserved when a line is partially kept.
+const LINE_PREFIX_RE = /^(\s*(?:[-*•]\s+|\d{1,3}[.)]\s+|#{1,6}\s+|>\s+)?)/;
+
+function splitIntoSentencesWithinLine(line: string): string[] {
+  return line
+    .split(/(?<=[.!?…])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function attemptSurgicalDowngrade(
+  text: string,
+  contract: NexusAnswerContract,
+  trippedIssues: string[],
+): string | null {
+  const trippedClaimIssues = trippedIssues.filter((issue) => CLAIM_TRIP_ISSUES.has(issue));
+  if (trippedClaimIssues.length === 0) return null;
+
+  const offends = (sentence: string): boolean => {
+    const sentenceIssues = detectChatResponseQualityIssuesWithSkipInfo(sentence, contract).issues;
+    return sentenceIssues.some((issue) => trippedClaimIssues.includes(issue));
+  };
+
+  const lines = text.split('\n');
+  let totalSentences = 0;
+  let removedSentences = 0;
+  const keptLines: string[] = [];
+  for (const line of lines) {
+    if (!line.trim()) {
+      keptLines.push('');
+      continue;
+    }
+    const prefix = line.match(LINE_PREFIX_RE)?.[1] ?? '';
+    const content = line.slice(prefix.length);
+    const sentences = splitIntoSentencesWithinLine(content);
+    if (sentences.length === 0) {
+      keptLines.push(line);
+      continue;
+    }
+    totalSentences += sentences.length;
+    const kept = sentences.filter((sentence) => !offends(sentence));
+    removedSentences += sentences.length - kept.length;
+    if (kept.length === 0) continue; // whole line was claim material — drop it
+    keptLines.push(kept.length === sentences.length ? line : `${prefix}${kept.join(' ')}`);
+  }
+
+  if (totalSentences <= 1) return null;
+  if (removedSentences === 0 || removedSentences === totalSentences) return null;
+
+  // Collapse blank-line runs (including runs created by dropped lines) and
+  // trim leading/trailing blanks so the repaired text stays tidy.
+  const collapsed: string[] = [];
+  for (const line of keptLines) {
+    if (line === '' && (collapsed.length === 0 || collapsed[collapsed.length - 1] === '')) continue;
+    collapsed.push(line);
+  }
+  while (collapsed.length > 0 && collapsed[collapsed.length - 1] === '') collapsed.pop();
+  if (collapsed.length === 0) return null;
+
+  const repairLine = trippedClaimIssues.includes('unverified_success_claim')
+    ? unverifiedActionRepairText(contract.language)
+    : scopedReadRepairText(contract.language);
+  return `${collapsed.join('\n')}\n\n${repairLine}`;
 }
 
 /**
@@ -409,6 +587,14 @@ function shouldEnforceLocalStateGrounding(contract: NexusAnswerContract): boolea
 function hasScopedStateGrounding(contract: NexusAnswerContract): boolean {
   return contract.groundingFacts.some((fact) => {
     if (!fact.safeForUser) return false;
+    // Adversarial-review fix (2026-07): facts derived from the response's
+    // OWN metadata envelope (`chat.context.metadata.*` — "backend returned
+    // scoped X metadata for this answer") are self-referential, not a real
+    // scoped state read. Counting them as grounding let model-authored
+    // answers (e.g. content-refine carrying "Publiquei o reel") bypass the
+    // answer_only success-claim check. Deterministic read families that DO
+    // return real state are contract_only and never reach this gate.
+    if (fact.source.startsWith('chat.context.metadata.')) return false;
     return ![
       'auth.scope',
       'chat.skill_capability_registry',

@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { RouteResult } from '../../router';
 import type { DomainName } from '../../domains/types';
 import { logger } from '../../utils/logger';
@@ -66,7 +68,7 @@ function buildShortcutResponse(input: {
   metadata: Record<string, unknown> | null;
 }): ChatShortcutRouteResult {
   const response = {
-    id: `msg-${Date.now()}`,
+    id: `msg-${randomUUID()}`,
     text: input.text,
     domain: input.domain,
     routeMethod: input.routeMethod,

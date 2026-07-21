@@ -67,8 +67,9 @@ describe('Chat Core v2 deterministic read API adapter', () => {
       capabilityId: 'tasks.today_summary',
       contextHash: 'abc123def4567890',
     });
+    // M11 id sweep: assistant message ids are collision-free uuids now.
+    expect(built.response.id).toMatch(/^msg-[0-9a-f-]{36}$/);
     expect(built.response).toMatchObject({
-      id: `msg-${requestStartedAt}`,
       text: 'You have 2 open tasks.',
       domain: 'tasks',
       routeMethod: 'chat-core-v2-deterministic-read',

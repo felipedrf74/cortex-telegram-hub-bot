@@ -4,8 +4,17 @@ import type { NexusAnswerContract, NexusChatLanguage } from './chat-answer-contr
 import {
   applyChatResponseQualityGate,
   type ChatResponseQualityGateResult,
+  type ChatResponseQualityGateVerificationScope,
 } from './chat-response-quality-gate';
 import { textClaimsUnverifiedAction } from './chat-success-claim-policy';
+
+// M8: how much of the safety machinery this composition runs.
+//   'full'          — draft validation + heuristic quality gate (default).
+//   'contract_only' — draft validation + contract stamping only. Reserved
+//                     for deterministic/templated response families that
+//                     cannot hallucinate; the heuristic gate (including the
+//                     forced safety re-run) is skipped entirely.
+export type NexusFinalAnswerGateMode = 'full' | 'contract_only';
 
 export const NEXUS_COMPOSED_ANSWER_DRAFT_VERSION = 'nexus_composed_answer_draft.v1';
 export const NEXUS_FINAL_ANSWER_COMPOSER_VERSION = 'nexus_final_answer_composer.v1';
@@ -92,10 +101,26 @@ export function composeNexusFinalAnswer(input: {
   draft: NexusComposedAnswerDraft;
   contract: NexusAnswerContract;
   qualityGateEnabled?: boolean;
+  // M8: 'contract_only' skips the heuristic gate entirely (deterministic
+  // response families). Default 'full' preserves the pre-M8 behavior,
+  // including the forced safety re-run on unverified success claims.
+  gateMode?: NexusFinalAnswerGateMode;
+  // M8: scope for the gate's token-zero verification read.
+  verification?: ChatResponseQualityGateVerificationScope;
 }): NexusFinalAnswerCompositionResult {
   const draftIssues = validateNexusComposedAnswerDraft(input.draft, input.contract);
-  const mustRunSafetyGate = draftIssues.includes('unverified_success_claim');
-  const quality = input.qualityGateEnabled === false && !mustRunSafetyGate
+  const contractOnly = input.gateMode === 'contract_only';
+  // Phase K F3 invariant (re-pinned by the 2026-07 adversarial review):
+  // the forced safety re-run on an unverified success claim must NEVER be
+  // disabled for model-authored text. 'contract_only' is only legal for
+  // deterministic/templated response families — the finalizer's policy
+  // table (chat-message-finalizer.ts) enforces that model-authored
+  // routeMethods (content-refine, content-refine-fallback, content-script,
+  // planner/local-answer/legacy families) always arrive here with
+  // gateMode 'full', where this predicate keeps the gate mandatory even
+  // when qualityGateEnabled === false.
+  const mustRunSafetyGate = draftIssues.includes('unverified_success_claim') && !contractOnly;
+  const quality = (input.qualityGateEnabled === false || contractOnly) && !mustRunSafetyGate
     ? {
         status: 'pass' as const,
         text: input.draft.text,
@@ -106,9 +131,15 @@ export function composeNexusFinalAnswer(input: {
     : applyChatResponseQualityGate({
         text: input.draft.text,
         contract: input.contract,
+        verification: input.verification,
       });
+  // M8: a verified-kept claim is no longer "unverified" — the deterministic
+  // read confirmed it, so the draft-level issue is resolved, not surfaced.
+  const resolvedDraftIssues = 'action' in quality && quality.action === 'verified_kept'
+    ? draftIssues.filter((issue) => issue !== 'unverified_success_claim')
+    : draftIssues;
   const issues = [...new Set<NexusFinalAnswerIssue>([
-    ...draftIssues,
+    ...resolvedDraftIssues,
     ...(quality.issues.filter(isFinalAnswerIssue)),
   ])];
   return {

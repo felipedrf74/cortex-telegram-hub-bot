@@ -77,8 +77,10 @@ export interface AICallResult {
     think?: boolean;
     numCtx?: number;
     numPredict?: number;
-    // Phase K — quality-gate decision carry-through, set by
-    // chat-message-routes.ts after applyChatResponseQualityGate runs.
+    // Phase K — quality-gate decision carry-through, set by the unified
+    // finalizer (src/api/routes/chat-message-finalizer.ts) after
+    // applyChatResponseQualityGate runs (M8: routes no longer call the
+    // gate directly).
     qualityGateSkipped?: boolean;
     qualityGateReason?: string;
   };

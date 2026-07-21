@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import {
@@ -199,7 +201,7 @@ function storeCallbackAssistantMessage(input: CallbackPersistenceInput): void {
   const entry: ChatHistoryWrite = {
     ...(input.tenantId ? { tenantId: input.tenantId } : {}),
     userId: input.userId,
-    messageId: input.fallbackMessageId ?? `cb-${Date.now()}`,
+    messageId: input.fallbackMessageId ?? `cb-${randomUUID()}`,
     role: 'assistant',
     text: input.text,
     domain: input.domain,

@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { randomUUID } from 'crypto';
+
 import type { InlineButton } from '../../adapters/message-adapter';
 import type { DomainName } from '../../domains/types';
 import type { RouteResult } from '../../router';
@@ -58,7 +60,9 @@ export function buildChatHandlerResponseEnvelope({
   buttons,
   metadata = null,
   timestamp = new Date().toISOString(),
-  id = `msg-${Date.now()}`,
+  // M11: uuid default — `msg-${Date.now()}` collides for envelopes built in
+  // the same millisecond (concurrent /message requests).
+  id = `msg-${randomUUID()}`,
 }: {
   route: RouteResult;
   result: ChatDomainExecutionResult;

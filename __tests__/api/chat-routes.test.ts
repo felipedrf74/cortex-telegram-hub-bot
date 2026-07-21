@@ -469,6 +469,10 @@ vi.mock('../../src/utils/callback-store', () => ({
 }));
 
 import { chatRoutes } from '../../src/api/routes/chat';
+import {
+  resetChatMessageContextForTests,
+  resolveChatActiveContext,
+} from '../../src/api/routes/chat-message-context';
 import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
 import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
@@ -2140,6 +2144,38 @@ describe('Chat API routes', () => {
       routeMethod: 'fast-path',
     });
     expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7001, 'secretary', '<b>Day overview</b>', 7001);
+  });
+
+  it('recovers lastAssistantMessage through durable continuity after a simulated restart (M13 wiring)', async () => {
+    // Adversarial-review fix: the legacy terminal now writes the persisted
+    // assistant message id into chat_conversation_state, so a restart can
+    // recover the last assistant reply end-to-end via resolveChatActiveContext.
+    resetChatMessageContextForTests();
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'classifier',
+      confidence: 0.95,
+      strippedMessage: 'how did my week go',
+    });
+    mockHandleSecretary.mockResolvedValue({ text: 'Durable weekly summary answer.', domain: 'secretary' });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'how did my week go',
+    });
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.text).toBe('Durable weekly summary answer.');
+
+    // Simulate a process restart: in-process caches wiped, DB rows survive.
+    resetChatMessageContextForTests();
+    // The pruned conversations table misses (mocked store returns null) —
+    // recovery must come from chat_conversation_state + chat-history-store.
+    mockGetLastAssistantMessage.mockReturnValue(null);
+
+    const context = resolveChatActiveContext(7001, Date.now(), 7001);
+    expect(context).toEqual({
+      domain: 'secretary',
+      lastAssistantMessage: 'Durable weekly summary answer.',
+    });
   });
 
   it('attaches actionable coach buttons to fresh triathlon briefings', async () => {

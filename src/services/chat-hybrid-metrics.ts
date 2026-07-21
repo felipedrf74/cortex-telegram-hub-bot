@@ -206,6 +206,44 @@ const DEBUG_LEAKAGE_PATTERNS = [
   /\bfallback policy\b/i,
 ];
 
+// ─── M8: runtime quality-gate outcome counters (additive) ──────────
+//
+// In-process counters for the unified finalizer's gate outcomes:
+// pass / verified-kept / surgical / replaced. Deterministic, no I/O —
+// consumers snapshot via the getter (portal/evidence surfaces).
+
+export type ChatQualityGateOutcome =
+  | 'pass'
+  | 'verified_kept'
+  | 'surgical_downgrade'
+  | 'replaced'
+  | 'sanitized'
+  | 'recipe_restructured';
+
+const chatQualityGateOutcomeCounters: Record<ChatQualityGateOutcome, number> = {
+  pass: 0,
+  verified_kept: 0,
+  surgical_downgrade: 0,
+  replaced: 0,
+  sanitized: 0,
+  recipe_restructured: 0,
+};
+
+export function recordChatQualityGateOutcome(outcome: ChatQualityGateOutcome): void {
+  if (!(outcome in chatQualityGateOutcomeCounters)) return;
+  chatQualityGateOutcomeCounters[outcome] += 1;
+}
+
+export function getChatQualityGateOutcomeCounters(): Readonly<Record<ChatQualityGateOutcome, number>> {
+  return { ...chatQualityGateOutcomeCounters };
+}
+
+export function resetChatQualityGateOutcomeCountersForTests(): void {
+  for (const key of Object.keys(chatQualityGateOutcomeCounters) as ChatQualityGateOutcome[]) {
+    chatQualityGateOutcomeCounters[key] = 0;
+  }
+}
+
 function valuesEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
