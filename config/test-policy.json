@@ -781,6 +781,71 @@
       "reason": "M2 eval CLI guard contract: fixture default mode, base-url requirement for live modes, auth via env var only, judge armed only with a live executor."
     },
     {
+      "pattern": "__tests__/services/chat-action-state.test.ts",
+      "disposition": "keep",
+      "reason": "M6 mirror suite: pending-action state machine — status transitions, TTL expiry, cancellation cascades, recent-entity graph, tenant scoping."
+    },
+    {
+      "pattern": "__tests__/services/chat-pending-confirmations.test.ts",
+      "disposition": "keep",
+      "reason": "M6 mirror suite: confirmation TTL/tenant scoping, ADV-3 confirmedTargets sanitization, completed-confirmation replay."
+    },
+    {
+      "pattern": "__tests__/services/chat-tenant-scope.test.ts",
+      "disposition": "keep",
+      "reason": "M6 mirror suite: tenant resolution rules, cross-tenant denial, scope observability anomalies."
+    },
+    {
+      "pattern": "__tests__/services/chat-grounding-layer.test.ts",
+      "disposition": "keep",
+      "reason": "M6 mirror suite: grounding fact assembly, freshness/staleness, missing-fact shapes, owner-skill precedence."
+    },
+    {
+      "pattern": "__tests__/services/chat-action-run-store.test.ts",
+      "disposition": "keep",
+      "reason": "M6 mirror suite: run claim/replay idempotency, terminal-status guard, cancel/reap/prune lifecycle."
+    },
+    {
+      "pattern": "__tests__/services/chat-segment-router.test.ts",
+      "disposition": "keep",
+      "reason": "M6 characterization pins of current segment routing incl. tasks-only $ref limitation (deliberately updated by M16)."
+    },
+    {
+      "pattern": "__tests__/api/chat-message-replay.test.ts",
+      "disposition": "keep",
+      "reason": "M6 replay net: normalized envelope + stage-order pins per routeMethod terminal family — the byte-parity net for M8-M10 refactors."
+    },
+    {
+      "pattern": "__tests__/scripts/chat-eval-local.test.ts",
+      "disposition": "keep",
+      "reason": "M5 local_engine orchestration: dry-run plan, kill switch, teardown flag, promote-gate ordering + loud override pins."
+    },
+    {
+      "pattern": "__tests__/services/routing-corpus.test.ts",
+      "disposition": "keep",
+      "reason": "M7 corpus builder: 4-source extraction, hash dedupe, labeling store, provenance."
+    },
+    {
+      "pattern": "__tests__/scripts/run-routing-accuracy.test.ts",
+      "disposition": "keep",
+      "reason": "M7 accuracy replay: per-surface precision/recall, calibration buckets, snapshot gate, zero-live-call guarantee."
+    },
+    {
+      "pattern": "__tests__/portal/routing-corpus-routes.test.ts",
+      "disposition": "keep",
+      "reason": "M7 portal labeling: admin-token auth, next/label/progress flow, tenant scoping, manifest-validated labels."
+    },
+    {
+      "pattern": "__tests__/services/chat-pending-cancellation.test.ts",
+      "disposition": "keep",
+      "reason": "Cancellation-turn matcher contract + labeled pre-existing-bug pin: 'cancel that/it' misses the cascade (owner M8/M16)."
+    },
+    {
+      "pattern": "__tests__/services/chat-skill-capability-registry.test.ts",
+      "disposition": "keep",
+      "reason": "Skill inference contract + labeled pre-existing-bug pin: plural 'tasks' resolves to chat (owner M15)."
+    },
+    {
       "pattern": "__tests__/**/*.test.ts",
       "disposition": "keep",
       "reason": "Retain until profiling and overlap evidence justify merge, conversion, evaluation, or deletion."

@@ -142,6 +142,11 @@ import {
   findDecisionByRelatedEntity,
   performDecisionAction,
 } from '../../services/decision-center';
+// M6 stage-trace seam: no-op unless CHAT_STAGE_TRACE / the test seam is on.
+// Each early-return checkpoint family below records its stage name so the
+// replay corpus can pin the /message stage ORDER ahead of the M10
+// stage-pipeline decomposition.
+import { recordChatStage } from '../../services/chat-stage-trace';
 
 type ChatRouteScopeGuard = (
   res: Response,
@@ -1674,8 +1679,11 @@ export function registerChatMessageRoutes(
       const latency = createChatLatencyTracker(requestStartedAt);
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
 
+      recordChatStage(chatRequestId, 'request_received');
+
       const idempotentHit = findCompletedAssistantForClientMessage(userId, scopedClientMessageId, tenantId);
       if (idempotentHit) {
+        recordChatStage(chatRequestId, idempotentHit.userText !== normalizedText ? 'idempotent_replay_conflict' : 'idempotent_replay');
         if (idempotentHit.userText !== normalizedText) {
           logger.warn(
             { chatRequestId, tenantId, userId, clientMessageId: scopedClientMessageId },
@@ -1725,6 +1733,7 @@ export function registerChatMessageRoutes(
           timestamp: new Date(requestStartedAt).toISOString(),
         });
         if (claim.status === 'conflict') {
+          recordChatStage(chatRequestId, 'idempotency_claim_conflict');
           logger.warn(
             { chatRequestId, tenantId, userId, clientMessageId: scopedClientMessageId },
             'iOS chat idempotency claim conflicted with existing message text',
@@ -1738,6 +1747,7 @@ export function registerChatMessageRoutes(
           return;
         }
         if (claim.status === 'duplicate') {
+          recordChatStage(chatRequestId, 'idempotency_in_progress');
           logger.info(
             { chatRequestId, tenantId, userId, clientMessageId: scopedClientMessageId, lifecycleState: claim.existingLifecycleState },
             'iOS chat idempotent retry found an in-flight message claim',
@@ -1783,6 +1793,7 @@ export function registerChatMessageRoutes(
         'iOS chat request started',
       );
       latency.mark('request_validated');
+      recordChatStage(chatRequestId, 'request_validated');
 
       const recordDeterministicReadEvidence = (
         response: Parameters<typeof safeRecordChatV2DeterministicReadEvidence>[0]['response'],
@@ -1843,6 +1854,7 @@ export function registerChatMessageRoutes(
         })
         : null;
       if (tokenZeroShortcut) {
+        recordChatStage(chatRequestId, 'token_zero_shortcut');
         const { conversationDomain } = tokenZeroShortcut;
         if (sendChatTierRequiredIfNeeded(res, userId, conversationDomain)) return;
         const response = enrichChatResponseForContract(tokenZeroShortcut.response, {
@@ -1884,6 +1896,7 @@ export function registerChatMessageRoutes(
         })
         : null;
       if (chatCoreV2Read) {
+        recordChatStage(chatRequestId, 'chat_core_v2_deterministic_read_early');
         latency.mark('chat_core_v2_deterministic_read_completed');
         const deterministicReadShortcut = buildChatCoreV2DeterministicReadShortcutResponse({
           result: chatCoreV2Read,
@@ -1990,6 +2003,7 @@ export function registerChatMessageRoutes(
           + cancelled.chatCoreV2Commands
           + (cancelled.chatPendingConfirmation ? 1 : 0)
           + (cancelled.decisionDismissed ? 1 : 0);
+        recordChatStage(chatRequestId, totalCancelled > 0 ? 'pending_work_cancelled' : 'pending_work_cancel_empty');
         if (totalCancelled > 0) {
           const isPT = chatCoreV2RouteLocale.startsWith('pt');
           const text = isPT
@@ -2101,6 +2115,7 @@ export function registerChatMessageRoutes(
           now: new Date(requestStartedAt),
         });
         if (gatewayResult.kind === 'resolved_preview' || gatewayResult.kind === 'resolved_execute') {
+          recordChatStage(chatRequestId, 'action_gateway_preview');
           const built = buildChatCoreV2CommandPreviewShortcutResponse({
             result: gatewayResult.preview,
             requestStartedAt,
@@ -2156,6 +2171,7 @@ export function registerChatMessageRoutes(
           || gatewayResult.kind === 'unsupported_write'
           || gatewayResult.kind === 'blocked_legacy_fallback'
         ) {
+          recordChatStage(chatRequestId, 'action_gateway_stop');
           const guardOnlyConfirmation = shouldCreateChatCoreV2GuardOnlyConfirmation(gatewayResult);
           const stopText = actionGatewayStopText(gatewayResult, chatCoreV2RouteLocale);
           const guardLabels = guardOnlyConfirmation
@@ -2325,6 +2341,7 @@ export function registerChatMessageRoutes(
           now: new Date(requestStartedAt),
         });
         if (readRoute) {
+          recordChatStage(chatRequestId, 'chat_core_v2_deterministic_read');
           const built = buildChatCoreV2DeterministicReadShortcutResponse({
             result: readRoute,
             requestStartedAt,
@@ -2375,6 +2392,7 @@ export function registerChatMessageRoutes(
       if (normalizedText && normalizedAttachments.length === 0) {
         const cached = getCachedChatCommandResponse(userId, normalizedTextLower, tenantId);
         if (cached) {
+          recordChatStage(chatRequestId, 'cached_command');
           logger.debug({ cmdLength: normalizedText.length, platform: 'ios', tenantId, userId }, 'Returning cached chat command');
           const cachedResponse = enrichChatResponseForContract(cached, {
             normalizedText,
@@ -2426,6 +2444,7 @@ export function registerChatMessageRoutes(
           allowModelPlanner: false,
         });
         if (actionResult) {
+          recordChatStage(chatRequestId, 'action_planner_deterministic');
           latency.mark('action_planner_completed');
           const response = actionResult.response;
           if (actionResult.status === 'needs_confirmation') {
@@ -2513,6 +2532,7 @@ export function registerChatMessageRoutes(
       }
 
       if (normalizedAttachments.length > 0) {
+        recordChatStage(chatRequestId, 'attachment');
         if (!await ensureModelBudget('iOS chat attachment blocked by AI budget')) return;
 
         const attachment = normalizedAttachments[0];
@@ -2566,6 +2586,7 @@ export function registerChatMessageRoutes(
       // user's real account identity.
       const identityResponse = tryBuildAuthenticatedIdentityResponse(normalizedText, normalizedTextLower, userId);
       if (identityResponse) {
+        recordChatStage(chatRequestId, 'authenticated_identity');
         const { conversationDomain } = identityResponse;
         const response = enrichChatResponseForContract(identityResponse.response, {
           normalizedText,
@@ -2604,6 +2625,7 @@ export function registerChatMessageRoutes(
         ? null
         : await tryBuildFastPathChatResponse(normalizedText, normalizedTextLower, userId, tenantId);
       if (fastPath) {
+        recordChatStage(chatRequestId, 'fast_path');
         const { response: fastResponse, conversationDomain } = fastPath;
         const response = enrichChatResponseForContract(fastResponse, {
           normalizedText,
@@ -2643,6 +2665,7 @@ export function registerChatMessageRoutes(
       // the Training tab's one-shot plan generator ($0.01 vs $0.15).
       const trainingPlanShortcut = tryBuildTrainingPlanShortcutResponse(normalizedText, normalizedTextLower, userId);
       if (trainingPlanShortcut) {
+        recordChatStage(chatRequestId, 'training_plan_shortcut');
         const { response: planResponse, conversationDomain } = trainingPlanShortcut;
         const response = enrichChatResponseForContract(planResponse, {
           normalizedText,
@@ -2686,6 +2709,7 @@ export function registerChatMessageRoutes(
           requireSafeWriteConfirmation: true,
         });
         if (actionResult) {
+          recordChatStage(chatRequestId, 'action_planner_model');
           latency.mark('action_planner_completed');
           const response = actionResult.response;
           if (actionResult.status === 'needs_confirmation') {
@@ -2789,6 +2813,7 @@ export function registerChatMessageRoutes(
         && preTurnContract?.routeKind === 'internet_research'
         && (preTurnContract.groundingRequired === 'web' || preTurnContract.groundingRequired === 'local_and_web')
       ) {
+        recordChatStage(chatRequestId, 'internet_research');
         if (!await ensureModelBudget('iOS chat internet research blocked by AI budget')) return;
         const researchDomain = domainForTurnContractSkill(preTurnContract.skill) ?? 'chat';
         const localContext = preTurnContract.groundingRequired === 'local_and_web' && researchDomain !== 'chat'
@@ -2887,6 +2912,7 @@ export function registerChatMessageRoutes(
           ? findDecisionByRelatedEntity(userId, tenantId, 'chat_confirmation', pending.id)
           : null;
         if (pending && decision) {
+          recordChatStage(chatRequestId, 'decision_confirmation_shortcut');
           const result = await performDecisionAction(decision.decisionId, 'option_a', userId, tenantId, {
             idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
               ?? `chat-confirm:${tenantId}:${userId}:${pending.id}:${Date.now()}`,
@@ -2967,6 +2993,7 @@ export function registerChatMessageRoutes(
       }
 
       if (preRoutingDecision.safety.requiresConfirmation && !preRoutingDecision.safety.explicitConfirmation) {
+        recordChatStage(chatRequestId, 'destructive_confirmation_hold');
         const intentClass = intentClassForAction(undefined, preRoutingDecision.involvedSkills);
         const copy = destructiveConfirmationCopy(chatCoreV2RouteLocale);
         const summary = {
@@ -3098,6 +3125,7 @@ export function registerChatMessageRoutes(
           env: process.env,
         });
         if (localChatResult) {
+          recordChatStage(chatRequestId, 'chat_core_v2_local_answer');
           latency.mark('chat_core_v2_local_answer_completed');
           const response = enrichChatResponseForContract(localChatResult.response, {
             normalizedText,
@@ -3161,6 +3189,7 @@ export function registerChatMessageRoutes(
         env: process.env,
       });
       if (unsupportedFallback.response) {
+        recordChatStage(chatRequestId, 'chat_core_v2_unsupported_fallback');
         latency.mark('chat_core_v2_unsupported_fallback_returned');
         const unsupportedResponse = {
           id: `msg-${requestStartedAt}`,
@@ -3239,6 +3268,7 @@ export function registerChatMessageRoutes(
       if (!await ensureModelBudget('iOS chat provider routing blocked by AI budget')) return;
       const rawRoute = await routeMessage(normalizedText, activeContext, userId, tenantId);
       latency.mark('routed');
+      recordChatStage(chatRequestId, 'legacy_route');
       const contractAwareRoute = preTurnContract ? applyTurnContractRouteHint(rawRoute, preTurnContract) : rawRoute;
       const routingDecision = analyzeChatSkillOrchestration({
         message: normalizedText,
@@ -3297,6 +3327,7 @@ export function registerChatMessageRoutes(
         activeContext,
       });
       if (shortcutResult) {
+        recordChatStage(chatRequestId, 'domain_shortcut');
         const { conversationDomain } = shortcutResult;
         const response = enrichChatResponseForContract(shortcutResult.response, {
           normalizedText,
@@ -3342,6 +3373,7 @@ export function registerChatMessageRoutes(
         }),
       }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
       latency.mark('domain_handler_completed');
+      recordChatStage(chatRequestId, 'legacy_response');
       if (routingDecision.safety.explicitConfirmation) {
         clearPendingChatConfirmation(userId, tenantId);
       }

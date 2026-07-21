@@ -216,6 +216,46 @@ export function listChatEvalRuns(
   return rows.map(mapRunRow);
 }
 
+export interface ChatEvalLatestRun {
+  id: number;
+  runId: string;
+  mode: ChatEvalMode;
+  passed: boolean;
+  generatedAt: string;
+  createdAt: string;
+}
+
+/**
+ * Latest recorded run for one eval mode, or null when that mode has never
+ * been recorded. Backs the local_engine promote gate: the gate reads
+ * `passed` from the newest row only, so a stale green run never masks a
+ * newer red one. "Newest" is INSERTION recency (created_at, then id) — not
+ * the report's self-declared generated_at — so a clock rollback in the
+ * report generator can never resurface an older run as the latest.
+ */
+export function getLatestChatEvalRunForMode(
+  db: Database.Database,
+  mode: ChatEvalMode,
+): ChatEvalLatestRun | null {
+  ensureChatEvalHistoryTables(db);
+  const row = db.prepare(`
+    SELECT id, run_id, mode, passed, generated_at, created_at
+    FROM chat_eval_runs
+    WHERE mode = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(mode) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    runId: String(row.run_id),
+    mode: row.mode as ChatEvalMode,
+    passed: Number(row.passed) === 1,
+    generatedAt: String(row.generated_at),
+    createdAt: String(row.created_at),
+  };
+}
+
 function normalizeProviderCallCount(value: PersistChatEvalRunOptions['realProviderCalls'], mode: ChatEvalMode): number {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.trunc(value));
   if (typeof value === 'boolean') return value ? 1 : 0;

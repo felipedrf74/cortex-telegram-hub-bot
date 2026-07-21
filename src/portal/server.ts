@@ -47,6 +47,7 @@ import { registerPortalOperationsRoutes } from './operations-routes';
 import { registerPortalOAuthRoutes } from './oauth-routes';
 import { registerPortalPlanRoutes } from './plan-routes';
 import { registerPortalProviderRoutes } from './provider-routes';
+import { registerPortalRoutingCorpusRoutes } from './routing-corpus-routes';
 import { registerPortalSkillRoutes } from './skill-routes';
 import { buildPortalSnapshot } from './snapshot-builder';
 import { registerPortalSnapshotRoutes } from './snapshot-routes';
@@ -406,6 +407,8 @@ export function createPortalServer(): http.Server {
   registerPortalChatRoutes(app);
 
   registerPortalEvalHistoryRoutes(app);
+
+  registerPortalRoutingCorpusRoutes(app);
 
   registerPortalUserSkillRoutes(app);
 

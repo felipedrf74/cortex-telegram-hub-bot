@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { runChatEvaluationSuite } from '../../src/services/chat-evaluation-harness';
 import {
   ensureChatEvalHistoryTables,
+  getLatestChatEvalRunForMode,
   listChatEvalRuns,
   persistChatEvalRun,
 } from '../../src/services/chat-eval-history';
@@ -127,5 +128,69 @@ describe('Chat eval history', () => {
     expect(runs[0].qualityMetrics[0]).toHaveProperty('privacy');
     expect(runs[0].dayToDaySummary).toHaveProperty('failureSummary');
     expect(JSON.stringify(runs[0])).not.toContain('userMessage');
+  });
+
+  it('returns null for the latest run of a mode that has never been recorded', () => {
+    expect(getLatestChatEvalRunForMode(db, 'local_engine')).toBeNull();
+  });
+
+  it('returns the newest run for the requested mode by insertion recency (created_at, id)', async () => {
+    const older = await runChatEvaluationSuite({
+      mode: 'local_engine',
+      generatedAt: '2026-05-01T10:00:00.000Z',
+    });
+    const newer = await runChatEvaluationSuite({
+      mode: 'local_engine',
+      generatedAt: '2026-05-02T10:00:00.000Z',
+    });
+
+    persistChatEvalRun(older, { db, runId: 'chat-eval-local-old' });
+    persistChatEvalRun(newer, { db, runId: 'chat-eval-local-new' });
+
+    const latest = getLatestChatEvalRunForMode(db, 'local_engine');
+    expect(latest).not.toBeNull();
+    expect(latest?.runId).toBe('chat-eval-local-new');
+    expect(latest?.mode).toBe('local_engine');
+    expect(latest?.generatedAt).toBe('2026-05-02T10:00:00.000Z');
+    expect(latest?.passed).toBe(newer.passed);
+    expect(typeof latest?.id).toBe('number');
+    expect(typeof latest?.createdAt).toBe('string');
+  });
+
+  it('is immune to report-clock rollbacks: the last INSERTED run wins even with an older generated_at', async () => {
+    const futureClock = await runChatEvaluationSuite({
+      mode: 'local_engine',
+      generatedAt: '2027-01-01T10:00:00.000Z', // report clock skewed into the future
+    });
+    const latestInserted = await runChatEvaluationSuite({
+      mode: 'local_engine',
+      generatedAt: '2026-05-01T10:00:00.000Z', // sane clock, inserted LAST
+    });
+
+    persistChatEvalRun(futureClock, { db, runId: 'chat-eval-local-skewed' });
+    persistChatEvalRun(latestInserted, { db, runId: 'chat-eval-local-latest' });
+
+    // Ordering by generated_at would resurface the skewed run; insertion
+    // recency (created_at DESC, id DESC) must return the last recorded run.
+    const latest = getLatestChatEvalRunForMode(db, 'local_engine');
+    expect(latest?.runId).toBe('chat-eval-local-latest');
+  });
+
+  it('isolates latest-run lookups per mode', async () => {
+    const fixtureRun = await runChatEvaluationSuite({
+      mode: 'fixture',
+      generatedAt: '2026-05-03T10:00:00.000Z',
+    });
+    const localRun = await runChatEvaluationSuite({
+      mode: 'local_engine',
+      generatedAt: '2026-05-01T10:00:00.000Z',
+    });
+
+    persistChatEvalRun(fixtureRun, { db, runId: 'chat-eval-fixture-newest' });
+    persistChatEvalRun(localRun, { db, runId: 'chat-eval-local-older' });
+
+    expect(getLatestChatEvalRunForMode(db, 'fixture')?.runId).toBe('chat-eval-fixture-newest');
+    expect(getLatestChatEvalRunForMode(db, 'local_engine')?.runId).toBe('chat-eval-local-older');
+    expect(getLatestChatEvalRunForMode(db, 'real_provider')).toBeNull();
   });
 });

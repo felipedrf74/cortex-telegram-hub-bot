@@ -742,8 +742,10 @@ function evaluateScenario(
 
   const averageScore = average(Object.values(scores));
   let status: ChatEvalStatus = failures.length > 0 ? 'fail' : 'pass';
+  // A live-evidence scenario is only 'partial' when the run mode cannot
+  // supply its evidence; running in the required mode unblocks it (M5).
   if (!failures.length && (
-    scenario.evidenceMode === 'local_engine_required'
+    (scenario.evidenceMode === 'local_engine_required' && mode !== 'local_engine')
     || (scenario.evidenceMode === 'real_provider_required' && mode !== 'real_provider')
   )) {
     status = 'partial';
