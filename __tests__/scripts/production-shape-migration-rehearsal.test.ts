@@ -398,11 +398,19 @@ describe('production-shape rehearsal evidence validation', () => {
         [(value: any) => { value.migrationPolicySubjectSha256 = '0'.repeat(64); }, 'migration_policy_subject_mismatch'],
         [(value: any) => { value.candidate.migrationSetSha256 = '0'.repeat(64); }, 'candidate_migration_set_mismatch'],
         [(value: any) => { value.source.databaseRelativePath = 'other.db'; }, 'source_database_identity_invalid'],
+        [(value: any) => { value.checks.temporaryCloneCleanup = 'pending'; }, 'clone_cleanup_not_proved'],
+      ] as Array<[(value: any) => void, string]>) {
+        const tampered = validEvidence();
+        mutate(tampered);
+        writeFileSync(file, `${JSON.stringify(tampered)}\n`, { mode: 0o600 });
+        expect(validate(file).reason).toBe(expectedReason);
+      }
+
+      for (const [mutate, expectedReason] of [
         [(value: any) => { value.source.retiredMigrationPolicySha256 = '0'.repeat(64); }, 'retired_migration_policy_mismatch'],
         [(value: any) => { value.source.migrationLineageId = 'unknown'; }, 'source_migration_lineage_invalid'],
         [(value: any) => { value.source.retiredMigrationCount = 1; }, 'retired_migration_count_mismatch'],
         [(value: any) => { value.source.retiredMigrationSetSha256 = '0'.repeat(64); }, 'retired_migration_set_mismatch'],
-        [(value: any) => { value.checks.temporaryCloneCleanup = 'pending'; }, 'clone_cleanup_not_proved'],
       ] as Array<[(value: any) => void, string]>) {
         const tampered = validEvidence();
         mutate(tampered);
