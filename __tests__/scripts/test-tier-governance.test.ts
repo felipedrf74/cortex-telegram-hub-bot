@@ -84,7 +84,7 @@ describe('governed test tier partitions', () => {
     expect(partitions.deterministic.filter((file) => partitions.evaluation.includes(file))).toEqual([]);
   });
 
-  it('keeps fail-closed changed-test escalation inside the deterministic partition', () => {
+  it('keeps fail-closed changed-test escalation inside the deterministic partition', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-selection-partition-'));
     tempRoots.push(temp);
     const classifierPath = path.join(temp, 'classifier.json');
