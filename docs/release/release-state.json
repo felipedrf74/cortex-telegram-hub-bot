@@ -1,12 +1,12 @@
 {
   "schema": "nexus.release-state.v1",
-  "lastVerifiedAt": "2026-07-19T12:43:05.167Z",
-  "docsHead": "7e1e25bb62080b0e39f6e30398f3153fc4db8baf",
+  "lastVerifiedAt": "2026-07-22T08:37:34.234Z",
+  "docsHead": "0d4553751a7b95ea0113ed9b4b68c021350e9c06",
   "backend": {
-    "version": "4.14.224",
-    "runtimeSha": "74f89adc0f1cbb5657cf42808b9ac6dce18713ca",
-    "artifactDigest": "e7662f9d995fb0df38becb390ac3c54c31fe3c97347ebd104d03a9bcbad88c41",
-    "installedDigest": "f425e991e203a584ba99d4551550a9b021e4e0500fcdd36666c0da45a37d961b",
+    "version": "4.14.230",
+    "runtimeSha": "36b96fab8d0987696ccd7e2ca35a343bca32da2f",
+    "artifactDigest": "07a09ffc1dd608710f203493a3bee244c296b2d8126adb5916a5427b28d0de05",
+    "installedDigest": "df54eea21739749e454153d931cfa01c953d5477f458009483fe4340b7be4aa6",
     "health": "healthy",
     "database": "connected",
     "pm2Processes": [
@@ -14,13 +14,13 @@
       "content-engine"
     ],
     "releaseEvidence": {
-      "rcRun": "29684934809",
-      "signingRun": "29685452278",
-      "stagingRun": "29687437451",
-      "stagingRequestId": "522c7ecc-2953-40f8-b2dd-93a51c69388b",
-      "productionCompletedAt": "2026-07-19T12:43:05.167Z",
-      "cutoverSeconds": 48,
-      "backup": "v4.14.223_before-v4.14.224_20260719_134147.tar.gz"
+      "rcRun": "29876582985",
+      "signingRun": "29878221235",
+      "stagingRun": "29878760031",
+      "stagingRequestId": "0a901fee-876d-44e6-ba36-fee8cf273d4a",
+      "productionCompletedAt": "2026-07-22T08:37:34.234Z",
+      "cutoverSeconds": 81,
+      "backup": "v4.14.224_before-v4.14.230_20260722_093618.tar.gz"
     }
   },
   "trainingCatalog": {
@@ -31,30 +31,38 @@
   },
   "ios": {
     "version": "1.5.0",
-    "build": 57,
-    "sha": "d2558f557a1852db92879303b57e86e07c72182a",
-    "refreshFixSha": "8ad3cc32b541e61682a4da2198cf9fe5dbf61970",
-    "prHeadSha": "1ef4c6f22ca10bfb7393d2b45e1f5745903736f6",
-    "mainSha": "5486d5f69ebb1f80b417945fa2411a3b63c7681c",
+    "build": 259,
+    "sourceBuild": 59,
+    "sha": "f3d868783a52f549c235b11dc0a378fa7adfc43b",
+    "prHeadSha": "213e40d08edc84732079c08b1515312b9e9efb30",
+    "mainSha": "7fd4e96e2e0d2b51587777c0454698ea8a3b8b3f",
     "testFlightState": "testing",
     "testFlightGroups": [
-      "Nexus Hub Betinha",
-      "Betinhas"
+      "Nexus Hub Betinha"
     ],
-    "ipaSha256": "e4dd6648b0c2254439284d0dac8e88cf11b490fcbc45ec3d35d8615f9cddd3d2",
-    "archiveBinarySha256": "5b6d5cac3d27017d0202c3739d4f6fe343d9bffadbfae9645480c498cc9774dc",
+    "appStoreReviewState": "waiting_for_review",
+    "appStoreSubmissionId": "85807d65-538d-40e8-9513-6bdfcaf42312",
+    "appStoreReviewSubmittedAt": "2026-07-22T08:59:00Z",
+    "appStoreReviewVerifiedAt": "2026-07-22T09:02:22Z",
+    "automaticReleaseAfterApproval": true,
+    "ipaSha256": "5eeb35d43ae24fb16ef7d5bb631e8bbbdbe866f527150073a3dcdbf7a74bb2c8",
+    "archiveBinarySha256": "b6f0215fab51f0d4d193cd4102e6c542bb56520e65669486af42aa117a1db7b5",
+    "distributionAttestationSha256": "35ebc4d1e2a27fc9d09e8ad089409191fc3b01b5e352bcc81c3ee53ff564452d",
+    "xcodeVersion": "26.6",
+    "sdkName": "iphoneos26.5",
     "physicalDeviceSmoke": "open",
     "buildsToRetain": [
       54,
       55,
-      56
+      56,
+      57
     ]
   },
   "releaseProcess": {
     "manifestSchema": "nexus.release-manifest.v2",
     "exactArtifactPath": "proven",
-    "stagingRehearsals": 4,
-    "ownerAuthorizedProductionReleases": 4,
+    "stagingRehearsals": 10,
+    "ownerAuthorizedProductionReleases": 6,
     "legacyWrappers": "retired",
     "firstProofRelease": {
       "version": "4.14.219",
