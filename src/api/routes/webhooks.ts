@@ -287,7 +287,7 @@ export async function processTodoistEvent(payload: any): Promise<void> {
   let nexusUserId = findNexusUserByTodoistId(todoistUserId);
 
   if (!nexusUserId) {
-    nexusUserId = await scanOAuthForTodoistUser(todoistUserId);
+    nexusUserId = await resolveNexusUserByTodoistSyncProbe(todoistUserId);
     if (!nexusUserId) {
       logger.info({ todoistUserId }, 'No Nexus user found for Todoist webhook — ignoring');
       return;
@@ -314,7 +314,7 @@ export async function processTodoistEvent(payload: any): Promise<void> {
  * a sync probe to see which one matches. This is slow (one HTTP call per
  * user) but only runs once per Todoist user per restart, so it's tolerable.
  */
-async function scanOAuthForTodoistUser(todoistUserId: number): Promise<number | undefined> {
+async function resolveNexusUserByTodoistSyncProbe(todoistUserId: number): Promise<number | undefined> {
   try {
     const db = getDb();
     const rows = db.prepare(

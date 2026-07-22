@@ -158,7 +158,6 @@ function stableNexusTaskId(tenantId: number, userId: number, task: NormalizedTas
   // The input is a provider entity identifier, never a password or credential.
   // SHA-256 is intentionally used as a deterministic ID fingerprint.
   const hash = crypto.createHash('sha256')
-    // codeql[js/insufficient-password-hash]
     .update(`${tenantId}:${userId}:${task.provider}:${task.externalId}`)
     .digest('hex')
     .slice(0, 28);
