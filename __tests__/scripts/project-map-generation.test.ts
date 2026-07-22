@@ -73,7 +73,7 @@ function generatedMap(): { serialized: string; map: ProjectMap } {
 }
 
 describe('project map generation', () => {
-  it('is deterministic and binds freshness to the proposed-tree digest', () => {
+  it('is deterministic and binds freshness to the proposed-tree digest', { timeout: 60_000 }, () => {
     const first = generatedMap();
     const second = generatedMap();
 

@@ -115,10 +115,10 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
 import {
   createWebhookRouter,
   processTodoistEvent,
+  todoistWebhookRateLimitMiddleware,
   verifyTodoistSignature,
   _resetDeliveryCacheForTests,
 } from '../../src/api/routes/webhooks';
-import { webhookRateLimitMiddleware } from '../../src/api/rate-limiter';
 import { config } from '../../src/config';
 
 const TODOIST_ROUTER_SECRET = 'isolated_todoist_webhook_test_secret';
@@ -236,10 +236,10 @@ describe('verifyTodoistSignature', () => {
 // ── POST /webhooks/todoist ─────────────────────────────────────────
 
 describe('POST /webhooks/todoist', () => {
-  it('runs the webhook limiter before parsing or HMAC authorization', () => {
+  it('runs its route-local limiter before parsing or HMAC authorization', () => {
     const router = createWebhookRouter({ todoistWebhookSecret: TODOIST_ROUTER_SECRET });
     const todoistRoute = router.stack.find((layer: any) => layer.route?.path === '/todoist');
-    expect(todoistRoute?.route.stack[0]?.handle).toBe(webhookRateLimitMiddleware);
+    expect(todoistRoute?.route.stack[0]?.handle).toBe(todoistWebhookRateLimitMiddleware);
   });
 
   it('returns 200 for a valid signature', async () => {
