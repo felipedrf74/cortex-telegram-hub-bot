@@ -64,7 +64,8 @@ vi.mock('../../src/services/chat-core-v2/command-preview-route', () => ({
 }));
 
 // Force the write-intent probe to detect a mutation for our test strings.
-vi.mock('../../src/services/chat-core-v2/shadow-route-classifier', () => ({
+vi.mock('../../src/services/chat-core-v2/shadow-route-classifier', async () => ({
+  ...(await vi.importActual('../../src/services/chat-core-v2/shadow-route-classifier')),
   classifyShadowRoute: vi.fn(() => ({
     intent: 'create_action',
     domains: ['tasks'],

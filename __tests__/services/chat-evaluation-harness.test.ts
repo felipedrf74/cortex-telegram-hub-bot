@@ -243,4 +243,26 @@ describe('chat evaluation harness', () => {
     expect(markdown).not.toContain('felipedrf74');
     expect(markdown).not.toContain('vieira.jaqueline');
   });
+
+  it('escapes both backslashes and pipes in judge details rendered into Markdown tables', async () => {
+    const result = await runChatEvaluationSuite({ generatedAt: '2026-04-29T00:00:00.000Z' });
+    result.judge = {
+      model: 'gemini-2.5-flash-lite',
+      maxUsd: 0.5,
+      callBudget: 1,
+      calls: 1,
+      estimatedSpendUsd: 0.001,
+      aborted: false,
+      scenarios: [{
+        scenarioId: 'markdown-escape',
+        status: 'blocked',
+        scores: null,
+        estimatedCostUsd: 0.001,
+        detail: 'path\\segment|tail',
+      }],
+    };
+
+    const markdown = formatChatEvaluationResultsMarkdown(result);
+    expect(markdown).toContain('path\\\\segment\\|tail');
+  });
 });

@@ -222,6 +222,10 @@ vi.mock('../../src/services/channel-learner', () => ({
 vi.mock('../../src/utils/chat-html-formatter', () => ({
   escapeHtml: (s: string) => s,
   splitMessage: (s: string) => [s],
+  formatAllTasks: vi.fn(() => ''),
+  formatMsTodoLists: vi.fn(() => ''),
+  formatMsTodoSummary: vi.fn(() => ''),
+  formatMsTodoTasks: vi.fn(() => ''),
 }));
 vi.mock('../../src/services/intelligence-bus', () => ({
   getActiveSignalCount: () => 0,

@@ -4,7 +4,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: vi.fn(() => {
     throw new Error('tests must pass an explicit db');
   }),
@@ -13,14 +14,16 @@ vi.mock('../../src/services/database', () => ({
 
 // The dashboard must never touch a live provider; routing-accuracy's import
 // chain includes provider-backed modules, so make any live call observable.
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/provider-registry', async () => ({
+  ...(await vi.importActual('../../src/services/provider-registry')),
   getActiveProvider: vi.fn(() => {
     throw new Error('dashboard must not touch providers');
   }),
   getProvider: vi.fn(),
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async () => ({
+  ...(await vi.importActual('../../src/services/anthropic')),
   classifyMessage: vi.fn(() => {
     throw new Error('dashboard must not classify');
   }),

@@ -12,6 +12,8 @@
  */
 
 import type { Express, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import {
@@ -21,13 +23,28 @@ import {
 import { sendPortalInternalError } from './http';
 
 export function registerPortalChatQualityRoutes(app: Express): void {
+  const routeRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many chat-quality requests. Slow down.', retryAfter },
+      });
+    },
+  });
+
   // AUTH NOTE: requirePortalAdminToken (src/api/secret-guards) with the
   // documented secret-guards caveat that PORTAL_ALLOW_LOCAL_BYPASS=true
   // waives the token for loopback requests (allowLocalPortalBypass), so that
   // bypass must never be enabled where this portal is reachable by anyone
   // but the owner. The payload is aggregate-only (no raw utterance or
   // response text), but readiness/accuracy evidence is still operator data.
-  app.get('/api/portal/chat-quality', requirePortalAdminToken, (_req: Request, res: Response) => {
+  app.get('/api/portal/chat-quality', routeRateLimitMiddleware, requirePortalAdminToken, (_req: Request, res: Response) => {
     try {
       const readiness = loadChatV2ReadinessReportFromFile();
       const dashboard = buildChatQualityDashboard(getDb(), {

@@ -27,47 +27,56 @@ const mockGetActiveProvider = vi.fn();
 const mockEnsureActiveProvider = vi.fn();
 const mockGetCurrentRequestId = vi.fn<() => string | undefined>();
 
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/provider-registry', async () => ({
+  ...(await vi.importActual('../../src/services/provider-registry')),
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args as []),
   ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args as []),
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async () => ({
+  ...(await vi.importActual('../../src/services/anthropic')),
   callDomain: vi.fn(),
   continueWithToolResults: vi.fn(),
 }));
 
-vi.mock('../../src/state/conversation', () => ({
+vi.mock('../../src/state/conversation', async () => ({
+  ...(await vi.importActual('../../src/state/conversation')),
   getConversationHistory: vi.fn().mockReturnValue([]),
   addToConversation: vi.fn(),
 }));
 
-vi.mock('../../src/state/todos', () => ({
+vi.mock('../../src/state/todos', async () => ({
+  ...(await vi.importActual('../../src/state/todos')),
   listTodos: vi.fn().mockReturnValue([]),
 }));
 
-vi.mock('../../src/state/shared-memory', () => ({
+vi.mock('../../src/state/shared-memory', async () => ({
+  ...(await vi.importActual('../../src/state/shared-memory')),
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
   getSharedMemory: vi.fn().mockReturnValue([]),
   getSharedMemoryByScope: vi.fn().mockReturnValue({ userPrivate: [], tenantShared: [] }),
 }));
 
-vi.mock('../../src/services/tool-executor', () => ({
+vi.mock('../../src/services/tool-executor', async () => ({
+  ...(await vi.importActual('../../src/services/tool-executor')),
   executeToolCall: vi.fn(),
 }));
 
 // Not under M18 ownership and irrelevant to checkpointing: the prompt
 // context compiler (owned by the routing/context milestones) is stubbed so
 // this mirror suite pins ONLY the tool-loop checkpoint hook.
-vi.mock('../../src/services/chat-context-engine', () => ({
+vi.mock('../../src/services/chat-context-engine', async () => ({
+  ...(await vi.importActual('../../src/services/chat-context-engine')),
   buildChatPromptContextBlock: vi.fn(async () => ''),
 }));
 
-vi.mock('../../src/utils/request-context', () => ({
+vi.mock('../../src/utils/request-context', async () => ({
+  ...(await vi.importActual('../../src/utils/request-context')),
   getCurrentRequestId: (...args: unknown[]) => mockGetCurrentRequestId(...args as []),
 }));
 
-vi.mock('../../src/utils/date-parser', () => ({
+vi.mock('../../src/utils/date-parser', async () => ({
+  ...(await vi.importActual('../../src/utils/date-parser')),
   now: vi.fn(),
   formatDateTime: vi.fn((d: string) => d),
   startOfDay: vi.fn().mockReturnValue('2026-03-30T00:00:00'),

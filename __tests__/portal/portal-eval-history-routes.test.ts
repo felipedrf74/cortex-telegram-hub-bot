@@ -11,30 +11,18 @@ const mocks = vi.hoisted(() => ({
   sendPortalInternalError: vi.fn(),
 }));
 
-vi.mock('../../src/api/secret-guards', () => ({
-  allowLocalHealthBypass: vi.fn(),
-  allowLocalPortalBypass: vi.fn(),
-  bearerTokenMatches: vi.fn(),
-  computePortalActorSignature: vi.fn(),
-  createPortalSessionToken: vi.fn(),
-  extractBearerToken: vi.fn(),
-  extractPortalActorHint: vi.fn(),
-  getPortalAuthContext: vi.fn(),
-  isLoopbackRequest: vi.fn(),
+vi.mock('../../src/api/secret-guards', async () => ({
+  ...await vi.importActual<typeof import('../../src/api/secret-guards')>('../../src/api/secret-guards'),
   requirePortalAdminToken: mocks.requirePortalAdminToken,
-  requirePortalToken: vi.fn(),
-  requirePortalTokenByMethod: vi.fn(),
-  requirePortalWriteToken: vi.fn(),
-  secureSecretMatches: vi.fn(),
-  verifyPortalActorSignature: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database'),
   getDb: (...args: unknown[]) => mocks.getDb(...args),
-  withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/services/chat-eval-history', () => ({
+vi.mock('../../src/services/chat-eval-history', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/chat-eval-history')>('../../src/services/chat-eval-history'),
   ensureChatEvalHistoryTables: vi.fn(),
   listChatEvalRuns: (...args: unknown[]) => mocks.listChatEvalRuns(...args),
   persistChatEvalRun: (...args: unknown[]) => mocks.persistChatEvalRun(...args),
@@ -47,7 +35,8 @@ vi.mock('../../src/services/chat-eval-history', () => ({
   },
 }));
 
-vi.mock('../../src/portal/http', () => ({
+vi.mock('../../src/portal/http', async () => ({
+  ...await vi.importActual<typeof import('../../src/portal/http')>('../../src/portal/http'),
   sendPortalInternalError: (...args: unknown[]) => mocks.sendPortalInternalError(...args),
 }));
 
@@ -99,16 +88,16 @@ describe('portal eval history routes', () => {
     });
   });
 
-  it('registers admin-protected history and frozen-baseline routes', () => {
+  it('rate-limits history and frozen-baseline routes before admin authorization', () => {
     const { app, routes } = makeApp();
     registerPortalEvalHistoryRoutes(app as any);
 
-    expect(app.get).toHaveBeenCalledWith('/api/portal/eval-history', mocks.requirePortalAdminToken, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/portal/eval-history', mocks.requirePortalAdminToken, expect.any(Function), expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/portal/eval-history/frozen-baseline', mocks.requirePortalAdminToken, expect.any(Function), expect.any(Function));
-    expect(routes.get('GET /api/portal/eval-history')?.[0]).toBe(mocks.requirePortalAdminToken);
-    expect(routes.get('POST /api/portal/eval-history')?.[0]).toBe(mocks.requirePortalAdminToken);
-    expect(routes.get('POST /api/portal/eval-history/frozen-baseline')?.[0]).toBe(mocks.requirePortalAdminToken);
+    expect(app.get).toHaveBeenCalledWith('/api/portal/eval-history', expect.any(Function), mocks.requirePortalAdminToken, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/portal/eval-history', expect.any(Function), mocks.requirePortalAdminToken, expect.any(Function), expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/portal/eval-history/frozen-baseline', expect.any(Function), mocks.requirePortalAdminToken, expect.any(Function), expect.any(Function));
+    expect(routes.get('GET /api/portal/eval-history')?.[1]).toBe(mocks.requirePortalAdminToken);
+    expect(routes.get('POST /api/portal/eval-history')?.[1]).toBe(mocks.requirePortalAdminToken);
+    expect(routes.get('POST /api/portal/eval-history/frozen-baseline')?.[1]).toBe(mocks.requirePortalAdminToken);
   });
 
   it('lists recent eval runs with optional filters', () => {

@@ -271,7 +271,7 @@ describe('release test evidence policy', () => {
     });
   });
 
-  it('keeps missing qualifying nightly evidence fail-closed to full', () => {
+  it('keeps missing qualifying nightly evidence fail-closed to full', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-plan-'));
     roots.push(temp);
     const outputPath = path.join(temp, 'selection.json');

@@ -14,6 +14,8 @@
  */
 
 import express, { type Express, type Request, type Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import {
@@ -26,6 +28,21 @@ import {
 import { sendPortalInternalError } from './http';
 
 export function registerPortalRoutingCorpusRoutes(app: Express): void {
+  const routeRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many routing-corpus requests. Slow down.', retryAfter },
+      });
+    },
+  });
+
   // PRIVACY NOTE: this endpoint returns RAW user utterance text
   // (item.utteranceText) for labeling. Its only access control is
   // requirePortalAdminToken (src/api/secret-guards enforcePortalToken,
@@ -33,7 +50,7 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
   // PORTAL_ALLOW_LOCAL_BYPASS=true waives the token for loopback requests
   // (allowLocalPortalBypass), so that bypass must never be enabled where
   // this portal is reachable by anyone but the owner.
-  app.get('/api/portal/routing-corpus/next', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/portal/routing-corpus/next', routeRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const tenantId = parseTenantId(req.query.tenantId);
       const db = getDb();
@@ -49,7 +66,7 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
     }
   });
 
-  app.post('/api/portal/routing-corpus/label', requirePortalAdminToken, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
+  app.post('/api/portal/routing-corpus/label', routeRateLimitMiddleware, requirePortalAdminToken, express.json({ limit: '64kb' }), (req: Request, res: Response) => {
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const id = typeof body.id === 'number' && Number.isInteger(body.id) && body.id > 0 ? body.id : null;
@@ -94,7 +111,7 @@ export function registerPortalRoutingCorpusRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/portal/routing-corpus/progress', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/portal/routing-corpus/progress', routeRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const tenantId = parseTenantId(req.query.tenantId);
       res.json({

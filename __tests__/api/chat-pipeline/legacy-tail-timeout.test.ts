@@ -35,30 +35,36 @@ vi.mock('../../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../../src/router', () => ({
+vi.mock('../../../src/router', async () => ({
+  ...(await vi.importActual('../../../src/router')),
   routeMessage: (...args: unknown[]) => hoisted.routeMessage(...args as []),
 }));
 
-vi.mock('../../../src/services/chat-pending-confirmations', () => ({
+vi.mock('../../../src/services/chat-pending-confirmations', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-pending-confirmations')),
   getPendingChatConfirmation: (...args: unknown[]) => hoisted.getPendingChatConfirmation(...args as []),
   clearPendingChatConfirmation: (...args: unknown[]) => hoisted.clearPendingChatConfirmation(...args as []),
 }));
 
-vi.mock('../../../src/services/chat-skill-orchestrator', () => ({
+vi.mock('../../../src/services/chat-skill-orchestrator', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-skill-orchestrator')),
   analyzeChatSkillOrchestration: (...args: unknown[]) => hoisted.analyzeChatSkillOrchestration(...args as []),
   applyChatSkillRoutingDecision: vi.fn((route: unknown) => route),
   buildChatSkillRoutingLogContext: vi.fn(() => ({})),
 }));
 
-vi.mock('../../../src/services/chat-tool-authorization', () => ({
+vi.mock('../../../src/services/chat-tool-authorization', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-tool-authorization')),
   runWithChatToolAuthorization: (...args: unknown[]) => hoisted.runWithChatToolAuthorization(...args as []),
 }));
 
-vi.mock('../../../src/services/content-workspace-chat-consent', () => ({
+vi.mock('../../../src/services/content-workspace-chat-consent', async () => ({
+  ...(await vi.importActual('../../../src/services/content-workspace-chat-consent')),
   issueContentIdeaCaptureConsent: vi.fn(() => null),
 }));
 
-vi.mock('../../../src/api/routes/chat-message-context', () => ({
+vi.mock('../../../src/api/routes/chat-message-context', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-message-context')),
   buildDefaultButtonsForChatDomain: vi.fn(() => null),
   getChatDomainHandler: vi.fn(() => vi.fn()),
   rememberChatActiveDomain: vi.fn(),
@@ -72,12 +78,14 @@ vi.mock('../../../src/api/routes/chat-message-execution', async (importOriginal)
   };
 });
 
-vi.mock('../../../src/api/routes/chat-message-finalizer', () => ({
+vi.mock('../../../src/api/routes/chat-message-finalizer', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-message-finalizer')),
   finalizeChatAnswerMetadata: (...args: unknown[]) => hoisted.finalizeChatAnswerMetadata(...args as []),
   finalizeChatMessageResponse: vi.fn((response: unknown) => response),
 }));
 
-vi.mock('../../../src/api/routes/chat-message-local-responses', () => ({
+vi.mock('../../../src/api/routes/chat-message-local-responses', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-message-local-responses')),
   maybeCacheChatCommandResponse: vi.fn(),
 }));
 
@@ -85,20 +93,24 @@ vi.mock('../../../src/api/routes/chat-message-tier-gate', () => ({
   sendChatTierRequiredIfNeeded: vi.fn(() => false),
 }));
 
-vi.mock('../../../src/api/routes/chat-persistence', () => ({
+vi.mock('../../../src/api/routes/chat-persistence', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-persistence')),
   persistExchange: (...args: unknown[]) => hoisted.persistExchange(...args as []),
   syncConversationStateForShortcut: vi.fn(),
 }));
 
-vi.mock('../../../src/api/routes/chat-message-shortcuts', () => ({
+vi.mock('../../../src/api/routes/chat-message-shortcuts', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-message-shortcuts')),
   tryBuildChatMessageShortcutResponse: vi.fn(async () => null),
 }));
 
-vi.mock('../../../src/services/chat-stage-trace', () => ({
+vi.mock('../../../src/services/chat-stage-trace', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-stage-trace')),
   recordChatStage: vi.fn(),
 }));
 
-vi.mock('../../../src/api/routes/chat-pipeline/support', () => ({
+vi.mock('../../../src/api/routes/chat-pipeline/support', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-pipeline/support')),
   applyTurnContractRouteHint: vi.fn((route: unknown) => route),
 }));
 

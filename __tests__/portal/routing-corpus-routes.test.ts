@@ -10,30 +10,18 @@ const mocks = vi.hoisted(() => ({
   sendPortalInternalError: vi.fn(),
 }));
 
-vi.mock('../../src/api/secret-guards', () => ({
-  allowLocalHealthBypass: vi.fn(),
-  allowLocalPortalBypass: vi.fn(),
-  bearerTokenMatches: vi.fn(),
-  computePortalActorSignature: vi.fn(),
-  createPortalSessionToken: vi.fn(),
-  extractBearerToken: vi.fn(),
-  extractPortalActorHint: vi.fn(),
-  getPortalAuthContext: vi.fn(),
-  isLoopbackRequest: vi.fn(),
+vi.mock('../../src/api/secret-guards', async () => ({
+  ...await vi.importActual<typeof import('../../src/api/secret-guards')>('../../src/api/secret-guards'),
   requirePortalAdminToken: mocks.requirePortalAdminToken,
-  requirePortalToken: vi.fn(),
-  requirePortalTokenByMethod: vi.fn(),
-  requirePortalWriteToken: vi.fn(),
-  secureSecretMatches: vi.fn(),
-  verifyPortalActorSignature: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database'),
   getDb: (...args: unknown[]) => mocks.getDb(...args),
-  withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/services/routing-corpus', () => ({
+vi.mock('../../src/services/routing-corpus', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/routing-corpus')>('../../src/services/routing-corpus'),
   getNextPendingRoutingCorpusItem: (...args: unknown[]) => mocks.getNextPendingRoutingCorpusItem(...args),
   getRoutingCorpusProgress: (...args: unknown[]) => mocks.getRoutingCorpusProgress(...args),
   getRoutingLabelCandidates: (...args: unknown[]) => mocks.getRoutingLabelCandidates(...args),
@@ -42,7 +30,8 @@ vi.mock('../../src/services/routing-corpus', () => ({
   labelRoutingCorpusItem: (...args: unknown[]) => mocks.labelRoutingCorpusItem(...args),
 }));
 
-vi.mock('../../src/portal/http', () => ({
+vi.mock('../../src/portal/http', async () => ({
+  ...await vi.importActual<typeof import('../../src/portal/http')>('../../src/portal/http'),
   sendPortalInternalError: (...args: unknown[]) => mocks.sendPortalInternalError(...args),
 }));
 
@@ -108,13 +97,13 @@ describe('portal routing corpus routes', () => {
     mocks.getRoutingCorpusProgress.mockReturnValue({ total: 3, pending: 2, labeled: 1, skipped: 0, bySource: {} });
   });
 
-  it('registers admin-protected JSON routes and the labeling page', () => {
+  it('rate-limits JSON routes before admin authorization and serves the labeling page', () => {
     const { app, routes } = makeApp();
     registerPortalRoutingCorpusRoutes(app as any);
 
-    expect(routes.get('GET /api/portal/routing-corpus/next')?.[0]).toBe(mocks.requirePortalAdminToken);
-    expect(routes.get('POST /api/portal/routing-corpus/label')?.[0]).toBe(mocks.requirePortalAdminToken);
-    expect(routes.get('GET /api/portal/routing-corpus/progress')?.[0]).toBe(mocks.requirePortalAdminToken);
+    expect(routes.get('GET /api/portal/routing-corpus/next')?.[1]).toBe(mocks.requirePortalAdminToken);
+    expect(routes.get('POST /api/portal/routing-corpus/label')?.[1]).toBe(mocks.requirePortalAdminToken);
+    expect(routes.get('GET /api/portal/routing-corpus/progress')?.[1]).toBe(mocks.requirePortalAdminToken);
     expect(routes.get('GET /routing-corpus')).toBeDefined();
   });
 

@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import express, { type Express, type Request, type Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import {
@@ -31,7 +33,22 @@ interface EvalHistoryRequestBody {
 }
 
 export function registerPortalEvalHistoryRoutes(app: Express): void {
-  app.get('/api/portal/eval-history', requirePortalAdminToken, (req: Request, res: Response) => {
+  const routeRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many chat-eval history requests. Slow down.', retryAfter },
+      });
+    },
+  });
+
+  app.get('/api/portal/eval-history', routeRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const limit = parseLimit(req.query.limit);
       const mode = parseMode(req.query.mode);
@@ -44,7 +61,7 @@ export function registerPortalEvalHistoryRoutes(app: Express): void {
     }
   });
 
-  app.post('/api/portal/eval-history', requirePortalAdminToken, express.json({ limit: '2mb' }), (req: Request, res: Response) => {
+  app.post('/api/portal/eval-history', routeRateLimitMiddleware, requirePortalAdminToken, express.json({ limit: '2mb' }), (req: Request, res: Response) => {
     try {
       const body = normalizeBody(req.body);
       if (!body || !isChatEvaluationSuiteResult(body.result)) {
@@ -99,6 +116,7 @@ export function registerPortalEvalHistoryRoutes(app: Express): void {
 
   app.post(
     '/api/portal/eval-history/frozen-baseline',
+    routeRateLimitMiddleware,
     requirePortalAdminToken,
     express.json({ limit: '32kb' }),
     (req: Request, res: Response) => {

@@ -9,7 +9,8 @@ const hoisted = vi.hoisted(() => ({
 
 // M18: the timeout path lazily reads checkpointed tool progress from the
 // run store. Mocked so this suite needs no database.
-vi.mock('../../src/services/chat-action-run-store', () => ({
+vi.mock('../../src/services/chat-action-run-store', async () => ({
+  ...(await vi.importActual('../../src/services/chat-action-run-store')),
   listLegacyToolLoopCheckpoints: (...args: unknown[]) => hoisted.listLegacyToolLoopCheckpoints(...args as []),
 }));
 

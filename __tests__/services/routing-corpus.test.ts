@@ -3,7 +3,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: vi.fn(() => {
     throw new Error('tests must pass an explicit db');
   }),

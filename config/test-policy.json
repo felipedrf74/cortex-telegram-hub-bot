@@ -2687,6 +2687,121 @@
           "src/skills/registry.ts"
         ],
         "reason": "Converted architecture source scans into typed config, manager, and registry contract suites."
+      },
+      {
+        "test": "__tests__/api/chat-message-tier-gate.test.ts",
+        "replacementTests": [
+          "__tests__/api/chat-message-tier-gate.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/chat-message-tier-gate.ts"
+        ],
+        "reason": "Converted the positive Telegram-id fallback assertion into an explicit verified-iOS-JWT users.id-only contract that proves the legacy identity fallback is never called."
+      },
+      {
+        "test": "__tests__/api/webhooks.test.ts",
+        "replacementTests": [
+          "__tests__/api/webhooks.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/webhooks.ts"
+        ],
+        "reason": "Replaced the ambient-config Todoist signer helper with an explicit per-router secret fixture while retaining coverage for the production no-option configured-secret path."
+      },
+      {
+        "test": "__tests__/portal/portal-eval-history-routes.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-eval-history-routes.test.ts"
+        ],
+        "sources": [
+          "src/portal/eval-history-routes.ts"
+        ],
+        "reason": "Replaced incomplete module stubs with import-and-override factories and pinned pre-authorization rate-limit ordering while retaining eval persistence, validation, error handling, and frozen-baseline behavior."
+      },
+      {
+        "test": "__tests__/services/chat-evaluation-harness.test.ts",
+        "replacementTests": [
+          "__tests__/services/chat-evaluation-harness.test.ts",
+          "__tests__/services/chat-day-to-day-simulation.test.ts"
+        ],
+        "sources": [
+          "src/services/chat-evaluation-harness.ts",
+          "src/services/chat-day-to-day-simulation.ts",
+          "src/services/chat-eval-executor.ts"
+        ],
+        "reason": "Replaced fabricated catalog scores and partial statuses with executed day-to-day profile evidence, explicit catalog-only accounting, and matching-mode executor enforcement."
+      },
+      {
+        "test": "__tests__/services/registry-channel-smoke-builder.test.ts",
+        "replacementTests": [
+          "__tests__/services/registry-channel-smoke-builder.test.ts",
+          "__tests__/scripts/telegram-purge-gate.test.ts"
+        ],
+        "sources": [
+          "src/services/registry-channel-smoke-builder.ts"
+        ],
+        "reason": "Retired legacy Telegram smoke-channel construction while retaining coverage for all five live channel types and assigning the removed surface to the repository-wide purge gate."
+      },
+      {
+        "test": "__tests__/services/registry-cross-tenant-alert-channels.test.ts",
+        "replacementTests": [
+          "__tests__/services/registry-cross-tenant-alert-channels.test.ts",
+          "__tests__/scripts/telegram-purge-gate.test.ts"
+        ],
+        "sources": [
+          "src/services/registry-cross-tenant-alert-channels.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/registry-cross-tenant-alert-channels.ts:161-161",
+            "anchor": "minSeverity: config.minSeverity ?? 'medium'",
+            "behavior": "The retained Slack alert channel defaults to medium severity when no explicit threshold is configured.",
+            "replacementTest": "__tests__/services/registry-cross-tenant-alert-channels.test.ts",
+            "ownerTestName": "Slack channel (Phase 8 batch 42) createSlackChannel default minSeverity is medium",
+            "minimumMutants": 2
+          }
+        ],
+        "reason": "Retired the legacy Telegram alert adapter cases while preserving live PagerDuty and Slack behavioral coverage and pinning the removed notification surface in the purge gate."
+      },
+      {
+        "test": "__tests__/services/registry-driven-eval-gates.test.ts",
+        "replacementTests": [
+          "__tests__/services/registry-driven-eval-gates.test.ts",
+          "__tests__/services/chat-evaluation-harness.test.ts",
+          "__tests__/services/chat-day-to-day-simulation.test.ts"
+        ],
+        "sources": [
+          "src/services/registry-driven-eval-scenarios.ts",
+          "src/services/chat-evaluation-harness.ts",
+          "src/services/chat-day-to-day-simulation.ts"
+        ],
+        "reason": "Replaced synthetic registry pass-rate thresholds with complete catalog accounting and a separate evidence-bearing day-to-day execution profile."
+      },
+      {
+        "test": "__tests__/services/registry-driven-eval-scenarios.test.ts",
+        "replacementTests": [
+          "__tests__/services/registry-driven-eval-scenarios.test.ts",
+          "__tests__/services/chat-evaluation-harness.test.ts",
+          "__tests__/services/chat-day-to-day-simulation.test.ts"
+        ],
+        "sources": [
+          "src/services/registry-driven-eval-scenarios.ts",
+          "src/services/chat-evaluation-harness.ts",
+          "src/services/chat-day-to-day-simulation.ts"
+        ],
+        "reason": "Converted registry scenario integration from manufactured execution results to exhaustive catalog-only accounting alongside the independent executed fixture profile."
+      },
+      {
+        "test": "__tests__/utils/telegram-formatter.test.ts",
+        "replacementTests": [
+          "__tests__/utils/chat-html-formatter.test.ts",
+          "__tests__/scripts/telegram-purge-gate.test.ts",
+          "__tests__/security/p0-chat-identity-isolation.test.ts"
+        ],
+        "sources": [
+          "src/utils/chat-html-formatter.ts"
+        ],
+        "reason": "Moved the live Microsoft To Do formatting contracts to the transport-neutral chat HTML formatter while purge and identity gates pin deletion of the dead daily-greeting surface."
       }
     ],
     "exceptions": []

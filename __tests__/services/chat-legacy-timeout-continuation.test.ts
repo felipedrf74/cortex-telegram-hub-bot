@@ -5,7 +5,8 @@ import Database from 'better-sqlite3';
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),
@@ -30,28 +31,34 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
 }));
 
-vi.mock('../../src/api/routes/chat-message-context', () => ({
+vi.mock('../../src/api/routes/chat-message-context', async () => ({
+  ...(await vi.importActual('../../src/api/routes/chat-message-context')),
   getChatDomainHandler: vi.fn(() => mocks.handler),
   rememberChatActiveDomain: (...args: unknown[]) => mocks.rememberChatActiveDomain(...args),
 }));
 
-vi.mock('../../src/api/routes/chat-message-execution', () => ({
+vi.mock('../../src/api/routes/chat-message-execution', async () => ({
+  ...(await vi.importActual('../../src/api/routes/chat-message-execution')),
   executeChatDomainHandler: (...args: unknown[]) => mocks.executeChatDomainHandler(...args),
 }));
 
-vi.mock('../../src/api/routes/chat-message-finalizer', () => ({
+vi.mock('../../src/api/routes/chat-message-finalizer', async () => ({
+  ...(await vi.importActual('../../src/api/routes/chat-message-finalizer')),
   finalizeChatAnswerMetadata: (...args: unknown[]) => mocks.finalizeChatAnswerMetadata(...args),
 }));
 
-vi.mock('../../src/services/chat-history-store', () => ({
+vi.mock('../../src/services/chat-history-store', async () => ({
+  ...(await vi.importActual('../../src/services/chat-history-store')),
   storeChatMessage: (...args: unknown[]) => mocks.storeChatMessage(...args),
 }));
 
-vi.mock('../../src/services/cost-guardrail', () => ({
+vi.mock('../../src/services/cost-guardrail', async () => ({
+  ...(await vi.importActual('../../src/services/cost-guardrail')),
   withAiBudgetReservation: (...args: unknown[]) => mocks.withAiBudgetReservation(...args),
 }));
 
-vi.mock('../../src/services/apns-sender', () => ({
+vi.mock('../../src/services/apns-sender', async () => ({
+  ...(await vi.importActual('../../src/services/apns-sender')),
   sendPushNotification: (...args: unknown[]) => mocks.push(...args),
 }));
 

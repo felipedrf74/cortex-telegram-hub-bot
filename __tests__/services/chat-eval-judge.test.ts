@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const completeOneShotMock = vi.fn();
 
-vi.mock('../../src/services/gemini-provider', () => ({
+vi.mock('../../src/services/gemini-provider', async () => ({
+  ...(await vi.importActual('../../src/services/gemini-provider')),
   completeOneShot: (...args: unknown[]) => completeOneShotMock(...args),
 }));
 

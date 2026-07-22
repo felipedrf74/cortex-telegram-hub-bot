@@ -830,7 +830,8 @@ export function formatChatEvaluationResultsMarkdown(result: ChatEvaluationSuiteR
     lines.push('| Scenario | Status | Est. cost (USD) | Detail |');
     lines.push('| --- | --- | ---: | --- |');
     for (const scenario of judge.scenarios) {
-      lines.push(`| ${scenario.scenarioId} | ${scenario.status} | ${scenario.estimatedCostUsd.toFixed(6)} | ${scenario.detail.replace(/\|/g, '\\|')} |`);
+      const detail = scenario.detail.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+      lines.push(`| ${scenario.scenarioId} | ${scenario.status} | ${scenario.estimatedCostUsd.toFixed(6)} | ${detail} |`);
     }
     lines.push('');
     lines.push('### Scorer Dimension Sources');

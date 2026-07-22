@@ -155,6 +155,9 @@ function stableNexusTaskId(tenantId: number, userId: number, task: NormalizedTas
   if (task.provider === 'nexus' && /^task_[A-Za-z0-9_-]+$/.test(task.externalId || '')) {
     return task.externalId;
   }
+  // The input is a provider entity identifier, never a password or credential.
+  // SHA-256 is intentionally used as a deterministic ID fingerprint.
+  // lgtm[js/insufficient-password-hash]
   const hash = crypto
     .createHash('sha256')
     .update(`${tenantId}:${userId}:${task.provider}:${task.externalId}`)

@@ -6,20 +6,23 @@ const graph = vi.hoisted(() => ({
   api: vi.fn(),
 }));
 
-vi.mock('../../src/services/microsoft-auth', () => ({
+vi.mock('../../src/services/microsoft-auth', async () => ({
+  ...(await vi.importActual('../../src/services/microsoft-auth')),
   getGraphClient: vi.fn(() => ({ api: graph.api })),
   getGraphClientForUser: vi.fn(() => ({ api: graph.api })),
   getOutlookRefreshTokenForUser: vi.fn(() => 'refresh-token'),
   isMicrosoftConfigured: vi.fn(() => true),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: vi.fn(() => ({
     prepare: vi.fn(() => ({ run: vi.fn() })),
   })),
 }));
 
-vi.mock('../../src/portal/telemetry', () => ({
+vi.mock('../../src/portal/telemetry', async () => ({
+  ...(await vi.importActual('../../src/portal/telemetry')),
   pushEvent: vi.fn(),
 }));
 

@@ -31,16 +31,19 @@ vi.mock('../../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../../src/api/routes/chat-persistence', () => ({
+vi.mock('../../../src/api/routes/chat-persistence', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-persistence')),
   persistExchange: (...args: unknown[]) => hoisted.persistExchange(...args),
   syncConversationStateForShortcut: (...args: unknown[]) => hoisted.syncConversationStateForShortcut(...args),
 }));
 
-vi.mock('../../../src/api/routes/chat-message-context', () => ({
+vi.mock('../../../src/api/routes/chat-message-context', async () => ({
+  ...(await vi.importActual('../../../src/api/routes/chat-message-context')),
   rememberChatActiveDomain: (...args: unknown[]) => hoisted.rememberChatActiveDomain(...args),
 }));
 
-vi.mock('../../../src/services/chat-stage-trace', () => ({
+vi.mock('../../../src/services/chat-stage-trace', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-stage-trace')),
   recordChatStage: (...args: unknown[]) => hoisted.recordChatStage(...args),
 }));
 

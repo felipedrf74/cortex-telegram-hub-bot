@@ -18,7 +18,8 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/operator-alerts', () => ({
+vi.mock('../../src/services/operator-alerts', async () => ({
+  ...(await vi.importActual('../../src/services/operator-alerts')),
   recordOperatorAlert: vi.fn(),
 }));
 

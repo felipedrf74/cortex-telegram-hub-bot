@@ -192,7 +192,7 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
 
   // ── POST /webhooks/todoist ─────────────────────────────────────
 
-  router.post('/todoist', rawJson, async (req: Request, res: Response) => {
+  router.post('/todoist', webhookRateLimitMiddleware, rawJson, async (req: Request, res: Response) => {
     const rawBody = req.body as Buffer;
     const signature = (req.headers['x-todoist-hmac-sha256'] as string) || '';
     const deliveryId = (req.headers['x-todoist-delivery-id'] as string) || '';

@@ -118,6 +118,7 @@ import {
   verifyTodoistSignature,
   _resetDeliveryCacheForTests,
 } from '../../src/api/routes/webhooks';
+import { webhookRateLimitMiddleware } from '../../src/api/rate-limiter';
 import { config } from '../../src/config';
 
 const TODOIST_ROUTER_SECRET = 'isolated_todoist_webhook_test_secret';
@@ -235,6 +236,12 @@ describe('verifyTodoistSignature', () => {
 // ── POST /webhooks/todoist ─────────────────────────────────────────
 
 describe('POST /webhooks/todoist', () => {
+  it('runs the webhook limiter before parsing or HMAC authorization', () => {
+    const router = createWebhookRouter({ todoistWebhookSecret: TODOIST_ROUTER_SECRET });
+    const todoistRoute = router.stack.find((layer: any) => layer.route?.path === '/todoist');
+    expect(todoistRoute?.route.stack[0]?.handle).toBe(webhookRateLimitMiddleware);
+  });
+
   it('returns 200 for a valid signature', async () => {
     const body = { event_name: 'item:added', user_id: 555, event_data: {} };
     const sig = buildSignature(JSON.stringify(body));

@@ -23,7 +23,8 @@ import type Database from 'better-sqlite3';
 
 let testDb: Database.Database | null = null;
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: () => {
     if (!testDb) throw new Error('testDb not initialized');
     return testDb;

@@ -7,7 +7,8 @@ const providerMocks = vi.hoisted(() => ({
   classifyMessage: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: vi.fn(() => {
     throw new Error('tests must pass an explicit db');
   }),
@@ -17,12 +18,14 @@ vi.mock('../../src/services/database', () => ({
 // The accuracy replay must NEVER touch a live provider: the LLM surface is
 // replayed exclusively from the SQLite cache. These mocks make any live call
 // observable (and would explode if invoked for classification).
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/provider-registry', async () => ({
+  ...(await vi.importActual('../../src/services/provider-registry')),
   getActiveProvider: providerMocks.getActiveProvider,
   getProvider: providerMocks.getProvider,
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async () => ({
+  ...(await vi.importActual('../../src/services/anthropic')),
   classifyMessage: providerMocks.classifyMessage,
 }));
 

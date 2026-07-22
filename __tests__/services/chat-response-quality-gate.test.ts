@@ -37,7 +37,8 @@ let testDb: Database.Database | null = null;
 // M8 gate redesign: token-zero verification reads go through the unified
 // task store, so the shared migrated :memory: DB pattern applies. Tests
 // that never pass a `verification` scope never touch the DB.
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: () => {
     if (!testDb) throw new Error('testDb not initialized');
     return testDb;

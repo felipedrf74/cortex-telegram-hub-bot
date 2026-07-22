@@ -110,7 +110,8 @@ vi.mock('../../src/utils/date-parser', () => ({
   formatDateTime: (iso: string) => DateTime.fromISO(iso).toFormat('LLL dd HH:mm'),
 }));
 
-vi.mock('../../src/utils/chat-html-formatter', () => ({
+vi.mock('../../src/utils/chat-html-formatter', async () => ({
+  ...(await vi.importActual('../../src/utils/chat-html-formatter')),
   escapeHtml: (value: string) => value,
   splitMessage: (message: string) => [message],
 }));

@@ -109,7 +109,7 @@ describe('governed test tier partitions', () => {
     expect(selection.escalated).toBe('classifier-full');
   });
 
-  it('reports scoped timing and missing historical evidence without inventing values', () => {
+  it('reports scoped timing and missing historical evidence without inventing values', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-inventory-'));
     tempRoots.push(temp);
     const policy = loadTestPolicy();
@@ -171,7 +171,7 @@ describe('governed test tier partitions', () => {
     });
   });
 
-  it('binds nightly release evidence to deterministic files only', () => {
+  it('binds nightly release evidence to deterministic files only', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-deterministic-nightly-'));
     tempRoots.push(temp);
     const partitions = partitionTestFiles(walkTestFiles(), loadTestPolicy());

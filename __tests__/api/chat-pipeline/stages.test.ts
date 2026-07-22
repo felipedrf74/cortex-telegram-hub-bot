@@ -28,21 +28,25 @@ vi.mock('../../../src/services/chat-core-v2', async (importOriginal) => {
   };
 });
 
-vi.mock('../../../src/services/chat-v2-completion-evidence', () => ({
+vi.mock('../../../src/services/chat-v2-completion-evidence', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-v2-completion-evidence')),
   safeRecordChatV2CompletionEvidence: (...args: unknown[]) => hoisted.completionEvidence(...args as []),
 }));
 
-vi.mock('../../../src/services/chat-deterministic-read-evidence', () => ({
+vi.mock('../../../src/services/chat-deterministic-read-evidence', async () => ({
+  ...(await vi.importActual('../../../src/services/chat-deterministic-read-evidence')),
   safeRecordChatV2DeterministicReadEvidence: (...args: unknown[]) => hoisted.deterministicReadEvidence(...args as []),
 }));
 
-vi.mock('../../../src/services/user-service', () => ({
+vi.mock('../../../src/services/user-service', async () => ({
+  ...(await vi.importActual('../../../src/services/user-service')),
   getUserLanguageById: vi.fn(() => 'en-US'),
   getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
   setUserLanguage: vi.fn(),
 }));
 
-vi.mock('../../../src/services/database', () => ({
+vi.mock('../../../src/services/database', async () => ({
+  ...(await vi.importActual('../../../src/services/database')),
   getDb: vi.fn(() => { throw new Error('db not needed in canHandle tests'); }),
 }));
 

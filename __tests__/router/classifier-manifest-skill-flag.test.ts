@@ -15,7 +15,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { classifyWithClaude } from '../../src/router/classifier';
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async () => ({
+  ...(await vi.importActual('../../src/services/anthropic')),
   classifyMessage: vi.fn(),
 }));
 
@@ -34,7 +35,8 @@ vi.mock('../../src/utils/logger', () => ({
 const mockGetActiveChatDomain = vi.hoisted(
   () => vi.fn((_userId: number, _now?: number, _tenantId?: number): string | null => null),
 );
-vi.mock('../../src/services/chat-conversation-state', () => ({
+vi.mock('../../src/services/chat-conversation-state', async () => ({
+  ...(await vi.importActual('../../src/services/chat-conversation-state')),
   getActiveChatDomain: (userId: number, now?: number, tenantId?: number) =>
     mockGetActiveChatDomain(userId, now, tenantId),
 }));

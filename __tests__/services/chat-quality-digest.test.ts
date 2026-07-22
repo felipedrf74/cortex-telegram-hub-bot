@@ -6,14 +6,16 @@ const alertMocks = vi.hoisted(() => ({
   recordParityFallbackWrapperSpy: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: vi.fn(() => {
     throw new Error('tests must pass an explicit db');
   }),
   withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/services/operator-alerts', () => ({
+vi.mock('../../src/services/operator-alerts', async () => ({
+  ...(await vi.importActual('../../src/services/operator-alerts')),
   recordOperatorAlert: (...args: unknown[]) => alertMocks.recordOperatorAlert(...args),
 }));
 
@@ -33,14 +35,16 @@ vi.mock('../../src/services/chatv2-readiness-alerts', async (importOriginal) => 
 });
 
 // routing chain safety: any live provider call is an observable failure.
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/provider-registry', async () => ({
+  ...(await vi.importActual('../../src/services/provider-registry')),
   getActiveProvider: vi.fn(() => {
     throw new Error('digest must not touch providers');
   }),
   getProvider: vi.fn(),
 }));
 
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async () => ({
+  ...(await vi.importActual('../../src/services/anthropic')),
   classifyMessage: vi.fn(() => {
     throw new Error('digest must not classify');
   }),

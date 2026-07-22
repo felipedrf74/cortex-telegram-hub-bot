@@ -27,7 +27,8 @@ const providerMocks = vi.hoisted(() => ({
   getProviderStatus: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: () => {
     if (!testDb) throw new Error('Test database not initialized');
     return testDb;
@@ -40,32 +41,38 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 // Mail providers are external APIs — always mocked.
-vi.mock('../../src/services/unified-mail-pressure', () => ({
+vi.mock('../../src/services/unified-mail-pressure', async () => ({
+  ...(await vi.importActual('../../src/services/unified-mail-pressure')),
   getUnreadMailSummaryForUser: vi.fn(async () => ({
     total: 3,
     providers: [{ provider: 'gmail', unread: 3 }],
   })),
 }));
-vi.mock('../../src/services/google-gmail', () => ({
+vi.mock('../../src/services/google-gmail', async () => ({
+  ...(await vi.importActual('../../src/services/google-gmail')),
   searchEmailsForUser: vi.fn(async () => [
     { id: 'gm-1', from: 'ana@example.test', subject: 'Hello', date: '2026-07-20', snippet: 'hi' },
   ]),
 }));
-vi.mock('../../src/services/outlook-mail', () => ({
+vi.mock('../../src/services/outlook-mail', async () => ({
+  ...(await vi.importActual('../../src/services/outlook-mail')),
   searchEmailsForUser: vi.fn(async () => []),
   createOutlookDraftForUser: providerMocks.createOutlookDraftForUser,
   sendOutlookEmailWithReadBackForUser: providerMocks.sendOutlookEmailWithReadBackForUser,
   isOutlookMailConfiguredForUser: providerMocks.isOutlookMailConfiguredForUser,
 }));
-vi.mock('../../src/services/unified-calendar', () => ({
+vi.mock('../../src/services/unified-calendar', async () => ({
+  ...(await vi.importActual('../../src/services/unified-calendar')),
   createEvent: vi.fn(),
   getEventsForSources: vi.fn(async () => []),
   getEventsWithDiagnostics: providerMocks.getEventsWithDiagnostics,
 }));
-vi.mock('../../src/services/garmin', () => ({
+vi.mock('../../src/services/garmin', async () => ({
+  ...(await vi.importActual('../../src/services/garmin')),
   ensureAuthenticated: providerMocks.ensureGarminAuthenticated,
 }));
-vi.mock('../../src/services/integration-status', () => ({
+vi.mock('../../src/services/integration-status', async () => ({
+  ...(await vi.importActual('../../src/services/integration-status')),
   getIntegrationSummary: vi.fn(() => ({
     providers: [
       { provider: 'google', state: 'connected', capabilities: ['calendar'], scopes: [] },

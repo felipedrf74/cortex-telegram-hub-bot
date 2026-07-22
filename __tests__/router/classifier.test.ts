@@ -455,7 +455,8 @@ vi.mock('../../src/utils/logger', () => ({
 const mockGetActiveChatDomain = vi.hoisted(
   () => vi.fn((_userId: number, _now?: number, _tenantId?: number): string | null => null),
 );
-vi.mock('../../src/services/chat-conversation-state', () => ({
+vi.mock('../../src/services/chat-conversation-state', async () => ({
+  ...(await vi.importActual('../../src/services/chat-conversation-state')),
   getActiveChatDomain: (userId: number, now?: number, tenantId?: number) =>
     mockGetActiveChatDomain(userId, now, tenantId),
 }));

@@ -15,7 +15,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockRecordOperatorAlert = vi.hoisted(() => vi.fn(() => ({ alert: null, created: true })));
-vi.mock('../../src/services/operator-alerts', () => ({
+vi.mock('../../src/services/operator-alerts', async () => ({
+  ...(await vi.importActual('../../src/services/operator-alerts')),
   recordOperatorAlert: mockRecordOperatorAlert,
 }));
 

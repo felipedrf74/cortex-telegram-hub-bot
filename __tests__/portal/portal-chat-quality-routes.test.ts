@@ -8,35 +8,24 @@ const mocks = vi.hoisted(() => ({
   sendPortalInternalError: vi.fn(),
 }));
 
-vi.mock('../../src/api/secret-guards', () => ({
-  allowLocalHealthBypass: vi.fn(),
-  allowLocalPortalBypass: vi.fn(),
-  bearerTokenMatches: vi.fn(),
-  computePortalActorSignature: vi.fn(),
-  createPortalSessionToken: vi.fn(),
-  extractBearerToken: vi.fn(),
-  extractPortalActorHint: vi.fn(),
-  getPortalAuthContext: vi.fn(),
-  isLoopbackRequest: vi.fn(),
+vi.mock('../../src/api/secret-guards', async () => ({
+  ...await vi.importActual<typeof import('../../src/api/secret-guards')>('../../src/api/secret-guards'),
   requirePortalAdminToken: mocks.requirePortalAdminToken,
-  requirePortalToken: vi.fn(),
-  requirePortalTokenByMethod: vi.fn(),
-  requirePortalWriteToken: vi.fn(),
-  secureSecretMatches: vi.fn(),
-  verifyPortalActorSignature: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database'),
   getDb: (...args: unknown[]) => mocks.getDb(...args),
-  withDatabaseForTestAsync: vi.fn(),
 }));
 
-vi.mock('../../src/services/chat-quality-dashboard', () => ({
+vi.mock('../../src/services/chat-quality-dashboard', async () => ({
+  ...await vi.importActual<typeof import('../../src/services/chat-quality-dashboard')>('../../src/services/chat-quality-dashboard'),
   buildChatQualityDashboard: (...args: unknown[]) => mocks.buildChatQualityDashboard(...args),
   loadChatV2ReadinessReportFromFile: (...args: unknown[]) => mocks.loadChatV2ReadinessReportFromFile(...args),
 }));
 
-vi.mock('../../src/portal/http', () => ({
+vi.mock('../../src/portal/http', async () => ({
+  ...await vi.importActual<typeof import('../../src/portal/http')>('../../src/portal/http'),
   sendPortalInternalError: (...args: unknown[]) => mocks.sendPortalInternalError(...args),
 }));
 
@@ -95,12 +84,17 @@ describe('portal chat quality routes', () => {
     mocks.loadChatV2ReadinessReportFromFile.mockReturnValue({ report: null, reason: 'readiness report artifact not found' });
   });
 
-  it('registers the dashboard JSON endpoint behind the admin token guard', () => {
+  it('rate-limits the dashboard JSON endpoint before the admin token guard', () => {
     const { app, routes } = makeApp();
     registerPortalChatQualityRoutes(app as any);
 
-    expect(app.get).toHaveBeenCalledWith('/api/portal/chat-quality', mocks.requirePortalAdminToken, expect.any(Function));
-    expect(routes.get('GET /api/portal/chat-quality')?.[0]).toBe(mocks.requirePortalAdminToken);
+    expect(app.get).toHaveBeenCalledWith(
+      '/api/portal/chat-quality',
+      expect.any(Function),
+      mocks.requirePortalAdminToken,
+      expect.any(Function),
+    );
+    expect(routes.get('GET /api/portal/chat-quality')?.[1]).toBe(mocks.requirePortalAdminToken);
     // HTML shell page carries no data, so it is intentionally unguarded.
     expect(routes.has('GET /chat-quality')).toBe(true);
   });

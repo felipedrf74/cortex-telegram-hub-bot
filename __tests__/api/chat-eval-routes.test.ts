@@ -8,14 +8,17 @@ import {
 let db: Database.Database;
 const prepareMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual('../../src/services/database')),
   getDb: () => db,
   withDatabaseForTestAsync: vi.fn(),
 }));
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual('../../src/services/user-service')),
   getUserById: () => ({ id: 42, email: 'nexushubbot@gmail.com' }),
 }));
-vi.mock('../../src/api/secret-guards', () => ({
+vi.mock('../../src/api/secret-guards', async () => ({
+  ...(await vi.importActual('../../src/api/secret-guards')),
   isLoopbackRequest: () => true,
 }));
 vi.mock('../../src/services/chat-live-evaluation-state', () => ({
