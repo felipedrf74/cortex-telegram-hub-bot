@@ -1303,6 +1303,7 @@ export function startScheduler(): void {
     registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
   }
   registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
+  registerJob('chat_quality_regression_monitor', 'Chat Quality Regression Monitor', '*/5 * * * *', 'system');
   registerJob('chat_quality_weekly_digest', 'Chat Quality Weekly Digest', '30 7 * * 1', 'system');
   registerJob('dst_watchdog', 'DST Watchdog', '2,17,32,47 * * * *', 'system');
   registerJob('notification_release', 'Notification delayed/digest release', '*/15 * * * *', 'system');
@@ -2630,6 +2631,36 @@ export function startScheduler(): void {
         sampledCount: result.digest.sampler.current.sampledCount,
       },
       'Chat quality weekly digest recorded',
+    );
+  }), { timezone: 'UTC' });
+
+  // M22: rollout-independent near-real-time quality regression path. This is
+  // intentionally outside every ChatV2 activation/auto-revert conditional
+  // and never depends on an active-tenant list. It reads aggregate/signed
+  // evidence only and records deduped operator alerts without provider calls.
+  cron.schedule('*/5 * * * *', wrapJob('chat_quality_regression_monitor', async () => {
+    if (process.env.CHAT_QUALITY_REGRESSION_MONITOR_DISABLED === '1') {
+      return 'skipped';
+    }
+    const { runChatQualityRegressionMonitor } = await import('./chat-quality-regression-monitor');
+    const result = await runChatQualityRegressionMonitor();
+    const regressionCount = result.readinessHealthAlertCount
+      + result.readinessRegressionAlertCount
+      + result.behaviorRegressionAlertCount
+      + result.fallbackRegressionAlertCount;
+    if (regressionCount === 0) return 'skipped';
+    logger.warn(
+      {
+        event: 'chat_quality_regression_monitor',
+        readinessAvailable: result.readinessAvailable,
+        readinessArtifactHealthy: result.readinessArtifactHealthy,
+        readinessHealthAlertCount: result.readinessHealthAlertCount,
+        readinessRegressionAlertCount: result.readinessRegressionAlertCount,
+        behaviorRegressionAlertCount: result.behaviorRegressionAlertCount,
+        fallbackRegressionAlertCount: result.fallbackRegressionAlertCount,
+        recordedAlertCount: result.recordedAlertCount,
+      },
+      'Chat quality regression monitor recorded deduped operator alerts',
     );
   }), { timezone: 'UTC' });
 

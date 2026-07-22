@@ -169,6 +169,16 @@ export interface ChatActionDefinition {
   risk: ChatActionRisk;
   riskClass?: ChatActionRiskClass;
   confirmationPolicy: 'none' | 'clarify' | 'confirm' | 'strong_confirm';
+  /**
+   * Exact destructive/external-send grant staged with a confirmation.
+   * `tool` is the canonical tool-authorization name and `argumentField` is
+   * the planner argument whose value identifies the authorized target.
+   * High-risk actions must declare this mapping; missing values fail closed.
+   */
+  confirmationTarget?: {
+    tool: string;
+    argumentField: string;
+  };
   executionPolicy?: 'read_only' | 'idempotent_write' | 'preview_then_confirm' | 'blocked';
   executor: string;
   /**

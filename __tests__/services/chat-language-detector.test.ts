@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  checkStagingLocaleWritePreview,
   checkResponseLocaleFidelity,
   detectResponseLanguage,
   expectedLanguageForLocale,
@@ -147,6 +148,51 @@ describe('checkResponseLocaleFidelity', () => {
     expect(result.ok).toBe(false);
     expect(result.expected).toBe('pt');
     expect(result.detected).toBe('es');
+  });
+});
+
+describe('checkStagingLocaleWritePreview', () => {
+  const spanishPreview = {
+    text: 'Listo, preparé la tarea para comprar leche mañana. Confirma para crearla.',
+    metadata: { actionStatus: 'needs_confirmation' },
+  };
+
+  it.each([200, 202])('accepts intended HTTP %i write previews with an explicit confirmation status', (httpStatus) => {
+    const result = checkStagingLocaleWritePreview('es-419', httpStatus, spanishPreview);
+
+    expect(result.ok).toBe(true);
+    expect(result.httpStatusAccepted).toBe(true);
+    expect(result.actionStatus).toBe('needs_confirmation');
+    expect(result.actionStatusAccepted).toBe(true);
+  });
+
+  it('fails closed when actionStatus is absent or claims the write already succeeded', () => {
+    const missing = checkStagingLocaleWritePreview('es-419', 202, {
+      text: spanishPreview.text,
+      metadata: {},
+    });
+    const mutated = checkStagingLocaleWritePreview('es-419', 200, {
+      text: spanishPreview.text,
+      metadata: { actionStatus: 'verified_success' },
+    });
+
+    expect(missing.ok).toBe(false);
+    expect(missing.actionStatusAccepted).toBe(false);
+    expect(mutated.ok).toBe(false);
+    expect(mutated.actionStatusAccepted).toBe(false);
+  });
+
+  it('rejects non-200/202 responses and cross-locale leakage', () => {
+    const wrongStatus = checkStagingLocaleWritePreview('es-419', 201, spanishPreview);
+    const leaked = checkStagingLocaleWritePreview('es-419', 202, {
+      text: 'Pronto, preparei a tarefa para comprar leite amanhã. Confirme para criar.',
+      metadata: { actionStatus: 'needs_confirmation' },
+    });
+
+    expect(wrongStatus.ok).toBe(false);
+    expect(wrongStatus.httpStatusAccepted).toBe(false);
+    expect(leaked.ok).toBe(false);
+    expect(leaked.localeFidelity.detected).toBe('pt');
   });
 });
 

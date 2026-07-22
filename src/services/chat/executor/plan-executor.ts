@@ -1,8 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import {
+  authorizeChatToolCall,
+  CONFIRMED_TARGET_FIELDS,
   getCurrentChatToolAuthorizationContext,
   runWithChatToolAuthorization,
+  type ChatConfirmedDestructiveTarget,
 } from '../../chat-tool-authorization';
 import { resolveStepRefs } from '../../chat-multi-step-dag';
 import { findChatActionDefinition } from '../registry';
@@ -54,18 +57,45 @@ const CONFIRMATION_GRANT_STEP_RISKS = new Set([
   'external_side_effect',
 ]);
 
-function confirmedDestructiveTargetsForPlan(plan: ChatActionPlan) {
-  return plan.steps
-    .filter((step) => CONFIRMATION_GRANT_STEP_RISKS.has(step.risk))
-    .map((step) => {
-      const args = step.args as Record<string, unknown> | undefined;
-      const targetId = typeof args?.eventId === 'string' && args.eventId.trim()
-        ? args.eventId.trim()
-        : typeof args?.taskId === 'string' && args.taskId.trim()
-          ? args.taskId.trim()
-          : undefined;
-      return targetId ? { targetId } : {};
-    });
+function normalizeConfirmationTargetId(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+/**
+ * Builds the exact grants staged by the confirmation hold. The registry owns
+ * the action -> authorization-tool/argument mapping so newly reachable risky
+ * actions cannot silently fall back to a turn-wide or tool-only grant.
+ */
+export function buildConfirmedDestructiveTargetsForPlanSteps(
+  steps: ReadonlyArray<ChatPlanStep>,
+): ChatConfirmedDestructiveTarget[] {
+  const targets: ChatConfirmedDestructiveTarget[] = [];
+  for (const step of steps) {
+    if (!CONFIRMATION_GRANT_STEP_RISKS.has(step.risk)) continue;
+    const definition = findChatActionDefinition(step.skill, step.action);
+    const targetContract = definition?.confirmationTarget;
+    if (!targetContract) continue;
+    const targetId = normalizeConfirmationTargetId(step.args?.[targetContract.argumentField]);
+    if (!targetId) continue;
+    targets.push({ tool: targetContract.tool, targetId });
+  }
+  return targets;
+}
+
+function authorizationCallForRiskyStep(step: ChatPlanStep): {
+  toolName: string;
+  input: Record<string, unknown>;
+} | null {
+  const [target] = buildConfirmedDestructiveTargetsForPlanSteps([step]);
+  if (!target?.tool || !target.targetId) return null;
+  const [toolTargetField] = CONFIRMED_TARGET_FIELDS[target.tool] ?? [];
+  if (!toolTargetField) return null;
+  return {
+    toolName: target.tool,
+    input: { [toolTargetField]: target.targetId },
+  };
 }
 
 export async function executeChatActionPlan(
@@ -81,20 +111,33 @@ export async function executeChatActionPlan(
   // the gate was only wired into the legacy tool-call surface at
   // chat-message-routes.ts:1160. Re-entrant calls already inside an auth
   // context fall through (AsyncLocalStorage scope continues unchanged).
-  if (!getCurrentChatToolAuthorizationContext()) {
+  const currentAuthorization = getCurrentChatToolAuthorizationContext();
+  const shouldBindAuthorization = options.authorizationContextBound !== true && (
+    !currentAuthorization
+    || (
+      options.confirmed === true
+      && currentAuthorization.userId === input.userId
+      && currentAuthorization.tenantId === input.tenantId
+    )
+  );
+  if (shouldBindAuthorization) {
+    const confirmedTargets = options.confirmed === true
+      ? options.confirmedTargets ?? buildConfirmedDestructiveTargetsForPlanSteps(plan.steps)
+      : undefined;
     return runWithChatToolAuthorization({
       userId: input.userId,
       tenantId: input.tenantId,
       confirmedDestructiveAction: options.confirmed === true,
-      // ADV-3: a confirmed plan authorizes at most one destructive/external
-      // call per previewed risky step — never a turn-wide blank check.
-      confirmedDestructiveTargets: options.confirmed === true
-        ? confirmedDestructiveTargetsForPlan(plan)
-        : undefined,
+      // ADV-3: exact server-staged grants are authoritative. Direct/internal
+      // confirmed-plan callers derive the same exact set from the registry.
+      confirmedDestructiveTargets: confirmedTargets,
       confirmationSource: options.confirmationSource
         ?? (options.confirmed === true ? 'pending_confirmation' : 'none'),
       requireConfirmationForWrites: shouldRequireSafeWriteConfirmation(input),
-    }, () => executeChatActionPlan(plan, input, deps, options));
+    }, () => executeChatActionPlan(plan, input, deps, {
+      ...options,
+      authorizationContextBound: true,
+    }));
   }
   const hasUnresolvedStep = plan.clarificationQuestion || plan.steps.some((step) => !step.requiredArgsPresent);
   if (hasUnresolvedStep) {
@@ -149,15 +192,11 @@ export async function executeChatActionPlan(
   // (needs_clarification / needs_confirmation) still stop the whole loop —
   // continuing past a pending user decision would be unsafe.
   //
-  // M1/ADV-3 interaction — honest bound: the registry-executor path below
-  // dispatches steps directly (getChatStepExecutor), which BYPASSES
-  // authorizeChatToolCall, so the per-target grants installed above
-  // (confirmedDestructiveTargetsForPlan) are NOT consumed on this path
-  // today. The REAL bound is structural: this loop executes only the steps
-  // of the previewed plan, each at most once — continue-on-failure can
-  // never add steps beyond the preview. The grants become live enforcement
-  // if/when step executors route their provider calls through
-  // tool-executor (which does call authorizeChatToolCall).
+  // M1/ADV-3 interaction: the registry-executor path dispatches steps
+  // directly, so target-bound registry actions are authorized explicitly
+  // below before their step executor runs. The loop also remains
+  // structurally bounded to the previewed steps, each at most once;
+  // continue-on-failure can never add work beyond the preview.
   const results: ChatStepExecutionResult[] = [];
   for (const step of plan.steps) {
     if (step.dependsOnStepIds?.some((dep) => {
@@ -194,6 +233,30 @@ export async function executeChatActionPlan(
       continue;
     }
     const runtimeStep: ChatPlanStep = { ...step, args: resolveStepRefs(step.args, results) };
+    // Some safe-write definitions are dynamically elevated (for example a
+    // calendar create with attendees). They keep their existing structural
+    // preview bound because there is no pre-existing target id. Exact grant
+    // consumption applies to registry actions that declare a target contract.
+    if (findChatActionDefinition(runtimeStep.skill, runtimeStep.action)?.confirmationTarget) {
+      const authorizationCall = authorizationCallForRiskyStep(runtimeStep);
+      const authorization = authorizationCall
+        ? authorizeChatToolCall(
+          authorizationCall.toolName,
+          authorizationCall.input,
+          input.userId,
+          input.tenantId,
+        )
+        : null;
+      if (!authorization?.allowed) {
+        persistStepStatus(plan, input, runtimeStep, 'blocked');
+        results.push({
+          step: runtimeStep,
+          status: 'blocked',
+          error: 'confirmation_target_mismatch',
+        });
+        continue;
+      }
+    }
     const result = await executeStepWithReliability(runtimeStep, {
       plan,
       input,

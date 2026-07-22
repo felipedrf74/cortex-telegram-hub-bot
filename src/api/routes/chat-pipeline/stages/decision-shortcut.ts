@@ -61,6 +61,7 @@ export const decisionShortcutStage: ChatStage = {
       conversationId: scopedClientMessageId ?? chatRequestId,
       messageId: userMessageId,
       sourceMessageId: pending.sourceMessageId,
+      confirmedTargets: pending.confirmedTargets,
       channel: 'ios',
       locale: chatCoreV2RouteLocale,
       timezone: getUserTimezoneById(userId),

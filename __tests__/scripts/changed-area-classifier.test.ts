@@ -372,6 +372,8 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     ['scripts/lib/changed-area-classifier.mjs', true],
     ['scripts/lib/git-changed-paths.mjs', true],
     ['scripts/lib/irreversible-migration-policy.mjs', true],
+    ['config/production-migration-lineages.json', true],
+    ['scripts/lib/production-migration-lineage.mjs', true],
     ['scripts/migration-safety-check.mjs', true],
     ['scripts/promote-exact-release.sh', false],
     ['scripts/remote-create-release-backup.sh', false],
@@ -446,8 +448,10 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
   });
 
   it.each([
+    'config/production-migration-lineages.json',
     'scripts/production-shape-migration-rehearsal.mjs',
     'scripts/validate-production-shape-migration-rehearsal.mjs',
+    'scripts/lib/production-migration-lineage.mjs',
     'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   ])('routes migration rehearsal trust-boundary code %s through the operator gate and full suite', (file) => {
     const result = classify(file);

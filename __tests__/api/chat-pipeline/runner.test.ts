@@ -19,6 +19,10 @@ import {
   runChatMessagePipeline,
 } from '../../../src/api/routes/chat-pipeline/runner';
 import type { ChatStage, ChatTurnCtx } from '../../../src/api/routes/chat-pipeline/types';
+import {
+  CHAT_V2_RETIREMENT_STAGE_MAPPINGS,
+  validateChatV2RetirementStageMappings,
+} from '../../../src/services/chat-route-exit-sampler';
 
 // ── Stage-order snapshot (ordering law) ─────────────────────────────
 // The flattened trace emissions mirror the recordChatStage names pinned by
@@ -47,6 +51,7 @@ const EXPECTED_STAGE_ORDER: Array<{ name: string; traceStages: string[] }> = [
   { name: 'decision_confirmation_shortcut', traceStages: ['decision_confirmation_shortcut'] },
   { name: 'destructive_confirmation_hold', traceStages: ['destructive_confirmation_hold'] },
   { name: 'routing_clarify', traceStages: ['routing_clarify'] },
+  { name: 'cross_skill_plan_declined', traceStages: ['cross_skill_plan_declined'] },
   { name: 'chat_core_v2_local_answer', traceStages: ['chat_core_v2_local_answer'] },
   { name: 'chat_core_v2_unsupported_fallback', traceStages: ['chat_core_v2_unsupported_fallback'] },
   { name: 'legacy_tail', traceStages: ['legacy_route', 'domain_shortcut', 'legacy_response'] },
@@ -104,6 +109,17 @@ describe('chat-pipeline runner', () => {
       for (const name of NON_RETIRABLE_CHAT_STAGES) {
         expect(names.has(name)).toBe(true);
       }
+    });
+
+    it('pins every retirement candidate mapping to a real retirable stage', () => {
+      expect(validateChatV2RetirementStageMappings(
+        CHAT_MESSAGE_STAGES.map((stage) => stage.name),
+        NON_RETIRABLE_CHAT_STAGES,
+      )).toEqual([]);
+      expect(CHAT_V2_RETIREMENT_STAGE_MAPPINGS.destructive_confirmation_hold).toMatchObject({
+        status: 'non_retirable',
+        disableStages: [],
+      });
     });
   });
 

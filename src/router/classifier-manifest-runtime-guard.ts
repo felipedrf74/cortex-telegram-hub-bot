@@ -4,20 +4,17 @@
  * M15 adversarial fix — hard runtime guard for the manifest classifier
  * prompt flag (AI_CLASSIFY_MANIFEST_PROMPT).
  *
- * The M15 flag-flip blockers are documented and test-pinned
+ * The original M15 flag-flip blockers are now closed and test-pinned
  * (__tests__/services/chat-manifest-newly-reachable-skill-execution.test.ts):
- *   1. registry actions reachable through the manifest prompt with NO step
- *      executor (draft_email / send_email / connections_retry_sync) — a turn
- *      routed there dead-ends in 'blocked';
- *   2. NL-reachable manifest domains with NO legacy domain handler
- *      (connections / notifications / decision_center) — a classifier turn
- *      that misses the planner stages reaches the legacy tail and returns
- *      UNKNOWN_DOMAIN.
+ *   1. draft_email / send_email / connections_retry_sync have confirmation-
+ *      gated, read-back-verifying step executors;
+ *   2. connections / notifications / decision_center have deterministic,
+ *      token-zero legacy-tail handlers.
  *
  * Documentation alone cannot stop an operator from flipping the env flag, so
- * this guard runs at process startup (same boot window as
- * assertOwnerBootstrapReadyForRuntime): when the flag is requested ON while
- * either gap class is still open, it FORCE-DISABLES the flag for the process
+ * this guard remains at process startup (same boot window as
+ * assertOwnerBootstrapReadyForRuntime): if either executable surface
+ * regresses, it FORCE-DISABLES the flag for the process
  * (process-level override consulted by isManifestClassifierPromptEnabled)
  * and records a deduped operator alert instead of serving a routing surface
  * whose targets cannot execute.
@@ -37,9 +34,8 @@ import { getChatDomainHandler } from '../api/routes/chat-message-context';
 import { recordOperatorAlert } from '../services/operator-alerts';
 
 /**
- * Registry actions the manifest prompt makes NL-reachable that MUST have a
- * step executor before the flag may serve traffic. Kept in sync with the
- * pinned "known execution gaps" test.
+ * Registry actions the manifest prompt makes NL-reachable that MUST retain a
+ * step executor while the flag serves traffic.
  */
 export const MANIFEST_PROMPT_REQUIRED_STEP_EXECUTOR_ACTIONS = [
   'draft_email',

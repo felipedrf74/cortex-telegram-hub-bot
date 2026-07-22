@@ -1,5 +1,5 @@
 -- Roll back the routing corpus + calibration tables introduced by
--- migration 255. Corpus labels are advisory tooling state, not release
+-- migration 256. Corpus labels are advisory tooling state, not release
 -- evidence; dropping them is safe.
 
 DROP INDEX IF EXISTS idx_accepted_accuracy_snapshots_accepted;

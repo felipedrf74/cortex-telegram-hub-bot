@@ -1,4 +1,4 @@
--- 255: Golden routing corpus + calibration tooling (Chat M7).
+-- 256: Golden routing corpus + calibration tooling (Chat M7).
 --
 -- routing_corpus_items collects candidate utterances for human routing
 -- labels. Sources are deterministic exports (classify-shadow disagreements,

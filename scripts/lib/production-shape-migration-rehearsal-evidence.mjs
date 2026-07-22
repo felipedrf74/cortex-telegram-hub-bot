@@ -3,9 +3,13 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  loadProductionMigrationLineagePolicy,
+  resolveProductionMigrationLineage,
+} from './production-migration-lineage.mjs';
 
 export const PRODUCTION_SHAPE_MIGRATION_REHEARSAL_SCHEMA =
-  'nexus.production-shape-migration-rehearsal.v1';
+  'nexus.production-shape-migration-rehearsal.v2';
 export const MAX_PRODUCTION_SHAPE_REHEARSAL_AGE_MS = 30 * 60 * 1000;
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -104,8 +108,16 @@ export function validateProductionShapeMigrationRehearsalEvidence({
   const evidence = governedEvidence(input, root);
   const parsed = evidence.parsed;
   const candidate = candidateMigrationIdentity(root);
+  let lineagePolicy = null;
+  try { lineagePolicy = loadProductionMigrationLineagePolicy({ root }); } catch { /* invalid below */ }
+  const expectedLineage = lineagePolicy && parsed?.source?.migrationLineageId
+    ? (parsed.source.migrationLineageId === 'canonical'
+      ? resolveProductionMigrationLineage(lineagePolicy, [])
+      : lineagePolicy.lineages.find(({ id }) => id === parsed.source.migrationLineageId) ?? null)
+    : null;
   let reason = evidence.reason;
   if (!reason && !parsed) reason = 'invalid_json';
+  else if (!reason && !lineagePolicy) reason = 'retired_migration_policy_invalid';
   else if (!reason && parsed.schema !== PRODUCTION_SHAPE_MIGRATION_REHEARSAL_SCHEMA) reason = 'invalid_schema';
   else if (!reason && parsed.status !== 'verified') reason = 'status_not_verified';
   else if (!reason && !isIsoTimestamp(parsed.startedAt)) reason = 'started_at_invalid';
@@ -138,6 +150,10 @@ export function validateProductionShapeMigrationRehearsalEvidence({
     || parsed.source.appliedMigrationCount < 0)) reason = 'source_migration_count_invalid';
   else if (!reason && !SHA256.test(parsed.source?.migrationSetSha256 || '')) reason = 'source_migration_set_invalid';
   else if (!reason && !SHA256.test(parsed.source?.databaseSha256 || '')) reason = 'source_database_digest_invalid';
+  else if (!reason && parsed.source?.retiredMigrationPolicySha256 !== lineagePolicy.sha256) reason = 'retired_migration_policy_mismatch';
+  else if (!reason && !expectedLineage) reason = 'source_migration_lineage_invalid';
+  else if (!reason && parsed.source?.retiredMigrationCount !== expectedLineage.migrationCount) reason = 'retired_migration_count_mismatch';
+  else if (!reason && parsed.source?.retiredMigrationSetSha256 !== expectedLineage.migrationSetSha256) reason = 'retired_migration_set_mismatch';
   else if (!reason && parsed.candidate?.migrationCount !== candidate.migrationCount) reason = 'candidate_migration_count_mismatch';
   else if (!reason && parsed.candidate?.migrationSetSha256 !== candidate.migrationSetSha256) reason = 'candidate_migration_set_mismatch';
   else if (!reason && (parsed.candidate?.requiredContentMigrationCount !== 15

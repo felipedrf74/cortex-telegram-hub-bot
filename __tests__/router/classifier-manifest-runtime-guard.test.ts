@@ -1,10 +1,9 @@
 /**
  * M15 adversarial fix — hard runtime guard for AI_CLASSIFY_MANIFEST_PROMPT.
  *
- * The flag-flip blockers (missing draft_email/send_email/
+ * The former flag-flip blockers (missing draft_email/send_email/
  * connections_retry_sync step executors; missing legacy domain handlers for
- * connections/notifications/decision_center) are documented and test-pinned,
- * but documentation cannot stop an env flip. The guard must:
+ * connections/notifications/decision_center) are now closed. The guard must:
  *   - force-disable the flag for the process when it is requested ON while
  *     either gap class is open (flag reads false afterwards),
  *   - record a warning operator alert with a stable dedupe key,
@@ -153,24 +152,15 @@ describe('enforceManifestClassifierRuntimeGuard', () => {
     expect(isManifestClassifierPromptRuntimeForceDisabled()).toBe(false);
   });
 
-  it('against the REAL dispatch table and handler map, the flag cannot go live today', () => {
+  it('against the REAL dispatch table and handler map, all executable-surface gaps are closed', () => {
     // No injected deps: the guard consults the real dispatch table, the real
-    // legacy domain-handler map, and the real manifest. As long as the M15
-    // execution gaps are open this MUST force the flag off; when the gaps
-    // get closed for real, this expectation flips and the pinned
-    // "known execution gaps" test flips with it.
+    // legacy domain-handler map, and the real manifest. The flag is eligible
+    // for its separately owner-gated rollout only while this remains gap-free.
     const result = enforceManifestClassifierRuntimeGuard({ env: FLAG_ON_ENV });
 
-    expect(result.flagRequested).toBe(true);
-    expect(result.forcedOff).toBe(true);
-    expect(result.gaps).toEqual(expect.arrayContaining([
-      'missing_step_executor:draft_email',
-      'missing_step_executor:send_email',
-      'missing_step_executor:connections_retry_sync',
-      'missing_domain_handler:connections',
-      'missing_domain_handler:notifications',
-      'missing_domain_handler:decision_center',
-    ]));
-    expect(isManifestClassifierPromptEnabled(FLAG_ON_ENV)).toBe(false);
+    expect(result).toEqual({ flagRequested: true, forcedOff: false, gaps: [] });
+    expect(isManifestClassifierPromptEnabled(FLAG_ON_ENV)).toBe(true);
+    expect(isManifestClassifierPromptRuntimeForceDisabled()).toBe(false);
+    expect(mockRecordOperatorAlert).not.toHaveBeenCalled();
   });
 });

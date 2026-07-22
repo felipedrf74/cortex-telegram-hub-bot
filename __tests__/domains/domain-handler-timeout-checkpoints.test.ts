@@ -7,7 +7,8 @@
  * Promise.race timeout; ADV-2 provider pinning cannot be guaranteed later;
  * sliced-history shape stability breaks tool_use_id scope). So the loop only
  * CHECKPOINTS completed read tool calls — write-behind, fail-open — and the
- * route builds an honest partial-progress reply with no auto-resume.
+ * route queues a delivery job that consumes only the late foreground result
+ * and otherwise fails honestly without starting another provider turn.
  *
  * These tests pin the checkpoint hook: completed tools 1-2 are persisted
  * while tool 3 stalls past the route timeout; blocked write tools are never

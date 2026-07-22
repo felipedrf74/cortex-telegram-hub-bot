@@ -3,14 +3,10 @@
 //
 // Chat M20 — offline ChatV2 legacy-route retirement campaign report.
 //
-// Prints the per-route campaign table in campaign order from the persisted
-// chat_v2_route_exit_samples evidence. Parity samples/rates (known
-// legacy-vs-v2 comparisons only) drive the gate; parity_unknown counts and
-// v2-health capture counts are shown as context. Routes below the
-// 50-known-parity-sample floor report INSUFFICIENT honestly instead of a
-// judged FAIL. Use --json for the machine-readable report and --sync to
-// convert/refresh source rows (shadow replay bundles, online-eval captures)
-// before reading.
+// Prints the per-route campaign table. Signed paired behavior evidence from
+// chat_v2_legacy_retirement_evidence is the only PASS input. Shadow routing
+// agreement and online-eval health are diagnostics only. The table also pins
+// the exact disable-stage mapping and trailing 24h attributed fallback rate.
 //
 // This CLI NEVER flips route flags. Flag flipping is owner-gated production
 // work; this report only shows whether the parity evidence floor is met.
@@ -23,6 +19,7 @@ import dotenv from 'dotenv';
 import {
   NEXUS_CHAT_ROUTE_EXIT_SAMPLER_VERSION,
   buildChatV2RetirementCampaign,
+  buildChatV2RetirementFallbackAlertInputs,
   isChatRouteExitSamplerMigrationApplied,
   syncChatRouteExitSamples,
   type ChatV2RetirementCampaignRow,
@@ -31,25 +28,28 @@ import {
 dotenv.config({ quiet: true });
 
 export interface ChatV2RetirementCampaignReport {
-  schemaVersion: 'chat_v2_retirement_campaign_report.v1';
+  schemaVersion: 'chat_v2_retirement_campaign_report.v2';
   samplerVersion: typeof NEXUS_CHAT_ROUTE_EXIT_SAMPLER_VERSION;
   generatedAt: string;
   /**
-   * 'migration_257_not_applied' on a readonly database that predates
-   * migration 257: the evidence table cannot be created on a readonly
+   * 'migration_258_not_applied' on a readonly database that predates
+   * migration 258: the evidence table cannot be created on a readonly
    * connection, so the report is honestly empty instead of throwing.
    */
-  status: 'ok' | 'migration_257_not_applied';
+  status: 'ok' | 'migration_258_not_applied';
   rows: ChatV2RetirementCampaignRow[];
   totals: {
     routes: number;
     passedRoutes: number;
     failedRoutes: number;
     insufficientRoutes: number;
-    paritySamples: number;
-    parityUnknown: number;
+    blockedRoutes: number;
+    behaviorParitySamples: number;
+    routingAgreementSamples: number;
+    routingAgreementUnknown: number;
     healthSamples: number;
     missingSamples: number;
+    fallbackAlertRoutes: number;
   };
 }
 
@@ -60,26 +60,29 @@ export function buildChatV2RetirementCampaignReport(
   const generatedAt = (options.now ?? new Date()).toISOString();
   if (!isChatRouteExitSamplerMigrationApplied(db) && db.readonly) {
     return {
-      schemaVersion: 'chat_v2_retirement_campaign_report.v1',
+      schemaVersion: 'chat_v2_retirement_campaign_report.v2',
       samplerVersion: NEXUS_CHAT_ROUTE_EXIT_SAMPLER_VERSION,
       generatedAt,
-      status: 'migration_257_not_applied',
+      status: 'migration_258_not_applied',
       rows: [],
       totals: {
         routes: 0,
         passedRoutes: 0,
         failedRoutes: 0,
         insufficientRoutes: 0,
-        paritySamples: 0,
-        parityUnknown: 0,
+        blockedRoutes: 0,
+        behaviorParitySamples: 0,
+        routingAgreementSamples: 0,
+        routingAgreementUnknown: 0,
         healthSamples: 0,
         missingSamples: 0,
+        fallbackAlertRoutes: 0,
       },
     };
   }
-  const rows = buildChatV2RetirementCampaign(db);
+  const rows = buildChatV2RetirementCampaign(db, { now: options.now });
   return {
-    schemaVersion: 'chat_v2_retirement_campaign_report.v1',
+    schemaVersion: 'chat_v2_retirement_campaign_report.v2',
     samplerVersion: NEXUS_CHAT_ROUTE_EXIT_SAMPLER_VERSION,
     generatedAt,
     status: 'ok',
@@ -89,10 +92,13 @@ export function buildChatV2RetirementCampaignReport(
       passedRoutes: rows.filter((row) => row.verdict === 'pass').length,
       failedRoutes: rows.filter((row) => row.verdict === 'fail').length,
       insufficientRoutes: rows.filter((row) => row.verdict === 'insufficient_evidence').length,
-      paritySamples: rows.reduce((sum, row) => sum + row.paritySamples, 0),
-      parityUnknown: rows.reduce((sum, row) => sum + row.parityUnknown, 0),
+      blockedRoutes: rows.filter((row) => row.verdict === 'blocked').length,
+      behaviorParitySamples: rows.reduce((sum, row) => sum + row.behaviorParitySamples, 0),
+      routingAgreementSamples: rows.reduce((sum, row) => sum + row.routingAgreementSamples, 0),
+      routingAgreementUnknown: rows.reduce((sum, row) => sum + row.routingAgreementUnknown, 0),
       healthSamples: rows.reduce((sum, row) => sum + row.healthSamples, 0),
       missingSamples: rows.reduce((sum, row) => sum + row.missingSamples, 0),
+      fallbackAlertRoutes: buildChatV2RetirementFallbackAlertInputs(rows, { generatedAt }).length,
     },
   };
 }
@@ -101,25 +107,32 @@ const VERDICT_LABELS: Record<ChatV2RetirementCampaignRow['verdict'], string> = {
   pass: 'PASS',
   fail: 'FAIL',
   insufficient_evidence: 'INSUFFICIENT',
+  blocked: 'BLOCKED',
 };
 
 export function renderChatV2RetirementCampaignTable(report: ChatV2RetirementCampaignReport): string {
-  if (report.status === 'migration_257_not_applied') {
+  if (report.status === 'migration_258_not_applied') {
     return [
       `ChatV2 legacy-route retirement campaign (${report.generatedAt})`,
-      'migration 257 not applied on this database (readonly connection — evidence table missing).',
+      'migration 258 not applied on this database (readonly connection — evidence table missing).',
       'Run the migration (or re-run with --sync on a writable connection) to collect evidence.',
     ].join('\n');
   }
-  const header = ['#', 'stage', 'route', 'parity', 'rate', 'unknown', 'health', 'verdict', 'missing'];
+  const header = ['#', 'stage', 'route', 'disable', 'behavior', 'rate', 'routing', 'health', 'fallback24h', 'verdict', 'missing'];
   const body = report.rows.map((row) => [
     String(row.position),
     row.campaignStage,
     row.routeId,
-    String(row.paritySamples),
-    row.paritySamples > 0 ? row.parityRate.toFixed(4) : '-',
-    String(row.parityUnknown),
+    row.disableStages.join(',') || `blocked:${row.mappingStatus}`,
+    String(row.behaviorParitySamples),
+    row.behaviorParitySamples > 0 ? row.behaviorParityRate.toFixed(4) : '-',
+    row.routingAgreementSamples > 0
+      ? `${row.routingAgreementCount}/${row.routingAgreementSamples}`
+      : '-',
     row.healthSamples > 0 ? `${row.healthSamples - row.healthFailures}/${row.healthSamples} ok` : '-',
+    row.fallback24h.rate == null
+      ? '-'
+      : `${row.fallback24h.fallbackCount}/${row.fallback24h.totalCount} ${(row.fallback24h.rate * 100).toFixed(2)}%`,
     VERDICT_LABELS[row.verdict],
     String(row.missingSamples),
   ]);
@@ -136,10 +149,13 @@ export function renderChatV2RetirementCampaignTable(report: ChatV2RetirementCamp
     ...body.map(renderLine),
     separator,
     `routes ${report.totals.routes} | PASS ${report.totals.passedRoutes} | FAIL ${report.totals.failedRoutes}`
-      + ` | INSUFFICIENT ${report.totals.insufficientRoutes} | parity samples ${report.totals.paritySamples}`
-      + ` | unknown ${report.totals.parityUnknown} | health ${report.totals.healthSamples}`
+      + ` | INSUFFICIENT ${report.totals.insufficientRoutes}`
+      + ` | BLOCKED ${report.totals.blockedRoutes} | behavior samples ${report.totals.behaviorParitySamples}`
+      + ` | routing diagnostics ${report.totals.routingAgreementSamples}`
+      + ` | health ${report.totals.healthSamples}`
       + ` | missing ${report.totals.missingSamples}`,
-    'Gate input: known legacy-vs-v2 parity samples only. parity_unknown and health rows are context.',
+    'Gate input: signed paired legacy-vs-ChatV2 behavior evidence only. Routing agreement and eval health are diagnostics.',
+    'A PASS also requires a validated retirable stage mapping and trailing-24h fallback at or below 2%.',
     'Route flag flipping stays owner-gated; this report is evidence only.',
   ];
   return lines.join('\n');

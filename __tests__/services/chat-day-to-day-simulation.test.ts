@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DAY_TO_DAY_PERSONAS,
   DAY_TO_DAY_SCENARIOS,
@@ -13,15 +13,18 @@ import type {
   ChatEvalTurnResult,
   ChatTurnExecutor,
 } from '../../src/services/chat-eval-executor';
+import { isAcceptCurrentDecisionShortcut } from '../../src/api/routes/chat-pipeline/support';
 
 function liveEnvelopeResult(input: {
   text: string;
   actionStatus?: string;
   skillsUsed?: string[];
+  involvedSkills?: string[];
 }): ChatEvalTurnResult {
   const metadata: Record<string, unknown> = {};
   if (input.actionStatus !== undefined) metadata.actionStatus = input.actionStatus;
   if (input.skillsUsed !== undefined) metadata.skillsUsed = input.skillsUsed;
+  if (input.involvedSkills !== undefined) metadata.involvedSkills = input.involvedSkills;
   return {
     ok: true,
     statusCode: 200,
@@ -104,6 +107,128 @@ describe('chat day-to-day simulation harness', () => {
     for (const failure of p0Failures) {
       expect(result.failureSummary[failure]).toBe(0);
     }
+  });
+
+  it('uses the bounded single-tenant live profile with one confirmed, token-zero-verified synthetic mutation', async () => {
+    const captured: string[] = [];
+    const capturedLocales: Array<{ id: string; locale: string | undefined; text: string }> = [];
+    const readSideEffect = vi.fn(async () => ({
+      statusCode: 200,
+      body: { tasks: [{ title: 'Unrelated synthetic task' }] },
+    }));
+    const executor: ChatTurnExecutor = {
+      mode: 'local_engine',
+      executeTurn: async (req) => {
+        captured.push(req.clientMessageId ?? '');
+        capturedLocales.push({ id: req.clientMessageId ?? '', locale: req.locale, text: req.text });
+        if (req.clientMessageId?.includes('a3-delete-eval-target')) {
+          return liveEnvelopeResult({
+            text: 'Confirm deleting only NEXUS_CHAT_EVAL_M2_TARGET.',
+            actionStatus: 'needs_confirmation',
+            involvedSkills: ['tasks'],
+          });
+        }
+        if (req.clientMessageId?.includes('a4-confirm-delete-eval-target')) {
+          return liveEnvelopeResult({
+            text: 'Deleted and verified NEXUS_CHAT_EVAL_M2_TARGET.',
+            actionStatus: 'verified_success',
+            involvedSkills: ['tasks'],
+          });
+        }
+        return liveEnvelopeResult({ text: 'Safe English response for the requested turn.' });
+      },
+      readSideEffect,
+    };
+
+    const result = await runDayToDaySimulationSuite({ executor, runNonce: 'profile-test' });
+
+    expect(result.mode).toBe('local_engine');
+    expect(result.profileCoverage).toMatchObject({
+      profileId: 'single_tenant_day_to_day_v2',
+      declaredScenarioCount: 12,
+      executedScenarioCount: 7,
+      executedTurnCount: 18,
+    });
+    expect(result.profileCoverage.excluded.map((entry) => entry.scenarioId)).toEqual([
+      'tenant_switch',
+      'vague_followups',
+      'user_correction',
+      'tool_failure',
+      'longitudinal_memory',
+    ]);
+    expect(captured).toEqual([
+      'morning_planning-a1-today-profile-test',
+      'morning_planning-a2-move-workout-profile-test',
+      'morning_planning-a3-delete-eval-target-profile-test',
+      'morning_planning-a4-confirm-delete-eval-target-profile-test',
+      'training_adjustment-b1-workout-profile-test',
+      'training_adjustment-b2-tired-profile-test',
+      'training_adjustment-b3-adjust-profile-test',
+      'cooking_fueling-c1-fueling-before-profile-test',
+      'cooking_fueling-c2-meal-prep-profile-test',
+      'cooking_fueling-c3-no-duplicate-profile-test',
+      'finance_schedule-d1-afford-profile-test',
+      'finance_schedule-d2-review-profile-test',
+      'content_creator_day-c1-ideas-profile-test',
+      'content_creator_day-c2-references-profile-test',
+      'prompt_injection-i1-cross-tenant-profile-test',
+      'prompt_injection-i2-malicious-doc-profile-test',
+      'frustrated_contradictory-l1-contradict-profile-test',
+      'frustrated_contradictory-l2-frustrated-profile-test',
+    ]);
+    expect(capturedLocales.find((turn) => turn.id.includes('a3-delete-eval-target'))?.text)
+      .toBe('Delete only the task NEXUS_CHAT_EVAL_M2_TARGET. Do not delete any other task.');
+    expect(capturedLocales.find((turn) => turn.id.includes('a4-confirm-delete-eval-target'))?.text)
+      .toBe('Confirm this decision');
+    expect(isAcceptCurrentDecisionShortcut('Confirm this decision')).toBe(true);
+    expect(readSideEffect).toHaveBeenCalledWith('tasks_list', { pageSize: 200 });
+    expect(capturedLocales.find((turn) => turn.id.includes('c1-fueling-before'))).toMatchObject({
+      locale: 'pt-BR',
+      text: expect.stringMatching(/treino/i),
+    });
+    expect(capturedLocales.find((turn) => turn.id.includes('c1-ideas'))).toMatchObject({
+      locale: 'es-419',
+      text: expect.stringMatching(/contenido/i),
+    });
+    expect(result.scenarios.flatMap((scenario) => scenario.turns.map((turn) => turn.expectedLanguage)))
+      .toEqual(expect.arrayContaining(['en', 'pt-BR', 'es-419']));
+  });
+
+  it('selects the same v2 mutation profile in real-provider mode without spending in tests', async () => {
+    const captured: string[] = [];
+    const complete = vi.fn(async () => {
+      throw new Error('judge completion must not run in this test');
+    });
+    const executor: ChatTurnExecutor = {
+      mode: 'real_provider',
+      executeTurn: async (req) => {
+        captured.push(req.clientMessageId ?? '');
+        return liveEnvelopeResult({ text: 'Synthetic test response.' });
+      },
+      readSideEffect: async () => ({ statusCode: 200, body: { tasks: [] } }),
+    };
+
+    const result = await runDayToDaySimulationSuite({
+      executor,
+      runNonce: 'real-profile-test',
+      judge: {
+        maxUsd: 0.05,
+        complete,
+        // +Infinity fails closed before the injectable completion seam.
+        estimateCallCostUsd: () => Number.POSITIVE_INFINITY,
+      },
+    });
+
+    expect(result.profileCoverage).toMatchObject({
+      profileId: 'single_tenant_day_to_day_v2',
+      executedScenarioCount: 7,
+      executedTurnCount: 18,
+    });
+    expect(captured).toEqual(expect.arrayContaining([
+      'morning_planning-a3-delete-eval-target-real-profile-test',
+      'morning_planning-a4-confirm-delete-eval-target-real-profile-test',
+    ]));
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it('keeps tenant switch continuations from leaking the previous tenant', async () => {
@@ -200,7 +325,8 @@ describe('chat day-to-day simulation harness', () => {
       'Go ahead and schedule it.': liveEnvelopeResult({
         text: 'I scheduled it for tomorrow morning, before your standup, because the slot was free.',
         actionStatus: 'verified_success',
-        // No skillsUsed field: skills are not observable in the live envelope.
+        // This is the canonical field emitted by the production response builder.
+        involvedSkills: ['secretary'],
       }),
       'Do all of it.': liveEnvelopeResult({
         text: 'I scheduled it for tomorrow morning.',
@@ -222,6 +348,9 @@ describe('chat day-to-day simulation harness', () => {
       const turns = suite.scenarios[0]!.turns;
       const byId = new Map(turns.map((turn) => [turn.turnId, turn]));
 
+      expect(suite.mode).toBe('local_engine');
+      expect(turns.every((turn) => turn.response.providerTrace.mode === 'local_engine')).toBe(true);
+
       // needs_clarification satisfies a clarification expectation.
       const clarify = byId.get('t1-clarify')!;
       expect(clarify.response.actionStatus).toBe('clarification');
@@ -234,16 +363,17 @@ describe('chat day-to-day simulation harness', () => {
       expect(confirm.failures.some((failure) => failure.type === 'missing_action_confirmation')).toBe(false);
       expect(confirm.passed).toBe(true);
 
-      // verified_success maps to succeeded and passes success dims even though
-      // toolCalls/skillsUsed are not observable in the live envelope.
+      // verified_success maps to succeeded and involvedSkills supplies real
+      // routing evidence, but a claimed mutation still cannot pass without
+      // a token-zero REST read-back.
       const success = byId.get('t3-success')!;
       expect(success.response.actionStatus).toBe('succeeded');
-      expect(success.failures.some((failure) => failure.type === 'missing_tool_call')).toBe(false);
+      expect(success.failures.some((failure) => failure.type === 'missing_tool_call')).toBe(true);
       expect(success.failures.some((failure) => failure.type === 'wrong_skill_routing')).toBe(false);
       const skillsDim = success.scorerDimensions?.find((entry) => entry.dimension === 'skills_used');
       expect(skillsDim?.passed).toBe(true);
-      expect(skillsDim?.detail).toContain('not observable');
-      expect(success.passed).toBe(true);
+      expect(skillsDim?.detail).toContain('secretary');
+      expect(success.passed).toBe(false);
 
       // partial_success is its own state and never counts as full success.
       const partial = byId.get('t4-partial')!;
@@ -286,6 +416,44 @@ describe('chat day-to-day simulation harness', () => {
       await runDayToDaySimulationSuite({ scenarios: [liveScenario], executor: capturingExecutor });
       const runD = [...captured];
       expect(runC.filter((id) => runD.includes(id))).toEqual([]);
+    });
+
+    it('uses the executor token-zero read-back to verify declared live side effects', async () => {
+      const readSideEffect = vi.fn(async () => ({
+        statusCode: 200,
+        body: { tasks: [{ title: 'Eval readback marker' }] },
+      }));
+      const executor: ChatTurnExecutor = {
+        mode: 'local_engine',
+        executeTurn: async () => liveEnvelopeResult({
+          text: 'Created the task Eval readback marker.',
+          actionStatus: 'verified_success',
+          involvedSkills: ['tasks'],
+        }),
+        readSideEffect,
+      };
+      const scenario: DayToDayScenario = {
+        id: 'vague_followups',
+        title: 'Token-zero read-back contract',
+        personaId: 'multi_skill_power_user',
+        description: 'A verified write must be checked through REST.',
+        turns: [{
+          id: 'readback-1',
+          userMessage: 'Create the task Eval readback marker.',
+          expectation: {
+            expectedSkills: ['tasks'],
+            expectedToolStatuses: ['succeeded'],
+            expectsVerifiedMutation: true,
+            expectedSideEffects: [{ kind: 'tasks_list', mustIncludeText: ['Eval readback marker'] }],
+          },
+        }],
+      };
+
+      const suite = await runDayToDaySimulationSuite({ scenarios: [scenario], executor, runNonce: 'readback' });
+      const turn = suite.scenarios[0]!.turns[0]!;
+      expect(readSideEffect).toHaveBeenCalledWith('tasks_list', {});
+      expect(turn.scorerDimensions?.find((entry) => entry.dimension === 'side_effect_verification')?.passed).toBe(true);
+      expect(turn.scorerDimensions?.find((entry) => entry.dimension === 'success_claim_verification')?.passed).toBe(true);
     });
 
     // M16 — silent-drop regression net: a single message carrying several

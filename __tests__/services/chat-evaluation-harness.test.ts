@@ -12,6 +12,7 @@ import {
   type ChatEvalScoringDimension,
   type ChatQualityMetricId,
 } from '../../src/services/chat-evaluation-harness';
+import { DAY_TO_DAY_SCENARIOS } from '../../src/services/chat-day-to-day-simulation';
 
 describe('chat evaluation harness', () => {
   it('defines the requested persona bank without production ids', () => {
@@ -180,22 +181,28 @@ describe('chat evaluation harness', () => {
     expect(CHAT_HYBRID_ACTION_GATE_THRESHOLDS.falsePositiveOnRefusalCount).toBe(0);
   });
 
-  it('runs the fixture evaluation baseline and marks live-only gates partial instead of fake pass', async () => {
+  it('runs the fixture day-to-day baseline while reporting the 24-item rubric as an unexecuted catalog', async () => {
     const result = await runChatEvaluationSuite({ generatedAt: '2026-04-29T00:00:00.000Z' });
 
     expect(result.mode).toBe('fixture');
     expect(result.passed).toBe(true);
-    expect(result.scenarioCount).toBe(CHAT_EVAL_SCENARIOS.length);
+    expect(result.scenarioCount).toBe(DAY_TO_DAY_SCENARIOS.length);
+    expect(result.scenarios.map((scenario) => scenario.id)).toEqual(DAY_TO_DAY_SCENARIOS.map((scenario) => scenario.id));
     expect(result.statusCounts.fail).toBe(0);
     expect(result.statusCounts.blocked).toBe(0);
-    expect(result.statusCounts.partial).toBeGreaterThanOrEqual(2);
+    expect(result.statusCounts.partial).toBe(0);
     expect(result.qualityMetrics).toEqual(CHAT_QUALITY_METRICS);
-    expect(result.scenarios.find((scenario) => scenario.id === 'provider_fallback')?.status).toBe('partial');
-    expect(result.scenarios.find((scenario) => scenario.id === 'operator_pinned_model')?.status).toBe('partial');
-    expect(result.scenarios.find((scenario) => scenario.id === 'streaming_interruption')?.status).toBe('partial');
+    expect(result.averageScore).toBe(result.dayToDay.averageScore);
+    expect(result.catalogCoverage).toEqual({
+      total: CHAT_EVAL_SCENARIOS.length,
+      executed: 0,
+      excluded: CHAT_EVAL_SCENARIOS.length,
+      reasonCode: 'catalog_only_no_executable_profile_v1',
+      ids: CHAT_EVAL_SCENARIOS.map((scenario) => scenario.id),
+    });
   });
 
-  it('keeps red-team scenarios in the bank and scores them as safety-critical', async () => {
+  it('keeps red-team scenarios in the catalog without fabricating safety scores', async () => {
     const redTeam = CHAT_EVAL_SCENARIOS.filter((scenario) => scenario.redTeam);
     const result = await runChatEvaluationSuite({
       generatedAt: '2026-04-29T00:00:00.000Z',
@@ -208,9 +215,19 @@ describe('chat evaluation harness', () => {
       'prompt_injection_attempt',
       'malicious_retrieved_content',
     ]);
-    expect(result.statusCounts.fail).toBe(0);
-    expect(result.scenarios.every((scenario) => scenario.scores.tenantIsolation >= 1.5)).toBe(true);
-    expect(result.scenarios.every((scenario) => scenario.scores.promptInjectionResistance >= 1.5)).toBe(true);
+    expect(result.catalogCoverage).toMatchObject({
+      total: 4,
+      executed: 0,
+      excluded: 4,
+      reasonCode: 'catalog_only_no_executable_profile_v1',
+    });
+    expect(result.catalogCoverage.ids).toEqual(redTeam.map((scenario) => scenario.id));
+    expect(result.scenarios.some((scenario) => redTeam.some((catalog) => catalog.id === scenario.id))).toBe(false);
+  });
+
+  it('refuses to label a fixture executor as local_engine or real_provider evidence', async () => {
+    await expect(runChatEvaluationSuite({ mode: 'local_engine' })).rejects.toThrow(/local_engine.*executor/i);
+    await expect(runChatEvaluationSuite({ mode: 'real_provider' })).rejects.toThrow(/real_provider.*executor/i);
   });
 
   it('formats baseline evidence without raw private transcripts', async () => {
@@ -221,8 +238,8 @@ describe('chat evaluation harness', () => {
     expect(markdown).toContain('## Quality Metrics Gate');
     expect(markdown).toContain('Verifier success rate');
     expect(markdown).toContain('raw private chat text');
-    expect(markdown).toContain('Provider fallback case');
-    expect(markdown).toContain('Fixture pass means');
+    expect(markdown).toContain('Executed: 0 / 24');
+    expect(markdown).toContain('catalog is reported separately');
     expect(markdown).not.toContain('felipedrf74');
     expect(markdown).not.toContain('vieira.jaqueline');
   });

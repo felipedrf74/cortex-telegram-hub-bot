@@ -119,7 +119,10 @@ export const MAIL_ACTIONS: ChatActionDefinition[] = [
       readableIntents: ['draft email', 'compose an email', 'rascunhar um email', 'esboçar email'],
       requiredFields: ['recipient', 'subject', 'body'],
       optionalFields: ['provider'],
-      providerDependencies: ['gmail', 'outlook_mail'],
+      // Gmail is intentionally read-only in the current OAuth contract;
+      // Outlook is the only executable write provider. Keep Gmail listed so
+      // an explicit Gmail request can fail with a precise scope error.
+      providerDependencies: ['outlook_mail', 'gmail'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',
       executor: 'mail.draft',
@@ -189,9 +192,16 @@ export const MAIL_ACTIONS: ChatActionDefinition[] = [
       readableIntents: ['send email', 'send an email', 'envia um email', 'manda um email'],
       requiredFields: ['recipient', 'subject', 'body'],
       optionalFields: ['provider', 'attachments'],
-      providerDependencies: ['gmail', 'outlook_mail'],
+      // See draft_email: provider default must select the only write-capable
+      // integration instead of routing an unspecified send into Gmail's
+      // readonly scope.
+      providerDependencies: ['outlook_mail', 'gmail'],
       risk: 'external_side_effect',
       confirmationPolicy: 'confirm',
+      confirmationTarget: {
+        tool: 'send_outlook_email',
+        argumentField: 'recipient',
+      },
       executor: 'mail.send',
       verifier: 'provider_read_back',
       // Phase 13 batch 67 (2026-05-16): typed extractor parses recipient

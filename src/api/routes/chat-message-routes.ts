@@ -16,7 +16,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { pushEvent } from '../../portal/telemetry';
-import { getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
+import { getUserById, getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
 import { acquireAiBudgetReservation } from '../../services/cost-guardrail';
 import { getCurrentRequestId } from '../../utils/request-context';
 import { executeConfirmedChatActionRuns } from '../../services/chat';
@@ -52,6 +52,13 @@ import { isPendingChatWorkCancellationTurn } from '../../services/chat-pending-c
 // its stage inside its chat-pipeline stage module.
 import { recordChatStage } from '../../services/chat-stage-trace';
 import { runChatMessagePipeline } from './chat-pipeline/runner';
+import { isLoopbackRequest } from '../secret-guards';
+import {
+  ChatLiveEvalContractError,
+  hasChatLiveEvalHeaders,
+  resolveChatLiveEvalRequest,
+} from '../../services/chat-live-evaluation-contract';
+import { runWithChatLiveEvalContext } from '../../services/chat-live-evaluation-context';
 import {
   buildChatCoreV2GuardOnlyConfirmationLabels,
   buildChatCoreV2GuardOnlyConfirmationText,
@@ -335,6 +342,7 @@ export function registerChatMessageRoutes(
       conversationId: `confirm-${pending.id}`,
       messageId: `msg-confirm-${pending.id}`,
       sourceMessageId: pending.sourceMessageId,
+      confirmedTargets: pending.confirmedTargets,
       channel: 'ios',
       locale: resolveChatCoreV2RouteLocale(req, userId, pending.actionSummary),
       timezone: getUserTimezoneById(userId),
@@ -418,6 +426,27 @@ export function registerChatMessageRoutes(
       return;
     }
 
+    let liveEvalContext;
+    try {
+      const readEvalHeader = (name: string) => req.header(name);
+      liveEvalContext = hasChatLiveEvalHeaders(readEvalHeader)
+        ? resolveChatLiveEvalRequest({
+            readHeader: readEvalHeader,
+            phase: 'turn',
+            userId,
+            tenantId,
+            principalEmail: getUserById(userId)?.email ?? null,
+            isLoopback: isLoopbackRequest(req),
+          })
+        : null;
+    } catch (error) {
+      if (error instanceof ChatLiveEvalContractError) {
+        res.status(error.status).json({ error: { code: error.code, message: error.message } });
+        return;
+      }
+      throw error;
+    }
+
     persistChatLanguagePreference(req, userId);
 
     // Token-zero reads/actions must never queue behind a long model call.
@@ -445,9 +474,19 @@ export function registerChatMessageRoutes(
           aiBudgetReservation.release = await acquireAiBudgetReservation({
             userId,
             requestSource: 'interactive',
-            baseCategory: 'ios_chat_message',
-            jobName: 'ios_chat_message',
-            runId: getCurrentRequestId() || (req as any).requestId || `chat-${requestStartedAt}`,
+            baseCategory: liveEvalContext?.targetBaseCategory ?? 'ios_chat_message',
+            jobName: liveEvalContext?.scenarioId
+              ? `chat_live_eval:${liveEvalContext.scenarioId}`
+              : 'ios_chat_message',
+            runId: liveEvalContext?.runId
+              ?? getCurrentRequestId()
+              ?? (req as any).requestId
+              ?? `chat-${requestStartedAt}`,
+            ...(liveEvalContext ? {
+              estimatedCostUsd: 0,
+              exactHardCostEstimate: true,
+              hardRunCostLimitUsd: liveEvalContext.budget.targetCeilingUsd,
+            } : {}),
           });
         }
         modelBudgetAllowed = true;
@@ -458,7 +497,7 @@ export function registerChatMessageRoutes(
 
       recordChatStage(chatRequestId, 'request_received');
 
-      await runChatMessagePipeline({
+      const runPipeline = () => runChatMessagePipeline({
         req,
         res,
         userId,
@@ -473,6 +512,11 @@ export function registerChatMessageRoutes(
         latency,
         ensureModelBudget,
       });
+      if (liveEvalContext) {
+        await runWithChatLiveEvalContext(liveEvalContext, runPipeline);
+      } else {
+        await runPipeline();
+      }
     } catch (err: any) {
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
       if (!res.headersSent && sendAiBudgetError(res, err)) return;

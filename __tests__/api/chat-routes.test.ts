@@ -475,10 +475,19 @@ import {
 } from '../../src/api/routes/chat-message-context';
 import { authMiddleware } from '../../src/api/auth-middleware';
 import { upsertPendingChatAction } from '../../src/services/chat-action-state';
-import { resetPendingChatConfirmationsForTests } from '../../src/services/chat-pending-confirmations';
+import {
+  getPendingChatConfirmation,
+  resetPendingChatConfirmationsForTests,
+  trackPendingChatConfirmation,
+} from '../../src/services/chat-pending-confirmations';
 import { signChatConfirmationToken } from '../../src/services/chat-confirmation-token';
 import { resetPendingChatCoreV2CommandsForTests } from '../../src/services/chat-core-v2';
 import { upsertTask } from '../../src/services/task-store/unified-task-store';
+import {
+  claimChatActionRun,
+  updateChatActionRun,
+} from '../../src/services/chat-action-run-store';
+import { attachPlannerNeedsConfirmationHold } from '../../src/api/routes/chat-pipeline/confirmation-hold';
 
 
 interface MockRes {
@@ -1530,6 +1539,160 @@ describe('Chat API routes', () => {
     });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM unified_tasks WHERE user_id = ? AND is_deleted = 0').get(7001)).toMatchObject({ count: 1 });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM chat_v2_write_evidence').get()).toMatchObject({ count: 1 });
+  });
+
+  it('never lets a live confirmation grant for target A execute a reconstructed target B run', async () => {
+    upsertTask(7001, {
+      provider: 'nexus',
+      externalId: 'task-target-b',
+      title: 'Target B must survive',
+      status: 'pending',
+      priority: 0,
+      projectName: 'Inbox',
+    });
+    const targetB = testDb.prepare(`
+      SELECT nexus_task_id
+      FROM unified_tasks
+      WHERE user_id = ? AND external_id = ?
+    `).get(7001, 'task-target-b') as { nexus_task_id: string };
+    const sourceMessageId = 'msg-user-target-substitution-adversary';
+    const run = claimChatActionRun({
+      userId: 7001,
+      tenantId: 7001,
+      conversationId: 'conv-target-substitution-adversary',
+      messageId: sourceMessageId,
+      normalizedActionHash: 'target-substitution-run-b',
+      provider: 'nexus',
+      actionType: 'delete_task',
+      risk: 'destructive',
+      request: {
+        taskId: targetB.nexus_task_id,
+        title: 'Target B must survive',
+      },
+    });
+    updateChatActionRun(run.row.id, 'needs_confirmation');
+    const pending = trackPendingChatConfirmation({
+      userId: 7001,
+      tenantId: 7001,
+      actionSummary: 'Delete target A',
+      involvedSkills: ['secretary'],
+      reasonCodes: ['destructive_requires_confirmation'],
+      intentClass: 'task_delete',
+      confirmedTargets: [{ tool: 'ms_todo_delete_task', targetId: 'task-target-A' }],
+      sourceMessageId,
+    });
+    const token = signChatConfirmationToken({
+      pendingId: pending.id,
+      userId: 7001,
+      tenantId: 7001,
+      intentClass: 'task_delete',
+      expiresAt: pending.expiresAt,
+      sourceMessageId,
+    });
+
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: token,
+      intent_class: 'task_delete',
+    });
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.body.metadata).toMatchObject({
+      actionStatus: 'blocked',
+      actionResults: expect.arrayContaining([
+        expect.objectContaining({
+          action: 'delete_task',
+          status: 'blocked',
+          error: 'confirmation_target_mismatch',
+        }),
+      ]),
+    });
+    expect(testDb.prepare(`
+      SELECT is_deleted, deleted_at
+      FROM unified_tasks
+      WHERE user_id = ? AND nexus_task_id = ?
+    `).get(7001, targetB.nexus_task_id)).toMatchObject({
+      is_deleted: 0,
+      deleted_at: null,
+    });
+  });
+
+  it('stages and executes the exact planner target without changing the single-target flow', async () => {
+    upsertTask(7001, {
+      provider: 'nexus',
+      externalId: 'task-target-a',
+      title: 'Target A may be deleted',
+      status: 'pending',
+      priority: 0,
+      projectName: 'Inbox',
+    });
+    const targetA = testDb.prepare(`
+      SELECT nexus_task_id
+      FROM unified_tasks
+      WHERE user_id = ? AND external_id = ?
+    `).get(7001, 'task-target-a') as { nexus_task_id: string };
+    const sourceMessageId = 'msg-user-exact-target-a';
+    const planStep = {
+      stepId: 'delete-exact-target-a',
+      skill: 'tasks' as const,
+      action: 'delete_task' as const,
+      type: 'delete_task' as const,
+      risk: 'destructive' as const,
+      provider: 'nexus' as const,
+      args: {
+        taskId: targetA.nexus_task_id,
+        title: 'Target A may be deleted',
+      },
+      requiredArgsPresent: true,
+      idempotencyKey: 'delete-exact-target-a',
+      verification: { required: true, method: 'local_read_back' as const },
+    };
+    const run = claimChatActionRun({
+      userId: 7001,
+      tenantId: 7001,
+      conversationId: 'conv-exact-target-a',
+      messageId: sourceMessageId,
+      normalizedActionHash: planStep.idempotencyKey,
+      provider: 'nexus',
+      actionType: planStep.action,
+      risk: planStep.risk,
+      request: planStep.args,
+    });
+    updateChatActionRun(run.row.id, 'needs_confirmation');
+    const response = { text: 'Delete target A?', metadata: {} as Record<string, unknown> };
+    await attachPlannerNeedsConfirmationHold({
+      response,
+      planSteps: [planStep],
+      normalizedText: 'Delete target A',
+      userId: 7001,
+      tenantId: 7001,
+      userMessageId: sourceMessageId,
+      chatCoreV2RouteLocale: 'en-US',
+    });
+    const pending = getPendingChatConfirmation(7001, 7001);
+    expect(pending?.confirmedTargets).toEqual([
+      { tool: 'ms_todo_delete_task', targetId: targetA.nexus_task_id },
+    ]);
+
+    const confirmed = await dispatch('POST', '/confirm-action', 7001, {
+      confirmation_token: (response.metadata as any).pendingConfirmation.confirmation_token,
+      intent_class: 'task_delete',
+    });
+
+    expect(confirmed.statusCode, JSON.stringify(confirmed.body)).toBe(200);
+    expect(confirmed.body.metadata).toMatchObject({
+      actionStatus: 'verified_success',
+      actionResults: expect.arrayContaining([
+        expect.objectContaining({ action: 'delete_task', status: 'verified_success' }),
+      ]),
+    });
+    expect(testDb.prepare(`
+      SELECT is_deleted, deleted_at
+      FROM unified_tasks
+      WHERE user_id = ? AND nexus_task_id = ?
+    `).get(7001, targetA.nexus_task_id)).toMatchObject({
+      is_deleted: 1,
+      deleted_at: expect.any(String),
+    });
   });
 
   it('rejects stale and wrong-user confirmation tokens before execution', async () => {
@@ -6636,6 +6799,7 @@ describe('Chat API routes', () => {
       chatActionRuns: 0,
       chatPendingConfirmation: false,
       chatCoreV2Commands: 0,
+      chatBackgroundContinuations: 0,
       decisionDismissed: false,
     });
     expect(mockRouteMessage).not.toHaveBeenCalled();

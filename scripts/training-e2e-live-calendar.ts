@@ -200,9 +200,6 @@ function configureRuntimeEnvironment(): void {
   process.env.GOOGLE_REFRESH_TOKEN = '';
   process.env.OUTLOOK_REFRESH_TOKEN = '';
   process.env.FINANCE_ENCRYPTION_ENABLED = process.env.FINANCE_ENCRYPTION_ENABLED || 'false';
-  process.env.TELEGRAM_LEGACY_DELIVERY = 'false';
-  process.env.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'training-e2e-telegram-disabled';
-  process.env.TELEGRAM_ALLOWED_USER_IDS = process.env.TELEGRAM_ALLOWED_USER_IDS || '100000001';
   process.env.OWNER_TELEGRAM_ID = process.env.OWNER_TELEGRAM_ID || '100000001';
   process.env.INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || 'nexus-training-e2e-internal-secret';
   process.env.CONTENT_ENGINE_ENABLED = 'false';

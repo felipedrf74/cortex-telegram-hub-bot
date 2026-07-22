@@ -350,6 +350,10 @@ export const TASK_ACTIONS: ChatActionDefinition[] = [
       providerDependencies: ['nexus'],
       risk: 'destructive',
       confirmationPolicy: 'confirm',
+      confirmationTarget: {
+        tool: 'ms_todo_delete_task',
+        argumentField: 'taskId',
+      },
       executor: 'task_store.deleteTask',
       verifier: 'local_read_back',
       // Phase 14 batch 72: shares task reference extractor with update_task / complete_task.

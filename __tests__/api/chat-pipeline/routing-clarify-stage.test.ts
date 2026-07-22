@@ -64,6 +64,7 @@ import {
   getRoutingClarifyCounters,
   resetRoutingClarifyCountersForTests,
 } from '../../../src/services/chat-hybrid-metrics';
+import { readChatRoutingClarifyBudget } from '../../../src/services/chat-routing-clarify-metrics';
 
 function vocabularyEntry(
   capabilityId: string,
@@ -241,6 +242,15 @@ describe('flag ON — deterministic clarify terminal', () => {
     // The answering turn evaluates (once) but does not clarify.
     await runTurn(AMBIGUOUS_WRITE);
     expect(getRoutingClarifyCounters()).toEqual({ evaluatedTurns: 2, clarifiedTurns: 1 });
+    // The operator/dashboard source survives process restarts because it is
+    // persisted independently of the compatibility in-process counters.
+    resetRoutingClarifyCountersForTests();
+    expect(readChatRoutingClarifyBudget(testDb, { windowDays: 30 })).toMatchObject({
+      evaluatedTurns: 2,
+      clarifiedTurns: 1,
+      rate: 0.5,
+      withinBudget: false,
+    });
   });
 });
 

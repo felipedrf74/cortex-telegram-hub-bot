@@ -62,6 +62,15 @@ if [ "${NEXUS_CHAT_EVAL_LOCAL_DISABLED:-0}" = "1" ]; then
   exit 1
 fi
 
+# The local_engine promotion proof is zero-cloud by contract. These switches
+# select docker-compose.chat-eval-local.yml and force every live Node routing
+# surface through the host Ollama daemon with no fallback. The overlay also
+# blanks any .env.local cloud-provider keys. Deliberately overwrite ambient/
+# .env.local values after sourcing it: this script has no paid-provider mode.
+export NEXUS_LOCAL_ALLOW_MODEL_CALLS=1
+export NEXUS_MODEL_FIXTURE_MODE=0
+export NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE=1
+
 NEXUS_PORT="${NEXUS_LOCAL_PORT_TS:-8200}"
 BASE_URL="http://127.0.0.1:${NEXUS_PORT}"
 AUTH_TOKEN_ENV="${NEXUS_CHAT_EVAL_AUTH_TOKEN_ENV:-CHAT_EVAL_AUTH_TOKEN}"
@@ -86,27 +95,108 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  history DB:   $HISTORY_DB"
   echo "  reports dir:  $OUT_DIR"
   echo "  token env:    $AUTH_TOKEN_ENV (value never printed)"
+  echo "  provider:     Ollama-only zero-cloud profile (NEXUS_LOCAL_ALLOW_MODEL_CALLS=1, NEXUS_MODEL_FIXTURE_MODE=0)"
   echo "  1. ./scripts/local-up.sh"
-  echo "  2. npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows=$SEED_ROWS --db <sandbox DB>"
-  echo "  3. node scripts/local-ios-debug-auth.mjs   # mint local dev session -> $AUTH_FILE"
-  echo "  4. npx tsx scripts/run-chat-eval-live.ts --mode local_engine --base-url $BASE_URL --auth-token-env $AUTH_TOKEN_ENV --out-dir $OUT_DIR --persist-db <history DB>"
-  echo "  5. teardown: $TEARDOWN_PLAN"
+  echo "  2. attest Ollama-only zero-cloud runtime profile in both Docker services"
+  echo "  3. npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows=$SEED_ROWS --db <sandbox DB>"
+  echo "  4. node scripts/local-ios-debug-auth.mjs   # mint local dev session -> $AUTH_FILE"
+  echo "  5. npx tsx scripts/run-chat-eval-live.ts --mode local_engine --base-url $BASE_URL --auth-token-env $AUTH_TOKEN_ENV --out-dir $OUT_DIR --persist-db <history DB>"
+  echo "  6. teardown: $TEARDOWN_PLAN"
   exit 0
 fi
 
-echo "chat-eval-local: [1/4] booting local sandbox (idempotent)"
+require_clean_evidence_checkout() {
+  if [ "$(git rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]; then
+    echo "chat-eval-local: release evidence requires a git worktree" >&2
+    return 1
+  fi
+  if git rev-parse --verify --quiet MERGE_HEAD >/dev/null 2>&1; then
+    echo "chat-eval-local: release evidence refuses an in-progress merge" >&2
+    return 1
+  fi
+  local checkout_status
+  checkout_status="$(git status --porcelain=v1 --untracked-files=all 2>/dev/null)" || {
+    echo "chat-eval-local: unable to inspect checkout status" >&2
+    return 1
+  }
+  if [ -n "$checkout_status" ]; then
+    echo "chat-eval-local: release evidence requires a clean checkout with no staged, unstaged, or untracked files" >&2
+    return 1
+  fi
+  local checkout_sha
+  checkout_sha="$(git rev-parse HEAD 2>/dev/null)" || {
+    echo "chat-eval-local: unable to resolve checkout SHA" >&2
+    return 1
+  }
+  [[ "$checkout_sha" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "chat-eval-local: release evidence requires a full 40-character git SHA" >&2
+    return 1
+  }
+}
+
+attest_zero_cloud_profile() {
+  local compose_args=(-f docker-compose.local.yml -f docker-compose.chat-eval-local.yml)
+  docker compose "${compose_args[@]}" exec -T content-engine sh -eu -c '
+    [ "${NEXUS_LOCAL_ALLOW_MODEL_CALLS:-}" = "1" ]
+    [ "${CONTENT_ENGINE_FIXTURE_MODE:-}" != "1" ]
+    [ "${CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED:-}" = "1" ]
+    [ -z "${ANTHROPIC_API_KEY:-}" ]
+    [ -z "${GEMINI_API_KEY:-}" ]
+    [ -z "${GOOGLE_API_KEY:-}" ]
+    [ -z "${OPENAI_API_KEY:-}" ]
+    [ -z "${SERPAPI_API_KEY:-}" ]
+    [ -z "${YOUTUBE_API_KEY:-}" ]
+    [ -z "${NEWSAPI_API_KEY:-}" ]
+  ' || {
+    echo "chat-eval-local: content-engine did not attest the live zero-cloud profile; refusing evidence" >&2
+    return 1
+  }
+  docker compose "${compose_args[@]}" exec -T nexus-hub sh -eu -c '
+    [ "${NEXUS_LOCAL_ALLOW_MODEL_CALLS:-}" = "1" ]
+    [ "${NEXUS_MODEL_FIXTURE_MODE:-}" != "1" ]
+    [ "${OLLAMA_ENABLED:-}" = "true" ]
+    [ "${AI_CLASSIFY_PRIMARY:-}" = "ollama" ]
+    [ "${AI_CLASSIFY_FALLBACK:-}" = "none" ]
+    [ "${AI_CHAT_PRIMARY:-}" = "ollama" ]
+    [ "${AI_CHAT_FALLBACK:-}" = "none" ]
+    [ "${AI_TOOL_USE_PRIMARY:-}" = "ollama" ]
+    [ "${AI_TOOL_USE_FALLBACK:-}" = "none" ]
+    [ "${ANTHROPIC_ENABLED:-}" != "true" ]
+    [ -z "${ANTHROPIC_API_KEY:-}" ]
+    [ -z "${GEMINI_API_KEY:-}" ]
+    [ -z "${GOOGLE_API_KEY:-}" ]
+    [ -z "${OPENAI_API_KEY:-}" ]
+  ' || {
+    echo "chat-eval-local: nexus-hub did not attest the Ollama-only zero-cloud profile; refusing evidence" >&2
+    return 1
+  }
+  docker compose "${compose_args[@]}" exec -T nexus-hub sh -eu -c '
+    curl -fsS "${OLLAMA_BASE_URL%/}/api/tags" >/dev/null
+  ' || {
+    echo "chat-eval-local: nexus-hub cannot reach its configured Ollama daemon; refusing evidence" >&2
+    return 1
+  }
+  echo "chat-eval-local: Ollama-only zero-cloud runtime profile attested in content-engine and nexus-hub"
+}
+
+require_clean_evidence_checkout
+
+echo "chat-eval-local: [1/5] booting Ollama-only zero-cloud local sandbox (idempotent)"
 ./scripts/local-up.sh || {
   echo "chat-eval-local: sandbox boot failed (scripts/local-up.sh). Is Docker running and .env.local present?" >&2
   exit 1
 }
 
-echo "chat-eval-local: [2/4] seeding local ChatV2 evidence ($SEED_ROWS rows)"
+echo "chat-eval-local: [2/5] attesting Ollama-only zero-cloud runtime profile"
+attest_zero_cloud_profile
+
+echo "chat-eval-local: [3/5] seeding local ChatV2 evidence ($SEED_ROWS rows)"
 npx tsx scripts/chatv2-seed-local-evidence.ts --write --replace --rows="$SEED_ROWS" --db "$HOST_DB" || {
   echo "chat-eval-local: evidence seeding failed (scripts/chatv2-seed-local-evidence.ts against $HOST_DB)" >&2
   exit 1
 }
 
-echo "chat-eval-local: [3/4] minting local dev session"
+echo "chat-eval-local: [4/5] minting local dev session"
 NEXUS_LOCAL_BASE_URL="$BASE_URL" \
 NEXUS_LOCAL_DB_PATH="$HOST_DB" \
 NEXUS_LOCAL_AUTH_IMPORT_PATH="$AUTH_FILE" \
@@ -126,7 +216,7 @@ ACCESS_TOKEN="$(node -e '
 export "$AUTH_TOKEN_ENV=$ACCESS_TOKEN"
 unset ACCESS_TOKEN
 
-echo "chat-eval-local: [4/4] running local_engine chat evaluation against $BASE_URL"
+echo "chat-eval-local: [5/5] running local_engine chat evaluation against $BASE_URL"
 set +e
 npx tsx scripts/run-chat-eval-live.ts \
   --mode local_engine \

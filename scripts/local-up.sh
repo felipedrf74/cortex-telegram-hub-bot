@@ -16,6 +16,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+COMPOSE_ARGS=(-f docker-compose.local.yml)
+if [ "${NEXUS_CHAT_EVAL_ZERO_CLOUD_PROFILE:-0}" = "1" ]; then
+  COMPOSE_ARGS+=(-f docker-compose.chat-eval-local.yml)
+fi
+
 if [ ! -f .env.local ]; then
   echo "ERROR: .env.local not found at repo root."
   echo "       Copy the template and fill in your dev keys:"
@@ -33,14 +38,14 @@ echo "Content engine port: 127.0.0.1:${NEXUS_LOCAL_PORT_PY:-8100}"
 echo "DB path on host:     $ROOT/data/"
 echo ""
 
-if ! docker compose -f docker-compose.local.yml up --build -d; then
+if ! docker compose "${COMPOSE_ARGS[@]}" up --build -d; then
   echo ""
   echo "WARN: Docker rebuild failed. This is often a transient npm/Docker network issue." >&2
   echo "      Trying to boot the last known local images without rebuilding..." >&2
 
   if docker image inspect nexus-hub-node:local >/dev/null 2>&1 \
     && docker image inspect nexus-hub-content-engine:local >/dev/null 2>&1; then
-    docker compose -f docker-compose.local.yml up -d --no-build
+    docker compose "${COMPOSE_ARGS[@]}" up -d --no-build
     echo "WARN: Sandbox started from existing local images." >&2
     echo "      If package.json or Dockerfile changed, rerun local-up once the network is stable." >&2
   else

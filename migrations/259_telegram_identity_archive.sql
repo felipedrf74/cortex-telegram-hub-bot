@@ -1,4 +1,4 @@
--- 258: Telegram identity archive (M21 telegram purge, Stage C — 2026-07).
+-- 259: Telegram identity archive (M21 telegram purge, Stage C — 2026-07).
 --
 -- ARCHIVE-FIRST, NON-DESTRUCTIVE. This migration copies every non-null
 -- users.telegram_id into telegram_identity_archive and touches NOTHING else.
@@ -17,7 +17,7 @@
 -- restore identity linkage from telegram_identity_archive. NEVER drop the
 -- column in the same release that introduces this archive.
 --
--- Reversible via migrations/down/258_telegram_identity_archive.sql (drops
+-- Reversible via migrations/down/259_telegram_identity_archive.sql (drops
 -- only the archive table; the live column is untouched in both directions).
 --
 -- SCHEMA-ONLY MIGRATION. The archive BACKFILL deliberately does NOT live

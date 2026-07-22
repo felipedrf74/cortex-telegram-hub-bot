@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CHAT_EVAL_DEFAULT_EVIDENCE_PATH,
   CHAT_EVAL_DEFAULT_MESSAGE_PATH,
+  CHAT_EVAL_DEFAULT_PREFLIGHT_PATH,
+  CHAT_EVAL_DEFAULT_RESET_PATH,
   CHAT_EVAL_DEFAULT_SIDE_EFFECT_PATHS,
   FixtureExecutor,
   HttpExecutor,
   type ChatEvalHttpResponse,
   type ChatEvalTurnResult,
 } from '../../src/services/chat-eval-executor';
+import {
+  CHAT_LIVE_EVAL_CONTRACT_VERSION,
+  CHAT_LIVE_EVAL_REAL_BUDGET,
+} from '../../src/services/chat-live-evaluation-contract';
 
 function okEnvelope(overrides: Record<string, unknown> = {}): ChatEvalHttpResponse {
   return {
@@ -71,7 +78,111 @@ describe('chat eval executor', () => {
       expect(() => new HttpExecutor({ mode: 'local_engine', authToken: 'jwt' } as any)).toThrow(/request function or a baseUrl/);
     });
 
-    it('POSTs the turn to the real chat message route with auth, tenant, and language headers', async () => {
+    it('requires and validates the governed run contract for a live base URL', () => {
+      expect(() => new HttpExecutor({
+        mode: 'real_provider',
+        baseUrl: 'https://staging.invalid',
+        authToken: 'jwt',
+      })).toThrow(/runContract/);
+      expect(() => new HttpExecutor({
+        mode: 'real_provider',
+        baseUrl: 'https://staging.invalid',
+        authToken: 'jwt',
+        runContract: {
+          version: CHAT_LIVE_EVAL_CONTRACT_VERSION,
+          runId: 'chat-eval-executor-test',
+          budget: { ...CHAT_LIVE_EVAL_REAL_BUDGET, judgeCeilingUsd: 0.5 },
+        },
+      })).toThrow(/budget/i);
+    });
+
+    it('preflights, resets each scenario once, attaches the full contract, and reads aggregate evidence', async () => {
+      const request = vi.fn(async (input) => {
+        if (input.path === CHAT_EVAL_DEFAULT_PREFLIGHT_PATH) {
+          return {
+            statusCode: 200,
+            body: {
+              ok: true,
+              data: {
+                contractVersion: CHAT_LIVE_EVAL_CONTRACT_VERSION,
+                mode: 'real_provider',
+                runId: 'chat-eval-executor-test',
+                budget: CHAT_LIVE_EVAL_REAL_BUDGET,
+                providerPolicy: 'metered_cloud_only',
+                seedProfileVersion: 'single-tenant-live-v2',
+                supportedScenarioIds: ['morning_planning'],
+              },
+            },
+          };
+        }
+        if (input.path === CHAT_EVAL_DEFAULT_RESET_PATH) {
+          return {
+            statusCode: 200,
+            body: { ok: true, data: { scenarioId: 'morning_planning', seedProfileVersion: 'single-tenant-live-v2' } },
+          };
+        }
+        if (input.path === CHAT_EVAL_DEFAULT_EVIDENCE_PATH) {
+          return { statusCode: 200, body: { ok: true, data: { attested: true, runId: 'chat-eval-executor-test' } } };
+        }
+        return okEnvelope();
+      });
+      const executor = new HttpExecutor({
+        mode: 'real_provider',
+        request,
+        authToken: 'jwt',
+        evalTenantId: 42,
+        runContract: {
+          version: CHAT_LIVE_EVAL_CONTRACT_VERSION,
+          runId: 'chat-eval-executor-test',
+          budget: CHAT_LIVE_EVAL_REAL_BUDGET,
+        },
+      });
+
+      await expect(executor.preflight()).resolves.toMatchObject({
+        mode: 'real_provider',
+        providerPolicy: 'metered_cloud_only',
+      });
+      await executor.executeTurn({
+        text: 'Today?',
+        conversationId: 'd2d-morning_planning',
+        userId: 7001,
+        tenantId: 501,
+      });
+      await executor.executeTurn({
+        text: 'And next?',
+        conversationId: 'd2d-morning_planning',
+        userId: 7001,
+        tenantId: 501,
+      });
+      await expect(executor.readRunEvidence()).resolves.toMatchObject({ attested: true });
+
+      const resetCalls = request.mock.calls.map(([input]) => input).filter((input) => input.path === CHAT_EVAL_DEFAULT_RESET_PATH);
+      expect(resetCalls).toHaveLength(1);
+      expect(resetCalls[0]).toMatchObject({
+        method: 'POST',
+        body: { scenarioId: 'morning_planning' },
+        headers: {
+          'x-nexus-chat-eval-contract': CHAT_LIVE_EVAL_CONTRACT_VERSION,
+          'x-nexus-chat-eval-mode': 'real_provider',
+          'x-nexus-chat-eval-run-id': 'chat-eval-executor-test',
+          'x-nexus-chat-eval-total-budget-usd': '0.5',
+          'x-nexus-chat-eval-target-budget-usd': '0.45',
+          'x-nexus-chat-eval-judge-budget-usd': '0.05',
+          'x-nexus-chat-eval-scenario-id': 'morning_planning',
+        },
+      });
+      const turnCalls = request.mock.calls.map(([input]) => input).filter((input) => input.path === CHAT_EVAL_DEFAULT_MESSAGE_PATH);
+      expect(turnCalls).toHaveLength(2);
+      expect(turnCalls[0].headers['x-nexus-chat-eval-scenario-id']).toBe('morning_planning');
+    });
+
+    it('rejects invalid explicit physical eval tenant ids before making requests', () => {
+      const request = vi.fn(async () => okEnvelope());
+      expect(() => new HttpExecutor({ mode: 'local_engine', request, authToken: 'jwt', evalTenantId: 0 })).toThrow(/evalTenantId/);
+      expect(() => new HttpExecutor({ mode: 'local_engine', request, authToken: 'jwt', evalTenantId: 1.5 })).toThrow(/evalTenantId/);
+    });
+
+    it('POSTs the turn to the real chat message route with auth and language headers without treating synthetic persona scope as auth scope', async () => {
       const request = vi.fn(async () => okEnvelope());
       const executor = new HttpExecutor({
         mode: 'real_provider',
@@ -95,7 +206,6 @@ describe('chat eval executor', () => {
         headers: {
           authorization: 'Bearer eval-jwt-token',
           'content-type': 'application/json',
-          'x-nexus-active-tenant-id': '501',
           'x-language': 'en',
         },
         body: {
@@ -112,6 +222,57 @@ describe('chat eval executor', () => {
       expect(result.providerTrace).toEqual({ provider: 'gemini' });
       expect(result.envelope).toMatchObject({ id: 'msg-1' });
       expect(typeof result.latencyMs).toBe('number');
+    });
+
+    it('uses one dedicated token across logical scenario tenants without sending either synthetic tenant as an auth header', async () => {
+      const request = vi.fn(async () => okEnvelope());
+      const executor = new HttpExecutor({ mode: 'local_engine', request, authToken: 'eval-jwt-token' });
+
+      await executor.executeTurn({
+        text: 'Tenant A turn',
+        conversationId: 'conv-a',
+        userId: 7007,
+        tenantId: 501,
+      });
+      await executor.executeTurn({
+        text: 'Tenant B turn',
+        conversationId: 'conv-b',
+        userId: 7007,
+        tenantId: 508,
+      });
+
+      expect(request).toHaveBeenCalledTimes(2);
+      for (const [input] of request.mock.calls) {
+        expect(input.headers).not.toHaveProperty('x-nexus-active-tenant-id');
+      }
+    });
+
+    it('uses an explicit physical eval tenant for every request regardless of logical scenario scope', async () => {
+      const request = vi.fn(async () => okEnvelope());
+      const executor = new HttpExecutor({
+        mode: 'local_engine',
+        request,
+        authToken: 'eval-jwt-token',
+        evalTenantId: 42,
+      });
+
+      await executor.executeTurn({
+        text: 'Tenant A turn',
+        conversationId: 'conv-a',
+        userId: 7007,
+        tenantId: 501,
+      });
+      await executor.executeTurn({
+        text: 'Tenant B turn',
+        conversationId: 'conv-b',
+        userId: 7007,
+        tenantId: 508,
+      });
+
+      expect(request).toHaveBeenCalledTimes(2);
+      for (const [input] of request.mock.calls) {
+        expect(input.headers['x-nexus-active-tenant-id']).toBe('42');
+      }
     });
 
     it('carries multi-turn conversation state via per-conversation client message ids', async () => {

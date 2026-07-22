@@ -49,6 +49,7 @@ export function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActio
   const totalCancelled = cancelled.chatPendingActions
     + cancelled.chatActionRuns
     + cancelled.chatCoreV2Commands
+    + cancelled.chatBackgroundContinuations
     + (cancelled.chatPendingConfirmation ? 1 : 0)
     + (cancelled.decisionDismissed ? 1 : 0);
   if (totalCancelled <= 0) return null;

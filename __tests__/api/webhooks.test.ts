@@ -120,12 +120,10 @@ import {
 } from '../../src/api/routes/webhooks';
 import { config } from '../../src/config';
 
-function todoistWebhookSecretForTest(): string {
-  return config.todoist.webhookSecret || 'webhook_test_secret';
-}
+const TODOIST_ROUTER_SECRET = 'isolated_todoist_webhook_test_secret';
 
 function buildSignature(rawBody: string): string {
-  return crypto.createHmac('sha256', todoistWebhookSecretForTest()).update(rawBody).digest('base64');
+  return crypto.createHmac('sha256', TODOIST_ROUTER_SECRET).update(rawBody).digest('base64');
 }
 
 /** Spin up a minimal Express server with the webhook router and POST a request. */
@@ -133,9 +131,15 @@ async function postWebhook(opts: {
   body: any;
   signature?: string;
   deliveryId?: string;
+  useConfiguredSecret?: boolean;
 }): Promise<{ status: number; body: any }> {
   const app = express();
-  app.use('/webhooks', createWebhookRouter());
+  app.use(
+    '/webhooks',
+    opts.useConfiguredSecret
+      ? createWebhookRouter()
+      : createWebhookRouter({ todoistWebhookSecret: TODOIST_ROUTER_SECRET }),
+  );
 
   const server = app.listen(0);
   const address = server.address() as { port: number };
@@ -203,17 +207,16 @@ afterEach(() => {
 describe('verifyTodoistSignature', () => {
   it('accepts a correctly-signed body', () => {
     const body = Buffer.from('{"test":"data"}');
-    const secret = todoistWebhookSecretForTest();
-    const sig = crypto.createHmac('sha256', secret).update(body).digest('base64');
-    expect(verifyTodoistSignature(body, sig, secret)).toBe(true);
+    const sig = crypto.createHmac('sha256', TODOIST_ROUTER_SECRET).update(body).digest('base64');
+    expect(verifyTodoistSignature(body, sig, TODOIST_ROUTER_SECRET)).toBe(true);
   });
 
   it('rejects an empty signature', () => {
-    expect(verifyTodoistSignature(Buffer.from('x'), '', todoistWebhookSecretForTest())).toBe(false);
+    expect(verifyTodoistSignature(Buffer.from('x'), '', TODOIST_ROUTER_SECRET)).toBe(false);
   });
 
   it('rejects a wrong signature', () => {
-    expect(verifyTodoistSignature(Buffer.from('x'), 'AAAAAAAAAAAAAAAAAAAAAAAA', todoistWebhookSecretForTest())).toBe(false);
+    expect(verifyTodoistSignature(Buffer.from('x'), 'AAAAAAAAAAAAAAAAAAAAAAAA', TODOIST_ROUTER_SECRET)).toBe(false);
   });
 
   it('rejects an empty secret', () => {
@@ -222,10 +225,10 @@ describe('verifyTodoistSignature', () => {
 
   it('uses constant-time comparison (no length leak)', () => {
     const body = Buffer.from('{"a":1}');
-    const correct = crypto.createHmac('sha256', todoistWebhookSecretForTest()).update(body).digest('base64');
+    const correct = crypto.createHmac('sha256', TODOIST_ROUTER_SECRET).update(body).digest('base64');
     // Wrong but same length
     const wrongSameLength = correct.split('').reverse().join('');
-    expect(verifyTodoistSignature(body, wrongSameLength, todoistWebhookSecretForTest())).toBe(false);
+    expect(verifyTodoistSignature(body, wrongSameLength, TODOIST_ROUTER_SECRET)).toBe(false);
   });
 });
 
@@ -238,6 +241,24 @@ describe('POST /webhooks/todoist', () => {
     const res = await postWebhook({ body, signature: sig, deliveryId: 'd1' });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+
+  it('uses the configured secret when no router override is provided', async () => {
+    const body = { event_name: 'item:added', user_id: 555, event_data: {} };
+    const rawBody = JSON.stringify(body);
+    const signature = crypto
+      .createHmac('sha256', config.todoist.webhookSecret)
+      .update(rawBody)
+      .digest('base64');
+
+    const res = await postWebhook({
+      body,
+      signature,
+      deliveryId: 'configured_secret_d1',
+      useConfiguredSecret: true,
+    });
+
+    expect(res).toEqual({ status: 200, body: { ok: true } });
   });
 
   it('invalidates task, Home, and plan surfaces after a valid Todoist sync', async () => {
@@ -287,10 +308,10 @@ describe('POST /webhooks/todoist', () => {
   it('returns 400 for malformed JSON (after passing HMAC)', async () => {
     // Sign the literal "not json" string so HMAC passes; then the parser fails
     const rawBody = 'not json';
-    const sig = crypto.createHmac('sha256', todoistWebhookSecretForTest()).update(Buffer.from(rawBody)).digest('base64');
+    const sig = crypto.createHmac('sha256', TODOIST_ROUTER_SECRET).update(Buffer.from(rawBody)).digest('base64');
 
     const app = express();
-    app.use('/webhooks', createWebhookRouter());
+    app.use('/webhooks', createWebhookRouter({ todoistWebhookSecret: TODOIST_ROUTER_SECRET }));
     const server = app.listen(0);
     const port = (server.address() as any).port;
 

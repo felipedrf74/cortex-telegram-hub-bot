@@ -150,14 +150,24 @@ describe('chat eval scorer', () => {
     });
   });
 
-  describe('observability policy: missing evidence never fails, contradicting evidence does', () => {
-    it('records an honest pass for skills_used when the live envelope carries no skillsUsed field', () => {
+  describe('observability policy: required missing evidence fails closed', () => {
+    it('scores the live response builder involvedSkills field as canonical routing evidence', () => {
+      const score = scoreChatEvalTurn(
+        { expectedSkills: ['secretary'] },
+        liveResult({ metadata: { actionStatus: 'none', involvedSkills: ['secretary'] } }),
+      );
+      const entry = dim(score.dimensions, 'skills_used');
+      expect(entry.passed).toBe(true);
+      expect(entry.detail).toContain('secretary');
+    });
+
+    it('fails skills_used when expected skills are not observable', () => {
       const score = scoreChatEvalTurn(
         { expectedSkills: ['secretary'] },
         liveResult({ metadata: { actionStatus: 'none' } }),
       );
       const entry = dim(score.dimensions, 'skills_used');
-      expect(entry.passed).toBe(true);
+      expect(entry.passed).toBe(false);
       expect(entry.detail).toContain('not observable');
     });
 
@@ -171,15 +181,24 @@ describe('chat eval scorer', () => {
       expect(entry.detail).toContain('training');
     });
 
-    it('records an honest pass for provider_metadata when the live envelope carries no providerTrace', () => {
+    it('fails provider_metadata when an expected provider trace is not observable', () => {
       const score = scoreChatEvalTurn(
         { expectedProvider: 'gemini', expectedTier: 'chat' },
         liveResult({ providerTrace: null }),
       );
       const entry = dim(score.dimensions, 'provider_metadata');
-      expect(entry.passed).toBe(true);
+      expect(entry.passed).toBe(false);
       expect(entry.detail).toContain('not observable');
     });
+  });
+
+  it('marks dimensions with no declared expectation as not applicable instead of awarding free points', () => {
+    const score = scoreChatEvalTurn({}, liveResult());
+    for (const id of ['routing_domain', 'routing_method', 'skills_used', 'semantic_coverage', 'forbidden_content'] as const) {
+      const entry = dim(score.dimensions, id);
+      expect(entry.score).toBeNull();
+      expect(entry.passed).toBeNull();
+    }
   });
 
   it('fails routing_domain with wrong_skill_routing when the actual domain diverges', () => {
@@ -271,12 +290,13 @@ describe('chat eval scorer', () => {
     expect(entry.failureType).toBe('hallucinated_context');
   });
 
-  it('passes success_claim_verification when the expectation includes a verified mutation', () => {
+  it('fails a claimed mutation when no token-zero read-back expectation was declared', () => {
     const score = scoreChatEvalTurn(
       { expectedToolStatuses: ['succeeded'] },
       liveResult({ text: 'I scheduled it for tomorrow morning.' }),
     );
-    expect(dim(score.dimensions, 'success_claim_verification').passed).toBe(true);
+    expect(dim(score.dimensions, 'side_effect_verification').passed).toBe(false);
+    expect(dim(score.dimensions, 'success_claim_verification').passed).toBe(false);
   });
 
   it('fails success_claim_verification when a success claim is paired with a failed side-effect read-back', () => {
@@ -372,8 +392,8 @@ describe('chat eval scorer', () => {
 
   it('scores response_language with the real deterministic detector by default', () => {
     // A clearly-English reply against a pt expectation fails the dim; a short
-    // undecidable reply stays an honest pass (fail-open); a Portuguese reply
-    // passes. This pins the milestone-3 detector as the wired default.
+    // undecidable reply also fails closed; a Portuguese reply passes. This
+    // pins the milestone-3 detector as the wired default.
     const english = scoreChatEvalTurn(
       { expectedLanguage: 'pt' },
       liveResult({ text: 'I have scheduled the meeting for tomorrow and updated your task list.' }),
@@ -381,7 +401,8 @@ describe('chat eval scorer', () => {
     expect(dim(english.dimensions, 'response_language').passed).toBe(false);
 
     const short = scoreChatEvalTurn({ expectedLanguage: 'pt' }, liveResult({ text: 'OK' }));
-    expect(dim(short.dimensions, 'response_language').passed).toBe(true);
+    expect(dim(short.dimensions, 'response_language').passed).toBe(false);
+    expect(dim(short.dimensions, 'response_language').detail).toContain('undecidable');
 
     const portuguese = scoreChatEvalTurn(
       { expectedLanguage: 'pt' },
@@ -390,14 +411,14 @@ describe('chat eval scorer', () => {
     expect(dim(portuguese.dimensions, 'response_language').passed).toBe(true);
   });
 
-  it('still honors an injected stub detector for tests that opt out of language scoring', () => {
+  it('does not let an injected undecidable detector satisfy a required language expectation', () => {
     const score = scoreChatEvalTurn(
       { expectedLanguage: 'pt' },
       liveResult({ text: 'Plainly English text that the stub never inspects.' }),
       undefined,
       { languageDetector: stubLanguageDetector },
     );
-    expect(dim(score.dimensions, 'response_language').passed).toBe(true);
+    expect(dim(score.dimensions, 'response_language').passed).toBe(false);
   });
 
   it('declares llm_judge dimensions unscored (null) for the bounded judge to fill in', () => {

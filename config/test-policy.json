@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-19.2",
+  "version": "2026-07-22.3",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -181,9 +181,24 @@
   },
   "dispositionRules": [
     {
+      "pattern": "__tests__/scripts/pm2-memory-policy.test.ts",
+      "disposition": "keep",
+      "reason": "Protects RSS-versus-V8 headroom, unchanged Content Engine ceilings, and full PM2 stability observation across canonical release paths."
+    },
+    {
       "pattern": "__tests__/scripts/test-tier-governance.test.ts",
       "disposition": "keep",
       "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring."
+    },
+    {
+      "pattern": "__tests__/scripts/production-migration-lineage.test.ts",
+      "disposition": "keep",
+      "reason": "Protects the signed retired-migration inventory, exact lineage matching, replacement identities, and fail-closed malformed-policy handling."
+    },
+    {
+      "pattern": "__tests__/migrations/training-session-schedule-truth-reconciliation.test.ts",
+      "disposition": "keep",
+      "reason": "Protects fresh and historical-lineage convergence for Training schedule truth without replaying retired SQL or duplicating columns."
     },
     {
       "pattern": "__tests__/services/calendar-dedup-qa-validation.test.ts",
@@ -743,12 +758,47 @@
     {
       "pattern": "__tests__/services/chat-eval-executor.test.ts",
       "disposition": "keep",
-      "reason": "M2 ChatTurnExecutor contract: fixture echo parity, header/auth injection, multi-turn state carry, blocked-shape on non-200/transport error, side-effect readback."
+      "reason": "M2 ChatTurnExecutor plus governed live-run contract: fixture parity, authenticated preflight, per-scenario reset, exact budget headers, evidence readback, physical eval identity, and blocked transport shapes."
+    },
+    {
+      "pattern": "__tests__/services/chat-live-evaluation-contract.test.ts",
+      "disposition": "keep",
+      "reason": "Live chat eval boundary: exact local/real budget split, dedicated non-production identity and provider policy, scoped actual-versus-attempt cost evidence, and fail-closed attestation."
+    },
+    {
+      "pattern": "__tests__/services/chat-live-evaluation-state.test.ts",
+      "disposition": "keep",
+      "reason": "Live chat eval scenario isolation: fixed server-owned seed profile, AsyncLocal scope, tenant-exact reset, exact eval-owned local-only mutation target replacement, repeatable cleanup, and aggregate-only durable preparation evidence."
+    },
+    {
+      "pattern": "__tests__/api/chat-eval-routes.test.ts",
+      "disposition": "keep",
+      "reason": "Authenticated eval control plane: sanitized preflight, header-bound dedicated-tenant reset with no client seeds, and aggregate no-transcript run evidence."
+    },
+    {
+      "pattern": "__tests__/migrations/chat-live-eval-preparations.test.ts",
+      "disposition": "keep",
+      "reason": "Migration 260 aggregate eval-preparation plus immutable first-live-baseline schema, run/scenario mutation guards, privacy column exclusions, and reversible down path."
     },
     {
       "pattern": "__tests__/services/chat-eval-scorer.test.ts",
       "disposition": "keep",
       "reason": "M2 deterministic scorer contract: one case per dimension with DayToDayFailureType mapping, llm_judge null pins, blocked-turn honesty, default language-detector wiring."
+    },
+    {
+      "pattern": "__tests__/services/chat-day-to-day-simulation.test.ts",
+      "disposition": "keep",
+      "reason": "M2 bounded live profile: seven allowlisted scenarios, EN/PT-BR/es-419 turns, exact-target preview and confirmation, token-zero side-effect verification, honest exclusions, and fixture parity."
+    },
+    {
+      "pattern": "__tests__/services/chat-eval-history.test.ts",
+      "disposition": "keep",
+      "reason": "M2/M22 eval evidence truth: cost attestations, immutable dedicated-staging real-provider baseline acceptance, compatible follow-up deltas, aggregate privacy, and mutation-proof storage guards."
+    },
+    {
+      "pattern": "__tests__/portal/portal-eval-history-routes.test.ts",
+      "disposition": "keep",
+      "reason": "M2/M22 portal evidence boundary: admin-token protection, attested live-run persistence, staging-only immutable baseline acceptance, and structured baseline readback."
     },
     {
       "pattern": "__tests__/services/chat-eval-judge.test.ts",
@@ -778,7 +828,7 @@
     {
       "pattern": "__tests__/scripts/run-chat-eval-live.test.ts",
       "disposition": "keep",
-      "reason": "M2 eval CLI guard contract: fixture default mode, base-url requirement for live modes, auth via env var only, judge armed only with a live executor."
+      "reason": "M2 eval CLI guard contract: fixture default, clean/full-SHA evidence identity, base-url/auth requirements, and exact $0.50 real split with a $0.05 bounded judge."
     },
     {
       "pattern": "__tests__/services/chat-action-state.test.ts",
@@ -888,12 +938,17 @@
     {
       "pattern": "__tests__/services/chat-quality-dashboard.test.ts",
       "disposition": "keep",
-      "reason": "M22 dashboard aggregation: eval trend, failure-type breakdown, gate counters, routing accuracy, sampler counts."
+      "reason": "M22 dashboard aggregation: actual estimated spend versus budget ceiling, frozen-baseline deltas, eval trend, failure-type breakdown, gate counters, durable clarify budget, routing accuracy, and sampler counts."
     },
     {
       "pattern": "__tests__/services/chat-quality-digest.test.ts",
       "disposition": "keep",
-      "reason": "M22 weekly digest builder: window deltas, empty week, alert-vs-digest severity routing."
+      "reason": "M22 weekly digest builder: actual-spend and frozen-baseline deltas, durable clarify budget, weekly windows, empty-week truth, and alert-vs-digest severity routing."
+    },
+    {
+      "pattern": "__tests__/services/chat-quality-regression-monitor.test.ts",
+      "disposition": "keep",
+      "reason": "M22 independent five-minute monitor: activation-free readiness/behavior/fallback alerts, deduped readiness-artifact health warnings, aggregate-only privacy, and no provider calls."
     },
     {
       "pattern": "__tests__/portal/portal-chat-quality-routes.test.ts",
@@ -926,6 +981,11 @@
       "reason": "M20 sampler: 3-source conversion, dedupe + high-water marks, per-route parity aggregation, gate integration."
     },
     {
+      "pattern": "__tests__/services/chat-retirement-campaign-truth.test.ts",
+      "disposition": "keep",
+      "reason": "M20/M22 retirement truth: diagnostic routing rows cannot promote; signed paired runtime evidence, retirable-stage mapping, zero-regression checks, and trailing-24h fallback evidence are mandatory."
+    },
+    {
       "pattern": "__tests__/scripts/chatv2-retirement-campaign.test.ts",
       "disposition": "keep",
       "reason": "M20 campaign CLI: real route-id order pin, table/json output, no flag flipping."
@@ -933,12 +993,17 @@
     {
       "pattern": "__tests__/migrations/chat-v2-route-exit-samples.test.ts",
       "disposition": "keep",
-      "reason": "M20 migration 257: schema, dedupe constraint, reversibility."
+      "reason": "M20 migration 258: schema, dedupe constraint, reversibility."
     },
     {
       "pattern": "__tests__/api/chat-pipeline/routing-clarify-stage.test.ts",
       "disposition": "keep",
       "reason": "M14 deterministic clarify terminal: templated EN/PT/ES response, e2e loop prevention via durable continuity, reads never clarify, flag/kill gating."
+    },
+    {
+      "pattern": "__tests__/services/chat-routing-clarify-metrics.test.ts",
+      "disposition": "keep",
+      "reason": "M14 durable clarify telemetry: tenant-safe aggregate writes, rolling-window budget calculation, stale/no-evidence distinction, and migration-backed persistence."
     },
     {
       "pattern": "__tests__/router/classifier-prompt-builder.test.ts",
@@ -963,7 +1028,12 @@
     {
       "pattern": "__tests__/services/chat-manifest-newly-reachable-skill-execution.test.ts",
       "disposition": "keep",
-      "reason": "M15 execution hardening for newly NL-reachable skills incl. pinned executor gaps (flag-flip blockers)."
+      "reason": "M15 execution hardening for newly NL-reachable skills, including confirmed Outlook mail writes with provider read-back, scoped connection refresh, and deterministic legacy-tail coverage."
+    },
+    {
+      "pattern": "__tests__/services/outlook-mail-write-readback.test.ts",
+      "disposition": "keep",
+      "reason": "M15 Outlook write boundary: exact recipients, abort propagation, draft/sent immutable read-back, and fail-closed verification before success."
     },
     {
       "pattern": "__tests__/services/chat/executor/plan-executor.test.ts",
@@ -973,12 +1043,17 @@
     {
       "pattern": "__tests__/router/classifier-manifest-runtime-guard.test.ts",
       "disposition": "keep",
-      "reason": "M15 flag-flip hard guard: force-disables the manifest classifier flag + operator alert while executor/domain-handler gaps exist; real-deps pin that the flag cannot go live today."
+      "reason": "M15 flag-flip hard guard: force-disables and alerts on any manifest-reachable executor/domain-handler gap; real-dependency coverage pins the closed-gap state."
     },
     {
       "pattern": "__tests__/api/chat-pipeline/legacy-tail-timeout.test.ts",
       "disposition": "keep",
-      "reason": "M18 timeout partial: checkpointed-progress envelope, zero-checkpoint parity rethrow, no background enqueue, PT localization."
+      "reason": "M18 timeout partial: checkpointed-progress HTTP 202 envelope, dedicated continuation job reference, zero-checkpoint parity rethrow, exact-target preservation, and locale handling."
+    },
+    {
+      "pattern": "__tests__/services/chat-legacy-timeout-continuation.test.ts",
+      "disposition": "keep",
+      "reason": "M18 durable continuation: exact-scope late-result reuse with zero model/tool replay, re-confirmation after timeout, fenced idempotent delivery, privacy-safe APNs, transient retry truth, full-gate persistence, and scoped cancellation."
     },
     {
       "pattern": "__tests__/domains/domain-handler-timeout-checkpoints.test.ts",
@@ -989,6 +1064,11 @@
       "pattern": "__tests__/services/chat/planner/cross-skill-ownership.test.ts",
       "disposition": "keep",
       "reason": "M19 ownership transform: manifest-driven rewrite (never duplicate), synthetic-entry genericity, preview enforcement, flag/kill gating."
+    },
+    {
+      "pattern": "__tests__/api/chat-pipeline/cross-skill-plan-declined.test.ts",
+      "disposition": "keep",
+      "reason": "M19 bridge retirement: flag-on actionable planner-declined cross-skill turns terminate honestly without a model call, while pure multi-skill reads retain the bridge and flag-off/non-cross-skill routing keeps legacy behavior."
     },
     {
       "pattern": "__tests__/**/*.test.ts",

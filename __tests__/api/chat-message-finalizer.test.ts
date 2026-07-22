@@ -110,6 +110,7 @@ describe('gate policy table', () => {
       'chat_core_v2_deterministic_read',
       'pending_work_cancelled',
       'action_gateway_stop',
+      'cross_skill_plan_declined',
     ]) {
       expect(resolveChatFinalizerGatePolicy({ stageFamily })).toBe('contract_only');
     }
@@ -142,6 +143,7 @@ describe('gate policy table', () => {
   it('falls back to the deterministic routeMethod table when no stage family is given', () => {
     expect(resolveChatFinalizerGatePolicy({ routeMethod: 'fast-path' })).toBe('contract_only');
     expect(resolveChatFinalizerGatePolicy({ routeMethod: 'authenticated-identity' })).toBe('contract_only');
+    expect(resolveChatFinalizerGatePolicy({ routeMethod: 'cross-skill-plan-declined' })).toBe('contract_only');
   });
 
   // Adversarial-review fix: domain_shortcut is a MIXED family — split by
@@ -178,6 +180,22 @@ describe('gate policy table', () => {
 });
 
 describe('contract_only families — heuristics skipped, enrichment still applied', () => {
+  it('records detected response language for the final user-visible turn', () => {
+    const response = finalizeChatMessageResponse(
+      baseResponse({
+        text: 'Aqui está a tua agenda de hoje com as prioridades e reuniões confirmadas.',
+        routeMethod: 'fast-path',
+      }),
+      baseCtx({ stageFamily: 'fast_path', locale: 'pt-BR' }),
+    );
+
+    expect((response.metadata as Record<string, unknown>).responseLanguage).toMatchObject({
+      expected: 'pt',
+      detected: 'pt',
+      matchesExpected: true,
+    });
+  });
+
   it('fast-path family keeps a would-trip templated text verbatim and still stamps the contract', () => {
     // This exact text trips the execute-tier heuristic under the full gate.
     const text = 'Done. I scheduled it for 2:00.';

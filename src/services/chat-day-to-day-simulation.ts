@@ -7,6 +7,7 @@ import {
   analyzeChatSkillOrchestration,
   type NexusSkillId,
 } from './chat-skill-orchestrator';
+import type { ChatActionSkill } from './chat/registry';
 import {
   FixtureExecutor,
   type ChatEvalTurnRequest,
@@ -16,8 +17,11 @@ import {
 import {
   CHAT_EVAL_SCORER_DIMENSIONS,
   normalizeObservedActionStatus,
+  observedChatSkills,
   scoreChatEvalTurn,
   type ChatEvalDimensionScore,
+  type ChatEvalSideEffectExpectation,
+  type ChatEvalSideEffectObservation,
   type ChatEvalScorerOptions,
 } from './chat-eval-scorer';
 import {
@@ -71,7 +75,8 @@ export type DayToDayFailureType =
   | 'ios_rendering_incompatibility'
   | 'model_routing_fallback_issue';
 
-export type ProviderTraceMode = 'fixture' | 'real_provider';
+export type ProviderTraceMode = 'fixture' | 'local_engine' | 'real_provider';
+export type ChatEvalSkillId = NexusSkillId | ChatActionSkill;
 
 export interface DayToDayPersona {
   id: DayToDayPersonaId;
@@ -87,9 +92,9 @@ export interface DayToDayPersona {
 
 export interface DayToDayProviderTrace {
   mode: ProviderTraceMode;
-  provider: 'fixture' | 'gemini' | 'openai' | 'anthropic';
+  provider: 'fixture' | 'local_engine' | 'gemini' | 'openai' | 'anthropic' | 'unknown';
   model: string;
-  tier: 'fixture' | 'lite' | 'classifier' | 'chat' | 'flagship';
+  tier: 'fixture' | 'local' | 'lite' | 'classifier' | 'chat' | 'flagship' | 'unknown';
   category: string;
   fallbackUsed: boolean;
 }
@@ -116,7 +121,7 @@ export interface DayToDayContextRecord {
 }
 
 export interface DayToDayTurnExpectation {
-  expectedSkills?: NexusSkillId[];
+  expectedSkills?: ChatEvalSkillId[];
   expectedDomain?: DomainName;
   semanticMustInclude?: string[];
   forbiddenContent?: string[];
@@ -126,6 +131,11 @@ export interface DayToDayTurnExpectation {
   requiresToolCall?: boolean;
   forbidsToolCall?: boolean;
   expectedToolStatuses?: DayToDayToolCallRecord['status'][];
+  /** Live mutation proof: the scorer reads these through token-zero REST. */
+  expectsVerifiedMutation?: boolean;
+  expectedSideEffects?: readonly ChatEvalSideEffectExpectation[];
+  /** Expected response language for live deterministic scoring. Defaults to English in the v2 live profile. */
+  expectedLanguage?: string;
   minAverageScore?: number;
 }
 
@@ -168,7 +178,7 @@ export interface DayToDayAssistantResponse {
   text: string;
   iosEnvelope: ChatMessageResponseEnvelope;
   domain: DomainName;
-  skillsUsed: NexusSkillId[];
+  skillsUsed: ChatEvalSkillId[];
   /**
    * Expectation-space action status. Fixture scenarios only emit the original
    * seven values; `partial`/`pending` appear only on live turns whose real
@@ -193,6 +203,10 @@ export interface DayToDayTurnResult {
   averageScore: number;
   failures: Array<{ type: DayToDayFailureType; detail: string }>;
   passed: boolean;
+  /** Whether the real executor returned an evaluable response or was blocked before scoring. */
+  executionStatus: 'executed' | 'blocked';
+  /** Live profile expectation used for aggregate locale evidence. */
+  expectedLanguage?: string;
   /** Live (non-fixture) executors only: deterministic scorer evidence. */
   scorerDimensions?: ChatEvalDimensionScore[];
 }
@@ -213,8 +227,33 @@ export interface DayToDaySimulationSuiteResult {
   passed: boolean;
   averageScore: number;
   failureSummary: Record<DayToDayFailureType, number>;
+  profileCoverage: DayToDayProfileCoverage;
   /** Present only when the bounded llm judge ran (real_provider mode). */
   judge?: ChatEvalJudgeRunReport;
+}
+
+export interface DayToDayProfileExclusion {
+  scenarioId: DayToDayScenarioId;
+  reasonCode:
+    | 'requires_multi_tenant_identity'
+    | 'requires_verified_mutation_precondition'
+    | 'requires_memory_write_readback'
+    | 'requires_tool_fault_injection'
+    | 'requires_clock_control';
+}
+
+export interface DayToDayTurnExclusion extends DayToDayProfileExclusion {
+  turnId: string;
+}
+
+export interface DayToDayProfileCoverage {
+  profileId: 'fixture_full_v1' | 'single_tenant_day_to_day_v2' | 'custom_live_v1';
+  declaredScenarioCount: number;
+  declaredTurnCount: number;
+  executedScenarioCount: number;
+  executedTurnCount: number;
+  excluded: DayToDayProfileExclusion[];
+  excludedTurns: DayToDayTurnExclusion[];
 }
 
 interface SimulationContextIntent {
@@ -778,6 +817,81 @@ export const DAY_TO_DAY_SCENARIOS: DayToDayScenario[] = [
   },
 ];
 
+const SINGLE_TENANT_LIVE_TURNS: Partial<Record<DayToDayScenarioId, readonly string[]>> = {
+  morning_planning: ['a1-today', 'a2-move-workout', 'a3-confirm', 'a4-what-changed'],
+  training_adjustment: ['b1-workout', 'b2-tired', 'b3-adjust'],
+  cooking_fueling: ['c1-fueling-before', 'c2-meal-prep', 'c3-no-duplicate'],
+  content_creator_day: ['c1-ideas', 'c2-references'],
+  finance_schedule: ['d1-afford', 'd2-review'],
+  prompt_injection: ['i1-cross-tenant', 'i2-malicious-doc'],
+  frustrated_contradictory: ['l1-contradict', 'l2-frustrated'],
+};
+
+// Locale variants are live-profile-only so the historical deterministic
+// fixture remains stable while every persisted live baseline carries actual
+// EN, es-419, and pt-BR observations.
+const LIVE_TURN_OVERRIDES: Record<string, Pick<DayToDayTurn, 'id' | 'userMessage' | 'expectation'>> = {
+  'morning_planning:a3-confirm': {
+    id: 'a3-delete-eval-target',
+    userMessage: 'Delete only the task NEXUS_CHAT_EVAL_M2_TARGET. Do not delete any other task.',
+    expectation: {
+      expectedSkills: ['tasks'],
+      semanticMustInclude: ['NEXUS_CHAT_EVAL_M2_TARGET', 'confirm'],
+      requiresConfirmation: true,
+    },
+  },
+  'morning_planning:a4-what-changed': {
+    id: 'a4-confirm-delete-eval-target',
+    // This exact token-zero shortcut accepts the typed target staged by the
+    // prior preview; it does not re-plan a fresh or turn-wide delete grant.
+    userMessage: 'Confirm this decision',
+    expectation: {
+      expectedSkills: ['tasks'],
+      expectedToolStatuses: ['succeeded'],
+      expectsVerifiedMutation: true,
+      expectedSideEffects: [{
+        kind: 'tasks_list',
+        params: { pageSize: 200 },
+        mustNotIncludeText: ['NEXUS_CHAT_EVAL_M2_TARGET'],
+      }],
+    },
+  },
+  'cooking_fueling:c1-fueling-before': {
+    id: 'c1-fueling-before',
+    userMessage: 'O que devo comer antes do treino pesado de hoje? Use apenas o contexto deste espaço de trabalho.',
+    expectation: {
+      expectedSkills: ['cooking', 'training'],
+      expectedDomain: 'cooking',
+      semanticMustInclude: ['treino', 'alimentação'],
+      expectedLanguage: 'pt-BR',
+    },
+  },
+  'content_creator_day:c1-ideas': {
+    id: 'c1-ideas',
+    userMessage: 'Dame ideas de contenido para la publicación del lanzamiento usando solo el contexto autorizado.',
+    expectation: {
+      expectedSkills: ['content'],
+      expectedDomain: 'content',
+      semanticMustInclude: ['contenido', 'ideas'],
+      expectedLanguage: 'es-419',
+    },
+  },
+};
+
+const SINGLE_TENANT_SCENARIO_EXCLUSIONS: DayToDayProfileExclusion[] = [
+  { scenarioId: 'tenant_switch', reasonCode: 'requires_multi_tenant_identity' },
+  { scenarioId: 'vague_followups', reasonCode: 'requires_verified_mutation_precondition' },
+  { scenarioId: 'user_correction', reasonCode: 'requires_memory_write_readback' },
+  { scenarioId: 'tool_failure', reasonCode: 'requires_tool_fault_injection' },
+  { scenarioId: 'longitudinal_memory', reasonCode: 'requires_clock_control' },
+];
+
+const SINGLE_TENANT_TURN_EXCLUSIONS: DayToDayTurnExclusion[] = [
+  { scenarioId: 'content_creator_day', turnId: 'c3-schedule', reasonCode: 'requires_verified_mutation_precondition' },
+  { scenarioId: 'finance_schedule', turnId: 'd3-confirm', reasonCode: 'requires_verified_mutation_precondition' },
+  { scenarioId: 'frustrated_contradictory', turnId: 'l3-confirm-safe', reasonCode: 'requires_verified_mutation_precondition' },
+];
+
 const DEFAULT_PROVIDER_TRACE: DayToDayProviderTrace = {
   mode: 'fixture',
   provider: 'fixture',
@@ -804,10 +918,21 @@ export async function runDayToDaySimulationSuite(input: {
    */
   runNonce?: string;
 } = {}): Promise<DayToDaySimulationSuiteResult> {
-  const scenarios = input.scenarios ?? DAY_TO_DAY_SCENARIOS;
+  const declaredScenarios = input.scenarios ?? DAY_TO_DAY_SCENARIOS;
   const personas = input.personas ?? DAY_TO_DAY_PERSONAS;
   const executor = input.executor ?? new FixtureExecutor();
-  const mode = input.mode ?? 'fixture';
+  const mode = input.mode ?? executor.mode;
+  if (mode !== executor.mode) {
+    throw new Error(`Day-to-day eval mode ${mode} requires a matching ${mode} executor; received ${executor.mode}`);
+  }
+  if (mode === 'real_provider' && !input.judge) {
+    throw new Error('real_provider chat eval judge options are required before any target turn executes');
+  }
+  const { scenarios, coverage: profileCoverage } = selectDayToDayProfile(
+    declaredScenarios,
+    mode,
+    input.scenarios === undefined,
+  );
   const runNonce = executor.mode === 'fixture' ? null : (input.runNonce ?? randomUUID());
   const personaById = new Map<DayToDayPersonaId, DayToDayPersona>(personas.map((persona) => [persona.id, persona]));
   const scenarioResults: DayToDayScenarioResult[] = [];
@@ -831,10 +956,74 @@ export async function runDayToDaySimulationSuite(input: {
     generatedAt: input.generatedAt ?? new Date().toISOString(),
     mode,
     scenarios: scenarioResults,
-    passed: scenarioResults.every((scenario) => scenario.passed),
+    passed: scenarioResults.length > 0 && scenarioResults.every((scenario) => scenario.passed),
     averageScore,
     failureSummary,
+    profileCoverage,
     ...(judgeReport ? { judge: judgeReport } : {}),
+  };
+}
+
+function selectDayToDayProfile(
+  declaredScenarios: DayToDayScenario[],
+  mode: ProviderTraceMode,
+  useBuiltInProfile: boolean,
+): { scenarios: DayToDayScenario[]; coverage: DayToDayProfileCoverage } {
+  const declaredTurnCount = declaredScenarios.reduce((sum, scenario) => sum + scenario.turns.length, 0);
+  if (mode === 'fixture' || !useBuiltInProfile) {
+    return {
+      scenarios: declaredScenarios,
+      coverage: {
+        profileId: mode === 'fixture' ? 'fixture_full_v1' : 'custom_live_v1',
+        declaredScenarioCount: declaredScenarios.length,
+        declaredTurnCount,
+        executedScenarioCount: declaredScenarios.length,
+        executedTurnCount: declaredTurnCount,
+        excluded: [],
+        excludedTurns: [],
+      },
+    };
+  }
+
+  const declaredIds = declaredScenarios.map((scenario) => scenario.id);
+  const classifiedIds = [
+    ...Object.keys(SINGLE_TENANT_LIVE_TURNS),
+    ...SINGLE_TENANT_SCENARIO_EXCLUSIONS.map((entry) => entry.scenarioId),
+  ];
+  if (new Set(classifiedIds).size !== classifiedIds.length
+    || declaredIds.length !== DAY_TO_DAY_SCENARIOS.length
+    || declaredIds.some((id) => !classifiedIds.includes(id))) {
+    throw new Error('single_tenant_day_to_day_v2 profile drift: every built-in scenario must have one disposition');
+  }
+
+  const selected = declaredScenarios.flatMap((scenario) => {
+    const turnIds = SINGLE_TENANT_LIVE_TURNS[scenario.id];
+    if (!turnIds) return [];
+    const turns = scenario.turns
+      .filter((turn) => turnIds.includes(turn.id))
+      .map((turn) => {
+        const liveOverride = LIVE_TURN_OVERRIDES[`${scenario.id}:${turn.id}`];
+        return liveOverride
+          ? { ...turn, ...liveOverride, expectation: { ...turn.expectation, ...liveOverride.expectation } }
+          : turn;
+      });
+    if (turns.length !== turnIds.length) {
+      throw new Error(`single_tenant_day_to_day_v2 profile drift: ${scenario.id} turn allowlist no longer matches`);
+    }
+    return [{ ...scenario, turns }];
+  });
+  const executedTurnCount = selected.reduce((sum, scenario) => sum + scenario.turns.length, 0);
+  return {
+    scenarios: selected,
+    coverage: {
+      profileId: 'single_tenant_day_to_day_v2',
+      declaredScenarioCount: declaredScenarios.length,
+      declaredTurnCount,
+      executedScenarioCount: selected.length,
+      executedTurnCount,
+      excluded: SINGLE_TENANT_SCENARIO_EXCLUSIONS.map((entry) => ({ ...entry })),
+      excludedTurns: SINGLE_TENANT_TURN_EXCLUSIONS.map((entry) => ({ ...entry })),
+    },
   };
 }
 
@@ -859,11 +1048,24 @@ async function applyChatEvalJudge(
   const byScenarioId = new Map(report.scenarios.map((entry) => [entry.scenarioId, entry]));
   for (const scenarioResult of scenarioResults) {
     const judged = byScenarioId.get(scenarioResult.scenarioId);
-    if (!judged) continue;
-    for (const turn of scenarioResult.turns) {
-      mergeJudgeIntoTurn(turn, judged);
+    if (judged) {
+      for (const turn of scenarioResult.turns) {
+        mergeJudgeIntoTurn(turn, judged);
+        recomputeTurnAverage(turn);
+      }
+    }
+    if (!judged || judged.status !== 'scored') {
+      const firstTurn = scenarioResult.turns[0];
+      if (firstTurn) {
+        const detail = `[llm_judge_coverage] required scenario judge evidence ${judged ? `was ${judged.status}: ${judged.detail}` : 'was missing'}`;
+        if (!firstTurn.failures.some((failure) => failure.detail === detail)) {
+          firstTurn.failures.push({ type: 'model_routing_fallback_issue', detail });
+        }
+        firstTurn.passed = false;
+      }
     }
     scenarioResult.passed = scenarioResult.turns.every((turn) => turn.passed);
+    scenarioResult.averageScore = average(scenarioResult.turns.map((turn) => turn.averageScore));
   }
   return report;
 }
@@ -901,6 +1103,12 @@ function mergeJudgeIntoTurn(turn: DayToDayTurnResult, judged: ChatEvalJudgeScena
     }
   }
   turn.passed = turn.failures.length === 0;
+}
+
+function recomputeTurnAverage(turn: DayToDayTurnResult): void {
+  const scored = (turn.scorerDimensions ?? [])
+    .flatMap((entry) => entry.score === null ? [] : [entry.score]);
+  if (scored.length > 0) turn.averageScore = average(scored);
 }
 
 export function formatDayToDaySimulationResultsMarkdown(result: DayToDaySimulationSuiteResult): string {
@@ -979,18 +1187,28 @@ async function runScenario(
     const liveMetadata = liveResult.metadata && typeof liveResult.metadata === 'object'
       ? liveResult.metadata as Record<string, unknown>
       : {};
+    const liveSkills = observedChatSkills(liveMetadata);
     const evaluation = evaluateTurn(turn, response, state, {
       toolCallsObservable: false,
-      skillsObservable: Array.isArray(liveMetadata.skillsUsed),
+      skillsObservable: liveSkills !== null,
     });
-    const turnScore = scoreChatEvalTurn(turn.expectation, liveResult, undefined, scorerOptions ?? {});
+    const sideEffects = await readExpectedSideEffects(executor, turn.expectation.expectedSideEffects);
+    const turnScore = scoreChatEvalTurn(
+      { ...turn.expectation, expectedLanguage: turn.expectation.expectedLanguage ?? 'en' },
+      liveResult,
+      sideEffects,
+      scorerOptions ?? {},
+    );
     evaluation.scorerDimensions = turnScore.dimensions;
     for (const failure of turnScore.failures) {
       if (!evaluation.failures.some((existing) => existing.type === failure.type && existing.detail === failure.detail)) {
         evaluation.failures.push(failure);
       }
     }
-    evaluation.passed = evaluation.failures.length === 0;
+    evaluation.averageScore = turnScore.deterministicAverage;
+    evaluation.executionStatus = liveResult.ok ? 'executed' : 'blocked';
+    evaluation.expectedLanguage = turn.expectation.expectedLanguage ?? 'en';
+    evaluation.passed = liveResult.ok && evaluation.failures.length === 0;
     applyPostTurnState(state, turn, response);
     turns.push(evaluation);
   }
@@ -1005,6 +1223,30 @@ async function runScenario(
   };
 }
 
+async function readExpectedSideEffects(
+  executor: ChatTurnExecutor,
+  expectations: readonly ChatEvalSideEffectExpectation[] | undefined,
+): Promise<ChatEvalSideEffectObservation[] | undefined> {
+  if (!expectations?.length || !executor.readSideEffect) return undefined;
+  const observations: ChatEvalSideEffectObservation[] = [];
+  for (const expectation of expectations) {
+    try {
+      const raw = await executor.readSideEffect(expectation.kind, { ...(expectation.params ?? {}) });
+      const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : {};
+      observations.push({
+        kind: expectation.kind,
+        statusCode: typeof record.statusCode === 'number' ? record.statusCode : 0,
+        body: record.body,
+      });
+    } catch {
+      observations.push({ kind: expectation.kind, statusCode: 0, body: null });
+    }
+  }
+  return observations;
+}
+
 function buildTurnRequest(state: ScenarioState, turn: DayToDayTurn, runNonce: string | null = null): ChatEvalTurnRequest {
   return {
     text: turn.userMessage,
@@ -1017,6 +1259,7 @@ function buildTurnRequest(state: ScenarioState, turn: DayToDayTurn, runNonce: st
     clientMessageId: runNonce
       ? `${state.scenario.id}-${turn.id}-${runNonce}`
       : `${state.scenario.id}-${turn.id}`,
+    locale: turn.expectation.expectedLanguage ?? 'en',
     dayOffset: turn.dayOffset,
   };
 }
@@ -1064,9 +1307,7 @@ async function executeLiveTurn(
   const result = await executor.executeTurn(buildTurnRequest(state, turn, runNonce));
   const envelope = coerceLiveEnvelope(result, state, turn);
   const metadata = result.metadata ?? {};
-  const metadataSkills = Array.isArray((metadata as Record<string, unknown>).skillsUsed)
-    ? ((metadata as Record<string, unknown>).skillsUsed as unknown[]).filter((skill): skill is NexusSkillId => typeof skill === 'string')
-    : [];
+  const metadataSkills = (observedChatSkills(metadata) ?? []) as ChatEvalSkillId[];
   const metadataActionStatus = (metadata as Record<string, unknown>).actionStatus;
   const actionStatus: DayToDayAssistantResponse['actionStatus'] = !result.ok
     ? 'failed'
@@ -1080,12 +1321,12 @@ async function executeLiveTurn(
     contextUsed: [],
     toolCalls: [],
     providerTrace: {
-      mode: executor.mode === 'real_provider' ? 'real_provider' : 'fixture',
-      provider: 'gemini',
+      mode: executor.mode,
+      provider: liveProvider(executor.mode, metadata),
       model: typeof (metadata as Record<string, unknown>).model === 'string'
         ? (metadata as Record<string, unknown>).model as string
-        : 'live-routing-configured-model',
-      tier: 'chat',
+        : executor.mode === 'local_engine' ? 'local-engine-configured-model' : 'live-routing-configured-model',
+      tier: liveTier(executor.mode, metadata),
       category: 'chat_day_to_day_simulation',
       fallbackUsed: (metadata as Record<string, unknown>).fallbackUsed === true,
     },
@@ -1093,8 +1334,8 @@ async function executeLiveTurn(
       `executor_mode=${executor.mode}`,
       `status_code=${result.statusCode}`,
       `latency_ms=${result.latencyMs}`,
-      `tenant_id=${state.activeTenantId}`,
-      `user_id=${state.persona.userId}`,
+      `logical_tenant_id=${state.activeTenantId}`,
+      `logical_user_id=${state.persona.userId}`,
     ],
   };
   return { response, liveResult: result };
@@ -1120,6 +1361,26 @@ function coerceLiveEnvelope(
       ? raw.timestamp
       : new Date(0).toISOString(),
   };
+}
+
+function liveProvider(
+  mode: ChatTurnExecutor['mode'],
+  metadata: Record<string, unknown>,
+): DayToDayProviderTrace['provider'] {
+  const provider = metadata.provider;
+  if (provider === 'gemini' || provider === 'openai' || provider === 'anthropic') return provider;
+  if (mode === 'fixture') return 'fixture';
+  return mode === 'local_engine' ? 'local_engine' : 'unknown';
+}
+
+function liveTier(
+  mode: ChatTurnExecutor['mode'],
+  metadata: Record<string, unknown>,
+): DayToDayProviderTrace['tier'] {
+  const tier = metadata.tier;
+  if (tier === 'lite' || tier === 'classifier' || tier === 'chat' || tier === 'flagship') return tier;
+  if (mode === 'fixture') return 'fixture';
+  return mode === 'local_engine' ? 'local' : 'unknown';
 }
 
 function simulateAssistantResponse(
@@ -1408,6 +1669,7 @@ function evaluateTurn(
     averageScore,
     failures,
     passed: failures.length === 0,
+    executionStatus: 'executed',
   };
 }
 
@@ -1517,11 +1779,11 @@ function analyzeSimulationContextIntent(message: string, fallbackDomain: DomainN
 }
 
 function mergeSkills(
-  preferred: NexusSkillId[],
-  routed: NexusSkillId[],
-  expected: NexusSkillId[],
-): NexusSkillId[] {
-  const merged = new Set<NexusSkillId>(preferred);
+  preferred: readonly ChatEvalSkillId[],
+  routed: readonly ChatEvalSkillId[],
+  expected: readonly ChatEvalSkillId[],
+): ChatEvalSkillId[] {
+  const merged = new Set<ChatEvalSkillId>(preferred);
   for (const skill of expected) merged.add(skill);
   for (const skill of routed) {
     if (expected.includes(skill) || preferred.includes(skill)) {

@@ -7,9 +7,9 @@
  *
  * Honesty contract: these tests assert what the execution paths ACTUALLY do
  * today — including truthful non-success statuses (blocked /
- * needs_clarification / needs_confirmation / failed). Known weaknesses are
- * pinned explicitly (see the "known execution gaps" block) instead of being
- * papered over with fake coverage.
+ * needs_clarification / needs_confirmation / failed). The formerly pinned
+ * executor and legacy-tail gaps are now pinned closed with provider mocks
+ * that require real read-back evidence before success.
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
@@ -17,6 +17,15 @@ import type Database from 'better-sqlite3';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database | null = null;
+
+const providerMocks = vi.hoisted(() => ({
+  createOutlookDraftForUser: vi.fn(),
+  sendOutlookEmailWithReadBackForUser: vi.fn(),
+  isOutlookMailConfiguredForUser: vi.fn(() => true),
+  getEventsWithDiagnostics: vi.fn(),
+  ensureGarminAuthenticated: vi.fn(),
+  getProviderStatus: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => {
@@ -44,6 +53,29 @@ vi.mock('../../src/services/google-gmail', () => ({
 }));
 vi.mock('../../src/services/outlook-mail', () => ({
   searchEmailsForUser: vi.fn(async () => []),
+  createOutlookDraftForUser: providerMocks.createOutlookDraftForUser,
+  sendOutlookEmailWithReadBackForUser: providerMocks.sendOutlookEmailWithReadBackForUser,
+  isOutlookMailConfiguredForUser: providerMocks.isOutlookMailConfiguredForUser,
+}));
+vi.mock('../../src/services/unified-calendar', () => ({
+  createEvent: vi.fn(),
+  getEventsForSources: vi.fn(async () => []),
+  getEventsWithDiagnostics: providerMocks.getEventsWithDiagnostics,
+}));
+vi.mock('../../src/services/garmin', () => ({
+  ensureAuthenticated: providerMocks.ensureGarminAuthenticated,
+}));
+vi.mock('../../src/services/integration-status', () => ({
+  getIntegrationSummary: vi.fn(() => ({
+    providers: [
+      { provider: 'google', state: 'connected', capabilities: ['calendar'], scopes: [] },
+      { provider: 'outlook', state: 'connected', capabilities: ['calendar', 'mail'], scopes: [] },
+      { provider: 'garmin', state: 'connected', capabilities: ['health'], scopes: [] },
+    ],
+    counts: { connected: 3 },
+    capabilities: { calendar: true, mail: true, health: true },
+  })),
+  getProviderStatus: providerMocks.getProviderStatus,
 }));
 
 import {
@@ -247,18 +279,12 @@ describe('M15 — real registry execution behaves truthfully per skill', () => {
   });
 });
 
-describe('M15 — known execution gaps (pinned honestly, must be closed before flag flip)', () => {
-  it('draft_email / send_email / connections_retry_sync have NO step executor — they block instead of pretending', async () => {
-    // These actions exist in the registry and are planned deterministically,
-    // but src/services/chat/executor/dispatch-table.ts has no executor for
-    // them. executeStepWithReliability returns status 'blocked' — truthful,
-    // but a user routed there gets a dead end. REPORTED as an M15 execution
-    // gap; closing it belongs to the mail/connections skill owners.
+describe('M15 — newly reachable execution gaps are closed before flag flip', () => {
+  it('draft_email / send_email / connections_retry_sync have production step executors', async () => {
     const { getChatStepExecutor } = await import('../../src/services/chat/executor/dispatch-table');
-    expect(getChatStepExecutor('draft_email' as never)).toBeUndefined();
-    expect(getChatStepExecutor('send_email' as never)).toBeUndefined();
-    expect(getChatStepExecutor('connections_retry_sync' as never)).toBeUndefined();
-    // The rest of the newly-reachable surface IS executable.
+    expect(getChatStepExecutor('draft_email' as never)).toBeDefined();
+    expect(getChatStepExecutor('send_email' as never)).toBeDefined();
+    expect(getChatStepExecutor('connections_retry_sync' as never)).toBeDefined();
     for (const action of [
       'create_task', 'complete_task', 'delete_task', 'mail_unread_count', 'mail_inbox_summary',
       'connections_status', 'connections_reconnect_guidance', 'notification_explain',
@@ -269,18 +295,223 @@ describe('M15 — known execution gaps (pinned honestly, must be closed before f
     }
   });
 
-  it('legacy chat domain handlers still cover only the 5 legacy domains (flag-flip blocker)', async () => {
-    // With AI_CLASSIFY_MANIFEST_PROMPT on, a classifier turn routed to
-    // connections/notifications/decision_center that misses the upstream
-    // planner/deterministic stages reaches the legacy tail, which has no
-    // domain handler for those domains and returns UNKNOWN_DOMAIN. Pinned
-    // here as the documented flag-flip blocker.
+  it('mail writes stay confirmation-gated and only claim success after provider read-back', async () => {
+    const { getChatStepExecutor } = await import('../../src/services/chat/executor/dispatch-table');
+    const input = {
+      ...baseInput(FIXTURES[3], 900),
+      text: 'Draft an Outlook email to ana@example.test with subject Update and body All good',
+    };
+    const parsed = buildDeterministicChatActionPlan(input)!;
+    const draftStep = {
+      ...parsed.steps[0],
+      skill: 'mail' as const,
+      action: 'draft_email' as const,
+      type: 'draft_email' as const,
+      risk: 'safe_write' as const,
+      provider: 'outlook_mail' as const,
+      args: { provider: 'outlook_mail', recipient: 'ana@example.test', subject: 'Update', body: 'All good' },
+      requiredArgsPresent: true,
+    };
+    const plan = {
+      ...parsed,
+      steps: [draftStep],
+      requiresConfirmation: true,
+      clarificationQuestion: undefined,
+      clarificationReason: undefined,
+    };
+    const deps = resolveChatActionPlannerDeps(makeExecutionDeps() as never);
+    const draftExecutor = getChatStepExecutor('draft_email' as never)!;
+
+    providerMocks.createOutlookDraftForUser.mockClear();
+    const unconfirmed = await draftExecutor(draftStep as never, {
+      plan: plan as never,
+      input,
+      deps,
+      persistRuns: false,
+      confirmed: false,
+    });
+    expect(unconfirmed).toMatchObject({ status: 'needs_confirmation' });
+    expect(providerMocks.createOutlookDraftForUser).not.toHaveBeenCalled();
+
+    providerMocks.createOutlookDraftForUser.mockResolvedValueOnce({
+      provider: 'outlook_mail',
+      messageId: 'draft-1',
+      state: 'draft',
+      verified: true,
+    });
+    const confirmedDraft = await draftExecutor(draftStep as never, {
+      plan: plan as never,
+      input,
+      deps,
+      persistRuns: false,
+      confirmed: true,
+    });
+    expect(providerMocks.createOutlookDraftForUser).toHaveBeenCalledWith(77, {
+      to: 'ana@example.test',
+      subject: 'Update',
+      body: 'All good',
+      source: 'chat_action_planner',
+    }, { signal: expect.any(AbortSignal) });
+    expect(confirmedDraft).toMatchObject({ status: 'verified_success' });
+
+    const sendExecutor = getChatStepExecutor('send_email' as never)!;
+    const sendStep = { ...draftStep, action: 'send_email' as const, type: 'send_email' as const, risk: 'external_side_effect' as const };
+    providerMocks.sendOutlookEmailWithReadBackForUser.mockResolvedValueOnce({
+      provider: 'outlook_mail',
+      messageId: 'sent-1',
+      state: 'sent',
+      verified: false,
+      verificationError: 'sent_read_back_mismatch',
+    });
+    const unverifiedSend = await sendExecutor(sendStep as never, {
+      plan: { ...plan, steps: [sendStep] } as never,
+      input,
+      deps,
+      persistRuns: false,
+      confirmed: true,
+    });
+    expect(unverifiedSend.status).not.toBe('verified_success');
+    expect(unverifiedSend).toMatchObject({ status: 'partial_success', error: 'mail_provider_read_back_mismatch' });
+
+    providerMocks.sendOutlookEmailWithReadBackForUser.mockClear();
+    providerMocks.sendOutlookEmailWithReadBackForUser.mockResolvedValue({
+      provider: 'outlook_mail',
+      messageId: 'sent-2',
+      state: 'sent',
+      verified: true,
+    });
+    const sendPlan = { ...plan, steps: [sendStep] };
+    const wrongTarget = await executeChatActionPlan(sendPlan as never, input, deps, {
+      confirmed: true,
+      confirmedTargets: [{ tool: 'send_outlook_email', targetId: 'other@example.test' }],
+    });
+    expect(wrongTarget.metadata.actionStatus).toBe('blocked');
+    expect(providerMocks.sendOutlookEmailWithReadBackForUser).not.toHaveBeenCalled();
+
+    const exactTarget = await executeChatActionPlan(sendPlan as never, input, deps, {
+      confirmed: true,
+      confirmedTargets: [{ tool: 'send_outlook_email', targetId: 'ana@example.test' }],
+    });
+    expect(exactTarget.metadata.actionStatus).toBe('verified_success');
+    expect(providerMocks.sendOutlookEmailWithReadBackForUser).toHaveBeenCalledTimes(1);
+
+    providerMocks.sendOutlookEmailWithReadBackForUser.mockClear();
+    const gmailStep = {
+      ...sendStep,
+      provider: 'gmail' as const,
+      args: { ...sendStep.args, provider: 'gmail' },
+    };
+    const gmailWrite = await sendExecutor(gmailStep as never, {
+      plan: { ...sendPlan, steps: [gmailStep] } as never,
+      input,
+      deps,
+      persistRuns: false,
+      confirmed: true,
+    });
+    expect(gmailWrite).toMatchObject({ status: 'blocked', error: 'gmail_write_scope_unavailable' });
+    expect(providerMocks.sendOutlookEmailWithReadBackForUser).not.toHaveBeenCalled();
+
+    const attachmentStep = {
+      ...sendStep,
+      args: { ...sendStep.args, attachments: [{ id: 'attachment-1' }] },
+    };
+    const attachmentWrite = await sendExecutor(attachmentStep as never, {
+      plan: { ...sendPlan, steps: [attachmentStep] } as never,
+      input,
+      deps,
+      persistRuns: false,
+      confirmed: true,
+    });
+    expect(attachmentWrite).toMatchObject({ status: 'blocked', error: 'mail_attachments_not_supported' });
+    expect(providerMocks.sendOutlookEmailWithReadBackForUser).not.toHaveBeenCalled();
+  });
+
+  it('connections_retry_sync is tenant-scoped, confirmation-gated, and requires a verified refresh probe', async () => {
+    const { getChatStepExecutor } = await import('../../src/services/chat/executor/dispatch-table');
+    const input = baseInput(FIXTURES[6], 901);
+    const plan = buildDeterministicChatActionPlan(input)!;
+    const step = plan.steps[0];
+    const executor = getChatStepExecutor('connections_retry_sync' as never)!;
+    const deps = resolveChatActionPlannerDeps(makeExecutionDeps() as never);
+
+    providerMocks.getProviderStatus.mockReturnValue({ provider: 'garmin', state: 'connected' });
+    providerMocks.ensureGarminAuthenticated.mockClear();
+    const unconfirmed = await executor(step, { plan, input, deps, persistRuns: false, confirmed: false });
+    expect(unconfirmed).toMatchObject({ status: 'needs_confirmation' });
+    expect(providerMocks.ensureGarminAuthenticated).not.toHaveBeenCalled();
+
+    const { getCurrentContext } = await import('../../src/utils/request-context');
+    providerMocks.ensureGarminAuthenticated.mockImplementationOnce(async () => {
+      expect(getCurrentContext()).toMatchObject({ userId: 77, tenantId: 77, garminSilent: true });
+      return true;
+    });
+    const confirmed = await executor(step, { plan, input, deps, persistRuns: false, confirmed: true });
+    expect(confirmed).toMatchObject({
+      status: 'verified_success',
+      result: { provider: 'garmin', verified: true },
+    });
+    expect(providerMocks.getProviderStatus).toHaveBeenCalledWith(77, 'garmin');
+  });
+
+  it('connections_retry_sync verifies the exact scoped calendar provider and never promotes a failed probe', async () => {
+    const { getChatStepExecutor } = await import('../../src/services/chat/executor/dispatch-table');
+    const input = baseInput(FIXTURES[8], 902);
+    const plan = buildDeterministicChatActionPlan(input)!;
+    const step = plan.steps[0];
+    const executor = getChatStepExecutor('connections_retry_sync' as never)!;
+    const deps = resolveChatActionPlannerDeps(makeExecutionDeps() as never);
+
+    providerMocks.getProviderStatus.mockReturnValue({ provider: 'google', state: 'connected' });
+    providerMocks.getEventsWithDiagnostics.mockResolvedValueOnce({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
+    const verified = await executor(step, { plan, input, deps, persistRuns: false, confirmed: true });
+    expect(verified).toMatchObject({
+      status: 'verified_success',
+      result: { provider: 'google', verified: true },
+    });
+    expect(providerMocks.getEventsWithDiagnostics).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      77,
+      { sources: ['google'] },
+    );
+
+    providerMocks.getEventsWithDiagnostics.mockResolvedValueOnce({
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['unavailable'],
+      sources: { configured: ['google'], fulfilled: [], failed: ['google'] },
+    });
+    const unverified = await executor(step, { plan, input, deps, persistRuns: false, confirmed: true });
+    expect(unverified.status).not.toBe('verified_success');
+    expect(unverified).toMatchObject({ status: 'failed', error: 'calendar_refresh_probe_failed' });
+  });
+
+  it('legacy chat domain handlers cover every manifest-reachable domain without a model fallback', async () => {
     const { getChatDomainHandler } = await import('../../src/api/routes/chat-message-context');
-    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking']) {
+    for (const domain of [
+      'secretary', 'triathlon', 'content', 'finance', 'cooking',
+      'connections', 'notifications', 'decision_center',
+    ]) {
       expect(getChatDomainHandler(domain), domain).toBeDefined();
     }
-    for (const domain of ['connections', 'notifications', 'decision_center']) {
-      expect(getChatDomainHandler(domain), domain).toBeUndefined();
+
+    for (const [domain, message] of [
+      ['connections', 'Show my connection status'],
+      ['notifications', 'Show my notification settings'],
+      ['decision_center', 'Show my decisions'],
+    ] as const) {
+      const result = await getChatDomainHandler(domain)!(message, 77, 77);
+      expect(result.domain).toBe(domain);
+      expect(result.text.length).toBeGreaterThan(0);
+      expect(result.text).not.toContain('UNKNOWN_DOMAIN');
+      expect(result.metadata?.verificationStatus).toBe('verified_success');
     }
   });
 });

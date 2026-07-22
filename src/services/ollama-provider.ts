@@ -50,6 +50,7 @@ import {
   checkAndConsumeLocalLLMRateLimit,
   type LocalLLMRateLimitScope,
 } from './local-llm-rate-limiter';
+import { buildScopedStateContextPrefix } from './provider-state-context';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -928,7 +929,8 @@ export class OllamaProvider implements AIProvider {
     for (const h of history) {
       messages.push({ role: h.role === 'assistant' ? 'assistant' : 'user', content: typeof h.content === 'string' ? h.content : JSON.stringify(h.content) });
     }
-    messages.push({ role: 'user', content: currentMessage });
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
+    messages.push({ role: 'user', content: `${contextPrefix}${currentMessage}` });
 
     enforceInputTokenCap('chat', [sys, currentMessage, stateContext, ...history.map(h => typeof h.content === 'string' ? h.content : '')]);
 

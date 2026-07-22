@@ -46,7 +46,9 @@ case "$ROLE" in staging|production) ;; *) echo "invalid readiness role" >&2; exi
 [ -x "$CURL_BIN" ] || { echo "curl is unavailable for readiness" >&2; exit 1; }
 [ -n "$OUTPUT" ] || { echo "readiness output is required" >&2; exit 64; }
 case "$STABILITY_SECONDS" in
-  '') [ "$ROLE" = production ] && STABILITY_SECONDS=10 || STABILITY_SECONDS=5 ;;
+  # Span PM2's memory monitor and the configured 60-second minimum-uptime
+  # boundary so an early supervised restart cannot escape release evidence.
+  '') STABILITY_SECONDS=60 ;;
   *[!0-9]*) echo "invalid stability seconds" >&2; exit 64 ;;
 esac
 [ "$STABILITY_SECONDS" -le 60 ] || { echo "stability seconds must not exceed 60" >&2; exit 64; }

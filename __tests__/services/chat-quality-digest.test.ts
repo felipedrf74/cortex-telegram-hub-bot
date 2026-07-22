@@ -46,9 +46,14 @@ vi.mock('../../src/services/anthropic', () => ({
   }),
 }));
 
-import { persistChatEvalRun } from '../../src/services/chat-eval-history';
+import {
+  acceptFrozenRealProviderBaseline,
+  persistChatEvalRun,
+  type ChatEvalRunCostAttestation,
+} from '../../src/services/chat-eval-history';
 import type { ChatEvaluationSuiteResult } from '../../src/services/chat-evaluation-harness';
 import { resetChatQualityGateOutcomeCountersForTests } from '../../src/services/chat-hybrid-metrics';
+import { recordChatRoutingClarifyDecisionPersisted } from '../../src/services/chat-routing-clarify-metrics';
 import { ensureRoutingCorpusTables } from '../../src/services/routing-corpus';
 import {
   ensureChatCoreV2OnlineEvalTables,
@@ -111,22 +116,69 @@ function makeReadinessReport(): ChatV2CompletionReadinessReportLike {
   };
 }
 
+function costEvidence(
+  scenarioIds: string[],
+  estimatedActualUsd: number,
+  ceilingUsd: number,
+): ChatEvalRunCostAttestation {
+  const judgeEstimatedSpendUsd = ceilingUsd === 0.5 && scenarioIds.length > 0 ? 0.004 : 0;
+  const targetActualSpendUsd = estimatedActualUsd - judgeEstimatedSpendUsd;
+  return {
+    contractVersion: 'chat-live-eval-v1',
+    attested: true,
+    reasons: [],
+    totalCeilingUsd: ceilingUsd,
+    targetCeilingUsd: ceilingUsd === 0.5 ? 0.45 : ceilingUsd,
+    judgeCeilingUsd: ceilingUsd === 0.5 ? 0.05 : 0,
+    targetActualSpendUsd,
+    targetReservedAttemptCeilingUsd: 0,
+    targetCommittedCeilingUsd: targetActualSpendUsd,
+    judgeEstimatedSpendUsd,
+    totalEstimatedActualSpendUsd: estimatedActualUsd,
+    totalConservativeCommitmentUsd: estimatedActualUsd,
+    targetUsageCallCount: 1,
+    targetProviderAttemptCount: 1,
+    targetProviders: ['gemini'],
+    unresolvedPricingCount: 0,
+    preparation: {
+      scenarioCount: scenarioIds.length,
+      scenarioIds: [...scenarioIds].sort(),
+      seedProfileVersions: ['single-tenant-live-v2'],
+      seedProfileHashes: ['a'.repeat(64)],
+      aggregateResetCounts: {},
+    },
+  };
+}
+
+function preflight(runId: string, scenarioIds: string[]): Record<string, unknown> {
+  return {
+    contractVersion: 'chat-live-eval-v1', mode: 'real_provider', runId,
+    budget: { totalCeilingUsd: 0.5, targetCeilingUsd: 0.45, judgeCeilingUsd: 0.05 },
+    targetBaseCategory: 'chat_live_eval_real', providerPolicy: 'metered_cloud_only',
+    productionDataUsed: false, seedProfileVersion: 'single-tenant-live-v2',
+    supportedScenarioIds: [...scenarioIds].sort(),
+  };
+}
+
 function seedWeeks(db: Database.Database): void {
   // Current week (>= 2026-07-13T08:00Z): two runs.
   persistChatEvalRun(makeSuiteResult('2026-07-18T10:00:00.000Z', { averageScore: 0.9, passed: true }), {
     db, runId: 'cur-1', budgetUsd: 2,
+    costAttestation: costEvidence([], 0.2, 2),
   });
   persistChatEvalRun(makeSuiteResult('2026-07-15T10:00:00.000Z', {
     averageScore: 0.7,
     passed: false,
     statusCounts: { pass: 0, partial: 0, fail: 1, blocked: 0 },
-  }), { db, runId: 'cur-2', budgetUsd: 1 });
+  }), { db, runId: 'cur-2', budgetUsd: 1, costAttestation: costEvidence([], 0.1, 1) });
   // Previous week: one run.
   persistChatEvalRun(makeSuiteResult('2026-07-08T10:00:00.000Z', { averageScore: 0.6, passed: false }), {
-    db, runId: 'prev-1', budgetUsd: 0.5,
+    db, runId: 'prev-1', budgetUsd: 0.5, costAttestation: costEvidence([], 0.05, 0.5),
   });
   // Ancient run outside both windows.
-  persistChatEvalRun(makeSuiteResult('2026-05-01T10:00:00.000Z'), { db, runId: 'old-1', budgetUsd: 9 });
+  persistChatEvalRun(makeSuiteResult('2026-05-01T10:00:00.000Z'), {
+    db, runId: 'old-1', budgetUsd: 9, costAttestation: costEvidence([], 0.9, 9),
+  });
 
   const base = {
     tenantId: 't1',
@@ -181,6 +233,10 @@ describe('chat quality weekly digest', () => {
 
   it('computes week-over-week deltas across eval, sampler, and corpus signals', () => {
     seedWeeks(db);
+    for (let index = 0; index < 9; index += 1) {
+      recordChatRoutingClarifyDecisionPersisted(db, false, NOW);
+    }
+    recordChatRoutingClarifyDecisionPersisted(db, true, NOW);
     const digest = buildChatQualityWeeklyDigest(db, { now: NOW, readinessReport: makeReadinessReport() });
 
     expect(digest.weekStart).toBe('2026-07-13T08:00:00.000Z');
@@ -190,23 +246,44 @@ describe('chat quality weekly digest', () => {
       runCount: 2,
       averageScore: 0.8,
       passRate: 0.5,
-      spendUsd: 3,
+      estimatedActualSpendUsd: 0.3,
+      budgetCeilingUsd: 3,
+      actualSpendEvidenceRunCount: 2,
       byMode: {
-        realProvider: { runCount: 0, averageScore: null, passRate: null, spendUsd: 0 },
-        other: { runCount: 2, averageScore: 0.8, passRate: 0.5, spendUsd: 3 },
+        realProvider: {
+          runCount: 0, averageScore: null, passRate: null,
+          estimatedActualSpendUsd: 0, budgetCeilingUsd: 0, actualSpendEvidenceRunCount: 0,
+        },
+        other: {
+          runCount: 2, averageScore: 0.8, passRate: 0.5,
+          estimatedActualSpendUsd: 0.3, budgetCeilingUsd: 3, actualSpendEvidenceRunCount: 2,
+        },
       },
     });
     expect(digest.eval.previous).toEqual({
       runCount: 1,
       averageScore: 0.6,
       passRate: 0,
-      spendUsd: 0.5,
+      estimatedActualSpendUsd: 0.05,
+      budgetCeilingUsd: 0.5,
+      actualSpendEvidenceRunCount: 1,
       byMode: {
-        realProvider: { runCount: 0, averageScore: null, passRate: null, spendUsd: 0 },
-        other: { runCount: 1, averageScore: 0.6, passRate: 0, spendUsd: 0.5 },
+        realProvider: {
+          runCount: 0, averageScore: null, passRate: null,
+          estimatedActualSpendUsd: 0, budgetCeilingUsd: 0, actualSpendEvidenceRunCount: 0,
+        },
+        other: {
+          runCount: 1, averageScore: 0.6, passRate: 0,
+          estimatedActualSpendUsd: 0.05, budgetCeilingUsd: 0.5, actualSpendEvidenceRunCount: 1,
+        },
       },
     });
-    expect(digest.eval.deltas).toEqual({ averageScore: 0.2, passRate: 0.5, spendUsd: 2.5 });
+    expect(digest.eval.deltas).toEqual({
+      averageScore: 0.2,
+      passRate: 0.5,
+      estimatedActualSpendUsd: 0.25,
+      budgetCeilingUsd: 2.5,
+    });
 
     expect(digest.sampler.current).toEqual({ sampledCount: 3, byReason: { fallback: 2, model_refusal: 1 } });
     expect(digest.sampler.previous).toEqual({ sampledCount: 1, byReason: { fallback: 1 } });
@@ -225,10 +302,21 @@ describe('chat quality weekly digest', () => {
       blockedGateCount: 3,
       parityFallbackRegressionCount: 2,
     });
+    expect(digest.routingClarifyBudget).toEqual({
+      windowDays: 7,
+      evaluatedTurns: 10,
+      clarifiedTurns: 1,
+      rate: 0.1,
+      budgetLimit: 0.1,
+      withinBudget: true,
+    });
 
     expect(digest.text).toContain('Evals: 2 run(s)');
+    expect(digest.text).toContain('estimated actual spend $0.3');
+    expect(digest.text).toContain('budget ceiling $3');
     expect(digest.text).toContain('vs prev week');
     expect(digest.text).toContain('Sampler: 3 capture(s)');
+    expect(digest.text).toContain('Clarify budget: 1 / 10 turns (rate 0.1, limit 0.1, within budget).');
     expect(digest.text).toContain('2 parity/fallback regression(s)');
   });
 
@@ -241,21 +329,29 @@ describe('chat quality weekly digest', () => {
       averageScore: 0.4,
       passed: false,
       statusCounts: { pass: 0, partial: 0, fail: 1, blocked: 0 },
-    }), { db, runId: 'live-1', budgetUsd: 4, realProviderCalls: 12 });
+    }), {
+      db, runId: 'live-1', budgetUsd: 4, realProviderCalls: 12,
+      costAttestation: costEvidence([], 0.4, 4),
+    });
     persistChatEvalRun(makeSuiteResult('2026-07-17T10:00:00.000Z', {
       averageScore: 0.95,
       passed: true,
-    }), { db, runId: 'fixture-1', budgetUsd: 0 });
+    }), { db, runId: 'fixture-1', budgetUsd: 0, costAttestation: costEvidence([], 0, 0) });
 
     const digest = buildChatQualityWeeklyDigest(db, { now: NOW });
 
     expect(digest.eval.current.byMode.realProvider).toEqual({
-      runCount: 1, averageScore: 0.4, passRate: 0, spendUsd: 4,
+      runCount: 1, averageScore: 0.4, passRate: 0,
+      estimatedActualSpendUsd: 0.4, budgetCeilingUsd: 4, actualSpendEvidenceRunCount: 1,
     });
     expect(digest.eval.current.byMode.other).toEqual({
-      runCount: 1, averageScore: 0.95, passRate: 1, spendUsd: 0,
+      runCount: 1, averageScore: 0.95, passRate: 1,
+      estimatedActualSpendUsd: 0, budgetCeilingUsd: 0, actualSpendEvidenceRunCount: 1,
     });
-    expect(digest.eval.current).toMatchObject({ runCount: 2, averageScore: 0.675, passRate: 0.5, spendUsd: 4 });
+    expect(digest.eval.current).toMatchObject({
+      runCount: 2, averageScore: 0.675, passRate: 0.5,
+      estimatedActualSpendUsd: 0.4, budgetCeilingUsd: 4, actualSpendEvidenceRunCount: 2,
+    });
     expect(digest.text).toContain('real_provider');
   });
 
@@ -266,19 +362,91 @@ describe('chat quality weekly digest', () => {
       runCount: 0,
       averageScore: null,
       passRate: null,
-      spendUsd: 0,
+      estimatedActualSpendUsd: 0,
+      budgetCeilingUsd: 0,
+      actualSpendEvidenceRunCount: 0,
       byMode: {
-        realProvider: { runCount: 0, averageScore: null, passRate: null, spendUsd: 0 },
-        other: { runCount: 0, averageScore: null, passRate: null, spendUsd: 0 },
+        realProvider: {
+          runCount: 0, averageScore: null, passRate: null,
+          estimatedActualSpendUsd: 0, budgetCeilingUsd: 0, actualSpendEvidenceRunCount: 0,
+        },
+        other: {
+          runCount: 0, averageScore: null, passRate: null,
+          estimatedActualSpendUsd: 0, budgetCeilingUsd: 0, actualSpendEvidenceRunCount: 0,
+        },
       },
     });
-    expect(digest.eval.deltas).toEqual({ averageScore: null, passRate: null, spendUsd: null });
+    expect(digest.eval.deltas).toEqual({
+      averageScore: null,
+      passRate: null,
+      estimatedActualSpendUsd: null,
+      budgetCeilingUsd: null,
+    });
     expect(digest.sampler.delta).toBeNull();
     expect(digest.corpus.labeledThisWeek).toBe(0);
     expect(digest.readiness.available).toBe(false);
     expect(digest.text).toContain('Evals: no runs recorded this week.');
+    expect(digest.frozenLiveBaseline.status).toBe('not_recorded');
+    expect(digest.text).toContain('Frozen live baseline: not recorded; quality deltas unavailable.');
     expect(digest.text).toContain('Sampler: no captures this week.');
     expect(digest.text).toContain('Readiness: unavailable');
+  });
+
+  it('includes comparable future deltas against the immutable live baseline', () => {
+    const baselineId = 'chat-eval-digest-baseline';
+    const scenarios = [{
+      id: 'morning_planning',
+      title: 'Morning planning',
+      personaId: 'dedicated-eval',
+      status: 'pass',
+      evidenceMode: 'custom_live_v1',
+      averageScore: 0.7,
+      scores: {
+        correctness: 1,
+        wording_quality: 2,
+        groundedness: 2,
+        sufficiency: 2,
+        explanation_quality: 2,
+      },
+      failures: [],
+      notes: [],
+    }];
+    const baseline = makeSuiteResult('2026-07-14T10:00:00.000Z', {
+      mode: 'real_provider', averageScore: 0.7, scenarioCount: 1, scenarios,
+    });
+    const scenarioIds = baseline.scenarios.map((scenario) => scenario.id);
+    persistChatEvalRun(baseline, {
+      db, runId: baselineId, gitCommit: 'a'.repeat(40), budgetUsd: 0.5,
+      realProviderCalls: 1, costAttestation: costEvidence(scenarioIds, 0.01, 0.5),
+      preflightAttestation: preflight(baselineId, scenarioIds),
+    });
+    acceptFrozenRealProviderBaseline(db, {
+      runId: baselineId,
+      evidenceJsonPath: `docs/release/eval-evidence/${baselineId}.json`,
+      evidenceMarkdownPath: `docs/release/eval-evidence/${baselineId}.md`,
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    });
+    const followupId = 'chat-eval-digest-followup';
+    const followup = makeSuiteResult('2026-07-18T10:00:00.000Z', {
+      mode: 'real_provider', averageScore: 0.9, scenarioCount: 1,
+      scenarios: [{ ...scenarios[0], averageScore: 0.9 }],
+    });
+    persistChatEvalRun(followup, {
+      db, runId: followupId, gitCommit: 'b'.repeat(40), budgetUsd: 0.5,
+      realProviderCalls: 1, costAttestation: costEvidence(scenarioIds, 0.015, 0.5),
+      preflightAttestation: preflight(followupId, scenarioIds),
+    });
+
+    const digest = buildChatQualityWeeklyDigest(db, { now: NOW });
+    expect(digest.frozenLiveBaseline).toMatchObject({
+      status: 'comparable',
+      baseline: { runId: baselineId },
+      latestFollowup: { runId: followupId },
+      comparison: { averageScoreDelta: 0.2, estimatedActualSpendUsdDelta: 0.005 },
+    });
+    expect(digest.text).toContain(`Frozen live baseline: ${baselineId}`);
+    expect(digest.text).toContain(`latest ${followupId}`);
+    expect(digest.text).toContain('score delta +0.2');
   });
 
   it('routes the digest as one weekly info alert and regressions as their own alerts', async () => {

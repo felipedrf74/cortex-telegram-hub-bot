@@ -23,6 +23,8 @@
 import type Database from 'better-sqlite3';
 import {
   ensureChatEvalHistoryTables,
+  readFrozenRealProviderBaselineState,
+  type ChatEvalFrozenBaselineState,
 } from './chat-eval-history';
 import {
   getChatQualityGateOutcomeCounters,
@@ -41,8 +43,12 @@ import {
   loadChatV2ReadinessReportFromFile,
 } from './chat-quality-dashboard';
 import type { RecordOperatorAlertInput, RecordOperatorAlertResult } from './operator-alerts';
+import {
+  readChatRoutingClarifyBudget,
+  type ChatRoutingClarifyBudget,
+} from './chat-routing-clarify-metrics';
 
-export const CHAT_QUALITY_DIGEST_VERSION = 'chat-quality-digest@1.0.0';
+export const CHAT_QUALITY_DIGEST_VERSION = 'chat-quality-digest@1.1.0';
 export const CHAT_QUALITY_DIGEST_SOURCE = 'chat_quality_digest';
 export const CHAT_QUALITY_DIGEST_RUNBOOK = 'docs/release/chat-quality-operations.md';
 
@@ -52,7 +58,9 @@ export interface ChatQualityDigestEvalModeWindow {
   runCount: number;
   averageScore: number | null;
   passRate: number | null;
-  spendUsd: number;
+  estimatedActualSpendUsd: number;
+  budgetCeilingUsd: number;
+  actualSpendEvidenceRunCount: number;
 }
 
 export interface ChatQualityDigestEvalWindow extends ChatQualityDigestEvalModeWindow {
@@ -82,9 +90,11 @@ export interface ChatQualityWeeklyDigest {
     deltas: {
       averageScore: number | null;
       passRate: number | null;
-      spendUsd: number | null;
+      estimatedActualSpendUsd: number | null;
+      budgetCeilingUsd: number | null;
     };
   };
+  frozenLiveBaseline: ChatEvalFrozenBaselineState;
   sampler: {
     current: ChatQualityDigestSamplerWindow;
     previous: ChatQualityDigestSamplerWindow;
@@ -98,6 +108,7 @@ export interface ChatQualityWeeklyDigest {
   };
   /** Process-local counters since boot — no durable weekly history yet. */
   gateOutcomes: Readonly<Record<ChatQualityGateOutcome, number>>;
+  routingClarifyBudget: ChatRoutingClarifyBudget;
   readiness: {
     available: boolean;
     reason: string | null;
@@ -132,6 +143,8 @@ export function buildChatQualityWeeklyDigest(
   const samplerPrevious = readSamplerWindow(db, prevStart, weekStart);
   const corpus = readCorpusWindows(db, prevStart, weekStart, weekEnd);
   const gateOutcomes = getChatQualityGateOutcomeCounters();
+  const routingClarifyBudget = readChatRoutingClarifyBudget(db, { now, windowDays: 7 });
+  const frozenLiveBaseline = readFrozenRealProviderBaselineState(db);
   const readiness = summarizeReadiness(options);
 
   const digest: ChatQualityWeeklyDigest = {
@@ -145,8 +158,11 @@ export function buildChatQualityWeeklyDigest(
       deltas: {
         averageScore: delta(evalCurrent.averageScore, evalPrevious.averageScore),
         passRate: delta(evalCurrent.passRate, evalPrevious.passRate),
-        spendUsd: evalPrevious.runCount > 0 || evalCurrent.runCount > 0
-          ? round4(evalCurrent.spendUsd - evalPrevious.spendUsd)
+        estimatedActualSpendUsd: evalPrevious.runCount > 0 || evalCurrent.runCount > 0
+          ? round4(evalCurrent.estimatedActualSpendUsd - evalPrevious.estimatedActualSpendUsd)
+          : null,
+        budgetCeilingUsd: evalPrevious.runCount > 0 || evalCurrent.runCount > 0
+          ? round4(evalCurrent.budgetCeilingUsd - evalPrevious.budgetCeilingUsd)
           : null,
       },
     },
@@ -157,8 +173,10 @@ export function buildChatQualityWeeklyDigest(
         ? samplerCurrent.sampledCount - samplerPrevious.sampledCount
         : null,
     },
+    frozenLiveBaseline,
     corpus,
     gateOutcomes,
+    routingClarifyBudget,
     readiness,
     text: '',
   };
@@ -194,9 +212,19 @@ export function buildChatQualityDigestAlertInput(
       evalRunCount: digest.eval.current.runCount,
       evalAverageScore: digest.eval.current.averageScore,
       evalPassRate: digest.eval.current.passRate,
-      evalSpendUsd: digest.eval.current.spendUsd,
+      evalEstimatedActualSpendUsd: digest.eval.current.estimatedActualSpendUsd,
+      evalBudgetCeilingUsd: digest.eval.current.budgetCeilingUsd,
+      evalActualSpendEvidenceRunCount: digest.eval.current.actualSpendEvidenceRunCount,
+      frozenBaselineStatus: digest.frozenLiveBaseline.status,
+      frozenBaselineRunId: digest.frozenLiveBaseline.baseline?.runId ?? null,
+      frozenBaselineLatestRunId: digest.frozenLiveBaseline.latestFollowup?.runId ?? null,
+      frozenBaselineAverageScoreDelta: digest.frozenLiveBaseline.comparison?.averageScoreDelta ?? null,
       sampledCount: digest.sampler.current.sampledCount,
       labeledThisWeek: digest.corpus.labeledThisWeek,
+      clarifyEvaluatedTurns: digest.routingClarifyBudget.evaluatedTurns,
+      clarifyTurns: digest.routingClarifyBudget.clarifiedTurns,
+      clarifyRate: digest.routingClarifyBudget.rate,
+      clarifyWithinBudget: digest.routingClarifyBudget.withinBudget,
       readinessBlockedGateCount: digest.readiness.blockedGateCount,
       parityFallbackRegressionCount: digest.readiness.parityFallbackRegressionCount,
     },
@@ -275,7 +303,9 @@ function readEvalWindow(
            COUNT(*) AS runCount,
            AVG(average_score) AS averageScore,
            AVG(passed) AS passRate,
-           SUM(COALESCE(budget_usd, 0)) AS spendUsd
+           SUM(COALESCE(total_estimated_actual_spend_usd, 0)) AS estimatedActualSpendUsd,
+           SUM(COALESCE(total_budget_ceiling_usd, budget_usd, 0)) AS budgetCeilingUsd,
+           SUM(CASE WHEN total_estimated_actual_spend_usd IS NOT NULL THEN 1 ELSE 0 END) AS actualSpendEvidenceRunCount
     FROM chat_eval_runs
     WHERE generated_at >= ? AND generated_at < ?
     GROUP BY modeGroup
@@ -284,7 +314,9 @@ function readEvalWindow(
     runCount: number;
     averageScore: number | null;
     passRate: number | null;
-    spendUsd: number | null;
+    estimatedActualSpendUsd: number | null;
+    budgetCeilingUsd: number | null;
+    actualSpendEvidenceRunCount: number;
   }>;
 
   const toModeWindow = (row?: (typeof rows)[number]): ChatQualityDigestEvalModeWindow => {
@@ -293,7 +325,9 @@ function readEvalWindow(
       runCount,
       averageScore: runCount > 0 && row?.averageScore != null ? round4(Number(row.averageScore)) : null,
       passRate: runCount > 0 && row?.passRate != null ? round4(Number(row.passRate)) : null,
-      spendUsd: round4(Number(row?.spendUsd) || 0),
+      estimatedActualSpendUsd: round4(Number(row?.estimatedActualSpendUsd) || 0),
+      budgetCeilingUsd: round4(Number(row?.budgetCeilingUsd) || 0),
+      actualSpendEvidenceRunCount: Number(row?.actualSpendEvidenceRunCount) || 0,
     };
   };
 
@@ -310,7 +344,12 @@ function readEvalWindow(
     runCount,
     averageScore: weighted(realProvider, other, 'averageScore'),
     passRate: weighted(realProvider, other, 'passRate'),
-    spendUsd: round4(realProvider.spendUsd + other.spendUsd),
+    estimatedActualSpendUsd: round4(
+      realProvider.estimatedActualSpendUsd + other.estimatedActualSpendUsd,
+    ),
+    budgetCeilingUsd: round4(realProvider.budgetCeilingUsd + other.budgetCeilingUsd),
+    actualSpendEvidenceRunCount:
+      realProvider.actualSpendEvidenceRunCount + other.actualSpendEvidenceRunCount,
     byMode: { realProvider, other },
   };
 }
@@ -393,12 +432,38 @@ function renderDigestText(digest: ChatQualityWeeklyDigest): string {
       `Evals: ${evalWindow.runCount} run(s)`,
       `avg score ${formatNumber(evalWindow.averageScore)}${formatDelta(digest.eval.deltas.averageScore)}`,
       `pass rate ${formatNumber(evalWindow.passRate)}${formatDelta(digest.eval.deltas.passRate)}`,
-      `spend $${formatNumber(evalWindow.spendUsd)}${formatDelta(digest.eval.deltas.spendUsd, '$')}`,
+      `estimated actual spend $${formatNumber(evalWindow.estimatedActualSpendUsd)}`
+        + `${formatDelta(digest.eval.deltas.estimatedActualSpendUsd, '$')}`
+        + ` (evidence ${evalWindow.actualSpendEvidenceRunCount}/${evalWindow.runCount})`,
+      `budget ceiling $${formatNumber(evalWindow.budgetCeilingUsd)}`
+        + `${formatDelta(digest.eval.deltas.budgetCeilingUsd, '$')}`,
     ];
     lines.push(`${parts.join(', ')}.`);
     lines.push(
       `Evals by mode: ${formatModeWindow('real_provider', evalWindow.byMode.realProvider)}; `
       + `${formatModeWindow('other', evalWindow.byMode.other)}.`,
+    );
+  }
+
+  const frozen = digest.frozenLiveBaseline;
+  if (frozen.status === 'not_recorded') {
+    lines.push('Frozen live baseline: not recorded; quality deltas unavailable.');
+  } else if (frozen.status === 'baseline_only') {
+    lines.push(
+      `Frozen live baseline: ${frozen.baseline!.runId} (score ${formatNumber(frozen.baseline!.averageScore)}); `
+      + 'no later real_provider run, so quality deltas unavailable.',
+    );
+  } else if (frozen.status === 'incompatible') {
+    lines.push(
+      `Frozen live baseline: ${frozen.baseline!.runId}; latest ${frozen.latestFollowup!.runId} is not comparable `
+      + `(${frozen.comparison!.reason}), so quality deltas unavailable.`,
+    );
+  } else {
+    lines.push(
+      `Frozen live baseline: ${frozen.baseline!.runId}; latest ${frozen.latestFollowup!.runId}, `
+      + `score delta ${signedNullable(frozen.comparison!.averageScoreDelta)}, `
+      + `scenario pass-rate delta ${signedNullable(frozen.comparison!.scenarioPassRateDelta)}, `
+      + `estimated actual-spend delta ${signedCurrency(frozen.comparison!.estimatedActualSpendUsdDelta)}.`,
     );
   }
 
@@ -427,6 +492,17 @@ function renderDigestText(digest: ChatQualityWeeklyDigest): string {
     .join(' ');
   lines.push(`Finalizer gate outcomes since boot: ${outcomes || 'none recorded'}.`);
 
+  const clarify = digest.routingClarifyBudget;
+  if (clarify.rate === null) {
+    lines.push(`Clarify budget: no evaluated-turn evidence in the last ${clarify.windowDays} days.`);
+  } else {
+    lines.push(
+      `Clarify budget: ${clarify.clarifiedTurns} / ${clarify.evaluatedTurns} turns `
+      + `(rate ${formatNumber(clarify.rate)}, limit ${formatNumber(clarify.budgetLimit)}, `
+      + `${clarify.withinBudget ? 'within budget' : 'OVER BUDGET'}).`,
+    );
+  }
+
   if (!digest.readiness.available) {
     lines.push(`Readiness: unavailable (${digest.readiness.reason}).`);
   } else if (digest.readiness.blockedGateCount === 0) {
@@ -446,7 +522,17 @@ function formatModeWindow(label: string, window: ChatQualityDigestEvalModeWindow
   if (window.runCount === 0) return `${label} none`;
   return `${label} ${window.runCount} run(s) `
     + `(avg ${formatNumber(window.averageScore)}, pass ${formatNumber(window.passRate)}, `
-    + `spend $${formatNumber(window.spendUsd)})`;
+    + `estimated actual $${formatNumber(window.estimatedActualSpendUsd)} `
+    + `(evidence ${window.actualSpendEvidenceRunCount}/${window.runCount}), `
+    + `ceiling $${formatNumber(window.budgetCeilingUsd)})`;
+}
+
+function signedNullable(value: number | null): string {
+  return value == null ? 'n/a' : signed(value);
+}
+
+function signedCurrency(value: number | null): string {
+  return value == null ? 'n/a' : signed(value, '$');
 }
 
 function formatNumber(value: number | null): string {

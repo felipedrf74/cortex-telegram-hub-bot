@@ -1,14 +1,13 @@
 /**
  * M18 — legacy-tail timeout catch: checkpoint-aware partial-progress terminal.
  *
- * Spike verdict: no auto-resume for the legacy tool loop (detached loop keeps
- * running after Promise.race; ADV-2 provider pinning + sliced-history shape
- * stability cannot be guaranteed across the process boundary; checkpoints are
- * sanitized summaries, not verbatim provider turns). The stage therefore:
+ * Spike verdict: never resume an open provider tool loop across a process
+ * boundary. The background job consumes only the detached foreground result;
+ * rejection or deadline fails honestly and never starts another provider turn.
+ * The stage therefore:
  *   - checkpoints > 0 → deterministic locale-aware partial-progress reply
  *     naming the completed tools (finalizer 'legacy_timeout_partial',
- *     contract_only family), honest "ask me to continue", NO background
- *     continuation enqueued;
+ *     contract_only family), HTTP 202, durable background continuation + APNs;
  *   - checkpoints == 0 → rethrow, keeping the pre-M18 degraded behavior
  *     byte-identical at the route catch.
  */
@@ -103,8 +102,8 @@ vi.mock('../../../src/api/routes/chat-pipeline/support', () => ({
   applyTurnContractRouteHint: vi.fn((route: unknown) => route),
 }));
 
-// M18 no-auto-resume guard: the background queue must never be touched by
-// the legacy timeout path.
+// M18 queued-continuation contract: the timeout error carries the job that was
+// durably enqueued by executeChatDomainHandler before it rejected.
 vi.mock('../../../src/services/chat-core-v2/background-lifecycle', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -172,23 +171,24 @@ afterEach(() => {
 });
 
 describe('legacy_tail M18 timeout catch', () => {
-  it('turns a checkpointed timeout into an honest partial-progress reply naming tools 1-2 (no auto-resume)', async () => {
+  it('turns a checkpointed timeout into an honest queued partial-progress 202 naming tools 1-2', async () => {
     const timeoutError = new ChatDomainTimeoutError('req-m18', [
       { toolName: 'ms_todo_get_tasks', sequence: 1, completedAt: '2026-07-21T10:00:00.000Z' },
       { toolName: 'get_calendar_events', sequence: 2, completedAt: '2026-07-21T10:00:01.000Z' },
-    ]);
+    ], { jobId: 'job-m18', notificationPolicy: 'apns' });
     hoisted.executeChatDomainHandler.mockRejectedValue(timeoutError);
 
-    const { ctx, json } = buildCtx();
+    const { ctx, json, status } = buildCtx();
     const result = await legacyTailStage.handle(ctx);
 
     expect(result).toEqual({ kind: 'respond' });
     expect(json).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenCalledWith(202);
     const envelope = json.mock.calls[0][0] as { text: string; metadata: Record<string, unknown> };
     // The deterministic template names exactly the completed tools.
     expect(envelope.text).toContain('ms todo get tasks');
     expect(envelope.text).toContain('get calendar events');
-    expect(envelope.text.toLowerCase()).toContain('continue');
+    expect(envelope.text).toContain('whether it completes or stops');
 
     // Finalized through the contract_only partial family with honest tags.
     expect(hoisted.finalizeChatAnswerMetadata).toHaveBeenCalledTimes(1);
@@ -201,10 +201,15 @@ describe('legacy_tail M18 timeout catch', () => {
     expect(existingMetadata.timeoutPartial).toMatchObject({
       runId: 'req-m18',
       autoResume: false,
+      continuation: 'background_queue',
+      continuationJobId: 'job-m18',
+      notificationPolicy: 'apns',
+      destructiveResumePolicy: 'reconfirm',
       completedTools: ['ms_todo_get_tasks', 'get_calendar_events'],
     });
 
-    // Honest partial means NO queued continuation.
+    // The route never misuses the write-command queue; the typed timeout
+    // already carries the dedicated continuation job reference.
     expect(hoisted.enqueueBackgroundChatCommand).not.toHaveBeenCalled();
     // The exchange persists so the client sees a completed turn.
     expect(hoisted.persistExchange).toHaveBeenCalledTimes(1);
@@ -230,12 +235,11 @@ describe('legacy_tail M18 timeout catch', () => {
     expect(json).not.toHaveBeenCalled();
   });
 
-  it('preserves the staged destructive confirmation on a timeout partial — nothing executed, so the retry keeps the grant', async () => {
-    // Adversarial NIT (M18 remediation, 2026-07-21): the confirmed turn
-    // timed out before any destructive tool ran, yet the stage cleared the
-    // staged confirmation — a retry then demanded a re-confirmation for work
-    // that never happened. The timeout-partial path must leave the staged
-    // confirmation in place.
+  it('consumes the staged destructive confirmation on timeout so any later recovery must re-confirm', async () => {
+    // The detached original turn retains its in-memory, per-target single-use
+    // authorization. The durable staged grant must still be consumed here:
+    // if that original turn definitively fails, a later recovery is a new
+    // attempt and must not inherit the old destructive authorization.
     hoisted.analyzeChatSkillOrchestration.mockReturnValue({
       safety: { explicitConfirmation: true, requiresConfirmation: true },
       involvedSkills: [],
@@ -252,7 +256,8 @@ describe('legacy_tail M18 timeout catch', () => {
     await legacyTailStage.handle(ctx);
 
     expect(json).toHaveBeenCalledTimes(1);
-    expect(hoisted.clearPendingChatConfirmation).not.toHaveBeenCalled();
+    expect(hoisted.clearPendingChatConfirmation).toHaveBeenCalledTimes(1);
+    expect(hoisted.clearPendingChatConfirmation).toHaveBeenCalledWith(42, 42);
   });
 
   it('still clears the staged confirmation when the confirmed turn completes normally', async () => {
@@ -270,6 +275,80 @@ describe('legacy_tail M18 timeout catch', () => {
 
     expect(hoisted.clearPendingChatConfirmation).toHaveBeenCalledTimes(1);
     expect(hoisted.clearPendingChatConfirmation).toHaveBeenCalledWith(42, 42);
+  });
+
+  it('propagates the exact staged targets into the live legacy authorization scope', async () => {
+    const authorization = await vi.importActual<typeof import('../../../src/services/chat-tool-authorization')>(
+      '../../../src/services/chat-tool-authorization',
+    );
+    hoisted.analyzeChatSkillOrchestration.mockReturnValue({
+      safety: { explicitConfirmation: true, requiresConfirmation: true },
+      involvedSkills: [],
+    });
+    hoisted.getPendingChatConfirmation.mockReturnValue({
+      confirmedTargets: [{ tool: 'delete_calendar_event', targetId: 'evt-A' }],
+    });
+    hoisted.runWithChatToolAuthorization.mockImplementation(
+      async (context: Parameters<typeof authorization.runWithChatToolAuthorization>[0], fn: () => Promise<unknown>) =>
+        authorization.runWithChatToolAuthorization(context, fn),
+    );
+    hoisted.executeChatDomainHandler.mockImplementation(async () => {
+      const wrongTarget = authorization.authorizeChatToolCall(
+        'delete_calendar_event',
+        { event_id: 'evt-B' },
+        42,
+        42,
+      );
+      const stagedTarget = authorization.authorizeChatToolCall(
+        'delete_calendar_event',
+        { event_id: 'evt-A' },
+        42,
+        42,
+      );
+      return {
+        text: 'authorization checked',
+        domain: 'secretary',
+        metadata: { wrongTarget, stagedTarget },
+      };
+    });
+
+    const { ctx, json } = buildCtx();
+    await legacyTailStage.handle(ctx);
+
+    const envelope = json.mock.calls[0][0] as {
+      metadata: {
+        wrongTarget: { allowed: boolean; code?: string };
+        stagedTarget: { allowed: boolean };
+      };
+    };
+    expect(envelope.metadata.wrongTarget).toMatchObject({
+      allowed: false,
+      code: 'CONFIRMATION_REQUIRED',
+    });
+    expect(envelope.metadata.stagedTarget).toMatchObject({ allowed: true });
+    expect(hoisted.runWithChatToolAuthorization.mock.calls[0]?.[0]).toMatchObject({
+      userId: 42,
+      tenantId: 42,
+      confirmedDestructiveTargets: [{ tool: 'delete_calendar_event', targetId: 'evt-A' }],
+    });
+  });
+
+  it('stages zero destructive grants when explicit text has no server-side target set', async () => {
+    hoisted.analyzeChatSkillOrchestration.mockReturnValue({
+      safety: { explicitConfirmation: true, requiresConfirmation: true },
+      involvedSkills: [],
+    });
+    hoisted.getPendingChatConfirmation.mockReturnValue(null);
+    hoisted.executeChatDomainHandler.mockResolvedValue({ text: 'no mutation', domain: 'secretary' });
+
+    const { ctx } = buildCtx();
+    await legacyTailStage.handle(ctx);
+
+    expect(hoisted.runWithChatToolAuthorization.mock.calls[0]?.[0]).toMatchObject({
+      confirmedDestructiveAction: true,
+      confirmedDestructiveTargets: [],
+      confirmationSource: 'explicit_current_turn',
+    });
   });
 
   it('localizes the partial-progress template for pt locales', async () => {

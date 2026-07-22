@@ -56,6 +56,7 @@ import {
   type ChatResponseBlock,
 } from '../../services/chat-response-blocks';
 import { recordChatQualityGateOutcome } from '../../services/chat-hybrid-metrics';
+import { buildResponseLanguageTelemetry } from '../../services/chat-language-detector';
 import type { analyzeChatSkillOrchestration } from '../../services/chat-skill-orchestrator';
 
 // ─── Gate policy table ─────────────────────────────────────────────
@@ -96,6 +97,9 @@ const STAGE_FAMILY_GATE_POLICIES: Readonly<Record<string, ChatFinalizerGatePolic
   // M14: deterministic routing-clarify terminal — fixed templated question,
   // cannot hallucinate.
   routing_clarify: 'contract_only',
+  // M19: fixed localized disclosure after both planner passes decline an
+  // actionable cross-skill request; no model/tool execution in this stage.
+  cross_skill_plan_declined: 'contract_only',
   chat_core_v2_unsupported_fallback: 'contract_only',
   // M18: deterministic partial-progress template after a domain-handler
   // timeout with checkpointed tool work — fixed localized string listing
@@ -118,6 +122,7 @@ const STAGE_FAMILY_GATE_POLICIES: Readonly<Record<string, ChatFinalizerGatePolic
   attachment: 'full_gate',
   internet_research: 'full_gate',
   chat_core_v2_local_answer: 'full_gate',
+  legacy_timeout_background: 'full_gate',
   legacy_response: 'full_gate',
 };
 
@@ -140,6 +145,7 @@ const DETERMINISTIC_ROUTE_METHOD_POLICIES: ReadonlySet<string> = new Set([
   'plan-shortcut',
   'confirmation-required',
   'routing-clarify',
+  'cross-skill-plan-declined',
   'decision-center-action',
   'unsupported',
   'finance-state-shortcut',
@@ -402,6 +408,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
         },
         ...qualityGateTripStamp,
         fallbackPolicy: fallbackPolicy.policy,
+        responseLanguage: buildResponseLanguageTelemetry(input.locale, composed.text),
       },
     };
   } catch (err) {
@@ -439,6 +446,7 @@ export function finalizeChatAnswerMetadata(input: FinalizeChatAnswerMetadataInpu
           issues: ['answer_contract_build_failed'],
           score: 0.2,
         },
+        responseLanguage: buildResponseLanguageTelemetry(input.locale, input.responseText),
       },
     };
   }

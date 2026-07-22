@@ -18,9 +18,13 @@ import {
   authorizeChatActionPlanSteps,
   buildChatActionAccessDeniedResponse,
 } from '../authorization';
+import type { ChatConfirmedDestructiveTarget } from '../../chat-tool-authorization';
 
 export async function executeConfirmedChatActionRuns(
-  input: ChatPlannerInput & { sourceMessageId?: string | null },
+  input: ChatPlannerInput & {
+    sourceMessageId?: string | null;
+    confirmedTargets?: ChatConfirmedDestructiveTarget[];
+  },
   deps: ChatActionPlannerDeps = {},
 ): Promise<{ plan: ChatActionPlan; response: ChatActionRouteResponse; status: ChatActionStatus } | null> {
   const rows = listPendingChatActionRuns({
@@ -62,6 +66,9 @@ export async function executeConfirmedChatActionRuns(
     ...input,
     conversationId: plan.conversationId,
     messageId: plan.messageId,
-  }, resolvedDeps, { confirmed: true });
+  }, resolvedDeps, {
+    confirmed: true,
+    confirmedTargets: input.confirmedTargets,
+  });
   return { plan, response, status: String(response.metadata.actionStatus || 'planned') as ChatActionStatus };
 }

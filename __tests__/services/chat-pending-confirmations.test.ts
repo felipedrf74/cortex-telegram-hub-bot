@@ -19,6 +19,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  clearCompletedChatConfirmationsForScope,
   clearPendingChatConfirmation,
   getCompletedChatConfirmation,
   getPendingChatConfirmation,
@@ -121,7 +122,7 @@ describe('chat-pending-confirmations', () => {
       expect(track().confirmedTargets).toBeUndefined();
     });
 
-    it('trims, caps, and normalizes staged targets', () => {
+    it('trims and caps exact staged targets while dropping malformed entries fail-closed', () => {
       const pending = track({
         confirmedTargets: [
           { tool: '  delete_task  ', targetId: `  ${'t'.repeat(250)}  ` },
@@ -130,12 +131,16 @@ describe('chat-pending-confirmations', () => {
         ],
       });
 
-      expect(pending.confirmedTargets).toHaveLength(3);
+      expect(pending.confirmedTargets).toHaveLength(1);
       expect(pending.confirmedTargets?.[0]?.tool).toBe('delete_task');
       expect(pending.confirmedTargets?.[0]?.targetId).toBe('t'.repeat(200));
-      // Empty/whitespace and non-string values collapse to undefined fields.
-      expect(pending.confirmedTargets?.[1]).toEqual({ tool: undefined, targetId: undefined });
-      expect(pending.confirmedTargets?.[2]).toEqual({ tool: undefined, targetId: undefined });
+    });
+
+    it('preserves an explicitly empty target list as a fail-closed grant set', () => {
+      expect(track({ confirmedTargets: [] }).confirmedTargets).toEqual([]);
+      expect(track({
+        confirmedTargets: [{ tool: '', targetId: '' }],
+      }).confirmedTargets).toEqual([]);
     });
 
     it('caps the target list at 10 entries', () => {
@@ -193,6 +198,24 @@ describe('chat-pending-confirmations', () => {
       expect(getCompletedChatConfirmation(TOKEN, 9999, TENANT_A, NOW)).toBeNull();
       expect(getCompletedChatConfirmation('other-token', USER_ID, TENANT_A, NOW)).toBeNull();
       expect(getCompletedChatConfirmation(TOKEN, USER_ID, TENANT_A, NOW)).not.toBeNull();
+    });
+
+    it('clears completed replays for exactly one authenticated tenant scope', () => {
+      remember();
+      remember({
+        confirmationToken: 'tenant-b-token',
+        tenantId: TENANT_B,
+      });
+      remember({
+        confirmationToken: 'other-user-token',
+        userId: 9999,
+        tenantId: 9999,
+      });
+
+      expect(clearCompletedChatConfirmationsForScope(USER_ID, TENANT_A)).toBe(1);
+      expect(getCompletedChatConfirmation(TOKEN, USER_ID, TENANT_A, NOW)).toBeNull();
+      expect(getCompletedChatConfirmation('tenant-b-token', USER_ID, TENANT_B, NOW)).not.toBeNull();
+      expect(getCompletedChatConfirmation('other-user-token', 9999, 9999, NOW)).not.toBeNull();
     });
   });
 });

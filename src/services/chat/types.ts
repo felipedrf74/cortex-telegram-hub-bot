@@ -18,6 +18,7 @@ import type {
   ChatActionSkill,
   ChatProvider,
 } from './registry/types';
+import type { ChatConfirmedDestructiveTarget } from '../chat-tool-authorization';
 
 export type ChatActionStatus = ChatActionRunStatus;
 
@@ -137,4 +138,8 @@ export interface ChatActionPlannerDeps {
 export interface ChatActionExecutionOptions {
   confirmed?: boolean;
   confirmationSource?: 'explicit_current_turn' | 'pending_confirmation' | 'none';
+  /** Exact server-staged grants carried from the pending confirmation. */
+  confirmedTargets?: ChatConfirmedDestructiveTarget[];
+  /** @internal Prevents recursive authorization-context installation. */
+  authorizationContextBound?: boolean;
 }

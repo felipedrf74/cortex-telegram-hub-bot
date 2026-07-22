@@ -78,8 +78,8 @@ async function main(): Promise<void> {
   }
 
   // M15 hard runtime guard (adversarial fix): if AI_CLASSIFY_MANIFEST_PROMPT
-  // was flipped on while the documented flag-flip blockers are still open
-  // (missing step executors / missing legacy domain handlers), force the
+  // is requested while an executable surface has regressed (missing step
+  // executors / missing legacy domain handlers), force the
   // flag off for this process and record a deduped operator alert. Zero
   // cost when the flag is off. Runs after initDatabase so the alert can
   // persist; boot never blocks on it.

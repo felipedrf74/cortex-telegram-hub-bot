@@ -98,8 +98,17 @@ export function verifyTodoistSignature(rawBody: Buffer, signature: string, secre
 
 // ─── Router factory ────────────────────────────────────────────────
 
-export function createWebhookRouter(): Router {
+export interface WebhookRouterOptions {
+  readonly todoistWebhookSecret?: string;
+}
+
+export function createWebhookRouter(options: WebhookRouterOptions = {}): Router {
   const router = Router();
+  // Snapshot immutable process config when the router is built. Tests may
+  // inject a fixed secret so their signer and verifier share one explicit
+  // input; production's no-option path keeps the configured fail-closed
+  // contract.
+  const todoistWebhookSecret = options.todoistWebhookSecret ?? config.todoist?.webhookSecret ?? '';
 
   // Raw-body parser scoped to ONLY the webhook routes — global express.json()
   // would consume the bytes before we get a chance to HMAC them.
@@ -189,7 +198,7 @@ export function createWebhookRouter(): Router {
     const deliveryId = (req.headers['x-todoist-delivery-id'] as string) || '';
 
     // 1. Verify signature against the raw bytes
-    const secret = config.todoist.webhookSecret;
+    const secret = todoistWebhookSecret;
     if (!secret) {
       logger.warn('Todoist webhook received but TODOIST_WEBHOOK_SECRET not set — rejecting');
       res.status(503).json({ error: 'webhook secret not configured' });

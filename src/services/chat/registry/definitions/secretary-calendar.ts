@@ -260,6 +260,10 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
       providerDependencies: ['google_calendar', 'outlook_calendar'],
       risk: 'destructive',
       confirmationPolicy: 'confirm',
+      confirmationTarget: {
+        tool: 'delete_calendar_event',
+        argumentField: 'eventId',
+      },
       executor: 'unified_calendar.deleteEvent',
       verifier: 'provider_read_back',
       // Phase 13 batch 67 (2026-05-16): typed extractor surfaces the event

@@ -84,6 +84,88 @@ describe('chat message execution helpers', () => {
     expect(hoisted.listLegacyToolLoopCheckpoints).toHaveBeenCalledWith({ runId: 'req-m18', userId: 42, tenantId: 1001 });
   });
 
+  it('durably queues before rejection and attaches a later foreground result for zero-extra-call delivery', async () => {
+    vi.useFakeTimers();
+    hoisted.listLegacyToolLoopCheckpoints.mockReturnValue([
+      { toolName: 'get_calendar_events', sequence: 1, completedAt: '2026-07-22T10:00:00.000Z' },
+    ]);
+    let resolveHandler!: (value: { text: string; domain: 'secretary' }) => void;
+    const handler = vi.fn(() => new Promise<{ text: string; domain: 'secretary' }>((resolve) => {
+      resolveHandler = resolve;
+    }));
+    const enqueue = vi.fn(() => ({ jobId: 'job-m18', notificationPolicy: 'apns' as const }));
+    const attachLateResult = vi.fn();
+    const attachLateFailure = vi.fn();
+
+    const execution = executeChatDomainHandler(
+      handler,
+      'slow request',
+      42,
+      1001,
+      undefined,
+      'req-m18',
+      { enqueue, attachLateResult, attachLateFailure },
+    );
+    const expectation = execution.then(
+      () => { throw new Error('expected timeout rejection'); },
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
+
+    const err = await expectation as ChatDomainTimeoutError;
+    expect(enqueue).toHaveBeenCalledWith([
+      { toolName: 'get_calendar_events', sequence: 1, completedAt: '2026-07-22T10:00:00.000Z' },
+    ]);
+    expect(err.continuation).toEqual({ jobId: 'job-m18', notificationPolicy: 'apns' });
+
+    resolveHandler({ text: 'late answer', domain: 'secretary' });
+    await Promise.resolve();
+    expect(attachLateResult).toHaveBeenCalledWith(
+      { jobId: 'job-m18', notificationPolicy: 'apns' },
+      { text: 'late answer', domain: 'secretary' },
+    );
+    expect(attachLateFailure).not.toHaveBeenCalled();
+  });
+
+  it('durably marks a detached foreground rejection so the worker fails honestly instead of re-running the provider', async () => {
+    vi.useFakeTimers();
+    hoisted.listLegacyToolLoopCheckpoints.mockReturnValue([
+      { toolName: 'get_calendar_events', sequence: 1, completedAt: '2026-07-22T10:00:00.000Z' },
+    ]);
+    let rejectHandler!: (reason: Error) => void;
+    const handler = vi.fn(() => new Promise<never>((_resolve, reject) => {
+      rejectHandler = reject;
+    }));
+    const enqueue = vi.fn(() => ({ jobId: 'job-m18-failed', notificationPolicy: 'apns' as const }));
+    const attachLateResult = vi.fn();
+    const attachLateFailure = vi.fn();
+
+    const execution = executeChatDomainHandler(
+      handler,
+      'slow request',
+      42,
+      1001,
+      undefined,
+      'req-m18-failed',
+      { enqueue, attachLateResult, attachLateFailure },
+    );
+    const expectation = execution.then(
+      () => { throw new Error('expected timeout rejection'); },
+      (err: unknown) => err,
+    );
+    await vi.advanceTimersByTimeAsync(CHAT_DOMAIN_HANDLER_TIMEOUT_MS);
+    await expectation;
+
+    const providerError = new Error('provider definitively failed');
+    rejectHandler(providerError);
+    await Promise.resolve();
+    expect(attachLateFailure).toHaveBeenCalledWith(
+      { jobId: 'job-m18-failed', notificationPolicy: 'apns' },
+      providerError,
+    );
+    expect(attachLateResult).not.toHaveBeenCalled();
+  });
+
   it('carries zero checkpoints when the turn has no chatRequestId (degraded behavior unchanged)', async () => {
     vi.useFakeTimers();
     const handler = vi.fn(() => new Promise<never>(() => {}));
@@ -136,6 +218,21 @@ describe('chat message execution helpers', () => {
     const es = buildChatTimeoutPartialReplyText('es-419', ['search_notes']);
     expect(es).toContain('search notes');
     expect(es).toContain('continuar');
+
+    const queued = buildChatTimeoutPartialReplyText('en-US', ['search_notes'], true);
+    expect(queued).toContain('in-flight request');
+    expect(queued).toContain('whether it completes or stops');
+    expect(queued).toContain('will not start it again');
+    expect(queued).toContain('require confirmation');
+    expect(queued).not.toContain('notify you when it finishes');
+
+    const queuedPt = buildChatTimeoutPartialReplyText('pt-BR', ['search_notes'], true);
+    expect(queuedPt).toContain('pedido em curso');
+    expect(queuedPt).toContain('se concluir ou parar');
+
+    const queuedEs = buildChatTimeoutPartialReplyText('es-419', ['search_notes'], true);
+    expect(queuedEs).toContain('solicitud en curso');
+    expect(queuedEs).toContain('si termina o se detiene');
 
     // Unknown locale falls back to English.
     expect(buildChatTimeoutPartialReplyText(null, ['search_notes'])).toContain('search notes');

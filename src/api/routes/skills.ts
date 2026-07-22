@@ -410,7 +410,7 @@ export function skillsRoutes(): Router {
     // DEPRECATED REMNANT (M21): the owner-only override contract still keys
     // targets by the legacy users.telegram_id column. Migrating this admin
     // request contract to canonical users.id is part of the owner-gated
-    // identity migration (see migrations/258_telegram_identity_archive.sql).
+    // identity migration (see migrations/259_telegram_identity_archive.sql).
     const target = getUserByTelegramId(targetUserId);
     if (!target) {
       sendError(res, 'USER_NOT_FOUND', `Target user ${targetUserId} not found`, 404);

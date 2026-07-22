@@ -60,6 +60,10 @@ export const destructiveConfirmationHoldStage: ChatStage = {
       reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
       intentClass,
       summary,
+      // Pre-routing only knows free text, not a provider-backed target id.
+      // Preserve the hold but stage zero grants so acceptance cannot become
+      // an untyped destructive authorization.
+      confirmedTargets: [],
       sourceMessageId: userMessageId,
     });
     const decisionResult = await createDecisionIntent({

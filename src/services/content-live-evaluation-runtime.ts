@@ -6,12 +6,14 @@ import path from 'node:path';
 export const CONTENT_LIVE_EVAL_RUNTIME_FLAG = 'NEXUS_CONTENT_LIVE_EVAL_RUNTIME' as const;
 export const CONTENT_LIVE_EVAL_VERIFIER_RUNTIME_FLAG = 'NEXUS_CONTENT_LIVE_EVAL_VERIFIER_RUNTIME' as const;
 export const CONTENT_LIVE_EVAL_BACKGROUND_JOBS_FLAG = 'NEXUS_BACKGROUND_JOBS_ENABLED' as const;
+export const CONTENT_LIVE_EVAL_DELIVERY_DISABLED_FLAG = 'NEXUS_CONTENT_LIVE_EVAL_DELIVERY_DISABLED' as const;
 
 const DISALLOWED_INTEGRATION_ENV_PATTERNS = [
   /^(?:GOOGLE|OUTLOOK|MICROSOFT|GARMIN|TODOIST|NOTION|STRIPE|APNS|AWS|MINIO|INVOICE)_/,
   /^(?:NEWSAPI|SERPAPI|REDDIT|YOUTUBE)_/,
   /^SENTRY_/,
-  /^(?:TELEGRAM_ALLOWED_USER_IDS|OWNER_TELEGRAM_ID)$/,
+  /^TELEGRAM_/,
+  /^OWNER_TELEGRAM_ID$/,
 ];
 
 export function isContentLiveEvalRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -86,7 +88,7 @@ export function assertContentLiveEvalRuntimeEnvironment(
   if (env.PORTAL_BIND !== '127.0.0.1' && env.PORTAL_BIND !== 'localhost' && env.PORTAL_BIND !== '::1') {
     throw new Error('CONTENT_LIVE_EVAL_LOOPBACK_BIND_REQUIRED');
   }
-  if (env.TELEGRAM_LEGACY_DELIVERY !== 'false' || env.TELEGRAM_BOT_TOKEN !== 'content-live-eval-disabled') {
+  if (env[CONTENT_LIVE_EVAL_DELIVERY_DISABLED_FLAG] !== '1') {
     throw new Error('CONTENT_LIVE_EVAL_DELIVERY_MUST_BE_DISABLED');
   }
   if (env.BACKUP_ENABLED !== 'false' || env.PORTAL_ALLOW_LOCAL_BYPASS !== 'true') {

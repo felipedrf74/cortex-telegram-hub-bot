@@ -6,7 +6,7 @@
 // Map inside src/api/routes/chat-message-context.ts, so every restart wiped
 // short-term continuity ("make it shorter" follow-ups, low-confidence
 // classifier pinning, degraded-mode domain fallback). This module makes the
-// DB (chat_conversation_state, migration 256) the source of truth with the
+// DB (chat_conversation_state, migration 257) the source of truth with the
 // Map demoted to a private read cache:
 //
 //   * rememberActiveChatDomain writes through: Map first, then a single-row

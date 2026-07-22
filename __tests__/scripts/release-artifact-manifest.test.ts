@@ -59,6 +59,10 @@ describe('release-artifact-manifest', () => {
       })}\n`,
     );
     fs.writeFileSync(
+      path.join(tmp, 'config/production-migration-lineages.json'),
+      '{"schema":"nexus.production-migration-lineages.v1","lineages":[]}\n',
+    );
+    fs.writeFileSync(
       path.join(tmp, 'src/services/chat-turn-contract.ts'),
       'export interface ChatTurnContractInput { message: string }\n',
     );
@@ -73,6 +77,7 @@ describe('release-artifact-manifest', () => {
       [
         "import './lib/production-shape-migration-rehearsal-evidence.mjs';",
         "import './lib/irreversible-migration-policy.mjs';",
+        "import './lib/production-migration-lineage.mjs';",
         'export {};',
         '',
       ].join('\n'),
@@ -82,6 +87,7 @@ describe('release-artifact-manifest', () => {
       "import './lib/production-shape-migration-rehearsal-evidence.mjs';\nexport {};\n",
     );
     fs.writeFileSync(path.join(tmp, 'scripts/lib/irreversible-migration-policy.mjs'), 'export {};\n');
+    fs.writeFileSync(path.join(tmp, 'scripts/lib/production-migration-lineage.mjs'), 'export {};\n');
     fs.writeFileSync(path.join(tmp, 'scripts/lib/production-shape-migration-rehearsal-evidence.mjs'), 'export {};\n');
   });
 
@@ -104,6 +110,8 @@ describe('release-artifact-manifest', () => {
     ['production promotion tooling', 'scripts/promote-exact-release.sh'],
     ['production-shape migration rehearsal', 'scripts/production-shape-migration-rehearsal.mjs'],
     ['irreversible migration policy runtime', 'scripts/lib/irreversible-migration-policy.mjs'],
+    ['retired migration lineage policy', 'config/production-migration-lineages.json'],
+    ['retired migration lineage runtime', 'scripts/lib/production-migration-lineage.mjs'],
     ['production-shape rehearsal evidence', 'scripts/lib/production-shape-migration-rehearsal-evidence.mjs'],
   ])('changes digest when %s changes', (_label, relativePath) => {
     const before = digest();
@@ -136,6 +144,7 @@ describe('release-artifact-manifest', () => {
       expect.arrayContaining([
         'scripts/production-shape-migration-rehearsal.mjs',
         'scripts/lib/irreversible-migration-policy.mjs',
+        'scripts/lib/production-migration-lineage.mjs',
         'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
       ]),
     );

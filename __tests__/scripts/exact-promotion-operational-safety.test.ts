@@ -85,6 +85,15 @@ exec "$@"
 }
 
 describe('exact production promotion operational safety', () => {
+  it('requires a nonempty full exact-SHA chat-eval record with no legacy prefix acceptance', () => {
+    const raw = source(PROMOTE);
+
+    expect(raw).toContain('if (!/^[0-9a-f]{40}$/.test(recordedCommit))');
+    expect(raw).toContain('recordedCommit !== runtimeSha');
+    expect(raw).not.toContain('runtimeSha.startsWith(recordedCommit)');
+    expect(raw).not.toContain('Rows with an empty git_commit stay accepted');
+  });
+
   it('locks staging and rejects an already-active release before rsync', () => {
     const operator = source(RELEASE_OPERATOR);
     const staging = operator.indexOf('  staging)');
@@ -270,6 +279,84 @@ describe('exact production promotion operational safety', () => {
     expect(raw.slice(evidenceWrite, strictGate)).toContain('onlinePreStop');
     expect(raw.slice(evidenceWrite, strictGate)).toContain('stoppedFinal');
     expect(raw.slice(strictGate, candidateMutation)).toContain('--final-rehearsal-evidence');
+  });
+
+  it('keeps rehearsal diagnostics separate from JSON evidence in both phases', () => {
+    const raw = source(PROMOTE);
+    const captures = [
+      ['MIGRATION_REHEARSAL_OUTPUT="$(', 'MIGRATION_REHEARSAL_EXIT=$?'],
+      ['FINAL_MIGRATION_REHEARSAL_OUTPUT="$(', 'FINAL_MIGRATION_REHEARSAL_EXIT=$?'],
+    ] as const;
+
+    for (const [startMarker, endMarker] of captures) {
+      const start = raw.indexOf(startMarker);
+      const end = raw.indexOf(endMarker, start);
+      const capture = raw.slice(start, end);
+
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      expect(capture).toContain('remote-production-shape-migration-rehearsal.sh');
+      expect(capture).not.toContain('2>&1');
+      expect(capture).not.toContain('2>/dev/null');
+    }
+
+    const fixture = spawnSync(
+      'bash',
+      ['-c', `set -euo pipefail
+json="$(node -e 'process.stderr.write("[production launch warning] fixture\\n");process.stdout.write("{\\"ok\\":true}")')"
+node -e 'const x=JSON.parse(process.argv[1]);if(x.ok!==true)process.exit(1)' "$json"`],
+      { cwd: ROOT, encoding: 'utf8' },
+    );
+    expect(fixture.status, fixture.stderr).toBe(0);
+    expect(fixture.stderr).toContain('[production launch warning] fixture');
+  });
+
+  it('terminates both rehearsal digest records so strict Bash reads do not fail at EOF', () => {
+    const raw = source(PROMOTE);
+    expect(raw.split('].join(" ") + "\\n"').length - 1).toBe(2);
+    const digest = 'a'.repeat(64);
+    const valid = {
+      evidenceSha256: digest,
+      cloneSha256: digest,
+      migratedCloneSha256: digest,
+      pendingMigrationSetSha256: digest,
+      sourceDatabaseSha256: digest,
+    };
+    const phases = [
+      {
+        prefix: 'MIGRATION_REHEARSAL',
+        invalidError: 'migration rehearsal returned an invalid identity',
+      },
+      {
+        prefix: 'FINAL_MIGRATION_REHEARSAL',
+        invalidError: 'final migration rehearsal returned an invalid identity',
+      },
+    ];
+
+    for (const phase of phases) {
+      const start = raw.indexOf(`  read -r ${phase.prefix}_SHA256`);
+      const endMarker = '\n  done';
+      const end = raw.indexOf(endMarker, start) + endMarker.length;
+      expect(start, `${phase.prefix} digest reader`).toBeGreaterThan(-1);
+      expect(end, `${phase.prefix} digest validator`).toBeGreaterThan(start);
+      const block = raw.slice(start, end);
+      const run = (payload: typeof valid) => spawnSync(
+        'bash',
+        ['-c', `set -euo pipefail
+${phase.prefix}_VALIDATION='${JSON.stringify(payload)}'
+${block}
+printf 'parser_completed\\n'`],
+        { cwd: ROOT, encoding: 'utf8' },
+      );
+
+      const success = run(valid);
+      expect(success.status, success.stderr).toBe(0);
+      expect(success.stdout).toBe('parser_completed\n');
+
+      const malformed = run({ ...valid, sourceDatabaseSha256: 'bad' });
+      expect(malformed.status).toBe(1);
+      expect(malformed.stderr).toContain(phase.invalidError);
+    }
   });
 
   it('restarts the untouched predecessor when final rehearsal fails after backup but before mutation', () => {

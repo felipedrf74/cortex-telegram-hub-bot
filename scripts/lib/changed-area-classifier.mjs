@@ -10,12 +10,14 @@ import {
 const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
   'config/test-policy.json',
   'config/irreversible-migrations.json',
+  'config/production-migration-lineages.json',
   'scripts/changed-area-classifier.sh',
   'scripts/changed-area-classifier.mjs',
   'scripts/resolve-ci-change-base.sh',
   'scripts/lib/changed-area-classifier.mjs',
   'scripts/lib/git-changed-paths.mjs',
   'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/lib/production-migration-lineage.mjs',
   'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/lib/test-policy.mjs',
   'scripts/migration-safety-check.mjs',
@@ -29,10 +31,12 @@ const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set([
   '.github/workflows/ci.yml',
   '.husky/pre-commit',
   'config/irreversible-migrations.json',
+  'config/production-migration-lineages.json',
   'scripts/changed-area-classifier.mjs',
   'scripts/lib/changed-area-classifier.mjs',
   'scripts/lib/git-changed-paths.mjs',
   'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/lib/production-migration-lineage.mjs',
   'scripts/migration-safety-check.mjs',
   'scripts/promote-exact-release.sh',
   'scripts/remote-create-release-backup.sh',
@@ -335,9 +339,10 @@ export function classifyChangedFiles({
   googleDriveTenantLeak = has(/^src\/services\/(?:google-drive|google-auth)\.ts$|^__tests__\/security\/google-drive-tenant-leak\.test\.ts$|^scripts\/cleanup-tainted-google-drive-sessions\.mjs$/);
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
-  flags.releaseOperator = has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|rollback|restore)\.sh$/)
+  flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
+    || has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|rollback|restore)\.sh$/)
     || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|trusted-release-signer|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal)\.mjs$/)
-    || has(/^scripts\/lib\/(?:release-artifact-manifest|production-shape-migration-rehearsal-evidence)\.mjs$/);
+    || has(/^scripts\/lib\/(?:release-artifact-manifest|production-migration-lineage|production-shape-migration-rehearsal-evidence)\.mjs$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;

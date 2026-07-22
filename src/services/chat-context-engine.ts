@@ -301,11 +301,10 @@ export async function buildChatPromptContext(input: BuildChatPromptContextInput)
     userId: input.userId,
     tenantId: input.tenantId,
   });
-  // M19 remediation (2026-07-21): the former crossSkillPlanCoverage signal
-  // (splitter-coverage proxy) was deleted. It suppressed the
-  // cross_skill_bridge prompt block, but that block only renders on turns
-  // the planner DECLINED — suppression therefore silently dropped the
-  // second intent. The bridge now always renders on cross-skill turns.
+  // M19: bridge retirement is decided by AI_CROSS_SKILL_EXECUTION inside
+  // buildChatSkillRoutingPromptBlock. The /message pipeline's deterministic
+  // cross_skill_plan_declined terminal protects planner-declined actionable
+  // turns from reaching this single-owner model path.
   const scope = resolveChatTenantScope({
     userId: input.userId,
     tenantId: input.tenantId,

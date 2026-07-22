@@ -53,6 +53,7 @@ import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach
 import { getChatToolRisk } from '../services/chat-tool-authorization';
 import { getCurrentRequestId } from '../utils/request-context';
 import { recordLegacyToolLoopCheckpoint } from '../services/chat-action-run-store';
+import { getCurrentChatLiveEvalSeedBlock } from '../services/chat-live-evaluation-context';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -546,6 +547,9 @@ export async function buildSimpleStateContext(
   if (includeScopedContext) {
     parts.push('\nLocal grounding rule: answer only from scoped Nexus facts listed above. If the requested local item is absent, say no matching local records were found instead of inventing it.');
   }
+
+  const evalSeedBlock = getCurrentChatLiveEvalSeedBlock();
+  if (evalSeedBlock) parts.push(`\n${evalSeedBlock}`);
 
   return parts.join('\n');
 }

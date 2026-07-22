@@ -922,7 +922,7 @@ export function deleteInviteCode(code: string): boolean {
  * production assert (assertOwnerBootstrapReadyForRuntime) all resolve
  * through this identity. It stays until the owner-gated identity migration
  * introduces a canonical owner key and re-keys the persisted row
- * (archive-first groundwork: migrations/258_telegram_identity_archive.sql).
+ * (archive-first groundwork: migrations/259_telegram_identity_archive.sql).
  */
 export function seedOwnerUser(): void {
   try {

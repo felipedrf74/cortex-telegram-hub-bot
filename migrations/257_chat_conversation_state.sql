@@ -1,4 +1,4 @@
--- 256: Durable chat conversation continuity (Chat M13).
+-- 257: Durable chat conversation continuity (Chat M13).
 --
 -- chat_conversation_state persists the per-user active-domain pin that
 -- previously lived only in an in-process Map inside

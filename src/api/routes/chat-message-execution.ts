@@ -20,9 +20,9 @@ export type ChatDomainExecutionResult = {
 
 // ─── M18: typed timeout with checkpointed partial progress ─────────
 //
-// Spike verdict (recorded in the milestone): resuming a timed-out legacy
-// tool loop by re-injecting checkpointed tool results as prior provider
-// turns is NOT provably safe across the process boundary —
+// Spike verdict (recorded in the milestone): resuming a timed-out OPEN legacy
+// tool loop by re-injecting checkpointed tool results as prior provider turns
+// is NOT provably safe across the process boundary —
 //   (1) Promise.race abandons but does NOT cancel the handler; the original
 //       loop keeps running detached in-process, so a queued continuation
 //       could double-execute tools against it;
@@ -34,9 +34,11 @@ export type ChatDomainExecutionResult = {
 //       (buildOptimizedOptions invariant) — by worker time the conversation
 //       state has mutated, breaking open tool_use_id scope;
 //   (4) checkpoints are sanitized summaries, not verbatim provider turns.
-// So the legacy loop gets checkpoint + HONEST PARTIAL (no auto-resume);
-// safe resume stays exclusive to planner-DAG runs, which already re-enter
-// idempotent chat-action-run claims and the M1 confirmation gate.
+// The safe continuation therefore consumes only the detached foreground
+// result. While that promise is outstanding the durable job is not runnable;
+// a definitive failure/deadline fails honestly without another provider call.
+// A later user-requested recovery must be newly planned, skip checkpointed
+// completed operations, and re-enter M1 confirmation for every write.
 //
 // The error message intentionally matches the pre-M18 plain Error so the
 // zero-checkpoint path keeps the route's degraded behavior byte-identical.
@@ -48,15 +50,26 @@ export interface ChatToolLoopCheckpointSummary {
   completedAt: string;
 }
 
+export interface ChatDomainTimeoutContinuationRef {
+  jobId: string;
+  notificationPolicy: 'apns';
+}
+
 export class ChatDomainTimeoutError extends Error {
   readonly code = 'CHAT_DOMAIN_TIMEOUT';
   readonly runId: string | null;
   readonly checkpoints: ChatToolLoopCheckpointSummary[];
-  constructor(runId: string | null, checkpoints: ChatToolLoopCheckpointSummary[]) {
+  readonly continuation: ChatDomainTimeoutContinuationRef | null;
+  constructor(
+    runId: string | null,
+    checkpoints: ChatToolLoopCheckpointSummary[],
+    continuation: ChatDomainTimeoutContinuationRef | null = null,
+  ) {
     super('Response timeout — AI is taking too long');
     this.name = 'ChatDomainTimeoutError';
     this.runId = runId;
     this.checkpoints = checkpoints;
+    this.continuation = continuation;
   }
 }
 
@@ -85,6 +98,7 @@ function readToolLoopCheckpointsFailOpen(
 export function buildChatTimeoutPartialReplyText(
   locale: string | null | undefined,
   toolNames: string[],
+  queuedContinuation = false,
 ): string {
   const listed = [...new Set(toolNames)]
     .map((name) => name.replace(/_/g, ' ').trim())
@@ -92,10 +106,19 @@ export function buildChatTimeoutPartialReplyText(
     .join(', ');
   const normalized = String(locale ?? '').toLowerCase();
   if (normalized.startsWith('pt')) {
+    if (queuedContinuation) {
+      return `Fiquei sem tempo antes de terminar, mas já concluí parte do trabalho: ${listed}. O pedido em curso continua em segundo plano; aviso-te se concluir ou parar, sem o iniciar novamente. Qualquer alteração posterior continuará a exigir confirmação.`;
+    }
     return `Fiquei sem tempo antes de terminar, mas já concluí parte do trabalho: ${listed}. Pede-me para continuar e retomo a partir daí.`;
   }
   if (normalized.startsWith('es')) {
+    if (queuedContinuation) {
+      return `Me quedé sin tiempo antes de terminar, pero ya completé parte del trabajo: ${listed}. La solicitud en curso sigue en segundo plano; te avisaré si termina o se detiene, sin iniciarla de nuevo. Cualquier cambio posterior seguirá requiriendo confirmación.`;
+    }
     return `Me quedé sin tiempo antes de terminar, pero ya completé parte del trabajo: ${listed}. Pídeme continuar y retomo desde ahí.`;
+  }
+  if (queuedContinuation) {
+    return `I ran out of time before finishing, but I already completed part of the work: ${listed}. The in-flight request is still running in the background; I’ll notify you whether it completes or stops, and I will not start it again. Any later change will still require confirmation.`;
   }
   return `I ran out of time before finishing, but I already completed part of the work: ${listed}. Ask me to continue and I'll pick up from there.`;
 }
@@ -127,14 +150,53 @@ export async function executeChatDomainHandler(
   // the domain handler; the typed timeout carries them out for the honest
   // partial-progress reply. Absent → zero checkpoints (behavior unchanged).
   chatRequestId?: string,
+  continuation?: {
+    enqueue(checkpoints: ChatToolLoopCheckpointSummary[]): ChatDomainTimeoutContinuationRef | null;
+    attachLateResult(
+      reference: ChatDomainTimeoutContinuationRef,
+      result: ChatDomainExecutionResult,
+    ): void;
+    attachLateFailure(
+      reference: ChatDomainTimeoutContinuationRef,
+      error: unknown,
+    ): void;
+  },
 ): Promise<ChatDomainExecutionResult> {
   const handlerPromise = handler(message, userId, tenantId);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(() => reject(new ChatDomainTimeoutError(
-      chatRequestId ?? null,
-      readToolLoopCheckpointsFailOpen(chatRequestId, userId, tenantId),
-    )), timeoutMs);
+    timeout = setTimeout(() => {
+      const checkpoints = readToolLoopCheckpointsFailOpen(chatRequestId, userId, tenantId);
+      let continuationRef: ChatDomainTimeoutContinuationRef | null = null;
+      if (checkpoints.length > 0 && continuation) {
+        try {
+          continuationRef = continuation.enqueue(checkpoints);
+        } catch {
+          // Queue persistence is fail-open: the caller still receives the
+          // honest partial-progress response and can ask to continue.
+          continuationRef = null;
+        }
+      }
+      if (continuationRef && continuation) {
+        void handlerPromise.then(
+          (result) => {
+            try {
+              continuation.attachLateResult(continuationRef as ChatDomainTimeoutContinuationRef, result);
+            } catch {
+              // The durable deadline still fails honestly without a re-run.
+            }
+          },
+          (error) => {
+            try {
+              continuation.attachLateFailure(continuationRef as ChatDomainTimeoutContinuationRef, error);
+            } catch {
+              // The durable deadline still fails honestly without a re-run.
+            }
+          },
+        );
+      }
+      reject(new ChatDomainTimeoutError(chatRequestId ?? null, checkpoints, continuationRef));
+    }, timeoutMs);
   });
 
   try {

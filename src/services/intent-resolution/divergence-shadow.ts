@@ -18,25 +18,11 @@ import { keywordMatch } from '../../router/classifier';
 import { analyzeChatSkillOrchestration } from '../chat-skill-orchestrator';
 import { selectRegistrySubsetForMessage } from '../chat/registry';
 import { resolveIntent, INTENT_RESOLVER_VERSION, type IntentCandidate } from './intent-resolver';
+import { V2_TO_LEGACY_DOMAIN } from './routing-domain-map';
+
+export { V2_TO_LEGACY_DOMAIN } from './routing-domain-map';
 
 export const ROUTING_DIVERGENCE_SHADOW_VERSION = 'routing_divergence_shadow@1.0.0';
-
-/**
- * Chat Core v2 domain space → legacy runtime domain space. Exported so the
- * M20 route-exit sampler derives its legacy-vs-v2 comparison with the same
- * mapping this record was built with.
- */
-export const V2_TO_LEGACY_DOMAIN: Record<string, string> = {
-  secretary: 'secretary',
-  tasks: 'secretary',
-  training: 'triathlon',
-  content: 'content',
-  cooking: 'cooking',
-  finance: 'finance',
-  connections: 'connections',
-  notifications: 'notifications',
-  decision_center: 'decision_center',
-};
 
 /** Granular Chat action-skill space → legacy runtime domain space. */
 const ACTION_SKILL_TO_LEGACY_DOMAIN: Record<string, string> = {

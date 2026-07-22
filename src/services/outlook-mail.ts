@@ -55,6 +55,186 @@ export interface OutlookEmail {
   importance: string;
 }
 
+export interface OutlookMailWriteInput {
+  to: string;
+  subject: string;
+  body: string;
+  cc?: string;
+  source?: string;
+}
+
+export interface OutlookMailWriteReceipt {
+  provider: 'outlook_mail';
+  messageId: string;
+  internetMessageId: string | null;
+  state: 'draft' | 'sent';
+  verified: boolean;
+  verificationError?: 'draft_read_back_mismatch' | 'sent_read_back_mismatch' | 'sent_read_back_unavailable';
+}
+
+type OutlookMailWriteReadBack = {
+  id: string;
+  internetMessageId: string | null;
+  recipients: string[];
+  subject: string;
+  body: string;
+  isDraft: boolean;
+  sentDateTime: string | null;
+};
+
+type OutlookMailWriteOptions = { signal?: AbortSignal };
+
+const OUTLOOK_MAIL_WRITE_PREFER = 'IdType="ImmutableId", outlook.body-content-type="text"';
+
+function normalizeAddresses(value: string): string[] {
+  return value
+    .split(',')
+    .map((address) => address.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
+function normalizeMailBody(value: string): string {
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+function graphMessagePayload(data: OutlookMailWriteInput): Record<string, unknown> {
+  return {
+    subject: data.subject,
+    body: { contentType: 'Text', content: data.body },
+    toRecipients: normalizeAddresses(data.to).map((address) => ({ emailAddress: { address } })),
+    ...(data.cc
+      ? { ccRecipients: normalizeAddresses(data.cc).map((address) => ({ emailAddress: { address } })) }
+      : {}),
+  };
+}
+
+function prepareOutlookMailWriteRequest(request: any, options?: OutlookMailWriteOptions): any {
+  const prepared = request.header('Prefer', OUTLOOK_MAIL_WRITE_PREFER);
+  if (options?.signal) prepared.option('signal', options.signal);
+  return prepared;
+}
+
+async function readOutlookMailWriteState(
+  client: any,
+  messageId: string,
+  options?: OutlookMailWriteOptions,
+): Promise<OutlookMailWriteReadBack> {
+  const msg = await prepareOutlookMailWriteRequest(
+    client.api(`/me/messages/${messageId}`),
+    options,
+  )
+    .select('id,internetMessageId,toRecipients,subject,body,isDraft,sentDateTime')
+    .get();
+  return {
+    id: typeof msg?.id === 'string' ? msg.id.trim() : '',
+    internetMessageId: typeof msg?.internetMessageId === 'string' ? msg.internetMessageId : null,
+    recipients: (Array.isArray(msg?.toRecipients) ? msg.toRecipients : [])
+      .map((recipient: any) => String(recipient?.emailAddress?.address || '').trim().toLowerCase())
+      .filter(Boolean)
+      .sort(),
+    subject: String(msg?.subject || ''),
+    body: String(msg?.body?.content || ''),
+    isDraft: msg?.isDraft === true,
+    sentDateTime: typeof msg?.sentDateTime === 'string' && msg.sentDateTime ? msg.sentDateTime : null,
+  };
+}
+
+function writeFieldsMatch(readBack: OutlookMailWriteReadBack, data: OutlookMailWriteInput): boolean {
+  return Boolean(readBack.id)
+    && JSON.stringify(readBack.recipients) === JSON.stringify(normalizeAddresses(data.to))
+    && readBack.subject.trim() === data.subject.trim()
+    && normalizeMailBody(readBack.body) === normalizeMailBody(data.body);
+}
+
+async function createOutlookDraftWithClient(
+  client: any,
+  data: OutlookMailWriteInput,
+  options?: OutlookMailWriteOptions,
+): Promise<OutlookMailWriteReceipt> {
+  const created = await prepareOutlookMailWriteRequest(client.api('/me/messages'), options)
+    .post(graphMessagePayload(data));
+  const messageId = typeof created?.id === 'string' ? created.id.trim() : '';
+  if (!messageId) throw new Error('outlook_draft_id_missing');
+  const readBack = await readOutlookMailWriteState(client, messageId, options);
+  const verified = readBack.id === messageId && readBack.isDraft && writeFieldsMatch(readBack, data);
+  return {
+    provider: 'outlook_mail',
+    messageId,
+    internetMessageId: readBack.internetMessageId,
+    state: 'draft',
+    verified,
+    ...(verified ? {} : { verificationError: 'draft_read_back_mismatch' as const }),
+  };
+}
+
+/**
+ * Creates an Outlook draft for one authenticated user and reads that exact
+ * immutable provider object back before allowing callers to claim success.
+ */
+export async function createOutlookDraftForUser(
+  userId: number,
+  data: OutlookMailWriteInput,
+  options?: OutlookMailWriteOptions,
+): Promise<OutlookMailWriteReceipt> {
+  return createOutlookDraftWithClient(getGraphClientForUser(userId), data, options);
+}
+
+/**
+ * Sends through a provider-created draft so the post-send state can be read
+ * back by immutable Graph id. A 202/POST alone is never treated as verified.
+ */
+export async function sendOutlookEmailWithReadBackForUser(
+  userId: number,
+  data: OutlookMailWriteInput,
+  options?: OutlookMailWriteOptions,
+): Promise<OutlookMailWriteReceipt> {
+  const client = getGraphClientForUser(userId);
+  const draft = await createOutlookDraftWithClient(client, data, options);
+  if (!draft.verified) return draft;
+
+  await prepareOutlookMailWriteRequest(
+    client.api(`/me/messages/${draft.messageId}/send`),
+    options,
+  )
+    .post({});
+
+  let readBack: OutlookMailWriteReadBack;
+  try {
+    readBack = await readOutlookMailWriteState(client, draft.messageId, options);
+  } catch {
+    // Graph errors can carry provider response bodies. Keep operational logs
+    // to scoped, opaque identifiers and return a stable public error code.
+    logger.warn({ userId, messageId: draft.messageId }, 'Outlook sent-message read-back unavailable');
+    return {
+      ...draft,
+      state: 'sent',
+      verified: false,
+      verificationError: 'sent_read_back_unavailable',
+    };
+  }
+  const verified = readBack.id === draft.messageId
+    && !readBack.isDraft
+    && Boolean(readBack.sentDateTime)
+    && writeFieldsMatch(readBack, data);
+  if (verified) {
+    logEmailSend(data.to, data.subject, 'sent', data.source);
+    pushEvent({
+      ts: new Date().toISOString(),
+      type: 'job',
+      summary: 'Outlook email sent and verified by chat action planner',
+    });
+  }
+  return {
+    provider: 'outlook_mail',
+    messageId: readBack.id,
+    internetMessageId: readBack.internetMessageId,
+    state: 'sent',
+    verified,
+    ...(verified ? {} : { verificationError: 'sent_read_back_mismatch' as const }),
+  };
+}
+
 function mapGraphMessages(messages: any[]): OutlookEmail[] {
   return (messages || []).map((msg: any) => ({
     id: msg.id || '',

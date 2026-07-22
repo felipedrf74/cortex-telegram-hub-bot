@@ -23,6 +23,8 @@ import type Database from 'better-sqlite3';
 import {
   ensureChatEvalHistoryTables,
   listChatEvalRuns,
+  readFrozenRealProviderBaselineState,
+  type ChatEvalFrozenBaselineState,
   type ChatEvalHistoryRun,
 } from './chat-eval-history';
 import {
@@ -37,11 +39,91 @@ import {
   type ChatV2CompletionReadinessReportLike,
   type ChatV2ReadinessDashboardRow,
 } from './chatv2-readiness-alerts';
+import {
+  readChatRoutingClarifyBudget,
+  type ChatRoutingClarifyBudget,
+} from './chat-routing-clarify-metrics';
+import {
+  CHAT_V2_RETIREMENT_FALLBACK_WINDOW_HOURS,
+  CHAT_V2_RETIREMENT_MAX_FALLBACK_RATE,
+  buildChatV2RetirementCampaign,
+  buildChatV2RetirementFallbackAlertInputs,
+  type ChatV2RetirementCampaignRow,
+} from './chat-route-exit-sampler';
 
-export const CHAT_QUALITY_DASHBOARD_VERSION = 'chat-quality-dashboard@1.0.0';
+export const CHAT_QUALITY_DASHBOARD_VERSION = 'chat-quality-dashboard@1.2.0';
 
 /** Default artifact path written by the owner-run readiness CLI (see runbook). */
 export const DEFAULT_CHAT_V2_READINESS_REPORT_PATH = 'reports/chatv2-readiness/latest.json';
+
+const CHAT_V2_READINESS_PHASES = [
+  'shadow',
+  'answerCanary',
+  'deterministicRead',
+  'writePreview',
+  'confirmedWrites',
+  'cloudAllowlist',
+  'legacyRetirement',
+] as const;
+
+/**
+ * Fail-closed structural validation for the owner-produced readiness artifact.
+ * A matching schema label alone is not evidence: all producer-owned phases
+ * and every scalar gate field must be present before consumers may map gates.
+ */
+export function validateChatV2ReadinessReportStructure(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return 'readiness report artifact is not an object';
+  }
+  const report = value as Record<string, unknown>;
+  const schema = typeof report.schemaVersion === 'string' ? report.schemaVersion : '';
+  if (!schema.startsWith('chat_v2_completion_readiness_report')) {
+    return `unexpected readiness schema: expected chat_v2_completion_readiness_report*, found ${schema || 'missing'}`
+      + ' (produce the artifact with scripts/chatv2-completion-readiness.ts)';
+  }
+  if (typeof report.generatedAt !== 'string' || report.generatedAt.trim().length === 0) {
+    return 'readiness report generatedAt must be a non-empty string';
+  }
+  if (
+    !Array.isArray(report.evidenceSources)
+    || report.evidenceSources.some((source) => typeof source !== 'string' || source.trim().length === 0)
+  ) {
+    return 'readiness report evidenceSources must be an array of non-empty strings';
+  }
+  for (const phaseName of CHAT_V2_READINESS_PHASES) {
+    const phase = report[phaseName];
+    if (!phase || typeof phase !== 'object' || Array.isArray(phase)) {
+      return `readiness report phase ${phaseName} is missing or invalid`;
+    }
+    const phaseRecord = phase as Record<string, unknown>;
+    if (typeof phaseRecord.passed !== 'boolean' || !Array.isArray(phaseRecord.gates)) {
+      return `readiness report phase ${phaseName} requires boolean passed and a gates array`;
+    }
+    for (const gate of phaseRecord.gates) {
+      if (!gate || typeof gate !== 'object' || Array.isArray(gate)) {
+        return `readiness report phase ${phaseName} contains an invalid gate`;
+      }
+      const gateRecord = gate as Record<string, unknown>;
+      if (
+        typeof gateRecord.gateId !== 'string'
+        || gateRecord.gateId.trim().length === 0
+        || typeof gateRecord.passed !== 'boolean'
+        || !Number.isInteger(gateRecord.sampleCount)
+        || Number(gateRecord.sampleCount) < 0
+        || !(
+          gateRecord.observed === null
+          || (typeof gateRecord.observed === 'number' && Number.isFinite(gateRecord.observed))
+        )
+        || typeof gateRecord.threshold !== 'number'
+        || !Number.isFinite(gateRecord.threshold)
+        || (gateRecord.reasonCode !== undefined && typeof gateRecord.reasonCode !== 'string')
+      ) {
+        return `readiness report phase ${phaseName} contains malformed gate scalars`;
+      }
+    }
+  }
+  return null;
+}
 
 export interface ChatQualityEvalTrendRow {
   runId: string;
@@ -54,8 +136,10 @@ export interface ChatQualityEvalTrendRow {
   partialCount: number;
   failCount: number;
   blockedCount: number;
-  /** Judge/provider spend recorded for the run (null when not recorded). */
-  budgetUsd: number | null;
+  /** Estimated actual target + judge spend (null when no cost evidence exists). */
+  estimatedActualSpendUsd: number | null;
+  /** Hard run ceiling; never presented as actual spend. */
+  budgetCeilingUsd: number | null;
   realProviderCalls: number;
 }
 
@@ -67,7 +151,7 @@ export interface ChatQualityFailureTypeBreakdown {
 
 export interface ChatQualityLocaleLeakage {
   /**
-   * Newest run whose scenarios carried a response_language score, preferring
+   * Newest run whose persisted day-to-day summary carried locale evidence, preferring
    * real_provider runs over any other mode (fixture runs must not mask live
    * locale regressions). Falls back to any mode; `mode` labels which one won.
    */
@@ -75,6 +159,7 @@ export interface ChatQualityLocaleLeakage {
   mode: ChatEvalHistoryRun['mode'] | null;
   scenarioCount: number;
   leakedCount: number;
+  unknownCount: number;
   rate: number | null;
 }
 
@@ -113,24 +198,39 @@ export interface ChatQualitySamplerSection {
 
 export interface ChatQualityMonthlySpendRow {
   month: string;
-  totalBudgetUsd: number;
+  totalEstimatedActualSpendUsd: number;
+  totalBudgetCeilingUsd: number;
+  actualSpendEvidenceRunCount: number;
   runCount: number;
+}
+
+export interface ChatQualityRetirementCampaignSection {
+  fallbackWindowHours: number;
+  fallbackThreshold: number;
+  alertRouteCount: number;
+  candidateRouteCount: number;
+  rows: ChatV2RetirementCampaignRow[];
 }
 
 export interface ChatQualityDashboard {
   version: string;
   generatedAt: string;
   evalTrend: ChatQualityEvalTrendRow[];
+  frozenLiveBaseline: ChatEvalFrozenBaselineState;
   failureTypeBreakdown: ChatQualityFailureTypeBreakdown;
   localeLeakage: ChatQualityLocaleLeakage;
   /** Process-local counters since boot (unified finalizer gate outcomes). */
   qualityGateOutcomes: Readonly<Record<ChatQualityGateOutcome, number>>;
+  /** Durable aggregate telemetry for the approved <=10% clarify budget. */
+  routingClarifyBudget: ChatRoutingClarifyBudget;
   routingAccuracy: ChatQualityRoutingSection;
   readiness: ChatQualityReadinessSection;
+  retirementCampaign: ChatQualityRetirementCampaignSection;
   samplerCaptures: ChatQualitySamplerSection;
   monthlyEvalSpend: {
     months: ChatQualityMonthlySpendRow[];
-    currentMonthUsd: number;
+    currentMonthEstimatedActualSpendUsd: number;
+    currentMonthBudgetCeilingUsd: number;
   };
 }
 
@@ -140,6 +240,7 @@ export interface BuildChatQualityDashboardOptions {
   /** How many recent runs contribute to the failure-type breakdown. */
   failureRunLimit?: number;
   samplerWindowDays?: number;
+  clarifyWindowDays?: number;
   /**
    * ChatV2 readiness report (chat_v2_completion_readiness_report.v1). Pass
    * null for "explicitly unavailable"; leave undefined to skip loading here
@@ -169,11 +270,17 @@ export function buildChatQualityDashboard(
     version: CHAT_QUALITY_DASHBOARD_VERSION,
     generatedAt: now.toISOString(),
     evalTrend: runs.slice(0, evalTrendLimit).map(toTrendRow),
+    frozenLiveBaseline: readFrozenRealProviderBaselineState(db),
     failureTypeBreakdown: buildFailureTypeBreakdown(runs.slice(0, failureRunLimit)),
-    localeLeakage: buildLocaleLeakage(db, runs),
+    localeLeakage: buildLocaleLeakage(db),
     qualityGateOutcomes: getChatQualityGateOutcomeCounters(),
+    routingClarifyBudget: readChatRoutingClarifyBudget(db, {
+      now,
+      windowDays: boundedInt(options.clarifyWindowDays, 30, 1, 365),
+    }),
     routingAccuracy: buildRoutingSection(db),
     readiness: buildReadinessSection(options),
+    retirementCampaign: buildRetirementCampaignSection(db, now),
     samplerCaptures: buildSamplerSection(db, now, samplerWindowDays),
     monthlyEvalSpend: buildMonthlySpend(db, now),
   };
@@ -205,17 +312,8 @@ export function loadChatV2ReadinessReportFromFile(
   }
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { report: null, reason: 'readiness report artifact is not an object' };
-    }
-    const schema = typeof parsed.schemaVersion === 'string' ? parsed.schemaVersion : '';
-    if (!schema.startsWith('chat_v2_completion_readiness_report')) {
-      return {
-        report: null,
-        reason: `unexpected readiness schema: expected chat_v2_completion_readiness_report*, found ${schema || 'missing'}`
-          + ' (produce the artifact with scripts/chatv2-completion-readiness.ts)',
-      };
-    }
+    const structureError = validateChatV2ReadinessReportStructure(parsed);
+    if (structureError) return { report: null, reason: structureError };
     return { report: parsed as ChatV2CompletionReadinessReportLike, reason: null };
   } catch {
     return { report: null, reason: 'readiness report artifact is not valid JSON' };
@@ -236,7 +334,8 @@ function toTrendRow(run: ChatEvalHistoryRun): ChatQualityEvalTrendRow {
     partialCount: run.partialCount,
     failCount: run.failCount,
     blockedCount: run.blockedCount,
-    budgetUsd: run.budgetUsd,
+    estimatedActualSpendUsd: run.totalEstimatedActualSpendUsd,
+    budgetCeilingUsd: run.totalBudgetCeilingUsd ?? run.budgetUsd,
     realProviderCalls: run.realProviderCalls,
   };
 }
@@ -258,48 +357,77 @@ function buildFailureTypeBreakdown(runs: ChatEvalHistoryRun[]): ChatQualityFailu
 }
 
 /**
- * Locale leakage from the newest run whose scenarios recorded the
- * deterministic `response_language` dimension (M3 locale gate). A score
- * below 1 means the detector saw the wrong language for the expected locale.
+ * Locale leakage from the aggregate-only day-to-day summary persisted by the
+ * live scorer. Raw turns and text never enter the dashboard.
  *
  * Mode-aware (M22): prefers the newest run with mode='real_provider' so
  * fixture runs cannot mask live regressions; falls back to any mode and
  * labels the winning mode in the payload.
  */
-function buildLocaleLeakage(db: Database.Database, runs: ChatEvalHistoryRun[]): ChatQualityLocaleLeakage {
-  const select = db.prepare('SELECT scores_json FROM chat_eval_scenario_results WHERE run_id = ?');
-
-  const leakageForRun = (run: ChatEvalHistoryRun): ChatQualityLocaleLeakage | null => {
-    const rows = select.all(run.runId) as Array<{ scores_json: string }>;
-    let scenarioCount = 0;
-    let leakedCount = 0;
-    for (const row of rows) {
-      const scores = parseObject(row.scores_json);
-      const score = scores.response_language;
-      if (typeof score !== 'number' || !Number.isFinite(score)) continue;
-      scenarioCount += 1;
-      if (score < 1) leakedCount += 1;
+function buildLocaleLeakage(db: Database.Database): ChatQualityLocaleLeakage {
+  type LocaleEvidenceRow = {
+    run_id: string;
+    mode: ChatEvalHistoryRun['mode'];
+    day_to_day_summary_json: string;
+  };
+  const leakageForRow = (row: LocaleEvidenceRow): ChatQualityLocaleLeakage | null => {
+    let dayToDaySummary: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(row.day_to_day_summary_json) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+      dayToDaySummary = parsed as Record<string, unknown>;
+    } catch {
+      return null;
     }
-    if (scenarioCount === 0) return null;
+    const raw = dayToDaySummary.localeLeakage;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const summary = raw as Record<string, unknown>;
+    const scenarioCount = nonNegativeCount(summary.observedTurnCount);
+    const leakedCount = nonNegativeCount(summary.leakedTurnCount);
+    const unknownCount = nonNegativeCount(summary.unknownTurnCount);
+    if (scenarioCount === 0 && unknownCount === 0) return null;
     return {
-      runId: run.runId,
-      mode: run.mode,
+      runId: row.run_id,
+      mode: row.mode,
       scenarioCount,
       leakedCount,
-      rate: round4(leakedCount / scenarioCount),
+      unknownCount,
+      rate: scenarioCount > 0 ? round4(leakedCount / scenarioCount) : null,
     };
   };
 
-  for (const run of runs) {
-    if (run.mode !== 'real_provider') continue;
-    const leakage = leakageForRun(run);
-    if (leakage) return leakage;
-  }
-  for (const run of runs) {
-    const leakage = leakageForRun(run);
-    if (leakage) return leakage;
-  }
-  return { runId: null, mode: null, scenarioCount: 0, leakedCount: 0, rate: null };
+  const findNewest = (mode?: 'real_provider'): ChatQualityLocaleLeakage | null => {
+    const rows = db.prepare(`
+      SELECT run_id, mode, day_to_day_summary_json
+      FROM chat_eval_runs
+      ${mode ? 'WHERE mode = ?' : ''}
+      ORDER BY generated_at DESC, id DESC
+    `).iterate(...(mode ? [mode] : [])) as Iterable<LocaleEvidenceRow>;
+    for (const row of rows) {
+      const leakage = leakageForRow(row);
+      if (leakage) return leakage;
+    }
+    return null;
+  };
+
+  const live = findNewest('real_provider');
+  if (live) return live;
+  const fallback = findNewest();
+  if (fallback) return fallback;
+  return {
+    runId: null,
+    mode: null,
+    scenarioCount: 0,
+    leakedCount: 0,
+    unknownCount: 0,
+    rate: null,
+  };
+}
+
+function nonNegativeCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : 0;
 }
 
 function buildRoutingSection(db: Database.Database): ChatQualityRoutingSection {
@@ -341,6 +469,22 @@ function buildReadinessSection(options: BuildChatQualityDashboardOptions): ChatQ
   };
 }
 
+function buildRetirementCampaignSection(
+  db: Database.Database,
+  now: Date,
+): ChatQualityRetirementCampaignSection {
+  const rows = buildChatV2RetirementCampaign(db, { now });
+  return {
+    fallbackWindowHours: CHAT_V2_RETIREMENT_FALLBACK_WINDOW_HOURS,
+    fallbackThreshold: CHAT_V2_RETIREMENT_MAX_FALLBACK_RATE,
+    alertRouteCount: buildChatV2RetirementFallbackAlertInputs(rows, {
+      generatedAt: now.toISOString(),
+    }).length,
+    candidateRouteCount: rows.filter((row) => row.candidate).length,
+    rows,
+  };
+}
+
 function buildSamplerSection(
   db: Database.Database,
   now: Date,
@@ -372,22 +516,34 @@ function buildSamplerSection(
 function buildMonthlySpend(db: Database.Database, now: Date): ChatQualityDashboard['monthlyEvalSpend'] {
   const rows = db.prepare(`
     SELECT substr(generated_at, 1, 7) AS month,
-           SUM(COALESCE(budget_usd, 0)) AS totalBudgetUsd,
+           SUM(COALESCE(total_estimated_actual_spend_usd, 0)) AS totalEstimatedActualSpendUsd,
+           SUM(COALESCE(total_budget_ceiling_usd, budget_usd, 0)) AS totalBudgetCeilingUsd,
+           SUM(CASE WHEN total_estimated_actual_spend_usd IS NOT NULL THEN 1 ELSE 0 END) AS actualSpendEvidenceRunCount,
            COUNT(*) AS runCount
     FROM chat_eval_runs
     GROUP BY substr(generated_at, 1, 7)
     ORDER BY month DESC
     LIMIT 12
-  `).all() as Array<{ month: string; totalBudgetUsd: number; runCount: number }>;
+  `).all() as Array<{
+    month: string;
+    totalEstimatedActualSpendUsd: number;
+    totalBudgetCeilingUsd: number;
+    actualSpendEvidenceRunCount: number;
+    runCount: number;
+  }>;
   const months = rows.map((row) => ({
     month: row.month,
-    totalBudgetUsd: round4(Number(row.totalBudgetUsd) || 0),
+    totalEstimatedActualSpendUsd: round4(Number(row.totalEstimatedActualSpendUsd) || 0),
+    totalBudgetCeilingUsd: round4(Number(row.totalBudgetCeilingUsd) || 0),
+    actualSpendEvidenceRunCount: Number(row.actualSpendEvidenceRunCount) || 0,
     runCount: Number(row.runCount) || 0,
   }));
   const currentMonth = now.toISOString().slice(0, 7);
+  const current = months.find((row) => row.month === currentMonth);
   return {
     months,
-    currentMonthUsd: months.find((row) => row.month === currentMonth)?.totalBudgetUsd ?? 0,
+    currentMonthEstimatedActualSpendUsd: current?.totalEstimatedActualSpendUsd ?? 0,
+    currentMonthBudgetCeilingUsd: current?.totalBudgetCeilingUsd ?? 0,
   };
 }
 
@@ -398,7 +554,7 @@ function buildMonthlySpend(db: Database.Database, now: Date): ChatQualityDashboa
  * server import chain, and this dashboard must stay loadable without
  * provider config. accepted_accuracy_snapshots is only ever written by
  * routing-accuracy's storeAcceptedAccuracySnapshot (owner-gated
- * --accept-snapshot); the schema lives in migration 255 /
+ * --accept-snapshot); the schema lives in migration 256 /
  * ensureRoutingCorpusTables.
  */
 function readLatestAcceptedAccuracySnapshot(db: Database.Database): RoutingAccuracyReport | null {
@@ -417,17 +573,6 @@ function readLatestAcceptedAccuracySnapshot(db: Database.Database): RoutingAccur
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
-
-function parseObject(value: unknown): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(String(value ?? '{}'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
 
 function boundedInt(value: number | undefined, fallback: number, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;

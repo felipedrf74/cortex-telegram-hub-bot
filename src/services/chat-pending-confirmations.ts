@@ -92,12 +92,18 @@ function sanitizeConfirmedTargets(
   targets: ChatConfirmedDestructiveTarget[] | undefined,
 ): ChatConfirmedDestructiveTarget[] | undefined {
   if (!targets) return undefined;
-  return targets.slice(0, MAX_CONFIRMED_TARGETS).map((target) => ({
-    tool: typeof target.tool === 'string' && target.tool.trim() ? target.tool.trim() : undefined,
-    targetId: typeof target.targetId === 'string' && target.targetId.trim()
-      ? target.targetId.trim().slice(0, 200)
-      : undefined,
-  }));
+  const sanitized: ChatConfirmedDestructiveTarget[] = [];
+  for (const target of targets) {
+    const tool = typeof target.tool === 'string' ? target.tool.trim() : '';
+    const targetId = typeof target.targetId === 'string' ? target.targetId.trim().slice(0, 200) : '';
+    // A partially typed row would silently become an untyped grant in the
+    // authorization layer. Drop it instead: supplied target sets are exact
+    // and malformed entries must fail closed.
+    if (!tool || !targetId) continue;
+    sanitized.push({ tool, targetId });
+    if (sanitized.length >= MAX_CONFIRMED_TARGETS) break;
+  }
+  return sanitized;
 }
 
 export function trackPendingChatConfirmation(input: TrackPendingChatConfirmationInput): PendingChatConfirmation {
@@ -174,6 +180,17 @@ export function getCompletedChatConfirmation(
     return null;
   }
   return completed;
+}
+
+export function clearCompletedChatConfirmationsForScope(userId: number, tenantId?: number): number {
+  const scopedTenantId = resolveChatTenantId(userId, tenantId);
+  let cleared = 0;
+  for (const [tokenHash, completed] of completedConfirmations.entries()) {
+    if (completed.userId !== userId || completed.tenantId !== scopedTenantId) continue;
+    completedConfirmations.delete(tokenHash);
+    cleared += 1;
+  }
+  return cleared;
 }
 
 export function resetPendingChatConfirmationsForTests(): void {

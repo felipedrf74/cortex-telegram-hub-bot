@@ -30,6 +30,41 @@ export interface ResponseLocaleFidelityResult {
   confidence: number;
 }
 
+export interface StagingLocaleWritePreviewResult {
+  ok: boolean;
+  httpStatusAccepted: boolean;
+  actionStatus: string | null;
+  actionStatusAccepted: boolean;
+  replyText: string;
+  replyTextPresent: boolean;
+  localeFidelity: ResponseLocaleFidelityResult;
+}
+
+export interface ResponseLanguageTelemetry {
+  expected: DetectedResponseLanguage;
+  detected: DetectedResponseLanguage;
+  confidence: number;
+  /** Null means either side was undecidable; it is never fabricated as a match. */
+  matchesExpected: boolean | null;
+}
+
+/** Aggregate-safe per-turn telemetry: categorical language + confidence only. */
+export function buildResponseLanguageTelemetry(
+  promptLocale: string | null | undefined,
+  responseText: string,
+): ResponseLanguageTelemetry {
+  const expected = expectedLanguageForLocale(promptLocale);
+  const detection = detectResponseLanguage(responseText);
+  return {
+    expected,
+    detected: detection.language,
+    confidence: detection.confidence,
+    matchesExpected: expected === 'unknown' || detection.language === 'unknown'
+      ? null
+      : expected === detection.language,
+  };
+}
+
 // ── Discriminative features ────────────────────────────────────────────────
 // Weights: 3 = orthography impossible in the sibling language,
 //          2 = exclusive high-frequency word / suffix,
@@ -212,4 +247,53 @@ export function checkResponseLocaleFidelity(
     detected: detection.language,
     confidence: detection.confidence,
   };
+}
+
+/**
+ * Contract used by the staging locale smoke's canned task-create turns.
+ * Both 200 and 202 are valid transport outcomes across the legacy/preview
+ * routing seams, but the semantic envelope must still prove this is a safe
+ * confirmation preview. A missing status or any success/mutation claim fails
+ * closed even when the response language is correct.
+ */
+export function checkStagingLocaleWritePreview(
+  promptLocale: string | null | undefined,
+  httpStatus: number,
+  responseBody: unknown,
+): StagingLocaleWritePreviewResult {
+  const body = asRecord(responseBody);
+  const data = asRecord(body?.data);
+  const metadata = asRecord(body?.metadata) ?? asRecord(data?.metadata);
+  const replyText = typeof body?.text === 'string'
+    ? body.text
+    : typeof data?.text === 'string'
+      ? data.text
+      : '';
+  const rawActionStatus = metadata?.actionStatus;
+  const actionStatus = typeof rawActionStatus === 'string' && rawActionStatus.trim()
+    ? rawActionStatus.trim()
+    : null;
+  const httpStatusAccepted = httpStatus === 200 || httpStatus === 202;
+  const actionStatusAccepted = actionStatus === 'needs_confirmation';
+  const replyTextPresent = replyText.trim().length > 0;
+  const localeFidelity = checkResponseLocaleFidelity(promptLocale, replyText);
+
+  return {
+    ok: httpStatusAccepted
+      && actionStatusAccepted
+      && replyTextPresent
+      && localeFidelity.ok,
+    httpStatusAccepted,
+    actionStatus,
+    actionStatusAccepted,
+    replyText,
+    replyTextPresent,
+    localeFidelity,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }

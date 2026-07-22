@@ -61,9 +61,9 @@ function parseBoolean(raw: string | undefined): boolean {
 }
 
 // M15 adversarial fix — hard runtime guard override. When the boot-time
-// guard (classifier-manifest-runtime-guard.ts) detects that the flag was
-// flipped on while the documented flag-flip blockers are still open
-// (missing step executors / missing legacy domain handlers), it
+// guard (classifier-manifest-runtime-guard.ts) detects that an executable
+// surface has regressed (missing step executors / missing legacy domain
+// handlers), it
 // force-disables the flag FOR THIS PROCESS. Consulted before the env so no
 // env combination can re-enable a guarded-off prompt without a restart.
 let manifestClassifierPromptRuntimeForceDisabled = false;

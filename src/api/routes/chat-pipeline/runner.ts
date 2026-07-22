@@ -37,6 +37,7 @@ import { internetResearchStage } from './stages/internet-research';
 import { decisionShortcutStage } from './stages/decision-shortcut';
 import { destructiveConfirmationHoldStage } from './stages/destructive-confirmation-hold';
 import { routingClarifyStage } from './stages/routing-clarify';
+import { crossSkillPlanDeclinedStage } from './stages/cross-skill-plan-declined';
 import { v2LocalAnswerStage } from './stages/v2-local-answer';
 import { unsupportedFallbackStage } from './stages/unsupported-fallback';
 import { legacyTailStage } from './stages/legacy-tail';
@@ -70,6 +71,10 @@ export const CHAT_MESSAGE_STAGES: readonly ChatStage[] = [
   // M14: deterministic clarify terminal — after the safety hold (which
   // outranks a routing question), before any model-backed owner.
   routingClarifyStage,
+  // M19: both planner passes have declined. With cross-skill execution on,
+  // stop actionable multi-owner turns deterministically instead of reviving
+  // the single-owner legacy prompt bridge.
+  crossSkillPlanDeclinedStage,
   v2LocalAnswerStage,
   unsupportedFallbackStage,
   legacyTailStage,
@@ -90,6 +95,7 @@ export const NON_RETIRABLE_CHAT_STAGES: ReadonlySet<string> = new Set([
   'action_gateway',
   'pre_routing',
   'destructive_confirmation_hold',
+  'cross_skill_plan_declined',
   'attachment',
   'legacy_tail',
 ]);

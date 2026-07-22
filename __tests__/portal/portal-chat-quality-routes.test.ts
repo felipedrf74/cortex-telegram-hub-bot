@@ -169,6 +169,15 @@ describe('portal chat quality routes', () => {
     expect(payload.contentType).toBe('html');
     expect(String(payload.sent)).toContain('Chat Quality Dashboard');
     expect(String(payload.sent)).toContain("fetch('/api/portal/chat-quality'");
+    expect(String(payload.sent)).toContain('Routing clarify budget');
+    expect(String(payload.sent)).toContain('Frozen live baseline');
+    expect(String(payload.sent)).toContain('Estimated actual spend (USD)');
+    expect(String(payload.sent)).toContain('Budget ceiling (USD)');
+    expect(String(payload.sent)).toContain('Judge calls');
+    expect(String(payload.sent)).not.toContain('Provider calls');
+    expect(String(payload.sent)).toContain('quality deltas unavailable');
+    expect(String(payload.sent)).toContain('ChatV2 per-route retirement campaign');
+    expect(String(payload.sent)).toContain('Routing agreement and online-eval health are diagnostic only');
     expect(mocks.buildChatQualityDashboard).not.toHaveBeenCalled();
   });
 });

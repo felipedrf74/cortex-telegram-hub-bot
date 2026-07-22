@@ -4,12 +4,12 @@ import type { ChatActionName } from '../registry';
 import type { ChatStepExecutor } from './types';
 import { executeCalendarCreateStep, executeCalendarDeleteStep, executeCalendarReadOnlyStep, executeCalendarUpdateStep } from '../../skills/secretary/executor';
 import { executeReminderSetStep } from '../../skills/reminders/executor';
-import { executeMailInboxSummaryStep, executeMailUnreadCountStep } from '../../skills/mail/executor';
+import { executeMailInboxSummaryStep, executeMailUnreadCountStep, executeMailWriteStep } from '../../skills/mail/executor';
 import { executeAddSubtasksToTaskStep, executeTaskCreateStep, executeTaskMutationStep, executeTaskWithSubtasksStep } from '../../skills/tasks/executor';
 import { executeContentAgencyStep, executeContentPipelineHandoffStep, executeContentPipelineStageTransitionStep, executeContentScheduleWorkStep } from '../../skills/content/executor';
 import { executeCookingGroceryListStep, executeCookingMealPlanStep, executeCookingSubstituteIngredientStep, executeCookingSupportStep } from '../../skills/cooking/executor';
 import { executeFinanceCategorizeReceiptStep, executeFinancePaymentActionStep, executeFinanceReminderStep, executeFinanceSummaryStep } from '../../skills/finance/executor';
-import { executeConnectionsReconnectGuidanceStep, executeConnectionsStatusStep } from '../../skills/connections/executor';
+import { executeConnectionsReconnectGuidanceStep, executeConnectionsRetrySyncStep, executeConnectionsStatusStep } from '../../skills/connections/executor';
 import { executeTrainingCoachReportStep, executeTrainingExplainSessionStep, executeTrainingPlanCreateStep, executeTrainingReflowStep } from '../../skills/training/executor';
 import { executeNotificationExplainStep, executeNotificationMutationStep } from '../../skills/notifications/executor';
 import { executeDecisionCenterStep } from '../../skills/decision_center/executor';
@@ -26,6 +26,8 @@ const CHAT_STEP_EXECUTORS: Partial<Record<ChatActionName, ChatStepExecutor>> = {
   set_reminder: (step, context) => executeReminderSetStep(step, context.plan, context.input, context.persistRuns),
   mail_unread_count: (step, context) => executeMailUnreadCountStep(step, context.input),
   mail_inbox_summary: (step, context) => executeMailInboxSummaryStep(step, context.input),
+  draft_email: (step, context) => executeMailWriteStep(step, context.plan, context.input, context.persistRuns, context.confirmed),
+  send_email: (step, context) => executeMailWriteStep(step, context.plan, context.input, context.persistRuns, context.confirmed),
   create_task: (step, context) => executeTaskCreateStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),
   create_task_with_subtasks: (step, context) => executeTaskWithSubtasksStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),
   add_subtasks_to_task: (step, context) => executeAddSubtasksToTaskStep(step, context.plan, context.input, context.deps.taskProviderForUser, context.persistRuns),
@@ -50,6 +52,7 @@ const CHAT_STEP_EXECUTORS: Partial<Record<ChatActionName, ChatStepExecutor>> = {
   finance_categorize_receipt: (step, context) => executeFinanceCategorizeReceiptStep(step, context.plan, context.input, context.persistRuns),
   finance_payment_action: (step, context) => executeFinancePaymentActionStep(step, context.plan, context.input, context.persistRuns),
   connections_status: (step, context) => executeConnectionsStatusStep(step, context.input),
+  connections_retry_sync: (step, context) => executeConnectionsRetrySyncStep(step, context.plan, context.input, context.persistRuns, context.confirmed),
   connections_reconnect_guidance: (step, context) => executeConnectionsReconnectGuidanceStep(step, context.input),
   training_coach_report: (step, context) => executeTrainingCoachReportStep(step, context.input),
   training_explain_session: (step, context) => executeTrainingExplainSessionStep(step, context.input),

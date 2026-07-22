@@ -7,6 +7,7 @@ import {
   getPendingChatConfirmation,
 } from './chat-pending-confirmations';
 import { clearPendingChatCoreV2CommandsForScope } from './chat-core-v2/pending-commands';
+import { cancelChatLegacyTimeoutContinuationsForScope } from './chat-legacy-timeout-continuation';
 import {
   dismissDecision,
   findDecisionByRelatedEntity,
@@ -19,6 +20,7 @@ export interface CancelAllPendingChatWorkResult {
   chatActionRuns: number;
   chatPendingConfirmation: boolean;
   chatCoreV2Commands: number;
+  chatBackgroundContinuations: number;
   decisionDismissed: boolean;
   errors?: Array<{ store: string; message: string }>;
 }
@@ -96,12 +98,21 @@ export function cancelAllPendingChatWork(input: {
     tenantId: input.tenantId,
     conversationId: null,
   }));
+  const chatBackgroundContinuations = safe(
+    'chat_legacy_timeout_continuations.cancel',
+    0,
+    () => cancelChatLegacyTimeoutContinuationsForScope({
+      userId: input.userId,
+      tenantId: input.tenantId,
+    }),
+  );
 
   const result: CancelAllPendingChatWorkResult = {
     chatPendingActions,
     chatActionRuns,
     chatPendingConfirmation,
     chatCoreV2Commands,
+    chatBackgroundContinuations,
     decisionDismissed,
   };
   if (errors.length > 0) result.errors = errors;

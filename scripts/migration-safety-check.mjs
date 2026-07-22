@@ -63,9 +63,11 @@ if (!['none', 'scan', 'review', 'promotion'].includes(approvalMode)) {
 const irreversiblePolicy = loadIrreversibleMigrationPolicy({ root });
 const irreversiblePolicyGovernanceReasons = new Map([
   ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
+  ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
   ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
   ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
   ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
+  ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
   ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
   ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
   ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
@@ -118,6 +120,35 @@ function gitRaw(commandArgs) {
   return execFileSync('git', commandArgs, { cwd: root, encoding: 'utf8' });
 }
 
+function tryResolveGitCommit(ref) {
+  try {
+    return execFileSync(
+      'git',
+      ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    ).trim();
+  } catch {
+    return null;
+  }
+}
+
+function activeMergeMainParent() {
+  const mergeHead = tryResolveGitCommit('MERGE_HEAD');
+  if (!mergeHead) return null;
+  const head = tryResolveGitCommit('HEAD');
+  const mergeParents = new Set([head, mergeHead].filter(Boolean));
+  const matchingMainParents = new Set(
+    ['origin/main', 'main']
+      .map((ref) => tryResolveGitCommit(ref))
+      .filter((commit) => commit && mergeParents.has(commit)),
+  );
+  return matchingMainParents.size === 1 ? [...matchingMainParents][0] : null;
+}
+
 function resolveBase() {
   if (baseRef) {
     return git(['rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`]);
@@ -150,12 +181,19 @@ function changedFiles() {
     return explicitFiles.split(',').map((file) => file.trim()).filter(Boolean);
   }
   const resolved = resolveBase();
-  const committed = parseGitNameStatusZ(gitRaw([
-    'diff', '--name-status', '-z', `${resolved}...HEAD`,
-  ]));
-  const staged = parseGitNameStatusZ(gitRaw([
-    'diff', '--cached', '--name-status', '-z',
-  ]));
+  const mergeMainParent = activeMergeMainParent();
+  // An in-progress feature/main merge must be evaluated as the resulting
+  // index versus main. Unioning feature-vs-base with index-vs-feature would
+  // misclassify branch-only migration rename sources as deployed deletes and
+  // could miss an incoming-main migration dropped during conflict resolution.
+  const committed = mergeMainParent
+    ? []
+    : parseGitNameStatusZ(gitRaw([
+      'diff', '--name-status', '-z', `${resolved}...HEAD`,
+    ]));
+  const staged = parseGitNameStatusZ(gitRaw(mergeMainParent
+    ? ['diff', '--cached', '--name-status', '-z', mergeMainParent]
+    : ['diff', '--cached', '--name-status', '-z']));
   const unstaged = parseGitNameStatusZ(gitRaw([
     'diff', '--name-status', '-z',
   ]));

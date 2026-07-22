@@ -40,6 +40,11 @@ import {
 } from '../../chat-persistence';
 import { tryBuildChatMessageShortcutResponse } from '../../chat-message-shortcuts';
 import { recordChatStage } from '../../../../services/chat-stage-trace';
+import {
+  attachLateChatLegacyTimeoutResult,
+  enqueueChatLegacyTimeoutContinuation,
+  markChatLegacyTimeoutForegroundFailure,
+} from '../../../../services/chat-legacy-timeout-continuation';
 import { applyTurnContractRouteHint } from '../support';
 import { routedChatTurnCtx, type ChatStage, type ChatStageResult, type ChatTurnCtx } from '../types';
 
@@ -154,15 +159,13 @@ export const legacyTailStage: ChatStage = {
       return { kind: 'respond' };
     }
 
-    // M18: catch the typed domain-handler timeout. Per the recorded spike
-    // verdict the legacy tool loop gets NO auto-resume (the detached loop
-    // keeps running after Promise.race; ADV-2 provider pinning + sliced-
-    // history shape stability cannot be guaranteed from a later worker), so
-    // a timeout WITH checkpointed tool work becomes a deterministic,
-    // locale-aware, honest partial-progress reply ("ask me to continue") —
-    // template only, zero further model calls, nothing enqueued. A timeout
-    // with ZERO completed tools rethrows: the route's pre-M18 degraded
-    // behavior stays byte-identical.
+    // M18: never resume the open provider loop across a process boundary. A
+    // checkpointed timeout instead queues a late-result delivery job. The job
+    // cannot run while the detached foreground promise remains outstanding;
+    // success is reused with zero extra model calls, and rejection/deadline
+    // fails honestly without repeating completed work. A user-requested retry
+    // must be newly planned and every write re-enters confirmation.
+    // A zero-checkpoint timeout keeps the pre-M18 degraded behavior.
     let result: ChatDomainExecutionResult;
     let timeoutPartial: ChatDomainTimeoutError | null = null;
     try {
@@ -171,10 +174,10 @@ export const legacyTailStage: ChatStage = {
         tenantId,
         confirmedDestructiveAction: routingDecision.safety.explicitConfirmation,
         // ADV-3: an accepted staged confirmation authorizes exactly the
-        // targets it was staged with; a free-text confirmation collapses to a
-        // single untyped grant (undefined) inside the authorization layer.
+        // targets it was staged with. Explicit confirmation text without a
+        // server-staged target set receives an empty, fail-closed grant set.
         confirmedDestructiveTargets: routingDecision.safety.explicitConfirmation
-          ? pendingConfirmation?.confirmedTargets
+          ? pendingConfirmation?.confirmedTargets ?? []
           : undefined,
         confirmationSource: routingDecision.safety.explicitConfirmation
           ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
@@ -186,7 +189,44 @@ export const legacyTailStage: ChatStage = {
           sourceMessageId: userMessageId,
           message: normalizedText,
         }),
-      }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId, undefined, chatRequestId));
+      }, () => executeChatDomainHandler(
+        handler,
+        route.strippedMessage,
+        userId,
+        tenantId,
+        undefined,
+        chatRequestId,
+        {
+          enqueue: (checkpoints) => enqueueChatLegacyTimeoutContinuation({
+            tenantId,
+            userId,
+            sourceRunId: chatRequestId,
+            sourceMessageId: userMessageId,
+            sourceText: route.strippedMessage,
+            domain: route.domain,
+            locale: chatCoreV2RouteLocale,
+            completedTools: checkpoints.map((checkpoint) => checkpoint.toolName),
+          }),
+          attachLateResult: (reference, lateResult) => {
+            attachLateChatLegacyTimeoutResult({
+              jobId: reference.jobId,
+              tenantId,
+              userId,
+              sourceRunId: chatRequestId,
+              result: lateResult,
+            });
+          },
+          attachLateFailure: (reference, error) => {
+            markChatLegacyTimeoutForegroundFailure({
+              jobId: reference.jobId,
+              tenantId,
+              userId,
+              sourceRunId: chatRequestId,
+              error,
+            });
+          },
+        },
+      ));
     } catch (err) {
       if (!(err instanceof ChatDomainTimeoutError) || err.checkpoints.length === 0) throw err;
       timeoutPartial = err;
@@ -198,10 +238,15 @@ export const legacyTailStage: ChatStage = {
           domain: route.domain,
           completedTools: err.checkpoints.map((c) => c.toolName),
         },
-        'iOS chat domain handler timed out with checkpointed tool work — returning honest partial-progress reply (no auto-resume)',
+        'iOS chat domain handler timed out with checkpointed tool work — returning queued partial-progress reply',
       );
+      const queuedContinuation = err.continuation;
       result = {
-        text: buildChatTimeoutPartialReplyText(chatCoreV2RouteLocale, err.checkpoints.map((c) => c.toolName)),
+        text: buildChatTimeoutPartialReplyText(
+          chatCoreV2RouteLocale,
+          err.checkpoints.map((c) => c.toolName),
+          Boolean(queuedContinuation),
+        ),
         domain: route.domain,
         metadata: {
           type: 'chat_timeout_partial',
@@ -209,21 +254,24 @@ export const legacyTailStage: ChatStage = {
             runId: err.runId,
             completedTools: err.checkpoints.map((c) => c.toolName),
             completedToolCount: err.checkpoints.length,
-            // Spike verdict: legacy tool loops are never auto-resumed.
+            // The queue awaits the already in-flight promise; it never
+            // starts/resumes another provider or tool-loop execution.
             autoResume: false,
-            continuation: 'ask_to_continue',
+            continuation: queuedContinuation ? 'background_queue' : 'ask_to_continue',
+            continuationJobId: queuedContinuation?.jobId ?? null,
+            notificationPolicy: queuedContinuation?.notificationPolicy ?? null,
+            destructiveResumePolicy: 'reconfirm',
           },
         },
       };
     }
     latency.mark('domain_handler_completed');
     recordChatStage(chatRequestId, 'legacy_response');
-    // M18 remediation (2026-07-21): on a timeout partial NOTHING destructive
-    // executed (checkpoints are read-risk only), so the staged confirmation
-    // must survive for the retry — clearing it would force the user to
-    // re-confirm work that never happened. Completed confirmed turns still
-    // consume the staged confirmation exactly as before.
-    if (routingDecision.safety.explicitConfirmation && !timeoutPartial) {
+    // A confirmed attempt consumes its durable staged grant even when the HTTP
+    // response times out. The detached original promise retains only its
+    // in-memory, per-target single-use grants; any later recovery is a new
+    // attempt and must re-enter confirmation instead of inheriting this grant.
+    if (routingDecision.safety.explicitConfirmation) {
       clearPendingChatConfirmation(userId, tenantId);
     }
 
@@ -265,7 +313,7 @@ export const legacyTailStage: ChatStage = {
             fallbackType: 'deterministic_summary' as const,
             fallbackReason: 'domain_handler_timeout_partial_progress',
             retryable: true,
-            userActionRequired: true,
+            userActionRequired: !timeoutPartial.continuation,
             operatorActionRequired: false,
           },
         }
@@ -318,7 +366,11 @@ export const legacyTailStage: ChatStage = {
       },
       'iOS chat request completed',
     );
-    res.json(response);
+    if (timeoutPartial?.continuation) {
+      res.status(202).json(response);
+    } else {
+      res.json(response);
+    }
     return { kind: 'respond' };
   },
 };

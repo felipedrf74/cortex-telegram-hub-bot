@@ -266,8 +266,6 @@ describe('enforceCrossSkillPreview / executableSkillsForPlan', () => {
   });
 });
 
-// crossSkillPlanPathCoverage was deleted in the M19 remediation: it existed
-// only to suppress the cross_skill_bridge prompt block, but that block only
-// renders on turns the planner DECLINED, so coverage-based suppression
-// guaranteed a silent drop of the second intent. The bridge now always
-// renders on the legacy/model path (see chat-skill-orchestrator.test.ts).
+// crossSkillPlanPathCoverage was deleted in the M19 remediation. Actionable
+// planner declines are now owned by a deterministic terminal, while uncovered
+// pure multi-skill reads retain the legacy bridge (see the orchestrator tests).

@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "ba2f75d5b75b50cbbe97868c2799f31f15cc4e9db05437c6693481d911987f9d",
-    "baseCommit": "71d14980a3c7f92df858b0647d78bc39f27de513",
-    "baseCommitTimestamp": "2026-07-21T20:51:30+01:00",
-    "trackedFiles": 2866,
-    "sourceFiles": 1073
+    "sourceDigest": "8802b061e959f4f702ee309f1d3d7748fcae41bdbf7782f81fe4498d8bebb1c7",
+    "baseCommit": "2c992e52d9dcaed3c37229c23c65b13c73f2ff2c",
+    "baseCommitTimestamp": "2026-07-21T21:49:52+01:00",
+    "trackedFiles": 2897,
+    "sourceFiles": 1082
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -34,7 +34,7 @@
     {
       "path": "src/api",
       "owner": "backend",
-      "files": 158
+      "files": 160
     },
     {
       "path": "src/boot.ts",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 769
+      "files": 776
     },
     {
       "path": "src/skills",
@@ -465,6 +465,14 @@
       "method": "POST",
       "path": "/api/portal/eval-history",
       "localPath": "/api/portal/eval-history",
+      "mountPath": "/",
+      "source": "src/portal/eval-history-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/portal/eval-history/frozen-baseline",
+      "localPath": "/api/portal/eval-history/frozen-baseline",
       "mountPath": "/",
       "source": "src/portal/eval-history-routes.ts",
       "owner": "backend"
@@ -1459,6 +1467,30 @@
       "localPath": "/confirm-action",
       "mountPath": "/api/v1/chat",
       "source": "src/api/routes/chat-message-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/chat/eval/evidence",
+      "localPath": "/eval/evidence",
+      "mountPath": "/api/v1/chat",
+      "source": "src/api/routes/chat-eval-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/chat/eval/preflight",
+      "localPath": "/eval/preflight",
+      "mountPath": "/api/v1/chat",
+      "source": "src/api/routes/chat-eval-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/eval/scenario/reset",
+      "localPath": "/eval/scenario/reset",
+      "mountPath": "/api/v1/chat",
+      "source": "src/api/routes/chat-eval-routes.ts",
       "owner": "backend"
     },
     {
@@ -4423,9 +4455,9 @@
     }
   ],
   "migrations": {
-    "count": 249,
-    "latest": "migrations/258_telegram_identity_archive.sql",
-    "digest": "42f3dcaee41738448c12b1a016e07b1e733cd2a84509b167e4b060683fb33623",
+    "count": 252,
+    "latest": "migrations/261_chat_routing_clarify_metrics.sql",
+    "digest": "cd967da06587aaf4631e9d841f2e5d6f7ef49a2d6aecad3313ada3a7810e3283",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4672,10 +4704,13 @@
       "migrations/252_content_legacy_script_workspace_parity.sql",
       "migrations/253_content_legacy_idea_note_workspace_parity.sql",
       "migrations/254_receipt_ai_transfer_idempotency.sql",
-      "migrations/255_routing_corpus.sql",
-      "migrations/256_chat_conversation_state.sql",
-      "migrations/257_chat_v2_route_exit_samples.sql",
-      "migrations/258_telegram_identity_archive.sql"
+      "migrations/255_training_session_schedule_truth_reconciliation.sql",
+      "migrations/256_routing_corpus.sql",
+      "migrations/257_chat_conversation_state.sql",
+      "migrations/258_chat_v2_route_exit_samples.sql",
+      "migrations/259_telegram_identity_archive.sql",
+      "migrations/260_chat_live_eval_preparations.sql",
+      "migrations/261_chat_routing_clarify_metrics.sql"
     ]
   },
   "capabilities": [
@@ -4791,13 +4826,13 @@
     }
   ],
   "tests": {
-    "files": 1056,
+    "files": 1070,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 4,
-      "api": 150,
+      "api": 152,
       "billing": 1,
       "brand": 1,
       "cli": 1,
@@ -4805,15 +4840,15 @@
       "domains": 5,
       "integration": 2,
       "lib": 1,
-      "migrations": 23,
+      "migrations": 25,
       "portal": 58,
       "regression": 1,
       "router": 6,
       "scope": 1,
-      "scripts": 58,
+      "scripts": 60,
       "sdk": 1,
       "security": 22,
-      "services": 666,
+      "services": 674,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -5495,7 +5530,7 @@
     },
     {
       "path": "package-lock.json",
-      "bytes": 340642,
+      "bytes": 342460,
       "generated": false
     },
     {
@@ -5510,7 +5545,7 @@
     },
     {
       "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 277547,
+      "bytes": 283101,
       "generated": false
     },
     {

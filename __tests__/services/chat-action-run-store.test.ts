@@ -379,10 +379,10 @@ describe('chat-action-run-store', () => {
       expect(listLegacyToolLoopCheckpoints({ runId: 'req-other', userId: USER_ID, tenantId: TENANT_A }).map((c) => c.toolName)).toEqual(['search_notes']);
     });
 
-    it('never leaves queued continuation work behind: checkpoints are not pending and cancellation is a no-op on them', () => {
-      // Spike verdict (M18): the legacy tool loop gets NO auto-resume, so a
-      // timed-out turn must leave zero pending rows for the cancellation
-      // cascade (cancelAllPendingChatWork → cancelPendingChatActionRuns).
+    it('keeps checkpoint evidence terminal; continuation lifecycle lives in the dedicated background queue', () => {
+      // The checkpoint rows are immutable evidence, never executable work.
+      // cancelAllPendingChatWork cancels the dedicated background job through
+      // its own scoped store without rewriting these historical rows.
       checkpoint(1, 'ms_todo_get_tasks');
       checkpoint(2, 'get_calendar_events');
 

@@ -12,6 +12,7 @@ import { analyzeChatSkillOrchestration } from '../../../../services/chat-skill-o
 import { inferChatTurnContract } from '../../../../services/chat-turn-contract';
 import { isChatTurnContractEnabled } from '../../../../services/runtime-flags';
 import { preparedChatTurnCtx, type ChatStage, type ChatStageResult, type ChatTurnCtx } from '../types';
+import { getDb } from '../../../../services/database';
 
 export const preRoutingStage: ChatStage = {
   name: 'pre_routing',
@@ -34,6 +35,7 @@ export const preRoutingStage: ChatStage = {
       tenantId,
       locale: chatCoreV2RouteLocale,
       countClarifyTelemetry: true,
+      clarifyTelemetryDb: getDb(),
     });
     const turnContractEnabled = isChatTurnContractEnabled(process.env, { userId, tenantId });
     const preTurnContract = turnContractEnabled

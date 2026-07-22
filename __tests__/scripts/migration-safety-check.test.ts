@@ -11,7 +11,14 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { candidateMigrationIdentity } from '../../scripts/lib/production-shape-migration-rehearsal-evidence.mjs';
+import {
+  candidateMigrationIdentity,
+  PRODUCTION_SHAPE_MIGRATION_REHEARSAL_SCHEMA,
+} from '../../scripts/lib/production-shape-migration-rehearsal-evidence.mjs';
+import {
+  loadProductionMigrationLineagePolicy,
+  resolveProductionMigrationLineage,
+} from '../../scripts/lib/production-migration-lineage.mjs';
 
 const root = resolve(process.cwd());
 const migrationSafetyScript = join(root, 'scripts/migration-safety-check.mjs');
@@ -316,10 +323,12 @@ describe('migration-safety-check', () => {
       const createdAt = new Date(now - 1_000).toISOString();
       const finalCreatedAt = new Date(now).toISOString();
       const candidate = candidateMigrationIdentity(root);
+      const lineagePolicy = loadProductionMigrationLineagePolicy({ root });
+      const canonicalLineage = resolveProductionMigrationLineage(lineagePolicy, []);
       const onlineDatabaseSha256 = 'd'.repeat(64);
       const stoppedDatabaseSha256 = 'e'.repeat(64);
       const rehearsal = (phase: 'online_pre_stop' | 'stopped_final', created: string) => ({
-        schema: 'nexus.production-shape-migration-rehearsal.v1', status: 'verified',
+        schema: PRODUCTION_SHAPE_MIGRATION_REHEARSAL_SCHEMA, status: 'verified',
         startedAt: created, createdAt: created, promotionRunId, phase,
         predecessorRuntimeSha: base, targetRuntimeSha: base, targetVersion: '4.14.224',
         artifactDigest, reviewEvidenceSha256: reviewPayload.reviewEvidence.sha256,
@@ -330,6 +339,10 @@ describe('migration-safety-check', () => {
           readOnlyConnection: true, onlineBackup: true, alreadyMigrated: false,
           appliedMigrationCount: 233, migrationSetSha256: '1'.repeat(64),
           databaseSha256: phase === 'online_pre_stop' ? onlineDatabaseSha256 : stoppedDatabaseSha256,
+          migrationLineageId: canonicalLineage.id,
+          retiredMigrationCount: canonicalLineage.migrationCount,
+          retiredMigrationSetSha256: canonicalLineage.migrationSetSha256,
+          retiredMigrationPolicySha256: lineagePolicy.sha256,
         },
         candidate: {
           migrationCount: candidate.migrationCount,
@@ -473,9 +486,11 @@ describe('migration-safety-check', () => {
 
   it.each([
     ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
+    ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
     ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
     ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
     ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
+    ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
     ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
     ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
     ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
@@ -507,6 +522,83 @@ describe('migration-safety-check', () => {
       irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
     };
     expect(payload.irreversibleChangedMigrations).toEqual([{ file, reason }]);
+  });
+
+  it('compares an in-progress merge to main while preserving incoming-main deletion detection', { timeout: 30_000 }, () => {
+    const fixture = createGovernedMigrationRepo();
+    try {
+      const branchOnlyMigration = 'migrations/002_branch_only.sql';
+      const mainMigration = 'migrations/002_main.sql';
+      const finalMigration = 'migrations/003_branch_only.sql';
+
+      fixture.git('switch', '-c', 'feature');
+      writeFileSync(
+        join(fixture.repo, branchOnlyMigration),
+        'CREATE TABLE branch_only_value (id INTEGER PRIMARY KEY);\n',
+      );
+      fixture.git('add', branchOnlyMigration);
+      fixture.git('commit', '-m', 'fixture: add branch-only migration');
+      const featureHead = fixture.git('rev-parse', 'HEAD');
+
+      fixture.git('switch', 'main');
+      writeFileSync(
+        join(fixture.repo, mainMigration),
+        'CREATE TABLE main_value (id INTEGER PRIMARY KEY);\n',
+      );
+      fixture.git('add', mainMigration);
+      fixture.git('commit', '-m', 'fixture: add main migration');
+
+      fixture.git('switch', 'feature');
+      fixture.git('merge', '--no-commit', 'main');
+      fixture.git('mv', branchOnlyMigration, finalMigration);
+
+      const result = spawnSync(
+        'node',
+        [
+          migrationSafetyScript,
+          '--root', fixture.repo,
+          '--base', featureHead,
+          '--changed-only',
+          '--approval-mode', 'scan',
+          '--json',
+        ],
+        { encoding: 'utf8', env: fixture.gitEnv },
+      );
+
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      expect(result.stderr).toBe('');
+      const payload = JSON.parse(result.stdout) as {
+        irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
+      };
+      expect(payload.irreversibleChangedMigrations).not.toContainEqual({
+        file: branchOnlyMigration,
+        reason: 'DELETED_OR_RENAMED',
+      });
+
+      fixture.git('rm', '--force', mainMigration);
+      const droppedIncomingMain = spawnSync(
+        'node',
+        [
+          migrationSafetyScript,
+          '--root', fixture.repo,
+          '--base', featureHead,
+          '--changed-only',
+          '--approval-mode', 'scan',
+          '--json',
+        ],
+        { encoding: 'utf8', env: fixture.gitEnv },
+      );
+      expect(droppedIncomingMain.status).toBe(1);
+      const droppedPayload = JSON.parse(droppedIncomingMain.stdout) as {
+        irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
+      };
+      expect(droppedPayload.irreversibleChangedMigrations).toContainEqual({
+        file: mainMigration,
+        reason: 'DELETED_OR_RENAMED',
+      });
+    } finally {
+      rmSync(fixture.repo, { recursive: true, force: true });
+    }
   });
 
   it.each(['rename', 'deletion'])(

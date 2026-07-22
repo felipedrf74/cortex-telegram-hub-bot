@@ -107,15 +107,47 @@ async function load() {
   var html = '';
 
   html += card('Eval score trend', table(
-    ['Run', 'Mode', 'Generated', 'Avg score', 'Result', 'P/Pa/F/B', 'Spend (USD)', 'Provider calls'],
+    ['Run', 'Mode', 'Generated', 'Avg score', 'Result', 'P/Pa/F/B', 'Estimated actual spend (USD)', 'Budget ceiling (USD)', 'Judge calls'],
     d.evalTrend.map(function (run) {
       return [esc(run.runId), esc(run.mode), esc(run.generatedAt), num(run.averageScore), passCell(run.passed),
         run.passCount + '/' + run.partialCount + '/' + run.failCount + '/' + run.blockedCount,
-        num(run.budgetUsd), run.realProviderCalls];
+        num(run.estimatedActualSpendUsd), num(run.budgetCeilingUsd), run.realProviderCalls];
     })
-  ) + '<p class="meta">Monthly eval spend: ' + table(['Month', 'Total USD', 'Runs'],
-    d.monthlyEvalSpend.months.map(function (m) { return [esc(m.month), num(m.totalBudgetUsd), m.runCount]; })
-  ) + 'Current month: $' + num(d.monthlyEvalSpend.currentMonthUsd) + '</p>');
+  ) + '<p class="meta">Monthly eval cost evidence: ' + table(
+    ['Month', 'Estimated actual USD', 'Budget ceiling USD', 'Actual evidence', 'Runs'],
+    d.monthlyEvalSpend.months.map(function (m) {
+      return [esc(m.month), num(m.totalEstimatedActualSpendUsd), num(m.totalBudgetCeilingUsd),
+        m.actualSpendEvidenceRunCount + '/' + m.runCount, m.runCount];
+    })
+  ) + 'Current month estimated actual: $' + num(d.monthlyEvalSpend.currentMonthEstimatedActualSpendUsd)
+    + '; budget ceiling: $' + num(d.monthlyEvalSpend.currentMonthBudgetCeilingUsd) + '</p>');
+
+  var frozen = d.frozenLiveBaseline;
+  if (!frozen || frozen.status === 'not_recorded') {
+    html += card('Frozen live baseline',
+      '<p class="meta">Not recorded — quality deltas unavailable. Run and explicitly accept the first dedicated-tenant staging real_provider baseline.</p>');
+  } else {
+    var baseline = frozen.baseline;
+    var baselineInner = table(
+      ['Identity', 'Accepted', 'Git SHA', 'Avg score', 'Scenario pass rate', 'Estimated actual spend', 'Budget ceiling'],
+      [[esc(baseline.runId), esc(baseline.acceptedAt), esc(baseline.gitCommit), num(baseline.averageScore),
+        num(baseline.scenarioPassRate), num(baseline.totalEstimatedActualSpendUsd), num(baseline.totalBudgetCeilingUsd)]]
+    );
+    if (frozen.status === 'baseline_only') {
+      baselineInner += '<p class="meta">Baseline frozen; no later real_provider run exists, so quality deltas unavailable.</p>';
+    } else if (frozen.status === 'incompatible') {
+      baselineInner += '<p class="fail">Latest run ' + esc(frozen.latestFollowup.runId)
+        + ' is not comparable (' + esc(frozen.comparison.reason) + '); quality deltas unavailable.</p>';
+    } else {
+      baselineInner += table(
+        ['Latest run', 'Avg score delta', 'Scenario pass-rate delta', 'Fail-count delta', 'Blocked-count delta', 'Estimated actual-spend delta'],
+        [[esc(frozen.latestFollowup.runId), num(frozen.comparison.averageScoreDelta),
+          num(frozen.comparison.scenarioPassRateDelta), num(frozen.comparison.failCountDelta),
+          num(frozen.comparison.blockedCountDelta), num(frozen.comparison.estimatedActualSpendUsdDelta)]]
+      );
+    }
+    html += card('Frozen live baseline', baselineInner);
+  }
 
   html += card('Day-to-day failure types (last ' + d.failureTypeBreakdown.runsConsidered + ' run(s))', table(
     ['Failure type', 'Count'],
@@ -132,6 +164,16 @@ async function load() {
   html += card('Quality-gate outcomes (process-local since boot)', table(
     ['Outcome', 'Count'],
     Object.entries(d.qualityGateOutcomes).map(function (entry) { return [esc(entry[0]), entry[1]]; })
+  ));
+
+  var clarify = d.routingClarifyBudget;
+  var clarifyStatus = clarify.withinBudget == null
+    ? '<span class="meta">no evidence</span>'
+    : passCell(clarify.withinBudget);
+  html += card('Routing clarify budget', table(
+    ['Window', 'Clarified', 'Evaluated', 'Rate', 'Limit', 'Status'],
+    [[clarify.windowDays + ' days', clarify.clarifiedTurns, clarify.evaluatedTurns,
+      num(clarify.rate), num(clarify.budgetLimit), clarifyStatus]]
   ));
 
   var routing = d.routingAccuracy;
@@ -163,6 +205,31 @@ async function load() {
       })
     ));
   }
+
+  var campaign = d.retirementCampaign;
+  html += card('ChatV2 per-route retirement campaign (paired behavior + 24h fallback)',
+    '<p class="meta">PASS candidates: ' + campaign.candidateRouteCount
+      + ' — fallback alerts: ' + campaign.alertRouteCount
+      + ' — ceiling: ' + num(campaign.fallbackThreshold * 100) + '%</p>'
+    + table(
+      ['Route', 'Disable stage', 'Behavior', 'Parity', 'Routing diag', 'Fallback 24h', 'Verdict'],
+      campaign.rows.map(function (row) {
+        var behavior = row.behaviorMatchingCount + '/' + row.behaviorParitySamples;
+        var routing = row.routingAgreementSamples > 0
+          ? row.routingAgreementCount + '/' + row.routingAgreementSamples
+          : 'diagnostic n/a';
+        var fallback = row.fallback24h.rate == null
+          ? 'no evidence'
+          : row.fallback24h.fallbackCount + '/' + row.fallback24h.totalCount
+            + ' (' + num(row.fallback24h.rate * 100) + '%)';
+        var verdict = row.verdict === 'pass'
+          ? '<span class="pass">PASS</span>'
+          : '<span class="fail">' + esc(row.verdict.toUpperCase()) + '</span>';
+        return [esc(row.routeId), esc(row.disableStages.join(',') || 'blocked:' + row.mappingStatus),
+          behavior, num(row.behaviorParityRate), routing, fallback, verdict];
+      })
+    )
+    + '<p class="meta">Routing agreement and online-eval health are diagnostic only; they never produce PASS.</p>');
 
   html += card('Online-eval sampler captures (last ' + d.samplerCaptures.windowDays + ' days, counts only)', table(
     ['Status', 'Reason', 'Count'],

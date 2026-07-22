@@ -1,7 +1,8 @@
 /**
  * Mirror test for cancelAllPendingChatWork (milestone 1 safety hardening).
  * "Cancel that" must clear EVERY pending-work store — typed pending actions,
- * action runs, the free-form confirmation, and staged ChatCoreV2 commands —
+ * action runs, the free-form confirmation, staged ChatCoreV2 commands, and
+ * timeout continuations —
  * and one failing store must never stop the others from being cleared.
  */
 
@@ -57,6 +58,9 @@ import {
   resetPendingChatCoreV2CommandsForTests,
   trackPendingChatCoreV2Command,
 } from '../../src/services/chat-core-v2/pending-commands';
+import {
+  enqueueChatLegacyTimeoutContinuation,
+} from '../../src/services/chat-legacy-timeout-continuation';
 
 const USER_ID = 4242;
 const TENANT_A = 4242;
@@ -116,6 +120,18 @@ function seedV2Command(tenantId: number, commandId: string) {
   });
 }
 
+function seedTimeoutContinuation(tenantId: number, runId: string) {
+  return enqueueChatLegacyTimeoutContinuation({
+    tenantId,
+    userId: USER_ID,
+    sourceRunId: runId,
+    sourceMessageId: `msg-${runId}`,
+    sourceText: 'plan my day',
+    domain: 'secretary',
+    completedTools: ['get_calendar_events'],
+  });
+}
+
 function pendingActionRow(id: string): { status: string; cancellation_state: string } | undefined {
   return testDb.prepare(
     'SELECT status, cancellation_state FROM chat_pending_actions WHERE id = ?',
@@ -139,6 +155,7 @@ describe('cancelAllPendingChatWork', () => {
     const run = seedActionRun(TENANT_A);
     seedConfirmation(TENANT_A);
     seedV2Command(TENANT_A, 'cmd-1');
+    seedTimeoutContinuation(TENANT_A, 'timeout-1');
 
     const result = cancelAllPendingChatWork({
       userId: USER_ID,
@@ -150,6 +167,7 @@ describe('cancelAllPendingChatWork', () => {
     expect(result.chatActionRuns).toBe(1);
     expect(result.chatPendingConfirmation).toBe(true);
     expect(result.chatCoreV2Commands).toBe(1);
+    expect(result.chatBackgroundContinuations).toBe(1);
     expect(result.errors).toBeUndefined();
 
     expect(pendingActionRow(action.id)?.status).not.toBe('needs_input');
@@ -215,6 +233,7 @@ describe('cancelAllPendingChatWork', () => {
       chatActionRuns: 0,
       chatPendingConfirmation: false,
       chatCoreV2Commands: 0,
+      chatBackgroundContinuations: 0,
       decisionDismissed: false,
     });
     expect(result.errors).toBeUndefined();

@@ -16,17 +16,14 @@
 import { createDecisionIntent } from '../../../services/decision-center';
 import { trackPendingChatConfirmation } from '../../../services/chat-pending-confirmations';
 import {
+  buildConfirmedDestructiveTargetsForPlanSteps,
+  type ChatPlanStep,
+} from '../../../services/chat';
+import {
   attachPendingConfirmationContract,
   intentClassForAction,
   mapActionPlannerSkillToNexusSkill,
 } from './support';
-
-interface PlannerStepLike {
-  skill: string;
-  action: string;
-  risk: string;
-  args: Record<string, unknown>;
-}
 
 /**
  * Stages the pending confirmation + Decision Center intent for a planner
@@ -35,7 +32,7 @@ interface PlannerStepLike {
  */
 export async function attachPlannerNeedsConfirmationHold(input: {
   response: { text?: string; metadata?: Record<string, any> };
-  planSteps: ReadonlyArray<PlannerStepLike>;
+  planSteps: ReadonlyArray<ChatPlanStep>;
   normalizedText: string;
   userId: number;
   tenantId: number;
@@ -64,6 +61,7 @@ export async function attachPlannerNeedsConfirmationHold(input: {
     reasonCodes,
     intentClass,
     summary,
+    confirmedTargets: buildConfirmedDestructiveTargetsForPlanSteps(input.planSteps),
     sourceMessageId: userMessageId,
   });
   const decisionResult = await createDecisionIntent({

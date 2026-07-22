@@ -151,6 +151,9 @@ export const actionGatewayStage: ChatStage = {
             actionType: gatewayResult.telemetry.actionType ?? null,
             reasonCodes: gatewayResult.telemetry.reasonCodes,
           },
+          // This guard-only card never executes work. An explicit empty set
+          // prevents it from being reused as an untyped destructive grant.
+          confirmedTargets: [],
           sourceMessageId: userMessageId,
         })
         : null;

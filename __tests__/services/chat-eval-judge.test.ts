@@ -290,9 +290,21 @@ describe('chat eval judge', () => {
       expect(sufficiency?.passed).toBe(false);
       // Failing judge dims surface as turn failures with the mapped type.
       expect(firstTurn?.failures.some((failure) => failure.type === 'insufficient_answer' && failure.detail.includes('[sufficiency]'))).toBe(true);
+
+      const scoredValues = firstTurn?.scorerDimensions
+        ?.flatMap((entry) => entry.score === null ? [] : [entry.score]) ?? [];
+      expect(firstTurn?.averageScore).toBeCloseTo(
+        scoredValues.reduce((sum, score) => sum + score, 0) / scoredValues.length,
+        10,
+      );
+      const scenarioAverages = suite.dayToDay.scenarios.map((scenario) => scenario.averageScore);
+      expect(suite.averageScore).toBeCloseTo(
+        scenarioAverages.reduce((sum, score) => sum + score, 0) / scenarioAverages.length,
+        10,
+      );
     });
 
-    it('a blocked judge never crashes the real_provider suite and skips judge dims honestly (passed: null)', async () => {
+    it('a blocked judge never crashes but fails the real_provider evidence gate', async () => {
       completeOneShotMock.mockResolvedValue('not json at all');
       const stubExecutor: ChatTurnExecutor = {
         mode: 'real_provider',
@@ -309,15 +321,45 @@ describe('chat eval judge', () => {
       expect(suite.judge?.abortReason).toBe('all_blocked');
       // ...and cost of the attempted calls is still counted.
       expect(suite.judge?.estimatedSpendUsd).toBeCloseTo(0.0004 * suite.dayToDay.scenarios.length, 10);
-      // Per-turn judge dims are honest skips: they never fail the turn.
+      expect(suite.passed).toBe(false);
+      expect(suite.dayToDay.passed).toBe(false);
+      // Per-turn judge dims remain honest nulls, while the scenario carries a
+      // gate failure so missing judge evidence can never produce PASS.
       for (const scenario of suite.dayToDay.scenarios) {
         for (const turn of scenario.turns) {
           const judged = turn.scorerDimensions?.filter((entry) => entry.source === 'llm_judge') ?? [];
           expect(judged.length).toBe(4);
           expect(judged.every((entry) => entry.score === null && entry.passed === null && entry.detail.includes('judge blocked'))).toBe(true);
-          expect(turn.failures.some((failure) => failure.detail.toLowerCase().includes('judge'))).toBe(false);
         }
+        expect(scenario.turns.some((turn) => turn.failures.some((failure) => failure.detail.includes('[llm_judge_coverage]')))).toBe(true);
       }
+    });
+
+    it('fails the real_provider evidence gate when budget skips any required scenario', async () => {
+      completeOneShotMock.mockResolvedValue(VALID_JUDGE_JSON);
+      const stubExecutor: ChatTurnExecutor = {
+        mode: 'real_provider',
+        executeTurn: async () => liveResult('Generic live reply for judging.'),
+      };
+      const suite = await runChatEvaluationSuite({
+        mode: 'real_provider',
+        executor: stubExecutor,
+        judgeOptions: { maxUsd: 0.0005, model: 'gemini-2.5-flash-lite', estimateCallCostUsd: () => 0.0004 },
+      });
+
+      expect(suite.judge?.scenarios.some((entry) => entry.status === 'skipped_budget')).toBe(true);
+      expect(suite.passed).toBe(false);
+      expect(suite.dayToDay.passed).toBe(false);
+    });
+
+    it('refuses real_provider mode before executing target turns when judge options are absent', async () => {
+      const executeTurn = vi.fn(async () => liveResult('This must not execute.'));
+      const stubExecutor: ChatTurnExecutor = { mode: 'real_provider', executeTurn };
+
+      await expect(runChatEvaluationSuite({ mode: 'real_provider', executor: stubExecutor }))
+        .rejects.toThrow(/judge.*required/i);
+      expect(executeTurn).not.toHaveBeenCalled();
+      expect(completeOneShotMock).not.toHaveBeenCalled();
     });
 
     it('a partially blocked judge run is not marked all_blocked', async () => {

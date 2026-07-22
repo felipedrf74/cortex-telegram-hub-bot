@@ -101,10 +101,10 @@ describe('routing corpus builder', () => {
     db.close();
   });
 
-  it('applies migration 255 and its down counterpart cleanly', () => {
+  it('applies migration 256 and its down counterpart cleanly', () => {
     const root = path.resolve(__dirname, '..', '..');
-    const up = fs.readFileSync(path.join(root, 'migrations', '255_routing_corpus.sql'), 'utf8');
-    const down = fs.readFileSync(path.join(root, 'migrations', 'down', '255_routing_corpus.sql'), 'utf8');
+    const up = fs.readFileSync(path.join(root, 'migrations', '256_routing_corpus.sql'), 'utf8');
+    const down = fs.readFileSync(path.join(root, 'migrations', 'down', '256_routing_corpus.sql'), 'utf8');
     const migrated = new Database(':memory:');
     migrated.exec(up);
     // Re-applying must be a no-op (IF NOT EXISTS discipline).

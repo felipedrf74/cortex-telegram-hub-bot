@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 //
 // M13 durable conversation continuity: DB-backed active-domain pin with an
-// in-process read cache. The DB (chat_conversation_state, migration 256) is
+// in-process read cache. The DB (chat_conversation_state, migration 257) is
 // the source of truth; the Map is a private read cache that must survive a
 // simulated restart (Map reset) by falling back to the DB row.
 
@@ -65,7 +65,7 @@ describe('chat-conversation-state (M13 durable continuity)', () => {
     resetChatConversationStateForTests();
   });
 
-  it('migration 256 creates the expected schema and is idempotent', () => {
+  it('migration 257 creates the expected schema and is idempotent', () => {
     const columns = testDb
       .prepare('PRAGMA table_info(chat_conversation_state)')
       .all() as Array<{ name: string; pk: number }>;
@@ -85,7 +85,7 @@ describe('chat-conversation-state (M13 durable continuity)', () => {
 
     // Re-applying the migration SQL is a no-op (IF NOT EXISTS everywhere).
     const sql = readFileSync(
-      join(process.cwd(), 'migrations/256_chat_conversation_state.sql'),
+      join(process.cwd(), 'migrations/257_chat_conversation_state.sql'),
       'utf8',
     );
     expect(() => testDb.exec(sql)).not.toThrow();

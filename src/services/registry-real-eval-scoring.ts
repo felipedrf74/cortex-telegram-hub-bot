@@ -150,6 +150,7 @@ export function scoreRegistryScenarioByPlannerTrace(
     scores,
     failures,
     notes,
+    executed: true,
   };
 }
 

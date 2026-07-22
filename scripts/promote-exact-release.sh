@@ -77,15 +77,17 @@ else
     if (Number(row.passed) !== 1) {
       fail(`latest local_engine run ${row.run_id} (${row.created_at}) FAILED; fix chat quality or rerun scripts/chat-eval-local.sh`);
     }
-    // Stale-run guard: run-chat-eval-live.ts records git rev-parse --short=12 HEAD
-    // in git_commit; refuse when the recorded run was produced on a different SHA
-    // than the one being promoted. Rows with an empty git_commit stay accepted
-    // (older schema / non-git contexts).
+    // Exact-run guard: release evidence is valid only when it carries the full
+    // commit identity produced by the clean evidence checkout. Legacy empty or
+    // abbreviated rows are not promotable; rerun the local evaluator.
     const recordedCommit = typeof row.git_commit === "string" ? row.git_commit.trim() : "";
-    if (recordedCommit && runtimeSha && !runtimeSha.startsWith(recordedCommit) && !recordedCommit.startsWith(runtimeSha)) {
+    if (!/^[0-9a-f]{40}$/.test(recordedCommit)) {
+      fail(`chat-eval run ${row.run_id} has no full exact git commit; re-run ./scripts/chat-eval-local.sh`);
+    }
+    if (recordedCommit !== runtimeSha) {
       fail(`chat-eval run was recorded on ${recordedCommit}, promoting ${runtimeSha} — re-run ./scripts/chat-eval-local.sh`);
     }
-    console.error(`chat-eval gate: latest local_engine run ${row.run_id} passed (${row.created_at}${recordedCommit ? `, commit ${recordedCommit}` : ""})`);
+    console.error(`chat-eval gate: latest local_engine run ${row.run_id} passed (${row.created_at}, commit ${recordedCommit})`);
   ' "$CHAT_EVAL_GATE_DB" "$RUNTIME_SHA" || {
     echo "local_engine chat-eval gate refused promotion (loud override: NEXUS_PROMOTE_SKIP_CHAT_EVAL=1)" >&2
     exit 1
@@ -325,7 +327,7 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
       "$PROD_RELEASE" "$PROD_BASE" "$CURRENT_RUNTIME" "$REMOTE_PM2" \
       "$PREDECESSOR_SHA" "$RUNTIME_SHA" "$TARGET_VERSION" "$ARTIFACT_DIGEST" \
       "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" "$PROMOTION_RUN_ID" \
-      online_pre_stop online 2>&1)"
+      online_pre_stop online)"
   MIGRATION_REHEARSAL_EXIT=$?
   set -e
   if [ "$MIGRATION_REHEARSAL_EXIT" -ne 0 ]; then
@@ -363,7 +365,7 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
         const value=JSON.parse(raw);process.stdout.write([
           value.evidenceSha256,value.cloneSha256,value.migratedCloneSha256,
           value.pendingMigrationSetSha256,value.sourceDatabaseSha256,
-        ].join(" "));
+        ].join(" ") + "\n");
       });')
   for digest in "$MIGRATION_REHEARSAL_SHA256" "$MIGRATION_REHEARSAL_CLONE_SHA256" \
       "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
@@ -652,7 +654,7 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
       "$PROD_RELEASE" "$PROD_BASE" "$CURRENT_RUNTIME" "$REMOTE_PM2" \
       "$PREDECESSOR_SHA" "$RUNTIME_SHA" "$TARGET_VERSION" "$ARTIFACT_DIGEST" \
       "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" "$PROMOTION_RUN_ID" \
-      stopped_final stopped 2>&1)"
+      stopped_final stopped)"
   FINAL_MIGRATION_REHEARSAL_EXIT=$?
   set -e
   if [ "$FINAL_MIGRATION_REHEARSAL_EXIT" -ne 0 ]; then
@@ -689,7 +691,7 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
         const value=JSON.parse(raw);process.stdout.write([
           value.evidenceSha256,value.cloneSha256,value.migratedCloneSha256,
           value.pendingMigrationSetSha256,value.sourceDatabaseSha256,
-        ].join(" "));
+        ].join(" ") + "\n");
       });')
   for digest in "$FINAL_MIGRATION_REHEARSAL_SHA256" "$FINAL_MIGRATION_REHEARSAL_CLONE_SHA256" \
       "$FINAL_MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$FINAL_MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
@@ -798,7 +800,7 @@ CANDIDATE_MUTATED=true
 set +e
 CUTOVER_OUTPUT="$("${SSH[@]}" "$SERVER" bash -s -- \
   "$PROD_RELEASE" "$PROD_BASE" "$REMOTE_PM2" "$RUNTIME_SHA" "$TARGET_VERSION" "$PUBLIC_BASE_URL" \
-  "${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-10}" <<'REMOTE_CUTOVER'
+  "${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-60}" <<'REMOTE_CUTOVER'
 set -euo pipefail
 release_dir="$1"; base_dir="$2"; pm2_bin="$3"; runtime_sha="$4"; target_version="$5"; public_base_url="$6"; stability_seconds="$7"
 rm -f "$base_dir/current.next"

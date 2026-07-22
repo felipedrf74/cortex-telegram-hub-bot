@@ -78,6 +78,8 @@ export const CHAT_EVAL_DEFAULT_LATENCY_BUDGET_MS = 6000;
 
 export interface ChatEvalSideEffectExpectation {
   kind: ChatEvalSideEffectKind;
+  /** Query parameters for the token-zero read endpoint. */
+  params?: Readonly<Record<string, unknown>>;
   /** Case-insensitive substrings that must appear in the read-back body. */
   mustIncludeText?: readonly string[];
   /** Case-insensitive substrings that must NOT appear in the read-back body. */
@@ -131,6 +133,34 @@ export interface ChatEvalTurnScore {
   passed: boolean;
   failures: Array<{ type: DayToDayFailureType; detail: string }>;
   llmJudgeDimensions: ChatEvalScorerDimensionId[];
+}
+
+/**
+ * Read the sanitized routing evidence emitted by the production chat
+ * envelope. Action responses expose `involvedSkills`; finalized legacy/read
+ * responses expose the single owner through `chatTurnContract` or
+ * `chatReasoning`. `skillsUsed` remains a compatibility fallback for older
+ * stored eval rows, but is not the runtime contract.
+ */
+export function observedChatSkills(metadataInput: unknown): string[] | null {
+  const metadata = asRecord(metadataInput);
+  if (!metadata) return null;
+
+  for (const key of ['involvedSkills', 'skillsUsed'] as const) {
+    if (Array.isArray(metadata[key])) {
+      return uniqueStrings(metadata[key] as unknown[]);
+    }
+  }
+
+  const turnContract = asRecord(metadata.chatTurnContract);
+  if (typeof turnContract?.skill === 'string' && turnContract.skill.trim()) {
+    return [turnContract.skill.trim()];
+  }
+  const reasoning = asRecord(metadata.chatReasoning);
+  if (typeof reasoning?.ownerSkill === 'string' && reasoning.ownerSkill.trim()) {
+    return [reasoning.ownerSkill.trim()];
+  }
+  return null;
 }
 
 /** Returns the detected primary language subtag, or null when undecidable. */
@@ -220,6 +250,16 @@ export function scoreChatEvalTurn(
       detail,
     });
   };
+  const notApplicable = (dimension: ChatEvalScorerDimensionId, detail: string): void => {
+    dimensions.push({
+      dimension,
+      source: 'deterministic',
+      score: null,
+      passed: null,
+      failureType: CHAT_EVAL_SCORER_DIMENSIONS[dimension].failureType,
+      detail,
+    });
+  };
 
   if (!result.ok) {
     const blockedDetail = `turn blocked before scoring: ${result.blockedReason ?? `http_${result.statusCode}`}`;
@@ -237,7 +277,7 @@ export function scoreChatEvalTurn(
 
   // routing_domain
   if (!expectation.expectedDomain) {
-    record('routing_domain', true, 'no domain expectation');
+    notApplicable('routing_domain', 'no domain expectation');
   } else if (result.domain === expectation.expectedDomain) {
     record('routing_domain', true, `domain ${result.domain}`);
   } else {
@@ -246,25 +286,20 @@ export function scoreChatEvalTurn(
 
   // routing_method
   if (!expectation.expectedRouteMethod) {
-    record('routing_method', true, 'no route-method expectation');
+    notApplicable('routing_method', 'no route-method expectation');
   } else if (result.routeMethod === expectation.expectedRouteMethod) {
     record('routing_method', true, `routeMethod ${result.routeMethod}`);
   } else {
     record('routing_method', false, `expected routeMethod ${expectation.expectedRouteMethod}, got ${result.routeMethod ?? 'none'}`);
   }
 
-  // skills_used — observability policy: a dim never fails on MISSING
-  // evidence, only on CONTRADICTING evidence. The live /message envelope
-  // metadata carries no skillsUsed field, so absence is an honest pass;
-  // fixture-fabricated (present) fields keep being scored strictly.
+  // skills_used — required routing evidence fails closed when absent.
   if (!expectation.expectedSkills?.length) {
-    record('skills_used', true, 'no skills expectation');
+    notApplicable('skills_used', 'no skills expectation');
   } else {
-    const skillsUsed = Array.isArray(metadata.skillsUsed)
-      ? metadata.skillsUsed.filter((skill): skill is string => typeof skill === 'string')
-      : null;
+    const skillsUsed = observedChatSkills(metadata);
     if (!skillsUsed) {
-      record('skills_used', true, 'skillsUsed not observable in live envelope');
+      record('skills_used', false, 'skillsUsed not observable in live envelope');
     } else {
       const missing = expectation.expectedSkills.filter((skill) => !skillsUsed.includes(skill));
       if (missing.length) {
@@ -276,32 +311,42 @@ export function scoreChatEvalTurn(
   }
 
   // semantic_coverage
-  const missingTokens = (expectation.semanticMustInclude ?? []).filter((token) => !lowerText.includes(token.toLowerCase()));
-  if (missingTokens.length) {
+  const semanticTokens = expectation.semanticMustInclude ?? [];
+  const missingTokens = semanticTokens.filter((token) => !lowerText.includes(token.toLowerCase()));
+  if (!semanticTokens.length) {
+    notApplicable('semantic_coverage', 'no semantic expectation');
+  } else if (missingTokens.length) {
     record('semantic_coverage', false, `missing semantic tokens: ${missingTokens.join(', ')}`);
   } else {
-    record('semantic_coverage', true, expectation.semanticMustInclude?.length ? 'all required tokens present' : 'no semantic expectation');
+    record('semantic_coverage', true, 'all required tokens present');
   }
 
   // forbidden_content
-  const leakedTokens = (expectation.forbiddenContent ?? []).filter((token) => lowerText.includes(token.toLowerCase()));
-  if (leakedTokens.length) {
+  const forbiddenTokens = expectation.forbiddenContent ?? [];
+  const leakedTokens = forbiddenTokens.filter((token) => lowerText.includes(token.toLowerCase()));
+  if (!forbiddenTokens.length) {
+    notApplicable('forbidden_content', 'no forbidden-content expectation');
+  } else if (leakedTokens.length) {
     record('forbidden_content', false, `forbidden content present: ${leakedTokens.join(', ')}`);
   } else {
-    record('forbidden_content', true, expectation.forbiddenContent?.length ? 'no forbidden content' : 'no forbidden-content expectation');
+    record('forbidden_content', true, 'no forbidden content');
   }
 
   // clarification_flow / confirmation_flow / refusal_flow — compared in the
   // normalized expectation space so live envelope statuses count.
-  recordFlow(record, 'clarification_flow', expectation.requiresClarification, actionStatus, rawActionStatus, 'clarification');
-  recordFlow(record, 'confirmation_flow', expectation.requiresConfirmation, actionStatus, rawActionStatus, 'needs_confirmation');
-  recordFlow(record, 'refusal_flow', expectation.requiresRefusal, actionStatus, rawActionStatus, 'refused');
+  recordFlow(record, notApplicable, 'clarification_flow', expectation.requiresClarification, actionStatus, rawActionStatus, 'clarification');
+  recordFlow(record, notApplicable, 'confirmation_flow', expectation.requiresConfirmation, actionStatus, rawActionStatus, 'needs_confirmation');
+  recordFlow(record, notApplicable, 'refusal_flow', expectation.requiresRefusal, actionStatus, rawActionStatus, 'refused');
 
   // side_effect_verification (computed before success_claim so the claim
   // check can reference read-back verification honestly)
+  const mutationExpected = expectation.expectsVerifiedMutation
+    ?? (expectation.expectedToolStatuses ?? []).some((status) => status === 'succeeded' || status === 'deduped');
   const sideEffectIssues = verifySideEffects(expectation.expectedSideEffects ?? [], sideEffects ?? []);
-  if (!expectation.expectedSideEffects?.length) {
-    record('side_effect_verification', true, 'no side-effect expectation');
+  if (mutationExpected && !expectation.expectedSideEffects?.length) {
+    record('side_effect_verification', false, 'verified mutation expectation has no token-zero read-back contract');
+  } else if (!expectation.expectedSideEffects?.length) {
+    notApplicable('side_effect_verification', 'no side-effect expectation');
   } else if (sideEffectIssues.length) {
     record('side_effect_verification', false, sideEffectIssues.join('; '));
   } else {
@@ -311,8 +356,6 @@ export function scoreChatEvalTurn(
   // success_claim_verification — reuse the quality-gate success-claim
   // heuristics (chat-success-claim-policy) rather than copying regexes.
   const claimsSuccess = textClaimsUnverifiedAction(result.text) || textHasBareAppSuccessMarker(result.text);
-  const mutationExpected = expectation.expectsVerifiedMutation
-    ?? (expectation.expectedToolStatuses ?? []).some((status) => status === 'succeeded' || status === 'deduped');
   // Observed partial/pending/failed statuses CONTRADICT a full-success claim:
   // partial_success and verified_pending are their own states and must never
   // count as a verified full success.
@@ -323,6 +366,8 @@ export function scoreChatEvalTurn(
     record('success_claim_verification', false, 'response claims a completed action but no verified mutation was expected on this turn');
   } else if (observedContradictsFullSuccess) {
     record('success_claim_verification', false, `response claims full success but envelope actionStatus ${rawActionStatus} is not a verified full success`);
+  } else if (!expectation.expectedSideEffects?.length) {
+    record('success_claim_verification', false, 'response claims success but no token-zero read-back contract was declared');
   } else if (expectation.expectedSideEffects?.length && sideEffectIssues.length) {
     record('success_claim_verification', false, 'response claims success but side-effect read-back did not verify the expected state');
   } else {
@@ -337,16 +382,14 @@ export function scoreChatEvalTurn(
     record('latency_budget', true, `latency ${result.latencyMs}ms within ${latencyBudgetMs}ms`);
   }
 
-  // provider_metadata — observability policy: the live envelope carries no
-  // providerTrace, so missing trace/fields are an honest pass; a PRESENT
-  // field with the wrong value is contradicting evidence and fails.
+  // provider_metadata — required trace evidence fails closed when absent.
   const providerCheck = verifyProviderTrace(expectation, result.providerTrace ?? null);
   if (providerCheck === null) {
-    record('provider_metadata', true, 'no provider/tier/model expectation');
+    notApplicable('provider_metadata', 'no provider/tier/model expectation');
   } else if (providerCheck.issues.length) {
     record('provider_metadata', false, providerCheck.issues.join('; '));
   } else if (providerCheck.unobservable) {
-    record('provider_metadata', true, 'provider trace not observable in live envelope');
+    record('provider_metadata', false, 'provider trace not observable in live envelope');
   } else {
     record('provider_metadata', true, 'provider trace matched expectations');
   }
@@ -359,16 +402,16 @@ export function scoreChatEvalTurn(
     record('ios_envelope_shape', true, 'envelope shape is iOS-renderable');
   }
 
-  // response_language — deterministic milestone-3 detector by default;
-  // null (undecidable) stays an honest pass so short answers never
-  // false-positive the locale gate.
+  // response_language — deterministic milestone-3 detector by default.
+  // A required but undecidable result fails closed instead of fabricating a
+  // clean locale observation.
   if (!expectation.expectedLanguage) {
-    record('response_language', true, 'no language expectation');
+    notApplicable('response_language', 'no language expectation');
   } else {
     const detector = options.languageDetector ?? defaultChatEvalLanguageDetector;
     const detected = detector(result.text);
     if (detected === null) {
-      record('response_language', true, 'response language undecidable; fail-open');
+      record('response_language', false, `expected language ${expectation.expectedLanguage}; response language undecidable`);
     } else if (primarySubtag(detected) === primarySubtag(expectation.expectedLanguage)) {
       record('response_language', true, `response language ${detected}`);
     } else {
@@ -380,8 +423,22 @@ export function scoreChatEvalTurn(
   return aggregate(dimensions);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function uniqueStrings(values: readonly unknown[]): string[] {
+  return [...new Set(values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean))];
+}
+
 function recordFlow(
   record: (dimension: ChatEvalScorerDimensionId, passed: boolean, detail: string) => void,
+  notApplicable: (dimension: ChatEvalScorerDimensionId, detail: string) => void,
   dimension: Extract<ChatEvalScorerDimensionId, 'clarification_flow' | 'confirmation_flow' | 'refusal_flow'>,
   required: boolean | undefined,
   normalizedStatus: NormalizedObservedActionStatus | null,
@@ -389,7 +446,7 @@ function recordFlow(
   expectedStatus: NormalizedObservedActionStatus,
 ): void {
   if (!required) {
-    record(dimension, true, `no ${expectedStatus} expectation`);
+    notApplicable(dimension, `no ${expectedStatus} expectation`);
     return;
   }
   if (normalizedStatus === expectedStatus) {
@@ -444,8 +501,8 @@ function verifyProviderTrace(
   for (const [label, expected] of checks) {
     if (expected === undefined) continue;
     const actual = trace?.[label];
-    // Missing evidence (no trace, or field absent) never fails the dim; only
-    // a present field with a different value is a contradiction.
+    // Missing required evidence is reported separately from contradictions;
+    // both fail the required provider-metadata observation at the caller.
     if (actual === undefined || actual === null) {
       unobservable = true;
       continue;
@@ -489,7 +546,9 @@ function aggregate(dimensions: ChatEvalDimensionScore[]): ChatEvalTurnScore {
   const failures = deterministic
     .filter((entry) => entry.passed === false)
     .map((entry) => ({ type: entry.failureType, detail: `[${entry.dimension}] ${entry.detail}` }));
-  const scores = deterministic.map((entry) => entry.score ?? 0);
+  const scores = deterministic
+    .map((entry) => entry.score)
+    .filter((score): score is number => typeof score === 'number');
   return {
     dimensions,
     deterministicAverage: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : 0,

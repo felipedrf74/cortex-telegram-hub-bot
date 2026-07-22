@@ -47,6 +47,7 @@ export const pendingWorkCancelStage: ChatStage = {
     const totalCancelled = cancelled.chatPendingActions
       + cancelled.chatActionRuns
       + cancelled.chatCoreV2Commands
+      + cancelled.chatBackgroundContinuations
       + (cancelled.chatPendingConfirmation ? 1 : 0)
       + (cancelled.decisionDismissed ? 1 : 0);
     recordChatStage(chatRequestId, totalCancelled > 0 ? 'pending_work_cancelled' : 'pending_work_cancel_empty');

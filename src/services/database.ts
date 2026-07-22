@@ -51,7 +51,7 @@ export function initDatabase(): Database.Database {
   }
 
   // M21 Stage C: archive telegram identities at boot (pragma-guarded,
-  // idempotent — see migration 258 header for why this is not SQL).
+  // idempotent — see migration 259 header for why this is not SQL).
   try {
     const { backfillTelegramIdentityArchive } = require('./user-service');
     const archive = backfillTelegramIdentityArchive();

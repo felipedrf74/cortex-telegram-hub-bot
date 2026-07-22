@@ -15,7 +15,7 @@ import * as path from 'path';
  * builder + notification-contracts 'legacy_telegram'), the error-monitor
  * Telegram wording, and the JWT-userId telegram-id identity fallbacks
  * (dashboard-home-input / skills getCaller / onboarding) were purged.
- * Stage C added migration 258 (archive-first copy of users.telegram_id
+ * Stage C added migration 259 (archive-first copy of users.telegram_id
  * into telegram_identity_archive; the live column is intentionally KEPT
  * this release because the owner bootstrap still reads it).
  *
@@ -28,15 +28,9 @@ import * as path from 'path';
  * - skills.ts override target lookups + garmin-session-store byTelegram
  *   fallback: legacy request contracts still keyed to the telegram_id
  *   column; removal is blocked on the same identity migration.
- * - LIVE TELEGRAM_* disable-sentinel contract:
- *   src/services/content-live-evaluation-runtime.ts refuses to boot the
- *   content live-eval runtime unless TELEGRAM_LEGACY_DELIVERY='false' AND
- *   TELEGRAM_BOT_TOKEN='content-live-eval-disabled'; the sentinels are
- *   exported by scripts/content-live-eval-local.sh,
- *   scripts/full-nexus-local-engine.sh, scripts/decision-center-ios-smoke.sh
- *   and scripts/chat-tenant-security-smoke.js. A live safety contract, not
- *   dead vocabulary — retiring it means renaming the sentinel pair in the
- *   runtime assert and every setter script in the same change.
+ * Runtime delivery safety uses the transport-neutral
+ * NEXUS_CONTENT_LIVE_EVAL_DELIVERY_DISABLED guard. No live TELEGRAM_* config
+ * remains outside the explicitly deferred OWNER_TELEGRAM_ID bootstrap.
  *
  * ALLOWLIST: entries here are the only permitted matches inside gated
  * files. Additions require explicit justification in the commit message.
@@ -68,6 +62,22 @@ const STAGE_B_GATED_FILES = [
   'src/services/onboarding.ts',
   'ecosystem.config.js',
   'ecosystem.staging.config.js',
+];
+
+/** Config/eval/smoke surfaces where no generic TELEGRAM_* key may survive. */
+const STAGE_B_ENV_SURFACES = [
+  '.env.local.example',
+  'docker-compose.decision-center-ios-smoke.yml',
+  'docker-compose.training-e2e.yml',
+  'scripts/chat-tenant-security-smoke.js',
+  'scripts/content-live-eval-local.sh',
+  'scripts/debug-env.js',
+  'scripts/decision-center-ios-smoke.sh',
+  'scripts/full-nexus-local-engine.sh',
+  'scripts/release-evidence-container.sh',
+  'scripts/release-verify-container.sh',
+  'scripts/seed-training-catalog.ts',
+  'scripts/training-e2e-live-calendar.ts',
 ];
 
 /**
@@ -140,6 +150,17 @@ describe('telegram purge gate (Stage B — config/env + notification-out + ident
     expect(pkg.keywords ?? []).not.toContain('telegram');
   });
 
+  it('purges generic TELEGRAM_* config from eval, smoke, and local-runtime surfaces', () => {
+    const offenders = STAGE_B_ENV_SURFACES.flatMap((file) => {
+      const source = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      return source.split('\n')
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => /\bTELEGRAM_[A-Z0-9_]+\b/.test(line))
+        .map(({ line, index }) => `${file}:${index + 1}: ${line.trim()}`);
+    });
+    expect(offenders, `Generic TELEGRAM_* config remains:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
   it('skills/dashboard-home/onboarding JWT-userId paths no longer fall back to getUserByTelegramId', () => {
     for (const file of [
       'src/api/routes/dashboard-home-input.ts',
@@ -157,15 +178,15 @@ describe('telegram purge gate (Stage B — config/env + notification-out + ident
 });
 
 describe('telegram purge gate (Stage C — archive-first data migration)', () => {
-  const up = path.join(REPO_ROOT, 'migrations', '258_telegram_identity_archive.sql');
-  const down = path.join(REPO_ROOT, 'migrations', 'down', '258_telegram_identity_archive.sql');
+  const up = path.join(REPO_ROOT, 'migrations', '259_telegram_identity_archive.sql');
+  const down = path.join(REPO_ROOT, 'migrations', 'down', '259_telegram_identity_archive.sql');
 
-  it('migration 258 exists with a reversible down migration', () => {
+  it('migration 259 exists with a reversible down migration', () => {
     expect(fs.existsSync(up)).toBe(true);
     expect(fs.existsSync(down)).toBe(true);
   });
 
-  it('migration 258 is archive-first and SCHEMA-ONLY: never drops, nulls, or references the live column in SQL', () => {
+  it('migration 259 is archive-first and SCHEMA-ONLY: never drops, nulls, or references the live column in SQL', () => {
     const sql = fs.readFileSync(up, 'utf8');
     expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS telegram_identity_archive/);
     // The backfill deliberately does NOT live in SQL: migration rehearsals

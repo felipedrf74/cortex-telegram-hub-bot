@@ -25,10 +25,10 @@
  * (AI_ROUTING_MANIFEST_KILL) wins over the enable, mirroring the M12
  * precedence rule: a kill can only ever ADD an off, never remove one.
  *
- * M19 remediation (2026-07-21): the flag does NOT suppress the
- * cross_skill_bridge prompt block — that block renders only on
- * planner-declined turns, so it is the honest fallback and always renders
- * on cross-skill turns regardless of this flag.
+ * The flag retires the legacy cross_skill_bridge prompt block only for
+ * actionable turns covered by the plan path or its deterministic declined
+ * terminal. Pure multi-skill reads keep the bridge until a multi-owner read
+ * executor exists, because their primary owner cannot represent every skill.
  */
 
 import { loadCapabilityManifest } from '../../capability-manifest';
@@ -285,10 +285,3 @@ export function enforceCrossSkillPreview(plan: ChatActionPlan): ChatActionPlan {
   if (executableSkillsForPlan(plan.steps).length < 2) return plan;
   return { ...plan, requiresConfirmation: true };
 }
-
-// crossSkillPlanPathCoverage was deleted in the M19 remediation
-// (2026-07-21). It suppressed the cross_skill_bridge prompt block based on
-// splitter coverage, but that block only renders on turns the planner
-// DECLINED — so suppression guaranteed the second intent got neither plan
-// execution nor the bridge (silent drop). The bridge now always renders on
-// the legacy/model path; the flag's benefit is the plan path itself.

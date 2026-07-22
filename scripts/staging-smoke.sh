@@ -633,7 +633,7 @@ else
     node <<'NODE'
 const Database = require('better-sqlite3');
 const { signIosJwt } = require('./dist/services/ios-jwt');
-const { checkResponseLocaleFidelity } = require('./dist/services/chat-language-detector');
+const { checkStagingLocaleWritePreview } = require('./dist/services/chat-language-detector');
 
 const userId = Number(process.env.NEXUS_SMOKE_LOCALE_FIDELITY_USER_ID || '1000016');
 if (!Number.isInteger(userId) || userId < 1000000 || userId > 1099999) {
@@ -730,18 +730,18 @@ async function runTurn(turn) {
   const raw = await response.text();
   let json = null;
   try { json = raw ? JSON.parse(raw) : null; } catch {}
-  const replyText = typeof json?.text === 'string' ? json.text
-    : typeof json?.data?.text === 'string' ? json.data.text
-    : '';
-  const fidelity = checkResponseLocaleFidelity(turn.locale, replyText);
+  const contract = checkStagingLocaleWritePreview(turn.locale, response.status, json);
   return {
     locale: turn.locale,
     httpStatus: response.status,
-    ok: response.status === 200 && replyText.length > 0 && fidelity.ok,
-    expected: fidelity.expected,
-    detected: fidelity.detected,
-    confidence: Number(fidelity.confidence.toFixed(3)),
-    replyPreview: replyText.slice(0, 120),
+    ok: contract.ok,
+    httpStatusAccepted: contract.httpStatusAccepted,
+    actionStatus: contract.actionStatus,
+    actionStatusAccepted: contract.actionStatusAccepted,
+    expected: contract.localeFidelity.expected,
+    detected: contract.localeFidelity.detected,
+    confidence: Number(contract.localeFidelity.confidence.toFixed(3)),
+    replyPreview: contract.replyText.slice(0, 120),
   };
 }
 

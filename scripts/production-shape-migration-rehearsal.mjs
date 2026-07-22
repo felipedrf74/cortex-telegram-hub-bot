@@ -14,6 +14,10 @@ import {
 import {
   loadIrreversibleMigrationPolicy,
 } from './lib/irreversible-migration-policy.mjs';
+import {
+  loadProductionMigrationLineagePolicy,
+  resolveProductionMigrationLineage,
+} from './lib/production-migration-lineage.mjs';
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -137,8 +141,11 @@ async function run() {
   const policy = loadIrreversibleMigrationPolicy({ root: releaseDir });
   if (policy.integrityIssues.length !== 0
     || policy.reviewSubjectSha256 !== migrationPolicySubjectSha256) fail('migration_policy_identity_mismatch');
+  const lineagePolicy = loadProductionMigrationLineagePolicy({ root: releaseDir });
 
   const candidateEntries = migrationEntries(releaseDir);
+  const candidateNames = candidateEntries.map(({ file }) => file);
+  const candidateNameSet = new Set(candidateNames);
   const candidateIdentity = candidateMigrationIdentity(releaseDir);
   if (candidateIdentity.requiredContentMigrationCount !== 15) fail('required_content_migration_inventory_invalid');
   const requiredFiles = candidateEntries.filter(({ file }) => {
@@ -156,6 +163,7 @@ async function run() {
   const clonePath = path.join(cloneDir, 'production-shape.db');
   let cleanupVerified = false;
   let result;
+  let sourceLineage;
   try {
     const sourceDatabaseSha256 = digestFile(sourceDatabase);
     const source = new Database(sourceDatabase, { readonly: true, fileMustExist: true });
@@ -167,9 +175,12 @@ async function run() {
       if (applied.some((file) => requiredFiles.some((entry) => entry.file === file))) {
         fail('source_already_contains_content_workspace_migrations');
       }
-      const candidateNames = candidateEntries.map(({ file }) => file);
-      if (applied.length > candidateNames.length
-        || applied.some((file, index) => file !== candidateNames[index])) {
+      const retiredApplied = applied.filter((file) => !candidateNameSet.has(file));
+      sourceLineage = resolveProductionMigrationLineage(lineagePolicy, retiredApplied);
+      if (!sourceLineage) fail('source_retired_migration_lineage_unrecognized');
+      const canonicalApplied = applied.filter((file) => candidateNameSet.has(file));
+      if (canonicalApplied.length > candidateNames.length
+        || canonicalApplied.some((file, index) => file !== candidateNames[index])) {
         fail('source_migration_ledger_not_candidate_prefix');
       }
       await source.backup(clonePath);
@@ -205,7 +216,8 @@ async function run() {
       assertContentLegacyIdeaWorkspaceExitReady(clone);
       const finalApplied = clone.prepare('SELECT filename FROM _migrations ORDER BY filename').all()
         .map((row) => String(row.filename));
-      if (JSON.stringify(finalApplied) !== JSON.stringify(candidateEntries.map(({ file }) => file))) {
+      const expectedFinalApplied = [...candidateNames, ...sourceLineage.migrationFiles].sort();
+      if (JSON.stringify(finalApplied) !== JSON.stringify(expectedFinalApplied)) {
         fail('candidate_migration_ledger_incomplete');
       }
       clone.pragma('wal_checkpoint(TRUNCATE)');
@@ -235,6 +247,10 @@ async function run() {
         appliedMigrationCount: applied.length,
         migrationSetSha256: sha256Bytes(Buffer.from(JSON.stringify(applied))),
         databaseSha256: sourceDatabaseSha256,
+        migrationLineageId: sourceLineage.id,
+        retiredMigrationCount: sourceLineage.migrationCount,
+        retiredMigrationSetSha256: sourceLineage.migrationSetSha256,
+        retiredMigrationPolicySha256: lineagePolicy.sha256,
       },
       candidate: {
         migrationCount: candidateIdentity.migrationCount,

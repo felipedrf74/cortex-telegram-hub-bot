@@ -32,11 +32,9 @@ export async function tryBuildMultiStepChatActionPlan(
     // M19 (flag AI_CROSS_SKILL_EXECUTION, default OFF → byte-identical):
     // any plan spanning >=2 skills is preview-first, and the splitter's own
     // cross-skill detection ('cross_skill_action_segments') is recorded as
-    // a planner input signal. M19 remediation (2026-07-21): the
-    // orchestrator's cross_skill_bridge prompt block is NOT suppressed by
-    // this path — it renders only on turns the planner declined, so it
-    // stays as the honest fallback there; when THIS plan path takes the
-    // turn, the prompt block never reaches the model anyway.
+    // a planner input signal. The flag also retires cross_skill_bridge;
+    // planner-declined actionable turns stop at the deterministic
+    // cross_skill_plan_declined terminal instead of silently dropping work.
     const crossSkillActive = isCrossSkillExecutionEnabled();
     const spansSkills = crossSkillActive && executableSkillsForPlan(routed.plan.steps).length >= 2;
     return {

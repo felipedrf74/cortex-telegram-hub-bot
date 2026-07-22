@@ -19,6 +19,8 @@ import {
   assertAgentEventHandlerRuntimeParity,
   assertAgentQueuedJobHandlerRuntimeParity,
 } from './agent-job-manifest';
+import { chatCoreV2BackgroundCommandJobHandler } from './chat-core-v2/background-command-worker';
+import { chatLegacyTimeoutContinuationJobHandler } from './chat-legacy-timeout-continuation';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
   'auth.user.logged_in',
@@ -185,6 +187,24 @@ export const defaultEventHandlers: EventHandler[] = [
 ];
 
 export const defaultJobHandlers: JobHandler[] = [
+  // Chat background jobs share the same durable SQLite lease/retry worker as
+  // the rest of the event backbone. Keeping them in this executable registry
+  // (and AgentJobManifest) prevents a successfully queued iOS 202 from becoming
+  // orphaned work in production.
+  {
+    jobType: 'chat_core_v2_background_command',
+    idempotent: true,
+    handle(job) {
+      return chatCoreV2BackgroundCommandJobHandler.handle(job);
+    },
+  },
+  {
+    jobType: 'chat_legacy_timeout_continuation',
+    idempotent: true,
+    handle(job) {
+      return chatLegacyTimeoutContinuationJobHandler.handle(job);
+    },
+  },
   {
     jobType: 'project_read_models',
     idempotent: true,

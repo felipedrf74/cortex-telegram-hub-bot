@@ -26,12 +26,17 @@ vi.mock('../../src/services/anthropic', () => ({
   }),
 }));
 
-import { persistChatEvalRun } from '../../src/services/chat-eval-history';
+import {
+  acceptFrozenRealProviderBaseline,
+  persistChatEvalRun,
+  type ChatEvalRunCostAttestation,
+} from '../../src/services/chat-eval-history';
 import type { ChatEvaluationSuiteResult } from '../../src/services/chat-evaluation-harness';
 import {
   recordChatQualityGateOutcome,
   resetChatQualityGateOutcomeCountersForTests,
 } from '../../src/services/chat-hybrid-metrics';
+import { recordChatRoutingClarifyDecisionPersisted } from '../../src/services/chat-routing-clarify-metrics';
 import { ensureRoutingCorpusTables } from '../../src/services/routing-corpus';
 import { storeAcceptedAccuracySnapshot, type RoutingAccuracyReport } from '../../src/services/routing-accuracy';
 import {
@@ -63,7 +68,29 @@ function makeSuiteResult(overrides: Partial<Record<string, unknown>> = {}): Chat
       generatedAt: '2026-07-18T10:00:00.000Z',
       mode: 'fixture',
       passed: true,
-      scenarios: [],
+      scenarios: [{
+        scenarioId: 'locale-observation',
+        title: 'Locale observation',
+        personaId: 'persona-1',
+        passed: false,
+        averageScore: 1,
+        turns: [
+          {
+            turnId: 'locale-ok',
+            expectedLanguage: 'en',
+            executionStatus: 'executed',
+            scorerDimensions: [{ dimension: 'response_language', passed: true, score: 2, detail: 'response language en' }],
+            failures: [],
+          },
+          {
+            turnId: 'locale-leak',
+            expectedLanguage: 'es',
+            executionStatus: 'executed',
+            scorerDimensions: [{ dimension: 'response_language', passed: false, score: 0, detail: 'expected language es, detected pt' }],
+            failures: [],
+          },
+        ],
+      }],
       averageScore: 0.9,
       failureSummary: { wrong_skill_routing: 1, stale_memory: 0 },
     },
@@ -75,7 +102,14 @@ function makeSuiteResult(overrides: Partial<Record<string, unknown>> = {}): Chat
         status: 'pass',
         evidenceMode: 'fixture',
         averageScore: 1,
-        scores: { grounding: 1, response_language: 1 },
+        scores: {
+          grounding: 1,
+          response_language: 1,
+          wording_quality: 2,
+          groundedness: 2,
+          sufficiency: 2,
+          explanation_quality: 2,
+        },
         failures: [],
         notes: [],
       },
@@ -86,7 +120,14 @@ function makeSuiteResult(overrides: Partial<Record<string, unknown>> = {}): Chat
         status: 'partial',
         evidenceMode: 'fixture',
         averageScore: 0.6,
-        scores: { grounding: 1, response_language: 0 },
+        scores: {
+          grounding: 1,
+          response_language: 0,
+          wording_quality: 1,
+          groundedness: 1,
+          sufficiency: 1,
+          explanation_quality: 1,
+        },
         failures: ['response_language: expected language es, detected pt'],
         notes: [],
       },
@@ -120,11 +161,17 @@ function makeAccuracySnapshot(): RoutingAccuracyReport {
 }
 
 function makeReadinessReport(): ChatV2CompletionReadinessReportLike {
+  const passingPhase = () => ({ passed: true, gates: [] });
   return {
     schemaVersion: 'chat_v2_completion_readiness_report.v1',
     generatedAt: '2026-07-19T09:00:00.000Z',
     evidenceSources: ['runtime_route'],
     shadow: { passed: true, gates: [{ gateId: 'shadow_sample_count', passed: true, sampleCount: 100, observed: 100, threshold: 50 }] },
+    answerCanary: passingPhase(),
+    deterministicRead: passingPhase(),
+    writePreview: passingPhase(),
+    confirmedWrites: passingPhase(),
+    cloudAllowlist: passingPhase(),
     legacyRetirement: {
       passed: false,
       gates: [
@@ -134,11 +181,61 @@ function makeReadinessReport(): ChatV2CompletionReadinessReportLike {
   };
 }
 
+function costEvidence(
+  scenarioIds: string[],
+  totalEstimatedActualSpendUsd: number,
+  totalCeilingUsd: number,
+): ChatEvalRunCostAttestation {
+  const judgeEstimatedSpendUsd = totalCeilingUsd === 0.5 && scenarioIds.length > 0 ? 0.004 : 0;
+  const targetActualSpendUsd = totalEstimatedActualSpendUsd - judgeEstimatedSpendUsd;
+  return {
+    contractVersion: 'chat-live-eval-v1',
+    attested: true,
+    reasons: [],
+    totalCeilingUsd,
+    targetCeilingUsd: totalCeilingUsd === 0.5 ? 0.45 : totalCeilingUsd,
+    judgeCeilingUsd: totalCeilingUsd === 0.5 ? 0.05 : 0,
+    targetActualSpendUsd,
+    targetReservedAttemptCeilingUsd: 0,
+    targetCommittedCeilingUsd: targetActualSpendUsd,
+    judgeEstimatedSpendUsd,
+    totalEstimatedActualSpendUsd,
+    totalConservativeCommitmentUsd: totalEstimatedActualSpendUsd,
+    targetUsageCallCount: 1,
+    targetProviderAttemptCount: 1,
+    targetProviders: ['gemini'],
+    unresolvedPricingCount: 0,
+    preparation: {
+      scenarioCount: scenarioIds.length,
+      scenarioIds: [...scenarioIds].sort(),
+      seedProfileVersions: ['single-tenant-live-v2'],
+      seedProfileHashes: ['a'.repeat(64)],
+      aggregateResetCounts: {},
+    },
+  };
+}
+
+function preflight(runId: string, scenarioIds: string[]): Record<string, unknown> {
+  return {
+    contractVersion: 'chat-live-eval-v1',
+    mode: 'real_provider',
+    runId,
+    budget: { totalCeilingUsd: 0.5, targetCeilingUsd: 0.45, judgeCeilingUsd: 0.05 },
+    targetBaseCategory: 'chat_live_eval_real',
+    providerPolicy: 'metered_cloud_only',
+    productionDataUsed: false,
+    seedProfileVersion: 'single-tenant-live-v2',
+    supportedScenarioIds: [...scenarioIds].sort(),
+  };
+}
+
 describe('chat quality dashboard', () => {
   let db: Database.Database;
 
   beforeEach(() => {
     db = new Database(':memory:');
+    db.exec(fs.readFileSync(path.resolve(__dirname, '../../migrations/160_chatv2_legacy_retirement_evidence.sql'), 'utf8'));
+    db.exec(fs.readFileSync(path.resolve(__dirname, '../../migrations/179_chat_v2_fallback_attribution_counter.sql'), 'utf8'));
     ensureRoutingCorpusTables(db);
     ensureChatCoreV2OnlineEvalTables(db);
     resetChatQualityGateOutcomeCountersForTests();
@@ -150,7 +247,13 @@ describe('chat quality dashboard', () => {
   });
 
   function seedEvalRuns(): void {
-    persistChatEvalRun(makeSuiteResult(), { db, runId: 'run-recent', budgetUsd: 1.5, realProviderCalls: 3 });
+    persistChatEvalRun(makeSuiteResult(), {
+      db,
+      runId: 'run-recent',
+      budgetUsd: 1.5,
+      realProviderCalls: 3,
+      costAttestation: costEvidence(['scenario-a', 'scenario-b'], 0.12, 1.5),
+    });
     persistChatEvalRun(
       makeSuiteResult({
         generatedAt: '2026-06-10T10:00:00.000Z',
@@ -166,7 +269,12 @@ describe('chat quality dashboard', () => {
           failureSummary: { wrong_skill_routing: 2, missing_tool_call: 1 },
         },
       }),
-      { db, runId: 'run-older', budgetUsd: 0.25 },
+      {
+        db,
+        runId: 'run-older',
+        budgetUsd: 0.25,
+        costAttestation: costEvidence(['scenario-a', 'scenario-b'], 0.02, 0.25),
+      },
     );
   }
 
@@ -223,19 +331,53 @@ describe('chat quality dashboard', () => {
     recordChatQualityGateOutcome('pass');
     recordChatQualityGateOutcome('pass');
     recordChatQualityGateOutcome('replaced');
+    for (let index = 0; index < 9; index += 1) {
+      recordChatRoutingClarifyDecisionPersisted(db, false, NOW);
+    }
+    recordChatRoutingClarifyDecisionPersisted(db, true, NOW);
+    db.prepare(`
+      INSERT INTO chat_v2_legacy_retirement_evidence (
+        evidence_source, evidence_kind, request_id, sample_hmac, sample_identifier_kind,
+        route_id, replaced, tested, shadow_parity_rate, route_sample_count,
+        raw_field_audit_count, safe_metadata_json, created_at
+      ) VALUES ('runtime_route', 'route_exit', 'dashboard-training', ?, 'hmac',
+        'training_plan_shortcut', 1, 1, 0.96, 50, 0, ?, ?)
+    `).run(
+      `hmac:test:${'e'.repeat(64)}`,
+      JSON.stringify({
+        schemaVersion: 'chat_v2_legacy_parity_evidence_safe_metadata.v1',
+        parityObservationImport: true,
+        evaluator: 'manual',
+        peerReviewSignoffHash: 'f'.repeat(64),
+        sampleCount: 50,
+        matchingCount: 48,
+        safetyRegressionCount: 0,
+        qualityRegressionCount: 0,
+        degradedNotComparableCount: 0,
+      }),
+      NOW.toISOString(),
+    );
+    db.prepare(`
+      INSERT INTO chat_v2_legacy_fallback_attribution_counter (
+        tenant_id, window_start, domain, route_owner, route_method,
+        fallback_count, total_count, updated_at
+      ) VALUES ('tenant-a', '2026-07-20T11', 'training',
+        'training_plan_shortcut', 'training-plan-shortcut', 2, 100, ?)
+    `).run(NOW.toISOString());
 
     const dashboard = buildChatQualityDashboard(db, {
       now: NOW,
       readinessReport: makeReadinessReport(),
     });
 
-    // Eval trend: newest first with spend + provider calls.
+    // Eval trend: actual estimated spend and budget ceilings remain distinct.
     expect(dashboard.evalTrend.map((run) => run.runId)).toEqual(['run-recent', 'run-older']);
     expect(dashboard.evalTrend[0]).toMatchObject({
       mode: 'fixture',
       passed: true,
       averageScore: 0.9,
-      budgetUsd: 1.5,
+      estimatedActualSpendUsd: 0.12,
+      budgetCeilingUsd: 1.5,
       realProviderCalls: 3,
     });
 
@@ -253,11 +395,20 @@ describe('chat quality dashboard', () => {
       mode: 'fixture',
       scenarioCount: 2,
       leakedCount: 1,
+      unknownCount: 0,
       rate: 0.5,
     });
 
     // Quality gate outcome counters (process-local).
     expect(dashboard.qualityGateOutcomes).toMatchObject({ pass: 2, replaced: 1, surgical_downgrade: 0 });
+    expect(dashboard.routingClarifyBudget).toEqual({
+      windowDays: 30,
+      evaluatedTurns: 10,
+      clarifiedTurns: 1,
+      rate: 0.1,
+      budgetLimit: 0.1,
+      withinBudget: true,
+    });
 
     // Routing accuracy from the accepted snapshot + corpus progress.
     expect(dashboard.routingAccuracy.snapshotGeneratedAt).toBe('2026-07-15T08:00:00.000Z');
@@ -278,6 +429,23 @@ describe('chat quality dashboard', () => {
     const retirement = dashboard.readiness.rows?.find((row) => row.phase === 'legacyRetirement');
     expect(retirement).toMatchObject({ passed: false, blockedGateCount: 1 });
 
+    // Per-route campaign uses paired behavior evidence and shows the exact
+    // owner-gated disable stage plus trailing-24h fallback.
+    expect(dashboard.retirementCampaign).toMatchObject({
+      fallbackWindowHours: 24,
+      fallbackThreshold: 0.02,
+      candidateRouteCount: 1,
+      alertRouteCount: 0,
+    });
+    expect(dashboard.retirementCampaign.rows.find((row) => row.routeId === 'training_plan_shortcut'))
+      .toMatchObject({
+        disableStages: ['training_plan_shortcut'],
+        behaviorParitySamples: 50,
+        behaviorParityRate: 0.96,
+        fallback24h: { rate: 0.02, passed: true },
+        verdict: 'pass',
+      });
+
     // Sampler capture counts within the window only — and never raw text.
     expect(dashboard.samplerCaptures.windowDays).toBe(30);
     expect(dashboard.samplerCaptures.total).toBe(3);
@@ -289,23 +457,101 @@ describe('chat quality dashboard', () => {
     expect(JSON.stringify(dashboard.samplerCaptures)).not.toContain('turn-');
     expect(JSON.stringify(dashboard.samplerCaptures)).not.toContain('labeled item');
 
-    // Monthly spend groups by month; current month has no runs.
+    // Monthly estimated actual spend never relabels the budget ceiling.
     expect(dashboard.monthlyEvalSpend.months).toEqual([
-      { month: '2026-07', totalBudgetUsd: 1.5, runCount: 1 },
-      { month: '2026-06', totalBudgetUsd: 0.25, runCount: 1 },
+      {
+        month: '2026-07', totalEstimatedActualSpendUsd: 0.12,
+        totalBudgetCeilingUsd: 1.5, actualSpendEvidenceRunCount: 1, runCount: 1,
+      },
+      {
+        month: '2026-06', totalEstimatedActualSpendUsd: 0.02,
+        totalBudgetCeilingUsd: 0.25, actualSpendEvidenceRunCount: 1, runCount: 1,
+      },
     ]);
-    expect(dashboard.monthlyEvalSpend.currentMonthUsd).toBe(1.5);
+    expect(dashboard.monthlyEvalSpend.currentMonthEstimatedActualSpendUsd).toBe(0.12);
+    expect(dashboard.monthlyEvalSpend.currentMonthBudgetCeilingUsd).toBe(1.5);
+    expect(dashboard.frozenLiveBaseline.status).toBe('not_recorded');
   });
 
-  it('prefers the newest real_provider run for locale leakage even when a fixture run is newer', () => {
-    // Newer fixture run (clean) + older real_provider run (leaking): the
-    // real_provider evidence must win so fixture runs cannot mask live
-    // locale regressions.
+  it('surfaces the immutable live baseline and only emits deltas for a compatible future run', () => {
+    const baselineId = 'chat-eval-dashboard-baseline';
+    const baselineResult = makeSuiteResult({ mode: 'real_provider', averageScore: 0.8 });
+    persistChatEvalRun(baselineResult, {
+      db,
+      runId: baselineId,
+      gitBranch: 'main',
+      gitCommit: 'a'.repeat(40),
+      budgetUsd: 0.5,
+      realProviderCalls: 2,
+      costAttestation: costEvidence(['scenario-a', 'scenario-b'], 0.016, 0.5),
+      preflightAttestation: preflight(baselineId, ['scenario-a', 'scenario-b']),
+    });
+    acceptFrozenRealProviderBaseline(db, {
+      runId: baselineId,
+      evidenceJsonPath: `docs/release/eval-evidence/${baselineId}.json`,
+      evidenceMarkdownPath: `docs/release/eval-evidence/${baselineId}.md`,
+      runtime: { nodeEnv: 'staging', staging: 'true' },
+    });
+
+    const followupId = 'chat-eval-dashboard-followup';
+    const followupResult = makeSuiteResult({
+      generatedAt: '2026-07-19T10:00:00.000Z',
+      mode: 'real_provider',
+      averageScore: 0.9,
+    });
+    persistChatEvalRun(followupResult, {
+      db,
+      runId: followupId,
+      gitBranch: 'main',
+      gitCommit: 'b'.repeat(40),
+      budgetUsd: 0.5,
+      realProviderCalls: 2,
+      costAttestation: costEvidence(['scenario-a', 'scenario-b'], 0.02, 0.5),
+      preflightAttestation: preflight(followupId, ['scenario-a', 'scenario-b']),
+    });
+
+    const dashboard = buildChatQualityDashboard(db, { now: NOW });
+    expect(dashboard.frozenLiveBaseline).toMatchObject({
+      status: 'comparable',
+      baseline: { runId: baselineId, averageScore: 0.8 },
+      latestFollowup: { runId: followupId, averageScore: 0.9 },
+      comparison: {
+        comparable: true,
+        averageScoreDelta: 0.1,
+        estimatedActualSpendUsdDelta: 0.004,
+      },
+    });
+  });
+
+  it('prefers real_provider locale evidence even when newer fixture runs exceed the dashboard query limit', () => {
+    // Enough newer fixture runs to evict the live run from both the trend and
+    // failure windows. Locale truth must come from its own mode-filtered read.
     persistChatEvalRun(makeSuiteResult(), { db, runId: 'fixture-newest' });
     persistChatEvalRun(
       makeSuiteResult({
         generatedAt: '2026-07-10T10:00:00.000Z',
         mode: 'real_provider',
+        dayToDay: {
+          generatedAt: '2026-07-10T10:00:00.000Z',
+          mode: 'real_provider',
+          passed: false,
+          scenarios: [{
+            scenarioId: 'live-a',
+            title: 'Live A',
+            personaId: 'persona-1',
+            passed: false,
+            averageScore: 0,
+            turns: [{
+              turnId: 'live-a-1',
+              expectedLanguage: 'es',
+              executionStatus: 'executed',
+              scorerDimensions: [{ dimension: 'response_language', passed: false, score: 0, detail: 'expected language es, detected en' }],
+              failures: [],
+            }],
+          }],
+          averageScore: 0,
+          failureSummary: {},
+        },
         scenarios: [
           {
             id: 'live-a',
@@ -322,14 +568,22 @@ describe('chat quality dashboard', () => {
       }),
       { db, runId: 'live-older', realProviderCalls: 5 },
     );
+    for (let index = 0; index < 25; index += 1) {
+      persistChatEvalRun(makeSuiteResult(), { db, runId: `fixture-after-live-${index}` });
+    }
 
-    const dashboard = buildChatQualityDashboard(db, { now: NOW });
+    const dashboard = buildChatQualityDashboard(db, {
+      now: NOW,
+      evalTrendLimit: 5,
+      failureRunLimit: 5,
+    });
 
     expect(dashboard.localeLeakage).toEqual({
       runId: 'live-older',
       mode: 'real_provider',
       scenarioCount: 1,
       leakedCount: 1,
+      unknownCount: 0,
       rate: 1,
     });
   });
@@ -339,12 +593,29 @@ describe('chat quality dashboard', () => {
 
     expect(dashboard.evalTrend).toEqual([]);
     expect(dashboard.failureTypeBreakdown).toEqual({ runsConsidered: 0, counts: {} });
-    expect(dashboard.localeLeakage).toEqual({ runId: null, mode: null, scenarioCount: 0, leakedCount: 0, rate: null });
+    expect(dashboard.localeLeakage).toEqual({ runId: null, mode: null, scenarioCount: 0, leakedCount: 0, unknownCount: 0, rate: null });
     expect(dashboard.routingAccuracy.snapshotGeneratedAt).toBeNull();
     expect(dashboard.routingAccuracy.surfaces).toBeNull();
     expect(dashboard.readiness).toMatchObject({ available: false, rows: null });
     expect(dashboard.samplerCaptures.total).toBe(0);
-    expect(dashboard.monthlyEvalSpend).toEqual({ months: [], currentMonthUsd: 0 });
+    expect(dashboard.monthlyEvalSpend).toEqual({
+      months: [],
+      currentMonthEstimatedActualSpendUsd: 0,
+      currentMonthBudgetCeilingUsd: 0,
+    });
+    expect(dashboard.frozenLiveBaseline).toEqual({
+      status: 'not_recorded', baseline: null, latestFollowup: null, comparison: null,
+    });
+    expect(dashboard.routingClarifyBudget).toEqual({
+      windowDays: 30,
+      evaluatedTurns: 0,
+      clarifiedTurns: 0,
+      rate: null,
+      budgetLimit: 0.1,
+      withinBudget: null,
+    });
+    expect(dashboard.retirementCampaign.candidateRouteCount).toBe(0);
+    expect(dashboard.retirementCampaign.rows).toHaveLength(9);
   });
 
   it('loads a readiness report artifact fail-soft', () => {
@@ -361,6 +632,15 @@ describe('chat quality dashboard', () => {
       const invalid = path.join(dir, 'invalid.json');
       fs.writeFileSync(invalid, 'not json');
       expect(loadChatV2ReadinessReportFromFile(invalid).reason).toContain('not valid JSON');
+
+      const malformed = path.join(dir, 'malformed.json');
+      fs.writeFileSync(malformed, JSON.stringify({
+        ...makeReadinessReport(),
+        legacyRetirement: { passed: false, gates: { corrupt: true } },
+      }));
+      const malformedResult = loadChatV2ReadinessReportFromFile(malformed);
+      expect(malformedResult.report).toBeNull();
+      expect(malformedResult.reason).toContain('gates array');
 
       const good = path.join(dir, 'latest.json');
       fs.writeFileSync(good, JSON.stringify(makeReadinessReport()));

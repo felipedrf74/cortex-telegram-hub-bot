@@ -308,14 +308,13 @@ export function pruneCompletedChatActionRuns(input: {
 // turn's chatRequestId. On a turn timeout the route reads these back to
 // build an honest partial-progress reply.
 //
-// Spike verdict (M18): no auto-resume for the legacy loop — the detached
-// loop keeps running in-process after the Promise.race timeout, ADV-2
-// provider pinning cannot be guaranteed from a later worker process, and
-// sliced-history shape stability breaks open tool_use_id scope. Checkpoints
-// are therefore EVIDENCE for an honest reply, never a resume payload. Being
-// terminal rows, they are invisible to listPendingChatActionRuns and
-// untouched by cancelPendingChatActionRuns / cancelAllPendingChatWork, so a
-// timed-out turn leaves zero queued continuation work behind.
+// Spike verdict (M18): never inject these summaries back into an open provider
+// tool_use loop. They are evidence for the immediate partial reply and for a
+// durable late-result delivery job. The worker never starts a fresh provider
+// turn: it consumes the original promise's result or fails honestly, so these
+// completed operations cannot be repeated. Being terminal rows, checkpoints
+// themselves remain invisible to pending-action cancellation; the dedicated
+// background job is cancelled separately by cancelAllPendingChatWork.
 
 export const LEGACY_TOOL_LOOP_CHECKPOINT_ACTION_PREFIX = 'legacy_tool_loop_checkpoint';
 

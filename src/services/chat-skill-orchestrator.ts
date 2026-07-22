@@ -3,6 +3,7 @@
 import type { DomainName } from '../domains/types';
 import type { RouteResult } from '../router';
 import type { ConversationContext } from '../router/classifier';
+import type Database from 'better-sqlite3';
 import { isManifestRoutingEnabled } from './intent-resolution/manifest-routing-flags';
 import { manifestDomainMatches } from './intent-resolution/manifest-projections';
 import { resolveIntent } from './intent-resolution/intent-resolver';
@@ -18,6 +19,9 @@ import {
   isRoutingClarifyQuestion,
 } from './chat/planner/clarification';
 import { recordRoutingClarifyDecision } from './chat-hybrid-metrics';
+import { recordChatRoutingClarifyDecisionPersisted } from './chat-routing-clarify-metrics';
+import { isCrossSkillExecutionEnabled } from './chat/planner/cross-skill-ownership';
+import { logger } from '../utils/logger';
 
 // ─── M12 manifest convergence (flag: AI_ROUTING_MANIFEST_ORCHESTRATOR) ─
 //
@@ -224,6 +228,8 @@ export function analyzeChatSkillOrchestration(input: {
    * offline/duplicate evaluations can never skew the ≤10% budget telemetry.
    */
   countClarifyTelemetry?: boolean;
+  /** Database supplied only by the live deciding pipeline call. */
+  clarifyTelemetryDb?: Database.Database;
   /**
    * M15 (flag AI_CLASSIFY_MANIFEST_PROMPT): manifest-validated
    * chatActionSkill hint from the classifier ({domain, skill, confidence}
@@ -278,6 +284,15 @@ export function analyzeChatSkillOrchestration(input: {
   // pass routedDomain (context engine, simulations, WebSocket) never count.
   if (isRoutingClarifyEnabled() && input.countClarifyTelemetry === true) {
     recordRoutingClarifyDecision(clarify !== null);
+    if (input.clarifyTelemetryDb) {
+      try {
+        recordChatRoutingClarifyDecisionPersisted(input.clarifyTelemetryDb, clarify !== null);
+      } catch (err) {
+        // Quality telemetry must not turn a user request into a 500. The
+        // dashboard exposes missing/stale evidence as no-evidence, not PASS.
+        logger.warn({ err }, 'routing clarify durable metric write failed');
+      }
+    }
   }
 
   return {
@@ -434,22 +449,23 @@ export function buildChatSkillRoutingPromptBlock(
   if (decision.context.shouldRefreshBeforeAnswer) {
     lines.push(`<context_refresh stale_risk="${decision.context.staleContextRisk}" ambiguous_reference="${decision.context.ambiguousReference}" tenant_boundary="${decision.context.tenantBoundaryMention}" />`);
   }
-  // Codex QA round 9: explicit prompt bridge for split-intent turns.
-  // Even though the model only has the routed domain's tools, it can
-  // still NAME the action the other skill should perform and ask the
-  // user to confirm or queue it.
-  //
-  // M19 remediation (2026-07-21): this block ALWAYS renders on cross-skill
-  // turns. It only ever reaches the model on turns the PLANNER DECLINED
-  // (the legacy/model path), so any suppression here — the retired
-  // coverage-proxy included — guaranteed the un-handled second intent got
-  // neither plan execution nor the bridge: a silent drop. The
-  // AI_CROSS_SKILL_EXECUTION flag's benefit lives entirely on the PLAN
-  // path (ownership rewrite + grouped preview + per-segment skill
-  // execution); this prompt bridge is the honest fallback when that path
-  // does not take the turn.
+  // Codex QA round 9: explicit prompt bridge for split-intent turns. With
+  // AI_CROSS_SKILL_EXECUTION ON, the two planner passes own ACTIONABLE
+  // multi-skill requests and cross_skill_plan_declined catches any such
+  // request they decline. Multi-skill reads/comparisons are deliberately not
+  // intercepted by that terminal and still have only the primary domain's
+  // tools, so they retain this bridge until a real multi-owner read executor
+  // covers them. The master kill restores the entire legacy prompt path.
   const crossSkill = decision.intentKinds.includes('cross_skill');
-  if (crossSkill && decision.involvedSkills.length > 1) {
+  const actionableCrossSkillCovered = decision.intentKinds.some((kind) => (
+    kind === 'action'
+    || kind === 'scheduling'
+    || kind === 'plan_creation'
+    || kind === 'cancellation'
+    || kind === 'edit_update'
+  ));
+  const bridgeRetiredForTurn = isCrossSkillExecutionEnabled() && actionableCrossSkillCovered;
+  if (!bridgeRetiredForTurn && crossSkill && decision.involvedSkills.length > 1) {
     const otherSkills = decision.involvedSkills
       .filter((s) => s !== 'shared_context' && s !== 'tools')
       .filter((s, _, arr) => arr.length > 1)

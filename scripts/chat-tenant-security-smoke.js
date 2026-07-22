@@ -30,9 +30,6 @@ function applyLocalDistDefaults() {
   process.env.NODE_ENV ||= 'development';
   process.env.ENV ||= 'development';
   process.env.STAGING ||= 'false';
-  process.env.TELEGRAM_LEGACY_DELIVERY ||= 'false';
-  process.env.TELEGRAM_BOT_TOKEN ||= 'local-chat-tenant-smoke-telegram-token-disabled';
-  process.env.TELEGRAM_ALLOWED_USER_IDS ||= '100000001';
   process.env.OWNER_TELEGRAM_ID ||= '100000001';
   process.env.IOS_API_ENABLED ||= 'true';
   process.env.IOS_API_JWT_SECRET ||= 'local-chat-tenant-smoke-secret-00000000000000000000';

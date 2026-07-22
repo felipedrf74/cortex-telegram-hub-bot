@@ -1,0 +1,41 @@
+# Ollama-only, zero-cloud overlay for scripts/chat-eval-local.sh only.
+#
+# The ordinary local sandbox may use developer provider keys from .env.local.
+# This overlay takes higher precedence, removes every cloud/research key, and
+# pins all live Node routing surfaces to the host Ollama daemon with no
+# fallback. Never use it for a real-provider evaluation.
+
+services:
+  content-engine:
+    environment:
+      # Content-engine model work proxies through nexus-hub, whose provider
+      # registry is pinned to Ollama below. Research network access stays off.
+      NEXUS_LOCAL_ALLOW_MODEL_CALLS: "1"
+      CONTENT_ENGINE_FIXTURE_MODE: "0"
+      CONTENT_ENGINE_RESEARCH_NETWORK_DISABLED: "1"
+      ANTHROPIC_API_KEY: ""
+      GEMINI_API_KEY: ""
+      GOOGLE_API_KEY: ""
+      OPENAI_API_KEY: ""
+      SERPAPI_API_KEY: ""
+      YOUTUBE_API_KEY: ""
+      NEWSAPI_API_KEY: ""
+
+  nexus-hub:
+    environment:
+      NEXUS_LOCAL_ALLOW_MODEL_CALLS: "1"
+      NEXUS_MODEL_FIXTURE_MODE: "0"
+      OLLAMA_ENABLED: "true"
+      OLLAMA_BASE_URL: "${NEXUS_CHAT_EVAL_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      AI_CLASSIFY_PRIMARY: "ollama"
+      AI_CLASSIFY_FALLBACK: "none"
+      AI_CHAT_PRIMARY: "ollama"
+      AI_CHAT_FALLBACK: "none"
+      AI_TOOL_USE_PRIMARY: "ollama"
+      AI_TOOL_USE_FALLBACK: "none"
+      ANTHROPIC_ENABLED: "false"
+      AI_ALLOW_CLOUD_FALLBACK_WHEN_LOCAL_DISABLED: "false"
+      ANTHROPIC_API_KEY: ""
+      GEMINI_API_KEY: ""
+      GOOGLE_API_KEY: ""
+      OPENAI_API_KEY: ""

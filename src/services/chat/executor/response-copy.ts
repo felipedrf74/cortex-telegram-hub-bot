@@ -524,14 +524,8 @@ export function plannedActionLabel(step: ChatPlanStep, input: ChatPlannerInput):
 
 export function unsupportedChatExecutorReason(step: ChatPlanStep): string {
   switch (step.action) {
-    case 'draft_email':
-      return 'email_draft_requires_provider_draft_read_back_contract';
-    case 'send_email':
-      return 'email_send_requires_outbound_confirmation_and_provider_read_back_contract';
     case 'training_adjust_plan':
       return 'training_plan_adjust_requires_preview_contract_before_chat_execution';
-    case 'connections_retry_sync':
-      return 'connections_retry_sync_requires_provider_specific_sync_contract';
     default:
       return 'executor_not_enabled_for_chat_yet';
   }
