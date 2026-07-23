@@ -299,6 +299,43 @@ describe('OpenAIProvider', () => {
     );
   });
 
+  it('rejects a non-OpenAI structured-generation model before SDK dispatch', async () => {
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 256,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'text',
+    })).rejects.toThrow('requires an OpenAI model');
+
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it('supports text mode and fails closed to empty text with a bounded stop reason', async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [],
+      usage: { prompt_tokens: 10, completion_tokens: 0 },
+      model: 'gpt-4o',
+    });
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'gpt-4o',
+      maxTokens: 256,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'text',
+    });
+
+    expect(result).toEqual({ text: '', stopReason: 'stop' });
+    expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('response_format');
+  });
+
   // ── classify ──────────────────────────────────────────────────────
 
   describe('classify', () => {

@@ -220,6 +220,25 @@ describe('OllamaProvider — construction guards', () => {
       mod.config.localLLMEvaluation.enabled = originalEnabled;
     }
   });
+
+  it('refuses script generation when local evaluation does not require it', async () => {
+    const mod = await import('../../src/config');
+    const originalRequired = mod.config.localLLMEvaluation.requireLocalForScriptGen;
+    mod.config.localLLMEvaluation.requireLocalForScriptGen = false;
+    try {
+      await expect(new OllamaProvider().generateScript({
+        description: 'make a release script',
+      } as never)).rejects.toMatchObject({
+        kind: 'unsupported_capability',
+        meta: expect.objectContaining({
+          capability: 'production_script_generation_requires_approved_cloud_reasoning',
+        }),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      mod.config.localLLMEvaluation.requireLocalForScriptGen = originalRequired;
+    }
+  });
 });
 
 describe('OllamaProvider — classify', () => {
@@ -321,8 +340,11 @@ describe('OllamaProvider — explicit workload roles', () => {
         workloadRole: 'validated_local_chat',
         prompt: 'bounded local chat',
         think: false,
+        numCtx: 8192,
       });
       expect(result.text).toBe('local answer');
+      const [, fetchOptions] = fetchMock.mock.calls[0] as [string, { body: string }];
+      expect(JSON.parse(fetchOptions.body).options.num_ctx).toBe(4096);
     } finally {
       mod.config.localLLMEvaluation.enabled = originalEnabled;
     }
@@ -417,7 +439,7 @@ describe('completeLocalReasoningOneShot — module-level one-shot helper (local-
       'You are a synthesizer.',
       'Synthesize the patterns.',
       'knowledge_synthesis_local',
-      { maxTokens: 512, temperature: 0.3, userId: 7, tenantId: 7 },
+      { maxTokens: 512, numCtx: 8192, temperature: 0.3, userId: 7, tenantId: 7 },
     );
 
     expect(result.text).toBe('{"categories":[]}');
@@ -439,6 +461,7 @@ describe('completeLocalReasoningOneShot — module-level one-shot helper (local-
     const sent = JSON.parse(fetchOpts.body);
     expect(sent.think).toBe(false);
     expect(sent.keep_alive).toBe(-1);
+    expect(sent.options.num_ctx).toBe(4096);
     expect(sent.options.num_predict).toBe(512);
     expect(sent.messages).toEqual([
       { role: 'system', content: 'You are a synthesizer.' },

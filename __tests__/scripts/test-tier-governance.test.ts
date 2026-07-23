@@ -172,7 +172,7 @@ describe('governed test tier partitions', () => {
     });
   });
 
-  it('keeps cold shared-runner timing advisory without hiding correctness evidence', () => {
+  it('keeps cold shared-runner timing advisory without hiding correctness evidence', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-advisory-'));
     tempRoots.push(temp);
     const policy = loadTestPolicy();

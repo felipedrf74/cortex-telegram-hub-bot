@@ -64,6 +64,22 @@ describe('network-independent release runtime dependencies', () => {
     expect(() => validateRuntimeDependencyLock(wrong, root)).toThrow('outside release policy');
   });
 
+  it('uses locale-independent wheel ordering for hyphenated and underscored names', () => {
+    const root = fixtureRoot();
+    fs.writeFileSync(
+      path.join(root, 'dist/runtime-dependencies/python-wheelhouse/fastapi_cli-0.0.32-py3-none-any.whl'),
+      'cli-wheel-bytes',
+    );
+
+    const lock = buildRuntimeDependencyLock(root, target);
+
+    expect(lock.pythonWheels.map(({ path: wheelPath }) => path.basename(wheelPath))).toEqual([
+      'fastapi-0.136.1-py3-none-any.whl',
+      'fastapi_cli-0.0.32-py3-none-any.whl',
+    ]);
+    expect(validateRuntimeDependencyLock(lock, root)).toEqual(lock);
+  });
+
   it('uses an offline installer with traversal-safe extraction and no staging package download', () => {
     const installer = fs.readFileSync('scripts/release-runtime-dependencies.mjs', 'utf8');
     const builder = fs.readFileSync('scripts/build-release-runtime-dependencies.sh', 'utf8');

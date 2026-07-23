@@ -78,4 +78,40 @@ describe('Anthropic training-context tenant scope', () => {
     expect(mockBuildKnowledgePromptBlock).not.toHaveBeenCalled();
     expect(mockReadTrainingContextAll).not.toHaveBeenCalled();
   });
+
+  it('rejects a non-Claude structured-generation model before SDK dispatch', async () => {
+    await expect(callStructuredGeneration({
+      systemPrompt: 'Return JSON.',
+      userPrompt: 'Create the requested helper.',
+      model: 'gpt-4o',
+      maxTokens: 512,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    })).rejects.toThrow('requires a Claude model');
+
+    expect(mockTrackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a missing provider stop reason', async () => {
+    mockTrackedCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Structured response' }],
+      stop_reason: null,
+    });
+
+    await expect(callStructuredGeneration({
+      systemPrompt: 'Return JSON.',
+      userPrompt: 'Create the requested helper.',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 512,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    })).resolves.toEqual({
+      text: 'Structured response',
+      stopReason: 'end_turn',
+    });
+  });
 });

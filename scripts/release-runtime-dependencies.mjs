@@ -30,6 +30,10 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function regularFileIdentity(absolute, relative) {
   const stat = fs.lstatSync(absolute);
   if (!stat.isFile() || stat.isSymbolicLink()) fail(`runtime dependency is not a regular file: ${relative}`);
@@ -56,7 +60,7 @@ export function buildRuntimeDependencyLock(rootInput, target) {
     'dist/runtime-dependencies/node_modules.tar.gz',
   );
   const wheelRoot = path.join(deps, 'python-wheelhouse');
-  const wheelNames = fs.readdirSync(wheelRoot).sort();
+  const wheelNames = fs.readdirSync(wheelRoot).sort(compareCodeUnits);
   if (wheelNames.length === 0) fail('Python wheelhouse is empty');
   const wheels = wheelNames.map((name) => {
     if (!/^[A-Za-z0-9_.+-]+\.whl$/.test(name)) fail(`unsafe Python wheel filename: ${name}`);
@@ -113,7 +117,8 @@ export function validateRuntimeDependencyLock(lock, rootInput) {
     const observed = regularFileIdentity(absolute, identity.path);
     if (canonicalJson(observed) !== canonicalJson(identity)) fail(`runtime dependency digest mismatch: ${identity.path}`);
   }
-  const sortedWheels = [...lock.pythonWheels].sort((left, right) => left.path.localeCompare(right.path));
+  const sortedWheels = [...lock.pythonWheels]
+    .sort((left, right) => compareCodeUnits(left.path, right.path));
   if (canonicalJson(sortedWheels) !== canonicalJson(lock.pythonWheels)) fail('runtime dependency wheels are not sorted');
   return lock;
 }
