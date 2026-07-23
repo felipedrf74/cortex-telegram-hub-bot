@@ -13,6 +13,24 @@ describe('resumable exact-release sequence', () => {
   let operations: string;
   let rcRunMarker: string;
 
+  it('durably replaces the local checkpoint before advancing release phases', () => {
+    const source = fs.readFileSync(coordinator, 'utf8');
+    const start = source.indexOf('function writeCheckpoint(state) {');
+    const end = source.indexOf('\n}\n\nfunction sha256File', start);
+    const block = source.slice(start, end);
+    const write = block.indexOf('fs.writeFileSync(temporary');
+    const fileFsync = block.indexOf('fs.fsyncSync(descriptor)', write);
+    const rename = block.indexOf('fs.renameSync(temporary, checkpointPath)', fileFsync);
+    const directoryFsync = block.indexOf('fsyncDirectory(checkpointDirectory)', rename);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(write).toBeGreaterThan(-1);
+    expect(fileFsync).toBeGreaterThan(write);
+    expect(rename).toBeGreaterThan(fileFsync);
+    expect(directoryFsync).toBeGreaterThan(rename);
+  });
+
   beforeEach(() => {
     fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-sequence-')));
     root = path.join(fixtureRoot, 'repo');
@@ -113,13 +131,94 @@ case "$command" in
   staging)
     mkdir -p .local/release/staging
     manifest_sha="$(node -e 'const fs=require("node:fs"),c=require("node:crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$manifest")"
-    printf '{"payload":{"runtimeSha":"%s","artifactDigest":"%s","releaseManifestSha256":"%s","installedRuntimeDigest":"%s"}}\n' "$sha" "$digest" "$manifest_sha" "${'b'.repeat(64)}" > ".local/release/staging/$sha-$digest.signed.json"
+    printf '{"payload":{"runtimeSha":"%s","artifactDigest":"%s","releaseManifestSha256":"%s","installedRuntimeDigest":"%s","recoveryRuntimeDigest":"%s"}}\n' "$sha" "$digest" "$manifest_sha" "${'b'.repeat(64)}" "${'c'.repeat(64)}" > ".local/release/staging/$sha-$digest.signed.json"
     ;;
   promote)
     mkdir -p .local/release/production
     installed_digest="$(node -e 'process.stdout.write(require(process.argv[1]).payload.installedRuntimeDigest)' "$staging_attestation")"
     installed_digest="\${PROMOTION_INSTALLED_DIGEST_OVERRIDE:-$installed_digest}"
-    printf '{"status":"passed","runtimeSha":"%s","artifactDigest":"%s","installedRuntimeDigest":"%s","backupSha256":"%s","rollbackEscrow":{"status":"passed","objectKey":"nexus/releases/rollback.%s.age","evidenceSha256":"%s"},"completedAt":"2026-07-22T12:00:00Z"}\n' "$sha" "$digest" "$installed_digest" "${'e'.repeat(64)}" "${'e'.repeat(64)}" "${'f'.repeat(64)}" > ".local/release/production/$sha-$digest.json"
+    recovery_digest="$(node -e 'process.stdout.write(require(process.argv[1]).payload.recoveryRuntimeDigest)' "$staging_attestation")"
+    manifest_sha="$(node -e 'const fs=require("node:fs"),c=require("node:crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$manifest")"
+    staging_sha="$(node -e 'const fs=require("node:fs"),c=require("node:crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$staging_attestation")"
+    node - ".local/release/production/$sha-$digest.json" "$sha" "$digest" "$installed_digest" \
+      "$recovery_digest" "$manifest_sha" "$staging_sha" <<'NODE'
+const fs=require('node:fs');
+const [file,runtimeSha,artifactDigest,installedRuntimeDigest,recoveryRuntimeDigest,
+ releaseManifestSha256,stagingAttestationSha256]=process.argv.slice(2);
+const d=(character)=>character.repeat(64);
+const transactionId='release-test-1234';
+const checks={loopbackBackend:true,contentEngine:true,pm2Identity:true,
+ publicHealth:true,authenticatedSnapshot:true};
+const readiness=(verifiedAt)=>({schema:'nexus.candidate-readiness-refresh.v1',
+ status:'passed',transactionId,runtimeSha,packageVersion:'4.14.231',verifiedAt,checks});
+const evidenceSha256=d('f'),backupSha256=d('e'),recoveryPlaintext=d('d');
+const provider='aws-s3';
+const body={
+ schema:'nexus.production-promotion-evidence.v1',status:'passed',runtimeSha,artifactDigest,
+ installedRuntimeDigest,recoveryRuntimeDigest,releaseManifestSha256,stagingAttestationSha256,
+ exactBackup:'/home/dominguez/telegram-hub-bot/backups/v4.14.230.tar.gz',
+ startedAt:'2026-07-22T12:00:00Z',serviceUnavailableStartedAt:'2026-07-22T12:00:01Z',
+ candidateAvailableAt:'2026-07-22T12:00:03Z',soakStartedAt:'2026-07-22T12:00:03Z',
+ soakCompletedAt:'2026-07-22T12:01:03Z',completedAt:'2026-07-22T12:01:08Z',
+ cutoverSeconds:63,backupSha256,drEscrowConfirmedAt:'2026-07-22T12:01:07Z',
+ drStorageControls:{provider,controlMode:'versioned-s3',releasePrefixLockVerified:true},
+ rollbackEscrow:{status:'passed',provider,
+  objectKey:'nexus/releases/rollback.'+backupSha256+'.age',
+  confirmedAt:'2026-07-22T12:01:05Z',objectVersionId:'release-version',
+  retainUntil:'2027-01-01T00:00:00Z',encryptedSha256:d('a'),
+  encryptedSizeBytes:100,evidenceSha256},
+ preMutationCurrentRecoveryEscrow:{status:'passed',provider,transactionId,
+  runtimeSha,artifactDigest,installedRuntimeDigest,recoveryRuntimeDigest,
+  escrowId:transactionId,escrowPhase:'pre-mutation',plaintextSha256:recoveryPlaintext,
+  objectKey:'nexus/releases/current+escrow-'+transactionId
+   +'+phase-pre-mutation.tar.gz.'+recoveryPlaintext+'.age',
+  confirmedAt:'2026-07-22T11:59:59Z',objectVersionId:'pre-recovery-version',
+  retainUntil:'2027-01-01T00:00:00Z',encryptedSha256:d('1'),
+  encryptedSizeBytes:101,evidenceSha256},
+ currentRecoveryEscrow:{status:'passed',provider,transactionId,
+  runtimeSha,artifactDigest,installedRuntimeDigest,recoveryRuntimeDigest,
+  escrowId:transactionId,escrowPhase:'post-soak',plaintextSha256:recoveryPlaintext,
+  objectKey:'nexus/releases/current+escrow-'+transactionId
+   +'+phase-post-soak.tar.gz.'+recoveryPlaintext+'.age',
+  confirmedAt:'2026-07-22T12:01:06Z',objectVersionId:'post-recovery-version',
+  retainUntil:'2027-01-01T00:00:00Z',encryptedSha256:d('2'),
+  encryptedSizeBytes:102,evidenceSha256},
+ preMutationDatabaseRecoveryPoint:{status:'passed',provider,
+  objectKey:'nexus/database/hourly/nexus-db-20260722T115958Z.sqlite.age',
+  plaintextSha256:d('3'),encryptedSha256:d('4'),encryptedSizeBytes:103,
+  confirmedAt:'2026-07-22T11:59:58Z',objectVersionId:'pre-database-version',
+  retentionVariance:null,approvedUnversionedVariance:false,evidenceSha256},
+ currentDatabaseRecoveryPoint:{status:'passed',provider,
+  objectKey:'nexus/database/hourly/nexus-db-20260722T120107Z.sqlite.age',
+  plaintextSha256:d('5'),encryptedSha256:d('6'),encryptedSizeBytes:104,
+  confirmedAt:'2026-07-22T12:01:07Z',objectVersionId:'post-database-version',
+  retentionVariance:null,approvedUnversionedVariance:false,evidenceSha256},
+ backupWindowSeconds:2,backupOutageSeconds:2,finalUnavailabilitySeconds:3,
+ totalUnavailabilitySeconds:3,verificationSoakSeconds:60,soakObservedSeconds:60,
+ sentryRelease:runtimeSha,packageVersion:'4.14.231',transactionId,
+ transactionMode:'systemd_oneshot',
+ candidateReadinessRefresh:{beforeEscrow:readiness('2026-07-22T12:01:04Z'),
+  afterEscrow:readiness('2026-07-22T12:01:08Z')},
+ verification:{loopbackBackend:true,contentEngineHealth:true,
+  authenticatedContentEngine:true,pm2AndCurrentIdentity:true,
+  publicHealth:{baseUrl:'https://nexushub.chat',status:'healthy',database:'connected'},
+  publicSnapshotVersion:'4.14.231'},
+};
+switch(process.env.PROMOTION_EVIDENCE_TAMPER){
+ case 'readiness-before-dr':
+  body.candidateReadinessRefresh.afterEscrow.verifiedAt='2026-07-22T12:01:06Z';
+  body.completedAt='2026-07-22T12:01:06Z';
+  break;
+ case 'recovery-phase':
+  body.currentRecoveryEscrow.escrowPhase='pre-mutation';
+  break;
+ case 'provider-semantics':
+  body.drStorageControls={provider:'cloudflare-r2',
+   controlMode:'r2-approved-variance',releasePrefixLockVerified:true};
+  break;
+}
+fs.writeFileSync(file,JSON.stringify(body)+'\\n');
+NODE
     ;;
   *) exit 64 ;;
 esac
@@ -192,6 +291,7 @@ esac
     expect(checkpoint.stagingAttestationIdentity).toMatchObject({
       path: path.join(root, '.local', 'release', 'staging', `${runtimeSha}-${'a'.repeat(64)}.signed.json`),
       installedRuntimeDigest: 'b'.repeat(64),
+      recoveryRuntimeDigest: 'c'.repeat(64),
     });
     expect(checkpoint.stagingAttestationIdentity.sha256).toMatch(/^[a-f0-9]{64}$/u);
   });
@@ -223,6 +323,7 @@ esac
       runtimeSha,
       artifactDigest: 'a'.repeat(64),
       installedRuntimeDigest: 'b'.repeat(64),
+      recoveryRuntimeDigest: 'c'.repeat(64),
       backupSha256: 'e'.repeat(64),
       rollbackEscrowEvidenceSha256: 'f'.repeat(64),
     });
@@ -395,5 +496,23 @@ esac
     );
     expect(productionDrift.status).toBe(1);
     expect(productionDrift.stderr).toContain('production promotion evidence does not match');
+  });
+
+  it.each([
+    'readiness-before-dr',
+    'recovery-phase',
+    'provider-semantics',
+  ])('rejects incomplete production recovery evidence: %s', (tamperMode) => {
+    expect(run(['--backend-only']).status).toBe(3);
+    const result = run(
+      ['--owner-authorized', '--promote'],
+      {
+        ...process.env,
+        NEXUS_RELEASE_OWNER_AUTHORIZED: '1',
+        PROMOTION_EVIDENCE_TAMPER: tamperMode,
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('production promotion evidence does not match');
   });
 });

@@ -62,6 +62,9 @@ function validateRequest(request, expectedRuntime = '') {
   if (!/^[0-9a-f]{64}$/.test(request.artifactDigest ?? '')) throw new Error('staging request artifact digest is invalid');
   if (!/^[0-9a-f]{64}$/.test(request.releaseManifestSha256 ?? '')) throw new Error('release manifest digest is invalid');
   if (!/^[0-9a-f]{64}$/.test(request.installedRuntimeDigest ?? '')) throw new Error('installed runtime digest is invalid');
+  if (!/^[0-9a-f]{64}$/.test(request.recoveryRuntimeDigest ?? '')) {
+    throw new Error('relocatable recovery runtime digest is invalid');
+  }
   if (!/^[0-9a-f]{64}$/.test(request.smoke?.logSha256 ?? '') || request.smoke?.status !== 'passed') {
     throw new Error('domain smoke evidence is invalid');
   }
@@ -109,6 +112,7 @@ function validateRequest(request, expectedRuntime = '') {
 if (command === 'request') {
   const manifestFile = resolveFile('--manifest');
   const installedFile = resolveFile('--installed-attestation');
+  const recoveryFile = resolveFile('--recovery-runtime-attestation');
   const identityFile = resolveFile('--identity-evidence');
   const readinessFile = resolveFile('--readiness-evidence');
   const smokeFile = resolveFile('--smoke-log');
@@ -116,10 +120,19 @@ if (command === 'request') {
   const manifestBody = fs.readFileSync(manifestFile);
   const manifest = JSON.parse(manifestBody);
   const installed = JSON.parse(fs.readFileSync(installedFile, 'utf8'));
+  const recovery = JSON.parse(fs.readFileSync(recoveryFile, 'utf8'));
   const remoteIdentity = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
   const remoteReadiness = JSON.parse(fs.readFileSync(readinessFile, 'utf8'));
   const smokeBody = fs.readFileSync(smokeFile);
   const now = new Date();
+  if (recovery.schema !== 'nexus.recovery-runtime-attestation.v1'
+      || recovery.identity?.schema !== 'nexus.recovery-installed-runtime-identity.v1'
+      || recovery.identity?.runtimeSha !== manifest.payload?.runtimeSha
+      || recovery.identity?.artifactDigest !== manifest.payload?.artifact?.digest
+      || recovery.identity?.packageVersion !== manifest.payload?.packageVersion
+      || recovery.aggregateDigest !== sha256(canonicalJson(recovery.identity))) {
+    throw new Error('relocatable recovery runtime attestation identity is invalid');
+  }
   const request = {
     schema: 'nexus.staging-attestation-request.v1',
     requestId: valueOf('--request-id', randomUUID()),
@@ -127,6 +140,7 @@ if (command === 'request') {
     artifactDigest: manifest.payload?.artifact?.digest,
     releaseManifestSha256: sha256(manifestBody),
     installedRuntimeDigest: installed.aggregateDigest,
+    recoveryRuntimeDigest: recovery.aggregateDigest,
     releaseDir: valueOf('--release-dir'),
     remoteIdentity,
     remoteReadiness,
@@ -238,6 +252,10 @@ if (command === 'request') {
   if (expectedInstalled && request.installedRuntimeDigest !== expectedInstalled) {
     throw new Error('signed installed runtime digest mismatch');
   }
+  const expectedRecovery = valueOf('--expect-recovery-runtime-digest');
+  if (expectedRecovery && request.recoveryRuntimeDigest !== expectedRecovery) {
+    throw new Error('signed relocatable recovery runtime digest mismatch');
+  }
   process.stdout.write(`${JSON.stringify({
     ok: true,
     promotable: true,
@@ -245,6 +263,7 @@ if (command === 'request') {
     runtimeSha: request.runtimeSha,
     artifactDigest: request.artifactDigest,
     installedRuntimeDigest: request.installedRuntimeDigest,
+    recoveryRuntimeDigest: request.recoveryRuntimeDigest,
     releaseDir: request.releaseDir,
   }, null, 2)}\n`);
 } else {

@@ -454,6 +454,7 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/rollback.sh',
     'scripts/restore.sh',
     'scripts/remote-promotion-control.sh',
+    'scripts/remote-promotion-worker-control.sh',
     'scripts/remote-promotion-systemd-install.sh',
     'scripts/remote-promotion-transaction.sh',
     'scripts/remote-release-capacity.sh',
@@ -483,12 +484,22 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/ollama-soak-evidence.mjs',
     'ops/application-dr/backup.env.example',
     'scripts/application-dr-backup.sh',
+    'scripts/application-dr-recovery-runtime.mjs',
+    'scripts/application-dr-systemd-install.sh',
   ])('routes advisory/backup operations tooling %s to focused checks without a staging release gate', (file) => {
     const result = classify(file);
     expect(result.flags.operationsTooling).toBe(true);
     expect(result.flags.releaseOperator).toBe(false);
     expect(result.vitest.mode).toBe('focused');
     expect(result.stagingSmoke.generic).toBe(false);
+  });
+
+  it('selects every application DR contract test for DR operations changes', () => {
+    const result = classify('scripts/application-dr-recovery-runtime.mjs');
+    expect(result.vitest.globs).toContain(
+      '__tests__/scripts/application-disaster-recovery.test.ts',
+    );
+    expect(result.vitest.globs).toContain('__tests__/scripts/application-dr-*.test.ts');
   });
 
   it.each([

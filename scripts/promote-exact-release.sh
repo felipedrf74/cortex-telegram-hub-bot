@@ -14,6 +14,9 @@ RUNTIME_SHA="${4:?runtime SHA is required}"
 ARTIFACT_DIGEST="${5:?artifact digest is required}"
 TARGET_VERSION="${6:?target version is required}"
 INSTALLED_RUNTIME_DIGEST="${7:?installed runtime digest is required}"
+RECOVERY_RUNTIME_DIGEST="${8:?recovery runtime digest is required}"
+RELEASE_MANIFEST="${9:?signed release manifest is required}"
+STAGING_ATTESTATION="${10:?signed staging attestation is required}"
 PUBLIC_BASE_URL="${NEXUS_PRODUCTION_PUBLIC_BASE_URL:-https://api.nexushub.me}"
 
 [[ "$SERVER" =~ ^[A-Za-z0-9._@-]+$ ]] || { echo "invalid deploy server" >&2; exit 64; }
@@ -23,6 +26,7 @@ PUBLIC_BASE_URL="${NEXUS_PRODUCTION_PUBLIC_BASE_URL:-https://api.nexushub.me}"
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid artifact digest" >&2; exit 64; }
 [[ "$TARGET_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "invalid target version" >&2; exit 64; }
 [[ "$INSTALLED_RUNTIME_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid installed runtime digest" >&2; exit 64; }
+[[ "$RECOVERY_RUNTIME_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid recovery runtime digest" >&2; exit 64; }
 [[ "$PUBLIC_BASE_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || { echo "invalid production public base URL" >&2; exit 64; }
 [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = "1" ] || {
   echo "exact promotion requires explicit owner authorization" >&2
@@ -35,6 +39,35 @@ if ! release_require_clean_tree "$ROOT"; then
 fi
 [ "$(git -C "$ROOT" rev-parse HEAD)" = "$RUNTIME_SHA" ] || {
   echo "exact promotion checkout SHA does not match the signed runtime SHA" >&2
+  exit 1
+}
+IFS=$'\t' read -r RELEASE_MANIFEST_SHA256 STAGING_ATTESTATION_SHA256 < <(node - \
+  "$RELEASE_MANIFEST" "$STAGING_ATTESTATION" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+  "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');const path=require('path');
+const [manifestPath,stagingPath,runtimeSha,artifactDigest,installedDigest,recoveryDigest]=process.argv.slice(2);
+const digest=(body)=>crypto.createHash('sha256').update(body).digest('hex');
+const read=(file,label)=>{
+ if(!path.isAbsolute(file)||fs.realpathSync(file)!==file)throw new Error(`${label} path is not canonical`);
+ const stat=fs.lstatSync(file);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.size===0||stat.size>16*1024*1024)throw new Error(`${label} is unsafe`);
+ return fs.readFileSync(file);
+};
+const manifestBody=read(manifestPath,'release manifest'),stagingBody=read(stagingPath,'staging attestation');
+const manifest=JSON.parse(manifestBody),staging=JSON.parse(stagingBody);
+if(manifest?.schema!=='nexus.release-manifest.v2'||manifest?.payload?.runtimeSha!==runtimeSha
+ ||manifest?.payload?.artifact?.digest!==artifactDigest
+ ||staging?.schema!=='nexus.staging-attestation.v1'||staging?.payload?.runtimeSha!==runtimeSha
+ ||staging?.payload?.artifactDigest!==artifactDigest
+ ||staging?.payload?.installedRuntimeDigest!==installedDigest
+ ||staging?.payload?.recoveryRuntimeDigest!==recoveryDigest
+ ||staging?.payload?.releaseManifestSha256!==digest(manifestBody))process.exit(1);
+process.stdout.write(`${digest(manifestBody)}\t${digest(stagingBody)}\n`);
+NODE
+) || { echo "signed release recovery evidence identity is invalid" >&2; exit 1; }
+[[ "$RELEASE_MANIFEST_SHA256" =~ ^[a-f0-9]{64}$ \
+    && "$STAGING_ATTESTATION_SHA256" =~ ^[a-f0-9]{64}$ ]] || {
+  echo "signed release recovery evidence digest is invalid" >&2
   exit 1
 }
 node "$ROOT/scripts/rollback-drill-check.mjs" validate \
@@ -81,8 +114,16 @@ TRANSACTION_CHECKPOINT_DIR="$ROOT/.local/release/transactions"
 TRANSACTION_CHECKPOINT="$TRANSACTION_CHECKPOINT_DIR/${RUNTIME_SHA}-${ARTIFACT_DIGEST}.checkpoint.json"
 TRANSACTION_CHECKPOINT_EXISTS=false
 RESUME_EXISTING_TRANSACTION=false
+RESUME_SIGNED_REQUEST_PENDING=false
 RESUME_STATUS_JSON=""
 RESUME_REQUEST_SHA=""
+RESUME_REQUEST_EXPIRES_AT=""
+RETRY_TERMINAL_PREDECESSOR=false
+RETRY_PREDECESSOR_RUNTIME=""
+RETRY_PREDECESSOR_SHA=""
+RETRY_PREDECESSOR_ARTIFACT_DIGEST=""
+RETRY_PREDECESSOR_INSTALLED_RUNTIME_DIGEST=""
+RETIRED_UNSIGNED_TRANSACTION_ID=""
 
 # `.local` is intentionally ignored by Git, so validate and create each
 # checkpoint parent one level at a time before reading or writing authority.
@@ -102,29 +143,153 @@ for local_authority_directory in \
   chmod 700 "$local_authority_directory"
 done
 
+fsync_local_directory() {
+  local directory="$1"
+  [ -d "$directory" ] && [ ! -L "$directory" ] || {
+    echo "local release durability directory is unsafe: $directory" >&2
+    return 1
+  }
+  node - "$directory" <<'NODE'
+const fs=require('fs');const directory=process.argv[2];
+const stat=fs.lstatSync(directory);
+if(!stat.isDirectory()||stat.isSymbolicLink())process.exit(1);
+const descriptor=fs.openSync(directory,'r');
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+NODE
+}
+fsync_local_directory "$ROOT"
+fsync_local_directory "$ROOT/.local"
+fsync_local_directory "$ROOT/.local/release"
+fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"
+
+reconcile_local_link_publication() {
+  local output="$1"
+  [ -e "$output" ] || [ -L "$output" ] || return 0
+  node - "$output" <<'NODE'
+const fs=require('fs');const path=require('path');
+const output=process.argv[2],parent=path.dirname(output);
+const prefix=`.${path.basename(output)}.next.`;
+const parentStat=fs.lstatSync(parent),stat=fs.lstatSync(output);
+if(!parentStat.isDirectory()||parentStat.isSymbolicLink()
+  ||path.dirname(path.resolve(output))!==path.resolve(parent)
+  ||!stat.isFile()||stat.isSymbolicLink()
+  ||![0o400,0o600].includes(stat.mode&0o777))process.exit(1);
+if(stat.nlink>1){
+ let removed=false;
+ for(const name of fs.readdirSync(parent)){
+  if(!name.startsWith(prefix))continue;
+  const candidate=path.join(parent,name),candidateStat=fs.lstatSync(candidate);
+  if(!candidateStat.isFile()||candidateStat.isSymbolicLink()
+    ||candidateStat.dev!==stat.dev||candidateStat.ino!==stat.ino)continue;
+  fs.unlinkSync(candidate);
+  removed=true;
+ }
+ if(removed){
+  const descriptor=fs.openSync(parent,'r');
+  try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+ }
+}
+if(fs.lstatSync(output).nlink!==1)process.exit(1);
+NODE
+}
+
+cleanup_retired_unsigned_request() {
+  local transaction_id="$1"
+  local archive_dir="$TRANSACTION_CHECKPOINT_DIR/expired-unsigned-authority"
+  local archive="$archive_dir/${transaction_id}.json"
+  local request="$TRANSACTION_CHECKPOINT_DIR/${transaction_id}.request.json"
+  [[ "$transaction_id" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$ ]] || {
+    echo "retired unsigned promotion transaction ID is invalid" >&2
+    return 1
+  }
+  [ -d "$archive_dir" ] && [ ! -L "$archive_dir" ] \
+    && [ -f "$archive" ] && [ ! -L "$archive" ] || {
+    echo "retired unsigned promotion authority archive is unavailable" >&2
+    return 1
+  }
+  node - "$archive" "$request" "$transaction_id" "$TRANSACTION_CHECKPOINT_DIR" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');const path=require('path');
+const [archivePath,requestPath,id,root]=process.argv.slice(2);
+const archiveStat=fs.lstatSync(archivePath);
+if(!archiveStat.isFile()||archiveStat.isSymbolicLink()||archiveStat.nlink!==1
+  ||(archiveStat.mode&0o777)!==0o600||path.dirname(archivePath)!==path.join(root,'expired-unsigned-authority')
+  ||requestPath!==path.join(root,`${id}.request.json`))process.exit(1);
+const archive=JSON.parse(fs.readFileSync(archivePath,'utf8')),request=archive.unsignedRequest;
+if(archive.schema!=='nexus.expired-unsigned-promotion-authority.v1'
+  ||archive.transactionId!==id||archive.reason!=='expired_unsigned_request_server_not_found'
+  ||request?.sha256!==crypto.createHash('sha256').update(Buffer.from(request?.bodyBase64||'','base64')).digest('hex')
+  ||Buffer.from(request?.bodyBase64||'','base64').toString('base64')!==request?.bodyBase64)process.exit(1);
+let stat=null;
+try{stat=fs.lstatSync(requestPath);}catch(error){if(error?.code!=='ENOENT')throw error;}
+if(stat!==null){
+  if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+    ||![0o400,0o600].includes(stat.mode&0o777))process.exit(1);
+  const body=fs.readFileSync(requestPath);
+  if(body.toString('base64')!==request.bodyBase64
+    ||crypto.createHash('sha256').update(body).digest('hex')!==request.sha256)process.exit(1);
+  fs.unlinkSync(requestPath);
+  const descriptor=fs.openSync(root,'r');
+  try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+}
+NODE
+}
+
 # A retry may arrive after the root-owned transaction completed but before the
 # Mac wrote local production evidence. Recover the exact signed transaction
 # authority before deriving a live predecessor or preparing any release path.
+if [ ! -e "$TRANSACTION_CHECKPOINT" ] && [ ! -L "$TRANSACTION_CHECKPOINT" ] \
+    && { [ -e "$TRANSACTION_CHECKPOINT.next" ] || [ -L "$TRANSACTION_CHECKPOINT.next" ]; }; then
+  [ -f "$TRANSACTION_CHECKPOINT.next" ] && [ ! -L "$TRANSACTION_CHECKPOINT.next" ] \
+    && [ "$(stat -c '%a' "$TRANSACTION_CHECKPOINT.next" 2>/dev/null \
+      || stat -f '%Lp' "$TRANSACTION_CHECKPOINT.next")" = 600 ] || {
+    echo "orphaned local promotion checkpoint is unsafe" >&2
+    exit 1
+  }
+  mv "$TRANSACTION_CHECKPOINT.next" "$TRANSACTION_CHECKPOINT"
+  fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"
+fi
 if [ -f "$TRANSACTION_CHECKPOINT" ]; then
   [ ! -L "$TRANSACTION_CHECKPOINT" ] || { echo "local promotion checkpoint must not be a symlink" >&2; exit 1; }
   checkpoint_mode="$(stat -c '%a' "$TRANSACTION_CHECKPOINT" 2>/dev/null || stat -f '%Lp' "$TRANSACTION_CHECKPOINT")"
   case "$checkpoint_mode" in 400|600) ;; *) echo "local promotion checkpoint mode must be 400 or 600" >&2; exit 1 ;; esac
-  read -r PROMOTION_RUN_ID PROMOTION_STARTED_AT < <(node - "$TRANSACTION_CHECKPOINT" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
-    "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" "$SERVER" "$PROD_BASE" <<'NODE'
+  CHECKPOINT_FIELDS="$(node - "$TRANSACTION_CHECKPOINT" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+    "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" "$RELEASE_MANIFEST_SHA256" \
+    "$STAGING_ATTESTATION_SHA256" "$TARGET_VERSION" "$SERVER" "$PROD_BASE" <<'NODE'
 const fs = require('fs');
-const [file, runtimeSha, artifactDigest, installedRuntimeDigest, targetVersion, server, productionBase] = process.argv.slice(2);
+const [file, runtimeSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+  releaseManifestSha256, stagingAttestationSha256, targetVersion, server, productionBase] = process.argv.slice(2);
 const x = JSON.parse(fs.readFileSync(file, 'utf8'));
 if (x.schema !== 'nexus.promotion-client-checkpoint.v1' || x.runtimeSha !== runtimeSha
     || x.artifactDigest !== artifactDigest || x.installedRuntimeDigest !== installedRuntimeDigest
+    || x.recoveryRuntimeDigest !== recoveryRuntimeDigest
+    || x.releaseManifestSha256 !== releaseManifestSha256
+    || x.stagingAttestationSha256 !== stagingAttestationSha256
     || x.targetVersion !== targetVersion || x.server !== server || x.productionBase !== productionBase
     || !/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u.test(x.transactionId || '')
     || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(x.startedAt || '')) process.exit(1);
-process.stdout.write(`${x.transactionId} ${x.startedAt}\n`);
+const retired=x.retiredUnsignedTransactionId??null;
+if(retired!==null&&(!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u.test(retired)
+  ||retired===x.transactionId))process.exit(1);
+process.stdout.write(`${x.transactionId}\t${x.startedAt}\t${retired??'-'}\n`);
 NODE
-  ) || { echo "local promotion checkpoint identity is invalid" >&2; exit 1; }
+  )" || { echo "local promotion checkpoint identity is invalid" >&2; exit 1; }
+  IFS=$'\t' read -r PROMOTION_RUN_ID PROMOTION_STARTED_AT RETIRED_UNSIGNED_TRANSACTION_ID \
+    <<<"$CHECKPOINT_FIELDS" || {
+    echo "local promotion checkpoint fields are invalid" >&2
+    exit 1
+  }
+  if [ "$RETIRED_UNSIGNED_TRANSACTION_ID" = "-" ]; then
+    RETIRED_UNSIGNED_TRANSACTION_ID=""
+  else
+    cleanup_retired_unsigned_request "$RETIRED_UNSIGNED_TRANSACTION_ID"
+  fi
   TRANSACTION_CHECKPOINT_EXISTS=true
   signed_resume_request="$TRANSACTION_CHECKPOINT_DIR/${PROMOTION_RUN_ID}.request.envelope.json"
-  if [ -e "$signed_resume_request" ]; then
+  if [ -e "$signed_resume_request" ] || [ -L "$signed_resume_request" ]; then
+    reconcile_local_link_publication "$signed_resume_request" || {
+      echo "signed promotion resume request publication is unsafe" >&2
+      exit 1
+    }
     [ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ] || {
       echo "signed promotion checkpoint requires the root-owned transaction control" >&2
       exit 1
@@ -135,13 +300,16 @@ NODE
     }
     signed_request_mode="$(stat -c '%a' "$signed_resume_request" 2>/dev/null || stat -f '%Lp' "$signed_resume_request")"
     case "$signed_request_mode" in 400|600) ;; *) echo "signed promotion resume request mode must be 400 or 600" >&2; exit 1 ;; esac
-    RESUME_REQUEST_SHA="$(node - "$signed_resume_request" "$OWNER_PRIVATE_KEY" "$PROMOTION_RUN_ID" \
+    IFS=$'\t' read -r RESUME_REQUEST_SHA RESUME_REQUEST_EXPIRES_AT < <(node - \
+      "$signed_resume_request" "$OWNER_PRIVATE_KEY" "$PROMOTION_RUN_ID" \
       "$PROD_BASE" "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
-      "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" <<'NODE'
+      "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" "$RELEASE_MANIFEST_SHA256" \
+      "$STAGING_ATTESTATION_SHA256" "$TARGET_VERSION" <<'NODE'
 const crypto = require('crypto');
 const fs = require('fs');
 const [envelopePath, privateKeyPath, transactionId, productionBase, targetRuntime,
-  runtimeSha, artifactDigest, installedRuntimeDigest, targetVersion] = process.argv.slice(2);
+  runtimeSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+  releaseManifestSha256, stagingAttestationSha256, targetVersion] = process.argv.slice(2);
 const canonicalJson = (input) => {
   if (input === null || typeof input !== 'object') return JSON.stringify(input);
   if (Array.isArray(input)) return `[${input.map(canonicalJson).join(',')}]`;
@@ -161,7 +329,13 @@ if (envelope?.schema !== 'nexus.promotion-transaction-request-envelope.v1'
     || payload?.target?.sentryRelease !== runtimeSha
     || payload?.target?.artifactDigest !== artifactDigest
     || payload?.target?.installedRuntimeDigest !== installedRuntimeDigest
+    || payload?.target?.recoveryRuntimeDigest !== recoveryRuntimeDigest
+    || payload?.releaseEvidence?.releaseManifestSha256 !== releaseManifestSha256
+    || payload?.releaseEvidence?.stagingAttestationSha256 !== stagingAttestationSha256
     || payload?.target?.version !== targetVersion) process.exit(1);
+const createdAt=Date.parse(payload.createdAt||''),expiresAt=Date.parse(payload.expiresAt||'');
+if(!Number.isFinite(createdAt)||!Number.isFinite(expiresAt)
+    ||expiresAt<=createdAt||expiresAt-createdAt>30*60*1000)process.exit(1);
 const privateKey = crypto.createPrivateKey(fs.readFileSync(privateKeyPath, 'utf8'));
 const valid = crypto.verify(
   null,
@@ -170,22 +344,35 @@ const valid = crypto.verify(
   Buffer.from(envelope.signature || '', 'base64'),
 );
 if (!valid) process.exit(1);
-process.stdout.write(crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'));
+process.stdout.write(`${crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex')}\t${payload.expiresAt}\n`);
 NODE
-    )" || { echo "signed promotion resume request identity is invalid" >&2; exit 1; }
+    ) || { echo "signed promotion resume request identity is invalid" >&2; exit 1; }
     [[ "$RESUME_REQUEST_SHA" =~ ^[a-f0-9]{64}$ ]] || {
       echo "signed promotion resume request digest is invalid" >&2
+      exit 1
+    }
+    [[ "$RESUME_REQUEST_EXPIRES_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || {
+      echo "signed promotion resume request expiration is invalid" >&2
       exit 1
     }
     set +e
     RESUME_STATUS_JSON="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" status "$PROMOTION_RUN_ID" 2>/dev/null)"
     resume_status_exit=$?
     set -e
-    [ "$resume_status_exit" -eq 0 ] || {
-      echo "unable to reconcile the existing root-owned promotion transaction: $PROMOTION_RUN_ID" >&2
-      exit 75
-    }
-    read -r resume_phase resume_status < <(printf '%s' "$RESUME_STATUS_JSON" | node -e '
+    if [ "$resume_status_exit" -eq 66 ]; then
+      printf '%s' "$RESUME_STATUS_JSON" | node -e '
+        let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
+          const x=JSON.parse(b);
+          if(x.schema!=="nexus.promotion-transaction-status.v1"
+            ||x.transactionId!==process.argv[1]||x.status!=="not_found")process.exit(1);
+        });' "$PROMOTION_RUN_ID" || {
+        echo "authoritative promotion not-found response is invalid" >&2
+        exit 1
+      }
+      RESUME_SIGNED_REQUEST_PENDING=true
+      RESUME_STATUS_JSON=""
+    elif [ "$resume_status_exit" -eq 0 ]; then
+      read -r resume_phase resume_status < <(printf '%s' "$RESUME_STATUS_JSON" | node -e '
       let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
         const x=JSON.parse(b),id=process.argv[1],digest=process.argv[2];
         const statuses=new Set(["pending","running","recovery_required","escrow_pending",
@@ -194,10 +381,374 @@ NODE
           ||x.requestSha256!==digest||typeof x.phase!=="string"||!statuses.has(x.status))process.exit(1);
         process.stdout.write(`${x.phase} ${x.status}\n`);
       });' "$PROMOTION_RUN_ID" "$RESUME_REQUEST_SHA") || {
-      echo "authoritative promotion resume status is invalid" >&2
+        echo "authoritative promotion resume status is invalid" >&2
+        exit 1
+      }
+      if [ "$resume_status" = failed_before_stop ] || [ "$resume_status" = recovered ]; then
+        IFS=$'\t' read -r RETRY_PREDECESSOR_RUNTIME RETRY_PREDECESSOR_SHA \
+          RETRY_PREDECESSOR_ARTIFACT_DIGEST RETRY_PREDECESSOR_INSTALLED_RUNTIME_DIGEST \
+          < <(printf '%s' "$RESUME_STATUS_JSON" | node -e '
+          let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
+            const x=JSON.parse(b),id=process.argv[1],requestSha=process.argv[2],
+              prod=process.argv[3],targetRuntime=process.argv[4],targetSha=process.argv[5],
+              artifact=process.argv[6],installed=process.argv[7],recovery=process.argv[8];
+            const p=x.predecessor,t=x.target;
+            const failedBeforeStop=x.status==="failed_before_stop"
+              &&["preflight","failed_before_stop"].includes(x.phase)
+              &&x.recoveryArmed===false&&x.escrowConfirmed===false&&x.recovery===null;
+            const recovered=x.status==="recovered"&&x.phase==="recovery_complete"
+              &&x.recovery?.schema==="nexus.promotion-recovery-result.v1"
+              &&x.recovery?.targetMet===true
+              &&Number.isSafeInteger(x.recovery?.outageToHealthySeconds)
+              &&x.recovery.outageToHealthySeconds<=120;
+            if(x.schema!=="nexus.promotion-transaction-journal.v1"
+              ||x.transactionId!==id||x.requestSha256!==requestSha
+              ||(!failedBeforeStop&&!recovered)
+              ||!Number.isFinite(Date.parse(x.completedAt||""))
+              ||t?.runtime!==targetRuntime||t?.sha!==targetSha
+              ||t?.artifactDigest!==artifact||t?.installedRuntimeDigest!==installed
+              ||t?.recoveryRuntimeDigest!==recovery
+              ||typeof p?.runtime!=="string"
+              ||!(p.runtime===prod||p.runtime.startsWith(`${prod}/releases/`))
+              ||!/^[a-f0-9]{40}$/u.test(p?.sha||"")
+              ||!/^[a-f0-9]{64}$/u.test(p?.artifactDigest||"")
+              ||!/^[a-f0-9]{64}$/u.test(p?.installedRuntimeDigest||""))process.exit(1);
+            process.stdout.write(`${p.runtime}\t${p.sha}\t${p.artifactDigest}\t${p.installedRuntimeDigest}\n`);
+          });' "$PROMOTION_RUN_ID" "$RESUME_REQUEST_SHA" "$PROD_BASE" "$PROD_RELEASE" \
+          "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" \
+          "$RECOVERY_RUNTIME_DIGEST") || {
+          echo "terminal predecessor retry evidence is invalid" >&2
+          exit 1
+        }
+        # Re-prove that the exact predecessor named by the terminal journal is
+        # still the healthy live runtime before issuing fresh owner authority.
+        "${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" "$RETRY_PREDECESSOR_RUNTIME" \
+          "$RETRY_PREDECESSOR_SHA" "$RETRY_PREDECESSOR_ARTIFACT_DIGEST" \
+          "$RETRY_PREDECESSOR_INSTALLED_RUNTIME_DIGEST" <<'REMOTE_FAILED_BEFORE_STOP_IDENTITY'
+set -euo pipefail
+base="$1"; predecessor="$2"; expected_sha="$3"; expected_artifact="$4"; expected_installed="$5"
+current="$base"
+if [ -L "$base/current" ]; then current="$(readlink -f "$base/current")"; fi
+[ "$current" = "$predecessor" ] || { echo "terminal transaction predecessor is no longer current" >&2; exit 1; }
+pm2_bin=""
+for candidate in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then pm2_bin="$candidate"; break; fi
+done
+[ -n "$pm2_bin" ] || { echo "PM2 is unavailable for pre-mutation retry verification" >&2; exit 1; }
+if [ "$predecessor" != "$base" ]; then
+  [ -f "$predecessor/.complete.json" ] \
+    && [ -f "$predecessor/.nexus-installed-runtime.json" ] \
+    && node -e '
+      const complete=require(process.argv[1]),installed=require(process.argv[2]);
+      if(complete.runtimeSha!==process.argv[3]||complete.artifactDigest!==process.argv[4]
+        ||installed.aggregateDigest!==process.argv[5])process.exit(1);
+    ' "$predecessor/.complete.json" "$predecessor/.nexus-installed-runtime.json" \
+      "$expected_sha" "$expected_artifact" "$expected_installed"
+fi
+timeout 5s "$pm2_bin" jlist | node -e '
+const fs=require("fs"),rows=JSON.parse(fs.readFileSync(0,"utf8"));
+const root=process.argv[1],sha=process.argv[2];
+for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
+ const row=rows.find((entry)=>entry?.name===name),env=row?.pm2_env??{};
+ const observed=env.NEXUS_RELEASE_SHA||env.GIT_COMMIT||"";
+ if(env.status!=="online"||env.pm_cwd!==cwd||(sha&&observed!==sha))process.exit(1);
+}' "$predecessor" "$expected_sha"
+REMOTE_FAILED_BEFORE_STOP_IDENTITY
+
+        retry_archive_dir="$TRANSACTION_CHECKPOINT_DIR/terminal-retries"
+        if [ -e "$retry_archive_dir" ] || [ -L "$retry_archive_dir" ]; then
+          [ -d "$retry_archive_dir" ] && [ ! -L "$retry_archive_dir" ] || {
+            echo "terminal promotion archive directory is unsafe" >&2
+            exit 1
+          }
+        else
+          mkdir "$retry_archive_dir"
+        fi
+        chmod 700 "$retry_archive_dir"
+        retry_archive="$retry_archive_dir/${PROMOTION_RUN_ID}.json"
+        raw_resume_request="$TRANSACTION_CHECKPOINT_DIR/${PROMOTION_RUN_ID}.request.json"
+        node - "$retry_archive" "$TRANSACTION_CHECKPOINT" "$signed_resume_request" \
+          "$raw_resume_request" "$RESUME_STATUS_JSON" <<'NODE'
+const crypto=require('crypto'),fs=require('fs'),path=require('path');
+const [output,checkpoint,envelope,request,statusRaw]=process.argv.slice(2);
+const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+for(const file of [checkpoint,envelope,request]){
+ const stat=fs.lstatSync(file);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)process.exit(1);
+}
+const status=JSON.parse(statusRaw);
+const checkpointBytes=fs.readFileSync(checkpoint);
+const body=Buffer.from(`${JSON.stringify({
+ schema:'nexus.terminal-promotion-client-archive.v1',
+ transactionId:status.transactionId,requestSha256:status.requestSha256,
+ terminalStatus:status,archivedAt:status.completedAt,
+ clientCheckpoint:{sha256:digest(checkpoint),bodyBase64:checkpointBytes.toString('base64')},
+ signedRequestEnvelope:{path:envelope,sha256:digest(envelope)},
+ rawRequest:{path:request,sha256:digest(request)},
+},null,2)}\n`);
+const parent=path.dirname(output),prefix=`.${path.basename(output)}.next.`;
+const parentStat=fs.lstatSync(parent);
+if(!parentStat.isDirectory()||parentStat.isSymbolicLink()
+  ||(parentStat.mode&0o777)!==0o700
+  ||path.dirname(path.resolve(output))!==path.resolve(parent))process.exit(1);
+const lstat=(file)=>{
+ try{return fs.lstatSync(file);}
+ catch(error){if(error?.code==='ENOENT')return null;throw error;}
+};
+const fsyncParent=()=>{
+ const descriptor=fs.openSync(parent,'r');
+ try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+};
+const validateExisting=()=>{
+ let stat=lstat(output);
+ if(!stat||!stat.isFile()||stat.isSymbolicLink()
+   ||(stat.mode&0o777)!==0o600||!fs.readFileSync(output).equals(body))process.exit(1);
+ if(stat.nlink>1){
+  let removed=false;
+  for(const name of fs.readdirSync(parent)){
+   if(!name.startsWith(prefix))continue;
+   const candidate=path.join(parent,name),candidateStat=lstat(candidate);
+   if(!candidateStat||!candidateStat.isFile()||candidateStat.isSymbolicLink()
+     ||candidateStat.dev!==stat.dev||candidateStat.ino!==stat.ino
+     ||!fs.readFileSync(candidate).equals(body))continue;
+   fs.unlinkSync(candidate);
+   removed=true;
+  }
+  if(removed)fsyncParent();
+  stat=fs.lstatSync(output);
+ }
+ if(stat.nlink!==1)process.exit(1);
+};
+if(lstat(output))validateExisting();
+else{
+ const temporary=path.join(parent,
+   `${prefix}${process.pid}.${crypto.randomBytes(12).toString('hex')}`);
+ let descriptor;
+ try{
+  descriptor=fs.openSync(temporary,'wx',0o600);
+  try{fs.writeFileSync(descriptor,body);fs.fsyncSync(descriptor);}
+  finally{fs.closeSync(descriptor);descriptor=undefined;}
+  try{fs.linkSync(temporary,output);fsyncParent();}
+  catch(error){if(error?.code!=='EEXIST')throw error;validateExisting();}
+  fs.unlinkSync(temporary);
+  fsyncParent();
+ validateExisting();
+ }finally{if(descriptor!==undefined)fs.closeSync(descriptor);}
+}
+NODE
+        fsync_local_directory "$retry_archive_dir"
+        fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"
+        RETRY_TERMINAL_PREDECESSOR=true
+        TRANSACTION_CHECKPOINT_EXISTS=false
+        RESUME_STATUS_JSON=""
+        RESUME_REQUEST_SHA=""
+        RESUME_REQUEST_EXPIRES_AT=""
+        PROMOTION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      else
+        RESUME_EXISTING_TRANSACTION=true
+        case "$resume_status" in
+          pending|running|recovery_required)
+            "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" ensure-started \
+              "$PROMOTION_RUN_ID" "$RESUME_REQUEST_SHA" >/dev/null
+            ;;
+        esac
+      fi
+    else
+      echo "unable to reconcile the existing root-owned promotion transaction: $PROMOTION_RUN_ID" >&2
+      exit 75
+    fi
+  else
+    unsigned_resume_request="$TRANSACTION_CHECKPOINT_DIR/${PROMOTION_RUN_ID}.request.json"
+    reconcile_local_link_publication "$unsigned_resume_request" || {
+      echo "unsigned promotion resume request publication is unsafe" >&2
       exit 1
     }
-    RESUME_EXISTING_TRANSACTION=true
+    if [ -e "$unsigned_resume_request" ] || [ -L "$unsigned_resume_request" ]; then
+      [ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ] || {
+        echo "unsigned promotion checkpoint requires the root-owned transaction control" >&2
+        exit 1
+      }
+      [ -f "$unsigned_resume_request" ] && [ ! -L "$unsigned_resume_request" ] || {
+        echo "unsigned promotion resume request is unsafe" >&2
+        exit 1
+      }
+      unsigned_request_mode="$(stat -c '%a' "$unsigned_resume_request" 2>/dev/null \
+        || stat -f '%Lp' "$unsigned_resume_request")"
+      case "$unsigned_request_mode" in
+        400|600) ;;
+        *) echo "unsigned promotion resume request mode must be 400 or 600" >&2; exit 1 ;;
+      esac
+      UNSIGNED_REQUEST_FIELDS="$(node - "$unsigned_resume_request" "$PROMOTION_RUN_ID" \
+        "$PROD_BASE" "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+        "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" \
+        "$RELEASE_MANIFEST_SHA256" "$STAGING_ATTESTATION_SHA256" "$TARGET_VERSION" <<'NODE'
+const fs=require('fs');
+const [file,id,productionBase,targetRuntime,runtimeSha,artifactDigest,installedDigest,
+ recoveryDigest,manifestSha,stagingSha,targetVersion]=process.argv.slice(2);
+const stat=fs.lstatSync(file);
+const request=JSON.parse(fs.readFileSync(file,'utf8'));
+const record=(value)=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+const exact=(value,keys)=>record(value)&&Object.keys(value).length===keys.length
+ &&keys.every((key)=>Object.prototype.hasOwnProperty.call(value,key));
+if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size===0||stat.size>16*1024*1024
+ ||!exact(request,['schema','transactionId','createdAt','expiresAt','ownerAuthorization',
+   'productionBase','predecessor','target','releaseEvidence','backupDir','preparedRuntimeDir',
+   'pm2Bin','publicBaseUrl','stabilitySeconds','gateTimeoutSeconds','migration'])
+ ||!exact(request.predecessor,['runtime','sha','artifactDigest','installedRuntimeDigest'])
+ ||!exact(request.target,['runtime','sha','sentryRelease','artifactDigest',
+   'installedRuntimeDigest','recoveryRuntimeDigest','version'])
+ ||!exact(request.releaseEvidence,['releaseManifestBase64','releaseManifestSha256',
+   'stagingAttestationBase64','stagingAttestationSha256'])
+ ||request.schema!=='nexus.promotion-transaction-request.v1'||request.transactionId!==id
+ ||request.ownerAuthorization!=='explicit'||request.productionBase!==productionBase
+ ||request.target.runtime!==targetRuntime||request.target.sha!==runtimeSha
+ ||request.target.sentryRelease!==runtimeSha||request.target.artifactDigest!==artifactDigest
+ ||request.target.installedRuntimeDigest!==installedDigest
+ ||request.target.recoveryRuntimeDigest!==recoveryDigest||request.target.version!==targetVersion
+ ||request.releaseEvidence.releaseManifestSha256!==manifestSha
+ ||request.releaseEvidence.stagingAttestationSha256!==stagingSha
+ ||typeof request.predecessor.runtime!=='string'
+ ||!(request.predecessor.runtime===productionBase
+   ||request.predecessor.runtime.startsWith(`${productionBase}/releases/`))
+ ||!/^[a-f0-9]{40}$/u.test(request.predecessor.sha||'')
+ ||!/^[a-f0-9]{64}$/u.test(request.predecessor.artifactDigest||'')
+ ||!/^[a-f0-9]{64}$/u.test(request.predecessor.installedRuntimeDigest||''))process.exit(1);
+const created=Date.parse(request.createdAt||''),expires=Date.parse(request.expiresAt||''),now=Date.now();
+if(!Number.isFinite(created)||!Number.isFinite(expires)||expires<=created
+ ||expires-created>30*60*1000||created>now+5*60*1000)process.exit(1);
+process.stdout.write(`${now>expires?'expired':'current'}\t${request.expiresAt}\n`);
+NODE
+      )" || {
+        echo "unsigned promotion resume request identity is invalid" >&2
+        exit 1
+      }
+      IFS=$'\t' read -r unsigned_request_state unsigned_request_expires_at \
+        <<<"$UNSIGNED_REQUEST_FIELDS" || {
+        echo "unsigned promotion resume request fields are invalid" >&2
+        exit 1
+      }
+      case "$unsigned_request_state" in
+        current) ;;
+        expired)
+          set +e
+          unsigned_status_json="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" \
+            status "$PROMOTION_RUN_ID" 2>/dev/null)"
+          unsigned_status_exit=$?
+          set -e
+          if [ "$unsigned_status_exit" -ne 66 ]; then
+            if [ "$unsigned_status_exit" -eq 0 ]; then
+              echo "server promotion authority exists but its local signed envelope is unavailable: $PROMOTION_RUN_ID" >&2
+            else
+              echo "unable to prove expired unsigned promotion authority is absent: $PROMOTION_RUN_ID" >&2
+            fi
+            exit 75
+          fi
+          printf '%s' "$unsigned_status_json" | node -e '
+            let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
+              const x=JSON.parse(b),keys=Object.keys(x).sort().join(",");
+              if(keys!=="schema,status,transactionId"
+                ||x.schema!=="nexus.promotion-transaction-status.v1"
+                ||x.transactionId!==process.argv[1]||x.status!=="not_found")process.exit(1);
+            });' "$PROMOTION_RUN_ID" || {
+            echo "authoritative expired-unsigned not-found response is invalid" >&2
+            exit 1
+          }
+          unsigned_archive_dir="$TRANSACTION_CHECKPOINT_DIR/expired-unsigned-authority"
+          if [ -e "$unsigned_archive_dir" ] || [ -L "$unsigned_archive_dir" ]; then
+            [ -d "$unsigned_archive_dir" ] && [ ! -L "$unsigned_archive_dir" ] || {
+              echo "expired unsigned promotion archive directory is unsafe" >&2
+              exit 1
+            }
+          else
+            mkdir "$unsigned_archive_dir"
+          fi
+          chmod 700 "$unsigned_archive_dir"
+          unsigned_archive="$unsigned_archive_dir/${PROMOTION_RUN_ID}.json"
+          node - "$unsigned_archive" "$TRANSACTION_CHECKPOINT" "$unsigned_resume_request" \
+            "$unsigned_status_json" "$PROMOTION_RUN_ID" "$unsigned_request_expires_at" <<'NODE'
+const crypto=require('crypto'),fs=require('fs'),path=require('path');
+const [output,checkpointPath,requestPath,statusRaw,id,expiresAt]=process.argv.slice(2);
+const read=(file)=>{
+ const stat=fs.lstatSync(file);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size===0
+   ||stat.size>16*1024*1024||![0o400,0o600].includes(stat.mode&0o777))process.exit(1);
+ return fs.readFileSync(file);
+};
+const checkpoint=read(checkpointPath),request=read(requestPath),status=JSON.parse(statusRaw);
+if(Object.keys(status).sort().join(',')!=='schema,status,transactionId'
+ ||status.schema!=='nexus.promotion-transaction-status.v1'
+ ||status.transactionId!==id||status.status!=='not_found'
+ ||!Number.isFinite(Date.parse(expiresAt)))process.exit(1);
+const digest=(body)=>crypto.createHash('sha256').update(body).digest('hex');
+const body=Buffer.from(`${JSON.stringify({
+ schema:'nexus.expired-unsigned-promotion-authority.v1',
+ transactionId:id,reason:'expired_unsigned_request_server_not_found',
+ requestExpiredAt:expiresAt,authorityStatus:status,
+ clientCheckpoint:{sha256:digest(checkpoint),bodyBase64:checkpoint.toString('base64')},
+ unsignedRequest:{sha256:digest(request),bodyBase64:request.toString('base64')},
+},null,2)}\n`);
+const parent=path.dirname(output),prefix=`.${path.basename(output)}.next.`;
+const parentStat=fs.lstatSync(parent);
+if(!parentStat.isDirectory()||parentStat.isSymbolicLink()
+  ||(parentStat.mode&0o777)!==0o700
+  ||path.dirname(path.resolve(output))!==path.resolve(parent))process.exit(1);
+const lstat=(file)=>{
+ try{return fs.lstatSync(file);}
+ catch(error){if(error?.code==='ENOENT')return null;throw error;}
+};
+const fsyncParent=()=>{
+ const descriptor=fs.openSync(parent,'r');
+ try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+};
+const validateExisting=()=>{
+ let stat=lstat(output);
+ if(!stat||!stat.isFile()||stat.isSymbolicLink()
+   ||(stat.mode&0o777)!==0o600||!fs.readFileSync(output).equals(body))process.exit(1);
+ if(stat.nlink>1){
+  let removed=false;
+  for(const name of fs.readdirSync(parent)){
+   if(!name.startsWith(prefix))continue;
+   const candidate=path.join(parent,name),candidateStat=lstat(candidate);
+   if(!candidateStat||!candidateStat.isFile()||candidateStat.isSymbolicLink()
+     ||candidateStat.dev!==stat.dev||candidateStat.ino!==stat.ino
+     ||!fs.readFileSync(candidate).equals(body))continue;
+   fs.unlinkSync(candidate);
+   removed=true;
+  }
+  if(removed)fsyncParent();
+  stat=fs.lstatSync(output);
+ }
+ if(stat.nlink!==1)process.exit(1);
+};
+if(lstat(output))validateExisting();
+else{
+ const temporary=path.join(parent,
+   `${prefix}${process.pid}.${crypto.randomBytes(12).toString('hex')}`);
+ let descriptor;
+ try{
+  descriptor=fs.openSync(temporary,'wx',0o600);
+  try{fs.writeFileSync(descriptor,body);fs.fsyncSync(descriptor);}
+  finally{fs.closeSync(descriptor);descriptor=undefined;}
+  try{fs.linkSync(temporary,output);fsyncParent();}
+  catch(error){if(error?.code!=='EEXIST')throw error;validateExisting();}
+  fs.unlinkSync(temporary);
+  fsyncParent();
+ validateExisting();
+ }finally{if(descriptor!==undefined)fs.closeSync(descriptor);}
+}
+NODE
+          fsync_local_directory "$unsigned_archive_dir"
+          fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"
+          RETIRED_UNSIGNED_TRANSACTION_ID="$PROMOTION_RUN_ID"
+          TRANSACTION_CHECKPOINT_EXISTS=false
+          PROMOTION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ;;
+        *)
+          echo "unsigned promotion resume request expiry state is invalid" >&2
+          exit 1
+          ;;
+      esac
+    fi
   fi
 fi
 
@@ -220,6 +771,11 @@ case "$CURRENT_RUNTIME" in
   "$PROD_BASE"|"$PROD_BASE"/releases/*) ;;
   *) echo "unsafe current production runtime: $CURRENT_RUNTIME" >&2; exit 1 ;;
 esac
+if [ "$RETRY_TERMINAL_PREDECESSOR" = true ] \
+    && [ "$CURRENT_RUNTIME" != "$RETRY_PREDECESSOR_RUNTIME" ]; then
+  echo "terminal predecessor identity changed before fresh authorization" >&2
+  exit 75
+fi
 
 # `current` and the two PM2 cwd values are one control-plane identity. Refuse
 # to copy or stop anything when they disagree; otherwise a stale symlink could
@@ -238,7 +794,7 @@ else
   [ ! -e "$base_dir/current" ] || { echo "legacy runtime cannot have a current link" >&2; exit 1; }
   active_sha=""
 fi
-"$pm2_bin" jlist | node -e '
+timeout 5s "$pm2_bin" jlist | node -e '
 const fs = require("fs");
 const rows = JSON.parse(fs.readFileSync(0, "utf8"));
 const runtime = process.argv[1];
@@ -278,11 +834,23 @@ REMOTE_PREDECESSOR_SHA
   echo "active predecessor runtime SHA is unavailable" >&2
   exit 1
 }
+if [ "$RETRY_TERMINAL_PREDECESSOR" = true ] \
+    && [ "$PREDECESSOR_SHA" != "$RETRY_PREDECESSOR_SHA" ]; then
+  echo "terminal predecessor SHA changed before fresh authorization" >&2
+  exit 75
+fi
 [[ "$PREDECESSOR_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ \
     && "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
   echo "active predecessor exact artifact/install identity is unavailable" >&2
   exit 1
 }
+if [ "$RETRY_TERMINAL_PREDECESSOR" = true ] \
+    && { [ "$PREDECESSOR_ARTIFACT_DIGEST" != "$RETRY_PREDECESSOR_ARTIFACT_DIGEST" ] \
+      || [ "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" \
+        != "$RETRY_PREDECESSOR_INSTALLED_RUNTIME_DIGEST" ]; }; then
+  echo "terminal predecessor artifact/install identity changed before fresh authorization" >&2
+  exit 75
+fi
 git -C "$ROOT" rev-parse --verify --quiet "${PREDECESSOR_SHA}^{commit}" >/dev/null || {
   echo "active predecessor runtime SHA is absent from the release checkout" >&2
   exit 1
@@ -349,18 +917,57 @@ if [ "$CURRENT_RUNTIME" = "$PROD_RELEASE" ]; then
 fi
 
 if [ "$TRANSACTION_CHECKPOINT_EXISTS" = false ]; then
-  PROMOTION_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$(node -e 'process.stdout.write(require("crypto").randomBytes(6).toString("hex"))')"
-  node - "$TRANSACTION_CHECKPOINT.next" "$PROMOTION_RUN_ID" "$PROMOTION_STARTED_AT" "$RUNTIME_SHA" \
-    "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" "$SERVER" "$PROD_BASE" <<'NODE'
+  while :; do
+    PROMOTION_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$(node -e 'process.stdout.write(require("crypto").randomBytes(6).toString("hex"))')"
+    [ -z "$RETIRED_UNSIGNED_TRANSACTION_ID" ] \
+      || [ "$PROMOTION_RUN_ID" != "$RETIRED_UNSIGNED_TRANSACTION_ID" ] || continue
+    break
+  done
+  checkpoint_temporary="$TRANSACTION_CHECKPOINT.$$.${PROMOTION_RUN_ID##*-}.tmp"
+  node - "$checkpoint_temporary" "$PROMOTION_RUN_ID" "$PROMOTION_STARTED_AT" "$RUNTIME_SHA" \
+    "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" \
+    "$RELEASE_MANIFEST_SHA256" "$STAGING_ATTESTATION_SHA256" \
+    "$TARGET_VERSION" "$SERVER" "$PROD_BASE" "$RETIRED_UNSIGNED_TRANSACTION_ID" <<'NODE'
 const fs = require('fs');
 const [file, transactionId, startedAt, runtimeSha, artifactDigest, installedRuntimeDigest,
-  targetVersion, server, productionBase] = process.argv.slice(2);
-fs.writeFileSync(file, `${JSON.stringify({
-  schema: 'nexus.promotion-client-checkpoint.v1', transactionId, startedAt, runtimeSha,
-  artifactDigest, installedRuntimeDigest, targetVersion, server, productionBase,
-}, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  recoveryRuntimeDigest, releaseManifestSha256, stagingAttestationSha256,
+  targetVersion, server, productionBase,retiredUnsignedTransactionId] = process.argv.slice(2);
+const checkpoint={
+  schema:'nexus.promotion-client-checkpoint.v1',transactionId,startedAt,runtimeSha,
+  artifactDigest,installedRuntimeDigest,recoveryRuntimeDigest,releaseManifestSha256,
+  stagingAttestationSha256,targetVersion,server,productionBase,
+};
+if(retiredUnsignedTransactionId)checkpoint.retiredUnsignedTransactionId=retiredUnsignedTransactionId;
+const fd=fs.openSync(file,'wx',0o600);
+try{fs.writeFileSync(fd,`${JSON.stringify(checkpoint,null,2)}\n`);fs.fsyncSync(fd);}
+finally{fs.closeSync(fd);}
 NODE
-  mv -f "$TRANSACTION_CHECKPOINT.next" "$TRANSACTION_CHECKPOINT"
+  node - "$checkpoint_temporary" "$TRANSACTION_CHECKPOINT" "$TRANSACTION_CHECKPOINT_DIR" <<'NODE'
+const fs=require('fs');const path=require('path');
+const [temporary,destination,parent]=process.argv.slice(2);
+const staged=fs.lstatSync(temporary);
+if(path.dirname(temporary)!==parent||path.dirname(destination)!==parent
+ ||!staged.isFile()||staged.isSymbolicLink()||staged.nlink!==1
+ ||(staged.mode&0o777)!==0o600)process.exit(1);
+let current=null;
+try{current=fs.lstatSync(destination);}catch(error){if(error?.code!=='ENOENT')throw error;}
+if(current!==null){
+ if(!current.isFile()||current.isSymbolicLink()||current.nlink!==1
+  ||![0o400,0o600].includes(current.mode&0o777))process.exit(1);
+}
+let descriptor=fs.openSync(temporary,'r');
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+fs.renameSync(temporary,destination);
+descriptor=fs.openSync(parent,'r');
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+NODE
+  # The hardened Node rename is the atomic equivalent of:
+  # mv "$checkpoint_temporary" "$TRANSACTION_CHECKPOINT"
+  # Its parent descriptor fsync is the durable equivalent of:
+  # fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"
+  if [ -n "$RETIRED_UNSIGNED_TRANSACTION_ID" ]; then
+    cleanup_retired_unsigned_request "$RETIRED_UNSIGNED_TRANSACTION_ID"
+  fi
 fi
 
 # Copy the already prepared staging runtime while production is still online.
@@ -561,23 +1168,45 @@ run_systemd_transaction() {
         return 1
       }
     done
+    if [ "$RESUME_SIGNED_REQUEST_PENDING" = true ] \
+        && ! node -e 'const t=Date.parse(process.argv[1]);if(!Number.isFinite(t)||Date.now()>t)process.exit(1)' \
+          "$RESUME_REQUEST_EXPIRES_AT"; then
+      # The root control proved that no server authority exists for this ID.
+      # Expired local authority may therefore be replaced in place only after
+      # exact target/predecessor/capacity derivation has run again above.
+      [ -f "$request_file" ] && [ ! -L "$request_file" ] \
+        && [ -f "$signed_request_file" ] && [ ! -L "$signed_request_file" ] || {
+        echo "expired local promotion authority is unsafe to replace" >&2
+        return 1
+      }
+      rm -f -- "$request_file" "$signed_request_file"
+      RESUME_SIGNED_REQUEST_PENDING=false
+      RESUME_REQUEST_SHA=""
+      RESUME_REQUEST_EXPIRES_AT=""
+    fi
     if [ ! -f "$request_file" ]; then
       node - "$request_file" "$PROMOTION_RUN_ID" "$PROD_BASE" "$CURRENT_RUNTIME" "$PREDECESSOR_SHA" \
       "$PREDECESSOR_ARTIFACT_DIGEST" "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" \
-      "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" \
+      "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" \
+      "$RECOVERY_RUNTIME_DIGEST" "$RELEASE_MANIFEST" "$STAGING_ATTESTATION" "$TARGET_VERSION" \
       "$BACKUP_DIR" "$PREPARED_RUNTIME_DIR" "$REMOTE_PM2" "$PUBLIC_BASE_URL" \
       "60" "${NEXUS_RELEASE_LOCAL_GATE_TIMEOUT_SECONDS:-60}" \
       "$MIGRATION_REVIEW_COUNT" "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" \
       "$MIGRATION_REHEARSAL_SHA256" "$MIGRATION_REHEARSAL_CLONE_SHA256" \
       "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
       "$MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" <<'NODE'
+const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const [output, transactionId, productionBase, predecessorRuntime, predecessorSha,
   predecessorArtifactDigest, predecessorInstalledRuntimeDigest, targetRuntime,
-  targetSha, artifactDigest, installedRuntimeDigest, version, backupDir, preparedRuntimeDir,
+  targetSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+  releaseManifestPath, stagingAttestationPath, version, backupDir, preparedRuntimeDir,
   pm2Bin, publicBaseUrl, stabilitySeconds, gateTimeoutSeconds, migrationCount,
   reviewEvidenceSha256, policySubjectSha256, onlineEvidenceSha256, onlineCloneSha256,
   onlineMigratedCloneSha256, onlinePendingSetSha256, onlineSourceDatabaseSha256] = process.argv.slice(2);
+const releaseManifestBytes = fs.readFileSync(releaseManifestPath);
+const stagingAttestationBytes = fs.readFileSync(stagingAttestationPath);
 const request = {
   schema: 'nexus.promotion-transaction-request.v1',
   transactionId,
@@ -587,7 +1216,14 @@ const request = {
   productionBase,
   predecessor: { runtime: predecessorRuntime, sha: predecessorSha,
     artifactDigest: predecessorArtifactDigest, installedRuntimeDigest: predecessorInstalledRuntimeDigest },
-  target: { runtime: targetRuntime, sha: targetSha, sentryRelease: targetSha, artifactDigest, installedRuntimeDigest, version },
+  target: { runtime: targetRuntime, sha: targetSha, sentryRelease: targetSha, artifactDigest,
+    installedRuntimeDigest, recoveryRuntimeDigest, version },
+  releaseEvidence: {
+    releaseManifestBase64: releaseManifestBytes.toString('base64'),
+    releaseManifestSha256: crypto.createHash('sha256').update(releaseManifestBytes).digest('hex'),
+    stagingAttestationBase64: stagingAttestationBytes.toString('base64'),
+    stagingAttestationSha256: crypto.createHash('sha256').update(stagingAttestationBytes).digest('hex'),
+  },
   backupDir,
   preparedRuntimeDir,
   pm2Bin,
@@ -605,8 +1241,37 @@ const request = {
     onlineSourceDatabaseSha256: onlineSourceDatabaseSha256 || null,
   },
 };
-fs.writeFileSync(output, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+const body=Buffer.from(`${JSON.stringify(request,null,2)}\n`);
+const parent=path.dirname(output);
+const parentStat=fs.lstatSync(parent);
+if(!parentStat.isDirectory()||parentStat.isSymbolicLink()
+  ||path.dirname(path.resolve(output))!==path.resolve(parent))process.exit(1);
+const temporary=path.join(
+  parent,`.${path.basename(output)}.next.${process.pid}.${crypto.randomBytes(12).toString('hex')}`,
+);
+const fsyncParent=()=>{
+ const descriptor=fs.openSync(parent,'r');
+ try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+};
+let descriptor;
+try{
+ descriptor=fs.openSync(temporary,'wx',0o600);
+ fs.writeFileSync(descriptor,body);
+ fs.fsyncSync(descriptor);
+ fs.closeSync(descriptor);
+ descriptor=undefined;
+ fs.linkSync(temporary,output);
+ fsyncParent();
+ fs.unlinkSync(temporary);
+ fsyncParent();
+ const stat=fs.lstatSync(output);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+   ||(stat.mode&0o777)!==0o600||!fs.readFileSync(output).equals(body))process.exit(1);
+}finally{
+ if(descriptor!==undefined)fs.closeSync(descriptor);
+}
 NODE
+      fsync_local_directory "$request_dir"
     fi
     [ -f "$request_file" ] && [ ! -L "$request_file" ] || {
       echo "local promotion request must be a regular non-symlink file" >&2
@@ -620,10 +1285,17 @@ NODE
         return 1
         ;;
     esac
-    [ ! -e "$signed_request_file" ] && [ ! -L "$signed_request_file" ] || {
-      echo "unexpected signed promotion request exists without reconciled server authority" >&2
-      return 1
-    }
+    if [ "$RESUME_SIGNED_REQUEST_PENDING" = true ]; then
+      [ -f "$signed_request_file" ] && [ ! -L "$signed_request_file" ] || {
+        echo "reconciled local promotion authority is missing or unsafe" >&2
+        return 1
+      }
+    else
+      [ ! -e "$signed_request_file" ] && [ ! -L "$signed_request_file" ] || {
+        echo "unexpected signed promotion request exists without reconciled server authority" >&2
+        return 1
+      }
+    fi
 
     # `.local/` is intentionally ignored, so a clean Git checkout does not
     # prove that a checkpoint-adjacent raw request is trustworthy. Bind every
@@ -632,7 +1304,9 @@ NODE
     # signer result to close the validation/signing read boundary.
     validated_request_sha="$(node - "$request_file" "$PROMOTION_RUN_ID" "$PROD_BASE" "$CURRENT_RUNTIME" \
       "$PREDECESSOR_SHA" "$PREDECESSOR_ARTIFACT_DIGEST" "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" \
-      "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" \
+      "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" \
+      "$RECOVERY_RUNTIME_DIGEST" "$RELEASE_MANIFEST" "$STAGING_ATTESTATION" \
+      "$RELEASE_MANIFEST_SHA256" "$STAGING_ATTESTATION_SHA256" "$TARGET_VERSION" \
       "$BACKUP_DIR" "$PREPARED_RUNTIME_DIR" "$REMOTE_PM2" "$PUBLIC_BASE_URL" \
       "60" "${NEXUS_RELEASE_LOCAL_GATE_TIMEOUT_SECONDS:-60}" \
       "$MIGRATION_REVIEW_COUNT" "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" \
@@ -643,7 +1317,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const [file, transactionId, productionBase, predecessorRuntime, predecessorSha,
   predecessorArtifactDigest, predecessorInstalledRuntimeDigest, targetRuntime,
-  targetSha, artifactDigest, installedRuntimeDigest, targetVersion, backupDir,
+  targetSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+  releaseManifestPath, stagingAttestationPath, releaseManifestSha256,
+  stagingAttestationSha256, targetVersion, backupDir,
   preparedRuntimeDir, pm2Bin, publicBaseUrl, stabilitySeconds, gateTimeoutSeconds,
   migrationCount, reviewEvidenceSha256, policySubjectSha256, onlineEvidenceSha256,
   onlineCloneSha256, onlineMigratedCloneSha256, onlinePendingSetSha256,
@@ -657,10 +1333,15 @@ if (!exactKeys(request, [
   'schema', 'transactionId', 'createdAt', 'expiresAt', 'ownerAuthorization',
   'productionBase', 'predecessor', 'target', 'backupDir', 'preparedRuntimeDir',
   'pm2Bin', 'publicBaseUrl', 'stabilitySeconds', 'gateTimeoutSeconds', 'migration',
+  'releaseEvidence',
 ]) || !exactKeys(request.predecessor, [
   'runtime', 'sha', 'artifactDigest', 'installedRuntimeDigest',
 ]) || !exactKeys(request.target, [
   'runtime', 'sha', 'sentryRelease', 'artifactDigest', 'installedRuntimeDigest', 'version',
+  'recoveryRuntimeDigest',
+]) || !exactKeys(request.releaseEvidence, [
+  'releaseManifestBase64', 'releaseManifestSha256',
+  'stagingAttestationBase64', 'stagingAttestationSha256',
 ]) || !exactKeys(request.migration, [
   'required', 'reviewEvidenceSha256', 'policySubjectSha256', 'onlineEvidenceSha256',
   'onlineCloneSha256', 'onlineMigratedCloneSha256', 'onlinePendingSetSha256',
@@ -690,7 +1371,12 @@ if (request.schema !== 'nexus.promotion-transaction-request.v1'
     || request.target.sentryRelease !== targetSha
     || request.target.artifactDigest !== artifactDigest
     || request.target.installedRuntimeDigest !== installedRuntimeDigest
+    || request.target.recoveryRuntimeDigest !== recoveryRuntimeDigest
     || request.target.version !== targetVersion
+    || request.releaseEvidence.releaseManifestSha256 !== releaseManifestSha256
+    || request.releaseEvidence.stagingAttestationSha256 !== stagingAttestationSha256
+    || request.releaseEvidence.releaseManifestBase64 !== fs.readFileSync(releaseManifestPath).toString('base64')
+    || request.releaseEvidence.stagingAttestationBase64 !== fs.readFileSync(stagingAttestationPath).toString('base64')
     || request.backupDir !== backupDir
     || request.preparedRuntimeDir !== preparedRuntimeDir
     || request.pm2Bin !== pm2Bin
@@ -720,11 +1406,16 @@ LOCAL_REQUEST_VALIDATION
       echo "validated local promotion request digest is invalid" >&2
       return 1
     }
-    request_signing="$(node "$ROOT/scripts/promotion-authorization.mjs" sign-request \
-      --input "$request_file" --private-key "$OWNER_PRIVATE_KEY" --output "$signed_request_file")"
-    request_sha="$(printf '%s' "$request_signing" | node -e 'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(b).payloadSha256))')"
+    if [ "$RESUME_SIGNED_REQUEST_PENDING" = true ]; then
+      request_sha="$RESUME_REQUEST_SHA"
+    else
+      request_signing="$(node "$ROOT/scripts/promotion-authorization.mjs" sign-request \
+        --input "$request_file" --private-key "$OWNER_PRIVATE_KEY" --output "$signed_request_file")"
+      fsync_local_directory "$request_dir"
+      request_sha="$(printf '%s' "$request_signing" | node -e 'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(b).payloadSha256))')"
+    fi
     if [ "$request_sha" != "$validated_request_sha" ]; then
-      rm -f "$signed_request_file"
+      if [ "$RESUME_SIGNED_REQUEST_PENDING" != true ]; then rm -f "$signed_request_file"; fi
       echo "owner-signed request differs from the validated local promotion request" >&2
       return 1
     fi
@@ -758,12 +1449,18 @@ REMOTE_TRANSACTION_REQUEST
         printf '%s\n' "$launch_output" >&2
         return "$launch_status"
       fi
+      "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" ensure-started \
+        "$PROMOTION_RUN_ID" "$request_sha" >/dev/null
     fi
   fi
 
   result_env="$request_dir/${PROMOTION_RUN_ID}.result.env"
   escrow_json="$request_dir/${PROMOTION_RUN_ID}.escrow.json"
-  deadline=$((SECONDS + 1800))
+  # The root transaction has a 28-minute upper bound that contains two
+  # separately bounded DR phases, candidate checks, cutover, and the soak.
+  # Keep the polling client outside that ceiling so it can observe and fetch
+  # the durable terminal result instead of timing out first.
+  deadline=$((SECONDS + 2100))
   while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -z "$status_json" ]; then
       if ! status_json="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" status "$PROMOTION_RUN_ID" 2>/dev/null)"; then
@@ -810,13 +1507,35 @@ REMOTE_TRANSACTION_REQUEST
           [ "$retry_status" -eq 0 ] || true
         fi
         ;;
+      pending|running|recovery_required)
+        # Close the accepted-authority/systemd-start crash window. The root
+        # control reuses only the already persisted exact request digest.
+        "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" ensure-started \
+          "$PROMOTION_RUN_ID" "$request_sha" >/dev/null 2>&1 || true
+        ;;
     esac
     status_json=""
     sleep 2
   done
   [ "$transaction_status" = completed ] || { echo "timed out polling persistent promotion transaction" >&2; return 75; }
-  "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" fetch "$PROMOTION_RUN_ID" result > "$result_env"
-  "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" fetch "$PROMOTION_RUN_ID" escrow > "$escrow_json"
+  result_raw="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" fetch "$PROMOTION_RUN_ID" result)"
+  escrow_raw="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" fetch "$PROMOTION_RUN_ID" escrow)"
+  fetch_suffix="$(node -e 'process.stdout.write(require("crypto").randomBytes(8).toString("hex"))')"
+  result_temporary="$result_env.$fetch_suffix.tmp"
+  escrow_temporary="$escrow_json.$fetch_suffix.tmp"
+  node - "$result_temporary" "$result_raw" "$escrow_temporary" "$escrow_raw" <<'NODE'
+const fs=require('fs');
+const [resultPath,resultRaw,escrowPath,escrowRaw]=process.argv.slice(2);
+for(const [file,raw,limit] of [[resultPath,resultRaw,1024*1024],[escrowPath,escrowRaw,16*1024*1024]]){
+ const body=Buffer.from(`${raw}\n`);
+ if(body.length===1||body.length>limit)process.exit(1);
+ const fd=fs.openSync(file,'wx',0o600);
+ try{fs.writeFileSync(fd,body);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+}
+NODE
+  mv -f "$result_temporary" "$result_env"
+  mv -f "$escrow_temporary" "$escrow_json"
+  fsync_local_directory "$request_dir"
   chmod 600 "$result_env" "$escrow_json"
   BACKUP_FILE="$(sed -n 's/^NEXUS_BACKUP_FILE=//p' "$result_env" | tail -1)"
   BACKUP_SHA256="$(sed -n 's/^NEXUS_BACKUP_SHA256=//p' "$result_env" | tail -1)"
@@ -847,20 +1566,148 @@ REMOTE_TRANSACTION_REQUEST
   }
   case "$BACKUP_FILE" in "$BACKUP_DIR"/v*.tar.gz) ;; *) echo "transaction returned an unsafe backup path" >&2; return 1 ;; esac
   [[ "$BACKUP_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "transaction returned an invalid backup digest" >&2; return 1; }
-  read -r ESCROW_OBJECT_KEY ESCROW_CONFIRMED_AT < <(node - "$escrow_json" "$PROMOTION_RUN_ID" "$request_sha" "$BACKUP_FILE" "$BACKUP_SHA256" <<'NODE'
-const fs=require('fs');const [file,id,requestSha,path,sha]=process.argv.slice(2);const x=JSON.parse(fs.readFileSync(file,'utf8')),r=x.requiredRelease,s=x.storageControls;
+  ESCROW_FIELDS="$(node - "$escrow_json" \
+    "$PROMOTION_RUN_ID" "$request_sha" \
+    "$BACKUP_FILE" "$BACKUP_SHA256" "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+    "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" "$RELEASE_MANIFEST_SHA256" \
+    "$STAGING_ATTESTATION_SHA256" "$RESULT_CUTOVER_STARTED_AT" \
+    "$RESULT_SERVICE_UNAVAILABLE_STARTED_AT" "$RESULT_SOAK_COMPLETED_AT" \
+    "$TARGET_VERSION" <<'NODE'
+const fs=require('fs');const [file,id,requestSha,path,sha,runtime,runtimeSha,artifact,installed,
+ recoveryDigest,manifestSha,stagingSha,cutoverStartedAt,serviceUnavailableStartedAt,
+ soakCompletedAt,targetVersion]=process.argv.slice(2);
+const x=JSON.parse(fs.readFileSync(file,'utf8')),r=x.requiredRelease,c=x.currentRecoveryRuntime,
+ p=x.preMutationCurrentRecovery,s=x.storageControls,d0=x.preMutationDatabaseRecoveryPoint,
+ d1=x.currentDatabaseRecoveryPoint,t=x.promotionTimeline,
+ readiness=x.candidateReadinessRefresh,beforeReadiness=readiness?.beforeEscrow,
+ afterReadiness=readiness?.afterEscrow;
 const validStoragePair=(s?.provider==='aws-s3'&&s?.controlMode==='versioned-s3')
  ||(s?.provider==='cloudflare-r2'&&s?.controlMode==='r2-approved-variance');
-if(x.schema!=='nexus.promotion-rollback-escrow.v1'||x.status!=='passed'||x.transactionId!==id
+const providerProof=(value)=>{
+ const confirmed=Date.parse(value?.confirmedAt||'');
+ if(!Number.isFinite(confirmed))return false;
+ if(s?.provider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+  &&Number.isFinite(Date.parse(value?.retainUntil||''))
+  &&Date.parse(value.retainUntil)>=confirmed+90*86400*1000
+  &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
+ return s?.provider==='cloudflare-r2'&&value?.objectVersionId===null&&value?.retainUntil===null
+  &&value?.retentionVariance==='r2-approved-variance'&&value?.approvedUnversionedVariance===true;
+};
+const databaseProof=(value)=>{
+ const confirmed=Date.parse(value?.confirmedAt||'');
+ if(!Number.isFinite(confirmed)
+   ||typeof value?.objectKey!=='string'||value.objectKey.includes('..')||value.objectKey.includes('//')
+   ||!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,900}\/database\/hourly\/nexus-db-\d{8}T\d{6}Z\.sqlite\.age$/u.test(value.objectKey)
+   ||!/^[a-f0-9]{64}$/u.test(value?.plaintextSha256||'')
+   ||!/^[a-f0-9]{64}$/u.test(value?.encryptedSha256||'')
+   ||!Number.isSafeInteger(value?.encryptedSizeBytes)||value.encryptedSizeBytes<=0)return false;
+ if(s?.provider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+   &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
+ return s?.provider==='cloudflare-r2'&&value?.objectVersionId===null
+   &&value?.retentionVariance==='r2-approved-variance'
+   &&value?.approvedUnversionedVariance===true;
+};
+const d0Confirmed=Date.parse(d0?.confirmedAt||''),d1Confirmed=Date.parse(d1?.confirmedAt||'');
+const pConfirmed=Date.parse(p?.confirmedAt||''),cConfirmed=Date.parse(c?.confirmedAt||'');
+const cutoverStarted=Date.parse(cutoverStartedAt),serviceUnavailable=Date.parse(serviceUnavailableStartedAt);
+const soakCompleted=Date.parse(soakCompletedAt);
+const releaseConfirmed=Date.parse(r?.confirmedAt||'');
+const beforeReadinessVerified=Date.parse(beforeReadiness?.verifiedAt||'');
+const afterReadinessVerified=Date.parse(afterReadiness?.verifiedAt||'');
+const readinessProof=(value)=>value?.schema==='nexus.candidate-readiness-refresh.v1'
+ &&value?.status==='passed'&&value?.transactionId===id&&value?.runtimeSha===runtimeSha
+ &&value?.packageVersion===targetVersion
+ &&Object.keys(value?.checks||{}).sort().join(',')==='authenticatedSnapshot,contentEngine,loopbackBackend,pm2Identity,publicHealth'
+ &&Object.values(value.checks).every((check)=>check===true);
+const stable=['path','plaintextSha256','runtimeSha','artifactDigest',
+ 'installedRuntimeDigest','recoveryRuntimeDigest','releaseManifestSha256',
+ 'stagingAttestationSha256','escrowId'];
+if(x.schema!=='nexus.promotion-dr-escrow.v3'||x.status!=='passed'||x.transactionId!==id
  ||typeof s?.provider!=='string'||typeof s?.controlMode!=='string'
  ||!validStoragePair
  ||s.releasePrefixLockVerified!==true
  ||x.requestSha256!==requestSha||r?.confirmed!==true||r?.path!==path||r?.plaintextSha256!==sha
- ||typeof r?.objectKey!=='string'||!r.objectKey.endsWith(`.${sha}.age`)||r.objectKey.includes('..')
+ ||!/^[a-f0-9]{64}$/u.test(r?.encryptedSha256||'')
+ ||!Number.isSafeInteger(r?.encryptedSizeBytes)||r.encryptedSizeBytes<=0
+ ||!providerProof(r)||typeof r?.objectKey!=='string'||!r.objectKey.endsWith(`.${sha}.age`)
+ ||r.objectKey.includes('..')||c?.confirmed!==true||c?.escrowId!==id
+ ||c?.escrowPhase!=='post-soak'||p?.escrowPhase!=='pre-mutation'
+ ||c?.path!==runtime||c?.runtimeSha!==runtimeSha
+ ||c?.artifactDigest!==artifact||c?.installedRuntimeDigest!==installed
+ ||c?.recoveryRuntimeDigest!==recoveryDigest||c?.releaseManifestSha256!==manifestSha
+ ||c?.stagingAttestationSha256!==stagingSha||!/^[a-f0-9]{64}$/u.test(c?.plaintextSha256||'')
+ ||!/^[a-f0-9]{64}$/u.test(c?.encryptedSha256||'')
+ ||!Number.isSafeInteger(c?.encryptedSizeBytes)||c.encryptedSizeBytes<=0
+ ||typeof c?.objectKey!=='string'
+ ||!c.objectKey.endsWith(`+escrow-${id}+phase-post-soak.tar.gz.${c.plaintextSha256}.age`)
+ ||c.objectKey.includes('..')||!providerProof(c)
+ ||typeof p?.objectKey!=='string'
+ ||!p.objectKey.endsWith(`+escrow-${id}+phase-pre-mutation.tar.gz.${p.plaintextSha256}.age`)
+ ||!/^[a-f0-9]{64}$/u.test(p?.encryptedSha256||'')
+ ||!Number.isSafeInteger(p?.encryptedSizeBytes)||p.encryptedSizeBytes<=0
+ ||!providerProof(p)
+ ||stable.some((field)=>c[field]!==p?.[field])
+ ||!databaseProof(d0)||!databaseProof(d1)
+ ||![d0Confirmed,d1Confirmed,pConfirmed,cConfirmed,releaseConfirmed,cutoverStarted,
+   serviceUnavailable,soakCompleted,beforeReadinessVerified,afterReadinessVerified]
+   .every(Number.isFinite)
+ ||d0Confirmed>cutoverStarted||d0Confirmed>serviceUnavailable
+ ||d1Confirmed<soakCompleted||d1Confirmed<d0Confirmed
+ ||pConfirmed>cutoverStarted||pConfirmed>serviceUnavailable
+ ||cConfirmed<soakCompleted||cConfirmed<pConfirmed
+ ||!readinessProof(beforeReadiness)||!readinessProof(afterReadiness)
+ ||beforeReadinessVerified<soakCompleted
+ ||releaseConfirmed<beforeReadinessVerified
+ ||cConfirmed<beforeReadinessVerified||d1Confirmed<beforeReadinessVerified
+ ||afterReadinessVerified<beforeReadinessVerified
+ ||afterReadinessVerified<releaseConfirmed
+ ||afterReadinessVerified<cConfirmed||afterReadinessVerified<d1Confirmed
+ ||t?.cutoverStartedAt!==cutoverStartedAt
+ ||t?.serviceUnavailableStartedAt!==serviceUnavailableStartedAt
+ ||t?.soakCompletedAt!==soakCompletedAt
  ||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(x.confirmedAt||''))process.exit(1);
-process.stdout.write(`${r.objectKey}\t${x.confirmedAt}\n`);
+const fields=[r.objectKey,r.confirmedAt,r.objectVersionId??'-',r.retainUntil??'-',
+ r.encryptedSha256,String(r.encryptedSizeBytes),
+ c.objectKey,c.plaintextSha256,c.encryptedSha256,String(c.encryptedSizeBytes),
+ c.confirmedAt,c.objectVersionId??'-',c.retainUntil??'-',
+ c.escrowId,s.provider,s.controlMode,x.confirmedAt,
+ p.objectKey,p.plaintextSha256,p.encryptedSha256,String(p.encryptedSizeBytes),
+ p.confirmedAt,p.objectVersionId??'-',p.retainUntil??'-',p.escrowId,
+ d0.objectKey,d0.plaintextSha256,d0.confirmedAt,d0.encryptedSha256,
+ String(d0.encryptedSizeBytes),d0.objectVersionId??'-',
+ d0.retentionVariance??'-',String(d0.approvedUnversionedVariance),
+ d1.objectKey,d1.plaintextSha256,d1.confirmedAt,d1.encryptedSha256,
+ String(d1.encryptedSizeBytes),d1.objectVersionId??'-',
+ d1.retentionVariance??'-',String(d1.approvedUnversionedVariance),
+ Buffer.from(JSON.stringify(beforeReadiness)).toString('base64'),
+ Buffer.from(JSON.stringify(afterReadiness)).toString('base64')];
+process.stdout.write(`${fields.join('\t')}\n`);
 NODE
-  ) || { echo "authoritative rollback escrow evidence is invalid" >&2; return 1; }
+  )" || { echo "authoritative rollback escrow evidence is invalid" >&2; return 1; }
+  IFS=$'\t' read -r ESCROW_OBJECT_KEY ROLLBACK_ESCROW_CONFIRMED_AT \
+    ESCROW_OBJECT_VERSION_ID ESCROW_RETAIN_UNTIL \
+    ROLLBACK_ESCROW_ENCRYPTED_SHA256 ROLLBACK_ESCROW_ENCRYPTED_SIZE_BYTES \
+    RECOVERY_ESCROW_OBJECT_KEY RECOVERY_ARCHIVE_SHA256 \
+    RECOVERY_ESCROW_ENCRYPTED_SHA256 RECOVERY_ESCROW_ENCRYPTED_SIZE_BYTES \
+    RECOVERY_ESCROW_CONFIRMED_AT \
+    RECOVERY_OBJECT_VERSION_ID RECOVERY_RETAIN_UNTIL RECOVERY_ESCROW_ID \
+    ESCROW_STORAGE_PROVIDER ESCROW_STORAGE_CONTROL_MODE ESCROW_CONFIRMED_AT \
+    PRE_RECOVERY_ESCROW_OBJECT_KEY PRE_RECOVERY_ARCHIVE_SHA256 \
+    PRE_RECOVERY_ESCROW_ENCRYPTED_SHA256 PRE_RECOVERY_ESCROW_ENCRYPTED_SIZE_BYTES \
+    PRE_RECOVERY_ESCROW_CONFIRMED_AT PRE_RECOVERY_OBJECT_VERSION_ID \
+    PRE_RECOVERY_RETAIN_UNTIL PRE_RECOVERY_ESCROW_ID \
+    PRE_DATABASE_OBJECT_KEY PRE_DATABASE_SHA256 PRE_DATABASE_CONFIRMED_AT \
+    PRE_DATABASE_ENCRYPTED_SHA256 PRE_DATABASE_ENCRYPTED_SIZE_BYTES \
+    PRE_DATABASE_OBJECT_VERSION_ID PRE_DATABASE_RETENTION_VARIANCE \
+    PRE_DATABASE_APPROVED_UNVERSIONED_VARIANCE \
+    CURRENT_DATABASE_OBJECT_KEY CURRENT_DATABASE_SHA256 CURRENT_DATABASE_CONFIRMED_AT \
+    CURRENT_DATABASE_ENCRYPTED_SHA256 CURRENT_DATABASE_ENCRYPTED_SIZE_BYTES \
+    CURRENT_DATABASE_OBJECT_VERSION_ID CURRENT_DATABASE_RETENTION_VARIANCE \
+    CURRENT_DATABASE_APPROVED_UNVERSIONED_VARIANCE \
+    BEFORE_ESCROW_READINESS_B64 AFTER_ESCROW_READINESS_B64 <<<"$ESCROW_FIELDS" || {
+    echo "authoritative rollback escrow evidence fields are invalid" >&2
+    return 1
+  }
   ESCROW_EVIDENCE_SHA256="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$escrow_json")"
   [[ "$CUTOVER_SECONDS" =~ ^[0-9]+$ ]] || { echo "transaction returned invalid cutover duration" >&2; return 1; }
   [[ "$BACKUP_WINDOW_SECONDS" =~ ^[0-9]+$ && "$BACKUP_OUTAGE_SECONDS" = "$BACKUP_WINDOW_SECONDS" ]] || {
@@ -903,9 +1750,12 @@ NODE
   # A journal saying completed is insufficient after a disconnect. Re-prove
   # the live symlink and both PM2 process identities before writing local
   # production evidence or treating a retry as successful.
-  "${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$REMOTE_PM2" <<'REMOTE_COMPLETED_IDENTITY'
+  "${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" "$PROD_RELEASE" "$RUNTIME_SHA" \
+    "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$RECOVERY_RUNTIME_DIGEST" \
+    "$REMOTE_PM2" <<'REMOTE_COMPLETED_IDENTITY'
 set -euo pipefail
-base_dir="$1"; release_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; installed_digest="$5"; pm2_bin="$6"
+base_dir="$1"; release_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; installed_digest="$5"; recovery_digest="$6"; pm2_bin="$7"
+[ "$(id -u)" -ne 0 ] || { echo "completed recovery identity verification must be unprivileged" >&2; exit 1; }
 [ "$(readlink -f "$base_dir/current")" = "$release_dir" ] || { echo "completed promotion current symlink mismatch" >&2; exit 1; }
 [ -f "$release_dir/.complete.json" ] || { echo "completed promotion marker is missing" >&2; exit 1; }
 node -e 'const x=require(process.argv[1]);if(x.runtimeSha!==process.argv[2])process.exit(1)' "$release_dir/.complete.json" "$runtime_sha"
@@ -913,7 +1763,10 @@ node "$release_dir/scripts/release-installed-tree-attestation.mjs" validate \
   --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" \
   --expect-runtime-sha "$runtime_sha" --expect-artifact-digest "$artifact_digest" \
   --expect-aggregate-digest "$installed_digest" >/dev/null
-"$pm2_bin" jlist | node -e '
+node "$release_dir/scripts/release-recovery-runtime-identity.mjs" compute \
+  --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" \
+  --expect-digest "$recovery_digest" >/dev/null
+timeout 5s "$pm2_bin" jlist | node -e '
 const fs=require("fs");const rows=JSON.parse(fs.readFileSync(0,"utf8"));const root=process.argv[1],sha=process.argv[2];
 for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
   const row=rows.find((entry)=>entry?.name===name),env=row?.pm2_env??{};
@@ -922,21 +1775,157 @@ for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-e
 REMOTE_COMPLETED_IDENTITY
 
   SYSTEMD_RESULT_PATH="$ROOT/.local/release/production/${RUNTIME_SHA}-${ARTIFACT_DIGEST}.json"
-  mkdir -p "$(dirname "$SYSTEMD_RESULT_PATH")"
-  node - "$SYSTEMD_RESULT_PATH" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" "$ESCROW_CONFIRMED_AT" "$ESCROW_EVIDENCE_SHA256" "$RESULT_CUTOVER_STARTED_AT" "$RESULT_SERVICE_UNAVAILABLE_STARTED_AT" "$RESULT_CANDIDATE_AVAILABLE_AT" "$RESULT_SOAK_STARTED_AT" "$RESULT_SOAK_COMPLETED_AT" "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" "$SOAK_OBSERVED_SECONDS" "$TARGET_VERSION" "$PUBLIC_BASE_URL" "$PROMOTION_RUN_ID" <<'NODE'
+  for evidence_directory in \
+    "$ROOT/.local" \
+    "$ROOT/.local/release" \
+    "$ROOT/.local/release/production"; do
+    if [ -e "$evidence_directory" ] || [ -L "$evidence_directory" ]; then
+      [ -d "$evidence_directory" ] && [ ! -L "$evidence_directory" ] || {
+        echo "local production evidence directory is unsafe: $evidence_directory" >&2
+        return 1
+      }
+    else
+      mkdir "$evidence_directory"
+    fi
+    chmod 700 "$evidence_directory"
+  done
+  node - "$SYSTEMD_RESULT_PATH" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" \
+    "$RECOVERY_RUNTIME_DIGEST" "$RELEASE_MANIFEST_SHA256" "$STAGING_ATTESTATION_SHA256" \
+    "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" \
+    "$ROLLBACK_ESCROW_CONFIRMED_AT" "$ESCROW_OBJECT_VERSION_ID" "$ESCROW_RETAIN_UNTIL" \
+    "$ROLLBACK_ESCROW_ENCRYPTED_SHA256" "$ROLLBACK_ESCROW_ENCRYPTED_SIZE_BYTES" \
+    "$RECOVERY_ESCROW_OBJECT_KEY" "$RECOVERY_ARCHIVE_SHA256" \
+    "$RECOVERY_ESCROW_ENCRYPTED_SHA256" "$RECOVERY_ESCROW_ENCRYPTED_SIZE_BYTES" \
+    "$RECOVERY_ESCROW_CONFIRMED_AT" \
+    "$RECOVERY_OBJECT_VERSION_ID" "$RECOVERY_RETAIN_UNTIL" "$RECOVERY_ESCROW_ID" \
+    "$ESCROW_STORAGE_PROVIDER" "$ESCROW_STORAGE_CONTROL_MODE" \
+    "$ESCROW_CONFIRMED_AT" "$ESCROW_EVIDENCE_SHA256" \
+    "$PRE_RECOVERY_ESCROW_OBJECT_KEY" "$PRE_RECOVERY_ARCHIVE_SHA256" \
+    "$PRE_RECOVERY_ESCROW_ENCRYPTED_SHA256" "$PRE_RECOVERY_ESCROW_ENCRYPTED_SIZE_BYTES" \
+    "$PRE_RECOVERY_ESCROW_CONFIRMED_AT" "$PRE_RECOVERY_OBJECT_VERSION_ID" \
+    "$PRE_RECOVERY_RETAIN_UNTIL" "$PRE_RECOVERY_ESCROW_ID" \
+    "$PRE_DATABASE_OBJECT_KEY" "$PRE_DATABASE_SHA256" "$PRE_DATABASE_CONFIRMED_AT" \
+    "$PRE_DATABASE_ENCRYPTED_SHA256" "$PRE_DATABASE_ENCRYPTED_SIZE_BYTES" \
+    "$PRE_DATABASE_OBJECT_VERSION_ID" "$PRE_DATABASE_RETENTION_VARIANCE" \
+    "$PRE_DATABASE_APPROVED_UNVERSIONED_VARIANCE" \
+    "$CURRENT_DATABASE_OBJECT_KEY" "$CURRENT_DATABASE_SHA256" "$CURRENT_DATABASE_CONFIRMED_AT" \
+    "$CURRENT_DATABASE_ENCRYPTED_SHA256" "$CURRENT_DATABASE_ENCRYPTED_SIZE_BYTES" \
+    "$CURRENT_DATABASE_OBJECT_VERSION_ID" "$CURRENT_DATABASE_RETENTION_VARIANCE" \
+    "$CURRENT_DATABASE_APPROVED_UNVERSIONED_VARIANCE" \
+    "$RESULT_CUTOVER_STARTED_AT" "$RESULT_SERVICE_UNAVAILABLE_STARTED_AT" \
+    "$RESULT_CANDIDATE_AVAILABLE_AT" "$RESULT_SOAK_STARTED_AT" "$RESULT_SOAK_COMPLETED_AT" \
+    "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" \
+    "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" \
+    "$SOAK_OBSERVED_SECONDS" "$BEFORE_ESCROW_READINESS_B64" "$AFTER_ESCROW_READINESS_B64" \
+    "$TARGET_VERSION" "$PUBLIC_BASE_URL" "$PROMOTION_RUN_ID" <<'NODE'
+const crypto = require('crypto');
 const fs = require('fs');
-const [file, runtimeSha, artifactDigest, installedRuntimeDigest, exactBackup, backupSha256,
-  escrowObjectKey, escrowConfirmedAt, escrowEvidenceSha256, budgetStartedAt, serviceUnavailableStartedAt,
+const path = require('path');
+const [file, runtimeSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+  releaseManifestSha256, stagingAttestationSha256,
+  exactBackup, backupSha256, escrowObjectKey, rollbackEscrowConfirmedAt,
+  escrowObjectVersionId, escrowRetainUntil, rollbackEscrowEncryptedSha256,
+  rollbackEscrowEncryptedSizeBytes, recoveryEscrowObjectKey, recoveryArchiveSha256,
+  recoveryEscrowEncryptedSha256, recoveryEscrowEncryptedSizeBytes,
+  recoveryEscrowConfirmedAt, recoveryObjectVersionId, recoveryRetainUntil, recoveryEscrowId,
+  escrowStorageProvider, escrowStorageControlMode, escrowConfirmedAt, escrowEvidenceSha256,
+  preRecoveryEscrowObjectKey, preRecoveryArchiveSha256,
+  preRecoveryEscrowEncryptedSha256, preRecoveryEscrowEncryptedSizeBytes,
+  preRecoveryEscrowConfirmedAt, preRecoveryObjectVersionId,
+  preRecoveryRetainUntil, preRecoveryEscrowId,
+  preDatabaseObjectKey, preDatabaseSha256, preDatabaseConfirmedAt,
+  preDatabaseEncryptedSha256, preDatabaseEncryptedSizeBytes,
+  preDatabaseObjectVersionId, preDatabaseRetentionVariance,
+  preDatabaseApprovedUnversionedVariance,
+  currentDatabaseObjectKey, currentDatabaseSha256, currentDatabaseConfirmedAt,
+  currentDatabaseEncryptedSha256, currentDatabaseEncryptedSizeBytes,
+  currentDatabaseObjectVersionId, currentDatabaseRetentionVariance,
+  currentDatabaseApprovedUnversionedVariance,
+  budgetStartedAt, serviceUnavailableStartedAt,
   candidateAvailableAt, soakStartedAt, soakCompletedAt, cutoverSeconds, backupWindowSeconds, backupOutageSeconds,
   finalUnavailabilitySeconds, totalUnavailabilitySeconds, verificationSoakSeconds, soakObservedSeconds,
+  beforeEscrowReadinessB64, afterEscrowReadinessB64,
   packageVersion, publicBaseUrl, transactionId] = process.argv.slice(2);
-fs.writeFileSync(file, `${JSON.stringify({
-  schema: 'nexus.production-promotion-evidence.v1', status: 'passed', runtimeSha, artifactDigest, installedRuntimeDigest,
+const beforeEscrowReadiness=JSON.parse(Buffer.from(beforeEscrowReadinessB64,'base64').toString('utf8'));
+const afterEscrowReadiness=JSON.parse(Buffer.from(afterEscrowReadinessB64,'base64').toString('utf8'));
+const body=`${JSON.stringify({
+  schema: 'nexus.production-promotion-evidence.v1', status: 'passed', runtimeSha, artifactDigest,
+  installedRuntimeDigest, recoveryRuntimeDigest,
+  releaseManifestSha256, stagingAttestationSha256,
   exactBackup, startedAt: budgetStartedAt, serviceUnavailableStartedAt, candidateAvailableAt,
   soakStartedAt, soakCompletedAt,
-  completedAt: new Date().toISOString(), cutoverSeconds: Number(cutoverSeconds),
+  completedAt: afterEscrowReadiness.verifiedAt, cutoverSeconds: Number(cutoverSeconds),
   backupSha256,
-  rollbackEscrow: { status: 'passed', objectKey: escrowObjectKey, confirmedAt: escrowConfirmedAt, evidenceSha256: escrowEvidenceSha256 },
+  drEscrowConfirmedAt: escrowConfirmedAt,
+  drStorageControls: {
+    provider: escrowStorageProvider,
+    controlMode: escrowStorageControlMode,
+    releasePrefixLockVerified: true,
+  },
+  rollbackEscrow: {
+    status: 'passed',
+    provider: escrowStorageProvider,
+    objectKey: escrowObjectKey,
+    confirmedAt: rollbackEscrowConfirmedAt,
+    objectVersionId: escrowObjectVersionId === '-' ? null : escrowObjectVersionId,
+    retainUntil: escrowRetainUntil === '-' ? null : escrowRetainUntil,
+    encryptedSha256: rollbackEscrowEncryptedSha256,
+    encryptedSizeBytes: Number(rollbackEscrowEncryptedSizeBytes),
+    evidenceSha256: escrowEvidenceSha256,
+  },
+  currentRecoveryEscrow: { status: 'passed', objectKey: recoveryEscrowObjectKey,
+    provider: escrowStorageProvider,
+    runtimeSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+    escrowId: recoveryEscrowId,
+    escrowPhase: 'post-soak',
+    plaintextSha256: recoveryArchiveSha256,
+    encryptedSha256: recoveryEscrowEncryptedSha256,
+    encryptedSizeBytes: Number(recoveryEscrowEncryptedSizeBytes),
+    confirmedAt: recoveryEscrowConfirmedAt,
+    objectVersionId: recoveryObjectVersionId === '-' ? null : recoveryObjectVersionId,
+    retainUntil: recoveryRetainUntil === '-' ? null : recoveryRetainUntil,
+    evidenceSha256: escrowEvidenceSha256 },
+  preMutationCurrentRecoveryEscrow: {
+    status: 'passed',
+    objectKey: preRecoveryEscrowObjectKey,
+    provider: escrowStorageProvider,
+    runtimeSha, artifactDigest, installedRuntimeDigest, recoveryRuntimeDigest,
+    escrowId: preRecoveryEscrowId,
+    escrowPhase: 'pre-mutation',
+    plaintextSha256: preRecoveryArchiveSha256,
+    encryptedSha256: preRecoveryEscrowEncryptedSha256,
+    encryptedSizeBytes: Number(preRecoveryEscrowEncryptedSizeBytes),
+    confirmedAt: preRecoveryEscrowConfirmedAt,
+    objectVersionId: preRecoveryObjectVersionId === '-' ? null : preRecoveryObjectVersionId,
+    retainUntil: preRecoveryRetainUntil === '-' ? null : preRecoveryRetainUntil,
+    evidenceSha256: escrowEvidenceSha256,
+  },
+  preMutationDatabaseRecoveryPoint: {
+    status: 'passed',
+    provider: escrowStorageProvider,
+    objectKey: preDatabaseObjectKey,
+    plaintextSha256: preDatabaseSha256,
+    encryptedSha256: preDatabaseEncryptedSha256,
+    encryptedSizeBytes: Number(preDatabaseEncryptedSizeBytes),
+    confirmedAt: preDatabaseConfirmedAt,
+    objectVersionId: preDatabaseObjectVersionId === '-' ? null : preDatabaseObjectVersionId,
+    retentionVariance: preDatabaseRetentionVariance === '-' ? null : preDatabaseRetentionVariance,
+    approvedUnversionedVariance: preDatabaseApprovedUnversionedVariance === 'true',
+    evidenceSha256: escrowEvidenceSha256,
+  },
+  currentDatabaseRecoveryPoint: {
+    status: 'passed',
+    provider: escrowStorageProvider,
+    objectKey: currentDatabaseObjectKey,
+    plaintextSha256: currentDatabaseSha256,
+    encryptedSha256: currentDatabaseEncryptedSha256,
+    encryptedSizeBytes: Number(currentDatabaseEncryptedSizeBytes),
+    confirmedAt: currentDatabaseConfirmedAt,
+    objectVersionId: currentDatabaseObjectVersionId === '-' ? null : currentDatabaseObjectVersionId,
+    retentionVariance: currentDatabaseRetentionVariance === '-' ? null : currentDatabaseRetentionVariance,
+    approvedUnversionedVariance: currentDatabaseApprovedUnversionedVariance === 'true',
+    evidenceSha256: escrowEvidenceSha256,
+  },
   backupWindowSeconds: Number(backupWindowSeconds),
   backupOutageSeconds: Number(backupOutageSeconds),
   finalUnavailabilitySeconds: Number(finalUnavailabilitySeconds),
@@ -945,14 +1934,82 @@ fs.writeFileSync(file, `${JSON.stringify({
   soakObservedSeconds: Number(soakObservedSeconds),
   sentryRelease: runtimeSha,
   packageVersion, transactionId, transactionMode: 'systemd_oneshot',
-  verification: {
-    nativeBinding: true, sqliteIntegrity: true, sqliteForeignKeys: true, loopbackBackend: true,
-    authenticatedContentEngine: true, pm2AndCurrentIdentity: true, pm2RestartStable: true,
-    publicHealth: { baseUrl: publicBaseUrl, status: 'healthy', database: 'connected' },
-    publicSnapshotVersion: packageVersion,
+  candidateReadinessRefresh: {
+    beforeEscrow: beforeEscrowReadiness,
+    afterEscrow: afterEscrowReadiness,
   },
-}, null, 2)}\n`, { mode: 0o600 });
+  verification: {
+    loopbackBackend: afterEscrowReadiness.checks.loopbackBackend,
+    contentEngineHealth: afterEscrowReadiness.checks.contentEngine,
+    authenticatedContentEngine: afterEscrowReadiness.checks.authenticatedSnapshot,
+    pm2AndCurrentIdentity: afterEscrowReadiness.checks.pm2Identity,
+    publicHealth: {
+      baseUrl: publicBaseUrl,
+      status: afterEscrowReadiness.checks.publicHealth ? 'healthy' : 'failed',
+      database: afterEscrowReadiness.checks.publicHealth ? 'connected' : 'unknown',
+    },
+    publicSnapshotVersion: afterEscrowReadiness.checks.authenticatedSnapshot
+      ? afterEscrowReadiness.packageVersion : null,
+  },
+}, null, 2)}\n`;
+const expected=Buffer.from(body),parent=path.dirname(file);
+const prefix=`.${path.basename(file)}.next.`;
+const parentStat=fs.lstatSync(parent);
+if(!parentStat.isDirectory()||parentStat.isSymbolicLink()
+  ||(parentStat.mode&0o777)!==0o700
+  ||path.dirname(path.resolve(file))!==path.resolve(parent))process.exit(1);
+const lstat=(candidate)=>{
+  try{return fs.lstatSync(candidate);}
+  catch(error){if(error?.code==='ENOENT')return null;throw error;}
+};
+const fsyncParent=()=>{
+  const descriptor=fs.openSync(parent,'r');
+  try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+};
+const validateExisting=()=>{
+  let stat=lstat(file);
+  if(!stat||!stat.isFile()||stat.isSymbolicLink()||(stat.mode&0o777)!==0o600
+    ||!fs.readFileSync(file).equals(expected))process.exit(1);
+  if(stat.nlink>1){
+    let removed=false;
+    for(const name of fs.readdirSync(parent)){
+      if(!name.startsWith(prefix))continue;
+      const candidate=path.join(parent,name),candidateStat=lstat(candidate);
+      if(!candidateStat||!candidateStat.isFile()||candidateStat.isSymbolicLink()
+        ||candidateStat.dev!==stat.dev||candidateStat.ino!==stat.ino
+        ||!fs.readFileSync(candidate).equals(expected))continue;
+      fs.unlinkSync(candidate);
+      removed=true;
+    }
+    if(removed)fsyncParent();
+    stat=fs.lstatSync(file);
+  }
+  if(stat.nlink!==1)process.exit(1);
+};
+if(lstat(file)){
+  validateExisting();
+}else{
+  const temporary=path.join(
+    parent,`${prefix}${process.pid}.${crypto.randomBytes(12).toString('hex')}`,
+  );
+  let descriptor;
+  try{
+    descriptor=fs.openSync(temporary,'wx',0o600);
+    fs.writeFileSync(descriptor,expected);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor=undefined;
+    try{fs.linkSync(temporary,file);fsyncParent();}
+    catch(error){if(error?.code!=='EEXIST')throw error;validateExisting();}
+    fs.unlinkSync(temporary);
+    fsyncParent();
+    validateExisting();
+  }finally{
+    if(descriptor!==undefined)fs.closeSync(descriptor);
+  }
+}
 NODE
+  fsync_local_directory "$ROOT/.local/release/production"
   printf '{"ok":true,"runtimeSha":"%s","artifactDigest":"%s","installedRuntimeDigest":"%s","cutoverSeconds":%s,"backupWindowSeconds":%s,"backupOutageSeconds":%s,"finalUnavailabilitySeconds":%s,"totalUnavailabilitySeconds":%s,"verificationSoakSeconds":%s,"soakObservedSeconds":%s,"sentryRelease":"%s","exactBackup":"%s","backupSha256":"%s","escrowObjectKey":"%s","transactionId":"%s","transactionMode":"systemd_oneshot"}\n' \
     "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" "$SOAK_OBSERVED_SECONDS" "$RUNTIME_SHA" "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" "$PROMOTION_RUN_ID"
 }

@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe
-Last verified: 2026-07-19
+Last verified: 2026-07-23
 
 Promotion accepts one signed `nexus.release-manifest.v2` envelope for one exact
 runtime artifact. Textual release claims and docs-only commits are not evidence.
@@ -176,12 +176,29 @@ identifier, that exactly one persisted active owner belongs to an explicitly sco
 non-global write cohort with every workspace slice enabled. Strict owner
 bootstrap and the same extended readiness checks run while automatic recovery
 remains armed.
+
+Before any PM2 or production-data mutation, the root transaction requires an
+encrypted, transaction-bound `phase-pre-mutation` candidate recovery runtime
+and fresh database point. After candidate availability and the exact 60-second
+soak, readiness is checked, then the predecessor rollback archive, a newly
+encrypted `phase-post-soak` candidate recovery runtime, and a refreshed
+database point are confirmed off-host before readiness is checked again. Both
+recovery objects bind the same runtime, artifact, installed-tree,
+recovery-runtime, release-manifest, and staging-attestation identities but
+require distinct phase keys, ciphertext identities, and exact AWS VersionIds
+or the explicit R2 unversioned variance. The private
+`nexus.production-promotion-evidence.v1` coordinator proof binds these objects,
+both readiness records, and their chronology and is revalidated on resume; it
+does not replace the root journal as promotion authority.
+
 The durable promotion journal also binds exact predecessor and candidate
 artifact/installed-runtime digests, a root-owned monotonic cutover budget, and
 separate cutover-start, actual-unavailability, candidate-available, and
 predecessor-recovered timestamps. Successful candidate availability must occur
 within 60 seconds; automatic recovery consumes only the remaining portion of
-the 120-second outage-to-healthy budget. A recovery archive is accepted only
+the original 120-second outage-to-healthy budget. Degradation detected after
+availability uses a distinct 120-second detection-to-healthy scope while
+retaining the original cutover history. A recovery archive is accepted only
 after exact path, size, whole-archive digest, safe-entry extraction, SQLite
 integrity/foreign-key checks, and stopped-state database digest agreement.
 These controls are implemented locally; live SSH-loss, failed-health, and

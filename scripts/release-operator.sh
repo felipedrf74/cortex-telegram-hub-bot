@@ -512,12 +512,16 @@ REMOTE
     IDENTITY_EVIDENCE="$EVIDENCE_BASE.identity.json"
     READINESS_EVIDENCE="$EVIDENCE_BASE.readiness.json"
     INSTALLED_EVIDENCE="$EVIDENCE_BASE.installed.json"
+    RECOVERY_RUNTIME_EVIDENCE="$EVIDENCE_BASE.recovery-runtime.json"
     SMOKE_LOG="$EVIDENCE_BASE.smoke.log"
     REQUEST="$EVIDENCE_BASE.request.json"
     SIGNED="$EVIDENCE_BASE.signed.json"
     ssh "$SERVER" "cat '$RELEASE_DIR/.nexus-pm2-identity.json'" > "$IDENTITY_EVIDENCE"
     ssh "$SERVER" "cat '$RELEASE_DIR/.nexus-release-readiness.json'" > "$READINESS_EVIDENCE"
     ssh "$SERVER" "cat '$RELEASE_DIR/.nexus-installed-runtime.json'" > "$INSTALLED_EVIDENCE"
+    ssh "$SERVER" \
+      "/usr/bin/node '$RELEASE_DIR/scripts/release-recovery-runtime-identity.mjs' compute --root '$RELEASE_DIR' --runtime-sha '$RUNTIME_SHA' --artifact-digest '$DIGEST'" \
+      > "$RECOVERY_RUNTIME_EVIDENCE"
     if ! STAGING_PATH="$RELEASE_DIR" NEXUS_SMOKE_EVIDENCE=0 scripts/staging-smoke.sh > "$SMOKE_LOG" 2>&1; then
       sed -n '1,240p' "$SMOKE_LOG" >&2
       echo "candidate domain smoke failed; staging is not attestable" >&2
@@ -526,6 +530,7 @@ REMOTE
     node scripts/release-staging-attestation.mjs request \
       --manifest "$MANIFEST" \
       --installed-attestation "$INSTALLED_EVIDENCE" \
+      --recovery-runtime-attestation "$RECOVERY_RUNTIME_EVIDENCE" \
       --identity-evidence "$IDENTITY_EVIDENCE" \
       --readiness-evidence "$READINESS_EVIDENCE" \
       --smoke-log "$SMOKE_LOG" \
@@ -558,11 +563,14 @@ REMOTE
       exit 0
     fi
     INSTALLED_DIGEST="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.payload.installedRuntimeDigest);' "$(absolute_path "$STAGING_ATTESTATION")")"
+    RECOVERY_RUNTIME_DIGEST="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.payload.recoveryRuntimeDigest);' "$(absolute_path "$STAGING_ATTESTATION")")"
     SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
     STAGING_BASE="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
     PROD_BASE="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
     scripts/promote-exact-release.sh \
-      "$SERVER" "$STAGING_BASE" "$PROD_BASE" "$RUNTIME_SHA" "$DIGEST" "$VERSION" "$INSTALLED_DIGEST"
+      "$SERVER" "$STAGING_BASE" "$PROD_BASE" "$RUNTIME_SHA" "$DIGEST" "$VERSION" \
+      "$INSTALLED_DIGEST" "$RECOVERY_RUNTIME_DIGEST" "$(absolute_path "$MANIFEST")" \
+      "$(absolute_path "$STAGING_ATTESTATION")"
     ;;
   *) echo "Unknown release command: $COMMAND" >&2; exit 64 ;;
 esac

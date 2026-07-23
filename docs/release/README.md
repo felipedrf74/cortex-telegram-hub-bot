@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe
-Last verified: 2026-07-22
+Last verified: 2026-07-23
 
 Current runtime truth is `release-state.json`. Release evidence is an ignored
 artifact, not a Markdown narrative.
@@ -177,26 +177,71 @@ before/after p50 and p95 application latency regress by no more than 5%; that
 check controls Sonar enablement only. If Sonar becomes required, move it off
 ServerDominguez before changing any release gate.
 
-Customer availability is measured as soon as the exact candidate passes local,
-public, PM2/current, and Sentry-SHA identity checks. The transaction then runs
-exactly one 60-second post-candidate stability soak while customers are already
-served. Encrypted rollback escrow and documentation closeout happen after
-availability and cannot extend the measured outage.
+Before any PM2 or production-data mutation, the transaction escrows the exact
+candidate recovery runtime under its `phase-pre-mutation` key and records a
+fresh database recovery point. Customer availability is measured as soon as
+the exact candidate passes local, public, PM2/current, and Sentry-SHA identity
+checks. The transaction then runs exactly one 60-second post-candidate
+stability soak while customers are already served. It verifies readiness,
+escrows the predecessor rollback archive, a newly encrypted phase-distinct
+`phase-post-soak` candidate recovery runtime, and a refreshed database point,
+then verifies readiness again. That network work and documentation closeout
+do not count as customer outage; detected candidate degradation during escrow
+triggers automatic predecessor recovery.
 
 ### One-time promotion control-plane bootstrap
 
 The owner Ed25519 private key stays off ServerDominguez, mode 0600 on the
-owner's Mac. Copy only its public key to a temporary root-readable path on the
-server, use a clean reviewed `origin/main` backend checkout, and run:
+owner's Mac. Copy only its public key to the server. Never execute this
+installer with `sudo` from `/home/dominguez`, an application checkout, or any
+other application-user-writable path. First copy the exact reviewed source
+archive and public key into a new root-owned mode-0700 directory, verify their
+owner-reviewed SHA-256 values after that copy, extract the verified root-owned
+archive with `--no-same-owner --no-same-permissions`, and then run:
 
 ```bash
-sudo scripts/remote-promotion-systemd-install.sh \
-  /absolute/path/to/reviewed/cortex-telegram-hub-bot \
-  /absolute/path/to/nexus-owner-promotion-public-key.pem
+sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotion-systemd-install.sh \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/source \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/nexus-owner-promotion-public-key.pem
 sudo /usr/local/sbin/nexus-release-promotion-control version
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
 sudo stat -c '%U:%G:%a %n' /run/lock/nexus-release-sonar.lock
 ```
+
+The installer independently rejects any source, key, or ancestor directory
+that is not canonical, root-owned, and non-writable by group/other. A
+pre-copy digest check against the `/home` input is not sufficient because the
+application identity can change that file between checking and privileged
+use. It also writes
+`/var/lib/nexus-release-promotion/bootstrap-in-progress.v1` before replacing
+the DR/control compatibility set. While that marker exists, promotion commands
+and units fail closed and the sudo contract is withheld; rerun the same
+reviewed bootstrap to finish and clear it.
+
+The promotion bootstrap first invokes the exact
+`application-dr-systemd-install.sh` from that same reviewed source. This
+transactionally installs the compatible root-owned backup, recovery-runtime,
+version-retention, restore-drill, service, and timer assets and creates the
+isolated `nexus-drill` identity. It deliberately does not write
+`/etc/nexus-application-dr/backup.env`, install provider credentials, or enable
+a previously disabled timer. The DR installer durably journals an in-progress
+compatibility-set replacement.
+If its host is interrupted, both systemd and direct backup invocation remain
+fail-closed until the owner reruns that exact reviewed installer successfully.
+Complete the provider-control and root-only configuration procedure in
+`ops/application-dr/OPERATIONS.txt`, then require:
+
+```bash
+sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
+  --config /etc/nexus-application-dr/backup.env --verify-config
+sudo systemctl enable --now nexus-application-dr-backup.timer
+```
+
+Do not launch a release until the exact `--verify-config` command passes and
+one owner-observed backup run has verified its database and release objects
+off-host. The root promotion broker repeats this exact check before it can arm
+recovery or stop PM2, so missing or older DR provisioning ends only as
+`failed_before_stop`.
 
 The expected control version is `nexus-release-promotion-control.v2`; the lock
 identity is `root:dominguez:660`. Remove the temporary public-key input after
@@ -214,32 +259,50 @@ identity, bounded symlink targets, and exact `.env`/`data`/`logs` links before
 removing every application write bit. The broker repeats trusted predecessor
 and candidate attestation immediately before cutover and after candidate
 readiness; candidate-provided verification code cannot authorize itself. The
-owner-signed request binds both the predecessor and candidate artifact and
-installed-runtime digests.
+owner-signed request binds both predecessor and candidate artifact and
+installed-runtime digests plus the candidate recovery-runtime digest and exact
+signed release-manifest and staging-attestation SHA-256 values.
 
-Before sealing runtimes, arming recovery, or allowing the worker to reach PM2,
-the root broker runs the installed application-DR tool's bounded
+The Mac seals the copied runtime before submitting the durable transaction.
+Inside that transaction, and before recovery is armed or the worker can reach
+PM2, the root broker runs the installed application-DR tool's bounded
 `--verify-config` check. Missing tooling, an unsafe or invalid root-only config,
 or incomplete local encryption/backup prerequisites terminates the journal as
-`failed_before_stop`; the existing post-soak upload still provides the
-authoritative exact rollback-escrow confirmation.
+`failed_before_stop`. A passing
+`nexus.pre-mutation-current-recovery-escrow.v2` must then prove the
+phase-pre-mutation candidate recovery object and fresh database point before
+cutover. Success later requires the separate post-soak rollback, candidate
+recovery, and database confirmations; neither phase substitutes for the other.
 
 Root records a wall timestamp, Linux boot ID, and `/proc/uptime` monotonic start
-before arming recovery. Candidate availability has a 60-second boundary; a
-failure uses only the remainder of the 120-second outage-to-healthy budget for
-automatic predecessor recovery. Success evidence records cutover start, actual
-service-unavailability start, candidate-available time, and measured duration.
-Recovery writes a root-owned `nexus.promotion-recovery-result.v1` record with
-predecessor-healthy time and whether the 120-second target was met. After a
-reboot, wall time is retained as a diagnostic because a monotonic clock cannot
-span boots; the staging reboot drill remains required before activation.
+before arming recovery. Candidate availability has a 60-second boundary. An
+original-cutover failure uses only the remainder of the shared 120-second
+outage-to-healthy budget. Its
+`nexus.promotion-recovery-attempt-timing.v1` scope is `original_cutover`.
+Candidate degradation detected after availability receives a separate
+`post_availability_detection` 120-second detection-to-healthy measurement
+while retaining `originalCutoverStartedAt`; it cannot rewrite the original
+customer-outage history. Recovery writes a root-owned
+`nexus.promotion-recovery-result.v1` with predecessor-healthy time and whether
+the applicable target was met. After a reboot, wall time is diagnostic because
+a monotonic clock cannot span boots; the staging reboot drill remains required
+before activation.
 
-`escrow_pending` means the exact candidate is healthy but encrypted off-host
-rollback upload still needs retry. Boot recovery does not create an outage for
-that network-only state. An explicit `recover <id>` is different: it persists
-the recovery decision and restores the exact predecessor even from
-`escrow_pending`. Local rollback pruning runs as `dominguez`, never root, and
-only after the exact encrypted plaintext digest is confirmed off-host.
+`escrow_pending` is the non-terminal retry state for the complete post-soak DR
+set: predecessor rollback archive, phase-post-soak candidate recovery runtime,
+and refreshed database point. A retry first re-proves the exact live candidate
+and readiness, makes at most eight exact-transaction retry requests, and
+automatically recovers the predecessor if the candidate is invalid or
+degraded. Boot recovery does not intentionally create an outage solely for a
+network-only pending state. An explicit `recover <id>` is different: it
+persists the recovery decision and restores the exact predecessor even from
+`escrow_pending`. The systemd unit timeout is 28 minutes, each DR attempt is
+bounded to 300 seconds, and the Mac polls the durable transaction for at most
+2,100 seconds. Terminal statuses are `completed`, `recovered`,
+`failed_before_stop`, and `recovery_failed`; only an owner-initiated governed
+retry may replace an eligible terminal client checkpoint with a freshly signed
+transaction. Local rollback pruning runs as `dominguez`, never root, and only
+after the exact encrypted plaintext digest is confirmed off-host.
 
 The 30-day rollback gate accepts only an exact signed
 `nexus.rollback-drill.v1` envelope. After completing the isolated dry-run
@@ -339,11 +402,12 @@ records. It reports unattended phase-transition delay while keeping explicit
 approval time as a separately excluded quantity. It also reports actual service
 unavailability separately from total cutover and the successful-promotion soak.
 The promotion-stage duration ends at the root journal's terminal completion, so
-it includes the soak plus required post-soak authenticated/PM2 checks; it is
-never presented as customer unavailability. Actual unavailability and recovery
-KPIs use the root monotonic integer measurements. Wall timestamps must match
-those measurements within one second and remain exact provenance bindings, but
-are not substituted for the monotonic KPI.
+it includes the soak, post-soak DR network escrow, and the required
+before/after-escrow authenticated/PM2 checks; it is never presented as customer
+unavailability. Actual unavailability and original-cutover recovery KPIs use
+the root monotonic integer measurements. Wall timestamps must match those
+measurements within one second and remain exact provenance bindings, but are
+not substituted for the monotonic KPI.
 Signed evidence binds protected-main completion, RC completion, manifest
 generation/signing completion, and staging verification. Root state binds the
 promotion outcome, transaction/Sentry identity, cutover/recovery timestamps,
@@ -352,6 +416,27 @@ not supply a trusted start time or handoff simply by containing a timestamp.
 Missing authoritative starts/handoffs return `MANUAL_REQUIRED`, with no p50 or
 p95 computed from those fields. A duration-only soak also returns
 `MANUAL_REQUIRED`; both root-recorded endpoints are required.
+
+For each successful release, the Mac coordinator also writes a private
+mode-0600 `nexus.production-promotion-evidence.v1` proof and
+`release-sequence.mjs` revalidates it before advancing or resuming. It binds the
+runtime, artifact, installed-runtime, and recovery-runtime digests; signed
+manifest and staging-attestation digests; rollback encrypted identity and
+exact AWS VersionId or approved R2 variance; both phase-specific candidate
+recovery objects; both database encrypted identities; before/after readiness;
+and the promotion timeline. Its `completedAt` equals the after-escrow readiness
+timestamp. This is coordinator proof copied from exact fetched root results,
+not canonical root authority.
+
+The ten-release evaluator currently reads only the root `journal.json` and the
+outcome-specific `result.env` or `recovery-result.json`. It does not yet consume
+`preflight-current-recovery.json`, `escrow-confirmation.json`,
+`recovery-attempt-timing.json`, or the rich Mac proof. Therefore its threshold
+result proves runtime/artifact/installed-tree parity and original-cutover
+timing, but does not independently authorize the two DR object identities or a
+`post_availability_detection` recovery scope. Those remain separately
+fail-closed per-release checks and `MANUAL_REQUIRED` for a root-authoritative
+ten-release aggregate until the evaluator contract is explicitly extended.
 
 Threshold evaluation covers the
 9-minute readiness median, 1-minute unattended handoff median, 120-second
@@ -364,9 +449,11 @@ No observed rollback also produces `MANUAL_REQUIRED`; absence of failure is not
 recovery evidence. With the current evidence schemas the ten-release declaration
 therefore cannot return `PASS` solely from the observation JSON. Exit status is
 0 for `PASS`, 2 for `FAIL`, 3 for `MANUAL_REQUIRED`, and 1 for malformed input.
-Rollback recovery is measured end to end from observed service unavailability
-until the predecessor is healthy; trigger-to-healthy timing is reported as a
-separate diagnostic and cannot hide delayed rollback initiation.
+Original-cutover rollback recovery is measured end to end from observed service
+unavailability until the predecessor is healthy; trigger-to-healthy timing is
+reported separately and cannot hide delayed rollback initiation. A
+post-availability recovery retains that original history and uses its distinct
+detection-to-healthy scope; the current evaluator does not aggregate that scope.
 
 Five shadow comparisons use a separate strictly consecutive production ledger:
 
@@ -464,14 +551,20 @@ available one eligible production comparison, the path remains shadow-only at
    candidate migrations and all Content readiness assertions against a private
    same-host SQLite online-backup clone; validate its fresh aggregate-only
    write-once evidence; for the first Content workspace cutover, require exactly
-   one active persisted owner in a non-global, all-slices write cohort; copy and
-   hash the immutable runtime backup; drain writes once, checkpoint SQLite,
-   append and verify the database snapshot; automatically validate the final
-   migration rehearsal against identities already bound in the signed request;
-   switch PM2 atomically; measure customer availability; run the one 60-second
-   post-candidate stability soak; then escrow the exact rollback digest off-host
-   while the candidate remains available. Network escrow never creates a
-   second outage or waits on the Mac.
+   one active persisted owner in a non-global, all-slices write cohort; escrow
+   the exact candidate recovery runtime under the transaction-bound
+   `phase-pre-mutation` key plus a fresh database point; copy and hash the
+   immutable runtime backup; drain writes once, checkpoint SQLite, append and
+   verify the database snapshot; automatically validate the final migration
+   rehearsal against identities already bound in the signed request; switch
+   PM2 atomically; measure customer availability; run the one 60-second
+   post-candidate stability soak; verify candidate readiness; then escrow the
+   exact rollback archive, a newly encrypted `phase-post-soak` candidate
+   recovery object with the same runtime identity but a distinct key/ciphertext,
+   and a refreshed database point; finally verify candidate readiness again.
+   Network escrow does not intentionally stop service or wait on the Mac, but
+   detected degradation during escrow triggers automatic predecessor recovery
+   under the post-availability timing scope.
 8. Restore the exact previous release automatically if readiness fails. Before
    touching production data, revalidate the recorded archive path, byte size,
    whole-archive SHA-256, and stopped-state database SHA-256. Extraction rejects

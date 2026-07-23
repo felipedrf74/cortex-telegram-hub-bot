@@ -3,6 +3,7 @@ Description=Encrypted off-host Nexus application recovery point
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/nexus-application-dr/backup.env
+ConditionPathExists=!/var/lib/nexus-application-dr/install-in-progress.v1
 
 [Service]
 Type=oneshot

@@ -36,6 +36,574 @@ describe('persistent systemd promotion transaction v2', () => {
   let drBackupBin: string;
   let drConfig: string;
   const id = '20260722T120000Z-1234-abcdef123456';
+  const releaseManifestBody = Buffer.from('{"schema":"nexus.release-manifest.v2"}\n');
+  const stagingAttestationBody = Buffer.from('{"schema":"nexus.staging-attestation.v1"}\n');
+  const preMutationRecoveryConfirmedAt = '2026-07-22T11:59:58.000Z';
+  const preMutationDatabaseConfirmedAt = '2026-07-22T11:59:59.000Z';
+
+  function recoveryProof(
+    runtime: string,
+    escrowId = id,
+    overrides: Record<string, unknown> = {},
+  ) {
+    const plaintextSha256 = '8'.repeat(64);
+    return {
+      path: runtime,
+      plaintextSha256,
+      encryptedSha256: '5'.repeat(64),
+      encryptedSizeBytes: 3584,
+      objectKey: `nexus/releases/v4.14.231+current-${'b'.repeat(40)}`
+        + `+escrow-${escrowId}+phase-pre-mutation.tar.gz.${plaintextSha256}.age`,
+      runtimeSha: 'b'.repeat(40),
+      artifactDigest: 'c'.repeat(64),
+      installedRuntimeDigest: 'd'.repeat(64),
+      recoveryRuntimeDigest: '9'.repeat(64),
+      releaseManifestSha256: createHash('sha256').update(releaseManifestBody).digest('hex'),
+      stagingAttestationSha256: createHash('sha256').update(stagingAttestationBody).digest('hex'),
+      escrowId,
+      escrowPhase: 'pre-mutation',
+      confirmedAt: preMutationRecoveryConfirmedAt,
+      retainUntil: new Date(
+        Date.parse(preMutationRecoveryConfirmedAt) + 91 * 24 * 60 * 60 * 1000,
+      ).toISOString(),
+      objectVersionId: 'fixture-recovery-pre-mutation-version-1',
+      retentionVariance: null,
+      approvedUnversionedVariance: false,
+      confirmed: true,
+      ...overrides,
+    };
+  }
+
+  function writePreflightRecoveryFixture(
+    runtime: string,
+    requestSha256: string,
+    overrides: Record<string, unknown> = {},
+  ) {
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    const output = path.join(authoritative, 'preflight-current-recovery.json');
+    fs.writeFileSync(output, `${JSON.stringify({
+      schema: 'nexus.pre-mutation-current-recovery-escrow.v2',
+      status: 'passed',
+      transactionId: id,
+      requestSha256,
+      capturedAt: '2026-07-22T12:02:01.000Z',
+      storageControls: {
+        provider: 'aws-s3',
+        controlMode: 'versioned-s3',
+        releasePrefixLockVerified: true,
+      },
+      currentRecoveryRuntime: recoveryProof(runtime, id, overrides),
+      databaseRecoveryPoint: {
+        objectKey: 'nexus/database/hourly/fixture.sqlite.age',
+        plaintextSha256: '7'.repeat(64),
+        encryptedSha256: '2'.repeat(64),
+        encryptedSizeBytes: 1024,
+        objectVersionId: 'fixture-database-pre-mutation-version-1',
+        confirmedAt: preMutationDatabaseConfirmedAt,
+        retentionVariance: null,
+        approvedUnversionedVariance: false,
+      },
+    }, null, 2)}\n`, { mode: 0o600 });
+    expect(fs.statSync(output).mode & 0o777).toBe(0o600);
+  }
+
+  function writeRootRecoveryIntent(
+    authoritative: string,
+    requestSha256: string,
+    phase: 'pre_candidate' | 'candidate_authorized',
+    backup?: {
+      file: string;
+      sha256: string;
+      sizeBytes: number;
+      databaseSha256: string;
+    },
+  ) {
+    const output = path.join(authoritative, 'recovery-armed');
+    fs.writeFileSync(output, `${JSON.stringify({
+      schema: 'nexus.promotion-root-recovery-intent.v2',
+      transactionId: id,
+      requestSha256,
+      phase,
+      armedAt: '2026-07-22T12:00:00.000Z',
+      ...(phase === 'candidate_authorized'
+        ? {
+            candidateAuthorizedAt: '2026-07-22T12:00:01.000Z',
+            backup,
+          }
+        : { backup: null }),
+    }, null, 2)}\n`, { mode: 0o600 });
+  }
+
+  function writeAwsDrFixture(file: string) {
+    fs.writeFileSync(file, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --verify-config "* ]]; then
+  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+  exit 0
+fi
+required=""
+runtime=""
+escrow_id=""
+escrow_phase=""
+descriptor=""
+manifest=""
+staging=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) shift 2 ;;
+    --require-release) required="$2"; shift 2 ;;
+    --require-recovery-runtime) runtime="$2"; shift 2 ;;
+    --recovery-escrow-id) escrow_id="$2"; shift 2 ;;
+    --recovery-escrow-phase) escrow_phase="$2"; shift 2 ;;
+    --recovery-descriptor) descriptor="$2"; shift 2 ;;
+    --recovery-release-manifest) manifest="$2"; shift 2 ;;
+    --recovery-staging-attestation) staging="$2"; shift 2 ;;
+    --recovery-runtime-sha|--recovery-artifact-digest|--recovery-installed-runtime-digest|--recovery-runtime-digest) shift 2 ;;
+    --json) shift ;;
+    *) printf 'unexpected DR fixture argument: %s\\n' "$1" >&2; exit 64 ;;
+  esac
+done
+[ "$escrow_id" = ${JSON.stringify(id)} ] || {
+  printf 'unexpected recovery escrow ID: %s\\n' "$escrow_id" >&2
+  exit 65
+}
+case "$escrow_phase" in pre-mutation|post-soak) ;; *) exit 65 ;; esac
+case "$descriptor" in
+  */transactions/${id}/state/recovery-runtime-descriptor.json) ;;
+  *) printf 'unexpected recovery descriptor: %s\\n' "$descriptor" >&2; exit 65 ;;
+esac
+[ -n "$runtime" ] && [ -f "$manifest" ] && [ -f "$staging" ] || exit 65
+node - "$required" "$runtime" "$escrow_id" "$escrow_phase" "$manifest" "$staging" <<'NODE'
+const crypto=require('crypto'),fs=require('fs');
+const [required,runtime,escrowId,escrowPhase,manifest,staging]=process.argv.slice(2);
+const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const plaintextSha256=process.env.DR_RUNTIME_PLAINTEXT_SHA256_OVERRIDE||'8'.repeat(64);
+const postMutation=escrowPhase==='post-soak';
+if(postMutation!==(required!==''))process.exit(65);
+const effectiveEscrowId=process.env.DR_ESCROW_ID_OVERRIDE||escrowId;
+const confirmedAt=postMutation
+  ? new Date(Math.floor(Date.now()/1000)*1000).toISOString()
+  : '2026-07-22T11:59:58.000Z';
+const databaseConfirmedAt=postMutation
+  ? confirmedAt
+  : '2026-07-22T11:59:59.000Z';
+const retainDays=Number(process.env.DR_RETAIN_DAYS||'91');
+const retainUntil=new Date(Date.parse(confirmedAt)+retainDays*24*60*60*1000).toISOString();
+const runtimeVersion=process.env.DR_OBJECT_VERSION_ID_OVERRIDE==='null'
+  ? null
+  : process.env.DR_OBJECT_VERSION_ID_OVERRIDE
+    ||(postMutation
+      ? 'fixture-recovery-current-version-1'
+      : 'fixture-recovery-pre-mutation-version-1');
+const runtimeEncryptedSha256=process.env.DR_RUNTIME_ENCRYPTED_SHA256_OVERRIDE==='invalid'
+  ? null
+  : (postMutation?'4':'5').repeat(64);
+const runtimeEncryptedSizeBytes=Number(
+  process.env.DR_RUNTIME_ENCRYPTED_SIZE_BYTES_OVERRIDE||(postMutation?'4096':'3584'),
+);
+const releaseProof=required ? {
+  path:required,
+  plaintextSha256:digest(required),
+  encryptedSha256:'3'.repeat(64),
+  encryptedSizeBytes:2048,
+  objectKey:'nexus/releases/'+required.split('/').pop()+'.'+digest(required)+'.age',
+  confirmedAt,
+  retainUntil,
+  objectVersionId:'fixture-release-version-1',
+  retentionVariance:null,
+  approvedUnversionedVariance:false,
+  confirmed:true,
+} : null;
+const recoveryProof={
+  path:runtime,
+  plaintextSha256,
+  encryptedSha256:runtimeEncryptedSha256,
+  encryptedSizeBytes:runtimeEncryptedSizeBytes,
+  objectKey:'nexus/releases/v4.14.231+current-'+'b'.repeat(40)
+    +'+escrow-'+effectiveEscrowId+'+phase-'+escrowPhase+'.tar.gz.'
+    +plaintextSha256+'.age',
+  runtimeSha:'b'.repeat(40),
+  artifactDigest:'c'.repeat(64),
+  installedRuntimeDigest:'d'.repeat(64),
+  recoveryRuntimeDigest:'9'.repeat(64),
+  releaseManifestSha256:digest(manifest),
+  stagingAttestationSha256:digest(staging),
+  escrowId:effectiveEscrowId,
+  escrowPhase,
+  confirmedAt,
+  retainUntil,
+  objectVersionId:runtimeVersion,
+  retentionVariance:null,
+  approvedUnversionedVariance:false,
+  confirmed:true,
+};
+const result={
+  schema:'nexus.application-dr-backup-result.v1',
+  status:'passed',
+  encrypted:true,
+  storageProvider:'aws-s3',
+  storageControlMode:'versioned-s3',
+  releasePrefixLockVerified:true,
+  databaseKey:'nexus/database/hourly/fixture.sqlite.age',
+  databaseSha256:'7'.repeat(64),
+  databaseEncryptedSha256:postMutation?'1'.repeat(64):'2'.repeat(64),
+  databaseEncryptedSizeBytes:postMutation?1536:1024,
+  databaseObjectVersionId:postMutation
+    ? 'fixture-database-current-version-1'
+    : 'fixture-database-pre-mutation-version-1',
+  databaseConfirmedAt,
+  databaseRetentionVariance:null,
+  databaseApprovedUnversionedVariance:false,
+  requiredRelease:releaseProof,
+  requiredRecoveryRuntime:recoveryProof,
+};
+if(process.env.DR_INVALID_STORAGE_CONTROLS==='1'){
+  delete result.storageProvider;
+  delete result.storageControlMode;
+  delete result.releasePrefixLockVerified;
+}
+process.stdout.write(JSON.stringify(result)+'\\n');
+NODE
+if [ -n "\${DR_COMPLETED_MARKER:-}" ]; then
+  : > "$DR_COMPLETED_MARKER"
+fi
+`, { mode: 0o755 });
+  }
+
+  function runGovernedTerminalRetryFixture(options: {
+    outcome: 'failed_before_stop' | 'recovered' | 'recovery_failed';
+    recoverySeconds?: number;
+    targetMet?: boolean;
+    tamperPredecessorSha?: boolean;
+    currentRuntimeDrift?: boolean;
+    failLivePredecessorProof?: boolean;
+    artifactIdentityDrift?: boolean;
+    installedIdentityDrift?: boolean;
+    partialTerminalArchive?: boolean;
+  }) {
+    const clientRoot = path.join(root, `governed-retry-${options.outcome}-${Date.now()}`);
+    const scriptsDir = path.join(clientRoot, 'scripts');
+    const bin = path.join(clientRoot, 'bin');
+    const checkpointDir = path.join(clientRoot, '.local', 'release', 'transactions');
+    fs.mkdirSync(path.join(scriptsDir, 'lib'), { recursive: true });
+    fs.mkdirSync(bin);
+    fs.mkdirSync(checkpointDir, { recursive: true });
+    for (const directory of [
+      path.join(clientRoot, '.local'),
+      path.join(clientRoot, '.local', 'release'),
+      checkpointDir,
+    ]) fs.chmodSync(directory, 0o700);
+
+    const clientPromotion = path.join(scriptsDir, 'promote-exact-release.sh');
+    fs.copyFileSync(promotion, clientPromotion);
+    fs.chmodSync(clientPromotion, 0o755);
+    fs.writeFileSync(path.join(scriptsDir, 'lib', 'release-gates.sh'), `#!/usr/bin/env bash
+release_require_git_worktree(){ return 0; }
+release_require_clean_tree(){ return 0; }
+release_cleanup_all_locks(){ return 0; }
+release_acquire_local_lock(){ return 0; }
+release_acquire_remote_lock(){ return 0; }
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(scriptsDir, 'rollback-drill-check.mjs'), 'process.exit(0);\n');
+    fs.writeFileSync(path.join(scriptsDir, 'migration-safety-check.mjs'), `
+process.stdout.write(JSON.stringify({irreversibleChangedMigrations:[],reviewEvidence:null}));
+`);
+    fs.writeFileSync(path.join(scriptsDir, 'env-parity-check.sh'), '#!/usr/bin/env bash\nexit 0\n', {
+      mode: 0o755,
+    });
+    fs.writeFileSync(path.join(scriptsDir, 'remote-release-capacity.sh'), '# fixture capacity\n');
+
+    const targetSha = 'b'.repeat(40);
+    const artifactDigest = 'c'.repeat(64);
+    const installedRuntimeDigest = 'd'.repeat(64);
+    const recoveryRuntimeDigest = '9'.repeat(64);
+    const predecessorSha = 'a'.repeat(40);
+    const predecessorArtifactDigest = 'e'.repeat(64);
+    const predecessorInstalledRuntimeDigest = 'f'.repeat(64);
+    const server = 'ServerDominguez';
+    const stagingBase = '/home/dominguez/staging';
+    const productionBase = '/home/dominguez/production';
+    const targetVersion = '4.14.231';
+    const targetRuntime = `${productionBase}/releases/${targetSha}-${artifactDigest.slice(0, 12)}`;
+    const predecessorRuntime = `${productionBase}/releases/previous-${predecessorSha.slice(0, 12)}`;
+    const oldTransactionId = '20260721T120000Z-1111-abcdef123456';
+    const terminalCompletedAt = '2026-07-23T18:00:00.000Z';
+
+    const manifestBody = Buffer.from(`${JSON.stringify({
+      schema: 'nexus.release-manifest.v2',
+      payload: { runtimeSha: targetSha, artifact: { digest: artifactDigest } },
+    })}\n`);
+    const manifestPath = path.join(clientRoot, 'release-manifest.json');
+    fs.writeFileSync(manifestPath, manifestBody, { mode: 0o600 });
+    const manifestSha256 = createHash('sha256').update(manifestBody).digest('hex');
+    const stagingBody = Buffer.from(`${JSON.stringify({
+      schema: 'nexus.staging-attestation.v1',
+      payload: {
+        runtimeSha: targetSha,
+        artifactDigest,
+        installedRuntimeDigest,
+        recoveryRuntimeDigest,
+        releaseManifestSha256: manifestSha256,
+      },
+    })}\n`);
+    const stagingPath = path.join(clientRoot, 'staging-attestation.json');
+    fs.writeFileSync(stagingPath, stagingBody, { mode: 0o600 });
+    const stagingSha256 = createHash('sha256').update(stagingBody).digest('hex');
+
+    const checkpoint = {
+      schema: 'nexus.promotion-client-checkpoint.v1',
+      transactionId: oldTransactionId,
+      startedAt: '2026-07-23T17:55:00.000Z',
+      runtimeSha: targetSha,
+      artifactDigest,
+      installedRuntimeDigest,
+      recoveryRuntimeDigest,
+      releaseManifestSha256: manifestSha256,
+      stagingAttestationSha256: stagingSha256,
+      targetVersion,
+      server,
+      productionBase,
+    };
+    const checkpointBody = Buffer.from(`${JSON.stringify(checkpoint, null, 2)}\n`);
+    const checkpointPath = path.join(
+      checkpointDir,
+      `${targetSha}-${artifactDigest}.checkpoint.json`,
+    );
+    fs.writeFileSync(checkpointPath, checkpointBody, { mode: 0o600 });
+
+    const requestPayload = {
+      schema: 'nexus.promotion-transaction-request.v1',
+      transactionId: oldTransactionId,
+      createdAt: '2026-07-23T17:55:00.000Z',
+      expiresAt: '2026-07-23T18:25:00.000Z',
+      ownerAuthorization: 'explicit',
+      productionBase,
+      predecessor: {
+        runtime: predecessorRuntime,
+        sha: predecessorSha,
+        artifactDigest: predecessorArtifactDigest,
+        installedRuntimeDigest: predecessorInstalledRuntimeDigest,
+      },
+      target: {
+        runtime: targetRuntime,
+        sha: targetSha,
+        sentryRelease: targetSha,
+        artifactDigest,
+        installedRuntimeDigest,
+        recoveryRuntimeDigest,
+        version: targetVersion,
+      },
+      releaseEvidence: {
+        releaseManifestBase64: manifestBody.toString('base64'),
+        releaseManifestSha256: manifestSha256,
+        stagingAttestationBase64: stagingBody.toString('base64'),
+        stagingAttestationSha256: stagingSha256,
+      },
+      backupDir: '/home/dominguez/backups/nexushub',
+      preparedRuntimeDir: '/home/dominguez/backups/nexushub/.runtime-stage-Fixture',
+      pm2Bin: '/fake/pm2',
+      publicBaseUrl: 'https://api.nexushub.test',
+      stabilitySeconds: 60,
+      gateTimeoutSeconds: 60,
+      migration: { required: false },
+    };
+    const requestBody = Buffer.from(`${JSON.stringify(requestPayload, null, 2)}\n`);
+    const requestPath = path.join(checkpointDir, `${oldTransactionId}.request.json`);
+    fs.writeFileSync(requestPath, requestBody, { mode: 0o600 });
+    const envelope = {
+      schema: 'nexus.promotion-transaction-request-envelope.v1',
+      keyId: 'nexus-owner-promotion-2026',
+      signatureAlgorithm: 'ed25519',
+      payload: requestPayload,
+      signature: cryptoSign(
+        null,
+        Buffer.from(canonicalJson(requestPayload)),
+        fs.readFileSync(privateKeyPath),
+      ).toString('base64'),
+    };
+    const envelopePath = path.join(
+      checkpointDir,
+      `${oldTransactionId}.request.envelope.json`,
+    );
+    fs.writeFileSync(envelopePath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+    const requestSha256 = createHash('sha256')
+      .update(canonicalJson(requestPayload))
+      .digest('hex');
+
+    const statusPredecessorSha = options.tamperPredecessorSha ? '6'.repeat(40) : predecessorSha;
+    const terminalStatus = {
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId: oldTransactionId,
+      requestSha256,
+      phase: options.outcome === 'failed_before_stop' ? 'preflight'
+        : options.outcome === 'recovered' ? 'recovery_complete' : 'recovery_failed',
+      status: options.outcome,
+      completedAt: terminalCompletedAt,
+      predecessor: {
+        runtime: predecessorRuntime,
+        sha: statusPredecessorSha,
+        artifactDigest: predecessorArtifactDigest,
+        installedRuntimeDigest: predecessorInstalledRuntimeDigest,
+      },
+      target: {
+        runtime: targetRuntime,
+        sha: targetSha,
+        artifactDigest,
+        installedRuntimeDigest,
+        recoveryRuntimeDigest,
+      },
+      recoveryArmed: options.outcome !== 'failed_before_stop',
+      escrowConfirmed: false,
+      recovery: options.outcome === 'recovered' ? {
+        schema: 'nexus.promotion-recovery-result.v1',
+        targetMet: options.targetMet ?? true,
+        outageToHealthySeconds: options.recoverySeconds ?? 120,
+      } : null,
+    };
+
+    fs.writeFileSync(path.join(bin, 'git'), `#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" rev-parse HEAD "*) printf '%s\\n' "$FIXTURE_TARGET_SHA" ;;
+  *" rev-parse --verify --quiet "*) exit 0 ;;
+  *" merge-base --is-ancestor "*) exit 0 ;;
+  *" ls-files migrations/"*)
+    pattern="\${!#}"; migration="\${pattern#migrations/}"; migration="\${migration%%_*}"
+    printf 'migrations/%s_fixture.sql\\n' "$migration"
+    ;;
+  *" diff --quiet "*) exit 0 ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o755 });
+    const sshLog = path.join(clientRoot, 'ssh.log');
+    const livePredecessorProof = path.join(clientRoot, 'live-predecessor-proof');
+    fs.writeFileSync(path.join(bin, 'ssh'), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FIXTURE_SSH_LOG"
+args="$*"
+if [[ "$args" == *"sudo -n $FIXTURE_CONTROL version"* ]]; then
+  printf '%s\\n' nexus-release-promotion-control.v2
+  exit 0
+fi
+if [[ "$args" == *"sudo -n $FIXTURE_CONTROL status $FIXTURE_OLD_ID"* ]]; then
+  printf '%s\\n' "$FIXTURE_STATUS_JSON"
+  exit 0
+fi
+if [[ "$args" == *"sudo -n $FIXTURE_CONTROL prepare-runtime-target"* ]]; then
+  exit 91
+fi
+if [[ "$args" == *"for p in "* ]]; then
+  printf '%s' /fake/pm2
+  exit 0
+fi
+if [[ "$args" == *"bash -s --"* ]]; then
+  body="$(cat)"
+  if [[ "$body" == *"terminal transaction predecessor is no longer current"* ]]; then
+    : > "$FIXTURE_LIVE_PREDECESSOR_PROOF"
+    argc=$#
+    expected_sha="\${@:$((argc-2)):1}"
+    expected_artifact="\${@:$((argc-1)):1}"
+    expected_installed="\${@:$argc:1}"
+    [ "$expected_sha" = "$FIXTURE_PREDECESSOR_SHA" ] || exit 1
+    [ "$expected_artifact" = "$FIXTURE_PREDECESSOR_ARTIFACT" ] || exit 1
+    [ "$expected_installed" = "$FIXTURE_PREDECESSOR_INSTALLED" ] || exit 1
+    [ "$FIXTURE_LIVE_ARTIFACT" = "$expected_artifact" ] || {
+      printf '%s\\n' 'terminal predecessor live artifact identity changed' >&2
+      exit 1
+    }
+    [ "$FIXTURE_LIVE_INSTALLED" = "$expected_installed" ] || {
+      printf '%s\\n' 'terminal predecessor live installed identity changed' >&2
+      exit 1
+    }
+    [ "$FIXTURE_FAIL_LIVE_PREDECESSOR_PROOF" != 1 ] || exit 1
+    exit 0
+  fi
+  if [[ "$body" == *'if [ -L "$base_dir/current" ]; then readlink -f'* ]]; then
+    printf '%s\\n' "$FIXTURE_CURRENT_RUNTIME"
+    exit 0
+  fi
+  if [[ "$body" == *"active PM2/current identity mismatch"* ]]; then exit 0; fi
+  if [[ "$body" == *"marker.runtimeSha"* && "$body" == *"installed.aggregateDigest"* ]]; then
+    printf '%s %s %s\\n' "$FIXTURE_PREDECESSOR_SHA" \
+      "$FIXTURE_PREDECESSOR_ARTIFACT" "$FIXTURE_PREDECESSOR_INSTALLED"
+    exit 0
+  fi
+  exit 0
+fi
+exit 0
+`, { mode: 0o755 });
+
+    const partialArchivePath = path.join(
+      checkpointDir,
+      'terminal-retries',
+      `${oldTransactionId}.json`,
+    );
+    if (options.partialTerminalArchive) {
+      fs.mkdirSync(path.dirname(partialArchivePath), { mode: 0o700 });
+      fs.writeFileSync(partialArchivePath, '{"schema":"partial', { mode: 0o600 });
+    }
+
+    const result = spawnSync('bash', [
+      clientPromotion,
+      server,
+      stagingBase,
+      productionBase,
+      targetSha,
+      artifactDigest,
+      targetVersion,
+      installedRuntimeDigest,
+      recoveryRuntimeDigest,
+      fs.realpathSync(manifestPath),
+      fs.realpathSync(stagingPath),
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NEXUS_RELEASE_OWNER_AUTHORIZED: '1',
+        NEXUS_RELEASE_OWNER_PRIVATE_KEY_PATH: privateKeyPath,
+        NEXUS_RELEASE_SYSTEMD_CONTROL: '/fake/control',
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        FIXTURE_CONTROL: '/fake/control',
+        FIXTURE_CURRENT_RUNTIME: options.currentRuntimeDrift
+          ? `${productionBase}/releases/drifted-${'7'.repeat(12)}`
+          : predecessorRuntime,
+        FIXTURE_FAIL_LIVE_PREDECESSOR_PROOF: options.failLivePredecessorProof ? '1' : '0',
+        FIXTURE_LIVE_PREDECESSOR_PROOF: livePredecessorProof,
+        FIXTURE_OLD_ID: oldTransactionId,
+        FIXTURE_PREDECESSOR_ARTIFACT: predecessorArtifactDigest,
+        FIXTURE_PREDECESSOR_INSTALLED: predecessorInstalledRuntimeDigest,
+        FIXTURE_PREDECESSOR_SHA: predecessorSha,
+        FIXTURE_LIVE_ARTIFACT: options.artifactIdentityDrift
+          ? '1'.repeat(64)
+          : predecessorArtifactDigest,
+        FIXTURE_LIVE_INSTALLED: options.installedIdentityDrift
+          ? '2'.repeat(64)
+          : predecessorInstalledRuntimeDigest,
+        FIXTURE_SSH_LOG: sshLog,
+        FIXTURE_STATUS_JSON: JSON.stringify(terminalStatus),
+        FIXTURE_TARGET_SHA: targetSha,
+      },
+      maxBuffer: 2 * 1024 * 1024,
+    });
+
+    return {
+      artifactDigest,
+      checkpoint,
+      checkpointBody,
+      checkpointDir,
+      checkpointPath,
+      envelopePath,
+      livePredecessorProof,
+      oldTransactionId,
+      partialArchivePath,
+      requestPath,
+      requestSha256,
+      result,
+      sshLog,
+      terminalCompletedAt,
+      terminalStatus,
+    };
+  }
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-promotion-control-')));
@@ -52,19 +620,31 @@ describe('persistent systemd promotion transaction v2', () => {
     fs.writeFileSync(publicKeyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
     const bin = path.join(root, 'bin');
     fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'stat'), `#!/usr/bin/env bash
+set -euo pipefail
+if /usr/bin/stat --version >/dev/null 2>&1; then exec /usr/bin/stat "$@"; fi
+if [ "\${1:-}" != -c ]; then exec /usr/bin/stat "$@"; fi
+format="\${2:-}"; file="\${3:-}"
+case "$format" in
+  %h) native=%l ;;
+  %a) native=%Lp ;;
+  %u) native=%u ;;
+  %g) native=%g ;;
+  %s) native=%z ;;
+  %U:%G) native=%Su:%Sg ;;
+  %u:%g:%a) native=%u:%g:%Lp ;;
+  %U:%G:%a) native=%Su:%Sg:%Lp ;;
+  %U:%G:%a:%h) native=%Su:%Sg:%Lp:%l ;;
+  *) printf 'unsupported GNU stat fixture format: %s\\n' "$format" >&2; exit 64 ;;
+esac
+exec /usr/bin/stat -f "$native" "$file"
+`, { mode: 0o755 });
     authWrapper = path.join(bin, 'promotion-auth');
     fs.writeFileSync(authWrapper, `#!/usr/bin/env bash\nexec node ${JSON.stringify(authorization)} "$@"\n`, { mode: 0o755 });
     drBackupBin = path.join(bin, 'application-dr-backup');
     drConfig = path.join(root, 'application-dr.env');
     fs.writeFileSync(drConfig, 'fixture=true\n', { mode: 0o600 });
-    fs.writeFileSync(drBackupBin, `#!/usr/bin/env bash
-set -euo pipefail
-if [[ " $* " == *" --verify-config "* ]]; then
-  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
-  exit 0
-fi
-exit 64
-`, { mode: 0o755 });
+    writeAwsDrFixture(drBackupBin);
     fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
@@ -113,7 +693,14 @@ exec "$@"
         sentryRelease: 'b'.repeat(40),
         artifactDigest: 'c'.repeat(64),
         installedRuntimeDigest: 'd'.repeat(64),
+        recoveryRuntimeDigest: '9'.repeat(64),
         version: '4.14.231',
+      },
+      releaseEvidence: {
+        releaseManifestBase64: releaseManifestBody.toString('base64'),
+        releaseManifestSha256: createHash('sha256').update(releaseManifestBody).digest('hex'),
+        stagingAttestationBase64: stagingAttestationBody.toString('base64'),
+        stagingAttestationSha256: createHash('sha256').update(stagingAttestationBody).digest('hex'),
       },
       backupDir: '/home/dominguez/backups/nexushub',
       preparedRuntimeDir: '/home/dominguez/backups/nexushub/.runtime-stage-Ab12',
@@ -173,6 +760,33 @@ exec "$@"
     return spawnSync('bash', [control, ...args], { encoding: 'utf8', env: env(extra) });
   }
 
+  it('adopts a crash-linked signed envelope without replacing its exact authority', () => {
+    const original = fs.readFileSync(envelopePath);
+    const crashTemporary = path.join(
+      path.dirname(envelopePath),
+      `.${path.basename(envelopePath)}.next.fixture`,
+    );
+    fs.linkSync(envelopePath, crashTemporary);
+    expect(fs.statSync(envelopePath).nlink).toBe(2);
+
+    const resumed = spawnSync('node', [
+      authorization,
+      'sign-request',
+      '--input',
+      requestPath,
+      '--private-key',
+      privateKeyPath,
+      '--output',
+      envelopePath,
+    ], { encoding: 'utf8' });
+
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(fs.existsSync(crashTemporary)).toBe(false);
+    expect(fs.statSync(envelopePath).nlink).toBe(1);
+    expect(fs.statSync(envelopePath).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(envelopePath)).toEqual(original);
+  });
+
   it('launches one signed immutable request atomically and reconciles an identical retry', () => {
     const first = run(['launch', envelopePath]);
     expect(first.status, first.stderr).toBe(0);
@@ -192,7 +806,37 @@ exec "$@"
     expect(run(['assert-idle']).status).toBe(73);
   });
 
-  it('relaunches only the same authoritative transaction when rollback escrow is pending', () => {
+  it('reattaches non-blockingly after reboot before recovery intent is armed', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    const staleTiming = {
+      schema: 'nexus.promotion-cutover-timing.v1',
+      startedAt: '2026-07-22T11:58:00Z',
+      startedMonotonicSeconds: 1,
+      preRecoveryDeadlineMonotonicSeconds: 61,
+      outageDeadlineMonotonicSeconds: 121,
+      bootId: 'stale-pre-mutation-boot',
+    };
+    const timingPath = path.join(authoritative, 'cutover-timing.json');
+    fs.writeFileSync(timingPath, `${JSON.stringify(staleTiming)}\n`, { mode: 0o600 });
+    fs.rmSync(systemctlActive, { force: true });
+
+    const recovered = run(['recover-all']);
+    expect(recovered.status, recovered.stderr).toBe(0);
+    const unitName = `nexus-release-promotion@${id}.service`;
+    const lines = fs.readFileSync(systemctlLog, 'utf8').trim().split('\n');
+    expect(lines.filter((line) => line === `start --no-block ${unitName}`)).toHaveLength(2);
+    expect(lines).not.toContain(`start ${unitName}`);
+    expect(fs.existsSync(path.join(stateRoot, 'transactions', id, 'control', 'recover')))
+      .toBe(false);
+    expect(fs.existsSync(path.join(stateRoot, 'active.json'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(timingPath, 'utf8'))).toEqual(staleTiming);
+    expect(fs.existsSync(path.join(authoritative, 'journal.json'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+  });
+
+  it('relaunches only the same authoritative transaction when DR escrow is pending', () => {
     const launch = run(['launch', envelopePath]);
     expect(launch.status, launch.stderr).toBe(0);
     const requestSha256 = JSON.parse(launch.stdout).requestSha256;
@@ -201,7 +845,7 @@ exec "$@"
       schema: 'nexus.promotion-transaction-journal.v1',
       transactionId: id,
       requestSha256,
-      phase: 'awaiting_rollback_escrow',
+      phase: 'awaiting_dr_escrow',
       status: 'escrow_pending',
     })}\n`, { mode: 0o600 });
     fs.rmSync(systemctlActive, { force: true });
@@ -228,7 +872,7 @@ exec "$@"
     expect(run(['retry-escrow', id]).status).toBe(75);
   });
 
-  it('resumes only pending rollback escrow after a host reboot', () => {
+  it('resumes only pending DR escrow after a host reboot', () => {
     const launch = run(['launch', envelopePath]);
     expect(launch.status, launch.stderr).toBe(0);
     const requestSha256 = JSON.parse(launch.stdout).requestSha256;
@@ -237,7 +881,7 @@ exec "$@"
       schema: 'nexus.promotion-transaction-journal.v1',
       transactionId: id,
       requestSha256,
-      phase: 'awaiting_rollback_escrow',
+      phase: 'awaiting_dr_escrow',
       status: 'escrow_pending',
     })}\n`, { mode: 0o600 });
     fs.rmSync(systemctlActive, { force: true });
@@ -280,6 +924,44 @@ exec "$@"
     expect(missingIdentity.stderr).toContain('verification failed');
   });
 
+  it('rejects a signed envelope for request A when the stored request is replaced with request B', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const storedRequest = path.join(stateRoot, 'requests', `${id}.json`);
+    const requestB = JSON.parse(fs.readFileSync(storedRequest, 'utf8'));
+    requestB.target.version = '4.14.999';
+    fs.writeFileSync(storedRequest, `${JSON.stringify(requestB, null, 2)}\n`, { mode: 0o644 });
+
+    const workerCalled = path.join(root, 'worker-called');
+    const workerSentinel = path.join(root, 'bin', 'unexpected-worker');
+    fs.writeFileSync(workerSentinel, `#!/usr/bin/env bash
+: > "$WORKER_CALLED"
+exit 99
+`, { mode: 0o755 });
+    const drCalled = path.join(root, 'dr-called');
+    const drSentinel = path.join(root, 'bin', 'unexpected-dr');
+    fs.writeFileSync(drSentinel, `#!/usr/bin/env bash
+: > "$DR_CALLED"
+exit 99
+`, { mode: 0o755 });
+
+    const rejected = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: workerSentinel,
+        NEXUS_PROMOTION_DR_BACKUP_BIN: drSentinel,
+        WORKER_CALLED: workerCalled,
+        DR_CALLED: drCalled,
+      }),
+    });
+
+    expect(rejected.status).not.toBe(0);
+    expect(fs.existsSync(workerCalled)).toBe(false);
+    expect(fs.existsSync(drCalled)).toBe(false);
+    expect(fs.existsSync(path.join(stateRoot, 'transactions', id, 'state', 'journal.json')))
+      .toBe(false);
+  });
+
   it('does not let deploy-writable artifacts forge terminal authority or clear the active transaction', () => {
     const launch = run(['launch', envelopePath]);
     expect(launch.status, launch.stderr).toBe(0);
@@ -305,12 +987,20 @@ exec "$@"
   });
 
   it('recovers only the authoritative active ID synchronously before PM2 boot ordering', () => {
-    expect(run(['launch', envelopePath]).status).toBe(0);
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const requestSha256 = JSON.parse(launch.stdout).requestSha256;
     const stray = '20260722T120001Z-1235-fedcba654321';
     fs.writeFileSync(path.join(stateRoot, 'requests', `${stray}.json`), '{}\n');
-    const worker = path.join(stateRoot, 'transactions', id, 'worker');
-    fs.writeFileSync(path.join(worker, 'recovery-armed'), 'armed\n');
-    fs.writeFileSync(path.join(worker, 'journal.json'), `${JSON.stringify({ transactionId: id, phase: 'recovery_required', status: 'recovery_required' })}\n`);
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    fs.writeFileSync(path.join(authoritative, 'recovery-armed'), 'armed\n', { mode: 0o600 });
+    fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId: id,
+      requestSha256,
+      phase: 'recovery_required',
+      status: 'recovery_required',
+    })}\n`, { mode: 0o600 });
 
     const recovered = run(['recover-all']);
     expect(recovered.status, recovered.stderr).toBe(0);
@@ -431,22 +1121,86 @@ printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-comp
     });
   });
 
+  it.each([
+    ['a different transaction escrow ID', {
+      DR_ESCROW_ID_OVERRIDE: '20260722T120001Z-1235-fedcba654321',
+    }],
+    ['a missing AWS object version', {
+      DR_OBJECT_VERSION_ID_OVERRIDE: 'null',
+    }],
+    ['less than 90 days of AWS retention', {
+      DR_RETAIN_DAYS: '89',
+    }],
+    ['a missing encrypted-object digest', {
+      DR_RUNTIME_ENCRYPTED_SHA256_OVERRIDE: 'invalid',
+    }],
+    ['a zero-byte encrypted object', {
+      DR_RUNTIME_ENCRYPTED_SIZE_BYTES_OVERRIDE: '0',
+    }],
+  ])('fails before cutover when current recovery escrow returns %s', (_label, proofEnv) => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+
+    const result = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        ...proofEnv,
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: runner,
+      }),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('pre-mutation current recovery runtime escrow evidence is invalid');
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    expect(fs.existsSync(path.join(authoritative, 'preflight-current-recovery.json'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'cutover-timing.json'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8'))).toMatchObject({
+      phase: 'preflight',
+      status: 'failed_before_stop',
+      message: 'current_recovery_runtime_not_escrowed_before_mutation',
+    });
+  });
+
   it('blocks local rollback pruning until the exact encrypted off-host escrow is confirmed', () => {
     const launch = run(['launch', envelopePath]);
     expect(launch.status, launch.stderr).toBe(0);
     const fixture = path.join(root, 'escrow-fixture');
     const backupDir = path.join(fixture, 'backups');
     const production = path.join(fixture, 'production');
+    const previous = path.join(production, 'releases', 'previous-runtime');
     const target = path.join(production, 'releases', 'target-runtime');
+    fs.mkdirSync(path.join(previous, 'content-engine'), { recursive: true });
     fs.mkdirSync(path.join(target, 'content-engine'), { recursive: true });
     fs.mkdirSync(path.join(fixture, 'bin'), { recursive: true });
     fs.mkdirSync(backupDir);
+    fs.writeFileSync(path.join(production, '.env'), 'PORTAL_TOKEN=fixture-token\n', { mode: 0o600 });
     fs.symlinkSync(target, path.join(production, 'current'));
     fs.writeFileSync(path.join(fixture, 'bin', 'pm2'), `#!/usr/bin/env bash
+if [ -n "\${RECOVERY_CALLED:-}" ] && [ -f "$RECOVERY_CALLED" ]; then
+  if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
+    { name: 'nexus-hub', pm2_env: { status: 'online', pm_cwd: previous, NEXUS_RELEASE_SHA: 'a'.repeat(40) } },
+    { name: 'content-engine', pm2_env: { status: 'online', pm_cwd: `${previous}/content-engine`, NEXUS_RELEASE_SHA: 'a'.repeat(40) } },
+  ])}'; fi
+  exit 0
+fi
+if [ -n "\${CANDIDATE_DEGRADE_MARKER:-}" ] && [ -f "$CANDIDATE_DEGRADE_MARKER" ]; then
+  printf '[]\\n'
+  exit 0
+fi
 if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
   { name: 'nexus-hub', pm2_env: { status: 'online', pm_cwd: target, NEXUS_RELEASE_SHA: 'b'.repeat(40), SENTRY_RELEASE: 'b'.repeat(40) } },
   { name: 'content-engine', pm2_env: { status: 'online', pm_cwd: `${target}/content-engine`, NEXUS_RELEASE_SHA: 'b'.repeat(40), SENTRY_RELEASE: 'b'.repeat(40) } },
 ])}'; fi
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(fixture, 'bin', 'curl'), `#!/usr/bin/env bash
+set -euo pipefail
+url="\${!#}"
+case "$url" in
+  */api/snapshot) printf '{"version":"4.14.231"}\\n' ;;
+  *health*) printf '{"status":"healthy","server":{"status":"online"},"database":"connected"}\\n' ;;
+  *) exit 1 ;;
+esac
 `, { mode: 0o755 });
     const backups: string[] = [];
     for (let index = 0; index < 11; index += 1) {
@@ -467,6 +1221,7 @@ if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
       `NEXUS_SENTRY_RELEASE=${'b'.repeat(40)}`,
       `NEXUS_ARTIFACT_DIGEST=${'c'.repeat(64)}`,
       `NEXUS_INSTALLED_RUNTIME_DIGEST=${'d'.repeat(64)}`,
+      'NEXUS_TARGET_VERSION=4.14.231',
       'NEXUS_CUTOVER_STARTED_AT=2026-07-22T12:00:00Z',
       'NEXUS_SERVICE_UNAVAILABLE_STARTED_AT=2026-07-22T12:00:01Z',
       'NEXUS_CANDIDATE_AVAILABLE_AT=2026-07-22T12:00:08Z',
@@ -485,52 +1240,406 @@ if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
     ].join('\n'), { mode: 0o600 });
     fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
       schema: 'nexus.promotion-transaction-journal.v1', transactionId: id, requestSha256,
-      phase: 'awaiting_rollback_escrow', status: 'escrow_pending',
+      phase: 'awaiting_dr_escrow', status: 'escrow_pending',
     })}\n`, { mode: 0o600 });
+    writeRootRecoveryIntent(authoritative, requestSha256, 'candidate_authorized', {
+      file: exact,
+      sha256: exactSha,
+      sizeBytes: fs.statSync(exact).size,
+      databaseSha256: '7'.repeat(64),
+    });
+    const recoveryIntent = path.join(authoritative, 'recovery-armed');
+    writeRootRecoveryIntent(authoritative, requestSha256, 'candidate_authorized', {
+      file: exact,
+      sha256: exactSha,
+      sizeBytes: fs.statSync(exact).size,
+      databaseSha256: '7'.repeat(64),
+    });
+    writePreflightRecoveryFixture(target, requestSha256);
     const drConfig = path.join(root, 'dr.env');
     fs.writeFileSync(drConfig, 'fixture=true\n', { mode: 0o600 });
     const dr = path.join(root, 'bin', 'dr-backup');
-    fs.writeFileSync(dr, `#!/usr/bin/env bash
-set -euo pipefail
-required=""
-while [ $# -gt 0 ]; do case "$1" in --require-release) required="$2"; shift 2 ;; *) shift ;; esac; done
-node - "$required" <<'NODE'
-const fs=require('fs'),c=require('crypto');const file=process.argv[2];
-const sha=c.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-process.stdout.write(JSON.stringify({schema:'nexus.application-dr-backup-result.v1',status:'passed',encrypted:true,
-  requiredRelease:{path:file,plaintextSha256:sha,objectKey:'nexus/releases/'+file.split('/').pop()+'.'+sha+'.age',confirmed:true}})+'\\n');
-NODE
-`, { mode: 0o755 });
+    writeAwsDrFixture(dr);
     const escrowEnv = {
       NEXUS_PROMOTION_DR_BACKUP_BIN: dr,
       NEXUS_PROMOTION_DR_CONFIG: drConfig,
       NEXUS_PROMOTION_TRANSACTION_SCRIPT: runner,
       NEXUS_PROMOTION_TEST_ROOT: fixture,
+      PATH: `${path.join(fixture, 'bin')}:${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
     };
 
-    const blocked = spawnSync('bash', [broker, 'run', id], { encoding: 'utf8', env: env(escrowEnv) });
-    expect(blocked.status).toBe(1);
+    const uptimePath = '/proc/uptime';
+    const bootIdPath = '/proc/sys/kernel/random/boot_id';
+    const nowMonotonic = fs.existsSync(uptimePath)
+      ? Math.floor(Number(fs.readFileSync(uptimePath, 'utf8').split(/\s+/u)[0]))
+      : Math.floor(Date.now() / 1000);
+    const bootId = fs.existsSync(bootIdPath)
+      ? fs.readFileSync(bootIdPath, 'utf8').trim()
+      : 'test-boot';
+    fs.writeFileSync(path.join(authoritative, 'cutover-timing.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-cutover-timing.v1',
+      startedAt: '2026-07-22T12:00:00Z',
+      startedMonotonicSeconds: nowMonotonic,
+      preRecoveryDeadlineMonotonicSeconds: nowMonotonic + 60,
+      outageDeadlineMonotonicSeconds: nowMonotonic + 120,
+      bootId,
+    })}\n`, { mode: 0o600 });
+    const degradeMarker = path.join(root, 'candidate-degraded-during-escrow');
+    const recoveryCalled = path.join(root, 'degraded-candidate-recovery-called');
+    const degradationWorker = path.join(root, 'bin', 'degradation-worker');
+    fs.writeFileSync(degradationWorker, `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = worker-recover ]; then
+  : > "$RECOVERY_CALLED"
+  rm -f "$RECOVERY_PRODUCTION/current"
+  ln -s "$RECOVERY_PREDECESSOR" "$RECOVERY_PRODUCTION/current"
+  exit 0
+fi
+exec bash ${JSON.stringify(runner)} "$@"
+`, { mode: 0o755 });
+
+    const degraded = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        ...escrowEnv,
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: degradationWorker,
+        DR_COMPLETED_MARKER: degradeMarker,
+        CANDIDATE_DEGRADE_MARKER: degradeMarker,
+        RECOVERY_CALLED: recoveryCalled,
+        RECOVERY_PREDECESSOR: previous,
+        RECOVERY_PRODUCTION: production,
+      }),
+    });
+    expect(degraded.status, degraded.stderr).toBe(0);
+    expect(degraded.stderr).toContain(
+      'candidate degraded while encrypted off-host escrow was running',
+    );
+    expect(fs.existsSync(recoveryCalled)).toBe(true);
+    expect(fs.readdirSync(backupDir)).toHaveLength(11);
+    expect(fs.existsSync(path.join(authoritative, 'escrow-confirmation.json'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')))
+      .toMatchObject({
+        phase: 'recovery_complete',
+        status: 'recovered',
+        message: 'escrow_candidate_degradation_recovered',
+      });
+    expect(JSON.parse(fs.readFileSync(
+      path.join(authoritative, 'recovery-result.json'),
+      'utf8',
+    ))).toMatchObject({
+      schema: 'nexus.promotion-recovery-result.v1',
+      timingScope: 'post_availability_detection',
+      originalCutoverStartedAt: '2026-07-22T12:00:00Z',
+      targetSeconds: 120,
+    });
+
+    fs.rmSync(degradeMarker);
+    fs.rmSync(recoveryCalled);
+    fs.rmSync(path.join(production, 'current'));
+    fs.symlinkSync(target, path.join(production, 'current'));
+    fs.rmSync(path.join(authoritative, 'recovery-attempt-timing.json'));
+    fs.rmSync(path.join(authoritative, 'recovery-result.json'));
+    fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-transaction-journal.v1', transactionId: id, requestSha256,
+      phase: 'awaiting_dr_escrow', status: 'escrow_pending',
+    })}\n`, { mode: 0o600 });
+    writeRootRecoveryIntent(authoritative, requestSha256, 'candidate_authorized', {
+      file: exact,
+      sha256: exactSha,
+      sizeBytes: fs.statSync(exact).size,
+      databaseSha256: '7'.repeat(64),
+    });
+
+    const blocked = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({ ...escrowEnv, DR_INVALID_STORAGE_CONTROLS: '1' }),
+    });
+    expect(blocked.status, blocked.stderr).toBe(75);
+    expect(fs.existsSync(recoveryIntent)).toBe(true);
     expect(fs.readdirSync(backupDir)).toHaveLength(11);
     expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')).status).toBe('escrow_pending');
 
-    fs.writeFileSync(dr, `#!/usr/bin/env bash
-set -euo pipefail
-required=""
-while [ $# -gt 0 ]; do case "$1" in --require-release) required="$2"; shift 2 ;; *) shift ;; esac; done
-node - "$required" <<'NODE'
-const fs=require('fs'),c=require('crypto');const file=process.argv[2];
-const sha=c.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-process.stdout.write(JSON.stringify({schema:'nexus.application-dr-backup-result.v1',status:'passed',encrypted:true,
-  storageProvider:'aws-s3',storageControlMode:'versioned-s3',releasePrefixLockVerified:true,
-  requiredRelease:{path:file,plaintextSha256:sha,objectKey:'nexus/releases/'+file.split('/').pop()+'.'+sha+'.age',confirmed:true}})+'\\n');
-NODE
-`, { mode: 0o755 });
+    const drifted = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        ...escrowEnv,
+        DR_RUNTIME_PLAINTEXT_SHA256_OVERRIDE: 'a'.repeat(64),
+      }),
+    });
+    expect(drifted.status, drifted.stderr).toBe(75);
+    expect(drifted.stderr).toContain('invalid storage-control evidence');
+    expect(fs.readdirSync(backupDir)).toHaveLength(11);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')).status)
+      .toBe('escrow_pending');
+
     const confirmed = spawnSync('bash', [broker, 'run', id], { encoding: 'utf8', env: env(escrowEnv) });
     expect(confirmed.status, confirmed.stderr).toBe(0);
     expect(fs.readdirSync(backupDir)).toHaveLength(10);
     expect(fs.existsSync(exact)).toBe(true);
-    expect(fs.existsSync(path.join(authoritative, 'escrow-confirmation.json'))).toBe(true);
+    const confirmationPath = path.join(authoritative, 'escrow-confirmation.json');
+    expect(fs.existsSync(confirmationPath)).toBe(true);
+    const confirmation = JSON.parse(fs.readFileSync(confirmationPath, 'utf8'));
+    expect(confirmation).toMatchObject({
+      schema: 'nexus.promotion-dr-escrow.v3',
+      status: 'passed',
+      transactionId: id,
+      storageControls: {
+        provider: 'aws-s3',
+        controlMode: 'versioned-s3',
+        releasePrefixLockVerified: true,
+      },
+      requiredRelease: {
+        path: exact,
+        plaintextSha256: exactSha,
+        encryptedSha256: '3'.repeat(64),
+        encryptedSizeBytes: 2048,
+        objectVersionId: 'fixture-release-version-1',
+        retentionVariance: null,
+        approvedUnversionedVariance: false,
+        confirmed: true,
+      },
+      currentRecoveryRuntime: {
+        path: target,
+        encryptedSha256: '4'.repeat(64),
+        encryptedSizeBytes: 4096,
+        escrowId: id,
+        escrowPhase: 'post-soak',
+        objectVersionId: 'fixture-recovery-current-version-1',
+        retentionVariance: null,
+        approvedUnversionedVariance: false,
+        confirmed: true,
+      },
+      preMutationCurrentRecovery: {
+        path: target,
+        encryptedSha256: '5'.repeat(64),
+        encryptedSizeBytes: 3584,
+        escrowId: id,
+        escrowPhase: 'pre-mutation',
+        objectVersionId: 'fixture-recovery-pre-mutation-version-1',
+        confirmedAt: preMutationRecoveryConfirmedAt,
+        retentionVariance: null,
+        approvedUnversionedVariance: false,
+        confirmed: true,
+      },
+      preMutationDatabaseRecoveryPoint: {
+        plaintextSha256: '7'.repeat(64),
+        encryptedSha256: '2'.repeat(64),
+        encryptedSizeBytes: 1024,
+        objectVersionId: 'fixture-database-pre-mutation-version-1',
+        confirmedAt: preMutationDatabaseConfirmedAt,
+      },
+      currentDatabaseRecoveryPoint: {
+        plaintextSha256: '7'.repeat(64),
+        encryptedSha256: '1'.repeat(64),
+        encryptedSizeBytes: 1536,
+        objectVersionId: 'fixture-database-current-version-1',
+      },
+      promotionTimeline: {
+        cutoverStartedAt: '2026-07-22T12:00:00Z',
+        serviceUnavailableStartedAt: '2026-07-22T12:00:01Z',
+        soakCompletedAt: '2026-07-22T12:01:08Z',
+      },
+      candidateReadinessRefresh: {
+        beforeEscrow: {
+          schema: 'nexus.candidate-readiness-refresh.v1',
+          status: 'passed',
+          transactionId: id,
+          runtimeSha: 'b'.repeat(40),
+          packageVersion: '4.14.231',
+          checks: {
+            loopbackBackend: true,
+            contentEngine: true,
+            pm2Identity: true,
+            publicHealth: true,
+            authenticatedSnapshot: true,
+          },
+        },
+        afterEscrow: {
+          schema: 'nexus.candidate-readiness-refresh.v1',
+          status: 'passed',
+          transactionId: id,
+          runtimeSha: 'b'.repeat(40),
+          packageVersion: '4.14.231',
+          checks: {
+            loopbackBackend: true,
+            contentEngine: true,
+            pm2Identity: true,
+            publicHealth: true,
+            authenticatedSnapshot: true,
+          },
+        },
+      },
+    });
+    expect(confirmation.currentRecoveryRuntime.objectKey)
+      .toContain(`+escrow-${id}+phase-post-soak.tar.gz.`);
+    expect(confirmation.preMutationCurrentRecovery.objectKey)
+      .toContain(`+escrow-${id}+phase-pre-mutation.tar.gz.`);
+    for (const proof of [confirmation.requiredRelease, confirmation.currentRecoveryRuntime]) {
+      expect(Date.parse(proof.retainUntil) - Date.parse(proof.confirmedAt))
+        .toBeGreaterThanOrEqual(90 * 24 * 60 * 60 * 1000);
+    }
+    for (const field of [
+      'path',
+      'plaintextSha256',
+      'runtimeSha',
+      'artifactDigest',
+      'installedRuntimeDigest',
+      'recoveryRuntimeDigest',
+      'releaseManifestSha256',
+      'stagingAttestationSha256',
+      'escrowId',
+    ]) {
+      expect(confirmation.preMutationCurrentRecovery[field])
+        .toBe(confirmation.currentRecoveryRuntime[field]);
+    }
+    expect(confirmation.preMutationCurrentRecovery.objectKey)
+      .not.toBe(confirmation.currentRecoveryRuntime.objectKey);
+    expect(confirmation.preMutationCurrentRecovery.encryptedSha256)
+      .not.toBe(confirmation.currentRecoveryRuntime.encryptedSha256);
+    expect(confirmation.preMutationCurrentRecovery.encryptedSizeBytes)
+      .not.toBe(confirmation.currentRecoveryRuntime.encryptedSizeBytes);
+    expect(confirmation.preMutationCurrentRecovery.objectVersionId)
+      .not.toBe(confirmation.currentRecoveryRuntime.objectVersionId);
+    expect(Date.parse(confirmation.preMutationCurrentRecovery.confirmedAt))
+      .toBeLessThanOrEqual(Date.parse(confirmation.promotionTimeline.cutoverStartedAt));
+    expect(Date.parse(confirmation.currentRecoveryRuntime.confirmedAt))
+      .toBeGreaterThanOrEqual(Date.parse(confirmation.promotionTimeline.soakCompletedAt));
+    expect(Date.parse(confirmation.candidateReadinessRefresh.beforeEscrow.verifiedAt))
+      .toBeGreaterThanOrEqual(Date.parse(confirmation.promotionTimeline.soakCompletedAt));
+    expect(Date.parse(confirmation.currentRecoveryRuntime.confirmedAt))
+      .toBeGreaterThanOrEqual(
+        Date.parse(confirmation.candidateReadinessRefresh.beforeEscrow.verifiedAt),
+      );
+    expect(Date.parse(confirmation.currentDatabaseRecoveryPoint.confirmedAt))
+      .toBeGreaterThanOrEqual(
+        Date.parse(confirmation.candidateReadinessRefresh.beforeEscrow.verifiedAt),
+      );
+    expect(Date.parse(confirmation.candidateReadinessRefresh.afterEscrow.verifiedAt))
+      .toBeGreaterThanOrEqual(Date.parse(confirmation.currentRecoveryRuntime.confirmedAt));
+    expect(Date.parse(confirmation.candidateReadinessRefresh.afterEscrow.verifiedAt))
+      .toBeGreaterThanOrEqual(
+        Date.parse(confirmation.currentDatabaseRecoveryPoint.confirmedAt),
+      );
     expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')).status).toBe('completed');
+    expect(fs.existsSync(recoveryIntent)).toBe(false);
+  }, 30_000);
+
+  it('recovers immediately on restart when authoritative recovery intent exists', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const requestSha256 = JSON.parse(launch.stdout).requestSha256 as string;
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    const recoveryIntent = path.join(authoritative, 'recovery-armed');
+    const recoveryDescriptor = path.join(authoritative, 'recovery-runtime-descriptor.json');
+    const descriptorBody = '{"schema":"fixture.pre-mutation-recovery-descriptor"}\n';
+    writeRootRecoveryIntent(authoritative, requestSha256, 'pre_candidate');
+    fs.writeFileSync(recoveryDescriptor, descriptorBody, { mode: 0o600 });
+
+    const uptimePath = '/proc/uptime';
+    const bootIdPath = '/proc/sys/kernel/random/boot_id';
+    const nowMonotonic = fs.existsSync(uptimePath)
+      ? Math.floor(Number(fs.readFileSync(uptimePath, 'utf8').split(/\s+/u)[0]))
+      : Math.floor(Date.now() / 1000);
+    const bootId = fs.existsSync(bootIdPath)
+      ? fs.readFileSync(bootIdPath, 'utf8').trim()
+      : 'test-boot';
+    const cutoverStartedAt = new Date(Date.now() - 1000).toISOString();
+    fs.writeFileSync(path.join(authoritative, 'cutover-timing.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-cutover-timing.v1',
+      startedAt: cutoverStartedAt,
+      startedMonotonicSeconds: nowMonotonic,
+      preRecoveryDeadlineMonotonicSeconds: nowMonotonic + 60,
+      outageDeadlineMonotonicSeconds: nowMonotonic + 120,
+      bootId,
+    })}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId: id,
+      requestSha256,
+      phase: 'executing',
+      status: 'running',
+      startedAt: cutoverStartedAt,
+    })}\n`, { mode: 0o600 });
+
+    const recoveryModeLog = path.join(root, 'recovery-mode.log');
+    const recoveryScript = path.join(root, 'bin', 'recovery-only-transaction');
+    fs.writeFileSync(recoveryScript, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "\${1:-}" > "$RECOVERY_MODE_LOG"
+[ "\${1:-}" = worker-recover ]
+`, { mode: 0o755 });
+    const drCalled = path.join(root, 'dr-preflight-called');
+    const drSentinel = path.join(root, 'bin', 'unexpected-dr-preflight');
+    fs.writeFileSync(drSentinel, `#!/usr/bin/env bash
+: > "$DR_CALLED"
+exit 99
+`, { mode: 0o755 });
+    const liveFixture = path.join(root, 'restart-recovery-live');
+    const liveProduction = path.join(liveFixture, 'production');
+    const livePredecessor = path.join(liveProduction, 'releases', 'previous-runtime');
+    const liveBin = path.join(liveFixture, 'bin');
+    fs.mkdirSync(path.join(livePredecessor, 'content-engine'), { recursive: true });
+    fs.mkdirSync(path.join(liveProduction, 'releases', 'target-runtime'), { recursive: true });
+    fs.mkdirSync(path.join(liveFixture, 'backups'), { recursive: true });
+    fs.mkdirSync(liveBin, { recursive: true });
+    fs.symlinkSync(livePredecessor, path.join(liveProduction, 'current'));
+    fs.writeFileSync(path.join(liveBin, 'pm2'), `#!/usr/bin/env bash
+if [ "\${1:-}" = jlist ]; then printf '%s\\n' '${JSON.stringify([
+  { name: 'nexus-hub', pm2_env: { status: 'online', pm_cwd: livePredecessor, NEXUS_RELEASE_SHA: 'a'.repeat(40) } },
+  { name: 'content-engine', pm2_env: { status: 'online', pm_cwd: `${livePredecessor}/content-engine`, NEXUS_RELEASE_SHA: 'a'.repeat(40) } },
+])}'; fi
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(liveBin, 'curl'), `#!/usr/bin/env bash
+if [[ "\${!#}" == *"8200/health"* ]]; then
+  printf '{"status":"healthy","server":{"status":"online"},"database":"connected"}\\n'
+fi
+`, { mode: 0o755 });
+
+    const recovered = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: recoveryScript,
+        NEXUS_PROMOTION_DR_BACKUP_BIN: drSentinel,
+        NEXUS_PROMOTION_TEST_ROOT: liveFixture,
+        NEXUS_PROMOTION_TEST_MONOTONIC_SECONDS: String(nowMonotonic + 121),
+        RECOVERY_MODE_LOG: recoveryModeLog,
+        DR_CALLED: drCalled,
+        PATH: `${liveBin}:${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
+      }),
+    });
+
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(fs.readFileSync(recoveryModeLog, 'utf8').trim()).toBe('worker-recover');
+    expect(fs.existsSync(drCalled)).toBe(false);
+    expect(fs.existsSync(recoveryIntent)).toBe(false);
+    expect(fs.readFileSync(recoveryDescriptor, 'utf8')).toBe(descriptorBody);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')))
+      .toMatchObject({
+        phase: 'recovery_complete',
+        status: 'recovered',
+        message: 'explicit_or_boot_recovery_completed',
+      });
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'recovery-result.json'), 'utf8')))
+      .toMatchObject({
+        schema: 'nexus.promotion-recovery-result.v1',
+        timingScope: 'original_cutover',
+        originalCutoverStartedAt: cutoverStartedAt,
+        outageStartedAt: cutoverStartedAt,
+        outageToHealthySeconds: 121,
+        targetSeconds: 120,
+        targetMet: false,
+      });
+    expect(JSON.parse(
+      fs.readFileSync(path.join(authoritative, 'recovery-attempt-timing.json'), 'utf8'),
+    )).toMatchObject({
+      schema: 'nexus.promotion-recovery-attempt-timing.v1',
+      scope: 'original_cutover',
+      originalCutoverStartedAt: cutoverStartedAt,
+      measurementStartedAt: cutoverStartedAt,
+      startedMonotonicSeconds: nowMonotonic,
+      deadlineMonotonicSeconds: nowMonotonic + 120,
+      bootId,
+    });
   });
 
   it('persists recovery intent before the first PM2 stop and automatically restores after an injected stop failure', () => {
@@ -565,7 +1674,11 @@ case "\${1:-}" in
   jlist) printf '%s\n' ${JSON.stringify(pm2Rows)} ;;
   describe) exit 0 ;;
   stop) [ -f ${JSON.stringify(armed)} ] || exit 99; exit 42 ;;
-  delete|start|save) exit 0 ;;
+  save)
+    mkdir -p "$NEXUS_PROMOTION_PM2_STATE_DIR"
+    printf '[]\\n' > "$NEXUS_PROMOTION_PM2_STATE_DIR/dump.pm2"
+    ;;
+  delete|start) exit 0 ;;
 esac
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(bin, 'sleep'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
@@ -597,6 +1710,56 @@ exec "$@"
     expect(calls).toContain('start');
     const journal = JSON.parse(fs.readFileSync(path.join(stateRoot, 'transactions', id, 'state', 'journal.json'), 'utf8'));
     expect(journal.status).toBe('recovered');
+  });
+
+  it('fails closed when root recovery phase is missing or conflicts with candidate state', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const requestSha256 = JSON.parse(launch.stdout).requestSha256 as string;
+    const fixture = path.join(root, 'ambiguous-recovery-fixture');
+    const production = path.join(fixture, 'production');
+    const previous = path.join(production, 'releases', 'previous-runtime');
+    const target = path.join(production, 'releases', 'target-runtime');
+    const bin = path.join(fixture, 'bin');
+    fs.mkdirSync(path.join(previous, 'content-engine'), { recursive: true });
+    fs.mkdirSync(path.join(target, 'content-engine'), { recursive: true });
+    fs.mkdirSync(path.join(fixture, 'backups'), { recursive: true });
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(previous, path.join(production, 'current'));
+    fs.writeFileSync(path.join(bin, 'pm2'), '#!/usr/bin/env bash\nexit 99\n', {
+      mode: 0o755,
+    });
+    const baseEnv = env({
+      NEXUS_PROMOTION_REQUEST_SHA256: requestSha256,
+      NEXUS_PROMOTION_TEST_ROOT: fixture,
+      PATH: `${bin}:${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
+    });
+
+    const missingPhase = spawnSync('bash', [runner, 'worker-recover', id], {
+      encoding: 'utf8',
+      env: baseEnv,
+    });
+    expect(missingPhase.status).toBe(1);
+    expect(missingPhase.stderr).toContain('authoritative recovery phase is missing or invalid');
+
+    const worker = path.join(stateRoot, 'transactions', id, 'worker');
+    fs.writeFileSync(path.join(worker, 'candidate-mutated'), `${JSON.stringify({
+      schema: 'nexus.promotion-worker-candidate-mutated.v1',
+      phase: 'candidate_authorized',
+      transactionId: id,
+      requestSha256,
+      recordedAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    const conflictingPhase = spawnSync('bash', [runner, 'worker-recover', id], {
+      encoding: 'utf8',
+      env: {
+        ...baseEnv,
+        NEXUS_PROMOTION_RECOVERY_PHASE: 'pre_candidate',
+      },
+    });
+    expect(conflictingPhase.status).toBe(1);
+    expect(conflictingPhase.stderr)
+      .toContain('authoritative pre-candidate recovery conflicts with candidate mutation state');
   });
 
   it('rejects an exact-digest archive containing a symlink instead of extracting it during recovery', () => {
@@ -631,8 +1794,20 @@ exec "$@"
       `NEXUS_BACKUP_DATABASE_SHA256=${'a'.repeat(64)}`,
       '',
     ].join('\n'), { mode: 0o600 });
-    fs.writeFileSync(path.join(worker, 'candidate-mutated'), 'yes\n', { mode: 0o600 });
-    fs.writeFileSync(path.join(worker, 'recovery-armed'), 'yes\n', { mode: 0o600 });
+    fs.writeFileSync(path.join(worker, 'candidate-mutated'), `${JSON.stringify({
+      schema: 'nexus.promotion-worker-candidate-mutated.v1',
+      phase: 'candidate_authorized',
+      transactionId: id,
+      requestSha256,
+      recordedAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(worker, 'recovery-armed'), `${JSON.stringify({
+      schema: 'nexus.promotion-worker-recovery-armed.v1',
+      phase: 'pre_candidate',
+      transactionId: id,
+      requestSha256,
+      recordedAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
     fs.writeFileSync(path.join(bin, 'pm2'), `#!/usr/bin/env bash
 case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\n' ;; esac
 `, { mode: 0o755 });
@@ -642,6 +1817,13 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
       env: env({
         NEXUS_PROMOTION_REQUEST_SHA256: requestSha256,
         NEXUS_PROMOTION_TEST_ROOT: fixture,
+        NEXUS_PROMOTION_RECOVERY_PHASE: 'candidate_authorized',
+        NEXUS_PROMOTION_AUTHORIZED_BACKUP_FILE: backup,
+        NEXUS_PROMOTION_AUTHORIZED_BACKUP_SHA256: createHash('sha256')
+          .update(bytes)
+          .digest('hex'),
+        NEXUS_PROMOTION_AUTHORIZED_BACKUP_SIZE_BYTES: String(bytes.length),
+        NEXUS_PROMOTION_AUTHORIZED_BACKUP_DATABASE_SHA256: 'a'.repeat(64),
         PATH: `${bin}:${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
       }),
     });
@@ -651,15 +1833,151 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(journal.status).toBe('recovery_failed');
   });
 
+  it.each([
+    ['failed-before-stop', 'failed_before_stop' as const],
+    ['recovered-at-120-second-boundary', 'recovered' as const],
+  ])('archives deterministic prior authority and allocates a fresh ID after %s', (_label, outcome) => {
+    const fixture = runGovernedTerminalRetryFixture({
+      outcome,
+      recoverySeconds: outcome === 'recovered' ? 120 : undefined,
+    });
+
+    // The fixture intentionally stops at the first fresh target-preparation
+    // mutation, after governed retry rotation and fresh-ID persistence.
+    expect(fixture.result.status).toBe(91);
+    expect(fs.existsSync(fixture.livePredecessorProof)).toBe(true);
+    const archivePath = path.join(
+      fixture.checkpointDir,
+      'terminal-retries',
+      `${fixture.oldTransactionId}.json`,
+    );
+    expect(fs.existsSync(archivePath)).toBe(true);
+    expect(fs.statSync(archivePath).mode & 0o777).toBe(0o600);
+    const archive = JSON.parse(fs.readFileSync(archivePath, 'utf8'));
+    expect(archive).toMatchObject({
+      schema: 'nexus.terminal-promotion-client-archive.v1',
+      transactionId: fixture.oldTransactionId,
+      requestSha256: fixture.requestSha256,
+      terminalStatus: fixture.terminalStatus,
+      archivedAt: fixture.terminalCompletedAt,
+      clientCheckpoint: {
+        sha256: createHash('sha256').update(fixture.checkpointBody).digest('hex'),
+        bodyBase64: fixture.checkpointBody.toString('base64'),
+      },
+      signedRequestEnvelope: {
+        path: fixture.envelopePath,
+        sha256: createHash('sha256')
+          .update(fs.readFileSync(fixture.envelopePath))
+          .digest('hex'),
+      },
+      rawRequest: {
+        path: fixture.requestPath,
+        sha256: createHash('sha256')
+          .update(fs.readFileSync(fixture.requestPath))
+          .digest('hex'),
+      },
+    });
+    expect(Buffer.from(archive.clientCheckpoint.bodyBase64, 'base64'))
+      .toEqual(fixture.checkpointBody);
+
+    const freshCheckpoint = JSON.parse(fs.readFileSync(fixture.checkpointPath, 'utf8'));
+    expect(freshCheckpoint).toMatchObject({
+      ...fixture.checkpoint,
+      transactionId: expect.stringMatching(/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u),
+      startedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+    });
+    expect(freshCheckpoint.transactionId).not.toBe(fixture.oldTransactionId);
+    expect(fs.statSync(fixture.checkpointPath).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(fixture.sshLog, 'utf8'))
+      .toContain('sudo -n /fake/control prepare-runtime-target');
+  });
+
+  it('does not adopt or overwrite a partial terminal retry archive after a crash', () => {
+    const fixture = runGovernedTerminalRetryFixture({
+      outcome: 'failed_before_stop',
+      partialTerminalArchive: true,
+    });
+
+    expect(fixture.result.status).not.toBe(0);
+    expect(fs.readFileSync(fixture.partialArchivePath, 'utf8')).toBe('{"schema":"partial');
+    expect(fs.readFileSync(fixture.checkpointPath)).toEqual(fixture.checkpointBody);
+  });
+
+  it.each([
+    ['recovery-failed terminal state', {
+      outcome: 'recovery_failed' as const,
+    }],
+    ['recovered outside the 120-second budget', {
+      outcome: 'recovered' as const,
+      recoverySeconds: 121,
+    }],
+  ])('does not rotate client authority for %s', (_label, options) => {
+    const fixture = runGovernedTerminalRetryFixture(options);
+
+    expect(fixture.result.status).not.toBe(0);
+    expect(fs.readFileSync(fixture.checkpointPath)).toEqual(fixture.checkpointBody);
+    expect(fs.existsSync(path.join(fixture.checkpointDir, 'terminal-retries'))).toBe(false);
+    expect(fs.existsSync(fixture.livePredecessorProof)).toBe(false);
+  });
+
+  it('fails closed when terminal predecessor identity is tampered', () => {
+    const fixture = runGovernedTerminalRetryFixture({
+      outcome: 'failed_before_stop',
+      tamperPredecessorSha: true,
+    });
+
+    expect(fixture.result.status).not.toBe(0);
+    expect(fs.existsSync(fixture.livePredecessorProof)).toBe(true);
+    expect(fs.readFileSync(fixture.checkpointPath)).toEqual(fixture.checkpointBody);
+    expect(fs.existsSync(path.join(fixture.checkpointDir, 'terminal-retries'))).toBe(false);
+  });
+
+  it.each([
+    ['artifact digest', { artifactIdentityDrift: true }],
+    ['installed-runtime digest', { installedIdentityDrift: true }],
+  ])('fails closed when the live terminal predecessor %s drifts', (_label, drift) => {
+    const fixture = runGovernedTerminalRetryFixture({
+      outcome: 'failed_before_stop',
+      ...drift,
+    });
+
+    expect(fixture.result.status).not.toBe(0);
+    expect(fixture.result.stderr).toContain('terminal predecessor live');
+    expect(fs.existsSync(fixture.livePredecessorProof)).toBe(true);
+    expect(fs.readFileSync(fixture.checkpointPath)).toEqual(fixture.checkpointBody);
+    expect(fs.existsSync(path.join(fixture.checkpointDir, 'terminal-retries'))).toBe(false);
+  });
+
+  it('fails closed without a fresh ID when current drifts after terminal predecessor proof', () => {
+    const fixture = runGovernedTerminalRetryFixture({
+      outcome: 'recovered',
+      recoverySeconds: 120,
+      currentRuntimeDrift: true,
+    });
+
+    expect(fixture.result.status).toBe(75);
+    expect(fixture.result.stderr).toContain(
+      'terminal predecessor identity changed before fresh authorization',
+    );
+    expect(fs.existsSync(fixture.livePredecessorProof)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(fixture.checkpointPath, 'utf8')).transactionId)
+      .toBe(fixture.oldTransactionId);
+  });
+
   it('wires the dedicated identity, finite bounds, signed client, and strict migration approval', () => {
     const clientSource = fs.readFileSync(promotion, 'utf8');
     const runnerSource = fs.readFileSync(runner, 'utf8');
     const brokerSource = fs.readFileSync(broker, 'utf8');
+    const controlSource = fs.readFileSync(control, 'utf8');
     const installSource = fs.readFileSync(installer, 'utf8');
     const attestorSource = fs.readFileSync(trustedAttestor, 'utf8');
     const service = fs.readFileSync(unit, 'utf8');
     const recovery = fs.readFileSync(recoveryUnit, 'utf8');
     const gate = fs.readFileSync(migrationGate, 'utf8');
+    const backupSource = fs.readFileSync(
+      path.resolve('scripts/remote-create-release-backup.sh'),
+      'utf8',
+    );
 
     expect(clientSource).toContain('nexus-release-promotion-control.v2');
     expect(clientSource).toContain('sign-request');
@@ -669,7 +1987,11 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(clientSource).toContain('transaction result identity does not match');
     expect(clientSource).toContain('NEXUS_INSTALLED_RUNTIME_DIGEST');
     expect(clientSource).toContain('release-installed-tree-attestation.mjs" validate');
-    expect(clientSource).toContain('rollbackEscrow: { status: \'passed\'');
+    const rollbackEscrowIndex = clientSource.indexOf('rollbackEscrow: {');
+    expect(rollbackEscrowIndex).toBeGreaterThan(-1);
+    expect(clientSource.slice(rollbackEscrowIndex, rollbackEscrowIndex + 100))
+      .toContain("status: 'passed'");
+    expect(clientSource).toContain("currentRecoveryEscrow: { status: 'passed'");
     const prepareTarget = clientSource.indexOf('prepare-runtime-target');
     const copyTarget = clientSource.indexOf('rsync -a --delete', prepareTarget);
     const sealTarget = clientSource.indexOf('seal-runtime', copyTarget);
@@ -681,15 +2003,135 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(clientSource.slice(prepareTarget, copyTarget)).toContain('[ ! -w "$base_dir/releases" ]');
     expect(clientSource).toContain('Tolerate bounded transient transport loss');
     expect(clientSource).toContain('retry-escrow "$PROMOTION_RUN_ID"');
-    const armIndex = runnerSource.indexOf('RECOVERY_ARMED_MARKER.next');
-    const stopIndex = runnerSource.indexOf('\nstop_predecessor\n', armIndex);
+    expect(clientSource).toContain('deadline=$((SECONDS + 2100))');
+    const retryArchiveStart = clientSource.indexOf(
+      'retry_archive="$retry_archive_dir/${PROMOTION_RUN_ID}.json"',
+    );
+    const retryArchiveEnd = clientSource.indexOf(
+      'RETRY_TERMINAL_PREDECESSOR=true',
+      retryArchiveStart,
+    );
+    expect(retryArchiveStart).toBeGreaterThan(-1);
+    expect(retryArchiveEnd).toBeGreaterThan(retryArchiveStart);
+    expect(clientSource.slice(retryArchiveStart, retryArchiveEnd))
+      .toContain("schema:'nexus.terminal-promotion-client-archive.v1'");
+    expect(clientSource.slice(retryArchiveStart, retryArchiveEnd))
+      .toContain("fs.openSync(temporary,'wx',0o600)");
+    expect(clientSource.slice(retryArchiveStart, retryArchiveEnd))
+      .toContain('fs.fsyncSync(descriptor)');
+    expect(clientSource.slice(retryArchiveStart, retryArchiveEnd))
+      .toContain('fs.linkSync(temporary,output)');
+    expect(clientSource.slice(retryArchiveStart, retryArchiveEnd))
+      .toContain('fsync_local_directory "$retry_archive_dir"');
+    expect(clientSource.slice(retryArchiveStart, retryArchiveEnd))
+      .toContain('fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"');
+    const checkpointWriterStart = clientSource.indexOf(
+      'checkpoint_temporary="$TRANSACTION_CHECKPOINT.',
+    );
+    const checkpointWriterEnd = clientSource.indexOf(
+      '# Copy the already prepared staging runtime',
+      checkpointWriterStart,
+    );
+    expect(checkpointWriterStart).toBeGreaterThan(-1);
+    expect(checkpointWriterEnd).toBeGreaterThan(checkpointWriterStart);
+    expect(clientSource.slice(checkpointWriterStart, checkpointWriterEnd))
+      .toContain("fs.openSync(file,'wx',0o600)");
+    expect(clientSource.slice(checkpointWriterStart, checkpointWriterEnd))
+      .toContain('fs.fsyncSync(fd)');
+    expect(clientSource.slice(checkpointWriterStart, checkpointWriterEnd))
+      .toContain('mv "$checkpoint_temporary" "$TRANSACTION_CHECKPOINT"');
+    expect(clientSource.slice(checkpointWriterStart, checkpointWriterEnd))
+      .toContain('fsync_local_directory "$TRANSACTION_CHECKPOINT_DIR"');
+    const requestWriterStart = clientSource.indexOf('if [ ! -f "$request_file" ]; then');
+    const requestWriterEnd = clientSource.indexOf(
+      '[ -f "$request_file" ] && [ ! -L "$request_file" ]',
+      requestWriterStart,
+    );
+    expect(requestWriterStart).toBeGreaterThan(-1);
+    expect(requestWriterEnd).toBeGreaterThan(requestWriterStart);
+    expect(clientSource.slice(requestWriterStart, requestWriterEnd))
+      .toContain("fs.openSync(temporary,'wx',0o600)");
+    expect(clientSource.slice(requestWriterStart, requestWriterEnd))
+      .toContain('fs.fsyncSync(descriptor)');
+    expect(clientSource.slice(requestWriterStart, requestWriterEnd))
+      .toContain('fs.linkSync(temporary,output)');
+    expect(clientSource.slice(requestWriterStart, requestWriterEnd))
+      .toContain('fs.unlinkSync(temporary)');
+    expect(clientSource.slice(requestWriterStart, requestWriterEnd))
+      .toContain('fsync_local_directory "$request_dir"');
+    const requestSigningStart = clientSource.indexOf(
+      'promotion-authorization.mjs" sign-request',
+    );
+    expect(requestSigningStart).toBeGreaterThan(-1);
+    expect(clientSource.slice(requestSigningStart, requestSigningStart + 500))
+      .toContain('fsync_local_directory "$request_dir"');
+    const armIndex = runnerSource.indexOf(
+      'durable_worker_marker "$RECOVERY_ARMED_MARKER"',
+    );
+    const stopIndex = runnerSource.indexOf('\n  stop_predecessor\n', armIndex);
+    const backupPublishIndex = runnerSource.indexOf(
+      'durable_publish_worker_file "$backup_temporary" "$BACKUP_ENV"',
+      stopIndex,
+    );
+    const candidateMarkerIndex = runnerSource.indexOf(
+      'durable_worker_marker "$CANDIDATE_MARKER"',
+      backupPublishIndex,
+    );
+    const selectorMutationIndex = runnerSource.indexOf(
+      'atomic_switch_current "$RELEASE_DIR"',
+      candidateMarkerIndex,
+    );
+    expect(armIndex).toBeGreaterThan(-1);
     expect(armIndex).toBeLessThan(stopIndex);
+    expect(backupPublishIndex).toBeGreaterThan(stopIndex);
+    expect(candidateMarkerIndex).toBeGreaterThan(backupPublishIndex);
+    expect(selectorMutationIndex).toBeGreaterThan(candidateMarkerIndex);
+    const candidateStart = runnerSource.indexOf(
+      '"$PM2_BIN" start "$RELEASE_DIR/ecosystem.release.config.js"',
+      selectorMutationIndex,
+    );
+    const candidateWindow = runnerSource.slice(candidateMarkerIndex, candidateStart);
+    expect(candidateStart).toBeGreaterThan(selectorMutationIndex);
+    expect(candidateWindow).toContain('"$TIMEOUT_BIN" 5s "$PM2_BIN" describe "$app"');
+    expect(candidateWindow).toContain('"$TIMEOUT_BIN" 10s "$PM2_BIN" delete "$app"');
+    expect(candidateWindow.lastIndexOf('PHASE_TIMEOUT_SECONDS="$(pre_recovery_remaining)"'))
+      .toBeGreaterThan(candidateWindow.indexOf('"$TIMEOUT_BIN" 10s "$PM2_BIN" delete "$app"'));
+    const rootCandidateProofStart = brokerSource.indexOf('verify_candidate_live() {');
+    const rootCandidateProofEnd = brokerSource.indexOf(
+      '\n}\n\nprune_local_backups_as_application_user()',
+      rootCandidateProofStart,
+    );
+    expect(brokerSource.slice(rootCandidateProofStart, rootCandidateProofEnd))
+      .toContain('"$TIMEOUT_BIN" 5s "$PM2_BIN" jlist');
+    expect(brokerSource.slice(rootCandidateProofStart, rootCandidateProofEnd))
+      .toContain('"$TIMEOUT_BIN" 5s "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist');
+    const selectorWriterStart = runnerSource.indexOf('atomic_switch_current() {');
+    const selectorWriterEnd = runnerSource.indexOf(
+      '\n}\n\nstart_predecessor()',
+      selectorWriterStart,
+    );
+    expect(runnerSource.slice(selectorWriterStart, selectorWriterEnd))
+      .toContain("descriptor=fs.openSync(productionBase,'r')");
+    const pm2SaveStart = runnerSource.indexOf('pm2_save_durable() {');
+    const pm2SaveEnd = runnerSource.indexOf(
+      '\n}\n\nverify_candidate_readiness_snapshot()',
+      pm2SaveStart,
+    );
+    expect(runnerSource.slice(pm2SaveStart, pm2SaveEnd))
+      .toContain("descriptor = fs.openSync(dump, 'r')");
+    expect(runnerSource.slice(pm2SaveStart, pm2SaveEnd))
+      .toContain("descriptor = fs.openSync(directory, 'r')");
+    expect(runnerSource)
+      .toContain("for(const name of ['bot.db','bot.db-wal','bot.db-shm'])");
+    expect(backupSource).toContain('fs.renameSync(temporary, archive)');
+    expect(backupSource).toContain("descriptor = fs.openSync(archive, 'r')");
+    expect(backupSource).toContain("descriptor = fs.openSync(backupDirectory, 'r')");
     expect(runnerSource).not.toContain('sleep "$STABILITY_SECONDS"');
     expect(runnerSource).not.toContain('soak_predecessor_identity');
     expect(runnerSource.match(/--stability-seconds "\$STABILITY_SECONDS"/gu)).toHaveLength(1);
     expect(runnerSource).toContain('signed_migration_identities_automatically_verified');
     expect(runnerSource).not.toContain('continue.envelope.json');
-    expect(fs.readFileSync(path.resolve('scripts/remote-create-release-backup.sh'), 'utf8')).not.toContain('tail -n +11');
+    expect(backupSource).not.toContain('tail -n +11');
     expect(brokerSource).toContain('OUTAGE_BUDGET_SECONDS=120');
     expect(brokerSource).toContain('PRE_RECOVERY_BUDGET_SECONDS=60');
     expect(brokerSource).toContain('NEXUS_PROMOTION_OUTAGE_DEADLINE_MONOTONIC');
@@ -698,11 +2140,120 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(brokerSource).toContain('exec 8<>"$RELEASE_SONAR_LOCK"');
     expect(brokerSource).not.toContain('exec 8>"$RELEASE_SONAR_LOCK"');
     expect(brokerSource).toContain('AUTHORITATIVE_DIR="$TRANSACTION_DIR/state"');
+    expect(brokerSource).toContain(
+      'PREDECESSOR_INSTALLED_RUNTIME_DIGEST TARGET_RUNTIME TARGET_SHA TARGET_VERSION',
+    );
+    expect(brokerSource).toContain('canonical(envelope?.payload)!==requestCanonical');
+    expect(brokerSource)
+      .toContain("crypto.createHash('sha256').update(requestCanonical).digest('hex')");
     const drPreflightIndex = brokerSource.indexOf('if ! preflight_application_dr; then');
+    const recoveryIntentArmIndex = brokerSource.lastIndexOf(
+      '\nwrite_recovery_intent_pre_candidate\n',
+    );
     expect(drPreflightIndex).toBeGreaterThan(-1);
-    expect(drPreflightIndex).toBeLessThan(brokerSource.indexOf('RECOVERY_INTENT.next'));
+    expect(recoveryIntentArmIndex).toBeGreaterThan(-1);
+    expect(drPreflightIndex).toBeLessThan(recoveryIntentArmIndex);
+    const timingWriterStart = brokerSource.indexOf('write_cutover_timing() {');
+    const timingWriterEnd = brokerSource.indexOf('\n}\n\nread_cutover_timing()', timingWriterStart);
+    expect(timingWriterStart).toBeGreaterThan(-1);
+    expect(timingWriterEnd).toBeGreaterThan(timingWriterStart);
+    expect(brokerSource.slice(timingWriterStart, timingWriterEnd))
+      .toContain('output="$(durable_staging_file "$CUTOVER_TIMING")"');
+    expect(brokerSource.slice(timingWriterStart, timingWriterEnd))
+      .toContain('durable_publish "$output" "$CUTOVER_TIMING"');
+    expect(brokerSource.lastIndexOf('\nwrite_cutover_timing\n'))
+      .toBeLessThan(recoveryIntentArmIndex);
     expect(brokerSource).toContain('"$DR_BACKUP_BIN" --config "$DR_CONFIG" --verify-config');
-    expect(brokerSource.indexOf('RECOVERY_INTENT.next')).toBeLessThan(brokerSource.indexOf('invoke_worker worker-run'));
+    expect(brokerSource.match(/--recovery-escrow-id "\$TRANSACTION_ID"/gu)).toHaveLength(2);
+    expect(brokerSource.match(/--recovery-descriptor "\$RECOVERY_DESCRIPTOR"/gu)).toHaveLength(2);
+    expect(brokerSource.match(/--recovery-escrow-phase pre-mutation/gu)).toHaveLength(1);
+    expect(brokerSource.match(/--recovery-escrow-phase post-soak/gu)).toHaveLength(1);
+    expect(brokerSource).toContain("'nexus.pre-mutation-current-recovery-escrow.v2'");
+    expect(brokerSource).toContain("c?.escrowPhase!=='post-soak'");
+    expect(brokerSource).toContain("preCurrent?.escrowPhase!=='pre-mutation'");
+    expect(brokerSource).toContain('encryptedSha256:dr.databaseEncryptedSha256');
+    expect(brokerSource).toContain('encryptedSizeBytes:dr.databaseEncryptedSizeBytes');
+    expect(brokerSource).toContain('preMutationDatabaseRecoveryPoint:preflight.databaseRecoveryPoint');
+    expect(brokerSource).toContain('currentDatabaseRecoveryPoint:{objectKey:dr.databaseKey');
+    expect(brokerSource).toContain('promotionTimeline:{cutoverStartedAt:result.get');
+    expect(brokerSource).toContain('candidateReadinessRefresh:{');
+    expect(brokerSource).toContain('beforeEscrow:beforeReadiness');
+    expect(brokerSource).toContain('afterEscrow:afterReadiness');
+    expect(brokerSource).toContain('invoke_worker worker-verify-candidate');
+    expect(brokerSource).toContain('nexus.candidate-readiness-refresh.v1');
+    expect(brokerSource).toContain('beforeReadinessVerified<soakCompleted');
+    expect(brokerSource).toContain('currentDatabaseConfirmed<beforeReadinessVerified');
+    expect(brokerSource).toContain('afterReadinessVerified<currentDatabaseConfirmed');
+    expect(brokerSource).toContain('write_journal awaiting_dr_escrow escrow_pending');
+    expect(brokerSource).toContain('recover_and_record post_availability_detection');
+    expect(brokerSource).toContain('nexus.promotion-recovery-attempt-timing.v1');
+    expect(brokerSource).toContain('candidate_degraded_during_escrow');
+    const workerPrepareIndex = brokerSource.lastIndexOf('invoke_worker worker-prepare');
+    const rootAuthorizeIndex = brokerSource.indexOf(
+      'authorize_candidate_from_worker_backup',
+      workerPrepareIndex,
+    );
+    const workerPromoteIndex = brokerSource.indexOf(
+      'invoke_worker worker-promote',
+      rootAuthorizeIndex,
+    );
+    expect(workerPrepareIndex).toBeGreaterThan(recoveryIntentArmIndex);
+    expect(rootAuthorizeIndex).toBeGreaterThan(workerPrepareIndex);
+    expect(workerPromoteIndex).toBeGreaterThan(rootAuthorizeIndex);
+    expect(brokerSource).toContain("'nexus.promotion-root-recovery-intent.v2'");
+    const invokeRecoveryIndex = brokerSource.indexOf('invoke_recovery() {');
+    const attestBeforeBudgetIndex = brokerSource.indexOf(
+      'trusted_attest verify "$PREDECESSOR_RUNTIME"',
+      invokeRecoveryIndex,
+    );
+    const refreshedBudgetIndex = brokerSource.indexOf(
+      'current_mono="$(monotonic_seconds)"',
+      attestBeforeBudgetIndex,
+    );
+    expect(attestBeforeBudgetIndex).toBeGreaterThan(invokeRecoveryIndex);
+    expect(refreshedBudgetIndex).toBeGreaterThan(attestBeforeBudgetIndex);
+    const recoveryRecordIndex = brokerSource.indexOf('recover_and_record() {');
+    const verifyRecoveredIndex = brokerSource.indexOf(
+      'verify_predecessor_live || return 1',
+      recoveryRecordIndex,
+    );
+    const sealRecoveredIndex = brokerSource.indexOf(
+      'seal_recovery_result',
+      verifyRecoveredIndex,
+    );
+    expect(verifyRecoveredIndex).toBeGreaterThan(recoveryRecordIndex);
+    expect(sealRecoveredIndex).toBeGreaterThan(verifyRecoveredIndex);
+    const restartRecoveryIndex = brokerSource.indexOf(
+      'if [ -f "$RECOVERY_INTENT" ] \\\n'
+      + '    || [ "$existing_status" = running ]',
+    );
+    expect(restartRecoveryIndex).toBeGreaterThan(-1);
+    expect(restartRecoveryIndex).toBeLessThan(drPreflightIndex);
+    const descriptorResumeIndex = brokerSource.indexOf(
+      'if [ -e "$RECOVERY_DESCRIPTOR" ] || [ -L "$RECOVERY_DESCRIPTOR" ]; then',
+    );
+    const descriptorRebuildIndex = brokerSource.indexOf(
+      'prepare_recovery_descriptor_unprivileged',
+      descriptorResumeIndex,
+    );
+    expect(descriptorResumeIndex).toBeGreaterThan(-1);
+    expect(descriptorRebuildIndex).toBeGreaterThan(descriptorResumeIndex);
+    expect(brokerSource.slice(descriptorResumeIndex, descriptorRebuildIndex))
+      .toContain('root:root:600:1');
+    expect(brokerSource.slice(descriptorResumeIndex, descriptorRebuildIndex))
+      .toContain('durable_remove "$RECOVERY_DESCRIPTOR"');
+    const finishEscrowStart = brokerSource.indexOf('finish_escrow() {');
+    const completedTransition = brokerSource.indexOf(
+      'write_journal completed completed exact_candidate_and_recovery_runtime_escrowed',
+      finishEscrowStart,
+    );
+    const finalIntentDisarm = brokerSource.indexOf(
+      'durable_remove "$RECOVERY_INTENT"',
+      completedTransition,
+    );
+    expect(completedTransition).toBeGreaterThan(finishEscrowStart);
+    expect(finalIntentDisarm).toBeGreaterThan(completedTransition);
+    expect(recoveryIntentArmIndex).toBeLessThan(workerPrepareIndex);
     expect(brokerSource.indexOf('verify_candidate_live')).toBeLessThan(brokerSource.indexOf('escrow_exact_backup'));
     expect(brokerSource).toContain('candidate_available_before_network_escrow');
     expect(brokerSource).toContain('explicit_recovery_from_escrow_pending');
@@ -715,6 +2266,9 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(attestorSource).toContain('installed dependency symlink escapes the runtime');
     expect(attestorSource).toContain('compareCodeUnits');
     expect(attestorSource).not.toContain('localeCompare');
+    expect(attestorSource).not.toContain('execFileSync');
+    expect(attestorSource).toContain("lock.target?.node !== process.version");
+    expect(attestorSource).toContain("lock.target?.python ?? ''");
     expect(attestorSource).toContain('assertSealedPermissions');
     expect(attestorSource).toContain('fs.chmodSync(base, 0o1770)');
     expect(attestorSource).toContain("fs.chmodSync(path.join(base, 'releases'), 0o750)");
@@ -726,17 +2280,88 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(releaseOperator).not.toContain('/usr/bin/npm ci');
     expect(releaseOperator).not.toContain('pip install');
     expect(installSource).toContain('--shell /usr/sbin/nologin');
-    expect(installSource).toContain('-m 700');
+    expect(installSource).toContain('root root 700');
     expect(installSource).toContain('nexus-release-sonar-lock.conf');
     expect(installSource).toContain('root:dominguez:660');
     expect(installSource).toContain('nexus-release-promotion-control retry-escrow *');
+    const bootstrapJournal = installSource.indexOf(
+      'nexus.release-promotion-bootstrap-journal.v1',
+    );
+    const guardedBroker = installSource.indexOf(
+      '/usr/local/sbin/nexus-release-promotion-control root root 755',
+      bootstrapJournal,
+    );
+    const drInstall = installSource.indexOf(
+      '"$SOURCE_ROOT/scripts/application-dr-systemd-install.sh" "$SOURCE_ROOT"',
+      guardedBroker,
+    );
+    const sudoersRestore = installSource.lastIndexOf(
+      'install_file_atomically "$sudoers_tmp" "$SUDOERS_TARGET" root root 440',
+    );
+    const journalDisarm = installSource.lastIndexOf(
+      'durable_remove "$BOOTSTRAP_JOURNAL"',
+    );
+    expect(bootstrapJournal).toBeGreaterThan(-1);
+    expect(guardedBroker).toBeGreaterThan(bootstrapJournal);
+    expect(drInstall).toBeGreaterThan(guardedBroker);
+    expect(sudoersRestore).toBeGreaterThan(drInstall);
+    expect(journalDisarm).toBeGreaterThan(sudoersRestore);
+    expect(installSource).toContain('fsync_path "$temporary"');
+    expect(installSource).toContain('mv -fT -- "$temporary" "$target"');
+    expect(controlSource).toContain(
+      'promotion control-plane installation is incomplete; rerun the reviewed bootstrap',
+    );
+    expect(installSource).toContain('validate_root_trusted_path "$SOURCE_ROOT"');
+    expect(installSource).toContain('scripts/application-dr-systemd-install.sh');
+    expect(installSource).toContain(
+      '"$SOURCE_ROOT/scripts/application-dr-systemd-install.sh" "$SOURCE_ROOT"',
+    );
+    expect(installSource.indexOf(
+      '"$SOURCE_ROOT/scripts/application-dr-systemd-install.sh" "$SOURCE_ROOT"',
+    )).toBeLessThan(installSource.indexOf(
+      '"$SOURCE_ROOT/scripts/remote-promotion-worker-control.sh"',
+    ));
+    expect(installSource).toContain(
+      'validate_root_trusted_path "$OWNER_PUBLIC_KEY_SOURCE"',
+    );
+    expect(installSource).toContain(
+      '"$SOURCE_ROOT/$required" \\\n    "promotion bootstrap source ($required)"',
+    );
+    expect(installSource).toContain('path component is not root-owned');
+    expect(installSource).toContain('path component is group/world writable');
+    expect(installSource).toContain(
+      'promotion service UID must be nonzero and unambiguous',
+    );
+    expect(installSource).toContain(
+      'promotion service identity must use the exact primary service group',
+    );
+    expect(installSource).toContain(
+      'promotion service identity home must be /nonexistent',
+    );
+    expect(installSource).toContain(
+      'promotion service identity must use nologin',
+    );
+    expect(installSource).toContain(
+      'promotion service identity must not belong to supplementary groups',
+    );
+    expect(installSource).toContain('promotion service group is shared by');
     expect(installSource).not.toContain('promotion-control continue');
     expect(installSource).not.toContain('promotion-control escrow-inflight');
     expect(service).toContain('User=nexus-release');
-    expect(service).not.toContain('TimeoutStartSec=infinity');
+    expect(service).toContain('TimeoutStartSec=28min');
+    expect(service).toContain(
+      'ConditionPathExists=!/var/lib/nexus-release-promotion/bootstrap-in-progress.v1',
+    );
+    expect(service).toContain('RestartPreventExitStatus=75 76');
     expect(service).not.toContain('network-online.target');
     expect(recovery).toContain('Before=network.target network-online.target multi-user.target pm2-dominguez.service pm2-root.service');
-    expect(recovery).toContain('TimeoutStartSec=130s');
+    expect(recovery).toContain('TimeoutStartSec=300s');
+    expect(recovery).toContain(
+      'ConditionPathExists=!/var/lib/nexus-release-promotion/bootstrap-in-progress.v1',
+    );
+    expect(installSource).toContain('pm2-dominguez.service pm2-root.service');
+    expect(installSource).toContain('Requires=nexus-release-promotion-recovery.service');
+    expect(installSource).toContain('After=nexus-release-promotion-recovery.service');
     expect(gate).toContain("'--approval-mode', 'promotion'");
   });
 });

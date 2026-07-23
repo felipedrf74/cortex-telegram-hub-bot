@@ -29,6 +29,7 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'content-engine/requirements-dev.txt',
   'content-engine/pyproject.toml',
   'scripts/release-installed-tree-attestation.mjs',
+  'scripts/release-recovery-runtime-identity.mjs',
   'scripts/release-runtime-dependencies.mjs',
   'scripts/env-parity-check.sh',
   'scripts/lib/release-gates.sh',

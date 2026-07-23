@@ -1,0 +1,37 @@
+[Unit]
+Description=Nexus Hub Cloudflare Tunnel connector
+Documentation=https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=config.yml:/etc/nexus-cloudflared/config.yml
+LoadCredential=tunnel.json:/etc/nexus-cloudflared/tunnel.json
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config ${CREDENTIALS_DIRECTORY}/config.yml tunnel --metrics 127.0.0.1:20243 run
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

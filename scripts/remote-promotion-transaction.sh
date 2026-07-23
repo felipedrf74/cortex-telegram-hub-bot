@@ -14,11 +14,20 @@ CUTOVER_STARTED_AT="${NEXUS_PROMOTION_CUTOVER_STARTED_AT:-}"
 CUTOVER_STARTED_MONOTONIC="${NEXUS_PROMOTION_CUTOVER_STARTED_MONOTONIC:-}"
 PRE_RECOVERY_DEADLINE_MONOTONIC="${NEXUS_PROMOTION_PRE_RECOVERY_DEADLINE_MONOTONIC:-}"
 OUTAGE_DEADLINE_MONOTONIC="${NEXUS_PROMOTION_OUTAGE_DEADLINE_MONOTONIC:-}"
+RECOVERY_PHASE="${NEXUS_PROMOTION_RECOVERY_PHASE:-}"
+AUTHORIZED_BACKUP_FILE="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_FILE:-}"
+AUTHORIZED_BACKUP_SHA256="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_SHA256:-}"
+AUTHORIZED_BACKUP_SIZE_BYTES="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_SIZE_BYTES:-}"
+AUTHORIZED_BACKUP_DATABASE_SHA256="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_DATABASE_SHA256:-}"
+PM2_STATE_DIR="${NEXUS_PROMOTION_PM2_STATE_DIR:-${PM2_HOME:-$HOME/.pm2}}"
 [[ "$TRANSACTION_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$ ]] || {
   echo "invalid promotion transaction id" >&2
   exit 64
 }
-case "$COMMAND" in worker-run|worker-recover) ;; *) echo "Usage: remote-promotion-transaction.sh <worker-run|worker-recover> <transaction-id>" >&2; exit 64 ;; esac
+case "$COMMAND" in
+  worker-prepare|worker-promote|worker-recover|worker-verify-candidate) ;;
+  *) echo "Usage: remote-promotion-transaction.sh <worker-prepare|worker-promote|worker-recover|worker-verify-candidate> <transaction-id>" >&2; exit 64 ;;
+esac
 [[ "$REQUEST_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "promotion request digest is missing" >&2; exit 77; }
 [ -x "$TIMEOUT_BIN" ] || { echo "timeout is required by the promotion worker" >&2; exit 1; }
 
@@ -113,7 +122,202 @@ monotonic_seconds() {
   return 1
 }
 
-if [ "$COMMAND" = worker-run ]; then
+durable_publish_worker_file() {
+  local temporary="$1" destination="$2"
+  node - "$temporary" "$destination" "$WORKER_DIR" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const [temporary, destination, workerRoot] = process.argv.slice(2);
+const parent = path.dirname(destination);
+if (parent !== workerRoot || path.dirname(temporary) !== parent
+    || !path.basename(temporary).startsWith(`${path.basename(destination)}.next.`)) {
+  throw new Error('unsafe worker durability publication path');
+}
+const staged = fs.lstatSync(temporary);
+if (!staged.isFile() || staged.isSymbolicLink() || staged.nlink !== 1) {
+  throw new Error('unsafe worker durability staging file');
+}
+if (fs.existsSync(destination)) {
+  const current = fs.lstatSync(destination);
+  if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) {
+    throw new Error('unsafe worker durability destination');
+  }
+}
+let descriptor = fs.openSync(temporary, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+fs.renameSync(temporary, destination);
+descriptor = fs.openSync(parent, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+NODE
+}
+
+durable_worker_marker() {
+  local destination="$1" schema="$2" phase="$3" temporary
+  temporary="$(mktemp "${destination}.next.XXXXXXXX")"
+  node - "$temporary" "$schema" "$phase" "$TRANSACTION_ID" "$REQUEST_SHA256" <<'NODE'
+const fs = require('fs');
+const [output, schema, phase, transactionId, requestSha256] = process.argv.slice(2);
+fs.writeFileSync(output, `${JSON.stringify({
+  schema, phase, transactionId, requestSha256, recordedAt: new Date().toISOString(),
+}, null, 2)}\n`, { mode: 0o600, flag: 'w' });
+NODE
+  chmod 600 "$temporary"
+  durable_publish_worker_file "$temporary" "$destination"
+}
+
+validate_worker_marker() {
+  local marker="$1" schema="$2" phase="$3"
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  node - "$marker" "$schema" "$phase" "$TRANSACTION_ID" "$REQUEST_SHA256" <<'NODE'
+const fs = require('fs');
+const [file, schema, phase, transactionId, requestSha256] = process.argv.slice(2);
+const stat = fs.lstatSync(file);
+const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+    || value.schema !== schema || value.phase !== phase
+    || value.transactionId !== transactionId || value.requestSha256 !== requestSha256
+    || typeof value.recordedAt !== 'string' || !Number.isFinite(Date.parse(value.recordedAt))) {
+  process.exit(1);
+}
+NODE
+}
+
+read_backup_env() {
+  local file="$1"
+  node - "$file" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+const stat = fs.lstatSync(file);
+if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) process.exit(1);
+const values = new Map();
+for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/u)) {
+  if (line === '') continue;
+  const match = line.match(/^([A-Z0-9_]+)=(.*)$/u);
+  if (!match || values.has(match[1]) || match[2].includes('\t')) process.exit(1);
+  values.set(match[1], match[2]);
+}
+const required = [
+  'NEXUS_BACKUP_FILE', 'NEXUS_BACKUP_SHA256', 'NEXUS_BACKUP_SIZE_BYTES',
+  'NEXUS_BACKUP_ARCHIVED_VERSION', 'NEXUS_BACKUP_TARGET_VERSION',
+  'NEXUS_BACKUP_CREATED_AT', 'NEXUS_BACKUP_DATABASE_SHA256',
+];
+if (values.size !== required.length || required.some((key) => !values.has(key))) process.exit(1);
+process.stdout.write(`${required.map((key) => values.get(key)).join('\t')}\n`);
+NODE
+}
+
+validate_authorized_backup() {
+  case "$AUTHORIZED_BACKUP_FILE" in
+    "$BACKUP_DIR"/v*.tar.gz) ;;
+    *) echo "authoritative rollback backup path is invalid" >&2; return 1 ;;
+  esac
+  [[ "$AUTHORIZED_BACKUP_SHA256" =~ ^[a-f0-9]{64}$ \
+      && "$AUTHORIZED_BACKUP_DATABASE_SHA256" =~ ^[a-f0-9]{64}$ \
+      && "$AUTHORIZED_BACKUP_SIZE_BYTES" =~ ^[1-9][0-9]*$ ]] || {
+    echo "authoritative rollback backup identity is invalid" >&2
+    return 1
+  }
+}
+
+pm2_save_durable() {
+  local dump_file
+  case "$PM2_STATE_DIR" in
+    /*) ;;
+    *) echo "PM2 state directory is not absolute" >&2; return 1 ;;
+  esac
+  "$TIMEOUT_BIN" 10s "$PM2_BIN" save >/dev/null || return 1
+  dump_file="$PM2_STATE_DIR/dump.pm2"
+  node - "$PM2_STATE_DIR" "$dump_file" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const [directory, dump] = process.argv.slice(2);
+const directoryStat = fs.lstatSync(directory);
+const dumpStat = fs.lstatSync(dump);
+if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()
+    || !dumpStat.isFile() || dumpStat.isSymbolicLink() || dumpStat.nlink !== 1
+    || path.dirname(dump) !== directory) {
+  throw new Error('PM2 saved state is unsafe or incomplete');
+}
+let descriptor = fs.openSync(dump, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+descriptor = fs.openSync(directory, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+NODE
+}
+
+verify_candidate_readiness_snapshot() (
+  set -euo pipefail
+  local auth_header local_health public_health public_snapshot require_session portal_token
+  local backend_ok=false content_ok=false identity_ok=false public_health_ok=false
+  local public_snapshot_ok=false
+  auth_header="$(mktemp)"; local_health="$(mktemp)"; public_health="$(mktemp)"; public_snapshot="$(mktemp)"
+  cleanup_candidate_snapshot() {
+    rm -f "$auth_header" "$local_health" "$public_health" "$public_snapshot"
+  }
+  trap cleanup_candidate_snapshot EXIT
+  chmod 600 "$auth_header" "$local_health" "$public_health" "$public_snapshot"
+  require_session="$(awk -F= '$1=="PORTAL_REQUIRE_SESSION_AUTH" {print substr($0,index($0,"=")+1); exit}' \
+    "$PROD_BASE/.env" 2>/dev/null || true)"
+  if [ "$require_session" = true ]; then
+    portal_token="$(cd "$RELEASE_DIR" && DOTENV_CONFIG_PATH="$PROD_BASE/.env" node -r dotenv/config \
+      dist/tools/portal-session-token.js --actor release-promotion@nexushub.me \
+      --scope admin --ttl-ms 300000 --json \
+      | node -e 'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(b).token||""))')"
+    [ -n "$portal_token" ] || return 1
+    printf 'x-portal-session: %s\n' "$portal_token" >"$auth_header"
+  else
+    portal_token="$(awk -F= '$1=="PORTAL_TOKEN" {print substr($0,index($0,"=")+1); exit}' \
+      "$PROD_BASE/.env" 2>/dev/null || true)"
+    [ -n "$portal_token" ] || return 1
+    printf 'Authorization: Bearer %s\n' "$portal_token" >"$auth_header"
+  fi
+  unset portal_token
+  for _ in 1 2 3; do
+    backend_ok=false; content_ok=false; identity_ok=false
+    public_health_ok=false; public_snapshot_ok=false
+    if curl --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+        http://127.0.0.1:8200/health >"$local_health" \
+        && node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.status!=="healthy"||x.server?.status!=="online"||x.database!=="connected")process.exit(1)' \
+          "$local_health"; then backend_ok=true; fi
+    if curl --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+        http://127.0.0.1:8100/health >/dev/null; then content_ok=true; fi
+    if [ "$(readlink -f "$PROD_BASE/current")" = "$RELEASE_DIR" ] \
+        && "$TIMEOUT_BIN" 3s "$PM2_BIN" jlist | node -e '
+          const fs=require("fs"),rows=JSON.parse(fs.readFileSync(0,"utf8"));
+          const root=process.argv[1],sha=process.argv[2];
+          for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
+            const row=rows.find((entry)=>entry?.name===name),env=row?.pm2_env??{};
+            if(env.status!=="online"||env.pm_cwd!==cwd
+              ||(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha
+              ||env.SENTRY_RELEASE!==sha)process.exit(1);
+          }' "$RELEASE_DIR" "$RUNTIME_SHA"; then identity_ok=true; fi
+    if curl --fail --silent --show-error --connect-timeout 2 --max-time 10 \
+        "$PUBLIC_BASE_URL/health" >"$public_health" \
+        && node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.status!=="healthy"||x.server?.status!=="online"||x.database!=="connected")process.exit(1)' \
+          "$public_health"; then public_health_ok=true; fi
+    if curl --fail --silent --show-error --connect-timeout 2 --max-time 15 \
+        -H @"$auth_header" "$PUBLIC_BASE_URL/api/snapshot" >"$public_snapshot" \
+        && node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.version!==process.argv[2])process.exit(1)' \
+          "$public_snapshot" "$TARGET_VERSION"; then public_snapshot_ok=true; fi
+    if [ "$backend_ok" = true ] && [ "$content_ok" = true ] \
+        && [ "$identity_ok" = true ] && [ "$public_health_ok" = true ] \
+        && [ "$public_snapshot_ok" = true ]; then
+      printf '{"schema":"nexus.candidate-readiness-refresh.v1","status":"passed","transactionId":"%s","runtimeSha":"%s","packageVersion":"%s","verifiedAt":"%s","checks":{"loopbackBackend":true,"contentEngine":true,"pm2Identity":true,"publicHealth":true,"authenticatedSnapshot":true}}\n' \
+        "$TRANSACTION_ID" "$RUNTIME_SHA" "$TARGET_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "candidate failed refreshed exact loopback/public readiness" >&2
+  return 1
+)
+
+if [ "$COMMAND" = worker-verify-candidate ]; then
+  verify_candidate_readiness_snapshot
+  exit $?
+fi
+
+if [ "$COMMAND" = worker-prepare ] || [ "$COMMAND" = worker-promote ]; then
   [[ "$CUTOVER_STARTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
       && "$CUTOVER_STARTED_MONOTONIC" =~ ^[0-9]+$ \
       && "$PRE_RECOVERY_DEADLINE_MONOTONIC" =~ ^[0-9]+$ \
@@ -188,7 +392,7 @@ verify_predecessor_identity() {
   else
     [ ! -e "$PROD_BASE/current" ] || { echo "legacy predecessor cannot have a current link" >&2; return 1; }
   fi
-  "$PM2_BIN" jlist | node -e '
+  "$TIMEOUT_BIN" 5s "$PM2_BIN" jlist | node -e '
     const fs=require("fs");const rows=JSON.parse(fs.readFileSync(0,"utf8"));
     const root=process.argv[1],sha=process.argv[2];
     for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
@@ -213,8 +417,12 @@ atomic_switch_current() {
   local target="$1" next="$PROD_BASE/current.next" current="$PROD_BASE/current"
   rm -f "$next" || return 1
   ln -s "$target" "$next" || return 1
-  node - "$next" "$current" "$target" <<'NODE'
-const fs=require('fs');const [next,current,target]=process.argv.slice(2);
+  node - "$next" "$current" "$target" "$PROD_BASE" <<'NODE'
+const fs=require('fs');const path=require('path');
+const [next,current,target,productionBase]=process.argv.slice(2);
+if(path.dirname(next)!==productionBase||path.dirname(current)!==productionBase){
+  throw new Error('release selector parent is unsafe');
+}
 if(!fs.lstatSync(next).isSymbolicLink()||fs.readlinkSync(next)!==target){
   throw new Error('next release selector is unsafe');
 }
@@ -224,6 +432,8 @@ try {
   if(error?.code!=='ENOENT')throw error;
 }
 fs.renameSync(next,current);
+const descriptor=fs.openSync(productionBase,'r');
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
 NODE
 }
 
@@ -240,6 +450,13 @@ start_predecessor() {
       "$TIMEOUT_BIN" 15s "$PM2_BIN" start "$PREVIOUS_RUNTIME/ecosystem.release.config.js" --update-env >/dev/null
   else
     rm -f "$PROD_BASE/current.next" "$PROD_BASE/current" || return 1
+    node - "$PROD_BASE" <<'NODE'
+const fs=require('fs');const directory=process.argv[2];
+const stat=fs.lstatSync(directory);
+if(!stat.isDirectory()||stat.isSymbolicLink())process.exit(1);
+const descriptor=fs.openSync(directory,'r');
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+NODE
     cd "$PROD_BASE"
     "$TIMEOUT_BIN" 15s "$PM2_BIN" start "$PROD_BASE/ecosystem.config.js" --update-env >/dev/null
   fi
@@ -269,7 +486,7 @@ start_predecessor() {
     fi
     if [ "$backend_ok" = true ] && [ "$content_ok" = true ] && [ "$identity_ok" = true ]; then
       rm -f "$health_file"
-      "$TIMEOUT_BIN" 10s "$PM2_BIN" save >/dev/null || return 1
+      pm2_save_durable || return 1
       return 0
     fi
     sleep 1
@@ -281,10 +498,11 @@ start_predecessor() {
 
 restore_exact_backup() {
   local backup_file backup_sha backup_size backup_database_sha observed_size stage previous_node_path
-  backup_file="$(sed -n 's/^NEXUS_BACKUP_FILE=//p' "$BACKUP_ENV" | tail -1)"
-  backup_sha="$(sed -n 's/^NEXUS_BACKUP_SHA256=//p' "$BACKUP_ENV" | tail -1)"
-  backup_size="$(sed -n 's/^NEXUS_BACKUP_SIZE_BYTES=//p' "$BACKUP_ENV" | tail -1)"
-  backup_database_sha="$(sed -n 's/^NEXUS_BACKUP_DATABASE_SHA256=//p' "$BACKUP_ENV" | tail -1)"
+  validate_authorized_backup || return 1
+  backup_file="$AUTHORIZED_BACKUP_FILE"
+  backup_sha="$AUTHORIZED_BACKUP_SHA256"
+  backup_size="$AUTHORIZED_BACKUP_SIZE_BYTES"
+  backup_database_sha="$AUTHORIZED_BACKUP_DATABASE_SHA256"
   case "$backup_file" in "$BACKUP_DIR"/v*.tar.gz) ;; *) echo "unsafe exact rollback backup" >&2; return 1 ;; esac
   [[ "$backup_sha" =~ ^[a-f0-9]{64}$ && "$backup_database_sha" =~ ^[a-f0-9]{64}$ \
       && "$backup_size" =~ ^[1-9][0-9]*$ ]] || { echo "exact rollback backup evidence is invalid" >&2; return 1; }
@@ -383,21 +601,77 @@ NODE
   [ ! -d "$stage/data/garmin-tokens" ] \
     || cp -a "$stage/data/garmin-tokens" "$PROD_BASE/data/garmin-tokens" \
     || { rm -rf "$stage"; return 1; }
+  node - "$PROD_BASE/data" <<'NODE'
+const fs=require('fs');const path=require('path');const directory=process.argv[2];
+const stat=fs.lstatSync(directory);
+if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error('restored data directory is unsafe');
+const fsyncFile=(file)=>{
+  const descriptor=fs.openSync(file,'r');
+  try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+};
+for(const name of ['bot.db','bot.db-wal','bot.db-shm']){
+  const file=path.join(directory,name);
+  if(!fs.existsSync(file))continue;
+  const fileStat=fs.lstatSync(file);
+  if(!fileStat.isFile()||fileStat.isSymbolicLink()||fileStat.nlink!==1){
+    throw new Error(`restored database file is unsafe: ${name}`);
+  }
+  fsyncFile(file);
+}
+const tokenRoot=path.join(directory,'garmin-tokens');
+if(fs.existsSync(tokenRoot)){
+  const pending=[tokenRoot],directories=[];
+  while(pending.length>0){
+    const current=pending.pop(),currentStat=fs.lstatSync(current);
+    if(!currentStat.isDirectory()||currentStat.isSymbolicLink()){
+      throw new Error('restored token directory is unsafe');
+    }
+    directories.push(current);
+    for(const name of fs.readdirSync(current)){
+      const child=path.join(current,name),childStat=fs.lstatSync(child);
+      if(childStat.isSymbolicLink())throw new Error('restored token symlink is unsafe');
+      if(childStat.isDirectory())pending.push(child);
+      else if(childStat.isFile()&&childStat.nlink===1)fsyncFile(child);
+      else throw new Error('restored token entry is unsafe');
+    }
+  }
+  for(const current of directories.reverse())fsyncFile(current);
+}
+fsyncFile(directory);
+NODE
   rm -rf "$stage" || return 1
   start_predecessor || return 1
 }
 
 recover_if_needed() {
-  if [ -f "$CANDIDATE_MARKER" ] && [ -f "$BACKUP_ENV" ]; then
-    journal_update recovering running restoring_exact_backup
-    restore_exact_backup || return 1
-  elif [ -f "$RECOVERY_ARMED_MARKER" ]; then
-    journal_update recovering running restarting_predecessor
-    start_predecessor || return 1
-  else
-    return 0
+  if [ -e "$RECOVERY_ARMED_MARKER" ] || [ -L "$RECOVERY_ARMED_MARKER" ]; then
+    validate_worker_marker "$RECOVERY_ARMED_MARKER" \
+      nexus.promotion-worker-recovery-armed.v1 pre_candidate || {
+      echo "worker recovery marker is unsafe or incomplete" >&2
+      return 1
+    }
   fi
-  : > "$RECOVERY_MARKER" || return 1
+  case "$RECOVERY_PHASE" in
+    pre_candidate)
+      if [ -e "$CANDIDATE_MARKER" ] || [ -L "$CANDIDATE_MARKER" ]; then
+        echo "authoritative pre-candidate recovery conflicts with candidate mutation state" >&2
+        return 1
+      fi
+      journal_update recovering running restarting_predecessor
+      start_predecessor || return 1
+      ;;
+    candidate_authorized)
+      validate_authorized_backup || return 1
+      journal_update recovering running restoring_exact_authorized_backup
+      restore_exact_backup || return 1
+      ;;
+    *)
+      echo "authoritative recovery phase is missing or invalid" >&2
+      return 1
+      ;;
+  esac
+  durable_worker_marker "$RECOVERY_MARKER" \
+    nexus.promotion-worker-recovery-complete.v1 "$RECOVERY_PHASE" || return 1
 }
 
 transaction_complete=false
@@ -431,93 +705,172 @@ if [ "$COMMAND" = worker-recover ]; then
   transaction_complete=true
   exit 1
 fi
-[ ! -f "$RECOVERY_ARMED_MARKER" ] && [ ! -f "$CONTROL_DIR/recover" ] || {
-  echo "promotion recovery is armed; refusing to resume candidate execution" >&2
-  exit 75
-}
 
-journal_update verifying_predecessor running verifying_exact_predecessor_identity
-verify_predecessor_identity
+if [ "$COMMAND" = worker-prepare ]; then
+  for stale in "$RECOVERY_ARMED_MARKER" "$STOPPED_MARKER" "$BACKUP_ENV" \
+    "$CANDIDATE_MARKER" "$RECOVERY_MARKER"; do
+    [ ! -e "$stale" ] && [ ! -L "$stale" ] || {
+      echo "worker preparation state is ambiguous; recovery is required" >&2
+      exit 75
+    }
+  done
+  [ ! -f "$CONTROL_DIR/recover" ] || {
+    echo "owner requested recovery before worker preparation" >&2
+    exit 75
+  }
+  journal_update verifying_predecessor running verifying_exact_predecessor_identity
+  verify_predecessor_identity
 
-journal_update arming_recovery running persisting_recovery_intent_before_first_stop
-printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECOVERY_ARMED_MARKER.next"
-chmod 600 "$RECOVERY_ARMED_MARKER.next"
-mv -f "$RECOVERY_ARMED_MARKER.next" "$RECOVERY_ARMED_MARKER"
-journal_update stopping_predecessor running stopping_database_owners
-pre_recovery_remaining >/dev/null
-SERVICE_UNAVAILABLE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-SERVICE_UNAVAILABLE_STARTED_MONOTONIC="$(monotonic_seconds)"
-stop_predecessor
-: > "$STOPPED_MARKER"
-pre_recovery_remaining >/dev/null
-journal_update predecessor_stopped running predecessor_stopped_and_verified
+  journal_update arming_recovery running persisting_recovery_intent_before_first_stop
+  durable_worker_marker "$RECOVERY_ARMED_MARKER" \
+    nexus.promotion-worker-recovery-armed.v1 pre_candidate
+  journal_update stopping_predecessor running stopping_database_owners
+  pre_recovery_remaining >/dev/null
+  SERVICE_UNAVAILABLE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  SERVICE_UNAVAILABLE_STARTED_MONOTONIC="$(monotonic_seconds)"
+  stop_predecessor
+  durable_worker_marker "$STOPPED_MARKER" \
+    nexus.promotion-worker-predecessor-stopped.v1 pre_candidate
+  pre_recovery_remaining >/dev/null
+  journal_update predecessor_stopped running predecessor_stopped_and_verified
 
-journal_update creating_backup running creating_exact_stopped_state_backup
-BACKUP_RAW="$WORKER_DIR/backup.raw"
-rm -f "$BACKUP_ENV.next" "$BACKUP_RAW"
-PHASE_TIMEOUT_SECONDS="$(pre_recovery_remaining)"
-"$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${PHASE_TIMEOUT_SECONDS}s" bash "$RELEASE_DIR/scripts/remote-create-release-backup.sh" \
-  "$PREVIOUS_RUNTIME" "$BACKUP_DIR" "$TARGET_VERSION" "$PM2_BIN" "nexus-hub,content-engine" "$PREPARED_RUNTIME_DIR" \
-  > "$BACKUP_RAW"
-for key in NEXUS_BACKUP_FILE NEXUS_BACKUP_SHA256 NEXUS_BACKUP_SIZE_BYTES NEXUS_BACKUP_ARCHIVED_VERSION \
-  NEXUS_BACKUP_TARGET_VERSION NEXUS_BACKUP_CREATED_AT NEXUS_BACKUP_DATABASE_SHA256; do
-  value="$(sed -n "s/^${key}=//p" "$BACKUP_RAW" | tail -1)"
-  [ -n "$value" ] || { echo "backup output is missing $key" >&2; exit 1; }
-  printf '%s=%s\n' "$key" "$value" >> "$BACKUP_ENV.next"
-done
-chmod 600 "$BACKUP_ENV.next"
-mv -f "$BACKUP_ENV.next" "$BACKUP_ENV"
-rm -f "$BACKUP_RAW"
-BACKUP_FILE="$(sed -n 's/^NEXUS_BACKUP_FILE=//p' "$BACKUP_ENV")"
-BACKUP_SHA256="$(sed -n 's/^NEXUS_BACKUP_SHA256=//p' "$BACKUP_ENV")"
-BACKUP_SIZE_BYTES="$(sed -n 's/^NEXUS_BACKUP_SIZE_BYTES=//p' "$BACKUP_ENV")"
-BACKUP_DATABASE_SHA256="$(sed -n 's/^NEXUS_BACKUP_DATABASE_SHA256=//p' "$BACKUP_ENV")"
-case "$BACKUP_FILE" in "$BACKUP_DIR"/v*.tar.gz) ;; *) echo "backup helper returned an unsafe path" >&2; exit 1 ;; esac
-[[ "$BACKUP_SHA256" =~ ^[a-f0-9]{64}$ && "$BACKUP_DATABASE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "backup identity is invalid" >&2; exit 1; }
-[[ "$BACKUP_SIZE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo "backup size identity is invalid" >&2; exit 1; }
-journal_update backup_created running exact_backup_verified
-BACKUP_WINDOW_SECONDS="$(( $(monotonic_seconds) - SERVICE_UNAVAILABLE_STARTED_MONOTONIC ))"
-
-if [ "$MIGRATION_REQUIRED" = true ]; then
-  journal_update final_migration_rehearsal running automatically_verifying_signed_migration_contract
+  journal_update creating_backup running creating_exact_stopped_state_backup
+  BACKUP_RAW="$WORKER_DIR/backup.raw"
+  backup_temporary="$(mktemp "${BACKUP_ENV}.next.XXXXXXXX")"
+  rm -f "$BACKUP_RAW"
   PHASE_TIMEOUT_SECONDS="$(pre_recovery_remaining)"
-  "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${PHASE_TIMEOUT_SECONDS}s" bash "$RELEASE_DIR/scripts/remote-production-shape-migration-rehearsal.sh" \
-    "$RELEASE_DIR" "$PROD_BASE" "$PREVIOUS_RUNTIME" "$PM2_BIN" \
-    "$PREVIOUS_SHA" "$RUNTIME_SHA" "$TARGET_VERSION" "$ARTIFACT_DIGEST" \
-    "$REVIEW_EVIDENCE_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" "$TRANSACTION_ID" \
-    stopped_final stopped > "$FINAL_REHEARSAL.next"
-  FINAL_VALIDATION="$("$TIMEOUT_BIN" --signal=TERM --kill-after=5s 30s node \
-    "$RELEASE_DIR/scripts/validate-production-shape-migration-rehearsal.mjs" \
-    --root "$RELEASE_DIR" --evidence "$FINAL_REHEARSAL.next" \
-    --predecessor-runtime-sha "$PREVIOUS_SHA" --target-runtime-sha "$RUNTIME_SHA" \
-    --target-version "$TARGET_VERSION" --artifact-digest "$ARTIFACT_DIGEST" \
-    --review-evidence-sha256 "$REVIEW_EVIDENCE_SHA256" \
-    --migration-policy-subject-sha256 "$MIGRATION_POLICY_SUBJECT_SHA256" \
-    --promotion-run-id "$TRANSACTION_ID" --phase stopped_final --database-owner-state stopped)"
-  read -r FINAL_PENDING_SET_SHA256 FINAL_SOURCE_DATABASE_SHA256 < <(printf '%s' "$FINAL_VALIDATION" | node -e '
-    let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{const x=JSON.parse(b);
-      process.stdout.write(`${x.pendingMigrationSetSha256} ${x.sourceDatabaseSha256}\n`)})')
-  [ "$FINAL_PENDING_SET_SHA256" = "$ONLINE_PENDING_SET_SHA256" ] || {
-    echo "final migration pending set differs from owner-authorized online proof" >&2
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${PHASE_TIMEOUT_SECONDS}s" bash "$RELEASE_DIR/scripts/remote-create-release-backup.sh" \
+    "$PREVIOUS_RUNTIME" "$BACKUP_DIR" "$TARGET_VERSION" "$PM2_BIN" "nexus-hub,content-engine" "$PREPARED_RUNTIME_DIR" \
+    > "$BACKUP_RAW"
+  for key in NEXUS_BACKUP_FILE NEXUS_BACKUP_SHA256 NEXUS_BACKUP_SIZE_BYTES NEXUS_BACKUP_ARCHIVED_VERSION \
+    NEXUS_BACKUP_TARGET_VERSION NEXUS_BACKUP_CREATED_AT NEXUS_BACKUP_DATABASE_SHA256; do
+    value="$(sed -n "s/^${key}=//p" "$BACKUP_RAW" | tail -1)"
+    [ -n "$value" ] || { echo "backup output is missing $key" >&2; exit 1; }
+    printf '%s=%s\n' "$key" "$value" >> "$backup_temporary"
+  done
+  chmod 600 "$backup_temporary"
+  durable_publish_worker_file "$backup_temporary" "$BACKUP_ENV"
+  rm -f "$BACKUP_RAW"
+  backup_fields="$(read_backup_env "$BACKUP_ENV")" || {
+    echo "durable backup evidence is invalid" >&2
     exit 1
   }
-  [ "$FINAL_SOURCE_DATABASE_SHA256" = "$BACKUP_DATABASE_SHA256" ] || {
-    echo "final migration source does not match exact quiescent backup" >&2
-    exit 1
-  }
-  chmod 600 "$FINAL_REHEARSAL.next"
-  mv -f "$FINAL_REHEARSAL.next" "$FINAL_REHEARSAL"
-  journal_update final_migration_verified running signed_migration_identities_automatically_verified
+  IFS=$'\t' read -r BACKUP_FILE BACKUP_SHA256 BACKUP_SIZE_BYTES BACKUP_ARCHIVED_VERSION \
+    BACKUP_TARGET_VERSION BACKUP_CREATED_AT BACKUP_DATABASE_SHA256 <<<"$backup_fields"
+  case "$BACKUP_FILE" in "$BACKUP_DIR"/v*.tar.gz) ;; *) echo "backup helper returned an unsafe path" >&2; exit 1 ;; esac
+  [[ "$BACKUP_SHA256" =~ ^[a-f0-9]{64}$ && "$BACKUP_DATABASE_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "backup identity is invalid" >&2; exit 1; }
+  [[ "$BACKUP_SIZE_BYTES" =~ ^[1-9][0-9]*$ ]] || { echo "backup size identity is invalid" >&2; exit 1; }
+  [ "$BACKUP_TARGET_VERSION" = "$TARGET_VERSION" ] || { echo "backup target version is invalid" >&2; exit 1; }
+  journal_update backup_created running exact_backup_verified
+  BACKUP_WINDOW_SECONDS="$(( $(monotonic_seconds) - SERVICE_UNAVAILABLE_STARTED_MONOTONIC ))"
+
+  if [ "$MIGRATION_REQUIRED" = true ]; then
+    journal_update final_migration_rehearsal running automatically_verifying_signed_migration_contract
+    PHASE_TIMEOUT_SECONDS="$(pre_recovery_remaining)"
+    rehearsal_temporary="$(mktemp "${FINAL_REHEARSAL}.next.XXXXXXXX")"
+    "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${PHASE_TIMEOUT_SECONDS}s" bash "$RELEASE_DIR/scripts/remote-production-shape-migration-rehearsal.sh" \
+      "$RELEASE_DIR" "$PROD_BASE" "$PREVIOUS_RUNTIME" "$PM2_BIN" \
+      "$PREVIOUS_SHA" "$RUNTIME_SHA" "$TARGET_VERSION" "$ARTIFACT_DIGEST" \
+      "$REVIEW_EVIDENCE_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" "$TRANSACTION_ID" \
+      stopped_final stopped > "$rehearsal_temporary"
+    FINAL_VALIDATION="$("$TIMEOUT_BIN" --signal=TERM --kill-after=5s 30s node \
+      "$RELEASE_DIR/scripts/validate-production-shape-migration-rehearsal.mjs" \
+      --root "$RELEASE_DIR" --evidence "$rehearsal_temporary" \
+      --predecessor-runtime-sha "$PREVIOUS_SHA" --target-runtime-sha "$RUNTIME_SHA" \
+      --target-version "$TARGET_VERSION" --artifact-digest "$ARTIFACT_DIGEST" \
+      --review-evidence-sha256 "$REVIEW_EVIDENCE_SHA256" \
+      --migration-policy-subject-sha256 "$MIGRATION_POLICY_SUBJECT_SHA256" \
+      --promotion-run-id "$TRANSACTION_ID" --phase stopped_final --database-owner-state stopped)"
+    read -r FINAL_PENDING_SET_SHA256 FINAL_SOURCE_DATABASE_SHA256 < <(printf '%s' "$FINAL_VALIDATION" | node -e '
+      let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{const x=JSON.parse(b);
+        process.stdout.write(`${x.pendingMigrationSetSha256} ${x.sourceDatabaseSha256}\n`)})')
+    [ "$FINAL_PENDING_SET_SHA256" = "$ONLINE_PENDING_SET_SHA256" ] || {
+      echo "final migration pending set differs from owner-authorized online proof" >&2
+      exit 1
+    }
+    [ "$FINAL_SOURCE_DATABASE_SHA256" = "$BACKUP_DATABASE_SHA256" ] || {
+      echo "final migration source does not match exact quiescent backup" >&2
+      exit 1
+    }
+    chmod 600 "$rehearsal_temporary"
+    durable_publish_worker_file "$rehearsal_temporary" "$FINAL_REHEARSAL"
+    journal_update final_migration_verified running signed_migration_identities_automatically_verified
+  fi
+  prepare_timing_temporary="$(mktemp "$WORKER_DIR/prepare-timing.next.XXXXXXXX")"
+  {
+    printf 'NEXUS_SERVICE_UNAVAILABLE_STARTED_AT=%s\n' "$SERVICE_UNAVAILABLE_STARTED_AT"
+    printf 'NEXUS_SERVICE_UNAVAILABLE_STARTED_MONOTONIC=%s\n' "$SERVICE_UNAVAILABLE_STARTED_MONOTONIC"
+    printf 'NEXUS_BACKUP_WINDOW_SECONDS=%s\n' "$BACKUP_WINDOW_SECONDS"
+  } > "$prepare_timing_temporary"
+  chmod 600 "$prepare_timing_temporary"
+  durable_publish_worker_file "$prepare_timing_temporary" "$WORKER_DIR/prepare-timing"
+  journal_update candidate_authorization_required running durable_backup_ready_for_root_authorization
+  transaction_complete=true
+  exit 0
 fi
 
+[ "$COMMAND" = worker-promote ] || { echo "unexpected worker command" >&2; exit 64; }
+[ "$RECOVERY_PHASE" = candidate_authorized ] || {
+  echo "root candidate authorization is missing" >&2
+  exit 77
+}
+validate_worker_marker "$RECOVERY_ARMED_MARKER" \
+  nexus.promotion-worker-recovery-armed.v1 pre_candidate \
+  && validate_worker_marker "$STOPPED_MARKER" \
+    nexus.promotion-worker-predecessor-stopped.v1 pre_candidate || {
+  echo "worker stopped-state evidence is missing or ambiguous" >&2
+  exit 75
+}
+[ ! -e "$CANDIDATE_MARKER" ] && [ ! -L "$CANDIDATE_MARKER" ] || {
+  echo "candidate mutation state already exists; recovery is required" >&2
+  exit 75
+}
+backup_fields="$(read_backup_env "$BACKUP_ENV")" || {
+  echo "durable backup evidence is invalid before candidate authorization" >&2
+  exit 1
+}
+IFS=$'\t' read -r BACKUP_FILE BACKUP_SHA256 BACKUP_SIZE_BYTES BACKUP_ARCHIVED_VERSION \
+  BACKUP_TARGET_VERSION BACKUP_CREATED_AT BACKUP_DATABASE_SHA256 <<<"$backup_fields"
+validate_authorized_backup
+[ "$BACKUP_FILE" = "$AUTHORIZED_BACKUP_FILE" ] \
+  && [ "$BACKUP_SHA256" = "$AUTHORIZED_BACKUP_SHA256" ] \
+  && [ "$BACKUP_SIZE_BYTES" = "$AUTHORIZED_BACKUP_SIZE_BYTES" ] \
+  && [ "$BACKUP_DATABASE_SHA256" = "$AUTHORIZED_BACKUP_DATABASE_SHA256" ] || {
+  echo "worker backup evidence differs from root candidate authorization" >&2
+  exit 77
+}
+[ "$BACKUP_TARGET_VERSION" = "$TARGET_VERSION" ] || {
+  echo "worker backup target version differs from candidate authorization" >&2
+  exit 77
+}
+[ -f "$WORKER_DIR/prepare-timing" ] && [ ! -L "$WORKER_DIR/prepare-timing" ] || {
+  echo "worker preparation timing is missing" >&2
+  exit 75
+}
+IFS=$'\t' read -r SERVICE_UNAVAILABLE_STARTED_AT SERVICE_UNAVAILABLE_STARTED_MONOTONIC \
+  BACKUP_WINDOW_SECONDS < <(node - "$WORKER_DIR/prepare-timing" <<'NODE'
+const fs=require('fs');const m=new Map();
+for(const line of fs.readFileSync(process.argv[2],'utf8').split(/\r?\n/u)){
+  if(line==='')continue;const match=line.match(/^([A-Z0-9_]+)=(.*)$/u);
+  if(!match||m.has(match[1]))process.exit(1);m.set(match[1],match[2]);
+}
+if(m.size!==3||!Number.isSafeInteger(Number(m.get('NEXUS_SERVICE_UNAVAILABLE_STARTED_MONOTONIC')))
+  ||!Number.isSafeInteger(Number(m.get('NEXUS_BACKUP_WINDOW_SECONDS'))))process.exit(1);
+process.stdout.write(`${m.get('NEXUS_SERVICE_UNAVAILABLE_STARTED_AT')}\t${m.get('NEXUS_SERVICE_UNAVAILABLE_STARTED_MONOTONIC')}\t${m.get('NEXUS_BACKUP_WINDOW_SECONDS')}\n`);
+NODE
+) || { echo "worker preparation timing is invalid" >&2; exit 75; }
 [ ! -f "$CONTROL_DIR/recover" ] || { echo "owner requested recovery before candidate mutation" >&2; exit 75; }
-PHASE_TIMEOUT_SECONDS="$(pre_recovery_remaining)"
+pre_recovery_remaining >/dev/null
 journal_update mutating_candidate running switching_to_exact_candidate
-: > "$CANDIDATE_MARKER"
+durable_worker_marker "$CANDIDATE_MARKER" \
+  nexus.promotion-worker-candidate-mutated.v1 candidate_authorized
 atomic_switch_current "$RELEASE_DIR"
 for app in nexus-hub content-engine; do
-  if "$PM2_BIN" describe "$app" >/dev/null 2>&1; then "$PM2_BIN" delete "$app" >/dev/null; fi
+  if "$TIMEOUT_BIN" 5s "$PM2_BIN" describe "$app" >/dev/null 2>&1; then
+    "$TIMEOUT_BIN" 10s "$PM2_BIN" delete "$app" >/dev/null
+  fi
 done
+PHASE_TIMEOUT_SECONDS="$(pre_recovery_remaining)"
 env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$RELEASE_DIR" NEXUS_RELEASE_BASE_DIR="$PROD_BASE" \
   NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$RUNTIME_SHA" SENTRY_RELEASE="$SENTRY_RELEASE" \
   "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${PHASE_TIMEOUT_SECONDS}s" \
@@ -619,7 +972,7 @@ for _ in $(seq 1 15); do
       && node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.status!=="healthy"||x.server?.status!=="online"||x.database!=="connected")process.exit(1)' "$local_health"; then backend_ok=true; fi
   if curl --fail --silent --show-error --connect-timeout 1 --max-time 5 http://127.0.0.1:8100/health >/dev/null; then content_ok=true; fi
   if [ "$(readlink -f "$PROD_BASE/current")" = "$RELEASE_DIR" ] \
-      && "$PM2_BIN" jlist | node -e '
+      && "$TIMEOUT_BIN" 3s "$PM2_BIN" jlist | node -e '
         const fs=require("fs");const rows=JSON.parse(fs.readFileSync(0,"utf8"));const root=process.argv[1],sha=process.argv[2];
         for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
           const row=rows.find((entry)=>entry?.name===name),env=row?.pm2_env??{};
@@ -642,9 +995,10 @@ rm -f "$auth_header" "$local_health" "$public_health" "$public_snapshot"
   echo "candidate failed exact loopback/public readiness" >&2
   exit 1
 }
-"$PM2_BIN" save >/dev/null
+pm2_save_durable
 
 CUTOVER_SECONDS="$(( $(monotonic_seconds) - CUTOVER_STARTED_MONOTONIC ))"
+result_temporary="$(mktemp "${RESULT_ENV}.next.XXXXXXXX")"
 {
   printf 'NEXUS_TRANSACTION_ID=%s\n' "$TRANSACTION_ID"
   printf 'NEXUS_RUNTIME_SHA=%s\n' "$RUNTIME_SHA"
@@ -665,9 +1019,9 @@ CUTOVER_SECONDS="$(( $(monotonic_seconds) - CUTOVER_STARTED_MONOTONIC ))"
   printf 'NEXUS_SOAK_COMPLETED_AT=%s\n' "$SOAK_COMPLETED_AT"
   printf 'NEXUS_SOAK_OBSERVED_SECONDS=%s\n' "$SOAK_OBSERVED_SECONDS"
   cat "$BACKUP_ENV"
-} > "$RESULT_ENV.next"
-chmod 600 "$RESULT_ENV.next"
-mv -f "$RESULT_ENV.next" "$RESULT_ENV"
+} > "$result_temporary"
+chmod 600 "$result_temporary"
+durable_publish_worker_file "$result_temporary" "$RESULT_ENV"
 journal_update completed completed exact_candidate_verified
 transaction_complete=true
 exit 0

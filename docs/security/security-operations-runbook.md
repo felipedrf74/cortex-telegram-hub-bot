@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-07-22
+Last verified: 2026-07-23
 Update policy: update after any security incident, deploy path change, provider
 credential change, or infrastructure hardening change.
 
@@ -25,6 +25,43 @@ and evidence to collect; it is not approval to mutate live infrastructure.
 - Run a CIS/Lynis audit and store the summary under release evidence.
 - Put staging/admin/operator routes behind Cloudflare Access before broad beta.
 
+### Durable cloudflared connector
+
+ServerDominguez must run the production connector as
+`nexus-cloudflared.service`, not as a user cron child. The reviewed unit uses a
+dynamic service identity, root-owned mode-0600 configuration and credential
+inputs delivered with systemd `LoadCredential`, a fixed loopback metrics
+listener on `127.0.0.1:20243`, and no automatic updater.
+
+Use `scripts/cloudflared-systemd-migrate.sh` only in an owner-approved
+Cloudflare operations window. It accepts a locally managed tunnel config,
+credential JSON, and cloudflared binary only as exact SHA-256-bound files; it
+has no token argument and refuses token-bearing environments. The safe
+migration is deliberately two phase:
+
+1. `--install-replica` deliberately restarts the reviewed systemd connector
+   while the legacy connector remains live. This also makes an interrupted
+   prior attempt reload the exact binary, configuration, and systemd
+   credentials. The installer rejects unit drop-ins, binds the exact unit
+   digest, attests the live process-image digest, requires active Cloudflare HA
+   connections from that process, verifies
+   `https://api.nexushub.me/health` returns 200, then enables the unit for boot.
+2. The owner removes the secret-bearing legacy cloudflared entry with
+   `crontab -e`; do not print or copy that line into evidence.
+3. `--retire-legacy` fails closed when any Ubuntu cron command source cannot be
+   inspected or still names cloudflared. It holds a Linux pidfd for the exact
+   PID/start-time/user/executable-digest-bound legacy process, freezes that
+   held process, proves the public route three times through the new replica,
+   then gracefully retires the old process through the same pidfd. A failed
+   proof, lost command pipe, HUP, INT, or TERM resumes the old connector and
+   exits the migration instead of continuing the retirement.
+
+The canonical route template is `ops/cloudflared/config.yml.example`. Replace
+only its tunnel UUID in a root-owned mode-0600 staging copy and provide the
+matching Cloudflare-generated credential JSON through the same protected
+staging boundary. Never commit either live file or include their contents in
+logs, command output, chat, or release evidence.
+
 ## Backup Protection And Restore Drill
 
 - Backups containing SQLite, provider tokens, or logs must not be group/world
@@ -35,7 +72,10 @@ and evidence to collect; it is not approval to mutate live infrastructure.
   S3-compatible upload. Retain 24 hourly, 7 daily, 4 weekly, and 6 monthly
   database points.
 - Escrow every exact-release rollback archive off-host for 90 days; keep the
-  existing latest-ten local policy. A missing timer run, failed upload, or
+  existing latest-ten local policy. Each promotion additionally requires a
+  pre-mutation candidate recovery-runtime object plus database point and a
+  newly encrypted phase-distinct post-soak candidate recovery-runtime object
+  plus refreshed database point. A missing timer run, failed upload, or
   unverified remote metadata is an alert, not a silent RPO exception.
 - Keep the private `age` identity off ServerDominguez. Bucket credentials are
   prefix-scoped, mode-0600 configuration or instance identity; plaintext never
@@ -46,9 +86,32 @@ and evidence to collect; it is not approval to mutate live infrastructure.
   evidence for an exact releases-prefix bucket lock of at least 90 days. The
   mode-0600 control evidence must be refreshed within 30 days; never claim R2
   versioning.
+- Scope AWS backup IAM to `s3:ListBucketVersions` on the governed prefix and
+  `s3:DeleteObjectVersion` on governed objects, in addition to required
+  Get/Head/Put and release-retention actions. AWS retention must exhaust direct
+  key/version-marker pages with CLI auto-pagination disabled, delete only exact
+  key-plus-VersionId identities sequentially, and stop on the first failure.
+  It must never use the R2 unversioned DeleteObject variance.
+- Retain release versions for 90 days plus a 3,600-second deletion grace.
+  Bind the two current-runtime keys to the exact transaction and phases:
+  `+escrow-<id>+phase-pre-mutation...` and
+  `+escrow-<id>+phase-post-soak...`. They preserve the same plaintext runtime
+  identity but require distinct keys and freshly encrypted ciphertext. Protect
+  each exact pair from the creating invocation's retention pass, then re-HEAD
+  and re-download the exact AWS VersionId. Confirmation records `escrowId`,
+  `escrowPhase`, plaintext/encrypted SHA-256, encrypted byte size,
+  `recoveryRuntimeDigest`, release-manifest/staging digests, `confirmedAt`,
+  `retainUntil`, and `objectVersionId`, with `retainUntil` at least 90 days
+  after `confirmedAt`. The pre/post database points likewise bind fresh
+  plaintext/encrypted identity and exact AWS versions, and post-soak candidate
+  readiness brackets the network work. R2 must emit null for unavailable
+  deadline/version fields and name the approved unversioned variance
+  explicitly.
 - Quarterly restore drill:
   1. Use `scripts/application-dr-restore-drill.sh` on an isolated host with the
-     newest hourly point and a compatible exact-release escrow object.
+     newest hourly point and a compatible exact-release escrow object. On AWS,
+     pin both objects to the exact retained VersionIds; use no version argument
+     only for the explicit R2 variance.
   2. Verify encrypted and plaintext digests, SQLite integrity/foreign keys, and
      safe exact-release extraction into a private scratch path.
   3. Install only the exact release's embedded Node/Python dependency payload
@@ -56,8 +119,15 @@ and evidence to collect; it is not approval to mutate live infrastructure.
   4. Boot and authenticate-smoke only through the root-owned private-namespace
      harness on its one-use token and dedicated loopback port; prove an invalid
      token is rejected and never point the harness at live paths.
-  5. Require RPO <= 1 hour and download-through-smoke RTO <= 30 minutes.
-  6. Destroy restored plaintext and retain only private mode-0600 evidence.
+  5. Require conservative storage-timestamp age <= 1 hour. Treat the monotonic
+     download-through-smoke measurement <= 30 minutes as a technical restore
+     window, not a customer RTO.
+  6. After stop, snapshot the scratch SQLite database through the online backup
+     API, recheck integrity/foreign keys, and require the exact terminal
+     migration lineage so committed WAL state cannot be omitted.
+  7. Destroy restored plaintext and retain only private mode-0600 evidence. If
+     process cleanup fails, preserve and report the private manual-cleanup
+     target instead of deleting a potentially live tree.
 
 Installation, credentials, bucket lifecycle/object-lock policy, and every real
 restore require a separate owner-approved operations window. The complete
