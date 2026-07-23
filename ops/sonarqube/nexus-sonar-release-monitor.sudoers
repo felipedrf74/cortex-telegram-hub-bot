@@ -1,0 +1,2 @@
+Cmnd_Alias NEXUS_SONAR_RELEASE_STATE = /usr/local/sbin/quality-sonar-release-state --project nexus-hub-backend --json
+dominguez ALL=(root) NOPASSWD: NEXUS_SONAR_RELEASE_STATE

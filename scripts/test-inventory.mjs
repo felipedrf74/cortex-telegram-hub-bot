@@ -18,6 +18,7 @@ const valueOf = (name, fallback = null) => {
 const timingsPath = valueOf('--timings');
 const timingScope = timingsPath ? valueOf('--timing-scope', 'all') : 'none';
 const enforceEvidence = args.includes('--enforce-evidence');
+const timingMode = valueOf('--timing-mode', 'enforce');
 const policy = loadTestPolicy();
 const files = walkTestFiles();
 const partitions = partitionTestFiles(files, policy);
@@ -25,6 +26,10 @@ const timingSamplesByFile = new Map();
 
 if (!['none', 'all', 'deterministic', 'evaluate'].includes(timingScope)) {
   console.error('--timing-scope must be one of all, deterministic, or evaluate when --timings is supplied.');
+  process.exit(64);
+}
+if (!['advisory', 'enforce'].includes(timingMode)) {
+  console.error('--timing-mode must be advisory or enforce.');
   process.exit(64);
 }
 
@@ -141,7 +146,7 @@ const outputPath = configuredOutput
   ? path.resolve(root, configuredOutput)
   : path.join(outputDir, 'test-inventory.json');
 const summary = {
-  schema: 'nexus.test-inventory.v2',
+  schema: 'nexus.test-inventory.v3',
   policyVersion: policy.version,
   generatedAt: new Date().toISOString(),
   testFiles: records.length,
@@ -157,6 +162,10 @@ const summary = {
   ])),
   timedFiles: records.filter((record) => record.runtimeMs !== null).length,
   slowNonExemptFiles: records.filter((record) => record.runtimeMs > 10_000 && !record.timingException).length,
+  timingGovernance: {
+    mode: timingMode,
+    thresholdMs: 10_000,
+  },
   evidenceCompleteness: {
     disposition: {
       observedFiles: resolvedDispositionFiles,
@@ -223,9 +232,10 @@ if (timingsPath && summary.slowNonExemptFiles > 0) {
   const slow = records
     .filter((record) => record.runtimeMs > 10_000 && !record.timingException)
     .sort((a, b) => b.runtimeMs - a.runtimeMs);
-  console.error(`Slow-test governance: ${slow.length} file(s) exceed 10s without a timingExceptions entry in config/test-policy.json:`);
+  const label = timingMode === 'enforce' ? 'Slow-test governance' : 'Slow-test advisory';
+  console.error(`${label}: ${slow.length} file(s) exceed 10s without a timingExceptions entry in config/test-policy.json:`);
   for (const record of slow) {
     console.error(`  ${Math.round(record.runtimeMs)}ms ${record.file}`);
   }
-  process.exit(1);
+  if (timingMode === 'enforce') process.exit(1);
 }

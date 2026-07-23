@@ -25,6 +25,7 @@ const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
   'scripts/validate-production-shape-migration-rehearsal.mjs',
   'scripts/release-test-gate.sh',
   'scripts/release-verify.sh',
+  'scripts/protected-main-ci-evidence.mjs',
 ]);
 
 const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set([
@@ -191,6 +192,7 @@ export function classifyChangedFiles({
   baseRef = 'explicit-files',
   head = 'unknown',
   impactResolved = true,
+  testTopologyChanged = false,
   generatedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   fullSuiteTriggers,
   policyPath,
@@ -230,6 +232,7 @@ export function classifyChangedFiles({
     packageJson: false,
     highFanIn: false,
     fullSuiteTrigger: false,
+    testTopologyChange: Boolean(testTopologyChanged),
     impactResolved,
     irreversibleMigration: false,
     currentVerdictDoc: false,
@@ -248,6 +251,7 @@ export function classifyChangedFiles({
     audit: false,
     deployConfig: false,
     runtimeInfra: false,
+    operationsTooling: false,
     iosNavigation: false,
     iosDto: false,
     appleNotificationWebhook: false,
@@ -306,7 +310,7 @@ export function classifyChangedFiles({
     || has(/^__tests__\/api\/training-plan-calendar-/);
   flags.providerRouting = has(/^src\/services\/(?:provider-registry|gemini-provider|anthropic|tool-executor|openai)/)
     || has(/^__tests__\/services\/(?:provider-|ai-provider)/);
-  flags.authOrTenant = has(/^src\/(?:api\/middleware\/auth|api\/routes\/auth|services\/auth|services\/ios-auth-session|services\/google-sign-in|services\/apple-sign-in-nonce|services\/google-auth-session-store|services\/oauth-flow|services\/oauth-state-store|portal\/oauth-routes|services\/user-service|state\/scope)/)
+  flags.authOrTenant = has(/^src\/(?:api\/middleware\/auth|api\/routes\/auth|services\/auth|services\/ios-auth-session|services\/google-sign-in|services\/apple-sign-in-nonce|services\/google-auth-session-store|services\/oauth(?:-flow|-state-store|-store)|portal\/oauth-routes|services\/user-service|state\/scope)/)
     || has(/^__tests__\/(?:security\/|scope\/|api\/auth-|api\/connections-tenant-|services\/google-sign-in|services\/apple-sign-in-nonce|services\/oauth-|portal\/portal-oauth-routes)/);
   flags.memoryOrRetrieval = has(/^src\/(?:services\/context-engine|services\/chat-context-engine|state\/content-references|services\/intelligence-bus)/)
     || has(/^__tests__\/services\/.*(?:context|memory|retrieval)/);
@@ -340,9 +344,14 @@ export function classifyChangedFiles({
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
   flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
-    || has(/^scripts\/(?:release-operator|promote-exact-release|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|rollback|restore)\.sh$/)
-    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|trusted-release-signer|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal)\.mjs$/)
-    || has(/^scripts\/lib\/(?:release-artifact-manifest|production-migration-lineage|production-shape-migration-rehearsal-evidence)\.mjs$/);
+    || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|remote-promotion-(?:control|systemd-install|transaction)|remote-release-capacity|rollback|restore)\.sh$/)
+    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|release-plan-evaluator|release-runtime-dependencies|release-sequence|trusted-release-signer|protected-main-ci-evidence|complete-promotion-migration-gate|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal)\.mjs$/)
+    || has(/^scripts\/systemd\/nexus-release-promotion/)
+    || has(/^scripts\/lib\/(?:release-artifact-manifest|release-plan-evaluation|production-migration-lineage|production-shape-migration-rehearsal-evidence)\.mjs$/);
+  flags.operationsTooling = has(/^ops\/(?:sonarqube|application-dr|ollama)\//)
+    || has(/^scripts\/(?:(?:quality-sonar|application-dr)-|ollama-(?:large-model-cleanup|observation-collector|service-envelope-check|soak-evidence|zero-swap-transition))/)
+    || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)
+    || has(/^__tests__\/scripts\/(?:quality-sonar|application-disaster-recovery|ollama-(?:large-model-cleanup|observation-collector|systemd-envelope))\.test\.ts$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
@@ -358,7 +367,7 @@ export function classifyChangedFiles({
   flags.highFanIn = has(/^src\/(?:config|index)\.ts$|^src\/services\/(?:database|db|tenant-scope)\.ts$|^src\/api\/router\.ts$/);
 
   flags.attachment = has(/^src\/api\/routes\/chat-message-attachments|^src\/api\/routes\/chat-attachments|^__tests__\/api\/chat-attachments|^__tests__\/api\/chat-message-attachments|^__tests__\/services\/fiscal-bundle-attachments/);
-  flags.modelRouting = has(/^src\/services\/domain-provider-router|^src\/portal\/provider-routes|^__tests__\/services\/domain-provider-router|^__tests__\/services\/model-routing-/);
+  flags.modelRouting = has(/^src\/services\/(?:domain-provider-router|ollama-model-policy|ollama-provider|model-config)|^src\/portal\/provider-routes|^__tests__\/services\/(?:domain-provider-router|model-routing-|ollama-small-only-policy|ollama-provider|model-config)/);
   flags.personalizationScope = has(/^src\/services\/(?:cooking-preferences|finance-preferences|skill-memory)|^src\/state\/content-references|^__tests__\/services\/(?:cooking-preferences|finance-preferences|skill-memory|content-references)/);
   flags.logger = has(/^src\/utils\/(?:logger|redact|log-context)|^__tests__\/utils\/logger-|^__tests__\/api\/secret-guards/);
   flags.scheduler = has(
@@ -368,7 +377,7 @@ export function classifyChangedFiles({
   flags.healthIntegration = has(/^src\/services\/(?:garmin|apple-health|wearable|readiness|body-battery)|^src\/api\/routes\/(?:wearable|health-data|garmin-auth)|^__tests__\/(?:services\/garmin-|services\/apple-health-|services\/integration-health-|api\/wearable-|api\/health-data-|api\/garmin-auth-|portal\/integration-health-)/);
   flags.rateLimit = has(/^src\/(?:api\/middleware\/rate-limit|services\/rate-limiter|api\/middleware\/auth-rate-limit)|^__tests__\/api\/rate-limiter/);
   flags.audit = has(/^src\/(?:services\/audit-trail|api\/routes\/audit-trail|portal\/admin-audit|portal\/admin-data-routes)|^__tests__\/(?:services\/audit-trail|api\/authenticated-support-routes-scope|portal\/portal-admin-audit|portal\/portal-admin-data-routes|portal\/portal-admin-data-isolation)/);
-  flags.deployConfig ||= has(/(^|\/)ecosystem(?:\.staging)?\.config\.js$|^src\/config\.ts$|^__tests__\/config|^__tests__\/scripts\/(?:release-runtime-safeguards|exact-promotion-operational-safety)/);
+  flags.deployConfig ||= has(/(^|\/)ecosystem(?:\.staging)?\.config\.js$|^src\/config\.ts$|^scripts\/(?:install-ollama|staging-smoke-ollama)\.sh$|^__tests__\/config|^__tests__\/scripts\/(?:release-runtime-safeguards|exact-promotion-operational-safety)/);
   flags.eventBackbone = has(/^src\/services\/(?:event-outbox|background-job-queue|product-decision-log|app-summary-read-models|delta-sync|resource-budgets|event-backbone-worker)|^src\/api\/routes\/(?:summaries|sync)|^migrations\/[0-9]+_event_backbone|^__tests__\/(?:services\/event-backbone|api\/event-backbone)/);
   if (has(/^src\/services\/chat\/|^src\/services\/chat-reasoning|^src\/api\/routes\/chat-message-routes|^__tests__\/services\/chat-reasoning|^__tests__\/api\/chat-routes/)) {
     flags.chatReasoning = true;
@@ -398,8 +407,9 @@ export function classifyChangedFiles({
   try {
     const triggers = fullSuiteTriggers ?? loadFullSuiteTriggers(root, policyPath);
     const matchers = triggers.map(globToRegExp);
-    flags.fullSuiteTrigger = files.some((file) => BOOTSTRAP_FULL_SUITE_PATHS.has(file)
-      || matchers.some((matcher) => matcher.test(file)));
+    flags.fullSuiteTrigger = flags.testTopologyChange
+      || files.some((file) => BOOTSTRAP_FULL_SUITE_PATHS.has(file)
+        || matchers.some((matcher) => matcher.test(file)));
   } catch {
     flags.fullSuiteTrigger = true;
   }
@@ -472,7 +482,7 @@ export function classifyChangedFiles({
   if (nonDoc) {
     if (flags.testConfig || flags.packageJson || flags.highFanIn) {
       vitestMode = 'full';
-    } else if (flags.backendSrc || flags.backendTest || flags.deployConfig || flags.releaseOperator) {
+    } else if (flags.backendSrc || flags.backendTest || flags.deployConfig || flags.releaseOperator || flags.operationsTooling) {
       vitestMode = 'focused';
       addVitest(flags.training, '__tests__/services/training-*.test.ts', '__tests__/services/coach-kernel-*.test.ts', '__tests__/api/training-*.test.ts', '__tests__/integration/training-plan-create-cycle.test.ts');
       addVitest(flags.trainingEntitlement, '__tests__/security/training-routes-entitlement.test.ts');
@@ -483,11 +493,11 @@ export function classifyChangedFiles({
       addVitest(flags.prompt, '__tests__/security/**/*.test.ts');
       addVitest(flags.cooking, '__tests__/services/*cooking*.test.ts', '__tests__/api/cooking-*.test.ts');
       addVitest(flags.content, '__tests__/services/content-*.test.ts', '__tests__/api/content-*.test.ts');
-      addVitest(flags.finance, '__tests__/services/finance-*.test.ts', '__tests__/services/invoice-*.test.ts');
+      addVitest(flags.finance, '__tests__/services/finance-*.test.ts', '__tests__/services/invoice-*.test.ts', '__tests__/security/finance-*.test.ts');
       addVitest(flags.secretary, '__tests__/services/secretary-*.test.ts');
       addVitest(flags.portal, '__tests__/portal/*.test.ts');
       addVitest(flags.attachment, '__tests__/api/chat-attachments*.test.ts', '__tests__/api/chat-message-attachments*.test.ts', '__tests__/services/fiscal-bundle-attachments*.test.ts', '__tests__/security/**/*.test.ts');
-      addVitest(flags.modelRouting, '__tests__/services/domain-provider-router*.test.ts', '__tests__/services/model-routing-*.test.ts');
+      addVitest(flags.modelRouting, '__tests__/services/domain-provider-router*.test.ts', '__tests__/services/model-routing-*.test.ts', '__tests__/services/ollama-small-only-policy.test.ts', '__tests__/services/ollama-provider.test.ts', '__tests__/services/model-config.test.ts');
       addVitest(flags.personalizationScope, '__tests__/services/cooking-preferences*.test.ts', '__tests__/services/finance-preferences*.test.ts', '__tests__/services/skill-memory*.test.ts', '__tests__/services/content-references*.test.ts', '__tests__/security/**/*.test.ts');
       addVitest(
         flags.contentAgent,
@@ -542,6 +552,21 @@ export function classifyChangedFiles({
         '__tests__/scripts/rollback-versioned-runtime.test.ts',
         '__tests__/scripts/pm2-sanitized-start.test.ts',
         '__tests__/scripts/release-evidence-container.test.ts',
+        '__tests__/scripts/release-sequence.test.ts',
+        '__tests__/scripts/persistent-promotion-transaction.test.ts',
+        '__tests__/scripts/remote-release-capacity.test.ts',
+        '__tests__/scripts/release-runtime-dependencies.test.ts',
+        '__tests__/scripts/release-plan-evaluator.test.ts',
+        '__tests__/scripts/rollback-drill-check.test.ts',
+        '__tests__/scripts/protected-main-ci-evidence.test.ts',
+      );
+      addVitest(
+        flags.operationsTooling,
+        '__tests__/scripts/quality-sonar-operations.test.ts',
+        '__tests__/scripts/application-disaster-recovery.test.ts',
+        '__tests__/scripts/ollama-observation-collector.test.ts',
+        '__tests__/scripts/ollama-large-model-cleanup.test.ts',
+        '__tests__/scripts/ollama-systemd-envelope.test.ts',
       );
       if (flags.contentPromptCleanliness) pytestGlobs.push('content-engine/tests/test_prompt_cleanliness.py');
       if (vitestGlobs.length === 0) vitestMode = 'changed-only';

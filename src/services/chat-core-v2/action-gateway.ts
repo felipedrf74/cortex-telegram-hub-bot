@@ -357,7 +357,7 @@ export function runChatCoreV2ActionGateway(
     // never receives an execute envelope; Class B marks requires3BCritic.
     const writeRiskPolicy = resolveWriteRiskPolicyForPreview(preview);
 
-    // WP-10: a Class-C write (or any 35B/background-escalation write) is blocked
+    // WP-10: a Class-C write (or any strong-reasoning/background escalation) is blocked
     // by the firewall here — it is downgraded to `unsupported_write` and never
     // gets an execute envelope, regardless of the auto-execute flag. This is the
     // governance value; the human-review queue + notification picks it up

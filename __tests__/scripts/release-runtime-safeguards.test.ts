@@ -267,6 +267,8 @@ describe('exact release extended readiness', () => {
       schema: 'nexus.release-readiness.v1',
       role: 'staging',
       runtimeSha,
+      stabilitySeconds: 0,
+      stabilityObservedSeconds: expect.any(Number),
       checks: {
         nativeBinding: true,
         sqliteIntegrity: true,
@@ -275,6 +277,10 @@ describe('exact release extended readiness', () => {
         pm2RestartStable: true,
       },
     });
+    expect(evidence.stabilityObservedSeconds).toBeGreaterThanOrEqual(0);
+    expect(Date.parse(evidence.stabilityCompletedAt)).toBeGreaterThanOrEqual(
+      Date.parse(evidence.stabilityStartedAt),
+    );
   });
 
   it('rejects a PM2 restart between independent samples', () => {

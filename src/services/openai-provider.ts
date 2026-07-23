@@ -20,6 +20,8 @@ import {
   AIToolResultMessage,
   CallDomainOptions,
   ClassifyOptions,
+  StructuredGenerationRequest,
+  StructuredGenerationResult,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -792,6 +794,53 @@ function safeParse(json: string): Record<string, unknown> {
 
 export class OpenAIProvider implements AIProvider {
   readonly name = 'openai';
+
+  /**
+   * Isolated no-tools completion for privacy-gated cloud reasoning. The
+   * routing layer supplies the exact approved model and validates any schema
+   * again after the response; this adapter only maps the request to the SDK.
+   */
+  async callStructuredGeneration(
+    request: StructuredGenerationRequest,
+  ): Promise<StructuredGenerationResult> {
+    if (!/^(?:gpt|chatgpt|o[1-9])(?:[-.:]|$)/i.test(request.model)) {
+      throw new Error('OpenAI structured generation requires an OpenAI model');
+    }
+    const responseFormat = request.responseFormat === 'json'
+      ? (request.jsonSchema !== undefined
+        && request.jsonSchema !== null
+        && typeof request.jsonSchema === 'object'
+        && !Array.isArray(request.jsonSchema)
+        ? {
+          type: 'json_schema' as const,
+          json_schema: {
+            name: 'nexus_cloud_local_reasoning',
+            strict: false,
+            schema: request.jsonSchema as Record<string, unknown>,
+          },
+        }
+        : { type: 'json_object' as const })
+      : undefined;
+    const response = await withRetry(() => trackedCompletion(
+      getClient(),
+      withTokenLimit({
+        model: request.model,
+        messages: [
+          { role: 'system', content: request.systemPrompt },
+          { role: 'user', content: request.userPrompt },
+        ],
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+      }, request.maxTokens),
+      request.category,
+      request.userId,
+      request.tenantId,
+    ));
+    const choice = response.choices[0];
+    return {
+      text: choice?.message?.content ?? '',
+      stopReason: choice?.finish_reason ?? 'stop',
+    };
+  }
 
   async classify(
     message: string,

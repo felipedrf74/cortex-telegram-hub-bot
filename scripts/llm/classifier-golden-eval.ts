@@ -25,7 +25,7 @@
  *
  * Usage:
  *   npx tsx scripts/llm/classifier-golden-eval.ts
- *   OLLAMA_CLASSIFIER_MODEL=gemma2:2b-instruct-q4_K_M npx tsx scripts/llm/classifier-golden-eval.ts
+ *   OLLAMA_CLASSIFIER_MODEL=qwen2.5:3b-instruct-q4_K_M npx tsx scripts/llm/classifier-golden-eval.ts
  *
  * Exit 0 if all gates pass. Exit 1 otherwise.
  */
@@ -34,7 +34,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-const MODEL = process.env.OLLAMA_CLASSIFIER_MODEL || 'qwen2.5:3b-instruct-q4_K_M';
+const SMALL_ONLY_MODEL = 'qwen2.5:3b-instruct-q4_K_M';
+const MODEL = process.env.OLLAMA_CLASSIFIER_MODEL || SMALL_ONLY_MODEL;
+if (MODEL !== SMALL_ONLY_MODEL) {
+  throw new Error(`small-only policy rejects OLLAMA_CLASSIFIER_MODEL=${MODEL}`);
+}
 const PROMPT_VERSION = process.env.OLLAMA_CLASSIFIER_PROMPT_VERSION || 'v1';
 
 // Eval prompts inlined here (rather than importing from

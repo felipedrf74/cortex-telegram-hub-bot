@@ -11,18 +11,24 @@
  * approves, and rejects (no SDK call) when the gate rejects.
  *
  * Two acceptance properties:
- *   1. When gate approves with `privacyAction='sent_raw'`, the cloud
- *      provider's `callDomain` receives the ORIGINAL `prompt` and the
- *      `modelOverride` matches the gate's selection.
- *   2. When gate rejects (e.g., private data + mode='redacted_only'),
- *      the cloud provider's `callDomain` is NEVER invoked.
+ *   1. Public/pre-redacted work uses the provider-native, no-tools
+ *      structured capability with the exact approved model.
+ *   2. Private optional work is always rejected before any cloud SDK call,
+ *      including when operator config drifts to allow_raw.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { rm } from 'fs/promises';
+import * as path from 'path';
 
-const { mockConfig } = vi.hoisted(() => ({
+const { mockConfig, mockAuditState, mockAuditInsert } = vi.hoisted(() => ({
   mockConfig: {
-    ollama: { enabled: true, queue: { backend: 'memory' } },
+    ollama: {
+      enabled: true,
+      model: 'qwen2.5:3b-instruct-q4_K_M',
+      queue: { backend: 'memory' },
+      artifacts: { storePrompts: false },
+    },
     cloudReasoningFallback: {
       enabled: true, provider: 'gemini', model: 'gemini-2.5-pro',
       requireApprovedModel: true, allowPreviewModels: false,
@@ -35,9 +41,34 @@ const { mockConfig } = vi.hoisted(() => ({
     localLLMEvaluation: { enabled: true, showProviderMetadata: true, requireLocalForScriptGen: false },
     isStaging: true,
   },
+  mockAuditState: { insertFails: false },
+  mockAuditInsert: vi.fn(),
 }));
 
 vi.mock('../../src/config', () => ({ config: mockConfig }));
+vi.mock('../../src/services/database', () => {
+  const requiredColumns = [
+    'ts', 'user_id', 'tenant_id', 'provider', 'model', 'model_digest',
+    'task_label', 'prompt_tokens', 'completion_tokens', 'duration_ms',
+    'load_duration_ms', 'validation_status', 'fallback_used',
+    'requires_cloud_reasoning', 'requires_human_approval', 'risk_level',
+    'artifact_count', 'meta_json',
+  ];
+  const db = {
+    prepare: (sql: string) => {
+      if (sql.includes('sqlite_master')) return { get: () => ({ name: 'script_generation_runs' }) };
+      if (sql.includes('PRAGMA table_info')) return { all: () => requiredColumns.map(name => ({ name })) };
+      return {
+        run: (...args: unknown[]) => {
+          mockAuditInsert(...args);
+          if (mockAuditState.insertFails) throw new Error('synthetic audit persistence failure');
+          return { changes: 1 };
+        },
+      };
+    },
+  };
+  return { getDb: () => db };
+});
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   LOGGER_REDACTION_PATHS: [],
@@ -64,12 +95,18 @@ vi.mock('../../src/services/anthropic', () => ({
 }));
 
 const cloudCallDomainSpy = vi.fn();
+const cloudStructuredGenerationSpy = vi.fn();
+const cloudResponseQueue: Array<{ text: string; toolCalls: unknown[]; stopReason: string }> = [];
 const cloudProvider = {
   name: 'gemini',
   classify: async () => ({ domain: 'content' as const, confidence: 1 }),
   callDomain: async (...args: unknown[]) => {
     cloudCallDomainSpy(...args);
-    return { text: 'cloud reply', toolCalls: [], stopReason: 'stop' };
+    return cloudResponseQueue.shift() ?? { text: 'cloud reply', toolCalls: [], stopReason: 'stop' };
+  },
+  callStructuredGeneration: async (request: unknown) => {
+    cloudStructuredGenerationSpy(request);
+    return cloudResponseQueue.shift() ?? { text: 'cloud reply', stopReason: 'stop' };
   },
   continueWithToolResults: async () => ({ text: 'cloud reply', toolCalls: [], stopReason: 'stop' }),
 };
@@ -106,12 +143,468 @@ import type { AIProvider } from '../../src/services/ai-provider';
 
 beforeEach(() => {
   cloudCallDomainSpy.mockClear();
+  cloudStructuredGenerationSpy.mockClear();
+  mockAuditInsert.mockClear();
+  mockAuditState.insertFails = false;
+  cloudResponseQueue.length = 0;
+  mockConfig.localLLMEvaluation.enabled = true;
   mockConfig.cloudReasoningFallback.privacy.mode = 'redacted_only';
   mockConfig.cloudReasoningFallback.privacy.allowRawPrivateData = false;
 });
 
-describe('v3.1 dispatch — non-private + cloud-escalation → raw prompt to cloud', () => {
-  it('cloud callDomain receives modelOverride=gemini-2.5-pro and the raw prompt', async () => {
+afterEach(async () => {
+  for (const runId of ['dispatch-cloud-script-test', 'dispatch-cloud-audit-failure']) {
+    await rm(path.resolve('data/script-gen-runs', runId), { recursive: true, force: true });
+  }
+});
+
+describe('small-only production dispatch', () => {
+  it('goes directly through the approved cloud gate when local reasoning evaluation is disabled', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const localReason = vi.fn(async () => {
+      throw new Error('disabled local reasoning must not be invoked');
+    });
+    const primary = { ...ollamaPrimaryThatFails, localReason } as unknown as AIProvider;
+    const pair: SentinelFallbackPair = {
+      primary,
+      fallback: 'approved_cloud_reasoning',
+    };
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: pair,
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await trp.dispatchLocalReasoning({
+      prompt: 'public architecture question',
+      containsPrivateData: false,
+    });
+
+    expect(localReason).not.toHaveBeenCalled();
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(1);
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps validated private local chat fail-closed when Ollama is rollback-disabled', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const unavailableLocal = {
+      ...ollamaPrimaryThatFails,
+      name: 'unavailable:ollama',
+    } as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary: unavailableLocal },
+      chat: { primary: unavailableLocal },
+      'tool-use': { primary: unavailableLocal },
+      localReasoning: {
+        primary: unavailableLocal,
+        fallback: 'approved_cloud_reasoning',
+      },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await expect(trp.dispatchLocalReasoning({
+      workloadRole: 'validated_local_chat',
+      prompt: 'private local chat',
+      containsPrivateData: true,
+      allowCloudEscalation: true,
+    })).rejects.toMatchObject({
+      code: 'VALIDATED_LOCAL_CHAT_LOCAL_PROVIDER_UNAVAILABLE',
+    });
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('narrows a generic cloud completion to the LocalReasoningResult contract', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: {
+        primary,
+        fallback: 'approved_cloud_reasoning',
+      },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    const result = await trp.dispatchLocalReasoning({
+      prompt: 'public architecture question',
+      containsPrivateData: false,
+    }) as Record<string, unknown>;
+
+    expect(result.text).toBe('cloud reply');
+    expect(result.stopReason).toBe('stop');
+    expect(result).not.toHaveProperty('toolCalls');
+    expect(result.providerMetadata).toMatchObject({
+      providerUsed: 'gemini',
+      modelUsed: 'gemini-2.5-pro',
+      fallbackUsed: true,
+      privacyAction: 'sent_raw',
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'cloud_local_reasoning',
+      model: 'gemini-2.5-pro',
+      responseFormat: 'text',
+      userPrompt: 'public architecture question',
+    }));
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses provider JSON mode and enforces the supplied schema before returning parsed output', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['answer'],
+      properties: { answer: { type: 'string', minLength: 1 } },
+    } as const;
+    cloudResponseQueue.push({
+      text: JSON.stringify({ answer: 'bounded result' }),
+      toolCalls: [],
+      stopReason: 'stop',
+    });
+
+    const result = await trp.dispatchLocalReasoning({
+      prompt: 'return one bounded answer',
+      systemContext: 'Follow the public architecture rubric.',
+      outputSchema: schema,
+      containsPrivateData: false,
+      userId: 306,
+      tenantId: 901,
+      numPredict: 777,
+    }) as Record<string, unknown>;
+
+    expect(result.parsed).toEqual({ answer: 'bounded result' });
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'cloud_local_reasoning',
+      model: 'gemini-2.5-pro',
+      maxTokens: 777,
+      userId: 306,
+      tenantId: 901,
+      responseFormat: 'json',
+      jsonSchema: schema,
+      userPrompt: 'return one bounded answer',
+    }));
+    const [request] = cloudStructuredGenerationSpy.mock.calls[0];
+    expect(request.systemPrompt).toContain('Follow the public architecture rubric.');
+    expect(request.systemPrompt).toContain('JSON schema:');
+    expect(request).not.toHaveProperty('tools');
+
+    cloudStructuredGenerationSpy.mockClear();
+    cloudResponseQueue.push({
+      text: JSON.stringify({ unexpected: 'not allowed' }),
+      toolCalls: [],
+      stopReason: 'stop',
+    });
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'return one bounded answer',
+      outputSchema: schema,
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'required_property_missing',
+    });
+  });
+
+  it('rejects unsupported output-schema keywords before the cloud SDK boundary', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'public request',
+      containsPrivateData: false,
+      outputSchema: { type: 'string', format: 'email' },
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'unsupported_schema_keyword',
+    });
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses the approved provider/model through the two-pass ScriptGen adapter', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: {
+        primary,
+        fallback: 'approved_cloud_reasoning',
+      },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    const plan = {
+      plan: ['Create a release helper'],
+      files_to_create: ['release-helper.md'],
+      files_to_modify: [],
+      commands_to_run: [],
+      risk_level: 'low',
+      requires_cloud_reasoning: true,
+      requires_human_approval: false,
+    } as const;
+    cloudResponseQueue.push(
+      { text: JSON.stringify(plan), toolCalls: [], stopReason: 'stop' },
+      {
+        text: JSON.stringify({
+          ...plan,
+          artifacts: [{ path: 'release-helper.md', kind: 'markdown', content: '# Release helper\n' }],
+          validation_steps: [],
+        }),
+        toolCalls: [],
+        stopReason: 'stop',
+      },
+    );
+
+    const result = await trp.dispatchScriptGeneration({
+      description: 'create a release helper',
+      domainContext: 'PUBLIC_DOMAIN_CONTEXT_MARKER',
+      containsPrivateData: false,
+      runId: 'dispatch-cloud-script-test',
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      run_id: 'dispatch-cloud-script-test',
+      validation_status: 'passed',
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(2);
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+    for (const [request] of cloudStructuredGenerationSpy.mock.calls) {
+      expect(request).toMatchObject({
+        model: 'gemini-2.5-pro',
+        userId: 0,
+        tenantId: 0,
+      });
+      expect(request.userPrompt).toContain('PUBLIC_DOMAIN_CONTEXT_MARKER');
+      expect(request.systemPrompt).not.toContain('PUBLIC_DOMAIN_CONTEXT_MARKER');
+      expect(request).not.toHaveProperty('tools');
+    }
+  });
+
+  it('fails closed after one bounded retry when cloud JSON is invalid', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+    cloudResponseQueue.push(
+      { text: 'not-json', toolCalls: [], stopReason: 'stop' },
+      { text: 'still-not-json', toolCalls: [], stopReason: 'stop' },
+    );
+
+    await expect(trp.dispatchScriptGeneration({
+      description: 'create a release helper',
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_SCRIPT_GENERATION_CONTRACT_INVALID',
+      reason: 'plan_json_parse_failure',
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(2);
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on extra schema properties and on missing privacy classification', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+    const invalidPlan = {
+      plan: ['Create helper'],
+      files_to_create: [],
+      files_to_modify: [],
+      commands_to_run: [],
+      risk_level: 'low',
+      requires_cloud_reasoning: true,
+      requires_human_approval: false,
+      unexpected: 'must be rejected',
+    };
+    cloudResponseQueue.push(
+      { text: JSON.stringify(invalidPlan), toolCalls: [], stopReason: 'stop' },
+      { text: JSON.stringify(invalidPlan), toolCalls: [], stopReason: 'stop' },
+    );
+
+    await expect(trp.dispatchScriptGeneration({
+      description: 'create a release helper',
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_SCRIPT_GENERATION_CONTRACT_INVALID',
+      reason: 'plan_additional_properties_forbidden',
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(2);
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+
+    cloudStructuredGenerationSpy.mockClear();
+    await expect(trp.dispatchScriptGeneration({
+      description: 'classification is mandatory',
+    })).rejects.toMatchObject({
+      providerMetadata: {
+        fallbackUsed: false,
+        warning: 'privacy_classification_required',
+      },
+    });
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a structurally fabricated approval permit', async () => {
+    const {
+      parseApprovedCloudScriptGenerationTask,
+      runApprovedCloudScriptGenerationPipeline,
+    } = await import('../../src/services/script-generation');
+    const task = parseApprovedCloudScriptGenerationTask({
+      description: 'must not run locally',
+      containsPrivateData: false,
+    });
+
+    await expect(runApprovedCloudScriptGenerationPipeline(
+      task,
+      Object.freeze({}) as never,
+    )).rejects.toMatchObject({
+      code: 'CLOUD_SCRIPT_GENERATION_CONTRACT_INVALID',
+      reason: 'approval_invalid',
+    });
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+  });
+
+  it('binds a one-use approval to the exact complete payload', async () => {
+    const {
+      parseApprovedCloudScriptGenerationTask,
+      runApprovedCloudScriptGenerationPipeline,
+    } = await import('../../src/services/script-generation');
+    const { approveCloudScriptGeneration } = await import('../../src/services/cloud-reasoning-gate');
+    const task = parseApprovedCloudScriptGenerationTask({
+      description: 'create a public helper',
+      domainContext: 'public repository conventions',
+      containsPrivateData: false,
+    });
+    const approval = await approveCloudScriptGeneration(task, () => cloudProvider as AIProvider);
+    expect(approval.rejected).toBe(false);
+    if (approval.rejected) throw new Error('expected approval');
+
+    await expect(runApprovedCloudScriptGenerationPipeline(
+      { ...task, domainContext: 'private tenant context added after approval' },
+      approval.permit,
+    )).rejects.toMatchObject({
+      code: 'CLOUD_SCRIPT_GENERATION_CONTRACT_INVALID',
+      reason: 'approval_payload_mismatch',
+    });
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+  });
+
+  it('cannot mint a private ScriptGen approval while privacy mode is never', async () => {
+    const { parseApprovedCloudScriptGenerationTask } = await import('../../src/services/script-generation');
+    const { approveCloudScriptGeneration } = await import('../../src/services/cloud-reasoning-gate');
+    mockConfig.cloudReasoningFallback.privacy.mode = 'never';
+    const task = parseApprovedCloudScriptGenerationTask({
+      description: 'create a helper',
+      domainContext: 'DISALLOWED_PRIVATE_MARKER tenant secret context',
+      containsPrivateData: true,
+      allowCloudEscalation: true,
+    });
+
+    const approval = await approveCloudScriptGeneration(task, () => cloudProvider as AIProvider);
+    expect(approval).toMatchObject({ rejected: true, reason: 'privacy_never' });
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+  });
+
+  it('blocks private ScriptGen even if operator config drifts to allow_raw', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    mockConfig.cloudReasoningFallback.privacy.mode = 'allow_raw';
+    mockConfig.cloudReasoningFallback.privacy.allowRawPrivateData = true;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await expect(trp.dispatchScriptGeneration({
+      description: 'generate from private tenant context',
+      domainContext: 'PRIVATE_SCRIPT_MARKER',
+      containsPrivateData: true,
+      allowCloudEscalation: true,
+    })).rejects.toMatchObject({ code: 'PRIVATE_OPTIONAL_CLOUD_WORKLOAD_FORBIDDEN' });
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the successful cloud artifact audit row cannot persist', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    mockAuditState.insertFails = true;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+    const plan = {
+      plan: ['Create helper'],
+      files_to_create: ['audit-helper.md'],
+      files_to_modify: [],
+      commands_to_run: [],
+      risk_level: 'low',
+      requires_cloud_reasoning: true,
+      requires_human_approval: false,
+    };
+    cloudResponseQueue.push(
+      { text: JSON.stringify(plan), toolCalls: [], stopReason: 'stop' },
+      {
+        text: JSON.stringify({
+          ...plan,
+          artifacts: [{ path: 'audit-helper.md', kind: 'markdown', content: '# Audit helper\n' }],
+          validation_steps: [],
+        }),
+        toolCalls: [],
+        stopReason: 'stop',
+      },
+    );
+
+    await expect(trp.dispatchScriptGeneration({
+      description: 'create audited helper',
+      containsPrivateData: false,
+      runId: 'dispatch-cloud-audit-failure',
+    })).rejects.toMatchObject({
+      code: 'CLOUD_SCRIPT_GENERATION_CONTRACT_INVALID',
+      reason: 'audit_persistence_failed',
+    });
+    expect(mockAuditInsert).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('v3.1 dispatch — non-private + cloud-escalation → isolated cloud reasoning', () => {
+  it('structured generation receives the exact approved model and raw user prompt', async () => {
     const pair: SentinelFallbackPair = {
       primary: ollamaPrimaryThatFails as unknown as AIProvider,
       fallback: 'approved_cloud_reasoning',
@@ -127,13 +620,14 @@ describe('v3.1 dispatch — non-private + cloud-escalation → raw prompt to clo
     const RAW = 'public question about TypeScript generic constraints';
     await trp.dispatchLocalReasoning({ prompt: RAW, containsPrivateData: false });
 
-    expect(cloudCallDomainSpy).toHaveBeenCalledTimes(1);
-    const args = cloudCallDomainSpy.mock.calls[0] as unknown[];
-    // callDomain(domain, history, currentMessage, stateContext, opts)
-    const sentPrompt = args[2] as string;
-    expect(sentPrompt).toBe(RAW);
-    const opts = args[4] as { modelOverride?: string };
-    expect(opts.modelOverride).toBe('gemini-2.5-pro');
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(1);
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'cloud_local_reasoning',
+      model: 'gemini-2.5-pro',
+      responseFormat: 'text',
+      userPrompt: RAW,
+    }));
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -164,11 +658,12 @@ describe('v3.1 dispatch — private + mode=redacted_only → cloud NEVER called'
     // rejected with redaction_unsupported because v3.1 removed the
     // redact-then-forward path.
     expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
   });
 });
 
-describe('v3.1 dispatch — private + mode=allow_raw + opt-in → cloud receives raw', () => {
-  it('explicit raw-private opt-in forwards the original prompt to cloud', async () => {
+describe('v3.1 dispatch — private optional work stays blocked under allow_raw drift', () => {
+  it('rejects generic larger reasoning before any cloud SDK call', async () => {
     mockConfig.cloudReasoningFallback.privacy.mode = 'allow_raw';
     mockConfig.cloudReasoningFallback.privacy.allowRawPrivateData = true;
     const pair: SentinelFallbackPair = {
@@ -184,16 +679,13 @@ describe('v3.1 dispatch — private + mode=allow_raw + opt-in → cloud receives
     });
 
     const RAW = 'felipe@example.com SSN 123-45-6789 — operator chose allow_raw deliberately';
-    await trp.dispatchLocalReasoning({
+    await expect(trp.dispatchLocalReasoning({
       prompt: RAW,
       containsPrivateData: true,
       allowCloudEscalation: true,
-    });
+    })).rejects.toMatchObject({ code: 'PRIVATE_OPTIONAL_CLOUD_WORKLOAD_FORBIDDEN' });
 
-    expect(cloudCallDomainSpy).toHaveBeenCalledTimes(1);
-    const args = cloudCallDomainSpy.mock.calls[0] as unknown[];
-    const sentPrompt = args[2] as string;
-    // In allow_raw the entire raw prompt is forwarded by design.
-    expect(sentPrompt).toBe(RAW);
+    expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
   });
 });

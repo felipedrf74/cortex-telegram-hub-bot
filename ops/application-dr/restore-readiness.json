@@ -1,0 +1,7 @@
+{
+  "schema": "nexus.application-dr-restore-readiness.v1",
+  "status": "MANUAL_REQUIRED",
+  "quarterlyRestoreDrillReady": false,
+  "reason": "site_specific_isolated_restore_harness_not_implemented",
+  "harnessTemplate": "ops/application-dr/restore-harness.example"
+}

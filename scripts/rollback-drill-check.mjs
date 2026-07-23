@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { createPrivateKey, createPublicKey, sign as cryptoSign, verify as cryptoVerify } from 'node:crypto';
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  sign as cryptoSign,
+  verify as cryptoVerify,
+} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveMaxAge } from './lib/freshness.mjs';
@@ -27,12 +33,16 @@ const evidencePath = path.resolve(
 );
 const DEFAULT_MAX_AGE_DAYS = 30;
 const MAX_AGE_CEILING_DAYS = 90;
-const maxAgeDays = resolveMaxAge(
+const releaseGate = hasArg('--release-gate');
+const resolvedMaxAgeDays = resolveMaxAge(
   readArg('--max-age-days', process.env.NEXUS_ROLLBACK_DRILL_MAX_AGE_DAYS || String(DEFAULT_MAX_AGE_DAYS)),
   DEFAULT_MAX_AGE_DAYS,
   MAX_AGE_CEILING_DAYS,
   { root, flag: 'NEXUS_ROLLBACK_DRILL_MAX_AGE_DAYS' },
 );
+// A release caller may choose a tighter window, but can never relax the
+// canonical 30-day gate through an environment variable or CLI argument.
+const maxAgeDays = releaseGate ? Math.min(resolvedMaxAgeDays, DEFAULT_MAX_AGE_DAYS) : resolvedMaxAgeDays;
 const outputJson = hasArg('--json');
 
 function emit(payload, exitCode) {
@@ -219,12 +229,16 @@ function readEvidence() {
 
 function validate() {
   const raw = readEvidence();
+  const evidenceSha256 = createHash('sha256').update(canonicalJson(raw)).digest('hex');
   const envelopeCheck = validateEnvelope(raw);
   const reasons = [...envelopeCheck.reasons, ...validatePayload(envelopeCheck.payload)];
   const evidence = envelopeCheck.payload || {};
   emit({
     ok: reasons.length === 0,
     evidencePath,
+    evidenceSha256,
+    releaseGate,
+    maxAgeDays,
     reasons,
     evidence: {
       schema: evidence?.schema,

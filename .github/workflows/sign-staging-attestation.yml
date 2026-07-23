@@ -84,5 +84,6 @@ jobs:
         with:
           name: staging-attestation-${{ inputs.request_id }}
           path: .local/release/staging/staging-attestation.json
+          include-hidden-files: true
           retention-days: 14
           if-no-files-found: error

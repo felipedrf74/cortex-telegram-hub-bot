@@ -852,16 +852,47 @@ describe('trusted release signing boundary', () => {
     }
     fs.writeFileSync(path.join(resultsRoot, 'pytest-results.log'), '1 passed in 0.01s\n');
     fs.writeFileSync(path.join(temp, '.local/release/test-results.json'), JSON.stringify({
-      schema: 'nexus.release-test-results.v2',
+      schema: 'nexus.release-test-results.v3',
       status: 'passed',
       runtimeSha: actualHead,
       completedAt: new Date(trustedReferenceTimeMs - 60_000).toISOString(),
       tier: 'full-sharded',
       selection,
       testPolicyDigest: policyDigest,
+      artifactDigest: 'f'.repeat(64),
+      lockfiles: {
+        packageLockSha256: createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex'),
+        pythonRequirementsSha256: createHash('sha256')
+          .update(fs.readFileSync('content-engine/requirements.txt')).digest('hex'),
+      },
       toolchain: { node: 'v22.23.1', python: 'Python 3.12.0' },
       counts: { vitest: files.length, pytest: 1 },
       ci: { runId: '12345', runAttempt: '1' },
+      protectedMainShadow: {
+        mode: 'shadow',
+        comparison: {
+          schema: 'nexus.release-evidence-shadow-comparison.v1',
+          status: 'ineligible',
+          reason: 'protected_main_evidence_missing',
+          reuseScope: 'vitest-and-exact-runtime-bundle-shadow',
+          runtimeSha: actualHead,
+          comparedAt: new Date(trustedReferenceTimeMs - 30_000).toISOString(),
+          mainCi: null,
+          releaseCi: { runId: '12345', runAttempt: '1' },
+          checks: {
+            exactRuntimeSha: false,
+            testPolicyMatch: false,
+            packageLockMatch: false,
+            pythonRequirementsMatch: false,
+            nodeToolchainMatch: false,
+            pythonToolchainMatch: false,
+            mainSelectionCoversRelease: false,
+            protectedJobsPassed: false,
+            runtimeArtifactMatch: false,
+          },
+        },
+        evidence: null,
+      },
     }));
 
     expect(validateTestEvidence({
@@ -874,6 +905,7 @@ describe('trusted release signing boundary', () => {
       trustedPolicy: policy,
       trustedPolicyDigest: policyDigest,
       candidateSourceRoot: process.cwd(),
+      artifactDigest: 'f'.repeat(64),
     })).toMatchObject({ status: 'passed', tier: 'full-sharded' });
   });
 

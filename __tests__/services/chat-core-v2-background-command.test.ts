@@ -161,17 +161,21 @@ afterEach(() => {
 
 // ── Pure keep-alive resolver (B8) ──────────────────────────────────────────
 describe('resolveKeepAliveForRole (B8)', () => {
-  it('maps escalation_35b to 300 (5m residency)', () => {
-    expect(resolveKeepAliveForRole('escalation_35b')).toBe(300);
+  it('unloads background escalation immediately', () => {
+    expect(resolveKeepAliveForRole('background_escalation')).toBe(0);
+  });
+  it('keeps legacy residency role aliases compatible without selecting a large model', () => {
+    expect(resolveKeepAliveForRole('escalation_35b')).toBe(0);
+    expect(resolveKeepAliveForRole('operational_rollback')).toBe(0);
   });
   it('keeps the 3B planner always-loaded at -1', () => {
     expect(resolveKeepAliveForRole('planner_3b')).toBe(-1);
   });
-  it('maps operational_rollback (unload) to 0', () => {
-    expect(resolveKeepAliveForRole('operational_rollback')).toBe(0);
+  it('keeps classifier shadow residency bounded to five minutes', () => {
+    expect(resolveKeepAliveForRole('classifier_shadow')).toBe(300);
   });
-  it('defaults unknown roles to -1', () => {
-    expect(resolveKeepAliveForRole('not_a_role')).toBe(-1);
+  it('defaults unknown roles to immediate unload', () => {
+    expect(resolveKeepAliveForRole('not_a_role')).toBe(0);
   });
 });
 
@@ -445,16 +449,16 @@ describe('processBackgroundChatCommandJob integration', () => {
     expect(getChatV2CommandEventById('cmd_bg_1:background_stale_rejected', testDb)).not.toBeNull();
   });
 
-  it('escalation_35b path asserts keep-alive=300 (B8)', async () => {
+  it('background escalation cannot pin local inference memory', async () => {
     mockExecuteCommand.mockResolvedValue({ ok: true, status: 'verified', commandId: 'cmd_bg_1', executorVersion: 'v', gateVerdict: { ok: true }, response: { text: 'done', cards: [], reasonCodes: [], schemaVersion: 'v', kind: 'command_result', locale: 'en' } });
     enqueueJobFor('planner_escalation');
     const result = await processBackgroundChatCommandJob(claimOne(), { now: NOW });
-    expect(result.escalationKeepAliveSeconds).toBe(300);
+    expect(result.escalationKeepAliveSeconds).toBe(0);
     const event = getChatV2CommandEventById('cmd_bg_1:background_execution_completed', testDb);
-    expect(event!.metadata.escalationKeepAliveSeconds).toBe(300);
+    expect(event!.metadata.escalationKeepAliveSeconds).toBe(0);
   });
 
-  it('composer path does NOT pin the 35B residency', async () => {
+  it('composer path does not set background escalation residency', async () => {
     mockExecuteCommand.mockResolvedValue({ ok: true, status: 'verified', commandId: 'cmd_bg_1', executorVersion: 'v', gateVerdict: { ok: true }, response: { text: 'done', cards: [], reasonCodes: [], schemaVersion: 'v', kind: 'command_result', locale: 'en' } });
     enqueueJobFor('composer');
     const result = await processBackgroundChatCommandJob(claimOne(), { now: NOW });

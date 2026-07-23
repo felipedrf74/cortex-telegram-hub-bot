@@ -56,6 +56,7 @@ module.exports = {
     max_memory_restart: staging ? '300M' : '500M',
     env: {
       ENV: role,
+      PYTHONDONTWRITEBYTECODE: '1',
       CONTENT_ENGINE_PORT: contentPort,
       NEXUS_BACKEND_BASE_URL: `http://127.0.0.1:${backendPort}`,
       NEXUS_BACKEND_PORT: backendPort,

@@ -142,6 +142,7 @@ jobs:
         with:
           name: mutation-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/mutation/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
 
@@ -168,6 +169,7 @@ jobs:
         with:
           name: changed-coverage-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/coverage/changed/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
 
@@ -274,6 +276,7 @@ jobs:
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
+          NEXUS_RISK_GATE_JSON_OUTPUT: .local/ci-evidence/vitest-results-${{ matrix.shard }}.json
         run: |
           BASE='${{ needs.classify.outputs.base_sha }}'
           ARGS=(
@@ -287,6 +290,16 @@ jobs:
             ARGS=(--base "$BASE" "${ARGS[@]}")
           fi
           scripts/risk-gate.sh "${ARGS[@]}"
+
+      - name: Upload exact protected-main shard result
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: protected-main-vitest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: .local/ci-evidence/vitest-results-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   docs_and_secrets:
     name: 📚 Docs & secrets
@@ -348,6 +361,7 @@ jobs:
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
           ANTHROPIC_API_KEY: sk-ant-test-key
           DATABASE_PATH: ':memory:'
+          NEXUS_RISK_GATE_JSON_OUTPUT: .local/ci-evidence/vitest-results-selected.json
         run: |
           BASE='${{ needs.classify.outputs.base_sha }}'
           test -n "$BASE"
@@ -356,6 +370,16 @@ jobs:
             --skip-typecheck \
             --skip-python \
             --skip-migrations
+
+      - name: Upload exact protected-main selected result
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: protected-main-vitest-${{ github.run_id }}-${{ github.run_attempt }}-selected
+          path: .local/ci-evidence/vitest-results-selected.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   test:
     # Keep this aggregate check-run name stable because the main-branch
@@ -419,9 +443,13 @@ jobs:
   # ═══════════════════════════════════════════════════
   build:
     name: 🔨 Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: classify
     if: needs.classify.outputs.docs_only != 'true'
+    outputs:
+      artifact_name: ${{ steps.runtime_artifact.outputs.artifact_name }}
+      artifact_digest: ${{ steps.runtime_artifact.outputs.digest }}
+      python_version: ${{ steps.runtime_artifact.outputs.python_version }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -430,21 +458,62 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
       - run: npm ci
 
       - run: npm run build
+
+      - name: Bind the Ubuntu 24.04 x86-64 runtime artifact identity
+        id: runtime_artifact
+        run: |
+          test "$(uname -m)" = 'x86_64'
+          . /etc/os-release
+          test "$ID" = 'ubuntu'
+          test "$VERSION_ID" = '24.04'
+          scripts/build-release-runtime-dependencies.sh
+          node scripts/release-bundle.mjs --runtime-sha "$GITHUB_SHA" >/dev/null
+          digest="$(node scripts/release-artifact-manifest.mjs --digest | tr -d '\n')"
+          bundle_root=".local/release/bundles/$GITHUB_SHA/$digest"
+          artifact_name="release-bundle-$GITHUB_SHA-$digest"
+          node scripts/release-artifact-manifest.mjs \
+            --verify-bundle "$bundle_root" \
+            --expected-runtime-sha "$GITHUB_SHA" \
+            --expected-digest "$digest" >/dev/null
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "bundle_root=$bundle_root" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "python_version=$(python --version)" >> "$GITHUB_OUTPUT"
 
       - name: Verify dist output
         run: |
           test -f dist/index.js || { echo "❌ dist/index.js not found"; exit 1; }
           echo "✅ Build output verified"
 
-      - name: Upload build artifact
+      - name: Upload exact runtime release bundle
+        id: upload_runtime_bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist-${{ github.sha }}
-          path: dist/
+          name: ${{ steps.runtime_artifact.outputs.artifact_name }}
+          path: ${{ steps.runtime_artifact.outputs.bundle_root }}/
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 30
+
+      - name: Download and verify the uploaded exact runtime bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ steps.runtime_artifact.outputs.artifact_name }}
+          path: .local/ci-evidence/downloaded-runtime-bundle
+
+      - name: Prove uploaded bundle bytes match the recorded digest
+        run: |
+          node scripts/release-artifact-manifest.mjs \
+            --verify-bundle .local/ci-evidence/downloaded-runtime-bundle \
+            --expected-runtime-sha "$GITHUB_SHA" \
+            --expected-digest '${{ steps.runtime_artifact.outputs.digest }}' >/dev/null
 
   # ═══════════════════════════════════════════════════
   # PYTHON CONTENT-ENGINE (only when content-engine/** changed)
@@ -542,3 +611,46 @@ jobs:
           else
             node scripts/migration-safety-check.mjs
           fi
+
+  protected_main_evidence:
+    name: 🧾 Protected-main release reuse shadow
+    runs-on: ubuntu-latest
+    needs: [classify, test, lint, build, python-test, science_policy, migrations]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.classify.result == 'success' && needs.classify.outputs.docs_only != 'true' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: protected-main-vitest-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: .local/ci-evidence/vitest-results
+          merge-multiple: true
+
+      - name: Write exact protected-main shadow evidence
+        env:
+          NEXUS_CI_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node scripts/protected-main-ci-evidence.mjs write \
+            --head "$GITHUB_SHA" \
+            --base '${{ needs.classify.outputs.base_sha }}' \
+            --mode '${{ needs.classify.outputs.vitest_mode }}' \
+            --vitest-results-dir .local/ci-evidence/vitest-results \
+            --build-artifact-name '${{ needs.build.outputs.artifact_name }}' \
+            --build-artifact-digest '${{ needs.build.outputs.artifact_digest }}' \
+            --python-version '${{ needs.build.outputs.python_version }}' \
+            --out .local/ci-evidence/protected-main-ci-evidence.json
+
+      - name: Upload protected-main shadow evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: protected-main-ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/ci-evidence/protected-main-ci-evidence.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

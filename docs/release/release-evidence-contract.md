@@ -146,6 +146,16 @@ identifier, that exactly one persisted active owner belongs to an explicitly sco
 non-global write cohort with every workspace slice enabled. Strict owner
 bootstrap and the same extended readiness checks run while automatic recovery
 remains armed.
+The durable promotion journal also binds exact predecessor and candidate
+artifact/installed-runtime digests, a root-owned monotonic cutover budget, and
+separate cutover-start, actual-unavailability, candidate-available, and
+predecessor-recovered timestamps. Successful candidate availability must occur
+within 60 seconds; automatic recovery consumes only the remaining portion of
+the 120-second outage-to-healthy budget. A recovery archive is accepted only
+after exact path, size, whole-archive digest, safe-entry extraction, SQLite
+integrity/foreign-key checks, and stopped-state database digest agreement.
+These controls are implemented locally; live SSH-loss, failed-health, and
+reboot timing remain `MANUAL_REQUIRED` until their staging drills are retained.
 Repository-sync deployment
 wrappers were retired after two staging rehearsals and two owner-authorized
 production releases proved this contract on 2026-07-15; exact rollback and

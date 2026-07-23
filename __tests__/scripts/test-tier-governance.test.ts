@@ -136,10 +136,11 @@ describe('governed test tier partitions', () => {
 
     const inventory = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
     expect(inventory.summary).toMatchObject({
-      schema: 'nexus.test-inventory.v2',
+      schema: 'nexus.test-inventory.v3',
       testFiles: files.length,
       deterministicFiles: partitions.deterministic.length,
       evaluationFiles: partitions.evaluation.length,
+      timingGovernance: { mode: 'enforce', thresholdMs: 10_000 },
       evidenceCompleteness: {
         timing: {
           scope: 'evaluate',
@@ -169,6 +170,52 @@ describe('governed test tier partitions', () => {
       lastFailure: null,
       lastFailureEvidence: 'not-collected',
     });
+  });
+
+  it('keeps cold shared-runner timing advisory without hiding correctness evidence', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-advisory-'));
+    tempRoots.push(temp);
+    const policy = loadTestPolicy();
+    const partitions = partitionTestFiles(walkTestFiles(), policy);
+    const exceptions = new Set((policy.timingExceptions ?? []).map(({ file }: { file: string }) => file));
+    const slowFile = partitions.evaluation.find((file) => !exceptions.has(file));
+    expect(slowFile).toBeTruthy();
+    const reportPath = path.join(temp, 'results.json');
+    const advisoryOutput = path.join(temp, 'advisory.json');
+    fs.writeFileSync(reportPath, JSON.stringify({
+      success: true,
+      testResults: partitions.evaluation.map((file, index) => ({
+        name: path.resolve(file),
+        startTime: index * 20_000,
+        endTime: index * 20_000 + (file === slowFile ? 10_001 : 25),
+      })),
+    }));
+
+    const advisory = spawnSync(process.execPath, [
+      'scripts/test-inventory.mjs',
+      '--timings', reportPath,
+      '--timing-scope', 'evaluate',
+      '--timing-mode', 'advisory',
+      '--enforce-evidence',
+      '--output', advisoryOutput,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(advisory.status).toBe(0);
+    expect(advisory.stderr).toContain('Slow-test advisory');
+    expect(JSON.parse(fs.readFileSync(advisoryOutput, 'utf8')).summary).toMatchObject({
+      slowNonExemptFiles: 1,
+      timingGovernance: { mode: 'advisory', thresholdMs: 10_000 },
+    });
+
+    const enforced = spawnSync(process.execPath, [
+      'scripts/test-inventory.mjs',
+      '--timings', reportPath,
+      '--timing-scope', 'evaluate',
+      '--timing-mode', 'enforce',
+      '--enforce-evidence',
+      '--output', path.join(temp, 'enforced.json'),
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(enforced.status).toBe(1);
+    expect(enforced.stderr).toContain('Slow-test governance');
   });
 
   it('binds nightly release evidence to deterministic files only', () => {
@@ -240,6 +287,7 @@ describe('governed test tier partitions', () => {
     expect(evaluationWorkflow).toContain('--timing-scope evaluate');
     expect(nightlyWorkflow).toContain('scripts/run-test-tier.mjs deterministic');
     expect(nightlyWorkflow).toContain('--timing-scope deterministic');
+    expect(nightlyWorkflow).toContain('--timing-mode advisory');
     expect(riskGate).toContain('scripts/run-test-tier.mjs deterministic');
     const fullCase = riskGate.match(/\n  full\)\n(?<body>[\s\S]*?)\n    ;;/)?.groups?.body ?? '';
     expect(fullCase).toContain('scripts/run-test-tier.mjs deterministic');

@@ -379,7 +379,6 @@ echo "NEXUS_BACKUP_TARGET_VERSION=$TARGET_VERSION"
 echo "NEXUS_BACKUP_CREATED_AT=$BACKUP_CREATED_AT"
 echo "NEXUS_BACKUP_DATABASE_SHA256=$DATABASE_SHA256"
 
-# Retention: keep the ten most recent deploy backups.
-while IFS= read -r stale_backup; do
-  [ -n "$stale_backup" ] && rm -f -- "$stale_backup"
-done < <(ls -1t "$BACKUP_DIR"/v*.tar.gz 2>/dev/null | tail -n +11 || true)
+# Local retention is intentionally not performed here. Promotion first proves
+# encrypted off-host escrow of this exact digest; only that root-owned control
+# boundary may prune older local rollback bundles.

@@ -2,7 +2,12 @@
 
 import dotenv from 'dotenv';
 import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation-runtime';
+import { resolveOllamaSmallOnlyRuntimeConfig } from './services/ollama-model-policy';
 dotenv.config(contentLiveEvalDotenvOptions());
+
+// Fail at process startup before provider registration if any environment
+// variable can select a local model outside the ServerDominguez 3B allowlist.
+const OLLAMA_MODELS = resolveOllamaSmallOnlyRuntimeConfig(process.env);
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
 // "production-only" required env vars (TELEGRAM_BOT_TOKEN, etc.) become
@@ -199,7 +204,7 @@ export const config = {
     // `'approved_cloud_reasoning'` = route through cloud-reasoning-gate.
     scriptGeneration: {
       primary: process.env.AI_SCRIPT_GENERATION_PRIMARY || 'ollama',
-      fallback: process.env.AI_SCRIPT_GENERATION_FALLBACK || 'none',
+      fallback: process.env.AI_SCRIPT_GENERATION_FALLBACK || 'approved_cloud_reasoning',
     },
     localReasoning: {
       primary: process.env.AI_LOCAL_REASONING_PRIMARY || 'ollama',
@@ -218,29 +223,21 @@ export const config = {
   ollama: {
     enabled: (process.env.OLLAMA_ENABLED || 'false') === 'true',
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
-    model: process.env.OLLAMA_MODEL || 'qwen3.6:35b-a3b-q4_K_M',
-    classifierModel: process.env.OLLAMA_CLASSIFIER_MODEL || process.env.OLLAMA_MODEL || 'qwen3.6:35b-a3b-q4_K_M',
-    // operationalRollbackModel is NOT used for in-process retry — it is
-    // the tag operators switch to via OLLAMA_MODEL/OLLAMA_CLASSIFIER_MODEL
-    // during a manual rollback. Pre-pulled at install time so the
-    // rollback is a one-command env flip. (Plan amendment R3-2.)
-    operationalRollbackModel: process.env.OLLAMA_OPERATIONAL_ROLLBACK_MODEL || 'qwen3.6:27b-q4_K_M',
-    maxTokens: optionalInt('OLLAMA_MAX_TOKENS', 2048, { min: 64, max: 8192 }),
-    secretaryMaxTokens: optionalInt('OLLAMA_SECRETARY_MAX_TOKENS', 4096, { min: 64, max: 8192 }),
-    // v1.1: bumped from 90s to 240s after the live smoke (2026-05-26) showed
-    // think:true cases on 35B-A3B taking 126-170s warm with truncated num_predict.
-    // v1.2 (same session): bumped 240s → 360s (6 min) after the v1.1 smoke
-    // re-run showed think:true cases NEEDING the full 4-7 min when num_predict
-    // is raised to let the model finish naturally. think:false classify (the
-    // hot path) finishes in 16-18 s warm, well inside any of these caps.
+    model: OLLAMA_MODELS.model,
+    classifierModel: OLLAMA_MODELS.classifierModel,
+    // Deprecated compatibility alias. There is no separate local rollback
+    // model; rollback disables Ollama and uses approved cloud routing.
+    operationalRollbackModel: OLLAMA_MODELS.model,
+    maxTokens: optionalInt('OLLAMA_MAX_TOKENS', 2048, { min: 64, max: 4096 }),
+    secretaryMaxTokens: optionalInt('OLLAMA_SECRETARY_MAX_TOKENS', 4096, { min: 64, max: 4096 }),
+    // Provider-level ceiling. Interactive local-chat paths apply their own
+    // substantially lower deadlines; this remains generous for bounded
+    // background 3B evaluation while the circuit breaker stays authoritative.
     timeoutMs: optionalInt('OLLAMA_TIMEOUT_MS', 360000, { min: 1000, max: 600000 }),
 
     // Per-task input/output token caps (plan A10 — conservative estimator).
-    // v1.1: scriptGenMaxOutput bumped 1800→4096 and localReasoningMaxOutput
-    // bumped 1200→3000 because Qwen3.6 think:true uses up the budget for
-    // chain-of-thought BEFORE emitting JSON content; the prior caps
-    // truncated 5/6 of the live smoke think:true cases. Classify output
-    // stays small (128) — classify uses think:false.
+    // Classify output stays small (128); script/reasoning limits remain bounded
+    // for compatibility but all calls resolve to the sole approved 3B model.
     tokenCaps: {
       classifyMaxInput: optionalInt('OLLAMA_CLASSIFY_MAX_INPUT_TOKENS', 1500, { min: 128 }),
       classifyMaxOutput: optionalInt('OLLAMA_CLASSIFY_MAX_OUTPUT_TOKENS', 128, { min: 16 }),
@@ -292,7 +289,9 @@ export const config = {
     disallowedSubstrings: (process.env.DISALLOWED_COMPLEX_FALLBACK_MODELS ||
       'flash,flash-lite,nano,mini,haiku,lite,classifier,fast')
       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-    onUnapproved: (process.env.CLOUD_REASONING_ON_UNAPPROVED_MODEL || 'return_local_result_with_warning') as
+    // A privacy or quality rejection must surface explicitly. There is no
+    // large local model to silently substitute under the small-only policy.
+    onUnapproved: (process.env.CLOUD_REASONING_ON_UNAPPROVED_MODEL || 'fail_visibly') as
       'return_local_result_with_warning' | 'fail_visibly' | 'allow',
     privacy: {
       mode: (process.env.CLOUD_REASONING_PRIVACY_MODE || 'redacted_only') as 'redacted_only' | 'allow_raw' | 'never',
@@ -302,9 +301,11 @@ export const config = {
 
   // ── Local LLM evaluation mode ────────────────────────────────────
   localLLMEvaluation: {
-    enabled: (process.env.LOCAL_LLM_EVALUATION_MODE || 'true') === 'true',
+    // Local script/reasoning is an explicit evaluation-only role. Production
+    // defaults route these workloads through the approved cloud/privacy gate.
+    enabled: (process.env.LOCAL_LLM_EVALUATION_MODE || 'false') === 'true',
     showProviderMetadata: (process.env.LOCAL_LLM_SHOW_PROVIDER_METADATA || 'true') === 'true',
-    requireLocalForScriptGen: (process.env.AI_SCRIPT_GENERATION_REQUIRE_LOCAL || 'true') === 'true',
+    requireLocalForScriptGen: (process.env.AI_SCRIPT_GENERATION_REQUIRE_LOCAL || 'false') === 'true',
   },
 
   // ── Option 3: classify shadow-eval ───────────────────────────────

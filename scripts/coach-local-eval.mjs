@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 // Copyright (c) 2026 Felipe Dominguez. MIT License. See LICENSE.
 //
-// coach-local-eval.mjs — side-by-side local-vs-cloud eval for the daily
-// coach analysis (local-LLM pilot, 2026-07-04).
+// coach-local-eval.mjs — local-first eval for the daily coach analysis
+// (local-LLM pilot, 2026-07-04).
 //
 // Feed it a payload captured by garmin-coach.ts with
 // GARMIN_COACH_CAPTURE_PROMPT=true (JSON: {capturedAt, userId,
 // systemPrompt, userPrompt, maxTokens} in .local/coach-payloads/) and it
-// runs the same prompt against:
-//   (a) the LOCAL model via the Ollama HTTP API directly
+// runs the prompt against:
+//   (a) the LOCAL model by default via the Ollama HTTP API directly
 //       (${OLLAMA_BASE_URL}/api/chat, stream:false, keep_alive:-1 — the
-//       provider default residency), and
-//   (b) the CLOUD path via the engine's own completeOneShotWithFallback
-//       (Gemini → OpenAI cascade) loaded from the compiled dist/, the
-//       same convention as scripts/staging-fixture-probes.mjs.
+//       provider default residency), and, only when explicitly requested,
+//   (b) the approved CLOUD reasoning provider selected by the engine's
+//       quality/privacy gate loaded from compiled dist/. Captured Garmin
+//       prompts are classified as private and never call a cloud provider
+//       unless both the per-run operator authorization and configured raw
+//       private-data policy approve the request.
 //
 // For each run it prints wall-clock, output length, and whether the
 // COACH_RECS JSON block parses (marker + parse semantics replicated from
@@ -21,16 +23,17 @@
 // full outputs to files next to the payload.
 //
 // Usage:
-//   node scripts/coach-local-eval.mjs --payload <file.json> [--local-only|--cloud-only] [--think] [--model <tag>]
+//   node scripts/coach-local-eval.mjs --payload <file.json> [--local-only|--with-cloud|--cloud-only] [--operator-authorize-private-cloud] [--think] [--model <tag>]
 //
 // Notes:
-//   - Operator-run only. NOT wired to any cron/scheduler.
+//   - Operator-run only. NOT wired to any cron/scheduler. The default is
+//     local-only; cloud access must be opted into on every invocation.
 //   - Read-only with respect to the DB: the script never calls
 //     initDatabase(), so the cloud provider's natural api_usage insert
 //     warn-fails harmlessly (logGeminiUsage swallows DB errors). Nothing
 //     is written to SQLite by this script.
 //   - --think enables the model's reasoning mode for the local run
-//     (measured 4-7 min on qwen3.6:35b-a3b); default is think:false.
+//     The small-only 3B runtime defaults to think:false for bounded latency.
 //
 // Exit codes: 0 all requested runs completed, 1 usage error, 2 run failure.
 
@@ -47,13 +50,23 @@ const require = createRequire(import.meta.url);
 // ── Args ────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const parsed = { payload: null, localOnly: false, cloudOnly: false, think: false, model: null };
+  const parsed = {
+    payload: null,
+    localOnly: false,
+    withCloud: false,
+    cloudOnly: false,
+    authorizePrivateCloud: false,
+    think: false,
+    model: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--payload') parsed.payload = argv[++i];
     else if (arg.startsWith('--payload=')) parsed.payload = arg.slice('--payload='.length);
     else if (arg === '--local-only') parsed.localOnly = true;
+    else if (arg === '--with-cloud') parsed.withCloud = true;
     else if (arg === '--cloud-only') parsed.cloudOnly = true;
+    else if (arg === '--operator-authorize-private-cloud') parsed.authorizePrivateCloud = true;
     else if (arg === '--think') parsed.think = true;
     else if (arg === '--model') parsed.model = argv[++i];
     else if (arg.startsWith('--model=')) parsed.model = arg.slice('--model='.length);
@@ -66,7 +79,7 @@ function parseArgs(argv) {
   return parsed;
 }
 
-const USAGE = 'Usage: node scripts/coach-local-eval.mjs --payload <file.json> [--local-only|--cloud-only] [--think] [--model <tag>]';
+const USAGE = 'Usage: node scripts/coach-local-eval.mjs --payload <file.json> [--local-only|--with-cloud|--cloud-only] [--operator-authorize-private-cloud] [--think] [--model <tag>]';
 
 // ── COACH_RECS extraction — replicated from garmin-coach.ts ─────────
 // (extractRecommendations: exact markers + JSON.parse + array check)
@@ -133,7 +146,11 @@ function loadEngineConfig() {
 async function runLocal(payload, opts) {
   const cfg = opts.engineConfig?.ollama;
   const baseUrl = process.env.OLLAMA_BASE_URL || cfg?.baseUrl || 'http://127.0.0.1:11434';
-  const model = opts.model || process.env.OLLAMA_MODEL || cfg?.model || 'qwen3.6:35b-a3b-q4_K_M';
+  const smallOnlyModel = 'qwen2.5:3b-instruct-q4_K_M';
+  const model = opts.model || process.env.OLLAMA_MODEL || cfg?.model || smallOnlyModel;
+  if (model !== smallOnlyModel) {
+    throw new Error(`small-only policy rejects model=${model}`);
+  }
   const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || cfg?.timeoutMs || 360000);
   const maxTokens = Number(payload.maxTokens) > 0 ? Number(payload.maxTokens) : 2500;
 
@@ -148,7 +165,7 @@ async function runLocal(payload, opts) {
     // keep_alive -1 = stay resident, matching the OllamaProvider default.
     keep_alive: -1,
     options: {
-      num_ctx: 8192,
+      num_ctx: 4096,
       num_predict: maxTokens,
       temperature: 0.2,
       top_p: 0.9,
@@ -193,38 +210,70 @@ async function runLocal(payload, opts) {
   }
 }
 
-// ── Cloud run (engine dist: completeOneShotWithFallback) ────────────
+// ── Cloud run (engine dist: approved quality/privacy gate) ─────────
 
-async function runCloud(payload) {
-  let provider;
+async function runCloud(payload, opts) {
+  let selectApprovedCloudReasoningProvider;
+  let getProvider;
   try {
-    provider = require(path.join(ENGINE_ROOT, 'dist', 'services', 'gemini-provider'));
+    ({ selectApprovedCloudReasoningProvider } = require(
+      path.join(ENGINE_ROOT, 'dist', 'services', 'cloud-reasoning-gate'),
+    ));
+    ({ getProvider } = require(path.join(ENGINE_ROOT, 'dist', 'services', 'provider-registry')));
   } catch (err) {
     throw new Error(
-      `Could not load dist/services/gemini-provider (${err.message}). ` +
-      'Run `npm run build` first — the cloud leg uses the compiled engine, not a raw REST call.',
+      `Could not load the compiled cloud reasoning gate/provider registry (${err.message}). ` +
+      'Run `npm run build` first — the cloud leg must use the engine privacy gate.',
     );
   }
+
+  if (opts.authorizePrivateCloud !== true) {
+    throw new Error('private cloud evaluation lacks explicit operator authorization');
+  }
+
   const maxTokens = Number(payload.maxTokens) > 0 ? Number(payload.maxTokens) : 2500;
   const userId = Number(payload.userId) > 0 ? Number(payload.userId) : 0;
-  const start = Date.now();
-  const { text, provider: providerUsed } = await provider.completeOneShotWithFallback(
-    payload.systemPrompt,
-    payload.userPrompt,
-    'coach_local_eval',
-    async () => {
-      // Anthropic stage is disabled by default (ANTHROPIC_ENABLED unset);
-      // this thunk only fires if an operator re-enabled it — refuse anyway
-      // so the eval never bills Anthropic.
-      throw new Error('Anthropic fallback disabled in coach-local-eval');
-    },
-    { maxTokens, userId, tenantId: userId },
+  const privacyRequest = {
+    prompt: `${payload.systemPrompt}\n\n${payload.userPrompt}`,
+    containsPrivateData: true,
+    allowCloudEscalation: true,
+    redactionRequired: true,
+  };
+  const selection = await selectApprovedCloudReasoningProvider(
+    privacyRequest,
+    getProvider,
+    null,
   );
+  if (selection.rejected) {
+    throw new Error(`cloud reasoning gate rejected captured private prompt: ${selection.reason}`);
+  }
+
+  const start = Date.now();
+  const result = await selection.provider.callDomain(
+    'triathlon',
+    [],
+    payload.userPrompt,
+    payload.systemPrompt,
+    {
+      maxTokensOverride: maxTokens,
+      userId,
+      tenantId: userId,
+      modelOverride: selection.model,
+      containsPrivateData: privacyRequest.containsPrivateData,
+      allowCloudEscalation: privacyRequest.allowCloudEscalation,
+      redactionRequired: privacyRequest.redactionRequired,
+    },
+  );
+  const providerUsed = selection.provider.name;
   return {
-    label: `cloud (${providerUsed})`,
+    label: `cloud (${providerUsed}/${selection.model}; ${selection.privacyAction})`,
     wallMs: Date.now() - start,
-    text,
-    meta: { providerUsed },
+    text: result.text,
+    meta: {
+      providerUsed,
+      modelUsed: selection.model,
+      privacyAction: selection.privacyAction,
+    },
   };
 }
 
@@ -254,8 +303,20 @@ async function main() {
     console.error(USAGE);
     process.exit(args.help ? 0 : 1);
   }
-  if (args.localOnly && args.cloudOnly) {
-    console.error('--local-only and --cloud-only are mutually exclusive.\n' + USAGE);
+  const cloudRequested = args.withCloud || args.cloudOnly;
+  if ((args.localOnly && cloudRequested) || (args.withCloud && args.cloudOnly)) {
+    console.error('--local-only, --with-cloud, and --cloud-only are mutually exclusive.\n' + USAGE);
+    process.exit(1);
+  }
+  if (cloudRequested && !args.authorizePrivateCloud) {
+    console.error(
+      'Cloud evaluation of a captured Garmin prompt requires the per-run ' +
+      '--operator-authorize-private-cloud acknowledgement.\n' + USAGE,
+    );
+    process.exit(1);
+  }
+  if (!cloudRequested && args.authorizePrivateCloud) {
+    console.error('--operator-authorize-private-cloud is valid only with --with-cloud or --cloud-only.\n' + USAGE);
     process.exit(1);
   }
 
@@ -287,9 +348,9 @@ async function main() {
     }
   }
 
-  if (!args.localOnly) {
+  if (cloudRequested) {
     try {
-      const cloudRun = await runCloud(payload);
+      const cloudRun = await runCloud(payload, { authorizePrivateCloud: args.authorizePrivateCloud });
       report(cloudRun, payloadPath, 'cloud');
     } catch (err) {
       failures += 1;

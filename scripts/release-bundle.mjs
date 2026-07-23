@@ -7,6 +7,7 @@ import {
   BACKEND_IOS_CONTRACT_FIXTURE_PATH,
   validateBackendIosContractFixtureBytes,
 } from './lib/backend-ios-contract-fixture.mjs';
+import { verifyReleaseBundle } from './lib/release-artifact-manifest.mjs';
 
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = '') => {
@@ -46,6 +47,10 @@ if (fs.existsSync(completeMarker)) {
   if (existing.artifactDigest !== artifact.digest || existing.runtimeSha !== runtimeSha) {
     throw new Error('existing immutable bundle identity does not match requested runtime');
   }
+  const verified = verifyReleaseBundle(outputRoot, runtimeSha);
+  if (verified.digest !== artifact.digest) {
+    throw new Error('existing immutable bundle bytes do not match requested artifact');
+  }
   process.stdout.write(`${JSON.stringify({ reused: true, outputRoot, ...existing }, null, 2)}\n`);
   process.exit(0);
 }
@@ -72,4 +77,5 @@ const marker = {
 };
 fs.writeFileSync(completeMarker, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
 fs.chmodSync(outputRoot, 0o500);
+verifyReleaseBundle(outputRoot, runtimeSha);
 process.stdout.write(`${JSON.stringify({ reused: false, outputRoot, ...marker }, null, 2)}\n`);

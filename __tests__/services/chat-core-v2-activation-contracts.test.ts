@@ -312,7 +312,7 @@ describe('ChatCoreV2 activation contracts', () => {
     expect(issues).toContain('unsupported_factual_claim');
   });
 
-  it('keeps Class C writes on the 35B/background escalation path', () => {
+  it('keeps Class C writes on the strong-reasoning/background escalation path', () => {
     expect(requires35BOrBackgroundEscalation({ riskClass: 'A' })).toBe(false);
     expect(requires35BOrBackgroundEscalation({ riskClass: 'B' })).toBe(false);
     expect(requires35BOrBackgroundEscalation({ riskClass: 'C' })).toBe(true);
@@ -350,10 +350,10 @@ describe('ChatCoreV2 activation contracts', () => {
       .toEqual([expect.objectContaining({ role: 'planner_3b', defaultKeepAlive: '-1' })]);
   });
 
-  it('resolves model residency config without promoting 35B to foreground', () => {
+  it('resolves every residency role to the sole approved 3B model', () => {
     const resolved = resolveChatCoreV2ModelResidencyConfig({
       OLLAMA_CLASSIFIER_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
-      OLLAMA_MODEL: 'qwen3.6:35b-a3b-q4_K_M',
+      OLLAMA_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
     });
 
     expect(validateChatCoreV2ModelResidencyConfig(resolved)).toEqual([]);
@@ -365,9 +365,9 @@ describe('ChatCoreV2 activation contracts', () => {
         foregroundAllowed: true,
       }),
       expect.objectContaining({
-        role: 'escalation_35b',
-        model: 'qwen3.6:35b-a3b-q4_K_M',
-        keepAlive: '5m',
+        role: 'background_escalation',
+        model: 'qwen2.5:3b-instruct-q4_K_M',
+        keepAlive: '0',
         foregroundAllowed: false,
       }),
     ]));

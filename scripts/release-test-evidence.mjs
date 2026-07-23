@@ -10,10 +10,15 @@ import {
   root,
   walkTestFiles,
 } from './lib/test-policy.mjs';
+import {
+  compareProtectedMainToRelease,
+  validateProtectedMainCiEvidence,
+  validateReleaseShadowComparison,
+} from './protected-main-ci-evidence.mjs';
 
 export const NIGHTLY_EVIDENCE_SCHEMA = 'nexus.nightly-full-suite-evidence.v1';
 export const RELEASE_SELECTION_SCHEMA = 'nexus.release-test-selection.v1';
-export const RELEASE_RESULTS_SCHEMA = 'nexus.release-test-results.v2';
+export const RELEASE_RESULTS_SCHEMA = 'nexus.release-test-results.v3';
 export const DEFAULT_RELEASE_TIER = 'changed-critical-cannot-skip';
 export const FULL_RELEASE_TIER = 'full-sharded';
 export const FULL_REQUIRED_REASONS = Object.freeze([
@@ -75,6 +80,13 @@ function writeJson(file, value) {
 
 function currentPolicyDigest() {
   return sha256(fs.readFileSync(path.join(root, 'config/test-policy.json')));
+}
+
+function releaseLockfileDigests() {
+  return {
+    packageLockSha256: sha256(fs.readFileSync(path.join(root, 'package-lock.json'))),
+    pythonRequirementsSha256: sha256(fs.readFileSync(path.join(root, 'content-engine/requirements.txt'))),
+  };
 }
 
 function cleanGitEnv(overrides = {}) {
@@ -372,6 +384,10 @@ function runJson(commandName, commandArgs) {
     cwd: root,
     encoding: 'utf8',
     env: cleanGitEnv(),
+    // The exact selected-file evidence is already larger than Node's small
+    // default sync-process buffer. Keep the bound explicit so growth fails
+    // predictably instead of truncating otherwise valid JSON at 64 KiB.
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0) fail(result.stderr || result.stdout || `${commandName} failed`);
   return JSON.parse(result.stdout);
@@ -519,6 +535,10 @@ function writeResult() {
   const pytestLogPath = path.resolve(root, valueOf('--pytest-log'));
   const out = path.resolve(root, valueOf('--out', '.local/release/test-results.json'));
   const runtimeSha = valueOf('--runtime-sha', process.env.GITHUB_SHA ?? git('rev-parse', 'HEAD'));
+  const artifactDigest = valueOf('--artifact-digest');
+  if (!/^[0-9a-f]{64}$/.test(artifactDigest)) {
+    fail('release result artifact digest is required');
+  }
   const policyDigest = currentPolicyDigest();
   const selection = validateReleaseSelection(readJson(selectionPath), {
     expectedHeadSha: runtimeSha,
@@ -557,6 +577,8 @@ function writeResult() {
     tier: selection.tier,
     selection,
     testPolicyDigest: policyDigest,
+    artifactDigest,
+    lockfiles: releaseLockfileDigests(),
     toolchain: {
       node: process.version,
       python: valueOf('--python-version', process.env.NEXUS_RELEASE_PYTHON_VERSION ?? ''),
@@ -566,6 +588,7 @@ function writeResult() {
       runId: String(valueOf('--run-id', process.env.GITHUB_RUN_ID ?? '')),
       runAttempt: String(valueOf('--run-attempt', process.env.GITHUB_RUN_ATTEMPT ?? '')),
     },
+    protectedMainShadow: null,
   };
   if (result.status !== 'passed' || !/^\d+$/.test(result.ci.runId)
       || !/^\d+$/.test(result.ci.runAttempt) || !result.toolchain.python) {
@@ -575,11 +598,47 @@ function writeResult() {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
+function bindProtectedMainShadow() {
+  const resultsPath = path.resolve(root, valueOf('--results', '.local/release/test-results.json'));
+  const comparisonPath = path.resolve(root, valueOf('--comparison'));
+  const evidenceArgument = valueOf('--main-evidence');
+  const result = readJson(resultsPath);
+  if (result.schema !== RELEASE_RESULTS_SCHEMA || result.status !== 'passed') {
+    fail('only passing governed release results can bind protected-main shadow evidence');
+  }
+  if (result.protectedMainShadow !== null) fail('protected-main shadow evidence is already bound');
+  const comparison = validateReleaseShadowComparison(readJson(comparisonPath), {
+    expectedRuntimeSha: result.runtimeSha,
+  });
+  let evidence = null;
+  if (evidenceArgument) {
+    evidence = validateProtectedMainCiEvidence(readJson(path.resolve(root, evidenceArgument)), {
+      expectedHeadSha: result.runtimeSha,
+      expectedPolicyDigest: result.testPolicyDigest,
+    });
+    const recomputed = compareProtectedMainToRelease(evidence, result);
+    const expected = { ...recomputed, comparedAt: comparison.comparedAt };
+    if (canonicalJson(expected) !== canonicalJson(comparison)) {
+      fail('release shadow comparison does not match the bound protected-main evidence');
+    }
+  } else if (comparison.mainCi !== null || comparison.status !== 'ineligible') {
+    fail('missing protected-main evidence must produce an ineligible comparison without main CI identity');
+  }
+  result.protectedMainShadow = {
+    mode: 'shadow',
+    comparison,
+    evidence,
+  };
+  writeJson(resultsPath, result);
+  process.stdout.write(`${JSON.stringify(result.protectedMainShadow, null, 2)}\n`);
+}
+
 if (process.argv[1]
     && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url))) {
   if (command === 'plan') writePlan();
   else if (command === 'run-selected') runSelected();
   else if (command === 'write-nightly') writeNightly();
   else if (command === 'write-result') writeResult();
-  else fail('Usage: release-test-evidence.mjs <plan|run-selected|write-nightly|write-result> [options]');
+  else if (command === 'bind-protected-main-shadow') bindProtectedMainShadow();
+  else fail('Usage: release-test-evidence.mjs <plan|run-selected|write-nightly|write-result|bind-protected-main-shadow> [options]');
 }

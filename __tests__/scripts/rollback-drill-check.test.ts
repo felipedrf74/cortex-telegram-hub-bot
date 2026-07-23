@@ -147,4 +147,21 @@ describe('rollback-drill-check', () => {
       ]));
     }
   });
+
+  it('caps the release gate at thirty days even when callers request a looser window', () => {
+    writeEvidence({
+      drilledAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const result = run(['--release-gate', '--max-age-days', '90']);
+    const output = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(1);
+    expect(output.releaseGate).toBe(true);
+    expect(output.maxAgeDays).toBe(30);
+    expect(output.evidenceSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(output.reasons).toEqual(expect.arrayContaining([
+      expect.stringContaining('drill_stale'),
+    ]));
+  });
 });

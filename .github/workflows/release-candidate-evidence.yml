@@ -141,6 +141,7 @@ jobs:
         with:
           name: release-test-selection-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/release/test-selection.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
@@ -235,6 +236,8 @@ jobs:
     needs: contract-binding
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      python_version: ${{ steps.python_identity.outputs.version }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -243,6 +246,10 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
           cache-dependency-path: content-engine/requirements.txt
+
+      - name: Record exact Python test toolchain
+        id: python_identity
+        run: echo "version=$(python --version)" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: |
@@ -268,7 +275,7 @@ jobs:
 
   release-evidence:
     name: 📦 Write unsigned release candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [contract-binding, test-plan, vitest-full, vitest-selected, python-full]
     if: ${{ always() }}
     timeout-minutes: 30
@@ -282,7 +289,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - run: npm ci
+
+      - name: Verify production artifact build platform
+        run: |
+          test "$(uname -m)" = 'x86_64'
+          . /etc/os-release
+          test "$ID" = 'ubuntu'
+          test "$VERSION_ID" = '24.04'
+          test "$(python --version)" = '${{ needs.python-full.outputs.python_version }}'
 
       - name: Stop when selected test prerequisites failed
         if: ${{ needs.contract-binding.result != 'success' || needs.test-plan.result != 'success' || needs.python-full.result != 'success' || (needs.test-plan.outputs.full_required == 'true' && needs.vitest-full.result != 'success') || (needs.test-plan.outputs.full_required == 'false' && needs.vitest-selected.result != 'success') }}
@@ -355,11 +374,16 @@ jobs:
           NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
         run: scripts/release-verify-container.sh --skip-vitest --skip-pytest
 
+      - name: Build immutable runtime bundle
+        run: |
+          scripts/build-release-runtime-dependencies.sh
+          node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
+
       - name: Write exact release-test result
         id: write_test_result
         env:
           NEXUS_RELEASE_VERDICT: ${{ steps.typecheck.outcome == 'success' && steps.science_policy.outcome == 'success' && steps.build.outcome == 'success' && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && steps.release_test_image.outcome == 'success' && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
-          NEXUS_RELEASE_PYTHON_VERSION: Python ${{ env.PYTHON_VERSION }}
+          NEXUS_RELEASE_PYTHON_VERSION: ${{ needs.python-full.outputs.python_version }}
         run: |
           node scripts/release-test-evidence.mjs write-result \
             --status "$NEXUS_RELEASE_VERDICT" \
@@ -368,10 +392,59 @@ jobs:
             --vitest-results-dir .local/release/rc-test-results \
             --pytest-log .local/release/rc-test-results/pytest-results.log \
             --python-version "$NEXUS_RELEASE_PYTHON_VERSION" \
+            --artifact-digest "$(node scripts/release-artifact-manifest.mjs --digest | tr -d '\n')" \
             --out .local/release/test-results.json
 
-      - name: Build immutable runtime bundle
-        run: node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
+      - name: Compare protected-main evidence in shadow mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .local/release/protected-main
+          main_run_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=10" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main")][0].id // empty')"
+          if [ -z "$main_run_id" ]; then
+            node scripts/protected-main-ci-evidence.mjs missing \
+              --release-results .local/release/test-results.json \
+              --reason protected_main_evidence_missing \
+              --out .local/release/protected-main-shadow-comparison.json
+          elif ! gh run download "$main_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "protected-main-ci-evidence-$main_run_id-*" \
+            --dir .local/release/protected-main; then
+            node scripts/protected-main-ci-evidence.mjs missing \
+              --release-results .local/release/test-results.json \
+              --reason protected_main_artifact_missing \
+              --out .local/release/protected-main-shadow-comparison.json
+          else
+            mapfile -t protected_main_files < <(find .local/release/protected-main \
+              -type f -name protected-main-ci-evidence.json -print)
+            if [ "${#protected_main_files[@]}" -ne 1 ] \
+              || ! node scripts/protected-main-ci-evidence.mjs compare \
+                --main-evidence "${protected_main_files[0]:-missing}" \
+                --release-results .local/release/test-results.json \
+                --out .local/release/protected-main-shadow-comparison.json; then
+              node scripts/protected-main-ci-evidence.mjs missing \
+                --release-results .local/release/test-results.json \
+                --reason protected_main_evidence_invalid \
+                --out .local/release/protected-main-shadow-comparison.json
+            fi
+          fi
+
+      - name: Bind the protected-main shadow record into release-test evidence
+        run: |
+          bind_args=(
+            --results .local/release/test-results.json
+            --comparison .local/release/protected-main-shadow-comparison.json
+          )
+          mapfile -t protected_main_files < <(find .local/release/protected-main \
+            -type f -name protected-main-ci-evidence.json -print 2>/dev/null || true)
+          comparison_has_main="$(node -e \
+            'const x=require("./.local/release/protected-main-shadow-comparison.json"); process.stdout.write(x.mainCi === null ? "false" : "true")')"
+          if [ "${#protected_main_files[@]}" -eq 1 ] && [ "$comparison_has_main" = 'true' ]; then
+            bind_args+=(--main-evidence "${protected_main_files[0]}")
+          fi
+          node scripts/release-test-evidence.mjs bind-protected-main-shadow "${bind_args[@]}"
 
       - name: Write unsigned ReleaseManifestV2 candidate
         env:
@@ -420,6 +493,7 @@ jobs:
             .local/release/bundles/${{ github.sha }}/**/.complete.json
             .local/release/test-selection.json
             .local/release/test-results.json
+            .local/release/protected-main-shadow-comparison.json
             .local/release/cannot-skip-dashboard.json
             .local/release/rc-test-results/*
           include-hidden-files: true

@@ -60,9 +60,10 @@ if (classifier.vitest?.mode === 'full' && !coverageSelection) {
   } else {
     process.stdout.write(`${allFiles.join('\n')}\n`);
   }
-  process.exit(0);
-}
-
+  // Do not call process.exit() immediately after a large write: when stdout is
+  // a pipe, Node can otherwise discard bytes still buffered beyond 64 KiB.
+  process.exitCode = 0;
+} else {
 // This selection runs inside the protected signer as well as RC planning.
 // Candidate files are inert data: build a transitive graph from literal local
 // imports and Git history without loading Vitest, setup files, or test modules.
@@ -101,4 +102,5 @@ if (json) {
     ? selected
     : (unresolved.length > 0 || removed.length > 0 ? allFiles : selected);
   process.stdout.write(plainSelection.length ? `${plainSelection.join('\n')}\n` : '');
+}
 }

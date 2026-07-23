@@ -33,6 +33,8 @@ import {
   AIToolResultMessage,
   CallDomainOptions,
   ClassifyOptions,
+  StructuredGenerationRequest,
+  StructuredGenerationResult,
   getModelRouting,
   normalizeCallDomainOptions,
 } from './ai-provider';
@@ -1196,12 +1198,16 @@ export class GeminiProvider implements AIProvider {
     maxOutputTokens: number,
     useTools: boolean,
     filteredTools: Anthropic.Tool[],
+    structuredJson = false,
+    structuredJsonSchema?: unknown,
   ) {
     return getClient().getGenerativeModel({
       model: modelName,
       systemInstruction: systemPrompt,
       generationConfig: {
         maxOutputTokens,
+        ...(structuredJson ? { responseMimeType: 'application/json' } : {}),
+        ...(structuredJsonSchema !== undefined ? { responseJsonSchema: structuredJsonSchema } : {}),
       },
       ...(useTools && filteredTools.length > 0 ? {
         tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
@@ -1220,6 +1226,8 @@ export class GeminiProvider implements AIProvider {
     maxTokensOverride?: number,
     usageContext?: { userId?: number; tenantId?: number },
     maxRetries = 3,
+    structuredJson = false,
+    structuredJsonSchema?: unknown,
   ): Promise<GenerateContentResult> {
     const maxOutputTokens = maxTokensOverride || routing.maxTokens;
     const model = this.buildModel(
@@ -1228,6 +1236,8 @@ export class GeminiProvider implements AIProvider {
       maxOutputTokens,
       useTools,
       filteredTools,
+      structuredJson,
+      structuredJsonSchema,
     );
 
     const maxCostUsd = computeProviderCallCostUpperBoundUsd({
@@ -1358,6 +1368,33 @@ ${message}`;
   }
 
   // ─── callDomain ───────────────────────────────────────────────────
+
+  async callStructuredGeneration(
+    request: StructuredGenerationRequest,
+  ): Promise<StructuredGenerationResult> {
+    if (!/^gemini(?:[-.:]|$)/i.test(request.model)) {
+      throw new Error('Gemini structured generation requires a Gemini model');
+    }
+    const result = await this.generateWithRouting(
+      {
+        contents: [{ role: 'user', parts: [{ text: request.userPrompt }] }],
+      },
+      request.systemPrompt,
+      [],
+      false,
+      { model: request.model, maxTokens: request.maxTokens },
+      request.category,
+      request.maxTokens,
+      { userId: request.userId, tenantId: request.tenantId },
+      3,
+      request.responseFormat === 'json',
+      request.jsonSchema,
+    );
+    return {
+      text: extractText(result),
+      stopReason: result.response.candidates?.[0]?.finishReason || 'STOP',
+    };
+  }
 
   async callDomain(
     domain: DomainName,

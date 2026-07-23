@@ -81,11 +81,46 @@ class LocalFixtureProvider implements AIProvider {
   }
 }
 
+/**
+ * Structural primary used only when Ollama is deliberately disabled and an
+ * optional complex-workload route points at the approved-cloud sentinel. It
+ * creates no Ollama client, performs no health probe, and is never used as a
+ * redactor. The routing layer recognizes the name and enters the privacy gate
+ * directly, while validated private local-chat remains fail-closed.
+ */
+class UnavailableOllamaOptionalProvider implements AIProvider {
+  readonly name = 'unavailable:ollama';
+
+  private unavailable(): never {
+    throw Object.assign(new Error('ollama_disabled'), { code: 'OLLAMA_DISABLED' });
+  }
+
+  async classify(): Promise<ClassificationResult> {
+    return this.unavailable();
+  }
+
+  async callDomain(): Promise<AICallResult> {
+    return this.unavailable();
+  }
+
+  async continueWithToolResults(): Promise<AICallResult> {
+    return this.unavailable();
+  }
+}
+
 let _fixtureProvider: AIProvider | null = null;
+let _unavailableOllamaOptionalProvider: AIProvider | null = null;
 
 function getFixtureProvider(): AIProvider {
   if (!_fixtureProvider) _fixtureProvider = new LocalFixtureProvider();
   return _fixtureProvider;
+}
+
+function getUnavailableOllamaOptionalProvider(): AIProvider {
+  if (!_unavailableOllamaOptionalProvider) {
+    _unavailableOllamaOptionalProvider = new UnavailableOllamaOptionalProvider();
+  }
+  return _unavailableOllamaOptionalProvider;
 }
 
 function getUsableProvider(name: string): AIProvider | null {
@@ -381,6 +416,16 @@ function buildSentinelFallbackPair(
   }
   const primary = getProvider(primaryName);
   if (!primary) {
+    if (primaryName === 'ollama' && fallbackName === 'approved_cloud_reasoning') {
+      logger.info(
+        { primaryName, fallbackName },
+        'Ollama disabled — preserving optional task route through approved cloud gate',
+      );
+      return {
+        primary: getUnavailableOllamaOptionalProvider(),
+        fallback: 'approved_cloud_reasoning',
+      };
+    }
     logger.info(
       { primaryName, fallbackName },
       'New task-type primary unavailable — skipping pair build',
@@ -475,4 +520,5 @@ function defaultFallbackHandler(event: FallbackEvent): void {
 export function clearProviderCache(): void {
   providers.clear();
   _activeProvider = null;
+  _unavailableOllamaOptionalProvider = null;
 }

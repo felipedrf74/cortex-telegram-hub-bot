@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-07-17
+Last verified: 2026-07-22
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change, or when the release
 process model changes. Incident response and recovery detail lives in
@@ -213,9 +213,45 @@ Production rollback is **always available**. The default release contract is:
    mutation begins.
 4. **Rollback restores exact bytes and state.** If symlink, PM2 identity,
    loopback health, public health, or snapshot-version readiness fails, restore
-   the exact backup and previous release directory automatically. A changed or
-   irreversible migration still requires explicit owner approval.
-5. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
+   the exact backup and previous release directory automatically. Revalidate
+   archive path, size, whole-archive SHA-256, and stopped-state database SHA-256
+   before data mutation; reject traversal, duplicate paths, links, devices, or
+   unsupported archive members. A changed or irreversible migration still
+   requires explicit owner approval.
+5. **Promotion is a durable server transaction.** Before the first PM2
+   mutation, persist a root-owned immutable request, predecessor identity, and
+   recovery intent. A Mac/SSH disconnect must not interrupt the transaction.
+   Reboot recovery completes before normal PM2 startup, and failed readiness
+   restores healthy predecessor service within 120 seconds. Use the Linux
+   monotonic clock for the same-boot 60-second candidate boundary and total
+   120-second budget; persist cutover, actual-unavailability, candidate-healthy,
+   and predecessor-recovered timestamps. Reboot wall timing is diagnostic and
+   requires the staging reboot drill before the bound is considered proven.
+6. **Runtime immutability is root-verified.** The production base is
+   root-owned/sticky, its `releases/` child is root-owned and application
+   non-writable, and a narrow root operation creates the exact target without
+   following or replacing links. Root-installed code verifies predecessor and
+   candidate artifact/installed-tree digests and safe dependency links, seals
+   all runtime entries read-only, and verifies again before candidate code runs.
+7. **The soak is evidence, not downtime.** Preserve the exact 60-second
+   stability soak. Record service unavailability separately from total cutover
+   duration so the soak is never shortened to improve a headline metric.
+8. **Capacity and rollback freshness fail closed.** Staging and promotion
+   require a rollback drill no more than 30 days old, at least 12 GiB available
+   memory, load-15 below 6, no sustained swap pressure or recent OOM/restart
+   delta, and no active Sonar Compute Engine analysis.
+9. **Advisory workloads prove host headroom before activation.** SonarQube
+   start requires a checksummed, same-boot preflight no more than two hours old
+   with at least 16 GiB available memory, load-15 below 6, zero swap delta,
+   zero recent OOMs, stable PM2/health, and complete listener/route/firewall
+   snapshots captured after Docker client/server installation. It also
+   requires the exact successful 24h staging then 24h production small-model
+   soak and cleanup evidence chain. Each window is backed by canonical,
+   mode-0600 path+SHA-256 health/request records that cover the full interval,
+   preserve the retained-model digest, and report zero health failures,
+   OOMs, restart deltas, pressure, or large/unapproved-model requests. Live Sonar state is
+   bind-mounted below the root-controlled `/srv/sonarqube/data` boundary.
+10. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
    `deploy-staging.sh`, and `promote-to-prod.sh` paths must not be restored or
    invoked. Exact `scripts/rollback.sh` and restore tooling remain available
    for emergency predecessor recovery.
@@ -253,6 +289,47 @@ When production is degraded:
 4. **No silent quota cap.** When a per-user or global cap is hit, the
    user-facing response is `429 RATE_LIMITED` with an `error.code` and a
    `retryAfter` hint.
+5. **ServerDominguez is small-model only.** The only permitted Ollama tag is
+   `qwen2.5:3b-instruct-q4_K_M`; the absent fast-chat path defaults off.
+   Classification remains Gemini-primary. Full script generation and larger
+   reasoning route through the approved cloud/privacy gate and fail visibly
+   when the content or model is not approved; local execution requires an
+   explicit evaluation mode. Approved cloud script generation uses the exact
+   provider/model selected by that gate in a dedicated two-pass JSON pipeline
+   (plan, then artifacts); it disables tools, rejects malformed or drifting
+   schemas, and enters the same path/symlink sandbox, deterministic validators,
+   and run persistence as offline-local evaluation. A generic domain completion
+   is never cast into a script-generation result.
+   Before the first small-only staging boot, inspect both environment values
+   and persisted model overrides: set `OLLAMA_MODEL`,
+   `OLLAMA_CLASSIFIER_MODEL`, `CHAT_CORE_V2_LOCAL_CHAT_MODEL`, and the recipe
+   model to the retained 3B tag; set `CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL=off`;
+   remove the retired `OLLAMA_OPERATIONAL_ROLLBACK_MODEL`; and remove or replace
+   every persisted Ollama override. Startup and per-request dispatch reject any
+   remaining large-model selector instead of silently changing it. The Ollama
+   staging smoke must prove the authenticated Gemini and Ollama runtime health
+   plus the live PM2 environment: Gemini is the classification primary,
+   classification and local chat are shadow-only, local script/reasoning
+   evaluation is off, cloud fallbacks are the approved reasoning gate, and all
+   local model selectors are explicit 3B values with fast chat off. Missing
+   settings do not inherit defaults during this promotion check.
+6. **Ollama has a hard host envelope.** Bind loopback-only with one loaded
+   model, one parallel request, queue depth four, 4096 context, 2 CPU quota,
+   `MemoryHigh=4G`, `MemoryMax=6G`, and at most 512 MiB swap. Move swap to zero
+   only after the additional healthy observation window. Staging, production,
+   cleanup, Sonar enablement, and zero-swap authorization must use the
+   root-installed foreground observation collector. Hand-authored aggregates
+   are not evidence. Its canonical mode-0600 result must resolve to a bounded
+   raw hash chain captured on one boot and to exact-window read-only SQLite
+   `api_usage` counts by provider/model with fail-closed pricing/local-unit
+   persistence. The production window must reference and revalidate the prior
+   staging result; the zero-swap window must bind the exact cleanup result.
+7. **Captured coach evaluations are local-only by default.** A cloud comparison
+   requires an explicit cloud mode plus the per-run
+   `--operator-authorize-private-cloud` acknowledgement. The script classifies
+   captured Garmin prompts as private and calls the configured cloud provider
+   only after `cloud-reasoning-gate` approves both model and raw-private-data
+   policy; a rejection is visible and no direct provider fallback is allowed.
 
 ## 11. Cost guardrail (must)
 
@@ -285,7 +362,7 @@ records evidence under ignored `.local/release/` paths or CI artifacts.
 ## 13. Data shape and disposability (must)
 
 1. **SQLite is the system of record.** It must be backed up before any
-   migration and on a daily cadence.
+   migration and by an hourly online recovery-point timer.
 2. **Release backups live under the governed remote backup directory**
    (`/home/dominguez/backups/nexushub/` in the current single-VPS deployment)
    with version/timestamp identity. Routine database backups retain their
@@ -304,7 +381,7 @@ records evidence under ignored `.local/release/` paths or CI artifacts.
 - [ ] No degraded provider state (Garmin, Google, Outlook, OAuth
       providers).
 - [ ] PM2 uptime ≥ 24 h or last restart was a planned deploy.
-- [ ] SQLite backup from yesterday exists.
+- [ ] Latest encrypted SQLite recovery point is no more than one hour old.
 
 ### Weekly (Sunday 06:00 UTC, automated via
 `weekly-housekeeping.yml`)

@@ -26,6 +26,11 @@
 import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import {
+  assertSmallOnlyOllamaModel,
+  OLLAMA_SMALL_ONLY_MODEL,
+  OllamaSmallOnlyPolicyError,
+} from './ollama-model-policy';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -102,6 +107,7 @@ export function getActiveModel(provider: ProviderName, role: ModelRole): string 
  * Set a provider-level model override. Affects all domains on that tier.
  */
 export function setActiveModel(provider: ProviderName, role: AnyModelRole, model: string): void {
+  validateRuntimeModelOverride(provider, role, model);
   const key = cacheKey(provider, role);
   overrides.set(key, model);
 
@@ -219,6 +225,8 @@ export function loadModelOverrides(): void {
       const role = parts[1] as AnyModelRole;
       const model = JSON.parse(row.value);
 
+      validateRuntimeModelOverride(provider, role, String(model));
+
       overrides.set(suffix, model);
 
       if (role === 'chat' || role === 'classifier') {
@@ -228,6 +236,7 @@ export function loadModelOverrides(): void {
       logger.info({ provider, role, model }, 'Loaded model override from DB');
     }
   } catch (err) {
+    if (err instanceof OllamaSmallOnlyPolicyError) throw err;
     logger.warn({ err }, 'Failed to load model overrides — using defaults');
   }
 }
@@ -298,11 +307,12 @@ export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: s
     chat: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
     classifier: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
   },
-  // Local Ollama (WO-ollama-local-llm). Both tags listed; operators flip
-  // OLLAMA_MODEL between them as a tier-1b rollback path.
+  // ServerDominguez local inference is intentionally small-only. Complex
+  // reasoning escalates through the approved cloud gate, never a large local
+  // model selected from the portal.
   ollama: {
-    chat: ['qwen3.6:35b-a3b-q4_K_M', 'qwen3.6:27b-q4_K_M'],
-    classifier: ['qwen3.6:35b-a3b-q4_K_M', 'qwen3.6:27b-q4_K_M'],
+    chat: [OLLAMA_SMALL_ONLY_MODEL],
+    classifier: [OLLAMA_SMALL_ONLY_MODEL],
   },
 };
 
@@ -314,9 +324,19 @@ export function _resetOverrides(): void {
 }
 
 function patchConfig(provider: ProviderName, role: ModelRole, model: string): void {
+  validateRuntimeModelOverride(provider, role, model);
   const cfg = config[provider] as Record<string, unknown> | undefined;
   if (cfg) {
     if (role === 'chat') cfg.model = model;
     else cfg.classifierModel = model;
   }
+}
+
+function validateRuntimeModelOverride(
+  provider: ProviderName,
+  role: AnyModelRole,
+  model: string,
+): void {
+  if (provider !== 'ollama') return;
+  assertSmallOnlyOllamaModel(model, `model_override:${provider}:${role}`);
 }

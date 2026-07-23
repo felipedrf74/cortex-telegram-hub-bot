@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "58051a4ee3bfa9ebbc586a13ff931fa9296a94e8e31b8748264b4d4a3061914b",
-    "baseCommit": "18306693c64c2a84d74b82e488a82b53f32cef9b",
-    "baseCommitTimestamp": "2026-07-22T10:20:27+01:00",
-    "trackedFiles": 2749,
-    "sourceFiles": 1022
+    "sourceDigest": "4d3a5b2ddb7cda18dac6723dd07c01062cbcc2e1de369c8bfccfe3e5bb276e04",
+    "baseCommit": "7ecd7fadedd0bf5246b790b7a5609a6846cfe3fb",
+    "baseCommitTimestamp": "2026-07-22T10:26:16+01:00",
+    "trackedFiles": 2829,
+    "sourceFiles": 1024
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 751
+      "files": 753
     },
     {
       "path": "src/skills",
@@ -4740,7 +4740,7 @@
     }
   ],
   "tests": {
-    "files": 1006,
+    "files": 1021,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -4759,10 +4759,10 @@
       "regression": 1,
       "router": 3,
       "scope": 1,
-      "scripts": 55,
+      "scripts": 68,
       "sdk": 1,
       "security": 22,
-      "services": 632,
+      "services": 634,
       "skills": 11,
       "state": 17,
       "storage": 1,
@@ -4774,9 +4774,9 @@
   "documentation": {
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
-    "policyVersion": "2026-07-15.1",
-    "count": 66,
-    "active": 66,
+    "policyVersion": "2026-07-22.1",
+    "count": 68,
+    "active": 68,
     "statusCounts": {
       "canonical": 29,
       "current": 2,
@@ -4784,7 +4784,7 @@
       "generated": 1,
       "mirror": 4,
       "runtime": 26,
-      "supporting": 2
+      "supporting": 4
     },
     "files": [
       {
@@ -4792,8 +4792,8 @@
         "status": "canonical",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/product-sentinel/SKILL.md"
       },
       {
@@ -4801,8 +4801,8 @@
         "status": "canonical",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/release-operator/SKILL.md"
       },
       {
@@ -4810,8 +4810,8 @@
         "status": "canonical",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/test-audit/SKILL.md"
       },
       {
@@ -4819,8 +4819,8 @@
         "status": "canonical",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/verifiable-reward-check/SKILL.md"
       },
       {
@@ -4828,8 +4828,8 @@
         "status": "mirror",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/product-sentinel/SKILL.md"
       },
       {
@@ -4837,8 +4837,8 @@
         "status": "mirror",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/release-operator/SKILL.md"
       },
       {
@@ -4846,8 +4846,8 @@
         "status": "mirror",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/test-audit/SKILL.md"
       },
       {
@@ -4855,8 +4855,8 @@
         "status": "mirror",
         "active": true,
         "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": ".agents/skills/verifiable-reward-check/SKILL.md"
       },
       {
@@ -4864,8 +4864,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "AGENTS.md"
       },
       {
@@ -4873,8 +4873,8 @@
         "status": "generated",
         "active": true,
         "owner": "release automation",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-08-15",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-08-21",
         "canonicalPath": "CHANGELOG.md"
       },
       {
@@ -4882,8 +4882,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "CLAUDE.md"
       },
       {
@@ -4891,8 +4891,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "README.md"
       },
       {
@@ -4900,8 +4900,8 @@
         "status": "canonical",
         "active": true,
         "owner": "content runtime lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "content-engine/README.md"
       },
       {
@@ -4909,8 +4909,8 @@
         "status": "canonical",
         "active": true,
         "owner": "content runtime lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "content-engine/SECURITY.md"
       },
       {
@@ -4918,8 +4918,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/DOCS_INDEX.md"
       },
       {
@@ -4927,8 +4927,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/TOKEN-QUOTA-CONTRACT.md"
       },
       {
@@ -4936,8 +4936,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/agents/VERIFIABLE_REWARD_PROTOCOL.md"
       },
       {
@@ -4945,8 +4945,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/ENGINEERING_STANDARDS_INDEX.md"
       },
       {
@@ -4954,8 +4954,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/backend-api-contract-standard.md"
       },
       {
@@ -4963,8 +4963,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/genai-migration-plan.md"
       },
       {
@@ -4972,8 +4972,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/jwt-rotation-runbook.md"
       },
       {
@@ -4981,8 +4981,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/offline-first-tasks-architecture.md"
       },
       {
@@ -4990,8 +4990,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/runtime-and-observability-standard.md"
       },
       {
@@ -4999,8 +4999,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/security-and-data-isolation-standard.md"
       },
       {
@@ -5008,8 +5008,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/testing-and-qa-harness-standard.md"
       },
       {
@@ -5017,8 +5017,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/training-exercise-media-v1-operator-runbook.md"
       },
       {
@@ -5026,8 +5026,8 @@
         "status": "canonical",
         "active": true,
         "owner": "legal and privacy owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/legal/data-retention.md"
       },
       {
@@ -5035,8 +5035,8 @@
         "status": "draft",
         "active": true,
         "owner": "legal and privacy owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-08-15",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-08-21",
         "canonicalPath": "docs/legal/privacy-policy-draft.md"
       },
       {
@@ -5044,8 +5044,8 @@
         "status": "draft",
         "active": true,
         "owner": "legal and privacy owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-08-15",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-08-21",
         "canonicalPath": "docs/legal/terms-of-service-draft.md"
       },
       {
@@ -5053,8 +5053,8 @@
         "status": "supporting",
         "active": true,
         "owner": "developer experience lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/local-dev/README.md"
       },
       {
@@ -5062,8 +5062,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend architecture lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/notifications/notification-center-boundary.md"
       },
       {
@@ -5071,8 +5071,8 @@
         "status": "current",
         "active": true,
         "owner": "release owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-08-15",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-08-21",
         "canonicalPath": "docs/release/CURRENT_RELEASE_STATE.md"
       },
       {
@@ -5080,8 +5080,8 @@
         "status": "canonical",
         "active": true,
         "owner": "release owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/release/README.md"
       },
       {
@@ -5089,8 +5089,8 @@
         "status": "canonical",
         "active": true,
         "owner": "release owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/release/migration-irreversible.md"
       },
       {
@@ -5098,8 +5098,8 @@
         "status": "canonical",
         "active": true,
         "owner": "release owner",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/release/release-evidence-contract.md"
       },
       {
@@ -5107,8 +5107,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend security lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/security/nexus-security-threat-model.md"
       },
       {
@@ -5116,8 +5116,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend security lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/security/security-control-matrix.md"
       },
       {
@@ -5125,8 +5125,8 @@
         "status": "current",
         "active": true,
         "owner": "backend security lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-08-15",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-08-21",
         "canonicalPath": "docs/security/security-hardening-implementation-status.md"
       },
       {
@@ -5134,8 +5134,8 @@
         "status": "canonical",
         "active": true,
         "owner": "backend security lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2026-10-14",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
         "canonicalPath": "docs/security/security-operations-runbook.md"
       },
       {
@@ -5143,8 +5143,8 @@
         "status": "runtime",
         "active": true,
         "owner": "agent knowledge lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "knowledge/skills/content-creation-SKILL.md"
       },
       {
@@ -5152,8 +5152,8 @@
         "status": "runtime",
         "active": true,
         "owner": "agent knowledge lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "knowledge/skills/nexushub-adaptation-guide.md"
       },
       {
@@ -5161,17 +5161,35 @@
         "status": "runtime",
         "active": true,
         "owner": "agent knowledge lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "knowledge/skills/secretary-SKILL.md"
+      },
+      {
+        "path": "ops/ollama/LARGE_MODEL_CLEANUP.md",
+        "status": "supporting",
+        "active": true,
+        "owner": "release operations lead",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
+        "canonicalPath": "ops/ollama/LARGE_MODEL_CLEANUP.md"
+      },
+      {
+        "path": "ops/sonarqube/README.md",
+        "status": "supporting",
+        "active": true,
+        "owner": "release operations lead",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2026-10-20",
+        "canonicalPath": "ops/sonarqube/README.md"
       },
       {
         "path": "prompts/channel-learner.md",
         "status": "runtime",
         "active": true,
         "owner": "agent prompt lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/channel-learner.md"
       },
       {
@@ -5179,8 +5197,8 @@
         "status": "runtime",
         "active": true,
         "owner": "agent prompt lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/chat-action-fixer.md"
       },
       {
@@ -5188,8 +5206,8 @@
         "status": "runtime",
         "active": true,
         "owner": "agent prompt lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/classifier.md"
       },
       {
@@ -5197,8 +5215,8 @@
         "status": "runtime",
         "active": true,
         "owner": "content lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/content.md"
       },
       {
@@ -5206,8 +5224,8 @@
         "status": "runtime",
         "active": true,
         "owner": "cooking lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/cooking.md"
       },
       {
@@ -5215,8 +5233,8 @@
         "status": "runtime",
         "active": true,
         "owner": "agent prompt lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/creator-config.md"
       },
       {
@@ -5224,8 +5242,8 @@
         "status": "runtime",
         "active": true,
         "owner": "agent prompt lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/cross-skill-and-memory.md"
       },
       {
@@ -5233,8 +5251,8 @@
         "status": "runtime",
         "active": true,
         "owner": "finance lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/finance.md"
       },
       {
@@ -5242,8 +5260,8 @@
         "status": "runtime",
         "active": true,
         "owner": "secretary lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/secretary.md"
       },
       {
@@ -5251,8 +5269,8 @@
         "status": "runtime",
         "active": true,
         "owner": "content lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/topic-generation.md"
       },
       {
@@ -5260,8 +5278,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/triathlon.md"
       },
       {
@@ -5269,8 +5287,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/triathlon/cycling.md"
       },
       {
@@ -5278,8 +5296,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/triathlon/gym.md"
       },
       {
@@ -5287,8 +5305,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/triathlon/running.md"
       },
       {
@@ -5296,8 +5314,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "prompts/triathlon/swim.md"
       },
       {
@@ -5305,8 +5323,8 @@
         "status": "supporting",
         "active": true,
         "owner": "developer experience lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "scripts/cockpit/README.md"
       },
       {
@@ -5314,8 +5332,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/services/coach-kernel/knowledge/docs/hybrid-athlete-rules.md"
       },
       {
@@ -5323,8 +5341,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/services/coach-kernel/knowledge/docs/llm-tool-contract.md"
       },
       {
@@ -5332,8 +5350,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/services/coach-kernel/knowledge/docs/marathon-periodization.md"
       },
       {
@@ -5341,8 +5359,8 @@
         "status": "runtime",
         "active": true,
         "owner": "content lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/skills/content/prompts/system.md"
       },
       {
@@ -5350,8 +5368,8 @@
         "status": "runtime",
         "active": true,
         "owner": "cooking lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/skills/cooking/prompts/system.md"
       },
       {
@@ -5359,8 +5377,8 @@
         "status": "runtime",
         "active": true,
         "owner": "finance lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/skills/finance/prompts/system.md"
       },
       {
@@ -5368,8 +5386,8 @@
         "status": "runtime",
         "active": true,
         "owner": "secretary lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/skills/secretary/prompts/system.md"
       },
       {
@@ -5377,8 +5395,8 @@
         "status": "runtime",
         "active": true,
         "owner": "training lead",
-        "reviewedOn": "2026-07-16",
-        "reviewDueOn": "2027-01-12",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
         "canonicalPath": "src/skills/training/prompts/system.md"
       }
     ]

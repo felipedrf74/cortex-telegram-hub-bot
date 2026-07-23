@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly encrypted Nexus application recovery point
+
+[Timer]
+OnCalendar=*-*-* *:05:00 UTC
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=nexus-application-dr-backup.service
+
+[Install]
+WantedBy=timers.target

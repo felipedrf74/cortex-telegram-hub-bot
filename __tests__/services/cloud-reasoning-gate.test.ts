@@ -65,7 +65,13 @@ vi.mock('../../src/services/ollama-provider', () => ({
   normalizeClassificationPayload: (payload: unknown) => payload,
 }));
 
-import { selectApprovedCloudReasoningProvider } from '../../src/services/cloud-reasoning-gate';
+import {
+  approveCloudScriptGeneration,
+  canonicalCloudLocalReasoningOutboundInput,
+  canonicalCloudScriptGenerationOutboundInput,
+  consumeCloudScriptGenerationApproval,
+  selectApprovedCloudReasoningProvider,
+} from '../../src/services/cloud-reasoning-gate';
 import type { AIProvider } from '../../src/services/ai-provider';
 
 function fakeProvider(name: string): AIProvider {
@@ -100,7 +106,7 @@ beforeEach(() => {
 describe('Quality gate — approved-model selection', () => {
   it('returns provider+model when approved model is configured', async () => {
     const result = await selectApprovedCloudReasoningProvider(
-      { prompt: 'hard question' },
+      { prompt: 'hard question', containsPrivateData: false },
       getProviderFn,
     );
     expect(result.rejected).toBe(false);
@@ -113,16 +119,127 @@ describe('Quality gate — approved-model selection', () => {
 
   it('rejects when fallback is disabled', async () => {
     mockConfig.cloudReasoningFallback.enabled = false;
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
     if (result.rejected) expect(result.reason).toBe('disabled');
   });
 
   it('rejects when provider or model is empty', async () => {
     mockConfig.cloudReasoningFallback.model = '';
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
     if (result.rejected) expect(result.reason).toBe('unconfigured');
+  });
+
+  it('rejects a globally approved model paired with the wrong provider', async () => {
+    mockConfig.cloudReasoningFallback.provider = 'anthropic';
+    mockConfig.cloudReasoningFallback.model = 'gemini-2.5-pro';
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-pro'];
+
+    const result = await selectApprovedCloudReasoningProvider(
+      { prompt: 'x', containsPrivateData: false },
+      getProviderFn,
+    );
+
+    expect(result).toMatchObject({
+      rejected: true,
+      reason: 'provider_model_mismatch',
+      warning: 'configured_cloud_provider_model_mismatch',
+    });
+  });
+
+  it('rejects an approved Claude model paired with the OpenAI provider', async () => {
+    mockConfig.cloudReasoningFallback.provider = 'openai';
+    mockConfig.cloudReasoningFallback.model = 'claude-sonnet-4-6';
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['claude-sonnet-4-6'];
+
+    const result = await selectApprovedCloudReasoningProvider(
+      { prompt: 'x', containsPrivateData: false },
+      getProviderFn,
+    );
+
+    expect(result).toMatchObject({
+      rejected: true,
+      reason: 'provider_model_mismatch',
+      warning: 'configured_cloud_provider_model_mismatch',
+    });
+  });
+});
+
+describe('ScriptGen approval boundary', () => {
+  it('canonicalizes domain context as part of the outbound payload inspected by the gate', () => {
+    const canonical = canonicalCloudScriptGenerationOutboundInput({
+      description: 'create a helper',
+      domainContext: 'DISALLOWED_PRIVATE_MARKER',
+      targetPath: 'not-sent-by-the-adapter',
+      containsPrivateData: true,
+    });
+
+    expect(canonical).toContain('create a helper');
+    expect(canonical).toContain('DISALLOWED_PRIVATE_MARKER');
+    expect(canonical).not.toContain('not-sent-by-the-adapter');
+  });
+
+  it('canonicalizes every caller-controlled generic reasoning field', () => {
+    const canonical = canonicalCloudLocalReasoningOutboundInput({
+      prompt: 'PUBLIC_USER_MARKER',
+      systemContext: 'PUBLIC_SYSTEM_MARKER',
+      outputSchema: { type: 'string', enum: ['PUBLIC_SCHEMA_MARKER'] },
+    });
+
+    expect(canonical).toContain('PUBLIC_USER_MARKER');
+    expect(canonical).toContain('PUBLIC_SYSTEM_MARKER');
+    expect(canonical).toContain('PUBLIC_SCHEMA_MARKER');
+  });
+
+  it('mints and consumes an exact-model OpenAI ScriptGen permit when the capability is present', async () => {
+    mockConfig.cloudReasoningFallback.provider = 'openai';
+    mockConfig.cloudReasoningFallback.model = 'gpt-5.2';
+    mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gpt-5.2'];
+    const openai = {
+      ...fakeProvider('openai'),
+      callStructuredGeneration: async () => ({ text: '{}', stopReason: 'stop' }),
+    } satisfies AIProvider;
+
+    const result = await approveCloudScriptGeneration({
+      description: 'create a helper',
+      containsPrivateData: false,
+    }, () => openai);
+
+    expect(result).toMatchObject({
+      rejected: false,
+      providerName: 'openai',
+      model: 'gpt-5.2',
+    });
+    if (result.rejected) throw new Error('expected OpenAI ScriptGen approval');
+    expect(consumeCloudScriptGenerationApproval(result.permit, {
+      description: 'create a helper',
+      containsPrivateData: false,
+    })).toMatchObject({
+      provider: openai,
+      model: 'gpt-5.2',
+      privacyAction: 'sent_raw',
+    });
+  });
+
+  it('never mints a private ScriptGen permit under allow_raw operator drift', async () => {
+    mockConfig.cloudReasoningFallback.privacy.mode = 'allow_raw';
+    mockConfig.cloudReasoningFallback.privacy.allowRawPrivateData = true;
+    const getProvider = vi.fn(getProviderFn);
+
+    const result = await approveCloudScriptGeneration({
+      description: 'public-looking description',
+      domainContext: 'PRIVATE_SCRIPT_CONTEXT_MARKER',
+      containsPrivateData: true,
+      allowCloudEscalation: true,
+    }, getProvider);
+
+    expect(result).toMatchObject({
+      rejected: true,
+      reason: 'privacy_never',
+      warning: 'private_script_generation_cloud_forbidden',
+    });
+    expect(getProvider).not.toHaveBeenCalled();
   });
 });
 
@@ -130,7 +247,7 @@ describe('Quality gate — disallowed substrings', () => {
   it('rejects gemini-2.5-flash (substring match)', async () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-2.5-flash';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-flash'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
     if (result.rejected) {
       expect(result.reason).toBe('disallowed_substring');
@@ -141,7 +258,7 @@ describe('Quality gate — disallowed substrings', () => {
   it('rejects gemini-2.5-flash-lite even if listed as approved', async () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-2.5-flash-lite';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-2.5-flash-lite'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
   });
 
@@ -149,7 +266,7 @@ describe('Quality gate — disallowed substrings', () => {
     mockConfig.cloudReasoningFallback.provider = 'anthropic';
     mockConfig.cloudReasoningFallback.model = 'claude-haiku-4-5-20251001';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['claude-haiku-4-5-20251001'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
   });
 
@@ -157,7 +274,7 @@ describe('Quality gate — disallowed substrings', () => {
     mockConfig.cloudReasoningFallback.provider = 'openai';
     mockConfig.cloudReasoningFallback.model = 'gpt-5-nano';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gpt-5-nano'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
   });
 
@@ -171,7 +288,7 @@ describe('Quality gate — disallowed substrings', () => {
       'gemini-2.5-flash', // <-- intentionally bad addition
     ];
     mockConfig.cloudReasoningFallback.model = 'gemini-2.5-flash';
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
     if (result.rejected) expect(result.reason).toBe('disallowed_substring');
   });
@@ -181,7 +298,7 @@ describe('Quality gate — preview blocking', () => {
   it('rejects preview models by default', async () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-3.1-pro-preview';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-3.1-pro-preview'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
     if (result.rejected) expect(result.reason).toBe('preview_blocked');
   });
@@ -189,7 +306,10 @@ describe('Quality gate — preview blocking', () => {
   it('allows gemini-non-preview (explicit negation skips preview-block, v2.8 fix)', async () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-non-preview';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-non-preview'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider(
+      { prompt: 'x', containsPrivateData: false },
+      getProviderFn,
+    );
     expect(result.rejected).toBe(false);
     if (!result.rejected) expect(result.model).toBe('gemini-non-preview');
   });
@@ -197,14 +317,17 @@ describe('Quality gate — preview blocking', () => {
   it('allows gemini-not-preview (explicit negation v2.8)', async () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-not-preview';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-not-preview'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider(
+      { prompt: 'x', containsPrivateData: false },
+      getProviderFn,
+    );
     expect(result.rejected).toBe(false);
   });
 
   it('still rejects gemini-pro-preview (no negation present)', async () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-pro-preview';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-pro-preview'];
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x', containsPrivateData: false }, getProviderFn);
     expect(result.rejected).toBe(true);
     if (result.rejected) expect(result.reason).toBe('preview_blocked');
   });
@@ -213,7 +336,10 @@ describe('Quality gate — preview blocking', () => {
     mockConfig.cloudReasoningFallback.model = 'gemini-3.1-pro-preview';
     mockConfig.cloudReasoningFallback.approvedReasoningModels = ['gemini-3.1-pro-preview'];
     mockConfig.cloudReasoningFallback.allowPreviewModels = true;
-    const result = await selectApprovedCloudReasoningProvider({ prompt: 'x' }, getProviderFn);
+    const result = await selectApprovedCloudReasoningProvider(
+      { prompt: 'x', containsPrivateData: false },
+      getProviderFn,
+    );
     expect(result.rejected).toBe(false);
   });
 });
@@ -310,7 +436,7 @@ describe('Quality gate — provider unavailability', () => {
     mockConfig.cloudReasoningFallback.provider = 'anthropic';
     mockConfig.cloudReasoningFallback.model = 'claude-sonnet-4-6';
     const result = await selectApprovedCloudReasoningProvider(
-      { prompt: 'x' },
+      { prompt: 'x', containsPrivateData: false },
       (name) => (name === 'gemini' ? fakeProvider('gemini') : null),
     );
     expect(result.rejected).toBe(true);

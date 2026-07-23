@@ -136,7 +136,7 @@ describe('project map generation', () => {
     expect(map.documentation).toMatchObject({
       policy: 'config/documentation-policy.json',
       policySchema: 'nexus.documentation-policy.v1',
-      policyVersion: '2026-07-15.1',
+      policyVersion: '2026-07-22.1',
       count: markdown.length,
       active: markdown.length,
     });

@@ -153,8 +153,7 @@ const MODEL_PRICING: ModelPricing[] = [
   // local_request_units column instead of cost_usd dollars. Listed here
   // so getOrThrow / computeModelUsageCostUsd resolves cleanly without
   // firing the operator alert for unknown models.
-  { provider: 'ollama', model: 'qwen3.6:35b-a3b-q4_K_M', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-  { provider: 'ollama', model: 'qwen3.6:27b-q4_K_M', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+  { provider: 'ollama', model: 'qwen2.5:3b-instruct-q4_K_M', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
 ];
 
 const UNRESOLVED_MODEL_SENTINEL_PRICING = {

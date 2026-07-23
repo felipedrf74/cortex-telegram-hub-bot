@@ -8,10 +8,14 @@ source "$ROOT/scripts/lib/release-gates.sh"
 COMMAND="${1:-status}"
 [ $# -gt 0 ] && shift
 usage() {
-  echo "Usage: scripts/release-operator.sh <prepare|staging|promote|status> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request]"
+  echo "Usage: scripts/release-operator.sh <prepare|staging|promote|status|resume> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request]"
   echo "       prepare requires exactly one contract scope: --backend-only OR --includes-ios --ios-sha <sha> --ios-build-number <number> --ios-contract-result passed"
+  echo "       resume coordinates RC -> signing -> staging -> explicit owner stop -> promotion with a local checkpoint"
 }
 if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ]; then usage; exit 0; fi
+if [ "$COMMAND" = "resume" ]; then
+  exec node "$ROOT/scripts/release-sequence.mjs" "$@"
+fi
 BASE="origin/main"
 MANIFEST=""
 STAGING_ATTESTATION=""
@@ -117,6 +121,14 @@ validate_staging_attestation() {
     --expect-runtime-sha "$runtime_sha"
 }
 
+validate_rollback_drill_freshness() {
+  node scripts/rollback-drill-check.mjs validate \
+    --root "$ROOT" \
+    --release-gate \
+    --max-age-days 30 \
+    --json >/dev/null
+}
+
 resolve_remote_pm2() {
   local server="$1"
   ssh "$server" 'for p in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do if [ -n "$p" ] && [ -x "$p" ]; then printf "%s" "$p"; exit 0; fi; done; exit 1'
@@ -196,6 +208,7 @@ case "$COMMAND" in
       exit 1
     fi
     validate_manifest
+    validate_rollback_drill_freshness
     SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
     BASE_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
     RELEASE_DIR="$BASE_DIR/releases/${RUNTIME_SHA}-${DIGEST:0:12}"
@@ -209,10 +222,13 @@ case "$COMMAND" in
     trap release_cleanup_all_locks EXIT
     release_acquire_local_lock "$ROOT" "staging-deploy"
     release_acquire_remote_lock "$SERVER" "$BASE_DIR" "staging-deploy"
+    release_acquire_remote_sonar_lock "$SERVER"
 
     # Resolve and prove the executable before creating or switching any link.
     REMOTE_PM2="$(resolve_remote_pm2 "$SERVER")"
     [ -n "$REMOTE_PM2" ] || { echo "remote PM2 binary is unavailable" >&2; exit 1; }
+    CAPACITY_ARGS=(--role staging --base-dir "$BASE_DIR" --pm2-bin "$REMOTE_PM2")
+    ssh "$SERVER" bash -s -- "${CAPACITY_ARGS[@]}" < "$ROOT/scripts/remote-release-capacity.sh"
     scripts/env-parity-check.sh --server "$SERVER" --staging-dir "$BASE_DIR" \
       --prod-dir "${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
     ACTIVE_STAGING="$(ssh "$SERVER" bash -s -- "$BASE_DIR" <<'REMOTE_ACTIVE_STAGING'
@@ -231,19 +247,169 @@ REMOTE_ACTIVE_STAGING
     fi
     ssh "$SERVER" "mkdir -p '$RELEASE_DIR' '$BASE_DIR/releases' '$BASE_DIR/data' '$BASE_DIR/logs'"
     rsync -az --delete --chmod=D700,Fu+rw,go-rwx "$BUNDLE/" "$SERVER:$RELEASE_DIR/"
+
+    # Verify the transferred bytes with trusted operator-owned code before
+    # executing any script from the candidate or creating its runtime links.
+    # Calling the candidate's verifier here would let a tampered bundle attest
+    # to itself.
+    ssh "$SERVER" /usr/bin/node - "$RELEASE_DIR" "$RUNTIME_SHA" "$DIGEST" <<'REMOTE_VERIFY_BUNDLE'
+'use strict';
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [rootInput, expectedRuntimeSha, expectedArtifactDigest] = process.argv.slice(2);
+if (!rootInput || !/^[0-9a-f]{40}$/.test(expectedRuntimeSha ?? '')
+    || !/^[0-9a-f]{64}$/.test(expectedArtifactDigest ?? '')) {
+  throw new Error('trusted remote bundle verifier received invalid expected identity');
+}
+const root = path.resolve(rootInput);
+const artifactSchema = 'nexus.release-artifact-manifest.v1';
+const sha256 = (body) => crypto.createHash('sha256').update(body).digest('hex');
+const isSafeRelativePath = (value) => typeof value === 'string'
+  && value.length > 0
+  && value.length <= 4096
+  && !path.posix.isAbsolute(value)
+  && !value.includes('\\')
+  && !/[\u0000-\u001f\u007f]/.test(value)
+  && path.posix.normalize(value) === value
+  && value.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+
+const rootStat = fs.lstatSync(root);
+if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+  throw new Error('remote release bundle root is not a regular directory');
+}
+
+function readMetadata(relativePath) {
+  const absolutePath = path.join(root, relativePath);
+  const stat = fs.lstatSync(absolutePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`remote release bundle metadata is not a regular file: ${relativePath}`);
+  }
+  if (stat.size > 16 * 1024 * 1024) {
+    throw new Error(`remote release bundle metadata is unreasonably large: ${relativePath}`);
+  }
+  return JSON.parse(fs.readFileSync(absolutePath, 'utf8'));
+}
+
+const declared = readMetadata('artifact-manifest.json');
+const marker = readMetadata('.complete.json');
+if (declared?.schema !== artifactSchema || !Array.isArray(declared.files)) {
+  throw new Error('remote release artifact manifest schema is invalid');
+}
+if (declared?.git?.sha !== expectedRuntimeSha) {
+  throw new Error('remote release artifact runtime SHA mismatch');
+}
+
+const files = [];
+const seen = new Set();
+let previousPath = null;
+for (const entry of declared.files) {
+  const relativePath = entry?.path;
+  if (!isSafeRelativePath(relativePath)
+      || relativePath === 'artifact-manifest.json'
+      || relativePath === '.complete.json') {
+    throw new Error(`remote release artifact path is unsafe: ${String(relativePath)}`);
+  }
+  if (seen.has(relativePath)) {
+    throw new Error(`remote release artifact path is duplicated: ${relativePath}`);
+  }
+  if (previousPath !== null && previousPath >= relativePath) {
+    throw new Error('remote release artifact file list is not strictly sorted');
+  }
+  if (!Number.isSafeInteger(entry?.size) || entry.size < 0
+      || !/^[0-9a-f]{64}$/.test(entry?.sha256 ?? '')) {
+    throw new Error(`remote release artifact declaration is invalid: ${relativePath}`);
+  }
+  seen.add(relativePath);
+  previousPath = relativePath;
+
+  const absolutePath = path.resolve(root, relativePath);
+  if (!absolutePath.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`remote release artifact escapes its root: ${relativePath}`);
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(absolutePath);
+  } catch {
+    throw new Error(`remote release artifact is missing: ${relativePath}`);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`remote release artifact is not a regular file: ${relativePath}`);
+  }
+  const body = fs.readFileSync(absolutePath);
+  const observedSha256 = sha256(body);
+  if (body.length !== entry.size || observedSha256 !== entry.sha256) {
+    throw new Error(`remote release artifact byte identity mismatch: ${relativePath}`);
+  }
+  files.push({ path: relativePath, size: body.length, sha256: observedSha256 });
+}
+
+const aggregateDigest = sha256(Buffer.from(JSON.stringify({
+  schema: artifactSchema,
+  files,
+})));
+if (declared.digest !== aggregateDigest
+    || declared.digest !== expectedArtifactDigest
+    || declared.fileCount !== files.length) {
+  throw new Error('remote release artifact aggregate digest or file count mismatch');
+}
+if (marker?.schema !== 'nexus.release-bundle.v1'
+    || marker.runtimeSha !== expectedRuntimeSha
+    || marker.artifactDigest !== expectedArtifactDigest
+    || marker.fileCount !== files.length) {
+  throw new Error('remote release completion marker identity mismatch');
+}
+
+const actualEntries = new Set();
+function walk(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const absolutePath = path.join(directory, entry.name);
+    const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
+    const stat = fs.lstatSync(absolutePath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`remote release bundle contains a symbolic link: ${relativePath}`);
+    }
+    if (stat.isDirectory()) {
+      walk(absolutePath);
+    } else if (stat.isFile()) {
+      actualEntries.add(relativePath);
+    } else {
+      throw new Error(`remote release bundle contains an unsupported entry: ${relativePath}`);
+    }
+  }
+}
+walk(root);
+const expectedEntries = new Set([
+  ...files.map((entry) => entry.path),
+  'artifact-manifest.json',
+  '.complete.json',
+]);
+const actual = [...actualEntries].sort();
+const expected = [...expectedEntries].sort();
+if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  throw new Error('remote release bundle contains undeclared or missing files');
+}
+process.stdout.write(`${JSON.stringify({
+  ok: true,
+  runtimeSha: expectedRuntimeSha,
+  artifactDigest: aggregateDigest,
+  fileCount: files.length,
+})}\n`);
+REMOTE_VERIFY_BUNDLE
+
     ssh "$SERVER" bash -s -- "$RELEASE_DIR" "$BASE_DIR" "$RUNTIME_SHA" "$DIGEST" "$REMOTE_PM2" \
       "${NEXUS_RELEASE_STAGING_STABILITY_SECONDS:-60}" <<'REMOTE'
 set -euo pipefail
 release_dir="$1"; base_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; pm2_bin="$5"; stability_seconds="$6"
 [ -x "$pm2_bin" ] || { echo "resolved PM2 binary is no longer executable" >&2; exit 1; }
-[ -x /usr/bin/node ] && [ -x /usr/bin/npm ] || { echo "system Node/npm toolchain is unavailable" >&2; exit 1; }
+[ -x /usr/bin/node ] || { echo "system Node toolchain is unavailable" >&2; exit 1; }
 ln -sfn "$base_dir/.env" "$release_dir/.env"
 ln -sfn "$base_dir/data" "$release_dir/data"
 ln -sfn "$base_dir/logs" "$release_dir/logs"
 cd "$release_dir"
-PATH=/usr/bin:$PATH /usr/bin/npm ci --omit=dev
-python3.12 -m venv content-engine/.venv
-content-engine/.venv/bin/pip install -q --disable-pip-version-check -r content-engine/requirements.txt
+/usr/bin/node scripts/release-runtime-dependencies.mjs install \
+  --root "$release_dir" --python-bin /usr/bin/python3.12
 /usr/bin/node scripts/release-installed-tree-attestation.mjs write \
   --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" >/dev/null
 # No link is mutated until PM2 and both installed dependency trees are proved.
@@ -304,7 +470,7 @@ mv -Tf "$base_dir/current.next" "$base_dir/current"
 switched=true
 delete_staging_apps
 env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$release_dir" NEXUS_RELEASE_BASE_DIR="$base_dir" \
-  NEXUS_RELEASE_ROLE=staging NEXUS_RELEASE_SHA="$runtime_sha" \
+  NEXUS_RELEASE_ROLE=staging NEXUS_RELEASE_SHA="$runtime_sha" SENTRY_RELEASE="$runtime_sha" \
   "$pm2_bin" start "$release_dir/ecosystem.release.config.js" --update-env
 bash "$release_dir/scripts/remote-release-readiness.sh" \
   --role staging --base-dir "$base_dir" --release-dir "$release_dir" \
@@ -379,6 +545,7 @@ REMOTE
     validate_manifest
     VERSION="$(manifest_field payload.packageVersion)"
     validate_staging_attestation "$RUNTIME_SHA" "$DIGEST" >/dev/null
+    validate_rollback_drill_freshness
     [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = "1" ] || {
       echo "promotion requires explicit owner authorization: NEXUS_RELEASE_OWNER_AUTHORIZED=1" >&2
       exit 1
