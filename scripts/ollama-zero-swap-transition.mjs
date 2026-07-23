@@ -5,10 +5,12 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   lstatSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   OLLAMA_ENVELOPE,
@@ -32,6 +34,7 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 // sort after it in systemd's lexical drop-in merge order.
 const PRODUCTION_DROP_IN = '/etc/systemd/system/ollama.service.d/zz-nexus-zero-swap.conf';
 const DROP_IN_CONTENT = `[Service]\nMemorySwapMax=0\n`;
+const INSTALLED_EXECUTABLE = '/usr/local/sbin/nexus-ollama-zero-swap-transition.mjs';
 
 function fail(message, exitCode = 1) {
   const error = new Error(message);
@@ -39,8 +42,23 @@ function fail(message, exitCode = 1) {
   throw error;
 }
 
+function assertProductionExecutable(testMode) {
+  if (testMode) return;
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+    fail('zero-swap transition must execute as root', 77);
+  }
+  const executable = realpathSync.native(fileURLToPath(import.meta.url));
+  if (executable !== INSTALLED_EXECUTABLE) {
+    fail(`zero-swap transition must execute from ${INSTALLED_EXECUTABLE}`, 77);
+  }
+  const info = lstatSync(executable);
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o777) !== 0o700) {
+    fail('installed zero-swap transition must be a root-owned mode-0700 regular file', 77);
+  }
+}
+
 function parseArgs(argv) {
-  const testMode = process.env.NEXUS_OLLAMA_SYSTEMD_TEST_MODE === '1';
+  const requestedTestMode = process.env.NEXUS_OLLAMA_SYSTEMD_TEST_MODE === '1';
   const options = {
     mode: 'dry-run',
     expectedHost: 'serverdominguez',
@@ -48,7 +66,7 @@ function parseArgs(argv) {
     ownerAuthorized: false,
     systemctlBin: 'systemctl',
     dropInPath: PRODUCTION_DROP_IN,
-    testMode,
+    testMode: false,
   };
   let explicitMode = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -92,7 +110,15 @@ function parseArgs(argv) {
     fail('--max-evidence-age-hours must be an integer from 1 through 72', 64);
   }
   if (!options.expectedHost || /[\r\n]/.test(options.expectedHost)) fail('--expected-host is invalid', 64);
-  if (!testMode && (options.systemctlBin !== 'systemctl' || options.dropInPath !== PRODUCTION_DROP_IN)) {
+  const isolatedTestMode = requestedTestMode
+    && options.systemctlBin !== 'systemctl'
+    && isAbsolute(options.systemctlBin)
+    && options.dropInPath !== PRODUCTION_DROP_IN;
+  if (requestedTestMode && !isolatedTestMode) {
+    fail('test mode requires an alternate absolute systemctl executable and non-production drop-in', 64);
+  }
+  options.testMode = isolatedTestMode;
+  if (!isolatedTestMode && (options.systemctlBin !== 'systemctl' || options.dropInPath !== PRODUCTION_DROP_IN)) {
     fail('systemctl and drop-in path overrides are test-only', 64);
   }
   if (!isAbsolute(options.dropInPath)) fail('drop-in path must be absolute', 64);
@@ -102,7 +128,7 @@ function parseArgs(argv) {
     if (!options.ownerAuthorized) fail('--owner-authorized is required for apply', 64);
     if (!DIGEST_PATTERN.test(options.ackPlan || '')) fail('--ack-plan must match a fresh dry-run', 64);
     if (!options.resultPath || !isAbsolute(options.resultPath)) fail('--result must be a new absolute path', 64);
-    if (!testMode && (typeof process.getuid !== 'function' || process.getuid() !== 0)) {
+    if (!isolatedTestMode && (typeof process.getuid !== 'function' || process.getuid() !== 0)) {
       fail('apply must run as root', 77);
     }
   }
@@ -252,6 +278,7 @@ function makePlan(evidenceFile, cleanupFile, evidence, envelope, options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  assertProductionExecutable(options.testMode);
   const evidenceFile = readSecureJsonEvidence(resolve(options.evidencePath), 'zero-swap collector evidence');
   const cleanupFile = readSecureJsonEvidence(resolve(options.cleanupResultPath), 'cleanup result');
   const cleanup = validateCleanupResult(cleanupFile, options.expectedHost);

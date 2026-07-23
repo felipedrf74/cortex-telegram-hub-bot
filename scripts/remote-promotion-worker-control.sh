@@ -169,8 +169,7 @@ prepare_exact_runtimes() {
 }
 
 preflight_application_dr() {
-  local verification expected
-  expected='application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+  local verification
   [ -f "$DR_BACKUP_BIN" ] && [ -x "$DR_BACKUP_BIN" ] && [ ! -L "$DR_BACKUP_BIN" ] || {
     echo "application DR backup tooling is unavailable" >&2
     return 1
@@ -184,10 +183,14 @@ preflight_application_dr() {
     echo "application DR provisioning/config preflight failed" >&2
     return 1
   }
-  [ "$verification" = "$expected" ] || {
-    echo "application DR provisioning/config preflight returned invalid evidence" >&2
-    return 1
-  }
+  case "$verification" in
+    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days') ;;
+    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=cloudflare-r2 storageControlMode=r2-approved-variance releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days') ;;
+    *)
+      echo "application DR provisioning/config preflight returned invalid evidence" >&2
+      return 1
+      ;;
+  esac
 }
 
 write_cutover_timing() {
@@ -415,7 +418,10 @@ for(const entry of files.slice(10))fs.unlinkSync(entry.file);'
 escrow_exact_backup() {
   local backup_file="$1" backup_sha="$2" observed_sha dr_output confirmation_json output
   [ -f "$backup_file" ] && [ ! -L "$backup_file" ] || { echo "promotion backup file is unavailable" >&2; return 1; }
-  observed_sha="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$backup_file")"
+  observed_sha="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$backup_file")" || {
+    echo "promotion backup digest could not be computed before escrow" >&2
+    return 1
+  }
   [ "$observed_sha" = "$backup_sha" ] || { echo "promotion backup digest changed before escrow" >&2; return 1; }
   [ -x "$DR_BACKUP_BIN" ] || { echo "application DR backup tooling is unavailable" >&2; return 1; }
   [ -f "$DR_CONFIG" ] && [ ! -L "$DR_CONFIG" ] || { echo "application DR configuration is unavailable" >&2; return 1; }
@@ -425,24 +431,39 @@ escrow_exact_backup() {
     return 1
   }
   confirmation_json="$(printf '%s\n' "$dr_output" | tail -n 1)"
-  node - "$confirmation_json" "$backup_file" "$backup_sha" <<'NODE'
+  if ! node - "$confirmation_json" "$backup_file" "$backup_sha" <<'NODE'
 const [raw,path,sha]=process.argv.slice(2);const x=JSON.parse(raw),r=x.requiredRelease;
 if(x.schema!=='nexus.application-dr-backup-result.v1'||x.status!=='passed'||x.encrypted!==true
+ ||typeof x.storageProvider!=='string'||typeof x.storageControlMode!=='string'
+ ||({ 'aws-s3':'versioned-s3','cloudflare-r2':'r2-approved-variance' })[x.storageProvider]!==x.storageControlMode
+ ||x.releasePrefixLockVerified!==true
  ||r?.confirmed!==true||r?.path!==path||r?.plaintextSha256!==sha
  ||typeof r?.objectKey!=='string'||!r.objectKey.endsWith(`.${sha}.age`)||r.objectKey.includes('..'))process.exit(1);
 NODE
+  then
+    echo "encrypted off-host rollback escrow returned invalid storage-control evidence" >&2
+    return 1
+  fi
   output="$ESCROW_CONFIRMATION.next"
-  rm -f "$output"
-  node - "$output" "$TRANSACTION_ID" "$request_sha" "$confirmation_json" <<'NODE'
+  rm -f "$output" || return 1
+  if ! node - "$output" "$TRANSACTION_ID" "$request_sha" "$confirmation_json" <<'NODE'
 const fs=require('fs');const [output,transactionId,requestSha256,raw]=process.argv.slice(2);const dr=JSON.parse(raw);
 fs.writeFileSync(output,`${JSON.stringify({schema:'nexus.promotion-rollback-escrow.v1',status:'passed',
- transactionId,requestSha256,confirmedAt:new Date().toISOString(),requiredRelease:dr.requiredRelease},null,2)}\n`,
+ transactionId,requestSha256,confirmedAt:new Date().toISOString(),
+ storageControls:{provider:dr.storageProvider,controlMode:dr.storageControlMode,
+  releasePrefixLockVerified:dr.releasePrefixLockVerified},requiredRelease:dr.requiredRelease},null,2)}\n`,
  {mode:0o600,flag:'wx'});
 NODE
-  chmod 600 "$output"; root_own "$output"; mv -f "$output" "$ESCROW_CONFIRMATION"
+  then
+    echo "encrypted off-host rollback escrow evidence could not be persisted" >&2
+    return 1
+  fi
+  chmod 600 "$output" || return 1
+  root_own "$output" || return 1
+  mv -f "$output" "$ESCROW_CONFIRMATION" || return 1
   # Count retention is legal only after this exact plaintext digest is proved
   # present in encrypted off-host storage.
-  prune_local_backups_as_application_user
+  prune_local_backups_as_application_user || return 1
 }
 
 finish_escrow() {

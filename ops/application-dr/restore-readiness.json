@@ -1,7 +1,14 @@
 {
   "schema": "nexus.application-dr-restore-readiness.v1",
   "status": "MANUAL_REQUIRED",
+  "repositoryHarnessImplemented": true,
   "quarterlyRestoreDrillReady": false,
-  "reason": "site_specific_isolated_restore_harness_not_implemented",
-  "harnessTemplate": "ops/application-dr/restore-harness.example"
+  "reason": "server_provisioning_storage_control_evidence_and_first_retained_restore_drill_required",
+  "harness": "scripts/application-dr-isolated-harness.sh",
+  "manualEvidenceRequired": [
+    "root_installed_application_dr_assets_and_dedicated_nologin_user",
+    "provider_control_plane_storage_evidence",
+    "off_host_age_identity",
+    "successful_retained_quarterly_restore_evidence"
+  ]
 }

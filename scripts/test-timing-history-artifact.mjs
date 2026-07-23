@@ -49,15 +49,20 @@ function selectArtifact({ runId, metadata }) {
   if (!Array.isArray(metadata?.artifacts) || metadata.artifacts.length > MAX_API_ARTIFACTS) {
     throw new Error('run-artifacts response is invalid or exceeds 100 entries');
   }
-  const namePattern = new RegExp(`^test-inventory-${runId}-([1-9]\\d*)$`);
+  const namePrefix = `test-inventory-${runId}-`;
+  const attemptFor = (name) => {
+    if (typeof name !== 'string' || !name.startsWith(namePrefix)) return null;
+    const attempt = name.slice(namePrefix.length);
+    return /^[1-9]\d*$/.test(attempt) ? attempt : null;
+  };
   const matches = metadata.artifacts.filter((artifact) => (
-    artifact?.expired === false && namePattern.test(artifact?.name ?? '')
+    artifact?.expired === false && attemptFor(artifact?.name) !== null
   ));
   if (matches.length !== 1) {
     throw new Error(`expected exactly one non-expired timing artifact for run ${runId}`);
   }
   const artifact = matches[0];
-  const attempt = Number(namePattern.exec(artifact.name)[1]);
+  const attempt = Number(attemptFor(artifact.name));
   if (!Number.isSafeInteger(artifact.id) || artifact.id < 1
       || !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes < 1
       || artifact.size_in_bytes > MAX_ARCHIVE_BYTES

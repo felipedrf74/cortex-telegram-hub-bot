@@ -29,6 +29,7 @@ import type http from 'http';
 import { registerGarminMfaNotifier } from './services/garmin-mfa-notifier';
 import { validateIosApiSecurityConfiguration } from './services/ios-api-security';
 import {
+  assertApplicationDrillRuntimeEnvironment,
   assertContentLiveEvalRuntimeEnvironment,
   shouldStartContentLiveEvalBackgroundServices,
 } from './services/content-live-evaluation-runtime';
@@ -36,6 +37,7 @@ import { pruneExpiredReceiptAiTransferResponses } from './services/receipt-ai-tr
 
 async function main(): Promise<void> {
   const liveEvalRuntime = assertContentLiveEvalRuntimeEnvironment();
+  const applicationDrillRuntime = assertApplicationDrillRuntimeEnvironment();
   const backgroundServicesEnabled = shouldStartContentLiveEvalBackgroundServices();
   logger.info('Starting Nexus Hub...');
 
@@ -173,11 +175,11 @@ async function main(): Promise<void> {
   } else {
     logger.info(
       {
-        runtime: 'content_live_eval',
-        databasePath: liveEvalRuntime?.databasePath,
+        runtime: applicationDrillRuntime ? 'application_restore_drill' : 'content_live_eval',
+        databasePath: applicationDrillRuntime?.databasePath ?? liveEvalRuntime?.databasePath,
         backgroundServicesEnabled: false,
       },
-      'Content live-evaluation runtime started without schedulers, connectors, or outbound telemetry',
+      'Isolated runtime started without schedulers, connectors, delivery, or outbound telemetry',
     );
   }
 

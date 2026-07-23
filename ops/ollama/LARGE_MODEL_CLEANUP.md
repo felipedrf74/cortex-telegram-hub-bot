@@ -43,24 +43,40 @@ The model set before cleanup is exactly:
 The repository deliberately contains no runtime model digests or reusable
 authorization template. Digests come only from the protected live collection.
 
-## Install the collector
+## Apply the fixed envelope and install the root tools
 
-From the reviewed repository revision on ServerDominguez, install both the
-collector and its validator as root and create its private data root:
+First deploy the reviewed exact release to staging with every local selector
+set to the retained tag, fast chat off, Gemini primary, and the approved cloud
+fail-closed policy. Remove persisted model overrides. Then, from that reviewed
+repository revision on ServerDominguez, run the installer during the approved
+maintenance window:
 
 ```sh
-sudo install -o root -g root -m 0700 \
-  scripts/ollama-observation-collector.mjs \
-  /usr/local/sbin/nexus-ollama-observation-collector.mjs
-sudo install -o root -g root -m 0700 \
-  scripts/ollama-soak-evidence.mjs \
-  /usr/local/sbin/ollama-soak-evidence.mjs
-sudo install -d -o root -g root -m 0700 \
-  /var/lib/nexus-release/ollama-observations
+sudo bash scripts/install-ollama.sh
+sudo /usr/local/sbin/nexus-ollama-service-envelope-check.mjs \
+  --expected-swap-bytes 536870912
 ```
 
-Never grant the application account write access to this directory or either
-installed executable. Do not run the collector while a staging or production
+This applies the fixed 4 GiB/6 GiB/512 MiB, 200%, context-4096, queue-four,
+single-parallel, single-loaded-model service envelope before any observation.
+It also installs the collector, evidence validator, cleanup gate, envelope
+checker, and zero-swap transition as root-owned mode-0700 tools below
+`/usr/local/sbin`. Never run a privileged cleanup or transition module from
+the user-writable checkout.
+
+From the exact staging release directory, run its authenticated smoke in the
+explicit pre-cleanup phase before starting the first 24-hour window:
+
+```sh
+OLLAMA_INVENTORY_PHASE=pre_cleanup \
+NEXUS_HUB_BASE_URL=http://127.0.0.1:8201 \
+PM2_APP_NAME=nexus-hub-staging \
+PM2_BIN=/home/dominguez/.npm-global/bin/pm2 \
+bash scripts/staging-smoke-ollama.sh
+```
+
+Never grant the application account write access to the observation directory
+or installed tools. Do not run the collector while a staging or production
 release lock is active. A release that starts during a window, a reboot, a
 release-SHA change, a restart, unsafe capacity, pressure, or failed health
 check invalidates that window and no successful result is written.
@@ -104,7 +120,7 @@ rehash their contents.
 Use the production collector result directly. Run the read-only plan first:
 
 ```sh
-sudo node scripts/ollama-large-model-cleanup.mjs \
+sudo /usr/local/sbin/nexus-ollama-large-model-cleanup.mjs \
   --evidence \
   /var/lib/nexus-release/ollama-observations/production-YYYYMMDDTHHMMSSZ-RANDOM/result.json \
   --dry-run
@@ -114,7 +130,7 @@ Review the exact inventory, full digests, protected evidence digest, and
 `ackPlan`. Apply requires explicit owner authorization and a new result path:
 
 ```sh
-sudo node scripts/ollama-large-model-cleanup.mjs \
+sudo /usr/local/sbin/nexus-ollama-large-model-cleanup.mjs \
   --evidence \
   /var/lib/nexus-release/ollama-observations/production-YYYYMMDDTHHMMSSZ-RANDOM/result.json \
   --apply \
@@ -147,7 +163,7 @@ sudo /usr/local/sbin/nexus-ollama-observation-collector.mjs \
 Pass that canonical `zero_swap` result directly to the transition dry-run:
 
 ```sh
-sudo node scripts/ollama-zero-swap-transition.mjs \
+sudo /usr/local/sbin/nexus-ollama-zero-swap-transition.mjs \
   --cleanup-result \
   /var/lib/nexus-release/ollama-cleanup-YYYYMMDDTHHMMSSZ.json \
   --evidence \

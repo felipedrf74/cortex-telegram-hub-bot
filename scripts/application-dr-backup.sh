@@ -63,6 +63,9 @@ required=(
   NEXUS_DR_S3_ENDPOINT
   NEXUS_DR_S3_BUCKET
   NEXUS_DR_S3_PREFIX
+  NEXUS_DR_STORAGE_PROVIDER
+  NEXUS_DR_STORAGE_CONTROL_MODE
+  NEXUS_DR_STORAGE_CONTROL_EVIDENCE
   NEXUS_DR_AGE_RECIPIENT
 )
 for key in "${required[@]}"; do
@@ -85,6 +88,11 @@ fi
   && [[ "$NEXUS_DR_S3_PREFIX" != *..* ]] \
   && [[ "$NEXUS_DR_S3_PREFIX" != *//* ]] \
   || die "invalid S3 prefix"
+case "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" in
+  aws-s3:versioned-s3|cloudflare-r2:r2-approved-variance) ;;
+  *) die "storage provider/control mode must be aws-s3:versioned-s3 or cloudflare-r2:r2-approved-variance" ;;
+esac
+private_root_file "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE" "storage-control evidence"
 [[ "$NEXUS_DR_AGE_RECIPIENT" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]] \
   || die "age recipient must be a native age public recipient"
 [[ "${AWS_REGION:-us-east-1}" =~ ^[a-z0-9-]+$ ]] || die "invalid AWS region"
@@ -126,7 +134,8 @@ python_mode="$(stat -c '%a' -- "$NEXUS_DR_PYTHON_BIN")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQLITE_HELPER="$SCRIPT_DIR/application-dr-sqlite.py"
 RETENTION_HELPER="$SCRIPT_DIR/application-dr-retention.py"
-for helper in "$SQLITE_HELPER" "$RETENTION_HELPER"; do
+STORAGE_CONTROL_HELPER="$SCRIPT_DIR/application-dr-storage-controls.py"
+for helper in "$SQLITE_HELPER" "$RETENTION_HELPER" "$STORAGE_CONTROL_HELPER"; do
   [[ -f "$helper" && ! -L "$helper" ]] || die "installed helper is missing: $helper"
   [ "$(stat -c '%U:%G:%a' -- "$helper")" = root:root:644 ] \
     || die "installed helper must be root:root mode 0644: $helper"
@@ -136,9 +145,16 @@ for command in age aws flock sha256sum stat tar; do
 done
 printf '' | age --encrypt --recipient "$NEXUS_DR_AGE_RECIPIENT" >/dev/null \
   || die "age recipient checksum is invalid"
+"$NEXUS_DR_PYTHON_BIN" "$STORAGE_CONTROL_HELPER" \
+  --evidence "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE" \
+  --provider "$NEXUS_DR_STORAGE_PROVIDER" \
+  --control-mode "$NEXUS_DR_STORAGE_CONTROL_MODE" \
+  --endpoint "$NEXUS_DR_S3_ENDPOINT" \
+  --bucket "$NEXUS_DR_S3_BUCKET" \
+  --prefix "$NEXUS_DR_S3_PREFIX" >/dev/null
 
 if [ "$ACTION" = verify ]; then
-  echo "application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days"
+  echo "application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days"
   exit 0
 fi
 
@@ -167,11 +183,12 @@ verify_remote_object() {
   local head="$tmp_dir/head-$(printf '%s' "$key" | sha256sum | awk '{print $1}').json"
   aws_s3api head-object --bucket "$NEXUS_DR_S3_BUCKET" --key "$key" >"$head"
   "$NEXUS_DR_PYTHON_BIN" - "$head" "$encrypted_sha" "$plaintext_sha" "$schema" \
-    "$expected_size" "$created_epoch" "$original_name" <<'PY'
+    "$expected_size" "$created_epoch" "$original_name" "$NEXUS_DR_STORAGE_PROVIDER" <<'PY'
+from datetime import datetime, timezone
 import json
 import sys
 
-head_path, encrypted, plaintext, schema, size, created, original = sys.argv[1:]
+head_path, encrypted, plaintext, schema, size, created, original, provider = sys.argv[1:]
 value = json.load(open(head_path, encoding="utf-8"))
 metadata = {str(key).lower(): str(item) for key, item in value.get("Metadata", {}).items()}
 expected = {
@@ -186,6 +203,18 @@ if original and metadata.get("original-name") != original:
     raise SystemExit("uploaded object original filename did not verify")
 if int(value.get("ContentLength", -1)) != int(size):
     raise SystemExit("uploaded object size did not verify")
+if schema == "NexusReleaseRollbackEscrowV1" and provider == "aws-s3":
+    if value.get("ObjectLockMode") != "COMPLIANCE":
+        raise SystemExit("release escrow object is missing S3 compliance retention")
+    raw_retention = value.get("ObjectLockRetainUntilDate", "")
+    try:
+        retention = datetime.fromisoformat(raw_retention.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise SystemExit("release escrow S3 retention timestamp is invalid")
+    if retention.tzinfo is None:
+        raise SystemExit("release escrow S3 retention timestamp has no timezone")
+    if int(retention.astimezone(timezone.utc).timestamp()) < int(created) + 90 * 86400:
+        raise SystemExit("release escrow S3 retention is shorter than 90 days")
 PY
 }
 
@@ -193,12 +222,30 @@ put_encrypted_object() {
   local key="$1" encrypted="$2" encrypted_sha="$3" plaintext_sha="$4"
   local schema="$5" created_epoch="$6" original_name="${7:-}"
   local metadata="encrypted-sha256=$encrypted_sha,plaintext-sha256=$plaintext_sha,schema-version=$schema,created-epoch=$created_epoch"
+  local object_lock_args=()
+  local retain_until=""
   [ -z "$original_name" ] || metadata="$metadata,original-name=$original_name"
+  if [ "$schema" = NexusReleaseRollbackEscrowV1 ] \
+      && [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+    retain_until="$("$NEXUS_DR_PYTHON_BIN" - "$created_epoch" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+retain_epoch = int(sys.argv[1]) + 90 * 86400
+print(datetime.fromtimestamp(retain_epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+    object_lock_args=(
+      --object-lock-mode COMPLIANCE
+      --object-lock-retain-until-date "$retain_until"
+    )
+  fi
   aws_s3api put-object \
     --bucket "$NEXUS_DR_S3_BUCKET" \
     --key "$key" \
     --body "$encrypted" \
     --content-type application/octet-stream \
+    "${object_lock_args[@]}" \
     --metadata "$metadata" >/dev/null
   verify_remote_object "$key" "$encrypted_sha" "$plaintext_sha" "$schema" \
     "$(size_file "$encrypted")" "$created_epoch" "$original_name"
@@ -273,7 +320,9 @@ for archive in "${rollback_archives[@]}"; do
   release_key="$NEXUS_DR_S3_PREFIX/releases/$basename.$archive_sha.age"
   release_head="$tmp_dir/release-head-$archive_sha.json"
   if aws_s3api head-object --bucket "$NEXUS_DR_S3_BUCKET" --key "$release_key" >"$release_head" 2>/dev/null; then
-    "$NEXUS_DR_PYTHON_BIN" - "$release_head" "$archive_sha" "$basename" <<'PY'
+    "$NEXUS_DR_PYTHON_BIN" - "$release_head" "$archive_sha" "$basename" \
+      "$NEXUS_DR_STORAGE_PROVIDER" <<'PY'
+from datetime import datetime, timezone
 import json
 import re
 import sys
@@ -287,6 +336,20 @@ if not re.fullmatch(r"[0-9a-f]{64}", metadata.get("encrypted-sha256", "")):
     raise SystemExit("existing release escrow encrypted digest is invalid")
 if int(value.get("ContentLength", 0)) <= 0:
     raise SystemExit("existing release escrow object is empty")
+created = metadata.get("created-epoch", "")
+if not re.fullmatch(r"[0-9]+", created):
+    raise SystemExit("existing release escrow created epoch is invalid")
+if sys.argv[4] == "aws-s3":
+    if value.get("ObjectLockMode") != "COMPLIANCE":
+        raise SystemExit("existing release escrow is missing S3 compliance retention")
+    try:
+        retention = datetime.fromisoformat(
+            str(value.get("ObjectLockRetainUntilDate", "")).replace("Z", "+00:00"),
+        )
+    except ValueError:
+        raise SystemExit("existing release escrow S3 retention timestamp is invalid")
+    if retention.tzinfo is None or int(retention.astimezone(timezone.utc).timestamp()) < int(created) + 90 * 86400:
+        raise SystemExit("existing release escrow S3 retention is shorter than 90 days")
 PY
   else
     release_encrypted="$tmp_dir/$basename.$archive_sha.age"
@@ -330,14 +393,18 @@ done <"$release_plan"
 
 if [ "$JSON_OUTPUT" = true ]; then
   "$NEXUS_DR_PYTHON_BIN" - "$hourly_key" "$plaintext_sha" "$release_count" "$REQUIRED_RELEASE" \
-    "$required_release_sha" "$required_release_key" <<'PY'
+    "$required_release_sha" "$required_release_key" "$NEXUS_DR_STORAGE_PROVIDER" \
+    "$NEXUS_DR_STORAGE_CONTROL_MODE" <<'PY'
 import json
 import sys
-database_key, database_sha, count, required_path, release_sha, release_key = sys.argv[1:]
+database_key, database_sha, count, required_path, release_sha, release_key, provider, control_mode = sys.argv[1:]
 print(json.dumps({
     "schema": "nexus.application-dr-backup-result.v1",
     "status": "passed",
     "encrypted": True,
+    "storageProvider": provider,
+    "storageControlMode": control_mode,
+    "releasePrefixLockVerified": True,
     "databaseKey": database_key,
     "databaseSha256": database_sha,
     "releaseBundles": int(count),
@@ -350,5 +417,5 @@ print(json.dumps({
 }, separators=(",", ":")))
 PY
 else
-  echo "application_dr_backup_complete encrypted=true databaseKey=$hourly_key databaseSha256=$plaintext_sha releaseBundles=$release_count databaseRetention=24,7,4,6 releaseRetentionDays=90"
+  echo "application_dr_backup_complete encrypted=true storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseKey=$hourly_key databaseSha256=$plaintext_sha releaseBundles=$release_count databaseRetention=24,7,4,6 releaseRetentionDays=90"
 fi

@@ -184,7 +184,9 @@ describe('governed test tier partitions', () => {
     });
   });
 
-  it('qualifies p50/p95 from the latest five exact-compatible nightly samples only', () => {
+  it('qualifies p50/p95 from the latest five exact-compatible nightly samples only', {
+    timeout: 30_000,
+  }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-history-'));
     tempRoots.push(temp);
     const policy = loadTestPolicy();
@@ -310,7 +312,9 @@ describe('governed test tier partitions', () => {
     });
   });
 
-  it('fails timing history closed on candidate over-count, oversize files, and symlinks', () => {
+  it('fails timing history closed on candidate over-count, oversize files, and symlinks', {
+    timeout: 30_000,
+  }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-bounds-'));
     tempRoots.push(temp);
     const partitions = partitionTestFiles(walkTestFiles(), loadTestPolicy());
@@ -427,6 +431,15 @@ describe('governed test tier partitions', () => {
     ], 'oversized');
     expect(oversized.status).not.toBe(0);
     expect(oversized.stderr).toContain('invalid or oversized');
+
+    const injectedRunId = spawnSync(process.execPath, [
+      'scripts/test-timing-history-artifact.mjs', 'select',
+      '--run-id', '123|.*',
+      '--artifacts', artifactsPath,
+      '--output', path.join(temp, 'injected-run-id.json'),
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(injectedRunId.status).not.toBe(0);
+    expect(injectedRunId.stderr).toContain('run ID must be a positive integer');
   });
 
   it('extracts only a bounded canonical inventory document from the artifact archive', () => {

@@ -743,6 +743,11 @@ exit 95
         transactionId,
         requestSha256: requestSha,
         confirmedAt: '2026-07-23T12:01:10Z',
+        storageControls: {
+          provider: 'aws-s3',
+          controlMode: 'versioned-s3',
+          releasePrefixLockVerified: true,
+        },
         requiredRelease: {
           confirmed: true,
           path: exactBackup,

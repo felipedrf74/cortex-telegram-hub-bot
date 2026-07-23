@@ -121,6 +121,7 @@ trap cleanup EXIT
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control launch *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control status *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control recover *\n' "$WORKER_USER"
+  printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control retry-escrow *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control fetch *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-worker-control run *\n' "$SERVICE_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-worker-control recover *\n' "$SERVICE_USER"

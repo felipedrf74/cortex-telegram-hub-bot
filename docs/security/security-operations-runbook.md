@@ -40,19 +40,31 @@ and evidence to collect; it is not approval to mutate live infrastructure.
 - Keep the private `age` identity off ServerDominguez. Bucket credentials are
   prefix-scoped, mode-0600 configuration or instance identity; plaintext never
   leaves the private temporary directory.
+- Default object-store controls are enabled S3 versioning plus at least 90-day
+  S3 Object Lock for release objects. Cloudflare R2 is accepted only through
+  the owner-approved `r2-approved-variance`, with current private control-plane
+  evidence for an exact releases-prefix bucket lock of at least 90 days. The
+  mode-0600 control evidence must be refreshed within 30 days; never claim R2
+  versioning.
 - Quarterly restore drill:
   1. Use `scripts/application-dr-restore-drill.sh` on an isolated host with the
      newest hourly point and a compatible exact-release escrow object.
   2. Verify encrypted and plaintext digests, SQLite integrity/foreign keys, and
      safe exact-release extraction into a private scratch path.
-  3. Boot and authenticate-smoke only through the root-owned isolated harness
-     on its dedicated loopback port; never point the harness at live paths.
-  4. Require RPO <= 1 hour and download-through-smoke RTO <= 30 minutes.
-  5. Destroy restored plaintext and retain only private mode-0600 evidence.
+  3. Install only the exact release's embedded Node/Python dependency payload
+     as the dedicated nologin account, with no credentials and no network.
+  4. Boot and authenticate-smoke only through the root-owned private-namespace
+     harness on its one-use token and dedicated loopback port; prove an invalid
+     token is rejected and never point the harness at live paths.
+  5. Require RPO <= 1 hour and download-through-smoke RTO <= 30 minutes.
+  6. Destroy restored plaintext and retain only private mode-0600 evidence.
 
 Installation, credentials, bucket lifecycle/object-lock policy, and every real
 restore require a separate owner-approved operations window. The complete
 layout and drill contract are in `ops/application-dr/OPERATIONS.txt`.
+Repository harness implementation does not change the current
+`MANUAL_REQUIRED` site-readiness status until provisioning and one retained
+quarterly drill are complete.
 
 ## Advisory SonarQube Host Boundary
 
@@ -83,6 +95,10 @@ layout and drill contract are in `ops/application-dr/OPERATIONS.txt`.
   and release transaction share `/run/lock/nexus-release-sonar.lock`.
   Compose restart policy stays disabled; only the root systemd wrapper may
   start the containers after those checks.
+- Immediately before Compose, the root wrapper must verify the live sole 3B
+  tag at the cleanup-bound digest, no unapproved loaded model, the exact
+  loopback/single-model/queue/context/CPU/memory envelope, a usable age
+  recipient, and authenticated access to the configured backup bucket.
 - Give the deploy account only the exact sudoers command that returns
   `nexus.sonarqube-release-state.v1` for `nexus-hub-backend`. Keep the dedicated
   project monitor token root-owned mode 0600 and out of command output. Its

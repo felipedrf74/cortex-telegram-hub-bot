@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# MANUAL_REQUIRED: this is a fail-closed contract template, not a working
-# quarterly restore harness. Copy it
-# to /etc/nexus-application-dr/restore-harness as root:root mode 0700, replace
-# each refusal with the site-specific isolated boot/smoke/stop implementation,
-# and keep the required environment/path checks.
+# Compatibility refusal only. The supported implementation is
+# scripts/application-dr-isolated-harness.sh, installed root:root mode 0700 at
+# the path declared in install-layout.tsv. Do not copy or customize this file
+# as a site harness.
 set -euo pipefail
 umask 077
 
@@ -18,9 +17,9 @@ runtime="${2:-}"
   || { echo "isolated loopback URL is invalid" >&2; exit 78; }
 
 case "$action" in
-  boot) echo "CONFIGURE: boot the restored exact release only from $runtime" >&2 ;;
-  smoke) echo "CONFIGURE: run authenticated health and representative read smoke" >&2 ;;
-  stop) echo "CONFIGURE: stop only the isolated drill processes" >&2 ;;
+  boot|smoke|stop)
+    echo "unsupported template: install application-dr-isolated-harness.sh" >&2
+    ;;
   *) echo "expected boot, smoke, or stop" >&2 ;;
 esac
 exit 78

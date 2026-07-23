@@ -80,15 +80,29 @@ echo "  disk free: ${free_gb}G · RAM total: ${total_ram_gb}G"
 echo "  systemd memory: MemoryHigh=${OLLAMA_MEMORY_HIGH} MemoryMax=${OLLAMA_MEMORY_MAX} MemorySwapMax=${OLLAMA_MEMORY_SWAP_MAX}"
 echo "  ollama daemon: MODEL=${PRIMARY_MODEL} NUM_PARALLEL=${OLLAMA_NUM_PARALLEL} MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS} CTX=${OLLAMA_CONTEXT_LENGTH} QUEUE=${OLLAMA_MAX_QUEUE} LOAD_TIMEOUT=${OLLAMA_LOAD_TIMEOUT}"
 
-# The observation authority is installed root-only beside its validator. The
-# collector refuses to run from the checkout or any alternate production path.
-log "Installing root-owned Ollama observation collector"
+# Install every privileged observation/mutation command as a reviewed,
+# root-owned executable before the envelope is changed or evidence collection
+# starts. Production commands refuse alternate checkout paths.
+log "Installing root-owned Ollama observation and transition tools"
+sudo install -d -o root -g root -m 0755 /usr/local/sbin/lib
 sudo install -o root -g root -m 0700 \
   "${SCRIPT_DIR}/ollama-observation-collector.mjs" \
   /usr/local/sbin/nexus-ollama-observation-collector.mjs
 sudo install -o root -g root -m 0700 \
   "${SCRIPT_DIR}/ollama-soak-evidence.mjs" \
   /usr/local/sbin/ollama-soak-evidence.mjs
+sudo install -o root -g root -m 0700 \
+  "${SCRIPT_DIR}/ollama-large-model-cleanup.mjs" \
+  /usr/local/sbin/nexus-ollama-large-model-cleanup.mjs
+sudo install -o root -g root -m 0700 \
+  "${SCRIPT_DIR}/ollama-zero-swap-transition.mjs" \
+  /usr/local/sbin/nexus-ollama-zero-swap-transition.mjs
+sudo install -o root -g root -m 0700 \
+  "${SCRIPT_DIR}/ollama-service-envelope-check.mjs" \
+  /usr/local/sbin/nexus-ollama-service-envelope-check.mjs
+sudo install -o root -g root -m 0700 \
+  "${SCRIPT_DIR}/lib/ollama-service-envelope.mjs" \
+  /usr/local/sbin/lib/ollama-service-envelope.mjs
 sudo install -d -o root -g root -m 0700 \
   /var/lib/nexus-release/ollama-observations
 
@@ -161,7 +175,7 @@ sudo systemctl enable --now ollama
 sudo systemctl restart ollama
 
 log "Verifying effective fixed systemd envelope"
-node "${SCRIPT_DIR}/ollama-service-envelope-check.mjs" --expected-swap-bytes 536870912 \
+sudo /usr/bin/env node "/usr/local/sbin/nexus-ollama-service-envelope-check.mjs" --expected-swap-bytes 536870912 \
   || fail "effective Ollama resource envelope differs from the fixed installation policy" 9
 
 # ── Wait for daemon ─────────────────────────────────────────────────────────

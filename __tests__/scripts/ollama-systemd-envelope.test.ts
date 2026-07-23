@@ -187,7 +187,8 @@ process.exit(64);
       expect(rejected.stderr).toContain(`environment override is forbidden for ${name}`);
     }
     const source = fs.readFileSync(INSTALLER, 'utf8');
-    expect(source.indexOf('systemctl restart ollama')).toBeLessThan(source.indexOf('ollama-service-envelope-check.mjs'));
+    expect(source.indexOf('systemctl restart ollama'))
+      .toBeLessThan(source.lastIndexOf('nexus-ollama-service-envelope-check.mjs'));
   });
 
   it('accepts only the exact effective 4G/6G/512M/200% one-model baseline', () => {

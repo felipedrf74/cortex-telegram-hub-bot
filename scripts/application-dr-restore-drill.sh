@@ -39,6 +39,18 @@ private_root_file() {
     || die "$label must be root:root mode 0600"
 }
 
+trusted_root_executable() {
+  local path="$1" label="$2" resolved mode
+  [[ "$path" == /* && "$path" != / && -x "$path" ]] \
+    || die "$label must be an absolute executable"
+  resolved="$(realpath -e -- "$path")"
+  [ -f "$resolved" ] || die "$label must resolve to a regular file"
+  [ "$(stat -c '%U' -- "$resolved")" = root ] \
+    || die "$label must resolve to a root-owned file"
+  mode="$(stat -c '%a' -- "$resolved")"
+  (( (8#$mode & 0022) == 0 )) || die "$label must not be group/world writable"
+}
+
 [ "$(id -u)" -eq 0 ] || die "must run as root on an isolated drill host"
 command -v realpath >/dev/null 2>&1 || die "realpath is required"
 private_root_file "$CONFIG" "configuration"
@@ -58,6 +70,8 @@ required=(
   NEXUS_DR_S3_PREFIX
   NEXUS_DR_RESTORE_HARNESS
   NEXUS_DR_DRILL_BASE_URL
+  NEXUS_DR_DRILL_USER
+  NEXUS_DR_DRILL_NODE_BIN
 )
 for key in "${required[@]}"; do
   [ -n "${!key:-}" ] || die "configuration is missing $key"
@@ -76,6 +90,18 @@ fi
   && [[ "$NEXUS_DR_S3_PREFIX" != *//* ]] \
   || die "invalid S3 prefix"
 [[ "${AWS_REGION:-us-east-1}" =~ ^[a-z0-9-]+$ ]] || die "invalid AWS region"
+[[ "$NEXUS_DR_DRILL_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] \
+  || die "invalid dedicated drill user"
+IFS=: read -r drill_account _ drill_uid drill_gid _ _ drill_shell \
+  < <(getent passwd "$NEXUS_DR_DRILL_USER")
+[[ "$drill_account" = "$NEXUS_DR_DRILL_USER" && "$drill_uid" =~ ^[0-9]+$ \
+   && "$drill_gid" =~ ^[0-9]+$ && "$drill_uid" -gt 0 ]] \
+  || die "dedicated drill user does not exist or is privileged"
+case "$drill_shell" in
+  /usr/sbin/nologin|/sbin/nologin|/bin/false) ;;
+  *) die "dedicated drill user must have a disabled login shell" ;;
+esac
+trusted_root_executable "$NEXUS_DR_DRILL_NODE_BIN" "drill Node binary"
 [[ "$NEXUS_DR_DRILL_BASE_URL" =~ ^http://127\.0\.0\.1:([0-9]{4,5})$ ]] \
   || die "drill base URL must be an explicit high loopback HTTP port"
 drill_port="${BASH_REMATCH[1]}"
@@ -116,18 +142,24 @@ release_suffix="${RELEASE_KEY#"$release_prefix"}"
   || die "release key is outside the governed escrow namespace"
 
 install -d -o root -g root -m 0700 "$NEXUS_DR_STATE_DIR/evidence" "$NEXUS_DR_STATE_DIR/tmp"
-[[ "$OUTPUT" == "$NEXUS_DR_STATE_DIR/evidence/"*.json && "$OUTPUT" != *..* && ! -L "$OUTPUT" ]] \
-  || die "output must be a non-symlink JSON path below the private evidence directory"
+[[ "$OUTPUT" == "$NEXUS_DR_STATE_DIR/evidence/"*.json && "$OUTPUT" != *..* \
+   && ! -e "$OUTPUT" && ! -L "$OUTPUT" && ! -e "$OUTPUT.next" ]] \
+  || die "output must be a new JSON path below the private evidence directory"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQLITE_HELPER="$SCRIPT_DIR/application-dr-sqlite.py"
 ARCHIVE_HELPER="$SCRIPT_DIR/application-dr-archive.py"
+RUNTIME_DEPENDENCY_HELPER="$SCRIPT_DIR/release-runtime-dependencies.mjs"
 for helper in "$SQLITE_HELPER" "$ARCHIVE_HELPER"; do
   [[ -f "$helper" && ! -L "$helper" ]] || die "installed helper is missing: $helper"
   [ "$(stat -c '%U:%G:%a' -- "$helper")" = root:root:644 ] \
     || die "installed helper must be root:root mode 0644: $helper"
 done
-for command in age aws flock sha256sum ss timeout; do
+[[ -f "$RUNTIME_DEPENDENCY_HELPER" && ! -L "$RUNTIME_DEPENDENCY_HELPER" ]] \
+  || die "installed runtime dependency helper is missing"
+[ "$(stat -c '%U:%G:%a' -- "$RUNTIME_DEPENDENCY_HELPER")" = root:root:644 ] \
+  || die "installed runtime dependency helper must be root:root mode 0644"
+for command in age aws curl flock getent ip mount nsenter od setsid setpriv sha256sum ss timeout unshare; do
   command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
 if ss -ltnH "sport = :$drill_port" | grep -q .; then
@@ -149,6 +181,10 @@ cleanup() {
     NEXUS_DRILL_ROOT="$runtime" \
     NEXUS_DRILL_DATABASE_PATH="$runtime/data/bot.db" \
     NEXUS_DRILL_BASE_URL="$NEXUS_DR_DRILL_BASE_URL" \
+    NEXUS_DRILL_STATE_DIR="$NEXUS_DR_STATE_DIR" \
+    NEXUS_DRILL_USER="$NEXUS_DR_DRILL_USER" \
+    NEXUS_DRILL_NODE_BIN="$NEXUS_DR_DRILL_NODE_BIN" \
+    NEXUS_DRILL_PYTHON_BIN="$NEXUS_DR_PYTHON_BIN" \
       timeout --signal=TERM --kill-after=15 60 "$NEXUS_DR_RESTORE_HARNESS" stop "$runtime" >/dev/null 2>&1 || true
   fi
   rm -rf -- "$tmp_dir"
@@ -226,6 +262,10 @@ database_encrypted="$tmp_dir/database.sqlite.age"
 release_encrypted="$tmp_dir/release.tar.gz.age"
 aws_s3api get-object --bucket "$NEXUS_DR_S3_BUCKET" --key "$DATABASE_KEY" "$database_encrypted" >/dev/null
 aws_s3api get-object --bucket "$NEXUS_DR_S3_BUCKET" --key "$RELEASE_KEY" "$release_encrypted" >/dev/null
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE
+unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_ROLE_SESSION_NAME
+unset AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
 [ "$(sha256_file "$database_encrypted")" = "$DATABASE_ENCRYPTED_SHA256" ] \
   || die "encrypted database checksum mismatch"
 [ "$(sha256_file "$release_encrypted")" = "$RELEASE_ENCRYPTED_SHA256" ] \
@@ -249,10 +289,39 @@ rm -f -- "$release_plain"
 install -m 0600 -- "$database_plain" "$runtime/data/bot.db.next"
 mv -f -- "$runtime/data/bot.db.next" "$runtime/data/bot.db"
 rm -f -- "$database_plain"
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
-unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE
-unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_ROLE_SESSION_NAME
-unset AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+
+# Install only the dependency payload already bound into the exact release.
+# The trusted helper enforces the Ubuntu/Node/Python lock and --no-index wheel
+# install. It runs as the dedicated nologin account in a private network
+# namespace with an empty environment, so package processing cannot inherit
+# object-store credentials, mutate production, or reach a package registry.
+install -d -o "$drill_uid" -g "$drill_gid" -m 0700 \
+  "$runtime/.dependency-home" "$runtime/.dependency-tmp"
+chown -R "$drill_uid:$drill_gid" "$runtime"
+run_dependency_helper() {
+  unshare --net -- \
+    setpriv \
+      --reuid "$drill_uid" \
+      --regid "$drill_gid" \
+      --clear-groups \
+      --bounding-set=-all \
+      --inh-caps=-all \
+      --ambient-caps=-all \
+      --no-new-privs \
+    env -i \
+      PATH=/usr/local/bin:/usr/bin:/bin \
+      HOME="$runtime/.dependency-home" \
+      TMPDIR="$runtime/.dependency-tmp" \
+      "$NEXUS_DR_DRILL_NODE_BIN" "$RUNTIME_DEPENDENCY_HELPER" "$@"
+}
+run_dependency_helper verify --root "$runtime" >"$tmp_dir/dependency-verify.json"
+run_dependency_helper install --root "$runtime" \
+  --python-bin "$NEXUS_DR_PYTHON_BIN" >"$tmp_dir/dependency-install.json"
+chmod 0600 "$tmp_dir/dependency-verify.json" "$tmp_dir/dependency-install.json"
+[ -d "$runtime/node_modules" ] \
+  && [ -d "$runtime/content-engine/.venv" ] \
+  && [ -f "$runtime/.network-independent-install.json" ] \
+  || die "network-independent dependency installation is incomplete"
 
 remaining_seconds() {
   local elapsed
@@ -268,30 +337,48 @@ run_harness() {
   NEXUS_DRILL_ROOT="$runtime" \
   NEXUS_DRILL_DATABASE_PATH="$runtime/data/bot.db" \
   NEXUS_DRILL_BASE_URL="$NEXUS_DR_DRILL_BASE_URL" \
+  NEXUS_DRILL_STATE_DIR="$NEXUS_DR_STATE_DIR" \
+  NEXUS_DRILL_USER="$NEXUS_DR_DRILL_USER" \
+  NEXUS_DRILL_NODE_BIN="$NEXUS_DR_DRILL_NODE_BIN" \
+  NEXUS_DRILL_PYTHON_BIN="$NEXUS_DR_PYTHON_BIN" \
     timeout --signal=TERM --kill-after=15 "$remaining" "$NEXUS_DR_RESTORE_HARNESS" "$action" "$runtime"
 }
 
 run_harness boot
 booted=true
-run_harness smoke
+run_harness smoke >"$tmp_dir/application-smoke.json"
+chmod 0600 "$tmp_dir/application-smoke.json"
 completed_epoch="$(date -u +%s)"
 rto_seconds=$((completed_epoch - started_epoch))
 (( rto_seconds <= 1800 )) || die "RTO breach: isolated restore took $rto_seconds seconds"
+run_harness stop
+booted=false
 
 "$NEXUS_DR_PYTHON_BIN" - "$OUTPUT" "$DATABASE_KEY" "$RELEASE_KEY" \
   "$DATABASE_PLAINTEXT_SHA256" "$RELEASE_PLAINTEXT_SHA256" "$DATABASE_AGE_SECONDS" "$rto_seconds" \
-  "$tmp_dir/release-database-compatibility.json" <<'PY'
+  "$tmp_dir/release-database-compatibility.json" "$tmp_dir/application-smoke.json" <<'PY'
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
-output, database_key, release_key, database_sha, release_sha, rpo, rto, compatibility_path = sys.argv[1:]
+output, database_key, release_key, database_sha, release_sha, rpo, rto, compatibility_path, smoke_path = sys.argv[1:]
 with open(compatibility_path, encoding="utf-8") as source:
     compatibility = json.load(source)
 if compatibility.get("schemaVersion") != "NexusApplicationRestoreCompatibilityV1" \
         or compatibility.get("status") != "passed":
     raise SystemExit("release/database compatibility evidence is invalid")
+with open(smoke_path, encoding="utf-8") as source:
+    application_smoke = json.load(source)
+if (
+    application_smoke.get("schemaVersion") != "NexusApplicationDrillSmokeV1"
+    or application_smoke.get("status") != "passed"
+    or application_smoke.get("nodeBackendHealthVerified") is not True
+    or application_smoke.get("contentEngineHealthVerified") is not True
+    or application_smoke.get("contentEngineReadinessVerified") is not True
+    or set(application_smoke.get("processIdentities", {})) != {"nodeBackend", "contentEngine"}
+):
+    raise SystemExit("two-process application smoke evidence is invalid")
 evidence = {
     "schemaVersion": "NexusApplicationRestoreDrillV1",
     "databaseKey": database_key,
@@ -300,8 +387,17 @@ evidence = {
     "releaseSha256": release_sha,
     "sqliteIntegrityVerified": True,
     "exactReleaseBundleVerified": True,
+    "networkIndependentDependenciesVerified": True,
+    "dependencyInstallNetworkNamespaceVerified": True,
     "releaseDatabaseCompatibility": compatibility,
     "isolatedBootVerified": True,
+    "isolatedNetworkNamespaceVerified": True,
+    "invalidCredentialRejected": True,
+    "representativeRestoredDatabaseReadVerified": True,
+    "nodeBackendBootVerified": True,
+    "contentEngineBootVerified": True,
+    "contentEngineHealthVerified": True,
+    "processIdentities": application_smoke["processIdentities"],
     "applicationSmokeHarnessVerified": True,
     "rpoSeconds": int(rpo),
     "rpoTargetSeconds": 3600,
@@ -317,6 +413,4 @@ os.chmod(temporary, 0o600)
 os.replace(temporary, output)
 PY
 chmod 0600 "$OUTPUT"
-run_harness stop
-booted=false
 echo "application_dr_restore_drill_ok rpoSeconds=$DATABASE_AGE_SECONDS rtoSeconds=$rto_seconds evidence=$OUTPUT"

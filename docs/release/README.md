@@ -166,6 +166,12 @@ the root-owned one-shot ServerDominguez collector, recursively backed by
 mode-0600 raw same-boot samples and exact-window SQLite `api_usage`
 provider/model counts. Missing collector provenance or request persistence
 fails closed.
+Immediately before Compose starts, the root wrapper also rereads the live
+Ollama inventory, retained-model digest, loaded models, and effective systemd
+envelope, and it requires a working age-encryption plus authenticated
+S3-compatible backup-readiness probe. The canonical staging smoke invokes the
+exact release's Ollama smoke sequentially; it creates no additional workflow,
+lane, shard, or release concurrency.
 Initial rollout additionally requires a successful exact-SHA scan whose bound
 before/after p50 and p95 application latency regress by no more than 5%; that
 check controls Sonar enablement only. If Sonar becomes required, move it off

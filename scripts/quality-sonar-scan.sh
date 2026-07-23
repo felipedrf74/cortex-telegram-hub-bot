@@ -18,6 +18,7 @@ TIMEOUT_SECONDS=900
 SSH_BIN="$(command -v ssh 2>/dev/null || true)"
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
+SCANNER_VERIFY="$ROOT/scripts/quality-sonar-verify-scanner.sh"
 
 usage() {
   cat <<'EOF'
@@ -62,6 +63,7 @@ token_mode="$(stat -c '%a' "$TOKEN_FILE" 2>/dev/null || stat -f '%Lp' "$TOKEN_FI
 token_owner="$(stat -c '%U' "$TOKEN_FILE" 2>/dev/null || stat -f '%Su' "$TOKEN_FILE")"
 [ "$token_owner" = "$(id -un)" ] || { echo "Sonar token file must be owned by the scanner user" >&2; exit 1; }
 [ -x "$SCANNER_BIN" ] || { echo "A pinned executable sonar-scanner is required" >&2; exit 1; }
+[ -x "$SCANNER_VERIFY" ] || { echo "The governed scanner verifier is unavailable" >&2; exit 1; }
 [ -x "$SSH_BIN" ] && [ -x "$CURL_BIN" ] && [ -x "$NODE_BIN" ] || { echo "ssh, curl, and node are required" >&2; exit 1; }
 [[ "$RELEASE_LOCK_HOST" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid release-lock SSH alias" >&2; exit 64; }
 
@@ -78,6 +80,7 @@ printf 'pid=%s\nstartedAt=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$scan_lo
 chmod 0600 "$scan_lock/owner"
 
 tmp_root="$(mktemp -d)"
+tmp_root="$(realpath "$tmp_root")"
 source_root="$tmp_root/source"
 auth_header="$tmp_root/sonar-auth-header"
 ce_body="$tmp_root/ce-task.json"
@@ -181,6 +184,9 @@ git -C "$ROOT" show "$runtime_sha:ops/sonarqube/sonar-project.properties" >"$sou
   echo "Exact origin/main does not contain the governed Sonar project settings" >&2
   exit 1
 }
+"$SCANNER_VERIFY" \
+  --scanner-bin "$SCANNER_BIN" \
+  --lock-file "$source_root/ops/sonarqube/scanner.lock.env" >/dev/null
 
 scanner_args=(
   "-Dsonar.host.url=$SERVER_URL"
