@@ -46,6 +46,7 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/remote-prepare-release-backup.sh',
   'scripts/remote-start-sanitized-pm2.sh',
+  'scripts/staging-smoke-ollama.sh',
   'scripts/restore.sh',
   'scripts/rollback.sh',
 ]);

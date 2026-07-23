@@ -63,7 +63,7 @@ describe('Ollama small-only policy', () => {
       'CPUQuota=${OLLAMA_CPU_QUOTA}',
       'CPUWeight=${OLLAMA_CPUWEIGHT}',
       'Nice=${OLLAMA_NICE}',
-      'ollama-service-envelope-check.mjs" --expected-swap-bytes 536870912',
+      'nexus-ollama-service-envelope-check.mjs" --expected-swap-bytes 536870912',
     ]) {
       expect(source).toContain(required);
     }

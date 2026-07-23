@@ -45,26 +45,30 @@ Explicit preparation
    large/unapproved-model requests before validating the cleanup-result chain
    and sole retained `qwen2.5:3b-instruct-q4_K_M` digest. A copied or
    hand-authored aggregate cannot authorize installation.
-3. Before Docker installation, capture the maintenance baseline with
-   `scripts/quality-sonar-preflight.sh --output REPLACE_WITH_NEW_PRIVATE_DIRECTORY`. Missing
+3. Install the file layout from `install-layout.tsv` before Docker. Create
+   `/usr/local/sbin/lib` as root-owned mode 0755 before copying its declared
+   root-only module. Provision the host bind directories exactly as declared
+   in `data-layout.tsv`; for the pinned images that means root-owned mode-0750
+   boundaries, PostgreSQL `999:999` mode 0700, and SonarQube `1000:1000` mode
+   0750. The Compose file sets `create_host_path: false`, and the stack wrapper
+   rejects missing, symlinked, mis-owned, or mis-moded paths rather than
+   letting Docker create them. Run
+   `systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf`
+   and verify the shared lock's declared owner/mode.
+4. Before Docker installation, capture the maintenance baseline with the
+   installed root-owned command:
+   `sudo /usr/local/sbin/quality-sonar-preflight --output REPLACE_WITH_NEW_PRIVATE_DIRECTORY`.
+   Missing
    firewall tools are recorded as `not_installed`; at least one authoritative
    UFW, nftables, or iptables snapshot is mandatory. Install official Docker
    Engine and Compose only after owner review of listeners, routes, firewall,
    Tailscale, Cloudflare, PM2, health, memory, load, swap, and OOM evidence.
-4. Install /etc/sonarqube/sonarqube.env and /etc/sonarqube/backup.env from the
+5. Install /etc/sonarqube/sonarqube.env and /etc/sonarqube/backup.env from the
    examples with root ownership and mode 0600. Put the project scanner token in
    a separate Mac-side mode-0600 file; never put it in either Compose file.
-5. Install the file layout from `install-layout.tsv`. Provision the host bind
-   directories exactly as declared in `data-layout.tsv`; for the pinned images
-   that means root-owned mode-0750 boundaries, PostgreSQL `999:999` mode 0700,
-   and SonarQube `1000:1000` mode 0750. The Compose file sets
-   `create_host_path: false`, and the stack wrapper rejects missing, symlinked,
-   mis-owned, or mis-moded paths rather than letting Docker create them.
-   Run `systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf`
-   and verify the shared lock's declared owner/mode before any scan, backup,
-   stack operation, or release transaction.
 6. After Docker is installed, while Sonar remains stopped, run another
-   `quality-sonar-preflight` into a new root-owned private directory. A passing
+   installed `quality-sonar-preflight` into a new root-owned private directory.
+   A passing
    result is valid for two hours and only for the current Linux boot. Write
    the exact absolute paths, one line each, into these root-owned mode-0600
    pointer files:
@@ -83,9 +87,22 @@ Explicit preparation
    startup that can bypass this post-boot check. Both Compose services use
    `restart: "no"`, so a Docker daemon or host restart cannot start them
    around the root wrapper.
-7. Change the default Sonar administrator password, force authentication, and
+7. Verify backup encryption, credentials, endpoint, and bucket access, then
+   start only through the installed root wrappers:
+
+   ```sh
+   sudo /usr/local/sbin/quality-sonar-backup \
+     --config /etc/sonarqube/backup.env --verify-config
+   sudo /usr/local/sbin/quality-sonar-stack start
+   ```
+
+   Start repeats backup readiness and, as its final read before Compose, proves
+   that `ollama.service` still has the fixed effective envelope and that the
+   live sole retained tag/digest matches cleanup evidence. Historical evidence
+   cannot authorize a reintroduced tag or expanded envelope.
+8. Change the default Sonar administrator password, force authentication, and
    issue a project-scoped analysis token before the first scan.
-8. Create a separate monitoring identity with only `Browse` permission on
+9. Create a separate monitoring identity with only `Browse` permission on
    `nexus-hub-backend`; do not grant project/global administration, Execute
    Analysis, or access to another project. The helper uses only the
    project-scoped `/api/ce/component` queue. Store its token only in root-owned mode-0600
@@ -95,6 +112,21 @@ Explicit preparation
    `sudo /usr/local/sbin/quality-sonar-release-state --project nexus-hub-backend --json`.
    It receives the schema/status/project/active-count aggregate, never the
    token or unrelated project activity.
+
+Install the reviewed scanner bundle on the Mac before the first scan. The lock
+file pins SonarScanner CLI 8.1.0.6389 for macOS arm64, the official HTTPS
+archive URL, the archive SHA-256, and the launcher SHA-256. Download that exact
+URL from `scanner.lock.env`, verify the archive SHA-256 before extraction, and
+write only the expected digest into a scanner-user-owned mode-0600
+`.nexus-archive-sha256` file at the extracted bundle root. Then verify it:
+
+```sh
+scripts/quality-sonar-verify-scanner.sh \
+  --scanner-bin /absolute/path/to/sonar-scanner-8.1.0.6389-macosx-aarch64/bin/sonar-scanner
+```
+
+The scan refuses a symlink, writable launcher, missing/mismatched bundle
+receipt, launcher digest drift, or runtime version/platform drift.
 
 Run scripts/quality-sonar-scan.sh on the Mac. It creates a temporary clean
 worktree at the exact fetched origin/main, refuses active local or remote
@@ -125,7 +157,7 @@ to the same private server evidence directory before comparison:
 
 ```sh
 # ServerDominguez
-node scripts/quality-sonar-latency-gate.mjs capture \
+sudo /usr/local/sbin/quality-sonar-latency-gate.mjs capture \
   --phase before --url http://127.0.0.1:8200/health \
   --runtime-sha REPLACE_WITH_DEPLOYED_40_HEX_SHA --service nexus-hub \
   --output /private/evidence/sonar-latency-before.json
@@ -134,11 +166,11 @@ npm run quality:sonar -- \
   --token-file /private/secrets/sonar-token \
   --output /private/evidence/sonar-scan.json
 # ServerDominguez
-node scripts/quality-sonar-latency-gate.mjs capture \
+sudo /usr/local/sbin/quality-sonar-latency-gate.mjs capture \
   --phase after --url http://127.0.0.1:8200/health \
   --runtime-sha REPLACE_WITH_THE_SAME_40_HEX_SHA --service nexus-hub \
   --output /private/evidence/sonar-latency-after.json
-node scripts/quality-sonar-latency-gate.mjs compare \
+sudo /usr/local/sbin/quality-sonar-latency-gate.mjs compare \
   --before /private/evidence/sonar-latency-before.json \
   --after /private/evidence/sonar-latency-after.json \
   --sonar-scan-evidence /private/evidence/sonar-scan.json \

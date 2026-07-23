@@ -4,18 +4,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ReleasePlanEvaluationError,
+  buildProtectedMainReuseServerPayload,
   evaluateReleaseObservationWindow,
   evaluateReleaseShadowReadiness,
 } from './lib/release-plan-evaluation.mjs';
+import { signServerActivationRequest } from './protected-main-reuse-activation.mjs';
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
-const COMMANDS = new Set(['evaluate', 'shadow-readiness']);
+const COMMANDS = new Set(['evaluate', 'shadow-readiness', 'activation-request']);
 
 function usage() {
   return [
     'Usage:',
     '  sudo node scripts/release-plan-evaluator.mjs evaluate --input <observation-window.json> --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion [--output <result.json>]',
     '  node scripts/release-plan-evaluator.mjs shadow-readiness --input <shadow-ledger.json> [--output <result.json>]',
+    '  sudo node scripts/release-plan-evaluator.mjs activation-request --input <observation-window.json> --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion --request-id <id> --server-private-key /etc/nexus-release/serverdominguez-provenance-private-key.pem --output <request.json>',
   ].join('\n');
 }
 
@@ -32,6 +35,8 @@ function parseArgs(argv) {
     evidenceRoot: '',
     promotionEvidenceRoot: '',
     publicKey: '',
+    requestId: '',
+    serverPrivateKey: '',
     allowTestKey: false,
   };
   const seen = new Set();
@@ -45,7 +50,15 @@ function parseArgs(argv) {
       continue;
     }
     const value = argv[index + 1];
-    if (!['--input', '--output', '--evidence-root', '--promotion-evidence-root', '--public-key'].includes(flag)
+    if (![
+      '--input',
+      '--output',
+      '--evidence-root',
+      '--promotion-evidence-root',
+      '--public-key',
+      '--request-id',
+      '--server-private-key',
+    ].includes(flag)
         || !value || value.startsWith('--')) {
       throw new ReleasePlanEvaluationError(`invalid or incomplete option: ${flag ?? 'missing'}`);
     }
@@ -54,22 +67,32 @@ function parseArgs(argv) {
     const property = flag === '--evidence-root' ? 'evidenceRoot'
       : flag === '--promotion-evidence-root' ? 'promotionEvidenceRoot'
       : flag === '--public-key' ? 'publicKey' : flag.slice(2);
-    options[property] = value;
+    if (flag === '--server-private-key') options.serverPrivateKey = value;
+    else if (flag === '--request-id') options.requestId = value;
+    else options[property] = value;
     index += 2;
   }
   if (!options.input) throw new ReleasePlanEvaluationError('--input is required');
-  if (command === 'evaluate' && !options.evidenceRoot) {
+  if (['evaluate', 'activation-request'].includes(command) && !options.evidenceRoot) {
     throw new ReleasePlanEvaluationError('--evidence-root is required for release evaluation');
   }
-  if (command === 'evaluate' && !options.promotionEvidenceRoot) {
+  if (['evaluate', 'activation-request'].includes(command) && !options.promotionEvidenceRoot) {
     throw new ReleasePlanEvaluationError('--promotion-evidence-root is required for release evaluation');
   }
-  if (command !== 'evaluate' && (options.evidenceRoot || options.promotionEvidenceRoot
-      || options.publicKey || options.allowTestKey)) {
+  if (!['evaluate', 'activation-request'].includes(command)
+      && (options.evidenceRoot || options.promotionEvidenceRoot
+      || options.publicKey || options.allowTestKey || options.requestId
+      || options.serverPrivateKey)) {
     throw new ReleasePlanEvaluationError('authoritative evidence options apply only to evaluate');
   }
   if (options.publicKey && (!options.allowTestKey || process.env.NODE_ENV !== 'test')) {
     throw new ReleasePlanEvaluationError('--public-key is allowed only with --allow-test-key in test mode');
+  }
+  if (command === 'activation-request' && (!options.requestId || !options.serverPrivateKey
+      || !options.output)) {
+    throw new ReleasePlanEvaluationError(
+      'activation-request requires --request-id, --server-private-key, and --output',
+    );
   }
   return options;
 }
@@ -127,17 +150,41 @@ export function runReleasePlanEvaluator(argv) {
   const options = parseArgs(argv);
   if (options.help) return { help: true, exitCode: 0, text: `${usage()}\n` };
   const input = readGovernedJson(options.input);
-  const result = options.command === 'evaluate'
-    ? evaluateReleaseObservationWindow(input.value, {
+  const evidenceOptions = {
       evidenceRoot: options.evidenceRoot,
       promotionEvidenceRoot: options.promotionEvidenceRoot,
       trustedPublicKeyPath: options.publicKey || undefined,
       allowTestKey: options.allowTestKey && process.env.NODE_ENV === 'test',
       allowTestPromotionRoot: options.allowTestKey && process.env.NODE_ENV === 'test',
-    })
-    : evaluateReleaseShadowReadiness(input.value);
+    };
+  let result;
+  if (options.command === 'evaluate') {
+    result = evaluateReleaseObservationWindow(input.value, evidenceOptions);
+  } else if (options.command === 'shadow-readiness') {
+    result = evaluateReleaseShadowReadiness(input.value);
+  } else {
+    const testMode = options.allowTestKey && process.env.NODE_ENV === 'test';
+    if (!testMode && typeof process.geteuid === 'function' && process.geteuid() !== 0) {
+      throw new ReleasePlanEvaluationError('activation request must run as root on ServerDominguez');
+    }
+    const keyPath = path.resolve(options.serverPrivateKey);
+    const keyStat = fs.lstatSync(keyPath);
+    if (!keyStat.isFile() || keyStat.isSymbolicLink()
+        || (!testMode && (keyStat.uid !== 0 || (keyStat.mode & 0o077) !== 0))) {
+      throw new ReleasePlanEvaluationError(
+        'ServerDominguez provenance private key ownership or mode is unsafe',
+      );
+    }
+    const payload = buildProtectedMainReuseServerPayload(input.value, evidenceOptions, {
+      requestId: options.requestId,
+      sourceRoot: path.resolve(import.meta.dirname, '..'),
+    });
+    result = signServerActivationRequest(payload, fs.readFileSync(keyPath, 'utf8'));
+  }
   if (options.output) writeGovernedJson(options.output, input.resolved, result);
-  const exitCode = result.verdict === 'PASS' ? 0 : result.verdict === 'FAIL' ? 2 : 3;
+  const exitCode = options.command === 'activation-request'
+    ? 0
+    : result.verdict === 'PASS' ? 0 : result.verdict === 'FAIL' ? 2 : 3;
   return { help: false, exitCode, result };
 }
 

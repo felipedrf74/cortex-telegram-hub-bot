@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
+import { builtinModules } from 'node:module';
 import {
   chmodSync,
   copyFileSync,
@@ -28,6 +29,51 @@ function cleanGitEnv(overrides: NodeJS.ProcessEnv = {}) {
     'GIT_NAMESPACE',
   ]) delete env[key];
   return { ...env, ...overrides };
+}
+
+function assertBuiltInOnlyModuleClosure(entrypoints: string[]) {
+  const builtins = new Set([
+    ...builtinModules,
+    ...builtinModules.map((name) => `node:${name}`),
+  ]);
+  const pending = entrypoints.map((entrypoint) => join(process.cwd(), entrypoint));
+  const visited = new Set<string>();
+  const bareImports = new Set<string>();
+  const importPattern = /(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/gu;
+
+  while (pending.length > 0) {
+    const filename = pending.pop()!;
+    if (visited.has(filename)) continue;
+    visited.add(filename);
+    const source = readFileSync(filename, 'utf8');
+    for (const match of source.matchAll(importPattern)) {
+      const specifier = match[1] ?? match[2];
+      if (builtins.has(specifier)) continue;
+      if (!specifier.startsWith('.')) {
+        bareImports.add(specifier);
+        continue;
+      }
+      const unresolved = join(filename, '..', specifier);
+      const candidates = [
+        unresolved,
+        `${unresolved}.mjs`,
+        `${unresolved}.js`,
+        join(unresolved, 'index.mjs'),
+        join(unresolved, 'index.js'),
+      ];
+      const dependency = candidates.find((candidate) => {
+        try {
+          return statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+      if (!dependency) throw new Error(`unresolved release-planner dependency: ${specifier}`);
+      pending.push(dependency);
+    }
+  }
+
+  expect([...bareImports].sort()).toEqual([]);
 }
 
 describe('release-evidence-container wrapper', () => {
@@ -82,6 +128,22 @@ describe('release-evidence-container wrapper', () => {
     expect(raw).toContain('contract_scope must be explicitly selected');
     expect(raw).toContain('.local/release/test-results.json');
     expect(raw).toContain('timeout-minutes: 30');
+  });
+
+  it('keeps the RC planner dependency-free and skips its redundant install', () => {
+    const raw = workflow();
+    const planner = raw.slice(
+      raw.indexOf('  test-plan:'),
+      raw.indexOf('  vitest-full:'),
+    );
+
+    expect(planner).not.toContain('npm ci');
+    expect(planner).not.toContain("cache: 'npm'");
+    expect(planner).not.toMatch(/\btsc\b/u);
+    assertBuiltInOnlyModuleClosure([
+      'scripts/release-test-evidence.mjs',
+      'scripts/protected-main-reuse-activation.mjs',
+    ]);
   });
 
   it('uploads the hidden immutable bundle completion seal', () => {

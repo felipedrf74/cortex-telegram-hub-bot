@@ -547,7 +547,7 @@ fi
 run_systemd_transaction() {
   local request_dir request_file signed_request_file remote_inbox remote_request status_json="" phase="" transaction_status=""
   local result_env escrow_json deadline request_signing request_sha request_mode validated_request_sha
-  local local_request_directory
+  local local_request_directory escrow_retry_attempts=0 next_escrow_retry_at=0 escrow_retry_delay retry_status
   request_dir="$ROOT/.local/release/transactions"
   request_file="$request_dir/${PROMOTION_RUN_ID}.request.json"
   signed_request_file="$request_dir/${PROMOTION_RUN_ID}.request.envelope.json"
@@ -792,6 +792,24 @@ REMOTE_TRANSACTION_REQUEST
         echo "persistent promotion transaction did not complete" >&2
         return 1
         ;;
+      escrow_pending)
+        # The service has its own short retry policy. If a sustained object-store
+        # outage exhausts systemd's start-rate limit, resume the same immutable,
+        # owner-authorized transaction through the root control. This retries
+        # escrow only; it cannot repeat the cutover or create a second lane.
+        if [ "$escrow_retry_attempts" -lt 8 ] && [ "$SECONDS" -ge "$next_escrow_retry_at" ]; then
+          set +e
+          "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" retry-escrow "$PROMOTION_RUN_ID" >/dev/null 2>&1
+          retry_status=$?
+          set -e
+          escrow_retry_attempts=$((escrow_retry_attempts + 1))
+          escrow_retry_delay=$((10 * (1 << (escrow_retry_attempts > 5 ? 5 : escrow_retry_attempts - 1))))
+          next_escrow_retry_at=$((SECONDS + escrow_retry_delay))
+          # A lost SSH response is reconciled by the next authoritative status
+          # read. Persistent denial remains bounded by the retry count/deadline.
+          [ "$retry_status" -eq 0 ] || true
+        fi
+        ;;
     esac
     status_json=""
     sleep 2
@@ -830,8 +848,13 @@ REMOTE_TRANSACTION_REQUEST
   case "$BACKUP_FILE" in "$BACKUP_DIR"/v*.tar.gz) ;; *) echo "transaction returned an unsafe backup path" >&2; return 1 ;; esac
   [[ "$BACKUP_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "transaction returned an invalid backup digest" >&2; return 1; }
   read -r ESCROW_OBJECT_KEY ESCROW_CONFIRMED_AT < <(node - "$escrow_json" "$PROMOTION_RUN_ID" "$request_sha" "$BACKUP_FILE" "$BACKUP_SHA256" <<'NODE'
-const fs=require('fs');const [file,id,requestSha,path,sha]=process.argv.slice(2);const x=JSON.parse(fs.readFileSync(file,'utf8')),r=x.requiredRelease;
+const fs=require('fs');const [file,id,requestSha,path,sha]=process.argv.slice(2);const x=JSON.parse(fs.readFileSync(file,'utf8')),r=x.requiredRelease,s=x.storageControls;
+const validStoragePair=(s?.provider==='aws-s3'&&s?.controlMode==='versioned-s3')
+ ||(s?.provider==='cloudflare-r2'&&s?.controlMode==='r2-approved-variance');
 if(x.schema!=='nexus.promotion-rollback-escrow.v1'||x.status!=='passed'||x.transactionId!==id
+ ||typeof s?.provider!=='string'||typeof s?.controlMode!=='string'
+ ||!validStoragePair
+ ||s.releasePrefixLockVerified!==true
  ||x.requestSha256!==requestSha||r?.confirmed!==true||r?.path!==path||r?.plaintextSha256!==sha
  ||typeof r?.objectKey!=='string'||!r.objectKey.endsWith(`.${sha}.age`)||r.objectKey.includes('..')
  ||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(x.confirmedAt||''))process.exit(1);

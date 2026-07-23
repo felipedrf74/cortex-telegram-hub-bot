@@ -13,7 +13,7 @@ export const approvedDirectMigrationReplays = new Map([
   ['__tests__/migrations/training-exercise-media-v1.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 229.' }],
   ['__tests__/migrations/training-adaptation-proposals-v1.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 230.' }],
   ['__tests__/migrations/training-m4-capacity-snapshots.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 231.' }],
-  ['__tests__/scripts/production-shape-migration-rehearsal.test.ts', { expectedCalls: 7, reason: 'Seven governed predecessor/candidate and retired-lineage production-shape rehearsal scenarios with private clone cleanup and fail-closed evidence checks.' }],
+  ['__tests__/scripts/production-shape-migration-rehearsal.test.ts', { expectedCalls: 8, reason: 'Eight governed predecessor/candidate and retired-lineage production-shape rehearsal scenarios with private clone cleanup and fail-closed evidence checks.' }],
   ['__tests__/services/database.test.ts', { expectedCalls: 5, reason: 'Canonical raw-SQL, production-runner, and registered SQL-function migration integrity rehearsals.' }],
   ['__tests__/services/paid-ai-cost-controls-migration-runner.test.ts', { expectedCalls: 3, reason: 'Historical edge-row, target migration, and second-pass idempotency rehearsal for migration 226.' }],
 ]);

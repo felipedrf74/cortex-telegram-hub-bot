@@ -781,6 +781,53 @@ else
   echo "    See: docs/runbooks/cloudflared-tunnel.md -> Edge Protection And AI Crawler Policy"
 fi
 
+# The exact-artifact release path runs the Ollama policy smoke here, inside the
+# existing staging gate. This is deliberately sequential: no extra workflow,
+# shard, worker, or release lane is introduced. The governed inventory phase
+# accepts only the reviewed pre-cleanup four-tag set or the post-cleanup sole
+# retained 3B tag, so releases remain possible on either side of the one-time
+# owner-authorized deletion.
+echo ""
+echo "🦙 Ollama routing, inventory, and bounded-runtime policy"
+OLLAMA_SMOKE_RESULT=""
+OLLAMA_SMOKE_RC=0
+run_ollama_release_smoke() {
+ssh "$SERVER" bash -s -- "$STAGING_DIR" <<'REMOTE_OLLAMA_SMOKE'
+set -euo pipefail
+release_dir="$1"
+case "$release_dir" in /*) ;; *) echo "release directory must be absolute" >&2; exit 64 ;; esac
+[ "$release_dir" != / ] && [ -d "$release_dir" ] && [ ! -L "$release_dir" ] || {
+  echo "release directory is missing, unsafe, or a symlink" >&2
+  exit 1
+}
+smoke_script="$release_dir/scripts/staging-smoke-ollama.sh"
+[ -f "$smoke_script" ] && [ ! -L "$smoke_script" ] || {
+  echo "exact-release Ollama smoke is missing or a symlink" >&2
+  exit 1
+}
+cd "$release_dir"
+exec env \
+  OLLAMA_INVENTORY_PHASE=governed \
+  NEXUS_HUB_BASE_URL=http://127.0.0.1:8201 \
+  PM2_APP_NAME=nexus-hub-staging \
+  PM2_BIN=/home/dominguez/.npm-global/bin/pm2 \
+  /usr/bin/bash "$smoke_script"
+REMOTE_OLLAMA_SMOKE
+}
+OLLAMA_SMOKE_RESULT=$(run_ollama_release_smoke) || OLLAMA_SMOKE_RC=$?
+OLLAMA_SMOKE_DETAIL="$(printf '%s' "$OLLAMA_SMOKE_RESULT" | tail -c 1000 | tr '\n' '; ')"
+if [ "$OLLAMA_SMOKE_RC" -eq 0 ]; then
+  echo "  ✅ Ollama release policy — exact staging release passed"
+  PASS=$((PASS + 1))
+  evidence_record "Ollama release policy" "passed" "$OLLAMA_SMOKE_DETAIL"
+else
+  echo "  ❌ Ollama release policy — exact staging release failed"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("Ollama release policy")
+  evidence_record "Ollama release policy" "failed" "$OLLAMA_SMOKE_DETAIL"
+  [ "$VERBOSE" = true ] && printf '     Detail: %s\n' "$OLLAMA_SMOKE_RESULT"
+fi
+
 # ── Smoke-evidence JSON ───────────────────────────────
 # Write a JSON file recording: branch, SHA, timestamps, per-check results.
 # Audits and the exact release operator can read this instead of re-running the

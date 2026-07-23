@@ -9,6 +9,8 @@ const restoreScript = path.resolve('scripts/application-dr-restore-drill.sh');
 const sqliteHelper = path.resolve('scripts/application-dr-sqlite.py');
 const retentionHelper = path.resolve('scripts/application-dr-retention.py');
 const archiveHelper = path.resolve('scripts/application-dr-archive.py');
+const storageControlHelper = path.resolve('scripts/application-dr-storage-controls.py');
+const isolatedHarness = path.resolve('scripts/application-dr-isolated-harness.sh');
 const opsRoot = path.resolve('ops/application-dr');
 const python = process.env.NEXUS_TEST_PYTHON ?? 'python3';
 const temporaryRoots: string[] = [];
@@ -207,6 +209,125 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(fs.statSync(releaseOutput).mode & 0o777).toBe(0o600);
   });
 
+  it('requires provider-explicit versioned S3 or an approved R2 lock variance', () => {
+    const root = privateRoot('nexus-app-dr-storage-controls-');
+    const evidencePath = path.join(root, 'controls.json');
+    const now = Date.parse('2026-07-23T12:00:00Z') / 1000;
+    const common = {
+      schema: 'nexus.application-dr-storage-controls.v1',
+      endpoint: 'https://objects.example.invalid',
+      bucket: 'nexus-recovery',
+      prefix: 'nexus-hub/application',
+      verifiedAt: '2026-07-23T11:00:00Z',
+      verificationReference: 'private-evidence:storage-controls-20260723',
+    };
+    const args = [
+      storageControlHelper,
+      '--evidence',
+      evidencePath,
+      '--endpoint',
+      common.endpoint,
+      '--bucket',
+      common.bucket,
+      '--prefix',
+      common.prefix,
+      '--now-epoch',
+      String(now),
+    ];
+
+    fs.writeFileSync(evidencePath, JSON.stringify({
+      ...common,
+      provider: 'aws-s3',
+      controlMode: 'versioned-s3',
+      versioning: { supported: true, status: 'enabled' },
+      releasePrefixLock: {
+        control: 's3-object-lock',
+        status: 'enabled',
+        prefix: 'nexus-hub/application/releases/',
+        retentionDays: 90,
+      },
+    }));
+    const s3 = runPython([
+      ...args,
+      '--provider',
+      'aws-s3',
+      '--control-mode',
+      'versioned-s3',
+    ]);
+    expect(s3.status, s3.stderr).toBe(0);
+    expect(JSON.parse(s3.stdout)).toMatchObject({
+      status: 'passed',
+      provider: 'aws-s3',
+      versioningVerified: true,
+      approvedVariance: false,
+      releasePrefixLockVerified: true,
+    });
+
+    const r2Evidence = {
+      ...common,
+      provider: 'cloudflare-r2',
+      controlMode: 'r2-approved-variance',
+      versioning: { supported: false, status: 'not-supported' },
+      releasePrefixLock: {
+        control: 'cloudflare-r2-prefix-lock',
+        status: 'enabled',
+        prefix: 'nexus-hub/application/releases/',
+        retentionDays: 90,
+      },
+      varianceApproval: {
+        approvedBy: 'owner',
+        approvedAt: '2026-07-23T10:00:00Z',
+        reason: 'r2-has-no-s3-versioning',
+      },
+    };
+    fs.writeFileSync(evidencePath, JSON.stringify(r2Evidence));
+    const r2 = runPython([
+      ...args,
+      '--provider',
+      'cloudflare-r2',
+      '--control-mode',
+      'r2-approved-variance',
+    ]);
+    expect(r2.status, r2.stderr).toBe(0);
+    expect(JSON.parse(r2.stdout)).toMatchObject({
+      status: 'passed',
+      provider: 'cloudflare-r2',
+      versioningVerified: false,
+      approvedVariance: true,
+      releasePrefixLockVerified: true,
+    });
+
+    const unapprovedR2 = Object.fromEntries(
+      Object.entries(r2Evidence).filter(([key]) => key !== 'varianceApproval'),
+    );
+    fs.writeFileSync(evidencePath, JSON.stringify(unapprovedR2));
+    const missingApproval = runPython([
+      ...args,
+      '--provider',
+      'cloudflare-r2',
+      '--control-mode',
+      'r2-approved-variance',
+    ]);
+    expect(missingApproval.status).not.toBe(0);
+    expect(missingApproval.stderr).toContain('fields do not match the governed schema');
+
+    fs.writeFileSync(evidencePath, JSON.stringify({
+      ...r2Evidence,
+      versioning: { supported: true, status: 'enabled' },
+    }));
+    const fakeR2Versioning = runPython([
+      ...args,
+      '--provider',
+      'cloudflare-r2',
+      '--control-mode',
+      'r2-approved-variance',
+    ]);
+    expect(fakeR2Versioning.status).not.toBe(0);
+    expect(fakeR2Versioning.stderr).toContain(
+      'R2 variance must explicitly record unavailable S3 versioning',
+    );
+  });
+
   it('safely extracts the exact release fixture and rejects traversal archives', () => {
     const root = privateRoot('nexus-app-dr-archive-');
     const fixture = path.join(root, 'fixture');
@@ -276,6 +397,7 @@ describe('Nexus application disaster-recovery assets', () => {
   it('keeps encryption, retention, root-only scheduling, and drill targets fail closed', () => {
     const backup = fs.readFileSync(backupScript, 'utf8');
     const restore = fs.readFileSync(restoreScript, 'utf8');
+    const harness = fs.readFileSync(isolatedHarness, 'utf8');
     const timer = fs.readFileSync(
       path.join(opsRoot, 'systemd/nexus-application-dr-backup.timer'),
       'utf8',
@@ -302,6 +424,8 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(backup).toContain('private_root_file "$CONFIG" "configuration"');
     expect(backup).toContain('must be root:root mode 0600');
     expect(backup).toContain('S3 endpoint must be a credential-free HTTPS origin');
+    expect(backup).toContain('NEXUS_DR_STORAGE_PROVIDER');
+    expect(backup).toContain('"$STORAGE_CONTROL_HELPER"');
     expect(backup).not.toContain('remote-create-release-backup.sh');
 
     expect(timer).toContain('OnCalendar=*-*-* *:05:00 UTC');
@@ -314,29 +438,60 @@ describe('Nexus application disaster-recovery assets', () => {
 
     expect(config).toContain('NEXUS_DR_S3_ENDPOINT=https://');
     expect(config).toContain('NEXUS_DR_RESTORE_HARNESS=');
+    expect(config).toContain('NEXUS_DR_STORAGE_PROVIDER=aws-s3');
+    expect(config).toContain('NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3');
+    expect(config).toContain('NEXUS_DR_DRILL_USER=nexus-drill');
     expect(config).not.toMatch(/AKIA[0-9A-Z]{16}/);
     expect(restore).toContain('RPO breach');
     expect(restore).toContain('RTO breach');
     expect(restore).toContain('age < 0 or age > 3600');
     expect(restore).toContain('elapsed < 1800');
     expect(restore).toContain('run_harness boot');
-    expect(restore).toContain('run_harness smoke');
+    expect(restore).toContain('run_harness smoke >"$tmp_dir/application-smoke.json"');
     expect(restore).toContain('run_harness stop');
+    expect(restore).toContain('run_dependency_helper install');
+    expect(restore).toContain('unshare --net');
+    expect(restore).toContain('NEXUS_DRILL_USER="$NEXUS_DR_DRILL_USER"');
+    expect(restore).toContain('"networkIndependentDependenciesVerified": True');
     expect(restore).toContain('release-database-compatibility.json');
     expect(restore).toContain(
       'unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN',
     );
     expect(restore).toContain('unset AWS_PROFILE AWS_DEFAULT_PROFILE');
+    expect(harness).toContain('unshare --mount --net --pid --fork --mount-proc');
+    expect(harness).toContain('mount -o remount,ro /');
+    expect(harness).toContain('--bounding-set=-all');
+    expect(harness).toContain('env -i');
+    expect(harness).toContain('CONTENT_ENGINE_ENABLED=true');
+    expect(harness).not.toContain('CONTENT_ENGINE_ENABLED=false');
+    expect(harness).toContain('"$MOUNTPOINT/content-engine/.venv/bin/python3.12"');
+    expect(harness).toContain('"http://127.0.0.1:$CONTENT_PORT/health"');
+    expect(harness).toContain('"http://127.0.0.1:$CONTENT_PORT/ready"');
+    expect(harness).toContain('"NexusApplicationDrillSmokeV1"');
+    expect(restore).toContain('"contentEngineBootVerified": True');
+    expect(restore).toContain('"processIdentities": application_smoke["processIdentities"]');
+    expect(harness).toContain('invalid drill credential was not rejected');
+    expect(harness).toContain('representative["totalUsers"] != expected_user_count');
+    expect(harness).not.toContain('/home/dominguez');
     expect(runbook).toContain('Adding them to the repository does not');
     expect(runbook).toContain('The drill is not a production restore command');
     expect(runbook).toContain('latest ten bundles');
     expect(runbook).toContain('Quarterly restore-drill readiness is MANUAL_REQUIRED');
+    expect(runbook).toContain('cloudflare-r2:r2-approved-variance');
+    expect(runbook).toContain('private network, mount, and PID namespaces');
     expect(restoreReadiness).toEqual({
       schema: 'nexus.application-dr-restore-readiness.v1',
       status: 'MANUAL_REQUIRED',
+      repositoryHarnessImplemented: true,
       quarterlyRestoreDrillReady: false,
-      reason: 'site_specific_isolated_restore_harness_not_implemented',
-      harnessTemplate: 'ops/application-dr/restore-harness.example',
+      reason: 'server_provisioning_storage_control_evidence_and_first_retained_restore_drill_required',
+      harness: 'scripts/application-dr-isolated-harness.sh',
+      manualEvidenceRequired: [
+        'root_installed_application_dr_assets_and_dedicated_nologin_user',
+        'provider_control_plane_storage_evidence',
+        'off_host_age_identity',
+        'successful_retained_quarterly_restore_evidence',
+      ],
     });
   });
 });

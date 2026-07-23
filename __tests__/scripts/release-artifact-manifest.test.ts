@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  RELEASE_RUNTIME_FILES,
   releaseArtifactDigest,
   sha256,
   verifyReleaseBundle,
@@ -98,6 +99,10 @@ describe('release-artifact-manifest', () => {
   function digest() {
     return execFileSync('node', [script, '--root', tmp, '--digest'], { encoding: 'utf8' }).trim();
   }
+
+  it('ships the exact-release Ollama staging smoke inside the signed artifact', () => {
+    expect(RELEASE_RUNTIME_FILES).toContain('scripts/staging-smoke-ollama.sh');
+  });
 
   it.each([
     ['migration', 'migrations/001_init.sql'],

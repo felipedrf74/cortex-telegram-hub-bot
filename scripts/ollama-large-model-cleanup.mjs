@@ -5,9 +5,11 @@ import { createHash } from 'node:crypto';
 import {
   chmodSync,
   lstatSync,
+  realpathSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   OLLAMA_DELETE_TAGS,
@@ -22,6 +24,7 @@ const RETAINED_TAG = OLLAMA_RETAINED_TAG;
 const DELETE_TAGS = OLLAMA_DELETE_TAGS;
 const EXPECTED_TAGS = new Set([RETAINED_TAG, ...DELETE_TAGS]);
 const DIGEST_PATTERN = OLLAMA_DIGEST_PATTERN;
+const INSTALLED_EXECUTABLE = '/usr/local/sbin/nexus-ollama-large-model-cleanup.mjs';
 
 function fail(message, exitCode = 1) {
   const error = new Error(message);
@@ -41,6 +44,35 @@ Options:
   --ollama-bin <path>               Ollama CLI (default: ollama)
   --max-evidence-age-hours <1-72>   Evidence freshness (default: 24)
 `);
+}
+
+function assertProductionExecutable(options) {
+  const isolatedTestMode = process.env.NEXUS_OLLAMA_COLLECTOR_TEST_MODE === '1'
+    && options.ollamaBin !== 'ollama'
+    && isAbsolute(options.ollamaBin)
+    && (() => {
+      try {
+        const target = new URL(options.ollamaUrl);
+        return target.protocol === 'http:'
+          && ['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname)
+          && target.port !== ''
+          && target.port !== '11434';
+      } catch {
+        return false;
+      }
+    })();
+  if (isolatedTestMode) return;
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+    fail('cleanup gate must execute as root', 77);
+  }
+  const executable = realpathSync.native(fileURLToPath(import.meta.url));
+  if (executable !== INSTALLED_EXECUTABLE) {
+    fail(`cleanup gate must execute from ${INSTALLED_EXECUTABLE}`, 77);
+  }
+  const info = lstatSync(executable);
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o777) !== 0o700) {
+    fail('installed cleanup gate must be a root-owned mode-0700 regular file', 77);
+  }
 }
 
 function parseArgs(argv) {
@@ -267,6 +299,7 @@ function writeResult(path, value, initial = false) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  assertProductionExecutable(options);
   const origin = normalizeLoopbackUrl(options.ollamaUrl);
   const evidenceFile = readSecureJsonEvidence(options.evidencePath, 'cleanup evidence');
   const evidence = validateOllamaSoakEvidence(evidenceFile, {

@@ -17,11 +17,12 @@ OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 NEXUS_HUB_BASE_URL="${NEXUS_HUB_BASE_URL:-http://127.0.0.1:8200}"
 QUEUE_BACKEND="${LOCAL_LLM_QUEUE_BACKEND:-memory}"
 EXPECTED_PM2_NAME="${PM2_APP_NAME:-nexus-hub}"
+PM2_BIN="${PM2_BIN:-$(command -v pm2 2>/dev/null || true)}"
 SMALL_ONLY_MODEL="qwen2.5:3b-instruct-q4_K_M"
 INVENTORY_PHASE="${OLLAMA_INVENTORY_PHASE:-strict}"
 case "${INVENTORY_PHASE}" in
-  strict|pre_cleanup) ;;
-  *) printf 'FAIL: OLLAMA_INVENTORY_PHASE must be strict or pre_cleanup\n' >&2; exit 2 ;;
+  strict|pre_cleanup|governed) ;;
+  *) printf 'FAIL: OLLAMA_INVENTORY_PHASE must be strict, pre_cleanup, or governed\n' >&2; exit 2 ;;
 esac
 
 # Read the health token without sourcing the full application environment.
@@ -42,12 +43,16 @@ chmod 600 "${AUTH_HEADER_FILE}" "${SMOKE_RESPONSE_FILE}"
 printf 'Authorization: Bearer %s\n' "${HEALTH_TOKEN_VALUE}" > "${AUTH_HEADER_FILE}"
 unset HEALTH_TOKEN_VALUE
 
-for required_command in curl jq pm2 ss; do
+for required_command in curl jq ss; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     printf 'FAIL: required command is missing: %s\n' "${required_command}" >&2
     exit 3
   fi
 done
+if [ -z "${PM2_BIN}" ] || [[ "${PM2_BIN}" != /* ]] || [ ! -x "${PM2_BIN}" ]; then
+  printf 'FAIL: PM2_BIN must name an absolute executable PM2 launcher\n' >&2
+  exit 3
+fi
 
 pass=0; fail=0
 check() {
@@ -65,7 +70,7 @@ check() {
 # workers each think they have concurrency=1 and call Ollama in parallel.
 echo "→ PM2 instance check (LOCAL_LLM_QUEUE_BACKEND=${QUEUE_BACKEND})"
 if [ "${QUEUE_BACKEND}" = "memory" ]; then
-  instances=$(pm2 jlist 2>/dev/null \
+  instances=$("${PM2_BIN}" jlist 2>/dev/null \
     | jq --arg name "${EXPECTED_PM2_NAME}" '[.[] | select(.name==$name)] | length' 2>/dev/null \
     || echo 0)
   if [ "${instances}" = "1" ]; then
@@ -87,12 +92,19 @@ check "GET /api/ps" curl -fsS "${OLLAMA_BASE_URL}/api/ps"
 echo "→ Small-only model inventory"
 if [ "${INVENTORY_PHASE}" = strict ]; then
   inventory_filter='.models | length == 1 and .[0].name == $model'
-else
+elif [ "${INVENTORY_PHASE}" = pre_cleanup ]; then
   # The two 24-hour routing soaks happen before owner-authorized deletion.
   # During that explicit phase the three known deletion targets may remain on
   # disk, but no alias/extra tag is accepted and the loaded-model check below
   # still permits only the retained 3B model.
   inventory_filter='[.models[].name] | sort == ([$model, $remove1, $remove2, $remove3] | sort)'
+else
+  # The canonical release gate has to remain valid on both sides of the
+  # owner-authorized cleanup. It accepts exactly the reviewed four-tag
+  # pre-cleanup inventory or the sole retained tag, never a partial/extra set.
+  inventory_filter='([.models[].name] | sort) as $names
+    | ($names == ([$model] | sort)
+      or $names == ([$model, $remove1, $remove2, $remove3] | sort))'
 fi
 if curl -fsS "${OLLAMA_BASE_URL}/api/tags" \
     | jq -e --arg model "${SMALL_ONLY_MODEL}" \
@@ -138,7 +150,7 @@ else
 fi
 
 echo "→ Exact PM2 routing/model policy"
-if pm2 jlist 2>/dev/null | jq -e \
+if "${PM2_BIN}" jlist 2>/dev/null | jq -e \
     --arg name "${EXPECTED_PM2_NAME}" \
     --arg model "${SMALL_ONLY_MODEL}" '
       [.[] | select(.name == $name and .pm2_env.status == "online") | .pm2_env] as $apps

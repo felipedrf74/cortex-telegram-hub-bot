@@ -12,9 +12,12 @@ LOCK_FILE="$STACK_DIR/images.lock.env"
 PREFLIGHT_POINTER="${SONAR_PREFLIGHT_POINTER:-/etc/sonarqube/preflight-evidence.path}"
 OLLAMA_SOAK_POINTER="${SONAR_OLLAMA_SOAK_POINTER:-/etc/sonarqube/ollama-soak-evidence.path}"
 OLLAMA_CLEANUP_POINTER="${SONAR_OLLAMA_CLEANUP_POINTER:-/etc/sonarqube/ollama-cleanup-result.path}"
+BACKUP_CONFIG="${SONAR_BACKUP_CONFIG:-/etc/sonarqube/backup.env}"
 SHARED_MUTEX=/run/lock/nexus-release-sonar.lock
 DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
+CURL_BIN="$(command -v curl 2>/dev/null || true)"
+SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() { echo "Usage: quality-sonar-stack.sh <config|start|stop|restart|status>"; }
@@ -38,6 +41,10 @@ health="$SCRIPT_DIR/quality-sonar-health.sh"
 [ -x "$health" ] || health=/usr/local/sbin/quality-sonar-health
 start_evidence="$SCRIPT_DIR/quality-sonar-start-evidence.mjs"
 [ -x "$start_evidence" ] || start_evidence=/usr/local/sbin/quality-sonar-start-evidence.mjs
+live_ollama="$SCRIPT_DIR/quality-sonar-live-ollama-state.mjs"
+[ -x "$live_ollama" ] || live_ollama=/usr/local/sbin/quality-sonar-live-ollama-state
+backup="$SCRIPT_DIR/quality-sonar-backup.sh"
+[ -x "$backup" ] || backup=/usr/local/sbin/quality-sonar-backup
 
 compose=("$DOCKER_BIN" compose --project-directory "$STACK_DIR" --env-file "$LOCK_FILE" --env-file "$SECRETS_FILE" -f "$COMPOSE_FILE")
 
@@ -89,6 +96,40 @@ verify_start_evidence() {
     --ollama-cleanup-result "$cleanup_result" \
     --current-boot-id "$boot_id" >/dev/null
 }
+
+verify_backup_readiness() {
+  [ -x "$backup" ] || { echo "Sonar backup verifier is unavailable" >&2; return 1; }
+  "$backup" --config "$BACKUP_CONFIG" --verify-config >/dev/null
+}
+
+verify_live_ollama() (
+  set -euo pipefail
+  [ -x "$live_ollama" ] || { echo "Live Ollama verifier is unavailable" >&2; return 1; }
+  [ -x "$CURL_BIN" ] || { echo "curl is required for the live Ollama verifier" >&2; return 1; }
+  [ -x "$SYSTEMCTL_BIN" ] || { echo "systemctl is required for the live Ollama verifier" >&2; return 1; }
+  local cleanup_result temp_dir
+  cleanup_result="$(read_protected_pointer "$OLLAMA_CLEANUP_POINTER" 'Ollama cleanup result')"
+  temp_dir="$(mktemp -d)"
+  chmod 0700 "$temp_dir"
+  trap 'rm -rf "$temp_dir"' EXIT
+  "$SYSTEMCTL_BIN" show ollama.service --no-pager \
+    --property=ActiveState \
+    --property=Environment \
+    --property=MemoryHigh \
+    --property=MemoryMax \
+    --property=MemorySwapMax \
+    --property=CPUQuotaPerSecUSec >"$temp_dir/systemd.txt"
+  "$CURL_BIN" --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:11434/api/tags >"$temp_dir/tags.json"
+  "$CURL_BIN" --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:11434/api/ps >"$temp_dir/loaded.json"
+  chmod 0600 "$temp_dir/systemd.txt" "$temp_dir/tags.json" "$temp_dir/loaded.json"
+  "$live_ollama" \
+    --cleanup-result "$cleanup_result" \
+    --systemd-state "$temp_dir/systemd.txt" \
+    --tags "$temp_dir/tags.json" \
+    --loaded "$temp_dir/loaded.json" >/dev/null
+)
 
 acquire_shared_mutex() {
   command -v flock >/dev/null 2>&1 || { echo "flock is required for the shared release/Sonar mutex" >&2; return 1; }
@@ -159,8 +200,13 @@ stop_stack() {
 
 start_stack() {
   verify_start_evidence
+  verify_backup_readiness
   validate_data_layout
   validate_config >/dev/null
+  # This is intentionally the final authorization read before Compose starts:
+  # historical evidence cannot hide a reintroduced model, digest drift, or an
+  # expanded effective service envelope.
+  verify_live_ollama
   "${compose[@]}" up -d
   if ! "$health" --url http://127.0.0.1:9000; then
     "${compose[@]}" stop -t 3600 sonarqube postgres >/dev/null 2>&1 || true

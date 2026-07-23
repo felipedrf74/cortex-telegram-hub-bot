@@ -29,6 +29,10 @@ import {
   validateProtectedMainCiEvidence,
   validateReleaseShadowComparison,
 } from './protected-main-ci-evidence.mjs';
+import {
+  protectedMainReusePolicyDigest,
+  validateProtectedMainReuseActivation,
+} from './protected-main-reuse-activation.mjs';
 import { loadTestPolicy, partitionTestFiles, walkTestFiles } from './lib/test-policy.mjs';
 import {
   BACKEND_IOS_CONTRACT_FIXTURE_PATH,
@@ -529,6 +533,7 @@ export function validateGitHubIdentity({
   repository,
   candidateRunId,
   selection,
+  protectedMainMode = 'shadow',
 }) {
   const expectedRunId = String(candidateRunId ?? '');
   if (!/^\d+$/.test(expectedRunId)) fail('candidate run id is invalid');
@@ -557,7 +562,11 @@ export function validateGitHubIdentity({
     '🐍 Content Engine full pytest',
     '📦 Write unsigned release candidate',
   ];
-  if (selection?.tier === FULL_RELEASE_TIER && selection.fullRequired === true) {
+  if (protectedMainMode === 'reuse') {
+    // Existing Vitest jobs remain in the workflow and must be skipped. The
+    // protected-main run is independently verified later against the signed
+    // activation and exact candidate evidence.
+  } else if (selection?.tier === FULL_RELEASE_TIER && selection.fullRequired === true) {
     expectedJobs.push(
       '🧪 Full Vitest shard 1/4',
       '🧪 Full Vitest shard 2/4',
@@ -576,7 +585,15 @@ export function validateGitHubIdentity({
       fail(`candidate GitHub job is missing, duplicated, or unsuccessful: ${name}`);
     }
   }
-  const forbiddenSuccessfulJobs = selection.fullRequired
+  const forbiddenSuccessfulJobs = protectedMainMode === 'reuse'
+    ? [
+      '🧪 Policy-selected Vitest',
+      '🧪 Full Vitest shard 1/4',
+      '🧪 Full Vitest shard 2/4',
+      '🧪 Full Vitest shard 3/4',
+      '🧪 Full Vitest shard 4/4',
+    ]
+    : selection.fullRequired
     ? ['🧪 Policy-selected Vitest']
     : [
       '🧪 Full Vitest shard 1/4',
@@ -748,6 +765,9 @@ export function validateTestEvidence({
   trustedPolicyDigest,
   candidateSourceRoot,
   artifactDigest,
+  protectedMainRun = null,
+  protectedMainArtifacts = null,
+  repository = '',
 }) {
   const resultPath = path.join(candidateArtifactRoot, '.local/release/test-results.json');
   const results = readJson(resultPath);
@@ -816,11 +836,17 @@ export function validateTestEvidence({
     fail('release test result timestamp is invalid, future, or stale');
   }
 
+  const reuseMode = results.protectedMainShadow?.mode === 'reuse';
+  if (!reuseMode && (protectedMainRun !== null || protectedMainArtifacts !== null)) {
+    fail('protected-main GitHub reuse metadata was supplied for a shadow-only candidate');
+  }
   const resultsRoot = path.join(candidateArtifactRoot, '.local/release/rc-test-results');
   const vitestFiles = fs.readdirSync(resultsRoot)
     .filter((name) => /^vitest-results-(?:[1-4]|selected)\.json$/.test(name))
     .sort();
-  const expectedVitestFiles = selection.fullRequired
+  const expectedVitestFiles = reuseMode
+    ? []
+    : selection.fullRequired
     ? ['vitest-results-1.json', 'vitest-results-2.json', 'vitest-results-3.json', 'vitest-results-4.json']
     : ['vitest-results-selected.json'];
   if (canonicalJson(vitestFiles) !== canonicalJson(expectedVitestFiles)) {
@@ -837,16 +863,27 @@ export function validateTestEvidence({
   const pytestLog = fs.readFileSync(path.join(resultsRoot, 'pytest-results.log'), 'utf8');
   const pytestMatch = pytestLog.match(/(\d+)\s+passed(?:,|\s|$)/);
   const pytestCount = pytestMatch ? Number(pytestMatch[1]) : 0;
-  if (results.counts.vitest !== vitestCount || vitestCount <= 0
+  if ((!reuseMode && (results.counts.vitest !== vitestCount || vitestCount <= 0))
+      || (reuseMode && (!Number.isSafeInteger(results.counts.vitest)
+        || results.counts.vitest <= 0))
       || results.counts.pytest !== pytestCount || pytestCount <= 0) {
     fail('release test counts do not match the uploaded suite results');
   }
-  if (canonicalJson([...reportedTestFiles].sort()) !== canonicalJson(selection.selected.files)) {
+  if (!reuseMode
+      && canonicalJson([...reportedTestFiles].sort()) !== canonicalJson(selection.selected.files)) {
     fail('release candidate Vitest files do not match the signed selection');
   }
   const shadow = results.protectedMainShadow;
-  exactKeys(shadow, ['mode', 'comparison', 'evidence'], 'protected-main release shadow binding');
-  if (shadow.mode !== 'shadow') fail('protected-main release evidence is not in governed shadow mode');
+  exactKeys(
+    shadow,
+    reuseMode
+      ? ['mode', 'activation', 'comparison', 'evidence']
+      : ['mode', 'comparison', 'evidence'],
+    'protected-main release binding',
+  );
+  if (!['shadow', 'reuse'].includes(shadow.mode)) {
+    fail('protected-main release evidence mode is invalid');
+  }
   const comparison = validateReleaseShadowComparison(shadow.comparison, {
     expectedRuntimeSha: runtimeSha,
   });
@@ -864,8 +901,65 @@ export function validateTestEvidence({
     if (canonicalJson(recomputed) !== canonicalJson(comparison)) {
       fail('protected-main shadow verdict does not match its signed evidence');
     }
+    if (reuseMode) {
+      validateProtectedMainReuseActivation(shadow.activation, {
+        releaseEvidencePublicKeyPem: fs.readFileSync(path.join(
+          scriptRoot,
+          'docs/release/evidence/release-evidence-public-key.pem',
+        ), 'utf8'),
+        expectedPolicyDigest: protectedMainReusePolicyDigest(scriptRoot),
+        repository,
+        nowMs: trustedReferenceTimeMs,
+      });
+      if (comparison.status !== 'eligible'
+          || results.counts.vitest !== evidence.vitest.tests) {
+        fail('protected-main reused test identity is inconsistent');
+      }
+      validateProtectedMainReuseGithubIdentity({
+        run: protectedMainRun,
+        artifacts: protectedMainArtifacts,
+        evidence,
+        repository,
+      });
+    }
   }
   return results;
+}
+
+export function validateProtectedMainReuseGithubIdentity({
+  run,
+  artifacts,
+  evidence,
+  repository,
+}) {
+  if (!run || !artifacts || String(run.id) !== String(evidence.ci.runId)
+      || String(run.run_attempt) !== String(evidence.ci.runAttempt)
+      || run.path !== '.github/workflows/ci.yml'
+      || run.event !== 'push'
+      || run.head_branch !== 'main'
+      || run.head_sha !== evidence.headSha
+      || run.status !== 'completed'
+      || run.conclusion !== 'success'
+      || run.repository?.full_name !== repository
+      || run.head_repository?.full_name !== repository) {
+    fail('reused protected-main GitHub run identity is invalid');
+  }
+  if (!Array.isArray(artifacts.artifacts)) {
+    fail('reused protected-main GitHub artifacts are missing');
+  }
+  const names = [
+    `protected-main-ci-evidence-${evidence.ci.runId}-${evidence.ci.runAttempt}`,
+    evidence.build.artifactName,
+  ];
+  for (const name of names) {
+    const matches = artifacts.artifacts.filter((artifact) => artifact?.name === name);
+    if (matches.length !== 1 || matches[0].expired === true
+        || !/^sha256:[0-9a-f]{64}$/u.test(matches[0].digest ?? '')
+        || String(matches[0].workflow_run?.id) !== String(evidence.ci.runId)
+        || matches[0].workflow_run?.head_sha !== evidence.headSha) {
+      fail(`reused protected-main artifact identity is missing or ambiguous: ${name}`);
+    }
+  }
 }
 
 function validateCandidate() {
@@ -912,6 +1006,14 @@ function validateCandidate() {
     expectedHeadSha: runtimeSha,
     expectedPolicyDigest: trustedPolicyDigest,
   });
+  const untrustedTestResults = readJson(path.join(
+    candidateArtifactRoot,
+    '.local/release/test-results.json',
+  ));
+  const protectedMainMode = untrustedTestResults?.protectedMainShadow?.mode;
+  if (!['shadow', 'reuse'].includes(protectedMainMode)) {
+    fail('candidate protected-main evidence mode is invalid');
+  }
   const githubIdentity = validateGitHubIdentity({
     run,
     artifacts,
@@ -920,6 +1022,7 @@ function validateCandidate() {
     repository,
     candidateRunId: valueOf('--candidate-run-id'),
     selection,
+    protectedMainMode,
   });
 
   if (git(candidateSourceRoot, 'rev-parse', 'HEAD') !== runtimeSha) fail('candidate source checkout SHA mismatch');
@@ -1034,6 +1137,13 @@ function validateCandidate() {
     trustedPolicyDigest,
     candidateSourceRoot,
     artifactDigest: artifact.digest,
+    protectedMainRun: valueOf('--protected-main-run-metadata')
+      ? readJson(resolveRequired('--protected-main-run-metadata'))
+      : null,
+    protectedMainArtifacts: valueOf('--protected-main-artifact-metadata')
+      ? readJson(resolveRequired('--protected-main-artifact-metadata'))
+      : null,
+    repository,
   });
   if (payload.toolchain.node !== testResults.toolchain.node
       || payload.toolchain.python !== testResults.toolchain.python

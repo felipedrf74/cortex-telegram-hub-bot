@@ -83,6 +83,7 @@
     "scripts/lib/changed-area-classifier.mjs",
     "scripts/lib/git-changed-paths.mjs",
     "scripts/lib/irreversible-migration-policy.mjs",
+    "scripts/lib/migration-safety-policy-classifier.mjs",
     "scripts/lib/production-shape-migration-rehearsal-evidence.mjs",
     "scripts/migration-safety-check.mjs",
     "scripts/production-shape-migration-rehearsal.mjs",
@@ -100,6 +101,7 @@
     "scripts/lib/test-policy.mjs",
     "scripts/lib/static-test-dependency-map.mjs",
     "scripts/test-inventory.mjs",
+    "scripts/test-timing-history-artifact.mjs",
     "scripts/test-migration-hook-lint.mjs",
     "scripts/changed-coverage-gate.mjs",
     "scripts/mutation-gate.mjs",
@@ -182,7 +184,8 @@
     },
     "timing": {
       "minimumScopePercent": 100,
-      "minimumSamplesForPercentiles": 5
+      "minimumSamplesForPercentiles": 5,
+      "maximumSamplesForPercentiles": 5
     },
     "uniqueCoverage": {
       "minimumPercent": 0,
@@ -201,12 +204,16 @@
     { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },
     { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, and predecessor restoration when the controlling Mac or SSH session disappears." },
     { "pattern": "__tests__/scripts/protected-main-ci-evidence.test.ts", "disposition": "keep", "reason": "Protects exact-SHA, toolchain, lockfile, policy, workflow, result, and artifact identity before protected-main evidence can be shadow-compared or reused." },
+    { "pattern": "__tests__/scripts/protected-main-reuse-activation.test.ts", "disposition": "keep", "reason": "Protects the root-signed five-production comparison window, independent protected GitHub run provenance, policy-drift invalidation, and exact-SHA fail-closed reuse authorization." },
+    { "pattern": "__tests__/scripts/quality-sonar-live-readiness.test.ts", "disposition": "keep", "reason": "Protects the immediate pre-start SonarQube capacity, retained-model identity, loaded-model state, and effective systemd envelope checks." },
     { "pattern": "__tests__/scripts/quality-sonar-operations.test.ts", "disposition": "keep", "reason": "Protects advisory-only SonarQube isolation, immutable image locks, local tunnel access, release mutual exclusion, resource ceilings, and recoverable backups." },
+    { "pattern": "__tests__/scripts/quality-sonar-scanner-pin.test.ts", "disposition": "keep", "reason": "Protects the immutable SonarScanner archive and launcher identities used by the clean exact-SHA analysis command." },
     { "pattern": "__tests__/scripts/release-sonar-mutex.test.ts", "disposition": "keep", "reason": "Protects prompt shared release/Sonar lock cleanup and immediate reacquisition after the Mac-side FIFO holder closes." },
     { "pattern": "__tests__/scripts/release-sequence.test.ts", "disposition": "keep", "reason": "Protects the sequential resumable release coordinator, exact-source checks, explicit approvals, checkpoint revalidation, and fail-closed phase transitions." },
     { "pattern": "__tests__/scripts/remote-release-capacity.test.ts", "disposition": "keep", "reason": "Protects release preflight thresholds for memory, load, swap, OOM, all production/staging PM2 services, rollback-drill freshness, and active Sonar analysis." },
     { "pattern": "__tests__/scripts/release-runtime-dependencies.test.ts", "disposition": "keep", "reason": "Protects the signed Ubuntu 24.04/x86-64 Node archive and Python wheelhouse, exact lockfile inputs, byte digests, safe extraction, and network-independent staging installation." },
     { "pattern": "__tests__/scripts/release-staging-transfer-integrity.test.ts", "disposition": "keep", "reason": "Protects trusted remote verification of the exact signed staging bundle before candidate code executes, including same-size drift, undeclared files, unsafe links, and hidden workflow evidence uploads." },
+    { "pattern": "__tests__/scripts/staging-smoke-ollama-integration.test.ts", "disposition": "keep", "reason": "Protects the canonical sequential staging smoke integration of the exact retained-model routing and bounded Ollama runtime evidence." },
     { "pattern": "__tests__/services/ollama-small-only-policy.test.ts", "disposition": "keep", "reason": "Protects the single retained 3B Ollama model, fail-closed model overrides, loopback binding, bounded context, and systemd resource ceilings." },
     { "pattern": "__tests__/services/structured-output-schema.test.ts", "disposition": "keep", "reason": "Protects the bounded JSON-schema subset and deterministic local validation used by privacy-gated, no-tools cloud reasoning responses." },
     { "pattern": "__tests__/scripts/pm2-memory-policy.test.ts", "disposition": "keep", "reason": "Protects RSS-versus-V8 headroom, unchanged Content Engine ceilings, and full PM2 stability observation across canonical release paths." },
@@ -529,6 +536,7 @@
       "sources": [
         "scripts/migration-safety-check.mjs",
         "scripts/lib/irreversible-migration-policy.mjs",
+        "scripts/lib/migration-safety-policy-classifier.mjs",
         "config/irreversible-migrations.json",
         "scripts/lib/production-shape-migration-rehearsal-evidence.mjs"
       ],

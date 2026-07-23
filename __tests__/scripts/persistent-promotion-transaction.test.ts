@@ -60,7 +60,7 @@ describe('persistent systemd promotion transaction v2', () => {
     fs.writeFileSync(drBackupBin, `#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" --verify-config "* ]]; then
-  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
   exit 0
 fi
 exit 64
@@ -190,6 +190,66 @@ exec "$@"
     const starts = fs.readFileSync(systemctlLog, 'utf8').split('\n').filter((line) => line.includes('start --no-block'));
     expect(starts).toEqual([`start --no-block nexus-release-promotion@${id}.service`]);
     expect(run(['assert-idle']).status).toBe(73);
+  });
+
+  it('relaunches only the same authoritative transaction when rollback escrow is pending', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const requestSha256 = JSON.parse(launch.stdout).requestSha256;
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId: id,
+      requestSha256,
+      phase: 'awaiting_rollback_escrow',
+      status: 'escrow_pending',
+    })}\n`, { mode: 0o600 });
+    fs.rmSync(systemctlActive, { force: true });
+
+    const retry = run(['retry-escrow', id]);
+    expect(retry.status, retry.stderr).toBe(0);
+    expect(JSON.parse(retry.stdout)).toMatchObject({
+      transactionId: id,
+      state: 'relaunched',
+      retry: 'rollback-escrow',
+    });
+    const lines = fs.readFileSync(systemctlLog, 'utf8').trim().split('\n');
+    expect(lines).toContain(`reset-failed nexus-release-promotion@${id}.service`);
+    expect(lines.filter((line) => line === `start --no-block nexus-release-promotion@${id}.service`))
+      .toHaveLength(2);
+
+    fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId: id,
+      requestSha256,
+      phase: 'executing',
+      status: 'running',
+    })}\n`, { mode: 0o600 });
+    expect(run(['retry-escrow', id]).status).toBe(75);
+  });
+
+  it('resumes only pending rollback escrow after a host reboot', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const requestSha256 = JSON.parse(launch.stdout).requestSha256;
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    fs.writeFileSync(path.join(authoritative, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId: id,
+      requestSha256,
+      phase: 'awaiting_rollback_escrow',
+      status: 'escrow_pending',
+    })}\n`, { mode: 0o600 });
+    fs.rmSync(systemctlActive, { force: true });
+
+    const recovered = run(['recover-all']);
+    expect(recovered.status, recovered.stderr).toBe(0);
+    const lines = fs.readFileSync(systemctlLog, 'utf8').trim().split('\n');
+    expect(lines).toContain(`reset-failed nexus-release-promotion@${id}.service`);
+    expect(lines.filter((line) => line === `start --no-block nexus-release-promotion@${id}.service`))
+      .toHaveLength(2);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')).status)
+      .toBe('escrow_pending');
   });
 
   it('rejects forged, expired, unsigned, and non-exact-soak owner authority', () => {
@@ -342,7 +402,7 @@ exec "$@"
     fs.writeFileSync(mutationScript, '#!/usr/bin/env bash\n: > "$MUTATION_MARKER"\nexit 99\n', { mode: 0o755 });
     fs.writeFileSync(invalidDr, `#!/usr/bin/env bash
 printf '%s\\n' "$*" > "$DR_INVOCATION"
-exit 42
+printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
 `, { mode: 0o755 });
 
     const result = spawnSync('bash', [broker, 'run', id], {
@@ -357,7 +417,7 @@ exit 42
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toContain('application DR provisioning/config preflight failed');
+    expect(result.stderr).toContain('application DR provisioning/config preflight returned invalid evidence');
     expect(fs.readFileSync(drInvocation, 'utf8')).toContain(`--config ${drConfig} --verify-config`);
     expect(fs.existsSync(mutationMarker)).toBe(false);
     expect(fs.realpathSync(current)).toBe(previous);
@@ -430,7 +490,17 @@ if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
     const drConfig = path.join(root, 'dr.env');
     fs.writeFileSync(drConfig, 'fixture=true\n', { mode: 0o600 });
     const dr = path.join(root, 'bin', 'dr-backup');
-    fs.writeFileSync(dr, '#!/usr/bin/env bash\nexit 42\n', { mode: 0o755 });
+    fs.writeFileSync(dr, `#!/usr/bin/env bash
+set -euo pipefail
+required=""
+while [ $# -gt 0 ]; do case "$1" in --require-release) required="$2"; shift 2 ;; *) shift ;; esac; done
+node - "$required" <<'NODE'
+const fs=require('fs'),c=require('crypto');const file=process.argv[2];
+const sha=c.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+process.stdout.write(JSON.stringify({schema:'nexus.application-dr-backup-result.v1',status:'passed',encrypted:true,
+  requiredRelease:{path:file,plaintextSha256:sha,objectKey:'nexus/releases/'+file.split('/').pop()+'.'+sha+'.age',confirmed:true}})+'\\n');
+NODE
+`, { mode: 0o755 });
     const escrowEnv = {
       NEXUS_PROMOTION_DR_BACKUP_BIN: dr,
       NEXUS_PROMOTION_DR_CONFIG: drConfig,
@@ -451,6 +521,7 @@ node - "$required" <<'NODE'
 const fs=require('fs'),c=require('crypto');const file=process.argv[2];
 const sha=c.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 process.stdout.write(JSON.stringify({schema:'nexus.application-dr-backup-result.v1',status:'passed',encrypted:true,
+  storageProvider:'aws-s3',storageControlMode:'versioned-s3',releasePrefixLockVerified:true,
   requiredRelease:{path:file,plaintextSha256:sha,objectKey:'nexus/releases/'+file.split('/').pop()+'.'+sha+'.age',confirmed:true}})+'\\n');
 NODE
 `, { mode: 0o755 });
@@ -609,6 +680,7 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(candidatePreflight).toBeGreaterThan(sealTarget);
     expect(clientSource.slice(prepareTarget, copyTarget)).toContain('[ ! -w "$base_dir/releases" ]');
     expect(clientSource).toContain('Tolerate bounded transient transport loss');
+    expect(clientSource).toContain('retry-escrow "$PROMOTION_RUN_ID"');
     const armIndex = runnerSource.indexOf('RECOVERY_ARMED_MARKER.next');
     const stopIndex = runnerSource.indexOf('\nstop_predecessor\n', armIndex);
     expect(armIndex).toBeLessThan(stopIndex);
@@ -657,6 +729,7 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(installSource).toContain('-m 700');
     expect(installSource).toContain('nexus-release-sonar-lock.conf');
     expect(installSource).toContain('root:dominguez:660');
+    expect(installSource).toContain('nexus-release-promotion-control retry-escrow *');
     expect(installSource).not.toContain('promotion-control continue');
     expect(installSource).not.toContain('promotion-control escrow-inflight');
     expect(service).toContain('User=nexus-release');

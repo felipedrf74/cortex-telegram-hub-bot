@@ -194,6 +194,9 @@ jobs:
       - name: Project map freshness
         run: npm run project:map:check
 
+      - name: Migration replay governance
+        run: npm run test:migration-hook-lint
+
       - name: TypeScript type check
         run: npx tsc --noEmit
 

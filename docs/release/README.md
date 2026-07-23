@@ -149,8 +149,10 @@ re-verifies its manifest, SHA, file closure, and digest before publishing the
 shadow evidence; this does not enable reuse.
 Only five consecutive exact agreements may activate reuse in the signed
 manifest path. Missing, stale, changed, or ambiguous evidence keeps the normal
-four-shard RC fallback. Removing the RC planner's install or standalone
-typecheck is a separate post-shadow change and requires equivalence evidence.
+four-shard RC fallback. The RC planner itself performs no dependency install or
+standalone typecheck: its two executable entrypoints have a recursively tested
+Node-built-in-only dependency closure, while the trusted protected-main build
+continues to own typecheck and build correctness.
 
 SonarQube is advisory quality feedback, not a time-saving release stage. Run
 `npm run quality:sonar` only from its Mac-side exact-origin/main launcher and
@@ -164,6 +166,12 @@ the root-owned one-shot ServerDominguez collector, recursively backed by
 mode-0600 raw same-boot samples and exact-window SQLite `api_usage`
 provider/model counts. Missing collector provenance or request persistence
 fails closed.
+Immediately before Compose starts, the root wrapper also rereads the live
+Ollama inventory, retained-model digest, loaded models, and effective systemd
+envelope, and it requires a working age-encryption plus authenticated
+S3-compatible backup-readiness probe. The canonical staging smoke invokes the
+exact release's Ollama smoke sequentially; it creates no additional workflow,
+lane, shard, or release concurrency.
 Initial rollout additionally requires a successful exact-SHA scan whose bound
 before/after p50 and p95 application latency regress by no more than 5%; that
 check controls Sonar enablement only. If Sonar becomes required, move it off
@@ -367,17 +375,72 @@ npm run release:shadow:readiness -- --input .local/release/shadow-ledger.json \
   --output .local/release/shadow-readiness.json
 ```
 
-The ledger must contain exactly five full
+The advisory ledger must contain exactly five full
 `nexus.release-evidence-shadow-comparison.v1` records with consecutive sequence
 numbers, unique release IDs and runtime SHAs, canonical comparison/completion
 timestamps, and independently recorded production runtime SHA and manifest
 SHA-256 for each release. The comparison runtime SHA must match that production
-identity exactly. Even five exact matches return
-`MANUAL_REQUIRED`, `activationAllowed: false`, and
-`independent_github_provenance_required`. This local evaluator cannot activate
-reuse; a separate protected GitHub provenance path must first be implemented
-and independently verified. Until then the existing four-shard RC fallback is
-unchanged.
+identity exactly. Even five exact matches in this operator-readable ledger
+return `MANUAL_REQUIRED`, `activationAllowed: false`, and
+`independent_github_provenance_required`. The local evaluator is deliberately
+non-authorizing.
+
+Activation uses the existing root evaluator, protected operational signer, RC
+workflow, and manifest signer. It adds no workflow, job, matrix, release lane,
+scheduler, or worker:
+
+1. The reviewed promotion-control bootstrap generates a ServerDominguez-only
+   Ed25519 private key at
+   `/etc/nexus-release/serverdominguez-provenance-private-key.pem` (root:root
+   0600) and its public key beside it (0644). Configure that exact public key as
+   the `release-signing` environment secret
+   `NEXUS_SERVERDOMINGUEZ_PROVENANCE_PUBLIC_KEY_PEM`. Never copy the private key
+   from the server.
+2. After five eligible production comparisons exist, run the reviewed,
+   root-owned evaluator on ServerDominguez. It validates the complete ten-record
+   observation window, takes only its last five successful exact agreements,
+   and requires those transaction IDs to be the latest five completed
+   root-owned promotion journals:
+
+   ```bash
+   sudo /usr/bin/node \
+     /opt/nexus-release-evaluator/current/scripts/release-plan-evaluator.mjs \
+     activation-request \
+     --input /var/lib/nexus-release-observations/observation-window.json \
+     --evidence-root /var/lib/nexus-release-observations/signed \
+     --promotion-evidence-root /var/lib/nexus-release-promotion \
+     --request-id <lowercase-uuid> \
+     --server-private-key /etc/nexus-release/serverdominguez-provenance-private-key.pem \
+     --output /var/lib/nexus-release-observations/protected-main-reuse-request.json
+   ```
+
+   Each entry binds its signed manifest, signed staging attestation, root
+   journal/result, protected-main run, RC run, SHA, artifact, installed tree,
+   and comparison digest. The root-signed request expires after 15 minutes so
+   it cannot be replayed after the latest production sequence changes; generate
+   a fresh request if protected approval is not completed in that window.
+3. Dispatch `sign-staging-attestation.yml` on protected `main` with
+   `evidence_kind=protected_main_reuse_activation`, the same request UUID and
+   fifth runtime SHA, plus canonical request base64 and SHA-256. The existing
+   `release-signing` job verifies the ServerDominguez signature, independently
+   fetches all five protected-main CI and all five RC run/artifact identities,
+   and emits a GitHub-signed activation envelope.
+4. Supply that envelope as canonical base64 in the existing RC input
+   `protected_reuse_activation_b64`. The test-plan job revalidates it and the
+   current exact protected-main evidence. It may skip the existing RC Vitest
+   jobs only for a later SHA, only while the activation is unexpired, and only
+   when policy/workflow digest, lockfiles, toolchains, selected-file coverage,
+   required jobs, and exact runtime bundle agree. Python and the remaining
+   release gates still run. The protected manifest signer independently fetches
+   the current protected-main run/artifacts and repeats validation.
+
+Any missing, invalid, ambiguous, policy-drifted, or expired input, an explicit
+`force_full`, or an attempt to reuse one of the five shadow-window SHAs leaves
+`reuse_allowed=false` and runs the existing RC Vitest fallback. An unsigned
+operator ledger or locally generated JSON can never activate reuse. No
+activation envelope is created by implementation itself; with the currently
+available one eligible production comparison, the path remains shadow-only at
+1/5.
 
 ## Required Sequence
 

@@ -1,5 +1,5 @@
 name: Release — Sign staging attestation
-run-name: Sign ${{ inputs.evidence_kind == 'rollback_drill' && 'rollback drill' || 'staging attestation' }} ${{ inputs.request_id }}
+run-name: Sign ${{ inputs.evidence_kind }} ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -12,6 +12,7 @@ on:
         options:
           - staging_attestation
           - rollback_drill
+          - protected_main_reuse_activation
       request_id:
         description: Unique operational evidence request identifier
         required: true
@@ -25,11 +26,12 @@ on:
         required: true
         type: string
       request_sha256:
-        description: Exact raw request digest (required for rollback drills)
+        description: Exact raw request digest (required for rollback drills and reuse activation)
         required: false
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -37,7 +39,7 @@ jobs:
     if: ${{ github.actor == github.repository_owner && github.ref == 'refs/heads/main' }}
     environment: release-signing
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Check out protected main signing tooling
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -89,9 +91,9 @@ jobs:
                 exit 64
               }
               ;;
-            rollback_drill)
+            rollback_drill|protected_main_reuse_activation)
               [[ "$REQUEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
-                echo "rollback drill request_sha256 must be an exact lowercase SHA-256" >&2
+                echo "protected evidence request_sha256 must be an exact lowercase SHA-256" >&2
                 exit 64
               }
               ;;
@@ -149,6 +151,97 @@ jobs:
             --max-age-days 30 \
             --json
 
+      - name: Decode and validate ServerDominguez reuse activation request
+        if: ${{ inputs.evidence_kind == 'protected_main_reuse_activation' }}
+        env:
+          REQUEST_B64: ${{ inputs.request_b64 }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+          SERVER_PROVENANCE_PUBLIC_KEY_PEM: ${{ secrets.NEXUS_SERVERDOMINGUEZ_PROVENANCE_PUBLIC_KEY_PEM }}
+        run: |
+          [[ -n "$SERVER_PROVENANCE_PUBLIC_KEY_PEM" ]] || {
+            echo "protected ServerDominguez provenance public key is not configured" >&2
+            exit 77
+          }
+          install -d -m 700 .local/release/protected-main-reuse trusted-input
+          printf '%s' "$SERVER_PROVENANCE_PUBLIC_KEY_PEM" \
+            > trusted-input/serverdominguez-provenance-public-key.pem
+          chmod 600 trusted-input/serverdominguez-provenance-public-key.pem
+          printf '%s' "$REQUEST_B64" | base64 --decode \
+            > .local/release/protected-main-reuse/server-request.json
+          chmod 600 .local/release/protected-main-reuse/server-request.json
+          actual_sha="$(sha256sum .local/release/protected-main-reuse/server-request.json | cut -d' ' -f1)"
+          [[ "$actual_sha" == "$REQUEST_SHA256" ]] || {
+            echo "ServerDominguez activation request digest mismatch" >&2
+            exit 64
+          }
+          node trusted-tooling/scripts/protected-main-reuse-activation.mjs \
+            validate-server-request \
+            --source-root trusted-tooling \
+            --request .local/release/protected-main-reuse/server-request.json \
+            --server-public-key trusted-input/serverdominguez-provenance-public-key.pem \
+            > .local/release/protected-main-reuse/validated-request.json
+          node - <<'NODE'
+          const request = require('./.local/release/protected-main-reuse/validated-request.json');
+          if (request.requestId !== process.env.REQUEST_ID) throw new Error('request id mismatch');
+          if (request.entries.at(-1)?.runtimeSha !== process.env.RUNTIME_SHA) {
+            throw new Error('activation runtime SHA must be the fifth production comparison');
+          }
+          NODE
+
+      - name: Fetch independent protected GitHub provenance for reuse activation
+        if: ${{ inputs.evidence_kind == 'protected_main_reuse_activation' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          install -d -m 700 trusted-input/protected-main-reuse-github
+          jq -r '.entries[] | [.runtimeSha, .mainCi.runId, .releaseCi.runId] | @tsv' \
+            .local/release/protected-main-reuse/validated-request.json \
+            > trusted-input/protected-main-reuse-github/runs.tsv
+          index=0
+          while IFS=$'\t' read -r runtime_sha main_run_id release_run_id; do
+            entry="trusted-input/protected-main-reuse-github/$index"
+            install -d -m 700 "$entry"
+            printf '%s' "$runtime_sha" > "$entry/runtime-sha"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$main_run_id" > "$entry/main-run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$main_run_id/artifacts?per_page=100" \
+              > "$entry/main-artifacts.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_run_id" > "$entry/release-run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_run_id/artifacts?per_page=100" \
+              > "$entry/release-artifacts.json"
+            index=$((index + 1))
+          done < trusted-input/protected-main-reuse-github/runs.tsv
+          [[ "$index" -eq 5 ]] || exit 64
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const base = 'trusted-input/protected-main-reuse-github';
+          const entries = Array.from({ length: 5 }, (_, index) => {
+            const directory = path.join(base, String(index));
+            return {
+              runtimeSha: fs.readFileSync(path.join(directory, 'runtime-sha'), 'utf8'),
+              main: {
+                run: JSON.parse(fs.readFileSync(path.join(directory, 'main-run.json'))),
+                artifacts: JSON.parse(fs.readFileSync(path.join(directory, 'main-artifacts.json'))),
+              },
+              release: {
+                run: JSON.parse(fs.readFileSync(path.join(directory, 'release-run.json'))),
+                artifacts: JSON.parse(fs.readFileSync(path.join(directory, 'release-artifacts.json'))),
+              },
+            };
+          });
+          fs.writeFileSync(
+            '.local/release/protected-main-reuse/github-provenance.json',
+            `${JSON.stringify({
+              schema: 'nexus.protected-main-reuse-github-provenance.v1',
+              repository: process.env.GITHUB_REPOSITORY,
+              entries,
+            }, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+
       - name: Sign protected operational evidence
         env:
           SIGNING_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
@@ -175,7 +268,17 @@ jobs:
                   --expect-sha "$RUNTIME_SHA" \
                   --release-gate \
                   --max-age-days 30 \
-                  --json
+                --json
+              ;;
+            protected_main_reuse_activation)
+              NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM="$SIGNING_PRIVATE_KEY_PEM" \
+                node trusted-tooling/scripts/protected-main-reuse-activation.mjs issue \
+                  --source-root trusted-tooling \
+                  --request .local/release/protected-main-reuse/server-request.json \
+                  --server-public-key trusted-input/serverdominguez-provenance-public-key.pem \
+                  --github-evidence .local/release/protected-main-reuse/github-provenance.json \
+                  --repository "$GITHUB_REPOSITORY" \
+                  --output .local/release/protected-main-reuse/activation.json
               ;;
             *)
               echo "unsupported operational evidence kind" >&2
@@ -208,6 +311,16 @@ jobs:
             --max-age-days 30 \
             --json
 
+      - name: Validate signed protected-main reuse activation
+        if: ${{ inputs.evidence_kind == 'protected_main_reuse_activation' }}
+        run: |
+          node trusted-tooling/scripts/protected-main-reuse-activation.mjs \
+            validate-activation \
+            --source-root trusted-tooling \
+            --activation .local/release/protected-main-reuse/activation.json \
+            --release-public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
+            --repository "$GITHUB_REPOSITORY"
+
       - name: Upload signed staging attestation
         if: ${{ inputs.evidence_kind == 'staging_attestation' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -224,6 +337,16 @@ jobs:
         with:
           name: rollback-drill-${{ inputs.request_id }}
           path: .local/release/rollback-drill/rollback-drill.json
+          include-hidden-files: true
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload signed protected-main reuse activation
+        if: ${{ inputs.evidence_kind == 'protected_main_reuse_activation' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: protected-main-reuse-activation-${{ inputs.request_id }}
+          path: .local/release/protected-main-reuse/activation.json
           include-hidden-files: true
           retention-days: 90
           if-no-files-found: error

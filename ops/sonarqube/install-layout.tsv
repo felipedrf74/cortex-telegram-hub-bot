@@ -13,7 +13,12 @@ scripts/quality-sonar-health.sh	/usr/local/sbin/quality-sonar-health	root:root	0
 scripts/quality-sonar-preflight.sh	/usr/local/sbin/quality-sonar-preflight	root:root	0755
 scripts/ollama-observation-collector.mjs	/usr/local/sbin/nexus-ollama-observation-collector.mjs	root:root	0700
 scripts/ollama-soak-evidence.mjs	/usr/local/sbin/ollama-soak-evidence.mjs	root:root	0700
+scripts/ollama-large-model-cleanup.mjs	/usr/local/sbin/nexus-ollama-large-model-cleanup.mjs	root:root	0700
+scripts/ollama-zero-swap-transition.mjs	/usr/local/sbin/nexus-ollama-zero-swap-transition.mjs	root:root	0700
+scripts/ollama-service-envelope-check.mjs	/usr/local/sbin/nexus-ollama-service-envelope-check.mjs	root:root	0700
+scripts/lib/ollama-service-envelope.mjs	/usr/local/sbin/lib/ollama-service-envelope.mjs	root:root	0700
 scripts/quality-sonar-start-evidence.mjs	/usr/local/sbin/quality-sonar-start-evidence.mjs	root:root	0755
+scripts/quality-sonar-live-ollama-state.mjs	/usr/local/sbin/quality-sonar-live-ollama-state	root:root	0755
 scripts/quality-sonar-latency-gate.mjs	/usr/local/sbin/quality-sonar-latency-gate.mjs	root:root	0755
 scripts/quality-sonar-backup.sh	/usr/local/sbin/quality-sonar-backup	root:root	0755
 scripts/quality-sonar-restore-drill.sh	/usr/local/sbin/quality-sonar-restore-drill	root:root	0755

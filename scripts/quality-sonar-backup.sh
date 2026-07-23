@@ -45,6 +45,7 @@ done
   && [[ "$SONAR_BACKUP_S3_PREFIX" != *..* ]] \
   && [[ "$SONAR_BACKUP_S3_PREFIX" != //* ]] || { echo "Invalid S3 prefix" >&2; exit 1; }
 [[ "$SONAR_DB_NAME" =~ ^[A-Za-z0-9_]+$ && "$SONAR_DB_USER" =~ ^[A-Za-z0-9_]+$ ]] || { echo "Invalid Sonar database identity" >&2; exit 1; }
+[[ "$SONAR_BACKUP_AGE_RECIPIENT" =~ ^age1[0-9a-z]{58}$ ]] || { echo "Invalid native age recipient" >&2; exit 1; }
 
 for command in docker age aws sha256sum flock; do
   command -v "$command" >/dev/null 2>&1 || { echo "$command is required for Sonar backup" >&2; exit 1; }
@@ -52,7 +53,19 @@ done
 [ -f "$STACK_DIR/compose.yaml" ] && [ -f "$STACK_DIR/images.lock.env" ] || { echo "Sonar stack files are missing" >&2; exit 1; }
 
 if [ "$ACTION" = verify ]; then
-  echo "sonar_backup_config_ok encryption=age transport=s3-compatible retention=7-daily,4-weekly"
+  probe_dir="$(mktemp -d)"
+  cleanup_probe() { rm -rf "$probe_dir"; }
+  trap cleanup_probe EXIT
+  chmod 0700 "$probe_dir"
+  printf 'nexus-sonarqube-backup-readiness\n' >"$probe_dir/probe.txt"
+  age --encrypt --recipient "$SONAR_BACKUP_AGE_RECIPIENT" \
+    --output "$probe_dir/probe.age" "$probe_dir/probe.txt"
+  [ -s "$probe_dir/probe.age" ] || { echo "age encryption readiness probe failed" >&2; exit 1; }
+  aws --cli-connect-timeout 5 --cli-read-timeout 10 \
+      --endpoint-url "$SONAR_BACKUP_S3_ENDPOINT" \
+      --region "${AWS_REGION:-us-east-1}" \
+      s3api head-bucket --bucket "$SONAR_BACKUP_S3_BUCKET" >/dev/null
+  echo "sonar_backup_config_ok encryption=age transport=s3-compatible remoteBucket=head-ok retention=7-daily,4-weekly"
   exit 0
 fi
 

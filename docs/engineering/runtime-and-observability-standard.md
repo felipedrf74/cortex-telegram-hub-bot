@@ -324,6 +324,10 @@ When production is degraded:
    `api_usage` counts by provider/model with fail-closed pricing/local-unit
    persistence. The production window must reference and revalidate the prior
    staging result; the zero-swap window must bind the exact cleanup result.
+   The fixed envelope and root-owned operational tools must be installed before
+   the first staging observation. Sonar authorization must recheck the live
+   sole retained tag/digest and effective envelope immediately before Compose,
+   after verifying encrypted off-host backup readiness.
 7. **Captured coach evaluations are local-only by default.** A cloud comparison
    requires an explicit cloud mode plus the per-run
    `--operator-authorize-private-cloud` acknowledgement. The script classifies

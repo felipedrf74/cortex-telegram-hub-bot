@@ -126,17 +126,20 @@ describe('governed test tier partitions', () => {
       })),
     }));
 
-    execFileSync(process.execPath, [
+    const inventoryRun = spawnSync(process.execPath, [
       'scripts/test-inventory.mjs',
       '--timings', reportPath,
+      '--timing-history-dir', path.join(temp, 'missing-history'),
       '--timing-scope', 'evaluate',
       '--enforce-evidence',
       '--output', outputPath,
-    ], { cwd: process.cwd(), env: cleanGitEnv() });
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(inventoryRun.status).toBe(0);
+    expect(inventoryRun.stderr).toContain('Timing history advisory');
 
     const inventory = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
     expect(inventory.summary).toMatchObject({
-      schema: 'nexus.test-inventory.v3',
+      schema: 'nexus.test-inventory.v4',
       testFiles: files.length,
       deterministicFiles: partitions.deterministic.length,
       evaluationFiles: partitions.evaluation.length,
@@ -149,6 +152,15 @@ describe('governed test tier partitions', () => {
           percent: 100,
           complete: true,
           percentileQualifiedFiles: 0,
+          history: {
+            requested: true,
+            status: 'unavailable',
+            candidateArtifacts: 0,
+            compatibleArtifacts: 0,
+            selectedArtifacts: 0,
+            maximumArtifacts: 4,
+            maximumSamplesPerFile: 5,
+          },
         },
         uniqueCoverage: { collectionStatus: 'not-collected', observedFiles: 0, percent: 0 },
         lastFailure: { collectionStatus: 'not-collected', observedFiles: 0, percent: 0 },
@@ -170,6 +182,312 @@ describe('governed test tier partitions', () => {
       lastFailure: null,
       lastFailureEvidence: 'not-collected',
     });
+  });
+
+  it('qualifies p50/p95 from the latest five exact-compatible nightly samples only', {
+    timeout: 30_000,
+  }, () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-history-'));
+    tempRoots.push(temp);
+    const policy = loadTestPolicy();
+    const partitions = partitionTestFiles(walkTestFiles(), policy);
+    const reportPath = path.join(temp, 'results.json');
+    const templatePath = path.join(temp, 'template.json');
+    const outputPath = path.join(temp, 'inventory.json');
+    const historyRoot = path.join(temp, 'history');
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv(),
+    }).trim();
+    const writeReport = (runtimeMs: number) => {
+      fs.writeFileSync(reportPath, JSON.stringify({
+        success: true,
+        testResults: partitions.evaluation.map((file, index) => ({
+          name: path.resolve(file),
+          startTime: index * 100,
+          endTime: index * 100 + runtimeMs,
+        })),
+      }));
+    };
+    const ciEnv = (runId: string) => cleanGitEnv({
+      GITHUB_WORKFLOW: 'Nightly — Full regression + coverage',
+      GITHUB_RUN_ID: runId,
+      GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_SHA: headSha,
+    });
+
+    writeReport(5);
+    execFileSync(process.execPath, [
+      'scripts/test-inventory.mjs',
+      '--timings', reportPath,
+      '--timing-scope', 'evaluate',
+      '--output', templatePath,
+    ], { cwd: process.cwd(), env: ciEnv('100') });
+    const template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+    const now = Date.now();
+    const writeHistory = (
+      directory: string,
+      runId: string,
+      runtimeMs: number,
+      ageDays: number,
+      mutate: (inventory: any) => void = () => {},
+    ) => {
+      const inventory = structuredClone(template);
+      inventory.summary.generatedAt = new Date(now - ageDays * 86_400_000).toISOString();
+      inventory.summary.timingIdentity.source.runId = runId;
+      for (const record of inventory.records) {
+        if (record.tiers.includes('evaluate')) record.runtimeMs = runtimeMs;
+      }
+      mutate(inventory);
+      const destination = path.join(historyRoot, directory);
+      fs.mkdirSync(destination, { recursive: true });
+      fs.writeFileSync(path.join(destination, 'test-inventory.json'), JSON.stringify(inventory));
+    };
+
+    writeHistory('run-104', '104', 40, 1);
+    writeHistory('run-103', '103', 30, 2);
+    writeHistory('run-102', '102', 20, 3);
+    writeHistory('run-101', '101', 10, 4);
+    writeHistory('run-100', '100', 999, 5);
+    writeHistory('old-schema', '99', 998, 0.1, (inventory) => {
+      inventory.summary.schema = 'nexus.test-inventory.v3';
+    });
+    writeHistory('wrong-policy', '98', 997, 0.2, (inventory) => {
+      inventory.summary.timingIdentity.policyDigest = '0'.repeat(64);
+    });
+    writeHistory('wrong-toolchain', '97', 996, 0.3, (inventory) => {
+      inventory.summary.timingIdentity.toolchain.node = '0.0.0';
+    });
+    const malformedDirectory = path.join(historyRoot, 'malformed');
+    fs.mkdirSync(malformedDirectory, { recursive: true });
+    fs.writeFileSync(path.join(malformedDirectory, 'test-inventory.json'), '{');
+
+    writeReport(50);
+    const inventoryRun = spawnSync(process.execPath, [
+      'scripts/test-inventory.mjs',
+      '--timings', reportPath,
+      '--timing-history-dir', historyRoot,
+      '--timing-scope', 'evaluate',
+      '--enforce-evidence',
+      '--output', outputPath,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: ciEnv('105') });
+    expect(inventoryRun.status).toBe(0);
+    expect(inventoryRun.stderr).not.toContain('Timing history advisory');
+
+    const inventory = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+    expect(inventory.summary.evidenceCompleteness.timing).toMatchObject({
+      minimumSamplesForPercentiles: 5,
+      maximumSamplesForPercentiles: 5,
+      percentileQualifiedFiles: partitions.evaluation.length,
+      history: {
+        status: 'window-qualified',
+        candidateArtifacts: 9,
+        compatibleArtifacts: 5,
+        selectedArtifacts: 4,
+        unusedCompatibleArtifacts: 1,
+        rejectedArtifacts: 4,
+        maximumArtifacts: 4,
+        discoveryLimits: {
+          maximumCandidates: 10,
+          maximumFileBytes: 2 * 1024 * 1024,
+          maximumDepth: 4,
+          maximumEntries: 64,
+        },
+        rejectionReasons: {
+          'inventory-schema': 1,
+          'test-policy-digest': 1,
+          toolchain: 1,
+          'malformed-json': 1,
+        },
+      },
+    });
+    const evaluationRecord = inventory.records.find((record: { file: string }) => (
+      record.file === partitions.evaluation[0]
+    ));
+    expect(evaluationRecord).toMatchObject({
+      runtimeMs: 50,
+      runtimeSampleCount: 5,
+      runtimeP50Ms: 30,
+      runtimeP95Ms: 50,
+      runtimeEvidence: 'percentiles-qualified',
+    });
+  });
+
+  it('fails timing history closed on candidate over-count, oversize files, and symlinks', {
+    timeout: 30_000,
+  }, () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-bounds-'));
+    tempRoots.push(temp);
+    const partitions = partitionTestFiles(walkTestFiles(), loadTestPolicy());
+    const reportPath = path.join(temp, 'results.json');
+    fs.writeFileSync(reportPath, JSON.stringify({
+      success: true,
+      testResults: partitions.evaluation.map((file, index) => ({
+        name: path.resolve(file),
+        startTime: index * 100,
+        endTime: index * 100 + 25,
+      })),
+    }));
+    const runInventory = (historyRoot: string, label: string) => {
+      const outputPath = path.join(temp, `${label}.json`);
+      const result = spawnSync(process.execPath, [
+        'scripts/test-inventory.mjs',
+        '--timings', reportPath,
+        '--timing-history-dir', historyRoot,
+        '--timing-scope', 'evaluate',
+        '--enforce-evidence',
+        '--output', outputPath,
+      ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain('Timing history advisory');
+      return JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+        .summary.evidenceCompleteness.timing.history;
+    };
+
+    const overCountRoot = path.join(temp, 'over-count');
+    for (let index = 0; index < 11; index += 1) {
+      const directory = path.join(overCountRoot, String(index));
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, 'test-inventory.json'), '{}');
+    }
+    expect(runInventory(overCountRoot, 'over-count')).toMatchObject({
+      status: 'unavailable',
+      candidateArtifacts: 11,
+      selectedArtifacts: 0,
+      discoveryFailure: 'candidate-limit',
+      rejectionReasons: { 'candidate-limit': 1 },
+    });
+
+    const oversizeRoot = path.join(temp, 'oversize', 'run');
+    fs.mkdirSync(oversizeRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(oversizeRoot, 'test-inventory.json'),
+      Buffer.alloc(2 * 1024 * 1024 + 1, 0x20),
+    );
+    expect(runInventory(path.dirname(oversizeRoot), 'oversize')).toMatchObject({
+      status: 'unavailable',
+      candidateArtifacts: 1,
+      rejectedArtifacts: 1,
+      rejectionReasons: { 'inventory-size': 1 },
+    });
+
+    const symlinkRoot = path.join(temp, 'symlink', 'run');
+    fs.mkdirSync(symlinkRoot, { recursive: true });
+    const symlinkTarget = path.join(temp, 'symlink-target.json');
+    fs.writeFileSync(symlinkTarget, '{}');
+    fs.symlinkSync(symlinkTarget, path.join(symlinkRoot, 'test-inventory.json'));
+    expect(runInventory(path.dirname(symlinkRoot), 'symlink')).toMatchObject({
+      status: 'unavailable',
+      candidateArtifacts: 1,
+      rejectedArtifacts: 1,
+      rejectionReasons: { 'candidate-type': 1 },
+    });
+  });
+
+  it('accepts exactly one bounded run-bound artifact and rejects ambiguity or oversize metadata', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-artifact-'));
+    tempRoots.push(temp);
+    const artifactsPath = path.join(temp, 'artifacts.json');
+    const runSelector = (artifacts: unknown[], label: string) => {
+      fs.writeFileSync(artifactsPath, JSON.stringify({ artifacts }));
+      return spawnSync(process.execPath, [
+        'scripts/test-timing-history-artifact.mjs', 'select',
+        '--run-id', '123',
+        '--artifacts', artifactsPath,
+        '--output', path.join(temp, `${label}.json`),
+      ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    };
+    const validArtifact = {
+      id: 456,
+      name: 'test-inventory-123-2',
+      expired: false,
+      size_in_bytes: 1024,
+      workflow_run: { id: 123 },
+    };
+
+    const accepted = runSelector([
+      { ...validArtifact, id: 455, name: 'unrelated-artifact' },
+      validArtifact,
+      { ...validArtifact, id: 454, expired: true, name: 'test-inventory-123-1' },
+    ], 'accepted');
+    expect(accepted.status).toBe(0);
+    expect(accepted.stdout.trim()).toBe('456');
+    expect(JSON.parse(fs.readFileSync(path.join(temp, 'accepted.json'), 'utf8'))).toEqual({
+      artifactId: 456,
+      name: 'test-inventory-123-2',
+      runId: '123',
+      runAttempt: 2,
+      archiveBytes: 1024,
+    });
+
+    const ambiguous = runSelector([
+      validArtifact,
+      { ...validArtifact, id: 457, name: 'test-inventory-123-3' },
+    ], 'ambiguous');
+    expect(ambiguous.status).not.toBe(0);
+    expect(ambiguous.stderr).toContain('exactly one non-expired timing artifact');
+
+    const oversized = runSelector([
+      { ...validArtifact, size_in_bytes: 5 * 1024 * 1024 + 1 },
+    ], 'oversized');
+    expect(oversized.status).not.toBe(0);
+    expect(oversized.stderr).toContain('invalid or oversized');
+
+    const injectedRunId = spawnSync(process.execPath, [
+      'scripts/test-timing-history-artifact.mjs', 'select',
+      '--run-id', '123|.*',
+      '--artifacts', artifactsPath,
+      '--output', path.join(temp, 'injected-run-id.json'),
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(injectedRunId.status).not.toBe(0);
+    expect(injectedRunId.stderr).toContain('run ID must be a positive integer');
+  });
+
+  it('extracts only a bounded canonical inventory document from the artifact archive', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-extract-'));
+    tempRoots.push(temp);
+    const archiveRoot = path.join(temp, 'archive-root');
+    const inventoryDirectory = path.join(archiveRoot, 'test-inventory');
+    fs.mkdirSync(inventoryDirectory, { recursive: true });
+    const sourceInventory = path.join(inventoryDirectory, 'test-inventory.json');
+    const archivePath = path.join(temp, 'artifact.zip');
+    fs.writeFileSync(sourceInventory, JSON.stringify({ summary: {}, records: [] }));
+    execFileSync('zip', ['-q', '-r', archivePath, 'test-inventory'], {
+      cwd: archiveRoot,
+      env: cleanGitEnv(),
+    });
+    const outputPath = path.join(temp, 'extracted', 'test-inventory.json');
+    const extracted = spawnSync(process.execPath, [
+      'scripts/test-timing-history-artifact.mjs', 'extract',
+      '--archive', archivePath,
+      '--output', outputPath,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(extracted.status).toBe(0);
+    expect(fs.lstatSync(outputPath).isFile()).toBe(true);
+    expect(fs.lstatSync(outputPath).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(fs.readFileSync(outputPath, 'utf8'))).toEqual({
+      summary: {},
+      records: [],
+    });
+
+    const oversizedRoot = path.join(temp, 'oversized-root');
+    const oversizedDirectory = path.join(oversizedRoot, 'test-inventory');
+    fs.mkdirSync(oversizedDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(oversizedDirectory, 'test-inventory.json'),
+      JSON.stringify({ summary: {}, records: [], padding: 'x'.repeat(2 * 1024 * 1024) }),
+    );
+    const oversizedArchive = path.join(temp, 'oversized.zip');
+    execFileSync('zip', ['-q', '-r', oversizedArchive, 'test-inventory'], {
+      cwd: oversizedRoot,
+      env: cleanGitEnv(),
+    });
+    const rejected = spawnSync(process.execPath, [
+      'scripts/test-timing-history-artifact.mjs', 'extract',
+      '--archive', oversizedArchive,
+      '--output', path.join(temp, 'oversized-output.json'),
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain('missing, invalid, or oversized');
   });
 
   it('keeps cold shared-runner timing advisory without hiding correctness evidence', { timeout: 30_000 }, () => {
@@ -286,6 +604,14 @@ describe('governed test tier partitions', () => {
     expect(evaluationWorkflow).toContain('npm run test:evaluate');
     expect(evaluationWorkflow).toContain('--timing-scope evaluate');
     expect(nightlyWorkflow).toContain('scripts/run-test-tier.mjs deterministic');
+    expect(nightlyWorkflow).toContain('actions: read');
+    expect(nightlyWorkflow).toContain('Download recent timing history (advisory)');
+    expect(nightlyWorkflow).toContain('[ "$run_id" != "$GITHUB_RUN_ID" ]');
+    expect(nightlyWorkflow).toContain('actions/runs/$run_id/artifacts?per_page=100');
+    expect(nightlyWorkflow).toContain('test-timing-history-artifact.mjs select');
+    expect(nightlyWorkflow).toContain('test-timing-history-artifact.mjs extract');
+    expect(nightlyWorkflow).not.toContain('gh run download');
+    expect(nightlyWorkflow).toContain('--timing-history-dir .local/test-profile/timing-history');
     expect(nightlyWorkflow).toContain('--timing-scope deterministic');
     expect(nightlyWorkflow).toContain('--timing-mode advisory');
     expect(riskGate).toContain('scripts/run-test-tier.mjs deterministic');

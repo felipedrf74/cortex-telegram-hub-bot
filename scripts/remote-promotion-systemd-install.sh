@@ -11,6 +11,8 @@ OWNER_PUBLIC_KEY_SOURCE="${2:-${NEXUS_PROMOTION_OWNER_PUBLIC_KEY_SOURCE:-}}"
 SERVICE_USER="${NEXUS_PROMOTION_SERVICE_USER:-nexus-release}"
 SERVICE_GROUP="${NEXUS_PROMOTION_SERVICE_GROUP:-nexus-release}"
 WORKER_USER="${NEXUS_PROMOTION_WORKER_USER:-dominguez}"
+SERVER_PROVENANCE_PRIVATE_KEY="${NEXUS_SERVER_PROVENANCE_PRIVATE_KEY:-/etc/nexus-release/serverdominguez-provenance-private-key.pem}"
+SERVER_PROVENANCE_PUBLIC_KEY="${NEXUS_SERVER_PROVENANCE_PUBLIC_KEY:-/etc/nexus-release/serverdominguez-provenance-public-key.pem}"
 
 [ -n "$OWNER_PUBLIC_KEY_SOURCE" ] || { echo "owner promotion public key path is required" >&2; exit 64; }
 [ -f "$OWNER_PUBLIC_KEY_SOURCE" ] && [ ! -L "$OWNER_PUBLIC_KEY_SOURCE" ] || {
@@ -19,7 +21,7 @@ WORKER_USER="${NEXUS_PROMOTION_WORKER_USER:-dominguez}"
 }
 id "$WORKER_USER" >/dev/null 2>&1 || { echo "promotion worker user is missing" >&2; exit 1; }
 [ "$WORKER_USER" = dominguez ] || { echo "promotion worker must be the dominguez application identity" >&2; exit 1; }
-for command in flock timeout runuser useradd groupadd getent visudo node systemd-tmpfiles stat; do
+for command in flock timeout runuser useradd groupadd getent visudo node openssl sha256sum systemd-tmpfiles stat; do
   command -v "$command" >/dev/null 2>&1 || { echo "$command is required for promotion bootstrap" >&2; exit 1; }
 done
 
@@ -80,6 +82,23 @@ install -o root -g root -m 755 \
   "$SOURCE_ROOT/scripts/remote-promotion-control.sh" \
   /usr/local/sbin/nexus-release-promotion-control
 install -o root -g root -m 644 "$OWNER_PUBLIC_KEY_SOURCE" /etc/nexus-release/owner-promotion-public-key.pem
+if [ ! -e "$SERVER_PROVENANCE_PRIVATE_KEY" ]; then
+  provenance_tmp="$(mktemp)"
+  openssl genpkey -algorithm ED25519 -out "$provenance_tmp"
+  install -o root -g root -m 600 "$provenance_tmp" "$SERVER_PROVENANCE_PRIVATE_KEY"
+  rm -f "$provenance_tmp"
+fi
+[ -f "$SERVER_PROVENANCE_PRIVATE_KEY" ] && [ ! -L "$SERVER_PROVENANCE_PRIVATE_KEY" ] \
+  && [ "$(stat -c '%U:%G:%a' "$SERVER_PROVENANCE_PRIVATE_KEY")" = root:root:600 ] || {
+  echo "ServerDominguez provenance private key ownership or mode is unsafe" >&2
+  exit 1
+}
+provenance_public_tmp="$(mktemp)"
+openssl pkey -in "$SERVER_PROVENANCE_PRIVATE_KEY" -pubout -out "$provenance_public_tmp"
+install -o root -g root -m 644 "$provenance_public_tmp" "$SERVER_PROVENANCE_PUBLIC_KEY"
+rm -f "$provenance_public_tmp"
+node -e 'const {createPublicKey}=require("crypto");const fs=require("fs");createPublicKey(fs.readFileSync(process.argv[1]));' \
+  "$SERVER_PROVENANCE_PUBLIC_KEY"
 install -o root -g root -m 644 \
   "$SOURCE_ROOT/scripts/systemd/nexus-release-promotion@.service" \
   /etc/systemd/system/nexus-release-promotion@.service
@@ -102,6 +121,7 @@ trap cleanup EXIT
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control launch *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control status *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control recover *\n' "$WORKER_USER"
+  printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control retry-escrow *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-control fetch *\n' "$WORKER_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-worker-control run *\n' "$SERVICE_USER"
   printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/nexus-release-promotion-worker-control recover *\n' "$SERVICE_USER"
@@ -112,5 +132,6 @@ install -o root -g root -m 440 "$sudoers_tmp" /etc/sudoers.d/nexus-release-promo
 
 systemctl daemon-reload
 systemctl enable nexus-release-promotion-recovery.service
-printf '{"ok":true,"controlVersion":"nexus-release-promotion-control.v2","serviceUser":"%s","workerUser":"%s"}\n' \
-  "$SERVICE_USER" "$WORKER_USER"
+provenance_public_sha256="$(sha256sum "$SERVER_PROVENANCE_PUBLIC_KEY" | cut -d' ' -f1)"
+printf '{"ok":true,"controlVersion":"nexus-release-promotion-control.v2","serviceUser":"%s","workerUser":"%s","serverProvenancePublicKey":"%s","serverProvenancePublicKeySha256":"%s"}\n' \
+  "$SERVICE_USER" "$WORKER_USER" "$SERVER_PROVENANCE_PUBLIC_KEY" "$provenance_public_sha256"

@@ -293,15 +293,44 @@ NODE
     if ! "$SYSTEMCTL_BIN" is-active --quiet "$(unit_name "$transaction_id")"; then "$SYSTEMCTL_BIN" start --no-block "$(unit_name "$transaction_id")"; fi
     printf '{"ok":true,"transactionId":"%s","decision":"recover"}\n' "$transaction_id"
     ;;
+  retry-escrow)
+    transaction_id="${1:-}"; validate_id "$transaction_id"; ensure_state_root; acquire_control_lock; clear_terminal_active
+    [ -f "$STATE_ROOT/active.json" ] || { echo "no promotion transaction is active" >&2; exit 75; }
+    IFS=$'\t' read -r active_id request_sha < <(read_active_fields)
+    [ "$active_id" = "$transaction_id" ] || {
+      echo "escrow retry target is not the authoritative active transaction" >&2
+      exit 73
+    }
+    [ "$(journal_status "$transaction_id" "$request_sha" 2>/dev/null || true)" = escrow_pending ] || {
+      echo "promotion transaction is not awaiting rollback escrow" >&2
+      exit 75
+    }
+    unit="$(unit_name "$transaction_id")"
+    if "$SYSTEMCTL_BIN" is-active --quiet "$unit"; then
+      state=active
+    else
+      "$SYSTEMCTL_BIN" reset-failed "$unit" >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" start --no-block "$unit"
+      state=relaunched
+    fi
+    printf '{"ok":true,"transactionId":"%s","state":"%s","retry":"rollback-escrow"}\n' \
+      "$transaction_id" "$state"
+    ;;
   recover-all)
     ensure_state_root; acquire_control_lock; clear_terminal_active
     [ -f "$STATE_ROOT/active.json" ] || exit 0
     IFS=$'\t' read -r transaction_id request_sha < <(read_active_fields); validate_id "$transaction_id"
     active_matches "$transaction_id" "$request_sha" || { echo "active promotion identity changed during recovery" >&2; exit 1; }
     status="$(journal_status "$transaction_id" "$request_sha" 2>/dev/null || true)"
-    # Candidate availability outranks network escrow at boot. The pending
-    # exact escrow remains active and blocks another release until retried.
-    [ "$status" != escrow_pending ] || exit 0
+    # Candidate availability outranks network escrow at boot. Resume only the
+    # pending exact escrow transaction; never roll back the already healthy
+    # candidate and never repeat the cutover.
+    if [ "$status" = escrow_pending ]; then
+      unit="$(unit_name "$transaction_id")"
+      "$SYSTEMCTL_BIN" reset-failed "$unit" >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" start --no-block "$unit"
+      exit 0
+    fi
     write_recovery_control "$transaction_id"
     "$SYSTEMCTL_BIN" reset-failed "$(unit_name "$transaction_id")" >/dev/null 2>&1 || true
     "$SYSTEMCTL_BIN" start "$(unit_name "$transaction_id")"
@@ -325,7 +354,7 @@ NODE
     cat "$file"
     ;;
   *)
-    echo "Usage: nexus-release-promotion-control <version|assert-idle|prepare-runtime-target|seal-runtime|launch|status|recover|recover-all|fetch>" >&2
+    echo "Usage: nexus-release-promotion-control <version|assert-idle|prepare-runtime-target|seal-runtime|launch|status|recover|retry-escrow|recover-all|fetch>" >&2
     exit 64
     ;;
 esac
