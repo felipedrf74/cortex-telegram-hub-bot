@@ -32,6 +32,10 @@ function sha256(input) {
   return createHash('sha256').update(input).digest('hex');
 }
 
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function assertCanonicalDirectory(directory, label) {
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory) {
@@ -109,7 +113,7 @@ function treeIdentity(relativeRoot) {
     }
   };
   walk(absoluteRoot);
-  entries.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) => compareCodeUnits(left.path, right.path));
   return {
     path: relativeRoot,
     digest: sha256(canonicalJson(entries)),

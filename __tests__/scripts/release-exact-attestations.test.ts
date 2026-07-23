@@ -79,6 +79,42 @@ describe('installed dependency tree attestation', () => {
       .toEqual(b.identity.trees.map((tree: { digest: string }) => tree.digest));
   });
 
+  it('uses locale-independent code-unit ordering for installed tree identities', () => {
+    const root = runtimeFixture();
+    const hyphenBody = Buffer.from('hyphen\n');
+    const underscoreBody = Buffer.from('underscore\n');
+    fs.writeFileSync(path.join(root, 'node_modules/pkg/fastapi_0.js'), underscoreBody);
+    fs.writeFileSync(path.join(root, 'node_modules/pkg/fastapi-0.js'), hyphenBody);
+
+    const attestation = writeInstalled(root);
+    const indexBody = fs.readFileSync(path.join(root, 'node_modules/pkg/index.js'));
+    const expectedEntries = [
+      {
+        path: 'pkg/fastapi-0.js',
+        type: 'file',
+        size: hyphenBody.length,
+        executable: false,
+        sha256: sha256(hyphenBody),
+      },
+      {
+        path: 'pkg/fastapi_0.js',
+        type: 'file',
+        size: underscoreBody.length,
+        executable: false,
+        sha256: sha256(underscoreBody),
+      },
+      {
+        path: 'pkg/index.js',
+        type: 'file',
+        size: indexBody.length,
+        executable: false,
+        sha256: sha256(indexBody),
+      },
+    ];
+
+    expect(attestation.identity.trees[0].digest).toBe(sha256(canonicalJson(expectedEntries)));
+  });
+
   it('rejects installed-tree drift before promotion', () => {
     const root = runtimeFixture();
     const attestation = writeInstalled(root);

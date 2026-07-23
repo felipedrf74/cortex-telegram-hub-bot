@@ -541,6 +541,8 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(runnerSource).toContain('rollback database digest does not match stopped-state evidence');
     expect(runnerSource).toContain('unsupported rollback archive entry');
     expect(attestorSource).toContain('installed dependency symlink escapes the runtime');
+    expect(attestorSource).toContain('compareCodeUnits');
+    expect(attestorSource).not.toContain('localeCompare');
     expect(attestorSource).toContain('assertSealedPermissions');
     expect(attestorSource).toContain('fs.chmodSync(base, 0o1770)');
     expect(attestorSource).toContain("fs.chmodSync(path.join(base, 'releases'), 0o750)");

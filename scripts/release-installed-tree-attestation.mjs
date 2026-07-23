@@ -23,6 +23,10 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function fileDigest(relative) {
   const file = path.join(root, relative);
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
@@ -61,7 +65,7 @@ function treeIdentity(relativeRoot) {
     }
   };
   walk(absoluteRoot);
-  entries.sort((a, b) => a.path.localeCompare(b.path));
+  entries.sort((a, b) => compareCodeUnits(a.path, b.path));
   const totalBytes = entries.reduce((sum, entry) => sum + (entry.size ?? 0), 0);
   return {
     path: relativeRoot,
