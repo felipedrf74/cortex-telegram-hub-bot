@@ -411,6 +411,56 @@
     ],
   "cleanupMappings": [
     {
+      "test": "__tests__/services/dispatch-privacy-e2e.test.ts",
+      "replacementTests": [
+        "__tests__/services/dispatch-privacy-e2e.test.ts"
+      ],
+      "sources": [
+        "src/services/provider-fallback.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/provider-fallback.ts:1657-1667",
+          "anchor": "model: selection.model,",
+          "behavior": "Approved public larger-reasoning dispatch uses the provider-native structured capability with the exact gated model and no tool surface.",
+          "replacementTest": "__tests__/services/dispatch-privacy-e2e.test.ts",
+          "ownerTestName": "small-only production dispatch narrows a generic cloud completion to the LocalReasoningResult contract",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Replaced the legacy generic callDomain forwarding assertion with provider-native structured generation, exact approved-model binding, no-tools enforcement, schema validation, and private-workload fail-closed coverage."
+    },
+    {
+      "test": "__tests__/services/ollama-provider.test.ts",
+      "replacementTests": [
+        "__tests__/services/ollama-provider.test.ts"
+      ],
+      "sources": [
+        "src/services/ollama-provider.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/ollama-provider.ts:157-159",
+          "anchor": "capability: 'local_workload_role_not_allowed'",
+          "behavior": "A disallowed or missing normal-runtime Ollama workload role fails with the explicit unsupported-capability identity before inference.",
+          "replacementTest": "__tests__/services/ollama-provider.test.ts",
+          "ownerTestName": "OllamaProvider — classify fails closed for live classification because only classifier shadow owns a local role",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Replaced large-model and unrestricted local-classification assumptions with the retained 3B model identity and explicit small-only workload-role enforcement."
+    },
+    {
+      "test": "__tests__/services/privacy-redacted-flow.test.ts",
+      "replacementTests": [
+        "__tests__/services/privacy-redacted-flow.test.ts"
+      ],
+      "sources": [
+        "src/services/cloud-reasoning-gate.ts"
+      ],
+      "reason": "Replaced the implicit non-private default with an explicit privacy-classification requirement while retaining public sent-raw and private fail-closed coverage."
+    },
+    {
       "test": "__tests__/api/chat-script-shortcut-response.test.ts",
       "replacementTests": [
         "__tests__/api/chat-script-shortcut-response.test.ts",
