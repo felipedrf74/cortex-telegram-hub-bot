@@ -209,6 +209,13 @@ readiness; candidate-provided verification code cannot authorize itself. The
 owner-signed request binds both the predecessor and candidate artifact and
 installed-runtime digests.
 
+Before sealing runtimes, arming recovery, or allowing the worker to reach PM2,
+the root broker runs the installed application-DR tool's bounded
+`--verify-config` check. Missing tooling, an unsafe or invalid root-only config,
+or incomplete local encryption/backup prerequisites terminates the journal as
+`failed_before_stop`; the existing post-soak upload still provides the
+authoritative exact rollback-escrow confirmation.
+
 Root records a wall timestamp, Linux boot ID, and `/proc/uptime` monotonic start
 before arming recovery. Candidate availability has a 60-second boundary; a
 failure uses only the remainder of the 120-second outage-to-healthy budget for
@@ -225,6 +232,31 @@ that network-only state. An explicit `recover <id>` is different: it persists
 the recovery decision and restores the exact predecessor even from
 `escrow_pending`. Local rollback pruning runs as `dominguez`, never root, and
 only after the exact encrypted plaintext digest is confirmed off-host.
+
+The 30-day rollback gate accepts only an exact signed
+`nexus.rollback-drill.v1` envelope. After completing the isolated dry-run
+restore, database-integrity check, and authenticated health check, record their
+non-secret machine result as a `nexus.rollback-drill-payload.v1` request under
+the ignored release-evidence tree. The payload is an exact, bounded schema and
+must bind both the restored backup SHA-256 and the retained machine-evidence
+bundle SHA-256; free-form notes, logs, credentials, and unknown fields are
+rejected. Request its protected signature with:
+
+```bash
+scripts/request-rollback-drill-signature.sh \
+  .local/release/rollback-drill-request.json
+node scripts/rollback-drill-check.mjs validate \
+  --release-gate --max-age-days 30 --json
+```
+
+The request helper reuses `sign-staging-attestation.yml` as the single
+protected operational signer. It binds the exact request digest and target SHA,
+requires the target to be reachable from protected `main`, stops at the
+existing `release-signing` approval, then validates and atomically installs the
+mode-0600 result at `.local/release/rollback-drill-latest.json`. Signing an
+operator-authored claim does not prove a drill happened; retain the underlying
+isolated-host machine evidence and never include production rows, user content,
+credentials, or raw logs in the request.
 
 Before the first owner-authorized production use, run these three drills on an
 isolated staging host and retain machine evidence under the normal ignored

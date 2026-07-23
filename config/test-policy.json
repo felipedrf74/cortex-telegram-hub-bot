@@ -150,6 +150,12 @@
       "expires": "2026-10-15"
     },
     {
+      "file": "__tests__/scripts/trusted-release-signing.test.ts",
+      "owner": "scripts",
+      "reason": "Recomputes the protected Git test-file tree and validates exact nightly artifact identity against the real repository; coverage instrumentation and shared-runner contention can push this integrity rehearsal beyond the 10s single-sample bound.",
+      "expires": "2026-10-15"
+    },
+    {
       "file": "__tests__/integration/training-plan-create-cycle.test.ts",
       "owner": "integration",
       "reason": "End-to-end training-plan lifecycle over a real migrated database (create, revise, complete across weeks); the integration breadth is the point and exceeds the 10s single-sample bound on shared nightly runners.",

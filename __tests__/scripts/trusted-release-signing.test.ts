@@ -722,7 +722,7 @@ describe('trusted release signing boundary', () => {
     expect(() => validateRecomputedSelection(unresolved)).toThrow('unresolved dependency digest');
   });
 
-  it('validates the actual qualifying-nightly run, artifact, evidence, and Git test-file digest', () => {
+  it('validates the actual qualifying-nightly run, artifact, evidence, and Git test-file digest', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-nightly-identity-'));
     roots.push(temp);
     const actualHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();

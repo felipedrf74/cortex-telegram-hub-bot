@@ -12,6 +12,21 @@ describe('shared release/Sonar SSH mutex lifecycle', () => {
       const fixtureLock = path.join(root, 'shared-release-sonar.lock');
       fs.mkdirSync(fixtureBin);
       fs.writeFileSync(fixtureLock, '');
+      const fixtureFlock = path.join(fixtureBin, 'flock');
+      if (fs.existsSync('/usr/bin/flock')) {
+        fs.symlinkSync('/usr/bin/flock', fixtureFlock);
+      } else {
+        fs.writeFileSync(fixtureFlock, `#!/usr/bin/env python3
+import fcntl
+import sys
+
+flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if "-n" in sys.argv else 0)
+try:
+    fcntl.flock(int(sys.argv[-1]), flags)
+except BlockingIOError:
+    raise SystemExit(1)
+`, { mode: 0o755 });
+      }
       fs.writeFileSync(path.join(fixtureBin, 'ssh'), `#!/usr/bin/env bash
 set -euo pipefail
 exec 7<>"$FAKE_SHARED_MUTEX"
@@ -21,14 +36,16 @@ cat >/dev/null
 `, { mode: 0o755 });
       const gates = path.resolve('scripts/lib/release-gates.sh');
 
-      const result = spawnSync('bash', ['-c', [
-        'source "$1"',
-        'release_acquire_remote_sonar_lock fixture-host',
-        'release_cleanup_remote_sonar_lock',
-        'release_acquire_remote_sonar_lock fixture-host',
-        'release_cleanup_remote_sonar_lock',
-        "printf 'mutex_reacquired\\n'",
-      ].join('; '), 'bash', gates], {
+      const result = spawnSync('/bin/bash', ['-s', '--', gates], {
+        input: [
+          'set -euo pipefail',
+          'source "$1"',
+          'release_acquire_remote_sonar_lock fixture-host',
+          'release_cleanup_remote_sonar_lock',
+          'release_acquire_remote_sonar_lock fixture-host',
+          'release_cleanup_remote_sonar_lock',
+          "printf 'mutex_reacquired\\n'",
+        ].join('\n'),
         encoding: 'utf8',
         timeout: 3_000,
         env: {

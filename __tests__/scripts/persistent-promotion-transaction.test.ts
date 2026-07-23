@@ -33,6 +33,8 @@ describe('persistent systemd promotion transaction v2', () => {
   let authWrapper: string;
   let systemctlLog: string;
   let systemctlActive: string;
+  let drBackupBin: string;
+  let drConfig: string;
   const id = '20260722T120000Z-1234-abcdef123456';
 
   beforeEach(() => {
@@ -52,6 +54,17 @@ describe('persistent systemd promotion transaction v2', () => {
     fs.mkdirSync(bin);
     authWrapper = path.join(bin, 'promotion-auth');
     fs.writeFileSync(authWrapper, `#!/usr/bin/env bash\nexec node ${JSON.stringify(authorization)} "$@"\n`, { mode: 0o755 });
+    drBackupBin = path.join(bin, 'application-dr-backup');
+    drConfig = path.join(root, 'application-dr.env');
+    fs.writeFileSync(drConfig, 'fixture=true\n', { mode: 0o600 });
+    fs.writeFileSync(drBackupBin, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --verify-config "* ]]; then
+  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+  exit 0
+fi
+exit 64
+`, { mode: 0o755 });
     fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
@@ -147,6 +160,8 @@ exec "$@"
       NEXUS_PROMOTION_FLOCK_BIN: path.join(root, 'bin', 'flock'),
       NEXUS_PROMOTION_TIMEOUT_BIN: path.join(root, 'bin', 'timeout'),
       NEXUS_PROMOTION_RELEASE_SONAR_LOCK: path.join(root, 'release-sonar.lock'),
+      NEXUS_PROMOTION_DR_BACKUP_BIN: drBackupBin,
+      NEXUS_PROMOTION_DR_CONFIG: drConfig,
       SYSTEMCTL_LOG: systemctlLog,
       SYSTEMCTL_ACTIVE: systemctlActive,
       PATH: `${path.join(root, 'bin')}:${process.env.PATH ?? ''}`,
@@ -266,13 +281,94 @@ exec "$@"
     fs.writeFileSync(path.join(deniedBin, 'ssh'), '#!/usr/bin/env bash\nexit 75\n', { mode: 0o755 });
     const gates = path.resolve('scripts/lib/release-gates.sh');
 
-    const result = spawnSync('bash', ['-c', 'source "$1"; release_acquire_remote_sonar_lock fixture-host', 'bash', gates], {
+    const result = spawnSync('/bin/bash', ['-s', '--', gates], {
+      input: 'set -euo pipefail\nsource "$1"\nrelease_acquire_remote_sonar_lock fixture-host\n',
       encoding: 'utf8',
       env: { ...process.env, PATH: `${deniedBin}:${process.env.PATH ?? ''}`, TMPDIR: root },
     });
 
     expect(result.status).toBe(75);
     expect(result.stderr).toContain('shared remote release/Sonar mutex is unavailable');
+  });
+
+  it('fails terminally before current or worker mutation when application DR configuration is missing', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const fixture = path.join(root, 'missing-dr-fixture');
+    const previous = path.join(fixture, 'production', 'releases', 'previous-runtime');
+    const current = path.join(fixture, 'production', 'current');
+    const mutationMarker = path.join(fixture, 'worker-mutated');
+    const mutationScript = path.join(root, 'bin', 'mutation-sentinel');
+    fs.mkdirSync(previous, { recursive: true });
+    fs.symlinkSync(previous, current);
+    fs.writeFileSync(mutationScript, '#!/usr/bin/env bash\n: > "$MUTATION_MARKER"\nexit 99\n', { mode: 0o755 });
+
+    const result = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        NEXUS_PROMOTION_DR_CONFIG: path.join(root, 'missing-application-dr.env'),
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: mutationScript,
+        NEXUS_PROMOTION_TEST_ROOT: fixture,
+        MUTATION_MARKER: mutationMarker,
+      }),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('application DR configuration is unavailable');
+    expect(fs.existsSync(mutationMarker)).toBe(false);
+    expect(fs.realpathSync(current)).toBe(previous);
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'cutover-timing.json'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8'))).toMatchObject({
+      phase: 'preflight',
+      status: 'failed_before_stop',
+      message: 'application_dr_provisioning_or_config_invalid',
+    });
+  });
+
+  it('runs application DR verify-config and fails before current or worker mutation when configuration validation fails', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const fixture = path.join(root, 'invalid-dr-fixture');
+    const previous = path.join(fixture, 'production', 'releases', 'previous-runtime');
+    const current = path.join(fixture, 'production', 'current');
+    const mutationMarker = path.join(fixture, 'worker-mutated');
+    const mutationScript = path.join(root, 'bin', 'mutation-sentinel');
+    const invalidDr = path.join(root, 'bin', 'invalid-application-dr-backup');
+    const drInvocation = path.join(fixture, 'dr-invocation.log');
+    fs.mkdirSync(previous, { recursive: true });
+    fs.symlinkSync(previous, current);
+    fs.writeFileSync(mutationScript, '#!/usr/bin/env bash\n: > "$MUTATION_MARKER"\nexit 99\n', { mode: 0o755 });
+    fs.writeFileSync(invalidDr, `#!/usr/bin/env bash
+printf '%s\\n' "$*" > "$DR_INVOCATION"
+exit 42
+`, { mode: 0o755 });
+
+    const result = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        NEXUS_PROMOTION_DR_BACKUP_BIN: invalidDr,
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: mutationScript,
+        NEXUS_PROMOTION_TEST_ROOT: fixture,
+        MUTATION_MARKER: mutationMarker,
+        DR_INVOCATION: drInvocation,
+      }),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('application DR provisioning/config preflight failed');
+    expect(fs.readFileSync(drInvocation, 'utf8')).toContain(`--config ${drConfig} --verify-config`);
+    expect(fs.existsSync(mutationMarker)).toBe(false);
+    expect(fs.realpathSync(current)).toBe(previous);
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'cutover-timing.json'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8'))).toMatchObject({
+      phase: 'preflight',
+      status: 'failed_before_stop',
+      message: 'application_dr_provisioning_or_config_invalid',
+    });
   });
 
   it('blocks local rollback pruning until the exact encrypted off-host escrow is confirmed', () => {
@@ -530,6 +626,10 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(brokerSource).toContain('exec 8<>"$RELEASE_SONAR_LOCK"');
     expect(brokerSource).not.toContain('exec 8>"$RELEASE_SONAR_LOCK"');
     expect(brokerSource).toContain('AUTHORITATIVE_DIR="$TRANSACTION_DIR/state"');
+    const drPreflightIndex = brokerSource.indexOf('if ! preflight_application_dr; then');
+    expect(drPreflightIndex).toBeGreaterThan(-1);
+    expect(drPreflightIndex).toBeLessThan(brokerSource.indexOf('RECOVERY_INTENT.next'));
+    expect(brokerSource).toContain('"$DR_BACKUP_BIN" --config "$DR_CONFIG" --verify-config');
     expect(brokerSource.indexOf('RECOVERY_INTENT.next')).toBeLessThan(brokerSource.indexOf('invoke_worker worker-run'));
     expect(brokerSource.indexOf('verify_candidate_live')).toBeLessThan(brokerSource.indexOf('escrow_exact_backup'));
     expect(brokerSource).toContain('candidate_available_before_network_escrow');

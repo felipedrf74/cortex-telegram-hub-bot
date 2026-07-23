@@ -3,6 +3,7 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
+  randomBytes,
   sign as cryptoSign,
   verify as cryptoVerify,
 } from 'node:crypto';
@@ -33,6 +34,34 @@ const evidencePath = path.resolve(
 );
 const DEFAULT_MAX_AGE_DAYS = 30;
 const MAX_AGE_CEILING_DAYS = 90;
+const ENVELOPE_SCHEMA = 'nexus.rollback-drill.v1';
+const PAYLOAD_SCHEMA = 'nexus.rollback-drill-payload.v1';
+const CURRENT_SIGNING_KEY_ID = 'github-environment-release-signing-2026-07';
+const ENVELOPE_FIELDS = new Set([
+  'schema',
+  'keyId',
+  'signatureAlgorithm',
+  'payload',
+  'signature',
+]);
+const PAYLOAD_FIELDS = new Set([
+  'schema',
+  'drilledAt',
+  'result',
+  'restoreMode',
+  'dryRun',
+  'sourceVersion',
+  'targetVersion',
+  'sourceSha',
+  'targetSha',
+  'targetBackup',
+  'targetBackupSha256',
+  'machineEvidenceSha256',
+  'operator',
+  'databaseIntegrity',
+  'backupContainsDatabase',
+  'healthCheck',
+]);
 const releaseGate = hasArg('--release-gate');
 const resolvedMaxAgeDays = resolveMaxAge(
   readArg('--max-age-days', process.env.NEXUS_ROLLBACK_DRILL_MAX_AGE_DAYS || String(DEFAULT_MAX_AGE_DAYS)),
@@ -93,29 +122,48 @@ function signPayload(payload, pem = privateKeyPem()) {
   return cryptoSign(null, Buffer.from(canonicalJson(payload)), createPrivateKey(pem)).toString('base64');
 }
 
+function canonicalSignature(signature) {
+  if (typeof signature !== 'string'
+      || signature.length !== 88
+      || !/^[A-Za-z0-9+/]{86}==$/.test(signature)) {
+    return { ok: false, reason: signature ? 'signature_encoding_invalid' : 'signature_missing' };
+  }
+  try {
+    const bytes = Buffer.from(signature, 'base64');
+    if (bytes.length !== 64 || bytes.toString('base64') !== signature) {
+      return { ok: false, reason: 'signature_encoding_invalid' };
+    }
+    return { ok: true, bytes };
+  } catch {
+    return { ok: false, reason: 'signature_encoding_invalid' };
+  }
+}
+
 function verifyPayload(payload, signature, pem = publicKeyPem()) {
   if (!pem) return { ok: false, reason: 'public_key_missing' };
-  if (!signature) return { ok: false, reason: 'signature_missing' };
+  const decoded = canonicalSignature(signature);
+  if (!decoded.ok) return decoded;
   try {
-    const ok = cryptoVerify(null, Buffer.from(canonicalJson(payload)), createPublicKey(pem), Buffer.from(signature, 'base64'));
+    const ok = cryptoVerify(
+      null,
+      Buffer.from(canonicalJson(payload)),
+      createPublicKey(pem),
+      decoded.bytes,
+    );
     return ok ? { ok: true } : { ok: false, reason: 'signature_invalid' };
   } catch (error) {
     return { ok: false, reason: `signature_verify_error:${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
-function isPassing(value) {
-  return new Set(['pass', 'passed', 'success', 'succeeded']).has(String(value || '').toLowerCase());
-}
-
-function envelopeForPayload(payload) {
+function envelopeForPayload(payload, keyId) {
   const signature = signPayload(payload);
   if (!signature) {
     emit({ ok: false, evidencePath, reasons: ['private_key_missing'] }, 1);
   }
   return {
-    schema: 'nexus.rollback-drill.v1',
-    keyId: readArg('--key-id', process.env.NEXUS_RELEASE_EVIDENCE_KEY_ID || 'github-actions-release-evidence'),
+    schema: ENVELOPE_SCHEMA,
+    keyId,
     signatureAlgorithm: 'ed25519',
     payload,
     signature,
@@ -123,22 +171,32 @@ function envelopeForPayload(payload) {
 }
 
 function payloadFromRaw(raw) {
-  if (raw?.schema === 'nexus.rollback-drill.v1' && raw?.payload) return raw.payload;
+  if (raw?.schema === ENVELOPE_SCHEMA && raw?.payload) return raw.payload;
   const { keyId: _keyId, signatureAlgorithm: _signatureAlgorithm, signature: _signature, ...rest } = raw || {};
   return {
     ...rest,
-    schema: 'nexus.rollback-drill-payload.v1',
+    schema: PAYLOAD_SCHEMA,
   };
 }
 
 function validateEnvelope(raw) {
   const reasons = [];
-  if (raw?.schema !== 'nexus.rollback-drill.v1') {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { reasons: ['envelope_not_an_object'], payload: {} };
+  }
+  if (Object.keys(raw).some((field) => !ENVELOPE_FIELDS.has(field))
+      || Object.keys(raw).length !== ENVELOPE_FIELDS.size) {
+    reasons.push('envelope_fields_invalid');
+  }
+  if (raw?.schema !== ENVELOPE_SCHEMA) {
     reasons.push(`schema_unsupported:${raw?.schema || 'missing'}`);
   }
   const payload = raw?.payload || {};
-  if (payload?.schema !== 'nexus.rollback-drill-payload.v1') {
+  if (payload?.schema !== PAYLOAD_SCHEMA) {
     reasons.push(`payload_schema_unsupported:${payload?.schema || 'missing'}`);
+  }
+  if (raw?.keyId !== CURRENT_SIGNING_KEY_ID) {
+    reasons.push(`key_id_unsupported:${raw?.keyId || 'missing'}`);
   }
   if (raw?.signatureAlgorithm !== 'ed25519') {
     reasons.push(`signature_algorithm_unsupported:${raw?.signatureAlgorithm || 'missing'}`);
@@ -150,58 +208,100 @@ function validateEnvelope(raw) {
 
 function validatePayload(evidence) {
   const reasons = [];
-  if (!isPassing(evidence?.result || evidence?.verdict)) {
-    reasons.push(`result_not_passing:${evidence?.result || evidence?.verdict || 'missing'}`);
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+    return ['payload_not_an_object'];
+  }
+  if (Object.keys(evidence).some((field) => !PAYLOAD_FIELDS.has(field))
+      || Object.keys(evidence).length !== PAYLOAD_FIELDS.size) {
+    reasons.push('payload_fields_invalid');
+  }
+  if (evidence?.schema !== PAYLOAD_SCHEMA) {
+    reasons.push(`payload_schema_unsupported:${evidence?.schema || 'missing'}`);
+  }
+  if (evidence?.result !== 'passed') {
+    reasons.push('result_not_passing');
   }
 
   if (evidence?.restoreMode !== 'dry-run' || evidence?.dryRun !== true) {
     reasons.push('dry_run_restore_missing');
   }
 
-  for (const key of ['sourceVersion', 'targetVersion', 'sourceSha', 'targetSha', 'targetBackup', 'operator']) {
+  for (const key of [
+    'sourceVersion',
+    'targetVersion',
+    'sourceSha',
+    'targetSha',
+    'targetBackup',
+    'targetBackupSha256',
+    'machineEvidenceSha256',
+    'operator',
+  ]) {
     if (!evidence?.[key] || typeof evidence[key] !== 'string') {
       reasons.push(`${key}_missing`);
     }
   }
 
-  const fullShaPattern = /^[0-9a-f]{40}$/i;
+  const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]{1,32})?$/;
+  for (const key of ['sourceVersion', 'targetVersion']) {
+    if (typeof evidence?.[key] === 'string' && !versionPattern.test(evidence[key])) {
+      reasons.push(`${key}_invalid`);
+    }
+  }
+  const fullShaPattern = /^[0-9a-f]{40}$/;
   if (evidence?.targetSha && !fullShaPattern.test(evidence.targetSha)) {
-    reasons.push(`targetSha_invalid:${evidence.targetSha}`);
+    reasons.push('targetSha_invalid');
   }
   if (evidence?.sourceSha && !fullShaPattern.test(evidence.sourceSha)) {
-    reasons.push(`sourceSha_invalid:${evidence.sourceSha}`);
+    reasons.push('sourceSha_invalid');
+  }
+  const digestPattern = /^[0-9a-f]{64}$/;
+  for (const key of ['targetBackupSha256', 'machineEvidenceSha256']) {
+    if (typeof evidence?.[key] === 'string' && !digestPattern.test(evidence[key])) {
+      reasons.push(`${key}_invalid`);
+    }
+  }
+  if (typeof evidence?.targetBackup === 'string'
+      && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(evidence.targetBackup)) {
+    reasons.push('targetBackup_invalid');
+  }
+  if (typeof evidence?.operator === 'string'
+      && !/^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$/.test(evidence.operator)) {
+    reasons.push('operator_invalid');
   }
 
   const expectedSha = readArg('--expect-sha', '');
   if (expectedSha && evidence?.targetSha !== expectedSha) {
-    reasons.push(`targetSha_mismatch:evidence=${evidence?.targetSha || 'missing'}:expected=${expectedSha}`);
+    reasons.push('targetSha_mismatch');
   }
   const expectedTargetVersion = readArg('--expect-target-version', '').replace(/^v/, '');
   if (expectedTargetVersion && String(evidence?.targetVersion || '').replace(/^v/, '') !== expectedTargetVersion) {
-    reasons.push(`targetVersion_mismatch:evidence=${evidence?.targetVersion || 'missing'}:expected=${expectedTargetVersion}`);
+    reasons.push('targetVersion_mismatch');
   }
 
   if (evidence?.databaseIntegrity !== 'ok') {
-    reasons.push(`database_integrity_not_ok:${evidence?.databaseIntegrity || 'missing'}`);
+    reasons.push('database_integrity_not_ok');
   }
   if (evidence?.backupContainsDatabase !== true) {
     reasons.push('backup_database_proof_missing');
   }
-  if (!isPassing(evidence?.healthCheck)) {
-    reasons.push(`health_check_not_passing:${evidence?.healthCheck || 'missing'}`);
+  if (evidence?.healthCheck !== 'passed') {
+    reasons.push('health_check_not_passing');
   }
 
-  const drilledAt = evidence?.drilledAt || evidence?.generatedAt || null;
+  const drilledAt = evidence?.drilledAt || null;
   if (!drilledAt) {
     reasons.push('drilled_at_missing');
+  } else if (typeof drilledAt !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(drilledAt)) {
+    reasons.push('drilled_at_invalid');
   } else {
     const drilledMs = Date.parse(drilledAt);
     if (!Number.isFinite(drilledMs)) {
-      reasons.push(`drilled_at_invalid:${drilledAt}`);
+      reasons.push('drilled_at_invalid');
     } else {
       const ageMs = Date.now() - drilledMs;
       if (ageMs < -5 * 60 * 1000) {
-        reasons.push(`drilled_at_in_future:${drilledAt}`);
+        reasons.push('drilled_at_in_future');
       }
       if (ageMs > maxAgeDays * 24 * 60 * 60 * 1000) {
         reasons.push(`drill_stale:${Math.floor(ageMs / 86400000)}d>${maxAgeDays}d`);
@@ -210,6 +310,22 @@ function validatePayload(evidence) {
   }
 
   return reasons;
+}
+
+function validateUnsignedPayload(raw) {
+  const reasons = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return ['payload_not_an_object'];
+  }
+  if (raw.schema === ENVELOPE_SCHEMA || raw.payload !== undefined) {
+    reasons.push('unsigned_payload_required');
+  }
+  for (const field of ['keyId', 'signatureAlgorithm', 'signature']) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
+      reasons.push(`payload_contains_envelope_field:${field}`);
+    }
+  }
+  return [...reasons, ...validatePayload(raw)];
 }
 
 function readEvidence() {
@@ -227,6 +343,29 @@ function readEvidence() {
   }
 }
 
+function validatePayloadCommand() {
+  const raw = readEvidence();
+  const reasons = validateUnsignedPayload(raw);
+  emit({
+    ok: reasons.length === 0,
+    evidencePath,
+    evidenceSha256: createHash('sha256').update(canonicalJson(raw)).digest('hex'),
+    releaseGate,
+    maxAgeDays,
+    reasons,
+    evidence: {
+      schema: raw?.schema,
+      drilledAt: raw?.drilledAt || null,
+      sourceVersion: raw?.sourceVersion || null,
+      targetVersion: raw?.targetVersion || null,
+      sourceSha: raw?.sourceSha || null,
+      targetSha: raw?.targetSha || null,
+      targetBackup: raw?.targetBackup || null,
+      result: raw?.result || null,
+    },
+  }, reasons.length === 0 ? 0 : 1);
+}
+
 function validate() {
   const raw = readEvidence();
   const evidenceSha256 = createHash('sha256').update(canonicalJson(raw)).digest('hex');
@@ -242,24 +381,41 @@ function validate() {
     reasons,
     evidence: {
       schema: evidence?.schema,
-      drilledAt: evidence?.drilledAt || evidence?.generatedAt || null,
+      drilledAt: evidence?.drilledAt || null,
       sourceVersion: evidence?.sourceVersion || null,
       targetVersion: evidence?.targetVersion || null,
       sourceSha: evidence?.sourceSha || null,
       targetSha: evidence?.targetSha || null,
       targetBackup: evidence?.targetBackup || null,
-      result: evidence?.result || evidence?.verdict || null,
+      result: evidence?.result || null,
     },
   }, reasons.length === 0 ? 0 : 1);
 }
 
 function sign() {
   const raw = readEvidence();
+  const reasons = validateUnsignedPayload(raw);
+  if (reasons.length > 0) {
+    emit({ ok: false, evidencePath, reasons }, 1);
+  }
+  const keyId = readArg(
+    '--key-id',
+    process.env.NEXUS_RELEASE_EVIDENCE_KEY_ID || CURRENT_SIGNING_KEY_ID,
+  );
+  if (keyId !== CURRENT_SIGNING_KEY_ID) {
+    emit({ ok: false, evidencePath, reasons: [`key_id_unsupported:${keyId || 'missing'}`] }, 1);
+  }
   const payload = payloadFromRaw(raw);
-  const signed = envelopeForPayload(payload);
+  const signed = envelopeForPayload(payload, keyId);
   const outputPath = path.resolve(root, readArg('--output', evidencePath));
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, `${JSON.stringify(signed, null, 2)}\n`);
+  const temporaryPath = `${outputPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(signed, null, 2)}\n`, {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  fs.renameSync(temporaryPath, outputPath);
+  fs.chmodSync(outputPath, 0o600);
   if (outputJson) {
     process.stdout.write(`${JSON.stringify({ ok: true, evidencePath: outputPath, evidence: signed }, null, 2)}\n`);
   } else {
@@ -269,6 +425,8 @@ function sign() {
 
 if (command === 'validate' || command === 'verify') {
   validate();
+} else if (command === 'validate-payload') {
+  validatePayloadCommand();
 } else if (command === 'sign') {
   sign();
 } else {

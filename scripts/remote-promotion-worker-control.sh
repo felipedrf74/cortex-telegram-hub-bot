@@ -168,6 +168,28 @@ prepare_exact_runtimes() {
     --role production --base-dir "$PROD_BASE" --release-dir "$TARGET_RUNTIME" --node-bin /usr/bin/node
 }
 
+preflight_application_dr() {
+  local verification expected
+  expected='application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+  [ -f "$DR_BACKUP_BIN" ] && [ -x "$DR_BACKUP_BIN" ] && [ ! -L "$DR_BACKUP_BIN" ] || {
+    echo "application DR backup tooling is unavailable" >&2
+    return 1
+  }
+  [ -f "$DR_CONFIG" ] && [ ! -L "$DR_CONFIG" ] || {
+    echo "application DR configuration is unavailable" >&2
+    return 1
+  }
+  verification="$("$TIMEOUT_BIN" --signal=TERM --kill-after=5s 60s \
+    "$DR_BACKUP_BIN" --config "$DR_CONFIG" --verify-config)" || {
+    echo "application DR provisioning/config preflight failed" >&2
+    return 1
+  }
+  [ "$verification" = "$expected" ] || {
+    echo "application DR provisioning/config preflight returned invalid evidence" >&2
+    return 1
+  }
+}
+
 write_cutover_timing() {
   local started_monotonic started_at boot_id output="$CUTOVER_TIMING.next"
   started_monotonic="$(monotonic_seconds)"
@@ -469,10 +491,15 @@ if [ "$ACTION" = recover ] || [ -f "$CONTROL_DIR/recover" ]; then
   exit 1
 fi
 
-# Persist root-owned recovery intent before the unprivileged worker can reach
-# its first PM2 stop. Every non-zero worker exit therefore takes recovery.
+# Static DR readiness must fail before sealing or any cutover-side mutation.
+if ! preflight_application_dr; then
+  write_journal preflight failed_before_stop application_dr_provisioning_or_config_invalid
+  exit 0
+fi
 prepare_exact_runtimes
 write_cutover_timing
+# Persist root-owned recovery intent before the unprivileged worker can reach
+# its first PM2 stop. Every non-zero worker exit therefore takes recovery.
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECOVERY_INTENT.next"
 chmod 600 "$RECOVERY_INTENT.next"; root_own "$RECOVERY_INTENT.next"; mv -f "$RECOVERY_INTENT.next" "$RECOVERY_INTENT"
 write_journal executing running durable_worker_started

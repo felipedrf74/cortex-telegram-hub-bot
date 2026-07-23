@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
@@ -15,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 const ROOT = join(__dirname, '..', '..');
 const PROMOTE = join(ROOT, 'scripts', 'promote-exact-release.sh');
+const PROMOTION_AUTHORIZATION = join(ROOT, 'scripts', 'promotion-authorization.mjs');
 const RELEASE_OPERATOR = join(ROOT, 'scripts', 'release-operator.sh');
 const RELEASE_GATES = join(ROOT, 'scripts', 'lib', 'release-gates.sh');
 
@@ -378,6 +380,433 @@ printf 'parser_completed\\n'`],
     expect(raw.slice(activeGuard, remotePrepare)).toContain('refusing to mutate the live runtime');
     expect(raw.slice(0, activeGuard)).not.toContain('rsync -a --delete');
     expect(raw.slice(0, activeGuard)).not.toContain('rm -f "$release_dir/$link"');
+  });
+
+  it('reconciles signed checkpoint authority before active-target rejection or new-ID creation', () => {
+    const raw = source(PROMOTE);
+    const checkpoint = raw.indexOf('if [ -f "$TRANSACTION_CHECKPOINT" ]');
+    const localAuthorityGuard = raw.indexOf(
+      'for local_authority_directory in',
+    );
+    const signedAuthority = raw.indexOf('signed_resume_request=', checkpoint);
+    const signatureProof = raw.indexOf('const valid = crypto.verify(', signedAuthority);
+    const authoritativeStatus = raw.indexOf(
+      'status "$PROMOTION_RUN_ID"',
+      signatureProof,
+    );
+    const resumeBranch = raw.indexOf('if [ "$RESUME_EXISTING_TRANSACTION" = true ]', authoritativeStatus);
+    const environmentPreparation = raw.indexOf('scripts/env-parity-check.sh', resumeBranch);
+    const activeGuard = raw.indexOf('if [ "$CURRENT_RUNTIME" = "$PROD_RELEASE" ]', environmentPreparation);
+    const newId = raw.indexOf('PROMOTION_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)', activeGuard);
+    const targetPreparation = raw.indexOf('prepare-runtime-target', newId);
+
+    expect(checkpoint).toBeGreaterThan(-1);
+    expect(localAuthorityGuard).toBeGreaterThan(-1);
+    expect(localAuthorityGuard).toBeLessThan(checkpoint);
+    expect(raw.slice(localAuthorityGuard, checkpoint)).toContain(
+      '[ ! -L "$local_authority_directory" ]',
+    );
+    expect(signedAuthority).toBeGreaterThan(checkpoint);
+    expect(signatureProof).toBeGreaterThan(signedAuthority);
+    expect(authoritativeStatus).toBeGreaterThan(signatureProof);
+    expect(resumeBranch).toBeGreaterThan(authoritativeStatus);
+    expect(environmentPreparation).toBeGreaterThan(resumeBranch);
+    expect(activeGuard).toBeGreaterThan(environmentPreparation);
+    expect(newId).toBeGreaterThan(activeGuard);
+    expect(targetPreparation).toBeGreaterThan(newId);
+    expect(raw.slice(checkpoint, authoritativeStatus)).toContain('payload?.transactionId !== transactionId');
+    expect(raw.slice(checkpoint, authoritativeStatus)).toContain('payload?.target?.runtime !== targetRuntime');
+    expect(raw.slice(checkpoint, authoritativeStatus)).toContain('payload?.target?.artifactDigest !== artifactDigest');
+    expect(raw.slice(checkpoint, authoritativeStatus)).toContain('payload?.target?.installedRuntimeDigest !== installedRuntimeDigest');
+    expect(raw.slice(authoritativeStatus, environmentPreparation)).toContain('RESUME_EXISTING_TRANSACTION=true');
+    expect(raw.slice(activeGuard, newId)).toContain('exit 75');
+  });
+
+  it('rejects hostile preseeded raw authority before the owner key signs it', () => {
+    const raw = source(PROMOTE);
+    const validationBody = heredocBody(raw, 'LOCAL_REQUEST_VALIDATION');
+    const validationStart = raw.indexOf("<<'LOCAL_REQUEST_VALIDATION'");
+    const signing = raw.indexOf(
+      'promotion-authorization.mjs" sign-request',
+      validationStart,
+    );
+    const fixture = mkdtempSync(join(tmpdir(), 'exact-promotion-raw-request-'));
+    const requestPath = join(fixture, 'request.json');
+    const transactionId = '20260723T120000Z-4321-abcdef123456';
+    const productionBase = '/home/dominguez/production';
+    const predecessorRuntime = `${productionBase}/releases/previous-aaaaaaaaaaaa`;
+    const predecessorSha = 'a'.repeat(40);
+    const predecessorArtifactDigest = 'b'.repeat(64);
+    const predecessorInstalledRuntimeDigest = 'c'.repeat(64);
+    const targetSha = 'd'.repeat(40);
+    const artifactDigest = 'e'.repeat(64);
+    const installedRuntimeDigest = 'f'.repeat(64);
+    const targetRuntime = `${productionBase}/releases/${targetSha}-${artifactDigest.slice(0, 12)}`;
+    const backupDir = '/home/dominguez/backups/nexushub';
+    const preparedRuntimeDir = `${backupDir}/.runtime-stage-fixture`;
+    const pm2Bin = '/usr/local/bin/pm2';
+    const publicBaseUrl = 'https://api.nexushub.me';
+    const targetVersion = '4.14.231';
+    const createdAt = new Date();
+    const request = {
+      schema: 'nexus.promotion-transaction-request.v1',
+      transactionId,
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + 30 * 60_000).toISOString(),
+      ownerAuthorization: 'explicit',
+      productionBase,
+      predecessor: {
+        runtime: predecessorRuntime,
+        sha: predecessorSha,
+        artifactDigest: predecessorArtifactDigest,
+        installedRuntimeDigest: predecessorInstalledRuntimeDigest,
+      },
+      target: {
+        runtime: targetRuntime,
+        sha: targetSha,
+        sentryRelease: targetSha,
+        artifactDigest,
+        installedRuntimeDigest,
+        version: targetVersion,
+      },
+      backupDir,
+      preparedRuntimeDir,
+      pm2Bin,
+      publicBaseUrl,
+      stabilitySeconds: 60,
+      gateTimeoutSeconds: 60,
+      migration: {
+        required: false,
+        reviewEvidenceSha256: null,
+        policySubjectSha256: null,
+        onlineEvidenceSha256: null,
+        onlineCloneSha256: null,
+        onlineMigratedCloneSha256: null,
+        onlinePendingSetSha256: null,
+        onlineSourceDatabaseSha256: null,
+      },
+    };
+    const validationArgs = [
+      requestPath,
+      transactionId,
+      productionBase,
+      predecessorRuntime,
+      predecessorSha,
+      predecessorArtifactDigest,
+      predecessorInstalledRuntimeDigest,
+      targetRuntime,
+      targetSha,
+      artifactDigest,
+      installedRuntimeDigest,
+      targetVersion,
+      backupDir,
+      preparedRuntimeDir,
+      pm2Bin,
+      publicBaseUrl,
+      '60',
+      '60',
+      '0',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+    ];
+    const validate = () => spawnSync(process.execPath, ['-', ...validationArgs], {
+      input: validationBody,
+      encoding: 'utf8',
+    });
+
+    try {
+      expect(validationStart).toBeGreaterThan(-1);
+      expect(signing).toBeGreaterThan(validationStart);
+      const unsignedGuard = raw.slice(raw.lastIndexOf('if [ ! -f "$request_file" ]', validationStart), signing);
+      expect(unsignedGuard).toContain('[ ! -L "$request_file" ]');
+      expect(unsignedGuard).toContain('[ ! -e "$signed_request_file" ]');
+      expect(raw.slice(signing)).toContain('request_sha" != "$validated_request_sha');
+
+      writeFileSync(requestPath, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600 });
+      const accepted = validate();
+      expect(accepted.status, accepted.stderr).toBe(0);
+      expect(accepted.stdout).toMatch(/^[a-f0-9]{64}$/);
+
+      writeFileSync(requestPath, `${JSON.stringify({
+        ...request,
+        productionBase: '/home/dominguez/other-production',
+        target: {
+          ...request.target,
+          runtime: `/home/dominguez/other-production/releases/${targetSha}-${artifactDigest.slice(0, 12)}`,
+        },
+        unreviewedAuthority: true,
+      }, null, 2)}\n`, { mode: 0o600 });
+      const hostile = validate();
+      expect(hostile.status).not.toBe(0);
+      expect(hostile.stdout).toBe('');
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('reattaches to a completed same-ID transaction and rebuilds missing local production evidence', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'exact-promotion-completed-resume-'));
+    const scriptsDir = join(fixture, 'scripts');
+    const requestDir = join(fixture, '.local', 'release', 'transactions');
+    const binDir = join(fixture, 'bin');
+    const serverLog = join(fixture, '.local', 'server.log');
+    const statusFixture = join(fixture, '.local', 'authoritative-status.json');
+    const resultFixture = join(fixture, '.local', 'authoritative-result.env');
+    const escrowFixture = join(fixture, '.local', 'authoritative-escrow.json');
+    const sshShim = join(binDir, 'ssh');
+    const transactionId = '20260723T120000Z-4321-abcdef123456';
+    const artifactDigest = 'c'.repeat(64);
+    const installedRuntimeDigest = 'd'.repeat(64);
+    const backupSha = 'f'.repeat(64);
+    const productionBase = '/home/dominguez/production';
+    const exactBackup = '/home/dominguez/backups/nexushub/v4.14.231.tar.gz';
+    try {
+      mkdirSync(join(scriptsDir, 'lib'), { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+      copyFileSync(PROMOTE, join(scriptsDir, 'promote-exact-release.sh'));
+      chmodSync(join(scriptsDir, 'promote-exact-release.sh'), 0o755);
+      writeFileSync(join(fixture, '.gitignore'), '.local/\n');
+      writeFileSync(join(scriptsDir, 'lib', 'release-gates.sh'), `#!/usr/bin/env bash
+release_require_git_worktree() { return 0; }
+release_require_clean_tree() { return 0; }
+release_acquire_local_lock() { return 0; }
+release_acquire_remote_lock() { return 0; }
+release_cleanup_all_locks() { return 0; }
+`);
+      writeFileSync(join(scriptsDir, 'rollback-drill-check.mjs'), '#!/usr/bin/env node\nprocess.exit(0);\n', { mode: 0o755 });
+      writeFileSync(sshShim, `#!/usr/bin/env bash
+set -euo pipefail
+while [ "\${1:-}" = -o ]; do shift 2; done
+server="\${1:-}"; shift || true
+[ "$server" = fixture-server ] || exit 90
+printf '%s\n' "$*" >> "$NEXUS_TEST_SERVER_LOG"
+if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
+  case "\${4:-}" in
+    version) printf 'nexus-release-promotion-control.v2\n' ;;
+    status)
+      [ "\${5:-}" = "$NEXUS_TEST_TRANSACTION_ID" ] || exit 91
+      cat "$NEXUS_TEST_STATUS_FIXTURE"
+      ;;
+    fetch)
+      [ "\${5:-}" = "$NEXUS_TEST_TRANSACTION_ID" ] || exit 92
+      case "\${6:-}" in
+        result) cat "$NEXUS_TEST_RESULT_FIXTURE" ;;
+        escrow) cat "$NEXUS_TEST_ESCROW_FIXTURE" ;;
+        *) exit 93 ;;
+      esac
+      ;;
+    *) exit 94 ;;
+  esac
+  exit 0
+fi
+if [ "$#" -eq 1 ] && [[ "$1" == for\\ p\\ in* ]]; then
+  printf '/usr/local/bin/pm2'
+  exit 0
+fi
+if [ "\${1:-}" = bash ] && [ "\${2:-}" = -s ]; then
+  cat >/dev/null
+  exit 0
+fi
+echo "unexpected fixture SSH command: $*" >&2
+exit 95
+`, { mode: 0o755 });
+
+      const gitEnv = cleanGitEnv();
+      expect(spawnSync('git', ['init', '--initial-branch=main'], { cwd: fixture, env: gitEnv }).status).toBe(0);
+      expect(spawnSync('git', ['config', 'user.name', 'Release Fixture'], { cwd: fixture, env: gitEnv }).status).toBe(0);
+      expect(spawnSync('git', ['config', 'user.email', 'release@example.invalid'], { cwd: fixture, env: gitEnv }).status).toBe(0);
+      expect(spawnSync('git', ['add', '.'], { cwd: fixture, env: gitEnv }).status).toBe(0);
+      const commit = spawnSync('git', ['commit', '-m', 'fixture'], {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: gitEnv,
+      });
+      expect(commit.status, commit.stderr).toBe(0);
+      const runtimeSha = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: gitEnv,
+      }).stdout.trim();
+      const productionRelease = `${productionBase}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+
+      mkdirSync(requestDir, { recursive: true });
+      const keyPair = generateKeyPairSync('ed25519');
+      const privateKey = join(fixture, '.local', 'owner-private.pem');
+      writeFileSync(
+        privateKey,
+        keyPair.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+        { mode: 0o600 },
+      );
+      const requestPath = join(requestDir, `${transactionId}.request.json`);
+      const signedRequestPath = join(requestDir, `${transactionId}.request.envelope.json`);
+      const createdAt = new Date();
+      writeFileSync(requestPath, `${JSON.stringify({
+        schema: 'nexus.promotion-transaction-request.v1',
+        transactionId,
+        createdAt: createdAt.toISOString(),
+        expiresAt: new Date(createdAt.getTime() + 30 * 60_000).toISOString(),
+        ownerAuthorization: 'explicit',
+        productionBase,
+        predecessor: {
+          runtime: `${productionBase}/releases/previous-aaaaaaaaaaaa`,
+          sha: 'a'.repeat(40),
+          artifactDigest: 'a'.repeat(64),
+          installedRuntimeDigest: 'b'.repeat(64),
+        },
+        target: {
+          runtime: productionRelease,
+          sha: runtimeSha,
+          sentryRelease: runtimeSha,
+          artifactDigest,
+          installedRuntimeDigest,
+          version: '4.14.231',
+        },
+        backupDir: '/home/dominguez/backups/nexushub',
+        preparedRuntimeDir: '/home/dominguez/backups/nexushub/.runtime-stage-fixture',
+        pm2Bin: '/usr/local/bin/pm2',
+        publicBaseUrl: 'https://api.nexushub.me',
+        stabilitySeconds: 60,
+        gateTimeoutSeconds: 60,
+        migration: { required: false },
+      }, null, 2)}\n`, { mode: 0o600 });
+      const signing = spawnSync('node', [
+        PROMOTION_AUTHORIZATION,
+        'sign-request',
+        '--input',
+        requestPath,
+        '--private-key',
+        privateKey,
+        '--output',
+        signedRequestPath,
+      ], {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: gitEnv,
+      });
+      expect(signing.status, signing.stderr).toBe(0);
+      const requestSha = JSON.parse(signing.stdout).payloadSha256 as string;
+      rmSync(requestPath);
+      const checkpointPath = join(
+        requestDir,
+        `${runtimeSha}-${artifactDigest}.checkpoint.json`,
+      );
+      writeFileSync(checkpointPath, `${JSON.stringify({
+        schema: 'nexus.promotion-client-checkpoint.v1',
+        transactionId,
+        startedAt: '2026-07-23T12:00:00Z',
+        runtimeSha,
+        artifactDigest,
+        installedRuntimeDigest,
+        targetVersion: '4.14.231',
+        server: 'fixture-server',
+        productionBase,
+      }, null, 2)}\n`, { mode: 0o600 });
+      const checkpointBefore = readFileSync(checkpointPath, 'utf8');
+      const signedRequestBefore = readFileSync(signedRequestPath, 'utf8');
+      writeFileSync(statusFixture, `${JSON.stringify({
+        schema: 'nexus.promotion-transaction-journal.v1',
+        transactionId,
+        requestSha256: requestSha,
+        phase: 'completed',
+        status: 'completed',
+      })}\n`, { mode: 0o600 });
+      writeFileSync(resultFixture, [
+        `NEXUS_TRANSACTION_ID=${transactionId}`,
+        `NEXUS_RUNTIME_SHA=${runtimeSha}`,
+        `NEXUS_SENTRY_RELEASE=${runtimeSha}`,
+        `NEXUS_ARTIFACT_DIGEST=${artifactDigest}`,
+        `NEXUS_INSTALLED_RUNTIME_DIGEST=${installedRuntimeDigest}`,
+        'NEXUS_CUTOVER_STARTED_AT=2026-07-23T12:00:00Z',
+        'NEXUS_SERVICE_UNAVAILABLE_STARTED_AT=2026-07-23T12:00:01Z',
+        'NEXUS_CANDIDATE_AVAILABLE_AT=2026-07-23T12:00:08Z',
+        'NEXUS_CUTOVER_SECONDS=68',
+        'NEXUS_BACKUP_WINDOW_SECONDS=4',
+        'NEXUS_BACKUP_OUTAGE_SECONDS=4',
+        'NEXUS_FINAL_UNAVAILABILITY_SECONDS=8',
+        'NEXUS_TOTAL_UNAVAILABILITY_SECONDS=8',
+        'NEXUS_VERIFICATION_SOAK_SECONDS=60',
+        'NEXUS_SOAK_STARTED_AT=2026-07-23T12:00:08Z',
+        'NEXUS_SOAK_COMPLETED_AT=2026-07-23T12:01:08Z',
+        'NEXUS_SOAK_OBSERVED_SECONDS=60',
+        `NEXUS_BACKUP_FILE=${exactBackup}`,
+        `NEXUS_BACKUP_SHA256=${backupSha}`,
+        '',
+      ].join('\n'), { mode: 0o600 });
+      writeFileSync(escrowFixture, `${JSON.stringify({
+        schema: 'nexus.promotion-rollback-escrow.v1',
+        status: 'passed',
+        transactionId,
+        requestSha256: requestSha,
+        confirmedAt: '2026-07-23T12:01:10Z',
+        requiredRelease: {
+          confirmed: true,
+          path: exactBackup,
+          plaintextSha256: backupSha,
+          objectKey: `nexus/releases/v4.14.231.tar.gz.${backupSha}.age`,
+        },
+      })}\n`, { mode: 0o600 });
+
+      const run = spawnSync('/bin/bash', [
+        'scripts/promote-exact-release.sh',
+        'fixture-server',
+        '/home/dominguez/staging',
+        productionBase,
+        runtimeSha,
+        artifactDigest,
+        '4.14.231',
+        installedRuntimeDigest,
+      ], {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: cleanGitEnv({
+          NEXUS_RELEASE_OWNER_AUTHORIZED: '1',
+          NEXUS_RELEASE_OWNER_PRIVATE_KEY_PATH: privateKey,
+          PATH: `${binDir}:${process.env.PATH ?? ''}`,
+          NEXUS_TEST_SERVER_LOG: serverLog,
+          NEXUS_TEST_TRANSACTION_ID: transactionId,
+          NEXUS_TEST_STATUS_FIXTURE: statusFixture,
+          NEXUS_TEST_RESULT_FIXTURE: resultFixture,
+          NEXUS_TEST_ESCROW_FIXTURE: escrowFixture,
+        }),
+      });
+
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain(`"transactionId":"${transactionId}"`);
+      const evidencePath = join(
+        fixture,
+        '.local',
+        'release',
+        'production',
+        `${runtimeSha}-${artifactDigest}.json`,
+      );
+      expect(existsSync(evidencePath)).toBe(true);
+      expect(JSON.parse(readFileSync(evidencePath, 'utf8'))).toMatchObject({
+        status: 'passed',
+        runtimeSha,
+        artifactDigest,
+        installedRuntimeDigest,
+        transactionId,
+        transactionMode: 'systemd_oneshot',
+      });
+      expect(readFileSync(checkpointPath, 'utf8')).toBe(checkpointBefore);
+      expect(readFileSync(signedRequestPath, 'utf8')).toBe(signedRequestBefore);
+      expect(existsSync(requestPath)).toBe(false);
+      const serverCalls = readFileSync(serverLog, 'utf8');
+      expect(serverCalls).toContain(`status ${transactionId}`);
+      expect(serverCalls).toContain(`fetch ${transactionId} result`);
+      expect(serverCalls).toContain(`fetch ${transactionId} escrow`);
+      expect(serverCalls).toContain(`bash -s -- ${productionBase} ${productionRelease}`);
+      expect(serverCalls).not.toContain(' launch ');
+      expect(serverCalls).not.toContain('prepare-runtime-target');
+      expect(serverCalls).not.toContain('seal-runtime');
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('rejects a dirty exact-promotion checkout before the first SSH call', () => {
