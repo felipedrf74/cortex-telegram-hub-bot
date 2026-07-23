@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "9f07af0d81dc7f58735455b6043d7e1c94eeb28678b2c273e91de220a1bebc5f",
-    "baseCommit": "616dab16cc815f828e2665c59e79345b4d7eec04",
-    "baseCommitTimestamp": "2026-07-23T16:28:20+01:00",
-    "trackedFiles": 2856,
-    "sourceFiles": 1024
+    "sourceDigest": "1a426a00ef142b29780dbac2e0686f1d358d51e2468afb609748e625e77e3842",
+    "baseCommit": "e168bbfe8ac04402a4e5260bb189737bbf7ae36c",
+    "baseCommitTimestamp": "2026-07-23T22:11:10+01:00",
+    "trackedFiles": 2857,
+    "sourceFiles": 1025
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 753
+      "files": 754
     },
     {
       "path": "src/skills",

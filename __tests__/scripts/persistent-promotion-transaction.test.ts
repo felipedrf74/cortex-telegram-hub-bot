@@ -622,6 +622,7 @@ exit 0
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'stat'), `#!/usr/bin/env bash
 set -euo pipefail
+if /usr/bin/stat --version >/dev/null 2>&1; then exec /usr/bin/stat "$@"; fi
 if [ "\${1:-}" != -c ]; then exec /usr/bin/stat "$@"; fi
 format="\${2:-}"; file="\${3:-}"
 case "$format" in

@@ -431,6 +431,20 @@
     ],
   "cleanupMappings": [
     {
+      "test": "__tests__/scripts/persistent-promotion-transaction.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/promote-exact-release.sh",
+        "scripts/remote-create-release-backup.sh",
+        "scripts/remote-promotion-systemd-install.sh",
+        "scripts/remote-promotion-transaction.sh",
+        "scripts/remote-promotion-worker-control.sh"
+      ],
+      "reason": "Replaced obsolete worker-owned recovery markers and rollback-escrow fixtures with retained assertions for root-owned recovery intent, phase-distinct DR escrow, bounded automatic recovery, and exact terminal retry identity."
+    },
+    {
       "test": "__tests__/services/dispatch-privacy-e2e.test.ts",
       "replacementTests": [
         "__tests__/services/dispatch-privacy-e2e.test.ts"

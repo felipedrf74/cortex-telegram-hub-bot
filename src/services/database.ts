@@ -5,6 +5,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { SQLiteStorage, setStorageProvider, clearStorageProvider } from './storage-provider';
 import { assertContentWorkspaceBootReadiness } from './content-workspace-boot-readiness';
+import { loadPersistedModelOverrides } from './persisted-model-overrides';
 import {
   applyMigrationFile,
   applyPendingMigrations,
@@ -18,23 +19,6 @@ export {
 } from './migration-runner';
 let db: Database.Database;
 let storage: SQLiteStorage | null = null;
-
-function loadPersistedModelOverrides(
-  loader: () => void = () => {
-    const { loadModelOverrides } = require('./model-config');
-    loadModelOverrides();
-  },
-): void {
-  // Persisted Ollama selectors are part of the production routing boundary.
-  // In particular, OllamaSmallOnlyPolicyError must reach the process startup
-  // boundary instead of being downgraded to an optional model-config load.
-  loader();
-}
-
-/** Exercise the production startup boundary without opening a database. */
-export function loadPersistedModelOverridesForTest(loader: () => void): void {
-  loadPersistedModelOverrides(loader);
-}
 
 export function getDb(): Database.Database {
   if (!db) {

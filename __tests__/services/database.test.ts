@@ -15,7 +15,6 @@ import fs from 'fs';
 import path from 'path';
 import {
   getDb,
-  loadPersistedModelOverridesForTest,
   runMigrationsForTest,
   stripWrappingTransactionStatements,
   withDatabaseForTest,
@@ -24,6 +23,7 @@ import {
 import { ensureMigrationSqlFunctions } from '../../src/services/migration-runner';
 import { assertContentWorkspaceBootReadiness } from '../../src/services/content-workspace-boot-readiness';
 import { OllamaSmallOnlyPolicyError } from '../../src/services/ollama-model-policy';
+import { loadPersistedModelOverrides } from '../../src/services/persisted-model-overrides';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -207,7 +207,7 @@ describe('Database Migrations', () => {
       'qwen3.6:35b-a3b-q4_K_M',
     );
 
-    expect(() => loadPersistedModelOverridesForTest(() => {
+    expect(() => loadPersistedModelOverrides(() => {
       throw violation;
     })).toThrow(violation);
   });
