@@ -598,6 +598,95 @@ function writeResult() {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
+export function validateReusedReleaseToolchain(mainEvidence, {
+  nodeVersion = process.version,
+  pythonVersion = '',
+} = {}) {
+  if (typeof pythonVersion !== 'string' || pythonVersion.length === 0
+      || mainEvidence?.toolchain?.node !== nodeVersion
+      || mainEvidence?.toolchain?.python !== pythonVersion) {
+    fail('protected-main evidence toolchain does not match the release candidate');
+  }
+  return mainEvidence.toolchain;
+}
+
+async function writeReusedResult() {
+  const selectionPath = path.resolve(root, valueOf('--selection'));
+  const evidencePath = path.resolve(root, valueOf('--main-evidence'));
+  const activationPath = path.resolve(root, valueOf('--activation'));
+  const pytestLogPath = path.resolve(root, valueOf('--pytest-log'));
+  const out = path.resolve(root, valueOf('--out', '.local/release/test-results.json'));
+  const runtimeSha = valueOf('--runtime-sha', process.env.GITHUB_SHA ?? git('rev-parse', 'HEAD'));
+  const selection = validateReleaseSelection(readJson(selectionPath), {
+    expectedHeadSha: runtimeSha,
+    expectedPolicyDigest: currentPolicyDigest(),
+  });
+  const mainEvidence = validateProtectedMainCiEvidence(readJson(evidencePath), {
+    expectedHeadSha: runtimeSha,
+    expectedPolicyDigest: currentPolicyDigest(),
+  });
+  const activation = readJson(activationPath);
+  const { decideProtectedMainReuse } = await import('./protected-main-reuse-activation.mjs');
+  const decision = decideProtectedMainReuse({
+    activation,
+    mainEvidence,
+    selection,
+    releaseEvidencePublicKeyPem: fs.readFileSync(path.join(
+      root,
+      'docs/release/evidence/release-evidence-public-key.pem',
+    ), 'utf8'),
+    repository: process.env.GITHUB_REPOSITORY ?? valueOf('--repository'),
+    sourceRoot: root,
+  });
+  if (decision.allowed !== true) {
+    fail(`protected-main reuse is not authorized: ${decision.reason}`);
+  }
+  const pytestLog = fs.readFileSync(pytestLogPath, 'utf8');
+  const pytestMatch = pytestLog.match(/(\d+)\s+passed(?:,|\s|$)/);
+  const pytestCount = pytestMatch ? Number(pytestMatch[1]) : 0;
+  if (!Number.isSafeInteger(pytestCount) || pytestCount <= 0) {
+    fail('release pytest count is invalid');
+  }
+  validateReusedReleaseToolchain(mainEvidence, {
+    nodeVersion: process.version,
+    pythonVersion: valueOf('--python-version', process.env.NEXUS_RELEASE_PYTHON_VERSION ?? ''),
+  });
+  const result = {
+    schema: RELEASE_RESULTS_SCHEMA,
+    status: valueOf('--status', 'passed'),
+    runtimeSha,
+    completedAt: new Date().toISOString(),
+    tier: selection.tier,
+    selection,
+    testPolicyDigest: currentPolicyDigest(),
+    artifactDigest: mainEvidence.build.artifactDigest,
+    lockfiles: mainEvidence.lockfiles,
+    toolchain: mainEvidence.toolchain,
+    counts: { vitest: mainEvidence.vitest.tests, pytest: pytestCount },
+    ci: {
+      runId: String(valueOf('--run-id', process.env.GITHUB_RUN_ID ?? '')),
+      runAttempt: String(valueOf('--run-attempt', process.env.GITHUB_RUN_ATTEMPT ?? '')),
+    },
+    protectedMainShadow: null,
+  };
+  if (result.status !== 'passed' || !/^\d+$/.test(result.ci.runId)
+      || !/^\d+$/.test(result.ci.runAttempt)) {
+    fail('reused release result status or CI identity is invalid');
+  }
+  const comparison = compareProtectedMainToRelease(mainEvidence, result);
+  if (comparison.status !== 'eligible') {
+    fail('protected-main evidence no longer exactly matches the release result');
+  }
+  result.protectedMainShadow = {
+    mode: 'reuse',
+    activation,
+    comparison,
+    evidence: mainEvidence,
+  };
+  writeJson(out, result);
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
 function bindProtectedMainShadow() {
   const resultsPath = path.resolve(root, valueOf('--results', '.local/release/test-results.json'));
   const comparisonPath = path.resolve(root, valueOf('--comparison'));
@@ -639,6 +728,7 @@ if (process.argv[1]
   else if (command === 'run-selected') runSelected();
   else if (command === 'write-nightly') writeNightly();
   else if (command === 'write-result') writeResult();
+  else if (command === 'write-reused-result') await writeReusedResult();
   else if (command === 'bind-protected-main-shadow') bindProtectedMainShadow();
-  else fail('Usage: release-test-evidence.mjs <plan|run-selected|write-nightly|write-result|bind-protected-main-shadow> [options]');
+  else fail('Usage: release-test-evidence.mjs <plan|run-selected|write-nightly|write-result|write-reused-result|bind-protected-main-shadow> [options]');
 }

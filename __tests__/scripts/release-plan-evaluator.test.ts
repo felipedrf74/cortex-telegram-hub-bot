@@ -10,9 +10,21 @@ import {
   RELEASE_SHADOW_CHECKS,
   RELEASE_SHADOW_COMPARISON_SCHEMA,
   RELEASE_SHADOW_LEDGER_SCHEMA,
+  buildProtectedMainReuseServerPayload,
   evaluateReleaseObservationWindow,
   evaluateReleaseShadowReadiness,
 } from '../../scripts/lib/release-plan-evaluation.mjs';
+import {
+  PROTECTED_MAIN_CI_SCHEMA,
+  PROTECTED_MAIN_WORKFLOW,
+  canonicalJson as canonicalEvidenceJson,
+  compareProtectedMainToRelease,
+  sha256 as evidenceSha256,
+} from '../../scripts/protected-main-ci-evidence.mjs';
+import {
+  SERVER_ACTIVATION_PAYLOAD_SCHEMA,
+  protectedMainReusePolicyDigest,
+} from '../../scripts/protected-main-reuse-activation.mjs';
 
 const cli = path.resolve('scripts/release-plan-evaluator.mjs');
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -496,6 +508,103 @@ function makeShadowLedger(mismatchIndex = -1) {
   };
 }
 
+function addFullProtectedMainBindings(window: ReturnType<typeof makeWindow>) {
+  const files = ['__tests__/scripts/protected-main-ci-evidence.test.ts'];
+  const policyDigest = 'c'.repeat(64);
+  for (let index = 5; index < 10; index += 1) {
+    const record = window.releases[index];
+    const manifestRef = record.authoritativeEvidence.releaseManifest;
+    const manifestPath = path.join(evidenceRoot, manifestRef.path);
+    const envelope = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const artifactDigest = record.identity.evidenceArtifactDigest;
+    const runtimeSha = record.identity.evidenceRuntimeSha;
+    const releaseResults = {
+      schema: 'nexus.release-test-results.v3',
+      status: 'passed',
+      runtimeSha,
+      completedAt: record.timing.automatedStages[1].completedAt,
+      tier: 'full-sharded',
+      selection: { selected: { files } },
+      testPolicyDigest: policyDigest,
+      artifactDigest,
+      lockfiles: {
+        packageLockSha256: 'd'.repeat(64),
+        pythonRequirementsSha256: 'e'.repeat(64),
+      },
+      toolchain: { node: 'v22.23.1', python: 'Python 3.12.11' },
+      counts: { vitest: 10, pytest: 10 },
+      ci: { runId: String(20_000 + index), runAttempt: '1' },
+      protectedMainShadow: null,
+    };
+    const mainEvidence = {
+      schema: PROTECTED_MAIN_CI_SCHEMA,
+      status: 'passed',
+      reuseScope: PROTECTED_MAIN_REUSE_SCOPE,
+      headSha: runtimeSha,
+      baseSha: 'a'.repeat(40),
+      completedAt: record.timing.automatedStages[0].completedAt,
+      testPolicyDigest: policyDigest,
+      lockfiles: releaseResults.lockfiles,
+      toolchain: releaseResults.toolchain,
+      vitest: {
+        mode: 'full',
+        files,
+        filesDigest: evidenceSha256(canonicalEvidenceJson(files)),
+        tests: 10,
+      },
+      build: {
+        artifactName: `release-bundle-${runtimeSha}-${artifactDigest}`,
+        artifactDigest,
+      },
+      ci: {
+        repository: 'felipedrf74/cortex-telegram-hub-bot',
+        workflow: PROTECTED_MAIN_WORKFLOW,
+        runId: String(10_000 + index),
+        runAttempt: '1',
+        event: 'push',
+        ref: 'refs/heads/main',
+      },
+      jobs: {
+        classify: 'success',
+        tests: 'success',
+        lint: 'success',
+        build: 'success',
+        sciencePolicy: 'success',
+        python: 'success',
+        migrations: 'success',
+      },
+    };
+    const comparison = compareProtectedMainToRelease(mainEvidence, releaseResults);
+    comparison.comparedAt = releaseResults.completedAt;
+    releaseResults.protectedMainShadow = {
+      mode: 'shadow',
+      comparison,
+      evidence: mainEvidence,
+    };
+    envelope.payload.testPolicy = { digest: policyDigest, results: releaseResults };
+    const rewrittenManifest = `${JSON.stringify(
+      signedEnvelope('nexus.release-manifest.v2', envelope.payload),
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(manifestPath, rewrittenManifest, { mode: 0o600 });
+    manifestRef.sha256 = sha256(rewrittenManifest);
+
+    const stagingRef = record.authoritativeEvidence.stagingAttestation;
+    const stagingPath = path.join(evidenceRoot, stagingRef.path);
+    const stagingEnvelope = JSON.parse(fs.readFileSync(stagingPath, 'utf8'));
+    stagingEnvelope.payload.releaseManifestSha256 = manifestRef.sha256;
+    const rewrittenStaging = `${JSON.stringify(
+      signedEnvelope('nexus.staging-attestation.v1', stagingEnvelope.payload),
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(stagingPath, rewrittenStaging, { mode: 0o600 });
+    stagingRef.sha256 = sha256(rewrittenStaging);
+  }
+  return window;
+}
+
 describe('release plan observation evaluation', () => {
   it('uses authority-bound metrics and refuses to certify operator-authored timing or quality claims', () => {
     const window = makeWindow();
@@ -816,6 +925,69 @@ describe('release shadow-readiness evaluation', () => {
     inconsistent.entries[0].comparison.status = 'ineligible';
     inconsistent.entries[0].comparison.reason = 'protected_main_evidence_mismatch';
     expect(() => evaluateReleaseShadowReadiness(inconsistent)).toThrow('status and checks are inconsistent');
+  });
+});
+
+describe('protected-main reuse authoritative activation request', () => {
+  it('derives five entries only from the latest signed manifests, staging attestations, and root journals', () => {
+    const window = addFullProtectedMainBindings(makeWindow(
+      Array.from({ length: 10 }, () => ({})),
+    ));
+    const payload = buildProtectedMainReuseServerPayload(window, evidenceOptions(), {
+      requestId: 'protected-main-reuse-window-1',
+    });
+    expect(payload).toMatchObject({
+      schema: SERVER_ACTIVATION_PAYLOAD_SCHEMA,
+      activationPolicyDigest: protectedMainReusePolicyDigest(),
+      entries: [
+        expect.objectContaining({ productionSequence: 6, exactAgreement: true }),
+        expect.any(Object),
+        expect.any(Object),
+        expect.any(Object),
+        expect.objectContaining({ productionSequence: 10, exactAgreement: true }),
+      ],
+    });
+
+    const omittedLatest = structuredClone(window);
+    omittedLatest.releases[9] = structuredClone(omittedLatest.releases[8]);
+    expect(() => buildProtectedMainReuseServerPayload(
+      omittedLatest,
+      evidenceOptions(),
+      { requestId: 'forged-window' },
+    )).toThrow();
+
+    const staleComparison = addFullProtectedMainBindings(makeWindow(
+      Array.from({ length: 10 }, () => ({})),
+    ));
+    const staleRecord = staleComparison.releases[6];
+    const staleManifestRef = staleRecord.authoritativeEvidence.releaseManifest;
+    const staleManifestPath = path.join(evidenceRoot, staleManifestRef.path);
+    const staleManifest = JSON.parse(fs.readFileSync(staleManifestPath, 'utf8'));
+    staleManifest.payload.testPolicy.results.protectedMainShadow.comparison.comparedAt =
+      staleComparison.releases[5].completedAt;
+    const rewrittenManifest = `${JSON.stringify(
+      signedEnvelope('nexus.release-manifest.v2', staleManifest.payload),
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(staleManifestPath, rewrittenManifest, { mode: 0o600 });
+    staleManifestRef.sha256 = sha256(rewrittenManifest);
+    const staleStagingRef = staleRecord.authoritativeEvidence.stagingAttestation;
+    const staleStagingPath = path.join(evidenceRoot, staleStagingRef.path);
+    const staleStaging = JSON.parse(fs.readFileSync(staleStagingPath, 'utf8'));
+    staleStaging.payload.releaseManifestSha256 = staleManifestRef.sha256;
+    const rewrittenStaging = `${JSON.stringify(
+      signedEnvelope('nexus.staging-attestation.v1', staleStaging.payload),
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(staleStagingPath, rewrittenStaging, { mode: 0o600 });
+    staleStagingRef.sha256 = sha256(rewrittenStaging);
+    expect(() => buildProtectedMainReuseServerPayload(
+      staleComparison,
+      evidenceOptions(),
+      { requestId: 'stale-comparison-window' },
+    )).toThrow('comparisons must follow the preceding production release');
   });
 });
 

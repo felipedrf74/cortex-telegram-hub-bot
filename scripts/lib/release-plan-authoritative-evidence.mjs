@@ -5,6 +5,11 @@ import {
 } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  compareProtectedMainToRelease,
+  validateProtectedMainCiEvidence,
+  validateReleaseShadowComparison,
+} from '../protected-main-ci-evidence.mjs';
 
 const MAX_EVIDENCE_BYTES = 4 * 1024 * 1024;
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
@@ -211,9 +216,33 @@ function validateManifest(record, manifest, manifestDigest, publicKey, label) {
   requireIdentity(payload.generatedAt, record.timing.automatedStages[2].completedAt,
     `${label}.timing.protected_signing.completedAt`);
   const protectedMain = payload.testPolicy.results.protectedMainShadow?.evidence ?? null;
+  const shadowBinding = payload.testPolicy.results.protectedMainShadow;
+  let comparison = null;
+  const completeShadowBinding = isObject(shadowBinding)
+    && shadowBinding.mode === 'shadow'
+    && isObject(shadowBinding.comparison);
+  if (completeShadowBinding) {
+    comparison = validateReleaseShadowComparison(shadowBinding.comparison, {
+      expectedRuntimeSha: payload.runtimeSha,
+    });
+  }
   let protectedMainCompletedAt = null;
   if (protectedMain !== null) {
-    if (protectedMain.schema !== 'nexus.protected-main-ci-evidence.v1'
+    if (completeShadowBinding) {
+      const evidence = validateProtectedMainCiEvidence(protectedMain, {
+        expectedHeadSha: payload.runtimeSha,
+        expectedPolicyDigest: payload.testPolicy.digest,
+      });
+      const recomputed = compareProtectedMainToRelease(
+        evidence,
+        payload.testPolicy.results,
+      );
+      recomputed.comparedAt = comparison.comparedAt;
+      if (canonicalJson(recomputed) !== canonicalJson(comparison)
+          || evidence.build.artifactDigest !== payload.artifact.digest) {
+        fail(`${label}.releaseManifest protected-main evidence identity is invalid`);
+      }
+    } else if (protectedMain.schema !== 'nexus.protected-main-ci-evidence.v1'
         || protectedMain.status !== 'passed'
         || protectedMain.headSha !== payload.runtimeSha
         || protectedMain.build?.artifactDigest !== payload.artifact.digest) {
@@ -239,6 +268,10 @@ function validateManifest(record, manifest, manifestDigest, publicKey, label) {
     expiresAt,
     releaseCandidateCompletedAt,
     protectedMainCompletedAt,
+    protectedMainShadow: {
+      comparison,
+      evidence: protectedMain,
+    },
   };
 }
 
@@ -533,5 +566,98 @@ export function validateAuthoritativeReleaseEvidence(record, index, options = {}
     actualUnavailabilityMs: promotionAuthority?.actualUnavailabilityMs ?? null,
     soakObservedMs: promotionAuthority?.soakObservedMs ?? null,
     rollbackRecoveryMs: promotionAuthority?.rollbackRecoveryMs ?? null,
+    reuseProvenance: {
+      transactionId: journalValue.transactionId,
+      productionCompletedAt: journalValue.completedAt,
+      manifestSha256: record.authoritativeEvidence.releaseManifest.sha256,
+      stagingAttestationSha256: record.authoritativeEvidence.stagingAttestation.sha256,
+      promotionJournalSha256: record.authoritativeEvidence.promotionJournal.sha256,
+      promotionResultSha256: record.authoritativeEvidence.promotionResult.sha256,
+      comparisonSha256: sha256(canonicalJson(manifestIdentity.protectedMainShadow.comparison)),
+      comparison: manifestIdentity.protectedMainShadow.comparison,
+    },
   };
+}
+
+function assertRootProtectedPath(file, promotionRoot, label, allowTestPromotionRoot) {
+  let cursor = file;
+  while (true) {
+    const stat = fs.lstatSync(cursor);
+    if (stat.isSymbolicLink()
+        || (!allowTestPromotionRoot && (stat.uid !== 0 || (stat.mode & 0o022) !== 0))) {
+      fail(`${label} is not protected by root ownership and mode`);
+    }
+    if (cursor === promotionRoot) break;
+    const parent = path.dirname(cursor);
+    if (parent === cursor
+        || (!parent.startsWith(`${promotionRoot}${path.sep}`) && parent !== promotionRoot)) {
+      fail(`${label} ancestry escapes the promotion evidence root`);
+    }
+    cursor = parent;
+  }
+}
+
+export function requireLatestCompletedPromotionSequence(provenances, options = {}) {
+  if (!Array.isArray(provenances) || provenances.length === 0) {
+    fail('completed promotion sequence is empty');
+  }
+  const promotionRoot = resolvePromotionRoot(options);
+  const transactionsRoot = path.join(promotionRoot, 'transactions');
+  let transactionEntries;
+  try {
+    transactionEntries = fs.readdirSync(transactionsRoot, { withFileTypes: true });
+  } catch {
+    fail('root-owned promotion transaction inventory cannot be read');
+  }
+  const completed = [];
+  for (const entry of transactionEntries) {
+    if (!entry.isDirectory()
+        || !/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u.test(entry.name)) continue;
+    const journalPath = path.join(transactionsRoot, entry.name, 'state', 'journal.json');
+    if (!fs.existsSync(journalPath)) continue;
+    const stat = fs.lstatSync(journalPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(journalPath) !== journalPath) {
+      fail(`promotion journal inventory contains an unsafe path: ${entry.name}`);
+    }
+    assertRootProtectedPath(
+      journalPath,
+      promotionRoot,
+      `promotion journal ${entry.name}`,
+      options.allowTestPromotionRoot === true,
+    );
+    let journal;
+    try { journal = JSON.parse(fs.readFileSync(journalPath, 'utf8')); } catch {
+      fail(`promotion journal inventory contains invalid JSON: ${entry.name}`);
+    }
+    if (journal?.schema !== 'nexus.promotion-transaction-journal.v1'
+        || journal.transactionId !== entry.name) {
+      fail(`promotion journal inventory identity is invalid: ${entry.name}`);
+    }
+    if (journal.status !== 'completed') continue;
+    completed.push({
+      transactionId: entry.name,
+      completedAt: canonicalTimestamp(
+        journal.completedAt,
+        `promotion journal ${entry.name}.completedAt`,
+      ),
+    });
+  }
+  completed.sort((left, right) => (
+    left.completedAt - right.completedAt
+    || left.transactionId.localeCompare(right.transactionId)
+  ));
+  if (completed.length < provenances.length) {
+    fail('promotion journal inventory has fewer completed productions than the activation window');
+  }
+  const latest = completed.slice(-provenances.length);
+  const requested = provenances.map((value) => value.transactionId);
+  if (canonicalJson(latest.map((value) => value.transactionId)) !== canonicalJson(requested)) {
+    fail('activation window is not the latest consecutive completed production sequence');
+  }
+  return latest.map((value) => ({
+    ...value,
+    productionSequence: completed.findIndex(
+      (entry) => entry.transactionId === value.transactionId,
+    ) + 1,
+  }));
 }

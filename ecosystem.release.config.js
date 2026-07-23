@@ -1,4 +1,6 @@
 const path = require('path');
+const fs = require('fs');
+const { parse: parseDotenv } = require('dotenv');
 
 const releaseDir = process.env.NEXUS_RELEASE_DIR;
 if (!releaseDir) throw new Error('NEXUS_RELEASE_DIR is required');
@@ -8,6 +10,39 @@ const baseDir = process.env.NEXUS_RELEASE_BASE_DIR
   || (staging ? '/home/dominguez/telegram-hub-bot-staging' : '/home/dominguez/telegram-hub-bot');
 const backendPort = staging ? '8201' : '8200';
 const contentPort = staging ? '8101' : '8100';
+const policyEnvironmentNames = Object.freeze([
+  'OLLAMA_ENABLED',
+  'AI_CLASSIFY_PRIMARY',
+  'LOCAL_LLM_CLASSIFY_SHADOW',
+  'CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE',
+  'LOCAL_LLM_EVALUATION_MODE',
+  'AI_SCRIPT_GENERATION_REQUIRE_LOCAL',
+  'AI_SCRIPT_GENERATION_FALLBACK',
+  'AI_LOCAL_REASONING_FALLBACK',
+  'CLOUD_REASONING_FALLBACK_ENABLED',
+  'CLOUD_REASONING_REQUIRE_APPROVED_MODEL',
+  'CLOUD_REASONING_ON_UNAPPROVED_MODEL',
+  'CLOUD_REASONING_PRIVACY_MODE',
+  'CLOUD_REASONING_ALLOW_RAW_PRIVATE_DATA',
+  'CLOUD_REASONING_PROVIDER',
+  'CLOUD_REASONING_MODEL',
+  'APPROVED_REASONING_MODELS',
+  'OLLAMA_MODEL',
+  'OLLAMA_CLASSIFIER_MODEL',
+  'CHAT_CORE_V2_LOCAL_CHAT_MODEL',
+  'CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL',
+  'CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL',
+]);
+const protectedEnvironmentPath = path.join(baseDir, '.env');
+const protectedEnvironment = parseDotenv(fs.readFileSync(protectedEnvironmentPath));
+const policyEnvironment = Object.fromEntries(policyEnvironmentNames.map((name) => {
+  const value = protectedEnvironment[name];
+  if (typeof value !== 'string' || value.length < 1 || value.length > 512
+      || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error(`protected release environment has an invalid or missing ${name}`);
+  }
+  return [name, value];
+}));
 
 module.exports = {
   apps: [{
@@ -33,6 +68,7 @@ module.exports = {
       DATABASE_PATH: path.join(baseDir, 'data/bot.db'),
       NEXUS_RELEASE_SHA: process.env.NEXUS_RELEASE_SHA || 'unknown',
       GIT_COMMIT: process.env.NEXUS_RELEASE_SHA || 'unknown',
+      ...policyEnvironment,
     },
     error_file: path.join(baseDir, 'logs/error.log'),
     out_file: path.join(baseDir, 'logs/out.log'),

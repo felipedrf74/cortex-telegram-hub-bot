@@ -28,6 +28,7 @@ import {
 const EXPECTED_HOST = 'serverdominguez';
 const OBSERVATION_ROOT = '/var/lib/nexus-release/ollama-observations';
 const INSTALLED_EXECUTABLE = '/usr/local/sbin/nexus-ollama-observation-collector.mjs';
+const SERVERDOMINGUEZ_PM2 = '/home/dominguez/.npm-global/bin/pm2';
 const RELEASE_LOCK_DIRECTORIES = Object.freeze([
   '/home/dominguez/telegram-hub-bot/.local/release/locks/prod-deploy.lock',
   '/home/dominguez/telegram-hub-bot-staging/.local/release/locks/staging-deploy.lock',
@@ -157,7 +158,7 @@ function parseArgs(argv) {
     ollamaUrl: 'http://127.0.0.1:11434',
     systemctlBin: '/usr/bin/systemctl',
     runuserBin: '/usr/sbin/runuser',
-    pm2Bin: '/usr/local/bin/pm2',
+    pm2Bin: SERVERDOMINGUEZ_PM2,
     journalctlBin: '/usr/bin/journalctl',
     pythonBin: '/usr/bin/python3',
     procRoot: '/proc',
@@ -219,7 +220,7 @@ function parseArgs(argv) {
     || options.contentUrl !== undefined
     || options.systemctlBin !== '/usr/bin/systemctl'
     || options.runuserBin !== '/usr/sbin/runuser'
-    || options.pm2Bin !== '/usr/local/bin/pm2'
+    || options.pm2Bin !== SERVERDOMINGUEZ_PM2
     || options.journalctlBin !== '/usr/bin/journalctl'
     || options.pythonBin !== '/usr/bin/python3'
     || options.procRoot !== '/proc';

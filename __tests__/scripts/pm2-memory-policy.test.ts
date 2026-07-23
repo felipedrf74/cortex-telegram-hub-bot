@@ -1,7 +1,18 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  describe,
+  expect,
+  it,
+} from 'vitest';
 
 const ROOT = join(__dirname, '..', '..');
 
@@ -9,7 +20,48 @@ type Pm2App = {
   name: string;
   max_memory_restart: string;
   node_args?: string;
+  env?: Record<string, string>;
 };
+
+const releaseBase = mkdtempSync(join(tmpdir(), 'nexus-release-pm2-policy-'));
+const expectedPolicy = {
+  OLLAMA_ENABLED: 'true',
+  AI_CLASSIFY_PRIMARY: 'gemini',
+  LOCAL_LLM_CLASSIFY_SHADOW: 'true',
+  CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE: 'shadow',
+  LOCAL_LLM_EVALUATION_MODE: 'false',
+  AI_SCRIPT_GENERATION_REQUIRE_LOCAL: 'false',
+  AI_SCRIPT_GENERATION_FALLBACK: 'approved_cloud_reasoning',
+  AI_LOCAL_REASONING_FALLBACK: 'approved_cloud_reasoning',
+  CLOUD_REASONING_FALLBACK_ENABLED: 'true',
+  CLOUD_REASONING_REQUIRE_APPROVED_MODEL: 'true',
+  CLOUD_REASONING_ON_UNAPPROVED_MODEL: 'fail_visibly',
+  CLOUD_REASONING_PRIVACY_MODE: 'never',
+  CLOUD_REASONING_ALLOW_RAW_PRIVATE_DATA: 'false',
+  CLOUD_REASONING_PROVIDER: 'gemini',
+  CLOUD_REASONING_MODEL: 'gemini-2.5-pro',
+  APPROVED_REASONING_MODELS: 'gemini-2.5-pro,claude-sonnet-4-6',
+  OLLAMA_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
+  OLLAMA_CLASSIFIER_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
+  CHAT_CORE_V2_LOCAL_CHAT_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
+  CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
+  CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'off',
+};
+writeFileSync(
+  join(releaseBase, '.env'),
+  `${Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n')}\nFAKE_SECRET=must-not-reach-pm2\n`,
+  { mode: 0o600 },
+);
+afterAll(() => rmSync(releaseBase, { recursive: true, force: true }));
+
+function releaseEnvironment(role: 'production' | 'staging'): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    NEXUS_RELEASE_DIR: ROOT,
+    NEXUS_RELEASE_BASE_DIR: releaseBase,
+    NEXUS_RELEASE_ROLE: role,
+  };
+}
 
 function loadConfig(file: string, env: NodeJS.ProcessEnv = process.env): Pm2App[] {
   const configPath = join(ROOT, file);
@@ -38,16 +90,8 @@ describe('PM2 backend memory policy', () => {
     const variants = [
       loadConfig('ecosystem.config.js'),
       loadConfig('ecosystem.staging.config.js'),
-      loadConfig('ecosystem.release.config.js', {
-        ...process.env,
-        NEXUS_RELEASE_DIR: ROOT,
-        NEXUS_RELEASE_ROLE: 'production',
-      }),
-      loadConfig('ecosystem.release.config.js', {
-        ...process.env,
-        NEXUS_RELEASE_DIR: ROOT,
-        NEXUS_RELEASE_ROLE: 'staging',
-      }),
+      loadConfig('ecosystem.release.config.js', releaseEnvironment('production')),
+      loadConfig('ecosystem.release.config.js', releaseEnvironment('staging')),
     ];
 
     for (const apps of variants) {
@@ -62,18 +106,50 @@ describe('PM2 backend memory policy', () => {
     expect(loadConfig('ecosystem.config.js').find((app) => app.name === 'content-engine')?.max_memory_restart).toBe('500M');
     expect(loadConfig('ecosystem.staging.config.js').find((app) => app.name === 'content-engine-staging')?.max_memory_restart).toBe('300M');
 
-    const releaseProduction = loadConfig('ecosystem.release.config.js', {
-      ...process.env,
-      NEXUS_RELEASE_DIR: ROOT,
-      NEXUS_RELEASE_ROLE: 'production',
-    });
-    const releaseStaging = loadConfig('ecosystem.release.config.js', {
-      ...process.env,
-      NEXUS_RELEASE_DIR: ROOT,
-      NEXUS_RELEASE_ROLE: 'staging',
-    });
+    const releaseProduction = loadConfig(
+      'ecosystem.release.config.js',
+      releaseEnvironment('production'),
+    );
+    const releaseStaging = loadConfig(
+      'ecosystem.release.config.js',
+      releaseEnvironment('staging'),
+    );
     expect(releaseProduction.find((app) => app.name === 'content-engine')?.max_memory_restart).toBe('500M');
     expect(releaseStaging.find((app) => app.name === 'content-engine-staging')?.max_memory_restart).toBe('300M');
+  });
+
+  it('attests only the explicit non-secret routing policy in PM2 state', () => {
+    const backend = loadConfig(
+      'ecosystem.release.config.js',
+      releaseEnvironment('production'),
+    ).find((app) => app.name === 'nexus-hub');
+
+    expect(backend?.env).toMatchObject(expectedPolicy);
+    expect(backend?.env).not.toHaveProperty('FAKE_SECRET');
+  });
+
+  it('fails closed when the protected routing policy is incomplete', () => {
+    const incompleteBase = mkdtempSync(join(tmpdir(), 'nexus-release-pm2-incomplete-'));
+    try {
+      writeFileSync(join(incompleteBase, '.env'), 'OLLAMA_ENABLED=true\n', { mode: 0o600 });
+      const result = spawnSync(process.execPath, [
+        '-e',
+        'require(process.argv[1])',
+        join(ROOT, 'ecosystem.release.config.js'),
+      ], {
+        encoding: 'utf8',
+        env: {
+          ...releaseEnvironment('production'),
+          NEXUS_RELEASE_BASE_DIR: incompleteBase,
+        },
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'protected release environment has an invalid or missing AI_CLASSIFY_PRIMARY',
+      );
+    } finally {
+      rmSync(incompleteBase, { recursive: true, force: true });
+    }
   });
 
   it('observes a full 60-second stability boundary by default in every canonical release path', () => {

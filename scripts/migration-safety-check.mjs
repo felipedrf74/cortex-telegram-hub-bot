@@ -18,6 +18,9 @@ import {
 import {
   validateProductionShapeMigrationRehearsalEvidence,
 } from './lib/production-shape-migration-rehearsal-evidence.mjs';
+import {
+  migrationSafetyGovernanceReasons,
+} from './lib/migration-safety-policy-classifier.mjs';
 
 const args = process.argv.slice(2);
 
@@ -61,28 +64,6 @@ if (!['none', 'scan', 'review', 'promotion'].includes(approvalMode)) {
   process.exit(64);
 }
 const irreversiblePolicy = loadIrreversibleMigrationPolicy({ root });
-const irreversiblePolicyGovernanceReasons = new Map([
-  ['config/irreversible-migrations.json', 'POLICY_REGISTRY_CHANGED'],
-  ['config/production-migration-lineages.json', 'POLICY_PRODUCTION_LINEAGE_CHANGED'],
-  ['.github/workflows/ci.yml', 'POLICY_CI_ENTRYPOINT_CHANGED'],
-  ['.husky/pre-commit', 'POLICY_HOOK_ENTRYPOINT_CHANGED'],
-  ['scripts/lib/irreversible-migration-policy.mjs', 'POLICY_ENFORCEMENT_CHANGED'],
-  ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
-  ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
-  ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
-  ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
-  ['scripts/lib/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
-  ['scripts/risk-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
-  ['scripts/release-verify.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
-  ['scripts/release-test-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
-  ['scripts/promote-exact-release.sh', 'POLICY_PROMOTION_ENTRYPOINT_CHANGED'],
-  ['scripts/remote-create-release-backup.sh', 'POLICY_BACKUP_EVIDENCE_CHANGED'],
-  ['scripts/remote-production-shape-migration-rehearsal.sh', 'POLICY_REHEARSAL_ENTRYPOINT_CHANGED'],
-  ['scripts/production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_CHANGED'],
-  ['scripts/validate-production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
-  ['scripts/lib/production-shape-migration-rehearsal-evidence.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
-]);
-
 const REVIEW_EVIDENCE_SCHEMA = IRREVERSIBLE_MIGRATION_REVIEW_APPROVAL_SCHEMA;
 const BACKUP_EVIDENCE_SCHEMA = 'nexus.exact-migration-backup-evidence.v2';
 const REVIEW_SUBJECT_SCHEMA = 'nexus.migration-review-subject.v1';
@@ -446,7 +427,7 @@ function checkChangedIrreversible(errors) {
   }
   const changed = changedFiles()
     .filter((file) => /^migrations\/\d{3}_.*\.sql$/.test(file)
-      || irreversiblePolicyGovernanceReasons.has(file));
+      || migrationSafetyGovernanceReasons.has(file));
   const irreversibleByFile = new Map();
   for (const issue of irreversiblePolicy.integrityIssues) {
     const identityReason = issue.type === 'missing'
@@ -455,7 +436,7 @@ function checkChangedIrreversible(errors) {
     irreversibleByFile.set(issue.file, { file: issue.file, reason: identityReason });
   }
   for (const file of changed) {
-    const governanceReason = irreversiblePolicyGovernanceReasons.get(file);
+    const governanceReason = migrationSafetyGovernanceReasons.get(file);
     if (governanceReason) {
       irreversibleByFile.set(file, { file, reason: governanceReason });
       continue;

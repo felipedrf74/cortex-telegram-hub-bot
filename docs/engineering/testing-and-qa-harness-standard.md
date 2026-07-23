@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-07-22
+Last verified: 2026-07-23
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. `config/test-policy.json` is the
 machine-readable tier/disposition policy; `docs/release/README.md` describes
@@ -57,6 +57,17 @@ Every test must:
    one cold sample exceeded 10 s. Reproduce a regression with a warmed,
    repeated focused benchmark before enforcing it. Shared-runner wall-clock
    benchmarks belong in `test:benchmark`, not a correctness assertion.
+   The nightly inventory serially combines the current sample with at most the
+   four most recent compatible protected-main inventory artifacts. Compatibility
+   requires the exact inventory/timing schema, test-policy digest, timing scope,
+   Node/Vitest toolchain, platform, and architecture. Per-file p50/p95 remain
+   null until five samples qualify; unavailable or incompatible history is
+   reported as advisory and cannot fail an otherwise-correct nightly suite.
+   Discovery is bounded to ten candidate inventories, 64 entries, four
+   directory levels, and 2 MiB per regular non-symlink inventory. The serial
+   downloader inspects at most ten completed prior runs, accepts exactly one
+   non-expired run/attempt-bound artifact per run, and rejects archives above
+   5 MiB before extracting only the canonical inventory entry.
 
 ## 3. `vi.mock` completeness (must)
 
@@ -117,11 +128,19 @@ gate for every production artifact.
 Protected-main CI also emits a separate exact-SHA shadow record containing its
 workflow/run identity, Node and Python toolchains, lockfile and test-policy
 digests, per-job results, selected-file identity, and build artifact digest.
-The RC workflow compares that record with the normal RC result but does not yet
-skip RC. Activation requires five consecutive release comparisons with exact
-agreement; any missing, stale, ambiguous, or mismatched field retains the
-existing four-shard RC fallback. This extends current release evidence rather
-than creating a competing release lane.
+The RC workflow compares that record with the normal RC result. Activation
+requires exactly five consecutive production comparisons with exact agreement.
+A root-owned ServerDominguez evaluator derives them from signed manifests,
+signed staging attestations, and the latest completed root promotion
+journals/results, then signs the bounded request with the server-only provenance
+key. The existing protected operational signer independently verifies all five
+protected-main and RC GitHub runs/artifacts before issuing the activation
+envelope. Reuse applies only to later exact SHAs and is reverified by the
+protected manifest signer. Any missing, stale, expired, ambiguous, locally
+authored, policy-drifted, or mismatched field retains the existing RC Vitest
+fallback. This extends current release evidence rather than creating a
+competing release lane. At implementation time only one eligible production
+comparison exists, so activation remains off.
 
 Weekly Stryker mutation analysis remains advisory and outside signing,
 staging, and promotion. Mutation output may drive a focused regression test or
@@ -252,6 +271,11 @@ wrapper changes:
    transaction.** `npm run test:migration-hook-lint` rejects full migration
    execution from per-test hooks. Do not add a private migration replay helper
    to bypass the guard.
+8. **Migration-policy path cases execute the dependency-free classifier in
+   process.** Keep one representative CLI binding assertion plus the dedicated
+   cumulative SQLite rehearsal; do not replay the complete migration history
+   once per table-driven governance-path case. The existing serial CI lint
+   step runs `npm run test:migration-hook-lint` without adding a job or lane.
 
 ## 11. iOS unit / contract tests (must, when iOS code touched)
 

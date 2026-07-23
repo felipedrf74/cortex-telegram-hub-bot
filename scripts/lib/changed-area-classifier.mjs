@@ -6,6 +6,7 @@ import {
   irreversibleMigrationReason,
   loadIrreversibleMigrationPolicy,
 } from './irreversible-migration-policy.mjs';
+import { migrationSafetyGovernanceReasons } from './migration-safety-policy-classifier.mjs';
 
 const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
   'config/test-policy.json',
@@ -17,6 +18,7 @@ const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
   'scripts/lib/changed-area-classifier.mjs',
   'scripts/lib/git-changed-paths.mjs',
   'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/lib/migration-safety-policy-classifier.mjs',
   'scripts/lib/production-migration-lineage.mjs',
   'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/lib/test-policy.mjs',
@@ -28,27 +30,7 @@ const BOOTSTRAP_FULL_SUITE_PATHS = new Set([
   'scripts/protected-main-ci-evidence.mjs',
 ]);
 
-const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set([
-  '.github/workflows/ci.yml',
-  '.husky/pre-commit',
-  'config/irreversible-migrations.json',
-  'config/production-migration-lineages.json',
-  'scripts/changed-area-classifier.mjs',
-  'scripts/lib/changed-area-classifier.mjs',
-  'scripts/lib/git-changed-paths.mjs',
-  'scripts/lib/irreversible-migration-policy.mjs',
-  'scripts/lib/production-migration-lineage.mjs',
-  'scripts/migration-safety-check.mjs',
-  'scripts/promote-exact-release.sh',
-  'scripts/remote-create-release-backup.sh',
-  'scripts/remote-production-shape-migration-rehearsal.sh',
-  'scripts/production-shape-migration-rehearsal.mjs',
-  'scripts/validate-production-shape-migration-rehearsal.mjs',
-  'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
-  'scripts/risk-gate.sh',
-  'scripts/release-test-gate.sh',
-  'scripts/release-verify.sh',
-]);
+const MIGRATION_POLICY_GOVERNANCE_PATHS = new Set(migrationSafetyGovernanceReasons.keys());
 
 export const CANNOT_SKIP_GATE_NAMES = Object.freeze([
   'tenant-auth-security',

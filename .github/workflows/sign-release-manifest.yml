@@ -130,6 +130,40 @@ jobs:
           run-id: ${{ env.CANDIDATE_RUN_ID }}
           github-token: ${{ github.token }}
 
+      - name: Resolve protected-main reuse provenance request
+        run: |
+          mode="$(jq -r '.protectedMainShadow.mode // "invalid"' \
+            candidate-artifact/.local/release/test-results.json)"
+          case "$mode" in
+            shadow)
+              echo "NEXUS_PROTECTED_MAIN_REUSE=false" >> "$GITHUB_ENV"
+              ;;
+            reuse)
+              run_id="$(jq -r '.protectedMainShadow.evidence.ci.runId // empty' \
+                candidate-artifact/.local/release/test-results.json)"
+              [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || {
+                echo "reused protected-main run identity is invalid" >&2
+                exit 64
+              }
+              echo "NEXUS_PROTECTED_MAIN_REUSE=true" >> "$GITHUB_ENV"
+              echo "NEXUS_PROTECTED_MAIN_RUN_ID=$run_id" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "candidate protected-main evidence mode is invalid" >&2
+              exit 64
+              ;;
+          esac
+
+      - name: Fetch exact reused protected-main GitHub identity
+        if: ${{ env.NEXUS_PROTECTED_MAIN_REUSE == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NEXUS_PROTECTED_MAIN_RUN_ID}" \
+            > trusted-input/protected-main-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NEXUS_PROTECTED_MAIN_RUN_ID}/artifacts?per_page=100" \
+            > trusted-input/protected-main-artifacts.json
+
       - name: Resolve protected nightly evidence request
         run: |
           node trusted-tooling/scripts/trusted-release-signer.mjs nightly-request \
@@ -200,6 +234,13 @@ jobs:
               --nightly-evidence-root trusted-input/nightly-evidence
             )
           fi
+          reuse_args=()
+          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
+            reuse_args=(
+              --protected-main-run-metadata trusted-input/protected-main-run.json
+              --protected-main-artifact-metadata trusted-input/protected-main-artifacts.json
+            )
+          fi
           node trusted-tooling/scripts/trusted-release-signer.mjs verify-candidate \
             --trusted-root trusted-tooling \
             --candidate-source candidate-source \
@@ -211,7 +252,8 @@ jobs:
             --runtime-sha "$RUNTIME_SHA" \
             --candidate-run-id "$CANDIDATE_RUN_ID" \
             "${contract_args[@]}" \
-            "${nightly_args[@]}"
+            "${nightly_args[@]}" \
+            "${reuse_args[@]}"
 
       - name: Sign exact ReleaseManifestV2 with protected-main tooling
         env:
@@ -232,6 +274,13 @@ jobs:
               --nightly-evidence-root trusted-input/nightly-evidence
             )
           fi
+          reuse_args=()
+          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
+            reuse_args=(
+              --protected-main-run-metadata trusted-input/protected-main-run.json
+              --protected-main-artifact-metadata trusted-input/protected-main-artifacts.json
+            )
+          fi
           node trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest \
             --trusted-root trusted-tooling \
             --candidate-source candidate-source \
@@ -244,6 +293,7 @@ jobs:
             --candidate-run-id "$CANDIDATE_RUN_ID" \
             "${contract_args[@]}" \
             "${nightly_args[@]}" \
+            "${reuse_args[@]}" \
             --output-root signed-artifact
 
       - name: Upload signed immutable release artifact

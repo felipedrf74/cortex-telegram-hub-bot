@@ -24,6 +24,10 @@ import {
   validateReleaseShadowComparison,
 } from './protected-main-ci-evidence.mjs';
 import {
+  protectedMainReusePolicyDigest,
+  validateProtectedMainReuseActivation,
+} from './protected-main-reuse-activation.mjs';
+import {
   backendIosContractDigest,
   backendIosContractFixtureIdentity,
 } from './lib/backend-ios-contract-fixture.mjs';
@@ -245,15 +249,30 @@ function releaseTestResultReasons(results, binding, options = {}) {
     }
     try {
       const shadow = results.protectedMainShadow;
-      if (!shadow || shadow.mode !== 'shadow') throw new Error('shadow binding missing');
+      if (!shadow || !['shadow', 'reuse'].includes(shadow.mode)) {
+        throw new Error('protected-main binding missing');
+      }
       const comparison = validateReleaseShadowComparison(shadow.comparison, {
         expectedRuntimeSha: binding.runtimeSha,
       });
-      if (shadow.evidence === null) {
+      if (shadow.mode === 'reuse') {
+        validateProtectedMainReuseActivation(shadow.activation, {
+          releaseEvidencePublicKeyPem: fs.readFileSync(path.join(
+            toolingRoot,
+            'docs/release/evidence/release-evidence-public-key.pem',
+          ), 'utf8'),
+          expectedPolicyDigest: protectedMainReusePolicyDigest(toolingRoot),
+          repository: process.env.GITHUB_REPOSITORY ?? '',
+        });
+        if (comparison.status !== 'eligible' || shadow.evidence === null) {
+          throw new Error('reused protected-main evidence is ineligible');
+        }
+      } else if (shadow.evidence === null) {
         if (comparison.status !== 'ineligible' || comparison.mainCi !== null) {
           throw new Error('missing evidence is reusable');
         }
-      } else {
+      }
+      if (shadow.evidence !== null) {
         const evidence = validateProtectedMainCiEvidence(shadow.evidence, {
           expectedHeadSha: binding.runtimeSha,
           expectedPolicyDigest: binding.testPolicyDigest,

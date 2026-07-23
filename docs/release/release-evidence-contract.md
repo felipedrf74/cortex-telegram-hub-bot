@@ -138,6 +138,21 @@ the four-shard full suite. Removing or renaming a test also forces the current
 remaining full suite and binds the removed paths into signed selection evidence;
 no raw test-count floor can substitute for this identity proof.
 
+Exact-SHA protected-main reuse is valid only with a current
+`nexus.protected-main-reuse-activation.v1` envelope signed by the existing
+GitHub `release-signing` key. That envelope must descend from a
+ServerDominguez-root-signed request for exactly the latest five consecutive
+successful production promotions. Each entry binds the eligible comparison to
+its signed manifest, signed staging attestation, root-owned promotion
+journal/result, protected-main CI run, RC run, runtime SHA, and artifact
+identity. The protected signer independently refetches the GitHub identities.
+The server request expires after 15 minutes. The resulting envelope is
+policy-digest-bound, expires after 180 days, cannot authorize one of its own
+five shadow SHAs, and never substitutes for current lockfile,
+toolchain, selected-file, job, bundle, Python, staging, or promotion evidence.
+If any check is unavailable or ambiguous, the ordinary RC Vitest path runs.
+Operator-authored ledgers and locally signed evidence are never reusable.
+
 `release:staging` installs the signed bundle in a versioned directory while the
 current process remains online, verifies env parity and owner bootstrap, then
 atomically selects it and records native/database, authenticated Content

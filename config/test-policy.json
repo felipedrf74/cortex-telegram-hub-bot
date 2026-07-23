@@ -83,6 +83,7 @@
     "scripts/lib/changed-area-classifier.mjs",
     "scripts/lib/git-changed-paths.mjs",
     "scripts/lib/irreversible-migration-policy.mjs",
+    "scripts/lib/migration-safety-policy-classifier.mjs",
     "scripts/lib/production-shape-migration-rehearsal-evidence.mjs",
     "scripts/migration-safety-check.mjs",
     "scripts/production-shape-migration-rehearsal.mjs",
@@ -100,6 +101,7 @@
     "scripts/lib/test-policy.mjs",
     "scripts/lib/static-test-dependency-map.mjs",
     "scripts/test-inventory.mjs",
+    "scripts/test-timing-history-artifact.mjs",
     "scripts/test-migration-hook-lint.mjs",
     "scripts/changed-coverage-gate.mjs",
     "scripts/mutation-gate.mjs",
@@ -182,7 +184,8 @@
     },
     "timing": {
       "minimumScopePercent": 100,
-      "minimumSamplesForPercentiles": 5
+      "minimumSamplesForPercentiles": 5,
+      "maximumSamplesForPercentiles": 5
     },
     "uniqueCoverage": {
       "minimumPercent": 0,
@@ -201,6 +204,7 @@
     { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },
     { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, and predecessor restoration when the controlling Mac or SSH session disappears." },
     { "pattern": "__tests__/scripts/protected-main-ci-evidence.test.ts", "disposition": "keep", "reason": "Protects exact-SHA, toolchain, lockfile, policy, workflow, result, and artifact identity before protected-main evidence can be shadow-compared or reused." },
+    { "pattern": "__tests__/scripts/protected-main-reuse-activation.test.ts", "disposition": "keep", "reason": "Protects the root-signed five-production comparison window, independent protected GitHub run provenance, policy-drift invalidation, and exact-SHA fail-closed reuse authorization." },
     { "pattern": "__tests__/scripts/quality-sonar-operations.test.ts", "disposition": "keep", "reason": "Protects advisory-only SonarQube isolation, immutable image locks, local tunnel access, release mutual exclusion, resource ceilings, and recoverable backups." },
     { "pattern": "__tests__/scripts/release-sonar-mutex.test.ts", "disposition": "keep", "reason": "Protects prompt shared release/Sonar lock cleanup and immediate reacquisition after the Mac-side FIFO holder closes." },
     { "pattern": "__tests__/scripts/release-sequence.test.ts", "disposition": "keep", "reason": "Protects the sequential resumable release coordinator, exact-source checks, explicit approvals, checkpoint revalidation, and fail-closed phase transitions." },
@@ -529,6 +533,7 @@
       "sources": [
         "scripts/migration-safety-check.mjs",
         "scripts/lib/irreversible-migration-policy.mjs",
+        "scripts/lib/migration-safety-policy-classifier.mjs",
         "config/irreversible-migrations.json",
         "scripts/lib/production-shape-migration-rehearsal-evidence.mjs"
       ],

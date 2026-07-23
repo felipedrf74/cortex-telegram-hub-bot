@@ -9,6 +9,7 @@ import {
   FULL_RELEASE_TIER,
   RELEASE_RESULTS_SCHEMA,
   RELEASE_SELECTION_SCHEMA,
+  validateReusedReleaseToolchain,
   validateNightlyEvidence,
   validateReleaseSelection,
 } from '../../scripts/release-test-evidence.mjs';
@@ -47,6 +48,7 @@ function installIrreversibleMigrationPolicyFixture(repo: string): void {
   for (const relative of [
     'scripts/lib/git-changed-paths.mjs',
     'scripts/lib/irreversible-migration-policy.mjs',
+    'scripts/lib/migration-safety-policy-classifier.mjs',
     policyRelative,
     ...policy.migrations.map((entry) => entry.file),
     ...policy.syntaxExemptions.map((entry) => entry.file),
@@ -58,6 +60,28 @@ function installIrreversibleMigrationPolicyFixture(repo: string): void {
 }
 
 const headSha = git(process.cwd(), 'rev-parse', 'HEAD');
+
+describe('protected-main reuse toolchain parity', () => {
+  const evidence = {
+    toolchain: {
+      node: process.version,
+      python: 'Python 3.12.11',
+    },
+  };
+
+  it('requires the current RC Node and Python toolchains to match exactly', () => {
+    expect(validateReusedReleaseToolchain(evidence, {
+      pythonVersion: 'Python 3.12.11',
+    })).toEqual(evidence.toolchain);
+    expect(() => validateReusedReleaseToolchain(evidence, {
+      nodeVersion: 'v22.23.0',
+      pythonVersion: 'Python 3.12.11',
+    })).toThrow('toolchain does not match');
+    expect(() => validateReusedReleaseToolchain(evidence, {
+      pythonVersion: 'Python 3.12.12',
+    })).toThrow('toolchain does not match');
+  });
+});
 const policyBody = fs.readFileSync('config/test-policy.json');
 const policyDigest = createHash('sha256').update(policyBody).digest('hex');
 const testFile = '__tests__/scripts/filter-existing-vitest-globs.test.ts';

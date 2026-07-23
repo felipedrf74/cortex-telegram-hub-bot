@@ -1,4 +1,13 @@
-import { validateAuthoritativeReleaseEvidence } from './release-plan-authoritative-evidence.mjs';
+import {
+  requireLatestCompletedPromotionSequence,
+  validateAuthoritativeReleaseEvidence,
+} from './release-plan-authoritative-evidence.mjs';
+import {
+  REQUIRED_PRODUCTION_COMPARISONS,
+  SERVER_REQUEST_LIFETIME_MS,
+  SERVER_ACTIVATION_PAYLOAD_SCHEMA,
+  protectedMainReusePolicyDigest,
+} from '../protected-main-reuse-activation.mjs';
 
 export const RELEASE_OBSERVATION_WINDOW_SCHEMA = 'nexus.release-plan-observation-window.v1';
 export const RELEASE_PLAN_EVALUATION_SCHEMA = 'nexus.release-plan-evaluation.v1';
@@ -905,5 +914,79 @@ export function evaluateReleaseShadowReadiness(ledger) {
     independentGithubProvenanceVerified: false,
     activationAllowed: false,
     reasons,
+  };
+}
+
+export function buildProtectedMainReuseServerPayload(window, evidenceOptions = {}, {
+  requestId,
+  sourceRoot,
+  now = new Date(),
+} = {}) {
+  const validated = validateReleaseObservationWindow(window, evidenceOptions);
+  const generatedAtMs = now.getTime();
+  if (!Number.isFinite(generatedAtMs)
+      || generatedAtMs < Date.parse(validated.generatedAt)) {
+    fail('reuse activation request time predates its observation window');
+  }
+  const releases = validated.releases.slice(-REQUIRED_PRODUCTION_COMPARISONS);
+  if (releases.length !== REQUIRED_PRODUCTION_COMPARISONS) {
+    fail(`reuse activation requires exactly ${REQUIRED_PRODUCTION_COMPARISONS} productions`);
+  }
+  const provenances = releases.map((release, index) => {
+    if (release.outcome !== 'passed' || release.parity !== true) {
+      fail(`reuse activation production[${index}] was not an exact successful promotion`);
+    }
+    const provenance = release.authority?.reuseProvenance;
+    const comparison = provenance?.comparison;
+    if (!provenance || comparison?.status !== 'eligible'
+        || comparison.reason !== null
+        || Object.values(comparison.checks ?? {}).some((value) => value !== true)
+        || comparison.mainCi === null) {
+      fail(`reuse activation production[${index}] lacks exact shadow agreement`);
+    }
+    return provenance;
+  });
+  for (let index = 1; index < provenances.length; index += 1) {
+    if (Date.parse(provenances[index].comparison.comparedAt)
+        <= Date.parse(provenances[index - 1].productionCompletedAt)) {
+      fail('reuse activation comparisons must follow the preceding production release');
+    }
+  }
+  const sequence = requireLatestCompletedPromotionSequence(provenances, evidenceOptions);
+  const entries = releases.map((release, index) => {
+    const provenance = provenances[index];
+    const comparison = provenance.comparison;
+    if (sequence[index].completedAt !== release.completedAt
+        || provenance.productionCompletedAt !== window.releases.at(
+          -REQUIRED_PRODUCTION_COMPARISONS + index,
+        ).completedAt) {
+      fail(`reuse activation production[${index}] completion identity drifted`);
+    }
+    return {
+      productionSequence: sequence[index].productionSequence,
+      productionReleaseId: release.releaseId,
+      runtimeSha: window.releases.at(
+        -REQUIRED_PRODUCTION_COMPARISONS + index,
+      ).identity.productionRuntimeSha,
+      productionCompletedAt: provenance.productionCompletedAt,
+      transactionId: provenance.transactionId,
+      manifestSha256: provenance.manifestSha256,
+      stagingAttestationSha256: provenance.stagingAttestationSha256,
+      promotionJournalSha256: provenance.promotionJournalSha256,
+      promotionResultSha256: provenance.promotionResultSha256,
+      comparisonSha256: provenance.comparisonSha256,
+      mainCi: comparison.mainCi,
+      releaseCi: comparison.releaseCi,
+      exactAgreement: true,
+    };
+  });
+  return {
+    schema: SERVER_ACTIVATION_PAYLOAD_SCHEMA,
+    requestId,
+    generatedAt: now.toISOString(),
+    expiresAt: new Date(generatedAtMs + SERVER_REQUEST_LIFETIME_MS).toISOString(),
+    reuseScope: PROTECTED_MAIN_REUSE_SCOPE,
+    activationPolicyDigest: protectedMainReusePolicyDigest(sourceRoot),
+    entries,
   };
 }

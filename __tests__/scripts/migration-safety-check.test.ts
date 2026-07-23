@@ -19,6 +19,9 @@ import {
   loadProductionMigrationLineagePolicy,
   resolveProductionMigrationLineage,
 } from '../../scripts/lib/production-migration-lineage.mjs';
+import {
+  migrationSafetyGovernanceReason,
+} from '../../scripts/lib/migration-safety-policy-classifier.mjs';
 
 const root = resolve(process.cwd());
 const migrationSafetyScript = join(root, 'scripts/migration-safety-check.mjs');
@@ -493,6 +496,7 @@ describe('migration-safety-check', () => {
     ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
     ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
     ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
+    ['scripts/lib/migration-safety-policy-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
     ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
     ['scripts/lib/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
     ['scripts/risk-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
@@ -504,7 +508,12 @@ describe('migration-safety-check', () => {
     ['scripts/production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_CHANGED'],
     ['scripts/validate-production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
     ['scripts/lib/production-shape-migration-rehearsal-evidence.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
-  ])('requires manual evidence when migration governance changes: %s', { timeout: 30_000 }, (file, reason) => {
+  ])('classifies migration governance changes without replaying all migrations: %s', (file, reason) => {
+    expect(migrationSafetyGovernanceReason(file)).toBe(reason);
+  });
+
+  it('binds the in-process governance classifier to the fail-closed CLI result', { timeout: 30_000 }, () => {
+    const file = 'config/irreversible-migrations.json';
     const result = spawnSync(
       'node',
       [
@@ -521,7 +530,10 @@ describe('migration-safety-check', () => {
     const payload = JSON.parse(result.stdout) as {
       irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
     };
-    expect(payload.irreversibleChangedMigrations).toEqual([{ file, reason }]);
+    expect(payload.irreversibleChangedMigrations).toEqual([{
+      file,
+      reason: migrationSafetyGovernanceReason(file),
+    }]);
   });
 
   it.each(['rename', 'deletion'])(

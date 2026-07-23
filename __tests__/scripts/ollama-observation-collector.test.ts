@@ -10,6 +10,16 @@ const COLLECTOR = path.resolve('scripts/ollama-observation-collector.mjs');
 const PYTHON = '/usr/bin/python3';
 type RunResult = { status: number | string; stdout: string; stderr: string };
 
+describe('Ollama observation collector host contract', () => {
+  it('uses the canonical ServerDominguez PM2 executable for real observations', () => {
+    const source = fs.readFileSync(COLLECTOR, 'utf8');
+    expect(source).toContain(
+      "const SERVERDOMINGUEZ_PM2 = '/home/dominguez/.npm-global/bin/pm2';",
+    );
+    expect(source).not.toContain("pm2Bin: '/usr/local/bin/pm2'");
+  });
+});
+
 function listen(handler: Parameters<typeof createServer>[0]): Promise<{ server: Server; origin: string }> {
   const server = createServer(handler);
   return new Promise((resolveListen, rejectListen) => {

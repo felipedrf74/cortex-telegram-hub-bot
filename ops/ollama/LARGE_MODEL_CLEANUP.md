@@ -65,6 +65,11 @@ release lock is active. A release that starts during a window, a reboot, a
 release-SHA change, a restart, unsafe capacity, pressure, or failed health
 check invalidates that window and no successful result is written.
 
+The collector invokes PM2 as `dominguez` through the canonical
+`/home/dominguez/.npm-global/bin/pm2` executable. Verify that exact path is
+executable before starting either 24-hour window; do not create a second PM2
+installation merely to satisfy the collector.
+
 ## Collect staging, then production
 
 First confirm staging is explicitly routed to the retained 3B model. Start the
