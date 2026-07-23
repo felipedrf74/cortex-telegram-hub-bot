@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.230",
+  "version": "4.14.231",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -86,6 +86,7 @@
     "release:staging": "scripts/release-operator.sh staging",
     "release:promote": "scripts/release-operator.sh promote",
     "release:status": "scripts/release-operator.sh status",
+    "release:resume": "scripts/release-operator.sh resume",
     "release:focused-verify": "scripts/release-focused-verify.sh",
     "release:verify": "scripts/release-focused-verify.sh",
     "release:verify:full": "scripts/release-verify.sh",
@@ -97,6 +98,11 @@
     "release:evidence:container": "scripts/release-evidence-container.sh",
     "release:evidence:keygen": "node scripts/release-evidence-keygen.mjs",
     "release:rollback-drill-check": "node scripts/rollback-drill-check.mjs",
+    "release:metrics:evaluate": "node scripts/release-plan-evaluator.mjs evaluate",
+    "release:shadow:readiness": "node scripts/release-plan-evaluator.mjs shadow-readiness",
+    "quality:sonar": "scripts/quality-sonar-scan.sh",
+    "quality:sonar:images": "scripts/quality-sonar-resolve-images.sh --verify-lock-only",
+    "quality:sonar:latency": "node scripts/quality-sonar-latency-gate.mjs",
     "precommit": "npm run verify",
     "release:patch": "scripts/release-prep.sh --patch",
     "release:minor": "scripts/release-prep.sh --minor",

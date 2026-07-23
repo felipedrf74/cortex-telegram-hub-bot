@@ -198,6 +198,80 @@ describe('GeminiProvider', () => {
     expect(provider.name).toBe('gemini');
   });
 
+  it('uses the ScriptGen schema as the real Gemini system instruction with JSON mode and no tools', async () => {
+    mockGeminiResponse('{"ok":true}', [], 'STOP');
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'Return only JSON matching SCHEMA_X.',
+      userPrompt: 'Create the requested helper.',
+      model: 'gemini-2.5-pro',
+      maxTokens: 4096,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_script_generation_artifacts',
+      responseFormat: 'json',
+    });
+
+    expect(result).toEqual({ text: '{"ok":true}', stopReason: 'STOP' });
+    const request = lastGenerateRequest();
+    expect(request.model).toBe('gemini-2.5-pro');
+    expect(request.contents).toEqual([
+      { role: 'user', parts: [{ text: 'Create the requested helper.' }] },
+    ]);
+    expect(request.config.systemInstruction).toBe('Return only JSON matching SCHEMA_X.');
+    expect(request.config.maxOutputTokens).toBe(4096);
+    expect(request.config.responseMimeType).toBe('application/json');
+    expect(request.config.tools).toBeUndefined();
+    expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 306,
+        category: 'cloud_script_generation_artifacts',
+        provider: 'gemini',
+        model: 'gemini-2.5-pro',
+      }),
+    );
+  });
+
+  it('forwards a generic reasoning schema through Gemini JSON mode without domain tools or state', async () => {
+    mockGeminiResponse('{"answer":"bounded"}', [], 'STOP');
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['answer'],
+      properties: { answer: { type: 'string' } },
+    };
+
+    await provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'gemini-2.5-pro',
+      maxTokens: 777,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'json',
+      jsonSchema: schema,
+    });
+
+    const request = lastGenerateRequest();
+    expect(request.model).toBe('gemini-2.5-pro');
+    expect(request.contents).toEqual([
+      { role: 'user', parts: [{ text: 'USER_BOUNDARY_MARKER' }] },
+    ]);
+    expect(request.config.systemInstruction).toBe('SYSTEM_BOUNDARY_MARKER');
+    expect(request.config.responseMimeType).toBe('application/json');
+    expect(request.config.responseJsonSchema).toEqual(schema);
+    expect(request.config.tools).toBeUndefined();
+    expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 306,
+        category: 'cloud_local_reasoning',
+        provider: 'gemini',
+        model: 'gemini-2.5-pro',
+      }),
+    );
+  });
+
   it('scrubs sensitive user context before Google Search grounding', async () => {
     mockGeminiResponse('Search result summary.');
     mockGenerateContent.mockClear();

@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-21.1",
+  "version": "2026-07-22.4",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -38,6 +38,15 @@
         "__tests__/scripts/release-*.test.ts",
         "__tests__/scripts/promote-*.test.ts",
         "__tests__/scripts/rollback-*.test.ts",
+        "__tests__/scripts/persistent-promotion-*.test.ts",
+        "__tests__/scripts/protected-main-ci-evidence.test.ts",
+        "__tests__/scripts/remote-release-capacity.test.ts",
+        "__tests__/scripts/release-runtime-dependencies.test.ts",
+        "__tests__/scripts/release-plan-evaluator.test.ts",
+        "__tests__/scripts/application-disaster-recovery.test.ts",
+        "__tests__/scripts/ollama-observation-collector.test.ts",
+        "__tests__/scripts/ollama-large-model-cleanup.test.ts",
+        "__tests__/scripts/ollama-systemd-envelope.test.ts",
         "__tests__/scripts/production-shape-migration-rehearsal.test.ts",
         "__tests__/scripts/changed-area-classifier.test.ts",
         "__tests__/scripts/ci-required-test-sharding.test.ts",
@@ -84,6 +93,7 @@
     "scripts/resolve-ci-change-base.sh",
     "scripts/select-vitest-files.mjs",
     "scripts/release-test-evidence.mjs",
+    "scripts/protected-main-ci-evidence.mjs",
     "scripts/run-test-tier.mjs",
     "scripts/risk-gate.sh",
     "scripts/lib/git-ref.mjs",
@@ -140,6 +150,12 @@
       "expires": "2026-10-15"
     },
     {
+      "file": "__tests__/scripts/trusted-release-signing.test.ts",
+      "owner": "scripts",
+      "reason": "Recomputes the protected Git test-file tree and validates exact nightly artifact identity against the real repository; coverage instrumentation and shared-runner contention can push this integrity rehearsal beyond the 10s single-sample bound.",
+      "expires": "2026-10-15"
+    },
+    {
       "file": "__tests__/integration/training-plan-create-cycle.test.ts",
       "owner": "integration",
       "reason": "End-to-end training-plan lifecycle over a real migrated database (create, revise, complete across weeks); the integration breadth is the point and exceeds the 10s single-sample bound on shared nightly runners.",
@@ -178,6 +194,21 @@
     }
   },
   "dispositionRules": [
+    { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects the exact ten-release timing and quality window, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery target, exact identity parity, and shadow-only five-release readiness verdict." },
+    { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, encrypted off-host retention, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
+    { "pattern": "__tests__/scripts/ollama-observation-collector.test.ts", "disposition": "keep", "reason": "Protects the root-owned foreground collector, same-boot sequential samples, raw hash chain, exact-window api_usage aggregation, and fail-closed persistence and reboot behavior." },
+    { "pattern": "__tests__/scripts/ollama-large-model-cleanup.test.ts", "disposition": "keep", "reason": "Protects the owner-authorized, exact-digest, soak-gated removal of large Ollama models using canonical hash-bound health/request evidence while preserving and re-verifying the retained 3B model." },
+    { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },
+    { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, and predecessor restoration when the controlling Mac or SSH session disappears." },
+    { "pattern": "__tests__/scripts/protected-main-ci-evidence.test.ts", "disposition": "keep", "reason": "Protects exact-SHA, toolchain, lockfile, policy, workflow, result, and artifact identity before protected-main evidence can be shadow-compared or reused." },
+    { "pattern": "__tests__/scripts/quality-sonar-operations.test.ts", "disposition": "keep", "reason": "Protects advisory-only SonarQube isolation, immutable image locks, local tunnel access, release mutual exclusion, resource ceilings, and recoverable backups." },
+    { "pattern": "__tests__/scripts/release-sonar-mutex.test.ts", "disposition": "keep", "reason": "Protects prompt shared release/Sonar lock cleanup and immediate reacquisition after the Mac-side FIFO holder closes." },
+    { "pattern": "__tests__/scripts/release-sequence.test.ts", "disposition": "keep", "reason": "Protects the sequential resumable release coordinator, exact-source checks, explicit approvals, checkpoint revalidation, and fail-closed phase transitions." },
+    { "pattern": "__tests__/scripts/remote-release-capacity.test.ts", "disposition": "keep", "reason": "Protects release preflight thresholds for memory, load, swap, OOM, all production/staging PM2 services, rollback-drill freshness, and active Sonar analysis." },
+    { "pattern": "__tests__/scripts/release-runtime-dependencies.test.ts", "disposition": "keep", "reason": "Protects the signed Ubuntu 24.04/x86-64 Node archive and Python wheelhouse, exact lockfile inputs, byte digests, safe extraction, and network-independent staging installation." },
+    { "pattern": "__tests__/scripts/release-staging-transfer-integrity.test.ts", "disposition": "keep", "reason": "Protects trusted remote verification of the exact signed staging bundle before candidate code executes, including same-size drift, undeclared files, unsafe links, and hidden workflow evidence uploads." },
+    { "pattern": "__tests__/services/ollama-small-only-policy.test.ts", "disposition": "keep", "reason": "Protects the single retained 3B Ollama model, fail-closed model overrides, loopback binding, bounded context, and systemd resource ceilings." },
+    { "pattern": "__tests__/services/structured-output-schema.test.ts", "disposition": "keep", "reason": "Protects the bounded JSON-schema subset and deterministic local validation used by privacy-gated, no-tools cloud reasoning responses." },
     { "pattern": "__tests__/scripts/pm2-memory-policy.test.ts", "disposition": "keep", "reason": "Protects RSS-versus-V8 headroom, unchanged Content Engine ceilings, and full PM2 stability observation across canonical release paths." },
     { "pattern": "__tests__/scripts/test-tier-governance.test.ts", "disposition": "keep", "reason": "Guards exact deterministic/evaluation partitioning, scoped inventory evidence, release evidence identity, and CI lane wiring." },
     { "pattern": "__tests__/scripts/production-migration-lineage.test.ts", "disposition": "keep", "reason": "Protects the signed retired-migration inventory, exact lineage matching, replacement identities, and fail-closed malformed-policy handling." },
@@ -385,6 +416,56 @@
       "src/services/training-exercise-media*.ts"
     ],
   "cleanupMappings": [
+    {
+      "test": "__tests__/services/dispatch-privacy-e2e.test.ts",
+      "replacementTests": [
+        "__tests__/services/dispatch-privacy-e2e.test.ts"
+      ],
+      "sources": [
+        "src/services/provider-fallback.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/provider-fallback.ts:1657-1667",
+          "anchor": "model: selection.model,",
+          "behavior": "Approved public larger-reasoning dispatch uses the provider-native structured capability with the exact gated model and no tool surface.",
+          "replacementTest": "__tests__/services/dispatch-privacy-e2e.test.ts",
+          "ownerTestName": "small-only production dispatch narrows a generic cloud completion to the LocalReasoningResult contract",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Replaced the legacy generic callDomain forwarding assertion with provider-native structured generation, exact approved-model binding, no-tools enforcement, schema validation, and private-workload fail-closed coverage."
+    },
+    {
+      "test": "__tests__/services/ollama-provider.test.ts",
+      "replacementTests": [
+        "__tests__/services/ollama-provider.test.ts"
+      ],
+      "sources": [
+        "src/services/ollama-provider.ts"
+      ],
+      "mutationTargets": [
+        {
+          "pattern": "src/services/ollama-provider.ts:157-159",
+          "anchor": "capability: 'local_workload_role_not_allowed'",
+          "behavior": "A disallowed or missing normal-runtime Ollama workload role fails with the explicit unsupported-capability identity before inference.",
+          "replacementTest": "__tests__/services/ollama-provider.test.ts",
+          "ownerTestName": "OllamaProvider — classify fails closed for live classification because only classifier shadow owns a local role",
+          "minimumMutants": 1
+        }
+      ],
+      "reason": "Replaced large-model and unrestricted local-classification assumptions with the retained 3B model identity and explicit small-only workload-role enforcement."
+    },
+    {
+      "test": "__tests__/services/privacy-redacted-flow.test.ts",
+      "replacementTests": [
+        "__tests__/services/privacy-redacted-flow.test.ts"
+      ],
+      "sources": [
+        "src/services/cloud-reasoning-gate.ts"
+      ],
+      "reason": "Replaced the implicit non-private default with an explicit privacy-classification requirement while retaining public sent-raw and private fail-closed coverage."
+    },
     {
       "test": "__tests__/api/chat-script-shortcut-response.test.ts",
       "replacementTests": [
@@ -1464,7 +1545,7 @@
       ],
       "mutationTargets": [
         {
-          "pattern": "src/services/ai-provider.ts:422-422",
+          "pattern": "src/services/ai-provider.ts:463-463",
           "anchor": "this.onFallback?.(err as Error, 'classify')",
           "behavior": "Classification fallback reports the exact method and preserves active context and scoped call options.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
@@ -1472,7 +1553,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/ai-provider.ts:438-438",
+          "pattern": "src/services/ai-provider.ts:479-479",
           "anchor": "this.onFallback?.(err as Error, 'callDomain')",
           "behavior": "Domain fallback reports the exact method and preserves every routing, history, state, and options argument.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
@@ -1480,7 +1561,7 @@
           "minimumMutants": 1
         },
         {
-          "pattern": "src/services/ai-provider.ts:455-455",
+          "pattern": "src/services/ai-provider.ts:496-496",
           "anchor": "this.onFallback?.(err as Error, 'continueWithToolResults')",
           "behavior": "Tool-result continuation fallback reports the exact method and preserves the full conversation and scoped options.",
           "replacementTest": "__tests__/services/ai-provider.test.ts",
@@ -1711,7 +1792,7 @@
         "sources": ["src/services/usage-metering.ts", "src/portal/snapshot-builder.ts", "src/services/gemini-provider.ts", "src/services/openai-provider.ts"],
         "mutationTargets": [
           {
-            "pattern": "src/services/gemini-provider.ts:657-657",
+            "pattern": "src/services/gemini-provider.ts:659-659",
             "anchor": "hasUnboundedProviderInjectedContext: true",
             "behavior": "Grounded Gemini calls reserve budget under the unbounded provider-context risk policy.",
             "replacementTest": "__tests__/services/gemini-provider.test.ts",
@@ -1719,7 +1800,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/openai-provider.ts:381-381",
+            "pattern": "src/services/openai-provider.ts:383-383",
             "anchor": "getProviderToolFeeUsd('openai_web_search')",
             "behavior": "OpenAI web search budget reservations include the maximum separately billed tool fees.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",
@@ -1727,7 +1808,7 @@
             "minimumMutants": 2
           },
           {
-            "pattern": "src/services/openai-provider.ts:428-428",
+            "pattern": "src/services/openai-provider.ts:430-430",
             "anchor": "webSearchRequests * getProviderToolFeeUsd",
             "behavior": "Recorded OpenAI response cost includes the observed number of billed web search requests.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",
@@ -1735,7 +1816,7 @@
             "minimumMutants": 2
           },
           {
-            "pattern": "src/services/openai-provider.ts:566-566",
+            "pattern": "src/services/openai-provider.ts:568-568",
             "anchor": "input.webSearchRequests ?? 0",
             "behavior": "Persisted OpenAI API usage stores provider tool cost and web search request attribution.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",
@@ -1743,7 +1824,7 @@
             "minimumMutants": 2
           },
           {
-            "pattern": "src/services/openai-provider.ts:610-610",
+            "pattern": "src/services/openai-provider.ts:612-612",
             "anchor": "recordUsage(input.userId",
             "behavior": "Successful OpenAI response usage is mirrored to the calendar-aligned usage meter as best effort.",
             "replacementTest": "__tests__/services/openai-provider.test.ts",

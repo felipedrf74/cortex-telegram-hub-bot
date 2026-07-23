@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -10,7 +11,7 @@ import {
 } from './lib/changed-area-classifier.mjs';
 import { cleanGitEnv } from './lib/git-ref.mjs';
 import {
-  parseGitNameStatusZ,
+  parseGitNameStatusRecordsZ,
   parseGitPathsZ,
 } from './lib/git-changed-paths.mjs';
 
@@ -93,19 +94,25 @@ function resolveBase(requested) {
 }
 
 function collectGitChanges(baseRef) {
-  const committed = parseGitNameStatusZ(
+  const committed = parseGitNameStatusRecordsZ(
     git(['diff', '--name-status', '-z', `${baseRef}...HEAD`], { allowFailure: true }) ?? '',
   );
-  const staged = parseGitNameStatusZ(
+  const staged = parseGitNameStatusRecordsZ(
     git(['diff', '--cached', '--name-status', '-z'], { allowFailure: true }) ?? '',
   );
-  const unstaged = parseGitNameStatusZ(
+  const unstaged = parseGitNameStatusRecordsZ(
     git(['diff', '--name-status', '-z'], { allowFailure: true }) ?? '',
   );
   const untracked = parseGitPathsZ(
     git(['ls-files', '--others', '--exclude-standard', '-z'], { allowFailure: true }) ?? '',
   );
-  return [...committed, ...staged, ...unstaged, ...untracked];
+  const records = [...committed, ...staged, ...unstaged];
+  const testTopologyChanged = records.some((record) => /^[DR]/.test(record.status)
+    && record.paths.some((file) => /^__tests__\/.+\.test\.ts$/.test(file)));
+  return {
+    files: [...records.flatMap((record) => record.paths), ...untracked],
+    testTopologyChanged,
+  };
 }
 
 function isAncestor(baseRef) {
@@ -121,16 +128,23 @@ try {
     ? (options.baseRef || 'explicit-files')
     : resolveBase(options.baseRef);
   const impactResolved = explicit ? true : isAncestor(baseRef);
-  const files = explicit ? options.explicitFiles : collectGitChanges(baseRef);
+  const changes = explicit
+    ? {
+      files: options.explicitFiles,
+      testTopologyChanged: options.explicitFiles.some((file) => /^__tests__\/.+\.test\.ts$/.test(file)
+        && !fs.existsSync(path.join(root, file))),
+    }
+    : collectGitChanges(baseRef);
   const head = git(['rev-parse', '--short', 'HEAD'], { allowFailure: true }) ?? 'unknown';
   const result = classifyChangedFiles({
-    files,
+    files: changes.files,
     root,
     policyPath,
     irreversiblePolicyPath,
     baseRef,
     head,
     impactResolved,
+    testTopologyChanged: changes.testTopologyChanged,
   });
   process.stdout.write(options.format === 'json'
     ? `${JSON.stringify(result, null, 2)}\n`

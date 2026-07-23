@@ -1,7 +1,7 @@
 {
   "$schema": "./documentation-policy.schema.json",
   "schema": "nexus.documentation-policy.v1",
-  "version": "2026-07-15.1",
+  "version": "2026-07-22.1",
   "statusDefinitions": {
     "canonical": { "active": true },
     "current": { "active": true },
@@ -14,7 +14,7 @@
     "archive": { "active": false }
   },
   "defaults": {
-    "reviewedOn": "2026-07-16",
+    "reviewedOn": "2026-07-22",
     "reviewIntervalDays": 180
   },
   "rules": [
@@ -112,6 +112,11 @@
       "id": "cockpit-supporting-docs",
       "glob": "scripts/**/README.md",
       "metadata": { "status": "supporting", "owner": "developer experience lead" }
+    },
+    {
+      "id": "operations-runbooks",
+      "glob": "ops/**/*.md",
+      "metadata": { "status": "supporting", "owner": "release operations lead", "reviewIntervalDays": 90 }
     },
     {
       "id": "source-runtime-docs",

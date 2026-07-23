@@ -344,7 +344,7 @@ describe('changed-critical mutation gate', () => {
     expect(policy.mutation.minimumMutants).toBeUndefined();
     expect(policy.mutation.cleanupMappings.flatMap(
       ({ mutationTargets = [] }) => mutationTargets,
-    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(48);
+    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(50);
   });
 
   it('maps deleted-test source text back to repository source dependencies', () => {
@@ -831,11 +831,11 @@ describe('changed-critical mutation gate', () => {
       '__tests__/services/openai-provider.test.ts',
     ]));
     expect(mapping?.mutationTargets?.map(({ pattern }) => pattern)).toEqual([
-      'src/services/gemini-provider.ts:657-657',
-      'src/services/openai-provider.ts:381-381',
-      'src/services/openai-provider.ts:428-428',
-      'src/services/openai-provider.ts:566-566',
-      'src/services/openai-provider.ts:610-610',
+      'src/services/gemini-provider.ts:659-659',
+      'src/services/openai-provider.ts:383-383',
+      'src/services/openai-provider.ts:430-430',
+      'src/services/openai-provider.ts:568-568',
+      'src/services/openai-provider.ts:612-612',
     ]);
     expect(mapping?.mutationTargets?.reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(8);
   });

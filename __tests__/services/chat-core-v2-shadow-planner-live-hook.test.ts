@@ -196,6 +196,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
     // bounded text-free packet (no raw user message text in the prompt).
     expect(dispatchLocalReasoning).toHaveBeenCalledTimes(1);
     const task = dispatchLocalReasoning.mock.calls[0][0] as {
+      workloadRole?: string;
       prompt: string;
       systemContext?: string;
       outputSchema?: unknown;
@@ -204,6 +205,7 @@ describe('Chat Core v2 shadow planner live hook (Batch-A)', () => {
       numPredict?: number;
       allowCloudEscalation?: boolean;
     };
+    expect(task.workloadRole).toBe('classifier_shadow');
     expect(task.think).toBe(false);
     expect(task.allowCloudEscalation).toBe(false);
     expect(typeof task.numPredict).toBe('number');

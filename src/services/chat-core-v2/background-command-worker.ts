@@ -11,9 +11,9 @@
  *      failure (§5.E / WP-15 acceptance).
  *   3. Re-validate `isExecutableCommandType` (defence in depth; the enqueue side
  *      already rejected unexecutable types).
- *   4. When the job is the 35B escalation path, resolve the keep-alive residency
- *      via `resolveKeepAliveForRole('escalation_35b')` (=300) — the only path
- *      that exercises the 5m residency (closes B8).
+ *   4. Background escalation never selects a large local model. Resolve the
+ *      small-only residency via `resolveKeepAliveForRole('background_escalation')`
+ *      (=0) so a stale/background path cannot pin inference memory.
  *   5. Execute via `executeChatCoreV2Command` (§5.E crossing 3: ids are NUMBER).
  *   6. Record a command event using ONLY migration-159 enum values
  *      (execution => `execution_completed`/`verified`; failure =>
@@ -50,7 +50,7 @@ export interface ProcessBackgroundChatCommandResult {
   status: string;
   finalState: ChatCoreV2BackgroundJobState;
   apnsPushed: boolean;
-  /** The resolved keep-alive seconds when the 35B escalation path ran. */
+  /** The resolved keep-alive seconds for a background escalation. */
   escalationKeepAliveSeconds?: number;
 }
 
@@ -160,13 +160,11 @@ export async function processBackgroundChatCommandJob(
     throw new Error(`chat_core_v2_background_command_unexecutable:${command.commandType}`);
   }
 
-  // ── 35B escalation residency (§5.E closes B8). The planner_escalation jobType
-  // is the only path that runs the 35B model in the background; assert its 5m
-  // (=300) keep-alive residency here. composer stays on the 3B/foreground model
-  // and does not pin the 35B residency. ──
+  // ── Small-only background residency. Complex work goes through approved
+  // cloud routing elsewhere; this worker never pins a large local model. ──
   let escalationKeepAliveSeconds: number | undefined;
   if (payload.jobType === 'planner_escalation') {
-    escalationKeepAliveSeconds = resolveKeepAliveForRole('escalation_35b');
+    escalationKeepAliveSeconds = resolveKeepAliveForRole('background_escalation');
   }
 
   // §5.E crossing 3: executeChatCoreV2Command ids are NUMBER. Convert the STRING

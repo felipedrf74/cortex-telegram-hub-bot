@@ -1,5 +1,16 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -216,11 +227,12 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     }
   });
 
-  it('signs release and staging evidence only through protected-main environment secret paths', () => {
+  it('signs release, staging, and rollback evidence only through protected-main secret paths', () => {
     const raw = stagingSigner();
     const rc = workflow();
     const release = releaseSigner();
     const request = readFileSync('scripts/request-staging-attestation.sh', 'utf8');
+    const rollbackRequest = readFileSync('scripts/request-rollback-drill-signature.sh', 'utf8');
 
     expect(raw).toContain('environment: release-signing');
     expect(raw).toContain("github.ref == 'refs/heads/main'");
@@ -230,6 +242,13 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs validate-request');
     expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs sign');
     expect(raw).toContain('staging-attestation-${{ inputs.request_id }}');
+    expect(raw).toContain("inputs.evidence_kind == 'rollback_drill'");
+    expect(raw).toContain('trusted-tooling/scripts/rollback-drill-check.mjs validate-payload');
+    expect(raw).toContain('trusted-tooling/scripts/rollback-drill-check.mjs sign');
+    expect(raw).toContain('git -C trusted-tooling merge-base --is-ancestor "$RUNTIME_SHA" HEAD');
+    expect(raw).toContain('rollback-drill-${{ inputs.request_id }}');
+    expect(raw).toContain('${#REQUEST_B64} -le 60000');
+    expect(raw.match(/secrets\.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM/g)).toHaveLength(1);
     expect(raw).not.toContain('SERVER_SSH_KEY');
     expect(release).toContain('environment: release-signing');
     expect(release).toContain('trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest');
@@ -238,6 +257,12 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(rc).not.toContain('sign_staging');
     expect(request).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(request).toContain('gh workflow run "$SIGNING_WORKFLOW" --ref "$REF"');
+    expect(rollbackRequest).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
+    expect(rollbackRequest).toContain('-f "evidence_kind=rollback_drill"');
+    expect(rollbackRequest).toContain('-f "request_sha256=$REQUEST_SHA256"');
+    expect(rollbackRequest).toContain('rollback-drill-latest.json');
+    expect(rollbackRequest).toContain('[ "$REQUEST_SIZE" -le 45000 ]');
+    expect(rollbackRequest).toContain('[ "${#REQUEST_B64}" -le 60000 ]');
   });
 
   it.each([
@@ -286,6 +311,45 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
         writeFileSync(join(root, 'scripts/release-staging-attestation.mjs'), `
           if (process.argv[2] !== 'validate-request') process.exit(70);
         `);
+      },
+      contractScope: null,
+    },
+    {
+      label: 'rollback drill',
+      script: 'request-rollback-drill-signature.sh',
+      workflow: 'sign-staging-attestation.yml',
+      args: (root: string, _runtimeSha: string) => [
+        join(root, 'rollback-drill-request.json'),
+        join(root, '.local/release/rollback-drill-latest.json'),
+      ],
+      prepare: (root: string, runtimeSha: string) => {
+        mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+        copyFileSync(
+          join('scripts', 'rollback-drill-check.mjs'),
+          join(root, 'scripts/rollback-drill-check.mjs'),
+        );
+        copyFileSync(
+          join('scripts/lib', 'freshness.mjs'),
+          join(root, 'scripts/lib/freshness.mjs'),
+        );
+        writeFileSync(join(root, 'rollback-drill-request.json'), JSON.stringify({
+          schema: 'nexus.rollback-drill-payload.v1',
+          drilledAt: new Date().toISOString(),
+          result: 'passed',
+          restoreMode: 'dry-run',
+          dryRun: true,
+          sourceVersion: '4.14.230',
+          targetVersion: '4.14.231',
+          sourceSha: 'b'.repeat(40),
+          targetSha: runtimeSha,
+          targetBackup: 'v4.14.230_before-v4.14.231_20260723_120000.tar.gz',
+          targetBackupSha256: 'c'.repeat(64),
+          machineEvidenceSha256: 'd'.repeat(64),
+          operator: 'fixture-owner',
+          databaseIntegrity: 'ok',
+          backupContainsDatabase: true,
+          healthCheck: 'passed',
+        }));
       },
       contractScope: null,
     },
@@ -356,8 +420,197 @@ exit 74
           expect(calls[dispatchIndex]).not.toContain('ios_contract_result=');
         }
       }
+      if (scriptName === 'request-rollback-drill-signature.sh') {
+        expect(calls[dispatchIndex]).toContain('-f evidence_kind=rollback_drill');
+        expect(calls[dispatchIndex]).toContain(`-f runtime_sha=${runtimeSha}`);
+        expect(calls[dispatchIndex]).toMatch(
+          /-f request_id=[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/,
+        );
+        expect(calls[dispatchIndex]).toMatch(/-f request_sha256=[0-9a-f]{64}/);
+        expect(calls[dispatchIndex]).toContain('-f request_b64=');
+      }
       expect(calls.some((call) => call.startsWith('run watch '))).toBe(false);
       expect(calls.some((call) => call.startsWith('run download '))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('downloads, revalidates, and atomically installs the exact signed rollback payload', () => {
+    const root = mkdtempSync(join(tmpdir(), 'rollback-signing-success-'));
+    const bin = join(root, 'bin');
+    const scripts = join(root, 'scripts');
+    const publicDir = join(root, 'docs/release/evidence');
+    const request = join(root, 'rollback-request.json');
+    const signed = join(root, 'signed-rollback.json');
+    const output = join(root, '.local/release/rollback-drill-latest.json');
+    const runIdFile = join(root, 'request-id');
+    const runtimeSha = 'a'.repeat(40);
+    try {
+      mkdirSync(join(scripts, 'lib'), { recursive: true });
+      mkdirSync(publicDir, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      copyFileSync(
+        'scripts/request-rollback-drill-signature.sh',
+        join(scripts, 'request-rollback-drill-signature.sh'),
+      );
+      copyFileSync('scripts/rollback-drill-check.mjs', join(scripts, 'rollback-drill-check.mjs'));
+      copyFileSync('scripts/lib/freshness.mjs', join(scripts, 'lib/freshness.mjs'));
+      chmodSync(join(scripts, 'request-rollback-drill-signature.sh'), 0o755);
+      const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+      const privateKeyPath = join(root, 'private.pem');
+      writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+      writeFileSync(
+        join(publicDir, 'release-evidence-public-key.pem'),
+        publicKey.export({ type: 'spki', format: 'pem' }),
+      );
+      writeFileSync(request, `${JSON.stringify({
+        schema: 'nexus.rollback-drill-payload.v1',
+        drilledAt: new Date().toISOString(),
+        result: 'passed',
+        restoreMode: 'dry-run',
+        dryRun: true,
+        sourceVersion: '4.14.230',
+        targetVersion: '4.14.231',
+        sourceSha: 'b'.repeat(40),
+        targetSha: runtimeSha,
+        targetBackup: 'v4.14.230_before-v4.14.231_20260723_120000.tar.gz',
+        targetBackupSha256: 'c'.repeat(64),
+        machineEvidenceSha256: 'd'.repeat(64),
+        operator: 'fixture-owner',
+        databaseIntegrity: 'ok',
+        backupContainsDatabase: true,
+        healthCheck: 'passed',
+      }, null, 2)}\n`);
+      execFileSync(process.execPath, [
+        join(scripts, 'rollback-drill-check.mjs'),
+        'sign',
+        '--root', root,
+        '--evidence', request,
+        '--private-key', privateKeyPath,
+        '--output', signed,
+        '--json',
+      ], { cwd: root, env: cleanGitEnv() });
+      mkdirSync(join(root, '.local/release'), { recursive: true });
+      writeFileSync(output, 'previous evidence\n', { mode: 0o600 });
+      writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+if (args[0] === 'auth' && args[1] === 'status') process.exit(0);
+if (args[0] === 'workflow' && args[1] === 'view') process.exit(0);
+if (args[0] === 'workflow' && args[1] === 'run') {
+  const fields = args.flatMap((arg, index) => arg === '-f' ? [args[index + 1]] : []);
+  const requestId = fields.find((field) => field.startsWith('request_id=')).slice('request_id='.length);
+  fs.writeFileSync(process.env.FAKE_RUN_ID_FILE, requestId);
+  process.exit(0);
+}
+if (args[0] === 'run' && args[1] === 'list') {
+  const requestId = fs.readFileSync(process.env.FAKE_RUN_ID_FILE, 'utf8');
+  process.stdout.write(JSON.stringify([{ databaseId: 4242, displayTitle: 'Sign rollback drill ' + requestId }]));
+  process.exit(0);
+}
+if (args[0] === 'run' && args[1] === 'watch') process.exit(0);
+if (args[0] === 'run' && args[1] === 'download') {
+  const outputIndex = args.indexOf('--dir');
+  const outputDir = args[outputIndex + 1];
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.copyFileSync(process.env.FAKE_SIGNED_EVIDENCE, path.join(outputDir, 'rollback-drill.json'));
+  process.exit(0);
+}
+process.exit(74);
+`);
+      chmodSync(join(bin, 'gh'), 0o755);
+
+      const result = spawnSync('/bin/bash', [
+        'scripts/request-rollback-drill-signature.sh',
+        request,
+        output,
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanGitEnv({
+          FAKE_RUN_ID_FILE: runIdFile,
+          FAKE_SIGNED_EVIDENCE: signed,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        }),
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: true,
+        workflowRunId: '4242',
+        targetSha: runtimeSha,
+        evidence: output,
+      });
+      expect(readFileSync(output, 'utf8')).toBe(readFileSync(signed, 'utf8'));
+      expect(statSync(output).mode & 0o777).toBe(0o600);
+
+      const differentRequest = join(root, 'different-request.json');
+      const differentSigned = join(root, 'different-signed-rollback.json');
+      const differentPayload = JSON.parse(readFileSync(request, 'utf8'));
+      differentPayload.operator = 'different-owner';
+      writeFileSync(differentRequest, `${JSON.stringify(differentPayload, null, 2)}\n`);
+      execFileSync(process.execPath, [
+        join(scripts, 'rollback-drill-check.mjs'),
+        'sign',
+        '--root', root,
+        '--evidence', differentRequest,
+        '--private-key', privateKeyPath,
+        '--output', differentSigned,
+        '--json',
+      ], { cwd: root, env: cleanGitEnv() });
+      const mismatched = spawnSync('/bin/bash', [
+        'scripts/request-rollback-drill-signature.sh',
+        request,
+        output,
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanGitEnv({
+          FAKE_RUN_ID_FILE: runIdFile,
+          FAKE_SIGNED_EVIDENCE: differentSigned,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        }),
+      });
+
+      expect(mismatched.status).not.toBe(0);
+      expect(mismatched.stderr).toContain(
+        'downloaded rollback drill payload differs from the exact reviewed request',
+      );
+      expect(readFileSync(output, 'utf8')).toBe(readFileSync(signed, 'utf8'));
+
+      rmSync(output);
+      mkdirSync(output);
+      const directoryOutput = spawnSync('/bin/bash', [
+        'scripts/request-rollback-drill-signature.sh',
+        request,
+        output,
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanGitEnv({ PATH: `${bin}:${process.env.PATH ?? ''}` }),
+      });
+      expect(directoryOutput.status).toBe(64);
+      expect(directoryOutput.stderr).toContain(
+        'signed rollback drill output must be a regular non-symlink file',
+      );
+
+      rmSync(output, { recursive: true });
+      symlinkSync(publicDir, output);
+      const symlinkOutput = spawnSync('/bin/bash', [
+        'scripts/request-rollback-drill-signature.sh',
+        request,
+        output,
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanGitEnv({ PATH: `${bin}:${process.env.PATH ?? ''}` }),
+      });
+      expect(symlinkOutput.status).toBe(64);
+      expect(symlinkOutput.stderr).toContain(
+        'signed rollback drill output must be a regular non-symlink file',
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -5,9 +5,8 @@ vi.mock('../../src/config', () => ({
     ollama: {
       enabled: true,
       baseUrl: 'http://127.0.0.1:11434',
-      model: 'qwen3.6:35b-a3b-q4_K_M',
+      model: 'qwen2.5:3b-instruct-q4_K_M',
       classifierModel: 'qwen2.5:3b-instruct-q4_K_M',
-      operationalRollbackModel: 'qwen3.6:27b-q4_K_M',
       maxTokens: 2048,
       secretaryMaxTokens: 4096,
       timeoutMs: 200,
@@ -87,7 +86,7 @@ const fetchMock = vi.fn();
 
 function makeChatResponse(content = 'ok') {
   return new Response(JSON.stringify({
-    model: 'qwen3.6:35b-a3b-q4_K_M',
+    model: 'qwen2.5:3b-instruct-q4_K_M',
     message: { role: 'assistant', content },
     done: true,
     done_reason: 'stop',
@@ -102,7 +101,7 @@ function makeChatResponse(content = 'ok') {
 
 function makeTagsResponse() {
   return new Response(JSON.stringify({
-    models: [{ name: 'qwen3.6:35b-a3b-q4_K_M', digest: 'sha256:abc' }],
+    models: [{ name: 'qwen2.5:3b-instruct-q4_K_M', digest: 'sha256:abc' }],
   }), { status: 200 });
 }
 
@@ -128,9 +127,11 @@ afterEach(() => {
 describe('ChatCoreV2 keep-alive adapter', () => {
   it('maps residency policy roles to Ollama keep_alive seconds', () => {
     expect(resolveKeepAliveForRole('planner_3b')).toBe(-1);
-    expect(resolveKeepAliveForRole('escalation_35b')).toBe(300);
+    expect(resolveKeepAliveForRole('background_escalation')).toBe(0);
+    expect(resolveKeepAliveForRole('escalation_35b')).toBe(0);
     expect(resolveKeepAliveForRole('operational_rollback')).toBe(0);
-    expect(resolveKeepAliveForRole('not_a_role')).toBe(-1);
+    expect(resolveKeepAliveForRole('classifier_shadow')).toBe(300);
+    expect(resolveKeepAliveForRole('not_a_role')).toBe(0);
   });
 
   it('sends task.keepAliveSeconds to Ollama localReason requests', async () => {
@@ -140,6 +141,7 @@ describe('ChatCoreV2 keep-alive adapter', () => {
 
     const provider = new OllamaProvider();
     await provider.localReason({
+      workloadRole: 'validated_local_chat',
       prompt: 'Summarize keep-alive policy.',
       systemContext: 'You are a test assistant.',
       keepAliveSeconds: 300,
@@ -159,6 +161,7 @@ describe('ChatCoreV2 keep-alive adapter', () => {
 
     const provider = new OllamaProvider();
     await provider.localReason({
+      workloadRole: 'validated_local_chat',
       prompt: 'Use the default local reasoning residency.',
       systemContext: 'You are a test assistant.',
       think: false,

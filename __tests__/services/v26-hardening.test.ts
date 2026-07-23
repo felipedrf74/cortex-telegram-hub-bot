@@ -14,7 +14,7 @@ vi.mock('../../src/config', () => ({
   config: {
     ollama: {
       enabled: true, baseUrl: 'http://127.0.0.1:11434',
-      model: 'qwen3.6:35b-a3b-q4_K_M', classifierModel: 'qwen3.6:35b-a3b-q4_K_M',
+      model: 'qwen2.5:3b-instruct-q4_K_M', classifierModel: 'qwen2.5:3b-instruct-q4_K_M',
       timeoutMs: 5000,
       tokenCaps: { classifyMaxInput: 1500, classifyMaxOutput: 128,
         scriptGenMaxInput: 6000, scriptGenMaxOutput: 4096,

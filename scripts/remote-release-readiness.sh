@@ -194,6 +194,10 @@ if (body.status !== 'ready' || body.internalAuthConfigured !== true) {
 NODE
 }
 
+monotonic_seconds() {
+  "$NODE_BIN" -e 'process.stdout.write(String(Number(process.hrtime.bigint() / 1000000000n)))'
+}
+
 probe_readiness() {
   : > "$backend_health"
   : > "$content_ready"
@@ -230,12 +234,23 @@ if [ "$ready" != true ]; then
   exit 1
 fi
 
+STABILITY_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+STABILITY_STARTED_MONOTONIC="$(monotonic_seconds)"
 [ "$STABILITY_SECONDS" -eq 0 ] || sleep "$STABILITY_SECONDS"
 snapshot_pm2 "$final"
+STABILITY_COMPLETED_MONOTONIC="$(monotonic_seconds)"
+STABILITY_COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+STABILITY_OBSERVED_SECONDS=$((STABILITY_COMPLETED_MONOTONIC - STABILITY_STARTED_MONOTONIC))
+[ "$STABILITY_OBSERVED_SECONDS" -ge "$STABILITY_SECONDS" ] || {
+  echo "PM2 stability observation did not cover the configured soak" >&2
+  exit 1
+}
 
-"$NODE_BIN" - "$baseline" "$final" "$OUTPUT" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" <<'NODE'
+"$NODE_BIN" - "$baseline" "$final" "$OUTPUT" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" \
+  "$STABILITY_STARTED_AT" "$STABILITY_COMPLETED_AT" "$STABILITY_OBSERVED_SECONDS" <<'NODE'
 const fs = require('fs');
-const [baselinePath, finalPath, output, role, runtimeSha, stabilitySeconds, readinessAttempts] = process.argv.slice(2);
+const [baselinePath, finalPath, output, role, runtimeSha, stabilitySeconds, readinessAttempts,
+  stabilityStartedAt, stabilityCompletedAt, stabilityObservedSeconds] = process.argv.slice(2);
 const before = JSON.parse(fs.readFileSync(baselinePath, 'utf8')).services;
 const after = JSON.parse(fs.readFileSync(finalPath, 'utf8')).services;
 for (const initial of before) {
@@ -252,6 +267,9 @@ const evidence = {
   runtimeSha,
   checkedAt: new Date().toISOString(),
   stabilitySeconds: Number(stabilitySeconds),
+  stabilityStartedAt,
+  stabilityCompletedAt,
+  stabilityObservedSeconds: Number(stabilityObservedSeconds),
   readinessAttempts: Number(readinessAttempts),
   checks: {
     nativeBinding: true,

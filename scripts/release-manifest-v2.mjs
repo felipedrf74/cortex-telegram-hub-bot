@@ -19,6 +19,11 @@ import {
   validateReleaseSelection,
 } from './release-test-evidence.mjs';
 import {
+  compareProtectedMainToRelease,
+  validateProtectedMainCiEvidence,
+  validateReleaseShadowComparison,
+} from './protected-main-ci-evidence.mjs';
+import {
   backendIosContractDigest,
   backendIosContractFixtureIdentity,
 } from './lib/backend-ios-contract-fixture.mjs';
@@ -216,6 +221,16 @@ function releaseTestResultReasons(results, binding, options = {}) {
       reasons.push('release_test_pytest_count_invalid');
     }
     if (results.schema !== RELEASE_RESULTS_SCHEMA) reasons.push('release_test_ci_schema_invalid');
+    if (results.artifactDigest !== binding.artifactDigest) {
+      reasons.push('release_test_artifact_digest_mismatch');
+    }
+    const expectedLockfiles = {
+      packageLockSha256: fileSha('package-lock.json'),
+      pythonRequirementsSha256: fileSha('content-engine/requirements.txt'),
+    };
+    if (canonicalJson(results.lockfiles) !== canonicalJson(expectedLockfiles)) {
+      reasons.push('release_test_lockfile_digest_mismatch');
+    }
     if (results.testPolicyDigest !== binding.testPolicyDigest) {
       reasons.push('release_test_policy_digest_mismatch');
     }
@@ -227,6 +242,30 @@ function releaseTestResultReasons(results, binding, options = {}) {
       if (results.tier !== selection.tier) reasons.push('release_test_tier_mismatch');
     } catch {
       reasons.push('release_test_selection_invalid');
+    }
+    try {
+      const shadow = results.protectedMainShadow;
+      if (!shadow || shadow.mode !== 'shadow') throw new Error('shadow binding missing');
+      const comparison = validateReleaseShadowComparison(shadow.comparison, {
+        expectedRuntimeSha: binding.runtimeSha,
+      });
+      if (shadow.evidence === null) {
+        if (comparison.status !== 'ineligible' || comparison.mainCi !== null) {
+          throw new Error('missing evidence is reusable');
+        }
+      } else {
+        const evidence = validateProtectedMainCiEvidence(shadow.evidence, {
+          expectedHeadSha: binding.runtimeSha,
+          expectedPolicyDigest: binding.testPolicyDigest,
+        });
+        const recomputed = compareProtectedMainToRelease(evidence, results);
+        recomputed.comparedAt = comparison.comparedAt;
+        if (canonicalJson(recomputed) !== canonicalJson(comparison)) {
+          throw new Error('shadow verdict mismatch');
+        }
+      }
+    } catch {
+      reasons.push('release_test_protected_main_shadow_invalid');
     }
     if (verifyCiContext) {
       const currentRunId = process.env.GITHUB_RUN_ID?.trim() ?? '';

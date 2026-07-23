@@ -133,11 +133,19 @@ describe('risk-gate dry run', () => {
         '--files',
         'src/services/training-exercise-media.ts',
       ],
-      { encoding: 'utf8' },
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NEXUS_RISK_GATE_JSON_OUTPUT: '.local/ci-evidence/vitest-results-2.json',
+        },
+      },
     );
 
     expect(raw).toContain('vitest mode: full');
-    expect(raw).toContain('node scripts/run-test-tier.mjs deterministic --reporter dot --shard 2/4');
+    expect(raw).toContain('node scripts/run-test-tier.mjs deterministic --reporter dot');
+    expect(raw).toContain('--json-output .local/ci-evidence/vitest-results-2.json');
+    expect(raw).toContain('--shard 2/4');
   });
 
   it('rejects malformed or out-of-range Vitest shards', () => {

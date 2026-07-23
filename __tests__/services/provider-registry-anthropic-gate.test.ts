@@ -73,5 +73,12 @@ describe('provider registry Anthropic gate observability', () => {
       }),
       false,
     );
+    expect(loggerInfo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scriptGeneration: 'unavailable:ollama→approved_cloud_reasoning',
+        localReasoning: 'unavailable:ollama→approved_cloud_reasoning',
+      }),
+      'Provider routing initialized',
+    );
   });
 });

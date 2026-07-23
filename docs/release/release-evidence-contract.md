@@ -91,6 +91,21 @@ evidence stay under `.local/release/` and are uploaded as restricted CI
 artifacts. Only the public verification key, current release state, and durable
 policy are tracked.
 
+Rollback-drill freshness evidence uses the same protected operational signing
+boundary as the staging attestation, not a third signing workflow. A completed
+isolated dry-run produces a non-secret `nexus.rollback-drill-payload.v1`
+request with an exact allowlisted schema, bounded scalar values, the restored
+backup SHA-256, and the retained machine-evidence bundle SHA-256. Unknown
+fields and free-form logs are rejected. `scripts/request-rollback-drill-signature.sh` binds its exact byte
+digest and target SHA, dispatches the protected-main
+`sign-staging-attestation.yml` rollback operation, and installs the validated
+`nexus.rollback-drill.v1` envelope at the ignored
+`.local/release/rollback-drill-latest.json` path. The target commit must be
+reachable from protected `main`; the envelope uses the current release-evidence
+Ed25519 key and is valid for release gating for at most 30 days. Protected
+signing approves the exact reviewed payload but does not replace the underlying
+isolated restore, integrity, health, and retained machine evidence.
+
 `release:prepare` creates the governed bundle and an unsigned payload. The RC
 workflow has no private-key access. A separate workflow dispatched on protected
 `main`, approved through the `release-signing` environment, independently
@@ -146,6 +161,16 @@ identifier, that exactly one persisted active owner belongs to an explicitly sco
 non-global write cohort with every workspace slice enabled. Strict owner
 bootstrap and the same extended readiness checks run while automatic recovery
 remains armed.
+The durable promotion journal also binds exact predecessor and candidate
+artifact/installed-runtime digests, a root-owned monotonic cutover budget, and
+separate cutover-start, actual-unavailability, candidate-available, and
+predecessor-recovered timestamps. Successful candidate availability must occur
+within 60 seconds; automatic recovery consumes only the remaining portion of
+the 120-second outage-to-healthy budget. A recovery archive is accepted only
+after exact path, size, whole-archive digest, safe-entry extraction, SQLite
+integrity/foreign-key checks, and stopped-state database digest agreement.
+These controls are implemented locally; live SSH-loss, failed-health, and
+reboot timing remain `MANUAL_REQUIRED` until their staging drills are retained.
 Repository-sync deployment
 wrappers were retired after two staging rehearsals and two owner-authorized
 production releases proved this contract on 2026-07-15; exact rollback and

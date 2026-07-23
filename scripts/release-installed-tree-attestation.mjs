@@ -23,6 +23,10 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function fileDigest(relative) {
   const file = path.join(root, relative);
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
@@ -61,13 +65,49 @@ function treeIdentity(relativeRoot) {
     }
   };
   walk(absoluteRoot);
-  entries.sort((a, b) => a.path.localeCompare(b.path));
+  entries.sort((a, b) => compareCodeUnits(a.path, b.path));
   const totalBytes = entries.reduce((sum, entry) => sum + (entry.size ?? 0), 0);
   return {
     path: relativeRoot,
     digest: sha256(canonicalJson(entries)),
     entryCount: entries.length,
     totalBytes,
+  };
+}
+
+function networkIndependentInstallIdentity() {
+  const evidenceRelative = '.network-independent-install.json';
+  const lockRelative = 'dist/runtime-dependencies/lock.json';
+  const evidencePath = path.join(root, evidenceRelative);
+  const lockPath = path.join(root, lockRelative);
+  if (!fs.existsSync(evidencePath) || !fs.statSync(evidencePath).isFile()) {
+    throw new Error('network-independent install evidence is missing');
+  }
+  if (!fs.existsSync(lockPath) || !fs.statSync(lockPath).isFile()) {
+    throw new Error('runtime dependency lock is missing');
+  }
+  const evidenceBytes = fs.readFileSync(evidencePath);
+  const evidence = JSON.parse(evidenceBytes.toString('utf8'));
+  const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  if (evidence.schema !== 'nexus.network-independent-install.v1'
+      || evidence.status !== 'passed'
+      || !/^[0-9a-f]{64}$/.test(evidence.dependencyLockDigest ?? '')
+      || !/^[0-9a-f]{64}$/.test(evidence.packageLockSha256 ?? '')
+      || !/^[0-9a-f]{64}$/.test(evidence.pythonRequirementsSha256 ?? '')
+      || Number.isNaN(Date.parse(evidence.installedAt ?? ''))) {
+    throw new Error('network-independent install evidence is invalid');
+  }
+  const dependencyLockDigest = sha256(canonicalJson(lock));
+  if (evidence.dependencyLockDigest !== dependencyLockDigest
+      || evidence.packageLockSha256 !== fileDigest('package-lock.json')
+      || evidence.pythonRequirementsSha256 !== fileDigest('content-engine/requirements.txt')) {
+    throw new Error('network-independent install evidence is not bound to release inputs');
+  }
+  return {
+    schema: evidence.schema,
+    status: evidence.status,
+    dependencyLockDigest,
+    evidenceSha256: sha256(evidenceBytes),
   };
 }
 
@@ -88,6 +128,7 @@ function buildIdentity() {
         { encoding: 'utf8' },
       ).trim(),
     },
+    networkIndependentInstall: networkIndependentInstallIdentity(),
     trees: [treeIdentity('node_modules'), treeIdentity('content-engine/.venv')],
   };
 }

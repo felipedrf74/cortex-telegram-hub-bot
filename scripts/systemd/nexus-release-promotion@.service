@@ -1,0 +1,22 @@
+[Unit]
+Description=Nexus exact release promotion transaction %i
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=nexus-release
+Group=nexus-release
+UMask=0077
+Environment=NEXUS_PROMOTION_STATE_ROOT=/var/lib/nexus-release-promotion
+ExecStart=/usr/bin/sudo -n /usr/local/sbin/nexus-release-promotion-worker-control run %i
+TimeoutStartSec=15min
+TimeoutStopSec=120s
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=2s
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true

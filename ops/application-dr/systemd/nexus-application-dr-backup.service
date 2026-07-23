@@ -1,0 +1,33 @@
+[Unit]
+Description=Encrypted off-host Nexus application recovery point
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/nexus-application-dr/backup.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/nexus-application-dr/application-dr-backup.sh --config /etc/nexus-application-dr/backup.env
+UMask=0077
+StateDirectory=nexus-application-dr
+StateDirectoryMode=0700
+TimeoutStartSec=50min
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true

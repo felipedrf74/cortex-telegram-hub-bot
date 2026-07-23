@@ -1,0 +1,23 @@
+[Unit]
+Description=Nexus Hub advisory SonarQube Community Build
+Documentation=https://docs.sonarsource.com/sonarqube-community-build/
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+WorkingDirectory=/srv/sonarqube
+ExecStart=/usr/local/sbin/quality-sonar-stack start
+ExecReload=/usr/local/sbin/quality-sonar-stack restart
+ExecStop=/usr/local/sbin/quality-sonar-stack stop
+TimeoutStartSec=20min
+TimeoutStopSec=70min
+UMask=0077
+ExecStartPre=/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
+
+[Install]
+WantedBy=multi-user.target

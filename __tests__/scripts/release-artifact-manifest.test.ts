@@ -267,6 +267,89 @@ describe('release-artifact-manifest', () => {
     );
   });
 
+  it('verifies an exact downloaded bundle against the recorded runtime SHA and digest', () => {
+    const bundle = path.join(tmp, 'downloaded-runtime-bundle');
+    const runtimeSha = 'a'.repeat(40);
+    const entryPath = 'dist/index.js';
+    const entryBody = Buffer.from('console.log("sealed");\n');
+    fs.mkdirSync(path.join(bundle, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(bundle, entryPath), entryBody);
+    const files = [{ path: entryPath, size: entryBody.length, sha256: sha256(entryBody) }];
+    const artifactDigest = releaseArtifactDigest(files);
+    fs.writeFileSync(path.join(bundle, 'artifact-manifest.json'), `${JSON.stringify({
+      schema: 'nexus.release-artifact-manifest.v1',
+      digest: artifactDigest,
+      fileCount: files.length,
+      files,
+    })}\n`);
+    fs.writeFileSync(path.join(bundle, '.complete.json'), `${JSON.stringify({
+      schema: 'nexus.release-bundle.v1',
+      runtimeSha,
+      artifactDigest,
+      fileCount: files.length,
+    })}\n`);
+
+    const verified = JSON.parse(execFileSync(process.execPath, [
+      script,
+      '--verify-bundle', bundle,
+      '--expected-runtime-sha', runtimeSha,
+      '--expected-digest', artifactDigest,
+    ], { encoding: 'utf8' }));
+    expect(verified).toMatchObject({
+      schema: 'nexus.release-bundle-verification.v1',
+      status: 'passed',
+      runtimeSha,
+      artifactDigest,
+      fileCount: 1,
+    });
+
+    const rejected = spawnSync(process.execPath, [
+      script,
+      '--verify-bundle', bundle,
+      '--expected-runtime-sha', runtimeSha,
+      '--expected-digest', 'f'.repeat(64),
+    ], { encoding: 'utf8' });
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain('does not match --expected-digest');
+  });
+
+  it('verifies bundle paths with locale-independent code-unit ordering', () => {
+    const bundle = path.join(tmp, 'code-unit-ordered-bundle');
+    const runtimeSha = 'a'.repeat(40);
+    const entries = [
+      ['dist/runtime-dependencies/fastapi-0.whl', Buffer.from('hyphen\n')],
+      ['dist/runtime-dependencies/fastapi_0.whl', Buffer.from('underscore\n')],
+    ] as const;
+    const files = entries.map(([entryPath, body]) => ({
+      path: entryPath,
+      size: body.length,
+      sha256: sha256(body),
+    }));
+    for (const [entryPath, body] of entries) {
+      fs.mkdirSync(path.dirname(path.join(bundle, entryPath)), { recursive: true });
+      fs.writeFileSync(path.join(bundle, entryPath), body);
+    }
+    const artifactDigest = releaseArtifactDigest(files);
+    fs.writeFileSync(path.join(bundle, 'artifact-manifest.json'), `${JSON.stringify({
+      schema: 'nexus.release-artifact-manifest.v1',
+      digest: artifactDigest,
+      fileCount: files.length,
+      files,
+    })}\n`);
+    fs.writeFileSync(path.join(bundle, '.complete.json'), `${JSON.stringify({
+      schema: 'nexus.release-bundle.v1',
+      runtimeSha,
+      artifactDigest,
+      fileCount: files.length,
+    })}\n`);
+
+    expect(files.map((entry) => entry.path)).toEqual([
+      'dist/runtime-dependencies/fastapi-0.whl',
+      'dist/runtime-dependencies/fastapi_0.whl',
+    ]);
+    expect(() => verifyReleaseBundle(bundle, runtimeSha)).not.toThrow();
+  });
+
   it('revalidates sealed bundle closure without installed package dependencies', () => {
     const bundle = path.join(tmp, 'isolated-bundle');
     const verifierRoot = path.join(tmp, 'isolated-verifier');

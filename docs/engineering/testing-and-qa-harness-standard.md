@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-07-15
+Last verified: 2026-07-22
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. `config/test-policy.json` is the
 machine-readable tier/disposition policy; `docs/release/README.md` describes
@@ -51,10 +51,12 @@ Every test must:
    dependency directly.
 6. **Be deterministic.** A test that "sometimes passes" is broken;
    investigate via `--repeat 30` before merging.
-7. **Be fast.** A unit test normally runs in <100 ms; integration setup must not
-   replay the migration tree. No non-exempt deterministic test file may exceed
-   10 s. Shared-runner wall-clock benchmarks belong in `test:benchmark`, not a
-   correctness assertion.
+7. **Be fast and measure honestly.** A unit test normally runs in <100 ms;
+   integration setup must not replay the migration tree. Nightly cold-file
+   timing is advisory: a passing correctness suite is not failed solely because
+   one cold sample exceeded 10 s. Reproduce a regression with a warmed,
+   repeated focused benchmark before enforcing it. Shared-runner wall-clock
+   benchmarks belong in `test:benchmark`, not a correctness assertion.
 
 ## 3. `vi.mock` completeness (must)
 
@@ -111,6 +113,20 @@ file set. Missing/stale/mismatched nightly proof, test-infrastructure changes,
 removed tests, or unresolved production impact force the complete four-shard
 suite. The full suite is therefore nightly/manual/conditional, not a routine
 gate for every production artifact.
+
+Protected-main CI also emits a separate exact-SHA shadow record containing its
+workflow/run identity, Node and Python toolchains, lockfile and test-policy
+digests, per-job results, selected-file identity, and build artifact digest.
+The RC workflow compares that record with the normal RC result but does not yet
+skip RC. Activation requires five consecutive release comparisons with exact
+agreement; any missing, stale, ambiguous, or mismatched field retains the
+existing four-shard RC fallback. This extends current release evidence rather
+than creating a competing release lane.
+
+Weekly Stryker mutation analysis remains advisory and outside signing,
+staging, and promotion. Mutation output may drive a focused regression test or
+test-removal decision, but it is not release evidence and never substitutes for
+the deterministic suite.
 
 ## 5. Two-user / two-tenant matrix (must)
 
@@ -640,18 +656,28 @@ device proof. The recommended additions to lock these in:
    collect repeated samples, and compare p95 with a governed baseline. A raw
    shared-runner assertion such as "50,000 events in <1 second" must not fail
    correctness CI.
+3. **Shared-host Sonar enablement has a one-time rollout gate.** Capture at
+   least 30 sequential loopback application samples before and after one
+   successful exact-SHA advisory scan. Bind both captures and the scan evidence
+   to the same deployed runtime, and require both p50 and p95 regression to be
+   at most 5%. This is private operations evidence from
+   `quality-sonar-latency-gate.mjs`; it never becomes a PR, signing, staging,
+   or production release gate while Sonar shares the production host.
 
 ## 16. Stale or skipped tests
 
-Tests are removed only when:
+Tests are rationalized by behavior and risk, never by a target file count. A
+test may be removed only when it is obsolete or duplicates another test,
+protects no unique regression, and both focused verification and the remaining
+full suite pass. Deleting or renaming any test therefore forces the complete
+four-shard suite.
 
-1. The behavior they assert is removed from production AND every other
-   test that asserted overlapping behavior continues to pass.
-2. The test was skipped (`it.skip` / `xit`) for >30 days. Skipped
-   tests rot. A skipped test must have an OPEN_ITEMS entry within
-   one week or be removed.
-3. A test that "tests itself" (asserts its own mock) is removed
-   without ceremony.
+Additionally:
+
+1. A test skipped (`it.skip` / `xit`) for more than 30 days is not silently
+   retained. It must have a canonical open item within one week or be removed.
+2. A test that "tests itself" by asserting only its own mock is removed without
+   ceremony.
 
 ## 17. Evidence requirements (per change)
 

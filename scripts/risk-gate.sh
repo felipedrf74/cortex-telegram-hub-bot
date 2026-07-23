@@ -33,6 +33,14 @@ SKIP_PYTHON=false
 SKIP_MIGRATIONS=false
 VITEST_SHARD=""
 REPORTER="${NEXUS_RISK_GATE_REPORTER:-dot}"
+JSON_OUTPUT="${NEXUS_RISK_GATE_JSON_OUTPUT:-}"
+
+if [ -n "$JSON_OUTPUT" ]; then
+  case "$JSON_OUTPUT" in
+    .local/*) mkdir -p "$(dirname "$JSON_OUTPUT")" ;;
+    *) echo "NEXUS_RISK_GATE_JSON_OUTPUT must stay under .local/" >&2; exit 64 ;;
+  esac
+fi
 
 usage() {
   cat <<'EOF'
@@ -52,6 +60,7 @@ Options:
 Env:
   NEXUS_FORCE_FULL_GATE=1       Force full Vitest.
   NEXUS_RISK_GATE_REPORTER=dot  Vitest reporter.
+  NEXUS_RISK_GATE_JSON_OUTPUT=.local/...  Exact Vitest JSON result for CI evidence.
 EOF
 }
 
@@ -194,10 +203,12 @@ case "$VITEST_MODE" in
     echo "🧪 Vitest skipped: ${REASON:-classifier selected skip}"
     ;;
   full)
+    tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
+    if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
     if [ -n "$VITEST_SHARD" ]; then
-      run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER" --shard "$VITEST_SHARD"
+      run_cmd "${tier_args[@]}" --shard "$VITEST_SHARD"
     else
-      run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER"
+      run_cmd "${tier_args[@]}"
     fi
     ;;
   changed-only|focused)
@@ -213,15 +224,21 @@ case "$VITEST_MODE" in
         --classifier "$CLASSIFIER_JSON_FILE")
       if [ "${#SELECTED_FILES[@]}" -eq 0 ]; then
         echo "⚠️  changed/focused/critical union was empty — escalating to full Vitest"
-        run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER"
+        tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
+        if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
+        run_cmd "${tier_args[@]}"
       else
-        run_cmd npx vitest run --reporter="$REPORTER" "${SELECTED_FILES[@]}"
+        tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
+        if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
+        run_cmd "${tier_args[@]}" "${SELECTED_FILES[@]}"
       fi
     fi
     ;;
   *)
     echo "⚠️  unknown vitest mode '$VITEST_MODE' — escalating to full Vitest"
-    run_cmd node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER"
+    tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
+    if [ -n "$JSON_OUTPUT" ]; then tier_args+=(--json-output "$JSON_OUTPUT"); fi
+    run_cmd "${tier_args[@]}"
     ;;
 esac
 

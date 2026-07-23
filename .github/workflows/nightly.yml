@@ -52,6 +52,7 @@ jobs:
           node scripts/test-inventory.mjs \
             --timings .local/test-profile/vitest-results.json \
             --timing-scope deterministic \
+            --timing-mode advisory \
             --enforce-evidence
 
       - name: Write qualifying nightly full-suite evidence
@@ -68,6 +69,7 @@ jobs:
         with:
           name: nightly-full-suite-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/test-profile/nightly-full-suite-evidence.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
@@ -87,6 +89,7 @@ jobs:
           path: |
             .local/test-profile/vitest-results.json
             .local/test-inventory/test-inventory.json
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
 

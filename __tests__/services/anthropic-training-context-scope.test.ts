@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockReadTrainingContextAll = vi.fn();
 const mockTrackedCreate = vi.fn();
+const mockBuildKnowledgePromptBlock = vi.fn();
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class Anthropic {
@@ -18,13 +19,22 @@ vi.mock('../../src/services/training-signals', () => ({
   formatTrainingContextForPrompt: vi.fn(() => '<training-context />'),
 }));
 
-import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
+vi.mock('../../src/state/content-references', () => ({
+  buildKnowledgePromptBlock: (...args: unknown[]) => mockBuildKnowledgePromptBlock(...args),
+}));
+
+import {
+  callDomain,
+  callStructuredGeneration,
+  continueWithToolResults,
+} from '../../src/services/anthropic';
 
 describe('Anthropic training-context tenant scope', () => {
   beforeEach(() => {
     mockReadTrainingContextAll.mockReset();
     mockReadTrainingContextAll.mockReturnValue({ signals: [{ type: 'session_load' }] });
     mockTrackedCreate.mockReset();
+    mockBuildKnowledgePromptBlock.mockReset();
     mockTrackedCreate.mockResolvedValue({
       content: [{ type: 'text', text: 'Scoped response' }],
       stop_reason: 'end_turn',
@@ -39,5 +49,69 @@ describe('Anthropic training-context tenant scope', () => {
 
     expect(mockReadTrainingContextAll).toHaveBeenNthCalledWith(1, { userId: 306, tenantId: 901 });
     expect(mockReadTrainingContextAll).toHaveBeenNthCalledWith(2, { userId: 306, tenantId: 901 });
+  });
+
+  it('uses the supplied ScriptGen schema as the actual system prompt without tools or tenant enrichment', async () => {
+    const result = await callStructuredGeneration({
+      systemPrompt: 'Return only JSON matching SCHEMA_X.',
+      userPrompt: 'Create the requested helper.',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 4096,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_script_generation_artifacts',
+      responseFormat: 'json',
+    });
+
+    expect(result).toEqual({ text: 'Scoped response', stopReason: 'end_turn' });
+    expect(mockTrackedCreate).toHaveBeenCalledTimes(1);
+    const [, request, category, attribution] = mockTrackedCreate.mock.calls[0];
+    expect(request).toEqual({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      system: [{ type: 'text', text: 'Return only JSON matching SCHEMA_X.' }],
+      messages: [{ role: 'user', content: 'Create the requested helper.' }],
+    });
+    expect(request).not.toHaveProperty('tools');
+    expect(category).toBe('cloud_script_generation_artifacts');
+    expect(attribution).toEqual({ userId: 306, tenantId: 901, isUserMessage: true });
+    expect(mockBuildKnowledgePromptBlock).not.toHaveBeenCalled();
+    expect(mockReadTrainingContextAll).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-Claude structured-generation model before SDK dispatch', async () => {
+    await expect(callStructuredGeneration({
+      systemPrompt: 'Return JSON.',
+      userPrompt: 'Create the requested helper.',
+      model: 'gpt-4o',
+      maxTokens: 512,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    })).rejects.toThrow('requires a Claude model');
+
+    expect(mockTrackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a missing provider stop reason', async () => {
+    mockTrackedCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Structured response' }],
+      stop_reason: null,
+    });
+
+    await expect(callStructuredGeneration({
+      systemPrompt: 'Return JSON.',
+      userPrompt: 'Create the requested helper.',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 512,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    })).resolves.toEqual({
+      text: 'Structured response',
+      stopReason: 'end_turn',
+    });
   });
 });

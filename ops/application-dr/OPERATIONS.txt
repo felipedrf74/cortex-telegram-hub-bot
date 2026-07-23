@@ -1,0 +1,156 @@
+Nexus application disaster recovery
+===================================
+
+Status and boundary
+-------------------
+
+Quarterly restore-drill readiness is MANUAL_REQUIRED. The repository contains
+only a fail-closed harness contract, not a site-specific isolated boot/smoke/
+stop implementation. `restore-readiness.json` is the machine-readable status;
+do not claim quarterly restore readiness until an owner-reviewed harness has
+replaced the template and a complete restore/reindex drill has produced
+retained evidence.
+
+These are installation templates. Adding them to the repository does not
+install a timer, create a bucket, upload data, delete backups, restore data, or
+change production. Installation and every restore remain owner-authorized
+operations. The restore drill is intentionally incapable of applying anything
+to the production path.
+
+The application DR boundary is separate from SonarQube backup. It covers:
+
+1. the live Nexus SQLite database through SQLite's online backup API;
+2. each local v*.tar.gz exact-release rollback bundle; and
+3. a quarterly isolated release-plus-database boot and smoke proof.
+
+Object-store preparation
+------------------------
+
+Create a private S3-compatible bucket reachable only over HTTPS. Enable bucket
+versioning. Give the ServerDominguez identity only ListBucket and object
+Get/Head/Put/Delete permissions below the configured NEXUS_DR_S3_PREFIX. Deny
+plaintext transport. For the releases/ prefix, configure provider-side object
+lock or an equivalent immutable retention policy of at least 90 days when the
+provider supports prefix-scoped retention. Do not apply a 90-day object lock to
+database/ because its four count-based tiers intentionally expire sooner.
+
+Generate the age identity off-host. Put only its public age1... recipient in
+backup.env. Keep the private identity in a separate recovery vault and copy it
+to an isolated drill host only for a drill. S3 server-side encryption may be
+enabled as defense in depth; age client-side encryption is mandatory and
+happens before the first upload.
+
+Install in an approved maintenance window
+-----------------------------------------
+
+1. Install age, AWS CLI v2, Python 3.12, GNU coreutils, util-linux, and iproute2
+   from the approved host package source. application-dr-backup.sh --verify-config
+   fails if its required tools are absent.
+2. Copy each install-layout.tsv entry to its exact target with the declared
+   root owner and mode. Create /etc/nexus-application-dr as root:root mode 0700.
+3. Create /etc/nexus-application-dr/backup.env from backup.env.example as
+   root:root mode 0600. Use real scoped credentials or an instance-role based
+   provider; never commit credentials or the age private identity.
+4. Confirm the configured database is a canonical, application-user-owned
+   regular file with mode 0600, 0640, or 0660. Confirm the rollback directory is
+   canonical, application-user-owned mode 0700 and its v*.tar.gz files are mode
+   0600. Remediate permissions deliberately; do not relax script validation.
+5. Run the following before enabling the timer:
+
+     sudo systemd-tmpfiles --create
+     sudo install -d -o root -g root -m 0700 /var/lib/nexus-application-dr
+     sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
+       --config /etc/nexus-application-dr/backup.env --verify-config
+     sudo systemctl daemon-reload
+     sudo systemctl enable --now nexus-application-dr-backup.timer
+
+6. Run one owner-observed service invocation, inspect its journal, and verify
+   the four database objects and every current release rollback object through
+   a read-only bucket listing. Alert on a failed service or a timer whose last
+   successful invocation is more than one hour old.
+
+Backup and retention behavior
+-----------------------------
+
+The hourly service is a sequential one-shot task. A non-blocking lock prevents
+overlap; a second invocation fails visibly. The snapshot is taken near minute
+05 of every UTC hour and the unit has a 50-minute deadline. Missing or delayed
+runs are failures, not silently accepted RPO exceptions.
+
+The service creates and integrity-checks a transactionally consistent SQLite
+snapshot while Nexus remains online. It encrypts the snapshot in a root-only
+temporary directory, deletes plaintext, uploads the same encrypted point to
+four governed tiers, verifies remote size/digest metadata, and then applies:
+
+  database/hourly   latest 24 hourly keys
+  database/daily    latest 7 UTC-date keys
+  database/weekly   latest 4 ISO-week keys
+  database/monthly  latest 6 UTC-month keys
+
+Daily, weekly, and monthly keys are refreshed by each successful hourly run,
+so the retained key holds the newest point for its period. Deletion plans only
+match exact governed key shapes; unexpected objects are never deleted.
+
+The same invocation scans every current v*.tar.gz bundle in the existing local
+rollback directory, verifies ownership/mode and tar readability, encrypts each
+previously unseen exact digest, and uploads it under releases/. Cloud escrow is
+kept for 90 days from upload. The promotion transaction also requires positive
+off-host confirmation for its exact new rollback-bundle digest before that
+bundle is eligible for local count pruning. The existing local policy keeps the
+latest ten bundles, while the hourly service reconciles and re-verifies the
+whole retained set. A failed escrow remains visible and the unconfirmed bundle
+must stay local; operators must never prune it merely to satisfy the count.
+
+Quarterly isolated restore drill
+--------------------------------
+
+Run the drill on a separate recovery host. If that is impossible, first prove
+that the configured loopback port is unused and that the harness cannot address
+the live paths or process names. Install the scripts and root-only config but do
+not enable the hourly timer on the drill host.
+
+Create /etc/nexus-application-dr/restore-harness as root:root mode 0700. The
+example intentionally exits 78 until implemented. The harness receives one of
+boot, smoke, or stop plus the absolute scratch runtime as argv[2], and these
+mandatory environment values:
+
+  NEXUS_DRILL_MODE=isolated-restore
+  NEXUS_DRILL_ROOT=<private scratch exact-release tree>
+  NEXUS_DRILL_DATABASE_PATH=<scratch tree>/data/bot.db
+  NEXUS_DRILL_BASE_URL=http://127.0.0.1:<dedicated high port>
+
+boot must use only that runtime and database, bind only the supplied loopback
+URL, and record enough private scratch state for stop. smoke must perform an
+authenticated health request plus a representative read against that URL and
+return nonzero for any mismatch. stop must terminate only drill processes and
+be idempotent. Never embed production credentials in this harness. The drill
+unsets object-store credentials before invoking it.
+
+Select the newest exact keys by read-only listing under database/hourly/ and
+releases/. Then run, with a freshly copied root:root mode-0600 age identity:
+
+  sudo /usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh \
+    --config /etc/nexus-application-dr/backup.env \
+    --database-key '<exact newest hourly key>' \
+    --release-key '<exact compatible release escrow key>' \
+    --identity-file /run/nexus-dr-age-identity \
+    --output /var/lib/nexus-application-dr/evidence/quarterly-YYYYQn.json
+
+The command verifies remote metadata, encrypted and plaintext SHA-256 values,
+SQLite integrity/foreign keys, hostile tar paths, the exact-release inventory,
+and that the database's highest applied migration does not exceed the selected
+runtime's migration set before isolated boot and the configured smoke. It fails
+closed on an incompatible release/database pair, if the selected recovery
+point is older than 3,600 seconds (RPO > 1 hour) or if download through smoke
+takes more than 1,800 seconds (RTO > 30 minutes). Store the resulting mode-0600
+JSON evidence in the approved private evidence system and remove the temporary
+age identity from the drill host.
+
+The drill is not a production restore command. A real restore still requires
+incident command, explicit production authorization, an exact recovery-point
+selection, current migration compatibility review, service stop, and the
+existing fail-closed restore/release procedure.
+
+Until that harness and its first retained drill evidence exist, this section
+is an implementation procedure only; quarterly RPO/RTO readiness remains
+MANUAL_REQUIRED.

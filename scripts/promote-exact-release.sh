@@ -37,6 +37,11 @@ fi
   echo "exact promotion checkout SHA does not match the signed runtime SHA" >&2
   exit 1
 }
+node "$ROOT/scripts/rollback-drill-check.mjs" validate \
+  --root "$ROOT" \
+  --release-gate \
+  --max-age-days 30 \
+  --json >/dev/null
 
 # Serialize exact promotion and emergency-recovery operator paths through the
 # same lock name.
@@ -47,8 +52,164 @@ release_acquire_local_lock "$ROOT" "prod-deploy"
 release_acquire_remote_lock "$SERVER" "$PROD_BASE" "prod-deploy"
 
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+SYSTEMD_CONTROL="${NEXUS_RELEASE_SYSTEMD_CONTROL:-/usr/local/sbin/nexus-release-promotion-control}"
+SYSTEMD_TRANSACTION_AVAILABLE=false
+set +e
+SYSTEMD_CONTROL_VERSION="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" version 2>/dev/null)"
+SYSTEMD_CONTROL_EXIT=$?
+set -e
+if [ "$SYSTEMD_CONTROL_EXIT" -eq 0 ] && [ "$SYSTEMD_CONTROL_VERSION" = nexus-release-promotion-control.v2 ]; then
+  SYSTEMD_TRANSACTION_AVAILABLE=true
+  OWNER_PRIVATE_KEY="${NEXUS_RELEASE_OWNER_PRIVATE_KEY_PATH:-}"
+  [ -n "$OWNER_PRIVATE_KEY" ] && [ -f "$OWNER_PRIVATE_KEY" ] && [ ! -L "$OWNER_PRIVATE_KEY" ] || {
+    echo "v2 promotion requires the owner's off-server Ed25519 private key" >&2
+    exit 77
+  }
+  owner_key_mode="$(stat -c '%a' "$OWNER_PRIVATE_KEY" 2>/dev/null || stat -f '%Lp' "$OWNER_PRIVATE_KEY")"
+  case "$owner_key_mode" in 400|600) ;; *) echo "owner promotion private key mode must be 400 or 600" >&2; exit 77 ;; esac
+elif [ "${NEXUS_RELEASE_ALLOW_LEGACY_LOCAL_TRANSACTION:-0}" != "1" ]; then
+  echo "root-owned promotion transaction is not provisioned; run the reviewed systemd bootstrap before promotion" >&2
+  exit 1
+fi
+
+RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
+STAGING_RELEASE="$STAGING_BASE/releases/$RELEASE_NAME"
+PROD_RELEASE="$PROD_BASE/releases/$RELEASE_NAME"
+BACKUP_DIR="/home/dominguez/backups/nexushub"
+PROMOTION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TRANSACTION_CHECKPOINT_DIR="$ROOT/.local/release/transactions"
+TRANSACTION_CHECKPOINT="$TRANSACTION_CHECKPOINT_DIR/${RUNTIME_SHA}-${ARTIFACT_DIGEST}.checkpoint.json"
+TRANSACTION_CHECKPOINT_EXISTS=false
+RESUME_EXISTING_TRANSACTION=false
+RESUME_STATUS_JSON=""
+RESUME_REQUEST_SHA=""
+
+# `.local` is intentionally ignored by Git, so validate and create each
+# checkpoint parent one level at a time before reading or writing authority.
+# Never let install/mkdir follow an attacker-controlled parent symlink.
+for local_authority_directory in \
+  "$ROOT/.local" \
+  "$ROOT/.local/release" \
+  "$TRANSACTION_CHECKPOINT_DIR"; do
+  if [ -e "$local_authority_directory" ] || [ -L "$local_authority_directory" ]; then
+    [ -d "$local_authority_directory" ] && [ ! -L "$local_authority_directory" ] || {
+      echo "local promotion authority directory is unsafe: $local_authority_directory" >&2
+      exit 1
+    }
+  else
+    mkdir "$local_authority_directory"
+  fi
+  chmod 700 "$local_authority_directory"
+done
+
+# A retry may arrive after the root-owned transaction completed but before the
+# Mac wrote local production evidence. Recover the exact signed transaction
+# authority before deriving a live predecessor or preparing any release path.
+if [ -f "$TRANSACTION_CHECKPOINT" ]; then
+  [ ! -L "$TRANSACTION_CHECKPOINT" ] || { echo "local promotion checkpoint must not be a symlink" >&2; exit 1; }
+  checkpoint_mode="$(stat -c '%a' "$TRANSACTION_CHECKPOINT" 2>/dev/null || stat -f '%Lp' "$TRANSACTION_CHECKPOINT")"
+  case "$checkpoint_mode" in 400|600) ;; *) echo "local promotion checkpoint mode must be 400 or 600" >&2; exit 1 ;; esac
+  read -r PROMOTION_RUN_ID PROMOTION_STARTED_AT < <(node - "$TRANSACTION_CHECKPOINT" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+    "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" "$SERVER" "$PROD_BASE" <<'NODE'
+const fs = require('fs');
+const [file, runtimeSha, artifactDigest, installedRuntimeDigest, targetVersion, server, productionBase] = process.argv.slice(2);
+const x = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (x.schema !== 'nexus.promotion-client-checkpoint.v1' || x.runtimeSha !== runtimeSha
+    || x.artifactDigest !== artifactDigest || x.installedRuntimeDigest !== installedRuntimeDigest
+    || x.targetVersion !== targetVersion || x.server !== server || x.productionBase !== productionBase
+    || !/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u.test(x.transactionId || '')
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(x.startedAt || '')) process.exit(1);
+process.stdout.write(`${x.transactionId} ${x.startedAt}\n`);
+NODE
+  ) || { echo "local promotion checkpoint identity is invalid" >&2; exit 1; }
+  TRANSACTION_CHECKPOINT_EXISTS=true
+  signed_resume_request="$TRANSACTION_CHECKPOINT_DIR/${PROMOTION_RUN_ID}.request.envelope.json"
+  if [ -e "$signed_resume_request" ]; then
+    [ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ] || {
+      echo "signed promotion checkpoint requires the root-owned transaction control" >&2
+      exit 1
+    }
+    [ -f "$signed_resume_request" ] && [ ! -L "$signed_resume_request" ] || {
+      echo "signed promotion resume request is unsafe" >&2
+      exit 1
+    }
+    signed_request_mode="$(stat -c '%a' "$signed_resume_request" 2>/dev/null || stat -f '%Lp' "$signed_resume_request")"
+    case "$signed_request_mode" in 400|600) ;; *) echo "signed promotion resume request mode must be 400 or 600" >&2; exit 1 ;; esac
+    RESUME_REQUEST_SHA="$(node - "$signed_resume_request" "$OWNER_PRIVATE_KEY" "$PROMOTION_RUN_ID" \
+      "$PROD_BASE" "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+      "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" <<'NODE'
+const crypto = require('crypto');
+const fs = require('fs');
+const [envelopePath, privateKeyPath, transactionId, productionBase, targetRuntime,
+  runtimeSha, artifactDigest, installedRuntimeDigest, targetVersion] = process.argv.slice(2);
+const canonicalJson = (input) => {
+  if (input === null || typeof input !== 'object') return JSON.stringify(input);
+  if (Array.isArray(input)) return `[${input.map(canonicalJson).join(',')}]`;
+  return `{${Object.keys(input).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(input[key])}`).join(',')}}`;
+};
+const envelope = JSON.parse(fs.readFileSync(envelopePath, 'utf8'));
+const payload = envelope?.payload;
+if (envelope?.schema !== 'nexus.promotion-transaction-request-envelope.v1'
+    || envelope?.keyId !== 'nexus-owner-promotion-2026'
+    || envelope?.signatureAlgorithm !== 'ed25519'
+    || payload?.schema !== 'nexus.promotion-transaction-request.v1'
+    || payload?.transactionId !== transactionId
+    || payload?.ownerAuthorization !== 'explicit'
+    || payload?.productionBase !== productionBase
+    || payload?.target?.runtime !== targetRuntime
+    || payload?.target?.sha !== runtimeSha
+    || payload?.target?.sentryRelease !== runtimeSha
+    || payload?.target?.artifactDigest !== artifactDigest
+    || payload?.target?.installedRuntimeDigest !== installedRuntimeDigest
+    || payload?.target?.version !== targetVersion) process.exit(1);
+const privateKey = crypto.createPrivateKey(fs.readFileSync(privateKeyPath, 'utf8'));
+const valid = crypto.verify(
+  null,
+  Buffer.from(canonicalJson(payload)),
+  crypto.createPublicKey(privateKey),
+  Buffer.from(envelope.signature || '', 'base64'),
+);
+if (!valid) process.exit(1);
+process.stdout.write(crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'));
+NODE
+    )" || { echo "signed promotion resume request identity is invalid" >&2; exit 1; }
+    [[ "$RESUME_REQUEST_SHA" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "signed promotion resume request digest is invalid" >&2
+      exit 1
+    }
+    set +e
+    RESUME_STATUS_JSON="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" status "$PROMOTION_RUN_ID" 2>/dev/null)"
+    resume_status_exit=$?
+    set -e
+    [ "$resume_status_exit" -eq 0 ] || {
+      echo "unable to reconcile the existing root-owned promotion transaction: $PROMOTION_RUN_ID" >&2
+      exit 75
+    }
+    read -r resume_phase resume_status < <(printf '%s' "$RESUME_STATUS_JSON" | node -e '
+      let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
+        const x=JSON.parse(b),id=process.argv[1],digest=process.argv[2];
+        const statuses=new Set(["pending","running","recovery_required","escrow_pending",
+          "completed","recovered","failed_before_stop","recovery_failed"]);
+        if(x.schema!=="nexus.promotion-transaction-journal.v1"||x.transactionId!==id
+          ||x.requestSha256!==digest||typeof x.phase!=="string"||!statuses.has(x.status))process.exit(1);
+        process.stdout.write(`${x.phase} ${x.status}\n`);
+      });' "$PROMOTION_RUN_ID" "$RESUME_REQUEST_SHA") || {
+      echo "authoritative promotion resume status is invalid" >&2
+      exit 1
+    }
+    RESUME_EXISTING_TRANSACTION=true
+  fi
+fi
+
+if [ "$RESUME_EXISTING_TRANSACTION" = true ]; then
+  # Status was already reconciled above. Only discover the PM2 binary needed
+  # for the final completed identity proof; do not rerun preparation or launch.
+  REMOTE_PM2="$("${SSH[@]}" "$SERVER" 'for p in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do if [ -n "$p" ] && [ -x "$p" ]; then printf "%s" "$p"; exit 0; fi; done; exit 1')"
+else
 "$ROOT/scripts/env-parity-check.sh" --server "$SERVER" --staging-dir "$STAGING_BASE" --prod-dir "$PROD_BASE"
 REMOTE_PM2="$("${SSH[@]}" "$SERVER" 'for p in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do if [ -n "$p" ] && [ -x "$p" ]; then printf "%s" "$p"; exit 0; fi; done; exit 1')"
+CAPACITY_ARGS=(--role production --base-dir "$PROD_BASE" --pm2-bin "$REMOTE_PM2")
+"${SSH[@]}" "$SERVER" bash -s -- "${CAPACITY_ARGS[@]}" < "$ROOT/scripts/remote-release-capacity.sh"
 CURRENT_RUNTIME="$("${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" <<'REMOTE_CURRENT'
 set -euo pipefail
 base_dir="$1"
@@ -97,22 +258,29 @@ REMOTE_ACTIVE_IDENTITY
 }
 verify_active_runtime
 
-PREDECESSOR_SHA="$("${SSH[@]}" "$SERVER" bash -s -- "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_PREDECESSOR_SHA'
+read -r PREDECESSOR_SHA PREDECESSOR_ARTIFACT_DIGEST PREDECESSOR_INSTALLED_RUNTIME_DIGEST \
+  < <("${SSH[@]}" "$SERVER" bash -s -- "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_PREDECESSOR_SHA'
 set -euo pipefail
 runtime="$1"; base_dir="$2"; pm2_bin="$3"
 if [ "$runtime" != "$base_dir" ]; then
-  node -e 'const x=require(process.argv[1]);process.stdout.write(x.runtimeSha||"")' "$runtime/.complete.json"
+  node - "$runtime/.complete.json" "$runtime/.nexus-installed-runtime.json" <<'NODE'
+const fs=require('fs');const marker=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const installed=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
+process.stdout.write(`${marker.runtimeSha||''} ${marker.artifactDigest||''} ${installed.aggregateDigest||''}\n`);
+NODE
   exit 0
 fi
-"$pm2_bin" jlist | node -e '
-const fs=require("fs");
-const rows=JSON.parse(fs.readFileSync(0,"utf8"));
-const row=rows.find((entry)=>entry?.name==="nexus-hub");
-process.stdout.write(row?.pm2_env?.NEXUS_RELEASE_SHA||row?.pm2_env?.GIT_COMMIT||"");'
+echo "legacy production runtime has no exact artifact/install identity" >&2
+exit 1
 REMOTE_PREDECESSOR_SHA
-)"
+)
 [[ "$PREDECESSOR_SHA" =~ ^[0-9a-f]{40}$ ]] || {
   echo "active predecessor runtime SHA is unavailable" >&2
+  exit 1
+}
+[[ "$PREDECESSOR_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ \
+    && "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "active predecessor exact artifact/install identity is unavailable" >&2
   exit 1
 }
 git -C "$ROOT" rev-parse --verify --quiet "${PREDECESSOR_SHA}^{commit}" >/dev/null || {
@@ -173,42 +341,85 @@ if [ "$MIGRATION_REVIEW_COUNT" -gt 0 ]; then
   [[ "$MIGRATION_POLICY_SUBJECT_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "migration policy subject digest is invalid" >&2; exit 1; }
 fi
 
-RELEASE_NAME="${RUNTIME_SHA}-${ARTIFACT_DIGEST:0:12}"
-STAGING_RELEASE="$STAGING_BASE/releases/$RELEASE_NAME"
-PROD_RELEASE="$PROD_BASE/releases/$RELEASE_NAME"
-BACKUP_DIR="/home/dominguez/backups/nexushub"
-PROMOTION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-PROMOTION_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$(node -e 'process.stdout.write(require("crypto").randomBytes(6).toString("hex"))')"
-
-# A lost client response after a successful cutover must never turn a retry
-# into an rsync over the live immutable runtime (including temporary removal
-# of its .env/data/log symlinks). The active identity was proved immediately
-# above, so reject the already-active target before any release-tree mutation.
+# Without signed resume authority, an already-active exact target is
+# ambiguous. Reject it before creating a checkpoint or touching release bytes.
 if [ "$CURRENT_RUNTIME" = "$PROD_RELEASE" ]; then
-  echo "exact release is already active; refusing to mutate the live runtime: $PROD_RELEASE" >&2
+  echo "exact release is already active without a reconcilable transaction; refusing to mutate the live runtime: $PROD_RELEASE" >&2
   exit 75
 fi
 
+if [ "$TRANSACTION_CHECKPOINT_EXISTS" = false ]; then
+  PROMOTION_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-$(node -e 'process.stdout.write(require("crypto").randomBytes(6).toString("hex"))')"
+  node - "$TRANSACTION_CHECKPOINT.next" "$PROMOTION_RUN_ID" "$PROMOTION_STARTED_AT" "$RUNTIME_SHA" \
+    "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" "$SERVER" "$PROD_BASE" <<'NODE'
+const fs = require('fs');
+const [file, transactionId, startedAt, runtimeSha, artifactDigest, installedRuntimeDigest,
+  targetVersion, server, productionBase] = process.argv.slice(2);
+fs.writeFileSync(file, `${JSON.stringify({
+  schema: 'nexus.promotion-client-checkpoint.v1', transactionId, startedAt, runtimeSha,
+  artifactDigest, installedRuntimeDigest, targetVersion, server, productionBase,
+}, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+NODE
+  mv -f "$TRANSACTION_CHECKPOINT.next" "$TRANSACTION_CHECKPOINT"
+fi
+
 # Copy the already prepared staging runtime while production is still online.
+# The root control owns the containing directory and creates (or recognizes)
+# only the exact canonical target, so the application account cannot replace
+# the target while it is copied and sealed.
+[ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ] || {
+  echo "root-owned runtime preparation is unavailable; legacy target mutation is disabled" >&2
+  exit 1
+}
+TARGET_PREPARATION="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" prepare-runtime-target \
+  "$PROD_RELEASE" "$PROD_BASE")"
+TARGET_WRITABLE="$(printf '%s' "$TARGET_PREPARATION" | node -e '
+let body="";process.stdin.on("data",(chunk)=>body+=chunk);process.stdin.on("end",()=>{
+  const x=JSON.parse(body);if(x.ok!==true||typeof x.writable!=="boolean")process.exit(1);
+  process.stdout.write(String(x.writable));
+});')" || { echo "root-owned runtime preparation result is invalid" >&2; exit 1; }
+
 # Verify every governed artifact byte before production is touched.
 "${SSH[@]}" "$SERVER" bash -s -- \
-  "$STAGING_RELEASE" "$PROD_RELEASE" "$PROD_BASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" <<'REMOTE_PREPARE'
+  "$STAGING_RELEASE" "$PROD_RELEASE" "$PROD_BASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" \
+  "$INSTALLED_RUNTIME_DIGEST" "$TARGET_WRITABLE" <<'REMOTE_PREPARE'
 set -euo pipefail
-staging_release="$1"; release_dir="$2"; base_dir="$3"; runtime_sha="$4"; expected_digest="$5"; installed_digest="$6"
+staging_release="$1"; release_dir="$2"; base_dir="$3"; runtime_sha="$4"; expected_digest="$5"; installed_digest="$6"; target_writable="$7"
 [ -f "$staging_release/.complete.json" ] || { echo "staged immutable release is missing" >&2; exit 1; }
-node "$staging_release/scripts/release-installed-tree-attestation.mjs" validate \
-  --root "$staging_release" --runtime-sha "$runtime_sha" --artifact-digest "$expected_digest" \
-  --expect-runtime-sha "$runtime_sha" --expect-artifact-digest "$expected_digest" \
-  --expect-aggregate-digest "$installed_digest" >/dev/null
-install -d -m 700 "$base_dir/releases" "$base_dir/data" "$base_dir/logs" "$release_dir"
-rsync -a --delete --chmod=D700,Fu+rw,go-rwx "$staging_release/" "$release_dir/"
-for link in .env data logs; do
-  if [ -L "$release_dir/$link" ]; then rm -f "$release_dir/$link";
-  elif [ -e "$release_dir/$link" ]; then rm -rf "$release_dir/$link"; fi
+case "$target_writable" in true|false) ;; *) echo "invalid root target preparation state" >&2; exit 1 ;; esac
+for governed in "$base_dir" "$staging_release"; do
+  [ -d "$governed" ] && [ ! -L "$governed" ] && [ "$(readlink -f "$governed")" = "$governed" ] || {
+    echo "promotion directory is not a canonical non-symlink directory: $governed" >&2
+    exit 1
+  }
 done
-ln -s "$base_dir/.env" "$release_dir/.env"
-ln -s "$base_dir/data" "$release_dir/data"
-ln -s "$base_dir/logs" "$release_dir/logs"
+[ -d "$base_dir/releases" ] && [ ! -L "$base_dir/releases" ] \
+  && [ "$(readlink -f "$base_dir/releases")" = "$base_dir/releases" ] \
+  && [ ! -w "$base_dir/releases" ] || { echo "root-owned production releases parent is unsafe" >&2; exit 1; }
+[ -d "$release_dir" ] && [ ! -L "$release_dir" ] && [ "$(readlink -f "$release_dir")" = "$release_dir" ] || {
+  echo "root-prepared production release target is unsafe" >&2
+  exit 1
+}
+if [ "$target_writable" = true ]; then
+  rsync -a --delete --chmod=D700,Fu+rw,go-rwx "$staging_release/" "$release_dir/"
+  for link in .env data logs; do
+    if [ -L "$release_dir/$link" ]; then rm -f "$release_dir/$link";
+    elif [ -e "$release_dir/$link" ]; then rm -rf "$release_dir/$link"; fi
+  done
+  ln -s "$base_dir/.env" "$release_dir/.env"
+  ln -s "$base_dir/data" "$release_dir/data"
+  ln -s "$base_dir/logs" "$release_dir/logs"
+else
+  for link in .env data logs; do
+    [ -L "$release_dir/$link" ] || { echo "existing exact release link is missing: $link" >&2; exit 1; }
+  done
+  [ "$(readlink "$release_dir/.env")" = "$base_dir/.env" ] \
+    && [ "$(readlink "$release_dir/data")" = "$base_dir/data" ] \
+    && [ "$(readlink "$release_dir/logs")" = "$base_dir/logs" ] || {
+    echo "existing exact release link identity mismatch" >&2
+    exit 1
+  }
+fi
 node - "$release_dir" "$runtime_sha" "$expected_digest" <<'NODE'
 const crypto = require('crypto');
 const fs = require('fs');
@@ -235,11 +446,13 @@ if (digest !== expectedDigest || artifact.digest !== expectedDigest) {
   throw new Error('artifact aggregate digest mismatch');
 }
 NODE
-node "$release_dir/scripts/release-installed-tree-attestation.mjs" validate \
-  --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$expected_digest" \
-  --expect-runtime-sha "$runtime_sha" --expect-artifact-digest "$expected_digest" \
-  --expect-aggregate-digest "$installed_digest" >/dev/null
 REMOTE_PREPARE
+
+# The narrow root control verifies artifact bytes, dependency trees, runtime
+# inventory and link targets with root-installed code, then removes application
+# write permission before any candidate script is executed.
+"${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" seal-runtime \
+  "$PROD_RELEASE" "$PROD_BASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" >/dev/null
 
 # Run the candidate's owner-bootstrap and canonical environment preflight
 # against production data while the predecessor is still online. Failure here
@@ -329,6 +542,402 @@ case "$PREPARED_RUNTIME_DIR" in
   "$BACKUP_DIR"/.runtime-stage-*) ;;
   *) echo "runtime backup preparation returned an unsafe path" >&2; exit 1 ;;
 esac
+fi
+
+run_systemd_transaction() {
+  local request_dir request_file signed_request_file remote_inbox remote_request status_json="" phase="" transaction_status=""
+  local result_env escrow_json deadline request_signing request_sha request_mode validated_request_sha
+  local local_request_directory
+  request_dir="$ROOT/.local/release/transactions"
+  request_file="$request_dir/${PROMOTION_RUN_ID}.request.json"
+  signed_request_file="$request_dir/${PROMOTION_RUN_ID}.request.envelope.json"
+  if [ "$RESUME_EXISTING_TRANSACTION" = true ]; then
+    request_sha="$RESUME_REQUEST_SHA"
+    status_json="$RESUME_STATUS_JSON"
+  else
+    for local_request_directory in "$ROOT/.local" "$ROOT/.local/release" "$request_dir"; do
+      [ -d "$local_request_directory" ] && [ ! -L "$local_request_directory" ] || {
+        echo "local promotion request directory is unsafe: $local_request_directory" >&2
+        return 1
+      }
+    done
+    if [ ! -f "$request_file" ]; then
+      node - "$request_file" "$PROMOTION_RUN_ID" "$PROD_BASE" "$CURRENT_RUNTIME" "$PREDECESSOR_SHA" \
+      "$PREDECESSOR_ARTIFACT_DIGEST" "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" \
+      "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" \
+      "$BACKUP_DIR" "$PREPARED_RUNTIME_DIR" "$REMOTE_PM2" "$PUBLIC_BASE_URL" \
+      "60" "${NEXUS_RELEASE_LOCAL_GATE_TIMEOUT_SECONDS:-60}" \
+      "$MIGRATION_REVIEW_COUNT" "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" \
+      "$MIGRATION_REHEARSAL_SHA256" "$MIGRATION_REHEARSAL_CLONE_SHA256" \
+      "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
+      "$MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" <<'NODE'
+const fs = require('fs');
+const [output, transactionId, productionBase, predecessorRuntime, predecessorSha,
+  predecessorArtifactDigest, predecessorInstalledRuntimeDigest, targetRuntime,
+  targetSha, artifactDigest, installedRuntimeDigest, version, backupDir, preparedRuntimeDir,
+  pm2Bin, publicBaseUrl, stabilitySeconds, gateTimeoutSeconds, migrationCount,
+  reviewEvidenceSha256, policySubjectSha256, onlineEvidenceSha256, onlineCloneSha256,
+  onlineMigratedCloneSha256, onlinePendingSetSha256, onlineSourceDatabaseSha256] = process.argv.slice(2);
+const request = {
+  schema: 'nexus.promotion-transaction-request.v1',
+  transactionId,
+  createdAt: new Date().toISOString(),
+  expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+  ownerAuthorization: 'explicit',
+  productionBase,
+  predecessor: { runtime: predecessorRuntime, sha: predecessorSha,
+    artifactDigest: predecessorArtifactDigest, installedRuntimeDigest: predecessorInstalledRuntimeDigest },
+  target: { runtime: targetRuntime, sha: targetSha, sentryRelease: targetSha, artifactDigest, installedRuntimeDigest, version },
+  backupDir,
+  preparedRuntimeDir,
+  pm2Bin,
+  publicBaseUrl,
+  stabilitySeconds: Number(stabilitySeconds),
+  gateTimeoutSeconds: Number(gateTimeoutSeconds),
+  migration: {
+    required: Number(migrationCount) > 0,
+    reviewEvidenceSha256: reviewEvidenceSha256 || null,
+    policySubjectSha256: policySubjectSha256 || null,
+    onlineEvidenceSha256: onlineEvidenceSha256 || null,
+    onlineCloneSha256: onlineCloneSha256 || null,
+    onlineMigratedCloneSha256: onlineMigratedCloneSha256 || null,
+    onlinePendingSetSha256: onlinePendingSetSha256 || null,
+    onlineSourceDatabaseSha256: onlineSourceDatabaseSha256 || null,
+  },
+};
+fs.writeFileSync(output, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+NODE
+    fi
+    [ -f "$request_file" ] && [ ! -L "$request_file" ] || {
+      echo "local promotion request must be a regular non-symlink file" >&2
+      return 1
+    }
+    request_mode="$(stat -c '%a' "$request_file" 2>/dev/null || stat -f '%Lp' "$request_file")"
+    case "$request_mode" in
+      400|600) ;;
+      *)
+        echo "local promotion request mode must be 400 or 600" >&2
+        return 1
+        ;;
+    esac
+    [ ! -e "$signed_request_file" ] && [ ! -L "$signed_request_file" ] || {
+      echo "unexpected signed promotion request exists without reconciled server authority" >&2
+      return 1
+    }
+
+    # `.local/` is intentionally ignored, so a clean Git checkout does not
+    # prove that a checkpoint-adjacent raw request is trustworthy. Bind every
+    # request field to the release state derived above before allowing the
+    # owner's private key to sign it. The returned digest is compared with the
+    # signer result to close the validation/signing read boundary.
+    validated_request_sha="$(node - "$request_file" "$PROMOTION_RUN_ID" "$PROD_BASE" "$CURRENT_RUNTIME" \
+      "$PREDECESSOR_SHA" "$PREDECESSOR_ARTIFACT_DIGEST" "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" \
+      "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" \
+      "$BACKUP_DIR" "$PREPARED_RUNTIME_DIR" "$REMOTE_PM2" "$PUBLIC_BASE_URL" \
+      "60" "${NEXUS_RELEASE_LOCAL_GATE_TIMEOUT_SECONDS:-60}" \
+      "$MIGRATION_REVIEW_COUNT" "$MIGRATION_REVIEW_SHA256" "$MIGRATION_POLICY_SUBJECT_SHA256" \
+      "$MIGRATION_REHEARSAL_SHA256" "$MIGRATION_REHEARSAL_CLONE_SHA256" \
+      "$MIGRATION_REHEARSAL_MIGRATED_CLONE_SHA256" "$MIGRATION_REHEARSAL_PENDING_SET_SHA256" \
+      "$MIGRATION_REHEARSAL_SOURCE_DATABASE_SHA256" <<'LOCAL_REQUEST_VALIDATION'
+const crypto = require('crypto');
+const fs = require('fs');
+const [file, transactionId, productionBase, predecessorRuntime, predecessorSha,
+  predecessorArtifactDigest, predecessorInstalledRuntimeDigest, targetRuntime,
+  targetSha, artifactDigest, installedRuntimeDigest, targetVersion, backupDir,
+  preparedRuntimeDir, pm2Bin, publicBaseUrl, stabilitySeconds, gateTimeoutSeconds,
+  migrationCount, reviewEvidenceSha256, policySubjectSha256, onlineEvidenceSha256,
+  onlineCloneSha256, onlineMigratedCloneSha256, onlinePendingSetSha256,
+  onlineSourceDatabaseSha256] = process.argv.slice(2);
+const request = JSON.parse(fs.readFileSync(file, 'utf8'));
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const exactKeys = (value, keys) => isRecord(value)
+  && Object.keys(value).length === keys.length
+  && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+if (!exactKeys(request, [
+  'schema', 'transactionId', 'createdAt', 'expiresAt', 'ownerAuthorization',
+  'productionBase', 'predecessor', 'target', 'backupDir', 'preparedRuntimeDir',
+  'pm2Bin', 'publicBaseUrl', 'stabilitySeconds', 'gateTimeoutSeconds', 'migration',
+]) || !exactKeys(request.predecessor, [
+  'runtime', 'sha', 'artifactDigest', 'installedRuntimeDigest',
+]) || !exactKeys(request.target, [
+  'runtime', 'sha', 'sentryRelease', 'artifactDigest', 'installedRuntimeDigest', 'version',
+]) || !exactKeys(request.migration, [
+  'required', 'reviewEvidenceSha256', 'policySubjectSha256', 'onlineEvidenceSha256',
+  'onlineCloneSha256', 'onlineMigratedCloneSha256', 'onlinePendingSetSha256',
+  'onlineSourceDatabaseSha256',
+])) process.exit(1);
+const migrationRequired = Number(migrationCount) > 0;
+const expectedMigration = {
+  required: migrationRequired,
+  reviewEvidenceSha256: reviewEvidenceSha256 || null,
+  policySubjectSha256: policySubjectSha256 || null,
+  onlineEvidenceSha256: onlineEvidenceSha256 || null,
+  onlineCloneSha256: onlineCloneSha256 || null,
+  onlineMigratedCloneSha256: onlineMigratedCloneSha256 || null,
+  onlinePendingSetSha256: onlinePendingSetSha256 || null,
+  onlineSourceDatabaseSha256: onlineSourceDatabaseSha256 || null,
+};
+if (request.schema !== 'nexus.promotion-transaction-request.v1'
+    || request.transactionId !== transactionId
+    || request.ownerAuthorization !== 'explicit'
+    || request.productionBase !== productionBase
+    || request.predecessor.runtime !== predecessorRuntime
+    || request.predecessor.sha !== predecessorSha
+    || request.predecessor.artifactDigest !== predecessorArtifactDigest
+    || request.predecessor.installedRuntimeDigest !== predecessorInstalledRuntimeDigest
+    || request.target.runtime !== targetRuntime
+    || request.target.sha !== targetSha
+    || request.target.sentryRelease !== targetSha
+    || request.target.artifactDigest !== artifactDigest
+    || request.target.installedRuntimeDigest !== installedRuntimeDigest
+    || request.target.version !== targetVersion
+    || request.backupDir !== backupDir
+    || request.preparedRuntimeDir !== preparedRuntimeDir
+    || request.pm2Bin !== pm2Bin
+    || request.publicBaseUrl !== publicBaseUrl
+    || request.stabilitySeconds !== Number(stabilitySeconds)
+    || request.gateTimeoutSeconds !== Number(gateTimeoutSeconds)
+    || Object.entries(expectedMigration)
+      .some(([key, value]) => request.migration[key] !== value)) process.exit(1);
+const createdAt = Date.parse(request.createdAt || '');
+const expiresAt = Date.parse(request.expiresAt || '');
+const now = Date.now();
+if (!Number.isFinite(createdAt) || !Number.isFinite(expiresAt)
+    || expiresAt <= createdAt || expiresAt - createdAt > 30 * 60 * 1000
+    || createdAt > now + 5 * 60 * 1000 || now > expiresAt) process.exit(1);
+const canonicalJson = (input) => {
+  if (input === null || typeof input !== 'object') return JSON.stringify(input);
+  if (Array.isArray(input)) return `[${input.map(canonicalJson).join(',')}]`;
+  return `{${Object.keys(input).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(input[key])}`).join(',')}}`;
+};
+process.stdout.write(crypto.createHash('sha256').update(canonicalJson(request)).digest('hex'));
+LOCAL_REQUEST_VALIDATION
+    )" || {
+      echo "local promotion request does not match the current derived release authority" >&2
+      return 1
+    }
+    [[ "$validated_request_sha" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "validated local promotion request digest is invalid" >&2
+      return 1
+    }
+    request_signing="$(node "$ROOT/scripts/promotion-authorization.mjs" sign-request \
+      --input "$request_file" --private-key "$OWNER_PRIVATE_KEY" --output "$signed_request_file")"
+    request_sha="$(printf '%s' "$request_signing" | node -e 'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>process.stdout.write(JSON.parse(b).payloadSha256))')"
+    if [ "$request_sha" != "$validated_request_sha" ]; then
+      rm -f "$signed_request_file"
+      echo "owner-signed request differs from the validated local promotion request" >&2
+      return 1
+    fi
+    [[ "$request_sha" =~ ^[a-f0-9]{64}$ ]] || { echo "owner-signed request digest is invalid" >&2; return 1; }
+
+    # Recheck capacity immediately before handing the durable service its
+    # authority; a Sonar analysis or pressure spike after the earlier preflight
+    # must not overlap the production critical section.
+    "${SSH[@]}" "$SERVER" bash -s -- "${CAPACITY_ARGS[@]}" < "$ROOT/scripts/remote-release-capacity.sh"
+    remote_inbox="$PROD_BASE/.local/release/transaction-inbox"
+    remote_request="$remote_inbox/$PROMOTION_RUN_ID.request.envelope.json"
+    "${SSH[@]}" "$SERVER" install -d -m 700 "$remote_inbox"
+    scp -q -o BatchMode=yes -o ConnectTimeout=10 "$signed_request_file" "$SERVER:$remote_request.next"
+    "${SSH[@]}" "$SERVER" bash -s -- "$remote_request" <<'REMOTE_TRANSACTION_REQUEST'
+set -euo pipefail
+request="$1"
+[ -f "$request.next" ] && [ ! -L "$request.next" ] || { echo "uploaded transaction request is unsafe" >&2; exit 1; }
+chmod 600 "$request.next"
+mv -f "$request.next" "$request"
+REMOTE_TRANSACTION_REQUEST
+    # launch is atomic and idempotent. A lost SSH response is reconciled by the
+    # same signed transaction identity rather than creating another cutover.
+    set +e
+    launch_output="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" launch "$remote_request" 2>&1)"
+    launch_status=$?
+    set -e
+    if [ "$launch_status" -ne 0 ]; then
+      # The server may have accepted the request before the transport failed.
+      # Status is authoritative; only fail when it cannot prove this ID exists.
+      if ! "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" status "$PROMOTION_RUN_ID" >/dev/null 2>&1; then
+        printf '%s\n' "$launch_output" >&2
+        return "$launch_status"
+      fi
+    fi
+  fi
+
+  result_env="$request_dir/${PROMOTION_RUN_ID}.result.env"
+  escrow_json="$request_dir/${PROMOTION_RUN_ID}.escrow.json"
+  deadline=$((SECONDS + 1800))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -z "$status_json" ]; then
+      if ! status_json="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" status "$PROMOTION_RUN_ID" 2>/dev/null)"; then
+        # Tolerate bounded transient transport loss and reattach to the same
+        # server-owned transaction on the next poll.
+        sleep 2
+        continue
+      fi
+    fi
+    read -r phase transaction_status < <(printf '%s' "$status_json" | node -e '
+      let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
+        const x=JSON.parse(b),id=process.argv[1],digest=process.argv[2];
+        const statuses=new Set(["pending","running","recovery_required","escrow_pending",
+          "completed","recovered","failed_before_stop","recovery_failed"]);
+        if(x.schema!=="nexus.promotion-transaction-journal.v1"||x.transactionId!==id
+          ||x.requestSha256!==digest||typeof x.phase!=="string"||!statuses.has(x.status))process.exit(1);
+        process.stdout.write(`${x.phase} ${x.status}\n`);
+      });' "$PROMOTION_RUN_ID" "$request_sha") || {
+      echo "authoritative promotion transaction status is invalid" >&2
+      return 1
+    }
+    case "$transaction_status" in
+      completed) break ;;
+      recovered|failed_before_stop|recovery_failed)
+        printf '%s\n' "$status_json" >&2
+        echo "persistent promotion transaction did not complete" >&2
+        return 1
+        ;;
+    esac
+    status_json=""
+    sleep 2
+  done
+  [ "$transaction_status" = completed ] || { echo "timed out polling persistent promotion transaction" >&2; return 75; }
+  "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" fetch "$PROMOTION_RUN_ID" result > "$result_env"
+  "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" fetch "$PROMOTION_RUN_ID" escrow > "$escrow_json"
+  chmod 600 "$result_env" "$escrow_json"
+  BACKUP_FILE="$(sed -n 's/^NEXUS_BACKUP_FILE=//p' "$result_env" | tail -1)"
+  BACKUP_SHA256="$(sed -n 's/^NEXUS_BACKUP_SHA256=//p' "$result_env" | tail -1)"
+  CUTOVER_SECONDS="$(sed -n 's/^NEXUS_CUTOVER_SECONDS=//p' "$result_env" | tail -1)"
+  BACKUP_WINDOW_SECONDS="$(sed -n 's/^NEXUS_BACKUP_WINDOW_SECONDS=//p' "$result_env" | tail -1)"
+  BACKUP_OUTAGE_SECONDS="$(sed -n 's/^NEXUS_BACKUP_OUTAGE_SECONDS=//p' "$result_env" | tail -1)"
+  FINAL_UNAVAILABILITY_SECONDS="$(sed -n 's/^NEXUS_FINAL_UNAVAILABILITY_SECONDS=//p' "$result_env" | tail -1)"
+  TOTAL_UNAVAILABILITY_SECONDS="$(sed -n 's/^NEXUS_TOTAL_UNAVAILABILITY_SECONDS=//p' "$result_env" | tail -1)"
+  VERIFICATION_SOAK_SECONDS="$(sed -n 's/^NEXUS_VERIFICATION_SOAK_SECONDS=//p' "$result_env" | tail -1)"
+  RESULT_SENTRY_RELEASE="$(sed -n 's/^NEXUS_SENTRY_RELEASE=//p' "$result_env" | tail -1)"
+  RESULT_TRANSACTION_ID="$(sed -n 's/^NEXUS_TRANSACTION_ID=//p' "$result_env" | tail -1)"
+  RESULT_RUNTIME_SHA="$(sed -n 's/^NEXUS_RUNTIME_SHA=//p' "$result_env" | tail -1)"
+  RESULT_ARTIFACT_DIGEST="$(sed -n 's/^NEXUS_ARTIFACT_DIGEST=//p' "$result_env" | tail -1)"
+  RESULT_INSTALLED_RUNTIME_DIGEST="$(sed -n 's/^NEXUS_INSTALLED_RUNTIME_DIGEST=//p' "$result_env" | tail -1)"
+  RESULT_CUTOVER_STARTED_AT="$(sed -n 's/^NEXUS_CUTOVER_STARTED_AT=//p' "$result_env" | tail -1)"
+  RESULT_SERVICE_UNAVAILABLE_STARTED_AT="$(sed -n 's/^NEXUS_SERVICE_UNAVAILABLE_STARTED_AT=//p' "$result_env" | tail -1)"
+  RESULT_CANDIDATE_AVAILABLE_AT="$(sed -n 's/^NEXUS_CANDIDATE_AVAILABLE_AT=//p' "$result_env" | tail -1)"
+  RESULT_SOAK_STARTED_AT="$(sed -n 's/^NEXUS_SOAK_STARTED_AT=//p' "$result_env" | tail -1)"
+  RESULT_SOAK_COMPLETED_AT="$(sed -n 's/^NEXUS_SOAK_COMPLETED_AT=//p' "$result_env" | tail -1)"
+  SOAK_OBSERVED_SECONDS="$(sed -n 's/^NEXUS_SOAK_OBSERVED_SECONDS=//p' "$result_env" | tail -1)"
+  [ "$RESULT_TRANSACTION_ID" = "$PROMOTION_RUN_ID" ] \
+    && [ "$RESULT_RUNTIME_SHA" = "$RUNTIME_SHA" ] \
+    && [ "$RESULT_ARTIFACT_DIGEST" = "$ARTIFACT_DIGEST" ] \
+    && [ "$RESULT_INSTALLED_RUNTIME_DIGEST" = "$INSTALLED_RUNTIME_DIGEST" ] \
+    && [ "$RESULT_SENTRY_RELEASE" = "$RUNTIME_SHA" ] || {
+    echo "transaction result identity does not match the requested release" >&2
+    return 1
+  }
+  case "$BACKUP_FILE" in "$BACKUP_DIR"/v*.tar.gz) ;; *) echo "transaction returned an unsafe backup path" >&2; return 1 ;; esac
+  [[ "$BACKUP_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "transaction returned an invalid backup digest" >&2; return 1; }
+  read -r ESCROW_OBJECT_KEY ESCROW_CONFIRMED_AT < <(node - "$escrow_json" "$PROMOTION_RUN_ID" "$request_sha" "$BACKUP_FILE" "$BACKUP_SHA256" <<'NODE'
+const fs=require('fs');const [file,id,requestSha,path,sha]=process.argv.slice(2);const x=JSON.parse(fs.readFileSync(file,'utf8')),r=x.requiredRelease;
+if(x.schema!=='nexus.promotion-rollback-escrow.v1'||x.status!=='passed'||x.transactionId!==id
+ ||x.requestSha256!==requestSha||r?.confirmed!==true||r?.path!==path||r?.plaintextSha256!==sha
+ ||typeof r?.objectKey!=='string'||!r.objectKey.endsWith(`.${sha}.age`)||r.objectKey.includes('..')
+ ||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(x.confirmedAt||''))process.exit(1);
+process.stdout.write(`${r.objectKey}\t${x.confirmedAt}\n`);
+NODE
+  ) || { echo "authoritative rollback escrow evidence is invalid" >&2; return 1; }
+  ESCROW_EVIDENCE_SHA256="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$escrow_json")"
+  [[ "$CUTOVER_SECONDS" =~ ^[0-9]+$ ]] || { echo "transaction returned invalid cutover duration" >&2; return 1; }
+  [[ "$BACKUP_WINDOW_SECONDS" =~ ^[0-9]+$ && "$BACKUP_OUTAGE_SECONDS" = "$BACKUP_WINDOW_SECONDS" ]] || {
+    echo "transaction returned invalid single-outage backup evidence" >&2
+    return 1
+  }
+  [[ "$FINAL_UNAVAILABILITY_SECONDS" =~ ^[0-9]+$ \
+      && "$TOTAL_UNAVAILABILITY_SECONDS" =~ ^[0-9]+$ \
+      && "$SOAK_OBSERVED_SECONDS" =~ ^[0-9]+$ \
+      && "$VERIFICATION_SOAK_SECONDS" = 60 ]] || {
+    echo "transaction returned invalid unavailability or soak evidence" >&2
+    return 1
+  }
+  [ "$SOAK_OBSERVED_SECONDS" -ge "$VERIFICATION_SOAK_SECONDS" ] \
+    && [ "$SOAK_OBSERVED_SECONDS" -le 180 ] || {
+    echo "transaction did not prove the configured stability soak" >&2
+    return 1
+  }
+  [ "$TOTAL_UNAVAILABILITY_SECONDS" -eq "$FINAL_UNAVAILABILITY_SECONDS" ] || {
+    echo "transaction unavailability evidence is inconsistent" >&2
+    return 1
+  }
+  [ "$TOTAL_UNAVAILABILITY_SECONDS" -le 60 ] \
+    && [[ "$RESULT_CUTOVER_STARTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+      && "$RESULT_SERVICE_UNAVAILABLE_STARTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+      && "$RESULT_CANDIDATE_AVAILABLE_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+      && "$RESULT_SOAK_STARTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+      && "$RESULT_SOAK_COMPLETED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+    echo "transaction violated the bounded unavailability contract" >&2
+    return 1
+  }
+  node -e '
+    const [started,completed]=process.argv.slice(1),a=Date.parse(started),b=Date.parse(completed);
+    if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)process.exit(1);' \
+    "$RESULT_SOAK_STARTED_AT" "$RESULT_SOAK_COMPLETED_AT" || {
+    echo "transaction returned invalid soak timestamps" >&2
+    return 1
+  }
+
+  # A journal saying completed is insufficient after a disconnect. Re-prove
+  # the live symlink and both PM2 process identities before writing local
+  # production evidence or treating a retry as successful.
+  "${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" "$PROD_RELEASE" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$REMOTE_PM2" <<'REMOTE_COMPLETED_IDENTITY'
+set -euo pipefail
+base_dir="$1"; release_dir="$2"; runtime_sha="$3"; artifact_digest="$4"; installed_digest="$5"; pm2_bin="$6"
+[ "$(readlink -f "$base_dir/current")" = "$release_dir" ] || { echo "completed promotion current symlink mismatch" >&2; exit 1; }
+[ -f "$release_dir/.complete.json" ] || { echo "completed promotion marker is missing" >&2; exit 1; }
+node -e 'const x=require(process.argv[1]);if(x.runtimeSha!==process.argv[2])process.exit(1)' "$release_dir/.complete.json" "$runtime_sha"
+node "$release_dir/scripts/release-installed-tree-attestation.mjs" validate \
+  --root "$release_dir" --runtime-sha "$runtime_sha" --artifact-digest "$artifact_digest" \
+  --expect-runtime-sha "$runtime_sha" --expect-artifact-digest "$artifact_digest" \
+  --expect-aggregate-digest "$installed_digest" >/dev/null
+"$pm2_bin" jlist | node -e '
+const fs=require("fs");const rows=JSON.parse(fs.readFileSync(0,"utf8"));const root=process.argv[1],sha=process.argv[2];
+for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
+  const row=rows.find((entry)=>entry?.name===name),env=row?.pm2_env??{};
+  if(env.status!=="online"||env.pm_cwd!==cwd||(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha||env.SENTRY_RELEASE!==sha)process.exit(1);
+}' "$release_dir" "$runtime_sha"
+REMOTE_COMPLETED_IDENTITY
+
+  SYSTEMD_RESULT_PATH="$ROOT/.local/release/production/${RUNTIME_SHA}-${ARTIFACT_DIGEST}.json"
+  mkdir -p "$(dirname "$SYSTEMD_RESULT_PATH")"
+  node - "$SYSTEMD_RESULT_PATH" "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" "$ESCROW_CONFIRMED_AT" "$ESCROW_EVIDENCE_SHA256" "$RESULT_CUTOVER_STARTED_AT" "$RESULT_SERVICE_UNAVAILABLE_STARTED_AT" "$RESULT_CANDIDATE_AVAILABLE_AT" "$RESULT_SOAK_STARTED_AT" "$RESULT_SOAK_COMPLETED_AT" "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" "$SOAK_OBSERVED_SECONDS" "$TARGET_VERSION" "$PUBLIC_BASE_URL" "$PROMOTION_RUN_ID" <<'NODE'
+const fs = require('fs');
+const [file, runtimeSha, artifactDigest, installedRuntimeDigest, exactBackup, backupSha256,
+  escrowObjectKey, escrowConfirmedAt, escrowEvidenceSha256, budgetStartedAt, serviceUnavailableStartedAt,
+  candidateAvailableAt, soakStartedAt, soakCompletedAt, cutoverSeconds, backupWindowSeconds, backupOutageSeconds,
+  finalUnavailabilitySeconds, totalUnavailabilitySeconds, verificationSoakSeconds, soakObservedSeconds,
+  packageVersion, publicBaseUrl, transactionId] = process.argv.slice(2);
+fs.writeFileSync(file, `${JSON.stringify({
+  schema: 'nexus.production-promotion-evidence.v1', status: 'passed', runtimeSha, artifactDigest, installedRuntimeDigest,
+  exactBackup, startedAt: budgetStartedAt, serviceUnavailableStartedAt, candidateAvailableAt,
+  soakStartedAt, soakCompletedAt,
+  completedAt: new Date().toISOString(), cutoverSeconds: Number(cutoverSeconds),
+  backupSha256,
+  rollbackEscrow: { status: 'passed', objectKey: escrowObjectKey, confirmedAt: escrowConfirmedAt, evidenceSha256: escrowEvidenceSha256 },
+  backupWindowSeconds: Number(backupWindowSeconds),
+  backupOutageSeconds: Number(backupOutageSeconds),
+  finalUnavailabilitySeconds: Number(finalUnavailabilitySeconds),
+  totalUnavailabilitySeconds: Number(totalUnavailabilitySeconds),
+  verificationSoakSeconds: Number(verificationSoakSeconds),
+  soakObservedSeconds: Number(soakObservedSeconds),
+  sentryRelease: runtimeSha,
+  packageVersion, transactionId, transactionMode: 'systemd_oneshot',
+  verification: {
+    nativeBinding: true, sqliteIntegrity: true, sqliteForeignKeys: true, loopbackBackend: true,
+    authenticatedContentEngine: true, pm2AndCurrentIdentity: true, pm2RestartStable: true,
+    publicHealth: { baseUrl: publicBaseUrl, status: 'healthy', database: 'connected' },
+    publicSnapshotVersion: packageVersion,
+  },
+}, null, 2)}\n`, { mode: 0o600 });
+NODE
+  printf '{"ok":true,"runtimeSha":"%s","artifactDigest":"%s","installedRuntimeDigest":"%s","cutoverSeconds":%s,"backupWindowSeconds":%s,"backupOutageSeconds":%s,"finalUnavailabilitySeconds":%s,"totalUnavailabilitySeconds":%s,"verificationSoakSeconds":%s,"soakObservedSeconds":%s,"sentryRelease":"%s","exactBackup":"%s","backupSha256":"%s","escrowObjectKey":"%s","transactionId":"%s","transactionMode":"systemd_oneshot"}\n' \
+    "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" "$SOAK_OBSERVED_SECONDS" "$RUNTIME_SHA" "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" "$PROMOTION_RUN_ID"
+}
+
+if [ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ]; then
+  run_systemd_transaction
+  exit 0
+fi
 
 restart_previous() {
   "${SSH[@]}" "$SERVER" bash -s -- "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_RESTART'

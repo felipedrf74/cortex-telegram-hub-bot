@@ -233,7 +233,7 @@ describe('release test evidence policy', () => {
     expect(result.stderr).toContain('does not cover every deterministic Vitest file');
   });
 
-  it('writes exact v2 selected evidence without a raw full-suite count floor', () => {
+  it('writes exact v3 selected evidence without a raw full-suite count floor', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-selected-evidence-'));
     roots.push(temp);
     const resultDir = path.join(temp, 'results');
@@ -256,6 +256,7 @@ describe('release test evidence policy', () => {
       '--vitest-results-dir', resultDir,
       '--pytest-log', pytestPath,
       '--python-version', 'Python 3.12',
+      '--artifact-digest', 'f'.repeat(64),
       '--run-id', '12345',
       '--run-attempt', '1',
       '--out', outputPath,
@@ -267,6 +268,12 @@ describe('release test evidence policy', () => {
       tier: DEFAULT_RELEASE_TIER,
       testPolicyDigest: policyDigest,
       counts: { vitest: 1, pytest: 1 },
+      artifactDigest: 'f'.repeat(64),
+      lockfiles: {
+        packageLockSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        pythonRequirementsSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+      protectedMainShadow: null,
       selection: { fullRequired: false, fullRequiredReason: null },
     });
   });
@@ -300,6 +307,7 @@ describe('release test evidence policy', () => {
     }
     for (const relative of [
       'scripts/release-test-evidence.mjs',
+      'scripts/protected-main-ci-evidence.mjs',
       'scripts/select-vitest-files.mjs',
       'scripts/changed-area-classifier.sh',
       'scripts/changed-area-classifier.mjs',
@@ -368,6 +376,7 @@ describe('release test evidence policy', () => {
     }
     for (const relative of [
       'scripts/release-test-evidence.mjs',
+      'scripts/protected-main-ci-evidence.mjs',
       'scripts/select-vitest-files.mjs',
       'scripts/changed-area-classifier.sh',
       'scripts/changed-area-classifier.mjs',

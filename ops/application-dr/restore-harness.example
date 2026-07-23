@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# MANUAL_REQUIRED: this is a fail-closed contract template, not a working
+# quarterly restore harness. Copy it
+# to /etc/nexus-application-dr/restore-harness as root:root mode 0700, replace
+# each refusal with the site-specific isolated boot/smoke/stop implementation,
+# and keep the required environment/path checks.
+set -euo pipefail
+umask 077
+
+action="${1:-}"
+runtime="${2:-}"
+[[ "${NEXUS_DRILL_MODE:-}" = isolated-restore ]] || { echo "isolated drill mode is required" >&2; exit 78; }
+[[ "$runtime" == /* && "$runtime" != / && "$runtime" = "${NEXUS_DRILL_ROOT:-}" ]] \
+  || { echo "isolated runtime root is invalid" >&2; exit 78; }
+[[ "${NEXUS_DRILL_DATABASE_PATH:-}" = "$runtime/data/bot.db" ]] \
+  || { echo "isolated database path is invalid" >&2; exit 78; }
+[[ "${NEXUS_DRILL_BASE_URL:-}" =~ ^http://127\.0\.0\.1:[0-9]{4,5}$ ]] \
+  || { echo "isolated loopback URL is invalid" >&2; exit 78; }
+
+case "$action" in
+  boot) echo "CONFIGURE: boot the restored exact release only from $runtime" >&2 ;;
+  smoke) echo "CONFIGURE: run authenticated health and representative read smoke" >&2 ;;
+  stop) echo "CONFIGURE: stop only the isolated drill processes" >&2 ;;
+  *) echo "expected boot, smoke, or stop" >&2 ;;
+esac
+exit 78

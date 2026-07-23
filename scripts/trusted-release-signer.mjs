@@ -24,6 +24,11 @@ import {
   validateReleaseSelection,
   vitestTestFiles,
 } from './release-test-evidence.mjs';
+import {
+  compareProtectedMainToRelease,
+  validateProtectedMainCiEvidence,
+  validateReleaseShadowComparison,
+} from './protected-main-ci-evidence.mjs';
 import { loadTestPolicy, partitionTestFiles, walkTestFiles } from './lib/test-policy.mjs';
 import {
   BACKEND_IOS_CONTRACT_FIXTURE_PATH,
@@ -35,6 +40,7 @@ import {
   IOS_DISTRIBUTION_ATTESTATION_FILE,
   validateIosDistributionAttestation,
 } from './lib/ios-distribution-attestation.mjs';
+import { validateRuntimeDependencyLock } from './release-runtime-dependencies.mjs';
 
 export { backendIosContractDigest } from './lib/backend-ios-contract-fixture.mjs';
 
@@ -741,13 +747,18 @@ export function validateTestEvidence({
   trustedPolicy,
   trustedPolicyDigest,
   candidateSourceRoot,
+  artifactDigest,
 }) {
   const resultPath = path.join(candidateArtifactRoot, '.local/release/test-results.json');
   const results = readJson(resultPath);
   exactKeys(results, [
     'schema', 'status', 'runtimeSha', 'completedAt', 'tier', 'selection',
-    'testPolicyDigest', 'toolchain', 'counts', 'ci',
+    'testPolicyDigest', 'artifactDigest', 'lockfiles', 'toolchain', 'counts',
+    'ci', 'protectedMainShadow',
   ], 'release test results');
+  exactKeys(results.lockfiles, [
+    'packageLockSha256', 'pythonRequirementsSha256',
+  ], 'release test lockfiles');
   exactKeys(results.toolchain, ['node', 'python'], 'release test toolchain');
   exactKeys(results.counts, ['vitest', 'pytest'], 'release test counts');
   exactKeys(results.ci, ['runId', 'runAttempt'], 'release test CI identity');
@@ -758,6 +769,19 @@ export function validateTestEvidence({
       || String(results.ci.runId) !== runId
       || String(results.ci.runAttempt) !== runAttempt) {
     fail('release test result is not bound to the exact runtime and CI run');
+  }
+  if (results.artifactDigest !== artifactDigest) {
+    fail('release test result artifact digest does not match the candidate bundle');
+  }
+  const expectedLockfiles = {
+    packageLockSha256: sha256(fs.readFileSync(path.join(candidateSourceRoot, 'package-lock.json'))),
+    pythonRequirementsSha256: sha256(fs.readFileSync(path.join(
+      candidateSourceRoot,
+      'content-engine/requirements.txt',
+    ))),
+  };
+  if (canonicalJson(results.lockfiles) !== canonicalJson(expectedLockfiles)) {
+    fail('release test result lockfiles do not match the exact candidate source');
   }
   if (results.toolchain.node !== 'v22.23.1' || !/^Python 3\.12(?:\.|$)/.test(results.toolchain.python)) {
     fail('release test result toolchain is outside the governed versions');
@@ -819,6 +843,27 @@ export function validateTestEvidence({
   }
   if (canonicalJson([...reportedTestFiles].sort()) !== canonicalJson(selection.selected.files)) {
     fail('release candidate Vitest files do not match the signed selection');
+  }
+  const shadow = results.protectedMainShadow;
+  exactKeys(shadow, ['mode', 'comparison', 'evidence'], 'protected-main release shadow binding');
+  if (shadow.mode !== 'shadow') fail('protected-main release evidence is not in governed shadow mode');
+  const comparison = validateReleaseShadowComparison(shadow.comparison, {
+    expectedRuntimeSha: runtimeSha,
+  });
+  if (shadow.evidence === null) {
+    if (comparison.status !== 'ineligible' || comparison.mainCi !== null) {
+      fail('missing protected-main evidence has a reusable shadow verdict');
+    }
+  } else {
+    const evidence = validateProtectedMainCiEvidence(shadow.evidence, {
+      expectedHeadSha: runtimeSha,
+      expectedPolicyDigest: trustedPolicyDigest,
+    });
+    const recomputed = compareProtectedMainToRelease(evidence, results);
+    recomputed.comparedAt = comparison.comparedAt;
+    if (canonicalJson(recomputed) !== canonicalJson(comparison)) {
+      fail('protected-main shadow verdict does not match its signed evidence');
+    }
   }
   return results;
 }
@@ -902,6 +947,10 @@ function validateCandidate() {
   if (artifact.git?.sha !== runtimeSha || path.basename(bundleRoot) !== artifact.digest) {
     fail('candidate bundle source SHA or digest directory mismatch');
   }
+  validateRuntimeDependencyLock(
+    readJson(path.join(bundleRoot, 'dist/runtime-dependencies/lock.json')),
+    bundleRoot,
+  );
   const fixtureIdentity = backendIosContractFixtureIdentity({ bundleRoot, artifact });
   for (const entry of artifact.files) {
     if (entry.path.startsWith('dist/')) continue;
@@ -984,6 +1033,7 @@ function validateCandidate() {
     trustedPolicy,
     trustedPolicyDigest,
     candidateSourceRoot,
+    artifactDigest: artifact.digest,
   });
   if (payload.toolchain.node !== testResults.toolchain.node
       || payload.toolchain.python !== testResults.toolchain.python

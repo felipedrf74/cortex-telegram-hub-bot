@@ -1,0 +1,8 @@
+# absolute path<TAB>numeric owner<TAB>mode<TAB>purpose
+/srv/sonarqube	0:0	0750	root-controlled stack boundary
+/srv/sonarqube/data	0:0	0750	root-controlled persistent-data boundary
+/srv/sonarqube/data/postgresql	999:999	0700	pinned PostgreSQL container data
+/srv/sonarqube/data/sonarqube	1000:1000	0750	pinned SonarQube application data
+/srv/sonarqube/data/extensions	1000:1000	0750	pinned SonarQube extensions
+/srv/sonarqube/data/logs	1000:1000	0750	pinned SonarQube logs
+/srv/sonarqube/data/temp	1000:1000	0750	pinned SonarQube search temporary data

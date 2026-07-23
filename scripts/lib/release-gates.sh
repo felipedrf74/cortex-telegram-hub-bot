@@ -457,7 +457,52 @@ REMOTE_CLEANUP
   RELEASE_REMOTE_LOCKS=""
 }
 
+release_acquire_remote_sonar_lock() {
+  local server="$1" lock_root ready errors pid
+  [ -z "${RELEASE_REMOTE_SONAR_LOCK_PID:-}" ] || {
+    echo "shared release/Sonar mutex is already held by this process" >&2
+    return 73
+  }
+  lock_root="$(mktemp -d "${TMPDIR:-/tmp}/nexus-release-sonar.XXXXXX")"
+  mkfifo "$lock_root/hold"
+  chmod 700 "$lock_root"
+  chmod 600 "$lock_root/hold"
+  ready="$lock_root/ready"; errors="$lock_root/errors"
+  : > "$ready"; : > "$errors"; chmod 600 "$ready" "$errors"
+  exec 8<>"$lock_root/hold"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$server" \
+    'command -v flock >/dev/null && test -f /run/lock/nexus-release-sonar.lock && test ! -L /run/lock/nexus-release-sonar.lock && test "$(stat -c "%U:%G:%a" /run/lock/nexus-release-sonar.lock)" = root:dominguez:660 && exec sh -c '\''exec 7<>/run/lock/nexus-release-sonar.lock; flock -n 7 || exit 75; printf "NEXUS_MUTEX_ACQUIRED\n"; cat >/dev/null'\''' \
+    < "$lock_root/hold" > "$ready" 2> "$errors" 8>&- &
+  pid=$!
+  for _ in $(seq 1 100); do
+    if grep -qx 'NEXUS_MUTEX_ACQUIRED' "$ready"; then
+      RELEASE_REMOTE_SONAR_LOCK_PID="$pid"
+      RELEASE_REMOTE_SONAR_LOCK_ROOT="$lock_root"
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then break; fi
+    sleep 0.1
+  done
+  exec 8>&-
+  wait "$pid" 2>/dev/null || true
+  echo "shared remote release/Sonar mutex is unavailable" >&2
+  sed -n '1,3p' "$errors" >&2 || true
+  rm -rf "$lock_root"
+  return 75
+}
+
+release_cleanup_remote_sonar_lock() {
+  if [ -n "${RELEASE_REMOTE_SONAR_LOCK_PID:-}" ]; then
+    exec 8>&-
+    wait "$RELEASE_REMOTE_SONAR_LOCK_PID" 2>/dev/null || true
+  fi
+  [ -z "${RELEASE_REMOTE_SONAR_LOCK_ROOT:-}" ] || rm -rf "$RELEASE_REMOTE_SONAR_LOCK_ROOT"
+  RELEASE_REMOTE_SONAR_LOCK_PID=""
+  RELEASE_REMOTE_SONAR_LOCK_ROOT=""
+}
+
 release_cleanup_all_locks() {
+  release_cleanup_remote_sonar_lock
   release_cleanup_remote_locks
   release_cleanup_local_locks
 }
