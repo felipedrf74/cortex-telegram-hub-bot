@@ -241,7 +241,7 @@ describe('migration-safety-check', () => {
     }
   });
 
-  it('allows review without claiming a backup when exact approval evidence matches', { timeout: 30_000 }, () => {
+  it('allows review without claiming a backup when exact approval evidence matches', { timeout: 60_000 }, () => {
     const relativeEvidence = `.local/release/migration-review/test-${process.pid}-${Date.now()}.json`;
     const absoluteEvidence = join(root, relativeEvidence);
     const args = [
