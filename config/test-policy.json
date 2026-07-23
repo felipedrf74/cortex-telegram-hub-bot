@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-22.4",
+  "version": "2026-07-23.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -44,6 +44,7 @@
         "__tests__/scripts/release-runtime-dependencies.test.ts",
         "__tests__/scripts/release-plan-evaluator.test.ts",
         "__tests__/scripts/application-disaster-recovery.test.ts",
+        "__tests__/scripts/application-dr-*.test.ts",
         "__tests__/scripts/ollama-observation-collector.test.ts",
         "__tests__/scripts/ollama-large-model-cleanup.test.ts",
         "__tests__/scripts/ollama-systemd-envelope.test.ts",
@@ -199,6 +200,12 @@
   "dispositionRules": [
     { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects the exact ten-release timing and quality window, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery target, exact identity parity, and shadow-only five-release readiness verdict." },
     { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, encrypted off-host retention, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
+    { "pattern": "__tests__/scripts/application-dr-backup-descriptor.test.ts", "disposition": "keep", "reason": "Protects the unprivileged, exact-identity recovery descriptor passed into the root-owned encrypted backup boundary." },
+    { "pattern": "__tests__/scripts/application-dr-installer.test.ts", "disposition": "keep", "reason": "Protects transactional installation and rollback of the root-owned DR assets, service state, and isolated drill identity." },
+    { "pattern": "__tests__/scripts/application-dr-recovery-runtime.test.ts", "disposition": "keep", "reason": "Protects hostile-archive rejection and exact signed runtime reconstruction without executing candidate-controlled recovery code." },
+    { "pattern": "__tests__/scripts/application-dr-required-release-escrow.test.ts", "disposition": "keep", "reason": "Protects phase-distinct, transaction-bound rollback and current-runtime escrow identities, retention, and exact-version confirmation." },
+    { "pattern": "__tests__/scripts/application-dr-version-retention.test.ts", "disposition": "keep", "reason": "Protects paginated exact AWS key/version retention and fail-closed deletion plans while preserving the explicit R2 variance." },
+    { "pattern": "__tests__/scripts/cloudflared-systemd-migration.test.ts", "disposition": "keep", "reason": "Protects the token-free, exact-input, root-owned Cloudflare replica handoff from a fragile cron child to a boot-persistent systemd connector without interrupting the confirmed public route." },
     { "pattern": "__tests__/scripts/ollama-observation-collector.test.ts", "disposition": "keep", "reason": "Protects the root-owned foreground collector, same-boot sequential samples, raw hash chain, exact-window api_usage aggregation, and fail-closed persistence and reboot behavior." },
     { "pattern": "__tests__/scripts/ollama-large-model-cleanup.test.ts", "disposition": "keep", "reason": "Protects the owner-authorized, exact-digest, soak-gated removal of large Ollama models using canonical hash-bound health/request evidence while preserving and re-verifying the retained 3B model." },
     { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },

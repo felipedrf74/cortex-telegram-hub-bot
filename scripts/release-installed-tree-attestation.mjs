@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -100,19 +99,26 @@ function networkIndependentInstallIdentity() {
   const dependencyLockDigest = sha256(canonicalJson(lock));
   if (evidence.dependencyLockDigest !== dependencyLockDigest
       || evidence.packageLockSha256 !== fileDigest('package-lock.json')
-      || evidence.pythonRequirementsSha256 !== fileDigest('content-engine/requirements.txt')) {
+      || evidence.pythonRequirementsSha256 !== fileDigest('content-engine/requirements.txt')
+      || lock.target?.node !== process.version
+      || !/^Python 3\.12\.\d+$/u.test(lock.target?.python ?? '')) {
     throw new Error('network-independent install evidence is not bound to release inputs');
   }
   return {
-    schema: evidence.schema,
-    status: evidence.status,
-    dependencyLockDigest,
-    evidenceSha256: sha256(evidenceBytes),
+    identity: {
+      schema: evidence.schema,
+      status: evidence.status,
+      dependencyLockDigest,
+      evidenceSha256: sha256(evidenceBytes),
+    },
+    node: lock.target.node,
+    python: lock.target.python,
   };
 }
 
 function buildIdentity() {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const networkIndependentInstall = networkIndependentInstallIdentity();
   return {
     schema: 'nexus.installed-runtime-identity.v1',
     runtimeSha: valueOf('--runtime-sha'),
@@ -121,14 +127,10 @@ function buildIdentity() {
     inputs: {
       packageLockSha256: fileDigest('package-lock.json'),
       requirementsSha256: fileDigest('content-engine/requirements.txt'),
-      node: process.version,
-      python: execFileSync(
-        path.join(root, 'content-engine/.venv/bin/python3.12'),
-        ['--version'],
-        { encoding: 'utf8' },
-      ).trim(),
+      node: networkIndependentInstall.node,
+      python: networkIndependentInstall.python,
     },
-    networkIndependentInstall: networkIndependentInstallIdentity(),
+    networkIndependentInstall: networkIndependentInstall.identity,
     trees: [treeIdentity('node_modules'), treeIdentity('content-engine/.venv')],
   };
 }

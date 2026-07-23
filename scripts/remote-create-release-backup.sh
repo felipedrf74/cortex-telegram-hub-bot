@@ -355,7 +355,25 @@ ARCHIVED_DATABASE_SHA256="$(sha256sum "$VERIFY_DIR/data/bot.db" | awk '{print $1
   exit 1
 }
 
-mv -f "$TMP_ARCHIVE" "$ARCHIVE"
+"$NODE_BIN" - "$TMP_ARCHIVE" "$ARCHIVE" "$BACKUP_DIR" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const [temporary, archive, backupDirectory] = process.argv.slice(2);
+if (path.dirname(temporary) !== backupDirectory || path.dirname(archive) !== backupDirectory) {
+  throw new Error('backup publication path escaped the backup directory');
+}
+const staged = fs.lstatSync(temporary);
+if (!staged.isFile() || staged.isSymbolicLink() || staged.nlink !== 1 || staged.size <= 0) {
+  throw new Error('backup publication staging archive is unsafe');
+}
+let descriptor = fs.openSync(temporary, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+fs.renameSync(temporary, archive);
+descriptor = fs.openSync(archive, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+descriptor = fs.openSync(backupDirectory, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+NODE
 trap - EXIT
 rm -rf "$META_DIR"
 [ -z "$PREPARED_RUNTIME_DIR" ] || rm -rf "$PREPARED_RUNTIME_DIR"

@@ -1,5 +1,6 @@
 [Unit]
 Description=Recover interrupted Nexus release promotion transactions
+ConditionPathExists=!/var/lib/nexus-release-promotion/bootstrap-in-progress.v1
 DefaultDependencies=no
 After=local-fs.target
 Before=network.target network-online.target multi-user.target pm2-dominguez.service pm2-root.service
@@ -7,7 +8,7 @@ Before=network.target network-online.target multi-user.target pm2-dominguez.serv
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/nexus-release-promotion-control recover-all
-TimeoutStartSec=130s
+TimeoutStartSec=300s
 
 [Install]
 WantedBy=multi-user.target

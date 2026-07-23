@@ -15,6 +15,19 @@ import sys
 from typing import NoReturn
 
 
+PRODUCTION_MIGRATION_LINEAGE_SCHEMA = "nexus.production-migration-lineages.v1"
+SHA256_PATTERN = re.compile(r"[a-f0-9]{64}")
+COMMIT_SHA_PATTERN = re.compile(r"[a-f0-9]{40}")
+LINEAGE_ID_PATTERN = re.compile(r"[a-z0-9-]+")
+LINEAGE_REASON_PATTERN = re.compile(r"[a-z0-9_]+")
+MIGRATION_FILENAME_PATTERN = re.compile(r"([0-9]{3})_[A-Za-z0-9_-]+\.sql")
+LINEAGE_RELATIONSHIPS = {
+    "byte_identical_renumber",
+    "comment_only_renumber",
+    "schema_reconciliation",
+}
+
+
 def fail(message: str) -> NoReturn:
     raise SystemExit(message)
 
@@ -120,13 +133,143 @@ def verify(source_value: str) -> dict[str, object]:
 
 
 def migration_number(filename: str, label: str) -> int:
-    match = re.fullmatch(r"([0-9]{3})_[A-Za-z0-9_-]+\.sql", filename)
+    match = MIGRATION_FILENAME_PATTERN.fullmatch(filename)
     if match is None:
         fail(f"{label} has an unsupported migration filename: {filename}")
     return int(match.group(1))
 
 
-def compatibility(source_value: str, migrations_value: str) -> dict[str, object]:
+def migration_set_sha256(filenames: list[str]) -> str:
+    body = json.dumps(filenames, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def load_lineage_policy(
+    policy_value: str,
+    migrations: Path,
+    runtime_files: list[str],
+) -> tuple[str, list[dict[str, object]]]:
+    policy = canonical_regular_file(policy_value, "production migration lineage policy")
+    raw = policy.read_bytes()
+    try:
+        parsed = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("production migration lineage policy is invalid JSON")
+    if (
+        not isinstance(parsed, dict)
+        or parsed.get("schema") != PRODUCTION_MIGRATION_LINEAGE_SCHEMA
+        or not isinstance(parsed.get("lineages"), list)
+        or not parsed["lineages"]
+    ):
+        fail("production migration lineage policy has an invalid schema")
+
+    runtime_set = set(runtime_files)
+    lineage_ids: set[str] = set()
+    retired_files: set[str] = set()
+    replacement_files: set[str] = set()
+    migration_sets: set[str] = set()
+    lineages: list[dict[str, object]] = []
+    for lineage in parsed["lineages"]:
+        if (
+            not isinstance(lineage, dict)
+            or not isinstance(lineage.get("id"), str)
+            or LINEAGE_ID_PATTERN.fullmatch(lineage["id"]) is None
+            or not isinstance(lineage.get("reason"), str)
+            or LINEAGE_REASON_PATTERN.fullmatch(lineage["reason"]) is None
+            or not isinstance(lineage.get("migrations"), list)
+            or not lineage["migrations"]
+            or lineage["id"] in lineage_ids
+        ):
+            fail("production migration lineage policy has an invalid lineage")
+        lineage_ids.add(lineage["id"])
+        entries = lineage["migrations"]
+        files = [
+            entry.get("file") if isinstance(entry, dict) else None
+            for entry in entries
+        ]
+        if (
+            not all(isinstance(item, str) for item in files)
+            or files != sorted(files)
+        ):
+            fail(f"production migration lineage is not sorted: {lineage['id']}")
+
+        normalized_files: list[str] = []
+        for entry in entries:
+            replacement = entry.get("replacement") if isinstance(entry, dict) else None
+            retired_file = entry.get("file") if isinstance(entry, dict) else None
+            replacement_file = (
+                replacement.get("file") if isinstance(replacement, dict) else None
+            )
+            if (
+                not isinstance(retired_file, str)
+                or MIGRATION_FILENAME_PATTERN.fullmatch(retired_file) is None
+                or not isinstance(entry.get("sha256"), str)
+                or SHA256_PATTERN.fullmatch(entry["sha256"]) is None
+                or not isinstance(entry.get("sourceCommit"), str)
+                or COMMIT_SHA_PATTERN.fullmatch(entry["sourceCommit"]) is None
+                or not isinstance(replacement, dict)
+                or not isinstance(replacement_file, str)
+                or MIGRATION_FILENAME_PATTERN.fullmatch(replacement_file) is None
+                or not isinstance(replacement.get("sha256"), str)
+                or SHA256_PATTERN.fullmatch(replacement["sha256"]) is None
+                or replacement.get("relationship") not in LINEAGE_RELATIONSHIPS
+                or retired_file in retired_files
+                or replacement_file in replacement_files
+            ):
+                fail(
+                    "production migration lineage policy has an invalid migration: "
+                    f"{lineage['id']}"
+                )
+            if retired_file in runtime_set:
+                fail(f"retired migration remains executable: {retired_file}")
+            if replacement_file not in runtime_set:
+                fail(f"replacement migration is missing or unsafe: {replacement_file}")
+            replacement_path = migrations / replacement_file
+            if replacement_path.is_symlink() or not replacement_path.is_file():
+                fail(f"replacement migration is missing or unsafe: {replacement_file}")
+            if sha256(replacement_path) != replacement["sha256"]:
+                fail(f"replacement migration digest mismatch: {replacement_file}")
+            relationship = replacement["relationship"]
+            if relationship == "byte_identical_renumber" and (
+                entry["sha256"] != replacement["sha256"]
+            ):
+                fail(f"byte-identical migration digest mismatch: {retired_file}")
+            if relationship == "comment_only_renumber" and (
+                entry["sha256"] == replacement["sha256"]
+            ):
+                fail(
+                    "comment-only migration unexpectedly has identical bytes: "
+                    f"{retired_file}"
+                )
+            retired_files.add(retired_file)
+            replacement_files.add(replacement_file)
+            normalized_files.append(retired_file)
+
+        set_sha256 = migration_set_sha256(normalized_files)
+        if set_sha256 in migration_sets:
+            fail("production migration lineage policy has a duplicate migration set")
+        migration_sets.add(set_sha256)
+        lineages.append(
+            {
+                "id": lineage["id"],
+                "migrationFiles": normalized_files,
+                "migrationCount": len(normalized_files),
+                "migrationSetSha256": set_sha256,
+            }
+        )
+
+    if [lineage["id"] for lineage in lineages] != sorted(lineage_ids):
+        fail("production migration lineages are not sorted")
+    return hashlib.sha256(raw).hexdigest(), lineages
+
+
+def compatibility(
+    source_value: str,
+    migrations_value: str,
+    lineage_policy_value: str,
+    *,
+    require_terminal: bool = False,
+) -> dict[str, object]:
     source = canonical_regular_file(source_value, "recovery point")
     migrations = Path(migrations_value)
     if not migrations.is_absolute() or migrations == Path("/") or migrations.is_symlink():
@@ -145,6 +288,11 @@ def compatibility(source_value: str, migrations_value: str) -> dict[str, object]
     if not runtime_files:
         fail("release migrations directory is empty")
     runtime_numbers = [migration_number(name, "release") for name in runtime_files]
+    lineage_policy_sha256, lineages = load_lineage_policy(
+        lineage_policy_value,
+        migrations,
+        runtime_files,
+    )
     uri = f"{source.as_uri()}?mode=ro&immutable=1"
     connection = sqlite3.connect(uri, uri=True, timeout=30)
     try:
@@ -170,15 +318,69 @@ def compatibility(source_value: str, migrations_value: str) -> dict[str, object]
             "release/database migration incompatibility: "
             f"database migration {database_max:03d} exceeds runtime {runtime_max:03d}"
         )
+    if len(applied) != len(set(applied)):
+        fail("release/database migration incompatibility: duplicate migration ledger rows")
+
+    runtime_set = set(runtime_files)
+    canonical_applied = [filename for filename in applied if filename in runtime_set]
+    retired_applied = [filename for filename in applied if filename not in runtime_set]
+    if canonical_applied != runtime_files[: len(canonical_applied)]:
+        fail(
+            "release/database migration incompatibility: "
+            "canonical migration ledger is not an exact release prefix"
+        )
+    selected_lineage: dict[str, object]
+    if retired_applied:
+        selected_lineage = next(
+            (
+                lineage
+                for lineage in lineages
+                if retired_applied == lineage["migrationFiles"]
+            ),
+            {},
+        )
+        if not selected_lineage:
+            fail(
+                "release/database migration incompatibility: "
+                "applied migrations are not an exact governed retired lineage: "
+                + ",".join(retired_applied)
+            )
+    else:
+        selected_lineage = {
+            "id": "canonical",
+            "migrationFiles": [],
+            "migrationCount": 0,
+            "migrationSetSha256": migration_set_sha256([]),
+        }
+    terminal_lineage_verified = canonical_applied == runtime_files
+    if require_terminal and not terminal_lineage_verified:
+        fail(
+            "release/database migration incompatibility: "
+            "terminal runtime migration lineage is incomplete: "
+            f"applied {len(canonical_applied)} of {len(runtime_files)} "
+            "canonical migrations"
+        )
     identity = {
         "appliedMigrations": applied,
         "runtimeMigrations": runtime_files,
+        "retiredMigrationPolicySha256": lineage_policy_sha256,
+        "migrationLineageId": selected_lineage["id"],
     }
     return {
         "schemaVersion": "NexusApplicationRestoreCompatibilityV1",
         "status": "passed",
         "databaseMaxMigration": database_max,
         "runtimeMaxMigration": runtime_max,
+        "terminalLineageVerified": terminal_lineage_verified,
+        "appliedMigrationCount": len(applied),
+        "appliedMigrationSetSha256": migration_set_sha256(applied),
+        "runtimeMigrationCount": len(runtime_files),
+        "runtimeMigrationSetSha256": migration_set_sha256(runtime_files),
+        "canonicalAppliedMigrationCount": len(canonical_applied),
+        "migrationLineageId": selected_lineage["id"],
+        "retiredMigrationCount": selected_lineage["migrationCount"],
+        "retiredMigrationSetSha256": selected_lineage["migrationSetSha256"],
+        "retiredMigrationPolicySha256": lineage_policy_sha256,
         "identitySha256": hashlib.sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
@@ -196,13 +398,20 @@ def main() -> None:
     compatibility_parser = subparsers.add_parser("compatibility")
     compatibility_parser.add_argument("source")
     compatibility_parser.add_argument("migrations")
+    compatibility_parser.add_argument("lineage_policy")
+    compatibility_parser.add_argument("--require-terminal", action="store_true")
     args = parser.parse_args()
     if args.command == "snapshot":
         result = snapshot(args.source, args.destination)
     elif args.command == "verify":
         result = verify(args.source)
     else:
-        result = compatibility(args.source, args.migrations)
+        result = compatibility(
+            args.source,
+            args.migrations,
+            args.lineage_policy,
+            require_terminal=args.require_terminal,
+        )
     json.dump(result, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
 

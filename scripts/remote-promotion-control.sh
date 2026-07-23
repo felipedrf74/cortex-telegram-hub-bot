@@ -13,12 +13,29 @@ OWNER_PUBLIC_KEY="${NEXUS_PROMOTION_OWNER_PUBLIC_KEY:-/etc/nexus-release/owner-p
 WORKER_USER="${NEXUS_PROMOTION_WORKER_USER:-dominguez}"
 TRUSTED_ATTESTOR="${NEXUS_PROMOTION_TRUSTED_ATTESTOR:-/usr/local/libexec/nexus-trusted-release-runtime-attestation.mjs}"
 PRODUCTION_BASE="${NEXUS_PROMOTION_PRODUCTION_BASE:-/home/dominguez/telegram-hub-bot}"
+SYSTEM_NODE_BIN="${NEXUS_PROMOTION_NODE_BIN:-/usr/bin/node}"
 COMMAND="${1:-}"
 shift || true
+BOOTSTRAP_JOURNAL="/var/lib/nexus-release-promotion/bootstrap-in-progress.v1"
 
 if [ "$EUID" -ne 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
   echo "promotion control must run as root" >&2
   exit 77
+fi
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then SYSTEM_NODE_BIN="$(command -v node)"; fi
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+  if [ -L "$BOOTSTRAP_JOURNAL" ]; then
+    echo "promotion bootstrap journal is unsafe" >&2
+    exit 75
+  elif [ -e "$BOOTSTRAP_JOURNAL" ]; then
+    [ -f "$BOOTSTRAP_JOURNAL" ] \
+      && [ "$(stat -c '%U:%G:%a' "$BOOTSTRAP_JOURNAL")" = root:root:600 ] || {
+      echo "promotion bootstrap journal is unsafe" >&2
+      exit 75
+    }
+    echo "promotion control-plane installation is incomplete; rerun the reviewed bootstrap" >&2
+    exit 75
+  fi
 fi
 
 validate_id() {
@@ -39,9 +56,142 @@ root_own() {
   if [ "$EUID" -eq 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then chown root:root "$@"; fi
 }
 
+durable_staging_file() {
+  local destination="$1" expected_mode="$2" parent temporary identity
+  case "$expected_mode" in 600|644) ;; *) echo "unsafe durable publication mode" >&2; return 1 ;; esac
+  [[ "$destination" == "$STATE_ROOT/"* ]] || {
+    echo "unsafe durable publication path" >&2
+    return 1
+  }
+  parent="$(dirname -- "$destination")"
+  [ -d "$parent" ] && [ ! -L "$parent" ] || {
+    echo "durable publication parent is unsafe" >&2
+    return 1
+  }
+  temporary="$(mktemp "${destination}.next.XXXXXXXX")"
+  [[ "$temporary" == "${destination}.next."* ]] \
+    && [ -f "$temporary" ] && [ ! -L "$temporary" ] \
+    && [ "$(stat -c '%h' "$temporary")" = 1 ] || {
+    echo "durable publication staging file is unsafe" >&2
+    return 1
+  }
+  chmod "$expected_mode" "$temporary"
+  root_own "$temporary"
+  if [ "$EUID" -eq 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+    identity="$(stat -c '%U:%G' "$temporary")"
+    [ "$identity" = root:root ] || {
+      rm -f -- "$temporary"
+      echo "durable publication staging owner is unsafe" >&2
+      return 1
+    }
+  fi
+  printf '%s\n' "$temporary"
+}
+
+durable_publish() {
+  local temporary="$1" destination="$2" expected_mode="$3" identity
+  [[ "$destination" == "$STATE_ROOT/"* \
+      && "$temporary" == "${destination}.next."* ]] \
+    && [ "$(dirname -- "$temporary")" = "$(dirname -- "$destination")" ] \
+    && [ -f "$temporary" ] && [ ! -L "$temporary" ] \
+    && [ "$(stat -c '%h' "$temporary")" = 1 ] \
+    && [ "$(stat -c '%a' "$temporary")" = "$expected_mode" ] || {
+    echo "durable publication staging identity is unsafe" >&2
+    return 1
+  }
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    [ -f "$destination" ] && [ ! -L "$destination" ] \
+      && [ "$(stat -c '%h' "$destination")" = 1 ] || {
+      echo "durable publication destination is unsafe" >&2
+      return 1
+    }
+  fi
+  if [ "$EUID" -eq 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+    identity="$(stat -c '%U:%G' "$temporary")"
+    [ "$identity" = root:root ] || {
+      echo "durable publication staging owner is unsafe" >&2
+      return 1
+    }
+    if [ -e "$destination" ]; then
+      identity="$(stat -c '%U:%G' "$destination")"
+      [ "$identity" = root:root ] || {
+        echo "durable publication destination owner is unsafe" >&2
+        return 1
+      }
+    fi
+  fi
+  if ! "$SYSTEM_NODE_BIN" - "$temporary" "$destination" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const [temporary, destination] = process.argv.slice(2);
+const staged = fs.lstatSync(temporary);
+if (!staged.isFile() || staged.isSymbolicLink() || staged.nlink !== 1
+    || path.dirname(temporary) !== path.dirname(destination)) process.exit(1);
+if (fs.existsSync(destination)) {
+  const current = fs.lstatSync(destination);
+  if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) process.exit(1);
+}
+let descriptor = fs.openSync(temporary, 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+fs.renameSync(temporary, destination);
+descriptor = fs.openSync(path.dirname(destination), 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+NODE
+  then
+    rm -f -- "$temporary"
+    echo "durable publication failed" >&2
+    return 1
+  fi
+}
+
+durable_remove() {
+  local destination="$1" expected_mode="$2" identity
+  [ -e "$destination" ] || [ -L "$destination" ] || return 0
+  [[ "$destination" == "$STATE_ROOT/"* ]] \
+    && [ -f "$destination" ] && [ ! -L "$destination" ] \
+    && [ "$(stat -c '%h' "$destination")" = 1 ] \
+    && [ "$(stat -c '%a' "$destination")" = "$expected_mode" ] || {
+    echo "durable removal target is unsafe" >&2
+    return 1
+  }
+  if [ "$EUID" -eq 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+    identity="$(stat -c '%U:%G' "$destination")"
+    [ "$identity" = root:root ] || {
+      echo "durable removal target owner is unsafe" >&2
+      return 1
+    }
+  fi
+  "$SYSTEM_NODE_BIN" - "$destination" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const destination = process.argv[2];
+const current = fs.lstatSync(destination);
+if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) process.exit(1);
+fs.unlinkSync(destination);
+const descriptor = fs.openSync(path.dirname(destination), 'r');
+try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+NODE
+}
+
+fsync_directory() {
+  local directory="$1"
+  [ -d "$directory" ] && [ ! -L "$directory" ] || {
+    echo "directory durability target is unsafe" >&2
+    return 1
+  }
+  "$SYSTEM_NODE_BIN" - "$directory" <<'NODE'
+const fs=require('fs');const directory=process.argv[2];
+const stat=fs.lstatSync(directory);
+if(!stat.isDirectory()||stat.isSymbolicLink())process.exit(1);
+const descriptor=fs.openSync(directory,'r');
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+NODE
+}
+
 ensure_state_root() {
   install -d -m 755 "$STATE_ROOT" "$STATE_ROOT/requests" "$STATE_ROOT/transactions"
   root_own "$STATE_ROOT" "$STATE_ROOT/requests" "$STATE_ROOT/transactions"
+  fsync_directory "$STATE_ROOT"
 }
 
 ensure_transaction_dirs() {
@@ -57,6 +207,8 @@ ensure_transaction_dirs() {
   if [ "$EUID" -eq 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
     chown "$WORKER_USER:$WORKER_USER" "$(worker_dir "$id")"
   fi
+  fsync_directory "$STATE_ROOT/transactions"
+  fsync_directory "$dir"
 }
 
 acquire_control_lock() {
@@ -115,18 +267,19 @@ clear_terminal_active() {
     exit 1
   }
   validate_id "$id"
-  if journal_terminal "$id" "$request_sha"; then rm -f "$STATE_ROOT/active.json"; fi
+  if journal_terminal "$id" "$request_sha"; then durable_remove "$STATE_ROOT/active.json" 600; fi
 }
 
 write_active() {
-  local id="$1" request_sha="$2" envelope_sha="$3" output="$STATE_ROOT/active.json.next"
-  rm -f "$output"
+  local id="$1" request_sha="$2" envelope_sha="$3" output
+  output="$(durable_staging_file "$STATE_ROOT/active.json" 600)"
   node - "$output" "$id" "$request_sha" "$envelope_sha" <<'NODE'
 const fs=require('fs');const [output,transactionId,requestSha256,envelopeSha256]=process.argv.slice(2);
 fs.writeFileSync(output,`${JSON.stringify({schema:'nexus.promotion-active.v1',transactionId,requestSha256,
- envelopeSha256,activatedAt:new Date().toISOString()},null,2)}\n`,{mode:0o600,flag:'wx'});
+ envelopeSha256,activatedAt:new Date().toISOString()},null,2)}\n`,{mode:0o600,flag:'w'});
 NODE
-  chmod 600 "$output"; root_own "$output"; mv -f "$output" "$STATE_ROOT/active.json"
+  chmod 600 "$output"; root_own "$output"
+  durable_publish "$output" "$STATE_ROOT/active.json" 600
 }
 
 active_matches() {
@@ -137,11 +290,13 @@ active_matches() {
 }
 
 write_recovery_control() {
-  local id="$1" output
+  local id="$1" output temporary
   ensure_transaction_dirs "$id"
   output="$(control_dir "$id")/recover"
-  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$output.next"
-  chmod 644 "$output.next"; root_own "$output.next"; mv -f "$output.next" "$output"
+  temporary="$(durable_staging_file "$output" 644)"
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$temporary"
+  chmod 644 "$temporary"; root_own "$temporary"
+  durable_publish "$temporary" "$output" 644
 }
 
 validate_runtime_target() {
@@ -231,14 +386,26 @@ case "$COMMAND" in
     envelope_input="${1:-}"; validate_authorization_input "$envelope_input"
     [ -x "$AUTH_BIN" ] || { echo "promotion authorization verifier is unavailable" >&2; exit 1; }
     [ -f "$OWNER_PUBLIC_KEY" ] && [ ! -L "$OWNER_PUBLIC_KEY" ] || { echo "owner promotion public key is unavailable" >&2; exit 1; }
-    verification="$("$AUTH_BIN" verify-request --input "$envelope_input" --public-key "$OWNER_PUBLIC_KEY")" || {
+    ensure_state_root
+    acquire_control_lock
+    trusted_envelope="$(mktemp "$STATE_ROOT/requests/.launch-envelope.XXXXXXXX")"
+    [[ "$trusted_envelope" == "$STATE_ROOT/requests/".launch-envelope.* ]] \
+      && [ -f "$trusted_envelope" ] && [ ! -L "$trusted_envelope" ] || {
+      echo "root-owned launch envelope staging failed" >&2
+      exit 1
+    }
+    cleanup_trusted_envelope() { rm -f -- "$trusted_envelope"; }
+    trap cleanup_trusted_envelope EXIT
+    install -m 600 "$envelope_input" "$trusted_envelope"
+    root_own "$trusted_envelope"
+    verification="$("$AUTH_BIN" verify-request --input "$trusted_envelope" --public-key "$OWNER_PUBLIC_KEY")" || {
       echo "owner-signed promotion request verification failed" >&2
       exit 77
     }
     IFS=$'\t' read -r transaction_id request_sha envelope_sha < <(printf '%s' "$verification" | node -e '
       let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{const x=JSON.parse(b);
       process.stdout.write(`${x.transactionId}\t${x.payloadSha256}\t${x.envelopeSha256}\n`)})')
-    validate_id "$transaction_id"; ensure_state_root; acquire_control_lock; clear_terminal_active
+    validate_id "$transaction_id"; clear_terminal_active
     ensure_transaction_dirs "$transaction_id"
     request_envelope="$STATE_ROOT/requests/$transaction_id.envelope.json"
     request_payload="$STATE_ROOT/requests/$transaction_id.json"
@@ -247,18 +414,23 @@ case "$COMMAND" in
       stored="$(node -e 'const x=require(process.argv[1]);process.stdout.write(`${x.requestSha256}\t${x.envelopeSha256}`)' "$authority")"
       [ "$stored" = "$request_sha"$'\t'"$envelope_sha" ] || { echo "promotion transaction authority is immutable" >&2; exit 73; }
     else
-      install -m 600 "$envelope_input" "$request_envelope.next"; root_own "$request_envelope.next"
-      node - "$envelope_input" "$request_payload.next" <<'NODE'
+      request_envelope_next="$(durable_staging_file "$request_envelope" 600)"
+      request_payload_next="$(durable_staging_file "$request_payload" 644)"
+      authority_next="$(durable_staging_file "$authority" 600)"
+      install -m 600 "$trusted_envelope" "$request_envelope_next"; root_own "$request_envelope_next"
+      node - "$trusted_envelope" "$request_payload_next" <<'NODE'
 const fs=require('fs');const e=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
-fs.writeFileSync(process.argv[3],`${JSON.stringify(e.payload,null,2)}\n`,{mode:0o644,flag:'wx'});
+fs.writeFileSync(process.argv[3],`${JSON.stringify(e.payload,null,2)}\n`,{mode:0o644,flag:'w'});
 NODE
-      chmod 644 "$request_payload.next"; root_own "$request_payload.next"
-      node - "$authority.next" "$transaction_id" "$request_sha" "$envelope_sha" <<'NODE'
+      chmod 644 "$request_payload_next"; root_own "$request_payload_next"
+      node - "$authority_next" "$transaction_id" "$request_sha" "$envelope_sha" <<'NODE'
 const fs=require('fs');const [output,transactionId,requestSha256,envelopeSha256]=process.argv.slice(2);
-fs.writeFileSync(output,`${JSON.stringify({schema:'nexus.promotion-authority.v1',transactionId,requestSha256,envelopeSha256},null,2)}\n`,{mode:0o600,flag:'wx'});
+fs.writeFileSync(output,`${JSON.stringify({schema:'nexus.promotion-authority.v1',transactionId,requestSha256,envelopeSha256},null,2)}\n`,{mode:0o600,flag:'w'});
 NODE
-      chmod 600 "$authority.next"; root_own "$authority.next"
-      mv -f "$request_envelope.next" "$request_envelope"; mv -f "$request_payload.next" "$request_payload"; mv -f "$authority.next" "$authority"
+      chmod 600 "$authority_next"; root_own "$authority_next"
+      durable_publish "$request_envelope_next" "$request_envelope" 600
+      durable_publish "$request_payload_next" "$request_payload" 644
+      durable_publish "$authority_next" "$authority" 600
     fi
     if journal_terminal "$transaction_id" "$request_sha"; then
       printf '{"ok":true,"transactionId":"%s","state":"terminal","requestSha256":"%s"}\n' "$transaction_id" "$request_sha"
@@ -277,12 +449,67 @@ NODE
   status)
     transaction_id="${1:-}"; validate_id "$transaction_id"; ensure_state_root
     authority="$(authority_path "$transaction_id")"
-    [ -f "$authority" ] || { echo "promotion transaction is unknown" >&2; exit 1; }
+    if [ ! -f "$authority" ]; then
+      printf '{"schema":"nexus.promotion-transaction-status.v1","transactionId":"%s","status":"not_found"}\n' \
+        "$transaction_id"
+      # EX_NOINPUT is an authoritative application-level absence. Transport,
+      # sudo, and malformed-state failures use different statuses so the Mac
+      # may safely resubmit only this same verified owner-signed authority.
+      exit 66
+    fi
     request_sha="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.requestSha256||"")' "$authority")"
     journal="$(journal_path "$transaction_id")"
     if [ -f "$journal" ]; then cat "$journal"; else
       printf '{"schema":"nexus.promotion-transaction-journal.v1","transactionId":"%s","requestSha256":"%s","phase":"submitted","status":"pending"}\n' "$transaction_id" "$request_sha"
     fi
+    ;;
+  ensure-started)
+    transaction_id="${1:-}"; expected_request_sha="${2:-}"
+    validate_id "$transaction_id"
+    [[ "$expected_request_sha" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "invalid promotion request digest" >&2
+      exit 64
+    }
+    ensure_state_root; acquire_control_lock; clear_terminal_active
+    authority="$(authority_path "$transaction_id")"
+    [ -f "$authority" ] && [ ! -L "$authority" ] || {
+      echo "accepted promotion authority is unavailable" >&2
+      exit 66
+    }
+    IFS=$'\t' read -r request_sha envelope_sha < <(node - "$authority" "$transaction_id" <<'NODE'
+const fs=require('fs');const [file,id]=process.argv.slice(2);
+const x=JSON.parse(fs.readFileSync(file,'utf8'));
+if(x.schema!=='nexus.promotion-authority.v1'||x.transactionId!==id
+ ||!/^[a-f0-9]{64}$/u.test(x.requestSha256||'')
+ ||!/^[a-f0-9]{64}$/u.test(x.envelopeSha256||''))process.exit(1);
+process.stdout.write(`${x.requestSha256}\t${x.envelopeSha256}\n`);
+NODE
+    ) || { echo "accepted promotion authority is invalid" >&2; exit 1; }
+    [ "$request_sha" = "$expected_request_sha" ] || {
+      echo "accepted promotion request digest does not match" >&2
+      exit 73
+    }
+    if journal_terminal "$transaction_id" "$request_sha"; then
+      printf '{"ok":true,"transactionId":"%s","state":"terminal","requestSha256":"%s"}\n' \
+        "$transaction_id" "$request_sha"
+      exit 0
+    fi
+    if [ -f "$STATE_ROOT/active.json" ]; then
+      active_matches "$transaction_id" "$request_sha" || {
+        read -r active_id _ < <(read_active_fields)
+        echo "another promotion transaction is active: $active_id" >&2
+        exit 73
+      }
+    else
+      write_active "$transaction_id" "$request_sha" "$envelope_sha"
+    fi
+    unit="$(unit_name "$transaction_id")"
+    if ! "$SYSTEMCTL_BIN" is-active --quiet "$unit"; then
+      "$SYSTEMCTL_BIN" reset-failed "$unit" >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" start --no-block "$unit"
+    fi
+    printf '{"ok":true,"transactionId":"%s","state":"started","requestSha256":"%s"}\n' \
+      "$transaction_id" "$request_sha"
     ;;
   recover)
     transaction_id="${1:-}"; validate_id "$transaction_id"; ensure_state_root; acquire_control_lock; clear_terminal_active
@@ -290,7 +517,11 @@ NODE
     IFS=$'\t' read -r active_id request_sha < <(read_active_fields)
     [ "$active_id" = "$transaction_id" ] || { echo "recovery target is not authoritative active transaction" >&2; exit 73; }
     write_recovery_control "$transaction_id"
-    if ! "$SYSTEMCTL_BIN" is-active --quiet "$(unit_name "$transaction_id")"; then "$SYSTEMCTL_BIN" start --no-block "$(unit_name "$transaction_id")"; fi
+    unit="$(unit_name "$transaction_id")"
+    if ! "$SYSTEMCTL_BIN" is-active --quiet "$unit"; then
+      "$SYSTEMCTL_BIN" reset-failed "$unit" >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" start --no-block "$unit"
+    fi
     printf '{"ok":true,"transactionId":"%s","decision":"recover"}\n' "$transaction_id"
     ;;
   retry-escrow)
@@ -321,7 +552,33 @@ NODE
     [ -f "$STATE_ROOT/active.json" ] || exit 0
     IFS=$'\t' read -r transaction_id request_sha < <(read_active_fields); validate_id "$transaction_id"
     active_matches "$transaction_id" "$request_sha" || { echo "active promotion identity changed during recovery" >&2; exit 1; }
-    status="$(journal_status "$transaction_id" "$request_sha" 2>/dev/null || true)"
+    journal="$(journal_path "$transaction_id")"
+    if [ -e "$journal" ] || [ -L "$journal" ]; then
+      [ -f "$journal" ] && [ ! -L "$journal" ] || {
+        echo "authoritative promotion journal is unsafe at boot" >&2
+        exit 1
+      }
+      status="$(journal_status "$transaction_id" "$request_sha")" || {
+        echo "authoritative promotion journal is invalid at boot" >&2
+        exit 1
+      }
+    else
+      status=""
+    fi
+    transaction_state="$(state_dir "$transaction_id")"
+    # Authority and active state are persisted before systemd accepts the
+    # one-shot. A reboot before recovery-armed is durable cannot have reached
+    # the application worker or PM2 mutation. A cutover-timing file alone is
+    # therefore still pre-mutation and will be durably replaced on the normal
+    # run. Once recovery-armed exists, fail closed into recovery below.
+    if [ -z "$status" ] \
+        && [ ! -e "$transaction_state/journal.json" ] && [ ! -L "$transaction_state/journal.json" ] \
+        && [ ! -e "$transaction_state/recovery-armed" ] && [ ! -L "$transaction_state/recovery-armed" ]; then
+      unit="$(unit_name "$transaction_id")"
+      "$SYSTEMCTL_BIN" reset-failed "$unit" >/dev/null 2>&1 || true
+      "$SYSTEMCTL_BIN" start --no-block "$unit"
+      exit 0
+    fi
     # Candidate availability outranks network escrow at boot. Resume only the
     # pending exact escrow transaction; never roll back the already healthy
     # candidate and never repeat the cutover.
@@ -354,7 +611,7 @@ NODE
     cat "$file"
     ;;
   *)
-    echo "Usage: nexus-release-promotion-control <version|assert-idle|prepare-runtime-target|seal-runtime|launch|status|recover|retry-escrow|recover-all|fetch>" >&2
+    echo "Usage: nexus-release-promotion-control <version|assert-idle|prepare-runtime-target|seal-runtime|launch|status|ensure-started|recover|retry-escrow|recover-all|fetch>" >&2
     exit 64
     ;;
 esac

@@ -3,6 +3,7 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
+  randomBytes,
   sign as cryptoSign,
   verify as cryptoVerify,
 } from 'node:crypto';
@@ -21,7 +22,86 @@ const canonicalJson = (input) => {
   return `{${Object.keys(input).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(input[key])}`).join(',')}}`;
 };
 const sha256 = (input) => createHash('sha256').update(canonicalJson(input)).digest('hex');
+const rawSha256 = (input) => createHash('sha256').update(input).digest('hex');
 const readJson = (name) => JSON.parse(fs.readFileSync(path.resolve(value(name)), 'utf8'));
+const lstatOrNull = (file) => {
+  try {
+    return fs.lstatSync(file);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+};
+const fsyncDirectory = (directory) => {
+  const descriptor = fs.openSync(directory, 'r');
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+const reconcileExactPublication = (output, body) => {
+  const parent = path.dirname(output);
+  const prefix = `.${path.basename(output)}.next.`;
+  let stat = lstatOrNull(output);
+  if (stat === null) return false;
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o600
+      || !fs.readFileSync(output).equals(body)) {
+    throw new Error('promotion envelope output is unsafe or differs from the signed authority');
+  }
+  if (stat.nlink > 1) {
+    let removed = false;
+    for (const name of fs.readdirSync(parent)) {
+      if (!name.startsWith(prefix)) continue;
+      const candidate = path.join(parent, name);
+      const candidateStat = lstatOrNull(candidate);
+      if (candidateStat === null || !candidateStat.isFile() || candidateStat.isSymbolicLink()
+          || candidateStat.dev !== stat.dev || candidateStat.ino !== stat.ino
+          || !fs.readFileSync(candidate).equals(body)) continue;
+      fs.unlinkSync(candidate);
+      removed = true;
+    }
+    if (removed) fsyncDirectory(parent);
+    stat = fs.lstatSync(output);
+  }
+  if (stat.nlink !== 1) {
+    throw new Error('promotion envelope output has an unexplained hard link');
+  }
+  return true;
+};
+const publishExactFile = (output, body) => {
+  const parent = path.dirname(output);
+  const parentStat = fs.lstatSync(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+      || path.dirname(path.resolve(output)) !== path.resolve(parent)) {
+    throw new Error('promotion envelope output directory is unsafe');
+  }
+  if (reconcileExactPublication(output, body)) return;
+  const temporary = path.join(
+    parent,
+    `.${path.basename(output)}.next.${process.pid}.${randomBytes(12).toString('hex')}`,
+  );
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(descriptor, body);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    try {
+      fs.linkSync(temporary, output);
+      fsyncDirectory(parent);
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      reconcileExactPublication(output, body);
+    }
+    fs.unlinkSync(temporary);
+    fsyncDirectory(parent);
+    reconcileExactPublication(output, body);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+};
 const fullSha = /^[a-f0-9]{40}$/u;
 const digest = /^[a-f0-9]{64}$/u;
 const transactionId = /^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u;
@@ -37,6 +117,37 @@ function validateRequestPayload(payload, { allowExpired = false } = {}) {
   }
   if (payload.target?.sentryRelease !== payload.target?.sha) throw new Error('Sentry release must equal the exact runtime SHA');
   if (!digest.test(payload.target?.artifactDigest || '') || !digest.test(payload.target?.installedRuntimeDigest || '')) throw new Error('invalid artifact identity');
+  if (!digest.test(payload.target?.recoveryRuntimeDigest || '')) {
+    throw new Error('invalid relocatable recovery runtime identity');
+  }
+  const releaseEvidence = payload.releaseEvidence;
+  const evidenceKeys = [
+    'releaseManifestBase64',
+    'releaseManifestSha256',
+    'stagingAttestationBase64',
+    'stagingAttestationSha256',
+  ];
+  if (!releaseEvidence || typeof releaseEvidence !== 'object' || Array.isArray(releaseEvidence)
+      || Object.keys(releaseEvidence).length !== evidenceKeys.length
+      || evidenceKeys.some((key) => !Object.prototype.hasOwnProperty.call(releaseEvidence, key))) {
+    throw new Error('signed release recovery evidence schema is invalid');
+  }
+  for (const [base64Key, digestKey] of [
+    ['releaseManifestBase64', 'releaseManifestSha256'],
+    ['stagingAttestationBase64', 'stagingAttestationSha256'],
+  ]) {
+    if (typeof releaseEvidence[base64Key] !== 'string'
+        || !digest.test(releaseEvidence[digestKey] || '')
+        || releaseEvidence[base64Key].length > 24 * 1024 * 1024) {
+      throw new Error(`signed release recovery evidence is invalid: ${base64Key}`);
+    }
+    const decoded = Buffer.from(releaseEvidence[base64Key], 'base64');
+    if (decoded.length === 0 || decoded.length > 16 * 1024 * 1024
+        || decoded.toString('base64') !== releaseEvidence[base64Key]
+        || rawSha256(decoded) !== releaseEvidence[digestKey]) {
+      throw new Error(`signed release recovery evidence digest is invalid: ${base64Key}`);
+    }
+  }
   const releasePath = /^\/home\/dominguez\/[A-Za-z0-9._-]+\/releases\/[A-Za-z0-9._-]+$/u;
   const basePath = /^\/home\/dominguez\/[A-Za-z0-9._-]+$/u;
   if (!basePath.test(payload.productionBase || '') || !releasePath.test(payload.target?.runtime || '')) {
@@ -109,7 +220,12 @@ function sign(kind) {
     signature: cryptoSign(null, Buffer.from(canonicalJson(payload)), createPrivateKey(privateKey)).toString('base64'),
   };
   const output = path.resolve(value('--output'));
-  fs.writeFileSync(output, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  const parent = path.dirname(output);
+  const parentStat = fs.lstatSync(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+    throw new Error('promotion envelope output directory is unsafe');
+  }
+  publishExactFile(output, Buffer.from(`${JSON.stringify(envelope, null, 2)}\n`));
   process.stdout.write(`${JSON.stringify({ ok: true, kind, envelopeSha256: sha256(envelope), payloadSha256: sha256(payload) })}\n`);
 }
 

@@ -19,6 +19,23 @@ export {
 let db: Database.Database;
 let storage: SQLiteStorage | null = null;
 
+function loadPersistedModelOverrides(
+  loader: () => void = () => {
+    const { loadModelOverrides } = require('./model-config');
+    loadModelOverrides();
+  },
+): void {
+  // Persisted Ollama selectors are part of the production routing boundary.
+  // In particular, OllamaSmallOnlyPolicyError must reach the process startup
+  // boundary instead of being downgraded to an optional model-config load.
+  loader();
+}
+
+/** Exercise the production startup boundary without opening a database. */
+export function loadPersistedModelOverridesForTest(loader: () => void): void {
+  loadPersistedModelOverrides(loader);
+}
+
 export function getDb(): Database.Database {
   if (!db) {
     throw new Error('Database not initialized. Call initDatabase() first.');
@@ -50,11 +67,10 @@ export function initDatabase(): Database.Database {
     logger.error({ err }, 'iOS auth refresh-token hash backfill failed — investigate before next deploy');
   }
 
-  // Load persisted model overrides from kv_store (after migrations create the table)
-  try {
-    const { loadModelOverrides } = require('./model-config');
-    loadModelOverrides();
-  } catch { /* model-config not yet available — non-critical */ }
+  // Load persisted model overrides from kv_store after migrations create the
+  // table. This is fail-closed: an invalid local-model selector must prevent
+  // startup rather than silently falling back to another routing state.
+  loadPersistedModelOverrides();
 
   // Load persisted settings overrides from kv_store
   try {

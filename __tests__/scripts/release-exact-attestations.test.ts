@@ -38,7 +38,11 @@ function runtimeFixture() {
   fs.writeFileSync(path.join(root, 'content-engine/requirements.txt'), 'fastapi==1.0.0\n');
   const packageLock = fs.readFileSync(path.join(root, 'package-lock.json'));
   const requirements = fs.readFileSync(path.join(root, 'content-engine/requirements.txt'));
-  const dependencyLock = { schema: 'nexus.release-runtime-dependencies.v1', fixture: true };
+  const dependencyLock = {
+    schema: 'nexus.release-runtime-dependencies.v1',
+    fixture: true,
+    target: { node: process.version, python: 'Python 3.12.0' },
+  };
   fs.writeFileSync(
     path.join(root, 'dist/runtime-dependencies/lock.json'),
     `${JSON.stringify(dependencyLock, null, 2)}\n`,
@@ -159,6 +163,7 @@ describe('detached staging attestation', () => {
     const files = {
       manifest: path.join(root, 'manifest.json'),
       installed: path.join(root, '.nexus-installed-runtime.json'),
+      recovery: path.join(root, 'recovery-runtime.json'),
       identity: path.join(root, 'identity.json'),
       readiness: path.join(root, 'readiness.json'),
       smoke: path.join(root, 'smoke.log'),
@@ -170,7 +175,18 @@ describe('detached staging attestation', () => {
     const releaseDir = `/home/dominguez/telegram-hub-bot-staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
     fs.writeFileSync(files.manifest, JSON.stringify({
       schema: 'nexus.release-manifest.v2',
-      payload: { runtimeSha, artifact: { digest: artifactDigest } },
+      payload: { runtimeSha, packageVersion: '4.14.219', artifact: { digest: artifactDigest } },
+    }));
+    const recoveryIdentity = {
+      schema: 'nexus.recovery-installed-runtime-identity.v1',
+      runtimeSha,
+      artifactDigest,
+      packageVersion: '4.14.219',
+    };
+    fs.writeFileSync(files.recovery, JSON.stringify({
+      schema: 'nexus.recovery-runtime-attestation.v1',
+      identity: recoveryIdentity,
+      aggregateDigest: sha256(canonicalJson(recoveryIdentity)),
     }));
     fs.writeFileSync(files.identity, JSON.stringify({
       schema: 'nexus.pm2-release-identity.v1',
@@ -204,6 +220,7 @@ describe('detached staging attestation', () => {
       '--root', root,
       '--manifest', files.manifest,
       '--installed-attestation', files.installed,
+      '--recovery-runtime-attestation', files.recovery,
       '--identity-evidence', files.identity,
       '--readiness-evidence', files.readiness,
       '--smoke-log', files.smoke,
@@ -263,13 +280,26 @@ describe('detached staging attestation', () => {
     const files = {
       manifest: path.join(root, 'manifest.json'),
       installed: path.join(root, '.nexus-installed-runtime.json'),
+      recovery: path.join(root, 'recovery-runtime.json'),
       identity: path.join(root, 'identity.json'),
       readiness: path.join(root, 'readiness.json'),
       smoke: path.join(root, 'smoke.log'),
       request: path.join(root, 'request.json'),
     };
     fs.writeFileSync(files.manifest, JSON.stringify({
-      schema: 'nexus.release-manifest.v2', payload: { runtimeSha, artifact: { digest: artifactDigest } },
+      schema: 'nexus.release-manifest.v2',
+      payload: { runtimeSha, packageVersion: '4.14.219', artifact: { digest: artifactDigest } },
+    }));
+    const recoveryIdentity = {
+      schema: 'nexus.recovery-installed-runtime-identity.v1',
+      runtimeSha,
+      artifactDigest,
+      packageVersion: '4.14.219',
+    };
+    fs.writeFileSync(files.recovery, JSON.stringify({
+      schema: 'nexus.recovery-runtime-attestation.v1',
+      identity: recoveryIdentity,
+      aggregateDigest: sha256(canonicalJson(recoveryIdentity)),
     }));
     fs.writeFileSync(files.identity, JSON.stringify({
       services: [
@@ -291,6 +321,7 @@ describe('detached staging attestation', () => {
       '--root', root,
       '--manifest', files.manifest,
       '--installed-attestation', files.installed,
+      '--recovery-runtime-attestation', files.recovery,
       '--identity-evidence', files.identity,
       '--readiness-evidence', files.readiness,
       '--smoke-log', files.smoke,

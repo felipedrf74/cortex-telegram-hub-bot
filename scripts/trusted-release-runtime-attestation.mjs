@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Root-installed verifier for a finalized production runtime. This file uses
-// only Node built-ins so a candidate cannot replace the code that authorizes
-// its own execution.
-import { execFileSync } from 'node:child_process';
+// only Node built-ins and never executes candidate bytes, so a candidate
+// cannot replace or run code that authorizes its own execution.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -130,19 +129,26 @@ function networkIdentity() {
   if (evidence.schema !== 'nexus.network-independent-install.v1' || evidence.status !== 'passed'
       || evidence.dependencyLockDigest !== dependencyLockDigest
       || evidence.packageLockSha256 !== fileDigest('package-lock.json')
-      || evidence.pythonRequirementsSha256 !== fileDigest('content-engine/requirements.txt')) {
+      || evidence.pythonRequirementsSha256 !== fileDigest('content-engine/requirements.txt')
+      || lock.target?.node !== process.version
+      || !/^Python 3\.12\.\d+$/u.test(lock.target?.python ?? '')) {
     throw new Error('network-independent install evidence is invalid');
   }
   return {
-    schema: evidence.schema,
-    status: evidence.status,
-    dependencyLockDigest,
-    evidenceSha256: sha256(evidenceBytes),
+    identity: {
+      schema: evidence.schema,
+      status: evidence.status,
+      dependencyLockDigest,
+      evidenceSha256: sha256(evidenceBytes),
+    },
+    node: lock.target.node,
+    python: lock.target.python,
   };
 }
 
 function installedIdentity() {
   const packageJson = readJson('package.json');
+  const networkIndependentInstall = networkIdentity();
   return {
     schema: 'nexus.installed-runtime-identity.v1',
     runtimeSha: expectedRuntimeSha,
@@ -151,12 +157,10 @@ function installedIdentity() {
     inputs: {
       packageLockSha256: fileDigest('package-lock.json'),
       requirementsSha256: fileDigest('content-engine/requirements.txt'),
-      node: process.version,
-      python: execFileSync(path.join(root, 'content-engine/.venv/bin/python3.12'), ['--version'], {
-        encoding: 'utf8',
-      }).trim(),
+      node: networkIndependentInstall.node,
+      python: networkIndependentInstall.python,
     },
-    networkIndependentInstall: networkIdentity(),
+    networkIndependentInstall: networkIndependentInstall.identity,
     trees: [treeIdentity('node_modules'), treeIdentity('content-engine/.venv')],
   };
 }

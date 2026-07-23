@@ -85,7 +85,28 @@ const checkpointRelative = path.relative(localRoot, checkpointPath);
 if (checkpointRelative.startsWith('..') || path.isAbsolute(checkpointRelative)) {
   fail('release checkpoint must stay under .local/release', 64);
 }
-fs.mkdirSync(path.dirname(checkpointPath), { recursive: true, mode: 0o700 });
+const checkpointDirectory = path.dirname(checkpointPath);
+fs.mkdirSync(checkpointDirectory, { recursive: true, mode: 0o700 });
+function fsyncDirectory(directory) {
+  const descriptor = fs.openSync(directory, 'r');
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+let durableDirectory = checkpointDirectory;
+while (true) {
+  fsyncDirectory(durableDirectory);
+  if (durableDirectory === root) break;
+  const parent = path.dirname(durableDirectory);
+  const parentRelative = path.relative(root, parent);
+  if (parent === durableDirectory || parentRelative.startsWith('..')
+    || path.isAbsolute(parentRelative)) {
+    fail('release checkpoint directory ancestry is invalid', 64);
+  }
+  durableDirectory = parent;
+}
 
 const lockPath = `${checkpointPath}.lock`;
 let lockHeld = false;
@@ -137,14 +158,176 @@ function readCheckpoint() {
 function writeCheckpoint(state) {
   const temporary = `${checkpointPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   const next = { ...state, updatedAt: new Date().toISOString() };
-  fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  fs.renameSync(temporary, checkpointPath);
-  fs.chmodSync(checkpointPath, 0o600);
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    const descriptor = fs.openSync(temporary, 'r');
+    try {
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(temporary, checkpointPath);
+    fsyncDirectory(checkpointDirectory);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
   return next;
 }
 
 function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function productionEvidenceMatches(production, expected) {
+  const digest = (input) => /^[a-f0-9]{64}$/u.test(input || '');
+  const timestamp = (input) => Number.isFinite(Date.parse(input || ''));
+  const safeKey = (input) => typeof input === 'string' && input.length > 0
+    && input.length <= 1024 && !input.includes('..') && !input.includes('//');
+  const controls = production?.drStorageControls;
+  const aws = controls?.provider === 'aws-s3' && controls?.controlMode === 'versioned-s3';
+  const r2 = controls?.provider === 'cloudflare-r2'
+    && controls?.controlMode === 'r2-approved-variance';
+  if (!aws && !r2) return false;
+  if (controls?.releasePrefixLockVerified !== true) return false;
+
+  const version = (input) => /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(input || '');
+  const retainedObject = (item) => {
+    const confirmed = Date.parse(item?.confirmedAt || '');
+    if (!Number.isFinite(confirmed) || item?.provider !== controls.provider
+        || !safeKey(item?.objectKey) || !digest(item?.encryptedSha256)
+        || !Number.isSafeInteger(item?.encryptedSizeBytes) || item.encryptedSizeBytes <= 0) {
+      return false;
+    }
+    if (aws) {
+      const retained = Date.parse(item?.retainUntil || '');
+      return version(item?.objectVersionId)
+        && Number.isFinite(retained) && retained >= confirmed + 90 * 86_400_000;
+    }
+    return item?.objectVersionId === null && item?.retainUntil === null;
+  };
+  const databaseObject = (item) => {
+    if (item?.status !== 'passed' || item?.provider !== controls.provider
+        || !safeKey(item?.objectKey)
+        || !/\/database\/hourly\/nexus-db-\d{8}T\d{6}Z\.sqlite\.age$/u.test(item.objectKey)
+        || !digest(item?.plaintextSha256) || !digest(item?.encryptedSha256)
+        || !Number.isSafeInteger(item?.encryptedSizeBytes) || item.encryptedSizeBytes <= 0
+        || !timestamp(item?.confirmedAt)) return false;
+    return aws
+      ? version(item?.objectVersionId)
+        && item?.retentionVariance === null
+        && item?.approvedUnversionedVariance === false
+      : item?.objectVersionId === null
+        && item?.retentionVariance === 'r2-approved-variance'
+        && item?.approvedUnversionedVariance === true;
+  };
+  const recoveryObject = (item, phase) => item?.status === 'passed'
+    && item?.escrowId === production.transactionId
+    && item?.escrowPhase === phase
+    && item?.runtimeSha === expected.runtimeSha
+    && item?.artifactDigest === expected.artifactDigest
+    && item?.installedRuntimeDigest === expected.installedRuntimeDigest
+    && item?.recoveryRuntimeDigest === expected.recoveryRuntimeDigest
+    && digest(item?.plaintextSha256)
+    && safeKey(item?.objectKey)
+    && item.objectKey.endsWith(
+      `+escrow-${production.transactionId}+phase-${phase}.tar.gz.${item.plaintextSha256}.age`,
+    )
+    && item?.evidenceSha256 === production.rollbackEscrow?.evidenceSha256
+    && retainedObject(item);
+  const readiness = (item) => item?.schema === 'nexus.candidate-readiness-refresh.v1'
+    && item?.status === 'passed'
+    && item?.transactionId === production.transactionId
+    && item?.runtimeSha === expected.runtimeSha
+    && item?.packageVersion === expected.packageVersion
+    && timestamp(item?.verifiedAt)
+    && Object.keys(item?.checks || {}).sort().join(',')
+      === 'authenticatedSnapshot,contentEngine,loopbackBackend,pm2Identity,publicHealth'
+    && Object.values(item.checks).every((check) => check === true);
+
+  const rollback = production?.rollbackEscrow;
+  const beforeRecovery = production?.preMutationCurrentRecoveryEscrow;
+  const currentRecovery = production?.currentRecoveryEscrow;
+  const beforeDatabase = production?.preMutationDatabaseRecoveryPoint;
+  const currentDatabase = production?.currentDatabaseRecoveryPoint;
+  const beforeReadiness = production?.candidateReadinessRefresh?.beforeEscrow;
+  const afterReadiness = production?.candidateReadinessRefresh?.afterEscrow;
+  if (production?.schema !== 'nexus.production-promotion-evidence.v1'
+      || production?.status !== 'passed'
+      || production?.runtimeSha !== expected.runtimeSha
+      || production?.artifactDigest !== expected.artifactDigest
+      || production?.installedRuntimeDigest !== expected.installedRuntimeDigest
+      || production?.recoveryRuntimeDigest !== expected.recoveryRuntimeDigest
+      || production?.releaseManifestSha256 !== expected.releaseManifestSha256
+      || production?.stagingAttestationSha256 !== expected.stagingAttestationSha256
+      || production?.packageVersion !== expected.packageVersion
+      || production?.sentryRelease !== expected.runtimeSha
+      || production?.transactionMode !== 'systemd_oneshot'
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/u.test(production?.transactionId || '')
+      || !digest(production?.backupSha256)
+      || typeof production?.exactBackup !== 'string'
+      || !production.exactBackup.endsWith('.tar.gz')
+      || rollback?.status !== 'passed'
+      || rollback?.provider !== controls.provider
+      || rollback?.objectKey?.endsWith(`.${production.backupSha256}.age`) !== true
+      || !digest(rollback?.evidenceSha256)
+      || !retainedObject(rollback)
+      || !recoveryObject(beforeRecovery, 'pre-mutation')
+      || !recoveryObject(currentRecovery, 'post-soak')
+      || beforeRecovery.plaintextSha256 !== currentRecovery.plaintextSha256
+      || beforeRecovery.objectKey === currentRecovery.objectKey
+      || beforeRecovery.encryptedSha256 === currentRecovery.encryptedSha256
+      || (aws && beforeRecovery.objectVersionId === currentRecovery.objectVersionId)
+      || !databaseObject(beforeDatabase) || !databaseObject(currentDatabase)
+      || beforeDatabase.encryptedSha256 === currentDatabase.encryptedSha256
+      || (aws && beforeDatabase.objectKey === currentDatabase.objectKey
+        && beforeDatabase.objectVersionId === currentDatabase.objectVersionId)
+      || !readiness(beforeReadiness) || !readiness(afterReadiness)) {
+    return false;
+  }
+
+  const times = {
+    started: Date.parse(production.startedAt),
+    unavailable: Date.parse(production.serviceUnavailableStartedAt),
+    soak: Date.parse(production.soakCompletedAt),
+    beforeRecovery: Date.parse(beforeRecovery.confirmedAt),
+    currentRecovery: Date.parse(currentRecovery.confirmedAt),
+    beforeDatabase: Date.parse(beforeDatabase.confirmedAt),
+    currentDatabase: Date.parse(currentDatabase.confirmedAt),
+    rollback: Date.parse(rollback.confirmedAt),
+    beforeReadiness: Date.parse(beforeReadiness.verifiedAt),
+    afterReadiness: Date.parse(afterReadiness.verifiedAt),
+    dr: Date.parse(production.drEscrowConfirmedAt),
+    completed: Date.parse(production.completedAt),
+  };
+  if (!Object.values(times).every(Number.isFinite)
+      || times.beforeRecovery > times.started || times.beforeRecovery > times.unavailable
+      || times.beforeDatabase > times.started || times.beforeDatabase > times.unavailable
+      || times.currentRecovery < times.soak || times.currentDatabase < times.soak
+      || times.beforeReadiness < times.soak
+      || times.rollback < times.beforeReadiness
+      || times.currentRecovery < times.beforeReadiness
+      || times.currentDatabase < times.beforeReadiness
+      || times.afterReadiness < Math.max(
+        times.beforeReadiness, times.rollback, times.currentRecovery, times.currentDatabase,
+      )
+      || times.dr !== Math.max(times.rollback, times.currentRecovery, times.currentDatabase)
+      || production.completedAt !== afterReadiness.verifiedAt
+      || times.completed !== times.afterReadiness) return false;
+
+  const afterChecks = afterReadiness.checks;
+  return production?.verification?.loopbackBackend === afterChecks.loopbackBackend
+    && production?.verification?.contentEngineHealth === afterChecks.contentEngine
+    && production?.verification?.authenticatedContentEngine === afterChecks.authenticatedSnapshot
+    && production?.verification?.pm2AndCurrentIdentity === afterChecks.pm2Identity
+    && production?.verification?.publicHealth?.status
+      === (afterChecks.publicHealth ? 'healthy' : 'failed')
+    && production?.verification?.publicHealth?.database
+      === (afterChecks.publicHealth ? 'connected' : 'unknown')
+    && production?.verification?.publicSnapshotVersion
+      === (afterChecks.authenticatedSnapshot ? expected.packageVersion : null);
 }
 
 function ghJson(commandArgs, label) {
@@ -237,6 +420,40 @@ function revalidateCheckpointTrust(state) {
       || codeqlJobId !== String(recorded.codeqlJobId)
       || codeqlJob.conclusion !== recorded.codeqlConclusion) {
     fail('release checkpoint CodeQL evidence no longer matches the exact stored run and job', 64);
+  }
+
+  if (state.phase === 'promoted') {
+    const identity = state.productionEvidenceIdentity;
+    const expectedPath = path.join(
+      root,
+      '.local',
+      'release',
+      'production',
+      `${runtimeSha}-${state.artifactDigest}.json`,
+    );
+    let production;
+    try {
+      if (path.resolve(identity?.path || '') !== expectedPath
+          || !fs.lstatSync(expectedPath).isFile()
+          || fs.lstatSync(expectedPath).isSymbolicLink()
+          || sha256File(expectedPath) !== identity?.sha256) {
+        fail('production promotion evidence identity drifted after it was checkpointed');
+      }
+      production = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
+    } catch {
+      fail('production promotion evidence identity drifted after it was checkpointed');
+    }
+    if (!productionEvidenceMatches(production, {
+      runtimeSha,
+      artifactDigest: identity.artifactDigest,
+      installedRuntimeDigest: identity.installedRuntimeDigest,
+      recoveryRuntimeDigest: identity.recoveryRuntimeDigest,
+      releaseManifestSha256: identity.releaseManifestSha256,
+      stagingAttestationSha256: identity.stagingAttestationSha256,
+      packageVersion: state.packageVersion,
+    })) {
+      fail('production promotion evidence no longer proves the exact checkpoint identity');
+    }
   }
 }
 
@@ -697,7 +914,9 @@ try { stagingAttestation = JSON.parse(fs.readFileSync(stagingAttestationPath, 'u
   fail('signed staging attestation is invalid JSON');
 }
 const installedRuntimeDigest = stagingAttestation?.payload?.installedRuntimeDigest;
+const recoveryRuntimeDigest = stagingAttestation?.payload?.recoveryRuntimeDigest;
 if (!/^[a-f0-9]{64}$/u.test(installedRuntimeDigest || '')
+    || !/^[a-f0-9]{64}$/u.test(recoveryRuntimeDigest || '')
     || stagingAttestation?.payload?.runtimeSha !== runtimeSha
     || stagingAttestation?.payload?.artifactDigest !== artifactDigest
     || stagingAttestation?.payload?.releaseManifestSha256 !== signedManifestSha256) {
@@ -706,7 +925,8 @@ if (!/^[a-f0-9]{64}$/u.test(installedRuntimeDigest || '')
 const stagingAttestationSha256 = sha256File(stagingAttestationPath);
 if (recordedStagingIdentity
     && (recordedStagingIdentity.sha256 !== stagingAttestationSha256
-      || recordedStagingIdentity.installedRuntimeDigest !== installedRuntimeDigest)) {
+      || recordedStagingIdentity.installedRuntimeDigest !== installedRuntimeDigest
+      || recordedStagingIdentity.recoveryRuntimeDigest !== recoveryRuntimeDigest)) {
   fail('staging attestation identity drifted after it was checkpointed');
 }
 state = writeCheckpoint({
@@ -718,9 +938,11 @@ state = writeCheckpoint({
     path: stagingAttestationPath,
     sha256: stagingAttestationSha256,
     installedRuntimeDigest,
+    recoveryRuntimeDigest,
   },
   stagingAttestationSha256,
   installedRuntimeDigest,
+  recoveryRuntimeDigest,
   ownerStopReachedAt: state.ownerStopReachedAt || new Date().toISOString(),
 });
 
@@ -757,15 +979,15 @@ let production;
 try { production = JSON.parse(fs.readFileSync(productionEvidence, 'utf8')); } catch {
   fail('production promotion evidence is missing or invalid after promotion');
 }
-if (production?.status !== 'passed' || production?.runtimeSha !== runtimeSha
-    || production?.artifactDigest !== artifactDigest
-    || production?.installedRuntimeDigest !== installedRuntimeDigest
-    || !/^[a-f0-9]{64}$/u.test(production?.backupSha256 || '')
-    || production?.rollbackEscrow?.status !== 'passed'
-    || !/^[a-f0-9]{64}$/u.test(production?.rollbackEscrow?.evidenceSha256 || '')
-    || typeof production?.rollbackEscrow?.objectKey !== 'string'
-    || !production.rollbackEscrow.objectKey.endsWith(`.${production.backupSha256}.age`)
-    || production.rollbackEscrow.objectKey.includes('..')) {
+if (!productionEvidenceMatches(production, {
+  runtimeSha,
+  artifactDigest,
+  installedRuntimeDigest,
+  recoveryRuntimeDigest,
+  releaseManifestSha256: signedManifestSha256,
+  stagingAttestationSha256,
+  packageVersion,
+})) {
   fail('production promotion evidence does not match the checkpoint identity');
 }
 state = writeCheckpoint({
@@ -779,6 +1001,9 @@ state = writeCheckpoint({
     runtimeSha,
     artifactDigest,
     installedRuntimeDigest,
+    recoveryRuntimeDigest,
+    releaseManifestSha256: signedManifestSha256,
+    stagingAttestationSha256,
     backupSha256: production.backupSha256,
     rollbackEscrowEvidenceSha256: production.rollbackEscrow.evidenceSha256,
   },
