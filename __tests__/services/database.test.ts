@@ -207,6 +207,7 @@ describe('Database Migrations', () => {
       'qwen3.6:35b-a3b-q4_K_M',
     );
 
+    expect(() => loadPersistedModelOverrides(() => {})).not.toThrow();
     expect(() => loadPersistedModelOverrides(() => {
       throw violation;
     })).toThrow(violation);

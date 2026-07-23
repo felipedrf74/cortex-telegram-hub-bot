@@ -1,15 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Load model overrides after database migrations without weakening the startup
- * boundary. The dynamic require preserves the existing database/model-config
- * cycle, while policy errors from persisted Ollama selectors remain fatal.
+ * Invoke the late-bound model override loader without weakening the startup
+ * boundary. Database owns the dynamic import needed for its model-config
+ * cycle, while this boundary keeps policy errors fatal and directly testable.
  */
-export function loadPersistedModelOverrides(
-  loader: () => void = () => {
-    const { loadModelOverrides } = require('./model-config');
-    loadModelOverrides();
-  },
-): void {
+export function loadPersistedModelOverrides(loader: () => void): void {
   loader();
 }

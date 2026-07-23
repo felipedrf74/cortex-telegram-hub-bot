@@ -54,7 +54,10 @@ export function initDatabase(): Database.Database {
   // Load persisted model overrides from kv_store after migrations create the
   // table. This is fail-closed: an invalid local-model selector must prevent
   // startup rather than silently falling back to another routing state.
-  loadPersistedModelOverrides();
+  loadPersistedModelOverrides(() => {
+    const { loadModelOverrides } = require('./model-config');
+    loadModelOverrides();
+  });
 
   // Load persisted settings overrides from kv_store
   try {
