@@ -233,6 +233,8 @@ const ISOLATION_OVERLAY_FIELDS = Object.freeze([
   'baselineSnapshotSha256',
   'machineUuid',
   'sshHostPublicKeySha256',
+  'guestMachineIdSha256',
+  'readinessBootIdSha256',
 ]);
 
 const DRILL_FIELDS = Object.freeze([
@@ -251,7 +253,18 @@ const DRILL_FIELDS = Object.freeze([
   'databaseBackupRestored',
   'journalSha256',
   'recoveryResultSha256',
+  'postTerminalReboot',
   'timeline',
+]);
+const POST_TERMINAL_REBOOT_FIELDS = Object.freeze([
+  'beforeGuestBootIdSha256',
+  'afterGuestBootIdSha256',
+  'journalSha256',
+  'controlVersion',
+  'recoveryUnitResult',
+  'assertRootPm2Ready',
+  'assertIdle',
+  'exactRuntimeHealthy',
 ]);
 const TIMELINE_FIELDS = Object.freeze([
   'event',
@@ -540,19 +553,17 @@ export function textKeyIdentity(value) {
 }
 
 function validateCanonicalReleasePaths(release) {
-  const productionBasePattern = /^\/home\/dominguez\/[A-Za-z0-9._-]+$/u;
-  if (!productionBasePattern.test(release.productionBase)) fail('production_base_invalid');
-  if (!release.stateRoot.startsWith('/home/dominguez/')
-      || !/^\/home\/dominguez\/[A-Za-z0-9._/-]+$/u.test(release.stateRoot)) {
-    fail('state_root_invalid');
+  if (release.productionBase !== '/srv/nexus-release/production') {
+    fail('production_base_invalid');
   }
+  if (release.stateRoot !== '/var/lib/nexus-release-promotion') fail('state_root_invalid');
   if (release.backupDir !== '/home/dominguez/backups/nexushub') fail('backup_dir_invalid');
   if (!/^\/home\/dominguez\/backups\/nexushub\/\.runtime-stage-[A-Za-z0-9]+$/u.test(
     release.preparedRuntimeDir,
   )) {
     fail('prepared_runtime_dir_invalid');
   }
-  if (!/^\/(?:[^\s/]+\/)+pm2$/u.test(release.pm2Bin)) fail('pm2_path_invalid');
+  if (release.pm2Bin !== '/usr/local/bin/pm2') fail('pm2_path_invalid');
   let publicUrl;
   try {
     publicUrl = new URL(release.publicBaseUrl);
@@ -661,7 +672,7 @@ export function validatePlan(plan, { nowMs = Date.now(), allowExpired = false } 
   assertBoolean(plan.labStorage.encryptionRequired, true, 'lab_storage_encryption_missing');
 
   assertExactFields(plan.syntheticDatabase, DATABASE_FIELDS, 'synthetic_database');
-  if (!/^\/home\/dominguez\/[A-Za-z0-9._/-]+\.db$/u.test(plan.syntheticDatabase.path)
+  if (!/^\/srv\/nexus-drill-lab\/[A-Za-z0-9._/-]+\.db$/u.test(plan.syntheticDatabase.path)
       || startsAtPath(plan.syntheticDatabase.path, plan.release.productionBase)
       || startsAtPath(plan.syntheticDatabase.path, plan.release.backupDir)) {
     fail('synthetic_database_path_invalid');
@@ -845,7 +856,8 @@ function validateMount(mount, index) {
       ].includes(option.toLowerCase()))
       || source.startsWith('host:')
       || source.includes('serverdominguez')
-      || source.includes('/home/dominguez/telegram-hub-bot')) {
+      || source.includes('/home/dominguez/telegram-hub-bot')
+      || source.includes('/srv/nexus-release')) {
     fail('shared_or_production_mount_detected');
   }
 }
@@ -867,7 +879,8 @@ function validateHypervisorDevice(device, index) {
       && (device.mode !== 'overlay'
         || !device.target.startsWith('vd')
         || device.source.includes('/home/dominguez/telegram-hub-bot')
-        || device.source.includes('/home/dominguez/nexus-hub'))) {
+        || device.source.includes('/home/dominguez/nexus-hub')
+        || device.source.includes('/srv/nexus-release'))) {
     fail('hypervisor_disk_not_isolated_overlay');
   }
 }
@@ -995,6 +1008,8 @@ export function validateIsolationEvidence(evidence, plan, { nowMs = Date.now() }
   assertArray(guest.productionDataMatches, 0, 0, 'production_data_detected');
 
   assertArray(evidence.overlays, 3, 3, 'isolation_overlays_invalid');
+  const overlayGuestMachineIds = [];
+  const overlayGuestBootIds = [];
   evidence.overlays.forEach((overlay, index) => {
     assertExactFields(overlay, ISOLATION_OVERLAY_FIELDS, 'isolation_overlay');
     const expected = plan.overlays[index];
@@ -1012,7 +1027,28 @@ export function validateIsolationEvidence(evidence, plan, { nowMs = Date.now() }
     if (overlay.sshHostPublicKeySha256 !== expected.ssh.hostPublicKeySha256) {
       fail('isolation_overlay_ssh_host_key_mismatch');
     }
+    assertDigest(
+      overlay.guestMachineIdSha256,
+      'isolation_overlay_guest_machine_id_invalid',
+    );
+    assertDigest(
+      overlay.readinessBootIdSha256,
+      'isolation_overlay_readiness_boot_id_invalid',
+    );
+    if (overlay.guestMachineIdSha256 === plan.controller.machineIdSha256
+        || overlay.readinessBootIdSha256 === plan.controller.bootIdSha256
+        || overlay.guestMachineIdSha256 === overlay.readinessBootIdSha256) {
+      fail('isolation_overlay_guest_identity_invalid');
+    }
+    overlayGuestMachineIds.push(overlay.guestMachineIdSha256);
+    overlayGuestBootIds.push(overlay.readinessBootIdSha256);
   });
+  unique(overlayGuestMachineIds, 'isolation_overlay_guest_machine_id_reuse');
+  unique(overlayGuestBootIds, 'isolation_overlay_readiness_boot_id_reuse');
+  if (evidence.guest.machineIdSha256 !== evidence.overlays[0].guestMachineIdSha256
+      || evidence.guest.bootIdSha256 !== evidence.overlays[0].readinessBootIdSha256) {
+    fail('isolation_representative_guest_identity_mismatch');
+  }
   return evidence;
 }
 
@@ -1312,6 +1348,53 @@ export function validateDrillOutcome(
   );
   assertDigest(outcome.journalSha256, 'drill_journal_digest_invalid');
   assertDigest(outcome.recoveryResultSha256, 'drill_recovery_result_digest_invalid');
+  if (outcome.drill === 'guest-reboot') {
+    assertExactFields(
+      outcome.postTerminalReboot,
+      POST_TERMINAL_REBOOT_FIELDS,
+      'post_terminal_reboot',
+    );
+    assertDigest(
+      outcome.postTerminalReboot.beforeGuestBootIdSha256,
+      'post_terminal_reboot_before_boot_id_invalid',
+    );
+    assertDigest(
+      outcome.postTerminalReboot.afterGuestBootIdSha256,
+      'post_terminal_reboot_after_boot_id_invalid',
+    );
+    assertDigest(
+      outcome.postTerminalReboot.journalSha256,
+      'post_terminal_reboot_journal_digest_invalid',
+    );
+    if (outcome.postTerminalReboot.beforeGuestBootIdSha256
+          === outcome.postTerminalReboot.afterGuestBootIdSha256) {
+      fail('post_terminal_reboot_boot_id_unchanged');
+    }
+    if (outcome.postTerminalReboot.journalSha256 !== outcome.journalSha256) {
+      fail('post_terminal_reboot_journal_changed');
+    }
+    if (outcome.postTerminalReboot.controlVersion !== INTERFACE_VALUES.controlVersion
+        || outcome.postTerminalReboot.recoveryUnitResult !== 'success') {
+      fail('post_terminal_reboot_control_invalid');
+    }
+    assertBoolean(
+      outcome.postTerminalReboot.assertRootPm2Ready,
+      true,
+      'post_terminal_reboot_root_pm2_not_ready',
+    );
+    assertBoolean(
+      outcome.postTerminalReboot.assertIdle,
+      true,
+      'post_terminal_reboot_not_idle',
+    );
+    assertBoolean(
+      outcome.postTerminalReboot.exactRuntimeHealthy,
+      true,
+      'post_terminal_reboot_runtime_unhealthy',
+    );
+  } else if (outcome.postTerminalReboot !== null) {
+    fail('unexpected_post_terminal_reboot');
+  }
 
   if (outcome.drill === 'ssh-loss') {
     const targetCompleted = outcome.terminalStatus === 'completed'
@@ -1331,6 +1414,10 @@ export function validateDrillOutcome(
   }
 
   const expectedEvents = TIMELINE_EVENTS[outcome.drill];
+  const isolationOverlay = isolation.overlays.find(
+    (entry) => entry.overlayId === outcome.overlayId,
+  );
+  if (!isolationOverlay) fail('drill_isolation_overlay_missing');
   assertArray(outcome.timeline, expectedEvents.length, expectedEvents.length, 'drill_timeline_invalid');
   let priorObserved = 0;
   let priorMonotonic = -1;
@@ -1356,7 +1443,8 @@ export function validateDrillOutcome(
       observerBootId = entry.observerBootIdSha256;
       guestBootId = entry.guestBootIdSha256;
       if (observerBootId !== plan.controller.bootIdSha256
-          || guestBootId !== isolation.guest.bootIdSha256) {
+          || guestBootId === plan.controller.bootIdSha256
+          || guestBootId === isolationOverlay.guestMachineIdSha256) {
         fail('drill_initial_boot_identity_mismatch');
       }
     } else if (entry.observerBootIdSha256 !== observerBootId) {
@@ -1375,6 +1463,11 @@ export function validateDrillOutcome(
       if (outcome.timeline[index].guestBootIdSha256 !== expectedBoot) {
         fail('guest_reboot_boot_id_transition_invalid');
       }
+    }
+    if (outcome.postTerminalReboot.beforeGuestBootIdSha256 !== newBootId
+        || outcome.postTerminalReboot.afterGuestBootIdSha256 === newBootId
+        || outcome.postTerminalReboot.afterGuestBootIdSha256 === guestBootId) {
+      fail('post_terminal_reboot_boot_id_transition_invalid');
     }
   } else if (outcome.timeline.some((entry) => entry.guestBootIdSha256 !== guestBootId)) {
     fail('unexpected_guest_boot_id_change');
@@ -1515,6 +1608,10 @@ function validatedComponents(
   unique(
     DRILL_NAMES.map((drill) => outcomes[drill].requestSha256),
     'drill_request_reuse',
+  );
+  unique(
+    DRILL_NAMES.map((drill) => outcomes[drill].timeline[0].guestBootIdSha256),
+    'drill_initial_guest_boot_id_reuse',
   );
   return validatedOutcomes;
 }
@@ -1848,7 +1945,9 @@ function sshInvocation(overlay, remoteArgv) {
       '-o',
       `HostKeyAlias=${overlay.overlayId}`,
       '-o',
-      'UserKnownHostsFile=<guest-only-known-hosts>',
+      `UserKnownHostsFile=<execution-output>/known-hosts/${overlay.overlayId}`,
+      '-i',
+      '<dedicated-lab-ssh-private-key>',
       `${overlay.ssh.user}@${overlay.ssh.host}`,
       ...remoteArgv,
     ],
@@ -1861,8 +1960,9 @@ export function buildLocalExecutionPlan(plan, { nowMs = Date.now() } = {}) {
     schema: 'nexus.rollback-drill-kvm-local-execution-plan.v1',
     planId: plan.planId,
     mode: plan.mode,
-    executionSupported: false,
-    refusalCode: 'execution_not_implemented',
+    executionSupported: true,
+    executionMode: 'strictly-sequential',
+    maximumActiveGuests: 1,
     guarantees: {
       loopbackSshOnly: true,
       independentOverlayRequired: true,
@@ -1871,19 +1971,33 @@ export function buildLocalExecutionPlan(plan, { nowMs = Date.now() } = {}) {
       automaticProtectedApproval: false,
       productionGateMutation: false,
     },
-    drills: plan.overlays.map((overlay) => ({
+    drills: plan.overlays.map((overlay, index) => ({
       drill: overlay.drill,
       overlayId: overlay.overlayId,
+      guest: `guest-${index + 1}`,
+      hostUnit: `nexus-rollback-drill-vm@guest-${index + 1}.service`,
       endpoint: `${overlay.ssh.host}:${overlay.ssh.port}`,
+      requestFile: `${overlay.drill}.envelope.json`,
       requiredManualBoundary: overlay.drill === 'guest-reboot'
-        ? 'hard-stop and start of only this isolated QEMU guest instance'
+        ? 'hard-stop/start during promotion, followed by one clean post-terminal reboot of only this isolated QEMU guest'
         : overlay.drill === 'failed-health'
           ? 'guest-local candidate health fault after candidate_mutated'
           : 'controller connection drop after predecessor_stopped',
       guestInterfaceInvocations: [
-        sshInvocation(overlay, [plan.interfaces.promotionControl, 'version']),
-        sshInvocation(overlay, [plan.interfaces.promotionControl, 'assert-idle']),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
+          plan.interfaces.promotionControl,
+          'version',
+        ]),
+        sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
+          plan.interfaces.promotionControl,
+          'assert-idle',
+        ]),
+        sshInvocation(overlay, [
+          '/usr/bin/node',
           plan.interfaces.promotionAuthorization,
           'verify-request',
           '--input',
@@ -1892,16 +2006,22 @@ export function buildLocalExecutionPlan(plan, { nowMs = Date.now() } = {}) {
           '<guest-owner-public-key>',
         ]),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
           plan.interfaces.promotionControl,
           'launch',
           '<guest-owner-signed-promotion-envelope>',
         ]),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
           plan.interfaces.promotionControl,
           'status',
           '<transaction-id>',
         ]),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
           plan.interfaces.promotionControl,
           'fetch',
           '<transaction-id>',

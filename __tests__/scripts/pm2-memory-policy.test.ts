@@ -21,6 +21,8 @@ type Pm2App = {
   max_memory_restart: string;
   node_args?: string;
   env?: Record<string, string>;
+  error_file?: string;
+  out_file?: string;
 };
 
 const releaseBase = mkdtempSync(join(tmpdir(), 'nexus-release-pm2-policy-'));
@@ -73,6 +75,38 @@ function loadConfig(file: string, env: NodeJS.ProcessEnv = process.env): Pm2App[
   return JSON.parse(output) as Pm2App[];
 }
 
+function loadReleaseConfigWithDefaultBase(role: 'production' | 'staging'): Pm2App[] {
+  const configPath = join(ROOT, 'ecosystem.release.config.js');
+  const baseDir = role === 'staging'
+    ? '/srv/nexus-release/staging'
+    : '/srv/nexus-release/production';
+  const env = {
+    ...process.env,
+    NEXUS_RELEASE_DIR: ROOT,
+    NEXUS_RELEASE_ROLE: role,
+  };
+  delete env.NEXUS_RELEASE_BASE_DIR;
+  const output = execFileSync(process.execPath, [
+    '-e',
+    [
+      "const fs = require('node:fs');",
+      'const originalRead = fs.readFileSync;',
+      'const protectedPath = process.argv[2];',
+      "const protectedBytes = Buffer.from(process.argv[3], 'base64');",
+      'fs.readFileSync = (file, ...args) => String(file) === protectedPath',
+      '  ? protectedBytes',
+      '  : originalRead.call(fs, file, ...args);',
+      'process.stdout.write(JSON.stringify(require(process.argv[1]).apps));',
+    ].join('\n'),
+    configPath,
+    join(baseDir, '.env'),
+    Buffer.from(
+      Object.entries(expectedPolicy).map(([name, value]) => `${name}=${value}`).join('\n'),
+    ).toString('base64'),
+  ], { encoding: 'utf8', env });
+  return JSON.parse(output) as Pm2App[];
+}
+
 function mebibytes(value: string): number {
   const match = /^(\d+)(M|G)$/u.exec(value);
   if (!match) throw new Error(`unsupported PM2 memory value: ${value}`);
@@ -86,6 +120,21 @@ function oldSpaceMebibytes(args: string | undefined): number {
 }
 
 describe('PM2 backend memory policy', () => {
+  it('defaults exact-release state to the root-governed production and staging bases', () => {
+    for (const role of ['production', 'staging'] as const) {
+      const baseDir = `/srv/nexus-release/${role}`;
+      const apps = loadReleaseConfigWithDefaultBase(role);
+      const backend = apps.find((app) => app.name.startsWith('nexus-hub'));
+      const content = apps.find((app) => app.name.startsWith('content-engine'));
+
+      expect(backend?.env?.DATABASE_PATH).toBe(`${baseDir}/data/bot.db`);
+      expect(backend?.error_file).toBe(`${baseDir}/logs/error.log`);
+      expect(backend?.out_file).toBe(`${baseDir}/logs/out.log`);
+      expect(content?.error_file).toBe(`${baseDir}/logs/content-engine-error.log`);
+      expect(content?.out_file).toBe(`${baseDir}/logs/content-engine-out.log`);
+    }
+  });
+
   it('keeps total RSS at least 256 MiB above V8 old space in every runtime config', () => {
     const variants = [
       loadConfig('ecosystem.config.js'),

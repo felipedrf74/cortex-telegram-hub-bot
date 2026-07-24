@@ -76,10 +76,16 @@ contain the Node or PM2 executables. A boot proves only KVM/cloud-init/SSH.
 Before any promotion drill, build and register a separately reviewed,
 owner-signed offline bundle for that exact guest. It contains and verifies:
 
-- Node 22.23.1;
+- Node 22.23.1, including a root-owned mode-0755 regular
+  /usr/bin/node file with link count one;
 - the exact provisioned Python 3.12 package and binary identity;
-- PM2 6.0.14 at
-  /opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2; and
+- the complete PM2 6.0.14 root closure at
+  /opt/nexus-release/pm2/6.0.14, the regular root-owned launcher at
+  /usr/local/bin/pm2, and the digest-bound installation attestation at
+  /var/lib/nexus-release-promotion/pm2-root-install.v1.json. The signed target
+  independently binds the source archive, closure digest, payload digest,
+  package-lock digest, and exact file count from
+  closure-manifest.json; and
 - the protected-main root promotion controls.
 
 The bundle builder runs only on a trusted Ubuntu 24.04/x86-64 builder with
@@ -90,6 +96,22 @@ and a lab-only Ed25519 owner key. It forces npm offline, disables lifecycle
 scripts, verifies the Node release signature and pinned identities, constructs
 the complete PM2 lock closure, signs the canonical manifest, fsyncs the full
 tree, and publishes one content-addressed directory. It performs no download.
+The protected source archive must be rooted at source/. The guest copies the
+same signed archive to
+/var/lib/nexus-release-bootstrap/<protected-main-sha>/source.tar.gz, verifies
+its digest and Git PAX commit identity, safely extracts only its source/
+sibling, and invokes the five-argument v3 promotion installer from that
+root-owned source tree.
+
+The readiness measurement binds every installed v3 core promotion asset,
+every application-DR install-layout asset, and all seven Ollama operational
+assets by source, destination, owner, mode, size, and digest. It separately
+binds generated keys, sudoers, service drop-ins, sealed production/staging
+environments, the PM2 installation attestation, effective systemd unit state,
+and NeedDaemonReload=false. A missing asset or an installer that provides only
+a subset of that union fails closed. Before readiness is signed, the guest
+invokes the installed v3 promotion control's assert-root-pm2-ready command;
+failure prevents readiness publication and therefore prevents every drill.
 
 Each provisioned guest is assigned to one drill. Start its first boot, collect
 the Python provenance with strict host-key checking through
@@ -216,10 +238,59 @@ Run the unmodified low-level promotion control plane for:
 2. deterministic candidate-health failure;
 3. guest reboot after recovery intent and predecessor stop.
 
+Run the coordinator as root on ServerDominguez because the three SSH forwards
+are loopback-only and the guest-reboot drill controls only the fixed
+nexus-rollback-drill-vm@guest-N.service units:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-coordinator.mjs execute \
+    --plan <plan.json> \
+    --authorization <guest-owner-authorization.json> \
+    --isolation <isolation.json> \
+    --guest-owner-public-key <guest-owner.pem> \
+    --production-owner-public-key <production-owner.pem> \
+    --guest-ssh-client-public-key <guest-ssh-client.pub> \
+    --production-ssh-client-public-key <production-ssh-client.pub> \
+    --guest-ssh-host-public-key <guest-ssh-host.pub> \
+    --production-ssh-host-public-key <production-ssh-host.pub> \
+    --release-evidence-public-key <release-evidence.pem> \
+    --guest-ssh-private-key <mode-0600-dedicated-lab-key> \
+    --request-dir <three-owner-signed-drill-envelopes> \
+    --output-dir <new-private-evidence-directory>
+
+The request directory contains exactly ssh-loss.envelope.json,
+failed-health.envelope.json, and guest-reboot.envelope.json. Each is a
+short-lived owner-signed promotion request bound to the plan's exact
+predecessor, target, release paths, PM2 launcher, public URL, and 60-second
+soak. The failed-health request must deterministically reach the control
+plane's invalid_worker_completion recovery path; the coordinator does not
+invent an unreviewed runtime mutation.
+
+Execution is strictly sequential. The coordinator starts one guest unit,
+constructs a private per-overlay known_hosts file from the separately
+validated lab host key, copies and re-verifies the exact signed request,
+launches once, and polls the root control journal. It stops a guest only after
+a terminal outcome is fully measured. If execution fails after launch, it
+leaves that isolated guest running so the durable guest recovery transaction
+can finish and does not start the next overlay.
+
+For guest-reboot, the first stop/start happens only after durable recovery
+intent and predecessor-stop evidence. After recovered state and exact
+predecessor health are proved, the coordinator performs a second clean reboot
+and requires a third distinct boot ID, an unchanged terminal journal digest,
+Result=success for nexus-release-promotion-recovery.service, an idle v3
+control plane, exact PM2 runtime identity, and healthy application endpoints.
+The 120-second target is measured from predecessor_stopped to the first
+post-recovery service_healthy observation; the clean confirmation reboot does
+not redefine that outage interval.
+
 Retain bounded machine evidence under ignored .local/release paths. The
 existing rollback-drill request builder and protected operational signer remain
 the only path to a nexus.rollback-drill.v1 envelope. A VM boot or a signed
 operator narrative is not drill evidence.
+Unit tests use only fake binaries and explicitly marked test-mode execution.
+Those tests prove sequencing and fail-closed parsing; they are not a substitute
+for the real KVM, power-cut, systemd, PM2 cgroup, health, and second-reboot
+evidence required before production promotion is unblocked.
 
 Failure handling
 ----------------

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -171,7 +172,7 @@ function provisionReceipt() {
       requirements: [
         "node-22.23.1",
         "python-3.12.x",
-        "pm2-6.0.14-at-/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2",
+        "pm2-6.0.14-root-closure-at-/opt/nexus-release/pm2/6.0.14-via-/usr/local/bin/pm2",
         "digest-bound-offline-toolchain-evidence",
       ],
     },
@@ -211,58 +212,61 @@ function extractShellFunction(source: string, name: string): string {
   return tail.slice(0, close.index + close[0].length);
 }
 
+function runtimeControlContract() {
+  const loaded = spawnSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import importlib.util,json,sys",
+        "spec=importlib.util.spec_from_file_location('runtime_manifest',sys.argv[1])",
+        "module=importlib.util.module_from_spec(spec)",
+        "spec.loader.exec_module(module)",
+        "print(json.dumps({'files':module.CONTROL_FILES,'bootstrap':module.BOOTSTRAP_FILES,'generated':module.GENERATED_CONTROL_FILES,'services':module.CONTROL_SERVICE_STATES}))",
+      ].join(";"),
+      helper,
+    ],
+    { encoding: "utf8" },
+  );
+  if (loaded.status !== 0) throw new Error(loaded.stderr);
+  return JSON.parse(loaded.stdout);
+}
+
 function structuralManifest(publicKey: Buffer) {
   const digest = (value: string) => value.repeat(64);
-  const controlFiles = [
-    [
-      "scripts/promotion-authorization.mjs",
-      "/usr/local/libexec/nexus-promotion-authorization.mjs",
-    ],
-    [
-      "scripts/trusted-release-runtime-attestation.mjs",
-      "/usr/local/libexec/nexus-trusted-release-runtime-attestation.mjs",
-    ],
-    [
-      "scripts/remote-promotion-transaction.sh",
-      "/usr/local/libexec/nexus-release-promotion-transaction",
-    ],
-    [
-      "scripts/remote-promotion-worker-control.sh",
-      "/usr/local/sbin/nexus-release-promotion-worker-control",
-    ],
-    [
-      "scripts/remote-promotion-control.sh",
-      "/usr/local/sbin/nexus-release-promotion-control",
-    ],
-    [
-      "scripts/systemd/nexus-release-promotion@.service",
-      "/etc/systemd/system/nexus-release-promotion@.service",
-    ],
-    [
-      "scripts/systemd/nexus-release-promotion-recovery.service",
-      "/etc/systemd/system/nexus-release-promotion-recovery.service",
-    ],
-  ].map(([source, destination]) => ({
+  const contract = runtimeControlContract();
+  const controlFiles = contract.files.map(
+    ([source, destination, owner, mode]: [string, string, string, number]) => ({
     source,
     destination,
+    owner,
+    mode,
     size: 1,
     sha256: digest("1"),
   }));
-  const bootstrapFiles = [
-    [
-      "scripts/rollback-drill-vm-runtime-manifest.py",
-      "/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest",
-    ],
-    [
-      "scripts/rollback-drill-vm-runtime-control.sh",
-      "/usr/local/sbin/nexus-rollback-drill-vm-runtime-control",
-    ],
-  ].map(([source, destination]) => ({
+  const bootstrapFiles = contract.bootstrap.map(
+    ([source, destination, owner, mode]: [string, string, string, number]) => ({
     source,
     destination,
+    owner,
+    mode,
     size: 1,
     sha256: digest("2"),
   }));
+  const generatedFiles = contract.generated.map(
+    ([destination, owner, mode]: [string, string, number]) => ({
+      destination,
+      owner,
+      mode,
+    }),
+  );
+  const serviceStates = contract.services.map(
+    ([unit, loadState, unitFileState]: [string, string, string]) => ({
+      unit,
+      loadState,
+      unitFileState,
+    }),
+  );
   const publicKeySha256 = sha256(publicKey);
   return {
     schema: "nexus.rollback-drill-vm-runtime-bundle.v1",
@@ -282,13 +286,11 @@ function structuralManifest(publicKey: Buffer) {
         contentTreeSha256: digest("d"),
         installRoot:
           "/opt/nexus-rollback-drill-vm/runtime/node-v22.23.1-linux-x64",
+        binaryPath: "/usr/bin/node",
         links: {
           "/usr/bin/corepack":
             "/opt/nexus-rollback-drill-vm/runtime/" +
             "node-v22.23.1-linux-x64/bin/corepack",
-          "/usr/bin/node":
-            "/opt/nexus-rollback-drill-vm/runtime/" +
-            "node-v22.23.1-linux-x64/bin/node",
           "/usr/bin/npm":
             "/opt/nexus-rollback-drill-vm/runtime/" +
             "node-v22.23.1-linux-x64/bin/npm",
@@ -308,20 +310,33 @@ function structuralManifest(publicKey: Buffer) {
       },
       pm2: {
         version: "6.0.14",
-        prefixPath: "payload/pm2-prefix",
+        prefixPath: "payload/pm2-closure",
+        sourceArchivePath: "payload/pm2-root-closure.tar.gz",
+        sourceArchiveSha256: digest("0"),
         lockPath: "provenance/pm2/package-lock.json",
-        binaryPath: "/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2",
-        installRoot: "/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14",
+        binaryPath: "/usr/local/bin/pm2",
+        installRoot: "/opt/nexus-release/pm2/6.0.14",
         binarySha256: digest("9"),
+        entrypointPath:
+          "/opt/nexus-release/pm2/6.0.14/node_modules/pm2/bin/pm2",
+        entrypointSha256: digest("8"),
+        attestationPath:
+          "/var/lib/nexus-release-promotion/pm2-root-install.v1.json",
         contentTreeSha256: digest("e"),
+        closureDigest: digest("1"),
+        payloadDigest: digest("2"),
+        fileCount: 123,
+        packageLockSha256: digest("c"),
       },
       control: {
-        version: "nexus-release-promotion-control.v2",
+        version: "nexus-release-promotion-control.v3",
         sourceCommit: "5".repeat(40),
         archivePath: "payload/control-source.tar.gz",
         archiveSha256: digest("6"),
         bootstrapFiles,
         files: controlFiles,
+        generatedFiles,
+        serviceStates,
       },
     },
     provenance: {
@@ -674,13 +689,12 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
     const runtime = {
       node: {
         version: manifest.target.node.version,
-        path:
-          "/opt/nexus-rollback-drill-vm/runtime/" +
-          "node-v22.23.1-linux-x64/bin/node",
+        path: manifest.target.node.binaryPath,
         sha256: manifest.target.node.binarySha256,
         treeSha256: manifest.target.node.contentTreeSha256,
         owner: "root:root",
         mode: "755",
+        linkCount: 1,
       },
       python: {
         version: manifest.target.python.version,
@@ -694,6 +708,10 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
         version: manifest.target.pm2.version,
         path: manifest.target.pm2.binaryPath,
         sha256: manifest.target.pm2.binarySha256,
+        entrypointPath: manifest.target.pm2.entrypointPath,
+        entrypointSha256: manifest.target.pm2.entrypointSha256,
+        attestationPath: manifest.target.pm2.attestationPath,
+        attestationSha256: "7".repeat(64),
         treeSha256: manifest.target.pm2.contentTreeSha256,
         owner: "root:root",
         mode: "755",
@@ -706,9 +724,41 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
         path: identity.destination,
         size: identity.size,
         sha256: identity.sha256,
-        owner: "root:root",
-        mode: identity.destination.endsWith(".service") ? "644" : "755",
+        owner: identity.owner,
+        mode: identity.mode.toString(8),
       })),
+      generatedFiles: manifest.target.control.generatedFiles.map((identity) => ({
+        path: identity.destination,
+        size: 1,
+        sha256: "6".repeat(64),
+        owner: identity.owner,
+        mode: identity.mode.toString(8),
+      })),
+      serviceStates: manifest.target.control.serviceStates.map((identity) => {
+        const loadState = identity.loadState === "not-found-or-loaded"
+          || identity.loadState === "masked-or-not-found"
+          ? "not-found"
+          : identity.loadState;
+        const unitFileState = identity.unitFileState === "masked-or-not-found"
+          ? "not-found"
+          : identity.unitFileState === "disabled-or-enabled"
+            ? "disabled"
+            : identity.unitFileState === "disabled-or-static"
+              ? "static"
+              : identity.unitFileState;
+        return {
+          unit: identity.unit,
+          loadState,
+          activeState: loadState === "not-found" ? "not-found" : "inactive",
+          unitFileState,
+          fragmentPath: loadState === "not-found"
+            ? ""
+            : `/etc/systemd/system/${identity.unit}`,
+          dropInPaths: [],
+          effectiveSha256: "5".repeat(64),
+          needDaemonReload: false,
+        };
+      }),
       assertIdle: true,
       runtimeRecovery: {
         unit: "nexus-rollback-drill-vm-runtime-recovery.service",
@@ -1284,27 +1334,37 @@ exit "$status"
   it("accepts a real lock-v3 shape without package name fields and rejects SRI drift", () => {
     const root = temporaryRoot();
     const prefix = join(root, "prefix");
-    const packageRoot = join(prefix, "lib/node_modules/pm2");
-    mkdirSync(join(packageRoot, "bin"), { recursive: true, mode: 0o700 });
+    const packageRoot = join(prefix, "node_modules/pm2");
+    mkdirSync(join(packageRoot, "bin"), { recursive: true, mode: 0o755 });
     mkdirSync(join(packageRoot, "lib/templates/sample-apps/http-server"), {
       recursive: true,
-      mode: 0o700,
+      mode: 0o755,
     });
-    mkdirSync(join(prefix, "bin"), { recursive: true, mode: 0o700 });
+    for (const directory of [
+      prefix,
+      join(prefix, "node_modules"),
+      packageRoot,
+      join(packageRoot, "bin"),
+      join(packageRoot, "lib"),
+      join(packageRoot, "lib/templates"),
+      join(packageRoot, "lib/templates/sample-apps"),
+      join(packageRoot, "lib/templates/sample-apps/http-server"),
+    ]) {
+      chmodSync(directory, 0o755);
+    }
     writeFileSync(
       join(packageRoot, "package.json"),
       JSON.stringify({ name: "pm2", version: "6.0.14" }),
-      { mode: 0o600 },
+      { mode: 0o644 },
     );
     writeFileSync(join(packageRoot, "bin/pm2"), "#!/usr/bin/env node\n", {
-      mode: 0o700,
+      mode: 0o755,
     });
     writeFileSync(
       join(packageRoot, "lib/templates/sample-apps/http-server/package.json"),
       JSON.stringify({ name: "pm2-sample-app", version: "1.0.0" }),
-      { mode: 0o600 },
+      { mode: 0o644 },
     );
-    symlinkSync("../lib/node_modules/pm2/bin/pm2", join(prefix, "bin/pm2"));
     const lockPath = join(root, "package-lock.json");
     const lock = {
       name: "nexus-pm2-runtime-bundle",
@@ -1321,6 +1381,71 @@ exit "$status"
       },
     };
     writeFileSync(lockPath, JSON.stringify(lock), { mode: 0o600 });
+    writeFileSync(
+      join(prefix, "package.json"),
+      JSON.stringify({
+        name: "nexus-pm2-runtime-bundle",
+        version: "1.0.0",
+        private: true,
+        dependencies: { pm2: "6.0.14" },
+      }),
+      { mode: 0o644 },
+    );
+    writeFileSync(join(prefix, "package-lock.json"), JSON.stringify(lock), {
+      mode: 0o644,
+    });
+    const payloadFiles = [
+      "node_modules/pm2/bin/pm2",
+      "node_modules/pm2/lib/templates/sample-apps/http-server/package.json",
+      "node_modules/pm2/package.json",
+      "package-lock.json",
+      "package.json",
+    ].map((relative) => {
+      const absolute = join(prefix, relative);
+      const body = readFileSync(absolute);
+      return {
+        path: relative,
+        size: body.length,
+        mode: statSync(absolute).mode & 0o7777,
+        sha256: sha256(body),
+      };
+    });
+    const payloadDigest = sha256(
+      canonicalJson({
+        schema: "nexus.pm2-root-closure-payload.v1",
+        files: payloadFiles,
+      }),
+    );
+    writeFileSync(
+      join(prefix, "closure-manifest.json"),
+      `${JSON.stringify(
+        {
+          schema: "nexus.pm2-root-closure-manifest.v1",
+          pm2Version: "6.0.14",
+          nodeVersion: "v22.23.1",
+          npmVersion: "10.9.8",
+          packageLockSha256: sha256(JSON.stringify(lock)),
+          packageLockPackages: [
+            {
+              path: "node_modules/pm2",
+              version: "6.0.14",
+              resolved:
+                "https://registry.npmjs.org/pm2/-/pm2-6.0.14.tgz",
+              integrity: pm2Integrity,
+            },
+          ],
+          installedPackages: [
+            { path: "node_modules/pm2", version: "6.0.14" },
+          ],
+          payloadDigest,
+          fileCount: payloadFiles.length,
+          files: payloadFiles,
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o644 },
+    );
 
     const valid = runHelper([
       "validate-pm2",
@@ -1334,6 +1459,8 @@ exit "$status"
       version: "6.0.14",
       packageCount: 1,
       integrity: pm2Integrity,
+      payloadDigest,
+      fileCount: payloadFiles.length + 1,
     });
 
     lock.packages["node_modules/pm2"].integrity =
@@ -1350,7 +1477,67 @@ exit "$status"
     expect(drift.stderr).toContain("does not bind exactly pm2 6.0.14");
   });
 
-  it("accepts official-style nested Node entrypoint symlinks and rejects escapes", () => {
+  it("uses the same 50,000-member PM2 archive boundary at build and guest admission", () => {
+    const root = temporaryRoot();
+    const atLimit = join(root, "at-limit.tar.gz");
+    const overLimit = join(root, "over-limit.tar.gz");
+    const placeholderLock = join(root, "placeholder-lock.json");
+    writeFileSync(placeholderLock, "{}\n", { mode: 0o600 });
+    const created = spawnSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import pathlib,sys,tarfile",
+          "def build(output,count):",
+          " with tarfile.open(output,'w:gz') as archive:",
+          "  for index in range(count):",
+          "   name='pm2-closure' if index==0 else f'pm2-closure/d{index:05d}'",
+          "   entry=tarfile.TarInfo(name);entry.type=tarfile.DIRTYPE;entry.mode=0o755",
+          "   archive.addfile(entry)",
+          "build(sys.argv[1],50000)",
+          "build(sys.argv[2],50001)",
+        ].join("\n"),
+        atLimit,
+        overLimit,
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    expect(created.status, created.stderr).toBe(0);
+
+    const acceptedBoundary = runHelper([
+      "validate-pm2-archive",
+      "--archive",
+      atLimit,
+      "--lock",
+      placeholderLock,
+    ]);
+    expect(acceptedBoundary.status).not.toBe(0);
+    expect(acceptedBoundary.stderr).toContain(
+      "PM2 closure archive is missing a required payload",
+    );
+    expect(acceptedBoundary.stderr).not.toContain(
+      "member count is invalid",
+    );
+
+    const rejectedBoundary = runHelper([
+      "validate-pm2-archive",
+      "--archive",
+      overLimit,
+      "--lock",
+      placeholderLock,
+    ]);
+    expect(rejectedBoundary.status).not.toBe(0);
+    expect(rejectedBoundary.stderr).toContain(
+      "PM2 closure archive member count is invalid",
+    );
+    expect(readFileSync(helper, "utf8")).toContain(
+      "entry_count > MAX_FILE_COUNT",
+    );
+    expect(guestControl).toContain("len(members)>50000");
+  });
+
+  it("requires a regular Node binary while accepting governed nested links", () => {
     const root = temporaryRoot();
     const nodeTarget = join(root, "node-v22.23.1-linux-x64");
     const linkRoot = join(root, "usr-bin");
@@ -1370,7 +1557,7 @@ exit "$status"
       join(nodeTarget, "lib/node_modules/npm/bin/npx-cli.js"),
       join(nodeTarget, "lib/node_modules/corepack/dist/corepack.js"),
     ]) {
-      writeFileSync(path, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      writeFileSync(path, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     }
     symlinkSync(
       "../lib/node_modules/npm/bin/npm-cli.js",
@@ -1384,7 +1571,10 @@ exit "$status"
       "../lib/node_modules/corepack/dist/corepack.js",
       join(nodeTarget, "bin/corepack"),
     );
-    for (const binary of ["node", "npm", "npx", "corepack"]) {
+    writeFileSync(join(linkRoot, "node"), "#!/bin/sh\nexit 0\n", {
+      mode: 0o755,
+    });
+    for (const binary of ["npm", "npx", "corepack"]) {
       symlinkSync(join(nodeTarget, "bin", binary), join(linkRoot, binary));
     }
 
@@ -1396,9 +1586,15 @@ exit "$status"
       linkRoot,
     ]);
     expect(valid.status, `${valid.stdout}${valid.stderr}`).toBe(0);
-    expect(JSON.parse(valid.stdout)).toMatchObject({
+    const validated = JSON.parse(valid.stdout);
+    expect(validated).toMatchObject({
       version: "v22.23.1",
       npmVersion: "10.9.8",
+    });
+    expect(validated.entrypoints[0]).toMatchObject({
+      name: "node",
+      kind: "regular-file",
+      entrypoint: join(linkRoot, "node"),
     });
 
     const outside = join(root, "outside-npm");
@@ -1414,6 +1610,102 @@ exit "$status"
     ]);
     expect(escaped.status).not.toBe(0);
     expect(escaped.stderr).toContain("entrypoint escapes its runtime");
+  });
+
+  it("recovers only an unlinked regular Node file and permits removal of a partial next file", () => {
+    const root = temporaryRoot();
+    const source = join(root, "source-node");
+    const candidate = join(root, "candidate-node");
+    const validator = extractShellFunction(
+      guestControl,
+      "validate_recovery_regular_node",
+    );
+    const run = (allowPartial: boolean) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "set -euo pipefail",
+            'die() { printf "%s\\n" "$*" >&2; exit 1; }',
+            validator,
+            "validate_recovery_regular_node " +
+              '"$CANDIDATE" "$SOURCE" "$ALLOW_PARTIAL" "$EXPECTED_UID"',
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CANDIDATE: candidate,
+            SOURCE: source,
+            ALLOW_PARTIAL: allowPartial ? "true" : "false",
+            EXPECTED_UID: String(process.getuid?.() ?? 0),
+          },
+        },
+      );
+    writeFileSync(source, "exact-node-runtime\n", { mode: 0o755 });
+    writeFileSync(candidate, "exact-node-runtime\n", { mode: 0o755 });
+    expect(run(false).status).toBe(0);
+
+    writeFileSync(candidate, "partial\n", { mode: 0o755 });
+    expect(run(false).status).not.toBe(0);
+    expect(run(true).status).toBe(0);
+
+    rmSync(candidate);
+    linkSync(source, candidate);
+    expect(run(false).status).not.toBe(0);
+    expect(statSync(candidate).nlink).toBe(2);
+  });
+
+  it("does not publish readiness when the installed v3 PM2 assertion fails", () => {
+    const root = temporaryRoot();
+    const control = join(root, "promotion-control");
+    const log = join(root, "control.log");
+    const marker = join(root, "readiness-published");
+    writeFileSync(
+      control,
+      [
+        "#!/usr/bin/env bash",
+        'printf "%s\\n" "$1" >>"$CONTROL_LOG"',
+        'if [ "$1" = assert-root-pm2-ready ]; then exit 75; fi',
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const assertion = extractShellFunction(
+      guestControl,
+      "assert_promotion_runtime_ready",
+    );
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          "set -euo pipefail",
+          'die() { printf "%s\\n" "$*" >&2; exit 1; }',
+          assertion,
+          "assert_promotion_runtime_ready",
+          'printf "ready\\n" >"$READINESS_MARKER"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CONTROL_BIN: control,
+          CONTROL_LOG: log,
+          READINESS_MARKER: marker,
+        },
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "installed v3 promotion control rejected the root PM2 closure",
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(log, "utf8").trim()).toBe("assert-root-pm2-ready");
   });
 
   it("resolves Node archive hard links from the archive root and rejects escapes", () => {
@@ -1489,7 +1781,11 @@ exit "$status"
       "output parent must not be accessible by group or world",
     );
     expect(builder).not.toMatch(/\b(?:curl|wget)\b/);
+    expect(builder).toContain("--prefix=source/");
     expect(builder).toContain("payload/control-source.tar.gz");
+    expect(builder).toContain("payload/pm2-root-closure.tar.gz");
+    expect(builder).toContain("nexus.pm2-root-closure-manifest.v1");
+    expect(builder).toContain('if (name === ".bin") continue');
     expect(builder).toContain("manifest-owner-public-key.pem");
   });
 
@@ -1545,10 +1841,31 @@ exit "$status"
     expect(guestControl).toContain('filter="data"');
     expect(guestControl).toContain("remote-promotion-systemd-install.sh");
     expect(guestControl).toContain("manifest-owner-public-key.pem");
-    expect(guestControl).toContain('PM2_TARGET="$NODE_PARENT/pm2-6.0.14"');
+    expect(guestControl).toContain('PM2_TARGET="$PM2_PARENT/6.0.14"');
+    expect(guestControl).toContain('PM2_LAUNCHER="/usr/local/bin/pm2"');
+    expect(guestControl).toContain(
+      'PM2_ATTESTATION="$PROMOTION_STATE_ROOT/pm2-root-install.v1.json"',
+    );
+    expect(guestControl).toContain(
+      '"$BUNDLE_ROOT/payload/pm2-root-closure.tar.gz"',
+    );
+    expect(guestControl).toContain('root="pm2-closure"');
+    expect(guestControl).not.toContain(
+      'cp -a -- "$BUNDLE_ROOT/payload/pm2-closure"',
+    );
+    expect(guestControl).toContain(
+      'CONTROL_SOURCE_ARCHIVE="$BOOTSTRAP_ROOT/source.tar.gz"',
+    );
+    expect(guestControl).toContain(
+      'CONTROL_SOURCE_ROOT="$BOOTSTRAP_ROOT/source"',
+    );
     expect(guestControl).toContain(
       "installed PM2 prefix contains an unexpected owner",
     );
+    expect(guestControl).toContain(
+      'install -o root -g root -m 0755 "$NODE_TARGET/bin/node" "$next"',
+    );
+    expect(guestControl).toContain("assert-root-pm2-ready");
     expect(guestControl).toContain('fsync_path "$STATE_ROOT"');
     expect(guestControl).toContain('fsync-tree --root "$node_stage"');
     expect(guestControl).toContain('fsync-tree --root "$pm2_stage"');

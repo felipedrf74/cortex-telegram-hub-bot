@@ -1035,6 +1035,14 @@ describe('Nexus application disaster-recovery assets', () => {
     );
     const config = fs.readFileSync(path.join(opsRoot, 'backup.env.example'), 'utf8');
     const runbook = fs.readFileSync(path.join(opsRoot, 'OPERATIONS.txt'), 'utf8');
+    const currentReleaseState = fs.readFileSync(
+      path.resolve('docs/release/CURRENT_RELEASE_STATE.md'),
+      'utf8',
+    );
+    const runtimeStandard = fs.readFileSync(
+      path.resolve('docs/engineering/runtime-and-observability-standard.md'),
+      'utf8',
+    );
     const restoreReadiness = JSON.parse(fs.readFileSync(
       path.join(opsRoot, 'restore-readiness.json'),
       'utf8',
@@ -1086,6 +1094,14 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(backup).toContain('S3 endpoint must be a credential-free HTTPS origin');
     expect(backup).toContain('NEXUS_DR_STORAGE_PROVIDER');
     expect(backup).toContain('"$STORAGE_CONTROL_HELPER"');
+    expect(backup).toContain(
+      '[ "$(dirname -- "$REQUIRED_RECOVERY_RUNTIME")" = '
+      + '/srv/nexus-release/production/releases ]',
+    );
+    expect(backup).toContain(
+      'required recovery runtime must be an exact governed production release directory',
+    );
+    expect(backup).not.toContain('/home/dominguez');
     expect(backup).not.toContain('remote-create-release-backup.sh');
 
     expect(timer).toContain('OnCalendar=*-*-* *:05:00 UTC');
@@ -1101,6 +1117,15 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(config).toContain('NEXUS_DR_STORAGE_PROVIDER=aws-s3');
     expect(config).toContain('NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3');
     expect(config).toContain('NEXUS_DR_DRILL_USER=nexus-drill');
+    expect(config).toContain(
+      'NEXUS_DR_DATABASE_PATH=/srv/nexus-release/production/data/bot.db',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_ROLLBACK_DIR=/home/dominguez/backups/nexushub',
+    );
+    expect(config).not.toContain(
+      'NEXUS_DR_DATABASE_PATH=/home/dominguez/telegram-hub-bot/data/bot.db',
+    );
     expect(config).not.toMatch(/AKIA[0-9A-Z]{16}/);
     expect(restore).toContain('RPO breach');
     expect(restore).toContain('technical restore target breached');
@@ -1171,6 +1196,22 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(runbook).toContain('s3:DeleteObjectVersion');
     expect(runbook).toContain('auto-pagination is disabled');
     expect(runbook).toContain('private network, mount, and PID namespaces');
+    expect(currentReleaseState).toContain(
+      'signed root-owned promotion transaction is the sole runtime or',
+    );
+    expect(currentReleaseState).toContain(
+      '`scripts/rollback.sh` and `scripts/restore.sh` commands remain available only',
+    );
+    expect(currentReleaseState).toContain('read-only dry-run inventory');
+    expect(runtimeStandard).toContain(
+      'signed root-owned promotion transaction is the sole path that',
+    );
+    expect(runtimeStandard).toContain(
+      '`scripts/restore.sh` retain read-only dry-run inventory only',
+    );
+    expect(runtimeStandard).not.toContain(
+      'restore tooling remain available\n   for emergency predecessor recovery',
+    );
     expect(restoreReadiness).toEqual({
       schema: 'nexus.application-dr-restore-readiness.v1',
       status: 'MANUAL_REQUIRED',

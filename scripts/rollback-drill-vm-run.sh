@@ -203,7 +203,7 @@ if value["runtimeReadiness"] != {
     "requirements": [
         "node-22.23.1",
         "python-3.12.x",
-        "pm2-6.0.14-at-/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2",
+        "pm2-6.0.14-root-closure-at-/opt/nexus-release/pm2/6.0.14-via-/usr/local/bin/pm2",
         "digest-bound-offline-toolchain-evidence",
     ],
 }:

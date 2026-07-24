@@ -12,8 +12,12 @@ PROVISION_PARENT="/var/lib/nexus-rollback-drill-vm/provision-receipts"
 BUNDLE_PARENT="/var/lib/nexus-rollback-drill-vm/toolchain-bundles"
 NODE_PARENT="/opt/nexus-rollback-drill-vm/runtime"
 NODE_TARGET="$NODE_PARENT/node-v22.23.1-linux-x64"
-PM2_TARGET="$NODE_PARENT/pm2-6.0.14"
+PM2_PARENT="/opt/nexus-release/pm2"
+PM2_TARGET="$PM2_PARENT/6.0.14"
+PM2_LAUNCHER="/usr/local/bin/pm2"
 PM2_HEALTH_PARENT="/run/nexus-rollback-drill-vm-pm2-health"
+PROMOTION_STATE_ROOT="/var/lib/nexus-release-promotion"
+PM2_ATTESTATION="$PROMOTION_STATE_ROOT/pm2-root-install.v1.json"
 MANIFEST_HELPER="/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest"
 CONTROL_BIN="/usr/local/sbin/nexus-release-promotion-control"
 RUNTIME_RECOVERY_UNIT="/etc/systemd/system/nexus-rollback-drill-vm-runtime-recovery.service"
@@ -228,6 +232,37 @@ validate_root_owned_chain() {
   done
 }
 
+validate_recovery_regular_node() {
+  [ "$#" -eq 4 ] || die "internal recovery Node validation argument error"
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import hashlib,os,pathlib,stat,sys
+candidate,source,allow_partial,expected_uid_text=sys.argv[1:]
+identity=os.lstat(candidate)
+if (
+ not stat.S_ISREG(identity.st_mode) or stat.S_ISLNK(identity.st_mode)
+ or identity.st_nlink!=1 or stat.S_IMODE(identity.st_mode)!=0o755
+ or identity.st_uid!=int(expected_uid_text)
+):
+ raise SystemExit("recoverable /usr/bin/node identity is unsafe")
+if allow_partial!="true":
+ source_identity=os.lstat(source)
+ if (
+  not stat.S_ISREG(source_identity.st_mode)
+  or stat.S_ISLNK(source_identity.st_mode)
+  or hashlib.sha256(pathlib.Path(candidate).read_bytes()).digest()
+    !=hashlib.sha256(pathlib.Path(source).read_bytes()).digest()
+ ):
+  raise SystemExit("recoverable /usr/bin/node differs from its runtime source")
+PY
+}
+
+assert_promotion_runtime_ready() {
+  "$CONTROL_BIN" assert-root-pm2-ready >/dev/null \
+    || die "installed v3 promotion control rejected the root PM2 closure"
+  "$CONTROL_BIN" assert-idle >/dev/null \
+    || die "promotion control is not idle before live runtime measurement"
+}
+
 if [ "$COMMAND" = recover-install ]; then
   install -d -o root -g root -m 0700 "$STATE_ROOT"
   exec 9>"$STATE_ROOT/install.lock"
@@ -243,10 +278,11 @@ if [ "$COMMAND" = recover-install ]; then
     && [ "$(stat -c '%s' "$JOURNAL")" -le 65536 ] \
     || die "runtime install recovery journal is unsafe"
   mapfile -t recovery < <(
-    python3 - "$JOURNAL" "$NODE_TARGET" "$PM2_TARGET" "$NODE_PARENT" <<'PY'
+    python3 - "$JOURNAL" "$NODE_TARGET" "$PM2_TARGET" "$NODE_PARENT" \
+      "$PM2_PARENT" "$PM2_LAUNCHER" <<'PY'
 import json,re,sys
 from pathlib import Path
-journal_path,node_target,pm2_target,node_parent=sys.argv[1:]
+journal_path,node_target,pm2_target,node_parent,pm2_parent,pm2_launcher=sys.argv[1:]
 value=json.loads(Path(journal_path).read_text(encoding="utf-8"))
 if set(value)!={"schema","status","transactionId","setId","guest","provisionReceiptSha256","bundleManifestSha256","paths","predecessors"}:
  raise SystemExit("runtime recovery journal schema is invalid")
@@ -265,7 +301,7 @@ paths=value["paths"]
 if set(paths)!={"node","pm2","links"}:
  raise SystemExit("runtime recovery journal paths are invalid")
 expected_node={"target":node_target,"stage":f"{node_parent}/.node-stage-{transaction}","backup":f"{node_parent}/.node-backup-{transaction}"}
-expected_pm2={"target":pm2_target,"stage":f"{node_parent}/.pm2-stage-{transaction}","backup":f"{node_parent}/.pm2-backup-{transaction}"}
+expected_pm2={"target":pm2_target,"stage":f"{pm2_parent}/.pm2-stage-{transaction}","backup":f"{pm2_parent}/.pm2-backup-{transaction}"}
 if paths["node"]!=expected_node or paths["pm2"]!=expected_pm2:
  raise SystemExit("runtime recovery journal tree paths are invalid")
 predecessors=value["predecessors"]
@@ -275,15 +311,23 @@ expected_links=[]
 for name in ("corepack","node","npm","npx"):
  expected_links.append({
   "name":name,
+  "kind":"regular-file" if name=="node" else "symlink",
   "target":f"/usr/bin/{name}",
   "backup":f"/usr/bin/.nexus-runtime-{transaction}-{name}",
   "previousPresent":None,
  })
+expected_links.append({
+ "name":"pm2",
+ "kind":"regular-file",
+ "target":pm2_launcher,
+ "backup":f"{str(Path(pm2_launcher).parent)}/.nexus-runtime-{transaction}-pm2",
+ "previousPresent":None,
+})
 links=paths["links"]
-if not isinstance(links,list) or len(links)!=4:
+if not isinstance(links,list) or len(links)!=5:
  raise SystemExit("runtime recovery link inventory is invalid")
 for observed,expected in zip(links,expected_links,strict=True):
- if set(observed)!={"name","target","backup","previousPresent"}:
+ if set(observed)!={"name","kind","target","backup","previousPresent"}:
   raise SystemExit("runtime recovery link schema is invalid")
  previous=observed["previousPresent"]
  if previous is not False:
@@ -306,8 +350,8 @@ PY
   recovery_guest="${recovery[2]}"
   node_stage="$NODE_PARENT/.node-stage-$transaction_id"
   node_backup="$NODE_PARENT/.node-backup-$transaction_id"
-  pm2_stage="$NODE_PARENT/.pm2-stage-$transaction_id"
-  pm2_backup="$NODE_PARENT/.pm2-backup-$transaction_id"
+  pm2_stage="$PM2_PARENT/.pm2-stage-$transaction_id"
+  pm2_backup="$PM2_PARENT/.pm2-backup-$transaction_id"
   recovery_install_receipt_dir="$STATE_ROOT/install-receipts/$recovery_set_id"
   recovery_install_receipt="$recovery_install_receipt_dir/$recovery_guest.json"
 
@@ -334,16 +378,45 @@ PY
     [ ! -e "$backup" ] && [ ! -L "$backup" ] \
       || die "runtime recovery found an impossible entrypoint predecessor"
     if [ -e "$link" ] || [ -L "$link" ]; then
-      [ -L "$link" ] \
-        && [ "$(readlink "$link")" = "$NODE_TARGET/bin/$binary" ] \
-        || die "runtime recovery Node entrypoint is ambiguous"
+      if [ "$binary" = node ]; then
+        validate_recovery_regular_node \
+          "$link" "$NODE_TARGET/bin/node" false 0 \
+          || die "runtime recovery regular Node entrypoint is ambiguous"
+      else
+        [ -L "$link" ] \
+          && [ "$(readlink "$link")" = "$NODE_TARGET/bin/$binary" ] \
+          || die "runtime recovery Node entrypoint is ambiguous"
+      fi
     fi
     if [ -e "$next" ] || [ -L "$next" ]; then
-      [ -L "$next" ] \
-        && [ "$(readlink "$next")" = "$NODE_TARGET/bin/$binary" ] \
-        || die "runtime recovery next entrypoint is ambiguous"
+      if [ "$binary" = node ]; then
+        validate_recovery_regular_node \
+          "$next" "$NODE_TARGET/bin/node" true 0 \
+          || die "runtime recovery next regular Node entrypoint is ambiguous"
+      else
+        [ -L "$next" ] \
+          && [ "$(readlink "$next")" = "$NODE_TARGET/bin/$binary" ] \
+          || die "runtime recovery next entrypoint is ambiguous"
+      fi
     fi
   done
+  pm2_backup_link="$(dirname -- "$PM2_LAUNCHER")/.nexus-runtime-$transaction_id-pm2"
+  pm2_next_link="$pm2_backup_link.next"
+  [ ! -e "$pm2_backup_link" ] && [ ! -L "$pm2_backup_link" ] \
+    || die "runtime recovery found an impossible PM2 launcher predecessor"
+  if [ -e "$pm2_next_link" ] || [ -L "$pm2_next_link" ]; then
+    [ -f "$pm2_next_link" ] && [ ! -L "$pm2_next_link" ] \
+      || die "runtime recovery PM2 next launcher is ambiguous"
+  fi
+  if [ -e "$PM2_LAUNCHER" ] || [ -L "$PM2_LAUNCHER" ]; then
+    [ -f "$PM2_LAUNCHER" ] && [ ! -L "$PM2_LAUNCHER" ] \
+      || die "runtime recovery PM2 launcher is ambiguous"
+  fi
+  if [ -e "$PM2_ATTESTATION" ] || [ -L "$PM2_ATTESTATION" ]; then
+    [ -f "$PM2_ATTESTATION" ] && [ ! -L "$PM2_ATTESTATION" ] \
+      && [ "$(stat -c '%U:%G:%a:%h' "$PM2_ATTESTATION")" = root:root:600:1 ] \
+      || die "runtime recovery PM2 attestation is ambiguous"
+  fi
 
   recovery_failed=false
   set +e
@@ -352,6 +425,8 @@ PY
     next="/usr/bin/.nexus-runtime-$transaction_id-$binary.next"
     rm -f -- "$link" "$next" || recovery_failed=true
   done
+  rm -f -- "$PM2_LAUNCHER" "$pm2_next_link" || recovery_failed=true
+  rm -f -- "$PM2_ATTESTATION" || recovery_failed=true
   rm -rf -- "$PM2_TARGET" || recovery_failed=true
   rm -rf -- "$NODE_TARGET" || recovery_failed=true
   rm -rf -- "$node_stage" "$pm2_stage" || recovery_failed=true
@@ -372,9 +447,20 @@ PY
   if [ -e "$PM2_TARGET" ] || [ -L "$PM2_TARGET" ]; then
     recovery_failed=true
   fi
+  if [ -e "$PM2_LAUNCHER" ] || [ -L "$PM2_LAUNCHER" ]; then
+    recovery_failed=true
+  fi
+  if [ -e "$PM2_ATTESTATION" ] || [ -L "$PM2_ATTESTATION" ]; then
+    recovery_failed=true
+  fi
   if ! $recovery_failed; then
     fsync_path /usr/bin || recovery_failed=true
+    fsync_path "$(dirname -- "$PM2_LAUNCHER")" || recovery_failed=true
     fsync_path "$NODE_PARENT" || recovery_failed=true
+    fsync_path "$PM2_PARENT" || recovery_failed=true
+    if [ -d "$PROMOTION_STATE_ROOT" ]; then
+      fsync_path "$PROMOTION_STATE_ROOT" || recovery_failed=true
+    fi
     if [ -d "$recovery_install_receipt_dir" ]; then
       fsync_path "$recovery_install_receipt_dir" || recovery_failed=true
     fi
@@ -649,15 +735,19 @@ mapfile -t expected_bootstrap < <(
   python3 - "$MANIFEST" <<'PY'
 import json,sys
 for entry in json.load(open(sys.argv[1],encoding="utf-8"))["target"]["control"]["bootstrapFiles"]:
- print("\t".join((entry["destination"],str(entry["size"]),entry["sha256"])))
+ print("\t".join((
+  entry["destination"],str(entry["size"]),entry["sha256"],
+  entry["owner"],format(entry["mode"],"o"),
+ )))
 PY
 )
 [ "${#expected_bootstrap[@]}" -eq 2 ] \
   || die "runtime bootstrap inventory is invalid"
 for record in "${expected_bootstrap[@]}"; do
-  IFS=$'\t' read -r path expected_size expected_sha256 <<<"$record"
+  IFS=$'\t' read -r path expected_size expected_sha256 expected_owner expected_mode <<<"$record"
   [ -f "$path" ] && [ ! -L "$path" ] \
-    && [ "$(stat -c '%U:%G:%a:%h' "$path")" = root:root:755:1 ] \
+    && [ "$(stat -c '%U:%G:%a:%h' "$path")" \
+      = "$expected_owner:$expected_mode:1" ] \
     || die "runtime bootstrap asset is missing or unsafe: $path"
   [ "$(stat -c '%s' "$path")" = "$expected_size" ] \
     && [ "$(sha256sum "$path" | cut -d' ' -f1)" = "$expected_sha256" ] \
@@ -674,11 +764,11 @@ mapfile -t context < <(
   printf '%s' "$context_json" | python3 -c '
 import json,sys
 v=json.load(sys.stdin)
-for k in ("setId","uuid","instanceId","hostKeyFingerprint","hostPublicKey","hostPublicKeySha256","overlayInitialSha256","nodeBinarySha256","nodeContentTreeSha256","pm2BinarySha256","pm2ContentTreeSha256","runtimeRecoveryUnitSha256"):
+for k in ("setId","uuid","instanceId","hostKeyFingerprint","hostPublicKey","hostPublicKeySha256","overlayInitialSha256","nodeBinarySha256","nodeContentTreeSha256","pm2BinarySha256","pm2EntrypointSha256","pm2ContentTreeSha256","runtimeRecoveryUnitSha256"):
  print(v[k])
 '
 )
-[ "${#context[@]}" -eq 12 ] || die "cannot select the exact guest context"
+[ "${#context[@]}" -eq 13 ] || die "cannot select the exact guest context"
 SET_ID="${context[0]}"
 EXPECTED_UUID="${context[1]}"
 EXPECTED_INSTANCE_ID="${context[2]}"
@@ -689,8 +779,9 @@ OVERLAY_INITIAL_SHA256="${context[6]}"
 EXPECTED_NODE_BINARY_SHA256="${context[7]}"
 EXPECTED_NODE_TREE_SHA256="${context[8]}"
 EXPECTED_PM2_BINARY_SHA256="${context[9]}"
-EXPECTED_PM2_TREE_SHA256="${context[10]}"
-EXPECTED_RUNTIME_RECOVERY_UNIT_SHA256="${context[11]}"
+EXPECTED_PM2_ENTRYPOINT_SHA256="${context[10]}"
+EXPECTED_PM2_TREE_SHA256="${context[11]}"
+EXPECTED_RUNTIME_RECOVERY_UNIT_SHA256="${context[12]}"
 [[ "$SET_ID" =~ ^[0-9a-f]{64}$ ]] || die "provision set identity is invalid"
 
 observed_uuid="$(tr '[:upper:]' '[:lower:]' </sys/class/dmi/id/product_uuid)"
@@ -721,7 +812,8 @@ rm -f -- "$python_allowed_signers"
 mapfile -t target < <(
   python3 - "$MANIFEST" <<'PY'
 import json,sys
-v=json.load(open(sys.argv[1],encoding="utf-8"))["target"]
+root=json.load(open(sys.argv[1],encoding="utf-8"))
+v=root["target"]
 for value in (
     v["node"]["npmVersion"],
     v["python"]["version"],
@@ -730,11 +822,18 @@ for value in (
     v["python"]["packageVersion"],
     v["python"]["packageArchitecture"],
     v["control"]["sourceCommit"],
+    v["control"]["archiveSha256"],
+    v["pm2"]["sourceArchiveSha256"],
+    root["provenance"]["pm2"]["lockSha256"],
+    v["pm2"]["closureDigest"],
+    v["pm2"]["payloadDigest"],
+    v["pm2"]["fileCount"],
+    v["pm2"]["packageLockSha256"],
 ):
     print(value)
 PY
 )
-[ "${#target[@]}" -eq 7 ] || die "cannot select the exact runtime target"
+[ "${#target[@]}" -eq 14 ] || die "cannot select the exact runtime target"
 EXPECTED_NPM_VERSION="${target[0]}"
 EXPECTED_PYTHON_VERSION="${target[1]}"
 EXPECTED_PYTHON_SHA256="${target[2]}"
@@ -742,6 +841,15 @@ EXPECTED_PYTHON_PACKAGE="${target[3]}"
 EXPECTED_PYTHON_PACKAGE_VERSION="${target[4]}"
 EXPECTED_PYTHON_ARCH="${target[5]}"
 CONTROL_SOURCE_COMMIT="${target[6]}"
+CONTROL_ARCHIVE_SHA256="${target[7]}"
+EXPECTED_PM2_SOURCE_ARCHIVE_SHA256="${target[8]}"
+EXPECTED_PM2_LOCK_SHA256="${target[9]}"
+EXPECTED_PM2_CLOSURE_DIGEST="${target[10]}"
+EXPECTED_PM2_PAYLOAD_DIGEST="${target[11]}"
+EXPECTED_PM2_FILE_COUNT="${target[12]}"
+EXPECTED_PM2_PACKAGE_LOCK_SHA256="${target[13]}"
+[ "$EXPECTED_PM2_PACKAGE_LOCK_SHA256" = "$EXPECTED_PM2_LOCK_SHA256" ] \
+  || die "PM2 closure package lock differs from signed provenance"
 
 verify_python() {
   local observed_owner observed_version observed_arch
@@ -849,7 +957,12 @@ verify_node() {
     || die "installed Node binary differs from the signed target"
   [ "$("$NODE_TARGET/bin/npm" --version)" = "$EXPECTED_NPM_VERSION" ] \
     || die "installed npm version differs from the bundle target"
-  for binary in node npm npx corepack; do
+  [ -f /usr/bin/node ] && [ ! -L /usr/bin/node ] \
+    && [ "$(stat -c '%U:%G:%a:%h' /usr/bin/node)" = root:root:755:1 ] \
+    && [ "$(sha256sum /usr/bin/node | cut -d' ' -f1)" \
+      = "$EXPECTED_NODE_BINARY_SHA256" ] \
+    || die "installed /usr/bin/node is not the exact root-owned regular runtime binary"
+  for binary in npm npx corepack; do
     [ -L "/usr/bin/$binary" ] \
       && [ "$(readlink "/usr/bin/$binary")" = "$NODE_TARGET/bin/$binary" ] \
       || die "installed Node link does not name its exact runtime entrypoint"
@@ -872,18 +985,41 @@ verify_node() {
 }
 
 verify_pm2() {
-  [ -L "$PM2_TARGET/bin/pm2" ] \
-    || die "installed PM2 binary must be the reviewed relative symlink"
-  resolved_pm2="$(readlink -f "$PM2_TARGET/bin/pm2")"
-  case "$resolved_pm2" in "$PM2_TARGET"/*) ;; *) die "installed PM2 binary escapes its prefix" ;; esac
-  [ -x "$resolved_pm2" ] && [ ! -L "$resolved_pm2" ] \
-    || die "installed PM2 binary target is missing or unsafe"
-  [ "$(sha256sum "$resolved_pm2" | cut -d' ' -f1)" \
+  local entrypoint expected_launcher validation
+  entrypoint="$PM2_TARGET/node_modules/pm2/bin/pm2"
+  [ -x "$entrypoint" ] && [ ! -L "$entrypoint" ] \
+    && [ "$(stat -c '%U:%G' "$entrypoint")" = root:root ] \
+    || die "installed PM2 entrypoint is missing or unsafe"
+  [ "$(sha256sum "$entrypoint" | cut -d' ' -f1)" \
+      = "$EXPECTED_PM2_ENTRYPOINT_SHA256" ] \
+    || die "installed PM2 entrypoint differs from the signed target"
+  [ -f "$PM2_LAUNCHER" ] && [ ! -L "$PM2_LAUNCHER" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' "$PM2_LAUNCHER")" = root:root:755:1 ] \
+    || die "installed PM2 launcher is missing or unsafe"
+  [ "$(sha256sum "$PM2_LAUNCHER" | cut -d' ' -f1)" \
       = "$EXPECTED_PM2_BINARY_SHA256" ] \
-    || die "installed PM2 binary differs from the signed target"
-  python3 "$MANIFEST_HELPER" validate-pm2 \
+    || die "installed PM2 launcher differs from the signed target"
+  expected_launcher='#!/usr/bin/bash
+exec "/usr/bin/node" "/opt/nexus-release/pm2/6.0.14/node_modules/pm2/bin/pm2" "$@"'
+  [ "$(<"$PM2_LAUNCHER")" = "$expected_launcher" ] \
+    || die "installed PM2 launcher content differs from policy"
+  validation="$(python3 "$MANIFEST_HELPER" validate-pm2 \
     --prefix "$PM2_TARGET" \
-    --lock "$BUNDLE_ROOT/provenance/pm2/package-lock.json" >/dev/null
+    --lock "$BUNDLE_ROOT/provenance/pm2/package-lock.json")"
+  python3 - "$validation" "$EXPECTED_PM2_CLOSURE_DIGEST" \
+    "$EXPECTED_PM2_PAYLOAD_DIGEST" "$EXPECTED_PM2_FILE_COUNT" \
+    "$EXPECTED_PM2_PACKAGE_LOCK_SHA256" <<'PY'
+import json,sys
+value=json.loads(sys.argv[1])
+closure,payload,file_count,package_lock=sys.argv[2:]
+if (
+ value.get("closureDigest")!=closure
+ or value.get("payloadDigest")!=payload
+ or value.get("fileCount")!=int(file_count)
+ or value.get("packageLockSha256")!=package_lock
+):
+ raise SystemExit("installed PM2 closure differs from the signed v3 identity")
+PY
   while IFS= read -r entry; do
     [ "$(stat -c '%U:%G' "$entry")" = root:root ] \
       || die "installed PM2 prefix contains an unexpected owner"
@@ -891,6 +1027,45 @@ verify_pm2() {
   python3 "$MANIFEST_HELPER" validate-content-tree \
     --root "$PM2_TARGET" \
     --expected-sha256 "$EXPECTED_PM2_TREE_SHA256" >/dev/null
+}
+
+verify_pm2_attestation() {
+  [ -f "$PM2_ATTESTATION" ] && [ ! -L "$PM2_ATTESTATION" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' "$PM2_ATTESTATION")" = root:root:600:1 ] \
+    || die "root PM2 installation attestation is missing or unsafe"
+  python3 - "$PM2_ATTESTATION" "$PM2_TARGET" "$PM2_LAUNCHER" \
+    "$EXPECTED_PM2_SOURCE_ARCHIVE_SHA256" "$EXPECTED_PM2_CLOSURE_DIGEST" \
+    "$EXPECTED_PM2_PAYLOAD_DIGEST" "$EXPECTED_PM2_FILE_COUNT" \
+    "$EXPECTED_PM2_PACKAGE_LOCK_SHA256" "$EXPECTED_PM2_BINARY_SHA256" \
+    "$EXPECTED_NODE_BINARY_SHA256" <<'PY'
+import json,sys
+(
+ path,closure,launcher,source_archive,closure_digest,payload_digest,file_count,
+ package_lock,launcher_sha,node_sha,
+)=sys.argv[1:]
+value=json.load(open(path,encoding="utf-8"))
+if set(value)!={
+ "schema","version","sourceArchiveSha256","closureDigest","payloadDigest",
+ "packageLockSha256","fileCount","closureRoot","launcher","launcherSha256",
+ "entrypoint","node","installedAt",
+}:
+ raise SystemExit("root PM2 attestation schema is invalid")
+if (
+ value["schema"]!="nexus.pm2-root-install.v1"
+ or value["version"]!="6.0.14"
+ or value["sourceArchiveSha256"]!=source_archive
+ or value["closureDigest"]!=closure_digest
+ or value["payloadDigest"]!=payload_digest
+ or value["packageLockSha256"]!=package_lock
+ or value["fileCount"]!=int(file_count)
+ or value["closureRoot"]!=closure
+ or value["launcher"]!=launcher
+ or value["launcherSha256"]!=launcher_sha
+ or value["entrypoint"]!=f"{closure}/node_modules/pm2/bin/pm2"
+ or value["node"]!={"path":"/usr/bin/node","version":"v22.23.1","sha256":node_sha}
+):
+ raise SystemExit("root PM2 attestation identity differs")
+PY
 }
 
 pm2_dry_health() {
@@ -901,13 +1076,13 @@ pm2_dry_health() {
   chmod 0700 "$pm2_health_home"
   if ! timeout 15s runuser -u dominguez -- env \
     PM2_HOME="$pm2_health_home" \
-    PATH="$PM2_TARGET/bin:/usr/bin:/bin" \
-    "$PM2_TARGET/bin/pm2" ping >/dev/null; then
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    "$PM2_LAUNCHER" ping >/dev/null; then
     failure="PM2 isolated dry-health ping failed"
   elif ! result="$(timeout 15s runuser -u dominguez -- env \
     PM2_HOME="$pm2_health_home" \
-    PATH="$PM2_TARGET/bin:/usr/bin:/bin" \
-    "$PM2_TARGET/bin/pm2" jlist)"; then
+    PATH="/usr/local/bin:/usr/bin:/bin" \
+    "$PM2_LAUNCHER" jlist)"; then
     failure="PM2 isolated dry-health inventory failed"
   elif ! printf '%s' "$result" | /usr/bin/node -e '
 let body="";process.stdin.on("data",c=>body+=c);process.stdin.on("end",()=>{
@@ -917,8 +1092,8 @@ let body="";process.stdin.on("data",c=>body+=c);process.stdin.on("end",()=>{
   fi
   timeout 15s runuser -u dominguez -- env \
       PM2_HOME="$pm2_health_home" \
-      PATH="$PM2_TARGET/bin:/usr/bin:/bin" \
-      "$PM2_TARGET/bin/pm2" kill >/dev/null 2>&1 || true
+      PATH="/usr/local/bin:/usr/bin:/bin" \
+      "$PM2_LAUNCHER" kill >/dev/null 2>&1 || true
   rm -rf -- "$pm2_health_home"
   [ -z "$failure" ] || die "$failure"
 }
@@ -930,6 +1105,7 @@ if [ "$COMMAND" = install ]; then
       || die "existing runtime installation receipt is unsafe"
     verify_node
     verify_pm2
+    verify_pm2_attestation
     verify_python
     pm2_dry_health
     python3 "$MANIFEST_HELPER" validate-install-receipt \
@@ -947,11 +1123,12 @@ if [ "$COMMAND" = install ]; then
   transaction_id="$(date -u +'%Y%m%dT%H%M%SZ')-$$-$RANDOM"
   node_stage="$NODE_PARENT/.node-stage-$transaction_id"
   node_backup="$NODE_PARENT/.node-backup-$transaction_id"
-  pm2_stage="$NODE_PARENT/.pm2-stage-$transaction_id"
-  pm2_backup="$NODE_PARENT/.pm2-backup-$transaction_id"
+  pm2_stage="$PM2_PARENT/.pm2-stage-$transaction_id"
+  pm2_backup="$PM2_PARENT/.pm2-backup-$transaction_id"
   install -d -o root -g root -m 0755 "$NODE_PARENT"
-  [ "$(dirname -- "$PM2_TARGET")" = "$NODE_PARENT" ] \
-    || die "Node and PM2 targets must share the protected runtime parent"
+  install -d -o root -g root -m 0755 "$PM2_PARENT" \
+    "$(dirname -- "$PM2_LAUNCHER")"
+  install -d -o root -g root -m 0700 "$PROMOTION_STATE_ROOT"
   [ ! -e "$node_stage" ] && [ ! -L "$node_stage" ] \
     && [ ! -e "$node_backup" ] && [ ! -L "$node_backup" ] \
     && [ ! -e "$pm2_stage" ] && [ ! -L "$pm2_stage" ] \
@@ -959,6 +1136,7 @@ if [ "$COMMAND" = install ]; then
     || die "transaction staging or backup path already exists"
 
   node_extract_parent=""
+  pm2_extract_parent=""
   journal_armed=false
   transaction_succeeded=false
   node_had_previous=false
@@ -972,6 +1150,7 @@ if [ "$COMMAND" = install ]; then
       rollback_install
     elif ! $journal_armed; then
       if [ -n "$node_extract_parent" ]; then rm -rf -- "$node_extract_parent"; fi
+      if [ -n "$pm2_extract_parent" ]; then rm -rf -- "$pm2_extract_parent"; fi
       rm -rf -- "$node_stage" "$pm2_stage"
     fi
   }
@@ -1012,9 +1191,49 @@ PY
   chown -R root:root "$node_stage"
   chmod -R go-w "$node_stage"
 
-  cp -a -- "$BUNDLE_ROOT/payload/pm2-prefix" "$pm2_stage"
-  [ -d "$pm2_stage" ] && [ ! -L "$pm2_stage" ] \
-    || die "PM2 bundle did not produce the exact prefix"
+  [ "$(sha256sum "$BUNDLE_ROOT/payload/pm2-root-closure.tar.gz" | cut -d' ' -f1)" \
+      = "$EXPECTED_PM2_SOURCE_ARCHIVE_SHA256" ] \
+    || die "PM2 source archive differs from the signed target"
+  pm2_extract_parent="$(mktemp -d "$PM2_PARENT/.extract.XXXXXXXX")"
+  python3 - "$BUNDLE_ROOT/payload/pm2-root-closure.tar.gz" \
+    "$pm2_extract_parent" <<'PY'
+import pathlib,posixpath,sys,tarfile
+archive,destination=sys.argv[1:]
+root="pm2-closure"
+with tarfile.open(archive,mode="r:gz") as handle:
+    members=handle.getmembers()
+    if not members or len(members)>50000:
+        raise SystemExit("PM2 source archive member count is invalid")
+    total=0;seen=set();regular=set()
+    for member in members:
+        name=pathlib.PurePosixPath(member.name)
+        if (
+            member.name in seen or name.is_absolute() or ".." in name.parts
+            or not name.parts or name.parts[0]!=root
+        ):
+            raise SystemExit("PM2 source archive member escapes its exact root")
+        seen.add(member.name)
+        if not member.isdir() and not member.isreg():
+            raise SystemExit("PM2 source archive contains a link or special file")
+        total+=max(member.size,0)
+        if member.size>64*1024*1024 or total>512*1024*1024:
+            raise SystemExit("PM2 source archive exceeds the accepted bound")
+        if member.isreg():
+            regular.add(pathlib.PurePosixPath(*name.parts[1:]).as_posix())
+    for required in (
+        "package.json","package-lock.json","closure-manifest.json",
+        "node_modules/pm2/package.json","node_modules/pm2/bin/pm2",
+    ):
+        if required not in regular:
+            raise SystemExit(f"PM2 source archive is missing {required}")
+    handle.extractall(destination,filter="data")
+PY
+  [ -d "$pm2_extract_parent/pm2-closure" ] \
+    && [ ! -L "$pm2_extract_parent/pm2-closure" ] \
+    || die "PM2 source archive did not produce the exact closure root"
+  mv -T -- "$pm2_extract_parent/pm2-closure" "$pm2_stage"
+  rmdir -- "$pm2_extract_parent"
+  pm2_extract_parent=""
   chown -R root:root "$pm2_stage"
   while IFS= read -r -d '' directory; do chmod 0755 "$directory"; done \
     < <(find "$pm2_stage" -xdev -type d -print0)
@@ -1032,6 +1251,12 @@ PY
   if [ -e "$PM2_TARGET" ] || [ -L "$PM2_TARGET" ]; then
     die "canonical Noble guest unexpectedly contains the PM2 target"
   fi
+  if [ -e "$PM2_LAUNCHER" ] || [ -L "$PM2_LAUNCHER" ]; then
+    die "canonical Noble guest unexpectedly contains the PM2 launcher"
+  fi
+  if [ -e "$PM2_ATTESTATION" ] || [ -L "$PM2_ATTESTATION" ]; then
+    die "canonical Noble guest unexpectedly contains a PM2 root attestation"
+  fi
   for binary in corepack node npm npx; do
     link="/usr/bin/$binary"
     backup="/usr/bin/.nexus-runtime-$transaction_id-$binary"
@@ -1045,6 +1270,7 @@ PY
       link_had_previous_map["$binary"]=false
     fi
   done
+  link_had_previous_map[pm2]=false
 
   # The journal is durable before the first live-path mutation. Backups stay on
   # the same filesystem as their target so every rename and rollback is atomic.
@@ -1056,12 +1282,14 @@ PY
     "${link_had_previous_map[corepack]}" \
     "${link_had_previous_map[node]}" \
     "${link_had_previous_map[npm]}" \
-    "${link_had_previous_map[npx]}" <<'PY'
+    "${link_had_previous_map[npx]}" \
+    "${link_had_previous_map[pm2]}" "$PM2_LAUNCHER" <<'PY'
 import json,os,sys
 (
  output,transaction,set_id,guest,provision,manifest,node_target,node_stage,
  node_backup,pm2_target,pm2_stage,pm2_backup,node_previous,pm2_previous,
  corepack_previous,node_link_previous,npm_previous,npx_previous,
+ pm2_link_previous,pm2_launcher,
 )=sys.argv[1:]
 value={
  "schema":"nexus.rollback-drill-vm-runtime-install-journal.v1",
@@ -1075,10 +1303,11 @@ value={
   "node":{"target":node_target,"stage":node_stage,"backup":node_backup},
   "pm2":{"target":pm2_target,"stage":pm2_stage,"backup":pm2_backup},
   "links":[
-   {"name":"corepack","target":"/usr/bin/corepack","backup":f"/usr/bin/.nexus-runtime-{transaction}-corepack","previousPresent":corepack_previous=="true"},
-   {"name":"node","target":"/usr/bin/node","backup":f"/usr/bin/.nexus-runtime-{transaction}-node","previousPresent":node_link_previous=="true"},
-   {"name":"npm","target":"/usr/bin/npm","backup":f"/usr/bin/.nexus-runtime-{transaction}-npm","previousPresent":npm_previous=="true"},
-   {"name":"npx","target":"/usr/bin/npx","backup":f"/usr/bin/.nexus-runtime-{transaction}-npx","previousPresent":npx_previous=="true"},
+   {"name":"corepack","kind":"symlink","target":"/usr/bin/corepack","backup":f"/usr/bin/.nexus-runtime-{transaction}-corepack","previousPresent":corepack_previous=="true"},
+   {"name":"node","kind":"regular-file","target":"/usr/bin/node","backup":f"/usr/bin/.nexus-runtime-{transaction}-node","previousPresent":node_link_previous=="true"},
+   {"name":"npm","kind":"symlink","target":"/usr/bin/npm","backup":f"/usr/bin/.nexus-runtime-{transaction}-npm","previousPresent":npm_previous=="true"},
+   {"name":"npx","kind":"symlink","target":"/usr/bin/npx","backup":f"/usr/bin/.nexus-runtime-{transaction}-npx","previousPresent":npx_previous=="true"},
+   {"name":"pm2","kind":"regular-file","target":pm2_launcher,"backup":f"{os.path.dirname(pm2_launcher)}/.nexus-runtime-{transaction}-pm2","previousPresent":pm2_link_previous=="true"},
   ],
  },
  "predecessors":{"nodePresent":node_previous=="true","pm2Present":pm2_previous=="true"},
@@ -1095,23 +1324,30 @@ PY
   journal_armed=true
 
   rollback_install() {
-    local rollback_failed=false binary backup link_had_previous
+    local rollback_failed=false binary backup link link_had_previous next
     set +e
     for binary in "${touched_links[@]}"; do
-      rm -f -- "/usr/bin/$binary" || rollback_failed=true
-      rm -f -- "/usr/bin/.nexus-runtime-$transaction_id-$binary.next" \
-        || rollback_failed=true
-      backup="/usr/bin/.nexus-runtime-$transaction_id-$binary"
+      if [ "$binary" = pm2 ]; then
+        link="$PM2_LAUNCHER"
+        backup="$(dirname -- "$PM2_LAUNCHER")/.nexus-runtime-$transaction_id-pm2"
+        next="$backup.next"
+      else
+        link="/usr/bin/$binary"
+        backup="/usr/bin/.nexus-runtime-$transaction_id-$binary"
+        next="$backup.next"
+      fi
+      rm -f -- "$link" || rollback_failed=true
+      rm -f -- "$next" || rollback_failed=true
       link_had_previous=false
       if [ -e "$backup" ] || [ -L "$backup" ]; then
         link_had_previous=true
-        mv -T -- "$backup" "/usr/bin/$binary" || rollback_failed=true
+        mv -T -- "$backup" "$link" || rollback_failed=true
       fi
       if [ -e "$backup" ] || [ -L "$backup" ]; then rollback_failed=true; fi
       if $link_had_previous; then
-        { [ -e "/usr/bin/$binary" ] || [ -L "/usr/bin/$binary" ]; } \
+        { [ -e "$link" ] || [ -L "$link" ]; } \
           || rollback_failed=true
-      elif [ -e "/usr/bin/$binary" ] || [ -L "/usr/bin/$binary" ]; then
+      elif [ -e "$link" ] || [ -L "$link" ]; then
         rollback_failed=true
       fi
     done
@@ -1138,9 +1374,13 @@ PY
     fi
     rm -rf -- "$node_stage" "$pm2_stage" || rollback_failed=true
     rm -f -- "$INSTALL_RECEIPT" || rollback_failed=true
+    rm -f -- "$PM2_ATTESTATION" || rollback_failed=true
     if ! $rollback_failed; then
       fsync_path /usr/bin || rollback_failed=true
+      fsync_path "$(dirname -- "$PM2_LAUNCHER")" || rollback_failed=true
       fsync_path "$NODE_PARENT" || rollback_failed=true
+      fsync_path "$PM2_PARENT" || rollback_failed=true
+      fsync_path "$PROMOTION_STATE_ROOT" || rollback_failed=true
       if [ -d "$INSTALL_RECEIPT_DIR" ]; then
         fsync_path "$INSTALL_RECEIPT_DIR" || rollback_failed=true
       fi
@@ -1168,6 +1408,7 @@ PY
   pm2_target_touched=true
   mv -T -- "$pm2_stage" "$PM2_TARGET"
   fsync_path "$NODE_PARENT"
+  fsync_path "$PM2_PARENT"
   for binary in corepack node npm npx; do
     link="/usr/bin/$binary"
     backup="/usr/bin/.nexus-runtime-$transaction_id-$binary"
@@ -1185,19 +1426,110 @@ PY
       die "Node entrypoint appeared after transaction preflight"
     fi
     touched_links+=("$binary")
-    ln -s "$NODE_TARGET/bin/$binary" "$next"
-    chown -h root:root "$next"
+    if [ "$binary" = node ]; then
+      install -o root -g root -m 0755 "$NODE_TARGET/bin/node" "$next"
+      [ -f "$next" ] && [ ! -L "$next" ] \
+        && [ "$(stat -c '%U:%G:%a:%h' "$next")" = root:root:755:1 ] \
+        && [ "$(sha256sum "$next" | cut -d' ' -f1)" \
+          = "$EXPECTED_NODE_BINARY_SHA256" ] \
+        || die "staged regular /usr/bin/node differs from the signed runtime"
+    else
+      ln -s "$NODE_TARGET/bin/$binary" "$next"
+      chown -h root:root "$next"
+    fi
     mv -T -- "$next" "$link"
   done
   fsync_path /usr/bin
+  pm2_link_backup="$(dirname -- "$PM2_LAUNCHER")/.nexus-runtime-$transaction_id-pm2"
+  pm2_link_next="$pm2_link_backup.next"
+  [ ! -e "$pm2_link_backup" ] && [ ! -L "$pm2_link_backup" ] \
+    && [ ! -e "$pm2_link_next" ] && [ ! -L "$pm2_link_next" ] \
+    || die "PM2 launcher transaction path appeared after preflight"
+  touched_links+=(pm2)
+  python3 - "$pm2_link_next" <<'PY'
+import os,sys
+body=b'#!/usr/bin/bash\nexec "/usr/bin/node" "/opt/nexus-release/pm2/6.0.14/node_modules/pm2/bin/pm2" "$@"\n'
+descriptor=os.open(
+ sys.argv[1],
+ os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0),
+ 0o755,
+)
+try:os.write(descriptor,body);os.fsync(descriptor)
+finally:os.close(descriptor)
+PY
+  chown root:root "$pm2_link_next"
+  chmod 0755 "$pm2_link_next"
+  mv -T -- "$pm2_link_next" "$PM2_LAUNCHER"
+  fsync_path "$(dirname -- "$PM2_LAUNCHER")"
 
   verify_node
   verify_pm2
   pm2_dry_health
+  [ "$(sha256sum "$BUNDLE_ROOT/payload/pm2-root-closure.tar.gz" | cut -d' ' -f1)" \
+      = "$EXPECTED_PM2_SOURCE_ARCHIVE_SHA256" ] \
+    || die "PM2 source archive differs from the signed runtime manifest"
+  [ "$(sha256sum "$BUNDLE_ROOT/provenance/pm2/package-lock.json" | cut -d' ' -f1)" \
+      = "$EXPECTED_PM2_LOCK_SHA256" ] \
+    || die "PM2 exact package lock differs from the signed provenance"
+  pm2_closure_json="$(python3 "$MANIFEST_HELPER" validate-pm2 \
+    --prefix "$PM2_TARGET" \
+    --lock "$BUNDLE_ROOT/provenance/pm2/package-lock.json")"
+  pm2_attestation_next="$(mktemp "$PROMOTION_STATE_ROOT/.pm2-root-install.XXXXXXXX")"
+  python3 - "$pm2_attestation_next" "$PM2_TARGET" "$PM2_LAUNCHER" \
+    "$EXPECTED_PM2_SOURCE_ARCHIVE_SHA256" "$pm2_closure_json" \
+    "$EXPECTED_PM2_CLOSURE_DIGEST" "$EXPECTED_PM2_PAYLOAD_DIGEST" \
+    "$EXPECTED_PM2_FILE_COUNT" "$EXPECTED_PM2_PACKAGE_LOCK_SHA256" \
+    "/usr/bin/node" <<'PY'
+import datetime,hashlib,json,os,pathlib,stat,sys
+(
+ output,closure_root,launcher,source_archive_sha,closure_json,
+ expected_closure,expected_payload,expected_file_count,expected_package_lock,
+ node_bin,
+)=sys.argv[1:]
+closure=json.loads(closure_json)
+if (
+ closure.get("closureDigest")!=expected_closure
+ or closure.get("payloadDigest")!=expected_payload
+ or closure.get("fileCount")!=int(expected_file_count)
+ or closure.get("packageLockSha256")!=expected_package_lock
+):
+ raise SystemExit("PM2 closure differs from the signed v3 target")
+launcher_body=pathlib.Path(launcher).read_bytes()
+node_body=pathlib.Path(node_bin).read_bytes()
+entrypoint=f"{closure_root}/node_modules/pm2/bin/pm2"
+value={
+ "schema":"nexus.pm2-root-install.v1",
+ "version":"6.0.14",
+ "sourceArchiveSha256":source_archive_sha,
+ "closureDigest":closure["closureDigest"],
+ "payloadDigest":closure["payloadDigest"],
+ "packageLockSha256":closure["packageLockSha256"],
+ "fileCount":closure["fileCount"],
+ "closureRoot":closure_root,
+ "launcher":launcher,
+ "launcherSha256":hashlib.sha256(launcher_body).hexdigest(),
+ "entrypoint":entrypoint,
+ "node":{
+  "path":"/usr/bin/node",
+  "version":"v22.23.1",
+  "sha256":hashlib.sha256(node_body).hexdigest(),
+ },
+ "installedAt":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+}
+descriptor=os.open(output,os.O_WRONLY|os.O_TRUNC|getattr(os,"O_NOFOLLOW",0))
+try:
+ body=(json.dumps(value,separators=(",",":"),sort_keys=True)+"\n").encode()
+ os.write(descriptor,body);os.fsync(descriptor)
+finally:os.close(descriptor)
+PY
+  chown root:root "$pm2_attestation_next"
+  chmod 0600 "$pm2_attestation_next"
+  mv -T -- "$pm2_attestation_next" "$PM2_ATTESTATION"
+  fsync_path "$PROMOTION_STATE_ROOT"
+  verify_pm2_attestation
   install -d -o root -g root -m 0700 "$INSTALL_RECEIPT_DIR"
-  node_sha256="$(sha256sum "$NODE_TARGET/bin/node" | cut -d' ' -f1)"
-  pm2_resolved="$(readlink -f "$PM2_TARGET/bin/pm2")"
-  pm2_sha256="$(sha256sum "$pm2_resolved" | cut -d' ' -f1)"
+  node_sha256="$(sha256sum /usr/bin/node | cut -d' ' -f1)"
+  pm2_sha256="$(sha256sum "$PM2_LAUNCHER" | cut -d' ' -f1)"
   python3 - "$INSTALL_RECEIPT" "$transaction_id" "$SET_ID" "$GUEST" \
     "$EXPECTED_PROVISION_SHA256" "$EXPECTED_MANIFEST_SHA256" \
     "$OVERLAY_INITIAL_SHA256" "$node_sha256" "$EXPECTED_NODE_TREE_SHA256" \
@@ -1253,6 +1585,7 @@ fi
   || die "runtime installation receipt is missing or unsafe"
 verify_node
 verify_pm2
+verify_pm2_attestation
 verify_python
 pm2_dry_health
 python3 "$MANIFEST_HELPER" validate-install-receipt \
@@ -1266,12 +1599,21 @@ python3 "$MANIFEST_HELPER" validate-install-receipt \
 # Materialize the exact protected-main control source from the owner-signed
 # offline bundle. The existing promotion bootstrap owns its own rollback
 # journal; no production key or data is copied into this guest.
-CONTROL_SOURCE_ROOT="$STATE_ROOT/control-source/$CONTROL_SOURCE_COMMIT"
-if [ ! -e "$CONTROL_SOURCE_ROOT" ] && [ ! -L "$CONTROL_SOURCE_ROOT" ]; then
-  install -d -o root -g root -m 0700 "$STATE_ROOT/control-source"
-  control_source_stage="$(mktemp -d "$STATE_ROOT/control-source/.stage.XXXXXXXX")"
-  python3 - "$BUNDLE_ROOT/payload/control-source.tar.gz" \
-    "$control_source_stage" "$CONTROL_SOURCE_COMMIT" <<'PY'
+BOOTSTRAP_BASE="/var/lib/nexus-release-bootstrap"
+BOOTSTRAP_ROOT="$BOOTSTRAP_BASE/$CONTROL_SOURCE_COMMIT"
+CONTROL_SOURCE_ARCHIVE="$BOOTSTRAP_ROOT/source.tar.gz"
+CONTROL_SOURCE_ROOT="$BOOTSTRAP_ROOT/source"
+if [ ! -e "$BOOTSTRAP_ROOT" ] && [ ! -L "$BOOTSTRAP_ROOT" ]; then
+  install -d -o root -g root -m 0700 "$BOOTSTRAP_BASE"
+  bootstrap_stage="$(mktemp -d "$BOOTSTRAP_BASE/.${CONTROL_SOURCE_COMMIT}.stage.XXXXXXXX")"
+  install -o root -g root -m 0600 \
+    "$BUNDLE_ROOT/payload/control-source.tar.gz" \
+    "$bootstrap_stage/source.tar.gz"
+  [ "$(sha256sum "$bootstrap_stage/source.tar.gz" | cut -d' ' -f1)" \
+      = "$CONTROL_ARCHIVE_SHA256" ] \
+    || die "root-side protected-main archive digest differs from the signed bundle"
+  python3 - "$bootstrap_stage/source.tar.gz" \
+    "$bootstrap_stage" "$CONTROL_SOURCE_COMMIT" <<'PY'
 import pathlib,posixpath,sys,tarfile
 archive,destination,expected_commit=sys.argv[1:]
 with tarfile.open(archive,mode="r:gz") as handle:
@@ -1285,6 +1627,8 @@ with tarfile.open(archive,mode="r:gz") as handle:
         name=pathlib.PurePosixPath(member.name)
         if name.is_absolute() or ".." in name.parts or not name.parts:
             raise SystemExit("control source archive member escapes its root")
+        if name.parts[0] != "source":
+            raise SystemExit("control source archive is not rooted at source/")
         if member.isdev() or member.isfifo():
             raise SystemExit("control source archive contains a special file")
         total+=max(member.size,0)
@@ -1300,12 +1644,19 @@ with tarfile.open(archive,mode="r:gz") as handle:
                 raise SystemExit("control source archive link escapes its root")
     handle.extractall(destination,filter="data")
 PY
-  chown -R root:root "$control_source_stage"
-  chmod -R go-w "$control_source_stage"
-  python3 "$MANIFEST_HELPER" fsync-tree --root "$control_source_stage" >/dev/null
-  mv -T -- "$control_source_stage" "$CONTROL_SOURCE_ROOT"
-  fsync_path "$STATE_ROOT/control-source"
+  [ -d "$bootstrap_stage/source" ] && [ ! -L "$bootstrap_stage/source" ] \
+    || die "protected-main source archive did not create its exact source/ root"
+  chown -R root:root "$bootstrap_stage"
+  chmod -R go-w "$bootstrap_stage"
+  python3 "$MANIFEST_HELPER" fsync-tree --root "$bootstrap_stage" >/dev/null
+  mv -T -- "$bootstrap_stage" "$BOOTSTRAP_ROOT"
+  fsync_path "$BOOTSTRAP_BASE"
 fi
+[ -f "$CONTROL_SOURCE_ARCHIVE" ] && [ ! -L "$CONTROL_SOURCE_ARCHIVE" ] \
+  && [ "$(stat -c '%U:%G:%a:%h' "$CONTROL_SOURCE_ARCHIVE")" = root:root:600:1 ] \
+  && [ "$(sha256sum "$CONTROL_SOURCE_ARCHIVE" | cut -d' ' -f1)" \
+      = "$CONTROL_ARCHIVE_SHA256" ] \
+  || die "protected-main root-side archive is missing, unsafe, or digest-drifted"
 [ -d "$CONTROL_SOURCE_ROOT" ] && [ ! -L "$CONTROL_SOURCE_ROOT" ] \
   && [ "$(realpath -e "$CONTROL_SOURCE_ROOT")" = "$CONTROL_SOURCE_ROOT" ] \
   || die "protected-main control source is missing or unsafe"
@@ -1318,7 +1669,7 @@ for entry in control["bootstrapFiles"]+control["files"]:
  print("\t".join((entry["source"],str(entry["size"]),entry["sha256"])))
 PY
 )
-[ "${#source_identities[@]}" -eq 9 ] \
+[ "${#source_identities[@]}" -gt 2 ] \
   || die "protected-main control source inventory is invalid"
 for record in "${source_identities[@]}"; do
   IFS=$'\t' read -r relative expected_size expected_sha256 <<<"$record"
@@ -1337,6 +1688,9 @@ env -i \
   NEXUS_PROMOTION_SERVICE_GROUP=nexus-release \
   bash "$CONTROL_SOURCE_ROOT/scripts/remote-promotion-systemd-install.sh" \
     "$CONTROL_SOURCE_ROOT" \
+    "$CONTROL_SOURCE_COMMIT" \
+    "$CONTROL_SOURCE_ARCHIVE" \
+    "$CONTROL_ARCHIVE_SHA256" \
     "$OWNER_PUBLIC_KEY" >/dev/null \
   || die "offline promotion control installation failed"
 
@@ -1344,21 +1698,24 @@ mapfile -t expected_control < <(
   python3 - "$MANIFEST" <<'PY'
 import json,sys
 for entry in json.load(open(sys.argv[1],encoding="utf-8"))["target"]["control"]["files"]:
- print("\t".join((entry["destination"],str(entry["size"]),entry["sha256"])))
+ print("\t".join((
+  entry["destination"],str(entry["size"]),entry["sha256"],
+  entry["owner"],format(entry["mode"],"o"),
+ )))
 PY
 )
-[ "${#expected_control[@]}" -eq 7 ] \
+[ "${#expected_control[@]}" -gt 7 ] \
   || die "promotion control manifest inventory is invalid"
 control_observed="$(mktemp "$STATE_ROOT/.control-observed.XXXXXXXX")"
 for record in "${expected_control[@]}"; do
-  IFS=$'\t' read -r path expected_size expected_sha256 <<<"$record"
+  IFS=$'\t' read -r path expected_size expected_sha256 expected_owner expected_mode <<<"$record"
   [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c '%h' "$path")" = 1 ] \
     || die "promotion control asset is missing or unsafe: $path"
-  [ "$(stat -c '%U:%G' "$path")" = root:root ] \
-    || die "promotion control asset is not root-owned: $path"
+  [ "$(stat -c '%U:%G' "$path")" = "$expected_owner" ] \
+    || die "promotion control asset ownership differs: $path"
   observed_mode="$(stat -c '%a' "$path")"
-  (( (8#$observed_mode & 0022) == 0 )) \
-    || die "promotion control asset is group/world writable: $path"
+  [ "$observed_mode" = "$expected_mode" ] \
+    || die "promotion control asset mode differs: $path"
   [ "$(stat -c '%s' "$path")" = "$expected_size" ] \
     && [ "$(sha256sum "$path" | cut -d' ' -f1)" = "$expected_sha256" ] \
     || die "promotion control asset differs from the protected-main bundle: $path"
@@ -1366,10 +1723,82 @@ for record in "${expected_control[@]}"; do
     "$path" "$expected_size" "$expected_sha256" \
     "$(stat -c '%U:%G' "$path")" "$observed_mode" >>"$control_observed"
 done
-[ "$("$CONTROL_BIN" version)" = nexus-release-promotion-control.v2 ] \
+mapfile -t expected_generated < <(
+  python3 - "$MANIFEST" <<'PY'
+import json,sys
+for entry in json.load(open(sys.argv[1],encoding="utf-8"))["target"]["control"]["generatedFiles"]:
+ print("\t".join((
+  entry["destination"],entry["owner"],format(entry["mode"],"o"),
+ )))
+PY
+)
+[ "${#expected_generated[@]}" -eq 9 ] \
+  || die "generated promotion control manifest inventory is invalid"
+generated_observed="$(mktemp "$STATE_ROOT/.generated-control-observed.XXXXXXXX")"
+for record in "${expected_generated[@]}"; do
+  IFS=$'\t' read -r path expected_owner expected_mode <<<"$record"
+  [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c '%h' "$path")" = 1 ] \
+    || die "generated promotion control asset is missing or unsafe: $path"
+  [ "$(stat -c '%U:%G' "$path")" = "$expected_owner" ] \
+    && [ "$(stat -c '%a' "$path")" = "$expected_mode" ] \
+    || die "generated promotion control asset ownership or mode differs: $path"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$path" "$(stat -c '%s' "$path")" \
+    "$(sha256sum "$path" | cut -d' ' -f1)" \
+    "$expected_owner" "$expected_mode" >>"$generated_observed"
+done
+[ "$(sha256sum /etc/nexus-release/owner-promotion-public-key.pem | cut -d' ' -f1)" \
+    = "$EXPECTED_OWNER_PUBLIC_KEY_SHA256" ] \
+  || die "installed owner promotion public key differs from the runtime owner key"
+
+mapfile -t expected_services < <(
+  python3 - "$MANIFEST" <<'PY'
+import json,sys
+for entry in json.load(open(sys.argv[1],encoding="utf-8"))["target"]["control"]["serviceStates"]:
+ print("\t".join((
+  entry["unit"],entry["loadState"],entry["unitFileState"],
+ )))
+PY
+)
+[ "${#expected_services[@]}" -eq 8 ] \
+  || die "promotion control service-state inventory is invalid"
+service_observed="$(mktemp "$STATE_ROOT/.service-control-observed.XXXXXXXX")"
+for record in "${expected_services[@]}"; do
+  IFS=$'\t' read -r unit expected_load expected_unit_file <<<"$record"
+  load_state="$(systemctl show "$unit" -p LoadState --value 2>/dev/null || printf not-found)"
+  [ -n "$load_state" ] || load_state=not-found
+  active_state="$(systemctl show "$unit" -p ActiveState --value 2>/dev/null || printf not-found)"
+  [ -n "$active_state" ] || active_state=not-found
+  unit_file_state="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  [ -n "$unit_file_state" ] || unit_file_state=not-found
+  fragment_path="$(systemctl show "$unit" -p FragmentPath --value 2>/dev/null || true)"
+  drop_in_paths="$(systemctl show "$unit" -p DropInPaths --value 2>/dev/null || true)"
+  need_reload="$(systemctl show "$unit" -p NeedDaemonReload --value 2>/dev/null || true)"
+  [ "$need_reload" = no ] \
+    || die "promotion control service requires an unobserved daemon reload: $unit"
+  case "$expected_load:$load_state" in
+    loaded:loaded|not-found-or-loaded:not-found|not-found-or-loaded:loaded|masked-or-not-found:masked|masked-or-not-found:not-found) ;;
+    *) die "promotion control service load state differs: $unit" ;;
+  esac
+  case "$expected_unit_file:$unit_file_state" in
+    enabled:enabled|static:static|masked-or-not-found:masked|masked-or-not-found:not-found|disabled-or-enabled:disabled|disabled-or-enabled:enabled|disabled-or-static:disabled|disabled-or-static:static) ;;
+    *) die "promotion control service enablement differs: $unit" ;;
+  esac
+  effective_sha256="$(
+    {
+      printf '%s\n' "$unit" "$load_state" "$active_state" "$unit_file_state" \
+        "$fragment_path" "$drop_in_paths" "$need_reload"
+      systemctl cat --no-pager "$unit" 2>/dev/null || true
+    } | sha256sum | cut -d' ' -f1
+  )"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$unit" "$load_state" "$active_state" "$unit_file_state" \
+    "$fragment_path" "$drop_in_paths" "$effective_sha256" "$need_reload" \
+    >>"$service_observed"
+done
+[ "$("$CONTROL_BIN" version)" = nexus-release-promotion-control.v3 ] \
   || die "promotion control version differs from policy"
-"$CONTROL_BIN" assert-idle >/dev/null \
-  || die "promotion control is not idle before live runtime measurement"
+assert_promotion_runtime_ready
 
 [ -f "$SSH_HOST_PRIVATE" ] && [ ! -L "$SSH_HOST_PRIVATE" ] \
   && [ "$(stat -c '%U:%G:%a:%h' "$SSH_HOST_PRIVATE")" = root:root:600:1 ] \
@@ -1381,8 +1810,9 @@ cleanup_measurement() {
 trap cleanup_measurement EXIT
 MEASUREMENT="$measurement_root/measurement.json"
 MEASUREMENT_SIGNATURE="$MEASUREMENT.sig"
-node_resolved="$NODE_TARGET/bin/node"
-pm2_resolved="$(readlink -f "$PM2_TARGET/bin/pm2")"
+node_resolved="/usr/bin/node"
+pm2_resolved="$PM2_LAUNCHER"
+pm2_entrypoint="$PM2_TARGET/node_modules/pm2/bin/pm2"
 python3 - "$MEASUREMENT" "$SET_ID" "$GUEST" \
   "$EXPECTED_PROVISION_SHA256" "$EXPECTED_MANIFEST_SHA256" \
   "$EXPECTED_UUID" "$EXPECTED_INSTANCE_ID" "$EXPECTED_HOST_KEY_FINGERPRINT" \
@@ -1392,8 +1822,12 @@ python3 - "$MEASUREMENT" "$SET_ID" "$GUEST" \
   "$EXPECTED_PYTHON_VERSION" "$EXPECTED_PYTHON_SHA256" \
   "$EXPECTED_PYTHON_PACKAGE" "$EXPECTED_PYTHON_PACKAGE_VERSION" "$EXPECTED_PYTHON_ARCH" \
   "$pm2_resolved" 6.0.14 \
-  "$(sha256sum "$pm2_resolved" | cut -d' ' -f1)" "$EXPECTED_PM2_TREE_SHA256" \
-  "$CONTROL_SOURCE_COMMIT" "$control_observed" "$RUNTIME_RECOVERY_UNIT" \
+  "$(sha256sum "$pm2_resolved" | cut -d' ' -f1)" \
+  "$pm2_entrypoint" "$(sha256sum "$pm2_entrypoint" | cut -d' ' -f1)" \
+  "$PM2_ATTESTATION" "$(sha256sum "$PM2_ATTESTATION" | cut -d' ' -f1)" \
+  "$EXPECTED_PM2_TREE_SHA256" \
+  "$CONTROL_SOURCE_COMMIT" "$control_observed" "$generated_observed" \
+  "$service_observed" "$RUNTIME_RECOVERY_UNIT" \
   "$EXPECTED_RUNTIME_RECOVERY_UNIT_SHA256" "$RUNTIME_RECOVERY_LOAD_STATE" \
   "$RUNTIME_RECOVERY_ACTIVE_STATE" "$RUNTIME_RECOVERY_UNIT_FILE_STATE" \
   "$RUNTIME_RECOVERY_FRAGMENT_PATH" "$RUNTIME_RECOVERY_DROP_IN_PATHS" \
@@ -1404,8 +1838,10 @@ import datetime,json,os,pathlib,sys
  output,set_id,guest,provision,manifest,uuid,instance_id,host_fingerprint,
  host_public_key_sha,
  node_path,node_version,node_sha,node_tree,python_version,python_sha,python_package,
- python_package_version,python_arch,pm2_path,pm2_version,pm2_sha,pm2_tree,
- control_commit,control_records,recovery_unit,recovery_sha,recovery_load,
+ python_package_version,python_arch,pm2_path,pm2_version,pm2_sha,
+ pm2_entrypoint,pm2_entrypoint_sha,pm2_attestation,pm2_attestation_sha,pm2_tree,
+ control_commit,control_records,generated_records,service_records,
+ recovery_unit,recovery_sha,recovery_load,
  recovery_active,recovery_unit_file,recovery_fragment,recovery_drop_ins,
  recovery_need_reload,challenge,
 )=sys.argv[1:]
@@ -1413,6 +1849,24 @@ files=[]
 for line in pathlib.Path(control_records).read_text(encoding="utf-8").splitlines():
  path,size,digest,owner,mode=line.split("\t")
  files.append({"path":path,"size":int(size),"sha256":digest,"owner":owner,"mode":mode})
+generated_files=[]
+for line in pathlib.Path(generated_records).read_text(encoding="utf-8").splitlines():
+ path,size,digest,owner,mode=line.split("\t")
+ generated_files.append({
+  "path":path,"size":int(size),"sha256":digest,"owner":owner,"mode":mode,
+ })
+service_states=[]
+for line in pathlib.Path(service_records).read_text(encoding="utf-8").splitlines():
+ (
+  unit,load_state,active_state,unit_file_state,fragment_path,drop_in_paths,
+  effective_sha,need_reload,
+ )=line.split("\t")
+ service_states.append({
+  "unit":unit,"loadState":load_state,"activeState":active_state,
+  "unitFileState":unit_file_state,"fragmentPath":fragment_path,
+  "dropInPaths":[] if drop_in_paths=="" else drop_in_paths.split(),
+  "effectiveSha256":effective_sha,"needDaemonReload":need_reload=="yes",
+ })
 value={
  "schema":"nexus.rollback-drill-vm-runtime-measurement.v1",
  "status":"guest_checks_passed",
@@ -1425,14 +1879,27 @@ value={
  "bundleManifestSha256":manifest,
  "machine":{"uuid":uuid,"instanceId":instance_id,"sshHostKeyFingerprint":host_fingerprint,"sshHostPublicKeySha256":host_public_key_sha},
  "runtime":{
-  "node":{"version":node_version,"path":node_path,"sha256":node_sha,"treeSha256":node_tree,"owner":"root:root","mode":oct(os.stat(node_path).st_mode&0o777)[2:]},
+  "node":{
+   "version":node_version,"path":node_path,"sha256":node_sha,
+   "treeSha256":node_tree,"owner":"root:root",
+   "mode":oct(os.lstat(node_path).st_mode&0o777)[2:],
+   "linkCount":os.lstat(node_path).st_nlink,
+  },
   "python":{"version":python_version,"path":"/usr/bin/python3.12","sha256":python_sha,"packageName":python_package,"packageVersion":python_package_version,"packageArchitecture":python_arch},
-  "pm2":{"version":pm2_version,"path":pm2_path,"sha256":pm2_sha,"treeSha256":pm2_tree,"owner":"root:root","mode":oct(os.stat(pm2_path).st_mode&0o777)[2:]},
+  "pm2":{
+   "version":pm2_version,"path":pm2_path,"sha256":pm2_sha,
+   "entrypointPath":pm2_entrypoint,"entrypointSha256":pm2_entrypoint_sha,
+   "attestationPath":pm2_attestation,"attestationSha256":pm2_attestation_sha,
+   "treeSha256":pm2_tree,"owner":"root:root",
+   "mode":oct(os.stat(pm2_path).st_mode&0o777)[2:],
+  },
  },
  "control":{
-  "version":"nexus-release-promotion-control.v2",
+  "version":"nexus-release-promotion-control.v3",
   "sourceCommit":control_commit,
   "files":files,
+  "generatedFiles":generated_files,
+  "serviceStates":service_states,
   "assertIdle":True,
   "runtimeRecovery":{
    "unit":"nexus-rollback-drill-vm-runtime-recovery.service",
@@ -1463,7 +1930,7 @@ try:
  os.write(descriptor,body);os.fsync(descriptor)
 finally: os.close(descriptor)
 PY
-rm -f -- "$control_observed"
+rm -f -- "$control_observed" "$generated_observed" "$service_observed"
 chown root:root "$MEASUREMENT"
 chmod 0600 "$MEASUREMENT"
 ssh-keygen -Y sign \

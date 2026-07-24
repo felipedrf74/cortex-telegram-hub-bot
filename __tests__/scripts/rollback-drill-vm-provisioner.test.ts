@@ -674,7 +674,7 @@ describe('rollback-drill KVM provisioner', () => {
     expect(provisioner).toContain('"status": "ssh_only_bootstrap_required"');
     expect(provisioner).toContain('"drillReady": False');
     expect(provisioner).toContain(
-      '"pm2-6.0.14-at-/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2"',
+      '"pm2-6.0.14-root-closure-at-/opt/nexus-release/pm2/6.0.14-via-/usr/local/bin/pm2"',
     );
     expect(provisioner).toContain('vm_uuid="$(tr');
     expect(provisioner).toContain('instance_id="nexus-rollback-drill-$guest-');
@@ -807,8 +807,9 @@ describe('rollback-drill KVM provisioner', () => {
     expect(operations).toContain('drillReady=false');
     expect(operations).toContain('Node 22.23.1');
     expect(operations).toContain(
-      '/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2',
+      '/opt/nexus-release/pm2/6.0.14',
     );
+    expect(operations).toContain('/usr/local/bin/pm2');
     expect(operations).toContain(
       'This first version deliberately has no automatic guest deletion',
     );

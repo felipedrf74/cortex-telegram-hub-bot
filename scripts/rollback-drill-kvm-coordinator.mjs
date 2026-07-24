@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -14,6 +16,7 @@ import {
   textKeyIdentity,
   validateIsolationEvidence,
   validateKeySet,
+  validateDrillOutcome,
   validateOwnerAuthorization,
   validatePlan,
   verifyBundle,
@@ -84,6 +87,9 @@ const FLAGS = Object.freeze({
     '--guest-ssh-host-public-key',
     '--production-ssh-host-public-key',
     '--release-evidence-public-key',
+    '--guest-ssh-private-key',
+    '--request-dir',
+    '--output-dir',
   ]),
 });
 
@@ -205,6 +211,923 @@ function keySummary(plan) {
   };
 }
 
+const DIGEST = /^[0-9a-f]{64}$/u;
+const TRANSACTION_ID = /^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u;
+const TERMINAL_STATUSES = new Set([
+  'completed',
+  'recovered',
+  'failed_before_stop',
+  'recovery_failed',
+]);
+const POST_STOP_PHASES = new Set([
+  'predecessor_stopped',
+  'creating_backup',
+  'backup_created',
+  'final_migration_rehearsal',
+  'final_migration_verified',
+  'candidate_authorization_required',
+  'mutating_candidate',
+  'candidate_available',
+  'verifying_candidate',
+  'awaiting_dr_escrow',
+  'recovery_required',
+  'recovering',
+  'recovery_complete',
+  'completed',
+]);
+const TEST_MODE = process.env.NEXUS_ROLLBACK_DRILL_COORDINATOR_TEST_MODE === '1';
+const POLL_INTERVAL_MS = TEST_MODE ? 1 : 100;
+const EXECUTION_TIMEOUT_MS = TEST_MODE ? 15_000 : 15 * 60 * 1000;
+const BOOT_TIMEOUT_MS = TEST_MODE ? 5_000 : 120 * 1000;
+const COMMAND_TIMEOUT_MS = TEST_MODE ? 5_000 : 30_000;
+const MAX_PROMOTION_ENVELOPE_BYTES = 40 * 1024 * 1024;
+const OWNER_PUBLIC_KEY = '/etc/nexus-release/owner-promotion-public-key.pem';
+
+function sha256Bytes(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function sleep(milliseconds) {
+  Atomics.wait(
+    new Int32Array(new SharedArrayBuffer(4)),
+    0,
+    0,
+    milliseconds,
+  );
+}
+
+function executionBinaries() {
+  if (!TEST_MODE) {
+    if (typeof process.geteuid !== 'function' || process.geteuid() !== 0) {
+      fail('execution_requires_root_controller');
+    }
+    return {
+      ssh: '/usr/bin/ssh',
+      scp: '/usr/bin/scp',
+      systemctl: '/usr/bin/systemctl',
+    };
+  }
+  const directory = process.env.NEXUS_ROLLBACK_DRILL_COORDINATOR_TEST_BIN_DIR;
+  if (!directory || !path.isAbsolute(directory)) fail('test_binary_directory_invalid');
+  return {
+    ssh: path.join(directory, 'ssh'),
+    scp: path.join(directory, 'scp'),
+    systemctl: path.join(directory, 'systemctl'),
+  };
+}
+
+function runProgram(program, argv, label, { allowFailure = false } = {}) {
+  const environment = TEST_MODE
+    ? { ...process.env, LC_ALL: 'C', LANG: 'C' }
+    : { PATH: '/usr/bin:/bin', LC_ALL: 'C', LANG: 'C' };
+  const result = spawnSync(program, argv, {
+    encoding: 'utf8',
+    env: environment,
+    timeout: COMMAND_TIMEOUT_MS,
+    maxBuffer: MAX_PROMOTION_ENVELOPE_BYTES + 1024 * 1024,
+  });
+  if (result.error) fail(`${label}_subprocess_error`);
+  if (!allowFailure && result.status !== 0) fail(`${label}_failed`);
+  return result;
+}
+
+function requireCanonicalRegularFile(
+  input,
+  label,
+  { maxBytes, modes = null } = {},
+) {
+  const requested = path.resolve(input);
+  let stat;
+  try {
+    stat = fs.lstatSync(requested);
+  } catch {
+    fail(`${label}_missing`);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+      || stat.size <= 0 || (maxBytes && stat.size > maxBytes)
+      || (modes && !modes.includes(stat.mode & 0o777))) {
+    fail(`${label}_unsafe`);
+  }
+  let resolved;
+  try {
+    resolved = fs.realpathSync(requested);
+  } catch {
+    fail(`${label}_unsafe`);
+  }
+  if (resolved !== requested) fail(`${label}_unsafe`);
+  return requested;
+}
+
+function requireCanonicalDirectory(input, label) {
+  const requested = path.resolve(input);
+  let stat;
+  try {
+    stat = fs.lstatSync(requested);
+  } catch {
+    fail(`${label}_missing`);
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`${label}_unsafe`);
+  let resolved;
+  try {
+    resolved = fs.realpathSync(requested);
+  } catch {
+    fail(`${label}_unsafe`);
+  }
+  if (resolved !== requested) fail(`${label}_unsafe`);
+  return requested;
+}
+
+function prepareExecutionOutput(input) {
+  const requested = path.resolve(input);
+  const parent = requireCanonicalDirectory(path.dirname(requested), 'execution_output_parent');
+  const resolved = path.join(parent, path.basename(requested));
+  if (fs.existsSync(requested) || fs.existsSync(resolved)) fail('execution_output_exists');
+  fs.mkdirSync(resolved, { mode: 0o700 });
+  fs.chmodSync(resolved, 0o700);
+  const descriptor = fs.openSync(parent, 'r');
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return resolved;
+}
+
+function publishCanonicalJson(directory, name, value) {
+  const destination = path.join(directory, name);
+  const descriptor = fs.openSync(destination, 'wx', 0o600);
+  try {
+    fs.writeFileSync(descriptor, canonicalJsonBuffer(value));
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.chmodSync(destination, 0o600);
+  const parentDescriptor = fs.openSync(directory, 'r');
+  try {
+    fs.fsyncSync(parentDescriptor);
+  } finally {
+    fs.closeSync(parentDescriptor);
+  }
+  return {
+    path: destination,
+    sha256: sha256Bytes(fs.readFileSync(destination)),
+  };
+}
+
+function controllerIdentity(plan) {
+  const rawMachineId = TEST_MODE
+    ? process.env.NEXUS_ROLLBACK_DRILL_CONTROLLER_MACHINE_ID
+    : fs.readFileSync('/etc/machine-id', 'utf8');
+  const rawBootId = TEST_MODE
+    ? process.env.NEXUS_ROLLBACK_DRILL_CONTROLLER_BOOT_ID
+    : fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8');
+  if (!rawMachineId || !rawBootId) fail('controller_identity_unavailable');
+  const identity = {
+    machineIdSha256: sha256Bytes(rawMachineId.trim()),
+    bootIdSha256: sha256Bytes(rawBootId.trim()),
+  };
+  if (identity.machineIdSha256 !== plan.controller.machineIdSha256
+      || identity.bootIdSha256 !== plan.controller.bootIdSha256) {
+    fail('controller_identity_changed');
+  }
+  return identity;
+}
+
+function keyMaterial(guestSshHostPublicKey) {
+  const parts = guestSshHostPublicKey.trim().split(/\s+/u);
+  if (parts.length < 2 || parts[0] !== 'ssh-ed25519'
+      || !/^[A-Za-z0-9+/]+={0,2}$/u.test(parts[1])) {
+    fail('guest_ssh_host_key_material_invalid');
+  }
+  return `${parts[0]} ${parts[1]}`;
+}
+
+function sshTarget(overlay) {
+  const host = overlay.ssh.host.includes(':')
+    ? `[${overlay.ssh.host}]`
+    : overlay.ssh.host;
+  return `${overlay.ssh.user}@${host}`;
+}
+
+function sshOptions(overlay, privateKey, knownHosts, { scp = false } = {}) {
+  return [
+    scp ? '-P' : '-p',
+    String(overlay.ssh.port),
+    '-F',
+    '/dev/null',
+    '-i',
+    privateKey,
+    '-o',
+    'BatchMode=yes',
+    '-o',
+    'IdentitiesOnly=yes',
+    '-o',
+    'StrictHostKeyChecking=yes',
+    '-o',
+    `HostKeyAlias=${overlay.overlayId}`,
+    '-o',
+    `UserKnownHostsFile=${knownHosts}`,
+    '-o',
+    'GlobalKnownHostsFile=/dev/null',
+    '-o',
+    'CheckHostIP=no',
+    '-o',
+    'UpdateHostKeys=no',
+    '-o',
+    'VerifyHostKeyDNS=no',
+    '-o',
+    'PasswordAuthentication=no',
+    '-o',
+    'KbdInteractiveAuthentication=no',
+    '-o',
+    'PreferredAuthentications=publickey',
+    '-o',
+    'ControlMaster=no',
+    '-o',
+    'LogLevel=ERROR',
+    '-o',
+    'ConnectTimeout=5',
+  ];
+}
+
+function remoteResult(context, remoteArgv, label, { allowFailure = false } = {}) {
+  return runProgram(
+    context.binaries.ssh,
+    [
+      ...sshOptions(context.overlay, context.privateKey, context.knownHosts),
+      sshTarget(context.overlay),
+      ...remoteArgv,
+    ],
+    label,
+    { allowFailure },
+  );
+}
+
+function remoteText(context, remoteArgv, label) {
+  return remoteResult(context, remoteArgv, label).stdout;
+}
+
+function sudoControl(context, argv, label) {
+  return remoteText(
+    context,
+    ['/usr/bin/sudo', '-n', context.plan.interfaces.promotionControl, ...argv],
+    label,
+  );
+}
+
+function parseJsonText(body, label) {
+  try {
+    return JSON.parse(body);
+  } catch {
+    fail(`${label}_json_invalid`);
+  }
+}
+
+function waitForSsh(context, label) {
+  const deadline = Date.now() + BOOT_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    const result = remoteResult(
+      context,
+      ['/usr/bin/true'],
+      label,
+      { allowFailure: true },
+    );
+    if (result.status === 0) return;
+    sleep(POLL_INTERVAL_MS);
+  }
+  fail(`${label}_timeout`);
+}
+
+function waitForSshDown(context, label) {
+  const deadline = Date.now() + BOOT_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    const result = remoteResult(
+      context,
+      ['/usr/bin/true'],
+      label,
+      { allowFailure: true },
+    );
+    if (result.status !== 0) return;
+    sleep(POLL_INTERVAL_MS);
+  }
+  fail(`${label}_timeout`);
+}
+
+function guestIdentity(context, label) {
+  const machineId = remoteText(
+    context,
+    ['/usr/bin/cat', '/etc/machine-id'],
+    `${label}_machine_id`,
+  ).trim();
+  const bootId = remoteText(
+    context,
+    ['/usr/bin/cat', '/proc/sys/kernel/random/boot_id'],
+    `${label}_boot_id`,
+  ).trim();
+  if (!machineId || !bootId) fail(`${label}_identity_empty`);
+  return {
+    machineIdSha256: sha256Bytes(machineId),
+    bootIdSha256: sha256Bytes(bootId),
+  };
+}
+
+function validateInitialGuestIdentity(context, isolationOverlay) {
+  const identity = guestIdentity(context, `${context.overlay.drill}_initial`);
+  if (identity.machineIdSha256 !== isolationOverlay.guestMachineIdSha256
+      || identity.bootIdSha256 === context.plan.controller.bootIdSha256
+      || identity.bootIdSha256 === identity.machineIdSha256) {
+    fail(`${context.overlay.drill}_guest_identity_mismatch`);
+  }
+  return identity;
+}
+
+function validatePromotionPayload(payload, plan) {
+  if (!payload || payload.schema !== 'nexus.promotion-transaction-request.v1'
+      || !TRANSACTION_ID.test(payload.transactionId || '')
+      || payload.ownerAuthorization !== 'explicit'
+      || payload.predecessor?.sha !== plan.release.sourceSha
+      || payload.target?.sha !== plan.release.targetSha
+      || payload.target?.version !== plan.release.targetVersion
+      || payload.target?.sentryRelease !== plan.release.targetSha
+      || payload.productionBase !== plan.release.productionBase
+      || payload.backupDir !== plan.release.backupDir
+      || payload.preparedRuntimeDir !== plan.release.preparedRuntimeDir
+      || payload.pm2Bin !== plan.release.pm2Bin
+      || payload.publicBaseUrl !== plan.release.publicBaseUrl
+      || payload.stabilitySeconds !== 60) {
+    fail('promotion_request_plan_binding_invalid');
+  }
+}
+
+function stageAndVerifyRequest(context, requestFile) {
+  const body = fs.readFileSync(requestFile);
+  const rawSha256 = sha256Bytes(body);
+  const remoteDirectory = `/home/dominguez/.nexus-rollback-drill/${context.plan.planId}`;
+  const remotePath = `${remoteDirectory}/${context.overlay.drill}-${rawSha256}.envelope.json`;
+  remoteText(
+    context,
+    ['/usr/bin/install', '-d', '-m', '0700', remoteDirectory],
+    `${context.overlay.drill}_request_directory`,
+  );
+  const copied = runProgram(
+    context.binaries.scp,
+    [
+      ...sshOptions(
+        context.overlay,
+        context.privateKey,
+        context.knownHosts,
+        { scp: true },
+      ),
+      requestFile,
+      `${sshTarget(context.overlay)}:${remotePath}`,
+    ],
+    `${context.overlay.drill}_request_copy`,
+  );
+  if (copied.status !== 0) fail(`${context.overlay.drill}_request_copy_failed`);
+  remoteText(
+    context,
+    ['/usr/bin/chmod', '0600', remotePath],
+    `${context.overlay.drill}_request_mode`,
+  );
+  const remoteDigest = remoteText(
+    context,
+    ['/usr/bin/sha256sum', remotePath],
+    `${context.overlay.drill}_request_digest`,
+  ).trim().split(/\s+/u)[0];
+  if (remoteDigest !== rawSha256) fail(`${context.overlay.drill}_request_copy_drift`);
+  const verified = parseJsonText(
+    remoteText(
+      context,
+      [
+        '/usr/bin/node',
+        context.plan.interfaces.promotionAuthorization,
+        'verify-request',
+        '--input',
+        remotePath,
+        '--public-key',
+        OWNER_PUBLIC_KEY,
+      ],
+      `${context.overlay.drill}_request_verification`,
+    ),
+    `${context.overlay.drill}_request_verification`,
+  );
+  if (verified.ok !== true || verified.kind !== 'request'
+      || !TRANSACTION_ID.test(verified.transactionId || '')
+      || !DIGEST.test(verified.payloadSha256 || '')) {
+    fail(`${context.overlay.drill}_request_verification_invalid`);
+  }
+  validatePromotionPayload(verified.payload, context.plan);
+  if (verified.transactionId !== verified.payload.transactionId) {
+    fail(`${context.overlay.drill}_request_transaction_mismatch`);
+  }
+  return {
+    remotePath,
+    transactionId: verified.transactionId,
+    requestSha256: verified.payloadSha256,
+  };
+}
+
+function parseJournal(raw, transactionId, requestSha256, label) {
+  const journal = parseJsonText(raw, label);
+  if (journal.schema !== 'nexus.promotion-transaction-journal.v1'
+      || journal.transactionId !== transactionId
+      || journal.requestSha256 !== requestSha256
+      || typeof journal.phase !== 'string'
+      || typeof journal.status !== 'string') {
+    fail(`${label}_identity_invalid`);
+  }
+  return { journal, raw };
+}
+
+function readJournal(context, transactionId, requestSha256, label) {
+  const raw = sudoControl(
+    context,
+    ['status', transactionId],
+    label,
+  );
+  return parseJournal(raw, transactionId, requestSha256, label);
+}
+
+function waitForJournal(
+  context,
+  transactionId,
+  requestSha256,
+  label,
+  predicate,
+  { allowTerminal = false } = {},
+) {
+  const deadline = Date.now() + EXECUTION_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    const observed = readJournal(
+      context,
+      transactionId,
+      requestSha256,
+      label,
+    );
+    if (predicate(observed.journal)) return observed;
+    if (!allowTerminal && TERMINAL_STATUSES.has(observed.journal.status)) {
+      fail(`${label}_unexpected_terminal`);
+    }
+    sleep(POLL_INTERVAL_MS);
+  }
+  fail(`${label}_timeout`);
+}
+
+function validateTerminalJournal(observed, expectedStatus, label) {
+  const { journal } = observed;
+  if (journal.status !== expectedStatus || journal.phase === 'submitted') {
+    fail(`${label}_terminal_status_invalid`);
+  }
+  if (expectedStatus === 'recovered') {
+    const recovery = journal.recovery;
+    if (!recovery || recovery.schema !== 'nexus.promotion-recovery-result.v1'
+        || recovery.targetSeconds !== 120 || recovery.targetMet !== true
+        || !Number.isInteger(recovery.outageToHealthySeconds)
+        || recovery.outageToHealthySeconds < 0
+        || recovery.outageToHealthySeconds > 120) {
+      fail(`${label}_recovery_result_invalid`);
+    }
+  }
+}
+
+function verifyRuntimeHealthy(context, expectedRuntimeSha, label) {
+  sudoControl(context, ['assert-root-pm2-ready'], `${label}_root_pm2`);
+  const processes = parseJsonText(
+    remoteText(context, [context.plan.release.pm2Bin, 'jlist'], `${label}_pm2`),
+    `${label}_pm2`,
+  );
+  if (!Array.isArray(processes)) fail(`${label}_pm2_invalid`);
+  for (const name of context.plan.guest.requiredPm2Apps) {
+    const row = processes.find((candidate) => candidate?.name === name);
+    if (!row || row.pm2_env?.status !== 'online') fail(`${label}_pm2_not_online`);
+    if (name === 'nexus-hub' || name === 'content-engine') {
+      const runtimeSha = row.pm2_env.NEXUS_RELEASE_SHA || row.pm2_env.GIT_COMMIT;
+      if (runtimeSha !== expectedRuntimeSha) fail(`${label}_runtime_sha_mismatch`);
+    }
+  }
+  const backend = parseJsonText(
+    remoteText(
+      context,
+      [
+        '/usr/bin/curl',
+        '--fail',
+        '--silent',
+        '--show-error',
+        '--connect-timeout',
+        '1',
+        '--max-time',
+        '5',
+        'http://127.0.0.1:8200/health',
+      ],
+      `${label}_backend_health`,
+    ),
+    `${label}_backend_health`,
+  );
+  if (backend.status !== 'healthy'
+      || backend.server?.status !== 'online'
+      || backend.database !== 'connected') {
+    fail(`${label}_backend_unhealthy`);
+  }
+  remoteText(
+    context,
+    [
+      '/usr/bin/curl',
+      '--fail',
+      '--silent',
+      '--show-error',
+      '--connect-timeout',
+      '1',
+      '--max-time',
+      '5',
+      'http://127.0.0.1:8100/health',
+    ],
+    `${label}_content_health`,
+  );
+}
+
+function hostUnit(context, action, label) {
+  const result = runProgram(
+    context.binaries.systemctl,
+    [action, context.hostUnit],
+    label,
+  );
+  if (result.status !== 0) fail(`${label}_failed`);
+}
+
+function rebootGuest(context, label) {
+  hostUnit(context, 'stop', `${label}_stop`);
+  waitForSshDown(context, `${label}_ssh_down`);
+  hostUnit(context, 'start', `${label}_start`);
+  waitForSsh(context, `${label}_ssh_up`);
+  return guestIdentity(context, `${label}_identity`);
+}
+
+function createTimelineRecorder(controllerBootIdSha256) {
+  let priorMonotonic = -1;
+  return (event, guestBootIdSha256) => {
+    const now = Number(process.hrtime.bigint() / 1_000_000n);
+    const observerMonotonicMs = Math.max(now, priorMonotonic + 1);
+    priorMonotonic = observerMonotonicMs;
+    return {
+      event,
+      observedAt: new Date().toISOString(),
+      observerMonotonicMs,
+      observerBootIdSha256: controllerBootIdSha256,
+      guestBootIdSha256,
+    };
+  };
+}
+
+function postTerminalReboot(context, beforeBootId, journalSha256, expectedRuntimeSha) {
+  const after = rebootGuest(context, `${context.overlay.drill}_clean_reboot`);
+  if (after.machineIdSha256 !== context.isolationOverlay.guestMachineIdSha256
+      || after.bootIdSha256 === beforeBootId
+      || after.bootIdSha256 === context.isolationOverlay.guestBootIdSha256) {
+    fail('post_terminal_reboot_identity_invalid');
+  }
+  const version = sudoControl(context, ['version'], 'post_terminal_control_version').trim();
+  if (version !== context.plan.interfaces.controlVersion) {
+    fail('post_terminal_control_version_invalid');
+  }
+  sudoControl(context, ['assert-root-pm2-ready'], 'post_terminal_assert_root_pm2');
+  sudoControl(context, ['assert-idle'], 'post_terminal_assert_idle');
+  const result = remoteText(
+    context,
+    [
+      '/usr/bin/systemctl',
+      'show',
+      context.plan.interfaces.recoveryUnit,
+      '--property=Result',
+      '--value',
+    ],
+    'post_terminal_recovery_unit',
+  ).trim();
+  if (result !== 'success') fail('post_terminal_recovery_unit_failed');
+  const observed = readJournal(
+    context,
+    context.transactionId,
+    context.requestSha256,
+    'post_terminal_journal',
+  );
+  if (sha256Bytes(Buffer.from(observed.raw, 'utf8')) !== journalSha256
+      || observed.journal.status !== 'recovered') {
+    fail('post_terminal_journal_changed');
+  }
+  verifyRuntimeHealthy(context, expectedRuntimeSha, 'post_terminal_runtime');
+  return {
+    beforeGuestBootIdSha256: beforeBootId,
+    afterGuestBootIdSha256: after.bootIdSha256,
+    journalSha256,
+    controlVersion: version,
+    recoveryUnitResult: result,
+    assertRootPm2Ready: true,
+    assertIdle: true,
+    exactRuntimeHealthy: true,
+  };
+}
+
+function executeOneDrill(context) {
+  let launched = false;
+  let terminalObserved = false;
+  hostUnit(context, 'start', `${context.overlay.drill}_guest_start`);
+  try {
+    waitForSsh(context, `${context.overlay.drill}_initial_ssh`);
+    const initialIdentity = validateInitialGuestIdentity(
+      context,
+      context.isolationOverlay,
+    );
+    const version = sudoControl(
+      context,
+      ['version'],
+      `${context.overlay.drill}_control_version`,
+    ).trim();
+    if (version !== context.plan.interfaces.controlVersion) {
+      fail(`${context.overlay.drill}_control_version_invalid`);
+    }
+    sudoControl(
+      context,
+      ['assert-root-pm2-ready'],
+      `${context.overlay.drill}_assert_root_pm2`,
+    );
+    sudoControl(context, ['assert-idle'], `${context.overlay.drill}_assert_idle`);
+    const request = stageAndVerifyRequest(context, context.requestFile);
+    context.transactionId = request.transactionId;
+    context.requestSha256 = request.requestSha256;
+    const launch = parseJsonText(
+      sudoControl(
+        context,
+        ['launch', request.remotePath],
+        `${context.overlay.drill}_launch`,
+      ),
+      `${context.overlay.drill}_launch`,
+    );
+    if (launch.ok !== true || launch.transactionId !== request.transactionId
+        || launch.requestSha256 !== request.requestSha256
+        || !['launched', 'terminal'].includes(launch.state)) {
+      fail(`${context.overlay.drill}_launch_invalid`);
+    }
+    launched = true;
+    const record = createTimelineRecorder(context.controller.bootIdSha256);
+    const timeline = [record('launch_accepted', initialIdentity.bootIdSha256)];
+
+    waitForJournal(
+      context,
+      request.transactionId,
+      request.requestSha256,
+      `${context.overlay.drill}_recovery_armed`,
+      (journal) => journal.recoveryArmed === true,
+    );
+    timeline.push(record('recovery_armed', initialIdentity.bootIdSha256));
+    waitForJournal(
+      context,
+      request.transactionId,
+      request.requestSha256,
+      `${context.overlay.drill}_predecessor_stopped`,
+      (journal) => POST_STOP_PHASES.has(journal.phase),
+    );
+    timeline.push(record('predecessor_stopped', initialIdentity.bootIdSha256));
+
+    let terminal;
+    let activeGuestBootId = initialIdentity.bootIdSha256;
+    if (context.overlay.drill === 'ssh-loss') {
+      timeline.push(record('controller_disconnected', activeGuestBootId));
+      sleep(POLL_INTERVAL_MS);
+      const reconnected = readJournal(
+        context,
+        request.transactionId,
+        request.requestSha256,
+        'ssh_loss_reconnect',
+      );
+      timeline.push(record('controller_reconnected', activeGuestBootId));
+      terminal = TERMINAL_STATUSES.has(reconnected.journal.status)
+        ? reconnected
+        : waitForJournal(
+            context,
+            request.transactionId,
+            request.requestSha256,
+            'ssh_loss_terminal',
+            (journal) => ['completed', 'recovered'].includes(journal.status),
+            { allowTerminal: true },
+          );
+    } else if (context.overlay.drill === 'failed-health') {
+      waitForJournal(
+        context,
+        request.transactionId,
+        request.requestSha256,
+        'failed_health_candidate_mutated',
+        (journal) => ['mutating_candidate', 'recovery_required', 'recovering']
+          .includes(journal.phase),
+      );
+      timeline.push(record('candidate_mutated', activeGuestBootId));
+      waitForJournal(
+        context,
+        request.transactionId,
+        request.requestSha256,
+        'failed_health_fault',
+        (journal) => journal.status === 'recovery_required'
+          && journal.message === 'invalid_worker_completion',
+      );
+      timeline.push(record('candidate_health_fault_injected', activeGuestBootId));
+      timeline.push(record('recovery_started', activeGuestBootId));
+      terminal = waitForJournal(
+        context,
+        request.transactionId,
+        request.requestSha256,
+        'failed_health_terminal',
+        (journal) => journal.status === 'recovered',
+        { allowTerminal: true },
+      );
+    } else {
+      timeline.push(record('guest_power_cut', activeGuestBootId));
+      const rebooted = rebootGuest(context, 'guest_reboot_fault');
+      if (rebooted.machineIdSha256 !== context.isolationOverlay.guestMachineIdSha256
+          || rebooted.bootIdSha256 === activeGuestBootId) {
+        fail('guest_reboot_identity_invalid');
+      }
+      activeGuestBootId = rebooted.bootIdSha256;
+      timeline.push(record('guest_booted', activeGuestBootId));
+      terminal = waitForJournal(
+        context,
+        request.transactionId,
+        request.requestSha256,
+        'guest_reboot_terminal',
+        (journal) => journal.status === 'recovered',
+        { allowTerminal: true },
+      );
+      timeline.push(record('recovery_service_completed', activeGuestBootId));
+    }
+
+    const expectedStatus = context.overlay.drill === 'ssh-loss'
+      ? terminal.journal.status
+      : 'recovered';
+    if (!['completed', 'recovered'].includes(expectedStatus)) {
+      fail(`${context.overlay.drill}_terminal_not_accepted`);
+    }
+    validateTerminalJournal(terminal, expectedStatus, context.overlay.drill);
+    const expectedRuntimeSha = expectedStatus === 'completed'
+      ? context.plan.release.targetSha
+      : context.plan.release.sourceSha;
+    verifyRuntimeHealthy(context, expectedRuntimeSha, `${context.overlay.drill}_terminal`);
+    if (context.overlay.drill === 'guest-reboot') {
+      timeline.push(record('pm2_started', activeGuestBootId));
+    }
+    timeline.push(record('service_healthy', activeGuestBootId));
+    timeline.push(record('terminal_observed', activeGuestBootId));
+    sudoControl(context, ['assert-idle'], `${context.overlay.drill}_terminal_idle`);
+    const journalSha256 = sha256Bytes(Buffer.from(terminal.raw, 'utf8'));
+    let recoveryResultSha256;
+    if (expectedStatus === 'recovered') {
+      recoveryResultSha256 = sha256Bytes(
+        canonicalJsonBuffer(terminal.journal.recovery),
+      );
+    } else {
+      recoveryResultSha256 = sha256Bytes(Buffer.from(
+        sudoControl(
+          context,
+          ['fetch', request.transactionId, 'result'],
+          'ssh_loss_result',
+        ),
+        'utf8',
+      ));
+    }
+    const postReboot = context.overlay.drill === 'guest-reboot'
+      ? postTerminalReboot(
+          context,
+          activeGuestBootId,
+          journalSha256,
+          expectedRuntimeSha,
+        )
+      : null;
+    remoteResult(
+      context,
+      ['/usr/bin/rm', '-f', request.remotePath],
+      `${context.overlay.drill}_request_cleanup`,
+      { allowFailure: true },
+    );
+    terminalObserved = true;
+    return {
+      schema: 'nexus.rollback-drill-kvm-outcome.v1',
+      planId: context.plan.planId,
+      drill: context.overlay.drill,
+      overlayId: context.overlay.overlayId,
+      transactionId: request.transactionId,
+      requestSha256: request.requestSha256,
+      controlVersion: version,
+      terminalStatus: expectedStatus,
+      secondLaunchObserved: false,
+      productionEvidenceEmitted: false,
+      exactTargetHealthy: expectedStatus === 'completed',
+      exactPredecessorRestored: expectedStatus === 'recovered',
+      databaseBackupRestored: expectedStatus === 'recovered',
+      journalSha256,
+      recoveryResultSha256,
+      postTerminalReboot: postReboot,
+      timeline,
+    };
+  } finally {
+    if (!launched || terminalObserved) {
+      runProgram(
+        context.binaries.systemctl,
+        ['stop', context.hostUnit],
+        `${context.overlay.drill}_guest_stop`,
+        { allowFailure: true },
+      );
+    }
+  }
+}
+
+function writeKnownHosts(outputRoot, plan, guestSshHostPublicKey) {
+  const directory = path.join(outputRoot, 'known-hosts');
+  fs.mkdirSync(directory, { mode: 0o700 });
+  fs.chmodSync(directory, 0o700);
+  const material = keyMaterial(guestSshHostPublicKey);
+  const paths = new Map();
+  for (const overlay of plan.overlays) {
+    const destination = path.join(directory, overlay.overlayId);
+    const descriptor = fs.openSync(destination, 'wx', 0o600);
+    try {
+      fs.writeFileSync(descriptor, `${overlay.overlayId} ${material}\n`);
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.chmodSync(destination, 0o600);
+    paths.set(overlay.overlayId, destination);
+  }
+  return paths;
+}
+
+function executeSequentialDrills(plan, isolation, keys, values) {
+  const binaries = executionBinaries();
+  const controller = controllerIdentity(plan);
+  const privateKey = requireCanonicalRegularFile(
+    required(values, '--guest-ssh-private-key'),
+    'guest_ssh_private_key',
+    { maxBytes: 64 * 1024, modes: [0o400, 0o600] },
+  );
+  const requestDirectory = requireCanonicalDirectory(
+    required(values, '--request-dir'),
+    'promotion_request_directory',
+  );
+  const outputRoot = prepareExecutionOutput(required(values, '--output-dir'));
+  const knownHosts = writeKnownHosts(
+    outputRoot,
+    plan,
+    keys.guestSshHostPublicKey,
+  );
+  const files = [];
+  const transactionIds = new Set();
+  const requestDigests = new Set();
+  for (let index = 0; index < plan.overlays.length; index += 1) {
+    const overlay = plan.overlays[index];
+    const isolationOverlay = isolation.overlays[index];
+    const requestFile = requireCanonicalRegularFile(
+      path.join(requestDirectory, `${overlay.drill}.envelope.json`),
+      `${overlay.drill}_promotion_request`,
+      { maxBytes: MAX_PROMOTION_ENVELOPE_BYTES, modes: [0o400, 0o600] },
+    );
+    const outcome = executeOneDrill({
+      binaries,
+      controller,
+      plan,
+      overlay,
+      isolationOverlay,
+      requestFile,
+      privateKey,
+      knownHosts: knownHosts.get(overlay.overlayId),
+      hostUnit: `nexus-rollback-drill-vm@guest-${index + 1}.service`,
+    });
+    validateDrillOutcome(outcome, plan, isolation);
+    if (transactionIds.has(outcome.transactionId)) fail('execution_transaction_id_reuse');
+    if (requestDigests.has(outcome.requestSha256)) fail('execution_request_digest_reuse');
+    transactionIds.add(outcome.transactionId);
+    requestDigests.add(outcome.requestSha256);
+    files.push(publishCanonicalJson(outputRoot, `${overlay.drill}.json`, outcome));
+  }
+  const receipt = {
+    schema: 'nexus.rollback-drill-kvm-execution.v1',
+    planId: plan.planId,
+    planSha256: sha256Json(plan),
+    executionMode: 'strictly-sequential',
+    maximumActiveGuests: 1,
+    testMode: TEST_MODE,
+    outcomes: files.map((entry, index) => ({
+      drill: plan.overlays[index].drill,
+      path: path.basename(entry.path),
+      sha256: entry.sha256,
+    })),
+    completedAt: new Date().toISOString(),
+  };
+  const receiptFile = publishCanonicalJson(outputRoot, 'execution.json', receipt);
+  return {
+    outputDir: outputRoot,
+    receiptSha256: receiptFile.sha256,
+    outcomes: receipt.outcomes,
+    testMode: TEST_MODE,
+  };
+}
+
 function main() {
   const values = parseFlags();
   if (command === 'plan') {
@@ -294,13 +1217,17 @@ function main() {
       plan,
       keys.guestOwnerPublicKeyPem,
     );
+    const isolation = readBoundedJson(required(values, '--isolation'), 'isolation');
     validateIsolationEvidence(
-      readBoundedJson(required(values, '--isolation'), 'isolation'),
+      isolation,
       plan,
     );
-    // Deliberately no child_process import or remote mutation path exists.
-    // Fault injection needs reviewed libvirt and guest-side contracts first.
-    fail('execution_not_implemented');
+    return {
+      ok: true,
+      command,
+      planId: plan.planId,
+      ...executeSequentialDrills(plan, isolation, keys, values),
+    };
   }
   fail('command_unsupported');
 }

@@ -37,6 +37,35 @@ approved R2 variance instead retains its existing prefix-scoped ListBucket and
 object Get/Head/Put/Delete permissions because R2 has no S3 versions. Deny
 plaintext transport in either mode.
 
+For AWS S3, provision the bucket from `aws-s3-stack.yaml` through a reviewed
+CloudFormation change set. The template retains the bucket on stack deletion,
+enables versioning and Object Lock without applying a default lock to the
+shorter-lived database tiers, enables default server-side encryption and
+public-access blocking, denies plaintext transport and unversioned deletion,
+and grants only the configured prefix. It accepts an existing dedicated backup
+role plus an optional separate read-only restore role and does not create an
+IAM access key, login profile, or another credential.
+Creating or executing the change set, selecting the server credential path,
+and writing any live DR configuration require explicit owner approval.
+
+ServerDominguez is not EC2 and has no instance profile. The default AWS design
+is IAM Roles Anywhere with short-lived credentials, a dedicated backup role,
+and a root-only pinned `aws_signing_helper` credential process. Restrict the
+trust anchor, profile, role trust, and session policy to the exact account,
+source ARN, certificate subject/issuer, and DR prefix. Do not put an IAM-user
+access key in `backup.env`. Use a separate certificate and read-only restore
+role for the isolated drill; it may list exact-prefix versions and read exact
+object versions/retention, but may not write or delete.
+
+The backup unit has `PrivateDevices=true`. Before unattended Roles Anywhere is
+enabled, the owner must approve the certificate issuance/rotation/revocation,
+private-key and PIN custody, and either a narrowly reviewed systemd device
+allowance, an isolated signing-helper service/socket, or an explicitly
+accepted protected software-key fallback. Secrets Manager cannot bootstrap
+this private key because AWS credentials are needed to retrieve it. Until that
+credential and unattended-unlock design is approved and tested, do not enable
+the backup timer.
+
 The default control mode is `aws-s3:versioned-s3`: bucket versioning must be
 enabled and release objects must have S3 Object Lock coverage for at least 90
 days. Do not apply the 90-day release lock to database/ because its four
@@ -132,8 +161,9 @@ Install in an approved maintenance window
    marker.
 3. Create /etc/nexus-application-dr/backup.env from backup.env.example and the
    provider control evidence described above, both root:root mode 0600. Use
-   real scoped credentials or an instance-role based provider; never commit
-   credentials, private provider evidence, or the age private identity.
+   only the owner-approved short-lived credential process described above;
+   never commit credentials, private provider evidence, the signing key, its
+   PIN, or the age private identity.
 4. Confirm the configured database is a canonical, application-user-owned
    regular file with mode 0600, 0640, or 0660. Confirm the rollback directory is
    canonical, application-user-owned mode 0700 and its v*.tar.gz files are mode

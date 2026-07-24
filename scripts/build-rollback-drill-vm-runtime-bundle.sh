@@ -140,6 +140,13 @@ for input in \
 done
 [ -d "$PM2_INPUT/npm-cache" ] && [ ! -L "$PM2_INPUT/npm-cache" ] \
   || die "prepared offline npm cache is missing or unsafe"
+for policy in package.json package-lock.json; do
+  [ -f "$SOURCE_ROOT/ops/pm2/$policy" ] \
+    && [ ! -L "$SOURCE_ROOT/ops/pm2/$policy" ] \
+    && [ "$(sha256sum "$PM2_INPUT/$policy" | cut -d' ' -f1)" \
+      = "$(sha256sum "$SOURCE_ROOT/ops/pm2/$policy" | cut -d' ' -f1)" ] \
+    || die "prepared PM2 $policy differs from protected origin/main"
+done
 
 python3 - "$PM2_INPUT/package.json" "$PM2_INPUT/package-lock.json" <<'PY'
 import json
@@ -153,8 +160,19 @@ if set(package) - {"name", "version", "private", "description", "dependencies"}:
     raise SystemExit("PM2 preparation package.json contains unsupported fields")
 if package.get("private") is not True or package.get("dependencies") != {"pm2": "6.0.14"}:
     raise SystemExit("PM2 preparation package.json must bind only pm2 6.0.14")
-if lock.get("lockfileVersion") not in {2, 3}:
-    raise SystemExit("PM2 preparation lockfile version is unsupported")
+if lock.get("lockfileVersion") != 3:
+    raise SystemExit("PM2 preparation lockfile must use npm lockfile version 3")
+for package_path in lock.get("packages", {}):
+    if not package_path:
+        continue
+    pure = pathlib.PurePosixPath(package_path)
+    if (
+        pure.is_absolute()
+        or "\\" in package_path
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or pure.parts[0] != "node_modules"
+    ):
+        raise SystemExit("PM2 preparation lock contains an unsafe package path")
 entry = lock.get("packages", {}).get("node_modules/pm2", {})
 if entry.get("version") != "6.0.14":
     raise SystemExit("PM2 preparation lock does not bind pm2 6.0.14")
@@ -245,7 +263,7 @@ install -m 0400 "$PYTHON_PROVENANCE" \
   "$stage/provenance/python/base-image-python.json"
 install -m 0400 "$PYTHON_PROVENANCE_SIGNATURE" \
   "$stage/provenance/python/base-image-python.json.sig"
-git -C "$SOURCE_ROOT" archive --format=tar "$SOURCE_COMMIT" \
+git -C "$SOURCE_ROOT" archive --format=tar --prefix=source/ "$SOURCE_COMMIT" \
   | gzip -n -9 >"$stage/payload/control-source.tar.gz"
 chmod 0400 "$stage/payload/control-source.tar.gz"
 install -m 0400 "$PM2_INPUT/package.json" "$pm2_work/project/package.json"
@@ -270,14 +288,191 @@ env -i \
     --no-audit \
     --no-fund
 
-install -d -m 0700 \
-  "$stage/payload/pm2-prefix/bin" \
-  "$stage/payload/pm2-prefix/lib"
-mv -- "$pm2_work/project/node_modules" \
-  "$stage/payload/pm2-prefix/lib/node_modules"
-ln -s ../lib/node_modules/pm2/bin/pm2 "$stage/payload/pm2-prefix/bin/pm2"
 install -m 0400 "$PM2_INPUT/package-lock.json" \
   "$stage/provenance/pm2/package-lock.json"
+
+# Construct the same symlink-free closure schema consumed by release-control
+# v3. npm's generated .bin links are deliberately omitted; /usr/local/bin/pm2
+# is a separately attested regular launcher owned by root.
+node - "$pm2_work/project" "$stage/payload/pm2-closure" "$npm_version" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const [installRoot, closureRoot, npmVersion] = process.argv.slice(2);
+const sha256 = (body) => crypto.createHash("sha256").update(body).digest("hex");
+const canonical = (value) => {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.keys(value).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+};
+const copyTree = (source, destination, filter = () => true) => {
+  const observed = fs.lstatSync(source);
+  if (observed.isSymbolicLink()) {
+    throw new Error(`PM2 closure contains a symlink: ${source}`);
+  }
+  if (observed.isDirectory()) {
+    fs.mkdirSync(destination, { recursive: true, mode: 0o755 });
+    fs.chmodSync(destination, 0o755);
+    for (const name of fs.readdirSync(source).sort()) {
+      if (filter(source, name)) {
+        copyTree(path.join(source, name), path.join(destination, name), filter);
+      }
+    }
+    return;
+  }
+  if (!observed.isFile()) {
+    throw new Error(`PM2 closure contains a special entry: ${source}`);
+  }
+  fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  fs.chmodSync(destination, observed.mode & 0o111 ? 0o755 : 0o644);
+};
+
+const packageBody = fs.readFileSync(path.join(installRoot, "package.json"));
+const lockBody = fs.readFileSync(path.join(installRoot, "package-lock.json"));
+const project = JSON.parse(packageBody);
+const lock = JSON.parse(lockBody);
+if (project.dependencies?.pm2 !== "6.0.14" || lock.lockfileVersion !== 3) {
+  throw new Error("PM2 closure project identity is invalid");
+}
+const lockPackages = [];
+for (const [packagePath, identity] of Object.entries(lock.packages ?? {})) {
+  if (!packagePath) continue;
+  if (identity.resolved?.startsWith("https://")
+      && (!identity.integrity || !identity.version)) {
+    throw new Error(`PM2 closure lock lacks registry integrity: ${packagePath}`);
+  }
+  lockPackages.push({
+    path: packagePath,
+    version: identity.version ?? null,
+    resolved: identity.resolved ?? null,
+    integrity: identity.integrity ?? null,
+  });
+}
+lockPackages.sort((left, right) =>
+  left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+
+fs.mkdirSync(closureRoot, { mode: 0o755 });
+fs.copyFileSync(
+  path.join(installRoot, "package.json"),
+  path.join(closureRoot, "package.json"),
+  fs.constants.COPYFILE_EXCL,
+);
+fs.copyFileSync(
+  path.join(installRoot, "package-lock.json"),
+  path.join(closureRoot, "package-lock.json"),
+  fs.constants.COPYFILE_EXCL,
+);
+fs.chmodSync(path.join(closureRoot, "package.json"), 0o644);
+fs.chmodSync(path.join(closureRoot, "package-lock.json"), 0o644);
+const dependenciesRoot = path.join(closureRoot, "node_modules");
+fs.mkdirSync(dependenciesRoot, { mode: 0o755 });
+for (const name of fs.readdirSync(path.join(installRoot, "node_modules")).sort()) {
+  if (name === ".bin") continue;
+  copyTree(
+    path.join(installRoot, "node_modules", name),
+    path.join(dependenciesRoot, name),
+    (parent, child) =>
+      !(path.basename(parent) === "node_modules" && child === ".bin"),
+  );
+}
+
+const files = [];
+const walk = (directory) => {
+  const directoryStat = fs.lstatSync(directory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+    throw new Error(`PM2 closure directory is unsafe: ${directory}`);
+  }
+  fs.chmodSync(directory, 0o755);
+  for (const name of fs.readdirSync(directory).sort()) {
+    const absolute = path.join(directory, name);
+    const observed = fs.lstatSync(absolute);
+    if (observed.isSymbolicLink()) {
+      throw new Error(`PM2 closure contains a symlink: ${absolute}`);
+    }
+    if (observed.isDirectory()) {
+      walk(absolute);
+    } else if (observed.isFile()) {
+      const body = fs.readFileSync(absolute);
+      files.push({
+        path: path.relative(closureRoot, absolute).split(path.sep).join("/"),
+        size: body.length,
+        mode: observed.mode & 0o7777,
+        sha256: sha256(body),
+      });
+    } else {
+      throw new Error(`PM2 closure contains a special entry: ${absolute}`);
+    }
+  }
+};
+walk(closureRoot);
+files.sort((left, right) =>
+  left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+const installedPackages = [];
+for (const identity of lockPackages) {
+  const packageRoot = path.join(closureRoot, identity.path);
+  if (!fs.existsSync(packageRoot)) {
+    if (lock.packages[identity.path]?.optional === true) continue;
+    throw new Error(`PM2 npm ci omitted a required locked package: ${identity.path}`);
+  }
+  const installed = JSON.parse(
+    fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+  );
+  if (installed.version !== identity.version) {
+    throw new Error(`PM2 installed package version differs from lock: ${identity.path}`);
+  }
+  installedPackages.push({ path: identity.path, version: identity.version });
+}
+const manifest = {
+  schema: "nexus.pm2-root-closure-manifest.v1",
+  pm2Version: "6.0.14",
+  nodeVersion: process.version,
+  npmVersion,
+  packageLockSha256: sha256(lockBody),
+  packageLockPackages: lockPackages,
+  installedPackages,
+  payloadDigest: sha256(canonical({
+    schema: "nexus.pm2-root-closure-payload.v1",
+    files,
+  })),
+  fileCount: files.length,
+  files,
+};
+fs.writeFileSync(
+  path.join(closureRoot, "closure-manifest.json"),
+  `${JSON.stringify(manifest, null, 2)}\n`,
+  { mode: 0o644, flag: "wx" },
+);
+NODE
+
+# Preserve the deterministic source archive that the guest extracts into the
+# root PM2 installation. It contains directories and regular files only.
+python3 - "$stage/payload/pm2-closure" \
+  "$stage/payload/pm2-root-closure.tar.gz" <<'PY'
+import gzip,pathlib,stat,sys,tarfile
+source=pathlib.Path(sys.argv[1]);output=pathlib.Path(sys.argv[2])
+with output.open("xb") as raw:
+    with gzip.GzipFile(filename="",mode="wb",fileobj=raw,mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed,mode="w",format=tarfile.PAX_FORMAT) as archive:
+            for item in [source,*sorted(source.rglob("*"))]:
+                relative=(
+                    pathlib.PurePosixPath("pm2-closure")
+                    if item==source
+                    else pathlib.PurePosixPath(
+                        "pm2-closure",item.relative_to(source).as_posix()
+                    )
+                )
+                info=archive.gettarinfo(str(item),arcname=str(relative))
+                info.uid=0;info.gid=0;info.uname="root";info.gname="root";info.mtime=0
+                if item.is_dir():
+                    info.mode=0o755;archive.addfile(info)
+                elif item.is_file() and not item.is_symlink():
+                    info.mode=0o755 if item.stat().st_mode&0o111 else 0o644
+                    with item.open("rb") as body:archive.addfile(info,body)
+                else:
+                    raise SystemExit("PM2 closure contains a link or special entry")
+PY
 
 # Normalize the owner-built payload without following symlinks.
 while IFS= read -r -d '' directory; do chmod 0700 "$directory"; done \
@@ -287,6 +482,15 @@ while IFS= read -r -d '' file; do
   [ -x "$file" ] && mode=0500
   chmod "$mode" "$file"
 done < <(find "$stage" -type f -print0)
+# The closure is itself a governed runtime payload. Restore the exact modes
+# recorded in closure-manifest.json after the private outer bundle is sealed.
+while IFS= read -r -d '' directory; do chmod 0755 "$directory"; done \
+  < <(find "$stage/payload/pm2-closure" -type d -print0)
+while IFS= read -r -d '' file; do
+  mode=0644
+  [ -x "$file" ] && mode=0755
+  chmod "$mode" "$file"
+done < <(find "$stage/payload/pm2-closure" -type f -print0)
 
 openssl pkey -in "$OWNER_PRIVATE_KEY" -pubout \
   -out "$stage/manifest-owner-public-key.pem"

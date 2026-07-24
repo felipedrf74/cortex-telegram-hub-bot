@@ -149,8 +149,8 @@ case "$recovery_argument_count" in
   0) ;;
   10)
     canonical_directory "$REQUIRED_RECOVERY_RUNTIME" "required recovery runtime"
-    [[ "$REQUIRED_RECOVERY_RUNTIME" == /home/dominguez/*/releases/* ]] \
-      || die "required recovery runtime must be a governed release directory"
+    [ "$(dirname -- "$REQUIRED_RECOVERY_RUNTIME")" = /srv/nexus-release/production/releases ] \
+      || die "required recovery runtime must be an exact governed production release directory"
     [[ "$RECOVERY_ESCROW_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$ ]] \
       || die "recovery escrow ID must be the exact promotion transaction ID"
     case "$RECOVERY_ESCROW_PHASE" in

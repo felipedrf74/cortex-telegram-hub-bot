@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private, versioned, Object Lock enabled S3 storage for encrypted Nexus
+  application disaster-recovery objects. The stack creates no access keys.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional globally unique bucket name. Leave empty to let CloudFormation
+      generate one.
+    AllowedPattern: '^$|^(?![0-9]{1,3}(\.[0-9]{1,3}){3}$)(?!xn--)(?!sthree-)(?!amzn-s3-demo-)(?!.*-s3alias$)(?!.*--ol-s3$)(?!.*\.mrap$)(?!.*--x-s3$)(?!.*--table-s3$)(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  BackupPrincipalArn:
+    Type: String
+    Description: >-
+      Existing dedicated backup IAM role ARN used by the approved
+      ServerDominguez temporary-credential path. The stack does not create or
+      expose credentials.
+    AllowedPattern: '^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$'
+  RestorePrincipalArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional separate read-only IAM role ARN used only by an isolated
+      restore drill. Never reuse the backup writer role on the drill host.
+    AllowedPattern: '^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$'
+  DrPrefix:
+    Type: String
+    Default: nexus-hub-production
+    Description: Prefix dedicated to Nexus application DR objects.
+    MaxLength: 512
+    AllowedPattern: '^(?!.*\.\.)(?!.*//)[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$'
+    ConstraintDescription: >-
+      Use a bounded non-empty prefix without a leading or trailing slash,
+      repeated slash, or parent-directory component.
+
+Conditions:
+  HasExplicitBucketName: !Not [!Equals [!Ref BucketName, '']]
+  HasRestorePrincipal: !Not [!Equals [!Ref RestorePrincipalArn, '']]
+
+Resources:
+  DisasterRecoveryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If [HasExplicitBucketName, !Ref BucketName, !Ref 'AWS::NoValue']
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      ObjectLockEnabled: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: encrypted-application-dr
+
+  DisasterRecoveryBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref DisasterRecoveryBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyPlaintextTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt DisasterRecoveryBucket.Arn
+              - !Sub '${DisasterRecoveryBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+                aws:PrincipalIsAWSService: 'false'
+          - Sid: DenyLegacyTls
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt DisasterRecoveryBucket.Arn
+              - !Sub '${DisasterRecoveryBucket.Arn}/*'
+            Condition:
+              NumericLessThan:
+                s3:TlsVersion: 1.2
+              Bool:
+                aws:PrincipalIsAWSService: 'false'
+          - Sid: DenyUnversionedObjectDeletion
+            Effect: Deny
+            Principal: '*'
+            Action: s3:DeleteObject
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+          - Sid: AllowExactPrefixVersionListing
+            Effect: Allow
+            Principal:
+              AWS: !Ref BackupPrincipalArn
+            Action:
+              - s3:ListBucketVersions
+            Resource: !GetAtt DisasterRecoveryBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - !Sub '${DrPrefix}/*'
+          - !If
+            - HasRestorePrincipal
+            - Sid: AllowRestoreExactPrefixVersionListing
+              Effect: Allow
+              Principal:
+                AWS: !Ref RestorePrincipalArn
+              Action: s3:ListBucketVersions
+              Resource: !GetAtt DisasterRecoveryBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - !Sub '${DrPrefix}/*'
+            - !Ref 'AWS::NoValue'
+          - !If
+            - HasRestorePrincipal
+            - Sid: AllowRestoreReadOnlyObjects
+              Effect: Allow
+              Principal:
+                AWS: !Ref RestorePrincipalArn
+              Action:
+                - s3:GetObject
+                - s3:GetObjectVersion
+                - s3:GetObjectRetention
+              Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+            - !Ref 'AWS::NoValue'
+          - Sid: AllowDatabaseObjectIO
+            Effect: Allow
+            Principal:
+              AWS: !Ref BackupPrincipalArn
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:DeleteObjectVersion
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'
+          - Sid: DenyDatabaseRetention
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'
+          - Sid: AllowReleaseObjectReadAndVersionDelete
+            Effect: Allow
+            Principal:
+              AWS: !Ref BackupPrincipalArn
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:DeleteObjectVersion
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+          - Sid: AllowCompliantReleasePut
+            Effect: Allow
+            Principal:
+              AWS: !Ref BackupPrincipalArn
+            Action: s3:PutObject
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              StringEquals:
+                s3:object-lock-mode: COMPLIANCE
+              NumericGreaterThanEquals:
+                s3:object-lock-remaining-retention-days: 90
+              NumericLessThanEquals:
+                s3:object-lock-remaining-retention-days: 91
+          - Sid: DenyReleasePutWithoutCompliance
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              StringNotEquals:
+                s3:object-lock-mode: COMPLIANCE
+          - Sid: DenyReleasePutShorterThan90Days
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 90
+          - Sid: DenyReleasePutLongerThan91Days
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 91
+          - Sid: AllowReleaseRetentionRead
+            Effect: Allow
+            Principal:
+              AWS: !Ref BackupPrincipalArn
+            Action:
+              - s3:GetObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+          - Sid: AllowReleaseRetentionWrite
+            Effect: Allow
+            Principal:
+              AWS: !Ref BackupPrincipalArn
+            Action:
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              StringEquals:
+                s3:object-lock-mode: COMPLIANCE
+              NumericGreaterThanEquals:
+                s3:object-lock-remaining-retention-days: 90
+              NumericLessThanEquals:
+                s3:object-lock-remaining-retention-days: 91
+          - Sid: DenyReleaseRetentionWithoutCompliance
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              StringNotEquals:
+                s3:object-lock-mode: COMPLIANCE
+          - Sid: DenyReleaseRetentionShorterThan90Days
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 90
+          - Sid: DenyReleaseRetentionLongerThan91Days
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 91
+
+Outputs:
+  BucketName:
+    Description: Private DR bucket name.
+    Value: !Ref DisasterRecoveryBucket
+  BucketArn:
+    Description: Private DR bucket ARN.
+    Value: !GetAtt DisasterRecoveryBucket.Arn
+  DrPrefix:
+    Description: Exact prefix granted to the backup principal.
+    Value: !Ref DrPrefix
+  S3Endpoint:
+    Description: Credential-free regional S3 HTTPS endpoint.
+    Value: !Sub 'https://s3.${AWS::Region}.${AWS::URLSuffix}'

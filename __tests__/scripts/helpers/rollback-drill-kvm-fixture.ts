@@ -75,8 +75,12 @@ function outcome(
       'terminal_observed',
     ],
   };
-  const initialGuestBoot = isolation.guest.bootIdSha256;
-  const rebootedGuestBoot = digest('guest-boot-after-reboot');
+  const isolationOverlay = isolation.overlays.find(
+    (entry: any) => entry.drill === drill,
+  );
+  const initialGuestBoot = isolationOverlay.readinessBootIdSha256;
+  const rebootedGuestBoot = digest(`${drill}-guest-boot-after-fault-reboot`);
+  const postTerminalGuestBoot = digest(`${drill}-guest-boot-after-clean-reboot`);
   const start = fixtureNow - startOffsetMinutes * 60 * 1000;
   const timeline = events[drill].map((event, index) => ({
     event,
@@ -104,6 +108,18 @@ function outcome(
     databaseBackupRestored: !completes,
     journalSha256: digest(`${drill}-journal`),
     recoveryResultSha256: digest(`${drill}-recovery-result`),
+    postTerminalReboot: drill === 'guest-reboot'
+      ? {
+          beforeGuestBootIdSha256: rebootedGuestBoot,
+          afterGuestBootIdSha256: postTerminalGuestBoot,
+          journalSha256: digest(`${drill}-journal`),
+          controlVersion: 'nexus-release-promotion-control.v3',
+          recoveryUnitResult: 'success',
+          assertRootPm2Ready: true,
+          assertIdle: true,
+          exactRuntimeHealthy: true,
+        }
+      : null,
     timeline,
   };
 }
@@ -148,11 +164,11 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       sourceVersion: '4.14.230',
       targetVersion: '4.14.231',
       targetBackup: 'nexus-release-4.14.231.tar.zst',
-      productionBase: '/home/dominguez/telegram-hub-bot',
-      stateRoot: '/home/dominguez/nexus-drill-state',
+      productionBase: '/srv/nexus-release/production',
+      stateRoot: '/var/lib/nexus-release-promotion',
       backupDir: '/home/dominguez/backups/nexushub',
       preparedRuntimeDir: '/home/dominguez/backups/nexushub/.runtime-stage-kvmdrill',
-      pm2Bin: '/home/dominguez/.nvm/versions/node/v22.23.1/bin/pm2',
+      pm2Bin: '/usr/local/bin/pm2',
       publicBaseUrl: 'https://rollback-drill.invalid',
     },
     guest: {
@@ -191,7 +207,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       encryptionRequired: true,
     },
     syntheticDatabase: {
-      path: '/home/dominguez/nexus-drill-lab/data/synthetic.db',
+      path: '/srv/nexus-drill-lab/data/synthetic.db',
       marker: `NEXUS_SYNTHETIC_DRILL:${planId}`,
       seedSha256: digest('synthetic-database-seed'),
       origin: 'generated-in-guest',
@@ -302,8 +318,8 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       ],
     },
     guest: {
-      machineIdSha256: digest('guest-machine-id'),
-      bootIdSha256: digest('guest-initial-boot-id'),
+      machineIdSha256: digest('guest-1-machine-id'),
+      bootIdSha256: digest('guest-1-initial-boot-id'),
       virtualization: 'kvm',
       osId: 'ubuntu',
       osVersionId: '24.04',
@@ -352,13 +368,15 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       },
       productionDataMatches: [],
     },
-    overlays: plan.overlays.map((overlay) => ({
+    overlays: plan.overlays.map((overlay, index) => ({
       drill: overlay.drill,
       overlayId: overlay.overlayId,
       overlayInitialSha256: overlay.overlayInitialSha256,
       baselineSnapshotSha256: overlay.baselineSnapshotSha256,
       machineUuid: overlay.machineUuid,
       sshHostPublicKeySha256: overlay.ssh.hostPublicKeySha256,
+      guestMachineIdSha256: digest(`guest-${index + 1}-machine-id`),
+      readinessBootIdSha256: digest(`guest-${index + 1}-initial-boot-id`),
     })),
   };
 

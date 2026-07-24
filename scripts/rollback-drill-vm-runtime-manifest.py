@@ -54,10 +54,13 @@ PM2_INTEGRITY = (
     "sha512-wX1FiFkzuT2H/UUEA8QNXDAA9MMHDsK/3UHj6Dkd5U7kxyigKDA5gyDw78yc"
     "TQZAuGCLWyUX5FiXEuVQWafukA=="
 )
-PM2_PREFIX = "payload/pm2-prefix"
+PM2_PREFIX = "payload/pm2-closure"
+PM2_SOURCE_ARCHIVE = "payload/pm2-root-closure.tar.gz"
 PM2_LOCK = "provenance/pm2/package-lock.json"
-PM2_INSTALL_ROOT = "/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14"
-PM2_BINARY = f"{PM2_INSTALL_ROOT}/bin/pm2"
+PM2_INSTALL_ROOT = "/opt/nexus-release/pm2/6.0.14"
+PM2_BINARY = "/usr/local/bin/pm2"
+PM2_ENTRYPOINT = f"{PM2_INSTALL_ROOT}/node_modules/pm2/bin/pm2"
+PM2_ATTESTATION = "/var/lib/nexus-release-promotion/pm2-root-install.v1.json"
 CONTROL_ARCHIVE = "payload/control-source.tar.gz"
 OWNER_PUBLIC_KEY = "manifest-owner-public-key.pem"
 MANIFEST_NAME = "manifest.json"
@@ -94,43 +97,334 @@ ISO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 CONTROL_FILES = (
     (
+        "ops/sonarqube/nexus-release-sonar-lock.conf",
+        "/etc/tmpfiles.d/nexus-release-sonar-lock.conf",
+        "root:root",
+        0o644,
+    ),
+    (
         "scripts/promotion-authorization.mjs",
         "/usr/local/libexec/nexus-promotion-authorization.mjs",
+        "root:root",
+        0o755,
     ),
     (
         "scripts/trusted-release-runtime-attestation.mjs",
         "/usr/local/libexec/nexus-trusted-release-runtime-attestation.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/trusted-release-filesystem-identity.mjs",
+        "/usr/local/libexec/nexus-trusted-release-filesystem-identity.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/remote-release-selector-switch.py",
+        "/usr/local/libexec/nexus-release-selector-switch.py",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/remote-staging-attestation-broker.sh",
+        "/usr/local/libexec/nexus-staging-attestation-broker.sh",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/remote-pm2-root-install.sh",
+        "/usr/local/sbin/nexus-release-pm2-root-install",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/capture-pm2-dump-authority.mjs",
+        "/usr/local/libexec/nexus-capture-pm2-dump-authority.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/remote-pm2-dump-authority.py",
+        "/usr/local/libexec/nexus-pm2-dump-authority.py",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/remote-release-boot-health.sh",
+        "/usr/local/sbin/nexus-release-boot-health",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/release-layout-authorization.mjs",
+        "/usr/local/libexec/nexus-release-layout-authorization.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/remote-release-layout-migrate.sh",
+        "/usr/local/sbin/nexus-release-layout-migrate",
+        "root:root",
+        0o700,
+    ),
+    (
+        "ops/pm2/package-lock.json",
+        "/usr/local/share/nexus-release/pm2-package-lock.json",
+        "root:root",
+        0o644,
     ),
     (
         "scripts/remote-promotion-transaction.sh",
         "/usr/local/libexec/nexus-release-promotion-transaction",
+        "root:root",
+        0o700,
     ),
     (
         "scripts/remote-promotion-worker-control.sh",
         "/usr/local/sbin/nexus-release-promotion-worker-control",
+        "root:root",
+        0o755,
     ),
     (
         "scripts/remote-promotion-control.sh",
         "/usr/local/sbin/nexus-release-promotion-control",
+        "root:root",
+        0o755,
     ),
     (
         "scripts/systemd/nexus-release-promotion@.service",
         "/etc/systemd/system/nexus-release-promotion@.service",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/systemd/nexus-release-pm2-recovery-daemon.service",
+        "/etc/systemd/system/nexus-release-pm2-recovery-daemon.service",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/systemd/nexus-release-layout-recovery.service",
+        "/etc/systemd/system/nexus-release-layout-recovery.service",
+        "root:root",
+        0o644,
     ),
     (
         "scripts/systemd/nexus-release-promotion-recovery.service",
         "/etc/systemd/system/nexus-release-promotion-recovery.service",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-backup.sh",
+        "/usr/local/libexec/nexus-application-dr/application-dr-backup.sh",
+        "root:root",
+        0o755,
+    ),
+    (
+        "scripts/application-dr-sqlite.py",
+        "/usr/local/libexec/nexus-application-dr/application-dr-sqlite.py",
+        "root:root",
+        0o644,
+    ),
+    (
+        "config/production-migration-lineages.json",
+        "/usr/local/libexec/nexus-application-dr/production-migration-lineages.json",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-retention.py",
+        "/usr/local/libexec/nexus-application-dr/application-dr-retention.py",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-version-retention.py",
+        "/usr/local/libexec/nexus-application-dr/application-dr-version-retention.py",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-storage-controls.py",
+        "/usr/local/libexec/nexus-application-dr/application-dr-storage-controls.py",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-recovery-runtime.mjs",
+        "/usr/local/libexec/nexus-application-dr/application-dr-recovery-runtime.mjs",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/release-recovery-runtime-identity.mjs",
+        "/usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-recovery-archive.py",
+        "/usr/local/libexec/nexus-application-dr/application-dr-recovery-archive.py",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-archive.py",
+        "/usr/local/libexec/nexus-application-dr/application-dr-archive.py",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/release-runtime-dependencies.mjs",
+        "/usr/local/libexec/nexus-application-dr/release-runtime-dependencies.mjs",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/application-dr-restore-drill.sh",
+        "/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh",
+        "root:root",
+        0o755,
+    ),
+    (
+        "scripts/application-dr-isolated-harness.sh",
+        "/usr/local/libexec/nexus-application-dr/application-dr-isolated-harness.sh",
+        "root:root",
+        0o700,
+    ),
+    (
+        "docs/release/evidence/release-evidence-public-key.pem",
+        "/etc/nexus-application-dr/release-evidence-public-key.pem",
+        "root:root",
+        0o644,
+    ),
+    (
+        "ops/application-dr/systemd/nexus-application-dr-backup.service",
+        "/etc/systemd/system/nexus-application-dr-backup.service",
+        "root:root",
+        0o644,
+    ),
+    (
+        "ops/application-dr/systemd/nexus-application-dr-backup.timer",
+        "/etc/systemd/system/nexus-application-dr-backup.timer",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/ollama-observation-collector.mjs",
+        "/usr/local/sbin/nexus-ollama-observation-collector.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/ollama-soak-evidence.mjs",
+        "/usr/local/sbin/ollama-soak-evidence.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/ollama-observation-control.mjs",
+        "/usr/local/sbin/nexus-ollama-observation-control.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/ollama-systemd-dropin-transaction.mjs",
+        "/usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/ollama-install-state-check.mjs",
+        "/usr/local/sbin/nexus-ollama-install-state-check.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
+        "scripts/systemd/00-nexus-ollama-install-guard.conf",
+        "/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf",
+        "root:root",
+        0o644,
+    ),
+    (
+        "scripts/systemd/nexus-ollama-observation@.service",
+        "/etc/systemd/system/nexus-ollama-observation@.service",
+        "root:root",
+        0o644,
     ),
 )
 BOOTSTRAP_FILES = (
     (
         "scripts/rollback-drill-vm-runtime-manifest.py",
         "/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest",
+        "root:root",
+        0o755,
     ),
     (
         "scripts/rollback-drill-vm-runtime-control.sh",
         "/usr/local/sbin/nexus-rollback-drill-vm-runtime-control",
+        "root:root",
+        0o755,
     ),
+)
+GENERATED_CONTROL_FILES = (
+    (
+        "/etc/nexus-release/owner-promotion-public-key.pem",
+        "root:root",
+        0o644,
+    ),
+    (
+        "/etc/nexus-release/serverdominguez-provenance-private-key.pem",
+        "root:root",
+        0o600,
+    ),
+    (
+        "/etc/nexus-release/serverdominguez-provenance-public-key.pem",
+        "root:root",
+        0o644,
+    ),
+    (
+        "/etc/sudoers.d/nexus-release-promotion",
+        "root:root",
+        0o440,
+    ),
+    (
+        "/etc/systemd/system/pm2-dominguez.service.d/nexus-release-recovery.conf",
+        "root:root",
+        0o644,
+    ),
+    (
+        "/etc/systemd/system/nexus-cloudflared.service.d/nexus-release-ready.conf",
+        "root:root",
+        0o644,
+    ),
+    (
+        "/var/lib/nexus-release-promotion/pm2-root-install.v1.json",
+        "root:root",
+        0o600,
+    ),
+    (
+        "/srv/nexus-release/production/.env",
+        "root:dominguez",
+        0o440,
+    ),
+    (
+        "/srv/nexus-release/staging/.env",
+        "root:dominguez",
+        0o440,
+    ),
+)
+CONTROL_SERVICE_STATES = (
+    ("nexus-release-layout-recovery.service", "loaded", "enabled"),
+    ("nexus-release-promotion-recovery.service", "loaded", "enabled"),
+    ("pm2-dominguez.service", "loaded", "enabled"),
+    ("pm2-root.service", "masked-or-not-found", "masked-or-not-found"),
+    ("nexus-cloudflared.service", "loaded", "enabled"),
+    ("nexus-application-dr-backup.service", "loaded", "static"),
+    ("nexus-application-dr-backup.timer", "loaded", "disabled-or-enabled"),
+    ("nexus-ollama-observation@.service", "loaded", "disabled-or-static"),
 )
 
 
@@ -163,7 +457,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_regular_nofollow(path: Path, limit: int, label: str) -> bytes:
+def read_regular_nofollow(
+    path: Path,
+    limit: int,
+    label: str,
+    *,
+    allow_empty: bool = False,
+) -> bytes:
     try:
         descriptor = os.open(
             path,
@@ -175,10 +475,11 @@ def read_regular_nofollow(path: Path, limit: int, label: str) -> bytes:
         fail(f"cannot open {label} without following links: {error}")
     try:
         before = os.fstat(descriptor)
+        minimum = 0 if allow_empty else 1
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_nlink != 1
-            or before.st_size <= 0
+            or before.st_size < minimum
             or before.st_size > limit
         ):
             fail(f"{label} must be one bounded regular file")
@@ -730,8 +1031,8 @@ def validate_pm2_lock(lock_path: Path) -> dict[str, Any]:
     )
     lockfile_version = lock.get("lockfileVersion")
     packages = lock.get("packages")
-    if lockfile_version not in {2, 3} or not isinstance(packages, dict):
-        fail("PM2 package lock must use npm lockfile version 2 or 3")
+    if lockfile_version != 3 or not isinstance(packages, dict):
+        fail("PM2 package lock must use npm lockfile version 3")
     project = packages.get("")
     if (
         not isinstance(project, dict)
@@ -743,9 +1044,14 @@ def validate_pm2_lock(lock_path: Path) -> dict[str, Any]:
     for package_path, package in packages.items():
         if package_path == "":
             continue
+        package_relative = PurePosixPath(package_path)
         if (
             not isinstance(package_path, str)
             or not package_path.startswith("node_modules/")
+            or package_relative.is_absolute()
+            or "\\" in package_path
+            or package_relative.as_posix() != package_path
+            or any(part in {"", ".", ".."} for part in package_relative.parts)
             or not isinstance(package, dict)
         ):
             fail("PM2 package lock contains an unsupported package entry")
@@ -799,72 +1105,259 @@ def validate_pm2_lock(lock_path: Path) -> dict[str, Any]:
     }
 
 
-def validate_pm2_prefix(prefix: Path, lock_path: Path) -> None:
-    if prefix.is_symlink() or not prefix.is_dir():
+def validate_pm2_prefix(prefix: Path, lock_path: Path) -> dict[str, Any]:
+    try:
+        canonical_prefix = prefix.resolve(strict=True)
+    except OSError as error:
+        fail(f"cannot resolve PM2 closure: {error}")
+    if (
+        canonical_prefix != prefix
+        or prefix.is_symlink()
+        or not prefix.is_dir()
+        or stat.S_IMODE(prefix.lstat().st_mode) != 0o755
+    ):
         fail("PM2 prefix must be one real directory")
-    pm2_package = prefix / "lib/node_modules/pm2/package.json"
+    pm2_package = prefix / "node_modules/pm2/package.json"
     package = bounded_json(pm2_package, "installed PM2 package", 1024 * 1024)
     if package.get("name") != "pm2" or package.get("version") != PM2_VERSION:
         fail("PM2 prefix does not contain pm2 6.0.14")
-    binary = prefix / "bin/pm2"
-    if not binary.is_symlink():
-        fail("PM2 prefix binary must be a relative symlink")
-    resolved = binary.resolve(strict=True)
-    try:
-        resolved.relative_to(prefix.resolve(strict=True))
-    except ValueError:
-        fail("PM2 binary symlink escapes its prefix")
-    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+    binary = prefix / "node_modules/pm2/bin/pm2"
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
         fail("PM2 binary target is not executable")
 
     lock = bounded_json(lock_path, "PM2 package lock", 8 * 1024 * 1024)
-    allowed = set()
-    for package_path, package in lock["packages"].items():
-        if isinstance(package, dict):
-            version = package.get("version")
-            if not isinstance(version, str) or not package_path:
-                continue
-            parts = PurePosixPath(package_path).parts
-            try:
-                last_node_modules = max(
-                    index for index, part in enumerate(parts) if part == "node_modules"
-                )
-            except ValueError:
-                continue
-            name_parts = parts[last_node_modules + 1 :]
-            if not name_parts:
-                continue
-            derived_name = (
-                "/".join(name_parts[:2])
-                if name_parts[0].startswith("@") and len(name_parts) >= 2
-                else name_parts[0]
-            )
-            allowed.add((derived_name, version))
-            explicit_name = package.get("name")
-            if isinstance(explicit_name, str):
-                allowed.add((explicit_name, version))
-    installed_root = prefix / "lib/node_modules"
-    for package_json in installed_root.glob("**/package.json"):
-        if package_json.is_symlink():
-            fail("PM2 installed package metadata may not be a symlink")
-        relative_parts = package_json.relative_to(installed_root).parts
-        boundary = -1
-        for index, part in enumerate(relative_parts):
-            if part == "node_modules":
-                boundary = index
-        package_parts = relative_parts[boundary + 1 :]
-        if not (
-            len(package_parts) == 2
-            or (
-                len(package_parts) == 3
-                and package_parts[0].startswith("@")
-            )
+    if lock.get("lockfileVersion") != 3 or not isinstance(lock.get("packages"), dict):
+        fail("PM2 closure lock must use npm lockfile version 3")
+    lock_body = read_regular_nofollow(
+        lock_path,
+        8 * 1024 * 1024,
+        "PM2 trusted package lock",
+    )
+    closure_lock_path = prefix / "package-lock.json"
+    closure_lock_body = read_regular_nofollow(
+        closure_lock_path,
+        8 * 1024 * 1024,
+        "PM2 closure package lock",
+    )
+    if closure_lock_body != lock_body:
+        fail("PM2 closure package lock differs from trusted provenance")
+
+    files: list[dict[str, Any]] = []
+    total_size = 0
+    entry_count = 1
+    for current, directories, names in os.walk(
+        canonical_prefix,
+        topdown=True,
+        followlinks=False,
+    ):
+        current_path = Path(current)
+        current_identity = current_path.lstat()
+        if (
+            not stat.S_ISDIR(current_identity.st_mode)
+            or stat.S_ISLNK(current_identity.st_mode)
+            or stat.S_IMODE(current_identity.st_mode) != 0o755
         ):
+            fail("PM2 closure directory mode or type is outside policy")
+        directories.sort()
+        names.sort()
+        entry_count += len(directories) + len(names)
+        if entry_count > MAX_FILE_COUNT:
+            fail("PM2 closure file and directory count exceeds policy")
+        for directory in directories:
+            identity = (current_path / directory).lstat()
+            if stat.S_ISLNK(identity.st_mode) or not stat.S_ISDIR(identity.st_mode):
+                fail("PM2 closure contains a linked or special directory")
+        for name in names:
+            candidate = current_path / name
+            relative = candidate.relative_to(canonical_prefix).as_posix()
+            identity = candidate.lstat()
+            mode = stat.S_IMODE(identity.st_mode)
+            if (
+                stat.S_ISLNK(identity.st_mode)
+                or not stat.S_ISREG(identity.st_mode)
+                or mode not in {0o644, 0o755}
+            ):
+                fail(f"PM2 closure file mode or type is outside policy: {relative}")
+            body = read_regular_nofollow(
+                candidate,
+                64 * 1024 * 1024,
+                f"PM2 closure file {relative}",
+                allow_empty=True,
+            )
+            total_size += len(body)
+            if total_size > 512 * 1024 * 1024:
+                fail("PM2 closure exceeds the accepted bounds")
+            files.append(
+                {
+                    "path": relative,
+                    "size": len(body),
+                    "mode": mode,
+                    "sha256": sha256_bytes(body),
+                }
+            )
+    files.sort(key=lambda entry: entry["path"])
+    manifest_path = prefix / "closure-manifest.json"
+    manifest = bounded_json(
+        manifest_path,
+        "PM2 closure manifest",
+        MAX_MANIFEST_BYTES,
+    )
+    exact_fields(
+        manifest,
+        {
+            "schema",
+            "pm2Version",
+            "nodeVersion",
+            "npmVersion",
+            "packageLockSha256",
+            "packageLockPackages",
+            "installedPackages",
+            "payloadDigest",
+            "fileCount",
+            "files",
+        },
+        "PM2 closure manifest",
+    )
+    payload_files = [
+        entry for entry in files if entry["path"] != "closure-manifest.json"
+    ]
+    lock_packages: list[dict[str, Any]] = []
+    installed_packages: list[dict[str, Any]] = []
+    for package_path, identity in lock["packages"].items():
+        if not package_path:
             continue
-        value = bounded_json(package_json, "PM2 installed package metadata", 1024 * 1024)
-        identity = (value.get("name"), value.get("version"))
-        if identity not in allowed:
-            fail(f"PM2 prefix package is absent from its lock: {package_json}")
+        if not isinstance(identity, dict):
+            fail("PM2 closure lock package identity is invalid")
+        safe_relative(package_path, "PM2 closure lock package path")
+        lock_packages.append(
+            {
+                "path": package_path,
+                "version": identity.get("version"),
+                "resolved": identity.get("resolved"),
+                "integrity": identity.get("integrity"),
+            }
+        )
+    lock_packages.sort(key=lambda entry: entry["path"])
+    for identity in lock_packages:
+        package_path = prefix / identity["path"] / "package.json"
+        if not package_path.exists():
+            if lock["packages"][identity["path"]].get("optional") is True:
+                continue
+            fail(
+                "PM2 closure omitted a required locked package: "
+                f"{identity['path']}"
+            )
+        installed = bounded_json(
+            package_path,
+            "PM2 installed package identity",
+            1024 * 1024,
+        )
+        if installed.get("version") != identity["version"]:
+            fail(
+                "PM2 closure installed package differs from lock: "
+                f"{identity['path']}"
+            )
+        installed_packages.append(
+            {"path": identity["path"], "version": identity["version"]}
+        )
+    payload_digest = sha256_bytes(
+        canonical_bytes(
+            {
+                "schema": "nexus.pm2-root-closure-payload.v1",
+                "files": payload_files,
+            }
+        )
+    )
+    package_lock_sha256 = sha256_bytes(lock_body)
+    if (
+        manifest["schema"] != "nexus.pm2-root-closure-manifest.v1"
+        or manifest["pm2Version"] != PM2_VERSION
+        or manifest["nodeVersion"] != NODE_VERSION
+        or manifest["npmVersion"] != NPM_VERSION
+        or manifest["packageLockSha256"] != package_lock_sha256
+        or canonical_bytes(manifest["packageLockPackages"])
+        != canonical_bytes(lock_packages)
+        or canonical_bytes(manifest["installedPackages"])
+        != canonical_bytes(installed_packages)
+        or canonical_bytes(manifest["files"]) != canonical_bytes(payload_files)
+        or manifest["fileCount"] != len(payload_files)
+        or manifest["payloadDigest"] != payload_digest
+    ):
+        fail("PM2 closure manifest differs from its exact payload and lock")
+    closure_digest = sha256_bytes(
+        canonical_bytes(
+            {
+                "schema": "nexus.pm2-root-closure.v1",
+                "files": files,
+            }
+        )
+    )
+    return {
+        "closureDigest": closure_digest,
+        "payloadDigest": payload_digest,
+        "fileCount": len(files),
+        "packageLockSha256": package_lock_sha256,
+    }
+
+
+def validate_pm2_archive(
+    archive_path: Path,
+    lock_path: Path,
+) -> dict[str, Any]:
+    regular_identity(archive_path, PM2_SOURCE_ARCHIVE)
+    with tempfile.TemporaryDirectory(
+        prefix="nexus-pm2-archive-validation.",
+    ) as temporary:
+        destination = Path(temporary).resolve(strict=True)
+        try:
+            with tarfile.open(archive_path, mode="r:gz") as archive:
+                members = archive.getmembers()
+                if not members or len(members) > MAX_FILE_COUNT:
+                    fail("PM2 closure archive member count is invalid")
+                seen: set[str] = set()
+                total_size = 0
+                regular_paths: set[str] = set()
+                for member in members:
+                    name = PurePosixPath(member.name)
+                    if (
+                        member.name in seen
+                        or name.is_absolute()
+                        or ".." in name.parts
+                        or not name.parts
+                        or name.parts[0] != "pm2-closure"
+                    ):
+                        fail("PM2 closure archive contains an unsafe member")
+                    seen.add(member.name)
+                    if member.isdir():
+                        if member.mode & 0o7777 != 0o755:
+                            fail("PM2 closure archive directory mode is invalid")
+                        continue
+                    if not member.isreg() or member.issym() or member.islnk():
+                        fail("PM2 closure archive contains a link or special member")
+                    if len(name.parts) < 2:
+                        fail("PM2 closure archive regular member has no path")
+                    if member.mode & 0o7777 not in {0o644, 0o755}:
+                        fail("PM2 closure archive file mode is invalid")
+                    if member.size < 0 or member.size > 64 * 1024 * 1024:
+                        fail("PM2 closure archive member exceeds policy")
+                    total_size += member.size
+                    if total_size > 512 * 1024 * 1024:
+                        fail("PM2 closure archive payload exceeds policy")
+                    regular_paths.add(PurePosixPath(*name.parts[1:]).as_posix())
+                required = {
+                    "package.json",
+                    "package-lock.json",
+                    "closure-manifest.json",
+                    "node_modules/pm2/package.json",
+                    "node_modules/pm2/bin/pm2",
+                }
+                if not required.issubset(regular_paths):
+                    fail("PM2 closure archive is missing a required payload")
+                archive.extractall(destination, filter="data")
+        except (OSError, tarfile.TarError) as error:
+            fail(f"cannot inspect PM2 closure archive: {error}")
+        extracted = destination / "pm2-closure"
+        return validate_pm2_prefix(extracted, lock_path)
 
 
 def validate_node_entrypoints(
@@ -886,7 +1379,34 @@ def validate_node_entrypoints(
     ):
         fail("installed Node layout roots must be canonical real directories")
     results: list[dict[str, str]] = []
-    for binary in ("node", "npm", "npx", "corepack"):
+    source_node = node_target / "bin/node"
+    installed_node = link_root / "node"
+    source_identity = source_node.lstat()
+    installed_identity = installed_node.lstat()
+    if (
+        not stat.S_ISREG(source_identity.st_mode)
+        or stat.S_ISLNK(source_identity.st_mode)
+        or not stat.S_ISREG(installed_identity.st_mode)
+        or stat.S_ISLNK(installed_identity.st_mode)
+        or installed_identity.st_nlink != 1
+        or stat.S_IMODE(installed_identity.st_mode) != 0o755
+        or sha256_file(installed_node) != sha256_file(source_node)
+        or not os.access(installed_node, os.X_OK)
+    ):
+        fail("installed /usr/bin/node is not the exact regular runtime binary")
+    if os.geteuid() == 0 and (
+        source_identity.st_uid != 0 or installed_identity.st_uid != 0
+    ):
+        fail("installed Node binary is not root-owned")
+    results.append(
+        {
+            "name": "node",
+            "kind": "regular-file",
+            "entrypoint": str(installed_node),
+            "resolved": str(installed_node),
+        }
+    )
+    for binary in ("npm", "npx", "corepack"):
         link = link_root / binary
         try:
             link_identity = link.lstat()
@@ -918,6 +1438,7 @@ def validate_node_entrypoints(
         results.append(
             {
                 "name": binary,
+                "kind": "symlink",
                 "link": str(link),
                 "entrypoint": expected_immediate,
                 "resolved": str(resolved),
@@ -928,16 +1449,18 @@ def validate_node_entrypoints(
 
 def mapped_identities(
     source_root: Path,
-    mappings: tuple[tuple[str, str], ...],
+    mappings: tuple[tuple[str, str, str, int], ...],
 ) -> list[dict[str, Any]]:
     results = []
-    for source, destination in mappings:
+    for source, destination, owner, mode in mappings:
         path = source_root / source
         identity = regular_identity(path, source)
         results.append(
             {
                 "source": source,
                 "destination": destination,
+                "owner": owner,
+                "mode": mode,
                 "size": identity["size"],
                 "sha256": identity["sha256"],
             }
@@ -989,6 +1512,7 @@ def validate_manifest(value: Any) -> dict[str, Any]:
             "archiveRoot",
             "npmVersion",
             "installRoot",
+            "binaryPath",
             "binarySha256",
             "contentTreeSha256",
             "links",
@@ -1000,13 +1524,13 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         or node["archivePath"] != NODE_ARCHIVE
         or node["archiveRoot"] != NODE_ARCHIVE_ROOT
         or node["installRoot"] != NODE_INSTALL_ROOT
+        or node["binaryPath"] != "/usr/bin/node"
         or node["npmVersion"] != NPM_VERSION
         or not HEX64.fullmatch(node["binarySha256"])
         or not HEX64.fullmatch(node["contentTreeSha256"])
         or node["links"]
         != {
             "/usr/bin/corepack": f"{NODE_INSTALL_ROOT}/bin/corepack",
-            "/usr/bin/node": f"{NODE_INSTALL_ROOT}/bin/node",
             "/usr/bin/npm": f"{NODE_INSTALL_ROOT}/bin/npm",
             "/usr/bin/npx": f"{NODE_INSTALL_ROOT}/bin/npx",
         }
@@ -1040,25 +1564,54 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         {
             "version",
             "prefixPath",
+            "sourceArchivePath",
+            "sourceArchiveSha256",
             "lockPath",
             "binaryPath",
             "installRoot",
             "binarySha256",
+            "entrypointPath",
+            "entrypointSha256",
+            "attestationPath",
             "contentTreeSha256",
+            "closureDigest",
+            "payloadDigest",
+            "fileCount",
+            "packageLockSha256",
         },
         "PM2 target",
     )
     if pm2 != {
         "version": PM2_VERSION,
         "prefixPath": PM2_PREFIX,
+        "sourceArchivePath": PM2_SOURCE_ARCHIVE,
+        "sourceArchiveSha256": pm2.get("sourceArchiveSha256"),
         "lockPath": PM2_LOCK,
         "binaryPath": PM2_BINARY,
         "installRoot": PM2_INSTALL_ROOT,
         "binarySha256": pm2.get("binarySha256"),
+        "entrypointPath": PM2_ENTRYPOINT,
+        "entrypointSha256": pm2.get("entrypointSha256"),
+        "attestationPath": PM2_ATTESTATION,
         "contentTreeSha256": pm2.get("contentTreeSha256"),
+        "closureDigest": pm2.get("closureDigest"),
+        "payloadDigest": pm2.get("payloadDigest"),
+        "fileCount": pm2.get("fileCount"),
+        "packageLockSha256": pm2.get("packageLockSha256"),
     } or not all(
         HEX64.fullmatch(pm2[field])
-        for field in ("binarySha256", "contentTreeSha256")
+        for field in (
+            "sourceArchiveSha256",
+            "binarySha256",
+            "entrypointSha256",
+            "contentTreeSha256",
+            "closureDigest",
+            "payloadDigest",
+            "packageLockSha256",
+        )
+    ) or (
+        type(pm2["fileCount"]) is not int
+        or pm2["fileCount"] < 2
     ):
         fail("PM2 target is outside policy")
     control = exact_fields(
@@ -1070,11 +1623,13 @@ def validate_manifest(value: Any) -> dict[str, Any]:
             "archiveSha256",
             "bootstrapFiles",
             "files",
+            "generatedFiles",
+            "serviceStates",
         },
         "promotion control target",
     )
     if (
-        control["version"] != "nexus-release-promotion-control.v2"
+        control["version"] != "nexus-release-promotion-control.v3"
         or not FULL_SHA.fullmatch(control["sourceCommit"])
         or control["archivePath"] != CONTROL_ARCHIVE
         or not HEX64.fullmatch(control["archiveSha256"])
@@ -1082,6 +1637,20 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         or len(control["files"]) != len(CONTROL_FILES)
         or not isinstance(control["bootstrapFiles"], list)
         or len(control["bootstrapFiles"]) != len(BOOTSTRAP_FILES)
+        or control["generatedFiles"]
+        != [
+            {"destination": destination, "owner": owner, "mode": mode}
+            for destination, owner, mode in GENERATED_CONTROL_FILES
+        ]
+        or control["serviceStates"]
+        != [
+            {
+                "unit": unit,
+                "loadState": load_state,
+                "unitFileState": unit_file_state,
+            }
+            for unit, load_state, unit_file_state in CONTROL_SERVICE_STATES
+        ]
     ):
         fail("promotion control target is invalid")
     for observed, expected in zip(
@@ -1089,11 +1658,17 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     ):
         exact_fields(
             observed,
-            {"source", "destination", "size", "sha256"},
+            {"source", "destination", "owner", "mode", "size", "sha256"},
             "runtime bootstrap file identity",
         )
         if (
-            (observed["source"], observed["destination"]) != expected
+            (
+                observed["source"],
+                observed["destination"],
+                observed["owner"],
+                observed["mode"],
+            )
+            != expected
             or type(observed["size"]) is not int
             or observed["size"] <= 0
             or not HEX64.fullmatch(observed["sha256"])
@@ -1102,11 +1677,17 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     for observed, expected in zip(control["files"], CONTROL_FILES, strict=True):
         exact_fields(
             observed,
-            {"source", "destination", "size", "sha256"},
+            {"source", "destination", "owner", "mode", "size", "sha256"},
             "promotion control file identity",
         )
         if (
-            (observed["source"], observed["destination"]) != expected
+            (
+                observed["source"],
+                observed["destination"],
+                observed["owner"],
+                observed["mode"],
+            )
+            != expected
             or type(observed["size"]) is not int
             or observed["size"] <= 0
             or not HEX64.fullmatch(observed["sha256"])
@@ -1203,7 +1784,7 @@ def validate_manifest(value: Any) -> dict[str, Any]:
     if (
         pm2_provenance["lockPath"] != PM2_LOCK
         or not HEX64.fullmatch(pm2_provenance["lockSha256"])
-        or pm2_provenance["lockfileVersion"] not in {2, 3}
+        or pm2_provenance["lockfileVersion"] != 3
         or type(pm2_provenance["packageCount"]) is not int
         or pm2_provenance["packageCount"] < 1
         or pm2_provenance["pm2Integrity"] != PM2_INTEGRITY
@@ -1211,6 +1792,8 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         or pm2_provenance["allPackagesIntegrityBound"] is not True
     ):
         fail("PM2 provenance is invalid")
+    if pm2["packageLockSha256"] != pm2_provenance["lockSha256"]:
+        fail("PM2 closure package lock differs from signed provenance")
     signing = exact_fields(
         manifest["signing"],
         {"algorithm", "publicKeyPath", "publicKeySha256"},
@@ -1241,8 +1824,11 @@ def verify_bundle_files(root: Path, manifest: dict[str, Any]) -> None:
         PM2_LOCK,
         CONTROL_ARCHIVE,
         OWNER_PUBLIC_KEY,
-        "payload/pm2-prefix/bin/pm2",
-        "payload/pm2-prefix/lib/node_modules/pm2/package.json",
+        PM2_SOURCE_ARCHIVE,
+        f"{PM2_PREFIX}/closure-manifest.json",
+        f"{PM2_PREFIX}/package-lock.json",
+        f"{PM2_PREFIX}/node_modules/pm2/package.json",
+        f"{PM2_PREFIX}/node_modules/pm2/bin/pm2",
     ):
         if required not in identities:
             fail(f"runtime bundle is missing a required input: {required}")
@@ -1259,6 +1845,11 @@ def verify_bundle_files(root: Path, manifest: dict[str, Any]) -> None:
         != manifest["target"]["control"]["archiveSha256"]
     ):
         fail("promotion control archive differs from its signed identity")
+    if (
+        identities[PM2_SOURCE_ARCHIVE].get("sha256")
+        != manifest["target"]["pm2"]["sourceArchiveSha256"]
+    ):
+        fail("PM2 closure archive differs from its signed identity")
     node_provenance = manifest["provenance"]["node"]
     for path_field, digest_field in (
         ("checksumsPath", "checksumsSha256"),
@@ -1271,6 +1862,21 @@ def verify_bundle_files(root: Path, manifest: dict[str, Any]) -> None:
     pm2_identity = identities.get(manifest["provenance"]["pm2"]["lockPath"], {})
     if pm2_identity.get("sha256") != manifest["provenance"]["pm2"]["lockSha256"]:
         fail("PM2 provenance differs from the bundle inventory")
+    signed_pm2_identity = {
+        field: manifest["target"]["pm2"][field]
+        for field in (
+            "closureDigest",
+            "payloadDigest",
+            "fileCount",
+            "packageLockSha256",
+        )
+    }
+    for observed_pm2_identity in (
+        validate_pm2_prefix(root / PM2_PREFIX, root / PM2_LOCK),
+        validate_pm2_archive(root / PM2_SOURCE_ARCHIVE, root / PM2_LOCK),
+    ):
+        if observed_pm2_identity != signed_pm2_identity:
+            fail("PM2 closure payload differs from its signed v3 identity")
     python_provenance = manifest["provenance"]["python"]
     for path_field, digest_field in (
         ("provenancePath", "provenanceSha256"),
@@ -1913,7 +2519,7 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
         "requirements": [
             "node-22.23.1",
             "python-3.12.x",
-            "pm2-6.0.14-at-/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2",
+            "pm2-6.0.14-root-closure-at-/opt/nexus-release/pm2/6.0.14-via-/usr/local/bin/pm2",
             "digest-bound-offline-toolchain-evidence",
         ],
     }:
@@ -2428,6 +3034,7 @@ def validate_guest_measurement(
             "treeSha256",
             "owner",
             "mode",
+            "linkCount",
         },
         "python": {
             "version",
@@ -2441,6 +3048,10 @@ def validate_guest_measurement(
             "version",
             "path",
             "sha256",
+            "entrypointPath",
+            "entrypointSha256",
+            "attestationPath",
+            "attestationSha256",
             "treeSha256",
             "owner",
             "mode",
@@ -2449,16 +3060,21 @@ def validate_guest_measurement(
         exact_fields(runtime[name], fields, f"guest {name} identity")
         if not HEX64.fullmatch(runtime[name]["sha256"]):
             fail(f"guest {name} digest is invalid")
+        if name == "pm2" and not all(
+            HEX64.fullmatch(runtime[name][field])
+            for field in ("entrypointSha256", "attestationSha256")
+        ):
+            fail("guest PM2 supporting digest is invalid")
         if name in {"node", "pm2"} and not HEX64.fullmatch(
             runtime[name]["treeSha256"]
         ):
             fail(f"guest {name} tree digest is invalid")
     if (
         runtime["node"]["version"] != NODE_VERSION
-        or runtime["node"]["path"] != f"{NODE_INSTALL_ROOT}/bin/node"
+        or runtime["node"]["path"] != "/usr/bin/node"
         or runtime["node"]["owner"] != "root:root"
-        or not re.fullmatch(r"[0-7]{3,4}", runtime["node"]["mode"])
-        or int(runtime["node"]["mode"], 8) & 0o022
+        or runtime["node"]["mode"] != "755"
+        or runtime["node"]["linkCount"] != 1
     ):
         fail("guest Node identity is outside policy")
     if (
@@ -2472,6 +3088,8 @@ def validate_guest_measurement(
     if (
         runtime["pm2"]["version"] != PM2_VERSION
         or runtime["pm2"]["path"] != PM2_BINARY
+        or runtime["pm2"]["entrypointPath"] != PM2_ENTRYPOINT
+        or runtime["pm2"]["attestationPath"] != PM2_ATTESTATION
         or runtime["pm2"]["owner"] != "root:root"
         or not re.fullmatch(r"[0-7]{3,4}", runtime["pm2"]["mode"])
         or int(runtime["pm2"]["mode"], 8) & 0o022
@@ -2482,7 +3100,7 @@ def validate_guest_measurement(
     pm2_target = manifest["target"]["pm2"]
     if (
         runtime["node"]["version"] != node_target["version"]
-        or runtime["node"]["path"] != f"{node_target['installRoot']}/bin/node"
+        or runtime["node"]["path"] != node_target["binaryPath"]
         or runtime["node"]["sha256"] != node_target["binarySha256"]
         or runtime["node"]["treeSha256"]
         != node_target["contentTreeSha256"]
@@ -2498,6 +3116,9 @@ def validate_guest_measurement(
         or runtime["pm2"]["version"] != pm2_target["version"]
         or runtime["pm2"]["path"] != pm2_target["binaryPath"]
         or runtime["pm2"]["sha256"] != pm2_target["binarySha256"]
+        or runtime["pm2"]["entrypointPath"] != pm2_target["entrypointPath"]
+        or runtime["pm2"]["entrypointSha256"] != pm2_target["entrypointSha256"]
+        or runtime["pm2"]["attestationPath"] != pm2_target["attestationPath"]
         or runtime["pm2"]["treeSha256"]
         != pm2_target["contentTreeSha256"]
     ):
@@ -2508,17 +3129,23 @@ def validate_guest_measurement(
             "version",
             "sourceCommit",
             "files",
+            "generatedFiles",
+            "serviceStates",
             "assertIdle",
             "runtimeRecovery",
         },
         "guest promotion control identity",
     )
     if (
-        control["version"] != "nexus-release-promotion-control.v2"
+        control["version"] != "nexus-release-promotion-control.v3"
         or not FULL_SHA.fullmatch(control["sourceCommit"])
         or control["assertIdle"] is not True
         or not isinstance(control["files"], list)
         or len(control["files"]) != len(CONTROL_FILES)
+        or not isinstance(control["generatedFiles"], list)
+        or len(control["generatedFiles"]) != len(GENERATED_CONTROL_FILES)
+        or not isinstance(control["serviceStates"], list)
+        or len(control["serviceStates"]) != len(CONTROL_SERVICE_STATES)
     ):
         fail("guest promotion control identity is invalid")
     for identity, expected in zip(control["files"], CONTROL_FILES, strict=True):
@@ -2532,11 +3159,87 @@ def validate_guest_measurement(
             or type(identity["size"]) is not int
             or identity["size"] <= 0
             or not HEX64.fullmatch(identity["sha256"])
-            or identity["owner"] != "root:root"
+            or identity["owner"] != expected[2]
             or not re.fullmatch(r"[0-7]{3,4}", identity["mode"])
-            or int(identity["mode"], 8) & 0o022
+            or int(identity["mode"], 8) != expected[3]
         ):
             fail("guest promotion control file identity is invalid")
+    for identity, expected in zip(
+        control["generatedFiles"], GENERATED_CONTROL_FILES, strict=True
+    ):
+        exact_fields(
+            identity,
+            {"path", "size", "sha256", "owner", "mode"},
+            "guest generated promotion control file",
+        )
+        if (
+            identity["path"] != expected[0]
+            or type(identity["size"]) is not int
+            or identity["size"] <= 0
+            or not HEX64.fullmatch(identity["sha256"])
+            or identity["owner"] != expected[1]
+            or not re.fullmatch(r"[0-7]{3,4}", identity["mode"])
+            or int(identity["mode"], 8) != expected[2]
+        ):
+            fail("guest generated promotion control file identity is invalid")
+    for identity, expected in zip(
+        control["serviceStates"], CONTROL_SERVICE_STATES, strict=True
+    ):
+        exact_fields(
+            identity,
+            {
+                "unit",
+                "loadState",
+                "activeState",
+                "unitFileState",
+                "fragmentPath",
+                "dropInPaths",
+                "effectiveSha256",
+                "needDaemonReload",
+            },
+            "guest promotion control service state",
+        )
+        expected_unit, expected_load, expected_unit_file = expected
+        if identity["unit"] != expected_unit:
+            fail("guest promotion control service unit is invalid")
+        if (
+            expected_load == "loaded" and identity["loadState"] != "loaded"
+        ) or (
+            expected_load == "not-found-or-loaded"
+            and identity["loadState"] not in {"not-found", "loaded"}
+        ) or (
+            expected_load == "masked-or-not-found"
+            and identity["loadState"] not in {"masked", "not-found"}
+        ):
+            fail("guest promotion control service load state is invalid")
+        if (
+            expected_unit_file == "enabled"
+            and identity["unitFileState"] != "enabled"
+        ) or (
+            expected_unit_file == "static"
+            and identity["unitFileState"] != "static"
+        ) or (
+            expected_unit_file == "masked-or-not-found"
+            and identity["unitFileState"] not in {"masked", "not-found"}
+        ) or (
+            expected_unit_file == "disabled-or-enabled"
+            and identity["unitFileState"] not in {"disabled", "enabled"}
+        ) or (
+            expected_unit_file == "disabled-or-static"
+            and identity["unitFileState"] not in {"disabled", "static"}
+        ):
+            fail("guest promotion control service enablement is invalid")
+        if (
+            identity["activeState"]
+            not in {"active", "inactive", "failed", "not-found"}
+            or not isinstance(identity["fragmentPath"], str)
+            or not isinstance(identity["dropInPaths"], list)
+            or any(not isinstance(path, str) for path in identity["dropInPaths"])
+            or not HEX64.fullmatch(identity["effectiveSha256"])
+            or type(identity["needDaemonReload"]) is not bool
+            or identity["needDaemonReload"]
+        ):
+            fail("guest promotion control effective unit state is invalid")
     control_target = manifest["target"]["control"]
     if (
         control["version"] != control_target["version"]
@@ -2549,6 +3252,16 @@ def validate_guest_measurement(
             (entry["destination"], entry["size"], entry["sha256"])
             for entry in control_target["files"]
         ]
+        or [
+            (entry["path"], entry["owner"], int(entry["mode"], 8))
+            for entry in control["generatedFiles"]
+        ]
+        != [
+            (entry["destination"], entry["owner"], entry["mode"])
+            for entry in control_target["generatedFiles"]
+        ]
+        or [entry["unit"] for entry in control["serviceStates"]]
+        != [entry["unit"] for entry in control_target["serviceStates"]]
     ):
         fail("guest promotion control differs from the owner-signed manifest")
     recovery = exact_fields(
@@ -2890,14 +3603,46 @@ def build_command(args: argparse.Namespace) -> None:
     regular_identity(node_archive, NODE_ARCHIVE)
     pm2_prefix = root / PM2_PREFIX
     pm2_lock = root / PM2_LOCK
-    validate_pm2_prefix(pm2_prefix, pm2_lock)
+    source_pm2_package = source_root / "ops/pm2/package.json"
+    source_pm2_lock = source_root / "ops/pm2/package-lock.json"
+    regular_identity(source_pm2_package, "ops/pm2/package.json")
+    regular_identity(source_pm2_lock, "ops/pm2/package-lock.json")
+    if (
+        read_regular_nofollow(
+            pm2_prefix / "package.json",
+            1024 * 1024,
+            "PM2 closure package policy",
+        )
+        != read_regular_nofollow(
+            source_pm2_package,
+            1024 * 1024,
+            "protected-main PM2 package policy",
+        )
+        or read_regular_nofollow(
+            pm2_lock,
+            8 * 1024 * 1024,
+            "PM2 closure provenance lock",
+        )
+        != read_regular_nofollow(
+            source_pm2_lock,
+            8 * 1024 * 1024,
+            "protected-main PM2 package lock",
+        )
+    ):
+        fail("PM2 closure inputs differ from the exact protected-main policy")
+    pm2_closure_identity = validate_pm2_prefix(pm2_prefix, pm2_lock)
     node_provenance = verify_node_signature(root, args.node_signer_fingerprint)
     pm2_provenance = validate_pm2_lock(pm2_lock)
     node_runtime_identity = node_archive_runtime_identity(node_archive)
-    pm2_binary = pm2_prefix / "bin/pm2"
+    pm2_entrypoint = pm2_prefix / "node_modules/pm2/bin/pm2"
+    launcher_body = (
+        f'#!/usr/bin/bash\nexec "/usr/bin/node" "{PM2_ENTRYPOINT}" "$@"\n'
+    ).encode("utf-8")
     pm2_runtime_identity = {
-        "binarySha256": sha256_file(pm2_binary.resolve(strict=True)),
+        "binarySha256": sha256_bytes(launcher_body),
+        "entrypointSha256": sha256_file(pm2_entrypoint),
         "contentTreeSha256": content_tree_sha256(pm2_prefix),
+        **pm2_closure_identity,
     }
     python_provenance_value = bounded_json(
         root / PYTHON_PROVENANCE,
@@ -2966,10 +3711,10 @@ def build_command(args: argparse.Namespace) -> None:
                 "archiveRoot": NODE_ARCHIVE_ROOT,
                 "npmVersion": args.npm_version,
                 "installRoot": NODE_INSTALL_ROOT,
+                "binaryPath": "/usr/bin/node",
                 **node_runtime_identity,
                 "links": {
                     "/usr/bin/corepack": f"{NODE_INSTALL_ROOT}/bin/corepack",
-                    "/usr/bin/node": f"{NODE_INSTALL_ROOT}/bin/node",
                     "/usr/bin/npm": f"{NODE_INSTALL_ROOT}/bin/npm",
                     "/usr/bin/npx": f"{NODE_INSTALL_ROOT}/bin/npx",
                 },
@@ -2986,18 +3731,38 @@ def build_command(args: argparse.Namespace) -> None:
             "pm2": {
                 "version": PM2_VERSION,
                 "prefixPath": PM2_PREFIX,
+                "sourceArchivePath": PM2_SOURCE_ARCHIVE,
+                "sourceArchiveSha256": sha256_file(root / PM2_SOURCE_ARCHIVE),
                 "lockPath": PM2_LOCK,
                 "binaryPath": PM2_BINARY,
                 "installRoot": PM2_INSTALL_ROOT,
+                "entrypointPath": PM2_ENTRYPOINT,
+                "attestationPath": PM2_ATTESTATION,
                 **pm2_runtime_identity,
             },
             "control": {
-                "version": "nexus-release-promotion-control.v2",
+                "version": "nexus-release-promotion-control.v3",
                 "sourceCommit": args.source_commit,
                 "archivePath": CONTROL_ARCHIVE,
                 "archiveSha256": sha256_file(root / CONTROL_ARCHIVE),
                 "bootstrapFiles": mapped_identities(source_root, BOOTSTRAP_FILES),
                 "files": control_identities(source_root, args.source_commit),
+                "generatedFiles": [
+                    {
+                        "destination": destination,
+                        "owner": owner,
+                        "mode": mode,
+                    }
+                    for destination, owner, mode in GENERATED_CONTROL_FILES
+                ],
+                "serviceStates": [
+                    {
+                        "unit": unit,
+                        "loadState": load_state,
+                        "unitFileState": unit_file_state,
+                    }
+                    for unit, load_state, unit_file_state in CONTROL_SERVICE_STATES
+                ],
             },
         },
         "provenance": {
@@ -3135,6 +3900,9 @@ def context_command(args: argparse.Namespace) -> None:
                 "pm2BinarySha256": manifest["target"]["pm2"][
                     "binarySha256"
                 ],
+                "pm2EntrypointSha256": manifest["target"]["pm2"][
+                    "entrypointSha256"
+                ],
                 "runtimeRecoveryUnitSha256": receipt["hypervisor"][
                     "runtimeRecoveryUnitSha256"
                 ],
@@ -3233,7 +4001,7 @@ def validate_pm2_command(args: argparse.Namespace) -> None:
     lock = Path(args.lock).resolve(strict=True)
     prefix = Path(args.prefix).resolve(strict=True)
     provenance = validate_pm2_lock(lock)
-    validate_pm2_prefix(prefix, lock)
+    closure = validate_pm2_prefix(prefix, lock)
     print(
         json.dumps(
             {
@@ -3243,6 +4011,24 @@ def validate_pm2_command(args: argparse.Namespace) -> None:
                 "lockSha256": provenance["lockSha256"],
                 "packageCount": provenance["packageCount"],
                 "integrity": provenance["pm2Integrity"],
+                **closure,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
+def validate_pm2_archive_command(args: argparse.Namespace) -> None:
+    archive = Path(args.archive).resolve(strict=True)
+    lock = Path(args.lock).resolve(strict=True)
+    identity = validate_pm2_archive(archive, lock)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "sourceArchiveSha256": sha256_file(archive),
+                **identity,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -3480,6 +4266,10 @@ def parse_args() -> argparse.Namespace:
     pm2.add_argument("--prefix", required=True)
     pm2.add_argument("--lock", required=True)
 
+    pm2_archive = subparsers.add_parser("validate-pm2-archive")
+    pm2_archive.add_argument("--archive", required=True)
+    pm2_archive.add_argument("--lock", required=True)
+
     node_entrypoints = subparsers.add_parser("validate-node-entrypoints")
     node_entrypoints.add_argument("--node-target", required=True)
     node_entrypoints.add_argument("--link-root", required=True)
@@ -3540,6 +4330,8 @@ def main() -> None:
         validate_python_provenance_command(args)
     elif args.command == "validate-pm2":
         validate_pm2_command(args)
+    elif args.command == "validate-pm2-archive":
+        validate_pm2_archive_command(args)
     elif args.command == "validate-node-entrypoints":
         validate_node_entrypoints_command(args)
     elif args.command == "fsync-tree":
