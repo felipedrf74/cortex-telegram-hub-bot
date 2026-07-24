@@ -62,6 +62,7 @@ function installIrreversibleMigrationPolicyFixture(repo: string): void {
 const headSha = git(process.cwd(), 'rev-parse', 'HEAD');
 
 describe('protected-main reuse toolchain parity', () => {
+  const mismatchedNodeVersion = process.version === 'v0.0.0' ? 'v0.0.1' : 'v0.0.0';
   const evidence = {
     toolchain: {
       node: process.version,
@@ -74,7 +75,7 @@ describe('protected-main reuse toolchain parity', () => {
       pythonVersion: 'Python 3.12.11',
     })).toEqual(evidence.toolchain);
     expect(() => validateReusedReleaseToolchain(evidence, {
-      nodeVersion: 'v22.23.0',
+      nodeVersion: mismatchedNodeVersion,
       pythonVersion: 'Python 3.12.11',
     })).toThrow('toolchain does not match');
     expect(() => validateReusedReleaseToolchain(evidence, {

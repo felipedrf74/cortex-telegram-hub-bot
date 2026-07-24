@@ -232,9 +232,30 @@ function validateOllamaResult(result, evidenceRaw, evidence, now) {
   const started = parseTime(result.startedAt, 'Ollama cleanup startedAt');
   const completed = parseTime(result.completedAt, 'Ollama cleanup completedAt');
   if (completed < started || started < evidence.generatedAtMs || completed > now + CLOCK_SKEW_MS) fail('Ollama cleanup timestamps are invalid');
-  exactKeys(result.plan, ['schema', 'host', 'evidenceDigest', 'inventoryFingerprint', 'retained', 'delete', 'ackPlan'], 'Ollama cleanup plan');
+  exactKeys(result.plan, [
+    'schema',
+    'host',
+    'evidenceDigest',
+    'inventoryFingerprint',
+    'observationControl',
+    'retained',
+    'delete',
+    'ackPlan',
+  ], 'Ollama cleanup plan');
   if (result.plan.schema !== CLEANUP_PLAN_SCHEMA || result.plan.host !== EXPECTED_HOST) fail('Ollama cleanup plan identity is invalid');
   if (result.plan.evidenceDigest !== `sha256:${sha256(evidenceRaw)}`) fail('Ollama cleanup result is not bound to the supplied soak evidence');
+  exactKeys(result.plan.observationControl, ['staging', 'production'], 'Ollama cleanup observation control');
+  for (const phase of ['staging', 'production']) {
+    exactKeys(
+      result.plan.observationControl[phase],
+      ['requestId', 'requestSha256', 'runtimeSha'],
+      `Ollama cleanup observation control.${phase}`,
+    );
+  }
+  if (JSON.stringify(result.plan.observationControl)
+      !== JSON.stringify(evidence.observationControl)) {
+    fail('Ollama cleanup result control requests do not match the exact soak evidence');
+  }
   for (const field of ['inventoryFingerprint', 'ackPlan']) if (!DIGEST.test(result.plan[field] || '')) fail(`Ollama cleanup plan ${field} is invalid`);
   const retained = validateModel(result.plan.retained, 'Ollama cleanup retained model');
   if (retained.tag !== RETAINED_TAG || retained.digest !== evidence.retained.digest) fail('Ollama cleanup retained model does not match soak evidence');
@@ -349,6 +370,7 @@ function verifyStart(options) {
     preflightExpiresAt: preflight.expiresAt,
     ollamaCleanupCompletedAt: result.completedAt,
     ollamaSoakEvidenceDigest: soak.digest,
+    observationControl: evidence.observationControl,
     retainedModel: result.retained,
   })}\n`);
 }

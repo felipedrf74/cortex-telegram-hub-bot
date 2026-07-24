@@ -18,6 +18,11 @@ export const OLLAMA_DIGESTS = new Map([
 type Phase = 'staging' | 'production' | 'zero_swap';
 type Reference = { path: string; sha256: string };
 type RequestRow = { provider: string; model: string; requests: number; localRequestUnits: number };
+export type ControlRequestBinding = {
+  requestId: string;
+  requestSha256: string;
+  runtimeSha: string;
+};
 
 export type ObservationFixture = {
   phase: Phase;
@@ -28,6 +33,7 @@ export type ObservationFixture = {
   resultPath: string;
   resultDigest: string;
   result: Record<string, any>;
+  controlRequest: ControlRequestBinding;
 };
 
 let sequence = 0;
@@ -49,7 +55,7 @@ function modelsFor(phase: Phase) {
     .sort((left, right) => left.tag.localeCompare(right.tag));
 }
 
-function pm2For(phase: Phase) {
+function pm2For(phase: Phase, runtimeSha: string) {
   const names = phase === 'staging'
     ? ['content-engine-staging', 'nexus-hub-staging']
     : ['content-engine', 'nexus-hub'];
@@ -57,7 +63,7 @@ function pm2For(phase: Phase) {
     name,
     status: 'online',
     restartCount: 0,
-    releaseSha: phase === 'staging' ? '1'.repeat(40) : '2'.repeat(40),
+    releaseSha: runtimeSha,
   }));
 }
 
@@ -91,6 +97,18 @@ export function createObservationFixture({
   fs.chmodSync(root, 0o700);
   sequence += 1;
   const runId = `${phase}-20260722T120000Z-${sequence.toString(16).padStart(12, '0')}`;
+  let previousControlRequest: ControlRequestBinding | null =
+    previousObservation?.controlRequest ?? null;
+  if (!previousControlRequest && subject) {
+    const cleanup = JSON.parse(fs.readFileSync(subject.path, 'utf8'));
+    previousControlRequest = cleanup.plan?.observationControl?.production ?? null;
+  }
+  const runtimeSha = previousControlRequest?.runtimeSha ?? '1'.repeat(40);
+  const controlRequest: ControlRequestBinding = {
+    requestId: `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`,
+    requestSha256: sha256(JSON.stringify({ runId, runtimeSha, sequence })),
+    runtimeSha,
+  };
   const runDirectory = path.join(root, runId);
   const samplesDirectory = path.join(runDirectory, 'samples');
   fs.mkdirSync(samplesDirectory, { recursive: true, mode: 0o700 });
@@ -118,6 +136,7 @@ export function createObservationFixture({
       bootId,
       monotonicSeconds: startedMonotonicSeconds + sampleSequence * intervalSeconds,
       previousSampleSha256,
+      controlRequest: { ...controlRequest },
       ollama: {
         healthy: true,
         inventory,
@@ -126,7 +145,7 @@ export function createObservationFixture({
       application: {
         backendHealthy: true,
         contentHealthy: true,
-        pm2: pm2For(phase),
+        pm2: pm2For(phase, runtimeSha),
       },
       service: {
         activeState: 'active',
@@ -180,6 +199,7 @@ export function createObservationFixture({
     completedAt,
     collectorSourceSha256,
     lastSampleSha256: previousSampleSha256,
+    controlRequest: { ...controlRequest },
     database: {
       path: path.join(root, `${phase}-api-usage.db`),
       columns: ['id', 'ts', 'provider', 'model', 'pricing_status', 'local_request_units'],
@@ -214,6 +234,8 @@ export function createObservationFixture({
       sampleCount,
       maximumGapSeconds: intervalSeconds,
     },
+    controlRequest: { ...controlRequest },
+    previousControlRequest: previousControlRequest ? { ...previousControlRequest } : null,
     retainedModel: { tag: OLLAMA_RETAINED, digest: OLLAMA_DIGESTS.get(OLLAMA_RETAINED)! },
     inventory,
     samples: {
@@ -239,5 +261,6 @@ export function createObservationFixture({
     resultPath,
     resultDigest: resultReference.sha256,
     result,
+    controlRequest,
   };
 }

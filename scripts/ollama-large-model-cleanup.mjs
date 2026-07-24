@@ -248,6 +248,7 @@ function makePlan(evidenceFile, evidence, runtime, expectedHost) {
     host: expectedHost,
     evidenceDigest: evidenceFile.digest,
     inventoryFingerprint: fingerprint,
+    observationControl: evidence.observationControl,
     retained: evidence.retained,
     delete: evidence.deleteModels,
   };

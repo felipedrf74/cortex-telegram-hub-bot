@@ -54,6 +54,48 @@ install_file_atomically() {
   fsync_path "$parent"
 }
 
+install_compatible_operational_asset() {
+  local source="$1" target="$2" mode="$3"
+  if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
+    echo "operational asset target is unsafe: $target" >&2
+    return 1
+  elif [ -e "$target" ]; then
+    [ "$(stat -c '%U:%G:%a' -- "$target")" = "root:root:${mode}" ] \
+      && [ "$(sha256sum -- "$target" | cut -d' ' -f1)" \
+        = "$(sha256sum -- "$source" | cut -d' ' -f1)" ] || {
+      echo "existing operational asset is not the exact compatible source: $target" >&2
+      return 1
+    }
+    return
+  fi
+  install_file_atomically "$source" "$target" root root "$mode"
+}
+
+ensure_compatible_operational_directory() {
+  local target="$1" mode="$2" parent
+  if [ -L "$target" ] || { [ -e "$target" ] && [ ! -d "$target" ]; }; then
+    echo "operational directory target is unsafe: $target" >&2
+    return 1
+  elif [ -d "$target" ]; then
+    [ "$(realpath -e -- "$target")" = "$target" ] \
+      && [ "$(stat -c '%U:%G:%a' -- "$target")" = "root:root:${mode}" ] || {
+      echo "existing operational directory is not exact: $target" >&2
+      return 1
+    }
+    return
+  fi
+  parent="$(dirname -- "$target")"
+  [ -d "$parent" ] && [ ! -L "$parent" ] \
+    && [ "$(realpath -e -- "$parent")" = "$parent" ] \
+    && [ "$(stat -c '%U:%G:%a' -- "$parent")" = root:root:755 ] || {
+    echo "operational directory parent is unsafe: $parent" >&2
+    return 1
+  }
+  install -d -o root -g root -m "$mode" -- "$target"
+  fsync_path "$target"
+  fsync_path "$parent"
+}
+
 publish_text_atomically() {
   local target="$1" mode="$2" parent temporary
   parent="$(dirname -- "$target")"
@@ -111,7 +153,14 @@ for required in \
   scripts/remote-promotion-control.sh \
   scripts/remote-promotion-worker-control.sh \
   scripts/remote-promotion-transaction.sh \
+  scripts/ollama-observation-collector.mjs \
+  scripts/ollama-soak-evidence.mjs \
+  scripts/ollama-observation-control.mjs \
+  scripts/ollama-systemd-dropin-transaction.mjs \
+  scripts/ollama-install-state-check.mjs \
   ops/sonarqube/nexus-release-sonar-lock.conf \
+  scripts/systemd/00-nexus-ollama-install-guard.conf \
+  scripts/systemd/nexus-ollama-observation@.service \
   scripts/systemd/nexus-release-promotion@.service \
   scripts/systemd/nexus-release-promotion-recovery.service; do
   validate_root_trusted_path \
@@ -166,6 +215,25 @@ fi
 install_file_atomically \
   "$SOURCE_ROOT/scripts/remote-promotion-control.sh" \
   /usr/local/sbin/nexus-release-promotion-control root root 755
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/ollama-observation-collector.mjs" \
+  /usr/local/sbin/nexus-ollama-observation-collector.mjs 700
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/ollama-soak-evidence.mjs" \
+  /usr/local/sbin/ollama-soak-evidence.mjs 700
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/ollama-observation-control.mjs" \
+  /usr/local/sbin/nexus-ollama-observation-control.mjs 700
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/ollama-systemd-dropin-transaction.mjs" \
+  /usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs 700
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/ollama-install-state-check.mjs" \
+  /usr/local/sbin/nexus-ollama-install-state-check.mjs 700
+ensure_compatible_operational_directory /etc/systemd/system/ollama.service.d 755
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/systemd/00-nexus-ollama-install-guard.conf" \
+  /etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf 644
 if [ -L "$SUDOERS_TARGET" ]; then
   echo "promotion sudoers target is a symlink" >&2
   exit 1
@@ -348,6 +416,9 @@ install_file_atomically \
 install_file_atomically \
   "$SOURCE_ROOT/scripts/systemd/nexus-release-promotion-recovery.service" \
   /etc/systemd/system/nexus-release-promotion-recovery.service root root 644
+install_compatible_operational_asset \
+  "$SOURCE_ROOT/scripts/systemd/nexus-ollama-observation@.service" \
+  /etc/systemd/system/nexus-ollama-observation@.service 644
 for pm2_unit in pm2-dominguez.service pm2-root.service; do
   pm2_dropin="/etc/systemd/system/${pm2_unit}.d"
   install -d -o root -g root -m 755 "$pm2_dropin"

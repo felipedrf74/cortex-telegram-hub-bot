@@ -158,6 +158,11 @@ scripts/ollama-large-model-cleanup.mjs	/usr/local/sbin/nexus-ollama-large-model-
 scripts/ollama-zero-swap-transition.mjs	/usr/local/sbin/nexus-ollama-zero-swap-transition.mjs	root:root	0700
 scripts/ollama-service-envelope-check.mjs	/usr/local/sbin/nexus-ollama-service-envelope-check.mjs	root:root	0700
 scripts/lib/ollama-service-envelope.mjs	/usr/local/sbin/lib/ollama-service-envelope.mjs	root:root	0700
+scripts/ollama-systemd-dropin-transaction.mjs	/usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs	root:root	0700
+scripts/ollama-install-state-check.mjs	/usr/local/sbin/nexus-ollama-install-state-check.mjs	root:root	0700
+scripts/ollama-observation-control.mjs	/usr/local/sbin/nexus-ollama-observation-control.mjs	root:root	0700
+scripts/systemd/00-nexus-ollama-install-guard.conf	/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf	root:root	0644
+scripts/systemd/nexus-ollama-observation@.service	/etc/systemd/system/nexus-ollama-observation@.service	root:root	0644
 scripts/quality-sonar-start-evidence.mjs	/usr/local/sbin/quality-sonar-start-evidence.mjs	root:root	0755
 scripts/quality-sonar-live-ollama-state.mjs	/usr/local/sbin/quality-sonar-live-ollama-state	root:root	0755
 scripts/quality-sonar-latency-gate.mjs	/usr/local/sbin/quality-sonar-latency-gate.mjs	root:root	0755
@@ -301,6 +306,11 @@ while IFS=$'\t' read -r relative target owner mode extra; do
     /usr/local/sbin/nexus-ollama-zero-swap-transition.mjs|\
     /usr/local/sbin/nexus-ollama-service-envelope-check.mjs|\
     /usr/local/sbin/lib/ollama-service-envelope.mjs|\
+    /usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs|\
+    /usr/local/sbin/nexus-ollama-install-state-check.mjs|\
+    /usr/local/sbin/nexus-ollama-observation-control.mjs|\
+    /etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf|\
+    /etc/systemd/system/nexus-ollama-observation@.service|\
     /usr/local/sbin/quality-sonar-start-evidence.mjs|\
     /usr/local/sbin/quality-sonar-live-ollama-state|\
     /usr/local/sbin/quality-sonar-latency-gate.mjs|\
@@ -389,6 +399,7 @@ validate_managed_directory() {
 }
 
 validate_managed_directory /usr/local/sbin/lib root root 0755
+validate_managed_directory /etc/systemd/system/ollama.service.d root root 0755
 validate_managed_directory /etc/sonarqube root root 0700
 validate_managed_directory "$STATE_DIR" root root 0700
 
@@ -596,6 +607,7 @@ ensure_directory() {
 }
 
 ensure_directory /usr/local/sbin/lib root root 0755
+ensure_directory /etc/systemd/system/ollama.service.d root root 0755
 ensure_directory /etc/sonarqube root root 0700
 ensure_directory "$STATE_DIR" root root 0700
 for ((index=0; index<${#data_paths[@]}; index+=1)); do
@@ -659,7 +671,8 @@ systemctl daemon-reload
 systemd-analyze verify \
   /etc/systemd/system/nexus-sonarqube.service \
   /etc/systemd/system/nexus-sonarqube-backup.service \
-  /etc/systemd/system/nexus-sonarqube-backup.timer >/dev/null
+  /etc/systemd/system/nexus-sonarqube-backup.timer \
+  /etc/systemd/system/nexus-ollama-observation@.service >/dev/null
 systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
 [ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
   && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \

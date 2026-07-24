@@ -600,6 +600,10 @@ describe('advisory SonarQube operational assets', () => {
           host: 'serverdominguez',
           evidenceDigest: `sha256:${createHash('sha256').update(soakRaw).digest('hex')}`,
           inventoryFingerprint: `sha256:${'e'.repeat(64)}`,
+          observationControl: {
+            staging: staging.controlRequest,
+            production: production.controlRequest,
+          },
           retained,
           delete: deleted,
           ackPlan: `sha256:${'f'.repeat(64)}`,
@@ -618,7 +622,26 @@ describe('advisory SonarQube operational assets', () => {
         '--current-boot-id', bootId,
       ], { encoding: 'utf8', env: collectorTestEnv });
       expect(JSON.parse(output).status).toBe('passed');
+      expect(JSON.parse(output).observationControl).toEqual({
+        staging: staging.controlRequest,
+        production: production.controlRequest,
+      });
       expect(JSON.parse(readFileSync(join(temp, 'result.json'), 'utf8')).dockerEngineCaptured).toBe(true);
+      const exactCleanup = readFileSync(resultPath);
+      const tamperedCleanup = JSON.parse(exactCleanup.toString('utf8'));
+      tamperedCleanup.plan.observationControl.production.requestSha256 =
+        `sha256:${'9'.repeat(64)}`;
+      writeFileSync(resultPath, `${JSON.stringify(tamperedCleanup)}\n`, { mode: 0o600 });
+      chmodSync(resultPath, 0o600);
+      expect(() => execFileSync(process.execPath, [
+        'scripts/quality-sonar-start-evidence.mjs', 'verify-start',
+        '--preflight-directory', temp,
+        '--ollama-soak-evidence', soakPath,
+        '--ollama-cleanup-result', resultPath,
+        '--current-boot-id', bootId,
+      ], { stdio: 'pipe', env: collectorTestEnv })).toThrow();
+      writeFileSync(resultPath, exactCleanup, { mode: 0o600 });
+      chmodSync(resultPath, 0o600);
       expect(() => execFileSync(process.execPath, [
         'scripts/quality-sonar-start-evidence.mjs', 'verify-start',
         '--preflight-directory', temp,

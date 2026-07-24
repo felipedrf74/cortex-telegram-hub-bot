@@ -318,12 +318,39 @@ When production is degraded:
    `MemoryHigh=4G`, `MemoryMax=6G`, and at most 512 MiB swap. Move swap to zero
    only after the additional healthy observation window. Staging, production,
    cleanup, Sonar enablement, and zero-swap authorization must use the
-   root-installed foreground observation collector. Hand-authored aggregates
-   are not evidence. Its canonical mode-0600 result must resolve to a bounded
+   root-installed durable systemd one-shot, which holds the shared
+   release/Sonar mutex while it owns exactly one foreground observation
+   collector. A Mac/SSH disconnect cannot terminate it, it never restarts
+   automatically, and a pending reboot or queued governed-service transition
+   blocks the window. Hand-authored aggregates are not evidence. Its
+   root-owned request/journal binds the exact phase, deployed PM2 SHA, prior
+   evidence digest and predecessor control request, boot, and final result
+   digest. The request UUID, request-file SHA-256, and expected runtime SHA
+   recur in the result, request aggregate, and every raw sample; every sampled
+   PM2 process must equal that SHA. Production preserves the exact staging
+   control binding, cleanup preserves both staging and production bindings,
+   and zero-swap preserves the cleanup's production binding. The canonical
+   mode-0600 result must resolve to a bounded
    raw hash chain captured on one boot and to exact-window read-only SQLite
    `api_usage` counts by provider/model with fail-closed pricing/local-unit
    persistence. The production window must reference and revalidate the prior
    staging result; the zero-swap window must bind the exact cleanup result.
+   The envelope installer accepts only an owner-digest-verified
+   Git archive whose PAX commit equals the SHA-named root bootstrap, restores
+   all replaced operational assets and the exact prior service state on
+   failure, and must not install a binary or pull a mutable model tag.
+   It requires the reviewed Ollama binary and systemd service-fragment digests,
+   and transaction commit independently queries the bounded loopback tags
+   endpoint, requires exactly one matching retained tag/digest, and binds the
+   observed response digest into the root-only receipt.
+   A permanent root-owned install-state guard is bootstrapped and loaded before
+   the first journal write, so a power loss before candidate publication still
+   blocks Ollama startup until exact recovery.
+   Commit and rollback seal an exact-result terminal journal before best-effort
+   predecessor-backup garbage collection. An active predecessor with no prior
+   override receives only a one-use restart authorization bound to the
+   transaction, candidate digest, current boot, and live rollback-helper PID;
+   reboot or replay remains blocked.
    The fixed envelope and root-owned operational tools must be installed before
    the first staging observation. Sonar authorization must recheck the live
    sole retained tag/digest and effective envelope immediately before Compose,

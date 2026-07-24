@@ -233,6 +233,50 @@ fetch(process.env.OLLAMA_HOST + '/test/remove', {
     expect(fs.existsSync(fakeLogPath)).toBe(false);
   });
 
+  it('rejects PM2 SHA drift and every tampered control-request binding', async () => {
+    let fixtures = writeEvidence({
+      productionSampleMutation(sample, sampleSequence) {
+        if (sampleSequence === 1) {
+          sample.application.pm2[0].releaseSha = '9'.repeat(40);
+        }
+      },
+    });
+    let result = await runGate(args(), environment());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('requested exact runtime SHA');
+
+    fixtures = writeEvidence({
+      productionSampleMutation(sample, sampleSequence) {
+        if (sampleSequence === 1) {
+          sample.controlRequest.requestSha256 = `sha256:${'9'.repeat(64)}`;
+        }
+      },
+    });
+    result = await runGate(args(), environment());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('control request identity mismatch');
+
+    fixtures = writeEvidence({
+      productionRequestMutation(request) {
+        request.controlRequest.requestId = '99999999-2222-4333-8444-555555555555';
+      },
+    });
+    result = await runGate(args(), environment());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('request evidence control request identity mismatch');
+
+    fixtures = writeEvidence({
+      productionResultMutation(observation) {
+        observation.previousControlRequest.requestSha256 = `sha256:${'8'.repeat(64)}`;
+      },
+    });
+    result = await runGate(args(), environment());
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('prior staging control request');
+    expect(fixtures.production.resultPath).toBe(evidencePath);
+    expect(fs.existsSync(fakeLogPath)).toBe(false);
+  });
+
   it('rejects unexpected runtime inventory, digest mismatch, and loaded deletion targets', async () => {
     inventory.push({ name: 'unexpected:latest', model: 'unexpected:latest', digest: 'e'.repeat(64) });
     let result = await runGate(args(), environment());
