@@ -10,7 +10,12 @@ SAMPLE_SECONDS=10
 MIN_AVAILABLE_GIB=16
 MIN_DISK_FREE_PERCENT=20
 EXPECTED_HOST="${SONAR_EXPECTED_HOST:-serverdominguez}"
-PM2_BIN="${PM2_BIN:-/home/dominguez/.npm-global/bin/pm2}"
+PM2_USER=dominguez
+PM2_USER_HOME=/home/dominguez
+PM2_HOME=/home/dominguez/.pm2
+PM2_BIN=/home/dominguez/.npm-global/bin/pm2
+RUNUSER_BIN=/usr/sbin/runuser
+CLOUDFLARED_UNIT=nexus-cloudflared.service
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
 HEALTH_URLS=(http://127.0.0.1:8200/health http://127.0.0.1:8201/health)
@@ -21,7 +26,6 @@ Usage: quality-sonar-preflight.sh --output <absolute-private-dir> [options]
   --sample-seconds <0-60>       Observation window for swap and PM2 stability.
   --min-available-gib <16-30>   Minimum MemAvailable; default 16 GiB.
   --min-disk-free-percent <20-90>
-  --pm2-bin <absolute-path>
   --health-url <loopback-url>   Replaces default URLs on first use; repeatable.
 EOF
 }
@@ -33,7 +37,6 @@ while [ $# -gt 0 ]; do
     --sample-seconds) SAMPLE_SECONDS="$2"; shift 2 ;;
     --min-available-gib) MIN_AVAILABLE_GIB="$2"; shift 2 ;;
     --min-disk-free-percent) MIN_DISK_FREE_PERCENT="$2"; shift 2 ;;
-    --pm2-bin) PM2_BIN="$2"; shift 2 ;;
     --health-url)
       if [ "$custom_health" = false ]; then HEALTH_URLS=(); custom_health=true; fi
       HEALTH_URLS+=("$2"); shift 2 ;;
@@ -48,7 +51,15 @@ done
 [[ "$SAMPLE_SECONDS" =~ ^[0-9]+$ ]] && [ "$SAMPLE_SECONDS" -le 60 ] || { echo "Invalid sample interval" >&2; exit 64; }
 [[ "$MIN_AVAILABLE_GIB" =~ ^[0-9]+$ ]] && [ "$MIN_AVAILABLE_GIB" -ge 16 ] && [ "$MIN_AVAILABLE_GIB" -le 30 ] || { echo "Invalid memory floor" >&2; exit 64; }
 [[ "$MIN_DISK_FREE_PERCENT" =~ ^[0-9]+$ ]] && [ "$MIN_DISK_FREE_PERCENT" -ge 20 ] && [ "$MIN_DISK_FREE_PERCENT" -le 90 ] || { echo "Invalid disk floor" >&2; exit 64; }
+id "$PM2_USER" >/dev/null 2>&1 || { echo "PM2 service user is unavailable" >&2; exit 1; }
 [[ "$PM2_BIN" == /* ]] && [ -x "$PM2_BIN" ] || { echo "PM2 binary is unavailable" >&2; exit 1; }
+[[ "$PM2_USER_HOME" == /* && "$PM2_HOME" == "$PM2_USER_HOME"/* ]] \
+  && [ -d "$PM2_USER_HOME" ] && [ ! -L "$PM2_USER_HOME" ] \
+  && [ -d "$PM2_HOME" ] && [ ! -L "$PM2_HOME" ] \
+  && [ "$(stat -c '%U' -- "$PM2_USER_HOME")" = "$PM2_USER" ] \
+  && [ "$(stat -c '%U:%a' -- "$PM2_HOME")" = "$PM2_USER:700" ] \
+  || { echo "PM2 service-user home is unsafe" >&2; exit 1; }
+[ -x "$RUNUSER_BIN" ] || { echo "runuser is unavailable" >&2; exit 1; }
 [ -x "$CURL_BIN" ] && [ -x "$NODE_BIN" ] || { echo "curl and node are required" >&2; exit 1; }
 observed_host="$(hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 [ "$observed_host" = "$EXPECTED_HOST" ] || { echo "Preflight must run on $EXPECTED_HOST (observed $observed_host)" >&2; exit 1; }
@@ -108,7 +119,7 @@ capture_or_mark routes.txt capture_routes
   printf 'tailscaleProcessCount=%s\n' "$(ps -eo comm= | awk '$1 == "tailscaled" { n++ } END { print n + 0 }')"
 } >"$OUTPUT/tailscale.txt"
 {
-  systemctl show cloudflared -p ActiveState -p SubState -p NRestarts --no-pager 2>/dev/null || true
+  systemctl show "$CLOUDFLARED_UNIT" -p ActiveState -p SubState -p NRestarts --no-pager 2>/dev/null || true
   printf 'cloudflaredProcessCount=%s\n' "$(ps -eo comm= | awk '$1 == "cloudflared" { n++ } END { print n + 0 }')"
 } >"$OUTPUT/cloudflare.txt"
 chmod 0600 "$OUTPUT/tailscale.txt" "$OUTPUT/cloudflare.txt"
@@ -152,7 +163,14 @@ fi
 [ "$oom_count" -eq 0 ] || record_failure "kernel_oom_events_last_24h:$oom_count"
 
 pm2_snapshot() {
-  "$PM2_BIN" jlist | "$NODE_BIN" -e '
+  "$RUNUSER_BIN" -u "$PM2_USER" -- \
+    /usr/bin/env -i \
+      HOME="$PM2_USER_HOME" \
+      USER="$PM2_USER" \
+      LOGNAME="$PM2_USER" \
+      PATH=/usr/local/bin:/usr/bin:/bin \
+      PM2_HOME="$PM2_HOME" \
+      "$PM2_BIN" jlist | "$NODE_BIN" -e '
     let raw="";
     process.stdin.on("data", d => raw += d).on("end", () => {
       const expected = ["nexus-hub", "content-engine", "nexus-hub-staging", "content-engine-staging"];

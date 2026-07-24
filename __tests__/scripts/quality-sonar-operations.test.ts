@@ -99,6 +99,16 @@ describe('advisory SonarQube operational assets', () => {
     expect(preflight).toContain('no_authoritative_firewall_backend_snapshot');
     expect(preflight).toContain('quality-sonar-start-evidence');
     expect(preflight).toContain('/proc/sys/kernel/random/boot_id');
+    expect(preflight).toContain('PM2_USER=dominguez');
+    expect(preflight).toContain('PM2_HOME=/home/dominguez/.pm2');
+    expect(preflight).toContain('RUNUSER_BIN=/usr/sbin/runuser');
+    expect(preflight).toContain('CLOUDFLARED_UNIT=nexus-cloudflared.service');
+    expect(preflight).toContain('"$RUNUSER_BIN" -u "$PM2_USER" --');
+    expect(preflight).toContain('/usr/bin/env -i');
+    expect(preflight).toContain('PM2_HOME="$PM2_HOME"');
+    expect(preflight).toContain('systemctl show "$CLOUDFLARED_UNIT"');
+    expect(preflight).not.toContain('pm2_snapshot() {\n  "$PM2_BIN" jlist');
+    expect(preflight).not.toMatch(/systemctl show (?:cloudflared|cloudflared\.service)\b/);
     for (const evidence of [
       'firewall-ufw.txt',
       'firewall-nft.txt',
