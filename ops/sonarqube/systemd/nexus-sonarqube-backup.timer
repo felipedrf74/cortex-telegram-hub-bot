@@ -1,5 +1,6 @@
 [Unit]
 Description=Daily encrypted SonarQube PostgreSQL backup
+ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1
 
 [Timer]
 OnCalendar=*-*-* 03:15:00 UTC

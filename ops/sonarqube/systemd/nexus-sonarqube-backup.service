@@ -2,6 +2,7 @@
 Description=Encrypted off-host SonarQube PostgreSQL backup
 After=docker.service nexus-sonarqube.service
 Requires=docker.service
+ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1
 
 [Service]
 Type=oneshot

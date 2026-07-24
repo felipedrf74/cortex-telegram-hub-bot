@@ -14,6 +14,7 @@ OLLAMA_SOAK_POINTER="${SONAR_OLLAMA_SOAK_POINTER:-/etc/sonarqube/ollama-soak-evi
 OLLAMA_CLEANUP_POINTER="${SONAR_OLLAMA_CLEANUP_POINTER:-/etc/sonarqube/ollama-cleanup-result.path}"
 BACKUP_CONFIG="${SONAR_BACKUP_CONFIG:-/etc/sonarqube/backup.env}"
 SHARED_MUTEX=/run/lock/nexus-release-sonar.lock
+INSTALL_JOURNAL=/var/lib/nexus-sonarqube/install-in-progress.v1
 DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
@@ -24,6 +25,8 @@ usage() { echo "Usage: quality-sonar-stack.sh <config|start|stop|restart|status>
 case "$ACTION" in config|start|stop|restart|status) ;; -h|--help|'') usage; [ -n "$ACTION" ] && exit 0 || exit 64 ;; *) usage >&2; exit 64 ;; esac
 
 [ "$(id -u)" -eq 0 ] || { echo "The Sonar stack wrapper must run as root" >&2; exit 1; }
+[ ! -e "$INSTALL_JOURNAL" ] && [ ! -L "$INSTALL_JOURNAL" ] \
+  || { echo "Sonar asset installation is incomplete; inspect and rerun the root installer" >&2; exit 1; }
 [ -x "$DOCKER_BIN" ] || { echo "Docker Engine is not installed" >&2; exit 1; }
 [ -x "$NODE_BIN" ] || { echo "Node.js is required to validate the rendered Sonar stack" >&2; exit 1; }
 for path in "$COMPOSE_FILE" "$LOCK_FILE" "$SECRETS_FILE"; do
@@ -47,6 +50,39 @@ backup="$SCRIPT_DIR/quality-sonar-backup.sh"
 [ -x "$backup" ] || backup=/usr/local/sbin/quality-sonar-backup
 
 compose=("$DOCKER_BIN" compose --project-directory "$STACK_DIR" --env-file "$LOCK_FILE" --env-file "$SECRETS_FILE" -f "$COMPOSE_FILE")
+
+read_exact_lock_value() {
+  local key="$1"
+  awk -F= -v key="$key" '
+    $1 == key {
+      count += 1
+      value = substr($0, index($0, "=") + 1)
+    }
+    END {
+      if (count != 1) exit 1
+      print value
+    }
+  ' "$LOCK_FILE"
+}
+
+LOCKED_SONAR_IMAGE="$(read_exact_lock_value SONARQUBE_IMAGE)" \
+  || { echo "Sonar image lock must contain exactly one SONARQUBE_IMAGE" >&2; exit 1; }
+LOCKED_POSTGRES_IMAGE="$(read_exact_lock_value POSTGRES_IMAGE)" \
+  || { echo "Sonar image lock must contain exactly one POSTGRES_IMAGE" >&2; exit 1; }
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?(SONARQUBE_IMAGE|POSTGRES_IMAGE)[[:space:]]*=' "$SECRETS_FILE"; then
+  echo "Sonar secrets file must not override immutable image references" >&2
+  exit 1
+fi
+
+verify_prepulled_images() {
+  local image
+  for image in "$LOCKED_SONAR_IMAGE" "$LOCKED_POSTGRES_IMAGE"; do
+    "$DOCKER_BIN" image inspect "$image" >/dev/null 2>&1 || {
+      echo "Required immutable image is not pre-pulled: ${image%@*}@<reviewed-digest>" >&2
+      return 1
+    }
+  done
+}
 
 assert_directory() {
   local path="$1" expected_owner="$2" expected_mode="$3"
@@ -150,12 +186,18 @@ validate_config() {
     rm -f "$rendered"
     return 1
   fi
-  if ! "$NODE_BIN" - "$rendered" <<'NODE'
+  if ! "$NODE_BIN" - \
+      "$rendered" "$LOCKED_POSTGRES_IMAGE" "$LOCKED_SONAR_IMAGE" <<'NODE'
 const fs = require('fs');
 const value = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const lockedPostgresImage = process.argv[3];
+const lockedSonarImage = process.argv[4];
 const postgres = value.services?.postgres;
 const sonar = value.services?.sonarqube;
 if (!postgres || !sonar) throw new Error('required services are absent');
+if (postgres.image !== lockedPostgresImage || sonar.image !== lockedSonarImage) {
+  throw new Error('rendered service image differs from the immutable image lock');
+}
 if (postgres.restart !== 'no' || sonar.restart !== 'no') throw new Error('Docker restart policy must not bypass root start authorization');
 if ((postgres.ports || []).length !== 0) throw new Error('PostgreSQL must not publish a host port');
 const ports = sonar.ports || [];
@@ -207,7 +249,8 @@ start_stack() {
   # historical evidence cannot hide a reintroduced model, digest drift, or an
   # expanded effective service envelope.
   verify_live_ollama
-  "${compose[@]}" up -d
+  verify_prepulled_images
+  "${compose[@]}" up -d --pull never
   if ! "$health" --url http://127.0.0.1:9000; then
     "${compose[@]}" stop -t 3600 sonarqube postgres >/dev/null 2>&1 || true
     echo "Sonar failed startup health; stopped advisory containers" >&2

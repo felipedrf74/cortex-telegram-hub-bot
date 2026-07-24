@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "56b292472dfb770dda81420c9d3e0017bed3141026025185cec6da9e65af7d3e",
-    "baseCommit": "75e0ff4af06bae7b03be7d55b3d5745c37406465",
-    "baseCommitTimestamp": "2026-07-24T02:59:08+01:00",
-    "trackedFiles": 2858,
+    "sourceDigest": "d084ef14de7280bad38adc7e12e90792b7fbc0a72515341670490b0f582d47aa",
+    "baseCommit": "9119a7e69f3fd5910a44de56a582566e46e06aac",
+    "baseCommitTimestamp": "2026-07-24T03:24:50+01:00",
+    "trackedFiles": 2859,
     "sourceFiles": 1025
   },
   "navigation": {
