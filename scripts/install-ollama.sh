@@ -201,8 +201,8 @@ echo "  ok: listening on 127.0.0.1:11434 only"
 
 # ── Pull the sole approved model (FATAL on failure) ────────────────────────
 log "Pulling small-only model: ${PRIMARY_MODEL} (fatal on failure)"
-if ! ollama pull "${PRIMARY_MODEL}" 2>&1 | tee /tmp/ollama-pull-primary.log; then
-  fail "small-only model pull failed — see /tmp/ollama-pull-primary.log; no alternate local tag is permitted" 2
+if ! ollama pull "${PRIMARY_MODEL}"; then
+  fail "small-only model pull failed — inspect the Ollama output above; no alternate local tag is permitted" 2
 fi
 
 # ── Warm-load + smoke ───────────────────────────────────────────────────────

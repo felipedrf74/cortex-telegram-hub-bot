@@ -191,6 +191,22 @@ process.exit(64);
       .toBeLessThan(source.lastIndexOf('nexus-ollama-service-envelope-check.mjs'));
   });
 
+  it('does not send the privileged model pull through a predictable temporary path', () => {
+    const source = fs.readFileSync(INSTALLER, 'utf8');
+    const pullStart = source.indexOf('log "Pulling small-only model:');
+    const pullEnd = source.indexOf('# ── Warm-load + smoke', pullStart);
+
+    expect(pullStart).toBeGreaterThan(0);
+    expect(pullEnd).toBeGreaterThan(pullStart);
+
+    const pullBlock = source.slice(pullStart, pullEnd);
+    expect(pullBlock).toContain('if ! ollama pull "${PRIMARY_MODEL}"; then');
+    expect(pullBlock).toContain('inspect the Ollama output above');
+    expect(pullBlock).not.toMatch(/\btee\b/);
+    expect(pullBlock).not.toMatch(/\/(?:var\/)?tmp\//);
+    expect(source).not.toContain('/tmp/ollama-pull-primary.log');
+  });
+
   it('accepts only the exact effective 4G/6G/512M/200% one-model baseline', () => {
     const valid = run(process.execPath, [
       CHECKER,
