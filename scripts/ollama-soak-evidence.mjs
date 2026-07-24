@@ -22,6 +22,9 @@ export const OLLAMA_DELETE_TAGS = Object.freeze([
 export const OLLAMA_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
 const BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const CONTROL_REQUEST_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const RUNTIME_SHA = /^[0-9a-f]{40}$/u;
 const RUN_ID = /^(?:staging|production|zero_swap)-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$/u;
 const MIN_OBSERVATION_SECONDS = 24 * 60 * 60;
 const PRODUCTION_INTERVAL_SECONDS = 300;
@@ -143,6 +146,34 @@ function assertInventory(phase, inventory, retained) {
   if (!observedRetained || observedRetained.digest !== retained.digest) fail('collector retained-model digest is inconsistent');
 }
 
+function controlRequest(value, label) {
+  exactKeys(value, ['requestId', 'requestSha256', 'runtimeSha'], label);
+  if (!CONTROL_REQUEST_ID.test(value.requestId || '')
+      || !OLLAMA_DIGEST_PATTERN.test(value.requestSha256 || '')
+      || !RUNTIME_SHA.test(value.runtimeSha || '')) {
+    fail(`${label} identity is invalid`);
+  }
+  return {
+    requestId: value.requestId,
+    requestSha256: value.requestSha256,
+    runtimeSha: value.runtimeSha,
+  };
+}
+
+function sameControlRequest(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function cleanupObservationControl(value, label = 'cleanup observation control') {
+  exactKeys(value, ['staging', 'production'], label);
+  const staging = controlRequest(value.staging, `${label}.staging`);
+  const production = controlRequest(value.production, `${label}.production`);
+  if (staging.runtimeSha !== production.runtimeSha) {
+    fail(`${label} does not bind one exact staged and production runtime SHA`);
+  }
+  return { staging, production };
+}
+
 function validateCollectorIdentity(value, runDirectory) {
   exactKeys(value, ['executablePath', 'sourceSha256', 'executionUid'], 'collector identity');
   if (!OLLAMA_DIGEST_PATTERN.test(value.sourceSha256 || '')) fail('collector source digest is invalid');
@@ -188,7 +219,7 @@ function validateSample(file, expected, previousDigest, baseline) {
   const value = file.value;
   exactKeys(value, [
     'schema', 'runId', 'phase', 'sequence', 'capturedAt', 'bootId', 'monotonicSeconds',
-    'previousSampleSha256', 'ollama', 'application', 'service', 'host',
+    'previousSampleSha256', 'controlRequest', 'ollama', 'application', 'service', 'host',
   ], `sample ${expected.sequence}`);
   if (value.schema !== OLLAMA_COLLECTOR_SAMPLE_SCHEMA || value.runId !== expected.runId
       || value.phase !== expected.phase || value.sequence !== expected.sequence || value.bootId !== expected.bootId) {
@@ -197,6 +228,13 @@ function validateSample(file, expected, previousDigest, baseline) {
   timestamp(value.capturedAt, `sample ${expected.sequence}.capturedAt`);
   safeInteger(value.monotonicSeconds, `sample ${expected.sequence}.monotonicSeconds`);
   if (value.previousSampleSha256 !== previousDigest) fail(`sample ${expected.sequence} hash chain is broken`);
+  const observedControlRequest = controlRequest(
+    value.controlRequest,
+    `sample ${expected.sequence}.controlRequest`,
+  );
+  if (!sameControlRequest(observedControlRequest, expected.controlRequest)) {
+    fail(`sample ${expected.sequence} control request identity mismatch`);
+  }
 
   exactKeys(value.ollama, ['healthy', 'inventory', 'loaded'], `sample ${expected.sequence}.ollama`);
   if (value.ollama.healthy !== true) fail(`sample ${expected.sequence} reports unhealthy Ollama`);
@@ -215,7 +253,9 @@ function validateSample(file, expected, previousDigest, baseline) {
   for (const [index, row] of value.application.pm2.entries()) {
     exactKeys(row, ['name', 'status', 'restartCount', 'releaseSha'], `sample ${expected.sequence}.application.pm2[${index}]`);
     if (row.name !== expected.pm2Names[index] || row.status !== 'online'
-        || !/^[a-f0-9]{40}$/u.test(row.releaseSha || '')) fail('collector PM2 identity is unhealthy or ambiguous');
+        || row.releaseSha !== expected.controlRequest.runtimeSha) {
+      fail('collector PM2 identity does not equal the requested exact runtime SHA');
+    }
     safeInteger(row.restartCount, 'PM2 restart count');
   }
 
@@ -251,13 +291,20 @@ function validateRequestEvidence(file, expected) {
   const value = file.value;
   exactKeys(value, [
     'schema', 'runId', 'phase', 'host', 'bootId', 'startedAt', 'completedAt',
-    'collectorSourceSha256', 'lastSampleSha256', 'database', 'rows', 'totals',
+    'collectorSourceSha256', 'lastSampleSha256', 'controlRequest', 'database', 'rows',
+    'totals',
   ], 'collector request evidence');
   if (value.schema !== OLLAMA_COLLECTOR_REQUEST_SCHEMA || value.runId !== expected.runId
       || value.phase !== expected.phase || value.host !== expected.host || value.bootId !== expected.bootId
       || value.startedAt !== expected.startedAt || value.completedAt !== expected.completedAt
       || value.collectorSourceSha256 !== expected.collectorSourceSha256
       || value.lastSampleSha256 !== expected.lastSampleSha256) fail('request evidence provenance or exact window mismatch');
+  if (!sameControlRequest(
+    controlRequest(value.controlRequest, 'request evidence controlRequest'),
+    expected.controlRequest,
+  )) {
+    fail('request evidence control request identity mismatch');
+  }
   exactKeys(value.database, ['path', 'columns', 'quickCheck', 'invalidPersistenceRows'], 'request evidence database');
   if (!isAbsolute(value.database.path || '') || value.database.quickCheck !== 'ok'
       || value.database.invalidPersistenceRows !== 0
@@ -304,12 +351,17 @@ export function validateOllamaObservationEvidence(file, {
   exactKeys(value, [
     'schema', 'status', 'host', 'phase', 'runId', 'collector', 'bootId', 'startedAt',
     'completedAt', 'startedMonotonicSeconds', 'completedMonotonicSeconds', 'sampling',
-    'retainedModel', 'inventory', 'samples', 'requestEvidence', 'previousObservation', 'subject',
+    'controlRequest', 'previousControlRequest', 'retainedModel', 'inventory', 'samples',
+    'requestEvidence', 'previousObservation', 'subject',
   ], 'collector result');
   if (value.schema !== OLLAMA_COLLECTOR_RESULT_SCHEMA || value.status !== 'complete') fail('collector result is not complete');
   if (value.host !== expectedHost || !['staging', 'production', 'zero_swap'].includes(value.phase)
       || (expectedPhase && value.phase !== expectedPhase) || !RUN_ID.test(value.runId || '')) fail('collector result host, phase, or run identity is invalid');
   if (!BOOT_ID.test(value.bootId || '')) fail('collector result boot identity is invalid');
+  const currentControlRequest = controlRequest(
+    value.controlRequest,
+    'collector result controlRequest',
+  );
   const runDirectory = dirname(file.path);
   const expectedBasename = allowCandidateResult ? 'result.candidate.json' : 'result.json';
   if (basename(file.path) !== expectedBasename) fail(`collector result must use its protected ${expectedBasename} path`);
@@ -357,7 +409,13 @@ export function validateOllamaObservationEvidence(file, {
   for (let sequence = 0; sequence < sampleCount; sequence += 1) {
     const sample = readSecureJsonEvidence(join(sampleDirectory, expectedNames[sequence]), `collector sample ${sequence}`);
     const validated = validateSample(sample, {
-      sequence, runId: value.runId, phase: value.phase, bootId: value.bootId, inventory, pm2Names,
+      sequence,
+      runId: value.runId,
+      phase: value.phase,
+      bootId: value.bootId,
+      inventory,
+      pm2Names,
+      controlRequest: currentControlRequest,
     }, previous, baseline);
     if (!baseline) baseline = validated.counters;
     if (!first) first = validated.value;
@@ -384,10 +442,13 @@ export function validateOllamaObservationEvidence(file, {
   const totals = validateRequestEvidence(requests, {
     runId: value.runId, phase: value.phase, host: value.host, bootId: value.bootId,
     startedAt: value.startedAt, completedAt: value.completedAt,
-    collectorSourceSha256: value.collector.sourceSha256, lastSampleSha256: value.samples.lastSha256,
+    collectorSourceSha256: value.collector.sourceSha256,
+    lastSampleSha256: value.samples.lastSha256,
+    controlRequest: currentControlRequest,
   });
 
   let previousObservation = null;
+  let previousControlRequest = null;
   if (value.phase === 'production') {
     const previousFile = reference(value.previousObservation, 'staging collector result');
     previousObservation = validateOllamaObservationEvidence(previousFile, {
@@ -398,6 +459,14 @@ export function validateOllamaObservationEvidence(file, {
         || JSON.stringify(previousObservation.inventory) !== JSON.stringify(inventory)) {
       fail('staging and production collector model identities differ');
     }
+    previousControlRequest = controlRequest(
+      value.previousControlRequest,
+      'production previousControlRequest',
+    );
+    if (!sameControlRequest(previousControlRequest, previousObservation.controlRequest)
+        || currentControlRequest.runtimeSha !== previousControlRequest.runtimeSha) {
+      fail('production collector is not bound to the exact prior staging control request');
+    }
   } else if (value.previousObservation !== null) fail(`${value.phase} collector result must not declare a previous observation`);
 
   let subject = null;
@@ -405,8 +474,28 @@ export function validateOllamaObservationEvidence(file, {
     const subjectFile = reference(value.subject, 'zero-swap cleanup subject');
     if ((expectedSubjectDigest && subjectFile.digest !== expectedSubjectDigest)
         || (expectedSubjectPath && subjectFile.path !== expectedSubjectPath)) fail('zero-swap collector subject does not match the exact cleanup result');
+    const cleanup = subjectFile.value;
+    if (cleanup?.schema !== 'nexus.ollama-large-model-cleanup-result.v1'
+        || cleanup.status !== 'complete') {
+      fail('zero-swap cleanup subject is not a complete governed cleanup result');
+    }
+    const cleanupControl = cleanupObservationControl(
+      cleanup.plan?.observationControl,
+      'zero-swap cleanup observation control',
+    );
+    previousControlRequest = controlRequest(
+      value.previousControlRequest,
+      'zero-swap previousControlRequest',
+    );
+    if (!sameControlRequest(previousControlRequest, cleanupControl.production)
+        || currentControlRequest.runtimeSha !== previousControlRequest.runtimeSha) {
+      fail('zero-swap collector is not bound to the cleanup production control request');
+    }
     subject = { path: subjectFile.path, sha256: subjectFile.digest };
   } else if (value.subject !== null) fail(`${value.phase} collector result must not declare a subject`);
+  if (value.phase === 'staging' && value.previousControlRequest !== null) {
+    fail('staging collector result must not declare a previous control request');
+  }
 
   return {
     path: file.path,
@@ -419,6 +508,8 @@ export function validateOllamaObservationEvidence(file, {
     completedAt: value.completedAt,
     startedMs,
     completedMs,
+    controlRequest: currentControlRequest,
+    previousControlRequest,
     previousObservation,
     subject,
   };
@@ -444,6 +535,10 @@ export function validateOllamaSoakEvidence(file, {
     deleteModels,
     generatedAt: production.completedAt,
     generatedAtMs: production.completedMs,
+    observationControl: {
+      staging: staging.controlRequest,
+      production: production.controlRequest,
+    },
     soaks: { staging, production },
   };
 }

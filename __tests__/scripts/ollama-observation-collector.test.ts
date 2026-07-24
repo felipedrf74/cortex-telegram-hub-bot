@@ -8,6 +8,9 @@ import { OLLAMA_DELETE, OLLAMA_RETAINED } from './helpers/ollama-observation-fix
 
 const COLLECTOR = path.resolve('scripts/ollama-observation-collector.mjs');
 const PYTHON = '/usr/bin/python3';
+const RUNTIME_SHA = '1'.repeat(40);
+const CONTROL_REQUEST_ID = '11111111-2222-4333-8444-555555555555';
+const CONTROL_REQUEST_SHA256 = `sha256:${'e'.repeat(64)}`;
 type RunResult = { status: number | string; stdout: string; stderr: string };
 
 describe('Ollama observation collector host contract', () => {
@@ -87,6 +90,9 @@ connection.close()
     return [
       '--phase', 'staging',
       '--output-directory', outputRoot,
+      '--expected-runtime-sha', RUNTIME_SHA,
+      '--control-request-id', CONTROL_REQUEST_ID,
+      '--control-request-sha256', CONTROL_REQUEST_SHA256,
       '--duration-seconds', '2',
       '--interval-seconds', '2',
       '--database', database,
@@ -139,8 +145,8 @@ process.stdout.write([
 `);
     writeExecutable(pm2, `#!/usr/bin/env node
 process.stdout.write(JSON.stringify([
-  { name: 'content-engine-staging', pm2_env: { status: 'online', restart_time: 0, NEXUS_RELEASE_SHA: '${'1'.repeat(40)}' } },
-  { name: 'nexus-hub-staging', pm2_env: { status: 'online', restart_time: 0, NEXUS_RELEASE_SHA: '${'1'.repeat(40)}' } },
+  { name: 'content-engine-staging', pm2_env: { status: 'online', restart_time: 0, NEXUS_RELEASE_SHA: '${RUNTIME_SHA}' } },
+  { name: 'nexus-hub-staging', pm2_env: { status: 'online', restart_time: 0, NEXUS_RELEASE_SHA: '${RUNTIME_SHA}' } },
 ]));
 `);
     writeExecutable(journalctl, '#!/bin/sh\nexit 0\n');
@@ -183,10 +189,25 @@ process.stdout.write(JSON.stringify([
     const summary = JSON.parse(run.stdout);
     expect(summary).toMatchObject({ status: 'complete', phase: 'staging' });
     const result = JSON.parse(fs.readFileSync(summary.result, 'utf8'));
+    expect(result.controlRequest).toEqual({
+      requestId: CONTROL_REQUEST_ID,
+      requestSha256: CONTROL_REQUEST_SHA256,
+      runtimeSha: RUNTIME_SHA,
+    });
     expect(result.sampling).toEqual({ intervalSeconds: 2, sampleCount: 2, maximumGapSeconds: 2 });
     expect(result.requestEvidence.path).toBe(path.join(path.dirname(summary.result), 'requests.json'));
     expect(fs.readdirSync(result.samples.directory)).toEqual(['000000.json', '000001.json']);
     const request = JSON.parse(fs.readFileSync(result.requestEvidence.path, 'utf8'));
+    expect(request.controlRequest).toEqual(result.controlRequest);
+    for (const samplePath of fs.readdirSync(result.samples.directory)) {
+      const sample = JSON.parse(
+        fs.readFileSync(path.join(result.samples.directory, samplePath), 'utf8'),
+      );
+      expect(sample.controlRequest).toEqual(result.controlRequest);
+      expect(sample.application.pm2.every(
+        (row: { releaseSha: string }) => row.releaseSha === RUNTIME_SHA,
+      )).toBe(true);
+    }
     expect(request.database).toMatchObject({ quickCheck: 'ok', invalidPersistenceRows: 0 });
     expect(request.rows).toEqual([{
       provider: 'ollama', model: OLLAMA_RETAINED, requests: 1, localRequestUnits: 1,
@@ -205,6 +226,21 @@ process.stdout.write(JSON.stringify([
     expect(runDirectories).toHaveLength(1);
     const runDirectory = path.join(outputRoot, runDirectories[0]);
     expect(fs.existsSync(path.join(runDirectory, 'failure.json'))).toBe(true);
+    expect(fs.existsSync(path.join(runDirectory, 'result.json'))).toBe(false);
+  }, 15_000);
+
+  it('rejects a full window whose PM2 samples are consistently on another SHA', async () => {
+    createDatabase(1);
+    writeExecutable(pm2, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify([
+  { name: 'content-engine-staging', pm2_env: { status: 'online', restart_time: 0, NEXUS_RELEASE_SHA: '${'2'.repeat(40)}' } },
+  { name: 'nexus-hub-staging', pm2_env: { status: 'online', restart_time: 0, NEXUS_RELEASE_SHA: '${'2'.repeat(40)}' } },
+]));
+`);
+    const run = await runCollector(args(), environment());
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain('every PM2 sample must equal the requested exact runtime SHA');
+    const runDirectory = path.join(outputRoot, fs.readdirSync(outputRoot)[0]);
     expect(fs.existsSync(path.join(runDirectory, 'result.json'))).toBe(false);
   }, 15_000);
 

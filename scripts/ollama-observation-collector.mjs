@@ -33,6 +33,7 @@ const RELEASE_LOCK_DIRECTORIES = Object.freeze([
   '/home/dominguez/telegram-hub-bot/.local/release/locks/prod-deploy.lock',
   '/home/dominguez/telegram-hub-bot-staging/.local/release/locks/staging-deploy.lock',
 ]);
+const REBOOT_REQUIRED_PATH = '/var/run/reboot-required';
 const DATABASES = Object.freeze({
   staging: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
   production: '/home/dominguez/telegram-hub-bot/data/bot.db',
@@ -137,7 +138,9 @@ function testMode() {
 function usage() {
   process.stdout.write(`Usage:
   sudo /usr/local/sbin/nexus-ollama-observation-collector.mjs \\
-    --phase staging --output-directory ${OBSERVATION_ROOT}
+    --phase staging --output-directory ${OBSERVATION_ROOT} \\
+    --expected-runtime-sha <40-hex> --control-request-id <uuid> \\
+    --control-request-sha256 <sha256:...>
   sudo /usr/local/sbin/nexus-ollama-observation-collector.mjs \\
     --phase production --output-directory ${OBSERVATION_ROOT} \\
     --previous-observation <staging-result.json>
@@ -187,6 +190,9 @@ function parseArgs(argv) {
       '--journalctl-bin': 'journalctlBin',
       '--python-bin': 'pythonBin',
       '--proc-root': 'procRoot',
+      '--expected-runtime-sha': 'expectedRuntimeSha',
+      '--control-request-id': 'controlRequestId',
+      '--control-request-sha256': 'controlRequestSha256',
     }[arg];
     if (!field || seen.has(field)) fail(`unknown or repeated argument: ${arg}`, 64);
     index += 1;
@@ -210,6 +216,16 @@ function parseArgs(argv) {
   }
   if (options.phase !== 'zero_swap' && options.cleanupResult) {
     fail('--cleanup-result is zero_swap-only', 64);
+  }
+  if (!/^[0-9a-f]{40}$/u.test(options.expectedRuntimeSha || '')) {
+    fail('--expected-runtime-sha must be an exact 40-hex SHA', 64);
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
+    .test(options.controlRequestId || '')) {
+    fail('--control-request-id must be a lowercase UUID', 64);
+  }
+  if (!OLLAMA_DIGEST_PATTERN.test(options.controlRequestSha256 || '')) {
+    fail('--control-request-sha256 must be an exact sha256 digest', 64);
   }
 
   const testOnlyChanged = options.durationSeconds !== DURATION_SECONDS
@@ -254,6 +270,11 @@ function parseArgs(argv) {
   options.ollamaUrl = loopbackOrigin(options.ollamaUrl, '--ollama-url');
   options.backendUrl = loopbackHealthUrl(options.backendUrl, '--backend-url');
   options.contentUrl = loopbackHealthUrl(options.contentUrl, '--content-url');
+  options.controlRequest = {
+    requestId: options.controlRequestId,
+    requestSha256: options.controlRequestSha256,
+    runtimeSha: options.expectedRuntimeSha,
+  };
   return options;
 }
 
@@ -526,6 +547,14 @@ function assertNoRelease(options) {
       if (error?.code !== 'ENOENT') throw error;
     }
   }
+  try {
+    const info = lstatSync(REBOOT_REQUIRED_PATH);
+    if (info.isSymbolicLink()) fail('pending-reboot marker is a symlink');
+    fail(`host restart is pending at ${REBOOT_REQUIRED_PATH}`);
+  } catch (error) {
+    if (error?.exitCode) throw error;
+    if (error?.code !== 'ENOENT') throw error;
+  }
 }
 
 async function captureSample(options, identity, sequence, previousSampleSha256) {
@@ -546,6 +575,7 @@ async function captureSample(options, identity, sequence, previousSampleSha256) 
     bootId: identity.bootId,
     monotonicSeconds,
     previousSampleSha256,
+    controlRequest: identity.controlRequest,
     ollama,
     application: { ...applicationHealth, pm2 },
     service,
@@ -563,6 +593,11 @@ function assertSamplePolicy(options, sample, baseline) {
   if (sample.ollama.loaded.some((tag) => tag !== OLLAMA_RETAINED_TAG)
       || sample.ollama.loaded.length > 1) {
     fail('an unapproved or excess Ollama model is loaded');
+  }
+  if (sample.application.pm2.some(
+    (row) => row.releaseSha !== options.controlRequest.runtimeSha,
+  )) {
+    fail('every PM2 sample must equal the requested exact runtime SHA');
   }
   const envelope = sample.service.envelope;
   if (sample.service.activeState !== 'active'
@@ -635,6 +670,7 @@ function readRequestRows(options, identity, first, last, lastSampleSha256) {
     completedAt: last.capturedAt,
     collectorSourceSha256: identity.sourceSha256,
     lastSampleSha256,
+    controlRequest: identity.controlRequest,
     database: {
       path: options.database,
       columns: query.columns,
@@ -655,7 +691,18 @@ function validateCleanupSubject(file) {
       || !OLLAMA_DIGEST_PATTERN.test(value.finalInventory[0]?.digest || '')) {
     fail('zero-swap subject is not a complete, exact small-model cleanup result');
   }
-  return value.finalInventory[0];
+  const observationControl = value.plan?.observationControl;
+  const production = observationControl?.production;
+  if (!observationControl || Object.keys(observationControl).sort().join(',') !== 'production,staging'
+      || !production
+      || Object.keys(production).sort().join(',') !== 'requestId,requestSha256,runtimeSha'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
+        .test(production.requestId || '')
+      || !OLLAMA_DIGEST_PATTERN.test(production.requestSha256 || '')
+      || !/^[0-9a-f]{40}$/u.test(production.runtimeSha || '')) {
+    fail('zero-swap subject lacks exact production observation control identity');
+  }
+  return { retained: value.finalInventory[0], previousControlRequest: production };
 }
 
 function waitMilliseconds(milliseconds) {
@@ -683,20 +730,28 @@ async function run(options) {
   }
 
   let previousObservation = null;
+  let previousControlRequest = null;
   if (options.previousObservation) {
     const previousFile = readSecureJsonEvidence(resolve(options.previousObservation), 'staging collector result');
-    validateOllamaObservationEvidence(previousFile, {
+    const validatedPrevious = validateOllamaObservationEvidence(previousFile, {
       expectedHost: EXPECTED_HOST,
       expectedPhase: 'staging',
       minimumDurationSeconds: options.durationSeconds,
     });
     previousObservation = { path: previousFile.path, sha256: previousFile.digest };
+    previousControlRequest = validatedPrevious.controlRequest;
   }
   let subject = null; let subjectRetained = null;
   if (options.cleanupResult) {
     const subjectFile = readSecureJsonEvidence(resolve(options.cleanupResult), 'cleanup result');
-    subjectRetained = validateCleanupSubject(subjectFile);
+    const validatedSubject = validateCleanupSubject(subjectFile);
+    subjectRetained = validatedSubject.retained;
+    previousControlRequest = validatedSubject.previousControlRequest;
     subject = { path: subjectFile.path, sha256: subjectFile.digest };
+  }
+  if (previousControlRequest
+      && previousControlRequest.runtimeSha !== options.controlRequest.runtimeSha) {
+    fail('observation runtime SHA differs from its prior control request binding');
   }
 
   assertNoRelease(options);
@@ -707,7 +762,12 @@ async function run(options) {
   const samplesDirectory = join(runDirectory, 'samples');
   secureDirectory(runDirectory, 'collector run directory', { create: true });
   secureDirectory(samplesDirectory, 'collector samples directory', { create: true });
-  const identity = { runId, bootId, sourceSha256 };
+  const identity = {
+    runId,
+    bootId,
+    sourceSha256,
+    controlRequest: options.controlRequest,
+  };
 
   let previousDigest = null; let first = null; let last = null; let firstFile = null; let baseline = null;
   let maximumGapSeconds = 0;
@@ -764,6 +824,8 @@ async function run(options) {
       startedMonotonicSeconds: first.monotonicSeconds,
       completedMonotonicSeconds: last.monotonicSeconds,
       sampling: { intervalSeconds: options.intervalSeconds, sampleCount, maximumGapSeconds },
+      controlRequest: options.controlRequest,
+      previousControlRequest,
       retainedModel: retained,
       inventory,
       samples: {
@@ -803,6 +865,7 @@ async function run(options) {
         phase: options.phase,
         runId,
         bootId,
+        controlRequest: options.controlRequest,
         failedAt: new Date().toISOString(),
         reason: String(error?.message || 'unknown error').slice(0, 512),
       });

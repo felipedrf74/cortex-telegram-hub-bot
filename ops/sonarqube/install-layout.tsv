@@ -17,6 +17,11 @@ scripts/ollama-large-model-cleanup.mjs	/usr/local/sbin/nexus-ollama-large-model-
 scripts/ollama-zero-swap-transition.mjs	/usr/local/sbin/nexus-ollama-zero-swap-transition.mjs	root:root	0700
 scripts/ollama-service-envelope-check.mjs	/usr/local/sbin/nexus-ollama-service-envelope-check.mjs	root:root	0700
 scripts/lib/ollama-service-envelope.mjs	/usr/local/sbin/lib/ollama-service-envelope.mjs	root:root	0700
+scripts/ollama-systemd-dropin-transaction.mjs	/usr/local/sbin/nexus-ollama-systemd-dropin-transaction.mjs	root:root	0700
+scripts/ollama-install-state-check.mjs	/usr/local/sbin/nexus-ollama-install-state-check.mjs	root:root	0700
+scripts/ollama-observation-control.mjs	/usr/local/sbin/nexus-ollama-observation-control.mjs	root:root	0700
+scripts/systemd/00-nexus-ollama-install-guard.conf	/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf	root:root	0644
+scripts/systemd/nexus-ollama-observation@.service	/etc/systemd/system/nexus-ollama-observation@.service	root:root	0644
 scripts/quality-sonar-start-evidence.mjs	/usr/local/sbin/quality-sonar-start-evidence.mjs	root:root	0755
 scripts/quality-sonar-live-ollama-state.mjs	/usr/local/sbin/quality-sonar-live-ollama-state	root:root	0755
 scripts/quality-sonar-latency-gate.mjs	/usr/local/sbin/quality-sonar-latency-gate.mjs	root:root	0755

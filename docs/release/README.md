@@ -162,10 +162,39 @@ release preflight also consumes only the root helper's project-scoped active
 Compute Engine count. Sonar start itself requires a fresh same-boot 16-GiB
 no-pressure preflight and the exact completed small-model soak/cleanup chain.
 That chain is not an operator-authored summary: it is the canonical output of
-the root-owned one-shot ServerDominguez collector, recursively backed by
+the root-owned durable ServerDominguez systemd one-shot, which holds the
+release/Sonar mutex and owns one foreground collector independently of the
+Mac/SSH session. Its request/journal binds phase, exact PM2 SHA, prior evidence
+digest, boot identity, and final result. The result is recursively backed by
 mode-0600 raw same-boot samples and exact-window SQLite `api_usage`
-provider/model counts. Missing collector provenance or request persistence
-fails closed.
+provider/model counts. The request UUID, immutable request-file SHA-256, and
+expected runtime SHA recur in the collector result, request aggregate, and
+every raw sample, and every sampled PM2 process must equal that SHA.
+Production binds the prior staging control request, cleanup binds both
+staging and production requests, and zero-swap binds the cleanup's production
+request. Missing or drifting collector/request provenance fails closed.
+
+The Ollama envelope installer is likewise source-bound: it executes only from
+the exact root-owned SHA bootstrap, verifies the owner-approved archive digest
+and Git PAX commit, and transactionally restores every operational asset plus
+the prior drop-in and service state on failure. It never installs an unpinned
+Ollama binary or pulls a mutable model tag; the reviewed Ollama 0.24.0 binary
+(`b2e45ade9cb754a079f74645e1183d613f582d98f7354b05f4f9a5bd81f8e0c9`),
+root-owned service fragment
+(`72b23db27bcd69aa9c05226285a928ae8520dac108736072a33cea35bbcccdda`),
+and retained 3B model
+(`357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b`)
+are verified before and after. Commit independently re-queries the bounded
+loopback tags endpoint, requires exactly one matching retained tag, and records
+the raw response digest plus exact model identity in the mode-0600 receipt.
+The reviewed bootstrap installs a permanent root-owned install-state guard;
+the installer verifies it and reloads systemd before writing its journal, so a
+power loss before candidate publication remains fail-closed on the next boot.
+Commit and rollback seal a durable exact-result terminal journal before
+best-effort backup garbage collection. If the active/enabled predecessor had
+no override, rollback may restart it only through one authorization bound to
+the transaction, original candidate digest, current boot, and live helper PID;
+the guard consumes that authorization once and rejects replay or reboot drift.
 Immediately before Compose starts, the root wrapper also rereads the live
 Ollama inventory, retained-model digest, loaded models, and effective systemd
 envelope, and it requires a working age-encryption plus authenticated

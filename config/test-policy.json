@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-24.3",
+  "version": "2026-07-24.4",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -46,6 +46,7 @@
         "__tests__/scripts/application-disaster-recovery.test.ts",
         "__tests__/scripts/application-dr-*.test.ts",
         "__tests__/scripts/ollama-observation-collector.test.ts",
+        "__tests__/scripts/ollama-operational-transactions.test.ts",
         "__tests__/scripts/ollama-large-model-cleanup.test.ts",
         "__tests__/scripts/ollama-systemd-envelope.test.ts",
         "__tests__/scripts/production-shape-migration-rehearsal.test.ts",
@@ -208,6 +209,7 @@
     { "pattern": "__tests__/scripts/application-dr-version-retention.test.ts", "disposition": "keep", "reason": "Protects paginated exact AWS key/version retention and fail-closed deletion plans while preserving the explicit R2 variance." },
     { "pattern": "__tests__/scripts/cloudflared-systemd-migration.test.ts", "disposition": "keep", "reason": "Protects the token-free, exact-input, root-owned Cloudflare replica handoff from a fragile cron child to a boot-persistent systemd connector without interrupting the confirmed public route." },
     { "pattern": "__tests__/scripts/ollama-observation-collector.test.ts", "disposition": "keep", "reason": "Protects the root-owned foreground collector, same-boot sequential samples, raw hash chain, exact-window api_usage aggregation, and fail-closed persistence and reboot behavior." },
+    { "pattern": "__tests__/scripts/ollama-operational-transactions.test.ts", "disposition": "keep", "reason": "Protects SHA/PAX/archive-bound immutable Ollama runtime identity, exact asset/drop-in/service predecessor restoration, fail-closed journal/boot handling, and the durable release/Sonar-exclusive 24-hour observation one-shot." },
     { "pattern": "__tests__/scripts/ollama-large-model-cleanup.test.ts", "disposition": "keep", "reason": "Protects the owner-authorized, exact-digest, soak-gated removal of large Ollama models using canonical hash-bound health/request evidence while preserving and re-verifying the retained 3B model." },
     { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },
     { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, and predecessor restoration when the controlling Mac or SSH session disappears." },
@@ -446,6 +448,19 @@
         "scripts/remote-promotion-worker-control.sh"
       ],
       "reason": "Replaced obsolete worker-owned recovery markers and rollback-escrow fixtures with retained assertions for root-owned recovery intent, phase-distinct DR escrow, bounded automatic recovery, and exact terminal retry identity."
+    },
+    {
+      "test": "__tests__/scripts/ollama-systemd-envelope.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/ollama-systemd-envelope.test.ts",
+        "__tests__/scripts/ollama-operational-transactions.test.ts"
+      ],
+      "sources": [
+        "scripts/install-ollama.sh",
+        "scripts/ollama-install-state-check.mjs",
+        "scripts/ollama-systemd-dropin-transaction.mjs"
+      ],
+      "reason": "Replaced the obsolete model-pull and temporary-log assertions with retained no-network/no-pull identity checks plus crash-safe transactional install, predecessor restoration, replay, and reboot coverage."
     },
     {
       "test": "__tests__/services/dispatch-privacy-e2e.test.ts",

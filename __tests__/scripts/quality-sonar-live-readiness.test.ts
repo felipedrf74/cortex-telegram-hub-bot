@@ -44,6 +44,18 @@ describe('Sonar start live Ollama and backup readiness', () => {
           host: 'serverdominguez',
           evidenceDigest: `sha256:${'a'.repeat(64)}`,
           inventoryFingerprint: `sha256:${'b'.repeat(64)}`,
+          observationControl: {
+            staging: {
+              requestId: '11111111-2222-4333-8444-555555555555',
+              requestSha256: `sha256:${'e'.repeat(64)}`,
+              runtimeSha: '1'.repeat(40),
+            },
+            production: {
+              requestId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+              requestSha256: `sha256:${'f'.repeat(64)}`,
+              runtimeSha: '1'.repeat(40),
+            },
+          },
           retained: { tag: OLLAMA_RETAINED, digest: retainedDigest },
           delete: OLLAMA_DELETE.map((tag) => ({
             tag,

@@ -2,8 +2,10 @@
 
 These operations are manual, owner-reviewed, and separate from the release
 path. They do not run during release, startup, installation, or SonarQube
-setup. The observation command is a foreground, root-owned one-shot process;
-it is not a daemon, scheduler, or background release worker.
+setup. Each observation is one explicitly launched systemd one-shot. The
+service owns one foreground collector until it finishes; it is not a daemon,
+scheduler, recurring timer, background release worker, or second release lane.
+Closing the Mac or SSH session does not terminate it.
 
 ## Evidence authority
 
@@ -12,6 +14,24 @@ enablement, and the later zero-swap transition accept only a canonical
 `result.json` produced by the installed repository collector:
 
 `/usr/local/sbin/nexus-ollama-observation-collector.mjs`
+
+Launch and inspect that collector only through:
+
+`/usr/local/sbin/nexus-ollama-observation-control.mjs`
+
+The root-owned request and journal under
+`/var/lib/nexus-release/ollama-observation-control/` bind the phase, exact PM2
+runtime SHA, prior evidence path and SHA-256, current boot, and final collector
+result digest. The systemd unit holds the existing release/Sonar mutex for the
+whole window. A release, Sonar operation, second observation, pending
+maintenance reboot, queued governed-service transition, PM2 SHA mismatch, or
+active Sonar Compute Engine task refuses or invalidates the run.
+The control passes the request UUID, SHA-256 of the immutable request file,
+and expected PM2 runtime SHA into the collector. Those three values recur in
+the result, SQLite request aggregate, and every raw sample, and both sampled
+PM2 rows must equal the requested SHA. Production records the exact staging
+control request. Cleanup binds both staging and production control requests,
+and zero-swap records the cleanup's production request binding.
 
 The collector executes sequential checks every five minutes for 24 continuous
 hours on one boot. Each mode-0600 raw sample records:
@@ -47,22 +67,69 @@ authorization template. Digests come only from the protected live collection.
 
 First deploy the reviewed exact release to staging with every local selector
 set to the retained tag, fast chat off, Gemini primary, and the approved cloud
-fail-closed policy. Remove persisted model overrides. Then, from that reviewed
-repository revision on ServerDominguez, run the installer during the approved
-maintenance window:
+fail-closed policy. Remove persisted model overrides. Then run the installer
+from the exact owner-verified, root-owned bootstrap source during the approved
+maintenance window. Never run it from `/home/dominguez` or another
+application-writable checkout:
 
 ```sh
-sudo bash scripts/install-ollama.sh
+sudo bash \
+  /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source/scripts/install-ollama.sh \
+  /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source \
+  REPLACE_WITH_40_HEX_SHA \
+  /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source.tar.gz \
+  REPLACE_WITH_OWNER_VERIFIED_64_HEX_ARCHIVE_SHA256
 sudo /usr/local/sbin/nexus-ollama-service-envelope-check.mjs \
   --expected-swap-bytes 536870912
 ```
 
 This applies the fixed 4 GiB/6 GiB/512 MiB, 200%, context-4096, queue-four,
 single-parallel, single-loaded-model service envelope before any observation.
-It also installs the collector, evidence validator, cleanup gate, envelope
-checker, and zero-swap transition as root-owned mode-0700 tools below
-`/usr/local/sbin`. Never run a privileged cleanup or transition module from
-the user-writable checkout.
+It refuses to install or update the Ollama binary, recursively change model
+ownership, or pull a mutable model tag. The preinstalled
+`/usr/local/bin/ollama` must remain root-owned mode 0755 at version `0.24.0`
+and SHA-256
+`b2e45ade9cb754a079f74645e1183d613f582d98f7354b05f4f9a5bd81f8e0c9`.
+The root-owned mode-0644 `/etc/systemd/system/ollama.service` fragment must
+remain at SHA-256
+`72b23db27bcd69aa9c05226285a928ae8520dac108736072a33cea35bbcccdda`.
+The retained tag must already resolve to digest
+`357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b`;
+the binary, fragment, and tag identities are verified before and after the
+smoke. Commit then independently queries the bounded loopback `/api/tags`
+endpoint with Node built-ins, requires exactly one matching retained tag, and
+binds the observed response SHA-256 and model digest into the receipt.
+
+The installer accepts only the exact SHA-named root bootstrap source/archive,
+checks the owner-approved archive SHA-256 and Git PAX commit, and compares
+every privileged source member byte-for-byte with that archive.
+The drop-in replacement is same-filesystem atomic and protected by a root-only
+durable journal. The installer preserves the prior drop-in bytes, mode,
+ownership, enablement, active state, and all operational asset predecessors.
+The reviewed bootstrap first installs a permanent install-state guard and its
+root-only checker; the installer verifies both and reloads systemd before the
+first journal write. A reboot in the journal-to-candidate replacement window
+therefore sees the journal and refuses startup.
+Any later asset replacement, reload, restart, envelope, daemon, loopback, or
+smoke failure restores and verifies that exact predecessor. An ambiguous power
+loss retains the journal so a later service start fails closed until the exact
+reviewed installer recovers it. A mode-0600 success receipt binds source SHA,
+archive SHA-256, runtime/model identity, asset digests, and service state and
+is written only after every check passes.
+Commit and rollback first seal a durable terminal journal that names and
+hashes the exact receipt or rollback result, then garbage-collect predecessor
+backups. A crash at backup unlink/fsync therefore leaves either no journal or
+a validated terminal journal, never a rollback-required journal whose backup
+was already removed. Restoring an active/enabled predecessor with no prior
+`override.conf` uses a one-use guard authorization bound to the transaction,
+original candidate SHA-256, current boot, and live recovery-helper PID. The
+guard consumes it atomically; replay or reboot cannot start Ollama.
+
+The bootstrap and installer also install the collector, durable observation
+control/unit, evidence validator, cleanup gate, envelope checker, transaction
+helper, and zero-swap transition as root-owned reviewed assets. Never run a
+privileged collector, cleanup, transition, or install helper from the
+user-writable checkout.
 
 From the exact staging release directory, run its authenticated smoke in the
 explicit pre-cleanup phase before starting the first 24-hour window:
@@ -75,11 +142,11 @@ PM2_BIN=/home/dominguez/.npm-global/bin/pm2 \
 bash scripts/staging-smoke-ollama.sh
 ```
 
-Never grant the application account write access to the observation directory
-or installed tools. Do not run the collector while a staging or production
-release lock is active. A release that starts during a window, a reboot, a
-release-SHA change, a restart, unsafe capacity, pressure, or failed health
-check invalidates that window and no successful result is written.
+Never grant the application account write access to the observation/control
+directories or installed tools. Do not launch the collector directly. A
+release that starts during a window, a reboot or pending reboot, a release-SHA
+change, a restart, unsafe capacity, pressure, or failed health check
+invalidates that window and no successful result is written.
 
 The collector invokes PM2 as `dominguez` through the canonical
 `/home/dominguez/.npm-global/bin/pm2` executable. Verify that exact path is
@@ -89,25 +156,34 @@ installation merely to satisfy the collector.
 ## Collect staging, then production
 
 First confirm staging is explicitly routed to the retained 3B model. Start the
-staging observation in a durable root shell (for example a supervised SSH
-session whose disconnect policy is understood):
+staging observation with its exact deployed SHA:
 
 ```sh
-sudo /usr/local/sbin/nexus-ollama-observation-collector.mjs \
+sudo /usr/local/sbin/nexus-ollama-observation-control.mjs launch \
   --phase staging \
-  --output-directory /var/lib/nexus-release/ollama-observations
+  --runtime-sha REPLACE_WITH_EXACT_40_HEX_STAGING_SHA
 ```
 
-The command prints the canonical staging `result.json` path and digest only on
-success. Review the protected run without changing any file. Then route and
-observe production, supplying that exact staging result:
+The command returns a request ID after systemd accepts the durable one-shot.
+The Mac may disconnect. Query only the root journal:
 
 ```sh
-sudo /usr/local/sbin/nexus-ollama-observation-collector.mjs \
+sudo /usr/local/sbin/nexus-ollama-observation-control.mjs status \
+  REPLACE_WITH_REQUEST_UUID
+```
+
+Only `status=completed` contains the canonical staging `result.json` path and
+digest. Review the protected run without changing any file. Then route and
+observe production, supplying both that exact staging path and its
+`sha256:...` digest from the completed journal:
+
+```sh
+sudo /usr/local/sbin/nexus-ollama-observation-control.mjs launch \
   --phase production \
-  --output-directory /var/lib/nexus-release/ollama-observations \
-  --previous-observation \
-  /var/lib/nexus-release/ollama-observations/staging-YYYYMMDDTHHMMSSZ-RANDOM/result.json
+  --runtime-sha REPLACE_WITH_EXACT_40_HEX_PRODUCTION_SHA \
+  --previous-evidence \
+  /var/lib/nexus-release/ollama-observations/staging-YYYYMMDDTHHMMSSZ-RANDOM/result.json \
+  --previous-evidence-sha256 sha256:REPLACE_WITH_64_HEX_DIGEST
 ```
 
 The production result recursively revalidates the staging chain and proves
@@ -150,14 +226,16 @@ deletion.
 
 Keep the installer-owned `MemorySwapMax=512M` baseline after cleanup. After an
 additional healthy 24 hours, use the same collector schema with the cleanup
-result as its exact subject:
+result as its exact subject. Supply the cleanup file's SHA-256 and the current
+production runtime SHA:
 
 ```sh
-sudo /usr/local/sbin/nexus-ollama-observation-collector.mjs \
+sudo /usr/local/sbin/nexus-ollama-observation-control.mjs launch \
   --phase zero_swap \
-  --output-directory /var/lib/nexus-release/ollama-observations \
-  --cleanup-result \
-  /var/lib/nexus-release/ollama-cleanup-YYYYMMDDTHHMMSSZ.json
+  --runtime-sha REPLACE_WITH_EXACT_40_HEX_PRODUCTION_SHA \
+  --previous-evidence \
+  /var/lib/nexus-release/ollama-cleanup-YYYYMMDDTHHMMSSZ.json \
+  --previous-evidence-sha256 sha256:REPLACE_WITH_64_HEX_DIGEST
 ```
 
 Pass that canonical `zero_swap` result directly to the transition dry-run:
@@ -180,7 +258,9 @@ only that drop-in and verifies restoration of the 512 MiB baseline.
 ## Failure handling
 
 A failed collector run retains its protected raw samples and writes only
-`failure.json`; it never writes a successful `result.json`. Diagnose the
-recorded failure and start a new full window. Never edit, truncate, copy into a
-new aggregate, or relabel a failed window. No live 24-hour observation or
+`failure.json`; it never writes a successful `result.json`. The systemd
+journal also becomes `failed`; the service has `Restart=no`, so it never
+silently starts a shorter replacement window. Diagnose the recorded failure
+and explicitly launch a new full window. Never edit, truncate, copy into a new
+aggregate, or relabel a failed window. No live 24-hour observation or
 production mutation is performed by repository tests.

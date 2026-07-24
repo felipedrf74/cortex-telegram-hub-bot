@@ -78,6 +78,18 @@ describe('fixed Ollama systemd envelope and zero-swap transition', () => {
         host: 'serverdominguez',
         evidenceDigest: `sha256:${'e'.repeat(64)}`,
         inventoryFingerprint: `sha256:${'f'.repeat(64)}`,
+        observationControl: {
+          staging: {
+            requestId: '11111111-2222-4333-8444-555555555555',
+            requestSha256: `sha256:${'2'.repeat(64)}`,
+            runtimeSha: '1'.repeat(40),
+          },
+          production: {
+            requestId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            requestSha256: `sha256:${'3'.repeat(64)}`,
+            runtimeSha: '1'.repeat(40),
+          },
+        },
         retained: { tag: RETAINED, digest: RETAINED_DIGEST },
         delete: [
           { tag: 'gemma2:2b-instruct-q4_K_M', digest: `sha256:${'b'.repeat(64)}` },
@@ -191,20 +203,17 @@ process.exit(64);
       .toBeLessThan(source.lastIndexOf('nexus-ollama-service-envelope-check.mjs'));
   });
 
-  it('does not send the privileged model pull through a predictable temporary path', () => {
+  it('refuses mutable binary installation, recursive ownership changes, and model pulls', () => {
     const source = fs.readFileSync(INSTALLER, 'utf8');
-    const pullStart = source.indexOf('log "Pulling small-only model:');
-    const pullEnd = source.indexOf('# ── Warm-load + smoke', pullStart);
-
-    expect(pullStart).toBeGreaterThan(0);
-    expect(pullEnd).toBeGreaterThan(pullStart);
-
-    const pullBlock = source.slice(pullStart, pullEnd);
-    expect(pullBlock).toContain('if ! ollama pull "${PRIMARY_MODEL}"; then');
-    expect(pullBlock).toContain('inspect the Ollama output above');
-    expect(pullBlock).not.toMatch(/\btee\b/);
-    expect(pullBlock).not.toMatch(/\/(?:var\/)?tmp\//);
-    expect(source).not.toContain('/tmp/ollama-pull-primary.log');
+    expect(source).not.toContain('https://ollama.com/install.sh');
+    expect(source).not.toMatch(/\bollama pull\b/);
+    expect(source).not.toContain('chown -R /var/lib/ollama');
+    expect(source).toContain('reviewed Ollama binary digest changed');
+    expect(source).toContain('retained Ollama model is absent or differs');
+    expect(source.indexOf('verify_retained_model_identity'))
+      .toBeLessThan(source.indexOf('"$transaction_helper" begin'));
+    expect(source.lastIndexOf('verify_retained_model_identity'))
+      .toBeGreaterThan(source.indexOf('smoke_response='));
   });
 
   it('accepts only the exact effective 4G/6G/512M/200% one-model baseline', () => {
