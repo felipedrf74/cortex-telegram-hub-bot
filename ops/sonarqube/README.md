@@ -1,9 +1,11 @@
 Advisory SonarQube on ServerDominguez
 =====================================
 
-This directory is an installation template, not an installer. It never installs
-Docker or changes a live host. Copy only the entries in install-layout.tsv
-during an approved operations window, preserving the declared owner and mode.
+This directory contains the reviewed installation layout and a transactional
+asset installer. The installer copies only the exact allowlisted assets from a
+root-owned, SHA-bound protected-main bootstrap; it never installs or invokes
+Docker, writes secrets, starts/stops/enables services, or writes Sonar
+application/database data.
 
 Safety contract
 ---------------
@@ -45,16 +47,34 @@ Explicit preparation
    large/unapproved-model requests before validating the cleanup-result chain
    and sole retained `qwen2.5:3b-instruct-q4_K_M` digest. A copied or
    hand-authored aggregate cannot authorize installation.
-3. Install the file layout from `install-layout.tsv` before Docker. Create
-   `/usr/local/sbin/lib` as root-owned mode 0755 before copying its declared
-   root-only module. Provision the host bind directories exactly as declared
-   in `data-layout.tsv`; for the pinned images that means root-owned mode-0750
-   boundaries, PostgreSQL `999:999` mode 0700, and SonarQube `1000:1000` mode
-   0750. The Compose file sets `create_host_path: false`, and the stack wrapper
-   rejects missing, symlinked, mis-owned, or mis-moded paths rather than
-   letting Docker create them. Run
-   `systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf`
-   and verify the shared lock's declared owner/mode.
+3. Install the file and data layouts before Docker from the same exact
+   root-owned bootstrap already verified by the release owner:
+
+   ```sh
+   sudo /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source/scripts/quality-sonar-systemd-install.sh \
+     /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source \
+     REPLACE_WITH_40_HEX_SHA \
+     /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source.tar.gz \
+     REPLACE_WITH_64_HEX_ARCHIVE_SHA256
+   ```
+
+   The installer revalidates the archive SHA-256 and Git-archive commit
+   identity, binds every source byte to a regular archive member, embeds the
+   exact allowed layout rows and destinations, takes the non-waiting shared
+   release/Sonar lock, prevalidates the assets, and uses same-filesystem atomic
+   replacement with rollback. It provisions `/usr/local/sbin/lib`,
+   `/etc/sonarqube`, its private install state, and the bind directories in
+   `data-layout.tsv`. Existing persistent directories must already have their
+   exact owner/mode and are never rewritten. The Sonar service and backup
+   timer must be inactive and disabled before installation and remain so
+   afterward. A durable journal prevents startup after an interrupted
+   installation.
+
+   For the pinned images that means root-owned mode-0750 boundaries,
+   PostgreSQL `999:999` mode 0700, and SonarQube `1000:1000` mode 0750. The
+   Compose file sets `create_host_path: false`, and the stack wrapper rejects
+   missing, symlinked, mis-owned, or mis-moded paths rather than letting Docker
+   create them.
 4. Before Docker installation, capture the maintenance baseline with the
    installed root-owned command:
    `sudo /usr/local/sbin/quality-sonar-preflight --output REPLACE_WITH_NEW_PRIVATE_DIRECTORY`.
@@ -87,8 +107,12 @@ Explicit preparation
    startup that can bypass this post-boot check. Both Compose services use
    `restart: "no"`, so a Docker daemon or host restart cannot start them
    around the root wrapper.
-7. Verify backup encryption, credentials, endpoint, and bucket access, then
-   start only through the installed root wrappers:
+7. Pull the two exact digest-qualified image references from
+   `/srv/sonarqube/images.lock.env` sequentially and verify both local image
+   identities. The root wrapper refuses an absent image and starts Compose
+   with `--pull never`, so startup cannot fetch from a registry. Then verify
+   backup encryption, credentials, endpoint, and bucket access and start only
+   through the installed root wrappers:
 
    ```sh
    sudo /usr/local/sbin/quality-sonar-backup \

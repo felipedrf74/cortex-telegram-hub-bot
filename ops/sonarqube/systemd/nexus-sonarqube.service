@@ -4,6 +4,7 @@ Documentation=https://docs.sonarsource.com/sonarqube-community-build/
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service
+ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1
 
 [Service]
 Type=oneshot

@@ -1,7 +1,8 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -21,6 +22,254 @@ import {
 const read = (path: string) => readFileSync(path, 'utf8');
 
 describe('advisory SonarQube operational assets', () => {
+  it('transactionally binds installation to the exact root bootstrap and reviewed layouts', () => {
+    const installer = resolve('scripts/quality-sonar-systemd-install.sh');
+    const syntax = spawnSync('bash', ['-n', installer], { encoding: 'utf8' });
+    expect(syntax.status, syntax.stderr).toBe(0);
+
+    const script = read(installer);
+    const declaredInstall = read('ops/sonarqube/install-layout.tsv')
+      .split('\n').slice(1).join('\n').trim();
+    const declaredData = read('ops/sonarqube/data-layout.tsv')
+      .split('\n').slice(1).join('\n').trim();
+    const installMatch = script.match(/cat <<'LAYOUT'\n([\s\S]*?)\nLAYOUT/);
+    const dataMatch = script.match(/cat <<'DATA_LAYOUT'\n([\s\S]*?)\nDATA_LAYOUT/);
+
+    expect(installMatch?.[1]).toBe(declaredInstall);
+    expect(dataMatch?.[1]).toBe(declaredData);
+    expect(script).toContain('BOOTSTRAP_BASE=/var/lib/nexus-release-bootstrap');
+    expect(script).toContain('EXPECTED_BOOTSTRAP_ROOT="$BOOTSTRAP_BASE/$SOURCE_SHA"');
+    expect(script).toContain(
+      '[ "$SOURCE_ROOT" = "$EXPECTED_BOOTSTRAP_ROOT/source" ]',
+    );
+    expect(script).toContain(
+      '[ "$SOURCE_ARCHIVE" = "$EXPECTED_BOOTSTRAP_ROOT/source.tar.gz" ]',
+    );
+    expect(script).toContain('archive.pax_headers.get("comment") != source_sha');
+    expect(script).toContain('required member is not regular');
+    expect(script).toContain('source drift for');
+    expect(script).toContain('install target is outside the exact allowlist');
+    expect(script).toContain('component is group/world writable');
+    expect(script).toContain(
+      'installer must execute from the exact reviewed bootstrap source path',
+    );
+    expect(script).toContain(
+      'managed directory parent must already exist and be canonical',
+    );
+  });
+
+  it('behaviorally rejects an installed source asset that drifted from the Git archive', () => {
+    const installer = read('scripts/quality-sonar-systemd-install.sh');
+    const verifier = installer.match(
+      /# Prove that the reviewed archive[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\n\nsources=\(\)/,
+    )?.[1];
+    expect(verifier).toBeTruthy();
+
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-installer-'));
+    const sourceRoot = join(temp, 'source');
+    const sourceScripts = join(sourceRoot, 'scripts');
+    const sourceOps = join(sourceRoot, 'ops', 'sonarqube');
+    const archive = join(temp, 'source.tar.gz');
+    const verifierPath = join(temp, 'verify.py');
+    const sha = 'a'.repeat(40);
+    const layoutPath = join(sourceOps, 'install-layout.tsv');
+    const dataLayoutPath = join(sourceOps, 'data-layout.tsv');
+    const installerPath = join(sourceScripts, 'quality-sonar-systemd-install.sh');
+    const assetPath = join(sourceScripts, 'asset.sh');
+
+    try {
+      mkdirSync(sourceScripts, { recursive: true });
+      mkdirSync(sourceOps, { recursive: true });
+      writeFileSync(
+        layoutPath,
+        '# source<TAB>absolute target<TAB>owner<TAB>mode\n' +
+          'scripts/asset.sh\t/usr/local/sbin/asset\troot:root\t0755\n',
+      );
+      writeFileSync(dataLayoutPath, '# data layout\n');
+      writeFileSync(installerPath, '#!/usr/bin/env bash\n');
+      writeFileSync(assetPath, '#!/usr/bin/env bash\necho reviewed\n');
+      writeFileSync(verifierPath, verifier!);
+
+      const createArchive = spawnSync(
+        'python3',
+        [
+          '-c',
+          [
+            'import pathlib,sys,tarfile',
+            'archive,root,sha=sys.argv[1:]',
+            'with tarfile.open(archive,"w:gz",format=tarfile.PAX_FORMAT,pax_headers={"comment":sha}) as output:',
+            '  for item in sorted(pathlib.Path(root).rglob("*")):',
+            '    output.add(item,arcname="source/"+item.relative_to(root).as_posix(),recursive=False)',
+          ].join('\n'),
+          archive,
+          sourceRoot,
+          sha,
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(createArchive.status, createArchive.stderr).toBe(0);
+
+      const verify = () =>
+        spawnSync(
+          'python3',
+          [
+            verifierPath,
+            archive,
+            sourceRoot,
+            sha,
+            layoutPath,
+            dataLayoutPath,
+            installerPath,
+          ],
+          { encoding: 'utf8' },
+        );
+
+      const accepted = verify();
+      expect(accepted.status, accepted.stderr).toBe(0);
+      writeFileSync(assetPath, '#!/usr/bin/env bash\necho drifted\n');
+      const rejected = verify();
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stderr).toContain('source drift for scripts/asset.sh');
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes, prevalidates, atomically installs, and rolls back without runtime mutation', () => {
+    const script = read('scripts/quality-sonar-systemd-install.sh');
+    const lock = script.indexOf('exec 9<>"$SHARED_MUTEX"');
+    const prevalidate = script.indexOf(
+      '# Complete every source-only validation before creating a directory',
+    );
+    const firstDirectory = script.indexOf(
+      'ensure_directory /usr/local/sbin/lib root root 0755',
+    );
+    const journalWrite = script.indexOf(
+      'mv -fT -- "$journal_tmp" "$INSTALL_JOURNAL"',
+    );
+    const stage = script.indexOf(
+      'stage="$(mktemp -p "$target_parent" ".nexus-sonarqube.stage.XXXXXX")"',
+    );
+    const firstCommit = script.indexOf('commit_asset "$service_index"');
+    const receipt = script.indexOf(
+      'mv -fT -- "$receipt_stage" "$INSTALL_RECEIPT"',
+    );
+    const receiptCommitted = script.indexOf(
+      'receipt_committed=true',
+      receipt,
+    );
+    const receiptDirectoryFsync = script.indexOf(
+      'fsync_path "$STATE_DIR"',
+      receipt,
+    );
+
+    expect(script).toContain('flock -n 9');
+    expect(script).toContain('bash -n "$source_path"');
+    expect(script).toContain('node --check "$source_path"');
+    expect(script).toContain('--verify-lock-only');
+    expect(script).toContain('visudo -cf');
+    expect(script).toContain('Sonar Compose prevalidation');
+    expect(lock).toBeGreaterThan(-1);
+    expect(prevalidate).toBeGreaterThan(lock);
+    expect(firstDirectory).toBeGreaterThan(prevalidate);
+    expect(journalWrite).toBeGreaterThan(firstDirectory);
+    expect(stage).toBeGreaterThan(journalWrite);
+    expect(firstCommit).toBeGreaterThan(stage);
+    expect(receipt).toBeGreaterThan(firstCommit);
+    expect(receiptCommitted).toBeGreaterThan(receipt);
+    expect(receiptDirectoryFsync).toBeGreaterThan(receiptCommitted);
+    expect(script.slice(receipt, receiptCommitted)).not.toContain('fsync_path');
+    expect(script).toContain('ln -- "$target" "$backup"');
+    expect(script).toContain('mv -fT -- "${stage_paths[$index]}" "$target"');
+    expect(script).toContain(
+      'for ((position=${#committed_indices[@]} - 1; position >= 0; position -= 1)); do',
+    );
+    expect(script).toContain('mv -fT -- "$backup" "$target"');
+    expect(script).toContain('failed to reload systemd after rollback');
+    expect(script).toContain('inactive:3|failed:3|unknown:4|not-found:4');
+    expect(script).not.toContain('! systemctl is-active "$unit"');
+    expect(script).toContain('"configurationWritten":false');
+    expect(script).toContain('"dockerTouched":false');
+    expect(script).toContain('"servicesEnabled":false');
+    expect(script).toContain('"applicationDataWritten":false');
+    expect(script).not.toMatch(/^\s*(?:sudo\s+)?(?:apt|apt-get|docker)\b/m);
+    expect(script).not.toMatch(/systemctl\s+(?:start|stop|restart|enable|disable)\b/);
+  });
+
+  it('rejects an unknown systemctl transport result instead of assuming inactivity', () => {
+    const installer = read('scripts/quality-sonar-systemd-install.sh');
+    const helper = installer.match(
+      /assert_unit_inactive\(\) \{\n[\s\S]*?\n\}/,
+    )?.[0];
+    expect(helper).toBeTruthy();
+
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-unit-state-'));
+    const systemctl = join(temp, 'systemctl');
+    try {
+      writeFileSync(
+        systemctl,
+        '#!/bin/sh\nprintf "%s\\n" "${MOCK_SYSTEMCTL_STATE:-}"\nexit "${MOCK_SYSTEMCTL_RC:-1}"\n',
+        { mode: 0o755 },
+      );
+      chmodSync(systemctl, 0o755);
+      const harness = [
+        'set -euo pipefail',
+        'die() { echo "$*" >&2; exit 1; }',
+        helper!,
+        'assert_unit_inactive nexus-sonarqube.service',
+      ].join('\n');
+      const run = (state: string, rc: number) =>
+        spawnSync('bash', ['-c', harness], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${temp}:${process.env.PATH ?? ''}`,
+            MOCK_SYSTEMCTL_STATE: state,
+            MOCK_SYSTEMCTL_RC: String(rc),
+          },
+        });
+
+      expect(run('inactive', 3).status).toBe(0);
+      expect(run('failed', 3).status).toBe(0);
+      expect(run('unknown', 4).status).toBe(0);
+      expect(run('active', 0).status).not.toBe(0);
+      expect(run('activating', 3).status).not.toBe(0);
+      const transportError = run('', 1);
+      expect(transportError.status).not.toBe(0);
+      expect(transportError.stderr).toContain(
+        'unable to prove unit is safely inactive',
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('guards stack and backup startup after an interrupted asset install', () => {
+    const condition =
+      'ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1';
+    expect(read('ops/sonarqube/systemd/nexus-sonarqube.service')).toContain(condition);
+    expect(read('ops/sonarqube/systemd/nexus-sonarqube-backup.service')).toContain(condition);
+    expect(read('ops/sonarqube/systemd/nexus-sonarqube-backup.timer')).toContain(condition);
+    expect(read('scripts/quality-sonar-stack.sh')).toContain(
+      'Sonar asset installation is incomplete',
+    );
+  });
+
+  it('rejects incomplete installer identity before any mutation', () => {
+    const result = spawnSync(
+      'bash',
+      ['scripts/quality-sonar-systemd-install.sh'],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      '<root-owned-source-root> <40-hex-source-sha>',
+    );
+    expect(result.stderr).toContain(
+      '<root-owned-source-archive> <64-hex-archive-sha256>',
+    );
+  });
+
   it('pins the reviewed Community Build and PostgreSQL tags by immutable manifest digest', () => {
     const lock = read('ops/sonarqube/images.lock.env');
     const resolver = read('scripts/quality-sonar-resolve-images.sh');
@@ -83,7 +332,151 @@ describe('advisory SonarQube operational assets', () => {
     expect(runbook).toContain('not a release, signing, application-health, or');
     expect(stack).toContain('Sonar secrets file must have mode 0600');
     expect(stack).toContain('validate_data_layout');
+    expect(stack).toContain('verify_prepulled_images');
+    expect(stack).toContain('"$DOCKER_BIN" image inspect "$image"');
+    expect(stack).toContain('"${compose[@]}" up -d --pull never');
+    expect(stack).toContain(
+      'rendered service image differs from the immutable image lock',
+    );
+    expect(stack).toContain(
+      'Sonar secrets file must not override immutable image references',
+    );
+    expect(stack.indexOf('verify_prepulled_images')).toBeLessThan(
+      stack.indexOf('"${compose[@]}" up -d --pull never'),
+    );
     expect(stack).not.toMatch(/docker\s+(system\s+prune|volume\s+prune|image\s+prune)/);
+  });
+
+  it('rejects duplicate lock identities and rendered image overrides', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-image-binding-'));
+    const stackDir = join(temp, 'stack');
+    const bin = join(temp, 'bin');
+    const secrets = join(temp, 'sonarqube.env');
+    const lockPath = join(stackDir, 'images.lock.env');
+    const dockerPath = join(bin, 'docker');
+    const lock = read('ops/sonarqube/images.lock.env');
+    const values = Object.fromEntries(
+      lock
+        .split('\n')
+        .filter((line) => /^[A-Z0-9_]+=/.test(line))
+        .map((line) => {
+          const equals = line.indexOf('=');
+          return [line.slice(0, equals), line.slice(equals + 1)];
+        }),
+    );
+    const rendered = (postgresImage: string, sonarImage: string) => ({
+      services: {
+        postgres: {
+          image: postgresImage,
+          restart: 'no',
+          ports: [],
+          volumes: [{
+            type: 'bind',
+            source: '/srv/sonarqube/data/postgresql',
+            target: '/var/lib/postgresql/data',
+            bind: { create_host_path: false },
+          }],
+        },
+        sonarqube: {
+          image: sonarImage,
+          restart: 'no',
+          ports: [{
+            host_ip: '127.0.0.1',
+            published: '9000',
+            target: 9000,
+          }],
+          volumes: [
+            ['/srv/sonarqube/data/sonarqube', '/opt/sonarqube/data'],
+            ['/srv/sonarqube/data/extensions', '/opt/sonarqube/extensions'],
+            ['/srv/sonarqube/data/logs', '/opt/sonarqube/logs'],
+            ['/srv/sonarqube/data/temp', '/opt/sonarqube/temp'],
+          ].map(([source, target]) => ({
+            type: 'bind',
+            source,
+            target,
+            bind: { create_host_path: false },
+          })),
+        },
+      },
+      networks: { sonar_backend: { internal: true } },
+    });
+    const writeDocker = (postgresImage: string, sonarImage: string) => {
+      writeFileSync(
+        dockerPath,
+        `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(rendered(postgresImage, sonarImage))}\nJSON\n`,
+        { mode: 0o755 },
+      );
+      chmodSync(dockerPath, 0o755);
+    };
+
+    try {
+      mkdirSync(stackDir, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(stackDir, 'compose.yaml'), 'services: {}\n');
+      writeFileSync(lockPath, lock);
+      writeFileSync(secrets, 'SONAR_JDBC_USERNAME=sonar\n', { mode: 0o600 });
+      chmodSync(secrets, 0o600);
+      writeFileSync(
+        join(bin, 'id'),
+        '#!/bin/sh\n[ "${1:-}" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n',
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(bin, 'stat'),
+        '#!/bin/sh\ncase "$*" in *%a*|*%Lp*) echo 600 ;; *%U*|*%Su*) echo root ;; *) exec /usr/bin/stat "$@" ;; esac\n',
+        { mode: 0o755 },
+      );
+      chmodSync(join(bin, 'id'), 0o755);
+      chmodSync(join(bin, 'stat'), 0o755);
+
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        SONAR_STACK_DIR: stackDir,
+        SONAR_SECRETS_FILE: secrets,
+      };
+      const run = () =>
+        spawnSync('bash', ['scripts/quality-sonar-stack.sh', 'config'], {
+          encoding: 'utf8',
+          env,
+        });
+
+      writeDocker(values.POSTGRES_IMAGE, values.SONARQUBE_IMAGE);
+      const accepted = run();
+      expect(accepted.status, accepted.stderr).toBe(0);
+      expect(accepted.stdout).toContain('sonarqube_compose_config_ok');
+
+      writeDocker(values.POSTGRES_IMAGE, 'evil-local:latest');
+      const renderedOverride = run();
+      expect(renderedOverride.status).not.toBe(0);
+      expect(renderedOverride.stderr).toContain(
+        'rendered service image differs from the immutable image lock',
+      );
+
+      writeFileSync(
+        secrets,
+        'SONAR_JDBC_USERNAME=sonar\nSONARQUBE_IMAGE=evil-local:latest\n',
+        { mode: 0o600 },
+      );
+      const secretOverride = run();
+      expect(secretOverride.status).not.toBe(0);
+      expect(secretOverride.stderr).toContain(
+        'Sonar secrets file must not override immutable image references',
+      );
+
+      writeFileSync(secrets, 'SONAR_JDBC_USERNAME=sonar\n', { mode: 0o600 });
+      writeFileSync(
+        lockPath,
+        `${lock}SONARQUBE_IMAGE=${values.SONARQUBE_IMAGE}\n`,
+      );
+      const duplicateLock = run();
+      expect(duplicateLock.status).not.toBe(0);
+      expect(duplicateLock.stderr).toContain(
+        'Sonar image lock must contain exactly one SONARQUBE_IMAGE',
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('keeps host preflight read-only while proving capacity and capturing private snapshots', () => {
@@ -402,6 +795,7 @@ describe('advisory SonarQube operational assets', () => {
       'quality-sonar-restore-drill.sh',
       'quality-sonar-scan.sh',
       'quality-sonar-stack.sh',
+      'quality-sonar-systemd-install.sh',
     ];
     for (const script of scripts) {
       expect(() => execFileSync('bash', ['-n', `scripts/${script}`])).not.toThrow();
