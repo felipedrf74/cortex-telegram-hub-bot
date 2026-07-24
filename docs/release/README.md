@@ -350,6 +350,105 @@ drills have already run:
    before either PM2 unit starts, and the predecessor's symlink/SHA/health must
    be exact.
 
+#### ServerDominguez KVM drill host
+
+The reviewed KVM environment in `ops/rollback-drill-vm/OPERATIONS.txt` is the
+supported production-shaped isolation boundary for those three drills when a
+separate physical staging host is unavailable. It does not create another
+release lane and cannot sign or authorize production evidence.
+
+Bootstrap only from the same exact protected-main archive pattern used for the
+promotion controls. The root installer validates a root-owned, non-writable
+source chain, transactionally installs the fixed helpers and static systemd
+template, creates a nologin `nexus-drill-vm` identity whose sole supplemental
+group is `kvm`, and leaves every guest disabled and inactive:
+
+```bash
+sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-vm-systemd-install.sh \
+  /var/lib/nexus-release-bootstrap/<sha>/source \
+  <40-hex-protected-main-sha> \
+  /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+  <64-hex-root-side-archive-sha256>
+```
+
+The archive must use the exact `source/` Git archive prefix and Git PAX commit
+comment. The installer checks that commit identity, the root-side archive
+digest, and every privileged source file against its regular archive member
+before syntax/unit prevalidation and any transactional commit.
+
+Provisioning requires an owner-reviewed Canonical image SHA-256 and byte size,
+one dedicated lab-only Ed25519 public key, and three unique loopback ports. It
+independently verifies `SHA256SUMS.gpg` with
+`/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg`, requires the exact signed
+`noble-server-cloudimg-amd64.img` entry to match both owner-reviewed values,
+validates the qcow2, and publishes one root-owned immutable base plus three
+independent overlays, cloud-init seeds, and VM identities. One newly generated
+lab-only SSH host identity is scoped to that provision set and shared by its
+three strictly sequential loopback endpoints; it is never a production key.
+An optional unprivileged staging directory is copied through no-follow file
+descriptors into root-private state before the same checks; the staged files
+are never executed.
+
+Only one guest can hold the non-waiting runtime lock. QEMU uses KVM, fixed
+regular-file drives, `restrict=on` user networking, and exactly one
+`127.0.0.1:<port>` SSH forward. The units expose no bridge, tap, shared
+filesystem, host block device, public listener, serial console, monitor, or
+production mount. Password and root SSH login are disabled. Use synthetic data
+and lab-only SSH/promotion keys inside the guest. The provision receipt also
+binds the installed QEMU executable digest, version output, owning Debian
+package, package version, and architecture; the runner revalidates them before
+every boot. It also requires the selected overlay to retain its exact initial
+file digest, so any previous boot or mutation forces a fresh provision set.
+
+QEMU advertises 14,336 MiB of logical guest RAM so the unmodified production
+capacity preflight can prove at least 12 GiB `MemAvailable` inside the guest.
+The host cgroup bounds actual pressure with `MemoryHigh=10G`,
+`MemoryMax=12G`, and `MemorySwapMax=512M`. A root preflight requires at least
+25 GiB host `MemAvailable`, load-15 below 6, and no kernel OOM evidence in the
+prior 24 hours; the unprivileged runner repeats the memory/load check. At the
+hard physical-memory bound this preserves 13 GiB on the host, keeping the
+existing 12-GiB production release floor plus a 1-GiB guard band. The logical
+RAM/cgroup combination is intentionally fail-closed and must prove real
+cloud-init, application, and fault-drill behavior before `drillReady` can
+become true.
+
+The static unit receives both the existing
+`/run/lock/nexus-release-sonar.lock` and the root-owned single-guest lock
+through named systemd file descriptors. The single-guest lock lives below a
+root:nexus-drill-vm mode-0750 directory and cannot be replaced by the service
+identity. The runner proves the exact descriptor names, paths, inode/device
+identities, owners, groups, modes, and link counts, acquires both non-waiting
+flocks, and holds them across QEMU exec. Installation and provisioning also
+acquire the release/Sonar lock. A release, Sonar operation, or second rollback
+drill guest therefore cannot overlap.
+
+The initial provision receipt deliberately reports
+`status=ssh_only_bootstrap_required` and `drillReady=false`. `restrict=on`
+prevents the guest from fetching the required Node 22.23.1 and PM2 6.0.14
+toolchain, and the signed release artifact supplies locked application
+dependencies rather than those executables. Before a fault drill, require
+separate root-owned, digest-bound offline bootstrap evidence for Node 22.23.1,
+Python 3.12.x, PM2 6.0.14 at
+`/home/dominguez/.npm-global/bin/pm2`, the exact root promotion controls, and
+synthetic predecessor/candidate runtimes. SSH readiness alone is not promotion
+readiness; do not enable guest egress or copy production data to close this
+gate.
+
+The installer and provisioner do not start a guest. Starting an explicit slot
+remains a separate owner-observed drill action:
+
+```bash
+sudo systemctl start nexus-rollback-drill-vm@guest-1.service
+```
+
+An install/provision journal, occupied port, unsafe path/mode, changed signed
+digest, ambiguous existing state, missing KVM device, or second active guest
+fails closed. A leftover journal after host interruption requires root
+inspection. Do not remove it merely to make a unit start. Repository tests and
+a successful VM boot are not fault-drill evidence: retain the three actual
+machine results and pass only the bounded request through the existing
+protected rollback-drill signer.
+
 ### Ten-release measurement and shadow readiness
 
 Evaluate the success window from exactly ten chronological production journal
