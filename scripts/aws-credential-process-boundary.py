@@ -48,11 +48,10 @@ REQUIRED_PROCESS_FLAGS = (
     "--trust-anchor-arn",
     "--profile-arn",
     "--role-arn",
+    "--session-duration",
 )
 OPTIONAL_PROCESS_FLAGS = (
     "--region",
-    "--session-duration",
-    "--role-session-name",
     "--intermediates",
 )
 
@@ -160,16 +159,8 @@ def parse_process(command: str, helper: Path) -> dict[str, str]:
         values["--intermediates"],
     ):
         fail("--intermediates must use a shell-safe absolute path")
-    if "--session-duration" in values and not re.fullmatch(
-        r"[0-9]{3,5}",
-        values["--session-duration"],
-    ):
-        fail("--session-duration is invalid")
-    if "--role-session-name" in values and not re.fullmatch(
-        r"[A-Za-z0-9+=,.@_-]{2,64}",
-        values["--role-session-name"],
-    ):
-        fail("--role-session-name is invalid")
+    if values["--session-duration"] != "900":
+        fail("--session-duration must equal the approved 900-second profile ceiling")
     return values
 
 

@@ -547,8 +547,8 @@ preflight_application_dr() {
     return 1
   }
   case "$verification" in
-    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days') ;;
-    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=cloudflare-r2 storageControlMode=r2-approved-variance releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days') ;;
+    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days') ;;
+    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=cloudflare-r2 storageControlMode=r2-approved-variance releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days') ;;
     *)
       echo "application DR provisioning/config preflight returned invalid evidence" >&2
       return 1
@@ -1200,19 +1200,25 @@ const crypto=require('crypto'),fs=require('fs');
 const [raw,id,path,sha,artifact,installed,recovery,manifestPath,stagingPath]=process.argv.slice(2);
 const x=JSON.parse(raw),c=x.requiredRecoveryRuntime;
 const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const validAwsVersionId=(value)=>{
+ if(typeof value!=='string'||value==='null')return false;
+ const encoded=Buffer.from(value,'utf8');
+ return encoded.length>=1&&encoded.length<=1024
+  &&encoded.toString('utf8')===value&&!/[\u0000-\u001f\u007f]/u.test(value);
+};
 const pair=(x.storageProvider==='aws-s3'&&x.storageControlMode==='versioned-s3')
  ||(x.storageProvider==='cloudflare-r2'&&x.storageControlMode==='r2-approved-variance');
 const confirmed=Date.parse(c?.confirmedAt||'');
 const databaseConfirmed=Date.parse(x.databaseConfirmedAt||'');
 const providerProof=x.storageProvider==='aws-s3'
- ? /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(c?.objectVersionId||'')
+ ? validAwsVersionId(c?.objectVersionId)
    && Number.isFinite(Date.parse(c?.retainUntil||''))
    && Date.parse(c.retainUntil)>=confirmed+90*86400*1000
    && c.retentionVariance===null&&c.approvedUnversionedVariance===false
  : x.storageProvider==='cloudflare-r2'&&c?.objectVersionId===null&&c?.retainUntil===null
    && c?.retentionVariance==='r2-approved-variance'&&c?.approvedUnversionedVariance===true;
 const databaseProviderProof=x.storageProvider==='aws-s3'
- ? /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(x.databaseObjectVersionId||'')
+ ? validAwsVersionId(x.databaseObjectVersionId)
    &&x.databaseRetentionVariance===null&&x.databaseApprovedUnversionedVariance===false
  : x.storageProvider==='cloudflare-r2'&&x.databaseObjectVersionId===null
    &&x.databaseRetentionVariance==='r2-approved-variance'
@@ -1324,12 +1330,18 @@ for(const line of fs.readFileSync(resultPath,'utf8').split(/\r?\n/u)){
  result.set(match[1],match[2]);
 }
 const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const validAwsVersionId=(value)=>{
+ if(typeof value!=='string'||value==='null')return false;
+ const encoded=Buffer.from(value,'utf8');
+ return encoded.length>=1&&encoded.length<=1024
+  &&encoded.toString('utf8')===value&&!/[\u0000-\u001f\u007f]/u.test(value);
+};
 const pair=(x.storageProvider==='aws-s3'&&x.storageControlMode==='versioned-s3')
  ||(x.storageProvider==='cloudflare-r2'&&x.storageControlMode==='r2-approved-variance');
 const providerProof=(value)=>{
  const confirmed=Date.parse(value?.confirmedAt||'');
  if(!Number.isFinite(confirmed))return false;
- if(x.storageProvider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+ if(x.storageProvider==='aws-s3')return validAwsVersionId(value?.objectVersionId)
   &&Number.isFinite(Date.parse(value?.retainUntil||''))
   &&Date.parse(value.retainUntil)>=confirmed+90*86400*1000
   &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
@@ -1350,7 +1362,7 @@ const databaseProviderProof=(value)=>{
   ||!/^[a-f0-9]{64}$/u.test(value?.encryptedSha256||'')
   ||!Number.isSafeInteger(value?.encryptedSizeBytes)||value.encryptedSizeBytes<=0
   ||!Number.isFinite(Date.parse(value?.confirmedAt||'')))return false;
- if(x.storageProvider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+ if(x.storageProvider==='aws-s3')return validAwsVersionId(value?.objectVersionId)
   &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
  return x.storageProvider==='cloudflare-r2'&&value?.objectVersionId===null
   &&value?.retentionVariance==='r2-approved-variance'

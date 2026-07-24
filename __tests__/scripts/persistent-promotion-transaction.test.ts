@@ -70,7 +70,7 @@ describe('persistent systemd promotion transaction v2', () => {
       retainUntil: new Date(
         Date.parse(preMutationRecoveryConfirmedAt) + 91 * 24 * 60 * 60 * 1000,
       ).toISOString(),
-      objectVersionId: 'fixture-recovery-pre-mutation-version-1',
+      objectVersionId: '--opaque-recovery-pre-✓|1',
       retentionVariance: null,
       approvedUnversionedVariance: false,
       confirmed: true,
@@ -102,7 +102,7 @@ describe('persistent systemd promotion transaction v2', () => {
         plaintextSha256: '7'.repeat(64),
         encryptedSha256: '2'.repeat(64),
         encryptedSizeBytes: 1024,
-        objectVersionId: 'fixture-database-pre-mutation-version-1',
+        objectVersionId: '--opaque-database-pre-✓|2',
         confirmedAt: preMutationDatabaseConfirmedAt,
         retentionVariance: null,
         approvedUnversionedVariance: false,
@@ -142,7 +142,7 @@ describe('persistent systemd promotion transaction v2', () => {
     fs.writeFileSync(file, `#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" --verify-config "* ]]; then
-  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days'
   exit 0
 fi
 required=""
@@ -197,8 +197,8 @@ const runtimeVersion=process.env.DR_OBJECT_VERSION_ID_OVERRIDE==='null'
   ? null
   : process.env.DR_OBJECT_VERSION_ID_OVERRIDE
     ||(postMutation
-      ? 'fixture-recovery-current-version-1'
-      : 'fixture-recovery-pre-mutation-version-1');
+      ? '--opaque-recovery-current-✓|3'
+      : '--opaque-recovery-pre-✓|1');
 const runtimeEncryptedSha256=process.env.DR_RUNTIME_ENCRYPTED_SHA256_OVERRIDE==='invalid'
   ? null
   : (postMutation?'4':'5').repeat(64);
@@ -213,7 +213,7 @@ const releaseProof=required ? {
   objectKey:'nexus/releases/'+required.split('/').pop()+'.'+digest(required)+'.age',
   confirmedAt,
   retainUntil,
-  objectVersionId:'fixture-release-version-1',
+  objectVersionId:'--opaque-release-✓|4',
   retentionVariance:null,
   approvedUnversionedVariance:false,
   confirmed:true,
@@ -253,8 +253,8 @@ const result={
   databaseEncryptedSha256:postMutation?'1'.repeat(64):'2'.repeat(64),
   databaseEncryptedSizeBytes:postMutation?1536:1024,
   databaseObjectVersionId:postMutation
-    ? 'fixture-database-current-version-1'
-    : 'fixture-database-pre-mutation-version-1',
+    ? '--opaque-database-current-✓|5'
+    : '--opaque-database-pre-✓|2',
   databaseConfirmedAt,
   databaseRetentionVariance:null,
   databaseApprovedUnversionedVariance:false,
@@ -1499,7 +1499,7 @@ exit 99
     fs.writeFileSync(mutationScript, '#!/usr/bin/env bash\n: > "$MUTATION_MARKER"\nexit 99\n', { mode: 0o755 });
     fs.writeFileSync(invalidDr, `#!/usr/bin/env bash
 printf '%s\\n' "$*" > "$DR_INVOCATION"
-printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days'
+printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days'
 `, { mode: 0o755 });
 
     const result = spawnSync('bash', [broker, 'run', id], {
@@ -1806,7 +1806,7 @@ exec bash ${JSON.stringify(runner)} "$@"
         plaintextSha256: exactSha,
         encryptedSha256: '3'.repeat(64),
         encryptedSizeBytes: 2048,
-        objectVersionId: 'fixture-release-version-1',
+        objectVersionId: '--opaque-release-✓|4',
         retentionVariance: null,
         approvedUnversionedVariance: false,
         confirmed: true,
@@ -1817,7 +1817,7 @@ exec bash ${JSON.stringify(runner)} "$@"
         encryptedSizeBytes: 4096,
         escrowId: id,
         escrowPhase: 'post-soak',
-        objectVersionId: 'fixture-recovery-current-version-1',
+        objectVersionId: '--opaque-recovery-current-✓|3',
         retentionVariance: null,
         approvedUnversionedVariance: false,
         confirmed: true,
@@ -1828,7 +1828,7 @@ exec bash ${JSON.stringify(runner)} "$@"
         encryptedSizeBytes: 3584,
         escrowId: id,
         escrowPhase: 'pre-mutation',
-        objectVersionId: 'fixture-recovery-pre-mutation-version-1',
+        objectVersionId: '--opaque-recovery-pre-✓|1',
         confirmedAt: preMutationRecoveryConfirmedAt,
         retentionVariance: null,
         approvedUnversionedVariance: false,
@@ -1838,14 +1838,14 @@ exec bash ${JSON.stringify(runner)} "$@"
         plaintextSha256: '7'.repeat(64),
         encryptedSha256: '2'.repeat(64),
         encryptedSizeBytes: 1024,
-        objectVersionId: 'fixture-database-pre-mutation-version-1',
+        objectVersionId: '--opaque-database-pre-✓|2',
         confirmedAt: preMutationDatabaseConfirmedAt,
       },
       currentDatabaseRecoveryPoint: {
         plaintextSha256: '7'.repeat(64),
         encryptedSha256: '1'.repeat(64),
         encryptedSizeBytes: 1536,
-        objectVersionId: 'fixture-database-current-version-1',
+        objectVersionId: '--opaque-database-current-✓|5',
       },
       promotionTimeline: {
         cutoverStartedAt: '2026-07-22T12:00:00Z',

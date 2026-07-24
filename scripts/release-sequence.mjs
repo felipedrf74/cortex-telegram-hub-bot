@@ -538,7 +538,13 @@ function productionEvidenceMatches(production, expected) {
   if (!aws && !r2) return false;
   if (controls?.releasePrefixLockVerified !== true) return false;
 
-  const version = (input) => /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(input || '');
+  const version = (input) => {
+    if (typeof input !== 'string' || input === 'null') return false;
+    const encoded = Buffer.from(input, 'utf8');
+    return encoded.length >= 1 && encoded.length <= 1024
+      && encoded.toString('utf8') === input
+      && !/[\u0000-\u001f\u007f]/u.test(input);
+  };
   const retainedObject = (item) => {
     const confirmed = Date.parse(item?.confirmedAt || '');
     if (!Number.isFinite(confirmed) || item?.provider !== controls.provider

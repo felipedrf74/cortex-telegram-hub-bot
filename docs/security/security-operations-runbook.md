@@ -78,27 +78,55 @@ logs, command output, chat, or release evidence.
   plus refreshed database point. A missing timer run, failed upload, or
   unverified remote metadata is an alert, not a silent RPO exception.
 - Keep the private `age` identity off ServerDominguez. Bucket credentials are
-  prefix-scoped, mode-0600 configuration or instance identity; plaintext never
-  leaves the private temporary directory.
+  prefix-scoped IAM Roles Anywhere sessions from two distinct private-CA leaf
+  certificates; plaintext never leaves the private temporary directory. The
+  managed CloudFormation identity plane must start disabled, bind exact account,
+  trust-anchor, issuer CN, subject CN, one-role profile, and session-policy
+  limits, and enable only after owner-approved key custody and revocation tests.
+  Keep the imported CRL current because IAM Roles Anywhere does not query OCSP
+  or CRL distribution points.
 - Default object-store controls are enabled S3 versioning plus at least 90-day
-  S3 Object Lock for release objects. Cloudflare R2 is accepted only through
+  S3 Object Lock for release objects. AWS database recovery points are
+  write-once first points protected by tier-specific COMPLIANCE locks and
+  lifecycle expiry; observed 24/7/4/6 counts are minimum floors and take time
+  to mature. Cloudflare R2 is accepted only through
   the owner-approved `r2-approved-variance`, with current private control-plane
   evidence for an exact releases-prefix bucket lock of at least 90 days. The
   mode-0600 control evidence must be refreshed within 30 days; never claim R2
   versioning.
-- Scope AWS backup IAM to `s3:ListBucketVersions` on the governed prefix and
-  `s3:DeleteObjectVersion` on governed objects, in addition to required
-  Get/Head/Put and release-retention actions. AWS retention must exhaust direct
-  key/version-marker pages with CLI auto-pagination disabled, delete only exact
-  key-plus-VersionId identities sequentially, and stop on the first failure.
-  It must never use the R2 unversioned DeleteObject variance.
-- Retain release versions for 90 days plus a 3,600-second deletion grace.
+- Scope AWS backup IAM to `s3:ListBucketVersions` and exact-tier
+  Get/Head/conditional Put plus bounded Object Lock actions. Explicitly deny
+  `DeleteObject`, `DeleteObjectVersion`, legal-hold changes, and bucket-policy,
+  lifecycle, versioning, or Object Lock mutation to the backup principal. AWS
+  bucket policy must deny governed writes from every principal except the exact
+  backup role, even when another same-account identity policy is overly broad.
+  AWS retention must exhaust direct key/version-marker pages with CLI
+  auto-pagination disabled and emit read-only consecutive-period floor
+  evidence. It must checksum-HEAD every selected exact VersionId and verify its
+  metadata, calendar identity, COMPLIANCE mode, and tier deadline. First
+  24/7/4/6 maturity creates a monotonic root-owned seal; later regression is a
+  failure. S3 Lifecycle is its only cleanup actor. The separate R2 variance
+  retains its unversioned DeleteObject pruning and must never be selected for
+  AWS.
+  `PutObjectRetention` is required to attach each initial lock. A compromised
+  writer could repeatedly extend objects to the tier's one-day upper bound and
+  cause storage-cost growth, but cannot shorten retention, delete versions,
+  alter legal holds, or mutate bucket controls. Alert on unexpected retention
+  changes and disable the Roles Anywhere profile and trust anchor during
+  credential response.
+- Retain release versions under COMPLIANCE lock for at least 90 days, with
+  lifecycle expiration after the lock window.
   Bind the two current-runtime keys to the exact transaction and phases:
   `+escrow-<id>+phase-pre-mutation...` and
   `+escrow-<id>+phase-post-soak...`. They preserve the same plaintext runtime
-  identity but require distinct keys and freshly encrypted ciphertext. Protect
-  each exact pair from the creating invocation's retention pass, then re-HEAD
-  and re-download the exact AWS VersionId. Confirmation records `escrowId`,
+  identity but require distinct keys and freshly encrypted ciphertext. The
+  post-soak phase also writes the predecessor rollback bundle under a distinct
+  `+rollback-escrow-<id>+phase-post-soak` key, preventing an older timer object
+  from shortening the promotion's required 90-day recovery window. The
+  one-day lock headroom and exact-version retention extension support a delayed
+  checkpoint resume without weakening that floor. Protect each exact pair with
+  a conditional write, then re-HEAD and re-download the exact AWS VersionId.
+  Confirmation records `escrowId`,
   `escrowPhase`, plaintext/encrypted SHA-256, encrypted byte size,
   `recoveryRuntimeDigest`, release-manifest/staging digests, `confirmedAt`,
   `retainUntil`, and `objectVersionId`, with `retainUntil` at least 90 days
@@ -181,13 +209,20 @@ quarterly drill are complete.
   than 5% regression in either p50 or p95. Failure stops Sonar rollout, not a
   production release.
 - Back up Sonar PostgreSQL daily as an encrypted off-host custom-format dump,
-  retaining 7 daily and 4 weekly copies. The asset installer leaves the timer
-  disabled; the owner-only `quality-sonar-backup --enable-timer` path must
-  complete one remote backup before enabling it. Failed attempts retry every
-  15 minutes without waiting behind a release, and
+  retaining one complete data/checksum pair for each of 7 distinct UTC days
+  and 4 distinct ISO weeks. Retries and manual runs are collapsed within their
+  period, and the post-prune inventory is re-listed. Every selected pair must
+  then pass exact-VersionId, metadata digest, checksum-object, and S3 SHA-256
+  attestation before the receipt records observed period counts or whether
+  each target has accrued. The asset
+  installer leaves the timer disabled; the owner-only
+  `quality-sonar-backup --enable-timer` path must complete one remote backup
+  before enabling it. Failed attempts retry every 15 minutes without waiting
+  behind a release, and
   `quality-sonar-backup --verify-freshness --max-age-hours 26` must validate
   the root-owned success receipt. Exercise restore/reindex quarterly on an
-  isolated Docker host.
+  isolated Docker host and publish each result as a new file beneath the
+  root-owned mode-0700 `/var/lib/nexus-sonarqube/restore-evidence` boundary.
 - Move SonarQube off the production host before making its quality gate
   required. Operational templates and exact commands live under
   `ops/sonarqube/`.

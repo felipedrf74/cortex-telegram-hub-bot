@@ -56,6 +56,9 @@ describe('advisory SonarQube operational assets', () => {
     expect(script).toContain(
       'managed directory parent must already exist and be canonical',
     );
+    expect(script).toContain(
+      'ensure_directory "$RESTORE_EVIDENCE_DIR" root root 0700',
+    );
   });
 
   it('behaviorally rejects an installed source asset that drifted from the Git archive', () => {
@@ -571,6 +574,7 @@ describe('advisory SonarQube operational assets', () => {
     const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-pm2-authority-'));
     const bin = join(temp, 'bin');
     const control = join(temp, 'nexus-release-promotion-control');
+    const rootNode = join(temp, 'root-node');
     mkdirSync(bin);
     chmodSync(temp, 0o700);
     try {
@@ -586,6 +590,12 @@ describe('advisory SonarQube operational assets', () => {
       );
       chmodSync(join(bin, 'id'), 0o755);
       chmodSync(join(bin, 'stat'), 0o755);
+      writeFileSync(
+        rootNode,
+        `#!/bin/sh\n[ "\${1:-}" = --version ] && { echo v22.23.1; exit 0; }\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+        { mode: 0o755 },
+      );
+      chmodSync(rootNode, 0o755);
       const run = () => spawnSync(
         'bash',
         ['scripts/quality-sonar-preflight.sh', '--verify-pm2-only'],
@@ -596,7 +606,7 @@ describe('advisory SonarQube operational assets', () => {
             PATH: `${bin}:${process.env.PATH ?? ''}`,
             NEXUS_RELEASE_TEST_MODE: '1',
             NEXUS_SONAR_PM2_CONTROL: control,
-            NEXUS_SONAR_ROOT_NODE_BIN: process.execPath,
+            NEXUS_SONAR_ROOT_NODE_BIN: rootNode,
           },
         },
       );
@@ -619,7 +629,7 @@ describe('advisory SonarQube operational assets', () => {
         launcher: '/usr/local/bin/pm2',
         launcherSha256: 'd'.repeat(64),
         node: {
-          path: process.execPath,
+          path: rootNode,
           version: 'v22.23.1',
           sha256: 'e'.repeat(64),
         },
@@ -936,6 +946,16 @@ describe('advisory SonarQube operational assets', () => {
     expect(backup.indexOf('age --encrypt')).toBeLessThan(backup.indexOf('s3api put-object'));
     expect(backup).toContain('prune_tier daily 7');
     expect(backup).toContain('prune_tier weekly 4');
+    expect(backup).toContain('quality-sonar-retention.mjs');
+    expect(backup).toContain('--no-paginate');
+    expect(backup).toContain('--max-keys 1000');
+    expect(backup).toContain('SonarRetentionEvidenceV1');
+    expect(backup).toContain('distinct-utc-days-and-iso-weeks');
+    expect(backup).toContain('get-bucket-versioning');
+    expect(backup).toContain('value.DeleteMarker !== true');
+    expect(backup).toContain(
+      'Sonar retention maturity regressed below an established target',
+    );
     expect(backup).toContain('pg_restore --list');
     expect(backup).toContain('--enable-timer');
     expect(backup).toContain('--verify-freshness');
@@ -944,11 +964,23 @@ describe('advisory SonarQube operational assets', () => {
     expect(backup).toContain('--metadata "encrypted-sha256=$encrypted_sha256"');
     expect(backup).toContain("metadata['encrypted-sha256'] !== expectedSha256");
     expect(backup).toContain(
-      "method: 'version-pinned-head-content-length-and-metadata-sha256'",
+      "method: 'version-pinned-head-content-length-metadata-and-s3-sha256'",
     );
-    expect(backup).toContain('--version-id "$object_version_id"');
-    expect(backup).toContain('"$object_version_id" != null');
-    expect(backup).toContain('"$checksum_version_id" != null');
+    expect(backup).toContain('--checksum-algorithm SHA256');
+    expect(backup).toContain('--checksum-mode ENABLED');
+    expect(backup).toContain('SonarRetentionPointV1');
+    expect(
+      backup.indexOf('attest_retained_pairs "$tier" "$plan" "$attestations"'),
+    ).toBeLessThan(
+      backup.indexOf('s3api delete-object', backup.indexOf('prune_tier()')),
+    );
+    expect(
+      backup.indexOf('revalidate_retained_pairs', backup.indexOf('prune_tier()')),
+    ).toBeGreaterThan(
+      backup.indexOf('s3api delete-object', backup.indexOf('prune_tier()')),
+    );
+    expect(backup).toContain('--version-id="$object_version_id"');
+    expect(backup).toContain('Buffer.from(v,"utf8")');
     expect(backup).toContain('dailyObjectVersionId');
     expect(backup).toContain('dailyChecksumVersionId');
     expect(backup).toContain('AWS_CREDENTIAL_BOUNDARY_HELPER');
@@ -983,16 +1015,314 @@ describe('advisory SonarQube operational assets', () => {
     expect(restore).toContain('AWS_CREDENTIAL_BOUNDARY_HELPER');
     expect(restore).toContain('--backup-version-id');
     expect(restore).toContain('--checksum-version-id');
-    expect(restore).toContain('--version-id "$BACKUP_VERSION_ID"');
-    expect(restore).toContain('--version-id "$CHECKSUM_VERSION_ID"');
-    expect(restore).toContain('"$BACKUP_VERSION_ID" != null');
-    expect(restore).toContain('"$CHECKSUM_VERSION_ID" != null');
+    expect(restore).toContain('--version-id="$BACKUP_VERSION_ID"');
+    expect(restore).toContain('--version-id="$CHECKSUM_VERSION_ID"');
+    expect(restore).toContain("Buffer.from(value, 'utf8')");
     expect(restore).toContain('Refusing restore drill while the live advisory Sonar stack is running');
     expect(restore).toContain('freshElasticsearchVolume: true');
     expect(restore).toContain('reindexStartupVerified: true');
     expect(restore).toContain('down --volumes --remove-orphans');
+    expect(restore).toContain(
+      'RESTORE_EVIDENCE_DIR=/var/lib/nexus-sonarqube/restore-evidence',
+    );
+    expect(restore).toContain('fs.constants.O_NOFOLLOW');
+    expect(restore).toContain('fs.linkSync(stage, output)');
+    expect(restore).toContain('evidence output must be a new path');
+    expect(restore).not.toContain('mkdir -p "$(dirname "$OUTPUT")"');
     expect(drillCompose).toContain('127.0.0.1:19000:9000');
     expect(drillCompose).toContain('drill_sonarqube_data');
+  });
+
+  it('retains complete Sonar backup pairs by distinct UTC day and ISO week', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-retention-'));
+    const helper = resolve('scripts/quality-sonar-retention.mjs');
+    const makeKey = (tier: 'daily' | 'weekly', timestamp: string) =>
+      `nexus-hub/sonarqube/${tier}/nexus-sonarqube-${timestamp}.dump.age`;
+    const pair = (tier: 'daily' | 'weekly', timestamp: string) => {
+      const key = makeKey(tier, timestamp);
+      return [{ Key: key }, { Key: `${key}.sha256` }];
+    };
+    const runPlan = (
+      tier: 'daily' | 'weekly',
+      retain: number,
+      timestamps: string[],
+      protectedTimestamp: string,
+      stem: string,
+    ) => {
+      const prefix = `nexus-hub/sonarqube/${tier}/`;
+      const listing = join(temp, `${stem}-before.json`);
+      const plan = join(temp, `${stem}-plan.json`);
+      writeFileSync(
+        listing,
+        `${JSON.stringify({
+          IsTruncated: false,
+          Contents: timestamps.flatMap((timestamp) => pair(tier, timestamp)),
+        })}\n`,
+      );
+      execFileSync(process.execPath, [
+        helper,
+        'plan',
+        '--listing',
+        listing,
+        '--prefix',
+        prefix,
+        '--tier',
+        tier,
+        '--retain',
+        String(retain),
+        '--protected-key',
+        makeKey(tier, protectedTimestamp),
+        '--output',
+        plan,
+      ]);
+      return { prefix, plan, value: JSON.parse(readFileSync(plan, 'utf8')) };
+    };
+
+    try {
+      const daily = runPlan(
+        'daily',
+        7,
+        [
+          '20260724T120000Z',
+          '20260724T110000Z',
+          '20260723T120000Z',
+          '20260722T120000Z',
+          '20260721T120000Z',
+          '20260720T120000Z',
+          '20260719T120000Z',
+          '20260718T120000Z',
+          '20260717T120000Z',
+        ],
+        '20260724T120000Z',
+        'daily',
+      );
+      expect(daily.value.selectedPeriods).toEqual([
+        '2026-07-24',
+        '2026-07-23',
+        '2026-07-22',
+        '2026-07-21',
+        '2026-07-20',
+        '2026-07-19',
+        '2026-07-18',
+      ]);
+      expect(daily.value.deleteKeys).toContain(
+        makeKey('daily', '20260724T110000Z'),
+      );
+      expect(daily.value.deleteKeys).toContain(
+        `${makeKey('daily', '20260717T120000Z')}.sha256`,
+      );
+
+      const dailyAfter = join(temp, 'daily-after.json');
+      writeFileSync(
+        dailyAfter,
+        `${JSON.stringify({
+          IsTruncated: false,
+          Contents: daily.value.selectedKeys.flatMap((key: string) => [
+            { Key: key },
+            { Key: `${key}.sha256` },
+          ]),
+        })}\n`,
+      );
+      const dailyInventoryEvidence = join(
+        temp,
+        'daily-inventory-evidence.json',
+      );
+      execFileSync(process.execPath, [
+        helper,
+        'verify',
+        '--listing',
+        dailyAfter,
+        '--prefix',
+        daily.prefix,
+        '--tier',
+        'daily',
+        '--retain',
+        '7',
+        '--plan',
+        daily.plan,
+        '--output',
+        dailyInventoryEvidence,
+      ]);
+      const dailyInventory = JSON.parse(
+        readFileSync(dailyInventoryEvidence, 'utf8'),
+      );
+      expect(dailyInventory).toMatchObject({
+        retainedDistinctPeriods: 7,
+        targetReached: true,
+        maturityStatus: 'mature',
+        completePairNamesVerified: true,
+        completePairsVerified: false,
+        excessObjectsAbsent: true,
+      });
+      const dailyAttestations = join(temp, 'daily-attestations.jsonl');
+      const dataChecksumSha256 = Buffer.from(
+        'a'.repeat(64),
+        'hex',
+      ).toString('base64');
+      const checksumObjectChecksumSha256 = Buffer.from(
+        'b'.repeat(64),
+        'hex',
+      ).toString('base64');
+      writeFileSync(
+        dailyAttestations,
+        `${dailyInventory.selectedKeys
+          .map((key: string, index: number) =>
+            JSON.stringify({
+              schemaVersion: 'SonarRetentionPointV1',
+              tier: 'daily',
+              period: dailyInventory.selectedPeriods[index],
+              key,
+              checksumKey: `${key}.sha256`,
+              dataVersionId: `--opaque-data-${index}-✓|`,
+              checksumVersionId: `--opaque-checksum-${index}-✓|`,
+              encryptedSha256: 'a'.repeat(64),
+              encryptedSizeBytes: 1024 + index,
+              checksumSizeBytes: 120,
+              dataChecksumSha256,
+              checksumObjectChecksumSha256,
+            }))
+          .join('\n')}\n`,
+      );
+      const dailyEvidence = join(temp, 'daily-evidence.json');
+      execFileSync(process.execPath, [
+        helper,
+        'bind',
+        '--evidence',
+        dailyInventoryEvidence,
+        '--attestations',
+        dailyAttestations,
+        '--output',
+        dailyEvidence,
+      ]);
+      expect(JSON.parse(readFileSync(dailyEvidence, 'utf8'))).toMatchObject({
+        retainedDistinctPeriods: 7,
+        targetReached: true,
+        completePairsVerified: true,
+        remotePairsVerified: true,
+        postPruneVerified: true,
+      });
+
+      const weekly = runPlan(
+        'weekly',
+        4,
+        [
+          '20260104T120000Z',
+          '20260103T120000Z',
+          '20251228T120000Z',
+          '20251221T120000Z',
+          '20251214T120000Z',
+          '20251207T120000Z',
+        ],
+        '20260104T120000Z',
+        'weekly',
+      );
+      expect(weekly.value.selectedPeriods).toEqual([
+        '2026-W01',
+        '2025-W52',
+        '2025-W51',
+        '2025-W50',
+      ]);
+      expect(weekly.value.deleteKeys).toContain(
+        makeKey('weekly', '20260103T120000Z'),
+      );
+      expect(weekly.value.deleteKeys).toContain(
+        makeKey('weekly', '20251207T120000Z'),
+      );
+
+      const warming = runPlan(
+        'daily',
+        7,
+        ['20260724T120000Z', '20260723T120000Z'],
+        '20260724T120000Z',
+        'warming',
+      );
+      const warmingAfter = join(temp, 'warming-after.json');
+      writeFileSync(
+        warmingAfter,
+        `${JSON.stringify({
+          IsTruncated: false,
+          Contents: warming.value.selectedKeys.flatMap((key: string) => [
+            { Key: key },
+            { Key: `${key}.sha256` },
+          ]),
+        })}\n`,
+      );
+      const warmingEvidence = join(temp, 'warming-evidence.json');
+      execFileSync(process.execPath, [
+        helper,
+        'verify',
+        '--listing',
+        warmingAfter,
+        '--prefix',
+        warming.prefix,
+        '--tier',
+        'daily',
+        '--retain',
+        '7',
+        '--plan',
+        warming.plan,
+        '--output',
+        warmingEvidence,
+      ]);
+      expect(JSON.parse(readFileSync(warmingEvidence, 'utf8'))).toMatchObject({
+        retainedDistinctPeriods: 2,
+        targetReached: false,
+        maturityStatus: 'warming',
+        completePairsVerified: false,
+      });
+
+      const orphanListing = join(temp, 'orphan.json');
+      const orphanPlan = join(temp, 'orphan-plan.json');
+      writeFileSync(
+        orphanListing,
+        `${JSON.stringify({
+          IsTruncated: false,
+          Contents: [{ Key: makeKey('daily', '20260724T120000Z') }],
+        })}\n`,
+      );
+      expect(() =>
+        execFileSync(process.execPath, [
+          helper,
+          'plan',
+          '--listing',
+          orphanListing,
+          '--prefix',
+          'nexus-hub/sonarqube/daily/',
+          '--tier',
+          'daily',
+          '--retain',
+          '7',
+          '--protected-key',
+          makeKey('daily', '20260724T120000Z'),
+          '--output',
+          orphanPlan,
+        ], { stdio: 'pipe' }),
+      ).toThrow();
+
+      const truncatedListing = join(temp, 'truncated.json');
+      writeFileSync(
+        truncatedListing,
+        `${JSON.stringify({ IsTruncated: true, Contents: [] })}\n`,
+      );
+      expect(() =>
+        execFileSync(process.execPath, [
+          helper,
+          'plan',
+          '--listing',
+          truncatedListing,
+          '--prefix',
+          'nexus-hub/sonarqube/daily/',
+          '--tier',
+          'daily',
+          '--retain',
+          '7',
+          '--output',
+          join(temp, 'truncated-plan.json'),
+        ], { stdio: 'pipe' }),
+      ).toThrow();
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('fails closed when the remote Sonar backup success receipt is stale or invalid', () => {
@@ -1004,27 +1334,94 @@ describe('advisory SonarQube operational assets', () => {
     const writeReceipt = (
       completedAt: string,
       remoteObjectVerified = true,
-      dailyObjectVersionId = 'daily-object-version-1',
-      dailyChecksumVersionId = 'daily-checksum-version-1',
+      dailyObjectVersionId = '--opaque-daily-✓|1',
+      dailyChecksumVersionId = '--opaque-checksum-✓|2',
     ) => {
+      const dailyKey =
+        'nexus-hub/sonarqube/daily/nexus-sonarqube-20260724T120000Z.dump.age';
       writeFileSync(receipt, `${JSON.stringify({
         schemaVersion: 'SonarBackupSuccessV2',
         encrypted: true,
         remoteObjectVerified,
-        dailyKey: 'nexus-hub/sonarqube/daily/nexus-sonarqube-20260724T120000Z.dump.age',
+        dailyKey,
         encryptedSha256: 'a'.repeat(64),
         encryptedSizeBytes: 1234,
         dailyObjectVersionId,
         dailyChecksumVersionId,
         weeklyUploaded: false,
+        weeklyKey: null,
         weeklyObjectVersionId: null,
         weeklyChecksumVersionId: null,
         remoteVerification: {
-          method: 'version-pinned-head-content-length-and-metadata-sha256',
+          method:
+            'version-pinned-head-content-length-metadata-and-s3-sha256',
           daily: true,
           weekly: false,
         },
-        retention: { daily: 7, weekly: 4 },
+        retention: {
+          daily: 7,
+          weekly: 4,
+          basis: 'distinct-utc-days-and-iso-weeks',
+        },
+        retentionEvidence: {
+          daily: {
+            schemaVersion: 'SonarRetentionEvidenceV1',
+            tier: 'daily',
+            periodKind: 'utc-day',
+            targetDistinctPeriods: 7,
+            retainedDistinctPeriods: 1,
+            targetReached: false,
+            maturityStatus: 'warming',
+            selectedPeriods: ['2026-07-24'],
+            selectedKeys: [dailyKey],
+            selectedPoints: [{
+              schemaVersion: 'SonarRetentionPointV1',
+              tier: 'daily',
+              period: '2026-07-24',
+              key: dailyKey,
+              checksumKey: `${dailyKey}.sha256`,
+              dataVersionId: dailyObjectVersionId,
+              checksumVersionId: dailyChecksumVersionId,
+              encryptedSha256: 'a'.repeat(64),
+              encryptedSizeBytes: 1234,
+              checksumSizeBytes: 120,
+              dataChecksumSha256: Buffer.from(
+                'a'.repeat(64),
+                'hex',
+              ).toString('base64'),
+              checksumObjectChecksumSha256: Buffer.from(
+                'b'.repeat(64),
+                'hex',
+              ).toString('base64'),
+            }],
+            protectedKeyVerified: true,
+            completePairNamesVerified: true,
+            completePairsVerified: true,
+            remotePairsVerified: true,
+            postPruneVerified: true,
+            excessObjectsAbsent: true,
+            verifiedAt: completedAt,
+          },
+          weekly: {
+            schemaVersion: 'SonarRetentionEvidenceV1',
+            tier: 'weekly',
+            periodKind: 'iso-week',
+            targetDistinctPeriods: 4,
+            retainedDistinctPeriods: 0,
+            targetReached: false,
+            maturityStatus: 'warming',
+            selectedPeriods: [],
+            selectedKeys: [],
+            selectedPoints: [],
+            protectedKeyVerified: false,
+            completePairNamesVerified: true,
+            completePairsVerified: true,
+            remotePairsVerified: true,
+            postPruneVerified: true,
+            excessObjectsAbsent: true,
+            verifiedAt: completedAt,
+          },
+        },
         completedAt,
       })}\n`, { mode: 0o600 });
       chmodSync(receipt, 0o600);
@@ -1066,6 +1463,14 @@ describe('advisory SonarQube operational assets', () => {
       expect(fresh.status, fresh.stderr).toBe(0);
       expect(fresh.stdout).toContain('sonar_backup_fresh');
 
+      const falseFloor = JSON.parse(readFileSync(receipt, 'utf8'));
+      falseFloor.retentionEvidence.daily.retainedDistinctPeriods = 7;
+      falseFloor.retentionEvidence.daily.targetReached = true;
+      falseFloor.retentionEvidence.daily.maturityStatus = 'mature';
+      writeFileSync(receipt, `${JSON.stringify(falseFloor)}\n`, { mode: 0o600 });
+      chmodSync(receipt, 0o600);
+      expect(run().status).not.toBe(0);
+
       writeReceipt(new Date(Date.now() - 27 * 60 * 60 * 1000).toISOString());
       expect(run().status).not.toBe(0);
 
@@ -1075,8 +1480,20 @@ describe('advisory SonarQube operational assets', () => {
       writeReceipt(new Date().toISOString(), true, 'null');
       expect(run().status).not.toBe(0);
 
-      writeReceipt(new Date().toISOString(), true, 'daily-object-version-1', 'null');
+      writeReceipt(new Date().toISOString(), true, '--opaque-daily-✓|1', 'null');
       expect(run().status).not.toBe(0);
+
+      writeReceipt(new Date().toISOString(), true, 'é'.repeat(512), 'é'.repeat(512));
+      expect(run().status).toBe(0);
+
+      for (const unsafe of [
+        'unsafe\nversion',
+        'unsafe\u007fversion',
+        `${'é'.repeat(512)}a`,
+      ]) {
+        writeReceipt(new Date().toISOString(), true, unsafe, unsafe);
+        expect(run().status).not.toBe(0);
+      }
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
@@ -1102,6 +1519,7 @@ describe('advisory SonarQube operational assets', () => {
       'ollama-soak-evidence.mjs',
       'quality-sonar-start-evidence.mjs',
       'quality-sonar-latency-gate.mjs',
+      'quality-sonar-retention.mjs',
     ]) {
       expect(() => execFileSync(process.execPath, ['--check', `scripts/${script}`])).not.toThrow();
     }

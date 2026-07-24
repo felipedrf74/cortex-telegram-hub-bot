@@ -185,6 +185,14 @@ Explicit preparation
     release/Sonar mutex collision. It never waits behind or runs alongside a
     release. Alert on a failed freshness check; a successful systemd unit
     invocation is not a substitute for the root-owned remote-backup receipt.
+    Retention is reconciled and re-listed by distinct UTC day and ISO week:
+    repeated manual runs or retries cannot consume multiple 7-daily/4-weekly
+    slots. Every selected historical data/checksum pair is then bound to its
+    exact S3 VersionIds, metadata digest, and S3 SHA-256 checksums before the
+    receipt can call it complete. The receipt records both the configured
+    targets and the observed distinct-period counts, and reports
+    `targetReached: false` while a new installation is still accruing its
+    initial retention history.
     Before a later asset reinstall, stop and disable the timer as required by
     the transactional installer, then repeat this owner action after review.
 
@@ -260,7 +268,11 @@ not weaken or block the production release path.
 
 Backups are PostgreSQL custom-format dumps encrypted with an off-host age
 recipient before upload to S3-compatible storage. The hook retains seven daily
-and four weekly objects and atomically records the last remotely verified
-success for the 26-hour freshness check. Run the restore/reindex drill
+and four weekly distinct periods and atomically records the last remotely
+verified success for the 26-hour freshness check. Run the restore/reindex drill
 quarterly on a separate Docker host, or stop the advisory live stack first;
-the drill refuses to share the host with a running live Sonar container.
+the drill refuses to share the host with a running live Sonar container. Write
+each drill result to a new direct child of the installer-created, root-owned
+mode-0700 `/var/lib/nexus-sonarqube/restore-evidence` directory, using a name
+such as `sonar-restore-2026Q3.json`; the drill refuses existing files,
+symlinks, subdirectories, and paths outside that boundary.

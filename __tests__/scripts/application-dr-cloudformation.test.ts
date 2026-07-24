@@ -28,7 +28,7 @@ describe('application DR CloudFormation', () => {
     expect(template).not.toMatch(/AWS::IAM::AccessKey|SecretAccessKey|LoginProfile/);
   });
 
-  it('grants only the governed prefix and denies plaintext and unversioned deletion', () => {
+  it('grants only exact governed tiers and denies all direct object deletion', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
     expect(template).toContain('Sid: DenyPlaintextTransport');
@@ -40,9 +40,22 @@ describe('application DR CloudFormation', () => {
     expect(template).toContain('Sid: DenyUnversionedObjectDeletion');
     expect(template).toContain('Action: s3:DeleteObject');
     expect(template).toContain('s3:ListBucketVersions');
-    expect(template).toContain('s3:DeleteObjectVersion');
+    expect(template).toContain('Sid: DenyDirectVersionDeletion');
+    expect(template).toContain('Action: s3:DeleteObjectVersion');
+    expect(template).toContain('Sid: DenyBackupPrincipalObjectDeletion');
+    const backupRoleStart = template.indexOf('\n  BackupRole:');
+    const restoreRoleStart = template.indexOf('\n  RestoreRole:');
+    const backupProfileStart = template.indexOf('\n  BackupRolesAnywhereProfile:');
+    const restoreProfileStart = template.indexOf('\n  RestoreRolesAnywhereProfile:');
+    expect(template.slice(backupRoleStart, restoreRoleStart))
+      .not.toContain('s3:DeleteObjectVersion');
+    expect(template.slice(backupProfileStart, restoreProfileStart))
+      .not.toContain('s3:DeleteObjectVersion');
+    expect(template).not.toContain(
+      '"${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*"',
+    );
     expect(template).toContain(
-      "Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'",
+      "Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'",
     );
     expect(template).toContain(
       "Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'",
@@ -79,25 +92,135 @@ describe('application DR CloudFormation', () => {
     );
   });
 
-  it('limits release retention controls to a 90-day governed window', () => {
+  it('can provision a disabled-first, exact-identity IAM Roles Anywhere plane', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
+    expect(template).toContain(
+      'PrincipalProvisioningMode:\n'
+      + '    Type: String\n'
+      + '    Default: EXTERNAL',
+    );
+    expect(template).toContain('RolesAnywhereActivation:');
+    expect(template).toContain('Default: DISABLED');
+    expect(template).toContain('Type: AWS::RolesAnywhere::TrustAnchor');
+    expect(template).toContain('Type: AWS::RolesAnywhere::CRL');
+    expect(template.match(/Type: AWS::RolesAnywhere::Profile/g)).toHaveLength(2);
+    expect(template.match(/DependsOn: RolesAnywhereCertificateRevocationList/g))
+      .toHaveLength(2);
+    expect(template.match(/Type: AWS::IAM::Role/g)).toHaveLength(2);
+    expect(template).toContain('MaxLength: 4096');
+    expect(template).toContain(
+      'X509CertificateData: !Ref TrustAnchorCertificateData',
+    );
+    expect(template).toContain('CrlData: !Ref CertificateRevocationListData');
+    expect(template.match(/Enabled: !If \[EnableRolesAnywhere, true, false\]/g))
+      .toHaveLength(4);
+    expect(template).not.toMatch(/^\s+Enabled: true$/m);
+    expect(template).not.toContain('RequireInstanceProperties');
+    expect(template.match(/AcceptRoleSessionName: false/g)).toHaveLength(2);
+    expect(template.match(/DurationSeconds: 900/g)).toHaveLength(2);
+    expect(template.match(/RoleArns:\n        - !GetAtt (Backup|Restore)Role\.Arn/g))
+      .toHaveLength(2);
+
+    expect(template.match(/Service: rolesanywhere\.amazonaws\.com/g)).toHaveLength(2);
+    expect(template.match(/aws:SourceArn: !GetAtt RolesAnywhereTrustAnchor\.TrustAnchorArn/g))
+      .toHaveLength(2);
+    expect(template.match(/aws:SourceAccount: !Ref 'AWS::AccountId'/g)).toHaveLength(2);
+    expect(template.match(/aws:PrincipalTag\/x509Issuer\/CN:/g)).toHaveLength(2);
+    expect(template.match(/aws:PrincipalTag\/x509Subject\/CN:/g)).toHaveLength(2);
+    expect(template.match(/CertificateField: x509Issuer/g)).toHaveLength(2);
+    expect(template.match(/CertificateField: x509Subject/g)).toHaveLength(2);
+    expect(template.match(/Specifier: CN/g)).toHaveLength(4);
+    expect(template.match(/sts:AssumeRole/g)).toHaveLength(2);
+    expect(template.match(/sts:SetSourceIdentity/g)).toHaveLength(2);
+    expect(template.match(/sts:TagSession/g)).toHaveLength(2);
+
+    expect(template).not.toMatch(/AWS: !Ref (Backup|Restore)PrincipalArn/);
+    expect(template).toContain(
+      'AWS: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]',
+    );
+    expect(template).toContain(
+      'AWS: !If [ProvisionRolesAnywhere, !GetAtt RestoreRole.Arn, !Ref RestorePrincipalArn]',
+    );
+    expect(template).toContain(
+      'Value: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]',
+    );
+    expect(template).toContain(
+      'Value: !If [ProvisionRolesAnywhere, !GetAtt RestoreRole.Arn, !Ref RestorePrincipalArn]',
+    );
+
+    const restoreRoleStart = template.indexOf('\n  RestoreRole:');
+    const backupProfileStart = template.indexOf('\n  BackupRolesAnywhereProfile:');
+    const restoreProfileStart = template.indexOf('\n  RestoreRolesAnywhereProfile:');
+    const bucketPolicyStart = template.indexOf('\n  DisasterRecoveryBucketPolicy:');
+    const restoreRole = template.slice(restoreRoleStart, backupProfileStart);
+    const restoreProfile = template.slice(restoreProfileStart, bucketPolicyStart);
+    expect(restoreRole).toContain('PolicyName: NexusApplicationDrRestore');
+    expect(restoreRole).not.toMatch(/s3:(Put|Delete)/);
+    expect(restoreProfile).not.toMatch(/s3:(Put|Delete)/);
+    expect(template).not.toMatch(/AWS::IAM::User|AWS::IAM::AccessKey|LoginProfile/);
+    expect(template).not.toMatch(/PrivateKey|SecretAccessKey/);
+  });
+
+  it('uses disabled-first lifecycle and bounded COMPLIANCE retention for every tier', () => {
+    const template = fs.readFileSync(templatePath, 'utf8');
+
+    expect(template).toContain(
+      'LifecycleActivation:\n'
+      + '    Type: String\n'
+      + '    Default: DISABLED',
+    );
+    expect(template.match(/Status: !If \[EnableLifecycle, Enabled, Disabled\]/g))
+      .toHaveLength(5);
+    for (const expectedRule of [
+      ['DatabaseHourlyWriteOnceRetention', 'database/hourly/', '3'],
+      ['DatabaseDailyWriteOnceRetention', 'database/daily/', '9'],
+      ['DatabaseWeeklyWriteOnceRetention', 'database/weekly/', '36'],
+      ['DatabaseMonthlyWriteOnceRetention', 'database/monthly/', '191'],
+      ['ReleaseWriteOnceRetention', 'releases/', '92'],
+    ]) {
+      const [id, prefix, days] = expectedRule;
+      const start = template.indexOf(`- Id: ${id}`);
+      expect(start).toBeGreaterThan(-1);
+      const rule = template.slice(start, template.indexOf('\n          - Id:', start + 1));
+      expect(rule).toContain(`/${prefix}'`);
+      expect(rule).toContain(`ExpirationInDays: ${days}`);
+      expect(rule).toContain('NoncurrentDays: 1');
+    }
     expect(template).toContain('s3:GetObjectRetention');
     expect(template).toContain('s3:PutObjectRetention');
-    expect(template).toContain('Sid: AllowCompliantReleasePut');
-    expect(template).toContain('Sid: DenyReleasePutWithoutCompliance');
-    expect(template).toContain('Sid: DenyReleaseRetentionWithoutCompliance');
+    expect(template).toContain('Sid: DenyGovernedPutWithoutIfNoneMatch');
+    expect(template).toContain("s3:if-none-match: '*'");
+    expect(template).toContain('Sid: DenyGovernedWriteWithoutRetentionDeadline');
+    expect(template).toContain('Sid: DenyGovernedWriteWithoutCompliance');
     expect(template).toContain('s3:object-lock-mode: COMPLIANCE');
+    for (const days of [2, 3, 8, 9, 35, 36, 190, 191, 90, 91]) {
+      expect(template).toContain(
+        `s3:object-lock-remaining-retention-days: ${days}`,
+      );
+    }
+    expect(template).toContain('Sid: DenyBackupPrincipalWritesOutsideGovernedNamespaces');
+    expect(template).toContain('Sid: DenyGovernedWritesFromNonBackupPrincipals');
+    expect(template).toContain('ArnNotEquals:');
+    expect(template).toContain('NotResource:');
+    expect(template).toContain('s3:PutBucketPolicy');
+    expect(template).toContain('s3:DeleteBucketPolicy');
+    expect(template).toContain('s3:PutLifecycleConfiguration');
+    expect(template).toContain('s3:PutBucketVersioning');
+    expect(template).toContain('s3:PutBucketObjectLockConfiguration');
+    expect(template).toContain('s3:PutObjectLegalHold');
     expect(template).toContain('s3:object-lock-remaining-retention-days: 90');
     expect(template).toContain('s3:object-lock-remaining-retention-days: 91');
-    expect(template).toContain('Sid: DenyDatabaseRetention');
     expect(template).not.toContain('DefaultRetention');
+    expect(template).not.toContain('NoncurrentVersionExpirationInDays');
   });
 
   it('validates portable bounded inputs without accepting invalid S3 bucket forms', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
-    expect(template).toContain('MaxLength: 512');
+    expect(template).toContain('MaxLength: 128');
+    expect(template.match(/role\/\[A-Za-z0-9\+=,.@_\/-\]\{1,128\}/g))
+      .toHaveLength(2);
     expect(template).toContain(
       'DrPrefix:\n'
       + '    Type: String\n'
@@ -120,8 +243,11 @@ describe('application DR CloudFormation', () => {
     expect(operations).toContain('aws-s3-stack.yaml');
     expect(operations).toMatch(/does not create an\s+IAM access key/u);
     expect(operations).toContain('IAM Roles Anywhere');
+    expect(operations).toContain('RolesAnywhereActivation=DISABLED');
+    expect(operations).toContain('CertificateRevocationListData');
     expect(operations).toContain('PrivateDevices=true');
-    expect(operations).toMatch(/separate certificate and read-only restore\s+role/u);
+    expect(operations).toContain('storage-cost');
+    expect(operations).toMatch(/separate (?:leaf )?certificate and read-only restore\s+role/u);
     expect(operations).toContain('explicit owner approval');
   });
 });

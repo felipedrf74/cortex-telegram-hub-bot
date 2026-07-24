@@ -210,6 +210,9 @@ case "$recovery_argument_count" in
     ;;
   *) die "current recovery runtime arguments must be supplied together" ;;
 esac
+if [ -n "$REQUIRED_RELEASE" ] && [ "$recovery_argument_count" -ne 10 ]; then
+  die "required release escrow must be bound to a complete promotion recovery transaction"
+fi
 [[ "$NEXUS_DR_DATABASE_PATH" == /* && "$NEXUS_DR_DATABASE_PATH" != / \
    && -f "$NEXUS_DR_DATABASE_PATH" && ! -L "$NEXUS_DR_DATABASE_PATH" ]] \
   || die "database must be an absolute non-symlink regular file"
@@ -268,7 +271,7 @@ fi
   --prefix "$NEXUS_DR_S3_PREFIX" >/dev/null
 
 if [ "$ACTION" = verify ]; then
-  echo "application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days"
+  echo "application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days"
   exit 0
 fi
 
@@ -295,7 +298,6 @@ aws_version_id_from_json() {
   local document="$1" label="$2"
   "$NEXUS_DR_PYTHON_BIN" - "$document" "$label" <<'PY'
 import json
-import re
 import sys
 
 path, label = sys.argv[1:]
@@ -303,24 +305,82 @@ try:
     value = json.load(open(path, encoding="utf-8"))
 except (OSError, json.JSONDecodeError) as error:
     raise SystemExit(f"{label} is unreadable: {error}")
+
+def valid_version_id(value):
+    if not isinstance(value, str) or value == "null":
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+    )
+
 version_id = value.get("VersionId") if isinstance(value, dict) else None
-if not isinstance(version_id, str) or not re.fullmatch(
-    r"[A-Za-z0-9._~+=:/-]{1,1024}",
-    version_id,
-):
+if not valid_version_id(version_id):
     raise SystemExit(f"{label} has no valid exact VersionId")
 print(version_id)
 PY
 }
 
+aws_version_id_is_safe() {
+  local version_id="$1"
+  "$NEXUS_DR_PYTHON_BIN" - "$version_id" <<'PY'
+import sys
+
+value = sys.argv[1]
+try:
+    encoded = value.encode("utf-8")
+except UnicodeEncodeError:
+    raise SystemExit(1)
+if (
+    value == "null"
+    or not 1 <= len(encoded) <= 1024
+    or any(ord(character) < 32 or ord(character) == 127 for character in value)
+):
+    raise SystemExit(1)
+PY
+}
+
+aws_opaque_from_base64() {
+  local encoded="$1" label="$2" kind="$3"
+  "$NEXUS_DR_PYTHON_BIN" - "$encoded" "$label" "$kind" <<'PY'
+import base64
+import binascii
+import sys
+
+encoded, label, kind = sys.argv[1:]
+if kind not in {"key", "version"}:
+    raise SystemExit(f"{label} transport kind is invalid")
+try:
+    raw = base64.b64decode(encoded, validate=True)
+    value = raw.decode("utf-8")
+except (binascii.Error, UnicodeDecodeError) as error:
+    raise SystemExit(f"{label} transport is invalid: {error}")
+if (
+    not 1 <= len(raw) <= 1024
+    or (kind == "version" and value == "null")
+    or any(ord(character) < 32 or ord(character) == 127 for character in value)
+):
+    raise SystemExit(f"{label} transport value is unsafe")
+print(value)
+PY
+}
+
 aws_retain_until_from_json() {
-  local document="$1" label="$2" minimum_epoch="$3"
-  "$NEXUS_DR_PYTHON_BIN" - "$document" "$label" "$minimum_epoch" <<'PY'
+  local document="$1" label="$2" minimum_epoch="$3" minimum_days="$4"
+  "$NEXUS_DR_PYTHON_BIN" - "$document" "$label" "$minimum_epoch" \
+    "$minimum_days" <<'PY'
 from datetime import datetime, timezone
 import json
 import sys
 
-path, label, minimum_raw = sys.argv[1:]
+path, label, minimum_raw, minimum_days_raw = sys.argv[1:]
 try:
     value = json.load(open(path, encoding="utf-8"))
 except (OSError, json.JSONDecodeError) as error:
@@ -333,20 +393,24 @@ except ValueError as error:
 if (
     retained.tzinfo is None
     or int(retained.astimezone(timezone.utc).timestamp())
-        < int(minimum_raw) + 90 * 86400
+        < int(minimum_raw) + int(minimum_days_raw) * 86400
 ):
-    raise SystemExit(f"{label} retention deadline is shorter than 90 days")
+    raise SystemExit(
+        f"{label} retention deadline is shorter than {minimum_days_raw} days",
+    )
 print(retained.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
 }
 
 validate_aws_retain_until() {
   local retain_until="$1" label="$2" minimum_epoch="$3"
-  "$NEXUS_DR_PYTHON_BIN" - "$retain_until" "$label" "$minimum_epoch" <<'PY'
+  local minimum_days="${4:-90}"
+  "$NEXUS_DR_PYTHON_BIN" - "$retain_until" "$label" "$minimum_epoch" \
+    "$minimum_days" <<'PY'
 from datetime import datetime, timezone
 import sys
 
-raw, label, minimum_raw = sys.argv[1:]
+raw, label, minimum_raw, minimum_days_raw = sys.argv[1:]
 try:
     retained = datetime.fromisoformat(raw.replace("Z", "+00:00"))
 except ValueError as error:
@@ -354,28 +418,66 @@ except ValueError as error:
 if (
     retained.tzinfo is None
     or int(retained.astimezone(timezone.utc).timestamp())
-        < int(minimum_raw) + 90 * 86400
+        < int(minimum_raw) + int(minimum_days_raw) * 86400
 ):
-    raise SystemExit(f"{label} retention deadline is shorter than 90 days")
+    raise SystemExit(
+        f"{label} retention deadline is shorter than {minimum_days_raw} days",
+    )
 print(retained.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+}
+
+aws_retain_until_for_floor() {
+  local created_epoch="$1" minimum_retention_days="$2"
+  "$NEXUS_DR_PYTHON_BIN" - "$created_epoch" \
+    "$minimum_retention_days" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+retain_epoch = int(sys.argv[1]) + (int(sys.argv[2]) + 1) * 86400
+print(datetime.fromtimestamp(retain_epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+}
+
+database_key_suffixes_from_epoch() {
+  local captured_epoch="$1"
+  "$NEXUS_DR_PYTHON_BIN" - "$captured_epoch" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+captured = datetime.fromtimestamp(int(sys.argv[1]), timezone.utc)
+print(
+    captured.strftime("%Y%m%dT%H%M%SZ"),
+    captured.strftime("%Y%m%d"),
+    captured.strftime("%G-W%V"),
+    captured.strftime("%Y%m"),
+    sep="\t",
+)
 PY
 }
 
 LAST_VERIFIED_VERSION_ID=""
 LAST_VERIFIED_RETAIN_UNTIL=""
+LAST_VERIFIED_ENCRYPTED_SHA=""
+LAST_VERIFIED_ENCRYPTED_SIZE=""
+LAST_VERIFIED_CREATED_EPOCH=""
 verify_remote_object() {
   local key="$1" encrypted_sha="$2" plaintext_sha="$3" schema="$4"
   local expected_size="$5" created_epoch="$6" original_name="${7:-}"
-  local expected_version_id="${8:-}" verified_version_id
+  local expected_version_id="${8:-}" minimum_retention_days="${9:-0}"
+  local verified_version_id
   local head="$tmp_dir/head-$(printf '%s' "$key" | sha256sum | awk '{print $1}').json"
   local -a head_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$key")
-  if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ] && [ -n "$expected_version_id" ]; then
-    head_args+=(--version-id "$expected_version_id")
+  if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+    head_args+=(--checksum-mode ENABLED)
+    [ -z "$expected_version_id" ] || head_args+=("--version-id=$expected_version_id")
   fi
   aws_s3api head-object "${head_args[@]}" >"$head"
   verified_version_id="$("$NEXUS_DR_PYTHON_BIN" - "$head" "$encrypted_sha" \
     "$plaintext_sha" "$schema" "$expected_size" "$created_epoch" "$original_name" \
-    "$NEXUS_DR_STORAGE_PROVIDER" "$expected_version_id" <<'PY'
+    "$NEXUS_DR_STORAGE_PROVIDER" "$expected_version_id" \
+    "$minimum_retention_days" <<'PY'
+import base64
 from datetime import datetime, timezone
 import json
 import re
@@ -391,6 +493,7 @@ import sys
     original,
     provider,
     expected_version_id,
+    minimum_retention_days_raw,
 ) = sys.argv[1:]
 value = json.load(open(head_path, encoding="utf-8"))
 metadata = {str(key).lower(): str(item) for key, item in value.get("Metadata", {}).items()}
@@ -406,11 +509,36 @@ if original and metadata.get("original-name") != original:
     raise SystemExit("uploaded object original filename did not verify")
 if int(value.get("ContentLength", -1)) != int(size):
     raise SystemExit("uploaded object size did not verify")
+
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
 if provider == "aws-s3":
+    try:
+        checksum = base64.b64decode(
+            value.get("ChecksumSHA256", ""),
+            validate=True,
+        ).hex()
+    except (TypeError, ValueError):
+        raise SystemExit("uploaded object SHA256 checksum proof is invalid")
+    if checksum != encrypted:
+        raise SystemExit("uploaded object SHA256 checksum did not verify")
     version_id = value.get("VersionId")
     if (
-        not re.fullmatch(r"[A-Za-z0-9._~+=:/-]{1,1024}", version_id or "")
-        or version_id != expected_version_id
+        not valid_version_id(version_id)
+        or (expected_version_id and version_id != expected_version_id)
     ):
         raise SystemExit("uploaded object exact VersionId did not verify")
     print(version_id)
@@ -424,73 +552,443 @@ elif provider == "cloudflare-r2":
         raise SystemExit("R2 object returned unsupported version or object-lock proof")
 else:
     raise SystemExit("uploaded object storage provider is invalid")
-if schema in {"NexusReleaseRollbackEscrowV1", "NexusCurrentRecoveryRuntimeV1"} and provider == "aws-s3":
+minimum_retention_days = int(minimum_retention_days_raw)
+if minimum_retention_days < 0:
+    raise SystemExit("uploaded object retention policy is invalid")
+if minimum_retention_days and provider == "aws-s3":
     if value.get("ObjectLockMode") != "COMPLIANCE":
-        raise SystemExit("release escrow object is missing S3 compliance retention")
+        raise SystemExit("uploaded object is missing S3 compliance retention")
     raw_retention = value.get("ObjectLockRetainUntilDate", "")
     try:
         retention = datetime.fromisoformat(raw_retention.replace("Z", "+00:00"))
     except (TypeError, ValueError):
-        raise SystemExit("release escrow S3 retention timestamp is invalid")
+        raise SystemExit("uploaded object S3 retention timestamp is invalid")
     if retention.tzinfo is None:
-        raise SystemExit("release escrow S3 retention timestamp has no timezone")
-    if int(retention.astimezone(timezone.utc).timestamp()) < int(created) + 90 * 86400:
-        raise SystemExit("release escrow S3 retention is shorter than 90 days")
+        raise SystemExit("uploaded object S3 retention timestamp has no timezone")
+    if (
+        int(retention.astimezone(timezone.utc).timestamp())
+        < int(created) + minimum_retention_days * 86400
+    ):
+        raise SystemExit(
+            "uploaded object S3 retention is shorter than the governed floor",
+        )
 PY
 )" || die "uploaded object verification failed: $key"
   LAST_VERIFIED_VERSION_ID="$verified_version_id"
   LAST_VERIFIED_RETAIN_UNTIL=""
-  if { [ "$schema" = NexusReleaseRollbackEscrowV1 ] \
-      || [ "$schema" = NexusCurrentRecoveryRuntimeV1 ]; } \
+  LAST_VERIFIED_ENCRYPTED_SHA="$encrypted_sha"
+  LAST_VERIFIED_ENCRYPTED_SIZE="$expected_size"
+  LAST_VERIFIED_CREATED_EPOCH="$created_epoch"
+  if [ "$minimum_retention_days" -gt 0 ] \
       && [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
     LAST_VERIFIED_RETAIN_UNTIL="$(
       aws_retain_until_from_json "$head" "uploaded release escrow head" \
-        "$created_epoch"
+        "$created_epoch" "$minimum_retention_days"
     )" || die "uploaded release escrow retention deadline did not verify"
   fi
+}
+
+aws_error_code_from_file() {
+  local error_file="$1"
+  "$NEXUS_DR_PYTHON_BIN" - "$error_file" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+try:
+    raw = path.read_text(encoding="utf-8", errors="replace")
+except OSError as error:
+    raise SystemExit(f"AWS error response is unreadable: {error}")
+if len(raw.encode("utf-8")) > 65536:
+    raise SystemExit("AWS error response exceeds the bounded size")
+match = re.search(
+    r"An error occurred \(([A-Za-z0-9]+)\) when calling the PutObject operation",
+    raw,
+)
+if not match:
+    raise SystemExit("AWS PutObject error code is unavailable")
+print(match.group(1))
+PY
+}
+
+verify_existing_period_object() {
+  local key="$1" tier="$2" minimum_retention_days="$3"
+  local expected_version_id="${4:-}"
+  local head="$tmp_dir/existing-$(printf '%s' "$key" | sha256sum | awk '{print $1}').json"
+  local -a head_args=(
+    --bucket "$NEXUS_DR_S3_BUCKET"
+    --key "$key"
+    --checksum-mode ENABLED
+  )
+  local fields
+  [ -z "$expected_version_id" ] \
+    || head_args+=("--version-id=$expected_version_id")
+  aws_s3api head-object "${head_args[@]}" >"$head"
+  fields="$("$NEXUS_DR_PYTHON_BIN" - "$head" "$key" "$database_root" \
+    "$tier" "$minimum_retention_days" "$expected_version_id" <<'PY'
+import base64
+from datetime import datetime, timezone
+import json
+import re
+import sys
+
+(
+    head_path,
+    key,
+    database_root,
+    tier,
+    minimum_days_raw,
+    expected_version_id,
+) = sys.argv[1:]
+try:
+    value = json.load(open(head_path, encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"existing period head is unreadable: {error}")
+if not isinstance(value, dict):
+    raise SystemExit("existing period head is invalid")
+metadata = {
+    str(name).lower(): str(item)
+    for name, item in value.get("Metadata", {}).items()
+}
+encrypted_sha = metadata.get("encrypted-sha256", "")
+plaintext_sha = metadata.get("plaintext-sha256", "")
+if (
+    not re.fullmatch(r"[0-9a-f]{64}", encrypted_sha)
+    or not re.fullmatch(r"[0-9a-f]{64}", plaintext_sha)
+    or metadata.get("schema-version")
+        != "NexusApplicationSqliteRecoveryPointV1"
+):
+    raise SystemExit("existing period recovery-point metadata is invalid")
+try:
+    checksum_sha = base64.b64decode(
+        value.get("ChecksumSHA256", ""),
+        validate=True,
+    ).hex()
+except (TypeError, ValueError):
+    raise SystemExit("existing period SHA256 checksum proof is invalid")
+if checksum_sha != encrypted_sha:
+    raise SystemExit("existing period SHA256 checksum does not match metadata")
+if not isinstance(value.get("ContentLength"), int) or value["ContentLength"] < 1:
+    raise SystemExit("existing period object size is invalid")
+
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
+version_id = value.get("VersionId")
+if (
+    not valid_version_id(version_id)
+    or (expected_version_id and version_id != expected_version_id)
+):
+    raise SystemExit("existing period exact VersionId is invalid")
+if value.get("ObjectLockMode") != "COMPLIANCE":
+    raise SystemExit("existing period object is missing COMPLIANCE retention")
+try:
+    created_epoch = int(metadata.get("created-epoch", ""))
+    created = datetime.fromtimestamp(created_epoch, timezone.utc)
+    retained = datetime.fromisoformat(
+        str(value.get("ObjectLockRetainUntilDate", "")).replace("Z", "+00:00"),
+    )
+except (OverflowError, TypeError, ValueError) as error:
+    raise SystemExit("existing period timestamps are invalid") from error
+if retained.tzinfo is None:
+    raise SystemExit("existing period retention timestamp has no timezone")
+minimum_days = int(minimum_days_raw)
+if int(retained.astimezone(timezone.utc).timestamp()) < (
+    created_epoch + minimum_days * 86400
+):
+    raise SystemExit("existing period retention is shorter than the governed floor")
+prefix = f"{database_root}/{tier}/nexus-db-"
+if not key.startswith(prefix) or not key.endswith(".sqlite.age"):
+    raise SystemExit("existing period key is outside the governed tier")
+suffix = key[len(prefix):-len(".sqlite.age")]
+expected = {
+    "hourly": created.strftime("%Y%m%dT%H%M%SZ"),
+    "daily": created.strftime("%Y%m%d"),
+    "weekly": created.strftime("%G-W%V"),
+    "monthly": created.strftime("%Y%m"),
+}.get(tier)
+if expected is None or suffix != expected:
+    raise SystemExit("existing period creation time does not match its calendar key")
+print(
+    base64.b64encode(version_id.encode("utf-8")).decode("ascii"),
+    retained.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    encrypted_sha,
+    value["ContentLength"],
+    created_epoch,
+    sep="|",
+)
+PY
+)" || die "existing $tier recovery point did not verify"
+  local version_id_b64
+  IFS='|' read -r version_id_b64 LAST_VERIFIED_RETAIN_UNTIL \
+    LAST_VERIFIED_ENCRYPTED_SHA LAST_VERIFIED_ENCRYPTED_SIZE \
+    LAST_VERIFIED_CREATED_EPOCH <<<"$fields"
+  LAST_VERIFIED_VERSION_ID="$(
+    aws_opaque_from_base64 "$version_id_b64" \
+      "existing $tier recovery point VersionId" version
+  )" || die "existing $tier recovery point VersionId transport did not verify"
+}
+
+verify_existing_exact_object() {
+  local key="$1" plaintext_sha="$2" schema="$3" original_name="$4"
+  local minimum_retention_days="$5"
+  local expected_version_id="${6:-}"
+  local head="$tmp_dir/existing-exact-$(printf '%s' "$key" | sha256sum | awk '{print $1}').json"
+  local -a head_args=(
+    --bucket "$NEXUS_DR_S3_BUCKET"
+    --key "$key"
+    --checksum-mode ENABLED
+  )
+  local fields
+  [ -z "$expected_version_id" ] \
+    || head_args+=("--version-id=$expected_version_id")
+  aws_s3api head-object "${head_args[@]}" >"$head"
+  fields="$("$NEXUS_DR_PYTHON_BIN" - "$head" "$plaintext_sha" "$schema" \
+    "$original_name" "$minimum_retention_days" "$expected_version_id" <<'PY'
+import base64
+from datetime import datetime, timezone
+import json
+import re
+import sys
+
+(
+    head_path,
+    expected_plaintext,
+    schema,
+    original,
+    minimum_days_raw,
+    expected_version_id,
+) = sys.argv[1:]
+try:
+    value = json.load(open(head_path, encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"existing exact object head is unreadable: {error}")
+if not isinstance(value, dict):
+    raise SystemExit("existing exact object head is invalid")
+metadata = {
+    str(name).lower(): str(item)
+    for name, item in value.get("Metadata", {}).items()
+}
+encrypted_sha = metadata.get("encrypted-sha256", "")
+if (
+    metadata.get("plaintext-sha256") != expected_plaintext
+    or metadata.get("schema-version") != schema
+    or not re.fullmatch(r"[0-9a-f]{64}", encrypted_sha)
+):
+    raise SystemExit("existing exact object metadata is invalid")
+if original and metadata.get("original-name") != original:
+    raise SystemExit("existing exact object original filename is invalid")
+try:
+    checksum_sha = base64.b64decode(
+        value.get("ChecksumSHA256", ""),
+        validate=True,
+    ).hex()
+except (TypeError, ValueError):
+    raise SystemExit("existing exact object SHA256 checksum proof is invalid")
+if checksum_sha != encrypted_sha:
+    raise SystemExit("existing exact object SHA256 checksum does not match metadata")
+if not isinstance(value.get("ContentLength"), int) or value["ContentLength"] < 1:
+    raise SystemExit("existing exact object size is invalid")
+
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
+version_id = value.get("VersionId")
+if (
+    not valid_version_id(version_id)
+    or (expected_version_id and version_id != expected_version_id)
+):
+    raise SystemExit("existing exact object VersionId is invalid")
+if value.get("ObjectLockMode") != "COMPLIANCE":
+    raise SystemExit("existing exact object is missing COMPLIANCE retention")
+try:
+    created_epoch = int(metadata.get("created-epoch", ""))
+    retained = datetime.fromisoformat(
+        str(value.get("ObjectLockRetainUntilDate", "")).replace("Z", "+00:00"),
+    )
+except (TypeError, ValueError) as error:
+    raise SystemExit("existing exact object timestamps are invalid") from error
+if retained.tzinfo is None:
+    raise SystemExit("existing exact object retention timestamp has no timezone")
+if int(retained.astimezone(timezone.utc).timestamp()) < (
+    created_epoch + int(minimum_days_raw) * 86400
+):
+    raise SystemExit("existing exact object retention is shorter than its floor")
+print(
+    base64.b64encode(version_id.encode("utf-8")).decode("ascii"),
+    retained.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    encrypted_sha,
+    value["ContentLength"],
+    created_epoch,
+    sep="|",
+)
+PY
+)" || die "existing exact governed object did not verify"
+  local version_id_b64
+  IFS='|' read -r version_id_b64 LAST_VERIFIED_RETAIN_UNTIL \
+    LAST_VERIFIED_ENCRYPTED_SHA LAST_VERIFIED_ENCRYPTED_SIZE \
+    LAST_VERIFIED_CREATED_EPOCH <<<"$fields"
+  LAST_VERIFIED_VERSION_ID="$(
+    aws_opaque_from_base64 "$version_id_b64" \
+      "existing exact governed object VersionId" version
+  )" || die "existing exact governed object VersionId transport did not verify"
+}
+
+extend_existing_exact_object_retention() {
+  local key="$1" plaintext_sha="$2" schema="$3" original_name="$4"
+  local minimum_retention_days="$5" confirmation_epoch="$6"
+  local existing_version_id="$LAST_VERIFIED_VERSION_ID"
+  local existing_retain_until="$LAST_VERIFIED_RETAIN_UNTIL"
+  local desired_retain_until decision
+  desired_retain_until="$(
+    aws_retain_until_for_floor "$confirmation_epoch" "$minimum_retention_days"
+  )"
+  decision="$("$NEXUS_DR_PYTHON_BIN" - "$existing_retain_until" \
+    "$desired_retain_until" <<'PY'
+from datetime import datetime, timezone
+import sys
+
+def parse(raw: str) -> datetime:
+    value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        raise SystemExit("exact object retention timestamp has no timezone")
+    return value.astimezone(timezone.utc)
+
+print("extend" if parse(sys.argv[1]) < parse(sys.argv[2]) else "keep")
+PY
+)" || die "existing exact object retention comparison failed"
+  if [ "$decision" = extend ]; then
+    aws_s3api put-object-retention \
+      --bucket "$NEXUS_DR_S3_BUCKET" \
+      --key "$key" \
+      --version-id="$existing_version_id" \
+      --retention "Mode=COMPLIANCE,RetainUntilDate=$desired_retain_until" \
+      >/dev/null \
+      || die "existing exact object COMPLIANCE retention extension failed"
+  elif [ "$decision" != keep ]; then
+    die "existing exact object retention comparison was invalid"
+  fi
+  verify_existing_exact_object "$key" "$plaintext_sha" "$schema" \
+    "$original_name" "$minimum_retention_days" "$existing_version_id"
+  [ "$LAST_VERIFIED_VERSION_ID" = "$existing_version_id" ] \
+    || die "existing exact object VersionId changed during retention extension"
+  LAST_VERIFIED_RETAIN_UNTIL="$(
+    validate_aws_retain_until "$LAST_VERIFIED_RETAIN_UNTIL" \
+      "existing exact governed object" "$confirmation_epoch" \
+      "$minimum_retention_days"
+  )" || die "existing exact object retention does not cover this confirmation"
 }
 
 put_encrypted_object() {
   local key="$1" encrypted="$2" encrypted_sha="$3" plaintext_sha="$4"
   local schema="$5" created_epoch="$6" original_name="${7:-}"
+  local minimum_retention_days="${8:-0}" collision_policy="${9:-fail}"
   local metadata="encrypted-sha256=$encrypted_sha,plaintext-sha256=$plaintext_sha,schema-version=$schema,created-epoch=$created_epoch"
-  local object_lock_args=()
-  local retain_until="" put_response put_version_id=""
+  local object_lock_args=() put_args=()
+  local retain_until="" put_response put_error put_version_id="" error_code
+  local attempt=1
   [ -z "$original_name" ] || metadata="$metadata,original-name=$original_name"
-  if { [ "$schema" = NexusReleaseRollbackEscrowV1 ] \
-      || [ "$schema" = NexusCurrentRecoveryRuntimeV1 ]; } \
-      && [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    retain_until="$("$NEXUS_DR_PYTHON_BIN" - "$created_epoch" <<'PY'
-from datetime import datetime, timezone
-import sys
-
-retain_epoch = int(sys.argv[1]) + 90 * 86400 + 3600
-print(datetime.fromtimestamp(retain_epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-PY
-)"
+  case "$collision_policy" in
+    fail|exact|period-daily|period-weekly|period-monthly) ;;
+    *) die "unsupported governed object collision policy" ;;
+  esac
+  if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+    [[ "$minimum_retention_days" =~ ^[0-9]+$ ]] \
+      && [ "$minimum_retention_days" -gt 0 ] \
+      || die "AWS governed objects require a positive retention floor"
+    retain_until="$(
+      aws_retain_until_for_floor "$created_epoch" "$minimum_retention_days"
+    )"
     object_lock_args=(
+      --checksum-algorithm SHA256
+      --if-none-match '*'
       --object-lock-mode COMPLIANCE
       --object-lock-retain-until-date "$retain_until"
     )
   fi
   put_response="$tmp_dir/put-$(printf '%s' "$key" | sha256sum | awk '{print $1}').json"
-  aws_s3api put-object \
+  put_error="$put_response.error"
+  put_args=(
+    put-object
     --bucket "$NEXUS_DR_S3_BUCKET" \
     --key "$key" \
     --body "$encrypted" \
     --content-type application/octet-stream \
     "${object_lock_args[@]}" \
-    --metadata "$metadata" >"$put_response"
-  if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    put_version_id="$(aws_version_id_from_json "$put_response" "put-object response")" \
-      || die "put-object did not return an exact S3 VersionId"
-  fi
-  verify_remote_object "$key" "$encrypted_sha" "$plaintext_sha" "$schema" \
-    "$(size_file "$encrypted")" "$created_epoch" "$original_name" "$put_version_id"
+    --metadata "$metadata"
+  )
+  while :; do
+    if aws_s3api "${put_args[@]}" >"$put_response" 2>"$put_error"; then
+      if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+        put_version_id="$(aws_version_id_from_json "$put_response" "put-object response")" \
+          || die "put-object did not return an exact S3 VersionId"
+      fi
+      verify_remote_object "$key" "$encrypted_sha" "$plaintext_sha" "$schema" \
+        "$(size_file "$encrypted")" "$created_epoch" "$original_name" \
+        "$put_version_id" "$minimum_retention_days"
+      return
+    fi
+    [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ] \
+      || die "S3-compatible put-object failed"
+    error_code="$(aws_error_code_from_file "$put_error")" \
+      || die "AWS put-object failed without a stable error code"
+    if [ "$error_code" = ConditionalRequestConflict ] && [ "$attempt" -eq 1 ]; then
+      attempt=2
+      continue
+    fi
+    if [ "$error_code" = PreconditionFailed ]; then
+      case "$collision_policy" in
+        period-daily|period-weekly|period-monthly)
+          verify_existing_period_object \
+            "$key" "${collision_policy#period-}" "$minimum_retention_days"
+          return
+          ;;
+        exact)
+          verify_existing_exact_object "$key" "$plaintext_sha" "$schema" \
+            "$original_name" "$minimum_retention_days"
+          extend_existing_exact_object_retention "$key" "$plaintext_sha" \
+            "$schema" "$original_name" "$minimum_retention_days" \
+            "$created_epoch"
+          return
+          ;;
+        fail)
+          die "write-once object key already exists: $key"
+          ;;
+      esac
+    fi
+    die "governed AWS put-object failed with code $error_code"
+  done
 }
 
 created_epoch="$(date -u +%s)"
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+database_key_fields="$(database_key_suffixes_from_epoch "$created_epoch")"
+IFS=$'\t' read -r timestamp daily_suffix weekly_suffix monthly_suffix \
+  <<<"$database_key_fields"
 snapshot="$tmp_dir/nexus-db-$timestamp.sqlite"
 snapshot_manifest="$tmp_dir/snapshot.json"
 "$NEXUS_DR_PYTHON_BIN" "$SQLITE_HELPER" snapshot "$NEXUS_DR_DATABASE_PATH" "$snapshot" >"$snapshot_manifest"
@@ -508,19 +1006,25 @@ encrypted_sha="$(sha256_file "$encrypted")"
 
 database_root="$NEXUS_DR_S3_PREFIX/database"
 hourly_key="$database_root/hourly/nexus-db-$timestamp.sqlite.age"
-daily_key="$database_root/daily/nexus-db-$(date -u +%Y%m%d).sqlite.age"
-weekly_key="$database_root/weekly/nexus-db-$(date -u +%G-W%V).sqlite.age"
-monthly_key="$database_root/monthly/nexus-db-$(date -u +%Y%m).sqlite.age"
+daily_key="$database_root/daily/nexus-db-$daily_suffix.sqlite.age"
+weekly_key="$database_root/weekly/nexus-db-$weekly_suffix.sqlite.age"
+monthly_key="$database_root/monthly/nexus-db-$monthly_suffix.sqlite.age"
 hourly_database_version_id=""
-for key in "$hourly_key" "$daily_key" "$weekly_key" "$monthly_key"; do
-  put_encrypted_object "$key" "$encrypted" "$encrypted_sha" "$plaintext_sha" \
-    NexusApplicationSqliteRecoveryPointV1 "$created_epoch"
-  if [ "$key" = "$hourly_key" ]; then
-    hourly_database_version_id="$LAST_VERIFIED_VERSION_ID"
-  fi
-done
+put_encrypted_object "$hourly_key" "$encrypted" "$encrypted_sha" \
+  "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
+  "" 2 fail
+hourly_database_version_id="$LAST_VERIFIED_VERSION_ID"
+put_encrypted_object "$daily_key" "$encrypted" "$encrypted_sha" \
+  "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
+  "" 8 period-daily
+put_encrypted_object "$weekly_key" "$encrypted" "$encrypted_sha" \
+  "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
+  "" 35 period-weekly
+put_encrypted_object "$monthly_key" "$encrypted" "$encrypted_sha" \
+  "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
+  "" 190 period-monthly
 if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-  [[ "$hourly_database_version_id" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
+  aws_version_id_is_safe "$hourly_database_version_id" \
     || die "hourly database recovery point is missing its exact S3 VersionId"
 fi
 
@@ -528,6 +1032,7 @@ fi
 list_versioned_objects() {
   local prefix="$1" listing="$2" label="$3"
   local key_marker="" version_id_marker="" next_key_marker next_version_id_marker
+  local next_key_marker_b64 next_version_id_marker_b64
   local page page_state listing_next marker_identity seen page_entry_count
   local truncated page_index=0 total_entries=0
   local -a page_files=() request=() seen_markers=()
@@ -550,14 +1055,14 @@ list_versioned_objects() {
         || die "version listing continuation marker pair is incomplete: $label"
       request+=(
         --key-marker "$key_marker"
-        --version-id-marker "$version_id_marker"
+        "--version-id-marker=$version_id_marker"
       )
     fi
     aws_s3api "${request[@]}" >"$page"
     if ! "$NEXUS_DR_PYTHON_BIN" - "$page" "$prefix" "$key_marker" \
       "$version_id_marker" >"$page_state" <<'PY'
+import base64
 import json
-import re
 import sys
 
 path, prefix, expected_key_marker, expected_version_marker = sys.argv[1:]
@@ -570,13 +1075,28 @@ if not isinstance(page, dict) or "NextToken" in page:
 if page.get("Prefix") not in (None, prefix):
     raise SystemExit("version listing page prefix does not match the request")
 
-safe_marker = re.compile(r"[A-Za-z0-9._~+=:/-]{1,1024}")
+def valid_opaque_utf8(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+    )
 
 def marker(name):
     raw = page.get(name)
     if raw in (None, ""):
         return ""
-    if not isinstance(raw, str) or not safe_marker.fullmatch(raw):
+    if not valid_opaque_utf8(raw):
+        raise SystemExit(f"version listing {name} is invalid")
+    if "VersionId" in name and raw == "null":
         raise SystemExit(f"version listing {name} is invalid")
     return raw
 
@@ -611,8 +1131,8 @@ if (
     raise SystemExit("version listing page entries are invalid or exceed max-keys")
 print(
     "true" if truncated else "false",
-    next_key_marker,
-    next_version_marker,
+    base64.b64encode(next_key_marker.encode("utf-8")).decode("ascii"),
+    base64.b64encode(next_version_marker.encode("utf-8")).decode("ascii"),
     len(versions) + len(delete_markers),
     sep="|",
 )
@@ -620,8 +1140,22 @@ PY
     then
       die "version listing page validation failed: $label page $page_index"
     fi
-    IFS='|' read -r truncated next_key_marker next_version_id_marker \
-      page_entry_count <"$page_state"
+    IFS='|' read -r truncated next_key_marker_b64 \
+      next_version_id_marker_b64 page_entry_count <"$page_state"
+    next_key_marker=""
+    next_version_id_marker=""
+    if [ -n "$next_key_marker_b64" ]; then
+      next_key_marker="$(
+        aws_opaque_from_base64 "$next_key_marker_b64" \
+          "version listing next key marker" key
+      )" || die "version listing key marker transport failed: $label page $page_index"
+    fi
+    if [ -n "$next_version_id_marker_b64" ]; then
+      next_version_id_marker="$(
+        aws_opaque_from_base64 "$next_version_id_marker_b64" \
+          "version listing next VersionId marker" version
+      )" || die "version listing VersionId marker transport failed: $label page $page_index"
+    fi
     [[ "$page_entry_count" =~ ^[0-9]+$ ]] \
       || die "version listing page count is invalid: $label page $page_index"
     total_entries=$((total_entries + page_entry_count))
@@ -680,101 +1214,125 @@ PY
   mv -- "$listing_next" "$listing"
 }
 
-render_version_delete_rows() {
-  local plan="$1" expected_prefix="$2" rows="$3"
-  if ! "$NEXUS_DR_PYTHON_BIN" - "$plan" "$expected_prefix" >"$rows" <<'PY'
+aws_retention_evidence=""
+collect_aws_retention_evidence() {
+  local listing="$tmp_dir/database-version-listing.json"
+  local maturity_seal="$NEXUS_DR_STATE_DIR/aws-retention-maturity.json"
+  [ "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" = aws-s3:versioned-s3 ] \
+    || die "versioned retention evidence requires aws-s3:versioned-s3"
+  aws_retention_evidence="$tmp_dir/database-retention-evidence.json"
+  list_versioned_objects "$database_root/" "$listing" "database"
+  "$NEXUS_DR_PYTHON_BIN" "$VERSION_RETENTION_HELPER" \
+    --listing "$listing" \
+    --prefix "$database_root" \
+    --output "$aws_retention_evidence" \
+    --now-epoch "$created_epoch" \
+    --maturity-seal "$maturity_seal" \
+    --bucket "$NEXUS_DR_S3_BUCKET" \
+    --expected-hourly-key "$hourly_key" \
+    --expected-daily-key "$daily_key" \
+    --expected-weekly-key "$weekly_key" \
+    --expected-monthly-key "$monthly_key"
+  verify_aws_retention_evidence_objects
+}
+
+verify_aws_retention_evidence_objects() {
+  local rows="$tmp_dir/database-retention-selected-versions.tsv"
+  local tier key version_id minimum_days verified_count=0
+  "$NEXUS_DR_PYTHON_BIN" - "$aws_retention_evidence" >"$rows" <<'PY'
 import json
-import re
 import sys
 
-path, expected_prefix = sys.argv[1:]
-try:
-    value = json.load(open(path, encoding="utf-8"))
-except (OSError, json.JSONDecodeError) as error:
-    raise SystemExit(f"version deletion plan is unreadable: {error}")
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+policy = {"hourly": 2, "daily": 8, "weekly": 35, "monthly": 190}
+required = {"hourly": 24, "daily": 7, "weekly": 4, "monthly": 6}
 if (
-    not isinstance(value, dict)
-    or set(value) != {"schemaVersion", "deletions"}
-    or value.get("schemaVersion") != "NexusApplicationDrVersionDeletionPlanV1"
-    or not isinstance(value.get("deletions"), list)
+    value.get("schemaVersion") != "NexusApplicationDrRetentionEvidenceV1"
+    or value.get("inventoryOnly") is not True
+    or value.get("currentPeriodsVerified") is not True
+    or value.get("selectedObjectsVerified") is not False
+    or not isinstance(value.get("tiers"), dict)
 ):
-    raise SystemExit("version deletion plan envelope is invalid")
-version_pattern = re.compile(r"[A-Za-z0-9._~+=:/-]{1,1024}")
+    raise SystemExit("retention evidence selected-version envelope is invalid")
+
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
 seen = set()
-for deletion in value["deletions"]:
-    if not isinstance(deletion, dict) or set(deletion) != {
-        "key", "versionId", "kind",
-    }:
-        raise SystemExit("version deletion row has invalid fields")
-    key = deletion["key"]
-    version_id = deletion["versionId"]
-    kind = deletion["kind"]
-    identity = (key, version_id)
+for tier, minimum_days in policy.items():
+    item = value["tiers"].get(tier)
+    selected = item.get("selectedVersions") if isinstance(item, dict) else None
     if (
-        not isinstance(key, str)
-        or not key.startswith(expected_prefix)
-        or "\t" in key
-        or "\n" in key
-        or not isinstance(version_id, str)
-        or not version_pattern.fullmatch(version_id)
-        or kind not in {"version", "delete-marker"}
-        or identity in seen
+        not isinstance(selected, list)
+        or not 1 <= len(selected) <= required[tier]
+        or item.get("coveredRequiredPeriods") != len(selected)
     ):
-        raise SystemExit("version deletion row is unsafe")
-    seen.add(identity)
-    print(key, version_id, kind, sep="\t")
+        raise SystemExit(f"retention evidence selected {tier} versions are invalid")
+    for entry in selected:
+        if not isinstance(entry, dict):
+            raise SystemExit("retention evidence selected version is invalid")
+        key = entry.get("key")
+        version_id = entry.get("versionId")
+        if (
+            not isinstance(key, str)
+            or "\t" in key
+            or "\n" in key
+            or not valid_version_id(version_id)
+            or (key, version_id) in seen
+        ):
+            raise SystemExit("retention evidence selected identity is invalid")
+        seen.add((key, version_id))
+        print(tier, key, version_id, minimum_days, sep="\t")
 PY
-  then
-    die "version deletion plan validation failed"
-  fi
   chmod 0600 "$rows"
-}
-
-execute_version_deletion_plan() {
-  local plan="$1" expected_prefix="$2" rows="$plan.rows"
-  local key version_id kind extra index
-  local -a protected_keys=("${3:-}" "${5:-}")
-  local -a protected_version_ids=("${4:-}" "${6:-}")
-  for index in 0 1; do
-    if [ -n "${protected_keys[$index]}" ] \
-        || [ -n "${protected_version_ids[$index]}" ]; then
-      [[ "${protected_keys[$index]}" == "$expected_prefix"* \
-          && "${protected_version_ids[$index]}" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
-        || die "version deletion protection identity is incomplete or unsafe"
-    fi
-  done
-  render_version_delete_rows "$plan" "$expected_prefix" "$rows"
-  while IFS=$'\t' read -r key version_id kind extra; do
-    [ -z "$extra" ] && [ -n "$key" ] && [ -n "$version_id" ] \
-      || die "version deletion row could not be parsed safely"
-    if { [ "$key" = "${protected_keys[0]}" ] \
-          && [ "$version_id" = "${protected_version_ids[0]}" ]; } \
-        || { [ "$key" = "${protected_keys[1]}" ] \
-          && [ "$version_id" = "${protected_version_ids[1]}" ]; }; then
-      continue
-    fi
-    if ! aws_s3api delete-object \
-      --bucket "$NEXUS_DR_S3_BUCKET" \
-      --key "$key" \
-      --version-id "$version_id" >/dev/null; then
-      die "versioned retention deletion failed for $kind: $key version $version_id"
-    fi
+  while IFS=$'\t' read -r tier key version_id minimum_days; do
+    [ -n "$tier" ] || continue
+    verify_existing_period_object \
+      "$key" "$tier" "$minimum_days" "$version_id"
+    verified_count=$((verified_count + 1))
   done <"$rows"
-}
+  [ "$verified_count" -gt 0 ] \
+    || die "retention evidence selected no exact versions for verification"
+  "$NEXUS_DR_PYTHON_BIN" - "$aws_retention_evidence" "$verified_count" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
 
-prune_versioned_count_tier() {
-  local tier="$1" retain="$2"
-  local protected_key="${3:-}" protected_version_id="${4:-}"
-  local listing="$tmp_dir/$tier-version-listing.json"
-  local plan="$tmp_dir/$tier-version-delete-plan.json"
-  [ "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" = aws-s3:versioned-s3 ] \
-    || die "versioned count retention requires aws-s3:versioned-s3"
-  list_versioned_objects "$database_root/$tier/" "$listing" "database-$tier"
-  "$NEXUS_DR_PYTHON_BIN" "$VERSION_RETENTION_HELPER" \
-    --listing "$listing" --prefix "$database_root" --output "$plan" \
-    count --tier "$tier" --retain "$retain"
-  execute_version_deletion_plan "$plan" "$database_root/$tier/" \
-    "$protected_key" "$protected_version_id"
+path = Path(sys.argv[1])
+verified_count = int(sys.argv[2])
+value = json.loads(path.read_text(encoding="utf-8"))
+selected_count = sum(
+    len(item["selectedVersions"])
+    for item in value["tiers"].values()
+)
+if selected_count != verified_count:
+    raise SystemExit("retention evidence verified-object count changed")
+value["selectedObjectsVerified"] = True
+value["selectedObjectCount"] = verified_count
+temporary = path.with_name(f".{path.name}.verified")
+if temporary.exists() or temporary.is_symlink():
+    raise SystemExit("retention evidence verification temporary path exists")
+temporary.write_text(
+    json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+temporary.chmod(0o600)
+os.replace(temporary, path)
+PY
 }
 
 prune_visible_count_tier() {
@@ -808,11 +1366,18 @@ prune_visible_count_tier() {
   done <"$plan"
 }
 
-prune_count_tier() {
+apply_database_retention() {
   case "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" in
-    aws-s3:versioned-s3) prune_versioned_count_tier "$@" ;;
-    cloudflare-r2:r2-approved-variance) prune_visible_count_tier "$@" ;;
-    *) die "unsupported storage mode reached count retention" ;;
+    aws-s3:versioned-s3)
+      collect_aws_retention_evidence
+      ;;
+    cloudflare-r2:r2-approved-variance)
+      prune_visible_count_tier hourly 24 "$hourly_key"
+      prune_visible_count_tier daily 7 "$daily_key"
+      prune_visible_count_tier weekly 4 "$weekly_key"
+      prune_visible_count_tier monthly 6 "$monthly_key"
+      ;;
+    *) die "unsupported storage mode reached database retention" ;;
   esac
 }
 
@@ -821,7 +1386,7 @@ confirm_database_after_retention() {
   local confirmed_epoch
   local -a get_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$hourly_key")
   if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    get_args+=(--version-id "$hourly_database_version_id")
+    get_args+=("--version-id=$hourly_database_version_id")
   fi
   verify_remote_object "$hourly_key" "$encrypted_sha" "$plaintext_sha" \
     NexusApplicationSqliteRecoveryPointV1 "$(size_file "$encrypted")" \
@@ -846,22 +1411,6 @@ print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT
 PY
 )"
   rm -f -- "$downloaded"
-}
-
-prune_versioned_release_age() {
-  local protected_key_one="${1:-}" protected_version_id_one="${2:-}"
-  local protected_key_two="${3:-}" protected_version_id_two="${4:-}"
-  local listing="$tmp_dir/releases-version-listing.json"
-  local plan="$tmp_dir/releases-version-delete-plan.json"
-  [ "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" = aws-s3:versioned-s3 ] \
-    || die "versioned release retention requires aws-s3:versioned-s3"
-  list_versioned_objects "$NEXUS_DR_S3_PREFIX/releases/" "$listing" "releases"
-  "$NEXUS_DR_PYTHON_BIN" "$VERSION_RETENTION_HELPER" \
-    --listing "$listing" --prefix "$NEXUS_DR_S3_PREFIX" --output "$plan" \
-    age --days 90 --now-epoch "$created_epoch" --grace-seconds 3600
-  execute_version_deletion_plan "$plan" "$NEXUS_DR_S3_PREFIX/releases/" \
-    "$protected_key_one" "$protected_version_id_one" \
-    "$protected_key_two" "$protected_version_id_two"
 }
 
 prune_visible_release_age() {
@@ -900,7 +1449,9 @@ prune_visible_release_age() {
 
 prune_release_age() {
   case "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" in
-    aws-s3:versioned-s3) prune_versioned_release_age "$@" ;;
+    aws-s3:versioned-s3)
+      # AWS expiry is owned exclusively by reviewed S3 Lifecycle rules.
+      ;;
     cloudflare-r2:r2-approved-variance)
       prune_visible_release_age "${1:-}" "${3:-}"
       ;;
@@ -918,8 +1469,11 @@ confirm_required_release_after_retention() {
   [ "$required_release_prepared" = true ] \
     || die "required release was not prepared for post-retention confirmation"
   if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    head_args+=(--version-id "$required_release_version_id")
-    get_args+=(--version-id "$required_release_version_id")
+    head_args+=(
+      "--version-id=$required_release_version_id"
+      --checksum-mode ENABLED
+    )
+    get_args+=("--version-id=$required_release_version_id")
   fi
   aws_s3api head-object "${head_args[@]}" >"$head"
   aws_s3api get-object "${get_args[@]}" "$encrypted" >/dev/null
@@ -932,6 +1486,7 @@ confirm_required_release_after_retention() {
     "$required_release_encrypted_sha" "$required_release_sha" \
     "$required_release_basename" "$required_release_encrypted_size" \
     "$required_release_created_epoch" "$confirmed_epoch" <<'PY'
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -997,11 +1552,35 @@ with open(encrypted_path, "rb") as source:
 if digest.hexdigest() != expected_encrypted_sha:
     raise SystemExit("post-retention required release encrypted digest changed")
 
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
 retain_until = ""
 if provider == "aws-s3" and control_mode == "versioned-s3":
+    try:
+        checksum_sha = base64.b64decode(
+            value.get("ChecksumSHA256", ""),
+            validate=True,
+        ).hex()
+    except (TypeError, ValueError):
+        raise SystemExit("post-retention required release checksum proof is invalid")
+    if checksum_sha != expected_encrypted_sha:
+        raise SystemExit("post-retention required release checksum changed")
     version_id = value.get("VersionId")
     if (
-        not re.fullmatch(r"[A-Za-z0-9._~+=:/-]{1,1024}", version_id or "")
+        not valid_version_id(version_id)
         or version_id != expected_version_id
     ):
         raise SystemExit("post-retention required release VersionId changed")
@@ -1060,8 +1639,11 @@ confirm_current_recovery_after_retention() {
   local -a head_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$required_recovery_key")
   local -a get_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$required_recovery_key")
   if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    head_args+=(--version-id "$required_recovery_version_id")
-    get_args+=(--version-id "$required_recovery_version_id")
+    head_args+=(
+      "--version-id=$required_recovery_version_id"
+      --checksum-mode ENABLED
+    )
+    get_args+=("--version-id=$required_recovery_version_id")
   fi
   aws_s3api head-object "${head_args[@]}" >"$head"
   aws_s3api get-object "${get_args[@]}" "$encrypted" >/dev/null
@@ -1073,6 +1655,7 @@ confirm_current_recovery_after_retention() {
     "$required_recovery_version_id" \
     "$required_recovery_retain_until" "$required_recovery_archive_sha" \
     "$recovery_basename" "$confirmed_epoch" <<'PY'
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -1127,11 +1710,35 @@ with open(encrypted_path, "rb") as source:
 if digest.hexdigest() != encrypted_sha:
     raise SystemExit("post-retention recovery encrypted digest is invalid")
 
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
 retain_until = ""
 if provider == "aws-s3" and control_mode == "versioned-s3":
+    try:
+        checksum_sha = base64.b64decode(
+            value.get("ChecksumSHA256", ""),
+            validate=True,
+        ).hex()
+    except (TypeError, ValueError):
+        raise SystemExit("post-retention recovery checksum proof is invalid")
+    if checksum_sha != encrypted_sha:
+        raise SystemExit("post-retention recovery checksum changed")
     version_id = value.get("VersionId")
     if (
-        not re.fullmatch(r"[A-Za-z0-9._~+=:/-]{1,1024}", version_id or "")
+        not valid_version_id(version_id)
         or version_id != expected_version_id
     ):
         raise SystemExit("post-retention recovery VersionId changed")
@@ -1180,10 +1787,7 @@ PY
   rm -f -- "$encrypted"
 }
 
-prune_count_tier hourly 24 "$hourly_key" "$hourly_database_version_id"
-prune_count_tier daily 7
-prune_count_tier weekly 4
-prune_count_tier monthly 6
+apply_database_retention
 database_confirmed_at=""
 confirm_database_after_retention
 
@@ -1212,7 +1816,11 @@ for archive in "${rollback_archives[@]}"; do
     || die "rollback bundle must be application-user owned mode 0600: $basename"
   tar tzf "$archive" >/dev/null || die "rollback bundle archive validation failed: $basename"
   archive_sha="$(sha256_file "$archive")"
-  release_key="$NEXUS_DR_S3_PREFIX/releases/$basename.$archive_sha.age"
+  release_object_basename="$basename"
+  if [ -n "$REQUIRED_RELEASE" ] && [ "$archive" = "$REQUIRED_RELEASE" ]; then
+    release_object_basename="${basename%.tar.gz}+rollback-escrow-${RECOVERY_ESCROW_ID}+phase-${RECOVERY_ESCROW_PHASE}.tar.gz"
+  fi
+  release_key="$NEXUS_DR_S3_PREFIX/releases/$release_object_basename.$archive_sha.age"
   release_head="$tmp_dir/release-head-$archive_sha.json"
   release_encrypted_sha=""
   release_encrypted_size=""
@@ -1220,15 +1828,23 @@ for archive in "${rollback_archives[@]}"; do
   release_version_id=""
   release_retain_until=""
   release_requires_fresh_retention=false
+  release_head_args=(
+    --bucket "$NEXUS_DR_S3_BUCKET"
+    --key "$release_key"
+  )
+  if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+    release_head_args+=(--checksum-mode ENABLED)
+  fi
   if [ -n "$REQUIRED_RELEASE" ] && [ "$archive" = "$REQUIRED_RELEASE" ]; then
     release_requires_fresh_retention=true
   fi
   if [ "$release_requires_fresh_retention" != true ] \
-      && aws_s3api head-object --bucket "$NEXUS_DR_S3_BUCKET" \
-        --key "$release_key" >"$release_head" 2>/dev/null; then
+      && aws_s3api head-object "${release_head_args[@]}" \
+        >"$release_head" 2>/dev/null; then
     release_fields="$("$NEXUS_DR_PYTHON_BIN" - "$release_head" "$archive_sha" \
       "$basename" "$NEXUS_DR_STORAGE_PROVIDER" "$NEXUS_DR_STORAGE_CONTROL_MODE" \
       "$created_epoch" "$release_requires_fresh_retention" <<'PY'
+import base64
 from datetime import datetime, timezone
 import json
 import re
@@ -1272,11 +1888,36 @@ if not re.fullmatch(r"[0-9]+", created):
     raise SystemExit("existing release escrow created epoch is invalid")
 if require_fresh_retention_raw not in {"true", "false"}:
     raise SystemExit("existing release escrow retention policy is invalid")
+
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate == "null":
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
 version_id = ""
 retain_until = ""
 if provider == "aws-s3" and control_mode == "versioned-s3":
+    try:
+        checksum_sha = base64.b64decode(
+            value.get("ChecksumSHA256", ""),
+            validate=True,
+        ).hex()
+    except (TypeError, ValueError):
+        raise SystemExit("existing release escrow SHA256 checksum proof is invalid")
+    if checksum_sha != encrypted_sha:
+        raise SystemExit("existing release escrow SHA256 checksum does not match metadata")
     version_id = value.get("VersionId", "")
-    if not re.fullmatch(r"[A-Za-z0-9._~+=:/-]{1,1024}", version_id):
+    if not valid_version_id(version_id):
         raise SystemExit("existing release escrow exact VersionId is invalid")
     if value.get("ObjectLockMode") != "COMPLIANCE":
         raise SystemExit("existing release escrow is missing S3 compliance retention")
@@ -1316,15 +1957,27 @@ print(
     encrypted_sha,
     content_length,
     created,
-    version_id,
+    base64.b64encode(version_id.encode("utf-8")).decode("ascii"),
     retain_until,
     sep="|",
 )
 PY
 )" || die "existing release escrow identity did not verify: $basename"
     IFS='|' read -r release_encrypted_sha release_encrypted_size \
-      release_created_epoch release_version_id release_retain_until \
+      release_created_epoch release_version_id_b64 release_retain_until \
       <<<"$release_fields"
+    release_version_id="$("$NEXUS_DR_PYTHON_BIN" - "$release_version_id_b64" <<'PY'
+import base64
+import binascii
+import sys
+
+try:
+    value = base64.b64decode(sys.argv[1], validate=True).decode("utf-8")
+except (binascii.Error, UnicodeDecodeError) as error:
+    raise SystemExit(f"existing release VersionId transport is invalid: {error}")
+print(value)
+PY
+)" || die "existing release VersionId transport did not verify: $basename"
   else
     release_encrypted="$tmp_dir/$basename.$archive_sha.age"
     age --encrypt --recipient "$NEXUS_DR_AGE_RECIPIENT" --output "$release_encrypted" "$archive"
@@ -1336,9 +1989,13 @@ PY
     release_encrypted_size="$(size_file "$release_encrypted")"
     release_created_epoch="$created_epoch"
     put_encrypted_object "$release_key" "$release_encrypted" "$release_encrypted_sha" \
-      "$archive_sha" NexusReleaseRollbackEscrowV1 "$created_epoch" "$basename"
+      "$archive_sha" NexusReleaseRollbackEscrowV1 "$created_epoch" "$basename" \
+      90 exact
     release_version_id="$LAST_VERIFIED_VERSION_ID"
     release_retain_until="$LAST_VERIFIED_RETAIN_UNTIL"
+    release_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
+    release_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"
+    release_created_epoch="$LAST_VERIFIED_CREATED_EPOCH"
     rm -f -- "$release_encrypted"
   fi
   if [ -n "$REQUIRED_RELEASE" ] && [ "$archive" = "$REQUIRED_RELEASE" ]; then
@@ -1360,7 +2017,7 @@ if [ -n "$REQUIRED_RELEASE" ] && [ "$required_release_prepared" != true ]; then
 fi
 if [ "$required_release_prepared" = true ] \
     && [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-  [[ "$required_release_version_id" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
+  aws_version_id_is_safe "$required_release_version_id" \
     || die "required release is missing its exact S3 VersionId"
   required_release_retain_until="$(
     validate_aws_retain_until "$required_release_retain_until" \
@@ -1434,12 +2091,14 @@ PY
   required_recovery_encrypted_size="$(size_file "$recovery_encrypted")"
   put_encrypted_object "$required_recovery_key" "$recovery_encrypted" \
     "$required_recovery_encrypted_sha" "$required_recovery_archive_sha" \
-    NexusCurrentRecoveryRuntimeV1 "$created_epoch" "$recovery_basename"
+    NexusCurrentRecoveryRuntimeV1 "$created_epoch" "$recovery_basename" 90 exact
   required_recovery_version_id="$LAST_VERIFIED_VERSION_ID"
   required_recovery_retain_until="$LAST_VERIFIED_RETAIN_UNTIL"
+  required_recovery_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
+  required_recovery_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"
   rm -f -- "$recovery_encrypted"
   if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    [[ "$required_recovery_version_id" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
+    aws_version_id_is_safe "$required_recovery_version_id" \
       || die "current recovery runtime confirmation is missing its exact S3 VersionId"
     required_recovery_retain_until="$(
       validate_aws_retain_until "$required_recovery_retain_until" \
@@ -1459,6 +2118,27 @@ if [ -n "$REQUIRED_RECOVERY_RUNTIME" ]; then
   required_recovery_confirmed=true
 fi
 
+database_retention_maturity="not-measured-r2-variance"
+database_retention_floor_observed="not-applicable"
+database_retention_objects_verified="not-applicable"
+if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+  IFS=$'\t' read -r database_retention_maturity \
+    database_retention_floor_observed database_retention_objects_verified \
+    < <("$NEXUS_DR_PYTHON_BIN" - "$aws_retention_evidence" <<'PY'
+import json
+import sys
+
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(
+    value.get("maturityStatus"),
+    str(value.get("floorObserved")).lower(),
+    str(value.get("selectedObjectsVerified")).lower(),
+    sep="\t",
+)
+PY
+)
+fi
+
 if [ "$JSON_OUTPUT" = true ]; then
   "$NEXUS_DR_PYTHON_BIN" - "$hourly_key" "$plaintext_sha" \
     "$encrypted_sha" "$(size_file "$encrypted")" \
@@ -1467,7 +2147,8 @@ if [ "$JSON_OUTPUT" = true ]; then
     "$required_release_sha" "$required_release_key" \
     "$required_release_encrypted_sha" "$required_release_encrypted_size" \
     "$NEXUS_DR_STORAGE_PROVIDER" \
-    "$NEXUS_DR_STORAGE_CONTROL_MODE" "$required_release_confirmed_at" \
+    "$NEXUS_DR_STORAGE_CONTROL_MODE" "$aws_retention_evidence" \
+    "$required_release_confirmed_at" \
     "$required_release_retain_until" "$required_release_version_id" \
     "$required_release_confirmed" "$REQUIRED_RECOVERY_RUNTIME" \
     "$required_recovery_archive_sha" "$required_recovery_key" \
@@ -1495,6 +2176,7 @@ import sys
     release_encrypted_size,
     provider,
     control_mode,
+    retention_evidence_path,
     release_confirmed_at,
     release_retain_until,
     release_version_id,
@@ -1517,6 +2199,27 @@ import sys
     recovery_version_id,
     recovery_confirmed,
 ) = sys.argv[1:]
+retention_evidence = None
+if retention_evidence_path:
+    try:
+        with open(retention_evidence_path, encoding="utf-8") as source:
+            retention_evidence = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"database retention evidence is unreadable: {error}")
+    if (
+        not isinstance(retention_evidence, dict)
+        or retention_evidence.get("schemaVersion")
+            != "NexusApplicationDrRetentionEvidenceV1"
+        or retention_evidence.get("inventoryOnly") is not True
+        or retention_evidence.get("selectedObjectsVerified") is not True
+        or retention_evidence.get("maturityStatus") not in {"warming", "mature"}
+        or (
+            retention_evidence.get("maturityStatus") == "mature"
+            and retention_evidence.get("maturitySealed") is not True
+        )
+        or "deletions" in retention_evidence
+    ):
+        raise SystemExit("database retention evidence is invalid")
 print(json.dumps({
     "schema": "nexus.application-dr-backup-result.v1",
     "status": "passed",
@@ -1530,6 +2233,7 @@ print(json.dumps({
     "databaseEncryptedSizeBytes": int(database_encrypted_size),
     "databaseObjectVersionId": database_version_id or None,
     "databaseConfirmedAt": database_confirmed_at,
+    "databaseRetentionEvidence": retention_evidence,
     "databaseRetentionVariance": (
         "r2-approved-variance"
         if provider == "cloudflare-r2"
@@ -1582,5 +2286,5 @@ print(json.dumps({
 }, separators=(",", ":")))
 PY
 else
-  echo "application_dr_backup_complete encrypted=true storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseKey=$hourly_key databaseSha256=$plaintext_sha releaseBundles=$release_count databaseRetention=24,7,4,6 releaseRetentionDays=90"
+  echo "application_dr_backup_complete encrypted=true storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseKey=$hourly_key databaseSha256=$plaintext_sha releaseBundles=$release_count databaseRetentionPolicy=24,7,4,6 databaseRetentionMaturity=$database_retention_maturity databaseRetentionFloorObserved=$database_retention_floor_observed databaseRetentionObjectsVerified=$database_retention_objects_verified releaseRetentionPolicyDays=90"
 fi

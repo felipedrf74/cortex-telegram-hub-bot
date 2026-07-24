@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Plan exact version deletion for governed Nexus DR S3 namespaces."""
+"""Produce read-only retention-floor evidence for governed Nexus DR versions."""
 
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
+import stat
 from typing import Any, NoReturn
 
 
@@ -17,14 +19,37 @@ TIER_PATTERNS = {
     "weekly": r"nexus-db-[0-9]{4}-W[0-9]{2}\.sqlite\.age",
     "monthly": r"nexus-db-[0-9]{6}\.sqlite\.age",
 }
-RELEASE_PATTERN = r"v[A-Za-z0-9._+-]+\.tar\.gz\.[0-9a-f]{64}\.age"
-VERSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._~+=:/-]{1,1024}$")
+REQUIRED_POINTS = {
+    "hourly": 24,
+    "daily": 7,
+    "weekly": 4,
+    "monthly": 6,
+}
 MAX_VERSION_ENTRIES = 20_000
 VERSION_LISTING_SCHEMA = "NexusApplicationDrVersionListingV1"
+EVIDENCE_SCHEMA = "NexusApplicationDrRetentionEvidenceV1"
+MATURITY_SEAL_SCHEMA = "NexusApplicationDrRetentionMaturitySealV1"
 
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(message)
+
+
+def valid_opaque_utf8(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        1 <= len(encoded) <= 1024
+        and not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    )
+
+
+def valid_version_id(value: Any) -> bool:
+    return value != "null" and valid_opaque_utf8(value)
 
 
 def timestamp(raw: Any, label: str) -> datetime:
@@ -43,7 +68,9 @@ def optional_marker(page: dict[str, Any], name: str, label: str) -> str | None:
     raw = page.get(name)
     if raw is None or raw == "":
         return None
-    if not isinstance(raw, str) or len(raw.encode("utf-8")) > 1024:
+    if not valid_opaque_utf8(raw):
+        fail(f"{label} {name} is invalid")
+    if "VersionId" in name and not valid_version_id(raw):
         fail(f"{label} {name} is invalid")
     return raw
 
@@ -132,9 +159,9 @@ def validated_entry(
     if not isinstance(key, str) or not key_pattern.fullmatch(key):
         return None
     version_id = raw.get("VersionId")
-    if not isinstance(version_id, str) or not VERSION_ID_PATTERN.fullmatch(version_id):
+    if not valid_version_id(version_id):
         fail(f"governed {kind} has an invalid VersionId: {key}")
-    modified_epoch = timestamp(raw.get("LastModified"), f"governed {kind}")
+    modified_at = timestamp(raw.get("LastModified"), f"governed {kind}")
     is_latest = raw.get("IsLatest")
     if not isinstance(is_latest, bool):
         fail(f"governed {kind} IsLatest is invalid: {key}")
@@ -142,7 +169,7 @@ def validated_entry(
         "key": key,
         "versionId": version_id,
         "kind": kind,
-        "modifiedAt": modified_epoch,
+        "modifiedAt": modified_at,
         "isLatest": is_latest,
     }
 
@@ -161,10 +188,19 @@ def governed_entries(
     markers = [
         entry
         for raw in markers_raw
-        if (entry := validated_entry(raw, kind="delete-marker", key_pattern=key_pattern))
+        if (
+            entry := validated_entry(
+                raw,
+                kind="delete-marker",
+                key_pattern=key_pattern,
+            )
+        )
         is not None
     ]
-    identities = [(entry["key"], entry["versionId"]) for entry in [*versions, *markers]]
+    identities = [
+        (str(entry["key"]), str(entry["versionId"]))
+        for entry in [*versions, *markers]
+    ]
     if len(set(identities)) != len(identities):
         fail("governed version listing contains duplicate key/version identities")
     by_key: dict[str, list[dict[str, Any]]] = {}
@@ -215,101 +251,251 @@ def tier_key_datetime(key: str, prefix: str, tier: str) -> datetime:
     return parsed.replace(tzinfo=timezone.utc)
 
 
-def count_plan(
+def expected_key_for_period(prefix: str, tier: str, now: datetime) -> str:
+    if tier == "hourly":
+        fail("hourly expected key must be supplied by the backup transaction")
+    suffix = {
+        "daily": now.strftime("%Y%m%d"),
+        "weekly": now.strftime("%G-W%V"),
+        "monthly": now.strftime("%Y%m"),
+    }[tier]
+    return f"{prefix}/{tier}/nexus-db-{suffix}.sqlite.age"
+
+
+def period_start(value: datetime, tier: str) -> datetime:
+    if tier == "hourly":
+        return value.replace(minute=0, second=0, microsecond=0)
+    if tier == "daily":
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+    if tier == "weekly":
+        start = value - timedelta(days=value.weekday())
+        return start.replace(hour=0, minute=0, second=0, microsecond=0)
+    return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def period_identity(value: datetime, tier: str) -> str:
+    start = period_start(value, tier)
+    return {
+        "hourly": start.strftime("%Y-%m-%dT%H"),
+        "daily": start.strftime("%Y-%m-%d"),
+        "weekly": start.strftime("%G-W%V"),
+        "monthly": start.strftime("%Y-%m"),
+    }[tier]
+
+
+def subtract_months(value: datetime, months: int) -> datetime:
+    absolute = value.year * 12 + value.month - 1 - months
+    return value.replace(year=absolute // 12, month=absolute % 12 + 1)
+
+
+def required_period_identities(tier: str, now: datetime, count: int) -> list[str]:
+    current = period_start(now, tier)
+    values: list[datetime] = []
+    for offset in range(count):
+        if tier == "hourly":
+            values.append(current - timedelta(hours=offset))
+        elif tier == "daily":
+            values.append(current - timedelta(days=offset))
+        elif tier == "weekly":
+            values.append(current - timedelta(weeks=offset))
+        else:
+            values.append(subtract_months(current, offset))
+    return [period_identity(value, tier) for value in values]
+
+
+def retention_evidence(
     listing: Path,
     prefix: str,
-    tier: str,
-    retain: int,
-) -> list[dict[str, str]]:
-    if tier not in TIER_PATTERNS or retain < 1:
-        fail("invalid versioned count-retention policy")
-    key_pattern = re.compile(
-        rf"^{re.escape(prefix)}/{re.escape(tier)}/{TIER_PATTERNS[tier]}$"
-    )
-    versions, markers = governed_entries(listing, key_pattern)
-    for entry in [*versions, *markers]:
-        tier_key_datetime(str(entry["key"]), prefix, tier)
-    keys = sorted(
-        {str(entry["key"]) for entry in versions},
-        key=lambda key: tier_key_datetime(key, prefix, tier),
-        reverse=True,
-    )
-    retained_keys = set(keys[:retain])
-    kept_identities: set[tuple[str, str]] = set()
-    for key in retained_keys:
-        candidates = [entry for entry in versions if entry["key"] == key]
-        if not candidates:
-            continue
-        newest = candidates[0]
-        kept_identities.add((str(newest["key"]), str(newest["versionId"])))
-    deletions = [
-        entry
-        for entry in versions
-        if (str(entry["key"]), str(entry["versionId"])) not in kept_identities
-    ]
-    deletions.extend(markers)
-    return deletion_rows(deletions)
-
-
-def age_plan(
-    listing: Path,
-    prefix: str,
-    days: int,
-    now_epoch: int,
-    grace_seconds: int,
-) -> list[dict[str, str]]:
-    if days < 1 or now_epoch < 1 or grace_seconds < 0 or grace_seconds > 86_400:
-        fail("invalid versioned age-retention policy")
-    key_pattern = re.compile(
-        rf"^{re.escape(prefix)}/releases/{RELEASE_PATTERN}$"
-    )
-    versions, markers = governed_entries(listing, key_pattern)
-    cutoff = datetime.fromtimestamp(now_epoch, timezone.utc) - timedelta(
-        days=days,
-        seconds=grace_seconds,
-    )
-    deletions = [
-        entry for entry in versions if entry["modifiedAt"] < cutoff
-    ]
-    # A delete marker can hide a compliance-locked rollback version without
-    # deleting it. Remove every governed marker so every retained bundle stays
-    # addressable by its exact key. deletion_rows keeps versions before markers
-    # for the same key, allowing a fail-fast consumer to stop on Object Lock.
-    deletions.extend(markers)
-    return deletion_rows(deletions)
-
-
-def deletion_rows(entries: list[dict[str, Any]]) -> list[dict[str, str]]:
-    kind_order = {"version": 0, "delete-marker": 1}
-    return [
-        {
-            "key": str(entry["key"]),
-            "versionId": str(entry["versionId"]),
-            "kind": str(entry["kind"]),
-        }
-        for entry in sorted(
-            entries,
-            key=lambda item: (
-                str(item["key"]),
-                kind_order[str(item["kind"])],
-                str(item["versionId"]),
-            ),
+    expected_keys: dict[str, str],
+    now: datetime,
+) -> dict[str, Any]:
+    all_pattern = re.compile(
+        rf"^{re.escape(prefix)}/(?:"
+        + "|".join(
+            rf"{re.escape(tier)}/{pattern}"
+            for tier, pattern in TIER_PATTERNS.items()
         )
-    ]
+        + r")$"
+    )
+    versions, markers = governed_entries(listing, all_pattern)
+    evidence: dict[str, Any] = {}
+    floor_observed = True
+    for tier, required in REQUIRED_POINTS.items():
+        tier_pattern = re.compile(
+            rf"^{re.escape(prefix)}/{re.escape(tier)}/{TIER_PATTERNS[tier]}$"
+        )
+        tier_versions = [
+            entry
+            for entry in versions
+            if tier_pattern.fullmatch(str(entry["key"]))
+        ]
+        tier_markers = [
+            entry
+            for entry in markers
+            if tier_pattern.fullmatch(str(entry["key"]))
+        ]
+        for entry in [*tier_versions, *tier_markers]:
+            tier_key_datetime(str(entry["key"]), prefix, tier)
+        visible_versions = {
+            str(entry["key"]): entry
+            for entry in tier_versions
+            if entry["isLatest"] is True
+        }
+        hidden_keys = {
+            str(entry["key"])
+            for entry in tier_markers
+            if entry["isLatest"] is True
+        }
+        expected_key = expected_keys[tier]
+        if not tier_pattern.fullmatch(expected_key):
+            fail(f"expected {tier} key is outside the governed namespace")
+        if tier == "hourly":
+            expected_at = tier_key_datetime(expected_key, prefix, tier)
+            age_seconds = int((now - expected_at).total_seconds())
+            if age_seconds < 0 or age_seconds > 7200:
+                fail("expected hourly key is not a recent transaction key")
+        elif expected_key != expected_key_for_period(prefix, tier, now):
+            fail(f"expected {tier} key does not match the current UTC period")
+        if expected_key not in visible_versions or expected_key in hidden_keys:
+            fail(f"current {tier} recovery point is not visibly retained")
+        visible_by_period: dict[str, dict[str, Any]] = {}
+        current_period = period_start(now, tier)
+        for key, entry in visible_versions.items():
+            key_time = tier_key_datetime(key, prefix, tier)
+            key_period = period_start(key_time, tier)
+            if (
+                (tier == "hourly" and key_time > now)
+                or key_period > current_period
+            ):
+                fail(f"governed {tier} key is in a future calendar period: {key}")
+            identity = period_identity(key_time, tier)
+            selected = visible_by_period.get(identity)
+            if selected is None or key_time > selected["keyTime"]:
+                visible_by_period[identity] = {
+                    "entry": entry,
+                    "keyTime": key_time,
+                }
+        required_periods = required_period_identities(tier, now, required)
+        selected_versions = [
+            {
+                "calendarPeriod": identity,
+                "key": str(visible_by_period[identity]["entry"]["key"]),
+                "versionId": str(
+                    visible_by_period[identity]["entry"]["versionId"],
+                ),
+            }
+            for identity in required_periods
+            if identity in visible_by_period
+        ]
+        consecutive_floor = len(selected_versions) == required
+        observed = len(visible_versions)
+        floor_observed = floor_observed and consecutive_floor
+        version_counts: dict[str, int] = {}
+        for entry in tier_versions:
+            version_counts[str(entry["key"])] = (
+                version_counts.get(str(entry["key"]), 0) + 1
+            )
+        evidence[tier] = {
+            "requiredPoints": required,
+            "visiblePoints": observed,
+            "currentKey": expected_key,
+            "currentKeyPresent": True,
+            "coveredRequiredPeriods": len(selected_versions),
+            "consecutiveRequiredPeriodsPresent": consecutive_floor,
+            "multipleVersionKeys": sum(
+                1 for count in version_counts.values() if count > 1
+            ),
+            "selectedVersions": selected_versions,
+            "latestVisibleKey": max(
+                visible_versions,
+                key=lambda key: tier_key_datetime(key, prefix, tier),
+            ),
+        }
+    return {
+        "schemaVersion": EVIDENCE_SCHEMA,
+        "inventoryOnly": True,
+        "policyConfigured": dict(REQUIRED_POINTS),
+        "floorObserved": floor_observed,
+        "maturityStatus": "mature" if floor_observed else "warming",
+        "maturitySealed": False,
+        "selectedObjectsVerified": False,
+        "currentPeriodsVerified": True,
+        "observedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "tiers": evidence,
+    }
 
 
-def write_plan(output: Path, deletions: list[dict[str, str]]) -> None:
+def enforce_maturity_seal(
+    seal: Path,
+    *,
+    bucket: str,
+    prefix: str,
+    evidence: dict[str, Any],
+) -> bool:
+    expected = {
+        "schemaVersion": MATURITY_SEAL_SCHEMA,
+        "bucket": bucket,
+        "prefix": prefix,
+        "policyConfigured": dict(REQUIRED_POINTS),
+    }
+    if seal.is_symlink():
+        fail("retention maturity seal must not be a symlink")
+    if seal.exists():
+        try:
+            status = seal.stat()
+            value = json.loads(seal.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            fail(f"retention maturity seal is unreadable: {error}")
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or stat.S_IMODE(status.st_mode) != 0o600
+            or status.st_uid != os.geteuid()
+            or not isinstance(value, dict)
+            or any(value.get(key) != item for key, item in expected.items())
+            or not isinstance(value.get("maturedAt"), str)
+        ):
+            fail("retention maturity seal is invalid")
+        if evidence.get("floorObserved") is not True:
+            fail("sealed retention maturity regressed below the 24/7/4/6 floor")
+        return True
+    if evidence.get("floorObserved") is not True:
+        return False
+    if not seal.parent.is_dir() or seal.parent.is_symlink():
+        fail("retention maturity seal parent is unsafe")
+    temporary = seal.with_name(f".{seal.name}.next")
+    if temporary.exists() or temporary.is_symlink():
+        fail("retention maturity seal temporary path already exists")
+    payload = {
+        **expected,
+        "maturedAt": evidence["observedAt"],
+    }
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            target.write(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            )
+            target.flush()
+            os.fsync(target.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    temporary.replace(seal)
+    return True
+
+
+def write_evidence(output: Path, payload: dict[str, Any]) -> None:
     if output.exists() or output.is_symlink():
-        fail("version deletion output must be a new path")
+        fail("retention evidence output must be a new path")
     if not output.parent.is_dir() or output.parent.is_symlink():
-        fail("version deletion output parent is unsafe")
+        fail("retention evidence output parent is unsafe")
     temporary = output.with_name(f".{output.name}.next")
     if temporary.exists() or temporary.is_symlink():
-        fail("version deletion temporary path already exists")
-    payload = {
-        "schemaVersion": "NexusApplicationDrVersionDeletionPlanV1",
-        "deletions": deletions,
-    }
+        fail("retention evidence temporary path already exists")
     temporary.write_text(
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -323,14 +509,11 @@ def main() -> None:
     parser.add_argument("--listing", type=Path, required=True)
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    count_parser = subparsers.add_parser("count")
-    count_parser.add_argument("--tier", choices=sorted(TIER_PATTERNS), required=True)
-    count_parser.add_argument("--retain", type=int, required=True)
-    age_parser = subparsers.add_parser("age")
-    age_parser.add_argument("--days", type=int, required=True)
-    age_parser.add_argument("--now-epoch", type=int, required=True)
-    age_parser.add_argument("--grace-seconds", type=int, default=3600)
+    parser.add_argument("--now-epoch", type=int, required=True)
+    parser.add_argument("--maturity-seal", type=Path)
+    parser.add_argument("--bucket")
+    for tier in REQUIRED_POINTS:
+        parser.add_argument(f"--expected-{tier}-key", required=True)
     args = parser.parse_args()
     if not args.listing.is_file() or args.listing.is_symlink():
         fail("version listing must be a regular non-symlink file")
@@ -343,18 +526,32 @@ def main() -> None:
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]", prefix)
     ):
         fail("version retention prefix is invalid")
-    deletions = (
-        count_plan(args.listing, prefix, args.tier, args.retain)
-        if args.command == "count"
-        else age_plan(
-            args.listing,
-            prefix,
-            args.days,
-            args.now_epoch,
-            args.grace_seconds,
+    if args.now_epoch < 1:
+        fail("retention evidence time is invalid")
+    now = datetime.fromtimestamp(args.now_epoch, timezone.utc)
+    expected_keys = {
+        tier: str(getattr(args, f"expected_{tier}_key"))
+        for tier in REQUIRED_POINTS
+    }
+    if (args.maturity_seal is None) != (args.bucket is None):
+        fail("maturity seal and bucket must be supplied together")
+    if args.bucket is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9]",
+        args.bucket,
+    ):
+        fail("retention maturity bucket is invalid")
+    evidence = retention_evidence(args.listing, prefix, expected_keys, now)
+    if args.maturity_seal is not None:
+        evidence["maturitySealed"] = enforce_maturity_seal(
+            args.maturity_seal,
+            bucket=args.bucket,
+            prefix=prefix,
+            evidence=evidence,
         )
+    write_evidence(
+        args.output,
+        evidence,
     )
-    write_plan(args.output, deletions)
 
 
 if __name__ == "__main__":

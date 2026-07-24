@@ -198,7 +198,12 @@ const server = http.createServer((request, response) => {
   response.end(body);
 });
 server.listen(0, '127.0.0.1', () => {
-  fs.writeFileSync(process.env.FAKE_TAGS_READY, JSON.stringify(server.address()));
+  const readyStage = process.env.FAKE_TAGS_READY + '.next-' + process.pid;
+  fs.writeFileSync(readyStage, JSON.stringify(server.address()) + '\\n', {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  fs.renameSync(readyStage, process.env.FAKE_TAGS_READY);
 });
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 `], {

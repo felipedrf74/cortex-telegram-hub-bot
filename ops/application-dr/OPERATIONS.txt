@@ -28,34 +28,60 @@ Object-store preparation
 
 Create a private object-store bucket reachable only over HTTPS. For
 `aws-s3:versioned-s3`, grant the ServerDominguez identity only prefix-scoped
-`s3:ListBucketVersions`, object Get/Head/Put, `s3:DeleteObjectVersion`, and the
-narrowly scoped GetObjectRetention/PutObjectRetention actions required for
-release objects. Scope `s3:ListBucketVersions` to the configured
-NEXUS_DR_S3_PREFIX and `s3:DeleteObjectVersion` to objects below that prefix;
-the AWS retention path does not require unversioned `DeleteObject`. The
-approved R2 variance instead retains its existing prefix-scoped ListBucket and
-object Get/Head/Put/Delete permissions because R2 has no S3 versions. Deny
-plaintext transport in either mode.
+`s3:ListBucketVersions`, object Get/Head/Put, and the narrowly scoped
+GetObjectRetention/PutObjectRetention actions required to apply the final
+COMPLIANCE deadline during each initial upload. The backup identity has no
+`DeleteObject`, `DeleteObjectVersion`, legal-hold, bucket-policy, lifecycle,
+versioning, or Object Lock mutation path. AWS cleanup belongs exclusively to
+reviewed S3 Lifecycle rules. The bucket also denies governed object writes from
+every principal except the exact backup role, even if another same-account
+identity policy is accidentally broad. The approved R2 variance instead
+retains its existing prefix-scoped ListBucket and object
+Get/Head/Put/Delete permissions because R2 has no S3 versions or Object Lock
+equivalence. Deny plaintext transport in either mode.
 
-For AWS S3, provision the bucket from `aws-s3-stack.yaml` through a reviewed
-CloudFormation change set. The template retains the bucket on stack deletion,
-enables versioning and Object Lock without applying a default lock to the
-shorter-lived database tiers, enables default server-side encryption and
-public-access blocking, denies plaintext transport and unversioned deletion,
-and grants only the configured prefix. It accepts an existing dedicated backup
-role plus an optional separate read-only restore role and does not create an
-IAM access key, login profile, or another credential.
-Creating or executing the change set, selecting the server credential path,
+For AWS S3, provision `aws-s3-stack.yaml` through a reviewed CloudFormation
+change set. The template retains the bucket on stack deletion, enables
+versioning and Object Lock without applying a default lock to the shorter-lived
+database tiers, enables default server-side encryption and public-access
+blocking, denies plaintext transport and unversioned deletion, and grants only
+the configured prefix. `PrincipalProvisioningMode=EXTERNAL` preserves the
+existing contract for owner-supplied roles. For ServerDominguez, select
+`IAM_ROLES_ANYWHERE`: the same atomic stack creates distinct least-privilege
+backup and restore roles, one-role profiles, a certificate-bundle trust anchor,
+and its CRL. Supply only the public certificate for an owner-controlled private
+CA and its current public CRL. The template never accepts or creates a CA key,
+leaf key, leaf certificate, access key, or login profile.
+It does not create an IAM access key or any other long-lived AWS credential.
+The writer requires bounded `PutObjectRetention` permission to attach each
+object's final lock during its initial upload. A compromised writer could keep
+extending objects to the tier's one-day upper bound and cause storage-cost
+growth, but it still cannot shorten retention, delete versions, change legal
+holds, or mutate bucket controls. Alert on unexpected retention changes and
+disable the Roles Anywhere profile and trust anchor during credential response.
+
+The first managed-mode change set must use
+`RolesAnywhereActivation=DISABLED` and `LifecycleActivation=DISABLED`, include
+`CAPABILITY_IAM`, and be reviewed before execution. Bind its exact bucket,
+prefix, role, trust-anchor, and profile outputs into the root-only runtime
+configuration. Never infer the generated IAM role path/name from the stack or
+profile label. After the write-once client, two distinct leaf certificates,
+pinned helper, and owner-approved custody/revocation tests pass, run one
+owner-observed locked backup and inventory every exact VersionId. Review a
+second change set that changes only the two activation parameters to `ENABLED`.
+Creating or executing either change set, selecting the server credential path,
 and writing any live DR configuration require explicit owner approval.
 
 ServerDominguez is not EC2 and has no instance profile. The default AWS design
-is IAM Roles Anywhere with short-lived credentials, a dedicated backup role,
-and a root-only pinned `aws_signing_helper` credential process. Restrict the
-trust anchor, profile, role trust, and session policy to the exact account,
-source ARN, certificate subject/issuer, and DR prefix. Do not put an IAM-user
-access key in `backup.env`. Use a separate certificate and read-only restore
-role for the isolated drill; it may list exact-prefix versions and read exact
-object versions/retention, but may not write or delete. The backup selects
+is IAM Roles Anywhere with 900-second credentials, a dedicated backup role, and
+a root-only pinned `aws_signing_helper` credential process. Managed mode binds
+each role trust to the exact account, trust-anchor source ARN, private-CA issuer
+CN, and distinct leaf subject CN. Explicit profile mappings expose only issuer
+CN and subject CN; each profile names one role and repeats the exact bucket and
+prefix permission ceiling as a session policy. Do not put an IAM-user access
+key in `backup.env`. Use a separate leaf certificate and read-only restore role
+for the isolated drill; it may list exact-prefix versions and read exact object
+versions/retention, but may not write or delete. The backup selects
 `nexus-application-dr-backup`; the restore drill overrides it with the
 `NEXUS_DR_RESTORE_AWS_PROFILE=nexus-application-dr-restore` profile from the
 same root-only AWS config and validates that credential-process boundary again
@@ -89,10 +115,21 @@ this private key because AWS credentials are needed to retrieve it. Until that
 credential and unattended-unlock design is approved and tested, do not enable
 the backup timer.
 
+IAM Roles Anywhere does not consult OCSP or CRL distribution points. Rotate the
+stack's `CertificateRevocationListData` through a reviewed change set whenever
+the private CA issues a new CRL, and test revocation before enabling the timer.
+For an emergency, first disable both profiles and the trust anchor by setting
+`RolesAnywhereActivation=DISABLED`; then update the CRL and revoke or replace
+the affected leaf certificate. CloudTrail evidence must show the expected
+subject and source identity for both the positive credential test and the
+revoked-certificate rejection.
+
 The default control mode is `aws-s3:versioned-s3`: bucket versioning must be
-enabled and release objects must have S3 Object Lock coverage for at least 90
-days. Do not apply the 90-day release lock to database/ because its four
-count-based tiers intentionally expire sooner.
+enabled and every governed upload must be conditional, checksummed, and
+COMPLIANCE locked. Database minimum lock floors are 2 days hourly, 8 days
+daily, 35 days weekly, and 190 days monthly; release objects have at least 90
+days. S3 Lifecycle expiry follows those deadlines and is asynchronous, so
+observed counts may exceed 24/7/4/6 and 90 days.
 
 Cloudflare R2 does not satisfy the versioned-S3 control. It may be used only as
 the explicit `cloudflare-r2:r2-approved-variance`: retain owner approval for
@@ -217,24 +254,35 @@ runs are failures, not silently accepted RPO exceptions.
 The service creates and integrity-checks a transactionally consistent SQLite
 snapshot while Nexus remains online. It encrypts the snapshot in a root-only
 temporary directory, deletes plaintext, uploads the same encrypted point to
-four governed tiers, verifies remote size/digest metadata, and then applies:
+four governed tiers, and verifies exact remote VersionId, checksum, size,
+metadata, calendar identity, COMPLIANCE mode, and deadline:
 
-  database/hourly   latest 24 hourly keys
-  database/daily    latest 7 UTC-date keys
-  database/weekly   latest 4 ISO-week keys
-  database/monthly  latest 6 UTC-month keys
+  database/hourly   unique invocation key, >=2-day lock, 3-day lifecycle
+  database/daily    first point per UTC date, >=8-day lock, 9-day lifecycle
+  database/weekly   first point per ISO week, >=35-day lock, 36-day lifecycle
+  database/monthly  first point per UTC month, >=190-day lock, 191-day lifecycle
 
-Daily, weekly, and monthly keys are refreshed by each successful hourly run,
-so the retained key holds the newest point for its period. In
-`aws-s3:versioned-s3`, retention explicitly exhausts direct 1,000-entry
-`ListObjectVersions` pages with the paired key/version markers; AWS CLI
-auto-pagination is disabled. The root-owned version-retention helper validates
-the complete `NexusApplicationDrVersionListingV1` page envelope and emits an
-ordered exact key-plus-VersionId plan. The service deletes one version at a
-time in plan order and stops at the first failure. This retains one current
-version for each governed retained database key and removes older governed
-versions/delete markers without issuing an unversioned delete. Unexpected
-objects are never deleted.
+AWS sends `If-None-Match: *` for every governed object. A collision on the
+unique hourly key is a hard failure. A daily, weekly, or monthly 412 is
+idempotent only when a checksum-enabled HEAD proves the existing first point
+belongs to that calendar period and still satisfies every metadata, VersionId,
+COMPLIANCE, and deadline invariant. A 409 receives one bounded retry; all
+other errors fail.
+
+For `aws-s3:versioned-s3`, the service explicitly exhausts direct 1,000-entry
+`ListObjectVersions` pages with paired key/version markers; AWS CLI
+auto-pagination is disabled. The root-owned helper validates the complete
+`NexusApplicationDrVersionListingV1` envelope and emits read-only
+`NexusApplicationDrRetentionEvidenceV1`. It reports configured policy and the
+observed consecutive 24-hour/7-date/4-ISO-week/6-month floor separately because
+a new namespace needs time to mature. Every selected exact VersionId is
+checksum-HEADed and its metadata, calendar identity, COMPLIANCE mode, and tier
+deadline are verified. First maturity creates a root-owned monotonic seal; a
+later regression fails instead of returning to warming. It never emits or
+executes deletion instructions. Missing current-period points are failures; an
+immature historical floor is visible but does not fabricate readiness. S3
+Lifecycle is the only AWS cleanup actor, and its eventual timing means retained
+counts are minimum floors rather than exact counts.
 
 The approved R2 variance deliberately keeps the visible-object
 ListObjectsV2/DeleteObject algorithm because R2 cannot provide S3 version
@@ -243,33 +291,40 @@ identities. Do not reuse that variance path for AWS.
 The same invocation scans every current v*.tar.gz bundle in the existing local
 rollback directory, verifies ownership/mode and tar readability, encrypts each
 previously unseen exact digest, and uploads it under releases/. Cloud escrow is
-kept for 90 days plus a 3,600-second deletion grace.
+written conditionally under COMPLIANCE retention and kept for at least 90 days.
+Lifecycle expiration is configured after that lock window; the backup
+credential never prunes AWS release versions.
 
 Promotion also creates two transaction-bound candidate recovery objects:
 `+escrow-<transaction-id>+phase-pre-mutation...` before PM2/data mutation and
 `+escrow-<transaction-id>+phase-post-soak...` after candidate availability and
 the 60-second soak. They bind the same runtime, artifact, installed-tree,
 recovery-runtime, release-manifest, and staging-attestation identities, but
-must use distinct object keys and newly encrypted ciphertext. Each phase
-records `escrowId`, `escrowPhase`, plaintext/encrypted SHA-256, encrypted byte
+must use distinct object keys and newly encrypted ciphertext. The post-soak
+phase also writes the predecessor rollback bundle under a distinct
+`+rollback-escrow-<transaction-id>+phase-post-soak` key, so an older timer upload
+cannot shorten the promotion's required 90-day recovery window. Governed AWS
+uploads use one-day lock headroom and can extend the same exact COMPLIANCE
+version after a delayed checkpoint resume without weakening that confirmation
+floor. Each phase records `escrowId`, `escrowPhase`, plaintext/encrypted SHA-256,
+encrypted byte
 size, `confirmedAt`, `retainUntil`, and the exact AWS `objectVersionId`. AWS
 requires `retainUntil` to be at least 90 days after `confirmedAt`. R2 emits null
 for unavailable deadline/version fields and explicitly records
 `retentionVariance: r2-approved-variance` plus
 `approvedUnversionedVariance: true`.
 
-Each exact key/version pair is protected from its creating invocation's
-retention plan and re-HEADed and re-downloaded by exact AWS VersionId. The
-pre-mutation recovery object is accompanied by a fresh database encrypted
-identity/version before cutover. The post-soak object is accompanied by a new
-database encrypted identity/version, and candidate readiness is recorded both
-before and after those post-soak uploads. The promotion transaction also
-requires positive off-host confirmation for its predecessor rollback-bundle
-digest before that bundle is eligible for local count pruning. The existing
-local policy keeps the latest ten bundles, while the hourly service reconciles
-and re-verifies the whole retained set. A failed escrow remains visible and the
-unconfirmed bundle must stay local; operators must never prune it merely to
-satisfy the count.
+Each exact key/version pair is re-HEADed and re-downloaded by exact AWS
+VersionId. The pre-mutation recovery object is accompanied by a fresh unique
+hourly database encrypted identity/version before cutover. The post-soak object
+is accompanied by another unique hourly database identity/version, and
+candidate readiness is recorded both before and after those post-soak uploads.
+The promotion transaction also requires positive off-host confirmation for its
+predecessor rollback-bundle digest before that bundle is eligible for local
+count pruning. The existing local policy keeps the latest ten bundles, while
+the hourly service reconciles and re-verifies the whole retained set. A failed
+escrow remains visible and the unconfirmed bundle must stay local; operators
+must never prune it merely to satisfy the count.
 
 Quarterly isolated restore drill
 --------------------------------

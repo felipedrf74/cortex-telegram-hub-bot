@@ -12,13 +12,14 @@ BACKUP_VERSION_ID=""
 CHECKSUM_VERSION_ID=""
 OUTPUT=""
 STACK_DIR="${SONAR_STACK_DIR:-/srv/sonarqube}"
+RESTORE_EVIDENCE_DIR=/var/lib/nexus-sonarqube/restore-evidence
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AWS_CREDENTIAL_BOUNDARY_HELPER="$SCRIPT_DIR/aws-credential-process-boundary.py"
 [ -f "$AWS_CREDENTIAL_BOUNDARY_HELPER" ] \
   || AWS_CREDENTIAL_BOUNDARY_HELPER=/usr/local/sbin/quality-sonar-aws-credential-process-boundary.py
 
 usage() {
-  echo "Usage: quality-sonar-restore-drill.sh --backup-key <exact-s3-key> --backup-version-id <version> --checksum-version-id <version> --identity-file <age-key> --output <absolute-json> [--config <file>]"
+  echo "Usage: quality-sonar-restore-drill.sh --backup-key <exact-s3-key> --backup-version-id <version> --checksum-version-id <version> --identity-file <age-key> --output /var/lib/nexus-sonarqube/restore-evidence/sonar-restore-<new-id>.json [--config <file>]"
 }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,7 +42,10 @@ for file in "$CONFIG" "$IDENTITY_FILE"; do
   owner="$(stat -c '%U' "$file" 2>/dev/null || stat -f '%Su' "$file")"
   [ "$owner" = root ] || { echo "Private drill files must be owned by root" >&2; exit 1; }
 done
-[[ "$OUTPUT" == /* ]] && [ "$OUTPUT" != / ] || { echo "--output must be an absolute JSON path" >&2; exit 64; }
+[[ "$OUTPUT" == "$RESTORE_EVIDENCE_DIR/"* ]] \
+  && [ "$(dirname -- "$OUTPUT")" = "$RESTORE_EVIDENCE_DIR" ] \
+  && [[ "${OUTPUT##*/}" =~ ^sonar-restore-[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.json$ ]] \
+  || { echo "--output must be a new governed Sonar restore evidence path" >&2; exit 64; }
 
 set -a
 # shellcheck disable=SC1090
@@ -86,15 +90,53 @@ escaped_prefix="${escaped_prefix//\//\\/}"
   echo "Backup key is outside the governed Sonar retention namespace" >&2
   exit 1
 }
-[[ "$BACKUP_VERSION_ID" != null \
-    && "$CHECKSUM_VERSION_ID" != null \
-    && "$BACKUP_VERSION_ID" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ \
-    && "$CHECKSUM_VERSION_ID" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
+[[ -n "$BACKUP_VERSION_ID" && -n "$CHECKSUM_VERSION_ID" ]] \
   || { echo "Restore drill requires exact data and checksum object VersionIds" >&2; exit 1; }
 
-for command in docker age aws openssl curl node python3 sha256sum ss flock; do
+for command in docker age aws openssl curl node python3 realpath sha256sum ss flock; do
   command -v "$command" >/dev/null 2>&1 || { echo "$command is required for restore drill" >&2; exit 1; }
 done
+validate_restore_evidence_target() {
+  local current="$RESTORE_EVIDENCE_DIR" owner mode canonical
+  [ -d "$RESTORE_EVIDENCE_DIR" ] && [ ! -L "$RESTORE_EVIDENCE_DIR" ] \
+    || { echo "Sonar restore evidence directory is missing or a symlink" >&2; return 1; }
+  canonical="$(realpath -e -- "$RESTORE_EVIDENCE_DIR")"
+  [ "$canonical" = "$RESTORE_EVIDENCE_DIR" ] \
+    || { echo "Sonar restore evidence directory is noncanonical" >&2; return 1; }
+  [ "$(stat -c '%U:%G:%a' -- "$RESTORE_EVIDENCE_DIR")" = root:root:700 ] \
+    || { echo "Sonar restore evidence directory must be root-owned mode 0700" >&2; return 1; }
+  while :; do
+    [ -d "$current" ] && [ ! -L "$current" ] \
+      || { echo "Sonar restore evidence path chain is unsafe" >&2; return 1; }
+    [ "$(realpath -e -- "$current")" = "$current" ] \
+      || { echo "Sonar restore evidence path chain traverses a symlink" >&2; return 1; }
+    owner="$(stat -c '%U:%G' -- "$current")"
+    mode="$(stat -c '%a' -- "$current")"
+    [ "$owner" = root:root ] && (( (8#$mode & 0022) == 0 )) \
+      || { echo "Sonar restore evidence path chain is not root-trusted" >&2; return 1; }
+    [ "$current" = / ] && break
+    current="$(dirname -- "$current")"
+  done
+  [ "$(realpath -m -- "$OUTPUT")" = "$OUTPUT" ] \
+    || { echo "Sonar restore evidence output must be canonical" >&2; return 1; }
+  [ ! -e "$OUTPUT" ] && [ ! -L "$OUTPUT" ] \
+    || { echo "Sonar restore evidence output must be a new path" >&2; return 1; }
+}
+validate_restore_evidence_target
+node - "$BACKUP_VERSION_ID" "$CHECKSUM_VERSION_ID" <<'NODE' || {
+const values = process.argv.slice(2);
+const valid = value => {
+  if (typeof value !== 'string' || value === 'null') return false;
+  const encoded = Buffer.from(value, 'utf8');
+  return encoded.length >= 1 && encoded.length <= 1024
+    && encoded.toString('utf8') === value
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+};
+if (values.length !== 2 || !values.every(valid)) process.exit(1);
+NODE
+  echo "Restore drill requires safe exact data and checksum object VersionIds" >&2
+  exit 1
+}
 [ -f "$AWS_CREDENTIAL_BOUNDARY_HELPER" ] && [ ! -L "$AWS_CREDENTIAL_BOUNDARY_HELPER" ] \
   || { echo "AWS credential-process boundary helper is missing" >&2; exit 1; }
 python3 "$AWS_CREDENTIAL_BOUNDARY_HELPER" \
@@ -130,12 +172,14 @@ encrypted="$tmp_dir/backup.dump.age"
 checksum="$tmp_dir/backup.dump.age.sha256"
 dump="$tmp_dir/backup.dump"
 started=false
+evidence_stage=""
 cleanup() {
   status=$?
   if [ "$started" = true ]; then
     SONAR_DRILL_PROJECT="$project" SONAR_DRILL_DB_PASSWORD="$drill_password" SONAR_DRILL_JWT_SECRET="$drill_jwt" \
       docker compose --project-name "$project" --env-file "$STACK_DIR/images.lock.env" -f "$STACK_DIR/compose.drill.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
+  [ -z "$evidence_stage" ] || rm -f -- "$evidence_stage"
   rm -rf "$tmp_dir"
   exit "$status"
 }
@@ -147,10 +191,10 @@ chmod 0700 "$tmp_dir"
 aws_args=(--endpoint-url "$SONAR_BACKUP_S3_ENDPOINT" --region "${AWS_REGION:-us-east-1}")
 aws "${aws_args[@]}" s3api get-object \
   --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$BACKUP_KEY" \
-  --version-id "$BACKUP_VERSION_ID" "$encrypted" >/dev/null
+  --version-id="$BACKUP_VERSION_ID" "$encrypted" >/dev/null
 aws "${aws_args[@]}" s3api get-object \
   --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$BACKUP_KEY.sha256" \
-  --version-id "$CHECKSUM_VERSION_ID" "$checksum" >/dev/null
+  --version-id="$CHECKSUM_VERSION_ID" "$checksum" >/dev/null
 expected_digest="$(awk 'NR == 1 { print $1 }' "$checksum")"
 [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] || { echo "Backup checksum object is invalid" >&2; exit 1; }
 [ "$(sha256sum "$encrypted" | awk '{ print $1 }')" = "$expected_digest" ] || { echo "Encrypted backup checksum mismatch" >&2; exit 1; }
@@ -183,11 +227,14 @@ health="$SCRIPT_DIR/quality-sonar-health.sh"
 [ -x "$health" ] || health=/usr/local/sbin/quality-sonar-health
 "$health" --url http://127.0.0.1:19000 --attempts 120 --interval 5
 
-mkdir -p "$(dirname "$OUTPUT")"
-node - "$OUTPUT" "$BACKUP_KEY" "$BACKUP_VERSION_ID" \
+validate_restore_evidence_target
+evidence_stage="$(mktemp -p "$RESTORE_EVIDENCE_DIR" '.sonar-restore.next.XXXXXXXX')"
+node - "$evidence_stage" "$OUTPUT" "$BACKUP_KEY" "$BACKUP_VERSION_ID" \
   "$CHECKSUM_VERSION_ID" "$expected_digest" <<'NODE'
 const fs = require('fs');
+const path = require('path');
 const [
+  stage,
   output,
   backupKey,
   backupVersionId,
@@ -206,7 +253,44 @@ const evidence = {
   sonarStatus: 'UP',
   completedAt: new Date().toISOString(),
 };
-fs.writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+const descriptor = fs.openSync(
+  stage,
+  fs.constants.O_WRONLY
+    | fs.constants.O_TRUNC
+    | (fs.constants.O_NOFOLLOW ?? 0),
+);
+try {
+  const before = fs.fstatSync(descriptor);
+  if (!before.isFile() || before.nlink !== 1 || before.uid !== 0) {
+    throw new Error('unsafe Sonar restore evidence staging file');
+  }
+  fs.fchmodSync(descriptor, 0o600);
+  fs.fchownSync(descriptor, 0, 0);
+  fs.writeFileSync(descriptor, `${JSON.stringify(evidence, null, 2)}\n`, {
+    encoding: 'utf8',
+  });
+  fs.fsyncSync(descriptor);
+} finally {
+  fs.closeSync(descriptor);
+}
+// link(2) is an atomic no-replace publication: an existing file or symlink at
+// the requested output path makes the drill fail instead of overwriting it.
+fs.linkSync(stage, output);
+fs.unlinkSync(stage);
+const directory = fs.openSync(
+  path.dirname(output),
+  fs.constants.O_RDONLY
+    | (fs.constants.O_DIRECTORY ?? 0)
+    | (fs.constants.O_NOFOLLOW ?? 0),
+);
+try {
+  fs.fsyncSync(directory);
+} finally {
+  fs.closeSync(directory);
+}
 NODE
-chmod 0600 "$OUTPUT"
+evidence_stage=""
+[ -f "$OUTPUT" ] && [ ! -L "$OUTPUT" ] \
+  && [ "$(stat -c '%U:%G:%a:%h' -- "$OUTPUT")" = root:root:600:1 ] \
+  || { echo "Published Sonar restore evidence identity is unsafe" >&2; exit 1; }
 echo "sonar_restore_drill_ok backupKey=$BACKUP_KEY reindex=fresh-volume evidence=$OUTPUT"

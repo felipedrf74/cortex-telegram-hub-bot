@@ -1585,10 +1585,16 @@ const x=JSON.parse(fs.readFileSync(file,'utf8')),r=x.requiredRelease,c=x.current
  afterReadiness=readiness?.afterEscrow;
 const validStoragePair=(s?.provider==='aws-s3'&&s?.controlMode==='versioned-s3')
  ||(s?.provider==='cloudflare-r2'&&s?.controlMode==='r2-approved-variance');
+const validAwsVersionId=(value)=>{
+ if(typeof value!=='string'||value==='null')return false;
+ const encoded=Buffer.from(value,'utf8');
+ return encoded.length>=1&&encoded.length<=1024
+  &&encoded.toString('utf8')===value&&!/[\u0000-\u001f\u007f]/u.test(value);
+};
 const providerProof=(value)=>{
  const confirmed=Date.parse(value?.confirmedAt||'');
  if(!Number.isFinite(confirmed))return false;
- if(s?.provider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+ if(s?.provider==='aws-s3')return validAwsVersionId(value?.objectVersionId)
   &&Number.isFinite(Date.parse(value?.retainUntil||''))
   &&Date.parse(value.retainUntil)>=confirmed+90*86400*1000
   &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
@@ -1603,7 +1609,7 @@ const databaseProof=(value)=>{
    ||!/^[a-f0-9]{64}$/u.test(value?.plaintextSha256||'')
    ||!/^[a-f0-9]{64}$/u.test(value?.encryptedSha256||'')
    ||!Number.isSafeInteger(value?.encryptedSizeBytes)||value.encryptedSizeBytes<=0)return false;
- if(s?.provider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+ if(s?.provider==='aws-s3')return validAwsVersionId(value?.objectVersionId)
    &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
  return s?.provider==='cloudflare-r2'&&value?.objectVersionId===null
    &&value?.retentionVariance==='r2-approved-variance'

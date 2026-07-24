@@ -147,8 +147,7 @@ if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
   trusted_root_executable "$NEXUS_DR_AWS_SIGNING_HELPER" "aws_signing_helper"
   [[ "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256" =~ ^[a-f0-9]{64}$ ]] \
     || die "reviewed aws_signing_helper SHA-256 is invalid"
-  [[ "$DATABASE_VERSION_ID" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ \
-      && "$RELEASE_VERSION_ID" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
+  [ -n "$DATABASE_VERSION_ID" ] && [ -n "$RELEASE_VERSION_ID" ] \
     || die "versioned S3 restore requires exact database and release VersionIds"
 else
   [ -z "$DATABASE_VERSION_ID" ] && [ -z "$RELEASE_VERSION_ID" ] \
@@ -188,6 +187,29 @@ trusted_root_path_chain "$NEXUS_DR_PYTHON_BIN" "Python binary"
   || die "Python binary must be root-owned"
 python_mode="$(stat -c '%a' -- "$NEXUS_DR_PYTHON_BIN")"
 (( (8#$python_mode & 0022) == 0 )) || die "Python binary must not be group/world writable"
+aws_version_id_is_safe() {
+  local version_id="$1"
+  "$NEXUS_DR_PYTHON_BIN" - "$version_id" <<'PY'
+import sys
+
+value = sys.argv[1]
+try:
+    encoded = value.encode("utf-8")
+except UnicodeEncodeError:
+    raise SystemExit(1)
+if (
+    value == "null"
+    or not 1 <= len(encoded) <= 1024
+    or any(ord(character) < 32 or ord(character) == 127 for character in value)
+):
+    raise SystemExit(1)
+PY
+}
+if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+  aws_version_id_is_safe "$DATABASE_VERSION_ID" \
+    && aws_version_id_is_safe "$RELEASE_VERSION_ID" \
+    || die "versioned S3 restore requires safe exact database and release VersionIds"
+fi
 [[ "$NEXUS_DR_RELEASE_PUBLIC_KEY" == /* && -f "$NEXUS_DR_RELEASE_PUBLIC_KEY" \
    && ! -L "$NEXUS_DR_RELEASE_PUBLIC_KEY" ]] \
   || die "release evidence public key must be an absolute non-symlink file"
@@ -213,7 +235,7 @@ release_suffix="${RELEASE_KEY#"$release_prefix"}"
   && [[ "$database_suffix" =~ ^nexus-db-[0-9]{8}T[0-9]{6}Z\.sqlite\.age$ ]] \
   || die "database key is outside the governed hourly namespace"
 [ "$RELEASE_KEY" = "$release_prefix$release_suffix" ] \
-  && [[ "$release_suffix" =~ ^v[A-Za-z0-9._+-]+\+current-[0-9a-f]{40}\+escrow-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]{12}\.tar\.gz\.[0-9a-f]{64}\.age$ ]] \
+  && [[ "$release_suffix" =~ ^v[A-Za-z0-9._+-]+\+current-[0-9a-f]{40}\+escrow-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]{12}\+phase-(pre-mutation|post-soak)\.tar\.gz\.[0-9a-f]{64}\.age$ ]] \
   || die "release key is outside the governed escrow namespace"
 
 install -d -o root -g root -m 0700 "$NEXUS_DR_STATE_DIR/evidence" "$NEXUS_DR_STATE_DIR/tmp"
@@ -319,8 +341,8 @@ release_head="$tmp_dir/release-head.json"
 database_head_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$DATABASE_KEY")
 release_head_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$RELEASE_KEY")
 if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-  database_head_args+=(--version-id "$DATABASE_VERSION_ID")
-  release_head_args+=(--version-id "$RELEASE_VERSION_ID")
+  database_head_args+=("--version-id=$DATABASE_VERSION_ID")
+  release_head_args+=("--version-id=$RELEASE_VERSION_ID")
 fi
 aws_s3api head-object "${database_head_args[@]}" >"$database_head"
 aws_s3api head-object "${release_head_args[@]}" >"$release_head"
@@ -373,8 +395,12 @@ def object_head(path, label, maximum_bytes, expected_version_id):
         raise SystemExit(f"{label} metadata is invalid")
     version_id = value.get("VersionId")
     if storage_provider == "aws-s3":
+        try:
+            encoded_version_id = version_id.encode("utf-8")
+        except (AttributeError, UnicodeEncodeError):
+            encoded_version_id = b""
         if not isinstance(version_id, str) or version_id == "null" \
-                or not 1 <= len(version_id) <= 1024 \
+                or not 1 <= len(encoded_version_id) <= 1024 \
                 or any(ord(character) < 32 or ord(character) == 127 for character in version_id):
             raise SystemExit(f"{label} version ID is invalid for versioned S3")
         if version_id != expected_version_id:
@@ -443,7 +469,8 @@ if age < 0 or age > 3600:
 original = release.get("original-name", "")
 if not re.fullmatch(
     r"v[A-Za-z0-9._+-]+\+current-[0-9a-f]{40}"
-    r"\+escrow-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]{12}\.tar\.gz",
+    r"\+escrow-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9a-f]{12}"
+    r"\+phase-(?:pre-mutation|post-soak)\.tar\.gz",
     original,
 ):
     raise SystemExit("current recovery runtime original filename is invalid")
@@ -520,8 +547,8 @@ release_get_args=(
   --range "bytes=0-$release_range_end"
 )
 if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-  database_get_args+=(--version-id "$DATABASE_OBJECT_VERSION_ID")
-  release_get_args+=(--version-id "$RELEASE_OBJECT_VERSION_ID")
+  database_get_args+=("--version-id=$DATABASE_OBJECT_VERSION_ID")
+  release_get_args+=("--version-id=$RELEASE_OBJECT_VERSION_ID")
 fi
 aws_s3api get-object "${database_get_args[@]}" "$database_encrypted" >/dev/null
 aws_s3api get-object "${release_get_args[@]}" "$release_encrypted" >/dev/null

@@ -45,11 +45,13 @@ function iso(epoch: number) {
 function runConfirmation({
   provider = 'aws-s3',
   controlMode = 'versioned-s3',
+  versionId = '--opaque-✓-%2F?generation=1|part',
   mutateHead,
   mutateEncrypted,
 }: {
   provider?: 'aws-s3' | 'cloudflare-r2';
   controlMode?: 'versioned-s3' | 'r2-approved-variance';
+  versionId?: string;
   mutateHead?: (head: Record<string, unknown>) => void;
   mutateEncrypted?: (content: Buffer) => Buffer;
 } = {}) {
@@ -61,7 +63,7 @@ function runConfirmation({
   const expectedOriginalName = 'v4.15.0.tar.gz';
   const expectedCreatedEpoch = 1_785_000_000;
   const confirmedEpoch = expectedCreatedEpoch + 30;
-  const expectedVersionId = provider === 'aws-s3' ? 'exact-version-1' : '';
+  const expectedVersionId = provider === 'aws-s3' ? versionId : '';
   const expectedRetainUntil = provider === 'aws-s3'
     ? iso(confirmedEpoch + 90 * 86_400 + 3_600)
     : '';
@@ -77,6 +79,7 @@ function runConfirmation({
   };
   if (provider === 'aws-s3') {
     Object.assign(head, {
+      ChecksumSHA256: createHash('sha256').update(encrypted).digest('base64'),
       VersionId: expectedVersionId,
       ObjectLockMode: 'COMPLIANCE',
       ObjectLockRetainUntilDate: expectedRetainUntil,
@@ -128,20 +131,24 @@ describe('required release exact escrow confirmation', () => {
 
     const source = fs.readFileSync(backupScript, 'utf8');
     expect(source).toContain(
-      'local -a protected_keys=("${3:-}" "${5:-}")',
+      'local protected_key_one="${1:-}" protected_key_two="${2:-}"',
     );
-    expect(source).toContain(
-      'local -a protected_version_ids=("${4:-}" "${6:-}")',
-    );
+    expect(source).not.toContain('protected_version_ids');
     expect(source).toContain(
       '"$required_release_key" "$required_release_version_id" \\\n'
       + '  "$required_recovery_key" "$required_recovery_version_id"',
     );
     expect(source).toContain(
-      'head_args+=(--version-id "$required_release_version_id")',
+      '"--version-id=$required_release_version_id"',
     );
     expect(source).toContain(
-      'get_args+=(--version-id "$required_release_version_id")',
+      '"--version-id=$required_release_version_id"',
+    );
+    expect(source).toContain(
+      '+rollback-escrow-${RECOVERY_ESCROW_ID}+phase-${RECOVERY_ESCROW_PHASE}.tar.gz',
+    );
+    expect(source).toContain(
+      'required release escrow must be bound to a complete promotion recovery transaction',
     );
     const prune = source.lastIndexOf('\nprune_release_age \\\n');
     const confirm = source.lastIndexOf(
@@ -188,6 +195,34 @@ describe('required release exact escrow confirmation', () => {
     expect(shortRetention.result.status).not.toBe(0);
     expect(shortRetention.result.stderr).toContain(
       'post-retention required release deadline does not cover confirmation',
+    );
+  });
+
+  it('uses the UTF-8 byte limit and rejects unsafe opaque AWS VersionIds', () => {
+    const exactLimit = runConfirmation({ versionId: 'é'.repeat(512) });
+    expect(exactLimit.result.status, exactLimit.result.stderr).toBe(0);
+
+    for (const versionId of [
+      'null',
+      'unsafe\nversion',
+      'unsafe\u007fversion',
+      `${'é'.repeat(512)}a`,
+    ]) {
+      const invalid = runConfirmation({ versionId });
+      expect(invalid.result.status).not.toBe(0);
+      expect(invalid.result.stderr).toContain(
+        'post-retention required release VersionId changed',
+      );
+    }
+
+    const jsonNull = runConfirmation({
+      mutateHead: (head) => {
+        head.VersionId = null;
+      },
+    });
+    expect(jsonNull.result.status).not.toBe(0);
+    expect(jsonNull.result.stderr).toContain(
+      'post-retention required release VersionId changed',
     );
   });
 
