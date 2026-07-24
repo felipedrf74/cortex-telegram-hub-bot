@@ -335,6 +335,11 @@ describe('advisory SonarQube operational assets', () => {
     expect(stack).toContain('verify_prepulled_images');
     expect(stack).toContain('"$DOCKER_BIN" image inspect "$image"');
     expect(stack).toContain('"${compose[@]}" up -d --pull never');
+    expect(stack).toContain('verify_runtime_limits');
+    expect(stack).toContain('Number(postgres.NanoCpus) !== 1_000_000_000');
+    expect(stack).toContain('Number(postgres.Memory) !== 2 * 1024 * 1024 * 1024');
+    expect(stack).toContain('Number(sonar.NanoCpus) !== 2_000_000_000');
+    expect(stack).toContain('Number(sonar.Memory) !== 6 * 1024 * 1024 * 1024');
     expect(stack).toContain(
       'rendered service image differs from the immutable image lock',
     );
@@ -369,6 +374,8 @@ describe('advisory SonarQube operational assets', () => {
         postgres: {
           image: postgresImage,
           restart: 'no',
+          cpus: 1,
+          mem_limit: String(2 * 1024 * 1024 * 1024),
           ports: [],
           volumes: [{
             type: 'bind',
@@ -380,6 +387,8 @@ describe('advisory SonarQube operational assets', () => {
         sonarqube: {
           image: sonarImage,
           restart: 'no',
+          cpus: 2,
+          mem_limit: String(6 * 1024 * 1024 * 1024),
           ports: [{
             host_ip: '127.0.0.1',
             published: '9000',
@@ -400,10 +409,24 @@ describe('advisory SonarQube operational assets', () => {
       },
       networks: { sonar_backend: { internal: true } },
     });
-    const writeDocker = (postgresImage: string, sonarImage: string) => {
+    const writeDocker = (
+      postgresImage: string,
+      sonarImage: string,
+      resourceLimits: 'approved' | 'missing' | 'expanded' = 'approved',
+    ) => {
+      const value = rendered(postgresImage, sonarImage);
+      if (resourceLimits === 'missing') {
+        Reflect.deleteProperty(value.services.postgres, 'cpus');
+        Reflect.deleteProperty(value.services.postgres, 'mem_limit');
+        Reflect.deleteProperty(value.services.sonarqube, 'cpus');
+        Reflect.deleteProperty(value.services.sonarqube, 'mem_limit');
+      } else if (resourceLimits === 'expanded') {
+        value.services.sonarqube.cpus = 4;
+        value.services.sonarqube.mem_limit = String(12 * 1024 * 1024 * 1024);
+      }
       writeFileSync(
         dockerPath,
-        `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(rendered(postgresImage, sonarImage))}\nJSON\n`,
+        `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify(value)}\nJSON\n`,
         { mode: 0o755 },
       );
       chmodSync(dockerPath, 0o755);
@@ -445,6 +468,20 @@ describe('advisory SonarQube operational assets', () => {
       const accepted = run();
       expect(accepted.status, accepted.stderr).toBe(0);
       expect(accepted.stdout).toContain('sonarqube_compose_config_ok');
+
+      writeDocker(values.POSTGRES_IMAGE, values.SONARQUBE_IMAGE, 'missing');
+      const missingLimits = run();
+      expect(missingLimits.status).not.toBe(0);
+      expect(missingLimits.stderr).toContain(
+        'rendered CPU or memory limits differ from the approved Sonar envelope',
+      );
+
+      writeDocker(values.POSTGRES_IMAGE, values.SONARQUBE_IMAGE, 'expanded');
+      const expandedLimits = run();
+      expect(expandedLimits.status).not.toBe(0);
+      expect(expandedLimits.stderr).toContain(
+        'rendered CPU or memory limits differ from the approved Sonar envelope',
+      );
 
       writeDocker(values.POSTGRES_IMAGE, 'evil-local:latest');
       const renderedOverride = run();
@@ -494,6 +531,20 @@ describe('advisory SonarQube operational assets', () => {
     expect(preflight).toContain('/proc/sys/kernel/random/boot_id');
     expect(preflight).toContain('PM2_USER=dominguez');
     expect(preflight).toContain('PM2_HOME=/home/dominguez/.pm2');
+    expect(preflight).toContain('PM2_BIN=/usr/local/bin/pm2');
+    expect(preflight).toContain('PM2_VERSION=6.0.14');
+    expect(preflight).toContain('ROOT_NODE_BIN=/usr/bin/node');
+    expect(preflight).toContain('NODE_BIN="$ROOT_NODE_BIN"');
+    expect(preflight).toContain(
+      'PM2_CONTROL=/usr/local/sbin/nexus-release-promotion-control',
+    );
+    expect(preflight).toContain('verify_root_pm2_identity');
+    expect(preflight).toContain('"$PM2_CONTROL" assert-root-pm2-ready');
+    expect(preflight).toContain("value.schema !== 'nexus.pm2-root-install.v1'");
+    expect(preflight).toContain('value.version !== expectedVersion');
+    expect(preflight).toContain('value.closureDigest');
+    expect(preflight).toContain('value.payloadDigest');
+    expect(preflight).not.toContain('/home/dominguez/.npm-global/bin/pm2');
     expect(preflight).toContain('RUNUSER_BIN=/usr/sbin/runuser');
     expect(preflight).toContain('CLOUDFLARED_UNIT=nexus-cloudflared.service');
     expect(preflight).toContain('"$RUNUSER_BIN" -u "$PM2_USER" --');
@@ -514,6 +565,87 @@ describe('advisory SonarQube operational assets', () => {
       'health.tsv',
     ]) expect(preflight).toContain(evidence);
     expect(preflight).not.toMatch(/systemctl\s+(restart|stop|start|enable)|apt(?:-get)?\s+(install|remove)|docker\s+(run|pull|compose\s+up)/);
+  });
+
+  it('blocks Sonar preflight when the governed root PM2 authority rejects its closure', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-pm2-authority-'));
+    const bin = join(temp, 'bin');
+    const control = join(temp, 'nexus-release-promotion-control');
+    mkdirSync(bin);
+    chmodSync(temp, 0o700);
+    try {
+      writeFileSync(
+        join(bin, 'id'),
+        '#!/bin/sh\n[ "${1:-}" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n',
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(bin, 'stat'),
+        '#!/bin/sh\ncase "$*" in *%U:%G:%a:%h*) echo root:root:755:1 ;; *) exec /usr/bin/stat "$@" ;; esac\n',
+        { mode: 0o755 },
+      );
+      chmodSync(join(bin, 'id'), 0o755);
+      chmodSync(join(bin, 'stat'), 0o755);
+      const run = () => spawnSync(
+        'bash',
+        ['scripts/quality-sonar-preflight.sh', '--verify-pm2-only'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            NEXUS_RELEASE_TEST_MODE: '1',
+            NEXUS_SONAR_PM2_CONTROL: control,
+            NEXUS_SONAR_ROOT_NODE_BIN: process.execPath,
+          },
+        },
+      );
+
+      writeFileSync(control, '#!/bin/sh\nexit 75\n', { mode: 0o755 });
+      chmodSync(control, 0o755);
+      const rejected = run();
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stderr).toContain(
+        'Governed root PM2 authority rejected the installed closure',
+      );
+
+      const identity = {
+        ok: true,
+        schema: 'nexus.pm2-root-install.v1',
+        version: '6.0.14',
+        closureDigest: 'a'.repeat(64),
+        payloadDigest: 'b'.repeat(64),
+        packageLockSha256: 'c'.repeat(64),
+        launcher: '/usr/local/bin/pm2',
+        launcherSha256: 'd'.repeat(64),
+        node: {
+          path: process.execPath,
+          version: 'v22.23.1',
+          sha256: 'e'.repeat(64),
+        },
+        entrypoint: '/opt/nexus-release/pm2/6.0.14/node_modules/pm2/bin/pm2',
+      };
+      writeFileSync(
+        control,
+        `#!/bin/sh\n[ "\${1:-}" = assert-root-pm2-ready ] || exit 64\nprintf '%s\\n' '${JSON.stringify(identity)}'\n`,
+        { mode: 0o755 },
+      );
+      chmodSync(control, 0o755);
+      const accepted = run();
+      expect(accepted.status, accepted.stderr).toBe(0);
+      expect(accepted.stdout).toContain('root_pm2_identity_ok version=6.0.14');
+
+      identity.version = '6.0.15';
+      writeFileSync(
+        control,
+        `#!/bin/sh\n[ "\${1:-}" = assert-root-pm2-ready ] || exit 64\nprintf '%s\\n' '${JSON.stringify(identity)}'\n`,
+        { mode: 0o755 },
+      );
+      chmodSync(control, 0o755);
+      expect(run().status).not.toBe(0);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('requires fresh same-boot preflight evidence and the exact completed small-model soak/cleanup chain before stack start', () => {
@@ -793,12 +925,28 @@ describe('advisory SonarQube operational assets', () => {
     const backup = read('scripts/quality-sonar-backup.sh');
     const restore = read('scripts/quality-sonar-restore-drill.sh');
     const drillCompose = read('ops/sonarqube/compose.drill.yaml');
+    const backupService = read(
+      'ops/sonarqube/systemd/nexus-sonarqube-backup.service',
+    );
+    const runbook = read('ops/sonarqube/README.md');
 
     expect(backup).toContain('age --encrypt');
     expect(backup.indexOf('age --encrypt')).toBeLessThan(backup.indexOf('s3api put-object'));
     expect(backup).toContain('prune_tier daily 7');
     expect(backup).toContain('prune_tier weekly 4');
     expect(backup).toContain('pg_restore --list');
+    expect(backup).toContain('--enable-timer');
+    expect(backup).toContain('--verify-freshness');
+    expect(backup).toContain("schemaVersion: 'SonarBackupSuccessV1'");
+    expect(backup).toContain('remoteObjectVerified: true');
+    expect(backup).toContain('systemctl enable --now "$BACKUP_TIMER"');
+    expect(backupService).toContain('Restart=on-failure');
+    expect(backupService).toContain('RestartSec=15min');
+    expect(backupService).toContain('TimeoutStartSec=30min');
+    expect(runbook).toContain(
+      'installation alone intentionally leaves the timer disabled',
+    );
+    expect(runbook).toContain('--max-age-hours 26');
     expect(restore).toContain('age --decrypt');
     expect(restore).toContain('Refusing restore drill while the live advisory Sonar stack is running');
     expect(restore).toContain('freshElasticsearchVolume: true');
@@ -806,6 +954,72 @@ describe('advisory SonarQube operational assets', () => {
     expect(restore).toContain('down --volumes --remove-orphans');
     expect(drillCompose).toContain('127.0.0.1:19000:9000');
     expect(drillCompose).toContain('drill_sonarqube_data');
+  });
+
+  it('fails closed when the remote Sonar backup success receipt is stale or invalid', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-backup-freshness-'));
+    const bin = join(temp, 'bin');
+    const receipt = join(temp, 'last-backup-success.v1.json');
+    mkdirSync(bin);
+    chmodSync(temp, 0o700);
+    const writeReceipt = (completedAt: string, remoteObjectVerified = true) => {
+      writeFileSync(receipt, `${JSON.stringify({
+        schemaVersion: 'SonarBackupSuccessV1',
+        encrypted: true,
+        remoteObjectVerified,
+        dailyKey: 'nexus-hub/sonarqube/daily/nexus-sonarqube-20260724T120000Z.dump.age',
+        encryptedSha256: 'a'.repeat(64),
+        weeklyUploaded: false,
+        retention: { daily: 7, weekly: 4 },
+        completedAt,
+      })}\n`, { mode: 0o600 });
+      chmodSync(receipt, 0o600);
+    };
+    try {
+      writeFileSync(
+        join(bin, 'id'),
+        '#!/bin/sh\n[ "${1:-}" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n',
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(bin, 'stat'),
+        '#!/bin/sh\ncase "$*" in *%U:%G:%a:%h*) echo root:root:600:1 ;; *) exec /usr/bin/stat "$@" ;; esac\n',
+        { mode: 0o755 },
+      );
+      chmodSync(join(bin, 'id'), 0o755);
+      chmodSync(join(bin, 'stat'), 0o755);
+      const run = () => spawnSync(
+        'bash',
+        [
+          'scripts/quality-sonar-backup.sh',
+          '--verify-freshness',
+          '--max-age-hours',
+          '26',
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            NEXUS_RELEASE_TEST_MODE: '1',
+            SONAR_BACKUP_SUCCESS_RECEIPT: receipt,
+          },
+        },
+      );
+
+      writeReceipt(new Date().toISOString());
+      const fresh = run();
+      expect(fresh.status, fresh.stderr).toBe(0);
+      expect(fresh.stdout).toContain('sonar_backup_fresh');
+
+      writeReceipt(new Date(Date.now() - 27 * 60 * 60 * 1000).toISOString());
+      expect(run().status).not.toBe(0);
+
+      writeReceipt(new Date().toISOString(), false);
+      expect(run().status).not.toBe(0);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('keeps every shell asset syntactically valid', () => {

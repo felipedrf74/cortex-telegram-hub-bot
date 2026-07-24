@@ -10,14 +10,23 @@ SAMPLE_SECONDS=10
 MIN_AVAILABLE_GIB=16
 MIN_DISK_FREE_PERCENT=20
 EXPECTED_HOST="${SONAR_EXPECTED_HOST:-serverdominguez}"
+VERIFY_PM2_ONLY=false
 PM2_USER=dominguez
 PM2_USER_HOME=/home/dominguez
 PM2_HOME=/home/dominguez/.pm2
-PM2_BIN=/home/dominguez/.npm-global/bin/pm2
+PM2_BIN=/usr/local/bin/pm2
+PM2_VERSION=6.0.14
+ROOT_NODE_BIN=/usr/bin/node
+PM2_CONTROL=/usr/local/sbin/nexus-release-promotion-control
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then
+  PM2_BIN="${NEXUS_SONAR_PM2_BIN:-$PM2_BIN}"
+  ROOT_NODE_BIN="${NEXUS_SONAR_ROOT_NODE_BIN:-$ROOT_NODE_BIN}"
+  PM2_CONTROL="${NEXUS_SONAR_PM2_CONTROL:-$PM2_CONTROL}"
+fi
 RUNUSER_BIN=/usr/sbin/runuser
 CLOUDFLARED_UNIT=nexus-cloudflared.service
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
-NODE_BIN="$(command -v node 2>/dev/null || true)"
+NODE_BIN="$ROOT_NODE_BIN"
 HEALTH_URLS=(http://127.0.0.1:8200/health http://127.0.0.1:8201/health)
 
 usage() {
@@ -27,6 +36,7 @@ Usage: quality-sonar-preflight.sh --output <absolute-private-dir> [options]
   --min-available-gib <16-30>   Minimum MemAvailable; default 16 GiB.
   --min-disk-free-percent <20-90>
   --health-url <loopback-url>   Replaces default URLs on first use; repeatable.
+  --verify-pm2-only             Verify the governed root PM2 closure and exit.
 EOF
 }
 
@@ -37,6 +47,7 @@ while [ $# -gt 0 ]; do
     --sample-seconds) SAMPLE_SECONDS="$2"; shift 2 ;;
     --min-available-gib) MIN_AVAILABLE_GIB="$2"; shift 2 ;;
     --min-disk-free-percent) MIN_DISK_FREE_PERCENT="$2"; shift 2 ;;
+    --verify-pm2-only) VERIFY_PM2_ONLY=true; shift ;;
     --health-url)
       if [ "$custom_health" = false ]; then HEALTH_URLS=(); custom_health=true; fi
       HEALTH_URLS+=("$2"); shift 2 ;;
@@ -46,11 +57,60 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || { echo "Preflight requires root so firewall evidence is complete" >&2; exit 1; }
-[[ "$OUTPUT" == /* ]] && [ "$OUTPUT" != / ] || { echo "--output must be a safe absolute directory" >&2; exit 64; }
-[ ! -e "$OUTPUT" ] || { echo "Preflight output already exists: $OUTPUT" >&2; exit 1; }
+if [ "$VERIFY_PM2_ONLY" = false ]; then
+  [[ "$OUTPUT" == /* ]] && [ "$OUTPUT" != / ] || { echo "--output must be a safe absolute directory" >&2; exit 64; }
+  [ ! -e "$OUTPUT" ] || { echo "Preflight output already exists: $OUTPUT" >&2; exit 1; }
+elif [ -n "$OUTPUT" ]; then
+  echo "--verify-pm2-only does not accept an evidence output directory" >&2
+  exit 64
+fi
 [[ "$SAMPLE_SECONDS" =~ ^[0-9]+$ ]] && [ "$SAMPLE_SECONDS" -le 60 ] || { echo "Invalid sample interval" >&2; exit 64; }
 [[ "$MIN_AVAILABLE_GIB" =~ ^[0-9]+$ ]] && [ "$MIN_AVAILABLE_GIB" -ge 16 ] && [ "$MIN_AVAILABLE_GIB" -le 30 ] || { echo "Invalid memory floor" >&2; exit 64; }
 [[ "$MIN_DISK_FREE_PERCENT" =~ ^[0-9]+$ ]] && [ "$MIN_DISK_FREE_PERCENT" -ge 20 ] && [ "$MIN_DISK_FREE_PERCENT" -le 90 ] || { echo "Invalid disk floor" >&2; exit 64; }
+
+verify_root_pm2_identity() {
+  local identity
+  [ -f "$PM2_CONTROL" ] && [ ! -L "$PM2_CONTROL" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' -- "$PM2_CONTROL")" = root:root:755:1 ] || {
+    echo "Root PM2 authority control is unsafe" >&2
+    return 1
+  }
+  [ -f "$ROOT_NODE_BIN" ] && [ ! -L "$ROOT_NODE_BIN" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' -- "$ROOT_NODE_BIN")" = root:root:755:1 ] || {
+    echo "Root PM2 Node identity is unsafe" >&2
+    return 1
+  }
+  [ "$("$ROOT_NODE_BIN" --version)" = v22.23.1 ] || {
+    echo "Root PM2 Node version is outside the v3 trust contract" >&2
+    return 1
+  }
+  identity="$("$PM2_CONTROL" assert-root-pm2-ready)" || {
+    echo "Governed root PM2 authority rejected the installed closure" >&2
+    return 1
+  }
+  "$ROOT_NODE_BIN" - "$identity" "$PM2_VERSION" "$PM2_BIN" "$ROOT_NODE_BIN" <<'NODE'
+const [raw, expectedVersion, launcher, nodePath] = process.argv.slice(2);
+const value = JSON.parse(raw);
+if (value.ok !== true || value.schema !== 'nexus.pm2-root-install.v1'
+    || value.version !== expectedVersion || value.launcher !== launcher
+    || value.entrypoint !== `/opt/nexus-release/pm2/${expectedVersion}/node_modules/pm2/bin/pm2`
+    || !/^[a-f0-9]{64}$/u.test(value.closureDigest || '')
+    || !/^[a-f0-9]{64}$/u.test(value.payloadDigest || '')
+    || !/^[a-f0-9]{64}$/u.test(value.packageLockSha256 || '')
+    || !/^[a-f0-9]{64}$/u.test(value.launcherSha256 || '')
+    || value.node?.path !== nodePath || value.node?.version !== 'v22.23.1'
+    || !/^[a-f0-9]{64}$/u.test(value.node?.sha256 || '')) process.exit(1);
+process.stdout.write(`root_pm2_identity_ok version=${value.version}\n`);
+NODE
+}
+if [ "$VERIFY_PM2_ONLY" = true ]; then
+  verify_root_pm2_identity \
+    || { echo "Root-owned PM2 v3 identity verification failed" >&2; exit 1; }
+  exit 0
+fi
+verify_root_pm2_identity >/dev/null \
+  || { echo "Root-owned PM2 v3 identity verification failed" >&2; exit 1; }
+
 id "$PM2_USER" >/dev/null 2>&1 || { echo "PM2 service user is unavailable" >&2; exit 1; }
 [[ "$PM2_BIN" == /* ]] && [ -x "$PM2_BIN" ] || { echo "PM2 binary is unavailable" >&2; exit 1; }
 [[ "$PM2_USER_HOME" == /* && "$PM2_HOME" == "$PM2_USER_HOME"/* ]] \

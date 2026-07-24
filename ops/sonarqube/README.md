@@ -78,6 +78,9 @@ Explicit preparation
 4. Before Docker installation, capture the maintenance baseline with the
    installed root-owned command:
    `sudo /usr/local/sbin/quality-sonar-preflight --output REPLACE_WITH_NEW_PRIVATE_DIRECTORY`.
+   Preflight first invokes the installed root-owned release authority's
+   `assert-root-pm2-ready` contract and accepts only the complete PM2 6.0.14
+   closure under the pinned `/usr/bin/node` v22.23.1 identity.
    Missing
    firewall tools are recorded as `not_installed`; at least one authoritative
    UFW, nftables, or iptables snapshot is mandatory. Install official Docker
@@ -136,6 +139,26 @@ Explicit preparation
    `sudo /usr/local/sbin/quality-sonar-release-state --project nexus-hub-backend --json`.
    It receives the schema/status/project/active-count aggregate, never the
    token or unrelated project activity.
+10. After the first healthy start and credential hardening, make the backup
+    schedule operational through the explicit owner action. This command
+    creates and remotely verifies one encrypted backup before it enables the
+    timer; installation alone intentionally leaves the timer disabled:
+
+    ```sh
+    sudo /usr/local/sbin/quality-sonar-backup \
+      --config /etc/sonarqube/backup.env --enable-timer
+    sudo /usr/local/sbin/quality-sonar-backup --verify-freshness \
+      --max-age-hours 26
+    sudo systemctl is-enabled --quiet nexus-sonarqube-backup.timer
+    sudo systemctl is-active --quiet nexus-sonarqube-backup.timer
+    ```
+
+    A failed backup retries every 15 minutes, including a non-blocking
+    release/Sonar mutex collision. It never waits behind or runs alongside a
+    release. Alert on a failed freshness check; a successful systemd unit
+    invocation is not a substitute for the root-owned remote-backup receipt.
+    Before a later asset reinstall, stop and disable the timer as required by
+    the transactional installer, then repeat this owner action after review.
 
 Install the reviewed scanner bundle on the Mac before the first scan. The lock
 file pins SonarScanner CLI 8.1.0.6389 for macOS arm64, the official HTTPS
@@ -209,6 +232,7 @@ not weaken or block the production release path.
 
 Backups are PostgreSQL custom-format dumps encrypted with an off-host age
 recipient before upload to S3-compatible storage. The hook retains seven daily
-and four weekly objects. Run the restore/reindex drill quarterly on a separate
-Docker host, or stop the advisory live stack first; the drill refuses to share
-the host with a running live Sonar container.
+and four weekly objects and atomically records the last remotely verified
+success for the 26-hour freshness check. Run the restore/reindex drill
+quarterly on a separate Docker host, or stop the advisory live stack first;
+the drill refuses to share the host with a running live Sonar container.

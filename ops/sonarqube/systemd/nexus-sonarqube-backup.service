@@ -3,12 +3,17 @@ Description=Encrypted off-host SonarQube PostgreSQL backup
 After=docker.service nexus-sonarqube.service
 Requires=docker.service
 ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 User=root
 Group=root
 ExecStart=/usr/local/sbin/quality-sonar-backup --config /etc/sonarqube/backup.env
+Restart=on-failure
+RestartSec=15min
+TimeoutStartSec=30min
+TimeoutStopSec=2min
 UMask=0077
 Nice=10
 IOSchedulingClass=idle

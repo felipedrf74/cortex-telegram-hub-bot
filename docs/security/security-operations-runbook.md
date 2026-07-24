@@ -150,7 +150,9 @@ quarterly drill are complete.
 - Keep PostgreSQL container-internal and publish Sonar only on
   `127.0.0.1:9000`; use an SSH tunnel for the UI, scanner, and IDE Connected
   Mode. Abort when available memory is below 16 GiB or host pressure/restarts
-  are present.
+  are present. The root stack wrapper rejects both rendered and running
+  Docker state unless PostgreSQL is exactly 1 CPU/2 GiB and SonarQube is
+  exactly 2 CPUs/6 GiB.
 - Keep persistent state in the explicit bind paths below the root-controlled
   `/srv/sonarqube/data` boundary; Docker must not create the paths and the
   stack wrapper verifies their fixed numeric service ownership and modes.
@@ -179,8 +181,13 @@ quarterly drill are complete.
   than 5% regression in either p50 or p95. Failure stops Sonar rollout, not a
   production release.
 - Back up Sonar PostgreSQL daily as an encrypted off-host custom-format dump,
-  retaining 7 daily and 4 weekly copies. Exercise restore/reindex quarterly on
-  an isolated Docker host.
+  retaining 7 daily and 4 weekly copies. The asset installer leaves the timer
+  disabled; the owner-only `quality-sonar-backup --enable-timer` path must
+  complete one remote backup before enabling it. Failed attempts retry every
+  15 minutes without waiting behind a release, and
+  `quality-sonar-backup --verify-freshness --max-age-hours 26` must validate
+  the root-owned success receipt. Exercise restore/reindex quarterly on an
+  isolated Docker host.
 - Move SonarQube off the production host before making its quality gate
   required. Operational templates and exact commands live under
   `ops/sonarqube/`.
