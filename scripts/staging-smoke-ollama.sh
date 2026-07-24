@@ -19,6 +19,7 @@ QUEUE_BACKEND="${LOCAL_LLM_QUEUE_BACKEND:-memory}"
 EXPECTED_PM2_NAME="${PM2_APP_NAME:-nexus-hub}"
 PM2_BIN="${PM2_BIN:-$(command -v pm2 2>/dev/null || true)}"
 SMALL_ONLY_MODEL="qwen2.5:3b-instruct-q4_K_M"
+DISALLOWED_REASONING_MODEL_TOKEN_PATTERN='(^|[^a-z0-9])(flash|nano|mini|haiku|lite|classifier|fast)([^a-z0-9]|$)'
 INVENTORY_PHASE="${OLLAMA_INVENTORY_PHASE:-strict}"
 case "${INVENTORY_PHASE}" in
   strict|pre_cleanup|governed) ;;
@@ -152,7 +153,8 @@ fi
 echo "→ Exact PM2 routing/model policy"
 if "${PM2_BIN}" jlist 2>/dev/null | jq -e \
     --arg name "${EXPECTED_PM2_NAME}" \
-    --arg model "${SMALL_ONLY_MODEL}" '
+    --arg model "${SMALL_ONLY_MODEL}" \
+    --arg disallowed_model_pattern "${DISALLOWED_REASONING_MODEL_TOKEN_PATTERN}" '
       [.[] | select(.name == $name and .pm2_env.status == "online") | .pm2_env] as $apps
       | ($apps | length) == 1
         and $apps[0].OLLAMA_ENABLED == "true"
@@ -181,7 +183,7 @@ if "${PM2_BIN}" jlist 2>/dev/null | jq -e \
                   and ($reasoning_model | test("^(gpt|chatgpt|o[1-9])([-.:]|$)"))))
             and ($approved_models | index($reasoning_model) != null)
             and (($reasoning_model | contains("preview")) | not)
-            and (($reasoning_model | test("flash|nano|mini|haiku|lite|classifier|fast")) | not)
+            and (($reasoning_model | test($disallowed_model_pattern)) | not)
         )
         and $apps[0].OLLAMA_MODEL == $model
         and $apps[0].OLLAMA_CLASSIFIER_MODEL == $model
