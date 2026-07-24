@@ -150,6 +150,38 @@ const installerRollbackFunctions = [
   extractShellFunction(installerSource, 'commit_asset'),
 ].join('\n\n');
 
+const runtimeDirectoryCleanupFunctions = String.raw`
+stat() {
+  local format="$2"
+  shift 2
+  [ "$#" -gt 0 ] && [ "$1" = -- ] && shift
+  case "$format:$1" in
+    "%U:%G:%a:%h:$TEST_RUNTIME_DIR/admission.lock" | \
+    "%U:%G:%a:%h:$TEST_RUNTIME_DIR/active.lock")
+      printf 'root:nexus-drill-vm:660:1\n'
+      ;;
+    "%U:%G:%a:$TEST_RUNTIME_DIR/handoff")
+      printf 'root:nexus-drill-vm:750\n'
+      ;;
+    *)
+      return 91
+      ;;
+  esac
+}
+
+rmdir() {
+  [ "$#" -gt 0 ] && [ "$1" = -- ] && shift
+  command rmdir "$@"
+}
+
+${extractShellFunction(installerSource, 'durable_remove')}
+
+${extractShellFunction(installerSource, 'cleanup_install').replaceAll(
+  '/run/nexus-rollback-drill-vm',
+  '$TEST_RUNTIME_DIR',
+)}
+`;
+
 const provisionRollbackFunctions = [
   extractShellFunction(provisionerSource, 'safe_remove_tree'),
   extractShellFunction(provisionerSource, 'cleanup_transaction'),
@@ -202,6 +234,34 @@ if [ "$SCENARIO" = missing-backup ]; then
     command rm -f "$backup"
   done
 fi
+exit 42
+`;
+
+const runtimeDirectoryCleanupHarness = String.raw`
+STATE_ROOT="$TEST_ROOT/state"
+INSTALL_JOURNAL="$STATE_ROOT/install-in-progress.v1"
+CONTROL_LOCK="$STATE_ROOT/control.lock"
+ACTIVE_RECEIPT=""
+EXPECTED_USER=nexus-drill-vm
+mkdir -p "$STATE_ROOT" "$TEST_RUNTIME_DIR/handoff"
+: >"$TEST_RUNTIME_DIR/admission.lock"
+: >"$TEST_RUNTIME_DIR/active.lock"
+
+targets=()
+stage_paths=()
+backup_paths=()
+committed_indices=()
+had_targets=()
+user_created=false
+group_created=false
+journal_armed=false
+install_succeeded=false
+rollback_abandoned=false
+state_existed=true
+libexec_existed=true
+runtime_dir_existed=false
+
+trap cleanup_install EXIT
 exit 42
 `;
 
@@ -303,54 +363,115 @@ function runHarness(
 }
 
 describe('rollback-drill VM installer transaction failures', () => {
+  it('removes every tmpfiles artifact when a failed first install created the runtime directory', () => {
+    const root = temporaryRoot();
+    const runtimeDirectory = join(root, 'run', 'nexus-rollback-drill-vm');
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          portableShellPrelude,
+          runtimeDirectoryCleanupFunctions,
+          runtimeDirectoryCleanupHarness,
+        ].join('\n\n'),
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TEST_ROOT: root,
+          TEST_RUNTIME_DIR: runtimeDirectory,
+          SCENARIO: 'runtime-directory',
+          INJECT_FIRST_MOVE_FAILURE: 'false',
+          FAIL_ACTIVE_REMOVE: 'false',
+        },
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(42);
+    expect(existsSync(runtimeDirectory)).toBe(false);
+  });
+
   it('restores an existing asset and removes the completed journal after a later failure', () => {
     const root = temporaryRoot();
-    const result = runHarness(root, installerRollbackFunctions, installerHarness, {
-      scenario: 'existing',
-    });
+    const result = runHarness(
+      root,
+      installerRollbackFunctions,
+      installerHarness,
+      {
+        scenario: 'existing',
+      },
+    );
 
     expect(result.status, result.stderr).toBe(42);
     expect(readFileSync(join(root, 'target', 'asset'), 'utf8')).toBe('old\n');
-    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(false);
+    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(
+      false,
+    );
     expect(
       readdirSync(join(root, 'target')).some((name) =>
-        name.startsWith('.nexus-rollback-drill-vm.backup.')),
+        name.startsWith('.nexus-rollback-drill-vm.backup.'),
+      ),
     ).toBe(false);
   });
 
   it('removes a newly committed asset when a later install step fails', () => {
     const root = temporaryRoot();
-    const result = runHarness(root, installerRollbackFunctions, installerHarness, {
-      scenario: 'new',
-    });
+    const result = runHarness(
+      root,
+      installerRollbackFunctions,
+      installerHarness,
+      {
+        scenario: 'new',
+      },
+    );
 
     expect(result.status, result.stderr).toBe(42);
     expect(existsSync(join(root, 'target', 'asset'))).toBe(false);
-    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(false);
+    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(
+      false,
+    );
   });
 
   it('restores the predecessor when the asset rename itself is fault-injected', () => {
     const root = temporaryRoot();
-    const result = runHarness(root, installerRollbackFunctions, installerHarness, {
-      scenario: 'move-failure',
-      injectFirstMoveFailure: true,
-    });
+    const result = runHarness(
+      root,
+      installerRollbackFunctions,
+      installerHarness,
+      {
+        scenario: 'move-failure',
+        injectFirstMoveFailure: true,
+      },
+    );
 
     expect(result.status, result.stderr).toBe(1);
     expect(readFileSync(join(root, 'target', 'asset'), 'utf8')).toBe('old\n');
-    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(false);
+    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(
+      false,
+    );
   });
 
   it('retains the blocking journal when an asset backup cannot be restored', () => {
     const root = temporaryRoot();
-    const result = runHarness(root, installerRollbackFunctions, installerHarness, {
-      scenario: 'missing-backup',
-    });
+    const result = runHarness(
+      root,
+      installerRollbackFunctions,
+      installerHarness,
+      {
+        scenario: 'missing-backup',
+      },
+    );
 
     expect(result.status, result.stderr).toBe(1);
-    expect(result.stderr).toContain('rollback incomplete; install journal remains');
+    expect(result.stderr).toContain(
+      'rollback incomplete; install journal remains',
+    );
     expect(readFileSync(join(root, 'target', 'asset'), 'utf8')).toBe('new\n');
-    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(true);
+    expect(existsSync(join(root, 'state', 'install-in-progress.v1'))).toBe(
+      true,
+    );
   });
 });
 
@@ -364,41 +485,64 @@ describe('rollback-drill VM provision transaction failures', () => {
     'rolls back the %s publication boundary and removes the journal',
     (scenario, removedPaths) => {
       const root = temporaryRoot();
-      const result = runHarness(root, provisionRollbackFunctions, provisionHarness, {
-        scenario,
-      });
+      const result = runHarness(
+        root,
+        provisionRollbackFunctions,
+        provisionHarness,
+        {
+          scenario,
+        },
+      );
 
       expect(result.status, result.stderr).toBe(42);
       for (const relative of removedPaths) {
         expect(existsSync(join(root, 'state', relative))).toBe(false);
       }
       expect(existsSync(join(root, 'state', '.download.case'))).toBe(false);
-      expect(existsSync(join(root, 'state', 'provision-in-progress.v1'))).toBe(false);
+      expect(existsSync(join(root, 'state', 'provision-in-progress.v1'))).toBe(
+        false,
+      );
     },
   );
 
   it('retains active state and the journal when active-receipt removal is fault-injected', () => {
     const root = temporaryRoot();
-    const result = runHarness(root, provisionRollbackFunctions, provisionHarness, {
-      scenario: 'active',
-      failActiveRemove: true,
-    });
+    const result = runHarness(
+      root,
+      provisionRollbackFunctions,
+      provisionHarness,
+      {
+        scenario: 'active',
+        failActiveRemove: true,
+      },
+    );
 
     expect(result.status, result.stderr).toBe(1);
     expect(result.stderr).toContain('rollback incomplete; journal remains');
     expect(existsSync(join(root, 'state', 'active.json'))).toBe(true);
-    expect(existsSync(join(root, 'state', 'provision-in-progress.v1'))).toBe(true);
+    expect(existsSync(join(root, 'state', 'provision-in-progress.v1'))).toBe(
+      true,
+    );
   });
 
   it('never follows an out-of-scope set target during rollback and keeps the journal', () => {
     const root = temporaryRoot();
-    const result = runHarness(root, provisionRollbackFunctions, provisionHarness, {
-      scenario: 'unsafe-set-target',
-    });
+    const result = runHarness(
+      root,
+      provisionRollbackFunctions,
+      provisionHarness,
+      {
+        scenario: 'unsafe-set-target',
+      },
+    );
 
     expect(result.status, result.stderr).toBe(1);
     expect(result.stderr).toContain('rollback incomplete; journal remains');
-    expect(readFileSync(join(root, 'outside-set', 'sentinel'), 'utf8')).toBe('outside\n');
-    expect(existsSync(join(root, 'state', 'provision-in-progress.v1'))).toBe(true);
+    expect(readFileSync(join(root, 'outside-set', 'sentinel'), 'utf8')).toBe(
+      'outside\n',
+    );
+    expect(existsSync(join(root, 'state', 'provision-in-progress.v1'))).toBe(
+      true,
+    );
   });
 });

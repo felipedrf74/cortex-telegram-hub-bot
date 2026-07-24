@@ -73,22 +73,82 @@ ssh_only_bootstrap_required and drillReady=false. With QEMU restrict=on it
 cannot fetch the promotion toolchain, and the exact release artifact does not
 contain the Node or PM2 executables. A boot proves only KVM/cloud-init/SSH.
 
-Before any of the three promotion drills, install a separately reviewed,
-root-owned, digest-bound offline lab toolchain and retain guest-local machine
-evidence for all of:
+Before any promotion drill, build and register a separately reviewed,
+owner-signed offline bundle for that exact guest. It contains and verifies:
 
 - Node 22.23.1;
-- Python 3.12.x;
-- PM2 6.0.14 at /home/dominguez/.npm-global/bin/pm2; and
-- the exact root promotion controls and synthetic predecessor/candidate
-  runtime.
+- the exact provisioned Python 3.12 package and binary identity;
+- PM2 6.0.14 at
+  /opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2; and
+- the protected-main root promotion controls.
 
-The evidence coordinator must reject a drill while the provision receipt alone
-is the only runtime-readiness input. Do not temporarily allow guest egress,
-download through cloud-init, copy production executables or data, or interpret
-the SSH-ready result as promotion readiness. A digest-bound offline toolchain
-bootstrap is a required bounded follow-up, not an implied part of this
-provisioner.
+The bundle builder runs only on a trusted Ubuntu 24.04/x86-64 builder with
+Node 22.23.1/npm 10.9.8. It requires a clean checkout whose HEAD and
+origin/main both equal the reviewed full SHA, prepared Node release inputs,
+an offline npm cache, the selected guest's host-key-signed Python provenance,
+and a lab-only Ed25519 owner key. It forces npm offline, disables lifecycle
+scripts, verifies the Node release signature and pinned identities, constructs
+the complete PM2 lock closure, signs the canonical manifest, fsyncs the full
+tree, and publishes one content-addressed directory. It performs no download.
+
+Each provisioned guest is assigned to one drill. Start its first boot, collect
+the Python provenance with strict host-key checking through
+`nexus-rollback-drill-vm-runtime-control inspect-python`, and keep that same
+guest running while its guest-bound bundle is built and registered. Do not stop
+and restart between provenance collection and the readiness collector: until a
+readiness v2 receipt exists, the runner accepts only the initial overlay
+digest. Repeat this sequence independently for each guest.
+
+Pin the separately transported owner public key exactly once, then register the
+signed bundle:
+
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness \
+    pin-owner-key <root-readable-lab-owner-public-key.pem> \
+    <owner-public-key-sha256>
+
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness \
+    register-bundle <copied-content-addressed-bundle> \
+    <bundle-manifest-sha256>
+
+Create compact, sorted canonical JSON with no trailing newline using schema
+`nexus.rollback-drill-vm-runtime-authorization.v1`. The signed authorization
+must bind a unique 64-hex authorizationId, issuedAt, expiresAt no more than 24
+hours later, operation `collect-runtime-readiness`, one allowlisted drill,
+setId, guest, port, provision receipt digest, bundle manifest digest, guest SSH
+host public-key digest, and pinned owner public-key digest. Sign those exact
+bytes with the same lab owner key:
+
+  openssl pkeyutl -sign -inkey <lab-owner-private-key.pem> -rawin \
+    -in <authorization.json> -out <authorization.sig>
+
+While the selected first-boot unit is still active, run:
+
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness collect \
+    <guest-1|guest-2|guest-3> <provision-receipt-sha256> \
+    <bundle-manifest-sha256> <dedicated-lab-ssh-private-key> \
+    <authorization.json> <authorization.sig> \
+    <ssh-disconnect-after-pm2-stop|failed-health-check|host-reboot-during-promotion>
+
+The collector independently verifies the pin, bundle, authorization, provision
+receipt, dedicated SSH key, systemd supervisor, exact QEMU child and command
+line, loopback listener, and all three orchestration locks. It installs without
+network access, requests a fresh nonce-bound guest measurement, verifies the
+guest host-key signature, including the exact effective guest recovery-unit
+fragment, empty drop-in set, and ExecStart, journals the exact live identities,
+and asks the
+runner to stop QEMU while the runner retains the active and release/Sonar
+locks. With the collector retaining the admission lock, it opens the qcow2 once
+with O_NOFOLLOW, proves no other process holds, maps, or names that inode,
+hashes the same descriptor, and verifies device, inode, size, mtime, and ctime
+before and after the full hash. Only then is immutable readiness v2 published.
+
+There is no caller-supplied guest-attestation input or static attestation
+command. A collector or host restart resumes only from the root-owned journal,
+reacquires the admission, active, and release/Sonar locks, and re-proves the
+stopped overlay before publication. The evidence coordinator must reject a
+drill while the provision receipt alone is the only readiness input. Never
+enable guest egress, download through cloud-init, copy production executables
+or data, or interpret SSH readiness as promotion readiness.
 
 Isolation
 ---------
@@ -100,10 +160,14 @@ Isolation
 - systemd passes the existing root:dominguez mode-0660
   `/run/lock/nexus-release-sonar.lock` and the root:nexus-drill-vm mode-0660
   `/run/nexus-rollback-drill-vm/active.lock` as named descriptors. The latter
-  lives under a root-owned, non-writable mode-0750 directory. The runner
+  lives beside a separate root:nexus-drill-vm mode-0660 admission lock under a
+  root-owned, non-writable mode-0750 directory. The runner acquires admission
+  before the active lock, then releases admission only after start acceptance.
+  The readiness collector holds admission across QEMU stop and overlay seal.
+  The runner
   validates both path/descriptor inode identities, ownership, modes, link
   count, and the exact `LISTEN_PID`/`LISTEN_FDS`/`LISTEN_FDNAMES` contract,
-  then holds both non-waiting flocks across the QEMU exec. Releases, Sonar
+  then supervises QEMU while retaining both non-waiting flocks. Releases, Sonar
   operations, provisioning, and a second drill guest are therefore mutually
   exclusive without a service-user-replaceable lock inode.
 - Start only one guest at a time:
@@ -121,9 +185,10 @@ Isolation
   networking. There is no bridge, tap, shared filesystem, host block device,
   display, serial console, QMP socket, production mount, or public listener.
 - The base and seed are root-owned and non-writable. Only the selected guest
-  overlay is writable by nexus-drill-vm. The runner requires that overlay's
-  exact initial file digest; any earlier boot or mutation requires a fresh
-  provision set.
+  overlay is writable by nexus-drill-vm. Before readiness, the runner requires
+  the exact initial file digest. After an immutable readiness v2 receipt, it
+  accepts only that receipt's stopped-overlay current digest. Any other
+  mutation requires a fresh provision set.
 - The provision set binds the exact root-owned QEMU binary SHA-256, QEMU
   version output, owning Debian package, package version, and architecture.
   The runtime revalidates all five values before starting a guest.
@@ -139,10 +204,11 @@ Isolation
 Evidence and drills
 -------------------
 
-Use a fresh overlay identity for each fault scenario. Connect with strict host
-key checking and a per-guest known_hosts file populated from the provision
-receipt's fingerprint after the first observed boot. Install only public lab
-keys and exact reviewed release controls inside the guest. Use synthetic data.
+Use one independently sealed guest for each fault scenario. Connect with strict
+host-key checking and a per-guest known_hosts file populated from the provision
+receipt before the first observed boot. The cloud-init bootstrap installs only
+the receipt-bound runtime helpers; the collector installs only the registered
+owner-signed bundle. Use synthetic data and lab-only keys.
 
 Run the unmodified low-level promotion control plane for:
 
@@ -159,8 +225,14 @@ Failure handling
 ----------------
 
 An install or provision journal blocks every guest. A clean transactional
-failure removes its own stage and journal. A journal left by host interruption
-requires root inspection; do not delete it merely to make the unit start.
+failure removes its own stage and journal. Guest runtime installation is also
+journaled and recovered by the enabled guest recovery unit before SSH. A
+readiness-collection journal is resumable and remains bound to the original
+owner authorization and live measurement. A crash after immutable readiness
+publication resumes by validating and promoting the exact pending evidence,
+or by validating already-promoted evidence, before it removes the nonce-bound
+handoff request. An unknown journal requires root inspection; do not delete it
+merely to make the unit start.
 Occupied loopback ports, unsafe ownership/modes, unknown files, a changed
 signed digest, malformed Canonical metadata, a missing KVM device, or an
 existing different active receipt all fail closed. A missing/spoofed/contended

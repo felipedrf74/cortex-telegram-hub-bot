@@ -19,6 +19,10 @@ KEYRING="/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg"
 MANIFEST_HELPER="/usr/local/libexec/nexus-rollback-drill-vm/manifest.py"
 RUNNER="/usr/local/libexec/nexus-rollback-drill-vm/run"
 HOST_PREFLIGHT="/usr/local/libexec/nexus-rollback-drill-vm/host-preflight"
+RUNTIME_MANIFEST="/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest"
+RUNTIME_CONTROL_SOURCE="/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest"
+RUNTIME_READINESS="/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness"
+RUNTIME_RECOVERY_UNIT_SOURCE="/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service"
 UNIT_PATH="/etc/systemd/system/nexus-rollback-drill-vm@.service"
 SHARED_MUTEX="/run/lock/nexus-release-sonar.lock"
 QEMU_IMG="/usr/bin/qemu-img"
@@ -222,10 +226,18 @@ validate_root_trusted_path "$KEYRING" "Ubuntu cloud-image keyring" file
 validate_root_trusted_path "$MANIFEST_HELPER" "installed manifest helper" file
 validate_root_trusted_path "$RUNNER" "installed VM runner" file
 validate_root_trusted_path "$HOST_PREFLIGHT" "installed host preflight" file
+validate_root_trusted_path "$RUNTIME_MANIFEST" "installed runtime manifest helper" file
+validate_root_trusted_path "$RUNTIME_CONTROL_SOURCE" "installed guest runtime control" file
+validate_root_trusted_path "$RUNTIME_READINESS" "installed runtime readiness collector" file
+validate_root_trusted_path "$RUNTIME_RECOVERY_UNIT_SOURCE" "installed guest runtime recovery unit" file
 validate_root_trusted_path "$UNIT_PATH" "installed VM unit" file
 validate_root_trusted_path "$QEMU_BIN" "QEMU system emulator" file
 runner_sha256="$(sha256sum -- "$RUNNER" | cut -d' ' -f1)"
 host_preflight_sha256="$(sha256sum -- "$HOST_PREFLIGHT" | cut -d' ' -f1)"
+runtime_manifest_sha256="$(sha256sum -- "$RUNTIME_MANIFEST" | cut -d' ' -f1)"
+runtime_control_sha256="$(sha256sum -- "$RUNTIME_CONTROL_SOURCE" | cut -d' ' -f1)"
+runtime_readiness_sha256="$(sha256sum -- "$RUNTIME_READINESS" | cut -d' ' -f1)"
+runtime_recovery_unit_sha256="$(sha256sum -- "$RUNTIME_RECOVERY_UNIT_SOURCE" | cut -d' ' -f1)"
 unit_sha256="$(sha256sum -- "$UNIT_PATH" | cut -d' ' -f1)"
 qemu_sha256="$(sha256sum -- "$QEMU_BIN" | cut -d' ' -f1)"
 qemu_version="$(
@@ -667,10 +679,13 @@ set_host_key_fingerprint="$(
   || die "lab SSH client and host identities must be independent"
 
 set_id="$(
-  printf 'schema=nexus.rollback-drill-vm-provision.v1\nimage=%s\nkey=%s\nhostKey=%s\nports=%s,%s,%s\nrunner=%s\nhostPreflight=%s\nunit=%s\nqemu=%s\nqemuVersion=%s\nqemuPackage=%s\nqemuPackageVersion=%s\nqemuPackageArchitecture=%s\n' \
+  printf 'schema=nexus.rollback-drill-vm-provision.v1\nimage=%s\nkey=%s\nhostKey=%s\nports=%s,%s,%s\nrunner=%s\nhostPreflight=%s\nruntimeManifest=%s\nruntimeControl=%s\nruntimeReadiness=%s\nruntimeRecoveryUnit=%s\nunit=%s\nqemu=%s\nqemuVersion=%s\nqemuPackage=%s\nqemuPackageVersion=%s\nqemuPackageArchitecture=%s\n' \
     "$expected_image_sha256" "$ssh_public_key_sha256" "$set_host_public_key_sha256" \
     "$port1" "$port2" "$port3" \
-    "$runner_sha256" "$host_preflight_sha256" "$unit_sha256" "$qemu_sha256" "$qemu_version" \
+    "$runner_sha256" "$host_preflight_sha256" \
+    "$runtime_manifest_sha256" "$runtime_control_sha256" \
+    "$runtime_readiness_sha256" "$runtime_recovery_unit_sha256" \
+    "$unit_sha256" "$qemu_sha256" "$qemu_version" \
     "$qemu_package_name" "$qemu_package_version" "$qemu_package_architecture" \
     | sha256sum | cut -d' ' -f1
 )"
@@ -684,6 +699,24 @@ chmod 0750 "$set_stage"
 guest_records="$set_stage/.guest-records.tsv"
 : >"$guest_records"
 chmod 0600 "$guest_records"
+runtime_manifest_base64="$(
+  python3 - "$RUNTIME_MANIFEST" <<'PY'
+import base64,pathlib,sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
+runtime_control_base64="$(
+  python3 - "$RUNTIME_CONTROL_SOURCE" <<'PY'
+import base64,pathlib,sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
+runtime_recovery_unit_base64="$(
+  python3 - "$RUNTIME_RECOVERY_UNIT_SOURCE" <<'PY'
+import base64,pathlib,sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
 
 for index in 1 2 3; do
   guest="guest-$index"
@@ -771,7 +804,7 @@ ssh_keys:
 USER_HEAD
     sed 's/^/    /' "$set_host_key"
     printf '  ed25519_public: %s\n' "$set_host_public_key"
-    cat <<'USER_TAIL'
+    cat <<USER_TAIL
 write_files:
   - path: /etc/ssh/sshd_config.d/99-nexus-rollback-drill.conf
     owner: root:root
@@ -782,7 +815,25 @@ write_files:
       KbdInteractiveAuthentication no
       PubkeyAuthentication yes
       AllowUsers dominguez
+  - path: /usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest
+    owner: root:root
+    permissions: '0755'
+    encoding: b64
+    content: $runtime_manifest_base64
+  - path: /usr/local/sbin/nexus-rollback-drill-vm-runtime-control
+    owner: root:root
+    permissions: '0755'
+    encoding: b64
+    content: $runtime_control_base64
+  - path: /etc/systemd/system/nexus-rollback-drill-vm-runtime-recovery.service
+    owner: root:root
+    permissions: '0644'
+    encoding: b64
+    content: $runtime_recovery_unit_base64
 runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, nexus-rollback-drill-vm-runtime-recovery.service]
+  - [systemctl, start, nexus-rollback-drill-vm-runtime-recovery.service]
   - [systemctl, restart, ssh.service]
 final_message: "nexus rollback drill guest ready"
 USER_TAIL
@@ -812,7 +863,10 @@ python3 - \
   "$receipt" "$set_id" "$expected_image_sha256" "$ssh_public_key_sha256" \
   "$set_host_public_key_sha256" \
   "$port1" "$port2" "$port3" "$set_target" "$guest_records" "$created_at" \
-  "$runner_sha256" "$host_preflight_sha256" "$unit_sha256" "$qemu_sha256" "$qemu_version" \
+  "$runner_sha256" "$host_preflight_sha256" \
+  "$runtime_manifest_sha256" "$runtime_control_sha256" \
+  "$runtime_readiness_sha256" "$runtime_recovery_unit_sha256" \
+  "$unit_sha256" "$qemu_sha256" "$qemu_version" \
   "$qemu_package_name" "$qemu_package_version" "$qemu_package_architecture" <<'PY'
 import hashlib
 import json
@@ -821,9 +875,10 @@ from pathlib import Path
 
 (
     output, set_id, image_sha, key_sha, host_key_sha, port1, port2, port3,
-    set_directory, records_path, created_at, runner_sha, host_preflight_sha, unit_sha,
-    qemu_sha, qemu_version, qemu_package, qemu_package_version,
-    qemu_package_architecture,
+    set_directory, records_path, created_at, runner_sha, host_preflight_sha,
+    runtime_manifest_sha, runtime_control_sha, runtime_readiness_sha,
+    runtime_recovery_unit_sha, unit_sha, qemu_sha, qemu_version, qemu_package,
+    qemu_package_version, qemu_package_architecture,
 ) = sys.argv[1:]
 ports = [int(port1), int(port2), int(port3)]
 guests = []
@@ -875,7 +930,7 @@ value = {
         "requirements": [
             "node-22.23.1",
             "python-3.12.x",
-            "pm2-6.0.14-at-/home/dominguez/.npm-global/bin/pm2",
+            "pm2-6.0.14-at-/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2",
             "digest-bound-offline-toolchain-evidence",
         ],
     },
@@ -891,7 +946,16 @@ value = {
         "runnerSha256": runner_sha,
         "hostPreflightPath": "/usr/local/libexec/nexus-rollback-drill-vm/host-preflight",
         "hostPreflightSha256": host_preflight_sha,
+        "runtimeManifestPath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest",
+        "runtimeManifestSha256": runtime_manifest_sha,
+        "runtimeControlSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest",
+        "runtimeControlSha256": runtime_control_sha,
+        "runtimeReadinessPath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness",
+        "runtimeReadinessSha256": runtime_readiness_sha,
+        "runtimeRecoveryUnitSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service",
+        "runtimeRecoveryUnitSha256": runtime_recovery_unit_sha,
         "sharedMutexPath": "/run/lock/nexus-release-sonar.lock",
+        "guestAdmissionLockPath": "/run/nexus-rollback-drill-vm/admission.lock",
         "hostAvailableMemoryFloorGiB": 25,
         "hostLoad15CeilingExclusive": 6,
         "unitTemplate": "nexus-rollback-drill-vm@.service",

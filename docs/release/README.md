@@ -418,7 +418,8 @@ An optional unprivileged staging directory is copied through no-follow file
 descriptors into root-private state before the same checks; the staged files
 are never executed.
 
-Only one guest can hold the non-waiting runtime lock. QEMU uses KVM, fixed
+Only one guest can hold the non-waiting runtime lock. A separate admission
+lock serializes guest starts with readiness collection. QEMU uses KVM, fixed
 regular-file drives, `restrict=on` user networking, and exactly one
 `127.0.0.1:<port>` SSH forward. The units expose no bridge, tap, shared
 filesystem, host block device, public listener, serial console, monitor, or
@@ -426,8 +427,9 @@ production mount. Password and root SSH login are disabled. Use synthetic data
 and lab-only SSH/promotion keys inside the guest. The provision receipt also
 binds the installed QEMU executable digest, version output, owning Debian
 package, package version, and architecture; the runner revalidates them before
-every boot. It also requires the selected overlay to retain its exact initial
-file digest, so any previous boot or mutation forces a fresh provision set.
+every boot. Before a readiness receipt exists, the selected overlay must retain
+its exact initial digest. After readiness v2 is published, only its exact
+stopped-overlay current digest is accepted.
 
 QEMU advertises 14,336 MiB of logical guest RAM so the unmodified production
 capacity preflight can prove at least 12 GiB `MemAvailable` inside the guest.
@@ -447,21 +449,44 @@ through named systemd file descriptors. The single-guest lock lives below a
 root:nexus-drill-vm mode-0750 directory and cannot be replaced by the service
 identity. The runner proves the exact descriptor names, paths, inode/device
 identities, owners, groups, modes, and link counts, acquires both non-waiting
-flocks, and holds them across QEMU exec. Installation and provisioning also
-acquire the release/Sonar lock. A release, Sonar operation, or second rollback
-drill guest therefore cannot overlap.
+flocks, and supervises QEMU while retaining them. Installation and
+provisioning also acquire the release/Sonar lock. A release, Sonar operation,
+or second rollback drill guest therefore cannot overlap.
 
 The initial provision receipt deliberately reports
 `status=ssh_only_bootstrap_required` and `drillReady=false`. `restrict=on`
 prevents the guest from fetching the required Node 22.23.1 and PM2 6.0.14
 toolchain, and the signed release artifact supplies locked application
-dependencies rather than those executables. Before a fault drill, require
-separate root-owned, digest-bound offline bootstrap evidence for Node 22.23.1,
-Python 3.12.x, PM2 6.0.14 at
-`/home/dominguez/.npm-global/bin/pm2`, the exact root promotion controls, and
-synthetic predecessor/candidate runtimes. SSH readiness alone is not promotion
+dependencies rather than those executables. For each guest, the first boot
+collects host-key-signed Python 3.12 provenance. While that same boot remains
+active, a trusted Ubuntu 24.04/x86-64 builder creates a guest-bound,
+owner-signed, content-addressed bundle from clean protected `origin/main`,
+pinned Node 22.23.1 release inputs, an offline PM2 6.0.14 lock closure, and the
+exact promotion controls. PM2 is installed at
+`/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2`.
+
+The host independently pins the lab owner public key, registers the signed
+bundle, and accepts one canonical owner authorization valid for at most 24
+hours. The root collector proves the live systemd/QEMU/loopback/lock identity,
+installs and measures the guest without network access, verifies a fresh
+challenge-bound guest host-key signature and the exact effective recovery
+unit with no drop-ins, durably journals the transaction, and stops QEMU
+through a nonce-bound runner handoff. The runner retains its
+active and release/Sonar locks while the collector retains admission. The
+collector opens the qcow2 once with `O_NOFOLLOW`, rejects any other process or
+mapping holding that inode, hashes that same descriptor, and checks device,
+inode, size, mtime, and ctime before and after the full hash. Only the resulting
+immutable `nexus.rollback-drill-vm-runtime-readiness.v2` receipt can set
+`drillReady=true`.
+
+The old caller-supplied guest-attestation path is absent. A collector or host
+restart can resume only from the root-owned journal and must reacquire all
+locks and re-prove the stopped overlay. A crash after receipt publication must
+finish validating and promoting the journal-bound evidence before removing the
+handoff request. SSH readiness alone is not promotion
 readiness; do not enable guest egress or copy production data to close this
-gate.
+gate. The exact commands and authorization schema are in
+`ops/rollback-drill-vm/OPERATIONS.txt`.
 
 The installer and provisioner do not start a guest. Starting an explicit slot
 remains a separate owner-observed drill action:
@@ -606,8 +631,7 @@ scheduler, or worker:
 
 1. The reviewed promotion-control bootstrap generates a ServerDominguez-only
    Ed25519 private key at
-   `/etc/nexus-release/serverdominguez-provenance-private-key.pem` (root:root
-   0600) and its public key beside it (0644). Configure that exact public key as
+   `/etc/nexus-release/serverdominguez-provenance-private-key.pem` (root:root 0600) and its public key beside it (0644). Configure that exact public key as
    the `release-signing` environment secret
    `NEXUS_SERVERDOMINGUEZ_PROVENANCE_PUBLIC_KEY_PEM`. Never copy the private key
    from the server.
@@ -634,6 +658,7 @@ scheduler, or worker:
    and comparison digest. The root-signed request expires after 15 minutes so
    it cannot be replayed after the latest production sequence changes; generate
    a fresh request if protected approval is not completed in that window.
+
 3. Dispatch `sign-staging-attestation.yml` on protected `main` with
    `evidence_kind=protected_main_reuse_activation`, the same request UUID and
    fifth runtime SHA, plus canonical request base64 and SHA-256. The existing

@@ -8,6 +8,8 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 STATE_ROOT="/var/lib/nexus-rollback-drill-vm"
 ACTIVE_RECEIPT="$STATE_ROOT/active.json"
 RUN_LOCK="/run/nexus-rollback-drill-vm/active.lock"
+ADMISSION_LOCK="/run/nexus-rollback-drill-vm/admission.lock"
+HANDOFF_DIR="/run/nexus-rollback-drill-vm/handoff"
 SHARED_MUTEX="/run/lock/nexus-release-sonar.lock"
 EXPECTED_USER="nexus-drill-vm"
 QEMU_BIN="/usr/bin/qemu-system-x86_64"
@@ -15,6 +17,10 @@ QEMU_IMG="/usr/bin/qemu-img"
 DPKG_QUERY="/usr/bin/dpkg-query"
 RUNNER_PATH="/usr/local/libexec/nexus-rollback-drill-vm/run"
 HOST_PREFLIGHT_PATH="/usr/local/libexec/nexus-rollback-drill-vm/host-preflight"
+RUNTIME_MANIFEST_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest"
+RUNTIME_CONTROL_SOURCE_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest"
+RUNTIME_READINESS_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness"
+RUNTIME_RECOVERY_UNIT_SOURCE_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service"
 UNIT_PATH="/etc/systemd/system/nexus-rollback-drill-vm@.service"
 
 die() {
@@ -67,6 +73,26 @@ acquire_shared_release_mutex() {
 }
 acquire_shared_release_mutex
 
+acquire_guest_admission() {
+  local path_identity descriptor_identity
+  [[ -f "$ADMISSION_LOCK" && ! -L "$ADMISSION_LOCK" ]] \
+    || die "guest admission lock is missing or unsafe"
+  [ "$(realpath -e -- "$ADMISSION_LOCK")" = "$ADMISSION_LOCK" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' -- "$ADMISSION_LOCK")" = root:nexus-drill-vm:660:1 ] \
+    || die "guest admission lock must be root:nexus-drill-vm mode 0660 with one link"
+  exec 5<>"$ADMISSION_LOCK"
+  path_identity="$(stat -c '%d:%i' -- "$ADMISSION_LOCK")"
+  descriptor_identity="$(stat -Lc '%d:%i' -- /proc/self/fd/5)"
+  [ "$descriptor_identity" = "$path_identity" ] \
+    && [ "$(stat -Lc '%U:%G:%a:%h' -- /proc/self/fd/5)" = root:nexus-drill-vm:660:1 ] \
+    || die "guest admission descriptor identity is invalid"
+  flock -n 5 \
+    || die "runtime readiness collection currently blocks new guest starts"
+  [ "$(stat -c '%d:%i' -- "$ADMISSION_LOCK")" = "$descriptor_identity" ] \
+    || die "guest admission-lock path changed after acquisition"
+}
+acquire_guest_admission
+
 acquire_single_guest_lock() {
   local run_directory path_identity descriptor_identity
   run_directory="$(dirname -- "$RUN_LOCK")"
@@ -92,6 +118,7 @@ acquire_single_guest_lock() {
     || die "global guest-lock path changed after acquisition"
 }
 acquire_single_guest_lock
+flock -u 5 || die "cannot release the guest admission lock after admission"
 
 python3 - <<'PY' || die "host capacity changed below the rollback-drill admission floor"
 import pathlib
@@ -114,6 +141,9 @@ PY
   || die "active provision receipt must be root:nexus-drill-vm mode 0640"
 [ "$(stat -c '%s' -- "$ACTIVE_RECEIPT")" -le 65536 ] \
   || die "active provision receipt exceeds the accepted bound"
+active_receipt_sha256="$(sha256sum -- "$ACTIVE_RECEIPT" | cut -d' ' -f1)"
+[[ "$active_receipt_sha256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "cannot derive the active provision receipt identity"
 
 mapfile -t selected < <(
   python3 - "$ACTIVE_RECEIPT" "$guest" <<'PY'
@@ -173,7 +203,7 @@ if value["runtimeReadiness"] != {
     "requirements": [
         "node-22.23.1",
         "python-3.12.x",
-        "pm2-6.0.14-at-/home/dominguez/.npm-global/bin/pm2",
+        "pm2-6.0.14-at-/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2",
         "digest-bound-offline-toolchain-evidence",
     ],
 }:
@@ -183,7 +213,11 @@ if set(hypervisor) != {
     "manager", "qemuBinary", "qemuSha256", "qemuVersion", "qemuPackage",
     "qemuPackageVersion", "qemuPackageArchitecture", "runnerPath",
     "runnerSha256", "hostPreflightPath", "hostPreflightSha256",
-    "sharedMutexPath", "hostAvailableMemoryFloorGiB",
+    "runtimeManifestPath", "runtimeManifestSha256",
+    "runtimeControlSourcePath", "runtimeControlSha256",
+    "runtimeReadinessPath", "runtimeReadinessSha256",
+    "runtimeRecoveryUnitSourcePath", "runtimeRecoveryUnitSha256",
+    "sharedMutexPath", "guestAdmissionLockPath", "hostAvailableMemoryFloorGiB",
     "hostLoad15CeilingExclusive", "unitTemplate", "unitPath", "unitSha256",
     "vcpus", "memoryMiB", "memorySwapMaxMiB", "diskBytes",
     "networkMode", "loopbackHost", "singleActiveGuest", "bridgeAttached",
@@ -196,7 +230,12 @@ expected_hypervisor = {
     "qemuBinary": "/usr/bin/qemu-system-x86_64",
     "runnerPath": "/usr/local/libexec/nexus-rollback-drill-vm/run",
     "hostPreflightPath": "/usr/local/libexec/nexus-rollback-drill-vm/host-preflight",
+    "runtimeManifestPath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest",
+    "runtimeControlSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest",
+    "runtimeReadinessPath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness",
+    "runtimeRecoveryUnitSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service",
     "sharedMutexPath": "/run/lock/nexus-release-sonar.lock",
+    "guestAdmissionLockPath": "/run/nexus-rollback-drill-vm/admission.lock",
     "hostAvailableMemoryFloorGiB": 25,
     "hostLoad15CeilingExclusive": 6,
     "unitTemplate": "nexus-rollback-drill-vm@.service",
@@ -217,12 +256,17 @@ expected_hypervisor = {
 for key, expected in expected_hypervisor.items():
     if hypervisor.get(key) != expected:
         raise SystemExit(f"hypervisor contract drifted at {key}")
-if not hex64.fullmatch(hypervisor.get("runnerSha256", "")):
-    raise SystemExit("runner digest is invalid")
-if not hex64.fullmatch(hypervisor.get("unitSha256", "")):
-    raise SystemExit("unit digest is invalid")
-if not hex64.fullmatch(hypervisor.get("hostPreflightSha256", "")):
-    raise SystemExit("host-preflight digest is invalid")
+for name in (
+    "runnerSha256",
+    "unitSha256",
+    "hostPreflightSha256",
+    "runtimeManifestSha256",
+    "runtimeControlSha256",
+    "runtimeReadinessSha256",
+    "runtimeRecoveryUnitSha256",
+):
+    if not hex64.fullmatch(hypervisor.get(name, "")):
+        raise SystemExit(f"{name} digest is invalid")
 if not hex64.fullmatch(hypervisor.get("qemuSha256", "")):
     raise SystemExit("QEMU digest is invalid")
 if re.fullmatch(r"QEMU emulator version [ -~]{1,230}", hypervisor.get("qemuVersion", "")) is None:
@@ -241,6 +285,10 @@ set_material = (
     f"ports={value['ports'][0]},{value['ports'][1]},{value['ports'][2]}\n"
     f"runner={hypervisor['runnerSha256']}\n"
     f"hostPreflight={hypervisor['hostPreflightSha256']}\n"
+    f"runtimeManifest={hypervisor['runtimeManifestSha256']}\n"
+    f"runtimeControl={hypervisor['runtimeControlSha256']}\n"
+    f"runtimeReadiness={hypervisor['runtimeReadinessSha256']}\n"
+    f"runtimeRecoveryUnit={hypervisor['runtimeRecoveryUnitSha256']}\n"
     f"unit={hypervisor['unitSha256']}\n"
     f"qemu={hypervisor['qemuSha256']}\n"
     f"qemuVersion={hypervisor['qemuVersion']}\n"
@@ -338,6 +386,8 @@ for output in (
     str(entry["port"]), entry["uuid"], entry["mac"], entry["instanceId"],
     hypervisor["runnerSha256"], hypervisor["unitSha256"],
     hypervisor["hostPreflightSha256"],
+    hypervisor["runtimeManifestSha256"], hypervisor["runtimeControlSha256"],
+    hypervisor["runtimeReadinessSha256"], hypervisor["runtimeRecoveryUnitSha256"],
     hypervisor["qemuSha256"], hypervisor["qemuVersion"],
     hypervisor["qemuPackage"], hypervisor["qemuPackageVersion"],
     hypervisor["qemuPackageArchitecture"],
@@ -345,7 +395,7 @@ for output in (
     print(output)
 PY
 )
-[ "${#selected[@]}" -eq 19 ] || die "provision receipt selection failed"
+[ "${#selected[@]}" -eq 23 ] || die "provision receipt selection failed"
 set_directory="${selected[0]}"
 base_path="${selected[1]}"
 base_sha256="${selected[2]}"
@@ -360,11 +410,15 @@ instance_id="${selected[10]}"
 runner_sha256="${selected[11]}"
 unit_sha256="${selected[12]}"
 host_preflight_sha256="${selected[13]}"
-qemu_sha256="${selected[14]}"
-qemu_version="${selected[15]}"
-qemu_package="${selected[16]}"
-qemu_package_version="${selected[17]}"
-qemu_package_architecture="${selected[18]}"
+runtime_manifest_sha256="${selected[14]}"
+runtime_control_sha256="${selected[15]}"
+runtime_readiness_sha256="${selected[16]}"
+runtime_recovery_unit_sha256="${selected[17]}"
+qemu_sha256="${selected[18]}"
+qemu_version="${selected[19]}"
+qemu_package="${selected[20]}"
+qemu_package_version="${selected[21]}"
+qemu_package_architecture="${selected[22]}"
 
 for directory in "$STATE_ROOT" "$STATE_ROOT/base" "$STATE_ROOT/sets" "$set_directory" "$(dirname -- "$overlay_path")"; do
   [[ -d "$directory" && ! -L "$directory" ]] \
@@ -398,24 +452,171 @@ done
 [[ -f "$UNIT_PATH" && ! -L "$UNIT_PATH" ]] || die "installed unit is unsafe"
 [[ -f "$HOST_PREFLIGHT_PATH" && ! -L "$HOST_PREFLIGHT_PATH" ]] \
   || die "installed host preflight is unsafe"
+[[ -f "$RUNTIME_MANIFEST_PATH" && ! -L "$RUNTIME_MANIFEST_PATH" ]] \
+  || die "installed runtime manifest helper is unsafe"
+[[ -f "$RUNTIME_CONTROL_SOURCE_PATH" && ! -L "$RUNTIME_CONTROL_SOURCE_PATH" ]] \
+  || die "installed guest runtime control source is unsafe"
+[[ -f "$RUNTIME_READINESS_PATH" && ! -L "$RUNTIME_READINESS_PATH" ]] \
+  || die "installed runtime readiness collector is unsafe"
+[[ -f "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH" && ! -L "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH" ]] \
+  || die "installed guest runtime recovery unit source is unsafe"
 [ "$(stat -c '%U:%G:%a' -- "$RUNNER_PATH")" = root:root:755 ] \
   || die "installed runner ownership or mode is unsafe"
 [ "$(stat -c '%U:%G:%a' -- "$UNIT_PATH")" = root:root:644 ] \
   || die "installed unit ownership or mode is unsafe"
 [ "$(stat -c '%U:%G:%a' -- "$HOST_PREFLIGHT_PATH")" = root:root:755 ] \
   || die "installed host preflight ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$RUNTIME_MANIFEST_PATH")" = root:root:755 ] \
+  || die "installed runtime manifest helper ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$RUNTIME_CONTROL_SOURCE_PATH")" = root:root:755 ] \
+  || die "installed guest runtime control source ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$RUNTIME_READINESS_PATH")" = root:root:755 ] \
+  || die "installed runtime readiness collector ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH")" = root:root:644 ] \
+  || die "installed guest runtime recovery unit source ownership or mode is unsafe"
 printf '%s  %s\n' "$runner_sha256" "$RUNNER_PATH" | sha256sum --check --status \
   || die "installed runner digest drifted"
 printf '%s  %s\n' "$unit_sha256" "$UNIT_PATH" | sha256sum --check --status \
   || die "installed unit digest drifted"
 printf '%s  %s\n' "$host_preflight_sha256" "$HOST_PREFLIGHT_PATH" | sha256sum --check --status \
   || die "installed host preflight digest drifted"
+printf '%s  %s\n' "$runtime_manifest_sha256" "$RUNTIME_MANIFEST_PATH" | sha256sum --check --status \
+  || die "installed runtime manifest helper digest drifted"
+printf '%s  %s\n' "$runtime_control_sha256" "$RUNTIME_CONTROL_SOURCE_PATH" | sha256sum --check --status \
+  || die "installed guest runtime control source digest drifted"
+printf '%s  %s\n' "$runtime_readiness_sha256" "$RUNTIME_READINESS_PATH" | sha256sum --check --status \
+  || die "installed runtime readiness collector digest drifted"
+printf '%s  %s\n' "$runtime_recovery_unit_sha256" "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH" | sha256sum --check --status \
+  || die "installed guest runtime recovery unit source digest drifted"
 printf '%s  %s\n' "$qemu_sha256" "$QEMU_BIN" | sha256sum --check --status \
   || die "installed QEMU binary digest drifted"
 printf '%s  %s\n' "$base_sha256" "$base_path" | sha256sum --check --status \
   || die "base image digest drifted"
-printf '%s  %s\n' "$overlay_initial_sha256" "$overlay_path" | sha256sum --check --status \
-  || die "guest overlay is not pristine; provision a fresh set"
+set_id="${set_directory##*/}"
+expected_overlay_sha256="$overlay_initial_sha256"
+readiness="$STATE_ROOT/runtime-readiness/$set_id/$guest.json"
+if [ -e "$readiness" ] || [ -L "$readiness" ]; then
+  [ -f "$readiness" ] && [ ! -L "$readiness" ] \
+    && [ "$(realpath -e -- "$readiness")" = "$readiness" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' -- "$readiness")" = root:nexus-drill-vm:640:1 ] \
+    && [ "$(stat -c '%s' -- "$readiness")" -le 1048576 ] \
+    || die "runtime readiness receipt is missing or unsafe"
+  expected_overlay_sha256="$(
+    python3 - "$readiness" "$set_id" "$guest" "$port" \
+      "$active_receipt_sha256" "$overlay_path" "$overlay_initial_sha256" \
+      "$vm_uuid" "$instance_id" "$mac" <<'PY'
+import json,re,sys
+from pathlib import Path
+(
+ path,set_id,guest,port,provision_sha,overlay_path,overlay_initial,
+ uuid,instance_id,mac,
+)=sys.argv[1:]
+hex64=re.compile(r"^[0-9a-f]{64}$")
+iso=re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+value=json.loads(Path(path).read_text(encoding="utf-8"))
+if set(value)!={
+ "schema","status","drillReady","sealedAt","setId","guest","port",
+ "provisionReceiptSha256","bundleManifestSha256","ownerAuthorization",
+ "guestMeasurement","machine","qemu","stoppedGuestProof","overlay",
+ "runtime","control","pm2DryHealth","networkInstallAttempted",
+}:
+ raise SystemExit("runtime readiness receipt schema is invalid")
+if (
+ value["schema"]!="nexus.rollback-drill-vm-runtime-readiness.v2"
+ or value["status"]!="ready"
+ or value["drillReady"] is not True
+ or not iso.fullmatch(value["sealedAt"])
+ or value["setId"]!=set_id
+ or value["guest"]!=guest
+ or value["port"]!=int(port)
+ or value["provisionReceiptSha256"]!=provision_sha
+ or not hex64.fullmatch(value["bundleManifestSha256"])
+ or value["networkInstallAttempted"] is not False
+):
+ raise SystemExit("runtime readiness receipt boundary is invalid")
+machine=value["machine"]
+if machine!={
+ "uuid":uuid,
+ "instanceId":instance_id,
+ "mac":mac,
+ "sshHostKeyFingerprint":machine.get("sshHostKeyFingerprint"),
+ "sshHostPublicKeySha256":machine.get("sshHostPublicKeySha256"),
+}:
+ raise SystemExit("runtime readiness machine identity is invalid")
+if (
+ not isinstance(machine["sshHostKeyFingerprint"],str)
+ or not machine["sshHostKeyFingerprint"].startswith("SHA256:")
+ or not hex64.fullmatch(machine["sshHostPublicKeySha256"])
+):
+ raise SystemExit("runtime readiness SSH host identity is invalid")
+overlay=value["overlay"]
+if set(overlay)!={
+ "path","initialSha256","currentSha256","size","device","inode","mtimeNs",
+ "ctimeNs","stableDescriptor",
+} or (
+ overlay["path"]!=overlay_path
+ or overlay["initialSha256"]!=overlay_initial
+ or not hex64.fullmatch(overlay["currentSha256"])
+ or type(overlay["size"]) is not int or overlay["size"]<=0
+ or type(overlay["device"]) is not int or overlay["device"]<=0
+ or type(overlay["inode"]) is not int or overlay["inode"]<=0
+ or type(overlay["mtimeNs"]) is not int or overlay["mtimeNs"]<=0
+ or type(overlay["ctimeNs"]) is not int or overlay["ctimeNs"]<=0
+ or overlay["stableDescriptor"] is not True
+):
+ raise SystemExit("runtime readiness overlay identity is invalid")
+proof=value["stoppedGuestProof"]
+if set(proof)!={
+ "unit","systemdState","admissionLockHeld","activeLockHolder",
+ "sharedReleaseSonarLockHolder","holderPid","holderStartTime",
+ "handoffNonce","qemuExited","overlayProcessAbsent",
+} or (
+ proof["unit"]!=f"nexus-rollback-drill-vm@{guest}.service"
+ or proof["systemdState"] not in {"active-handoff-wait","inactive-recovery"}
+ or proof["admissionLockHeld"] is not True
+ or proof["activeLockHolder"] not in {"runner-supervisor","root-collector"}
+ or proof["sharedReleaseSonarLockHolder"]!=proof["activeLockHolder"]
+ or type(proof["holderPid"]) is not int or proof["holderPid"]<=1
+ or not isinstance(proof["holderStartTime"],str)
+ or not proof["holderStartTime"].isdigit()
+ or not hex64.fullmatch(proof["handoffNonce"])
+ or proof["qemuExited"] is not True
+ or proof["overlayProcessAbsent"] is not True
+):
+ raise SystemExit("runtime readiness stopped-guest proof is invalid")
+if (
+ (proof["systemdState"]=="active-handoff-wait"
+  and proof["activeLockHolder"]!="runner-supervisor")
+ or (proof["systemdState"]=="inactive-recovery"
+  and proof["activeLockHolder"]!="root-collector")
+):
+ raise SystemExit("runtime readiness lock-holder state is invalid")
+authorization=value["ownerAuthorization"]
+if set(authorization)!={
+ "authorizationId","drill","issuedAt","expiresAt","sha256","signatureSha256",
+ "ownerPublicKeySha256",
+} or any(
+ not hex64.fullmatch(authorization[name])
+ for name in ("authorizationId","sha256","signatureSha256","ownerPublicKeySha256")
+):
+ raise SystemExit("runtime readiness authorization identity is invalid")
+measurement=value["guestMeasurement"]
+if set(measurement)!={
+ "sha256","signatureSha256","challenge","namespace",
+} or any(
+ not hex64.fullmatch(measurement[name])
+ for name in ("sha256","signatureSha256","challenge")
+) or measurement["namespace"]!="nexus-rollback-drill-vm-runtime-measurement":
+ raise SystemExit("runtime readiness guest measurement identity is invalid")
+if not all(isinstance(value[name],dict) for name in ("qemu","runtime","control","pm2DryHealth")):
+ raise SystemExit("runtime readiness evidence is incomplete")
+print(overlay["currentSha256"])
+PY
+  )" || die "runtime readiness receipt validation failed"
+fi
+printf '%s  %s\n' "$expected_overlay_sha256" "$overlay_path" \
+  | sha256sum --check --status \
+  || die "guest overlay differs from its accepted current readiness; provision a fresh set"
 printf '%s  %s\n' "$seed_sha256" "$seed_path" | sha256sum --check --status \
   || die "guest seed digest drifted"
 
@@ -489,7 +690,29 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
     sock.bind(("127.0.0.1", port))
 PY
 
-exec "$QEMU_BIN" \
+# Ignore an early handoff signal during the tiny launch window; the collector
+# retries the nonce-bound request until this handler is replaced below.
+trap ':' USR1
+qemu_pid=""
+normal_shutdown=false
+normal_shutdown_status=0
+handle_normal_shutdown() {
+  normal_shutdown=true
+  normal_shutdown_status=0
+  if [ -n "$qemu_pid" ]; then
+    kill -TERM "$qemu_pid" 2>/dev/null || true
+  fi
+}
+handle_interrupt() {
+  normal_shutdown=true
+  normal_shutdown_status=130
+  if [ -n "$qemu_pid" ]; then
+    kill -TERM "$qemu_pid" 2>/dev/null || true
+  fi
+}
+trap handle_normal_shutdown TERM
+trap handle_interrupt INT
+"$QEMU_BIN" \
   -name "$instance_id" \
   -enable-kvm \
   -machine q35,accel=kvm \
@@ -511,4 +734,101 @@ exec "$QEMU_BIN" \
   -netdev "user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:${port}-:22" \
   -device "virtio-net-pci,netdev=net0,mac=$mac" \
   -object rng-random,id=rng0,filename=/dev/urandom \
-  -device virtio-rng-pci,rng=rng0
+  -device virtio-rng-pci,rng=rng0 &
+qemu_pid=$!
+handoff_request="$HANDOFF_DIR/$guest.request"
+[[ -d "$HANDOFF_DIR" && ! -L "$HANDOFF_DIR" ]] \
+  && [ "$(realpath -e -- "$HANDOFF_DIR")" = "$HANDOFF_DIR" ] \
+  && [ "$(stat -c '%U:%G:%a' -- "$HANDOFF_DIR")" = root:nexus-drill-vm:750 ] \
+  || die "runtime handoff directory is missing or unsafe"
+[[ ! -e "$handoff_request" && ! -L "$handoff_request" ]] \
+  || die "a stale runtime readiness handoff request blocks this guest"
+supervisor_start_time="$(
+  python3 - "$$" <<'PY'
+import pathlib,sys
+body=pathlib.Path(f"/proc/{sys.argv[1]}/stat").read_text(encoding="ascii")
+print(body[body.rfind(") ")+2:].split()[19])
+PY
+)" || die "cannot derive the runner supervisor start time"
+qemu_start_time="$(
+  python3 - "$qemu_pid" <<'PY'
+import pathlib,sys
+body=pathlib.Path(f"/proc/{sys.argv[1]}/stat").read_text(encoding="ascii")
+print(body[body.rfind(") ")+2:].split()[19])
+PY
+)" || die "cannot derive the QEMU child start time"
+handoff_requested=false
+qemu_status=0
+
+validate_handoff_request() {
+  [ -f "$handoff_request" ] && [ ! -L "$handoff_request" ] \
+    && [ "$(realpath -e -- "$handoff_request")" = "$handoff_request" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' -- "$handoff_request")" = root:nexus-drill-vm:640:1 ] \
+    && [ "$(stat -c '%s' -- "$handoff_request")" -le 65536 ] \
+    || return 1
+  python3 - "$handoff_request" "$set_id" "$guest" "$$" \
+    "$supervisor_start_time" "$qemu_pid" "$qemu_start_time" <<'PY'
+import json,re,sys
+from pathlib import Path
+path,set_id,guest,supervisor,supervisor_start,qemu,qemu_start=sys.argv[1:]
+value=json.loads(Path(path).read_text(encoding="utf-8"))
+if set(value)!={
+ "schema","setId","guest","supervisorPid","supervisorStartTime",
+ "qemuPid","qemuStartTime","nonce",
+} or (
+ value["schema"]!="nexus.rollback-drill-vm-runtime-handoff.v1"
+ or value["setId"]!=set_id
+ or value["guest"]!=guest
+ or value["supervisorPid"]!=int(supervisor)
+ or value["supervisorStartTime"]!=supervisor_start
+ or value["qemuPid"]!=int(qemu)
+ or value["qemuStartTime"]!=qemu_start
+ or re.fullmatch(r"[0-9a-f]{64}",value["nonce"]) is None
+):
+ raise SystemExit("runtime readiness handoff identity is invalid")
+PY
+}
+
+handle_runtime_handoff() {
+  if ! validate_handoff_request; then
+    echo "rollback drill VM runner: ignored invalid runtime readiness handoff request" >&2
+    return
+  fi
+  handoff_requested=true
+  kill -TERM "$qemu_pid" 2>/dev/null || true
+}
+trap handle_runtime_handoff USR1
+
+while kill -0 "$qemu_pid" 2>/dev/null; do
+  if wait "$qemu_pid"; then
+    qemu_status=0
+  else
+    qemu_status=$?
+  fi
+  if [ "$handoff_requested" = true ] || [ "$normal_shutdown" = true ]; then
+    break
+  fi
+done
+if kill -0 "$qemu_pid" 2>/dev/null; then
+  for ((attempt=0; attempt<150; attempt+=1)); do
+    kill -0 "$qemu_pid" 2>/dev/null || break
+    sleep 0.2
+  done
+fi
+if kill -0 "$qemu_pid" 2>/dev/null; then
+  kill -KILL "$qemu_pid" 2>/dev/null || true
+fi
+wait "$qemu_pid" 2>/dev/null || true
+
+if [ "$handoff_requested" = true ]; then
+  validate_handoff_request \
+    || die "runtime readiness handoff request changed while stopping QEMU"
+  while [ -e "$handoff_request" ] || [ -L "$handoff_request" ]; do
+    sleep 0.2
+  done
+  exit 0
+fi
+if [ "$normal_shutdown" = true ]; then
+  exit "$normal_shutdown_status"
+fi
+exit "$qemu_status"

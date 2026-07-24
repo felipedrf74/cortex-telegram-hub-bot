@@ -200,6 +200,10 @@ scripts/rollback-drill-vm-provision.sh	/usr/local/libexec/nexus-rollback-drill-v
 scripts/rollback-drill-vm-run.sh	/usr/local/libexec/nexus-rollback-drill-vm/run	root:root	0755
 scripts/rollback-drill-vm-host-preflight.sh	/usr/local/libexec/nexus-rollback-drill-vm/host-preflight	root:root	0755
 scripts/rollback-drill-vm-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm/manifest.py	root:root	0644
+scripts/rollback-drill-vm-runtime-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest	root:root	0755
+scripts/rollback-drill-vm-runtime-control.sh	/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest	root:root	0755
+scripts/rollback-drill-vm-runtime-readiness-seal.sh	/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness	root:root	0755
+ops/rollback-drill-vm/systemd/nexus-rollback-drill-vm-runtime-recovery.service	/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service	root:root	0644
 ops/rollback-drill-vm/systemd/nexus-rollback-drill-vm@.service	/etc/systemd/system/nexus-rollback-drill-vm@.service	root:root	0644
 ops/rollback-drill-vm/nexus-rollback-drill-vm.tmpfiles	/etc/tmpfiles.d/nexus-rollback-drill-vm.conf	root:root	0644
 LAYOUT
@@ -300,6 +304,10 @@ had_targets=()
 unit_index=-1
 runner_index=-1
 preflight_index=-1
+runtime_manifest_index=-1
+runtime_control_index=-1
+runtime_readiness_index=-1
+runtime_recovery_index=-1
 while IFS=$'\t' read -r relative target owner mode extra; do
   [ -z "$extra" ] || die "install layout contains an extra column"
   [ -n "$relative" ] && [ -n "$target" ] && [ "$owner" = root:root ] && [ -n "$mode" ] \
@@ -345,12 +353,28 @@ while IFS=$'\t' read -r relative target owner mode extra; do
     runner_index=$((${#targets[@]} - 1))
   elif [ "$target" = /usr/local/libexec/nexus-rollback-drill-vm/host-preflight ]; then
     preflight_index=$((${#targets[@]} - 1))
+  elif [ "$target" = /usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest ]; then
+    runtime_manifest_index=$((${#targets[@]} - 1))
+  elif [ "$target" = /usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest ]; then
+    runtime_control_index=$((${#targets[@]} - 1))
+  elif [ "$target" = /usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness ]; then
+    runtime_readiness_index=$((${#targets[@]} - 1))
+  elif [ "$target" = /usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service ]; then
+    runtime_recovery_index=$((${#targets[@]} - 1))
   fi
 done <<<"$actual_layout"
-[ "${#sources[@]}" -eq 6 ] || die "install layout asset count is invalid"
+[ "${#sources[@]}" -eq 10 ] || die "install layout asset count is invalid"
 [ "$unit_index" -ge 0 ] || die "install layout omits the journal-guarded unit"
 [ "$runner_index" -ge 0 ] || die "install layout omits the receipt-bound runner"
 [ "$preflight_index" -ge 0 ] || die "install layout omits the receipt-bound host preflight"
+[ "$runtime_manifest_index" -ge 0 ] \
+  || die "install layout omits the receipt-bound runtime manifest helper"
+[ "$runtime_control_index" -ge 0 ] \
+  || die "install layout omits the receipt-bound guest runtime control"
+[ "$runtime_readiness_index" -ge 0 ] \
+  || die "install layout omits the receipt-bound runtime readiness collector"
+[ "$runtime_recovery_index" -ge 0 ] \
+  || die "install layout omits the receipt-bound guest runtime recovery unit"
 
 for guest in guest-1 guest-2 guest-3; do
   assert_guest_unit_inactive "nexus-rollback-drill-vm@$guest.service" true
@@ -374,11 +398,14 @@ done
 unit_source="${sources[$unit_index]}"
 runner_source="${sources[$runner_index]}"
 preflight_source="${sources[$preflight_index]}"
+runtime_control_source="${sources[$runtime_control_index]}"
+runtime_recovery_source="${sources[$runtime_recovery_index]}"
 unit_verify_root="$(mktemp -d /tmp/nexus-rollback-drill-vm-unit.XXXXXX)"
 [[ "$unit_verify_root" == /tmp/nexus-rollback-drill-vm-unit.* \
     && -d "$unit_verify_root" && ! -L "$unit_verify_root" ]] \
   || die "cannot create a safe unit prevalidation directory"
 unit_verify_path="$unit_verify_root/$UNIT_TEMPLATE"
+runtime_recovery_verify_path="$unit_verify_root/nexus-rollback-drill-vm-runtime-recovery.service"
 prevalidate_rc=0
 python3 - "$unit_source" "$runner_source" "$preflight_source" "$unit_verify_path" <<'PY' \
   || prevalidate_rc=$?
@@ -398,11 +425,35 @@ pathlib.Path(output).write_text(
 )
 PY
 if [ "$prevalidate_rc" -eq 0 ]; then
+  python3 - "$runtime_recovery_source" "$runtime_control_source" \
+    "$runtime_recovery_verify_path" <<'PY' \
+    || prevalidate_rc=$?
+import pathlib
+import sys
+source, control, output = sys.argv[1:]
+text = pathlib.Path(source).read_text(encoding="utf-8")
+expected = (
+    "ExecStart=/usr/local/sbin/"
+    "nexus-rollback-drill-vm-runtime-control recover-install"
+)
+if text.count(expected) != 1:
+    raise SystemExit(
+        "rollback drill VM runtime recovery prevalidation: "
+        "ExecStart contract drifted"
+    )
+pathlib.Path(output).write_text(
+    text.replace(expected, f"ExecStart={control} recover-install"),
+    encoding="utf-8",
+)
+PY
+fi
+if [ "$prevalidate_rc" -eq 0 ]; then
   SYSTEMD_UNIT_PATH="$unit_verify_root:/etc/systemd/system:/usr/lib/systemd/system:/lib/systemd/system" \
-    systemd-analyze verify "$unit_verify_path" >/dev/null \
+    systemd-analyze verify \
+      "$unit_verify_path" "$runtime_recovery_verify_path" >/dev/null \
     || prevalidate_rc=$?
 fi
-rm -f -- "$unit_verify_path"
+rm -f -- "$unit_verify_path" "$runtime_recovery_verify_path"
 rmdir -- "$unit_verify_root"
 [ "$prevalidate_rc" -eq 0 ] \
   || die "systemd unit prevalidation failed"
@@ -479,7 +530,15 @@ value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 hypervisor = value.get("hypervisor")
 if value.get("schema") != "nexus.rollback-drill-vm-provision.v1" or not isinstance(hypervisor, dict):
     raise SystemExit("active provision receipt schema is invalid")
-for name in ("runnerSha256", "unitSha256", "hostPreflightSha256"):
+for name in (
+    "runnerSha256",
+    "unitSha256",
+    "hostPreflightSha256",
+    "runtimeManifestSha256",
+    "runtimeControlSha256",
+    "runtimeReadinessSha256",
+    "runtimeRecoveryUnitSha256",
+):
     digest = hypervisor.get(name)
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise SystemExit(f"active provision receipt {name} is invalid")
@@ -487,17 +546,29 @@ for name in ("runnerSha256", "unitSha256", "hostPreflightSha256"):
 PY
   )" || die "cannot validate active provision receipt"
   mapfile -t active_runtime_digests <<<"$active_runtime_output"
-  [ "${#active_runtime_digests[@]}" -eq 3 ] \
+  [ "${#active_runtime_digests[@]}" -eq 7 ] \
     || die "active provision receipt runtime identity is incomplete"
   proposed_runner_sha256="$(sha256sum -- "${sources[$runner_index]}" | cut -d' ' -f1)"
   proposed_unit_sha256="$(sha256sum -- "${sources[$unit_index]}" | cut -d' ' -f1)"
   proposed_preflight_sha256="$(sha256sum -- "${sources[$preflight_index]}" | cut -d' ' -f1)"
+  proposed_runtime_manifest_sha256="$(sha256sum -- "${sources[$runtime_manifest_index]}" | cut -d' ' -f1)"
+  proposed_runtime_control_sha256="$(sha256sum -- "${sources[$runtime_control_index]}" | cut -d' ' -f1)"
+  proposed_runtime_readiness_sha256="$(sha256sum -- "${sources[$runtime_readiness_index]}" | cut -d' ' -f1)"
+  proposed_runtime_recovery_sha256="$(sha256sum -- "${sources[$runtime_recovery_index]}" | cut -d' ' -f1)"
   [ "$proposed_runner_sha256" = "${active_runtime_digests[0]}" ] \
     || die "active guest set binds a different runner; replacement is not automatic"
   [ "$proposed_unit_sha256" = "${active_runtime_digests[1]}" ] \
     || die "active guest set binds a different systemd unit; replacement is not automatic"
   [ "$proposed_preflight_sha256" = "${active_runtime_digests[2]}" ] \
     || die "active guest set binds a different host preflight; replacement is not automatic"
+  [ "$proposed_runtime_manifest_sha256" = "${active_runtime_digests[3]}" ] \
+    || die "active guest set binds a different runtime manifest helper; replacement is not automatic"
+  [ "$proposed_runtime_control_sha256" = "${active_runtime_digests[4]}" ] \
+    || die "active guest set binds a different guest runtime control; replacement is not automatic"
+  [ "$proposed_runtime_readiness_sha256" = "${active_runtime_digests[5]}" ] \
+    || die "active guest set binds a different readiness collector; replacement is not automatic"
+  [ "$proposed_runtime_recovery_sha256" = "${active_runtime_digests[6]}" ] \
+    || die "active guest set binds a different guest recovery unit; replacement is not automatic"
 fi
 
 stage_paths=()
@@ -566,8 +637,31 @@ cleanup_install() {
       rmdir -- /usr/local/libexec/nexus-rollback-drill-vm >/dev/null 2>&1
     fi
     if [ "$runtime_dir_existed" = false ]; then
-      rm -f -- /run/nexus-rollback-drill-vm/active.lock
-      rmdir -- /run/nexus-rollback-drill-vm >/dev/null 2>&1
+      for runtime_lock in \
+        /run/nexus-rollback-drill-vm/admission.lock \
+        /run/nexus-rollback-drill-vm/active.lock; do
+        if [ -e "$runtime_lock" ] || [ -L "$runtime_lock" ]; then
+          if [ -f "$runtime_lock" ] && [ ! -L "$runtime_lock" ] \
+              && [ "$(stat -c '%U:%G:%a:%h' -- "$runtime_lock")" = root:nexus-drill-vm:660:1 ]; then
+            rm -f -- "$runtime_lock" || rollback_failed=true
+          else
+            rollback_failed=true
+          fi
+        fi
+      done
+      if [ -e /run/nexus-rollback-drill-vm/handoff ] \
+          || [ -L /run/nexus-rollback-drill-vm/handoff ]; then
+        if [ -d /run/nexus-rollback-drill-vm/handoff ] \
+            && [ ! -L /run/nexus-rollback-drill-vm/handoff ] \
+            && [ "$(stat -c '%U:%G:%a' -- /run/nexus-rollback-drill-vm/handoff)" = root:nexus-drill-vm:750 ]; then
+          rmdir -- /run/nexus-rollback-drill-vm/handoff >/dev/null 2>&1 \
+            || rollback_failed=true
+        else
+          rollback_failed=true
+        fi
+      fi
+      rmdir -- /run/nexus-rollback-drill-vm >/dev/null 2>&1 \
+        || rollback_failed=true
     fi
   fi
   if [ "$rollback_failed" = true ]; then
@@ -686,5 +780,5 @@ done
 durable_remove "$INSTALL_JOURNAL"
 journal_armed=false
 install_succeeded=true
-printf '{"ok":true,"schema":"nexus.rollback-drill-vm-install.v1","sourceSha":"%s","archiveSha256":"%s","installedAssets":6,"serviceUser":"%s","servicesStarted":false,"servicesEnabled":false,"guestDataCreated":false}\n' \
+printf '{"ok":true,"schema":"nexus.rollback-drill-vm-install.v1","sourceSha":"%s","archiveSha256":"%s","installedAssets":10,"serviceUser":"%s","servicesStarted":false,"servicesEnabled":false,"guestDataCreated":false}\n' \
   "$SOURCE_SHA" "$EXPECTED_ARCHIVE_SHA256" "$EXPECTED_USER"
