@@ -450,6 +450,19 @@
       "reason": "Replaced obsolete worker-owned recovery markers and rollback-escrow fixtures with retained assertions for root-owned recovery intent, phase-distinct DR escrow, bounded automatic recovery, and exact terminal retry identity."
     },
     {
+      "test": "__tests__/scripts/ollama-systemd-envelope.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/ollama-systemd-envelope.test.ts",
+        "__tests__/scripts/ollama-operational-transactions.test.ts"
+      ],
+      "sources": [
+        "scripts/install-ollama.sh",
+        "scripts/ollama-install-state-check.mjs",
+        "scripts/ollama-systemd-dropin-transaction.mjs"
+      ],
+      "reason": "Replaced the obsolete model-pull and temporary-log assertions with retained no-network/no-pull identity checks plus crash-safe transactional install, predecessor restoration, replay, and reboot coverage."
+    },
+    {
       "test": "__tests__/services/dispatch-privacy-e2e.test.ts",
       "replacementTests": [
         "__tests__/services/dispatch-privacy-e2e.test.ts"
