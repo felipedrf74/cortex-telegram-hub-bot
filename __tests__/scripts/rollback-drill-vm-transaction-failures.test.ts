@@ -96,6 +96,12 @@ mv() {
     : >"$injection_marker"
     return 1
   fi
+  if [ "$#" -eq 2 ] && [ -e "$1" ] && [ -e "$2" ] \
+      && [ "$1" -ef "$2" ]; then
+    # Match GNU mv's failure when source and destination are hard links to the
+    # same inode, even when this portable harness runs with BSD mv.
+    return 1
+  fi
   if [ "$force" = true ]; then
     command mv -f "$@"
   else

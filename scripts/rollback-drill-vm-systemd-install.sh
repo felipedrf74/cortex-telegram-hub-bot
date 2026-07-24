@@ -519,10 +519,17 @@ cleanup_install() {
       target="${targets[$index]}"
       backup="${backup_paths[$index]:-}"
       if [ "${had_targets[$index]}" = true ]; then
-        if [ -n "$backup" ] && [ -f "$backup" ]; then
-          mv -fT -- "$backup" "$target" \
-            && fsync_path "$(dirname -- "$target")" \
-            || rollback_failed=true
+        if [ -n "$backup" ] && [[ -f "$backup" && ! -L "$backup" ]]; then
+          if [[ -f "$target" && ! -L "$target" && "$backup" -ef "$target" ]]; then
+            # GNU mv rejects moving a hard-link backup over the unchanged
+            # predecessor. In that boundary the predecessor is already
+            # restored, so only the redundant backup needs durable removal.
+            durable_remove "$backup" || rollback_failed=true
+          else
+            mv -fT -- "$backup" "$target" \
+              && fsync_path "$(dirname -- "$target")" \
+              || rollback_failed=true
+          fi
           backup_paths[$index]=""
         else
           rollback_failed=true
