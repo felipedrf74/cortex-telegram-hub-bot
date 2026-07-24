@@ -78,15 +78,20 @@ describe('root PM2 boot authority', () => {
       writeFileSync(join(root, 'pm2.pid'), `${process.pid}\n`);
       writeFileSync(join(root, 'rpc.sock'), 'poison\n');
       symlinkSync(target, join(root, 'pub.sock'));
-      const result = spawnSync('/bin/bash', ['-c', `
+      const result = spawnSync('/bin/bash', [
+        '-c',
+        `
 set -euo pipefail
 PYTHON_BIN="$(command -v python3)"
-PM2_HOME=${JSON.stringify(root)}
+PM2_HOME="$1"
 WORKER_UID="$(id -u)"
 WORKER_GID="$(id -g)"
 ${shellFunction(boot, 'remove_untrusted_pm2_runtime_files')}
 remove_untrusted_pm2_runtime_files
-`], { encoding: 'utf8' });
+`,
+        'nexus-pm2-stale-runtime-fixture',
+        root,
+      ], { encoding: 'utf8' });
       expect(result.status, result.stderr).toBe(0);
       expect(existsSync(join(root, 'pm2.pid'))).toBe(false);
       expect(existsSync(join(root, 'rpc.sock'))).toBe(false);

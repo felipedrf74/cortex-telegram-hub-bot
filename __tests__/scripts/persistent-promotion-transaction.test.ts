@@ -298,6 +298,16 @@ fi
       ).toString('base64'),
     });
 
+    // GitHub's hosted toolcache may be owned by a provisioning UID that is
+    // neither root nor the runner. Keep the ownership assertion deterministic
+    // by attesting a fixture-owned launcher that delegates to the exact Node
+    // binary used by the test process.
+    const systemNode = path.join(root, 'bin', 'node-root-fixture');
+    fs.writeFileSync(
+      systemNode,
+      `#!/usr/bin/env bash\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+      { mode: 0o755 },
+    );
     const trustedLock = path.join(root, 'pm2-package-lock.json');
     const trustedLockBody = writeJson(trustedLock, {
       name: 'nexus-pm2-root-fixture',
@@ -377,7 +387,7 @@ fi
     }));
     const launcher = path.join(root, 'bin', 'pm2-root');
     const launcherBody = Buffer.from(
-      `#!/usr/bin/bash\nexec ${JSON.stringify(process.execPath)} `
+      `#!/usr/bin/bash\nexec ${JSON.stringify(systemNode)} `
       + `${JSON.stringify(entrypoint)} "$@"\n`,
     );
     fs.writeFileSync(launcher, launcherBody, { mode: 0o755 });
@@ -394,9 +404,9 @@ fi
       launcherSha256: digest(launcherBody),
       entrypoint,
       node: {
-        path: process.execPath,
+        path: systemNode,
         version: 'v22.23.1',
-        sha256: digest(fs.readFileSync(process.execPath)),
+        sha256: digest(fs.readFileSync(systemNode)),
       },
       fileCount: files.length,
       installedAt: new Date().toISOString(),
@@ -614,7 +624,7 @@ set -euo pipefail
       ),
       NEXUS_PROMOTION_PM2_ATTESTATION: pm2Attestation,
       NEXUS_PROMOTION_PM2_BIN: launcher,
-      NEXUS_PROMOTION_NODE_BIN: process.execPath,
+      NEXUS_PROMOTION_NODE_BIN: systemNode,
       NEXUS_PROMOTION_PM2_TRUSTED_LOCK: trustedLock,
       NEXUS_PROMOTION_PM2_INSTALL_JOURNAL: path.join(
         root,

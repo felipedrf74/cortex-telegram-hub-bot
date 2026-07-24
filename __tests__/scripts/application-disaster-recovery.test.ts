@@ -676,9 +676,13 @@ describe('Nexus application disaster-recovery assets', () => {
     };
     const listing = path.join(root, 'listing.json');
     const script = [
-      `NEXUS_DR_PYTHON_BIN=${JSON.stringify(python)}`,
+      'NEXUS_DR_PYTHON_BIN="$1"',
       'NEXUS_DR_S3_BUCKET=nexus-recovery',
-      `tmp_dir=${JSON.stringify(root)}`,
+      'tmp_dir="$2"',
+      'first_page="$3"',
+      'second_page="$4"',
+      'prefix="$5"',
+      'listing="$6"',
       'die() { printf "%s\\n" "$*" >&2; exit 1; }',
       backup.slice(decoderStart, decoderEnd),
       backup.slice(listStart, listEnd),
@@ -688,12 +692,22 @@ describe('Nexus application disaster-recovery assets', () => {
       '  [ "$operation" = list-object-versions ] || return 1',
       '  page_count=$((page_count + 1))',
       '  printf "<%s>\\n" "$@" >>"$tmp_dir/calls.log"',
-      `  if [ "$page_count" -eq 1 ]; then printf '%s\\n' '${JSON.stringify(firstPage)}'`,
-      `  else printf '%s\\n' '${JSON.stringify(secondPage)}'; fi`,
+      '  if [ "$page_count" -eq 1 ]; then printf "%s\\n" "$first_page"',
+      '  else printf "%s\\n" "$second_page"; fi',
       '}',
-      `list_versioned_objects ${JSON.stringify(prefix)} ${JSON.stringify(listing)} database`,
+      'list_versioned_objects "$prefix" "$listing" database',
     ].join('\n');
-    const result = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8' });
+    const result = spawnSync('/bin/bash', [
+      '-c',
+      script,
+      'nexus-dr-pagination-fixture',
+      python,
+      root,
+      JSON.stringify(firstPage),
+      JSON.stringify(secondPage),
+      prefix,
+      listing,
+    ], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(fs.readFileSync(listing, 'utf8'));
     expect(value.pages).toHaveLength(2);
@@ -1059,7 +1073,7 @@ describe('Nexus application disaster-recovery assets', () => {
     const evidencePath = path.join(root, 'controls.json');
     const now = Date.parse('2026-07-23T12:00:00Z') / 1000;
     const common = {
-      schema: 'nexus.application-dr-storage-controls.v1',
+      schema: 'nexus.application-dr-storage-controls.v2',
       endpoint: 'https://objects.example.invalid',
       bucket: 'nexus-recovery',
       prefix: 'nexus-hub/application',
@@ -1085,6 +1099,31 @@ describe('Nexus application disaster-recovery assets', () => {
       provider: 'aws-s3',
       controlMode: 'versioned-s3',
       versioning: { supported: true, status: 'enabled' },
+      databaseProtection: {
+        writeMode: 'conditional-first-point',
+        objectLock: {
+          supported: true,
+          status: 'enabled',
+          mode: 'COMPLIANCE',
+          retentionFloorDays: {
+            hourly: 2,
+            daily: 8,
+            weekly: 35,
+            monthly: 190,
+          },
+        },
+      },
+      cleanup: {
+        owner: 's3-lifecycle',
+        status: 'enabled',
+        databaseExpirationDays: {
+          hourly: 3,
+          daily: 9,
+          weekly: 36,
+          monthly: 191,
+        },
+        releaseExpirationDays: 92,
+      },
       releasePrefixLock: {
         control: 's3-object-lock',
         status: 'enabled',
@@ -1101,10 +1140,15 @@ describe('Nexus application disaster-recovery assets', () => {
     ]);
     expect(s3.status, s3.stderr).toBe(0);
     expect(JSON.parse(s3.stdout)).toMatchObject({
+      schemaVersion: 'NexusApplicationDrStorageControlsVerificationV2',
       status: 'passed',
       provider: 'aws-s3',
       versioningVerified: true,
       approvedVariance: false,
+      databaseWriteOnceVerified: true,
+      databaseObjectLockVerified: true,
+      cleanupOwner: 's3-lifecycle',
+      lifecycleVerified: true,
       releasePrefixLockVerified: true,
     });
 
@@ -1113,6 +1157,22 @@ describe('Nexus application disaster-recovery assets', () => {
       provider: 'cloudflare-r2',
       controlMode: 'r2-approved-variance',
       versioning: { supported: false, status: 'not-supported' },
+      databaseProtection: {
+        writeMode: 'mutable-period-key',
+        objectLock: { supported: false, status: 'not-supported' },
+        retentionVariance: 'client-count-pruning',
+      },
+      cleanup: {
+        owner: 'client-side-pruning',
+        status: 'enabled',
+        databaseRetainedCounts: {
+          hourly: 24,
+          daily: 7,
+          weekly: 4,
+          monthly: 6,
+        },
+        releaseAgeDays: 90,
+      },
       releasePrefixLock: {
         control: 'cloudflare-r2-prefix-lock',
         status: 'enabled',
@@ -1122,7 +1182,7 @@ describe('Nexus application disaster-recovery assets', () => {
       varianceApproval: {
         approvedBy: 'owner',
         approvedAt: '2026-07-23T10:00:00Z',
-        reason: 'r2-has-no-s3-versioning',
+        reason: 'r2-has-no-versioning-or-database-object-lock',
       },
     };
     fs.writeFileSync(evidencePath, JSON.stringify(r2Evidence));
@@ -1135,10 +1195,15 @@ describe('Nexus application disaster-recovery assets', () => {
     ]);
     expect(r2.status, r2.stderr).toBe(0);
     expect(JSON.parse(r2.stdout)).toMatchObject({
+      schemaVersion: 'NexusApplicationDrStorageControlsVerificationV2',
       status: 'passed',
       provider: 'cloudflare-r2',
       versioningVerified: false,
       approvedVariance: true,
+      databaseWriteOnceVerified: false,
+      databaseObjectLockVerified: false,
+      cleanupOwner: 'client-side-pruning',
+      lifecycleVerified: false,
       releasePrefixLockVerified: true,
     });
 
@@ -1170,6 +1235,75 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(fakeR2Versioning.status).not.toBe(0);
     expect(fakeR2Versioning.stderr).toContain(
       'R2 variance must explicitly record unavailable S3 versioning',
+    );
+
+    fs.writeFileSync(evidencePath, JSON.stringify({
+      ...r2Evidence,
+      databaseProtection: {
+        ...r2Evidence.databaseProtection,
+        objectLock: { supported: true, status: 'enabled' },
+      },
+    }));
+    const fakeR2DatabaseLock = runPython([
+      ...args,
+      '--provider',
+      'cloudflare-r2',
+      '--control-mode',
+      'r2-approved-variance',
+    ]);
+    expect(fakeR2DatabaseLock.status).not.toBe(0);
+    expect(fakeR2DatabaseLock.stderr).toContain(
+      'R2 variance must explicitly record mutable database keys',
+    );
+
+    const awsEvidence = {
+      ...common,
+      provider: 'aws-s3',
+      controlMode: 'versioned-s3',
+      versioning: { supported: true, status: 'enabled' },
+      databaseProtection: {
+        writeMode: 'conditional-first-point',
+        objectLock: {
+          supported: true,
+          status: 'enabled',
+          mode: 'COMPLIANCE',
+          retentionFloorDays: {
+            hourly: 2,
+            daily: 8,
+            weekly: 35,
+            monthly: 190,
+          },
+        },
+      },
+      cleanup: {
+        owner: 's3-lifecycle',
+        status: 'disabled',
+        databaseExpirationDays: {
+          hourly: 3,
+          daily: 9,
+          weekly: 36,
+          monthly: 191,
+        },
+        releaseExpirationDays: 92,
+      },
+      releasePrefixLock: {
+        control: 's3-object-lock',
+        status: 'enabled',
+        prefix: 'nexus-hub/application/releases/',
+        retentionDays: 90,
+      },
+    };
+    fs.writeFileSync(evidencePath, JSON.stringify(awsEvidence));
+    const disabledLifecycle = runPython([
+      ...args,
+      '--provider',
+      'aws-s3',
+      '--control-mode',
+      'versioned-s3',
+    ]);
+    expect(disabledLifecycle.status).not.toBe(0);
+    expect(disabledLifecycle.stderr).toContain(
+      'versioned-s3 requires enabled S3 Lifecycle owned cleanup',
     );
   });
 
@@ -1331,27 +1465,49 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(service).toContain('TimeoutStartSec=50min');
     expect(service).toContain('ProtectSystem=strict');
 
-    expect(config).toContain('NEXUS_DR_S3_ENDPOINT=https://');
+    expect(config).toContain(
+      'NEXUS_DR_S3_ENDPOINT=REPLACE_WITH_STACK_OUTPUT_S3Endpoint',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_S3_BUCKET=REPLACE_WITH_STACK_OUTPUT_BucketName',
+    );
     expect(config).toContain('NEXUS_DR_RESTORE_HARNESS=');
     expect(config).toContain('NEXUS_DR_STORAGE_PROVIDER=aws-s3');
     expect(config).toContain('NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3');
-    expect(config).toContain('NEXUS_DR_S3_PREFIX=nexus-hub/application');
+    expect(config).toContain(
+      'NEXUS_DR_S3_PREFIX=REPLACE_WITH_STACK_OUTPUT_DrPrefix',
+    );
     expect(config).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
     expect(config).toContain('AWS_PROFILE=nexus-application-dr-backup');
     expect(config).toContain(
-      'NEXUS_DR_AWS_BACKUP_ROLE_ARN=arn:aws:iam::111122223333:role/replace-with-backup-role-path-and-name',
+      'NEXUS_DR_AWS_BACKUP_ROLE_ARN=REPLACE_WITH_STACK_OUTPUT_BackupPrincipalArn',
     );
     expect(config).toContain(
       'NEXUS_DR_RESTORE_AWS_PROFILE=nexus-application-dr-restore',
     );
     expect(config).toContain(
-      'NEXUS_DR_AWS_RESTORE_ROLE_ARN=arn:aws:iam::111122223333:role/replace-with-restore-role-path-and-name',
+      'NEXUS_DR_AWS_RESTORE_ROLE_ARN=REPLACE_WITH_STACK_OUTPUT_RestorePrincipalArn',
     );
+    expect(config).not.toContain('111122223333');
+    expect(config).not.toMatch(/^NEXUS_DR_AWS_(?:BACKUP|RESTORE)_ROLE_ARN=arn:/m);
     expect(config).not.toMatch(/^AWS_ACCESS_KEY_ID=/m);
     expect(config).not.toMatch(/^AWS_SECRET_ACCESS_KEY=/m);
     expect(awsConfig).toContain('[profile nexus-application-dr-backup]');
     expect(awsConfig).toContain('[profile nexus-application-dr-restore]');
     expect(awsConfig).toContain('aws_signing_helper credential-process');
+    for (const output of [
+      'RolesAnywhereTrustAnchorArn',
+      'BackupRolesAnywhereProfileArn',
+      'BackupPrincipalArn',
+      'RestoreRolesAnywhereProfileArn',
+      'RestorePrincipalArn',
+    ]) {
+      expect(awsConfig).toContain(`REPLACE_WITH_STACK_OUTPUT_${output}`);
+    }
+    expect(awsConfig).not.toContain('111122223333');
+    expect(awsConfig).not.toMatch(
+      /--(?:trust-anchor|profile|role)-arn arn:aws:/,
+    );
     expect(backup).toContain('"$AWS_CREDENTIAL_BOUNDARY_HELPER"');
     expect(backup).toContain('--helper-sha256 "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256"');
     expect(backup).toContain('--expected-role-arn "$NEXUS_DR_AWS_BACKUP_ROLE_ARN"');
@@ -1458,9 +1614,21 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(runbook).toContain('does not consult OCSP or CRL distribution points');
     expect(runbook).toContain('cloudflare-r2:r2-approved-variance');
     expect(runbook).toContain('s3:ListBucketVersions');
-    expect(runbook).toContain('DeleteObjectVersion');
+    expect(runbook).toMatch(
+      /backup identity has no\s+`DeleteObject`, `DeleteObjectVersion`/u,
+    );
     expect(runbook).toMatch(/S3\s+Lifecycle is the only AWS cleanup actor/u);
     expect(runbook).toContain('auto-pagination is disabled');
+    expect(runbook).toContain('legacy mutable-tier writer');
+    expect(runbook).toMatch(/fresh\s+versioned prefix/u);
+    expect(runbook).toMatch(
+      /Never apply the\s+conditional-write deny before its compatible client/u,
+    );
+    expect(runbook).toContain(
+      '"schema": "nexus.application-dr-storage-controls.v2"',
+    );
+    expect(runbook).toContain('"writeMode": "conditional-first-point"');
+    expect(runbook).toContain('"owner": "client-side-pruning"');
     expect(runbook).toContain('private network, mount, and PID namespaces');
     expect(currentReleaseState).toContain(
       'signed root-owned promotion transaction is the sole runtime or',

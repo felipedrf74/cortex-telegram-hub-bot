@@ -5,10 +5,12 @@
 # Use only the exact role, trust-anchor, and profile ARNs emitted by the reviewed
 # aws-s3-stack.yaml managed-mode change set. Backup and restore must use
 # different leaf certificates and private keys whose CNs match the stack inputs.
+# The deliberately non-ARN REPLACE_WITH_STACK_OUTPUT_* values must be replaced
+# verbatim from the named CloudFormation outputs; never infer generated names.
 [profile nexus-application-dr-backup]
 region = eu-west-1
-credential_process = /usr/local/libexec/nexus-application-dr/aws_signing_helper credential-process --certificate /etc/nexus-application-dr/roles-anywhere-certificate.pem --private-key /etc/nexus-application-dr/roles-anywhere-private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/replace-with-trust-anchor-id --profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/replace-with-profile-id --role-arn arn:aws:iam::111122223333:role/replace-with-backup-role-path-and-name --session-duration 900
+credential_process = /usr/local/libexec/nexus-application-dr/aws_signing_helper credential-process --certificate /etc/nexus-application-dr/roles-anywhere-certificate.pem --private-key /etc/nexus-application-dr/roles-anywhere-private-key.pem --trust-anchor-arn REPLACE_WITH_STACK_OUTPUT_RolesAnywhereTrustAnchorArn --profile-arn REPLACE_WITH_STACK_OUTPUT_BackupRolesAnywhereProfileArn --role-arn REPLACE_WITH_STACK_OUTPUT_BackupPrincipalArn --session-duration 900
 
 [profile nexus-application-dr-restore]
 region = eu-west-1
-credential_process = /usr/local/libexec/nexus-application-dr/aws_signing_helper credential-process --certificate /etc/nexus-application-dr/roles-anywhere-restore-certificate.pem --private-key /etc/nexus-application-dr/roles-anywhere-restore-private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/replace-with-trust-anchor-id --profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/replace-with-restore-profile-id --role-arn arn:aws:iam::111122223333:role/replace-with-restore-role-path-and-name --session-duration 900
+credential_process = /usr/local/libexec/nexus-application-dr/aws_signing_helper credential-process --certificate /etc/nexus-application-dr/roles-anywhere-restore-certificate.pem --private-key /etc/nexus-application-dr/roles-anywhere-restore-private-key.pem --trust-anchor-arn REPLACE_WITH_STACK_OUTPUT_RolesAnywhereTrustAnchorArn --profile-arn REPLACE_WITH_STACK_OUTPUT_RestoreRolesAnywhereProfileArn --role-arn REPLACE_WITH_STACK_OUTPUT_RestorePrincipalArn --session-duration 900

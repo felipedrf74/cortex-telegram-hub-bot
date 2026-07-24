@@ -104,6 +104,21 @@ Review a later change set that changes only `LifecycleActivation` to
 credential path, and writing any live DR configuration require explicit owner
 approval.
 
+The final `If-None-Match: *` bucket policy is intentionally incompatible with
+the legacy mutable-tier writer. For the current empty AWS namespace, deploy the
+final write-once stack directly with both activation parameters disabled. If a
+future migration targets any nonempty legacy prefix, do not enable the final
+write policy or lifecycle in place. Immediately after a confirmed recovery
+point, stop the timer, inventory every exact legacy VersionId, keep lifecycle
+disabled for that namespace, preinstall the write-once client, and bind a fresh
+versioned prefix through a reviewed change set. Run and verify one observed
+locked backup in the fresh prefix before enabling its lifecycle. Keep the
+legacy prefix and its lifecycle unchanged until the fresh namespace proves 24
+consecutive hourly, 7 daily, 4 ISO-weekly, and 6 monthly points plus the
+required exact-release escrow. Retire the legacy namespace only through a
+separate owner-reviewed change set and retained inventory. Never apply the
+conditional-write deny before its compatible client is installed.
+
 ServerDominguez is not EC2 and has no instance profile. The default AWS design
 is IAM Roles Anywhere with 900-second credentials, a dedicated backup role, and
 a root-only pinned `aws_signing_helper` credential process. Managed mode binds
@@ -191,7 +206,7 @@ or raw private evidence in this JSON. Refresh the control observation at least
 every 30 days. The exact versioned-S3 shape is:
 
   {
-    "schema": "nexus.application-dr-storage-controls.v1",
+    "schema": "nexus.application-dr-storage-controls.v2",
     "provider": "aws-s3",
     "controlMode": "versioned-s3",
     "endpoint": "<exact configured HTTPS endpoint>",
@@ -200,6 +215,31 @@ every 30 days. The exact versioned-S3 shape is:
     "verifiedAt": "YYYY-MM-DDTHH:MM:SSZ",
     "verificationReference": "private-evidence:s3-controls-YYYYMMDD",
     "versioning": {"supported": true, "status": "enabled"},
+    "databaseProtection": {
+      "writeMode": "conditional-first-point",
+      "objectLock": {
+        "supported": true,
+        "status": "enabled",
+        "mode": "COMPLIANCE",
+        "retentionFloorDays": {
+          "hourly": 2,
+          "daily": 8,
+          "weekly": 35,
+          "monthly": 190
+        }
+      }
+    },
+    "cleanup": {
+      "owner": "s3-lifecycle",
+      "status": "enabled",
+      "databaseExpirationDays": {
+        "hourly": 3,
+        "daily": 9,
+        "weekly": 36,
+        "monthly": 191
+      },
+      "releaseExpirationDays": 92
+    },
     "releasePrefixLock": {
       "control": "s3-object-lock",
       "status": "enabled",
@@ -211,7 +251,7 @@ every 30 days. The exact versioned-S3 shape is:
 The exact R2 variance shape adds the governed approval:
 
   {
-    "schema": "nexus.application-dr-storage-controls.v1",
+    "schema": "nexus.application-dr-storage-controls.v2",
     "provider": "cloudflare-r2",
     "controlMode": "r2-approved-variance",
     "endpoint": "<exact configured HTTPS R2 endpoint>",
@@ -220,6 +260,22 @@ The exact R2 variance shape adds the governed approval:
     "verifiedAt": "YYYY-MM-DDTHH:MM:SSZ",
     "verificationReference": "private-evidence:r2-bucket-lock-YYYYMMDD",
     "versioning": {"supported": false, "status": "not-supported"},
+    "databaseProtection": {
+      "writeMode": "mutable-period-key",
+      "objectLock": {"supported": false, "status": "not-supported"},
+      "retentionVariance": "client-count-pruning"
+    },
+    "cleanup": {
+      "owner": "client-side-pruning",
+      "status": "enabled",
+      "databaseRetainedCounts": {
+        "hourly": 24,
+        "daily": 7,
+        "weekly": 4,
+        "monthly": 6
+      },
+      "releaseAgeDays": 90
+    },
     "releasePrefixLock": {
       "control": "cloudflare-r2-prefix-lock",
       "status": "enabled",
@@ -229,7 +285,7 @@ The exact R2 variance shape adds the governed approval:
     "varianceApproval": {
       "approvedBy": "owner",
       "approvedAt": "YYYY-MM-DDTHH:MM:SSZ",
-      "reason": "r2-has-no-s3-versioning"
+      "reason": "r2-has-no-versioning-or-database-object-lock"
     }
   }
 

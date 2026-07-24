@@ -261,7 +261,12 @@ describe('detached staging attestation', () => {
       '--private-key', files.privateKey,
       '--expect-runtime-sha', runtimeSha,
     ];
-    let signingEnv = process.env;
+    const {
+      GITHUB_RUN_ID: _githubRunId,
+      GITHUB_RUN_ATTEMPT: _githubRunAttempt,
+      ...unprotectedSigningEnv
+    } = process.env;
+    let signingEnv = unprotectedSigningEnv;
     if (protectedSigning) {
       const requestBody = fs.readFileSync(files.request);
       const request = JSON.parse(requestBody.toString('utf8'));

@@ -69,8 +69,9 @@ logs, command output, chat, or release evidence.
 - Encrypt backups before off-host transfer.
 - The root-owned `nexus-application-dr-backup.timer` creates an online SQLite
   recovery point hourly and encrypts it with an off-host `age` recipient before
-  S3-compatible upload. Retain 24 hourly, 7 daily, 4 weekly, and 6 monthly
-  database points.
+  S3-compatible upload. After each tier matures, maintain verified steady-state
+  minimum floors of 24 hourly, 7 daily, 4 weekly, and 6 monthly database points.
+  Before maturity, report warming explicitly; never claim the full floor early.
 - Escrow every exact-release rollback archive off-host for 90 days; keep the
   existing latest-ten local policy. Each promotion additionally requires a
   pre-mutation candidate recovery-runtime object plus database point and a
@@ -101,8 +102,12 @@ logs, command output, chat, or release evidence.
   to mature. Cloudflare R2 is accepted only through
   the owner-approved `r2-approved-variance`, with current private control-plane
   evidence for an exact releases-prefix bucket lock of at least 90 days. The
-  mode-0600 control evidence must be refreshed within 30 days; never claim R2
-  versioning.
+  mode-0600 v2 control evidence must be refreshed within 30 days. AWS evidence
+  must bind conditional first-point writes, the exact 2/8/35/190 database lock
+  floors, enabled 3/9/36/191 plus 92-day lifecycle cleanup, and S3 Lifecycle as
+  cleanup owner. R2 evidence must state that database versioning and Object Lock
+  are unavailable and that client-side count pruning is the approved variance;
+  never claim R2 versioning.
 - Scope AWS backup IAM to `s3:ListBucketVersions` and exact-tier
   Get/Head/conditional Put plus bounded Object Lock actions. Explicitly deny
   `DeleteObject`, `DeleteObjectVersion`, legal-hold changes, and bucket-policy,
