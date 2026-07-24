@@ -568,6 +568,13 @@ readiness; do not enable guest egress or copy production data to close this
 gate. The exact commands and authorization schema are in
 `ops/rollback-drill-vm/OPERATIONS.txt`.
 
+The real evidence bundle requires the exact `execution.json` receipt in
+addition to all three outcomes. Each outcome binds the receipt digest and
+repeats its strictly-sequential mode and `testMode=false` identity; the receipt
+binds their ordered payload digests. Collection and verification reject a
+missing, substituted, reordered, or test-mode receipt before rollback freshness
+evidence can be produced.
+
 The installer and provisioner do not start a guest. Starting an explicit slot
 remains a separate owner-observed drill action:
 

@@ -273,6 +273,15 @@ a terminal outcome is fully measured. If execution fails after launch, it
 leaves that isolated guest running so the durable guest recovery transaction
 can finish and does not start the next overlay.
 
+Keep execution.json with all three outcome files. Each outcome binds the exact
+receipt digest plus executionMode and testMode; the receipt binds the ordered
+outcome payload digests, exact plan, single-guest maximum, and completion time.
+The evidence collect command requires --execution <execution.json>, revalidates
+every bidirectional binding, and rejects testMode=true before creating a
+machine-evidence directory. Verification requires the same canonical receipt
+inside the bundle. Never copy only the three outcome files into an evidence
+collection.
+
 For guest-reboot, the first stop/start happens only after durable recovery
 intent and predecessor-stop evidence. After recovered state and exact
 predecessor health are proved, the coordinator performs a second clean reboot

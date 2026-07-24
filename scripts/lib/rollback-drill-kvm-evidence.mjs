@@ -12,6 +12,7 @@ export const SCHEMAS = Object.freeze({
   authorizationPayload: 'nexus.rollback-drill-kvm-owner-authorization-payload.v1',
   isolation: 'nexus.rollback-drill-kvm-isolation.v1',
   drill: 'nexus.rollback-drill-kvm-outcome.v1',
+  execution: 'nexus.rollback-drill-kvm-execution.v1',
   manifest: 'nexus.rollback-drill-kvm-machine-evidence.v1',
   rollbackRequest: 'nexus.rollback-drill-payload.v1',
   restore: 'NexusApplicationRestoreDrillV1',
@@ -63,6 +64,7 @@ const INTERFACE_VALUES = Object.freeze({
   controlVersion: 'nexus-release-promotion-control.v3',
   recoveryUnit: 'nexus-release-promotion-recovery.service',
 });
+const EXECUTION_MODE = 'strictly-sequential';
 
 const PLAN_FIELDS = Object.freeze([
   'schema',
@@ -240,6 +242,9 @@ const ISOLATION_OVERLAY_FIELDS = Object.freeze([
 const DRILL_FIELDS = Object.freeze([
   'schema',
   'planId',
+  'executionMode',
+  'testMode',
+  'executionReceiptSha256',
   'drill',
   'overlayId',
   'transactionId',
@@ -255,6 +260,21 @@ const DRILL_FIELDS = Object.freeze([
   'recoveryResultSha256',
   'postTerminalReboot',
   'timeline',
+]);
+const EXECUTION_FIELDS = Object.freeze([
+  'schema',
+  'planId',
+  'planSha256',
+  'executionMode',
+  'maximumActiveGuests',
+  'testMode',
+  'outcomes',
+  'completedAt',
+]);
+const EXECUTION_OUTCOME_FIELDS = Object.freeze([
+  'drill',
+  'path',
+  'payloadSha256',
 ]);
 const POST_TERMINAL_REBOOT_FIELDS = Object.freeze([
   'beforeGuestBootIdSha256',
@@ -284,9 +304,18 @@ const MANIFEST_FIELDS = Object.freeze([
   'planSha256',
   'authorizationSha256',
   'isolationSha256',
+  'execution',
   'restore',
   'drills',
   'files',
+]);
+const MANIFEST_EXECUTION_FIELDS = Object.freeze([
+  'schema',
+  'executionMode',
+  'maximumActiveGuests',
+  'testMode',
+  'receiptSha256',
+  'completedAt',
 ]);
 const MANIFEST_RESTORE_FIELDS = Object.freeze([
   'schemaVersion',
@@ -1311,13 +1340,22 @@ export function validateDrillOutcome(
   outcome,
   plan,
   isolation,
-  { nowMs = Date.now() } = {},
+  { nowMs = Date.now(), allowUnboundExecution = false } = {},
 ) {
   validatePlan(plan, { nowMs, allowExpired: true });
   validateIsolationEvidence(isolation, plan, { nowMs });
   assertExactFields(outcome, DRILL_FIELDS, 'drill_outcome');
   if (outcome.schema !== SCHEMAS.drill) fail('drill_outcome_schema_unsupported');
   if (outcome.planId !== plan.planId) fail('drill_outcome_plan_id_mismatch');
+  if (outcome.executionMode !== EXECUTION_MODE) fail('drill_execution_mode_invalid');
+  assertBoolean(outcome.testMode, undefined, 'drill_test_mode_invalid');
+  if (allowUnboundExecution && outcome.executionReceiptSha256 === null) {
+    // The coordinator validates the measured outcome before it has enough
+    // information to build the ordered execution receipt. Collection never
+    // permits this provisional state.
+  } else {
+    assertDigest(outcome.executionReceiptSha256, 'drill_execution_receipt_digest_invalid');
+  }
   if (!DRILL_NAMES.includes(outcome.drill)) fail('drill_name_invalid');
   const overlay = plan.overlays.find((entry) => entry.drill === outcome.drill);
   if (!overlay || outcome.overlayId !== overlay.overlayId) fail('drill_overlay_mismatch');
@@ -1543,11 +1581,120 @@ export function readBoundedJson(file, label = 'input') {
   }
 }
 
-function canonicalSources({ plan, authorization, isolation, restore, outcomes }) {
+function executionOutcomePayload(outcome) {
+  const payload = { ...outcome };
+  delete payload.executionReceiptSha256;
+  return payload;
+}
+
+export function buildExecutionReceipt(
+  plan,
+  outcomes,
+  {
+    testMode,
+    completedAt,
+  },
+) {
+  assertExactFields(outcomes, DRILL_NAMES, 'execution_outcomes');
+  const receipt = {
+    schema: SCHEMAS.execution,
+    planId: plan.planId,
+    planSha256: sha256Json(plan),
+    executionMode: EXECUTION_MODE,
+    maximumActiveGuests: 1,
+    testMode,
+    outcomes: DRILL_NAMES.map((drill) => ({
+      drill,
+      path: `${drill}.json`,
+      payloadSha256: sha256Json(executionOutcomePayload(outcomes[drill])),
+    })),
+    completedAt,
+  };
+  return receipt;
+}
+
+export function bindExecutionReceipt(execution, outcomes) {
+  const executionReceiptSha256 = sha256Bytes(canonicalJsonBuffer(execution));
+  return Object.fromEntries(DRILL_NAMES.map((drill) => [
+    drill,
+    {
+      ...outcomes[drill],
+      executionReceiptSha256,
+    },
+  ]));
+}
+
+export function validateExecutionReceipt(
+  execution,
+  plan,
+  outcomes,
+  {
+    nowMs = Date.now(),
+    allowTestMode = false,
+  } = {},
+) {
+  assertExactFields(execution, EXECUTION_FIELDS, 'execution_receipt');
+  if (execution.schema !== SCHEMAS.execution) fail('execution_receipt_schema_unsupported');
+  if (execution.planId !== plan.planId || execution.planSha256 !== sha256Json(plan)) {
+    fail('execution_receipt_plan_mismatch');
+  }
+  if (execution.executionMode !== EXECUTION_MODE || execution.maximumActiveGuests !== 1) {
+    fail('execution_receipt_mode_invalid');
+  }
+  assertBoolean(execution.testMode, undefined, 'execution_receipt_test_mode_invalid');
+  if (!allowTestMode && execution.testMode !== false) {
+    fail('execution_receipt_test_mode_rejected');
+  }
+  assertArray(
+    execution.outcomes,
+    DRILL_NAMES.length,
+    DRILL_NAMES.length,
+    'execution_receipt_outcomes_invalid',
+  );
+  assertExactFields(outcomes, DRILL_NAMES, 'execution_outcomes');
+  const receiptSha256 = sha256Bytes(canonicalJsonBuffer(execution));
+  let latestOutcome = 0;
+  execution.outcomes.forEach((record, index) => {
+    assertExactFields(record, EXECUTION_OUTCOME_FIELDS, 'execution_receipt_outcome');
+    const drill = DRILL_NAMES[index];
+    if (record.drill !== drill || record.path !== `${drill}.json`) {
+      fail('execution_receipt_outcome_order_invalid');
+    }
+    assertDigest(record.payloadSha256, 'execution_receipt_outcome_digest_invalid');
+    const outcome = outcomes[drill];
+    if (record.payloadSha256 !== sha256Json(executionOutcomePayload(outcome))) {
+      fail(`execution_receipt_outcome_mismatch:${drill}`);
+    }
+    if (outcome.executionMode !== execution.executionMode
+        || outcome.testMode !== execution.testMode
+        || outcome.executionReceiptSha256 !== receiptSha256) {
+      fail(`execution_receipt_binding_mismatch:${drill}`);
+    }
+    latestOutcome = Math.max(
+      latestOutcome,
+      parseIso(outcome.timeline.at(-1)?.observedAt, 'execution_outcome_completed_at_invalid'),
+    );
+  });
+  const completed = parseIso(execution.completedAt, 'execution_receipt_completed_at_invalid');
+  if (completed < latestOutcome || completed > nowMs + CLOCK_SKEW_MS) {
+    fail('execution_receipt_completion_time_invalid');
+  }
+  return execution;
+}
+
+function canonicalSources({
+  plan,
+  authorization,
+  isolation,
+  execution,
+  restore,
+  outcomes,
+}) {
   const sources = new Map([
     ['plan.json', canonicalJsonBuffer(plan)],
     ['owner-authorization.json', canonicalJsonBuffer(authorization)],
     ['isolation.json', canonicalJsonBuffer(isolation)],
+    ['execution.json', canonicalJsonBuffer(execution)],
     ['restore.json', canonicalJsonBuffer(restore)],
   ]);
   for (const drill of DRILL_NAMES) {
@@ -1571,6 +1718,7 @@ function validatedComponents(
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
     keys,
@@ -1613,6 +1761,7 @@ function validatedComponents(
     DRILL_NAMES.map((drill) => outcomes[drill].timeline[0].guestBootIdSha256),
     'drill_initial_guest_boot_id_reuse',
   );
+  validateExecutionReceipt(execution, plan, outcomes, { nowMs });
   return validatedOutcomes;
 }
 
@@ -1621,6 +1770,7 @@ function buildManifest(
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
   },
@@ -1630,6 +1780,7 @@ function buildManifest(
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
   });
@@ -1652,6 +1803,14 @@ function buildManifest(
     planSha256: sha256Json(plan),
     authorizationSha256: sha256Json(authorization),
     isolationSha256: sha256Json(isolation),
+    execution: {
+      schema: execution.schema,
+      executionMode: execution.executionMode,
+      maximumActiveGuests: execution.maximumActiveGuests,
+      testMode: execution.testMode,
+      receiptSha256: sha256Bytes(canonicalJsonBuffer(execution)),
+      completedAt: execution.completedAt,
+    },
     restore: {
       schemaVersion: restore.schemaVersion,
       targetBackup: plan.release.targetBackup,
@@ -1690,6 +1849,15 @@ function validateManifestShape(manifest) {
   for (const field of ['planSha256', 'authorizationSha256', 'isolationSha256']) {
     assertDigest(manifest[field], `manifest_${field}_invalid`);
   }
+  assertExactFields(manifest.execution, MANIFEST_EXECUTION_FIELDS, 'manifest_execution');
+  if (manifest.execution.schema !== SCHEMAS.execution
+      || manifest.execution.executionMode !== EXECUTION_MODE
+      || manifest.execution.maximumActiveGuests !== 1
+      || manifest.execution.testMode !== false) {
+    fail('manifest_execution_invalid');
+  }
+  assertDigest(manifest.execution.receiptSha256, 'manifest_execution_receipt_digest_invalid');
+  parseIso(manifest.execution.completedAt, 'manifest_execution_completed_at_invalid');
   assertExactFields(manifest.restore, MANIFEST_RESTORE_FIELDS, 'manifest_restore');
   if (manifest.restore.schemaVersion !== SCHEMAS.restore) fail('manifest_restore_schema_invalid');
   assertString(manifest.restore.targetBackup, SAFE_BACKUP, 'manifest_target_backup_invalid');
@@ -1726,7 +1894,7 @@ function validateManifestShape(manifest) {
     parseIso(drill.completedAt, 'manifest_drill_completed_at_invalid');
     assertDigest(drill.outcomeSha256, 'manifest_outcome_digest_invalid');
   });
-  assertArray(manifest.files, 7, 7, 'manifest_files_invalid');
+  assertArray(manifest.files, 8, 8, 'manifest_files_invalid');
   const paths = [];
   let total = 0;
   for (const record of manifest.files) {
@@ -1735,6 +1903,7 @@ function validateManifestShape(manifest) {
       'plan.json',
       'owner-authorization.json',
       'isolation.json',
+      'execution.json',
       'restore.json',
       ...DRILL_NAMES.map((drill) => `drills/${drill}.json`),
     ].includes(record.path)) {
@@ -1818,6 +1987,7 @@ function assertExactBundleLayout(bundleDir) {
   const rootEntries = fs.readdirSync(resolved).sort();
   const expectedRoot = [
     'drills',
+    'execution.json',
     'isolation.json',
     'manifest.json',
     'owner-authorization.json',
@@ -1848,6 +2018,7 @@ function readBundleComponents(bundleDir) {
     'bundle_authorization',
   );
   const isolation = readBoundedJson(path.join(resolved, 'isolation.json'), 'bundle_isolation');
+  const execution = readBoundedJson(path.join(resolved, 'execution.json'), 'bundle_execution');
   const restore = readBoundedJson(path.join(resolved, 'restore.json'), 'bundle_restore');
   const outcomes = {};
   for (const drill of DRILL_NAMES) {
@@ -1862,6 +2033,7 @@ function readBundleComponents(bundleDir) {
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
     manifest,

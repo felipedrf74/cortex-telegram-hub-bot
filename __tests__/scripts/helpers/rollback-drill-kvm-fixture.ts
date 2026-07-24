@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  bindExecutionReceipt,
+  buildExecutionReceipt,
   canonicalJson,
   publicKeyIdentity,
   textKeyIdentity,
@@ -95,6 +97,9 @@ function outcome(
   return {
     schema: 'nexus.rollback-drill-kvm-outcome.v1',
     planId: plan.planId,
+    executionMode: 'strictly-sequential',
+    testMode: false,
+    executionReceiptSha256: null,
     drill,
     overlayId: plan.overlays.find((entry: any) => entry.drill === drill).overlayId,
     transactionId: `20260724T12000${sequence}Z-${sequence}-${String(sequence).repeat(12)}`,
@@ -452,11 +457,20 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     technicalRestoreScope: 'selected-object-download-through-isolated-application-smoke',
     completedAt: iso(nowMs - 30 * 60 * 1000),
   };
-  const outcomes = {
+  const provisionalOutcomes = {
     'ssh-loss': outcome(nowMs, plan, isolation, 'ssh-loss', 1, 20),
     'failed-health': outcome(nowMs, plan, isolation, 'failed-health', 2, 15),
     'guest-reboot': outcome(nowMs, plan, isolation, 'guest-reboot', 3, 10),
   };
+  const completedAt = Object.values(provisionalOutcomes)
+    .map((entry: any) => entry.timeline.at(-1).observedAt)
+    .sort()
+    .at(-1);
+  const execution = buildExecutionReceipt(plan, provisionalOutcomes, {
+    testMode: false,
+    completedAt,
+  });
+  const outcomes = bindExecutionReceipt(execution, provisionalOutcomes);
   const keys = {
     guestOwnerPublicKeyPem,
     productionOwnerPublicKeyPem,
@@ -471,6 +485,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
     keys,
@@ -483,6 +498,7 @@ export function writeKvmDrillFixture(root: string, fixture: ReturnType<typeof ma
     'plan.json': fixture.plan,
     'authorization.json': fixture.authorization,
     'isolation.json': fixture.isolation,
+    'execution.json': fixture.execution,
     'restore.json': fixture.restore,
     'ssh-loss.json': fixture.outcomes['ssh-loss'],
     'failed-health.json': fixture.outcomes['failed-health'],

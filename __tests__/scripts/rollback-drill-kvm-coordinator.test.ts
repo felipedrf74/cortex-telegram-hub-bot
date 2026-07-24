@@ -6,6 +6,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  bindExecutionReceipt,
+  buildExecutionReceipt,
   buildLocalExecutionPlan,
   buildRollbackRequest,
   collectBundle,
@@ -410,6 +412,43 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
     )).toThrow('drill_outcome_fields_invalid');
   });
 
+  it('rejects self-consistent test-mode execution before creating machine evidence', () => {
+    const provisionalOutcomes = Object.fromEntries(
+      Object.entries(fixture.outcomes).map(([drill, outcome]) => [
+        drill,
+        {
+          ...(structuredClone(outcome) as any),
+          testMode: true,
+          executionReceiptSha256: null,
+        },
+      ]),
+    );
+    const execution = buildExecutionReceipt(fixture.plan, provisionalOutcomes, {
+      testMode: true,
+      completedAt: fixture.execution.completedAt,
+    });
+    const outcomes = bindExecutionReceipt(execution, provisionalOutcomes);
+    const destination = path.join(root, 'test-mode-bundle');
+    expect(() => collectBundle(
+      { ...fixture, execution, outcomes },
+      destination,
+      { nowMs: fixture.nowMs },
+    )).toThrow('execution_receipt_test_mode_rejected');
+    expect(fs.existsSync(destination)).toBe(false);
+  });
+
+  it('rejects a substituted execution receipt before creating machine evidence', () => {
+    const execution = structuredClone(fixture.execution);
+    execution.completedAt = new Date(Date.parse(execution.completedAt) + 1_000).toISOString();
+    const destination = path.join(root, 'substituted-execution-bundle');
+    expect(() => collectBundle(
+      { ...fixture, execution },
+      destination,
+      { nowMs: fixture.nowMs },
+    )).toThrow('execution_receipt_binding_mismatch:ssh-loss');
+    expect(fs.existsSync(destination)).toBe(false);
+  });
+
   it('rejects recovery beyond 120 seconds and a reboot without a changed guest boot id', () => {
     const slow = structuredClone(fixture.outcomes['failed-health']);
     const stopped = slow.timeline.find((entry: any) => entry.event === 'predecessor_stopped');
@@ -510,12 +549,47 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
     fs.writeFileSync(path.join(extra.bundlePath, 'operator-notes.txt'), 'manual claim\n');
     expect(() => verifyBundle(extra.bundlePath, fixture.keys, { nowMs: fixture.nowMs }))
       .toThrow('bundle_layout_invalid');
+
+    const missingExecution = collectBundle(
+      fixture,
+      path.join(root, 'missing-execution-bundle'),
+      { nowMs: fixture.nowMs },
+    );
+    fs.unlinkSync(path.join(missingExecution.bundlePath, 'execution.json'));
+    expect(() => verifyBundle(
+      missingExecution.bundlePath,
+      fixture.keys,
+      { nowMs: fixture.nowMs },
+    )).toThrow('bundle_layout_invalid');
   });
 
   it('collects, verifies, and emits an unsigned existing-schema request through the CLI', () => {
     const inputs = path.join(root, 'cli-inputs');
     writeKvmDrillFixture(inputs, fixture);
     const requestedBundle = path.join(root, 'cli-bundle');
+    const missingExecution = spawnSync(
+      process.execPath,
+      [
+        coordinator,
+        'collect',
+        '--plan', path.join(inputs, 'plan.json'),
+        '--authorization', path.join(inputs, 'authorization.json'),
+        '--isolation', path.join(inputs, 'isolation.json'),
+        '--restore', path.join(inputs, 'restore.json'),
+        '--ssh-loss', path.join(inputs, 'ssh-loss.json'),
+        '--failed-health', path.join(inputs, 'failed-health.json'),
+        '--guest-reboot', path.join(inputs, 'guest-reboot.json'),
+        ...keyArgsFor(inputs),
+        '--output-dir', requestedBundle,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(missingExecution.status).toBe(1);
+    expect(JSON.parse(missingExecution.stderr)).toEqual({
+      ok: false,
+      code: 'flag_required:--execution',
+    });
+    expect(fs.existsSync(requestedBundle)).toBe(false);
     const collectResult = spawnSync(
       process.execPath,
       [
@@ -524,6 +598,7 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
         '--plan', path.join(inputs, 'plan.json'),
         '--authorization', path.join(inputs, 'authorization.json'),
         '--isolation', path.join(inputs, 'isolation.json'),
+        '--execution', path.join(inputs, 'execution.json'),
         '--restore', path.join(inputs, 'restore.json'),
         '--ssh-loss', path.join(inputs, 'ssh-loss.json'),
         '--failed-health', path.join(inputs, 'failed-health.json'),
@@ -673,11 +748,41 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       assertIdle: true,
       exactRuntimeHealthy: true,
     }));
+    expect(reboot).toEqual(expect.objectContaining({
+      executionMode: 'strictly-sequential',
+      testMode: true,
+      executionReceiptSha256: result.receiptSha256,
+    }));
     expect(validateDrillOutcome(
       reboot,
       fixture.plan,
       fixture.isolation,
     ).recoveryMilliseconds).toBeLessThanOrEqual(120_000);
+    const rejectedBundle = path.join(canonicalRoot, 'test-mode-machine-evidence');
+    const rejectedCollection = spawnSync(
+      process.execPath,
+      [
+        coordinator,
+        'collect',
+        '--plan', path.join(canonicalInputs, 'plan.json'),
+        '--authorization', path.join(canonicalInputs, 'authorization.json'),
+        '--isolation', path.join(canonicalInputs, 'isolation.json'),
+        '--execution', path.join(output, 'execution.json'),
+        '--restore', path.join(canonicalInputs, 'restore.json'),
+        '--ssh-loss', path.join(output, 'ssh-loss.json'),
+        '--failed-health', path.join(output, 'failed-health.json'),
+        '--guest-reboot', path.join(output, 'guest-reboot.json'),
+        ...keyArgsFor(canonicalInputs),
+        '--output-dir', rejectedBundle,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(rejectedCollection.status).toBe(1);
+    expect(JSON.parse(rejectedCollection.stderr)).toEqual({
+      ok: false,
+      code: 'execution_receipt_test_mode_rejected',
+    });
+    expect(fs.existsSync(rejectedBundle)).toBe(false);
 
     const fakeState = JSON.parse(fs.readFileSync(fake.state, 'utf8'));
     expect(Object.values(fakeState.guests).every((guest: any) => guest.active === false))

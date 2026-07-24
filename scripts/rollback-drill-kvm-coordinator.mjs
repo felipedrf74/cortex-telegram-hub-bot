@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   EvidenceError,
+  bindExecutionReceipt,
+  buildExecutionReceipt,
   buildLocalExecutionPlan,
   buildRollbackRequest,
   canonicalJsonBuffer,
@@ -17,6 +19,7 @@ import {
   validateIsolationEvidence,
   validateKeySet,
   validateDrillOutcome,
+  validateExecutionReceipt,
   validateOwnerAuthorization,
   validatePlan,
   verifyBundle,
@@ -41,6 +44,7 @@ const FLAGS = Object.freeze({
     '--plan',
     '--authorization',
     '--isolation',
+    '--execution',
     '--restore',
     '--ssh-loss',
     '--failed-health',
@@ -783,7 +787,7 @@ function postTerminalReboot(context, beforeBootId, journalSha256, expectedRuntim
   const after = rebootGuest(context, `${context.overlay.drill}_clean_reboot`);
   if (after.machineIdSha256 !== context.isolationOverlay.guestMachineIdSha256
       || after.bootIdSha256 === beforeBootId
-      || after.bootIdSha256 === context.isolationOverlay.guestBootIdSha256) {
+      || after.bootIdSha256 === context.isolationOverlay.readinessBootIdSha256) {
     fail('post_terminal_reboot_identity_invalid');
   }
   const version = sudoControl(context, ['version'], 'post_terminal_control_version').trim();
@@ -1009,6 +1013,9 @@ function executeOneDrill(context) {
     return {
       schema: 'nexus.rollback-drill-kvm-outcome.v1',
       planId: context.plan.planId,
+      executionMode: 'strictly-sequential',
+      testMode: TEST_MODE,
+      executionReceiptSha256: null,
       drill: context.overlay.drill,
       overlayId: context.overlay.overlayId,
       transactionId: request.transactionId,
@@ -1076,7 +1083,7 @@ function executeSequentialDrills(plan, isolation, keys, values) {
     plan,
     keys.guestSshHostPublicKey,
   );
-  const files = [];
+  const provisionalOutcomes = {};
   const transactionIds = new Set();
   const requestDigests = new Set();
   for (let index = 0; index < plan.overlays.length; index += 1) {
@@ -1098,27 +1105,23 @@ function executeSequentialDrills(plan, isolation, keys, values) {
       knownHosts: knownHosts.get(overlay.overlayId),
       hostUnit: `nexus-rollback-drill-vm@guest-${index + 1}.service`,
     });
-    validateDrillOutcome(outcome, plan, isolation);
+    validateDrillOutcome(outcome, plan, isolation, { allowUnboundExecution: true });
     if (transactionIds.has(outcome.transactionId)) fail('execution_transaction_id_reuse');
     if (requestDigests.has(outcome.requestSha256)) fail('execution_request_digest_reuse');
     transactionIds.add(outcome.transactionId);
     requestDigests.add(outcome.requestSha256);
-    files.push(publishCanonicalJson(outputRoot, `${overlay.drill}.json`, outcome));
+    provisionalOutcomes[overlay.drill] = outcome;
   }
-  const receipt = {
-    schema: 'nexus.rollback-drill-kvm-execution.v1',
-    planId: plan.planId,
-    planSha256: sha256Json(plan),
-    executionMode: 'strictly-sequential',
-    maximumActiveGuests: 1,
+  const receipt = buildExecutionReceipt(plan, provisionalOutcomes, {
     testMode: TEST_MODE,
-    outcomes: files.map((entry, index) => ({
-      drill: plan.overlays[index].drill,
-      path: path.basename(entry.path),
-      sha256: entry.sha256,
-    })),
     completedAt: new Date().toISOString(),
-  };
+  });
+  const outcomes = bindExecutionReceipt(receipt, provisionalOutcomes);
+  validateExecutionReceipt(receipt, plan, outcomes, { allowTestMode: TEST_MODE });
+  for (const overlay of plan.overlays) {
+    validateDrillOutcome(outcomes[overlay.drill], plan, isolation);
+    publishCanonicalJson(outputRoot, `${overlay.drill}.json`, outcomes[overlay.drill]);
+  }
   const receiptFile = publishCanonicalJson(outputRoot, 'execution.json', receipt);
   return {
     outputDir: outputRoot,
@@ -1160,6 +1163,7 @@ function main() {
       'authorization',
     );
     const isolation = readBoundedJson(required(values, '--isolation'), 'isolation');
+    const execution = readBoundedJson(required(values, '--execution'), 'execution');
     const restore = readBoundedJson(required(values, '--restore'), 'restore');
     const outcomes = {
       'ssh-loss': readBoundedJson(required(values, '--ssh-loss'), 'ssh_loss'),
@@ -1180,6 +1184,7 @@ function main() {
           plan,
           authorization,
           isolation,
+          execution,
           restore,
           outcomes,
           keys: readKeys(values),
