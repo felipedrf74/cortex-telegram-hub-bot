@@ -79,9 +79,9 @@ print(os.path.realpath(sys.argv[1]))
 PY
 }
 
-MOVE_FAILURE_INJECTED=false
 mv() {
   local force=false
+  local injection_marker="$TEST_ROOT/.first-move-failure-injected"
   if [ "$#" -gt 0 ] && [ "$1" = "-fT" ]; then
     force=true
     shift
@@ -92,8 +92,8 @@ mv() {
     shift
   fi
   if [ "$INJECT_FIRST_MOVE_FAILURE" = true ] \
-      && [ "$MOVE_FAILURE_INJECTED" = false ]; then
-    MOVE_FAILURE_INJECTED=true
+      && [ ! -e "$injection_marker" ]; then
+    : >"$injection_marker"
     return 1
   fi
   if [ "$force" = true ]; then
