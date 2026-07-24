@@ -488,12 +488,25 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/application-dr-backup.sh',
     'scripts/application-dr-recovery-runtime.mjs',
     'scripts/application-dr-systemd-install.sh',
+    'ops/rollback-drill-vm/install-layout.tsv',
+    'scripts/rollback-drill-vm-provision.sh',
   ])('routes advisory/backup operations tooling %s to focused checks without a staging release gate', (file) => {
     const result = classify(file);
     expect(result.flags.operationsTooling).toBe(true);
     expect(result.flags.releaseOperator).toBe(false);
     expect(result.vitest.mode).toBe('focused');
     expect(result.stagingSmoke.generic).toBe(false);
+  });
+
+  it('selects the KVM rollback-drill contract test for VM operations changes', () => {
+    const result = classify('scripts/rollback-drill-vm-systemd-install.sh');
+    expect(result.flags.operationsTooling).toBe(true);
+    expect(result.vitest.globs).toContain(
+      '__tests__/scripts/rollback-drill-vm-provisioner.test.ts',
+    );
+    expect(result.vitest.globs).toContain(
+      '__tests__/scripts/rollback-drill-vm-transaction-failures.test.ts',
+    );
   });
 
   it('selects every application DR contract test for DR operations changes', () => {

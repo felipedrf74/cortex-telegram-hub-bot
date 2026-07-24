@@ -76,6 +76,13 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       .toThrow('ssh_target_not_loopback');
   });
 
+  it('requires the production release floor of at least 12 GiB inside the drill guest', () => {
+    const undersized = structuredClone(fixture.plan);
+    undersized.guest.minimumMemoryAvailableBytes = 12 * 1024 ** 3 - 1;
+    expect(() => validatePlan(undersized, { nowMs: fixture.nowMs }))
+      .toThrow('guest_memory_threshold_invalid');
+  });
+
   it('rejects production owner, SSH client, and SSH host key reuse', () => {
     for (const [guestField, productionField, expected] of [
       ['guestOwnerPublicKeySha256', 'productionOwnerPublicKeySha256', 'production_owner_key_reuse'],

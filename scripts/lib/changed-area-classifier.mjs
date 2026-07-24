@@ -330,10 +330,10 @@ export function classifyChangedFiles({
     || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|release-plan-evaluator|release-runtime-dependencies|release-sequence|trusted-release-signer|protected-main-ci-evidence|complete-promotion-migration-gate|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal|rollback-drill-kvm-coordinator)\.mjs$/)
     || has(/^scripts\/systemd\/nexus-release-promotion/)
     || has(/^scripts\/lib\/(?:release-artifact-manifest|release-plan-evaluation|production-migration-lineage|production-shape-migration-rehearsal-evidence|rollback-drill-kvm-evidence)\.mjs$/);
-  flags.operationsTooling = has(/^ops\/(?:sonarqube|application-dr|ollama|cloudflared)\//)
-    || has(/^scripts\/(?:(?:quality-sonar|application-dr)-|cloudflared-systemd-migrate|ollama-(?:large-model-cleanup|observation-collector|service-envelope-check|soak-evidence|zero-swap-transition))/)
+  flags.operationsTooling = has(/^ops\/(?:sonarqube|application-dr|ollama|cloudflared|rollback-drill-vm)\//)
+    || has(/^scripts\/(?:(?:quality-sonar|application-dr|rollback-drill-vm)-|cloudflared-systemd-migrate|ollama-(?:large-model-cleanup|observation-collector|service-envelope-check|soak-evidence|zero-swap-transition))/)
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)
-    || has(/^__tests__\/scripts\/(?:quality-sonar|application-(?:disaster-recovery|dr-[a-z-]+)|cloudflared-systemd-migration|ollama-(?:large-model-cleanup|observation-collector|systemd-envelope))\.test\.ts$/);
+    || has(/^__tests__\/scripts\/(?:quality-sonar|application-(?:disaster-recovery|dr-[a-z-]+)|cloudflared-systemd-migration|rollback-drill-vm-(?:provisioner|transaction-failures)|ollama-(?:large-model-cleanup|observation-collector|systemd-envelope))\.test\.ts$/);
   if (has(/^scripts\/lib\/release-gates\.sh$/)) {
     flags.runtimeInfra = true;
     flags.deployConfig = true;
@@ -552,6 +552,8 @@ export function classifyChangedFiles({
         '__tests__/scripts/ollama-observation-collector.test.ts',
         '__tests__/scripts/ollama-large-model-cleanup.test.ts',
         '__tests__/scripts/ollama-systemd-envelope.test.ts',
+        '__tests__/scripts/rollback-drill-vm-provisioner.test.ts',
+        '__tests__/scripts/rollback-drill-vm-transaction-failures.test.ts',
       );
       if (flags.contentPromptCleanliness) pytestGlobs.push('content-engine/tests/test_prompt_cleanliness.py');
       if (vitestGlobs.length === 0) vitestMode = 'changed-only';

@@ -1,0 +1,7 @@
+# source	absolute target	owner	mode
+scripts/rollback-drill-vm-provision.sh	/usr/local/libexec/nexus-rollback-drill-vm/provision	root:root	0755
+scripts/rollback-drill-vm-run.sh	/usr/local/libexec/nexus-rollback-drill-vm/run	root:root	0755
+scripts/rollback-drill-vm-host-preflight.sh	/usr/local/libexec/nexus-rollback-drill-vm/host-preflight	root:root	0755
+scripts/rollback-drill-vm-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm/manifest.py	root:root	0644
+ops/rollback-drill-vm/systemd/nexus-rollback-drill-vm@.service	/etc/systemd/system/nexus-rollback-drill-vm@.service	root:root	0644
+ops/rollback-drill-vm/nexus-rollback-drill-vm.tmpfiles	/etc/tmpfiles.d/nexus-rollback-drill-vm.conf	root:root	0644
