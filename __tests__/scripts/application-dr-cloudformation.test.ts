@@ -108,11 +108,33 @@ describe('application DR CloudFormation', () => {
     expect(template.match(/DependsOn: RolesAnywhereCertificateRevocationList/g))
       .toHaveLength(2);
     expect(template.match(/Type: AWS::IAM::Role/g)).toHaveLength(2);
-    expect(template).toContain('MaxLength: 4096');
+    const crlChunkDeclarations = template.match(
+      /^  CertificateRevocationListData\d{3}: \{Type: String, Default: '', MaxLength: \d+\}$/gm,
+    ) || [];
+    expect(crlChunkDeclarations).toHaveLength(74);
+    expect(crlChunkDeclarations.filter((line) => line.endsWith('MaxLength: 4096}')))
+      .toHaveLength(73);
+    expect(crlChunkDeclarations.at(-1)).toContain('Data074:');
+    expect(crlChunkDeclarations.at(-1)).toContain('MaxLength: 992');
+    expect(template).not.toMatch(/^  CertificateRevocationListData:\s*$/m);
+    expect(template.match(/!Ref CertificateRevocationListData\d{3}/g))
+      .toHaveLength(76);
+    expect(template).toContain('CrlData: !Join');
+    expect(template).toContain("CertificateRevocationListSha256:");
+    expect(template).toContain("AllowedPattern: '^$|^[0-9a-f]{64}$'");
+    expect(template).toContain('Key: crl-sha256');
+    expect(template).toContain('Value: !Ref CertificateRevocationListSha256');
+    expect(template).toContain('RolesAnywhereCrlSha256:');
+    expect(template).not.toMatch(/^\s+UsePreviousValue:/m);
+    const parameters = template.slice(
+      template.indexOf('Parameters:'),
+      template.indexOf('\nConditions:'),
+    );
+    expect(parameters.match(/^  [A-Za-z][A-Za-z0-9]+:/gm)?.length).toBeLessThan(200);
+    expect(Buffer.byteLength(template, 'utf8')).toBeLessThanOrEqual(51_200);
     expect(template).toContain(
       'X509CertificateData: !Ref TrustAnchorCertificateData',
     );
-    expect(template).toContain('CrlData: !Ref CertificateRevocationListData');
     expect(template.match(/Enabled: !If \[EnableRolesAnywhere, true, false\]/g))
       .toHaveLength(4);
     expect(template).not.toMatch(/^\s+Enabled: true$/m);
@@ -158,6 +180,8 @@ describe('application DR CloudFormation', () => {
     expect(restoreRole).toContain('PolicyName: NexusApplicationDrRestore');
     expect(restoreRole).not.toMatch(/s3:(Put|Delete)/);
     expect(restoreProfile).not.toMatch(/s3:(Put|Delete)/);
+    expect(template.slice(template.indexOf('\n  BackupRole:'), bucketPolicyStart))
+      .not.toContain('rolesanywhere:');
     expect(template).not.toMatch(/AWS::IAM::User|AWS::IAM::AccessKey|LoginProfile/);
     expect(template).not.toMatch(/PrivateKey|SecretAccessKey/);
   });
@@ -244,10 +268,13 @@ describe('application DR CloudFormation', () => {
     expect(operations).toMatch(/does not create an\s+IAM access key/u);
     expect(operations).toContain('IAM Roles Anywhere');
     expect(operations).toContain('RolesAnywhereActivation=DISABLED');
-    expect(operations).toContain('CertificateRevocationListData');
+    expect(operations).toContain('application-dr-crl-parameters.mjs');
+    expect(operations).toContain('74');
+    expect(operations).toContain('300,000');
+    expect(operations).toContain('UsePreviousValue');
     expect(operations).toContain('PrivateDevices=true');
     expect(operations).toContain('storage-cost');
     expect(operations).toMatch(/separate (?:leaf )?certificate and read-only restore\s+role/u);
-    expect(operations).toContain('explicit owner approval');
+    expect(operations).toMatch(/explicit owner\s+approval/u);
   });
 });

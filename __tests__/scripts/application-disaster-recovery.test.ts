@@ -1449,7 +1449,11 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(runbook).toContain('NEXUS_DR_AWS_SIGNING_HELPER_SHA256');
     expect(runbook).toContain('nexus-application-dr-restore');
     expect(runbook).toContain('RolesAnywhereActivation=DISABLED');
-    expect(runbook).toContain('CertificateRevocationListData');
+    expect(runbook).toContain('application-dr-crl-parameters.mjs');
+    expect(runbook).toContain('300,000-byte');
+    expect(runbook).toContain('UsePreviousValue');
+    expect(runbook).toContain('--operation rotate');
+    expect(runbook).toContain('superset of every previously');
     expect(runbook).toContain('900-second credentials');
     expect(runbook).toContain('does not consult OCSP or CRL distribution points');
     expect(runbook).toContain('cloudflare-r2:r2-approved-variance');

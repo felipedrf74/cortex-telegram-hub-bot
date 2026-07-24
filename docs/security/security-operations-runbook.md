@@ -83,8 +83,17 @@ logs, command output, chat, or release evidence.
   managed CloudFormation identity plane must start disabled, bind exact account,
   trust-anchor, issuer CN, subject CN, one-role profile, and session-policy
   limits, and enable only after owner-approved key custody and revocation tests.
-  Keep the imported CRL current because IAM Roles Anywhere does not query OCSP
-  or CRL distribution points.
+  Keep the CloudFormation-owned CRL current because IAM Roles Anywhere does not
+  query OCSP or CRL distribution points. Generate every rotation with
+  `scripts/application-dr-crl-parameters.mjs`: its 74 explicit chunks cover
+  the 300,000-byte service limit without exceeding CloudFormation's 4,096-byte
+  per-parameter limit, bind the exact SHA-256, prohibit `UsePreviousValue`, and
+  enforce increasing CRL number plus a superset of revoked serials. Rotate only
+  through the sequential disable, update-and-verify, re-enable-and-verify
+  change-set path. Each verification must bind the exact trust anchor and both
+  profile ARNs/IDs and require the trust anchor, both profiles, and CRL to share
+  the expected enabled state; normal operators and runtime roles have no direct
+  CRL mutation path.
 - Default object-store controls are enabled S3 versioning plus at least 90-day
   S3 Object Lock for release objects. AWS database recovery points are
   write-once first points protected by tier-specific COMPLIANCE locks and
