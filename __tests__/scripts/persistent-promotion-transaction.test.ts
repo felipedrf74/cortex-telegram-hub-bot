@@ -2762,11 +2762,49 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     const journalDisarm = installSource.lastIndexOf(
       'durable_remove "$BOOTSTRAP_JOURNAL"',
     );
+    const pm2PrerequisiteDefinition = installSource.indexOf(
+      'verify_exact_root_pm2_prerequisite() {',
+    );
+    const pm2PrerequisiteBeforeJournal = installSource.indexOf(
+      '\nverify_exact_root_pm2_prerequisite\n',
+      pm2PrerequisiteDefinition,
+    );
+    const pm2UnitRewire = installSource.indexOf(
+      'pm2_dropin=/etc/systemd/system/pm2-dominguez.service.d',
+    );
+    const pm2PrerequisiteBeforeDisarm = installSource.lastIndexOf(
+      '\nverify_exact_root_pm2_prerequisite\n',
+    );
     expect(bootstrapJournal).toBeGreaterThan(-1);
+    expect(pm2PrerequisiteDefinition).toBeGreaterThan(-1);
+    expect(pm2PrerequisiteBeforeJournal).toBeGreaterThan(pm2PrerequisiteDefinition);
+    expect(pm2PrerequisiteBeforeJournal).toBeLessThan(bootstrapJournal);
+    expect(pm2UnitRewire).toBeGreaterThan(bootstrapJournal);
+    expect(pm2PrerequisiteBeforeJournal).toBeLessThan(pm2UnitRewire);
     expect(guardedBroker).toBeGreaterThan(bootstrapJournal);
     expect(drInstall).toBeGreaterThan(guardedBroker);
     expect(sudoersRestore).toBeGreaterThan(drInstall);
+    expect(pm2PrerequisiteBeforeDisarm).toBeGreaterThan(pm2UnitRewire);
+    expect(pm2PrerequisiteBeforeDisarm).toBeLessThan(journalDisarm);
     expect(journalDisarm).toBeGreaterThan(sudoersRestore);
+    expect(installSource).toContain(
+      'ROOT_PM2_CLOSURE="/opt/nexus-release/pm2/$ROOT_PM2_VERSION"',
+    );
+    expect(installSource).toContain(
+      'the separately installed root PM2 lock is not the exact reviewed source lock',
+    );
+    expect(installSource).toContain(
+      "record.schema!=='nexus.pm2-root-install.v1'||record.version!==expectedVersion",
+    );
+    expect(installSource).toContain(
+      "manifest.schema!=='nexus.pm2-root-closure-manifest.v1'",
+    );
+    expect(installSource).toContain(
+      "schema:'nexus.pm2-root-closure.v1',files",
+    );
+    expect(installSource).toContain(
+      "schema:'nexus.pm2-root-closure-payload.v1',files:payloadFiles",
+    );
     expect(installSource).toContain('fsync_path "$temporary"');
     expect(installSource).toContain('mv -fT -- "$temporary" "$target"');
     expect(controlSource).toContain(
@@ -2824,6 +2862,49 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
       'ConditionPathExists=!/var/lib/nexus-release-promotion/bootstrap-in-progress.v1',
     );
     expect(installSource).toContain('systemctl mask pm2-root.service');
+    expect(installSource).toContain(
+      'pm2-root.service.${pm2_root_fragment_sha256}.retired',
+    );
+    expect(installSource).toContain(
+      'install_file_atomically \\\n          "$pm2_root_fragment" "$pm2_root_retired" root root 600',
+    );
+    expect(installSource.indexOf(
+      'install_file_atomically \\\n          "$pm2_root_fragment" "$pm2_root_retired" root root 600',
+    )).toBeLessThan(installSource.indexOf(
+      'systemctl mask pm2-root.service',
+    ));
+    expect(installSource).toContain('Environment=\nEnvironmentFile=\nPassEnvironment=');
+    expect(installSource).toContain(
+      'ExecCondition=\nExecStartPre=\nExecStart=',
+    );
+    expect(installSource).toContain(
+      'ExecStartPost=\nExecStartPost=+/usr/local/sbin/nexus-release-promotion-control boot-postcheck',
+    );
+    expect(installSource).toContain('ExecStopPost=\nEOF');
+    expect(installSource).toContain(
+      'verify_effective_pm2_application_unit \\\n  "$pm2_dropin/nexus-release-recovery.conf"',
+    );
+    expect(installSource).toContain(
+      'properties["DropInPaths"] != expected_dropin',
+    );
+    expect(installSource).toContain(
+      'local expected_fragment=/etc/systemd/system/pm2-dominguez.service',
+    );
+    expect(installSource).toContain(
+      'fragment is not the exact reviewed local unit',
+    );
+    expect(installSource).toContain(
+      'properties["ExecStartPre"] != ""',
+    );
+    expect(installSource).toContain(
+      'properties["EnvironmentFiles"] != ""',
+    );
+    expect(installSource).toContain(
+      'require_one_exec("ExecStart", "/usr/local/bin/pm2", "/usr/local/bin/pm2 resurrect")',
+    );
+    expect(installSource).toContain(
+      'require_one_exec(\n    "ExecStartPost",',
+    );
     expect(installSource).toContain(
       'pm2-dominguez must be the one enabled PM2 boot authority',
     );
@@ -3086,7 +3167,7 @@ describe('release layout authorization key handling', () => {
 describe('promotion bootstrap archive self-binding', () => {
   const installSource = fs.readFileSync(installer, 'utf8');
   const archiveVerifier = installSource.match(
-    /# This proof completes before[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\n\nid "\$WORKER_USER"/,
+    /# This proof completes before[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\n\nverify_exact_root_pm2_prerequisite\(\)/,
   )?.[1];
   const sourceSha = 'a'.repeat(40);
 

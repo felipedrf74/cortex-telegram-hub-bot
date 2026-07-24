@@ -18,6 +18,12 @@ WORKER_USER="${NEXUS_PROMOTION_WORKER_USER:-dominguez}"
 WORKER_GROUP="$(id -gn "$WORKER_USER" 2>/dev/null || printf '%s' "$WORKER_USER")"
 SERVER_PROVENANCE_PRIVATE_KEY="${NEXUS_SERVER_PROVENANCE_PRIVATE_KEY:-/etc/nexus-release/serverdominguez-provenance-private-key.pem}"
 SERVER_PROVENANCE_PUBLIC_KEY="${NEXUS_SERVER_PROVENANCE_PUBLIC_KEY:-/etc/nexus-release/serverdominguez-provenance-public-key.pem}"
+ROOT_PM2_VERSION=6.0.14
+ROOT_PM2_CLOSURE="/opt/nexus-release/pm2/$ROOT_PM2_VERSION"
+ROOT_PM2_LAUNCHER=/usr/local/bin/pm2
+ROOT_PM2_ATTESTATION=/var/lib/nexus-release-promotion/pm2-root-install.v1.json
+ROOT_PM2_INSTALL_JOURNAL=/var/lib/nexus-release-promotion/pm2-install-in-progress.v1.json
+ROOT_PM2_TRUSTED_LOCK=/usr/local/share/nexus-release/pm2-package-lock.json
 
 die() {
   echo "promotion systemd bootstrap: $*" >&2
@@ -364,6 +370,266 @@ if pathlib.Path(installer_path).is_symlink():
     )
 PY
 
+verify_exact_root_pm2_prerequisite() {
+  [ ! -e "$ROOT_PM2_INSTALL_JOURNAL" ] \
+    && [ ! -L "$ROOT_PM2_INSTALL_JOURNAL" ] || {
+    echo "root PM2 closure installation is incomplete; rerun its reviewed installer" >&2
+    return 1
+  }
+  [ -f "$ROOT_PM2_TRUSTED_LOCK" ] && [ ! -L "$ROOT_PM2_TRUSTED_LOCK" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' "$ROOT_PM2_TRUSTED_LOCK")" = root:root:644:1 ] \
+    && [ "$(sha256sum -- "$ROOT_PM2_TRUSTED_LOCK" | cut -d' ' -f1)" \
+      = "$(sha256sum -- "$SOURCE_ROOT/ops/pm2/package-lock.json" | cut -d' ' -f1)" ] || {
+    echo "the separately installed root PM2 lock is not the exact reviewed source lock" >&2
+    return 1
+  }
+  [ -f "$ROOT_PM2_ATTESTATION" ] && [ ! -L "$ROOT_PM2_ATTESTATION" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' "$ROOT_PM2_ATTESTATION")" = root:root:600:1 ] || {
+    echo "the separately installed root PM2 attestation is unavailable or unsafe" >&2
+    return 1
+  }
+  [ -f "$ROOT_PM2_LAUNCHER" ] && [ ! -L "$ROOT_PM2_LAUNCHER" ] \
+    && [ "$(stat -c '%U:%G:%a:%h' "$ROOT_PM2_LAUNCHER")" = root:root:755:1 ] || {
+    echo "the separately installed root PM2 launcher is unavailable or unsafe" >&2
+    return 1
+  }
+  [ -x /usr/bin/node ] && [ ! -L /usr/bin/node ] \
+    && [ "$(stat -c '%U:%G:%a:%h' /usr/bin/node)" = root:root:755:1 ] || {
+    echo "the root PM2 Node runtime is unavailable or unsafe" >&2
+    return 1
+  }
+  /usr/bin/node - \
+    "$ROOT_PM2_ATTESTATION" "$ROOT_PM2_LAUNCHER" /usr/bin/node \
+    "$ROOT_PM2_TRUSTED_LOCK" "$ROOT_PM2_CLOSURE" "$ROOT_PM2_VERSION" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');const path=require('path');
+const [attestationPath,launcher,nodeBin,trustedLockPath,expectedClosureRoot,
+ expectedVersion]=process.argv.slice(2);
+const canonical=(value)=>value===null||typeof value!=='object'?JSON.stringify(value)
+ :Array.isArray(value)?`[${value.map(canonical).join(',')}]`
+ :`{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+const sha256=(value)=>crypto.createHash('sha256').update(value).digest('hex');
+const readStable=(file)=>{
+ const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{
+  const before=fs.fstatSync(descriptor);const body=fs.readFileSync(descriptor);const after=fs.fstatSync(descriptor);
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1
+   ||before.uid!==0||before.gid!==0||before.dev!==after.dev||before.ino!==after.ino
+   ||before.size!==after.size||before.mtimeMs!==after.mtimeMs)process.exit(1);
+  return body;
+ }finally{fs.closeSync(descriptor);}
+};
+if(process.version!=='v22.23.1')process.exit(1);
+const attestationBody=readStable(attestationPath);
+const record=JSON.parse(attestationBody);
+const trustedLockBody=readStable(trustedLockPath);
+const trustedLock=JSON.parse(trustedLockBody);
+const closureRoot=path.resolve(record.closureRoot??'');
+const entrypoint=path.join(expectedClosureRoot,'node_modules','pm2','bin','pm2');
+if(record.schema!=='nexus.pm2-root-install.v1'||record.version!==expectedVersion
+ ||record.closureRoot!==expectedClosureRoot||closureRoot!==expectedClosureRoot
+ ||record.launcher!==launcher||record.entrypoint!==entrypoint
+ ||!/^[a-f0-9]{64}$/u.test(record.sourceArchiveSha256||'')
+ ||!/^[a-f0-9]{64}$/u.test(record.closureDigest||'')
+ ||!/^[a-f0-9]{64}$/u.test(record.payloadDigest||'')
+ ||record.packageLockSha256!==sha256(trustedLockBody)
+ ||!/^[a-f0-9]{64}$/u.test(record.launcherSha256||'')
+ ||record.node?.path!==nodeBin||record.node?.version!=='v22.23.1'
+ ||record.node?.sha256!==sha256(readStable(nodeBin))
+ ||!Number.isSafeInteger(record.fileCount)||record.fileCount<2
+ ||!Number.isFinite(Date.parse(record.installedAt||'')))process.exit(1);
+const launcherBody=readStable(launcher);
+const launcherIdentity=fs.lstatSync(launcher);
+if((launcherIdentity.mode&0o7777)!==0o755
+ ||sha256(launcherBody)!==record.launcherSha256
+ ||launcherBody.toString('utf8')
+   !==`#!/usr/bin/bash\nexec ${JSON.stringify(nodeBin)} ${JSON.stringify(entrypoint)} "$@"\n`)process.exit(1);
+const files=[];
+const walk=(directory)=>{
+ const directoryIdentity=fs.lstatSync(directory);
+ if(!directoryIdentity.isDirectory()||directoryIdentity.isSymbolicLink()
+  ||directoryIdentity.uid!==0||directoryIdentity.gid!==0
+  ||(directoryIdentity.mode&0o7777)!==0o755)process.exit(1);
+ for(const name of fs.readdirSync(directory).sort()){
+  const absolute=path.join(directory,name);const identity=fs.lstatSync(absolute);
+  if(identity.isSymbolicLink()||identity.uid!==0||identity.gid!==0
+   ||(identity.mode&0o022)!==0)process.exit(1);
+  if(identity.isDirectory())walk(absolute);
+  else if(identity.isFile()){
+   const body=readStable(absolute);
+   files.push({path:path.relative(closureRoot,absolute).split(path.sep).join('/'),
+    size:body.length,mode:identity.mode&0o7777,sha256:sha256(body)});
+  }else process.exit(1);
+ }
+};
+walk(closureRoot);
+files.sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0);
+const closureDigest=sha256(canonical({schema:'nexus.pm2-root-closure.v1',files}));
+if(files.length!==record.fileCount||closureDigest!==record.closureDigest)process.exit(1);
+const packageIdentity=JSON.parse(readStable(
+ path.join(closureRoot,'node_modules','pm2','package.json')));
+if(packageIdentity.name!=='pm2'||packageIdentity.version!==expectedVersion)process.exit(1);
+const manifest=JSON.parse(readStable(path.join(closureRoot,'closure-manifest.json')));
+const lockPackages=Object.entries(trustedLock.packages??{}).filter(([packagePath])=>packagePath)
+ .map(([packagePath,identity])=>({path:packagePath,version:identity.version??null,
+  resolved:identity.resolved??null,integrity:identity.integrity??null}))
+ .sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0);
+if(lockPackages.some((identity)=>String(identity.resolved??'').startsWith('https://')
+ &&(!identity.version||!identity.integrity)))process.exit(1);
+const payloadFiles=files.filter((identity)=>identity.path!=='closure-manifest.json');
+const payloadDigest=sha256(canonical({
+ schema:'nexus.pm2-root-closure-payload.v1',files:payloadFiles,
+}));
+const installedPackages=[];
+for(const identity of lockPackages){
+ const packageFile=path.join(closureRoot,identity.path,'package.json');
+ if(!fs.existsSync(packageFile)){
+  if(trustedLock.packages[identity.path]?.optional===true)continue;
+  process.exit(1);
+ }
+ const installed=JSON.parse(readStable(packageFile));
+ if(installed.version!==identity.version)process.exit(1);
+ installedPackages.push({path:identity.path,version:identity.version});
+}
+if(manifest.schema!=='nexus.pm2-root-closure-manifest.v1'
+ ||manifest.pm2Version!==expectedVersion||manifest.nodeVersion!=='v22.23.1'
+ ||manifest.npmVersion!=='10.9.8'
+ ||manifest.packageLockSha256!==record.packageLockSha256
+ ||canonical(manifest.packageLockPackages)!==canonical(lockPackages)
+ ||canonical(manifest.installedPackages)!==canonical(installedPackages)
+ ||canonical(manifest.files)!==canonical(payloadFiles)
+ ||manifest.fileCount!==payloadFiles.length||manifest.payloadDigest!==payloadDigest
+ ||record.payloadDigest!==payloadDigest)process.exit(1);
+NODE
+}
+
+verify_effective_pm2_application_unit() {
+  local expected_dropin="$1" fragment properties
+  local expected_fragment=/etc/systemd/system/pm2-dominguez.service
+  fragment="$(systemctl show pm2-dominguez.service -p FragmentPath --value)"
+  [ "$fragment" = "$expected_fragment" ] || {
+    echo "pm2-dominguez systemd fragment is not the exact reviewed local unit" >&2
+    return 1
+  }
+  validate_root_trusted_path "$expected_fragment" "pm2-dominguez systemd fragment" file
+  [ "$(stat -c '%U:%G:%h' "$expected_fragment")" = root:root:1 ] || {
+    echo "pm2-dominguez systemd fragment identity is unsafe" >&2
+    return 1
+  }
+  validate_root_trusted_path "$expected_dropin" "pm2-dominguez release drop-in" file
+  [ "$(stat -c '%U:%G:%a:%h' "$expected_dropin")" = root:root:644:1 ] || {
+    echo "pm2-dominguez release drop-in identity is unsafe" >&2
+    return 1
+  }
+  properties="$(
+    systemctl show pm2-dominguez.service --no-pager \
+      -p FragmentPath -p DropInPaths -p Type -p User -p Group -p PIDFile \
+      -p ExecCondition -p ExecStartPre -p ExecStart -p ExecStartPost \
+      -p ExecReload -p ExecStop -p ExecStopPost \
+      -p Environment -p EnvironmentFiles -p PassEnvironment -p UnsetEnvironment
+  )"
+  python3 - "$properties" "$fragment" "$expected_dropin" <<'PY'
+import shlex
+import sys
+
+body, expected_fragment, expected_dropin = sys.argv[1:]
+properties = {}
+for line in body.splitlines():
+    key, separator, value = line.partition("=")
+    if not separator or key in properties:
+        raise SystemExit("pm2-dominguez effective property output is invalid")
+    properties[key] = value
+
+expected_keys = {
+    "DropInPaths",
+    "Environment",
+    "EnvironmentFiles",
+    "ExecCondition",
+    "ExecReload",
+    "ExecStart",
+    "ExecStartPost",
+    "ExecStartPre",
+    "ExecStop",
+    "ExecStopPost",
+    "FragmentPath",
+    "Group",
+    "PIDFile",
+    "PassEnvironment",
+    "Type",
+    "UnsetEnvironment",
+    "User",
+}
+if set(properties) != expected_keys:
+    raise SystemExit("pm2-dominguez effective property set is incomplete")
+if (
+    properties["FragmentPath"] != expected_fragment
+    or properties["DropInPaths"] != expected_dropin
+    or properties["Type"] != "forking"
+    or properties["User"] != "dominguez"
+    or properties["Group"] != "dominguez"
+    or properties["PIDFile"] != "/home/dominguez/.pm2/pm2.pid"
+    or properties["ExecCondition"] != ""
+    or properties["ExecStartPre"] != ""
+    or properties["ExecStopPost"] != ""
+    or properties["EnvironmentFiles"] != ""
+    or properties["PassEnvironment"] != ""
+):
+    raise SystemExit("pm2-dominguez effective static authority differs")
+
+
+def require_one_exec(property_name: str, executable: str, argv: str) -> None:
+    value = properties[property_name]
+    if (
+        value.count("{") != 1
+        or value.count("}") != 1
+        or f"path={executable} ;" not in value
+        or f"argv[]={argv} ;" not in value
+    ):
+        raise SystemExit(
+            f"pm2-dominguez {property_name} is not the sole exact command"
+        )
+
+
+require_one_exec("ExecStart", "/usr/local/bin/pm2", "/usr/local/bin/pm2 resurrect")
+require_one_exec(
+    "ExecStartPost",
+    "/usr/local/sbin/nexus-release-promotion-control",
+    "/usr/local/sbin/nexus-release-promotion-control boot-postcheck",
+)
+require_one_exec("ExecReload", "/usr/local/bin/pm2", "/usr/local/bin/pm2 reload all")
+require_one_exec("ExecStop", "/usr/local/bin/pm2", "/usr/local/bin/pm2 kill")
+
+expected_environment = {
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "PM2_HOME=/home/dominguez/.pm2",
+    "PM2_DUMP_FILE_PATH=/var/lib/nexus-release-promotion/pm2-authority/dump.pm2",
+    "PM2_DUMP_BACKUP_FILE_PATH=/var/lib/nexus-release-promotion/pm2-authority/dump.pm2.backup-disabled",
+    "PM2_DAEMON_TITLE=NexusPM2:/opt/nexus-release/pm2/6.0.14",
+}
+if set(shlex.split(properties["Environment"])) != expected_environment:
+    raise SystemExit("pm2-dominguez effective environment differs")
+expected_unset = {
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PM2_NODE_OPTIONS",
+    "PYTHONBREAKPOINT",
+    "PYTHONHOME",
+    "PYTHONINSPECT",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+}
+if set(shlex.split(properties["UnsetEnvironment"])) != expected_unset:
+    raise SystemExit("pm2-dominguez effective unset-environment policy differs")
+PY
+}
+
+# The PM2 closure is a separate, owner-approved maintenance artifact because
+# the five-argument promotion bootstrap does not accept arbitrary package
+# bytes. Prove it against this exact protected-main lock before writing the
+# bootstrap journal or changing either PM2 boot authority.
+verify_exact_root_pm2_prerequisite
+
 id "$WORKER_USER" >/dev/null 2>&1 || { echo "promotion worker user is missing" >&2; exit 1; }
 [ "$WORKER_USER" = dominguez ] || { echo "promotion worker must be the dominguez application identity" >&2; exit 1; }
 
@@ -682,37 +948,110 @@ KillMode=control-group
 SendSIGKILL=yes
 TimeoutStartSec=135s
 TimeoutStopSec=30s
+Environment=
+EnvironmentFile=
+PassEnvironment=
+UnsetEnvironment=
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PM2_HOME=/home/dominguez/.pm2"
 Environment="PM2_DUMP_FILE_PATH=/var/lib/nexus-release-promotion/pm2-authority/dump.pm2"
 Environment="PM2_DUMP_BACKUP_FILE_PATH=/var/lib/nexus-release-promotion/pm2-authority/dump.pm2.backup-disabled"
 Environment="PM2_DAEMON_TITLE=NexusPM2:/opt/nexus-release/pm2/6.0.14"
 UnsetEnvironment=NODE_OPTIONS NODE_PATH PM2_NODE_OPTIONS PYTHONPATH PYTHONHOME PYTHONINSPECT PYTHONSTARTUP PYTHONBREAKPOINT LD_PRELOAD LD_LIBRARY_PATH
+ExecCondition=
+ExecStartPre=
 ExecStart=
 ExecStart=/usr/local/bin/pm2 resurrect
+ExecStartPost=
+ExecStartPost=+/usr/local/sbin/nexus-release-promotion-control boot-postcheck
 ExecReload=
 ExecReload=/usr/local/bin/pm2 reload all
 ExecStop=
 ExecStop=/usr/local/bin/pm2 kill
-ExecStartPost=+/usr/local/sbin/nexus-release-promotion-control boot-postcheck
+ExecStopPost=
 EOF
 # A root PM2 unit is a competing boot/restart authority. The application unit
 # is the single allowed PM2 owner; an existing root unit is stopped, disabled,
 # and masked during this owner-approved maintenance transaction.
-if [ "$(
-  systemctl show pm2-root.service -p LoadState --value 2>/dev/null || printf not-found
-)" != not-found ]; then
-  systemctl disable --now pm2-root.service
-  systemctl mask pm2-root.service
-  [ "$(systemctl is-enabled pm2-root.service 2>/dev/null || true)" = masked ] || {
-    echo "competing pm2-root service could not be masked" >&2
+pm2_root_load_state="$(
+  systemctl show pm2-root.service -p LoadState --value 2>/dev/null || true
+)"
+pm2_root_enabled_state="$(
+  systemctl is-enabled pm2-root.service 2>/dev/null || true
+)"
+case "$pm2_root_load_state" in
+  loaded|masked|not-found) ;;
+  *)
+    echo "competing pm2-root service load state is unavailable or invalid" >&2
+    exit 1
+    ;;
+esac
+if [ "$pm2_root_enabled_state" = masked ]; then
+  [ "$pm2_root_load_state" = masked ] || {
+    echo "competing pm2-root mask state is internally inconsistent" >&2
     exit 1
   }
-elif [ -f /etc/systemd/system/pm2-root.service.d/nexus-release-recovery.conf ]; then
-  rm -f -- /etc/systemd/system/pm2-root.service.d/nexus-release-recovery.conf
+elif [ -n "$pm2_root_load_state" ] && [ "$pm2_root_load_state" != not-found ]; then
+  pm2_root_fragment="$(
+    systemctl show pm2-root.service -p FragmentPath --value
+  )"
+  case "$pm2_root_fragment" in
+    /etc/systemd/system/pm2-root.service)
+      validate_root_trusted_path "$pm2_root_fragment" "legacy pm2-root unit" file
+      [ "$(stat -c '%U:%G:%h' "$pm2_root_fragment")" = root:root:1 ] || {
+        echo "legacy pm2-root unit identity is unsafe" >&2
+        exit 1
+      }
+      pm2_root_retired_dir=/var/lib/nexus-release-promotion/retired-systemd-units
+      install -d -o root -g root -m 700 "$pm2_root_retired_dir"
+      pm2_root_fragment_sha256="$(
+        sha256sum -- "$pm2_root_fragment" | cut -d' ' -f1
+      )"
+      pm2_root_retired="$pm2_root_retired_dir/pm2-root.service.${pm2_root_fragment_sha256}.retired"
+      if [ -e "$pm2_root_retired" ] || [ -L "$pm2_root_retired" ]; then
+        [ -f "$pm2_root_retired" ] && [ ! -L "$pm2_root_retired" ] \
+          && [ "$(stat -c '%U:%G:%a:%h' "$pm2_root_retired")" = root:root:600:1 ] \
+          && [ "$(sha256sum -- "$pm2_root_retired" | cut -d' ' -f1)" \
+            = "$pm2_root_fragment_sha256" ] || {
+          echo "retired pm2-root unit evidence is unsafe" >&2
+          exit 1
+        }
+      else
+        install_file_atomically \
+          "$pm2_root_fragment" "$pm2_root_retired" root root 600
+      fi
+      systemctl disable --now pm2-root.service
+      durable_remove "$pm2_root_fragment"
+      systemctl daemon-reload
+      ;;
+    /usr/lib/systemd/system/pm2-root.service|/lib/systemd/system/pm2-root.service)
+      validate_root_trusted_path "$pm2_root_fragment" "legacy pm2-root vendor unit" file
+      [ "$(stat -c '%U:%G:%h' "$pm2_root_fragment")" = root:root:1 ] || {
+        echo "legacy pm2-root vendor unit identity is unsafe" >&2
+        exit 1
+      }
+      systemctl disable --now pm2-root.service
+      ;;
+    *)
+      echo "competing pm2-root service has an unreviewed fragment: $pm2_root_fragment" >&2
+      exit 1
+      ;;
+  esac
+fi
+if [ -f /etc/systemd/system/pm2-root.service.d/nexus-release-recovery.conf ]; then
+  validate_root_trusted_path \
+    /etc/systemd/system/pm2-root.service.d/nexus-release-recovery.conf \
+    "legacy pm2-root release drop-in" file
+  durable_remove /etc/systemd/system/pm2-root.service.d/nexus-release-recovery.conf
   rmdir --ignore-fail-on-non-empty /etc/systemd/system/pm2-root.service.d
   fsync_path /etc/systemd/system
 fi
+systemctl mask pm2-root.service
+fsync_path /etc/systemd/system
+[ "$(systemctl is-enabled pm2-root.service 2>/dev/null || true)" = masked ] || {
+  echo "competing pm2-root service could not be masked" >&2
+  exit 1
+}
 cloudflared_dropin=/etc/systemd/system/nexus-cloudflared.service.d
 install -d -o root -g root -m 755 "$cloudflared_dropin"
 publish_text_atomically "$cloudflared_dropin/nexus-release-ready.conf" 644 <<'EOF'
@@ -951,6 +1290,8 @@ systemctl daemon-reload
   echo "pm2-dominguez must be the one enabled PM2 boot authority" >&2
   exit 1
 }
+verify_effective_pm2_application_unit \
+  "$pm2_dropin/nexus-release-recovery.conf"
 [ "$(systemctl show pm2-root.service -p LoadState --value 2>/dev/null || printf not-found)" = not-found ] \
   || [ "$(systemctl is-enabled pm2-root.service 2>/dev/null || true)" = masked ] || {
   echo "pm2-root remains a competing PM2 boot authority" >&2
@@ -980,6 +1321,9 @@ if unexpected:
 PY
 systemctl enable nexus-release-layout-recovery.service
 systemctl enable nexus-release-promotion-recovery.service
+# Re-attest the separately installed closure after every root-owned bootstrap
+# mutation and before disarming the marker that blocks release commands.
+verify_exact_root_pm2_prerequisite
 rm -f -- "$ENV_SEAL_JOURNAL"
 fsync_path /var/lib/nexus-release-promotion
 ENV_SEAL_COMMITTED=true

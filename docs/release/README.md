@@ -290,7 +290,45 @@ installer with `sudo` from `/home/dominguez`, an application checkout, or any
 other application-user-writable path. First copy the exact reviewed source
 archive and public key into a new root-owned mode-0700 directory, verify their
 owner-reviewed SHA-256 values after that copy, extract the verified root-owned
-archive with `--no-same-owner --no-same-permissions`, and then run:
+archive with `--no-same-owner --no-same-permissions`, and install the exact
+offline PM2 closure before rewiring the application unit.
+
+Build that closure before the maintenance window on a trusted Ubuntu
+24.04/x86-64 builder with Node 22.23.1 and npm 10.9.8:
+
+```bash
+install -d -m 700 .local/pm2-closure
+node scripts/build-pm2-root-closure.mjs \
+  --output "$PWD/.local/pm2-closure/pm2-6.0.14.tar.gz" \
+  > "$PWD/.local/pm2-closure/build.json"
+sha256sum "$PWD/.local/pm2-closure/pm2-6.0.14.tar.gz"
+```
+
+Copy the archive into the same exact-SHA, root-owned bootstrap directory and
+verify that its server digest equals `archiveSha256` in `build.json`. During the
+owner-approved maintenance window, install the trusted lock and closure from
+the exact reviewed source. This step performs no production network install:
+
+```bash
+sudo install -d -o root -g root -m 755 /usr/local/share/nexus-release
+sudo install -o root -g root -m 644 \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/source/ops/pm2/package-lock.json \
+  /usr/local/share/nexus-release/pm2-package-lock.json
+sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-pm2-root-install.sh \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/pm2-6.0.14.tar.gz \
+  <owner-approved-64-hex-pm2-closure-sha256> \
+  6.0.14
+```
+
+The closure installer is first-install only and refuses an implicit
+replacement. If its root-owned attestation already exists, do not delete or
+overwrite it. Run
+`sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotion-control.sh assert-root-pm2-ready`
+instead; a mismatch requires owner inspection and a separate replacement
+procedure.
+
+Only after that command succeeds, run the five-argument control-plane
+bootstrap:
 
 ```bash
 sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotion-systemd-install.sh \
@@ -300,6 +338,7 @@ sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotio
   <owner-approved-64-hex-source-archive-sha256> \
   /var/lib/nexus-release-bootstrap/<exact-sha>/nexus-owner-promotion-public-key.pem
 sudo /usr/local/sbin/nexus-release-promotion-control version
+sudo /usr/local/sbin/nexus-release-promotion-control assert-root-pm2-ready
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
 sudo stat -c '%U:%G:%a %n' /run/lock/nexus-release-sonar.lock
 ```
@@ -317,6 +356,9 @@ use. It also writes
 the DR/control compatibility set. While that marker exists, promotion commands
 and units fail closed and the sudo contract is withheld; rerun the same
 reviewed bootstrap to finish and clear it.
+The bootstrap refuses to rewire or accept `pm2-dominguez.service` unless the
+root-owned PM2 6.0.14 closure, regular `/usr/local/bin/pm2` launcher, Node
+22.23.1 identity, trusted lock, and installation attestation all validate.
 
 The promotion bootstrap first invokes the exact
 `application-dr-systemd-install.sh` from that same reviewed source. This
