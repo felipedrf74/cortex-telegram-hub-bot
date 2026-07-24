@@ -65,7 +65,9 @@ describe('root one-shot Ollama observation collector', () => {
   function writeProc(relative: string, value: string) {
     const file = path.join(procRoot, relative);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, value);
+    const candidate = `${file}.candidate`;
+    fs.writeFileSync(candidate, value);
+    fs.renameSync(candidate, file);
   }
 
   function createDatabase(localUnits = 1) {

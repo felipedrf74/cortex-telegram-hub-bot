@@ -5,6 +5,7 @@
 set -euo pipefail
 umask 077
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 
 SERVICE=nexus-cloudflared.service
 METRICS_URL=http://127.0.0.1:20243/metrics
@@ -489,78 +490,9 @@ assert_no_cloudflared_cron_sources() {
   # Exit 0 only after every Ubuntu cron command source was read and found
   # clean. Exit 10 means a launch reference exists; every inspection error is
   # exit 20. File contents and matching lines are intentionally never emitted.
-  python3 <<'PY'
-import os
-import stat
-
-FOUND = 10
-INSPECTION_ERROR = 20
-needle = b"cloudflared"
-
-single_files = (
-    "/etc/crontab",
-    "/etc/anacrontab",
-)
-command_directories = (
-    "/etc/cron.d",
-    "/etc/cron.hourly",
-    "/etc/cron.daily",
-    "/etc/cron.weekly",
-    "/etc/cron.monthly",
-    "/var/spool/cron/crontabs",
-    "/var/spool/cron",
-)
-
-
-def inspect_file(path):
-    try:
-        observed = os.lstat(path)
-    except FileNotFoundError:
-        return
-    except OSError:
-        raise SystemExit(INSPECTION_ERROR)
-    if stat.S_ISLNK(observed.st_mode):
-        # Cron has distribution- and ownership-dependent symlink semantics.
-        # Refuse ambiguity instead of following a mutable target.
-        raise SystemExit(INSPECTION_ERROR)
-    if not stat.S_ISREG(observed.st_mode):
-        return
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-        try:
-            with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                for line in handle:
-                    stripped = line.lstrip()
-                    if stripped and not stripped.startswith(b"#") and needle in stripped.lower():
-                        raise SystemExit(FOUND)
-        finally:
-            os.close(descriptor)
-    except SystemExit:
-        raise
-    except OSError:
-        raise SystemExit(INSPECTION_ERROR)
-
-
-for item in single_files:
-    inspect_file(item)
-
-for directory in command_directories:
-    try:
-        observed = os.lstat(directory)
-    except FileNotFoundError:
-        continue
-    except OSError:
-        raise SystemExit(INSPECTION_ERROR)
-    if not stat.S_ISDIR(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
-        raise SystemExit(INSPECTION_ERROR)
-    try:
-        with os.scandir(directory) as entries:
-            paths = sorted(entry.path for entry in entries if not entry.name.startswith("."))
-    except OSError:
-        raise SystemExit(INSPECTION_ERROR)
-    for item in paths:
-        inspect_file(item)
-PY
+  local inspector="$SCRIPT_DIR/cloudflared-cron-source-inspector.py"
+  validate_file "$inspector" helper root || return 20
+  python3 "$inspector"
 }
 
 legacy_broker_command() {
