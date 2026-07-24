@@ -119,6 +119,34 @@ case "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" in
   *) die "storage provider/control mode is not an approved pair" ;;
 esac
 if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+  expected_aws_s3_endpoint="https://s3.${AWS_REGION:-us-east-1}.amazonaws.com"
+  [ "$NEXUS_DR_S3_ENDPOINT" = "$expected_aws_s3_endpoint" ] \
+    || die "AWS S3 endpoint must match the canonical configured regional endpoint"
+  for key in AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE AWS_EC2_METADATA_DISABLED \
+    NEXUS_DR_AWS_SIGNING_HELPER NEXUS_DR_AWS_SIGNING_HELPER_SHA256 \
+    AWS_PROFILE NEXUS_DR_AWS_BACKUP_ROLE_ARN NEXUS_DR_RESTORE_AWS_PROFILE \
+    NEXUS_DR_AWS_RESTORE_ROLE_ARN; do
+    [ -n "${!key:-}" ] || die "AWS S3 restore configuration is missing $key"
+  done
+  [ "$AWS_PROFILE" = nexus-application-dr-backup ] \
+    || die "configured application DR backup profile is invalid"
+  [ "$NEXUS_DR_RESTORE_AWS_PROFILE" = nexus-application-dr-restore ] \
+    || die "application DR restore profile is invalid"
+  [ "$NEXUS_DR_AWS_BACKUP_ROLE_ARN" != "$NEXUS_DR_AWS_RESTORE_ROLE_ARN" ] \
+    || die "application DR writer and restore role ARNs must be distinct"
+  [[ "$NEXUS_DR_AWS_RESTORE_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$ ]] \
+    || die "application DR restore role ARN is invalid"
+  export AWS_PROFILE="$NEXUS_DR_RESTORE_AWS_PROFILE"
+  [ "$AWS_SHARED_CREDENTIALS_FILE" = /dev/null ] \
+    || die "AWS_SHARED_CREDENTIALS_FILE must be /dev/null in AWS S3 mode"
+  case "$AWS_EC2_METADATA_DISABLED" in
+    true|TRUE) ;;
+    *) die "AWS_EC2_METADATA_DISABLED must be true in AWS S3 mode" ;;
+  esac
+  private_root_file "$AWS_CONFIG_FILE" "AWS credential-process configuration"
+  trusted_root_executable "$NEXUS_DR_AWS_SIGNING_HELPER" "aws_signing_helper"
+  [[ "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+    || die "reviewed aws_signing_helper SHA-256 is invalid"
   [[ "$DATABASE_VERSION_ID" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ \
       && "$RELEASE_VERSION_ID" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
     || die "versioned S3 restore requires exact database and release VersionIds"
@@ -200,8 +228,10 @@ RECOVERY_ARCHIVE_HELPER="$SCRIPT_DIR/application-dr-recovery-archive.py"
 RECOVERY_RUNTIME_HELPER="$SCRIPT_DIR/application-dr-recovery-runtime.mjs"
 RECOVERY_IDENTITY_HELPER="$SCRIPT_DIR/release-recovery-runtime-identity.mjs"
 RUNTIME_DEPENDENCY_HELPER="$SCRIPT_DIR/release-runtime-dependencies.mjs"
+AWS_CREDENTIAL_BOUNDARY_HELPER="$SCRIPT_DIR/aws-credential-process-boundary.py"
 for helper in "$SQLITE_HELPER" "$MIGRATION_LINEAGE_POLICY" "$RECOVERY_ARCHIVE_HELPER" \
-  "$RECOVERY_RUNTIME_HELPER" "$RECOVERY_IDENTITY_HELPER"; do
+  "$RECOVERY_RUNTIME_HELPER" "$RECOVERY_IDENTITY_HELPER" \
+  "$AWS_CREDENTIAL_BOUNDARY_HELPER"; do
   [[ -f "$helper" && ! -L "$helper" ]] || die "installed helper is missing: $helper"
   [ "$(realpath -e -- "$helper")" = "$helper" ] \
     || die "installed helper must not traverse symlinks: $helper"
@@ -216,6 +246,15 @@ done
 trusted_root_path_chain "$RUNTIME_DEPENDENCY_HELPER" "installed runtime dependency helper"
 [ "$(stat -c '%U:%G:%a' -- "$RUNTIME_DEPENDENCY_HELPER")" = root:root:644 ] \
   || die "installed runtime dependency helper must be root:root mode 0644"
+if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+  "$NEXUS_DR_PYTHON_BIN" "$AWS_CREDENTIAL_BOUNDARY_HELPER" \
+    --config "$AWS_CONFIG_FILE" \
+    --profile "$AWS_PROFILE" \
+    --region "${AWS_REGION:-us-east-1}" \
+    --helper "$NEXUS_DR_AWS_SIGNING_HELPER" \
+    --helper-sha256 "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256" \
+    --expected-role-arn "$NEXUS_DR_AWS_RESTORE_ROLE_ARN" >/dev/null
+fi
 for command in age aws curl flock getent ip mount nsenter od setsid setpriv sha256sum ss timeout unshare; do
   command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done

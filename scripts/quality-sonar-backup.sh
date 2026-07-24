@@ -8,11 +8,15 @@ umask 077
 CONFIG=/etc/sonarqube/backup.env
 STACK_DIR="${SONAR_STACK_DIR:-/srv/sonarqube}"
 SECRETS_FILE="${SONAR_SECRETS_FILE:-/etc/sonarqube/sonarqube.env}"
-SUCCESS_RECEIPT="${SONAR_BACKUP_SUCCESS_RECEIPT:-/var/lib/nexus-sonarqube/last-backup-success.v1.json}"
+SUCCESS_RECEIPT="${SONAR_BACKUP_SUCCESS_RECEIPT:-/var/lib/nexus-sonarqube/last-backup-success.v2.json}"
 BACKUP_TIMER=nexus-sonarqube-backup.timer
 MAX_AGE_HOURS=26
 ACTION=backup
 ACTION_SET=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AWS_CREDENTIAL_BOUNDARY_HELPER="$SCRIPT_DIR/aws-credential-process-boundary.py"
+[ -f "$AWS_CREDENTIAL_BOUNDARY_HELPER" ] \
+  || AWS_CREDENTIAL_BOUNDARY_HELPER=/usr/local/sbin/quality-sonar-aws-credential-process-boundary.py
 
 usage() {
   echo "Usage: quality-sonar-backup.sh [--config <mode-0600-file>] [--verify-config|--verify-freshness [--max-age-hours <1-168>]|--enable-timer]"
@@ -69,12 +73,27 @@ const value = JSON.parse(body);
 const completedAt = Date.parse(value.completedAt || '');
 const ageMs = Date.now() - completedAt;
 const maxAgeMs = Number(maxAgeHoursRaw) * 60 * 60 * 1000;
-if (value.schemaVersion !== 'SonarBackupSuccessV1'
+const versionIdPattern = /^[A-Za-z0-9._~+=:/-]{1,1024}$/u;
+const isImmutableVersionId = value =>
+  typeof value === 'string' && value !== 'null' && versionIdPattern.test(value);
+if (value.schemaVersion !== 'SonarBackupSuccessV2'
     || value.encrypted !== true || value.remoteObjectVerified !== true
     || value.retention?.daily !== 7 || value.retention?.weekly !== 4
     || typeof value.dailyKey !== 'string'
     || !/\/daily\/nexus-sonarqube-[0-9]{8}T[0-9]{6}Z\.dump\.age$/u.test(value.dailyKey)
     || !/^[a-f0-9]{64}$/u.test(value.encryptedSha256 || '')
+    || !Number.isSafeInteger(value.encryptedSizeBytes) || value.encryptedSizeBytes <= 0
+    || !isImmutableVersionId(value.dailyObjectVersionId)
+    || !isImmutableVersionId(value.dailyChecksumVersionId)
+    || (value.weeklyUploaded === true
+      ? (!isImmutableVersionId(value.weeklyObjectVersionId)
+        || !isImmutableVersionId(value.weeklyChecksumVersionId))
+      : (value.weeklyObjectVersionId !== null
+        || value.weeklyChecksumVersionId !== null))
+    || value.remoteVerification?.method
+      !== 'version-pinned-head-content-length-and-metadata-sha256'
+    || value.remoteVerification?.daily !== true
+    || value.remoteVerification?.weekly !== value.weeklyUploaded
     || !Number.isFinite(completedAt) || ageMs < -5 * 60 * 1000 || ageMs > maxAgeMs) process.exit(1);
 process.stdout.write(`sonar_backup_fresh ageHours=${(ageMs / 3_600_000).toFixed(2)} maxAgeHours=${maxAgeHoursRaw}\n`);
 NODE
@@ -99,21 +118,74 @@ set -a
 . "$SECRETS_FILE"
 set +a
 
-required=(SONAR_BACKUP_S3_ENDPOINT SONAR_BACKUP_S3_BUCKET SONAR_BACKUP_S3_PREFIX SONAR_BACKUP_AGE_RECIPIENT SONAR_DB_NAME SONAR_DB_USER SONAR_DB_PASSWORD)
+required=(
+  SONAR_BACKUP_S3_ENDPOINT
+  SONAR_BACKUP_S3_BUCKET
+  SONAR_BACKUP_S3_PREFIX
+  SONAR_BACKUP_AGE_RECIPIENT
+  SONAR_DB_NAME
+  SONAR_DB_USER
+  SONAR_DB_PASSWORD
+  AWS_CONFIG_FILE
+  AWS_PROFILE
+  AWS_SHARED_CREDENTIALS_FILE
+  AWS_EC2_METADATA_DISABLED
+  SONAR_BACKUP_AWS_SIGNING_HELPER
+  SONAR_BACKUP_AWS_SIGNING_HELPER_SHA256
+  SONAR_BACKUP_AWS_ROLE_ARN
+)
 for key in "${required[@]}"; do
   [ -n "${!key:-}" ] || { echo "Backup configuration is missing $key" >&2; exit 1; }
 done
 [[ "$SONAR_BACKUP_S3_ENDPOINT" =~ ^https://[^[:space:]]+$ ]] || { echo "S3 endpoint must use HTTPS" >&2; exit 1; }
+expected_aws_s3_endpoint="https://s3.${AWS_REGION:-us-east-1}.amazonaws.com"
+[ "$SONAR_BACKUP_S3_ENDPOINT" = "$expected_aws_s3_endpoint" ] \
+  || { echo "Sonar backup endpoint must match the canonical regional AWS S3 endpoint" >&2; exit 1; }
 [[ "$SONAR_BACKUP_S3_BUCKET" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,62}$ ]] || { echo "Invalid S3 bucket" >&2; exit 1; }
 [[ "$SONAR_BACKUP_S3_PREFIX" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$ ]] \
   && [[ "$SONAR_BACKUP_S3_PREFIX" != *..* ]] \
   && [[ "$SONAR_BACKUP_S3_PREFIX" != //* ]] || { echo "Invalid S3 prefix" >&2; exit 1; }
 [[ "$SONAR_DB_NAME" =~ ^[A-Za-z0-9_]+$ && "$SONAR_DB_USER" =~ ^[A-Za-z0-9_]+$ ]] || { echo "Invalid Sonar database identity" >&2; exit 1; }
 [[ "$SONAR_BACKUP_AGE_RECIPIENT" =~ ^age1[0-9a-z]{58}$ ]] || { echo "Invalid native age recipient" >&2; exit 1; }
+[[ "$SONAR_BACKUP_AWS_SIGNING_HELPER_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+  || { echo "Reviewed aws_signing_helper SHA-256 is invalid" >&2; exit 1; }
+[ "$AWS_PROFILE" = nexus-sonarqube-backup ] \
+  || { echo "AWS_PROFILE must be nexus-sonarqube-backup" >&2; exit 1; }
+[[ "$SONAR_BACKUP_AWS_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$ ]] \
+  || { echo "Sonar backup role ARN is invalid" >&2; exit 1; }
 
-for command in docker age aws sha256sum flock node; do
+for file in "$AWS_CONFIG_FILE"; do
+  [[ "$file" == /* ]] && [ -f "$file" ] && [ ! -L "$file" ] \
+    || { echo "AWS credential-process config is missing: $file" >&2; exit 1; }
+  mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file")"
+  owner="$(stat -c '%U' "$file" 2>/dev/null || stat -f '%Su' "$file")"
+  [ "$mode" = 600 ] && [ "$owner" = root ] \
+    || { echo "AWS credential-process config must be root-owned mode 0600" >&2; exit 1; }
+done
+[[ "$SONAR_BACKUP_AWS_SIGNING_HELPER" == /* ]] \
+  && [ "$SONAR_BACKUP_AWS_SIGNING_HELPER" != / ] \
+  && [ -f "$SONAR_BACKUP_AWS_SIGNING_HELPER" ] \
+  && [ ! -L "$SONAR_BACKUP_AWS_SIGNING_HELPER" ] \
+  && [ -x "$SONAR_BACKUP_AWS_SIGNING_HELPER" ] \
+  || { echo "aws_signing_helper must be an absolute executable non-symlink file" >&2; exit 1; }
+helper_owner="$(stat -c '%U' "$SONAR_BACKUP_AWS_SIGNING_HELPER" 2>/dev/null || stat -f '%Su' "$SONAR_BACKUP_AWS_SIGNING_HELPER")"
+helper_mode="$(stat -c '%a' "$SONAR_BACKUP_AWS_SIGNING_HELPER" 2>/dev/null || stat -f '%Lp' "$SONAR_BACKUP_AWS_SIGNING_HELPER")"
+[ "$helper_owner" = root ] \
+  && (( (8#$helper_mode & 0022) == 0 )) \
+  || { echo "aws_signing_helper must be root-owned and not group/world writable" >&2; exit 1; }
+
+for command in docker age aws sha256sum flock node python3; do
   command -v "$command" >/dev/null 2>&1 || { echo "$command is required for Sonar backup" >&2; exit 1; }
 done
+[ -f "$AWS_CREDENTIAL_BOUNDARY_HELPER" ] && [ ! -L "$AWS_CREDENTIAL_BOUNDARY_HELPER" ] \
+  || { echo "AWS credential-process boundary helper is missing" >&2; exit 1; }
+python3 "$AWS_CREDENTIAL_BOUNDARY_HELPER" \
+  --config "$AWS_CONFIG_FILE" \
+  --profile "$AWS_PROFILE" \
+  --region "${AWS_REGION:-us-east-1}" \
+  --helper "$SONAR_BACKUP_AWS_SIGNING_HELPER" \
+  --helper-sha256 "$SONAR_BACKUP_AWS_SIGNING_HELPER_SHA256" \
+  --expected-role-arn "$SONAR_BACKUP_AWS_ROLE_ARN" >/dev/null
 [ "$ACTION" != enable ] || command -v systemctl >/dev/null 2>&1 \
   || { echo "systemctl is required to enable the Sonar backup timer" >&2; exit 1; }
 [ -f "$STACK_DIR/compose.yaml" ] && [ -f "$STACK_DIR/images.lock.env" ] || { echo "Sonar stack files are missing" >&2; exit 1; }
@@ -168,11 +240,88 @@ unset SONAR_DB_PASSWORD SONAR_AUTH_JWTBASE64HS256SECRET
 printf '%s  %s\n' "$(sha256sum "$encrypted" | awk '{ print $1 }')" "$basename" >"$checksum"
 
 aws_args=(--endpoint-url "$SONAR_BACKUP_S3_ENDPOINT" --region "${AWS_REGION:-us-east-1}")
+daily_object_version_id=""
+daily_checksum_version_id=""
+weekly_object_version_id=""
+weekly_checksum_version_id=""
 upload_pair() {
   local tier="$1" key="$SONAR_BACKUP_S3_PREFIX/$tier/$basename"
-  aws "${aws_args[@]}" s3api put-object --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$key" --body "$encrypted" --content-type application/octet-stream >/dev/null
-  aws "${aws_args[@]}" s3api put-object --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$key.sha256" --body "$checksum" --content-type text/plain >/dev/null
-  aws "${aws_args[@]}" s3api head-object --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$key" >/dev/null
+  local encrypted_sha256 encrypted_size checksum_size head checksum_head
+  local object_put checksum_put object_version_id checksum_version_id
+  encrypted_sha256="$(awk 'NR == 1 { print $1 }' "$checksum")"
+  encrypted_size="$(stat -c '%s' "$encrypted")"
+  checksum_size="$(stat -c '%s' "$checksum")"
+  head="$tmp_dir/$tier-head.json"
+  checksum_head="$tmp_dir/$tier-checksum-head.json"
+  object_put="$tmp_dir/$tier-object-put.json"
+  checksum_put="$tmp_dir/$tier-checksum-put.json"
+  [[ "$encrypted_sha256" =~ ^[a-f0-9]{64}$ ]] \
+    && [[ "$encrypted_size" =~ ^[1-9][0-9]*$ ]] \
+    || { echo "Local encrypted Sonar backup identity is invalid" >&2; exit 1; }
+  aws "${aws_args[@]}" s3api put-object \
+    --bucket "$SONAR_BACKUP_S3_BUCKET" \
+    --key "$key" \
+    --body "$encrypted" \
+    --content-type application/octet-stream \
+    --metadata "encrypted-sha256=$encrypted_sha256" >"$object_put"
+  aws "${aws_args[@]}" s3api put-object \
+    --bucket "$SONAR_BACKUP_S3_BUCKET" \
+    --key "$key.sha256" \
+    --body "$checksum" \
+    --content-type text/plain >"$checksum_put"
+  object_version_id="$(node -e \
+    'const v=require(process.argv[1]).VersionId;if(typeof v!=="string")process.exit(1);process.stdout.write(v)' \
+    "$object_put")"
+  checksum_version_id="$(node -e \
+    'const v=require(process.argv[1]).VersionId;if(typeof v!=="string")process.exit(1);process.stdout.write(v)' \
+    "$checksum_put")"
+  [[ "$object_version_id" != null \
+      && "$checksum_version_id" != null \
+      && "$object_version_id" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ \
+      && "$checksum_version_id" =~ ^[A-Za-z0-9._~+=:/-]{1,1024}$ ]] \
+    || { echo "Sonar backup bucket must return immutable object VersionIds" >&2; exit 1; }
+  aws "${aws_args[@]}" s3api head-object \
+    --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$key" \
+    --version-id "$object_version_id" >"$head"
+  aws "${aws_args[@]}" s3api head-object \
+    --bucket "$SONAR_BACKUP_S3_BUCKET" --key "$key.sha256" \
+    --version-id "$checksum_version_id" >"$checksum_head"
+  node - "$head" "$checksum_head" "$encrypted_size" "$checksum_size" \
+    "$encrypted_sha256" "$object_version_id" "$checksum_version_id" <<'NODE'
+const fs = require('fs');
+const [
+  headPath,
+  checksumHeadPath,
+  expectedSizeRaw,
+  expectedChecksumSizeRaw,
+  expectedSha256,
+  expectedVersionId,
+  expectedChecksumVersionId,
+] = process.argv.slice(2);
+const head = JSON.parse(fs.readFileSync(headPath, 'utf8'));
+const checksumHead = JSON.parse(fs.readFileSync(checksumHeadPath, 'utf8'));
+const metadata = Object.fromEntries(
+  Object.entries(head.Metadata || {}).map(([key, value]) => [key.toLowerCase(), value]),
+);
+if (Number(head.ContentLength) !== Number(expectedSizeRaw)
+    || metadata['encrypted-sha256'] !== expectedSha256
+    || head.VersionId !== expectedVersionId
+    || Number(checksumHead.ContentLength) !== Number(expectedChecksumSizeRaw)
+    || checksumHead.VersionId !== expectedChecksumVersionId) {
+  throw new Error('remote encrypted Sonar backup identity differs from local bytes');
+}
+NODE
+  case "$tier" in
+    daily)
+      daily_object_version_id="$object_version_id"
+      daily_checksum_version_id="$checksum_version_id"
+      ;;
+    weekly)
+      weekly_object_version_id="$object_version_id"
+      weekly_checksum_version_id="$checksum_version_id"
+      ;;
+    *) echo "Unsupported Sonar backup tier" >&2; exit 1 ;;
+  esac
 }
 
 upload_pair daily
@@ -207,7 +356,7 @@ prune_tier daily 7
 prune_tier weekly 4
 
 write_success_receipt() {
-  local receipt_dir temporary encrypted_sha256
+  local receipt_dir temporary encrypted_sha256 encrypted_size
   receipt_dir="$(dirname -- "$SUCCESS_RECEIPT")"
   [ -d "$receipt_dir" ] && [ ! -L "$receipt_dir" ] \
     && [ "$(stat -c '%U:%G:%a' -- "$receipt_dir")" = root:root:700 ] \
@@ -219,17 +368,40 @@ write_success_receipt() {
   fi
   temporary="$(mktemp "$receipt_dir/.last-backup-success.next.XXXXXXXX")"
   encrypted_sha256="$(awk 'NR == 1 { print $1 }' "$checksum")"
+  encrypted_size="$(stat -c '%s' "$encrypted")"
   node - "$temporary" "$SONAR_BACKUP_S3_PREFIX/daily/$basename" \
-    "$encrypted_sha256" "$weekly_uploaded" <<'NODE'
+    "$encrypted_sha256" "$encrypted_size" "$daily_object_version_id" \
+    "$daily_checksum_version_id" "$weekly_uploaded" \
+    "$weekly_object_version_id" "$weekly_checksum_version_id" <<'NODE'
 const fs = require('fs');
-const [output, dailyKey, encryptedSha256, weeklyUploaded] = process.argv.slice(2);
+const [
+  output,
+  dailyKey,
+  encryptedSha256,
+  encryptedSizeBytesRaw,
+  dailyObjectVersionId,
+  dailyChecksumVersionId,
+  weeklyUploaded,
+  weeklyObjectVersionId,
+  weeklyChecksumVersionId,
+] = process.argv.slice(2);
 const value = {
-  schemaVersion: 'SonarBackupSuccessV1',
+  schemaVersion: 'SonarBackupSuccessV2',
   encrypted: true,
   remoteObjectVerified: true,
   dailyKey,
   encryptedSha256,
+  encryptedSizeBytes: Number(encryptedSizeBytesRaw),
+  dailyObjectVersionId,
+  dailyChecksumVersionId,
   weeklyUploaded: weeklyUploaded === 'true',
+  weeklyObjectVersionId: weeklyUploaded === 'true' ? weeklyObjectVersionId : null,
+  weeklyChecksumVersionId: weeklyUploaded === 'true' ? weeklyChecksumVersionId : null,
+  remoteVerification: {
+    method: 'version-pinned-head-content-length-and-metadata-sha256',
+    daily: true,
+    weekly: weeklyUploaded === 'true',
+  },
   retention: { daily: 7, weekly: 4 },
   completedAt: new Date().toISOString(),
 };

@@ -923,6 +923,8 @@ describe('advisory SonarQube operational assets', () => {
 
   it('encrypts database backups before S3 upload, retains 7/4, and restores into fresh drill volumes', () => {
     const backup = read('scripts/quality-sonar-backup.sh');
+    const backupConfig = read('ops/sonarqube/backup.env.example');
+    const awsConfig = read('ops/sonarqube/aws-config.example');
     const restore = read('scripts/quality-sonar-restore-drill.sh');
     const drillCompose = read('ops/sonarqube/compose.drill.yaml');
     const backupService = read(
@@ -937,8 +939,36 @@ describe('advisory SonarQube operational assets', () => {
     expect(backup).toContain('pg_restore --list');
     expect(backup).toContain('--enable-timer');
     expect(backup).toContain('--verify-freshness');
-    expect(backup).toContain("schemaVersion: 'SonarBackupSuccessV1'");
+    expect(backup).toContain("schemaVersion: 'SonarBackupSuccessV2'");
     expect(backup).toContain('remoteObjectVerified: true');
+    expect(backup).toContain('--metadata "encrypted-sha256=$encrypted_sha256"');
+    expect(backup).toContain("metadata['encrypted-sha256'] !== expectedSha256");
+    expect(backup).toContain(
+      "method: 'version-pinned-head-content-length-and-metadata-sha256'",
+    );
+    expect(backup).toContain('--version-id "$object_version_id"');
+    expect(backup).toContain('"$object_version_id" != null');
+    expect(backup).toContain('"$checksum_version_id" != null');
+    expect(backup).toContain('dailyObjectVersionId');
+    expect(backup).toContain('dailyChecksumVersionId');
+    expect(backup).toContain('AWS_CREDENTIAL_BOUNDARY_HELPER');
+    expect(backup).toContain('--helper-sha256 "$SONAR_BACKUP_AWS_SIGNING_HELPER_SHA256"');
+    expect(backupConfig).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
+    expect(backupConfig).toContain('AWS_PROFILE=nexus-sonarqube-backup');
+    expect(backupConfig).toContain(
+      'SONAR_BACKUP_AWS_ROLE_ARN=arn:aws:iam::111122223333:role/nexus-sonarqube-backup',
+    );
+    expect(backupConfig).toContain(
+      'SONAR_RESTORE_AWS_PROFILE=nexus-sonarqube-restore',
+    );
+    expect(backupConfig).toContain(
+      'SONAR_RESTORE_AWS_ROLE_ARN=arn:aws:iam::111122223333:role/nexus-sonarqube-restore',
+    );
+    expect(backupConfig).not.toMatch(/^AWS_ACCESS_KEY_ID=/m);
+    expect(backupConfig).not.toMatch(/^AWS_SECRET_ACCESS_KEY=/m);
+    expect(awsConfig).toContain('[profile nexus-sonarqube-backup]');
+    expect(awsConfig).toContain('[profile nexus-sonarqube-restore]');
+    expect(awsConfig).toContain('nexus-sonarqube-aws-signing-helper credential-process');
     expect(backup).toContain('systemctl enable --now "$BACKUP_TIMER"');
     expect(backupService).toContain('Restart=on-failure');
     expect(backupService).toContain('RestartSec=15min');
@@ -947,7 +977,16 @@ describe('advisory SonarQube operational assets', () => {
       'installation alone intentionally leaves the timer disabled',
     );
     expect(runbook).toContain('--max-age-hours 26');
+    expect(runbook).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
     expect(restore).toContain('age --decrypt');
+    expect(restore).toContain('export AWS_PROFILE="$SONAR_RESTORE_AWS_PROFILE"');
+    expect(restore).toContain('AWS_CREDENTIAL_BOUNDARY_HELPER');
+    expect(restore).toContain('--backup-version-id');
+    expect(restore).toContain('--checksum-version-id');
+    expect(restore).toContain('--version-id "$BACKUP_VERSION_ID"');
+    expect(restore).toContain('--version-id "$CHECKSUM_VERSION_ID"');
+    expect(restore).toContain('"$BACKUP_VERSION_ID" != null');
+    expect(restore).toContain('"$CHECKSUM_VERSION_ID" != null');
     expect(restore).toContain('Refusing restore drill while the live advisory Sonar stack is running');
     expect(restore).toContain('freshElasticsearchVolume: true');
     expect(restore).toContain('reindexStartupVerified: true');
@@ -959,17 +998,32 @@ describe('advisory SonarQube operational assets', () => {
   it('fails closed when the remote Sonar backup success receipt is stale or invalid', () => {
     const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-backup-freshness-'));
     const bin = join(temp, 'bin');
-    const receipt = join(temp, 'last-backup-success.v1.json');
+    const receipt = join(temp, 'last-backup-success.v2.json');
     mkdirSync(bin);
     chmodSync(temp, 0o700);
-    const writeReceipt = (completedAt: string, remoteObjectVerified = true) => {
+    const writeReceipt = (
+      completedAt: string,
+      remoteObjectVerified = true,
+      dailyObjectVersionId = 'daily-object-version-1',
+      dailyChecksumVersionId = 'daily-checksum-version-1',
+    ) => {
       writeFileSync(receipt, `${JSON.stringify({
-        schemaVersion: 'SonarBackupSuccessV1',
+        schemaVersion: 'SonarBackupSuccessV2',
         encrypted: true,
         remoteObjectVerified,
         dailyKey: 'nexus-hub/sonarqube/daily/nexus-sonarqube-20260724T120000Z.dump.age',
         encryptedSha256: 'a'.repeat(64),
+        encryptedSizeBytes: 1234,
+        dailyObjectVersionId,
+        dailyChecksumVersionId,
         weeklyUploaded: false,
+        weeklyObjectVersionId: null,
+        weeklyChecksumVersionId: null,
+        remoteVerification: {
+          method: 'version-pinned-head-content-length-and-metadata-sha256',
+          daily: true,
+          weekly: false,
+        },
         retention: { daily: 7, weekly: 4 },
         completedAt,
       })}\n`, { mode: 0o600 });
@@ -1016,6 +1070,12 @@ describe('advisory SonarQube operational assets', () => {
       expect(run().status).not.toBe(0);
 
       writeReceipt(new Date().toISOString(), false);
+      expect(run().status).not.toBe(0);
+
+      writeReceipt(new Date().toISOString(), true, 'null');
+      expect(run().status).not.toBe(0);
+
+      writeReceipt(new Date().toISOString(), true, 'daily-object-version-1', 'null');
       expect(run().status).not.toBe(0);
     } finally {
       rmSync(temp, { recursive: true, force: true });

@@ -591,7 +591,7 @@ NODE
     const output = JSON.parse(first.stdout);
     expect(output.phase).toBe('owner_stop');
     expect(output.manualRequired).toBe(true);
-    expect(output.reason).toBe('owner_authorization_not_automatic');
+    expect(output.reason).toBe('owner_stop_requires_new_invocation');
     expect(fs.readFileSync(operations, 'utf8').trim().split('\n')).toEqual([
       'rc-dispatch',
       'rc-watch',
@@ -657,6 +657,31 @@ NODE
     expect(checkpoint.stagingAttestationIdentity.sha256).toMatch(/^[a-f0-9]{64}$/u);
   });
 
+  it('never honors promotion signals from the invocation that first reaches the owner stop', () => {
+    const preapproved = run(
+      ['--backend-only', '--owner-authorized', '--promote'],
+      { ...process.env, NEXUS_RELEASE_OWNER_AUTHORIZED: '1' },
+    );
+    expect(preapproved.status, preapproved.stderr).toBe(3);
+    expect(JSON.parse(preapproved.stdout)).toMatchObject({
+      phase: 'owner_stop',
+      manualRequired: true,
+      reason: 'owner_stop_requires_new_invocation',
+    });
+    expect(fs.readFileSync(operations, 'utf8')).not.toContain('promote\n');
+
+    const laterInvocation = run(
+      ['--owner-authorized', '--promote'],
+      { ...process.env, NEXUS_RELEASE_OWNER_AUTHORIZED: '1' },
+    );
+    expect(laterInvocation.status, laterInvocation.stderr).toBe(0);
+    expect(JSON.parse(laterInvocation.stdout).phase).toBe('promoted');
+    expect(
+      fs.readFileSync(operations, 'utf8').trim().split('\n')
+        .filter((entry) => entry === 'promote'),
+    ).toHaveLength(1);
+  });
+
   it('resumes without repeating completed external work and promotes only with both owner signals', () => {
     expect(run(['--backend-only']).status).toBe(3);
 
@@ -695,6 +720,40 @@ NODE
     const status = run(['--status']);
     expect(status.status).toBe(0);
     expect(JSON.parse(status.stdout).phase).toBe('promoted');
+  });
+
+  it('treats a verified promoted checkpoint as terminal for every later invocation', () => {
+    expect(run(['--backend-only']).status).toBe(3);
+    const promoted = run(
+      ['--owner-authorized', '--promote'],
+      { ...process.env, NEXUS_RELEASE_OWNER_AUTHORIZED: '1' },
+    );
+    expect(promoted.status, promoted.stderr).toBe(0);
+
+    const checkpointPath = path.join(
+      root,
+      '.local',
+      'release',
+      'checkpoints',
+      `${runtimeSha}.json`,
+    );
+    const checkpointBefore = fs.readFileSync(checkpointPath);
+    const operationsBefore = fs.readFileSync(operations, 'utf8');
+
+    const plainResume = run([]);
+    expect(plainResume.status, plainResume.stderr).toBe(0);
+    expect(JSON.parse(plainResume.stdout).phase).toBe('promoted');
+    const preapprovedResume = run(
+      ['--owner-authorized', '--promote'],
+      { ...process.env, NEXUS_RELEASE_OWNER_AUTHORIZED: '1' },
+    );
+    expect(preapprovedResume.status, preapprovedResume.stderr).toBe(0);
+    expect(JSON.parse(preapprovedResume.stdout).phase).toBe('promoted');
+    expect(fs.readFileSync(checkpointPath)).toEqual(checkpointBefore);
+    expect(fs.readFileSync(operations, 'utf8')).toBe(operationsBefore);
+    expect(
+      operationsBefore.trim().split('\n').filter((entry) => entry === 'promote'),
+    ).toHaveLength(1);
   });
 
   it('rejects an attempt to resume the checkpoint with a different RC identity', () => {

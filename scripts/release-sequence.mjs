@@ -1454,6 +1454,10 @@ if (suppliedRcRun && !/^[0-9]+$/u.test(suppliedRcRun)) fail('release RC run id i
 const suppliedProtectedReuseActivation = value('--protected-reuse-activation');
 
 let state = readCheckpoint();
+const phaseAtProcessStart = state?.phase || null;
+const ownerStopPersistedAtProcessStart = state !== null
+  && ['owner_stop', 'owner_authorized_for_current_invocation'].includes(state.phase)
+  && Number.isFinite(Date.parse(state.ownerStopReachedAt || ''));
 if (!state) {
   if (suppliedRcRun) fail('a new release sequence dispatches its own RC; --rc-run is resume-only', 64);
   if (!suppliedScope) fail('first release resume requires --backend-only or --includes-ios', 64);
@@ -1545,6 +1549,7 @@ if (!state) {
   revalidateCheckpointTrust(state);
   if (suppliedRcRun && suppliedRcRun !== state.rcRunId) fail('release checkpoint RC run identity mismatch', 64);
   if (suppliedScope && suppliedScope !== state.contractScope) fail('release checkpoint contract scope mismatch', 64);
+  if (phaseAtProcessStart === 'promoted') emit(state);
 }
 
 state = await continueReleaseCandidate(state);
@@ -1906,6 +1911,9 @@ state = writeCheckpoint({
   ownerStopReachedAt: state.ownerStopReachedAt || new Date().toISOString(),
 });
 
+if (!ownerStopPersistedAtProcessStart) {
+  emit(state, { manualRequired: true, reason: 'owner_stop_requires_new_invocation' }, 3);
+}
 if (!has('--owner-authorized')) {
   emit(state, { manualRequired: true, reason: 'owner_authorization_not_automatic' }, 3);
 }

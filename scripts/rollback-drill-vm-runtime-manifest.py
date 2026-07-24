@@ -253,6 +253,12 @@ CONTROL_FILES = (
         0o644,
     ),
     (
+        "scripts/aws-credential-process-boundary.py",
+        "/usr/local/libexec/nexus-application-dr/aws-credential-process-boundary.py",
+        "root:root",
+        0o644,
+    ),
+    (
         "scripts/application-dr-recovery-runtime.mjs",
         "/usr/local/libexec/nexus-application-dr/application-dr-recovery-runtime.mjs",
         "root:root",

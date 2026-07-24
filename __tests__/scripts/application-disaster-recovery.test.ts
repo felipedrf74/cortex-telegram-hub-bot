@@ -11,6 +11,7 @@ const sqliteHelper = path.resolve('scripts/application-dr-sqlite.py');
 const retentionHelper = path.resolve('scripts/application-dr-retention.py');
 const archiveHelper = path.resolve('scripts/application-dr-archive.py');
 const storageControlHelper = path.resolve('scripts/application-dr-storage-controls.py');
+const awsCredentialBoundary = path.resolve('scripts/aws-credential-process-boundary.py');
 const isolatedHarness = path.resolve('scripts/application-dr-isolated-harness.sh');
 const migrationRoot = path.resolve('migrations');
 const migrationLineagePolicy = path.resolve('config/production-migration-lineages.json');
@@ -67,6 +68,134 @@ function writeMigrationLedger(database: string, filenames: string[]) {
 }
 
 describe('Nexus application disaster-recovery assets', () => {
+  it('accepts only the exact Roles Anywhere credential_process boundary', () => {
+    const root = privateRoot('nexus-app-dr-aws-boundary-');
+    const helper = path.join(root, 'aws_signing_helper');
+    const config = path.join(root, 'aws-config');
+    const certificate = path.join(root, 'certificate.pem');
+    const privateKey = path.join(root, 'private-key.pem');
+    fs.writeFileSync(helper, 'reviewed-helper-fixture\n', { mode: 0o700 });
+    fs.writeFileSync(certificate, 'reviewed-certificate-fixture\n', { mode: 0o644 });
+    fs.writeFileSync(privateKey, 'reviewed-private-key-fixture\n', { mode: 0o600 });
+    const helperSha256 = createHash('sha256')
+      .update(fs.readFileSync(helper))
+      .digest('hex');
+    fs.writeFileSync(
+      config,
+      [
+        '[profile nexus-application-dr-backup]',
+        'region = eu-west-1',
+        `credential_process = ${helper} credential-process `
+          + `--certificate ${certificate} `
+          + `--private-key ${privateKey} `
+          + '--trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/ta-1 '
+          + '--profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/profile-1 '
+          + '--role-arn arn:aws:iam::111122223333:role/nexus-application-dr-backup',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+    const environment: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_SECURITY_TOKEN',
+      'AWS_CREDENTIAL_FILE',
+      'AWS_DEFAULT_PROFILE',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_ROLE_ARN',
+      'AWS_ROLE_SESSION_NAME',
+      'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+      'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+    ]) {
+      delete environment[key];
+    }
+    Object.assign(environment, {
+      AWS_CONFIG_FILE: config,
+      AWS_PROFILE: 'nexus-application-dr-backup',
+      AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+      AWS_EC2_METADATA_DISABLED: 'true',
+      PYTHONDONTWRITEBYTECODE: '1',
+    });
+    const args = [
+      awsCredentialBoundary,
+      '--config', config,
+      '--profile', 'nexus-application-dr-backup',
+      '--region', 'eu-west-1',
+      '--helper', helper,
+      '--helper-sha256', helperSha256,
+      '--expected-role-arn',
+      'arn:aws:iam::111122223333:role/nexus-application-dr-backup',
+      '--expected-owner-uid', String(process.getuid?.() ?? 0),
+      '--trust-boundary', root,
+    ];
+    const accepted = spawnSync(python, args, { encoding: 'utf8', env: environment });
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toMatchObject({
+      status: 'passed',
+      credentialSource: 'iam-roles-anywhere-credential-process',
+      longLivedEnvironmentRejected: true,
+      sharedCredentialsDisabled: true,
+    });
+
+    const longLived = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: { ...environment, AWS_ACCESS_KEY_ID: 'forbidden-static-key' },
+    });
+    expect(longLived.status).not.toBe(0);
+    expect(longLived.stderr).toContain(
+      'alternate or long-lived AWS credential environment is forbidden',
+    );
+
+    fs.chmodSync(privateKey, 0o644);
+    const exposedPrivateKey = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(exposedPrivateKey.status).not.toBe(0);
+    expect(exposedPrivateKey.stderr).toContain(
+      'Roles Anywhere private key mode is outside the trusted allowlist',
+    );
+    fs.chmodSync(privateKey, 0o600);
+
+    fs.appendFileSync(config, 'aws_access_key_id = forbidden-in-profile\n');
+    const selectedProfileStaticKey = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(selectedProfileStaticKey.status).not.toBe(0);
+    expect(selectedProfileStaticKey.stderr).toContain(
+      'selected AWS profile may contain only region and credential_process',
+    );
+
+    fs.writeFileSync(
+      config,
+      [
+        '[profile nexus-application-dr-backup]',
+        'region = eu-west-1',
+        `credential_process = ${helper} credential-process `
+          + `--certificate ${certificate} `
+          + `--private-key ${privateKey} `
+          + '--trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/ta-1 '
+          + '--profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/profile-1 '
+          + '--role-arn arn:aws:iam::111122223333:role/unexpected-writer',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+    const substitutedRole = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(substitutedRole.status).not.toBe(0);
+    expect(substitutedRole.stderr).toContain(
+      'credential_process role ARN differs from the exact expected role',
+    );
+  });
+
   it('takes and verifies a private SQLite recovery point through the online backup API', () => {
     const root = privateRoot('nexus-app-dr-sqlite-');
     const source = path.join(root, 'source.sqlite');
@@ -1034,6 +1163,7 @@ describe('Nexus application disaster-recovery assets', () => {
       'utf8',
     );
     const config = fs.readFileSync(path.join(opsRoot, 'backup.env.example'), 'utf8');
+    const awsConfig = fs.readFileSync(path.join(opsRoot, 'aws-config.example'), 'utf8');
     const runbook = fs.readFileSync(path.join(opsRoot, 'OPERATIONS.txt'), 'utf8');
     const currentReleaseState = fs.readFileSync(
       path.resolve('docs/release/CURRENT_RELEASE_STATE.md'),
@@ -1116,6 +1246,35 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(config).toContain('NEXUS_DR_RESTORE_HARNESS=');
     expect(config).toContain('NEXUS_DR_STORAGE_PROVIDER=aws-s3');
     expect(config).toContain('NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3');
+    expect(config).toContain('NEXUS_DR_S3_PREFIX=nexus-hub/application');
+    expect(config).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
+    expect(config).toContain('AWS_PROFILE=nexus-application-dr-backup');
+    expect(config).toContain(
+      'NEXUS_DR_AWS_BACKUP_ROLE_ARN=arn:aws:iam::111122223333:role/nexus-application-dr-backup',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_RESTORE_AWS_PROFILE=nexus-application-dr-restore',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_AWS_RESTORE_ROLE_ARN=arn:aws:iam::111122223333:role/nexus-application-dr-restore',
+    );
+    expect(config).not.toMatch(/^AWS_ACCESS_KEY_ID=/m);
+    expect(config).not.toMatch(/^AWS_SECRET_ACCESS_KEY=/m);
+    expect(awsConfig).toContain('[profile nexus-application-dr-backup]');
+    expect(awsConfig).toContain('[profile nexus-application-dr-restore]');
+    expect(awsConfig).toContain('aws_signing_helper credential-process');
+    expect(backup).toContain('"$AWS_CREDENTIAL_BOUNDARY_HELPER"');
+    expect(backup).toContain('--helper-sha256 "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256"');
+    expect(backup).toContain('--expected-role-arn "$NEXUS_DR_AWS_BACKUP_ROLE_ARN"');
+    expect(backup).toContain(
+      'expected_aws_s3_endpoint="https://s3.${AWS_REGION:-us-east-1}.amazonaws.com"',
+    );
+    expect(restore).toContain('export AWS_PROFILE="$NEXUS_DR_RESTORE_AWS_PROFILE"');
+    expect(restore).toContain('"$AWS_CREDENTIAL_BOUNDARY_HELPER"');
+    expect(restore).toContain('--expected-role-arn "$NEXUS_DR_AWS_RESTORE_ROLE_ARN"');
+    expect(restore).toContain(
+      '"$NEXUS_DR_AWS_BACKUP_ROLE_ARN" != "$NEXUS_DR_AWS_RESTORE_ROLE_ARN"',
+    );
     expect(config).toContain('NEXUS_DR_DRILL_USER=nexus-drill');
     expect(config).toContain(
       'NEXUS_DR_DATABASE_PATH=/srv/nexus-release/production/data/bot.db',
@@ -1191,6 +1350,9 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(runbook).toContain('The drill is not a production restore command');
     expect(runbook).toContain('latest ten bundles');
     expect(runbook).toContain('Quarterly restore-drill readiness is MANUAL_REQUIRED');
+    expect(runbook).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
+    expect(runbook).toContain('NEXUS_DR_AWS_SIGNING_HELPER_SHA256');
+    expect(runbook).toContain('nexus-application-dr-restore');
     expect(runbook).toContain('cloudflare-r2:r2-approved-variance');
     expect(runbook).toContain('s3:ListBucketVersions');
     expect(runbook).toContain('s3:DeleteObjectVersion');

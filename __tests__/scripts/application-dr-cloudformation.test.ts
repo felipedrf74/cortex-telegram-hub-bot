@@ -58,6 +58,10 @@ describe('application DR CloudFormation', () => {
     expect(template).toContain(':role/');
     expect(template).not.toContain('(role|user)');
     expect(template).toContain('HasRestorePrincipal:');
+    expect(template).toContain('RestorePrincipalMustBeReadOnlyAndDistinct:');
+    expect(template).toContain(
+      "Assert: !Not [!Equals [!Ref RestorePrincipalArn, !Ref BackupPrincipalArn]]",
+    );
     expect(template).toContain('Sid: AllowRestoreExactPrefixVersionListing');
     const restoreStart = template.indexOf('Sid: AllowRestoreReadOnlyObjects');
     const restoreEnd = template.indexOf("- !Ref 'AWS::NoValue'", restoreStart);
@@ -65,6 +69,14 @@ describe('application DR CloudFormation', () => {
     expect(restoreStatement).toContain('s3:GetObjectVersion');
     expect(restoreStatement).toContain('s3:GetObjectRetention');
     expect(restoreStatement).not.toMatch(/s3:(Put|Delete)/);
+    expect(template).toContain(
+      'BackupPrincipalArn:\n'
+      + '    Description: Exact writer role ARN',
+    );
+    expect(template).toContain(
+      'RestorePrincipalArn:\n'
+      + '    Condition: HasRestorePrincipal',
+    );
   });
 
   it('limits release retention controls to a 90-day governed window', () => {
@@ -86,6 +98,11 @@ describe('application DR CloudFormation', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
     expect(template).toContain('MaxLength: 512');
+    expect(template).toContain(
+      'DrPrefix:\n'
+      + '    Type: String\n'
+      + '    Default: nexus-hub/application',
+    );
     expect(template).toContain('(?!.*\\.\\.)');
     expect(template).toContain('(?!.*-s3alias$)');
     expect(template).toContain('(?!.*--ol-s3$)');

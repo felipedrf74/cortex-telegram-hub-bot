@@ -27,7 +27,7 @@ Parameters:
     AllowedPattern: '^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$'
   DrPrefix:
     Type: String
-    Default: nexus-hub-production
+    Default: nexus-hub/application
     Description: Prefix dedicated to Nexus application DR objects.
     MaxLength: 512
     AllowedPattern: '^(?!.*\.\.)(?!.*//)[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$'
@@ -38,6 +38,15 @@ Parameters:
 Conditions:
   HasExplicitBucketName: !Not [!Equals [!Ref BucketName, '']]
   HasRestorePrincipal: !Not [!Equals [!Ref RestorePrincipalArn, '']]
+
+Rules:
+  RestorePrincipalMustBeReadOnlyAndDistinct:
+    RuleCondition: !Not [!Equals [!Ref RestorePrincipalArn, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref RestorePrincipalArn, !Ref BackupPrincipalArn]]
+        AssertDescription: >-
+          RestorePrincipalArn must be a separate read-only role and must not
+          equal the write-capable BackupPrincipalArn.
 
 Resources:
   DisasterRecoveryBucket:
@@ -263,6 +272,13 @@ Outputs:
   DrPrefix:
     Description: Exact prefix granted to the backup principal.
     Value: !Ref DrPrefix
+  BackupPrincipalArn:
+    Description: Exact writer role ARN to bind in the application DR runtime configuration.
+    Value: !Ref BackupPrincipalArn
+  RestorePrincipalArn:
+    Condition: HasRestorePrincipal
+    Description: Exact read-only restore role ARN to bind in the drill configuration.
+    Value: !Ref RestorePrincipalArn
   S3Endpoint:
     Description: Credential-free regional S3 HTTPS endpoint.
     Value: !Sub 'https://s3.${AWS::Region}.${AWS::URLSuffix}'

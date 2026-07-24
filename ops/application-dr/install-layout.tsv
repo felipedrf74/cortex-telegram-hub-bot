@@ -5,6 +5,7 @@ config/production-migration-lineages.json	/usr/local/libexec/nexus-application-d
 scripts/application-dr-retention.py	/usr/local/libexec/nexus-application-dr/application-dr-retention.py	root:root	0644
 scripts/application-dr-version-retention.py	/usr/local/libexec/nexus-application-dr/application-dr-version-retention.py	root:root	0644
 scripts/application-dr-storage-controls.py	/usr/local/libexec/nexus-application-dr/application-dr-storage-controls.py	root:root	0644
+scripts/aws-credential-process-boundary.py	/usr/local/libexec/nexus-application-dr/aws-credential-process-boundary.py	root:root	0644
 scripts/application-dr-recovery-runtime.mjs	/usr/local/libexec/nexus-application-dr/application-dr-recovery-runtime.mjs	root:root	0644
 scripts/release-recovery-runtime-identity.mjs	/usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs	root:root	0644
 scripts/application-dr-recovery-archive.py	/usr/local/libexec/nexus-application-dr/application-dr-recovery-archive.py	root:root	0644

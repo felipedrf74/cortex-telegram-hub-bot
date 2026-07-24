@@ -57,6 +57,17 @@ private_root_file() {
   [ "$identity" = root:root:600 ] || die "$label must be root:root mode 0600"
 }
 
+trusted_root_executable() {
+  local path="$1" label="$2" owner mode
+  [[ "$path" == /* && "$path" != / && -f "$path" && ! -L "$path" && -x "$path" ]] \
+    || die "$label must be an absolute executable non-symlink regular file"
+  [ "$(realpath -e -- "$path")" = "$path" ] || die "$label must not traverse symlinks"
+  owner="$(stat -c '%U' -- "$path")"
+  mode="$(stat -c '%a' -- "$path")"
+  [ "$owner" = root ] || die "$label must be root-owned"
+  (( (8#$mode & 0022) == 0 )) || die "$label must not be group/world writable"
+}
+
 canonical_directory() {
   local path="$1" label="$2"
   [[ "$path" == /* && "$path" != / && -d "$path" && ! -L "$path" ]] \
@@ -116,6 +127,37 @@ private_root_file "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE" "storage-control evidence
 [[ "$NEXUS_DR_AGE_RECIPIENT" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]{58}$ ]] \
   || die "age recipient must be a native age public recipient"
 [[ "${AWS_REGION:-us-east-1}" =~ ^[a-z0-9-]+$ ]] || die "invalid AWS region"
+if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+  expected_aws_s3_endpoint="https://s3.${AWS_REGION:-us-east-1}.amazonaws.com"
+  [ "$NEXUS_DR_S3_ENDPOINT" = "$expected_aws_s3_endpoint" ] \
+    || die "AWS S3 endpoint must match the canonical configured regional endpoint"
+  aws_boundary_required=(
+    AWS_CONFIG_FILE
+    AWS_PROFILE
+    AWS_SHARED_CREDENTIALS_FILE
+    AWS_EC2_METADATA_DISABLED
+    NEXUS_DR_AWS_SIGNING_HELPER
+    NEXUS_DR_AWS_SIGNING_HELPER_SHA256
+    NEXUS_DR_AWS_BACKUP_ROLE_ARN
+  )
+  for key in "${aws_boundary_required[@]}"; do
+    [ -n "${!key:-}" ] || die "AWS S3 configuration is missing $key"
+  done
+  [ "$AWS_SHARED_CREDENTIALS_FILE" = /dev/null ] \
+    || die "AWS_SHARED_CREDENTIALS_FILE must be /dev/null in AWS S3 mode"
+  case "$AWS_EC2_METADATA_DISABLED" in
+    true|TRUE) ;;
+    *) die "AWS_EC2_METADATA_DISABLED must be true in AWS S3 mode" ;;
+  esac
+  private_root_file "$AWS_CONFIG_FILE" "AWS credential-process configuration"
+  trusted_root_executable "$NEXUS_DR_AWS_SIGNING_HELPER" "aws_signing_helper"
+  [[ "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+    || die "reviewed aws_signing_helper SHA-256 is invalid"
+  [ "$AWS_PROFILE" = nexus-application-dr-backup ] \
+    || die "AWS_PROFILE must be nexus-application-dr-backup in AWS S3 mode"
+  [[ "$NEXUS_DR_AWS_BACKUP_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$ ]] \
+    || die "application DR backup role ARN is invalid"
+fi
 
 canonical_directory "$NEXUS_DR_STATE_DIR" "state directory"
 [ "$(stat -c '%U:%G:%a' -- "$NEXUS_DR_STATE_DIR")" = root:root:700 ] \
@@ -194,9 +236,11 @@ SQLITE_HELPER="$SCRIPT_DIR/application-dr-sqlite.py"
 RETENTION_HELPER="$SCRIPT_DIR/application-dr-retention.py"
 VERSION_RETENTION_HELPER="$SCRIPT_DIR/application-dr-version-retention.py"
 STORAGE_CONTROL_HELPER="$SCRIPT_DIR/application-dr-storage-controls.py"
+AWS_CREDENTIAL_BOUNDARY_HELPER="$SCRIPT_DIR/aws-credential-process-boundary.py"
 RECOVERY_ARCHIVE_HELPER="$SCRIPT_DIR/application-dr-recovery-archive.py"
 for helper in "$SQLITE_HELPER" "$RETENTION_HELPER" "$VERSION_RETENTION_HELPER" \
-  "$STORAGE_CONTROL_HELPER" "$RECOVERY_ARCHIVE_HELPER"; do
+  "$STORAGE_CONTROL_HELPER" "$AWS_CREDENTIAL_BOUNDARY_HELPER" \
+  "$RECOVERY_ARCHIVE_HELPER"; do
   [[ -f "$helper" && ! -L "$helper" ]] || die "installed helper is missing: $helper"
   [ "$(stat -c '%U:%G:%a' -- "$helper")" = root:root:644 ] \
     || die "installed helper must be root:root mode 0644: $helper"
@@ -206,6 +250,15 @@ for command in age aws flock sha256sum stat tar; do
 done
 printf '' | age --encrypt --recipient "$NEXUS_DR_AGE_RECIPIENT" >/dev/null \
   || die "age recipient checksum is invalid"
+if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
+  "$NEXUS_DR_PYTHON_BIN" "$AWS_CREDENTIAL_BOUNDARY_HELPER" \
+    --config "$AWS_CONFIG_FILE" \
+    --profile "$AWS_PROFILE" \
+    --region "${AWS_REGION:-us-east-1}" \
+    --helper "$NEXUS_DR_AWS_SIGNING_HELPER" \
+    --helper-sha256 "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256" \
+    --expected-role-arn "$NEXUS_DR_AWS_BACKUP_ROLE_ARN" >/dev/null
+fi
 "$NEXUS_DR_PYTHON_BIN" "$STORAGE_CONTROL_HELPER" \
   --evidence "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE" \
   --provider "$NEXUS_DR_STORAGE_PROVIDER" \

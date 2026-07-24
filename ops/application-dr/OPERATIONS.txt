@@ -55,7 +55,30 @@ trust anchor, profile, role trust, and session policy to the exact account,
 source ARN, certificate subject/issuer, and DR prefix. Do not put an IAM-user
 access key in `backup.env`. Use a separate certificate and read-only restore
 role for the isolated drill; it may list exact-prefix versions and read exact
-object versions/retention, but may not write or delete.
+object versions/retention, but may not write or delete. The backup selects
+`nexus-application-dr-backup`; the restore drill overrides it with the
+`NEXUS_DR_RESTORE_AWS_PROFILE=nexus-application-dr-restore` profile from the
+same root-only AWS config and validates that credential-process boundary again
+before any download. Bind the exact CloudFormation outputs in
+`NEXUS_DR_AWS_BACKUP_ROLE_ARN` and `NEXUS_DR_AWS_RESTORE_ROLE_ARN`; the runtime
+rejects a selected profile whose credential process names another role and
+rejects equal writer/restore roles.
+
+Install `aws-config.example` as `/etc/nexus-application-dr/aws-config`,
+root:root mode 0600, after replacing every placeholder. Install the reviewed
+Linux x86-64 `aws_signing_helper` as the exact absolute path declared in
+`backup.env`, root-owned and not group/world writable, and bind its reviewed
+SHA-256 in `NEXUS_DR_AWS_SIGNING_HELPER_SHA256`. Keep
+`AWS_SHARED_CREDENTIALS_FILE=/dev/null`, `AWS_EC2_METADATA_DISABLED=true`, and
+the dedicated `AWS_PROFILE`; the backup rejects long-lived access-key,
+web-identity, container-credential, or alternate shared-credential
+environment paths in AWS S3 mode. Every helper, config, certificate, and
+private-key path and parent must be canonical, root-owned, and not
+group/world writable. The private key must be mode 0400 or 0600; the
+certificate may be root-readable mode 0400, 0444, 0600, or 0644. HSM,
+PKCS#11, TPM, or device-backed paths are not accepted by this implementation
+until an owner-approved custody design and corresponding validator change are
+reviewed together.
 
 The backup unit has `PrivateDevices=true`. Before unattended Roles Anywhere is
 enabled, the owner must approve the certificate issuance/rotation/revocation,
@@ -159,11 +182,13 @@ Install in an approved maintenance window
    The backup unit and direct backup command then fail closed; rerun the same
    reviewed installer to replace the complete compatibility set and clear the
    marker.
-3. Create /etc/nexus-application-dr/backup.env from backup.env.example and the
-   provider control evidence described above, both root:root mode 0600. Use
-   only the owner-approved short-lived credential process described above;
-   never commit credentials, private provider evidence, the signing key, its
-   PIN, or the age private identity.
+3. Create `/etc/nexus-application-dr/backup.env` from `backup.env.example`,
+   `/etc/nexus-application-dr/aws-config` from `aws-config.example`, and the
+   provider control evidence described above, all root:root mode 0600. Install
+   the reviewed helper at the configured immutable path and record its exact
+   SHA-256. Use only the owner-approved short-lived credential process
+   described above; never commit credentials, private provider evidence, the
+   signing key, its PIN, or the age private identity.
 4. Confirm the configured database is a canonical, application-user-owned
    regular file with mode 0600, 0640, or 0660. Confirm the rollback directory is
    canonical, application-user-owned mode 0700 and its v*.tar.gz files are mode

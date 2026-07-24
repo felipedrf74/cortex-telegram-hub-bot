@@ -86,9 +86,37 @@ Explicit preparation
    UFW, nftables, or iptables snapshot is mandatory. Install official Docker
    Engine and Compose only after owner review of listeners, routes, firewall,
    Tailscale, Cloudflare, PM2, health, memory, load, swap, and OOM evidence.
-5. Install /etc/sonarqube/sonarqube.env and /etc/sonarqube/backup.env from the
-   examples with root ownership and mode 0600. Put the project scanner token in
-   a separate Mac-side mode-0600 file; never put it in either Compose file.
+5. Install `/etc/sonarqube/sonarqube.env`, `/etc/sonarqube/backup.env`, and
+   `/etc/sonarqube/aws-config` from their examples with root ownership and
+   mode 0600. The backup profile must use the dedicated IAM Roles Anywhere
+   writer role through the exact root-owned `aws_signing_helper` path and
+   reviewed SHA-256 declared in `backup.env`. Keep
+   `AWS_SHARED_CREDENTIALS_FILE=/dev/null`; long-lived access-key,
+   web-identity, container-credential, and alternate shared-credential
+   environment paths are rejected. The backup uses
+   `nexus-sonarqube-backup`; the isolated restore drill selects the separate
+   `SONAR_RESTORE_AWS_PROFILE=nexus-sonarqube-restore` read-only role and
+   revalidates the same boundary before downloading. Bind both exact role ARNs
+   in `SONAR_BACKUP_AWS_ROLE_ARN` and `SONAR_RESTORE_AWS_ROLE_ARN`; equal or
+   substituted roles fail closed. Approve and test the certificate
+   issuance/rotation/revocation and private-key/PIN custody before enabling
+   unattended backups. Every helper, config, certificate, and private-key
+   path and parent must be canonical, root-owned, and not group/world
+   writable; the private key must be mode 0400 or 0600. HSM, PKCS#11, TPM,
+   and device-backed paths remain unsupported until their owner-approved
+   custody design and validator change are reviewed together. Put the project
+   scanner token in a separate Mac-side mode-0600 file; never put it in either
+   Compose file.
+
+   Provision a separate owner-approved Sonar backup bucket/change set with
+   distinct writer and read-only restore roles. Do not reuse the application
+   DR bucket, prefixes, or roles. The Sonar storage policy must enforce TLS,
+   default encryption, public-access blocking, and access only to the exact
+   configured Sonar prefix. The bucket must have versioning enabled. Its
+   reviewed lifecycle must bound noncurrent versions without weakening the
+   visible 7-daily/4-weekly count tiers. Every successful backup receipt binds
+   the exact encrypted object and checksum object VersionIds; a restore drill
+   must pass both VersionIds and never download the mutable current key.
 6. After Docker is installed, while Sonar remains stopped, run another
    installed `quality-sonar-preflight` into a new root-owned private directory.
    A passing
