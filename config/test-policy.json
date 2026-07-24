@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-23.1",
+  "version": "2026-07-24.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -199,6 +199,7 @@
   },
   "dispositionRules": [
     { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects the exact ten-release timing and quality window, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery target, exact identity parity, and shadow-only five-release readiness verdict." },
+    { "pattern": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts", "disposition": "keep", "reason": "Protects the fail-closed, loopback-only KVM rollback-drill plan, distinct guest and key isolation, bounded deterministic machine evidence, three independent fault outcomes, 120-second recovery target, tamper rejection, and exact rollback-request digest binding." },
     { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, encrypted off-host retention, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
     { "pattern": "__tests__/scripts/application-dr-backup-descriptor.test.ts", "disposition": "keep", "reason": "Protects the unprivileged, exact-identity recovery descriptor passed into the root-owned encrypted backup boundary." },
     { "pattern": "__tests__/scripts/application-dr-installer.test.ts", "disposition": "keep", "reason": "Protects transactional installation and rollback of the root-owned DR assets, service state, and isolated drill identity." },

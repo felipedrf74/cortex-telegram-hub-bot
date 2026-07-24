@@ -466,8 +466,10 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/protected-main-ci-evidence.mjs',
     'scripts/complete-promotion-migration-gate.mjs',
     'scripts/trusted-release-signer.mjs',
+    'scripts/rollback-drill-kvm-coordinator.mjs',
     'scripts/lib/release-artifact-manifest.mjs',
     'scripts/lib/release-plan-evaluation.mjs',
+    'scripts/lib/rollback-drill-kvm-evidence.mjs',
   ])('routes exact release entrypoint %s through the operator gate', (file) => {
     const result = classify(file);
     expect(result.flags.releaseOperator).toBe(true);
