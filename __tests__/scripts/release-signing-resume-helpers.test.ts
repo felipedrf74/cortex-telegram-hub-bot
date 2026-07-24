@@ -122,6 +122,7 @@ fs.appendFileSync(process.env.OPERATIONS, 'validate:' + process.argv.slice(2).jo
       runtimeSha,
       installedRuntimeDigest: 'c'.repeat(64),
       recoveryRuntimeDigest: 'd'.repeat(64),
+      verifiedAt: '2026-07-24T12:00:00.000Z',
     };
     const requestBody = `${JSON.stringify(requestPayload)}\n`;
     const requestSha256 = createHash('sha256').update(requestBody).digest('hex');
@@ -145,7 +146,10 @@ if(args[0]==='run'&&args[1]==='watch')process.exit(0);
 if(args[0]==='run'&&args[1]==='download'){
  const directory=args[args.indexOf('--dir')+1];
  fs.mkdirSync(directory,{recursive:true});
- const payload=${JSON.stringify(requestPayload)};
+ const payload={...${JSON.stringify(requestPayload)},protectedSigning:{
+  workflow:'.github/workflows/sign-staging-attestation.yml',runId:'4343',runAttempt:'1',
+  requestedAt:process.env.SIGNED_REQUESTED_AT||'2026-07-24T11:59:55.000Z',
+  signedAt:'2026-07-24T12:00:02.000Z'}};
  if(process.env.SIGNED_PAYLOAD_DRIFT==='1')payload.installedRuntimeDigest='e'.repeat(64);
  fs.writeFileSync(path.join(directory,'staging-attestation.json'),
   JSON.stringify({schema:'nexus.staging-attestation.v1',payload,signature:'fixture'})+'\\n');
@@ -174,6 +178,16 @@ process.exit(92);
     expect(driftedPayload.status).not.toBe(0);
     expect(driftedPayload.stderr).toContain(
       'signed staging payload differs from the exact checkpointed request',
+    );
+    expect(fs.existsSync(output)).toBe(false);
+
+    const excessiveSkew = invoke({
+      ...process.env,
+      SIGNED_REQUESTED_AT: '2026-07-24T11:59:54.999Z',
+    });
+    expect(excessiveSkew.status).not.toBe(0);
+    expect(excessiveSkew.stderr).toContain(
+      'signed staging payload lacks protected signing timing',
     );
     expect(fs.existsSync(output)).toBe(false);
 

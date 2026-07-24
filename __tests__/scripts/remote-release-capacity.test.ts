@@ -49,10 +49,13 @@ describe('remote release host capacity gate', () => {
   afterEach(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
 
   function run(role: 'staging' | 'production' = 'production') {
+    const baseDir = role === 'staging'
+      ? '/srv/nexus-release/staging'
+      : '/srv/nexus-release/production';
     return spawnSync('bash', [
       script,
       '--role', role,
-      '--base-dir', '/fixture',
+      '--base-dir', baseDir,
       '--pm2-bin', '/fixture/pm2',
       '--sample-seconds', '0',
       '--fixture-root', fixtureRoot,
@@ -155,7 +158,7 @@ describe('remote release host capacity gate', () => {
     const result = spawnSync('bash', [
       script,
       '--role', 'staging',
-      '--base-dir', '/fixture',
+      '--base-dir', '/srv/nexus-release/staging',
       '--pm2-bin', '/fixture/pm2',
       '--sample-seconds', '0',
       '--fixture-root', fixtureRoot,
@@ -163,6 +166,29 @@ describe('remote release host capacity gate', () => {
 
     expect(result.status).toBe(64);
     expect(result.stderr).toContain('capacity fixtures are test-only');
+  });
+
+  it('rejects a role-mismatched or non-canonical live release base', () => {
+    for (const baseDir of [
+      '/srv/nexus-release/production',
+      '/srv/nexus-release/staging-extra',
+      '/home/dominguez/unrelated-release',
+    ]) {
+      const result = spawnSync('bash', [
+        script,
+        '--role', 'staging',
+        '--base-dir', baseDir,
+        '--pm2-bin', '/fixture/pm2',
+        '--sample-seconds', '0',
+        '--fixture-root', fixtureRoot,
+      ], {
+        encoding: 'utf8',
+        env: { ...process.env, NEXUS_RELEASE_TEST_MODE: '1' },
+      });
+
+      expect(result.status, baseDir).toBe(64);
+      expect(result.stderr).toContain('unsafe release capacity base path');
+    }
   });
 
   it('runs capacity and the fixed rollback freshness gate before release mutation', () => {

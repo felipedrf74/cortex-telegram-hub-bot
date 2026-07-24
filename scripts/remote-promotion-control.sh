@@ -421,6 +421,7 @@ assert_root_pm2_ready() {
 const crypto=require('crypto');const fs=require('fs');const path=require('path');
 const [attestationPath,launcher,nodeBin,trustedLockPath,testMode]=process.argv.slice(2);
 const rootUid=testMode==='1'?process.getuid():0;
+const allowedNodeUids=testMode==='1'?new Set([0,rootUid]):new Set([0]);
 const canonical=(value)=>value===null||typeof value!=='object'?JSON.stringify(value)
  :Array.isArray(value)?`[${value.map(canonical).join(',')}]`
  :`{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
@@ -452,7 +453,7 @@ if(!link.isFile()||link.isSymbolicLink()||link.uid!==rootUid
 const launcherBody=fs.readFileSync(launcher);
 if(sha256(launcherBody)!==record.launcherSha256)process.exit(1);
 const nodeStat=fs.lstatSync(nodeBin);
-if(!nodeStat.isFile()||nodeStat.isSymbolicLink()||nodeStat.uid!==rootUid
+if(!nodeStat.isFile()||nodeStat.isSymbolicLink()||!allowedNodeUids.has(nodeStat.uid)
  ||(nodeStat.mode&0o022)!==0||sha256(fs.readFileSync(nodeBin))!==record.node.sha256)process.exit(1);
 const closureRoot=path.resolve(record.closureRoot);
 const entrypoint=path.join(closureRoot,'node_modules','pm2','bin','pm2');

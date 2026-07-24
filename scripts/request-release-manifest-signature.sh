@@ -167,6 +167,16 @@ MANIFESTS="$(find "$DOWNLOAD" -type f -path "*/.local/release/manifests/$RUNTIME
 [ "$(printf '%s\n' "$MANIFESTS" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] \
   || { echo "signed ReleaseManifestV2 is missing or ambiguous" >&2; exit 1; }
 MANIFEST="$MANIFESTS"
+TIMINGS="$(find "$DOWNLOAD" -type f -path "*/.local/release/timing/$RUNTIME_SHA.json" -print)"
+TIMING_COUNT="$(printf '%s\n' "$TIMINGS" | sed '/^$/d' | wc -l | tr -d ' ')"
+case "$TIMING_COUNT" in
+  0)
+    TIMING=""
+    echo "signed protected release timing is unavailable; release timing remains advisory" >&2
+    ;;
+  1) TIMING="$TIMINGS" ;;
+  *) echo "signed protected release timing evidence is ambiguous" >&2; exit 1 ;;
+esac
 BUNDLE_MARKERS="$(find "$DOWNLOAD" -type f -path "*/.local/release/bundles/$RUNTIME_SHA/*/.complete.json" -print)"
 [ "$(printf '%s\n' "$BUNDLE_MARKERS" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] \
   || { echo "signed release artifact bundle is missing or ambiguous" >&2; exit 1; }
@@ -183,7 +193,8 @@ ARTIFACT_DIGEST="$(node -e 'process.stdout.write(require(process.argv[1]).payloa
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "signed artifact digest is invalid" >&2; exit 1; }
 DESTINATION_BUNDLE_PARENT="$INSTALL_RELEASE/bundles/$RUNTIME_SHA"
 DESTINATION_BUNDLE="$DESTINATION_BUNDLE_PARENT/$ARTIFACT_DIGEST"
-install -d -m 700 "$INSTALL_RELEASE/manifests" "$INSTALL_RELEASE/bundles" "$DESTINATION_BUNDLE_PARENT"
+install -d -m 700 "$INSTALL_RELEASE/manifests" "$INSTALL_RELEASE/timing" \
+  "$INSTALL_RELEASE/bundles" "$DESTINATION_BUNDLE_PARENT"
 if [ -e "$DESTINATION_BUNDLE" ] || [ -L "$DESTINATION_BUNDLE" ]; then
   [ -d "$DESTINATION_BUNDLE" ] && [ ! -L "$DESTINATION_BUNDLE" ] || {
     echo "existing release bundle destination is unsafe" >&2
@@ -245,5 +256,22 @@ node scripts/release-manifest-v2.mjs validate \
   --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
   --expect-runtime-sha "$RUNTIME_SHA" \
   "${MANIFEST_EXPECTATIONS[@]}" >/dev/null
+if [ -n "$TIMING" ]; then
+  TIMING_DESTINATION="$INSTALL_RELEASE/timing/$RUNTIME_SHA.json"
+  if [ -e "$TIMING_DESTINATION" ] || [ -L "$TIMING_DESTINATION" ]; then
+    node - "$TIMING" "$TIMING_DESTINATION" <<'NODE' || {
+const fs=require('node:fs');const [source,destination]=process.argv.slice(2);
+const stat=fs.lstatSync(destination);
+if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+ ||(stat.mode&0o777)!==0o600
+ ||!fs.readFileSync(source).equals(fs.readFileSync(destination)))process.exit(1);
+NODE
+      echo "existing protected release timing evidence differs from the signer artifact" >&2
+      exit 1
+    }
+  else
+    install -m 600 "$TIMING" "$TIMING_DESTINATION"
+  fi
+fi
 printf '{"ok":true,"runtimeSha":"%s","requestId":"%s","runId":"%s","manifest":"%s"}\n' \
   "$RUNTIME_SHA" "$REQUEST_ID" "$RUN_ID" "$INSTALL_RELEASE/manifests/$RUNTIME_SHA.json"

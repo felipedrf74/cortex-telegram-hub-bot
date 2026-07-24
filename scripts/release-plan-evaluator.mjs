@@ -5,20 +5,30 @@ import { fileURLToPath } from 'node:url';
 import {
   ReleasePlanEvaluationError,
   buildProtectedMainReuseServerPayload,
+  collectReleaseActivationWindow,
+  collectReleaseObservationWindow,
   evaluateReleaseObservationWindow,
   evaluateReleaseShadowReadiness,
 } from './lib/release-plan-evaluation.mjs';
 import { signServerActivationRequest } from './protected-main-reuse-activation.mjs';
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
-const COMMANDS = new Set(['evaluate', 'shadow-readiness', 'activation-request']);
+const COMMANDS = new Set([
+  'collect-observation',
+  'collect-activation',
+  'evaluate',
+  'shadow-readiness',
+  'activation-request',
+]);
 
 function usage() {
   return [
     'Usage:',
+    '  sudo node scripts/release-plan-evaluator.mjs collect-observation --quality-evidence <signed-relative-path> --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion --output <observation-window.json>',
+    '  sudo node scripts/release-plan-evaluator.mjs collect-activation --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion --output <activation-window.json>',
     '  sudo node scripts/release-plan-evaluator.mjs evaluate --input <observation-window.json> --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion [--output <result.json>]',
     '  node scripts/release-plan-evaluator.mjs shadow-readiness --input <shadow-ledger.json> [--output <result.json>]',
-    '  sudo node scripts/release-plan-evaluator.mjs activation-request --input <observation-window.json> --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion --request-id <id> --server-private-key /etc/nexus-release/serverdominguez-provenance-private-key.pem --output <request.json>',
+    '  sudo node scripts/release-plan-evaluator.mjs activation-request --input <activation-window.json> --evidence-root <directory> --promotion-evidence-root /var/lib/nexus-release-promotion --request-id <id> --server-private-key /etc/nexus-release/serverdominguez-provenance-private-key.pem --output <request.json>',
   ].join('\n');
 }
 
@@ -37,6 +47,7 @@ function parseArgs(argv) {
     publicKey: '',
     requestId: '',
     serverPrivateKey: '',
+    qualityEvidence: '',
     allowTestKey: false,
   };
   const seen = new Set();
@@ -58,6 +69,7 @@ function parseArgs(argv) {
       '--public-key',
       '--request-id',
       '--server-private-key',
+      '--quality-evidence',
     ].includes(flag)
         || !value || value.startsWith('--')) {
       throw new ReleasePlanEvaluationError(`invalid or incomplete option: ${flag ?? 'missing'}`);
@@ -66,24 +78,41 @@ function parseArgs(argv) {
     seen.add(flag);
     const property = flag === '--evidence-root' ? 'evidenceRoot'
       : flag === '--promotion-evidence-root' ? 'promotionEvidenceRoot'
-      : flag === '--public-key' ? 'publicKey' : flag.slice(2);
+      : flag === '--public-key' ? 'publicKey'
+      : flag === '--quality-evidence' ? 'qualityEvidence' : flag.slice(2);
     if (flag === '--server-private-key') options.serverPrivateKey = value;
     else if (flag === '--request-id') options.requestId = value;
     else options[property] = value;
     index += 2;
   }
-  if (!options.input) throw new ReleasePlanEvaluationError('--input is required');
-  if (['evaluate', 'activation-request'].includes(command) && !options.evidenceRoot) {
+  const collector = ['collect-observation', 'collect-activation'].includes(command);
+  const authoritative = ['evaluate', 'activation-request', ...(
+    collector ? [command] : []
+  )].includes(command);
+  if (!collector && !options.input) throw new ReleasePlanEvaluationError('--input is required');
+  if (collector && options.input) {
+    throw new ReleasePlanEvaluationError('collection reads canonical evidence and does not accept --input');
+  }
+  if (authoritative && !options.evidenceRoot) {
     throw new ReleasePlanEvaluationError('--evidence-root is required for release evaluation');
   }
-  if (['evaluate', 'activation-request'].includes(command) && !options.promotionEvidenceRoot) {
+  if (authoritative && !options.promotionEvidenceRoot) {
     throw new ReleasePlanEvaluationError('--promotion-evidence-root is required for release evaluation');
   }
-  if (!['evaluate', 'activation-request'].includes(command)
+  if (!authoritative
       && (options.evidenceRoot || options.promotionEvidenceRoot
       || options.publicKey || options.allowTestKey || options.requestId
-      || options.serverPrivateKey)) {
+      || options.serverPrivateKey || options.qualityEvidence)) {
     throw new ReleasePlanEvaluationError('authoritative evidence options apply only to evaluate');
+  }
+  if (command === 'collect-observation' && !options.qualityEvidence) {
+    throw new ReleasePlanEvaluationError('collect-observation requires --quality-evidence');
+  }
+  if (command !== 'collect-observation' && options.qualityEvidence) {
+    throw new ReleasePlanEvaluationError('--quality-evidence applies only to collect-observation');
+  }
+  if (collector && !options.output) {
+    throw new ReleasePlanEvaluationError('collection requires --output');
   }
   if (options.publicKey && (!options.allowTestKey || process.env.NODE_ENV !== 'test')) {
     throw new ReleasePlanEvaluationError('--public-key is allowed only with --allow-test-key in test mode');
@@ -149,7 +178,7 @@ function writeGovernedJson(file, inputPath, value) {
 export function runReleasePlanEvaluator(argv) {
   const options = parseArgs(argv);
   if (options.help) return { help: true, exitCode: 0, text: `${usage()}\n` };
-  const input = readGovernedJson(options.input);
+  const input = options.input ? readGovernedJson(options.input) : null;
   const evidenceOptions = {
       evidenceRoot: options.evidenceRoot,
       promotionEvidenceRoot: options.promotionEvidenceRoot,
@@ -158,7 +187,14 @@ export function runReleasePlanEvaluator(argv) {
       allowTestPromotionRoot: options.allowTestKey && process.env.NODE_ENV === 'test',
     };
   let result;
-  if (options.command === 'evaluate') {
+  if (options.command === 'collect-observation') {
+    result = collectReleaseObservationWindow(
+      { qualityEvidencePath: options.qualityEvidence },
+      evidenceOptions,
+    );
+  } else if (options.command === 'collect-activation') {
+    result = collectReleaseActivationWindow({}, evidenceOptions);
+  } else if (options.command === 'evaluate') {
     result = evaluateReleaseObservationWindow(input.value, evidenceOptions);
   } else if (options.command === 'shadow-readiness') {
     result = evaluateReleaseShadowReadiness(input.value);
@@ -181,8 +217,9 @@ export function runReleasePlanEvaluator(argv) {
     });
     result = signServerActivationRequest(payload, fs.readFileSync(keyPath, 'utf8'));
   }
-  if (options.output) writeGovernedJson(options.output, input.resolved, result);
-  const exitCode = options.command === 'activation-request'
+  if (options.output) writeGovernedJson(options.output, input?.resolved ?? '', result);
+  const exitCode = ['activation-request', 'collect-observation', 'collect-activation']
+    .includes(options.command)
     ? 0
     : result.verdict === 'PASS' ? 0 : result.verdict === 'FAIL' ? 2 : 3;
   return { help: false, exitCode, result };

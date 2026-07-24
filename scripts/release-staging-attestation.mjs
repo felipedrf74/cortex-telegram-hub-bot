@@ -17,6 +17,11 @@ const toolingRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const allowTestKey = has('--allow-test-key') && process.env.NODE_ENV === 'test';
 const CURRENT_SIGNING_KEY_ID = 'github-environment-release-signing-2026-07';
 const LEGACY_SIGNING_KEY_ID = 'github-actions-release-manifest-2026-07';
+const STAGING_SIGNING_WORKFLOW = '.github/workflows/sign-staging-attestation.yml';
+// GitHub Actions run created_at is second-precision. Allow that truncation plus
+// a narrowly bounded clock skew only when validating chronology; never adjust
+// the independently sourced timestamp that is written into the signature.
+const GITHUB_REQUEST_CHRONOLOGY_TOLERANCE_MS = 5_000;
 
 function canonicalJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -109,6 +114,71 @@ function matchesTrackedPublicKey(publicPem, relativePath) {
   }
 }
 
+function canonicalGithubTimestamp(value, label) {
+  const milliseconds = Date.parse(value ?? '');
+  if (typeof value !== 'string'
+      || !/Z$/u.test(value)
+      || !Number.isFinite(milliseconds)
+      || milliseconds > Date.now() + 5 * 60_000) {
+    throw new Error(`${label} is not a valid UTC GitHub timestamp`);
+  }
+  return milliseconds;
+}
+
+function validateSigningRunMetadata(run, request, requestBody) {
+  const runId = process.env.GITHUB_RUN_ID ?? '';
+  const runAttempt = process.env.GITHUB_RUN_ATTEMPT ?? '';
+  const repository = process.env.GITHUB_REPOSITORY ?? '';
+  const headSha = process.env.GITHUB_SHA ?? '';
+  const expectedTitle =
+    `Sign staging_attestation ${request.requestId} digest ${sha256(requestBody)}`;
+  const toolingHead = execFileSync(
+    'git',
+    ['-C', toolingRoot, 'rev-parse', 'HEAD'],
+    { encoding: 'utf8' },
+  ).trim();
+  if (!/^[1-9][0-9]*$/u.test(runId)
+      || !/^[1-9][0-9]*$/u.test(runAttempt)
+      || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)
+      || !/^[0-9a-f]{40}$/u.test(headSha)
+      || String(run?.id) !== runId
+      || String(run?.run_attempt) !== runAttempt
+      || run.path !== STAGING_SIGNING_WORKFLOW
+      || run.event !== 'workflow_dispatch'
+      || run.head_branch !== 'main'
+      || run.head_sha !== headSha
+      || toolingHead !== run.head_sha
+      || !['in_progress', 'completed'].includes(run.status)
+      || (run.status === 'completed' && run.conclusion !== 'success')
+      || run.repository?.full_name !== repository
+      || run.head_repository?.full_name !== repository
+      || run.display_title !== expectedTitle) {
+    throw new Error('staging signing GitHub run identity is invalid');
+  }
+  const requestedAtMs = canonicalGithubTimestamp(
+    run.created_at,
+    'staging signing GitHub run.createdAt',
+  );
+  const runStartedAt = run.run_started_at ?? null;
+  if (runStartedAt !== null
+      && canonicalGithubTimestamp(
+        runStartedAt,
+        'staging signing GitHub run.startedAt',
+      ) < requestedAtMs) {
+    throw new Error('staging signing GitHub run chronology is invalid');
+  }
+  if (requestedAtMs + GITHUB_REQUEST_CHRONOLOGY_TOLERANCE_MS
+      < Date.parse(request.verifiedAt)) {
+    throw new Error('staging signing GitHub run predates verified staging smoke');
+  }
+  return {
+    workflow: STAGING_SIGNING_WORKFLOW,
+    runId,
+    runAttempt,
+    requestedAt: new Date(requestedAtMs).toISOString(),
+  };
+}
+
 function validateRequest(request, expectedRuntime = '') {
   if (request.schema !== 'nexus.staging-attestation-request.v1') throw new Error('staging request schema is invalid');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(request.requestId ?? '')) {
@@ -129,6 +199,43 @@ function validateRequest(request, expectedRuntime = '') {
       || Date.parse(request.expiresAt) <= Date.parse(request.verifiedAt)
       || Date.parse(request.expiresAt) <= Date.now()) {
     throw new Error('staging request lifetime is invalid or expired');
+  }
+  if (request.protectedSigning !== undefined) {
+    const signing = request.protectedSigning;
+    const keys = Object.keys(signing ?? {}).sort();
+    const legacyKeys = [
+      'runAttempt',
+      'runId',
+      'signedAt',
+      'workflow',
+    ].sort().join(',');
+    const currentKeys = [
+      'requestedAt',
+      'runAttempt',
+      'runId',
+      'signedAt',
+      'workflow',
+    ].sort().join(',');
+    const requestedAt = signing.requestedAt === undefined
+      ? null
+      : Date.parse(signing.requestedAt);
+    if (![legacyKeys, currentKeys].includes(keys.join(','))
+        || signing.workflow !== STAGING_SIGNING_WORKFLOW
+        || !/^[1-9][0-9]*$/.test(signing.runId ?? '')
+        || !/^[1-9][0-9]*$/.test(signing.runAttempt ?? '')
+        || !Number.isFinite(Date.parse(signing.signedAt ?? ''))
+        || new Date(Date.parse(signing.signedAt)).toISOString() !== signing.signedAt
+        || (requestedAt !== null && (
+          !Number.isFinite(requestedAt)
+          || new Date(requestedAt).toISOString() !== signing.requestedAt
+          || requestedAt + GITHUB_REQUEST_CHRONOLOGY_TOLERANCE_MS
+            < Date.parse(request.verifiedAt)
+          || requestedAt > Date.parse(signing.signedAt)
+        ))
+        || Date.parse(signing.signedAt) < Date.parse(request.verifiedAt)
+        || Date.parse(signing.signedAt) > Date.now() + 5 * 60_000) {
+      throw new Error('protected staging signing timing is invalid');
+    }
   }
   if (!request.releaseDir?.startsWith('/srv/nexus-release/staging/releases/')) {
     throw new Error('staging release directory is outside the governed root');
@@ -233,15 +340,44 @@ if (command === 'request') {
 } else if (command === 'sign') {
   const requestFile = resolveFile('--request');
   const output = resolveFile('--output');
-  const request = validateRequest(JSON.parse(fs.readFileSync(requestFile, 'utf8')), valueOf('--expect-runtime-sha'));
+  const requestBody = fs.readFileSync(requestFile);
+  const request = validateRequest(JSON.parse(requestBody), valueOf('--expect-runtime-sha'));
   const privatePem = readPem('--private-key', 'NEXUS_RELEASE_MANIFEST_PRIVATE_KEY_PEM');
   if (!privatePem) throw new Error('CI staging-attestation signing key is required');
+  const runId = process.env.GITHUB_RUN_ID ?? '';
+  const runAttempt = process.env.GITHUB_RUN_ATTEMPT ?? '';
+  const signingRunMetadata = valueOf('--signing-run-metadata');
+  const protectedContext = Boolean(runId || runAttempt || signingRunMetadata);
+  if (protectedContext && (!runId || !runAttempt || !signingRunMetadata)) {
+    throw new Error('protected staging signing requires exact GitHub run metadata');
+  }
+  const protectedSigning = protectedContext
+    ? validateSigningRunMetadata(
+      JSON.parse(fs.readFileSync(path.resolve(root, signingRunMetadata), 'utf8')),
+      request,
+      requestBody,
+    )
+    : null;
+  const signedPayload = protectedSigning
+    ? {
+      ...request,
+      protectedSigning: {
+        ...protectedSigning,
+        signedAt: new Date().toISOString(),
+      },
+    }
+    : request;
+  validateRequest(signedPayload, valueOf('--expect-runtime-sha'));
   const envelope = {
     schema: 'nexus.staging-attestation.v1',
     keyId: valueOf('--key-id', process.env.NEXUS_RELEASE_MANIFEST_KEY_ID ?? CURRENT_SIGNING_KEY_ID),
     signatureAlgorithm: 'ed25519',
-    payload: request,
-    signature: sign(null, Buffer.from(canonicalJson(request)), createPrivateKey(privatePem)).toString('base64'),
+    payload: signedPayload,
+    signature: sign(
+      null,
+      Buffer.from(canonicalJson(signedPayload)),
+      createPrivateKey(privatePem),
+    ).toString('base64'),
   };
   atomicWritePrivateFile(output, `${JSON.stringify(envelope, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ ok: true, attestation: output, requestId: request.requestId }, null, 2)}\n`);

@@ -114,10 +114,11 @@ node scripts/release-staging-attestation.mjs validate \
   --attestation "$SIGNED" --manifest "$MANIFEST" --expect-runtime-sha "$RUNTIME_SHA" \
   --expect-installed-runtime-digest "$INSTALLED_RUNTIME_DIGEST" \
   --expect-recovery-runtime-digest "$RECOVERY_RUNTIME_DIGEST" >/dev/null
-node - "$REQUEST" "$SIGNED" "$REQUEST_SHA256" <<'NODE'
+node - "$REQUEST" "$SIGNED" "$REQUEST_SHA256" "$RUN_ID" <<'NODE'
 const crypto=require('node:crypto');
 const fs=require('node:fs');
-const [requestPath,signedPath,expectedSha]=process.argv.slice(2);
+const [requestPath,signedPath,expectedSha,expectedRunId]=process.argv.slice(2);
+const GITHUB_REQUEST_CHRONOLOGY_TOLERANCE_MS=5_000;
 const canonical=(value)=>value===null||typeof value!=='object'
   ?JSON.stringify(value)
   :Array.isArray(value)
@@ -129,8 +130,23 @@ if(crypto.createHash('sha256').update(requestBody).digest('hex')!==expectedSha){
 }
 const request=JSON.parse(requestBody);
 const signed=JSON.parse(fs.readFileSync(signedPath,'utf8'));
-if(canonical(signed.payload)!==canonical(request)){
+const {protectedSigning,...signedRequest}=signed.payload??{};
+if(canonical(signedRequest)!==canonical(request)){
   throw new Error('signed staging payload differs from the exact checkpointed request');
+}
+if(protectedSigning?.workflow!=='.github/workflows/sign-staging-attestation.yml'
+  ||protectedSigning.runId!==expectedRunId
+  ||!/^[1-9][0-9]*$/.test(protectedSigning.runId??'')
+  ||!/^[1-9][0-9]*$/.test(protectedSigning.runAttempt??'')
+  ||!Number.isFinite(Date.parse(protectedSigning.signedAt??''))
+  ||(protectedSigning.requestedAt!==undefined
+    &&(!Number.isFinite(Date.parse(protectedSigning.requestedAt))
+      ||new Date(Date.parse(protectedSigning.requestedAt)).toISOString()!==protectedSigning.requestedAt
+      ||Date.parse(protectedSigning.requestedAt)+GITHUB_REQUEST_CHRONOLOGY_TOLERANCE_MS
+        <Date.parse(request.verifiedAt)
+      ||Date.parse(protectedSigning.requestedAt)>Date.parse(protectedSigning.signedAt)))
+  ||Date.parse(protectedSigning.signedAt)<Date.parse(request.verifiedAt)){
+  throw new Error('signed staging payload lacks protected signing timing');
 }
 NODE
 node - "$SIGNED" "$OUTPUT" <<'NODE'

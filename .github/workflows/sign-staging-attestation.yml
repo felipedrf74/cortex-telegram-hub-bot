@@ -13,6 +13,7 @@ on:
           - staging_attestation
           - rollback_drill
           - protected_main_reuse_activation
+          - release_quality
       request_id:
         description: Unique operational evidence request identifier
         required: true
@@ -44,7 +45,7 @@ jobs:
       - name: Check out protected main signing tooling
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: refs/heads/main
+          ref: ${{ github.sha }}
           path: trusted-tooling
           fetch-depth: 0
           persist-credentials: false
@@ -93,7 +94,7 @@ jobs:
           }
           NODE
           case "$EVIDENCE_KIND" in
-            staging_attestation|rollback_drill|protected_main_reuse_activation) ;;
+            staging_attestation|rollback_drill|protected_main_reuse_activation|release_quality) ;;
             *)
               echo "unsupported operational evidence kind" >&2
               exit 64
@@ -108,6 +109,8 @@ jobs:
           RUNTIME_SHA: ${{ inputs.runtime_sha }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
+          git -C trusted-tooling cat-file -e "${RUNTIME_SHA}^{commit}"
+          git -C trusted-tooling merge-base --is-ancestor "$RUNTIME_SHA" HEAD
           install -d -m 700 .local/release/staging
           node - <<'NODE'
           const fs = require('fs');
@@ -124,6 +127,15 @@ jobs:
             --root "$GITHUB_WORKSPACE" \
             --request .local/release/staging/request.json \
             --expect-runtime-sha "$RUNTIME_SHA"
+
+      - name: Fetch independent current staging-signing run provenance
+        if: ${{ inputs.evidence_kind == 'staging_attestation' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          install -d -m 700 trusted-input
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            > trusted-input/staging-signing-run.json
 
       - name: Decode and validate rollback drill request
         if: ${{ inputs.evidence_kind == 'rollback_drill' }}
@@ -244,9 +256,69 @@ jobs:
           );
           NODE
 
+      - name: Decode and validate ServerDominguez release quality request
+        if: ${{ inputs.evidence_kind == 'release_quality' }}
+        env:
+          REQUEST_B64: ${{ inputs.request_b64 }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+          SERVER_PROVENANCE_PUBLIC_KEY_PEM: ${{ secrets.NEXUS_SERVERDOMINGUEZ_PROVENANCE_PUBLIC_KEY_PEM }}
+        run: |
+          [[ -n "$SERVER_PROVENANCE_PUBLIC_KEY_PEM" ]] || {
+            echo "protected ServerDominguez provenance public key is not configured" >&2
+            exit 77
+          }
+          git -C trusted-tooling cat-file -e "${RUNTIME_SHA}^{commit}"
+          git -C trusted-tooling merge-base --is-ancestor "$RUNTIME_SHA" HEAD
+          install -d -m 700 .local/release/quality trusted-input
+          printf '%s' "$SERVER_PROVENANCE_PUBLIC_KEY_PEM" \
+            > trusted-input/serverdominguez-provenance-public-key.pem
+          chmod 600 trusted-input/serverdominguez-provenance-public-key.pem
+          printf '%s' "$REQUEST_B64" | base64 --decode \
+            > .local/release/quality/server-request.json
+          chmod 600 .local/release/quality/server-request.json
+          actual_sha="$(sha256sum .local/release/quality/server-request.json | cut -d' ' -f1)"
+          [[ "$actual_sha" == "$REQUEST_SHA256" ]] || {
+            echo "ServerDominguez release quality request digest mismatch" >&2
+            exit 64
+          }
+          node trusted-tooling/scripts/release-quality-evidence.mjs \
+            validate-server-request \
+            --source-root trusted-tooling \
+            --request .local/release/quality/server-request.json \
+            --server-public-key trusted-input/serverdominguez-provenance-public-key.pem \
+            --expect-runtime-sha "$RUNTIME_SHA" \
+            > .local/release/quality/validated-request.json
+          node - <<'NODE'
+          const request = require('./.local/release/quality/validated-request.json');
+          if (request.requestId !== process.env.REQUEST_ID) throw new Error('request id mismatch');
+          NODE
+
+      - name: Refuse release quality collection while release workflows are active
+        if: ${{ inputs.evidence_kind == 'release_quality' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        run: |
+          snapshots=()
+          for status in queued in_progress requested waiting pending; do
+            file=".local/release/quality/actions-${status}.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=${status}&per_page=100" \
+              > "$file"
+            snapshots+=(--actions-snapshot "$file")
+          done
+          node trusted-tooling/scripts/release-quality-evidence.mjs assert-actions-idle \
+            --current-run-id "$CURRENT_RUN_ID" \
+            "${snapshots[@]}"
+
       - name: Sign protected operational evidence
         env:
           SIGNING_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
+          NEXUS_SENTRY_QUALITY_READ_TOKEN: ${{ inputs.evidence_kind == 'release_quality' && secrets.NEXUS_SENTRY_QUALITY_READ_TOKEN || '' }}
+          NEXUS_SENTRY_ORGANIZATION: ${{ inputs.evidence_kind == 'release_quality' && vars.NEXUS_SENTRY_ORGANIZATION || '' }}
+          NEXUS_SENTRY_PROJECT_IDS: ${{ inputs.evidence_kind == 'release_quality' && vars.NEXUS_SENTRY_PROJECT_IDS || '' }}
+          NEXUS_SENTRY_API_BASE_URL: ${{ inputs.evidence_kind == 'release_quality' && vars.NEXUS_SENTRY_API_BASE_URL || '' }}
           EVIDENCE_KIND: ${{ inputs.evidence_kind }}
           RUNTIME_SHA: ${{ inputs.runtime_sha }}
         run: |
@@ -257,6 +329,7 @@ jobs:
                 node trusted-tooling/scripts/release-staging-attestation.mjs sign \
                   --root "$GITHUB_WORKSPACE" \
                   --request .local/release/staging/request.json \
+                  --signing-run-metadata trusted-input/staging-signing-run.json \
                   --output .local/release/staging/staging-attestation.json \
                   --expect-runtime-sha "$RUNTIME_SHA"
               ;;
@@ -281,6 +354,15 @@ jobs:
                   --github-evidence .local/release/protected-main-reuse/github-provenance.json \
                   --repository "$GITHUB_REPOSITORY" \
                   --output .local/release/protected-main-reuse/activation.json
+              ;;
+            release_quality)
+              NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM="$SIGNING_PRIVATE_KEY_PEM" \
+                node trusted-tooling/scripts/release-quality-evidence.mjs collect-and-sign \
+                  --source-root trusted-tooling \
+                  --request .local/release/quality/server-request.json \
+                  --server-public-key trusted-input/serverdominguez-provenance-public-key.pem \
+                  --expect-runtime-sha "$RUNTIME_SHA" \
+                  --output .local/release/quality/release-quality.json
               ;;
             *)
               echo "unsupported operational evidence kind" >&2
@@ -323,6 +405,31 @@ jobs:
             --release-public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
             --repository "$GITHUB_REPOSITORY"
 
+      - name: Recheck release workflow isolation after Sentry collection
+        if: ${{ inputs.evidence_kind == 'release_quality' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+        run: |
+          snapshots=()
+          for status in queued in_progress requested waiting pending; do
+            file=".local/release/quality/actions-${status}-after.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=${status}&per_page=100" \
+              > "$file"
+            snapshots+=(--actions-snapshot "$file")
+          done
+          node trusted-tooling/scripts/release-quality-evidence.mjs assert-actions-idle \
+            --current-run-id "$CURRENT_RUN_ID" \
+            "${snapshots[@]}"
+          node trusted-tooling/scripts/release-quality-evidence.mjs validate-evidence \
+            --source-root trusted-tooling \
+            --request .local/release/quality/server-request.json \
+            --server-public-key trusted-input/serverdominguez-provenance-public-key.pem \
+            --evidence .local/release/quality/release-quality.json \
+            --release-public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
+            --expect-runtime-sha "$RUNTIME_SHA"
+
       - name: Upload signed staging attestation
         if: ${{ inputs.evidence_kind == 'staging_attestation' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -349,6 +456,16 @@ jobs:
         with:
           name: protected-main-reuse-activation-${{ inputs.request_id }}
           path: .local/release/protected-main-reuse/activation.json
+          include-hidden-files: true
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload signed release quality evidence
+        if: ${{ inputs.evidence_kind == 'release_quality' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-quality-${{ inputs.request_id }}
+          path: .local/release/quality/release-quality.json
           include-hidden-files: true
           retention-days: 90
           if-no-files-found: error

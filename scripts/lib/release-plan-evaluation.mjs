@@ -1,6 +1,10 @@
 import {
+  collectAuthoritativeReleaseRecords,
+  referenceAuthoritativeEvidence,
+  requireAuthoritativePromotionWindows,
   requireLatestCompletedPromotionSequence,
   validateAuthoritativeReleaseEvidence,
+  validateAuthoritativeReleaseQualityEvidence,
 } from './release-plan-authoritative-evidence.mjs';
 import {
   REQUIRED_PRODUCTION_COMPARISONS,
@@ -10,7 +14,9 @@ import {
 } from '../protected-main-reuse-activation.mjs';
 
 export const RELEASE_OBSERVATION_WINDOW_SCHEMA = 'nexus.release-plan-observation-window.v1';
-export const RELEASE_PLAN_EVALUATION_SCHEMA = 'nexus.release-plan-evaluation.v1';
+export const RELEASE_OBSERVATION_WINDOW_V2_SCHEMA = 'nexus.release-plan-observation-window.v2';
+export const RELEASE_ACTIVATION_WINDOW_SCHEMA = 'nexus.release-plan-activation-window.v1';
+export const RELEASE_PLAN_EVALUATION_SCHEMA = 'nexus.release-plan-evaluation.v2';
 export const RELEASE_SHADOW_LEDGER_SCHEMA = 'nexus.release-shadow-ledger.v1';
 export const RELEASE_SHADOW_READINESS_SCHEMA = 'nexus.release-shadow-readiness.v1';
 
@@ -34,6 +40,13 @@ export const RELEASE_PLAN_THRESHOLDS = Object.freeze({
   rollbackRecoveryMaxMs: 120_000,
   minimumSuccessfulSoakMs: 60_000,
 });
+
+function canonicalNow(now, label) {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    fail(`${label} is invalid`);
+  }
+  return now.toISOString();
+}
 
 export const RELEASE_AUTOMATED_STAGES = Object.freeze([
   'protected_main_ci',
@@ -337,7 +350,11 @@ function validateRollback(rollback, label, outcome, recordCompletedAt) {
   return healthyAt === null ? null : healthyAt - triggeredAt;
 }
 
-function validateReleaseRecord(record, index) {
+function validateReleaseRecord(
+  record,
+  index,
+  { automatedReadinessBoundary = 'staging_validation' } = {},
+) {
   const label = `releases[${index}]`;
   exactKeys(record, [
     'releaseId',
@@ -380,10 +397,16 @@ function validateReleaseRecord(record, index) {
   if (automatedStages[0].startedAt !== readinessStartedAt) {
     fail(`${label}.timing automated readiness must start with protected-main CI`);
   }
-  if (automatedStages[3].completedAt !== readinessCompletedAt) {
-    fail(`${label}.timing automated readiness must complete with staging validation`);
+  const readinessCompletionStage = automatedReadinessBoundary === 'release_candidate'
+    ? automatedStages[1]
+    : automatedStages[3];
+  if (readinessCompletionStage.completedAt !== readinessCompletedAt) {
+    fail(
+      `${label}.timing automated readiness must complete with `
+      + automatedReadinessBoundary.replace('_', ' '),
+    );
   }
-  if (automatedStages[4].startedAt < readinessCompletedAt) {
+  if (automatedStages[4].startedAt < automatedStages[3].completedAt) {
     fail(`${label}.timing promotion cannot start before staging validation completes`);
   }
   if (!Array.isArray(record.timing.handoffs) || record.timing.handoffs.length === 0) {
@@ -525,32 +548,55 @@ function validateReleaseRecord(record, index) {
 }
 
 export function validateReleaseObservationWindow(window, evidenceOptions = {}) {
-  exactKeys(window, ['schema', 'generatedAt', 'baseline', 'releases'], 'release observation window');
-  if (window.schema !== RELEASE_OBSERVATION_WINDOW_SCHEMA) {
+  const isV2 = window?.schema === RELEASE_OBSERVATION_WINDOW_V2_SCHEMA;
+  exactKeys(
+    window,
+    isV2
+      ? ['schema', 'generatedAt', 'baseline', 'releases', 'qualityEvidence']
+      : ['schema', 'generatedAt', 'baseline', 'releases'],
+    'release observation window',
+  );
+  if (![RELEASE_OBSERVATION_WINDOW_SCHEMA, RELEASE_OBSERVATION_WINDOW_V2_SCHEMA]
+    .includes(window.schema)) {
     fail('release observation window schema is unsupported');
   }
   const generatedAt = timestampMs(window.generatedAt, 'release observation window.generatedAt');
-  exactKeys(window.baseline, [
-    'releaseCount',
-    'failedPromotions',
-    'escapedReleaseDefects',
-  ], 'release observation window.baseline');
+  exactKeys(
+    window.baseline,
+    isV2
+      ? ['releaseCount']
+      : ['releaseCount', 'failedPromotions', 'escapedReleaseDefects'],
+    'release observation window.baseline',
+  );
   requireSafeInteger(window.baseline.releaseCount, 'release observation window.baseline.releaseCount', {
     minimum: OBSERVATION_COUNT,
     maximum: OBSERVATION_COUNT,
   });
-  requireSafeInteger(window.baseline.failedPromotions, 'release observation window.baseline.failedPromotions', {
-    maximum: OBSERVATION_COUNT,
-  });
-  requireSafeInteger(
-    window.baseline.escapedReleaseDefects,
-    'release observation window.baseline.escapedReleaseDefects',
-  );
+  if (!isV2) {
+    requireSafeInteger(
+      window.baseline.failedPromotions,
+      'release observation window.baseline.failedPromotions',
+      { maximum: OBSERVATION_COUNT },
+    );
+    requireSafeInteger(
+      window.baseline.escapedReleaseDefects,
+      'release observation window.baseline.escapedReleaseDefects',
+    );
+  }
   if (!Array.isArray(window.releases) || window.releases.length !== OBSERVATION_COUNT) {
     fail(`release observation window must contain exactly ${OBSERVATION_COUNT} production records`);
   }
-  const releases = window.releases.map(validateReleaseRecord);
-  if (new Set(releases.map((release) => release.releaseId)).size !== releases.length) {
+  const releases = window.releases.map((record, index) => validateReleaseRecord(
+    record,
+    index,
+    {
+      automatedReadinessBoundary: isV2
+        ? 'release_candidate'
+        : 'staging_validation',
+    },
+  ));
+  if (!isV2
+      && new Set(releases.map((release) => release.releaseId)).size !== releases.length) {
     fail('release observation window contains duplicate release IDs');
   }
   for (let index = 1; index < releases.length; index += 1) {
@@ -565,11 +611,45 @@ export function validateReleaseObservationWindow(window, evidenceOptions = {}) {
     fail('release observation window was generated before its final production record completed');
   }
   const authorities = window.releases.map((record, index) => (
-    validateAuthoritativeReleaseEvidence(record, index, evidenceOptions)
+    validateAuthoritativeReleaseEvidence(record, index, {
+      ...evidenceOptions,
+      requireTimingEvidence: isV2,
+    })
   ));
+  const transactionIds = authorities.map(
+    (authority) => authority.reuseProvenance.transactionId,
+  );
+  if (isV2 && new Set(transactionIds).size !== transactionIds.length) {
+    fail('release observation window v2 contains duplicate promotion transaction IDs');
+  }
+  const promotionWindows = requireAuthoritativePromotionWindows(
+    transactionIds,
+    evidenceOptions,
+    { baselineCount: OBSERVATION_COUNT },
+  );
+  let qualityAuthority = null;
+  if (isV2) {
+    if (promotionWindows.baseline === null) {
+      fail('release observation window v2 requires the preceding ten authoritative promotions');
+    }
+    qualityAuthority = validateAuthoritativeReleaseQualityEvidence(
+      window.qualityEvidence,
+      promotionWindows,
+      evidenceOptions,
+    );
+    for (let index = 0; index < window.releases.length; index += 1) {
+      if (window.releases[index].escapedReleaseDefects
+          !== qualityAuthority.current.transactions[index].escapedReleaseDefects) {
+        fail(`releases[${index}].escapedReleaseDefects contradicts signed quality evidence`);
+      }
+    }
+  }
   return {
+    schema: window.schema,
     generatedAt: window.generatedAt,
     baseline: { ...window.baseline },
+    promotionWindows,
+    qualityAuthority,
     releases: releases.map((release, index) => {
       const authority = authorities[index];
       return {
@@ -599,7 +679,10 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
     .map((release) => release.automatedReadinessMs);
   const unattendedValues = validated.releases
     .filter((release) => release.authority.handoffsExplicit)
-    .flatMap((release) => release.unattendedHandoffMs);
+    .map((release) => release.unattendedHandoffMs.reduce(
+      (total, durationMs) => total + durationMs,
+      0,
+    ));
   const approvalValues = validated.releases
     .filter((release) => release.authority.handoffsExplicit)
     .flatMap((release) => release.approvalHandoffMs);
@@ -639,10 +722,11 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
     .filter((release) => !release.parity)
     .map((release) => ({ releaseId: release.releaseId, checks: release.parityDetails }));
   const failedPromotions = validated.releases.filter((release) => release.outcome !== 'passed').length;
-  const escapedReleaseDefects = validated.releases.reduce(
-    (sum, release) => sum + release.escapedReleaseDefects,
-    0,
-  );
+  const failedPromotionBaseline = validated.promotionWindows.baseline === null
+    ? null
+    : validated.promotionWindows.baseline.filter((entry) => entry.status !== 'completed').length;
+  const escapedReleaseDefects = validated.qualityAuthority?.current.total ?? null;
+  const escapedReleaseDefectBaseline = validated.qualityAuthority?.baseline.total ?? null;
   const recoveryFailures = validated.releases
     .filter((release) => release.outcome === 'recovery_failed')
     .map((release) => release.releaseId);
@@ -652,6 +736,7 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
   const metrics = {
     automatedReadiness: {
       ...readiness,
+      measurement: 'protected_main_ci_start_to_release_candidate_completion',
       targetP50Ms: RELEASE_PLAN_THRESHOLDS.automatedReadinessP50Ms,
       status: readiness.sampleCount === validated.releases.length
         ? metricStatus(readiness.p50Ms <= RELEASE_PLAN_THRESHOLDS.automatedReadinessP50Ms)
@@ -668,6 +753,7 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
     ])),
     unattendedHandoffDelay: {
       ...unattended,
+      measurement: 'sum_per_release_excluding_explicit_approvals',
       excludedExplicitApprovalSampleCount: approvalValues.length,
       excludedExplicitApprovalTotalMs: approvalValues.reduce((sum, value) => sum + value, 0),
       targetP50Ms: RELEASE_PLAN_THRESHOLDS.unattendedHandoffP50Ms,
@@ -717,25 +803,36 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
     },
     failedPromotions: {
       baselineReleaseCount: validated.baseline.releaseCount,
-      baselineCount: validated.baseline.failedPromotions,
+      baselineCount: failedPromotionBaseline,
       currentReleaseCount: validated.releases.length,
       currentCount: failedPromotions,
-      delta: failedPromotions - validated.baseline.failedPromotions,
-      status: 'manual_required',
+      delta: failedPromotionBaseline === null ? null : failedPromotions - failedPromotionBaseline,
+      status: failedPromotionBaseline === null
+        ? 'manual_required'
+        : metricStatus(failedPromotions <= failedPromotionBaseline),
     },
     escapedReleaseDefects: {
       baselineReleaseCount: validated.baseline.releaseCount,
-      baselineCount: validated.baseline.escapedReleaseDefects,
+      baselineCount: escapedReleaseDefectBaseline,
       currentReleaseCount: validated.releases.length,
       currentCount: escapedReleaseDefects,
-      delta: escapedReleaseDefects - validated.baseline.escapedReleaseDefects,
-      status: 'manual_required',
+      delta: escapedReleaseDefectBaseline === null || escapedReleaseDefects === null
+        ? null
+        : escapedReleaseDefects - escapedReleaseDefectBaseline,
+      evidenceSha256: validated.qualityAuthority?.evidenceSha256 ?? null,
+      status: escapedReleaseDefectBaseline === null || escapedReleaseDefects === null
+        ? 'manual_required'
+        : metricStatus(escapedReleaseDefects <= escapedReleaseDefectBaseline),
     },
   };
 
   const reasons = [];
-  if (metrics.automatedReadiness.status === 'fail') reasons.push('automated_readiness_p50_above_9_minutes');
-  if (metrics.unattendedHandoffDelay.status === 'fail') reasons.push('unattended_handoff_p50_above_1_minute');
+  if (metrics.automatedReadiness.status === 'fail') {
+    reasons.push('ci_rc_readiness_p50_above_9_minutes');
+  }
+  if (metrics.unattendedHandoffDelay.status === 'fail') {
+    reasons.push('unattended_handoff_sum_per_release_p50_above_1_minute');
+  }
   if (metrics.successfulPromotionSoak.status === 'fail') reasons.push('successful_promotion_soak_below_60_seconds');
   if (metrics.rollbackRecovery.status === 'fail') reasons.push('rollback_recovery_failed_or_above_120_seconds');
   if (metrics.exactShaAndDigestParity.status === 'fail') reasons.push('exact_sha_or_digest_parity_failed');
@@ -744,7 +841,7 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
   if (metrics.actualUnavailability.status === 'not_observed') reasons.push('actual_unavailability_not_observed');
   if (metrics.rollbackRecovery.status === 'manual_required') reasons.push('rollback_recovery_not_observed');
   if (metrics.automatedReadiness.status === 'manual_required') {
-    reasons.push('authoritative_automated_readiness_start_evidence_required');
+    reasons.push('authoritative_ci_rc_timing_evidence_required');
   }
   if (validated.releases.some((release) => !release.authority.protectedMainCompletionExplicit)) {
     reasons.push('signed_protected_main_completion_evidence_required');
@@ -780,6 +877,144 @@ export function evaluateReleaseObservationWindow(window, evidenceOptions = {}) {
     metrics,
     reasons,
   };
+}
+
+export function validateReleaseActivationWindow(window, evidenceOptions = {}) {
+  exactKeys(window, ['schema', 'generatedAt', 'releases'], 'release activation window');
+  if (window.schema !== RELEASE_ACTIVATION_WINDOW_SCHEMA) {
+    fail('release activation window schema is unsupported');
+  }
+  const generatedAt = timestampMs(window.generatedAt, 'release activation window.generatedAt');
+  if (!Array.isArray(window.releases)
+      || window.releases.length !== REQUIRED_PRODUCTION_COMPARISONS) {
+    fail(
+      `release activation window must contain exactly ${REQUIRED_PRODUCTION_COMPARISONS}`
+      + ' production records',
+    );
+  }
+  const releases = window.releases.map((record, index) => {
+    exactKeys(record, [
+      'releaseId',
+      'completedAt',
+      'identity',
+      'timing',
+      'promotion',
+      'authoritativeEvidence',
+    ], `release activation window.releases[${index}]`);
+    return validateReleaseRecord(
+      { ...record, escapedReleaseDefects: 0 },
+      index,
+      {
+        automatedReadinessBoundary:
+          Object.hasOwn(record.authoritativeEvidence, 'protectedTiming')
+            ? 'release_candidate'
+            : 'staging_validation',
+      },
+    );
+  });
+  for (let index = 1; index < releases.length; index += 1) {
+    if (releases[index - 1].completedAt >= releases[index].completedAt) {
+      fail('release activation window must be strictly chronological');
+    }
+    if (releases[index].readinessStartedAt < releases[index - 1].completedAt) {
+      fail('release activation window cannot contain overlapping release lanes');
+    }
+  }
+  if (generatedAt < releases.at(-1).completedAt) {
+    fail('release activation window was generated before its final production record completed');
+  }
+  const authorities = window.releases.map((record, index) => (
+    validateAuthoritativeReleaseEvidence(record, index, {
+      ...evidenceOptions,
+      requireTimingEvidence:
+        Object.hasOwn(record.authoritativeEvidence, 'protectedTiming'),
+    })
+  ));
+  const transactionIds = authorities.map(
+    (authority) => authority.reuseProvenance.transactionId,
+  );
+  if (new Set(transactionIds).size !== transactionIds.length) {
+    fail('release activation window contains duplicate promotion transaction IDs');
+  }
+  return {
+    generatedAt: window.generatedAt,
+    releases: releases.map((release, index) => ({
+      ...release,
+      authority: authorities[index],
+    })),
+  };
+}
+
+export function collectReleaseObservationWindow({
+  qualityEvidencePath,
+  now = new Date(),
+} = {}, evidenceOptions = {}) {
+  if (typeof qualityEvidencePath !== 'string' || qualityEvidencePath.length === 0) {
+    fail('quality evidence path is required to collect an observation window');
+  }
+  const collected = collectAuthoritativeReleaseRecords(
+    evidenceOptions,
+    { count: OBSERVATION_COUNT },
+  );
+  const promotionWindows = requireAuthoritativePromotionWindows(
+    collected.map((entry) => entry.transactionId),
+    evidenceOptions,
+    { baselineCount: OBSERVATION_COUNT },
+  );
+  if (promotionWindows.baseline === null) {
+    fail('observation collection requires ten preceding authoritative promotions');
+  }
+  const qualityEvidence = referenceAuthoritativeEvidence(
+    qualityEvidencePath,
+    evidenceOptions,
+  );
+  const qualityAuthority = validateAuthoritativeReleaseQualityEvidence(
+    qualityEvidence,
+    promotionWindows,
+    evidenceOptions,
+  );
+  const generatedAt = canonicalNow(now, 'observation collection time');
+  if (Date.parse(generatedAt) < promotionWindows.current.at(-1).completedAtMs
+      || Date.parse(generatedAt) < Date.parse(qualityAuthority.generatedAt)) {
+    fail('observation collection time predates its authoritative evidence');
+  }
+  const window = {
+    schema: RELEASE_OBSERVATION_WINDOW_V2_SCHEMA,
+    generatedAt,
+    baseline: { releaseCount: OBSERVATION_COUNT },
+    releases: collected.map((entry, index) => ({
+      ...entry.record,
+      escapedReleaseDefects:
+        qualityAuthority.current.transactions[index].escapedReleaseDefects,
+    })),
+    qualityEvidence,
+  };
+  validateReleaseObservationWindow(window, evidenceOptions);
+  return window;
+}
+
+export function collectReleaseActivationWindow({
+  now = new Date(),
+} = {}, evidenceOptions = {}) {
+  const collected = collectAuthoritativeReleaseRecords(
+    evidenceOptions,
+    { count: REQUIRED_PRODUCTION_COMPARISONS, completedOnly: true },
+  );
+  const generatedAt = canonicalNow(now, 'activation collection time');
+  if (Date.parse(generatedAt) < Date.parse(collected.at(-1).record.completedAt)) {
+    fail('activation collection time predates its latest promotion');
+  }
+  const window = {
+    schema: RELEASE_ACTIVATION_WINDOW_SCHEMA,
+    generatedAt,
+    releases: collected.map((entry) => {
+      const { escapedReleaseDefects: ignored, ...record } = entry.record;
+      void ignored;
+      return record;
+    }),
+  };
+  validateReleaseActivationWindow(window, evidenceOptions);
+  return window;
 }
 
 function validatePositiveNumericString(value, label) {
@@ -922,13 +1157,18 @@ export function buildProtectedMainReuseServerPayload(window, evidenceOptions = {
   sourceRoot,
   now = new Date(),
 } = {}) {
-  const validated = validateReleaseObservationWindow(window, evidenceOptions);
+  const activationWindow = window?.schema === RELEASE_ACTIVATION_WINDOW_SCHEMA;
+  const validated = activationWindow
+    ? validateReleaseActivationWindow(window, evidenceOptions)
+    : validateReleaseObservationWindow(window, evidenceOptions);
   const generatedAtMs = now.getTime();
   if (!Number.isFinite(generatedAtMs)
       || generatedAtMs < Date.parse(validated.generatedAt)) {
     fail('reuse activation request time predates its observation window');
   }
-  const releases = validated.releases.slice(-REQUIRED_PRODUCTION_COMPARISONS);
+  const releases = activationWindow
+    ? validated.releases
+    : validated.releases.slice(-REQUIRED_PRODUCTION_COMPARISONS);
   if (releases.length !== REQUIRED_PRODUCTION_COMPARISONS) {
     fail(`reuse activation requires exactly ${REQUIRED_PRODUCTION_COMPARISONS} productions`);
   }
@@ -958,7 +1198,7 @@ export function buildProtectedMainReuseServerPayload(window, evidenceOptions = {
     const comparison = provenance.comparison;
     if (sequence[index].completedAt !== release.completedAt
         || provenance.productionCompletedAt !== window.releases.at(
-          -REQUIRED_PRODUCTION_COMPARISONS + index,
+          activationWindow ? index : -REQUIRED_PRODUCTION_COMPARISONS + index,
         ).completedAt) {
       fail(`reuse activation production[${index}] completion identity drifted`);
     }
@@ -966,7 +1206,7 @@ export function buildProtectedMainReuseServerPayload(window, evidenceOptions = {
       productionSequence: sequence[index].productionSequence,
       productionReleaseId: release.releaseId,
       runtimeSha: window.releases.at(
-        -REQUIRED_PRODUCTION_COMPARISONS + index,
+        activationWindow ? index : -REQUIRED_PRODUCTION_COMPARISONS + index,
       ).identity.productionRuntimeSha,
       productionCompletedAt: provenance.productionCompletedAt,
       transactionId: provenance.transactionId,

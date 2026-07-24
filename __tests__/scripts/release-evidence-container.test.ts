@@ -166,7 +166,8 @@ describe('release-evidence-container wrapper', () => {
     const rootSeal = staging.indexOf('seal-staging-runtime', candidateInstall);
     const rootAttest = staging.indexOf('attest-staging-runtime', rootSeal);
     const evidenceParser = staging.indexOf('node - "$ROOT_STAGING_EVIDENCE"', rootAttest);
-    const stagingRequest = staging.indexOf('release-staging-attestation.mjs request', evidenceParser);
+    const stagingSmoke = staging.indexOf('scripts/staging-smoke.sh', evidenceParser);
+    const stagingRequest = staging.indexOf('release-staging-attestation.mjs request', stagingSmoke);
 
     expect(operator).toContain('scripts/promote-exact-release.sh');
     expect(operator).toContain('git status --porcelain=v1 --untracked-files=normal');
@@ -187,12 +188,13 @@ describe('release-evidence-container wrapper', () => {
     expect(rootSeal).toBeGreaterThan(candidateInstall);
     expect(rootAttest).toBeGreaterThan(rootSeal);
     expect(evidenceParser).toBeGreaterThan(rootAttest);
-    expect(stagingRequest).toBeGreaterThan(evidenceParser);
+    expect(stagingSmoke).toBeGreaterThan(evidenceParser);
+    expect(stagingRequest).toBeGreaterThan(stagingSmoke);
     expect(staging.slice(trustedVerifier, candidateInstall)).not.toContain('$RELEASE_DIR/scripts/');
     expect(staging.slice(trustedVerifier, candidateInstall)).not.toContain('release-artifact-manifest.mjs');
-    expect(staging.slice(evidenceParser, stagingRequest))
+    expect(staging.slice(evidenceParser, stagingSmoke))
       .toContain("record.schema!=='nexus.root-staging-attestation-evidence.v1'");
-    expect(staging.slice(evidenceParser, stagingRequest))
+    expect(staging.slice(evidenceParser, stagingSmoke))
       .toContain('record.outputDigests?.readinessSha256');
     expect(operator).toContain('scripts/staging-smoke.sh');
     expect(operator).toContain('release-staging-attestation.mjs request');
@@ -315,16 +317,19 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     const raw = stagingSigner();
     const rc = workflow();
     const release = releaseSigner();
+    const releaseRequest = readFileSync('scripts/request-release-manifest-signature.sh', 'utf8');
     const request = readFileSync('scripts/request-staging-attestation.sh', 'utf8');
     const rollbackRequest = readFileSync('scripts/request-rollback-drill-signature.sh', 'utf8');
 
     expect(raw).toContain('environment: release-signing');
     expect(raw).toContain("github.ref == 'refs/heads/main'");
-    expect(raw).toContain('ref: refs/heads/main');
+    expect(raw).toContain('ref: ${{ github.sha }}');
     expect(raw).toContain('path: trusted-tooling');
     expect(raw).toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
     expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs validate-request');
     expect(raw).toContain('trusted-tooling/scripts/release-staging-attestation.mjs sign');
+    expect(raw).toContain('actions/runs/$GITHUB_RUN_ID');
+    expect(raw).toContain('--signing-run-metadata trusted-input/staging-signing-run.json');
     expect(raw).toContain('staging-attestation-${{ inputs.request_id }}');
     expect(raw).toContain("inputs.evidence_kind == 'rollback_drill'");
     expect(raw).toContain('trusted-tooling/scripts/rollback-drill-check.mjs validate-payload');
@@ -341,13 +346,20 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(raw).not.toContain('SERVER_SSH_KEY');
     expect(release).toContain('environment: release-signing');
     expect(release).toContain('trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest');
+    expect(release).toContain('trusted-input/protected-main-run.json');
+    expect(release).toContain('trusted-input/signing-run.json');
+    expect(release).toContain('trusted-input/signing-jobs.json');
+    expect(release).toContain('--signing-run-metadata trusted-input/signing-run.json');
+    expect(release).toContain('--signing-jobs-metadata trusted-input/signing-jobs.json');
     expect(release).toContain('release-manifest-v2-${{ env.RUNTIME_SHA }}');
+    expect(releaseRequest).toContain('.local/release/timing');
     expect(rc).not.toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
     expect(rc).not.toContain('sign_staging');
     expect(request).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(request).toContain('gh workflow run "$SIGNING_WORKFLOW" --ref "$REF"');
     expect(request).toContain('-f "request_sha256=$REQUEST_SHA256"');
     expect(request).toContain('signed staging payload differs from the exact checkpointed request');
+    expect(request).toContain('protectedSigning.requestedAt');
     expect(rollbackRequest).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(rollbackRequest).toContain('-f "evidence_kind=rollback_drill"');
     expect(rollbackRequest).toContain('-f "request_sha256=$REQUEST_SHA256"');

@@ -831,7 +831,7 @@ describe('Nexus application disaster-recovery assets', () => {
         'NEXUS_DR_S3_PREFIX=nexus-hub/application',
         'database_root="$NEXUS_DR_S3_PREFIX/database"',
         'die() { printf "%s\\n" "$*" >&2; exit 1; }',
-        'size_file() { stat -f "%z" -- "$1"; }',
+        'size_file() { wc -c <"$1" | tr -d "[:space:]"; }',
         governedFunctions,
         'aws_s3api() {',
         '  local operation="$1" count=0',

@@ -172,6 +172,96 @@ drill while the provision receipt alone is the only readiness input. Never
 enable guest egress, download through cloud-init, copy production executables
 or data, or interpret SSH readiness as promotion readiness.
 
+Input generation and signing
+----------------------------
+
+Do not handcraft plan, isolation, runtime-readiness authorization, or promotion
+request schemas. The protected-main input generator derives their fixed fields,
+ordered guest/drill bindings, key identities, provision identities, evidence
+digests, canonical paths, 60-second soak, and short lifetimes. It never reads a
+private signing key, creates a signature, starts a guest, launches promotion,
+or accesses the network.
+
+First create the owner-reviewable input-spec template in a new root-private
+directory. Every `__REQUIRED__` value must be replaced with an exact
+root-readable source; unresolved values fail before an output directory is
+created:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs template \
+    --output-dir <new-root-private-template-directory>
+
+After review, generate the plan, three canonical runtime authorization
+payloads, a plan-bound isolation-observation template, and a generation
+manifest:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs prepare \
+    --spec <completed-input-spec.json> \
+    --output-dir <new-root-private-preparation-directory>
+
+`prepare` deliberately emits no KVM owner-authorization envelope and no
+promotion requests. Sign each compact runtime authorization file, whose exact
+bytes contain no trailing newline, with the separately held lab owner key:
+
+  openssl pkeyutl -sign -inkey <lab-owner-private-key.pem> -rawin \
+    -in <prepared>/runtime-authorizations/<drill>.json \
+    -out <prepared>/runtime-authorizations/<drill>.sig
+
+Use those detached signatures in the three runtime-readiness collector calls.
+After all three immutable readiness-v2 receipts exist, fill only the measured
+fields in `isolation-observation.template.json`. In particular, bind each
+receipt's raw SHA-256, record three distinct guest machine/boot identities, and
+record the representative guest's live memory, disk, kernel-log, mount,
+listener, PM2, synthetic-database, and zero-production-match observations.
+The untouched template is intentionally invalid. Finalize it only with all
+three readiness receipts, in the fixed sequential order:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs finalize-isolation \
+    --plan <prepared>/plan.json \
+    --generation-manifest <prepared>/generation-manifest.json \
+    --provision-receipt <provision-receipt.json> \
+    --observation <completed-isolation-observation.json> \
+    --ssh-loss-readiness <ssh-loss-readiness-v2.json> \
+    --failed-health-readiness <failed-health-readiness-v2.json> \
+    --guest-reboot-readiness <guest-reboot-readiness-v2.json> \
+    --output <new-isolation.json>
+
+Only immediately before execution, generate the short-lived plan authorization
+payload and three unsigned promotion requests. This avoids expiring a
+30-minute request while runtime readiness is collected:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs authorize \
+    --spec <completed-input-spec.json> \
+    --plan <prepared>/plan.json \
+    --output-dir <new-root-private-authorization-directory>
+
+Sign the exact compact plan payload with the lab owner key, then let the
+generator combine and verify that detached signature. It will not publish an
+envelope whose key, plan digest, endpoints, target, lifetime, or signature do
+not verify:
+
+  openssl pkeyutl -sign -inkey <lab-owner-private-key.pem> -rawin \
+    -in <authorization>/plan-owner-authorization.payload.json \
+    -out <authorization>/plan-owner-authorization.sig
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs seal-plan-authorization \
+    --plan <prepared>/plan.json \
+    --payload <authorization>/plan-owner-authorization.payload.json \
+    --signature <authorization>/plan-owner-authorization.sig \
+    --guest-owner-public-key <lab-owner-public-key.pem> \
+    --output <authorization>/plan-owner-authorization.envelope.json
+
+Sign each generated promotion request only through the existing protected
+promotion signer and publish the results under the coordinator's exact names:
+
+  node scripts/promotion-authorization.mjs sign-request \
+    --input <authorization>/promotion-requests/<drill>.request.json \
+    --private-key <production-owner-private-key.pem> \
+    --output <request-directory>/<drill>.envelope.json
+
+The generated manifests always declare `strictly-sequential` execution and the
+order `ssh-loss`, `failed-health`, `guest-reboot`. They do not create a second
+release lane or permit concurrent guests.
+
 Isolation
 ---------
 

@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-24.8",
+  "version": "2026-07-24.10",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -199,7 +199,9 @@
     }
   },
   "dispositionRules": [
-    { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects the exact ten-release timing and quality window, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery target, exact identity parity, and shadow-only five-release readiness verdict." },
+    { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects root-collected ten-release observation windows, signed redacted Sentry quality authority, root-derived failed-promotion baselines, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery, exact identity parity, and the distinct five-release activation contract." },
+    { "pattern": "__tests__/scripts/release-quality-evidence.test.ts", "disposition": "keep", "reason": "Protects the exact root-signed 10+10 promotion window, 24-hour Sentry observation maturation, successful-release exposure semantics, bounded sequential exact-SHA queries, in-memory redaction, aggregate-only protected signatures, and existing release/Sonar mutual exclusion." },
+    { "pattern": "__tests__/scripts/rollback-drill-kvm-inputs.test.ts", "disposition": "keep", "reason": "Protects the fail-closed detached rollback-drill input chain from unsigned plan preparation through owner-signed readiness, isolated finalization, fresh authorization, and exact protected promotion-request sealing." },
     { "pattern": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts", "disposition": "keep", "reason": "Protects the fail-closed, loopback-only KVM rollback-drill plan, distinct guest and key isolation, bounded deterministic machine evidence, three independent fault outcomes, 120-second recovery target, tamper rejection, and exact rollback-request digest binding." },
     { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, encrypted off-host retention, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
     { "pattern": "__tests__/scripts/application-dr-backup-descriptor.test.ts", "disposition": "keep", "reason": "Protects the unprivileged, exact-identity recovery descriptor passed into the root-owned encrypted backup boundary." },
@@ -441,7 +443,111 @@
       "src/api/routes/dashboard-data-fetchers.ts",
       "src/services/training-exercise-media*.ts"
     ],
-  "cleanupMappings": [
+    "cleanupMappings": [
+    {
+      "test": "__tests__/scripts/application-disaster-recovery.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/application-disaster-recovery.test.ts",
+        "__tests__/scripts/application-dr-version-retention.test.ts"
+      ],
+      "sources": [
+        "scripts/application-dr-backup.sh",
+        "scripts/application-dr-version-retention.py"
+      ],
+      "reason": "Replaced destructive version-delete and post-prune assertions with retained lifecycle-only evidence, opaque VersionId pagination, COMPLIANCE writes, and exact post-write verification."
+    },
+    {
+      "test": "__tests__/scripts/application-dr-version-retention.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/application-dr-version-retention.test.ts",
+        "__tests__/scripts/application-disaster-recovery.test.ts"
+      ],
+      "sources": [
+        "scripts/application-dr-version-retention.py"
+      ],
+      "reason": "Replaced deletion-plan ownership with read-only paginated retention-floor evidence, exact version identity, current-period visibility, and fail-closed maturity reporting."
+    },
+    {
+      "test": "__tests__/scripts/quality-sonar-operations.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/quality-sonar-operations.test.ts"
+      ],
+      "sources": [
+        "scripts/quality-sonar-retention.mjs"
+      ],
+      "reason": "Expanded the retained helper syntax fingerprint to include the dedicated retention implementation while preserving the behavioral Sonar backup, maturity, mutual-exclusion, and restore evidence."
+    },
+    {
+      "test": "__tests__/scripts/release-sequence.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-sequence.test.ts"
+      ],
+      "sources": [
+        "scripts/release-sequence.mjs"
+      ],
+      "reason": "Replaced one generic signing-count assertion with distinct manifest and staging dispatch, watch, correlation, owner-stop, lock-loss, and fail-closed sequential phase checks."
+    },
+    {
+      "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-staging-transfer-integrity.test.ts",
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/release-operator.sh"
+      ],
+      "reason": "Replaced inline operator-slice checks with retained extracted trusted-heredoc verification and exact root prepare, seal, attest, evidence, request, and candidate ordering."
+    },
+    {
+      "test": "__tests__/scripts/restore-runtime-artifact.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/restore-runtime-artifact.test.ts",
+        "__tests__/scripts/application-dr-recovery-runtime.test.ts",
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/application-dr-recovery-runtime.mjs",
+        "scripts/remote-promotion-worker-control.sh",
+        "scripts/restore.sh"
+      ],
+      "reason": "Retired direct legacy apply behavior in favor of retained signed runtime reconstruction, exact release-bound identity, and root-owned automatic predecessor recovery."
+    },
+    {
+      "test": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts"
+      ],
+      "sources": [
+        "scripts/lib/rollback-drill-kvm-evidence.mjs",
+        "scripts/rollback-drill-kvm-coordinator.mjs"
+      ],
+      "reason": "Replaced the obsolete execution-not-implemented refusal with retained three-scenario KVM orchestration, bounded evidence, exact request identity, timeout enforcement, and fail-closed fault results."
+    },
+    {
+      "test": "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts"
+      ],
+      "sources": [
+        "scripts/build-rollback-drill-vm-runtime-bundle.sh",
+        "scripts/rollback-drill-vm-runtime-control.sh",
+        "scripts/rollback-drill-vm-runtime-manifest.py"
+      ],
+      "reason": "Replaced permissive nested-link assumptions with retained archive member limits, exact offline Node and PM2 closure identity, hostile-link rejection, and guest admission parity."
+    },
+    {
+      "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-versioned-runtime.test.ts",
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/rollback.sh",
+        "scripts/remote-promotion-worker-control.sh",
+        "scripts/remote-release-selector-switch.py"
+      ],
+      "reason": "Retired direct apply ownership in favor of the retained root promotion transaction, atomic selector switch, exact predecessor restoration, and pre-stop rollback refusal."
+    },
     {
       "test": "__tests__/scripts/persistent-promotion-transaction.test.ts",
       "replacementTests": [

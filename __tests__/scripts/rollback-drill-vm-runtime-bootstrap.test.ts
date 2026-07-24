@@ -1477,65 +1477,69 @@ exit "$status"
     expect(drift.stderr).toContain("does not bind exactly pm2 6.0.14");
   });
 
-  it("uses the same 50,000-member PM2 archive boundary at build and guest admission", () => {
-    const root = temporaryRoot();
-    const atLimit = join(root, "at-limit.tar.gz");
-    const overLimit = join(root, "over-limit.tar.gz");
-    const placeholderLock = join(root, "placeholder-lock.json");
-    writeFileSync(placeholderLock, "{}\n", { mode: 0o600 });
-    const created = spawnSync(
-      "python3",
-      [
-        "-c",
+  it(
+    "uses the same 50,000-member PM2 archive boundary at build and guest admission",
+    { timeout: 30_000 },
+    () => {
+      const root = temporaryRoot();
+      const atLimit = join(root, "at-limit.tar.gz");
+      const overLimit = join(root, "over-limit.tar.gz");
+      const placeholderLock = join(root, "placeholder-lock.json");
+      writeFileSync(placeholderLock, "{}\n", { mode: 0o600 });
+      const created = spawnSync(
+        "python3",
         [
-          "import pathlib,sys,tarfile",
-          "def build(output,count):",
-          " with tarfile.open(output,'w:gz') as archive:",
-          "  for index in range(count):",
-          "   name='pm2-closure' if index==0 else f'pm2-closure/d{index:05d}'",
-          "   entry=tarfile.TarInfo(name);entry.type=tarfile.DIRTYPE;entry.mode=0o755",
-          "   archive.addfile(entry)",
-          "build(sys.argv[1],50000)",
-          "build(sys.argv[2],50001)",
-        ].join("\n"),
+          "-c",
+          [
+            "import pathlib,sys,tarfile",
+            "def build(output,count):",
+            " with tarfile.open(output,'w:gz') as archive:",
+            "  for index in range(count):",
+            "   name='pm2-closure' if index==0 else f'pm2-closure/d{index:05d}'",
+            "   entry=tarfile.TarInfo(name);entry.type=tarfile.DIRTYPE;entry.mode=0o755",
+            "   archive.addfile(entry)",
+            "build(sys.argv[1],50000)",
+            "build(sys.argv[2],50001)",
+          ].join("\n"),
+          atLimit,
+          overLimit,
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      expect(created.status, created.stderr).toBe(0);
+
+      const acceptedBoundary = runHelper([
+        "validate-pm2-archive",
+        "--archive",
         atLimit,
+        "--lock",
+        placeholderLock,
+      ]);
+      expect(acceptedBoundary.status).not.toBe(0);
+      expect(acceptedBoundary.stderr).toContain(
+        "PM2 closure archive is missing a required payload",
+      );
+      expect(acceptedBoundary.stderr).not.toContain(
+        "member count is invalid",
+      );
+
+      const rejectedBoundary = runHelper([
+        "validate-pm2-archive",
+        "--archive",
         overLimit,
-      ],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-    expect(created.status, created.stderr).toBe(0);
-
-    const acceptedBoundary = runHelper([
-      "validate-pm2-archive",
-      "--archive",
-      atLimit,
-      "--lock",
-      placeholderLock,
-    ]);
-    expect(acceptedBoundary.status).not.toBe(0);
-    expect(acceptedBoundary.stderr).toContain(
-      "PM2 closure archive is missing a required payload",
-    );
-    expect(acceptedBoundary.stderr).not.toContain(
-      "member count is invalid",
-    );
-
-    const rejectedBoundary = runHelper([
-      "validate-pm2-archive",
-      "--archive",
-      overLimit,
-      "--lock",
-      placeholderLock,
-    ]);
-    expect(rejectedBoundary.status).not.toBe(0);
-    expect(rejectedBoundary.stderr).toContain(
-      "PM2 closure archive member count is invalid",
-    );
-    expect(readFileSync(helper, "utf8")).toContain(
-      "entry_count > MAX_FILE_COUNT",
-    );
-    expect(guestControl).toContain("len(members)>50000");
-  });
+        "--lock",
+        placeholderLock,
+      ]);
+      expect(rejectedBoundary.status).not.toBe(0);
+      expect(rejectedBoundary.stderr).toContain(
+        "PM2 closure archive member count is invalid",
+      );
+      expect(readFileSync(helper, "utf8")).toContain(
+        "entry_count > MAX_FILE_COUNT",
+      );
+      expect(guestControl).toContain("len(members)>50000");
+    },
+  );
 
   it("requires a regular Node binary while accepting governed nested links", () => {
     const root = temporaryRoot();

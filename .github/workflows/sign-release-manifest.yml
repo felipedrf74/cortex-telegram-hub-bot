@@ -162,9 +162,18 @@ jobs:
               exit 64
               ;;
           esac
+          run_id="$(jq -r '.protectedMainShadow.evidence.ci.runId // empty' \
+            candidate-artifact/.local/release/test-results.json)"
+          if [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "NEXUS_PROTECTED_TIMING_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "NEXUS_PROTECTED_MAIN_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          else
+            echo "NEXUS_PROTECTED_TIMING_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "Exact protected-main timing is unavailable; release timing remains advisory." >&2
+          fi
 
       - name: Fetch exact reused protected-main GitHub identity
-        if: ${{ env.NEXUS_PROTECTED_MAIN_REUSE == 'true' }}
+        if: ${{ env.NEXUS_PROTECTED_TIMING_AVAILABLE == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -172,6 +181,16 @@ jobs:
             > trusted-input/protected-main-run.json
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NEXUS_PROTECTED_MAIN_RUN_ID}/artifacts?per_page=100" \
             > trusted-input/protected-main-artifacts.json
+
+      - name: Fetch current protected signing run and job timing
+        if: ${{ env.NEXUS_PROTECTED_TIMING_AVAILABLE == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > trusted-input/signing-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            > trusted-input/signing-jobs.json
 
       - name: Resolve protected nightly evidence request
         run: |
@@ -243,10 +262,16 @@ jobs:
               --nightly-evidence-root trusted-input/nightly-evidence
             )
           fi
-          reuse_args=()
-          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
-            reuse_args=(
+          protected_timing_args=()
+          if [[ "$NEXUS_PROTECTED_TIMING_AVAILABLE" == 'true' ]]; then
+            protected_timing_args+=(
               --protected-main-run-metadata trusted-input/protected-main-run.json
+              --signing-run-metadata trusted-input/signing-run.json
+              --signing-jobs-metadata trusted-input/signing-jobs.json
+            )
+          fi
+          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
+            protected_timing_args+=(
               --protected-main-artifact-metadata trusted-input/protected-main-artifacts.json
             )
           fi
@@ -262,7 +287,7 @@ jobs:
             --candidate-run-id "$CANDIDATE_RUN_ID" \
             "${contract_args[@]}" \
             "${nightly_args[@]}" \
-            "${reuse_args[@]}"
+            "${protected_timing_args[@]}"
 
       - name: Sign exact ReleaseManifestV2 with protected-main tooling
         env:
@@ -283,10 +308,16 @@ jobs:
               --nightly-evidence-root trusted-input/nightly-evidence
             )
           fi
-          reuse_args=()
-          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
-            reuse_args=(
+          protected_timing_args=()
+          if [[ "$NEXUS_PROTECTED_TIMING_AVAILABLE" == 'true' ]]; then
+            protected_timing_args+=(
               --protected-main-run-metadata trusted-input/protected-main-run.json
+              --signing-run-metadata trusted-input/signing-run.json
+              --signing-jobs-metadata trusted-input/signing-jobs.json
+            )
+          fi
+          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
+            protected_timing_args+=(
               --protected-main-artifact-metadata trusted-input/protected-main-artifacts.json
             )
           fi
@@ -302,7 +333,7 @@ jobs:
             --candidate-run-id "$CANDIDATE_RUN_ID" \
             "${contract_args[@]}" \
             "${nightly_args[@]}" \
-            "${reuse_args[@]}" \
+            "${protected_timing_args[@]}" \
             --output-root signed-artifact
 
       - name: Upload signed immutable release artifact
