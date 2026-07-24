@@ -1,5 +1,5 @@
 name: Release — Sign staging attestation
-run-name: Sign ${{ inputs.evidence_kind }} ${{ inputs.request_id }}
+run-name: Sign ${{ inputs.evidence_kind }} ${{ inputs.request_id }} digest ${{ inputs.request_sha256 }}
 
 on:
   workflow_dispatch:
@@ -26,8 +26,8 @@ on:
         required: true
         type: string
       request_sha256:
-        description: Exact raw request digest (required for rollback drills and reuse activation)
-        required: false
+        description: Exact raw request digest
+        required: true
         type: string
 
 permissions:
@@ -77,26 +77,23 @@ jobs:
             echo "request_b64 is not canonical base64" >&2
             exit 64
           }
+          [[ "$REQUEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "request_sha256 must be an exact lowercase SHA-256" >&2
+            exit 64
+          }
           node - <<'NODE'
+          const crypto = require('crypto');
           const input = process.env.REQUEST_B64 ?? '';
           const decoded = Buffer.from(input, 'base64');
           if (decoded.toString('base64') !== input) {
             throw new Error('request_b64 is not canonical base64');
           }
+          if (crypto.createHash('sha256').update(decoded).digest('hex') !== process.env.REQUEST_SHA256) {
+            throw new Error('decoded request bytes do not match request_sha256');
+          }
           NODE
           case "$EVIDENCE_KIND" in
-            staging_attestation)
-              [[ -z "$REQUEST_SHA256" ]] || {
-                echo "staging attestation must not supply request_sha256" >&2
-                exit 64
-              }
-              ;;
-            rollback_drill|protected_main_reuse_activation)
-              [[ "$REQUEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
-                echo "protected evidence request_sha256 must be an exact lowercase SHA-256" >&2
-                exit 64
-              }
-              ;;
+            staging_attestation|rollback_drill|protected_main_reuse_activation) ;;
             *)
               echo "unsupported operational evidence kind" >&2
               exit 64
@@ -107,15 +104,20 @@ jobs:
         if: ${{ inputs.evidence_kind == 'staging_attestation' }}
         env:
           REQUEST_B64: ${{ inputs.request_b64 }}
+          REQUEST_SHA256: ${{ inputs.request_sha256 }}
           RUNTIME_SHA: ${{ inputs.runtime_sha }}
           REQUEST_ID: ${{ inputs.request_id }}
         run: |
           install -d -m 700 .local/release/staging
           node - <<'NODE'
           const fs = require('fs');
+          const crypto = require('crypto');
           const request = Buffer.from(process.env.REQUEST_B64, 'base64');
           const parsed = JSON.parse(request);
           if (parsed.requestId !== process.env.REQUEST_ID) throw new Error('request id mismatch');
+          if (crypto.createHash('sha256').update(request).digest('hex') !== process.env.REQUEST_SHA256) {
+            throw new Error('staging request digest mismatch');
+          }
           fs.writeFileSync('.local/release/staging/request.json', request, { mode: 0o600 });
           NODE
           node trusted-tooling/scripts/release-staging-attestation.mjs validate-request \

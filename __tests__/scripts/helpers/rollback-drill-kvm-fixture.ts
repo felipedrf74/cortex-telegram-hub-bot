@@ -95,7 +95,7 @@ function outcome(
     overlayId: plan.overlays.find((entry: any) => entry.drill === drill).overlayId,
     transactionId: `20260724T12000${sequence}Z-${sequence}-${String(sequence).repeat(12)}`,
     requestSha256: digest(`${drill}-request`),
-    controlVersion: 'nexus-release-promotion-control.v2',
+    controlVersion: 'nexus-release-promotion-control.v3',
     terminalStatus: completes ? 'completed' : 'recovered',
     secondLaunchObserved: false,
     productionEvidenceEmitted: false,
@@ -243,7 +243,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
       restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
       promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-      controlVersion: 'nexus-release-promotion-control.v2',
+      controlVersion: 'nexus-release-promotion-control.v3',
       recoveryUnit: 'nexus-release-promotion-recovery.service',
     },
   };

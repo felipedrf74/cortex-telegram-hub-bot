@@ -15,6 +15,7 @@ const trustedAttestor = path.resolve('scripts/trusted-release-runtime-attestatio
 const unit = path.resolve('scripts/systemd/nexus-release-promotion@.service');
 const recoveryUnit = path.resolve('scripts/systemd/nexus-release-promotion-recovery.service');
 const migrationGate = path.resolve('scripts/complete-promotion-migration-gate.mjs');
+const layoutAuthorization = path.resolve('scripts/release-layout-authorization.mjs');
 
 const canonicalJson = (input: unknown): string => {
   if (input === null || typeof input !== 'object') return JSON.stringify(input);
@@ -35,6 +36,9 @@ describe('persistent systemd promotion transaction v2', () => {
   let systemctlActive: string;
   let drBackupBin: string;
   let drConfig: string;
+  let v3ControlFixtureEnv: NodeJS.ProcessEnv;
+  let cleanupV3ControlFixtures: () => void = () => {};
+  let selectorFixtureRuntimes: string[] = [];
   const id = '20260722T120000Z-1234-abcdef123456';
   const releaseManifestBody = Buffer.from('{"schema":"nexus.release-manifest.v2"}\n');
   const stagingAttestationBody = Buffer.from('{"schema":"nexus.staging-attestation.v1"}\n');
@@ -270,6 +274,373 @@ fi
 `, { mode: 0o755 });
   }
 
+  function writeV3ControlFixtures() {
+    const digest = (value: Buffer | string) =>
+      createHash('sha256').update(value).digest('hex');
+    const writeJson = (file: string, value: unknown, mode = 0o600) => {
+      const body = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+      fs.writeFileSync(file, body, { mode });
+      return body;
+    };
+    const privateKey = fs.readFileSync(privateKeyPath);
+    const envelope = (
+      kind: 'request' | 'fault-drill',
+      payload: Record<string, unknown>,
+    ) => ({
+      schema: `nexus.release-layout-${kind}-envelope.v1`,
+      keyId: 'nexus-owner-promotion-2026',
+      signatureAlgorithm: 'ed25519',
+      payload,
+      signature: cryptoSign(
+        null,
+        Buffer.from(canonicalJson(payload)),
+        privateKey,
+      ).toString('base64'),
+    });
+
+    const trustedLock = path.join(root, 'pm2-package-lock.json');
+    const trustedLockBody = writeJson(trustedLock, {
+      name: 'nexus-pm2-root-fixture',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      requires: true,
+      packages: {},
+    }, 0o644);
+    const closureRoot = path.join(root, 'pm2-closure');
+    const pm2PackageRoot = path.join(closureRoot, 'node_modules', 'pm2');
+    const entrypoint = path.join(pm2PackageRoot, 'bin', 'pm2');
+    fs.mkdirSync(path.dirname(entrypoint), { recursive: true, mode: 0o755 });
+    for (const directory of [
+      closureRoot,
+      path.join(closureRoot, 'node_modules'),
+      pm2PackageRoot,
+      path.dirname(entrypoint),
+    ]) fs.chmodSync(directory, 0o755);
+    fs.writeFileSync(
+      path.join(pm2PackageRoot, 'package.json'),
+      '{"name":"pm2","version":"6.0.14"}\n',
+      { mode: 0o644 },
+    );
+    fs.writeFileSync(
+      entrypoint,
+      '#!/usr/bin/env node\nprocess.stdout.write("fixture");\n',
+      { mode: 0o755 },
+    );
+    const closureFiles = () => {
+      const files: Array<{
+        path: string;
+        size: number;
+        mode: number;
+        sha256: string;
+      }> = [];
+      const walk = (directory: string) => {
+        for (const name of fs.readdirSync(directory).sort()) {
+          const absolute = path.join(directory, name);
+          const stat = fs.lstatSync(absolute);
+          if (stat.isDirectory()) walk(absolute);
+          else if (stat.isFile()) {
+            const body = fs.readFileSync(absolute);
+            files.push({
+              path: path.relative(closureRoot, absolute).split(path.sep).join('/'),
+              size: body.length,
+              mode: stat.mode & 0o7777,
+              sha256: digest(body),
+            });
+          }
+        }
+      };
+      walk(closureRoot);
+      return files.sort((left, right) =>
+        left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    };
+    const payloadFiles = closureFiles();
+    const payloadDigest = digest(canonicalJson({
+      schema: 'nexus.pm2-root-closure-payload.v1',
+      files: payloadFiles,
+    }));
+    writeJson(path.join(closureRoot, 'closure-manifest.json'), {
+      schema: 'nexus.pm2-root-closure-manifest.v1',
+      pm2Version: '6.0.14',
+      nodeVersion: 'v22.23.1',
+      npmVersion: '10.9.8',
+      packageLockSha256: digest(trustedLockBody),
+      packageLockPackages: [],
+      installedPackages: [],
+      files: payloadFiles,
+      fileCount: payloadFiles.length,
+      payloadDigest,
+    }, 0o644);
+    const files = closureFiles();
+    const closureDigest = digest(canonicalJson({
+      schema: 'nexus.pm2-root-closure.v1',
+      files,
+    }));
+    const launcher = path.join(root, 'bin', 'pm2-root');
+    const launcherBody = Buffer.from(
+      `#!/usr/bin/bash\nexec ${JSON.stringify(process.execPath)} `
+      + `${JSON.stringify(entrypoint)} "$@"\n`,
+    );
+    fs.writeFileSync(launcher, launcherBody, { mode: 0o755 });
+    const pm2Attestation = path.join(root, 'pm2-root-install.v1.json');
+    const pm2AttestationBody = writeJson(pm2Attestation, {
+      schema: 'nexus.pm2-root-install.v1',
+      version: '6.0.14',
+      sourceArchiveSha256: '0'.repeat(64),
+      closureRoot,
+      closureDigest,
+      payloadDigest,
+      packageLockSha256: digest(trustedLockBody),
+      launcher,
+      launcherSha256: digest(launcherBody),
+      entrypoint,
+      node: {
+        path: process.execPath,
+        version: 'v22.23.1',
+        sha256: digest(fs.readFileSync(process.execPath)),
+      },
+      fileCount: files.length,
+      installedAt: new Date().toISOString(),
+    });
+
+    const releaseRoot = path.join(root, 'release-root');
+    const productionBase = path.join(releaseRoot, 'production');
+    const stagingBase = path.join(releaseRoot, 'staging');
+    const productionRuntime = path.join(
+      productionBase,
+      'releases',
+      `previous-${'a'.repeat(12)}`,
+    );
+    const stagingRuntime = path.join(
+      stagingBase,
+      'releases',
+      `staging-${'b'.repeat(12)}`,
+    );
+    fs.mkdirSync(productionRuntime, { recursive: true, mode: 0o755 });
+    fs.mkdirSync(stagingRuntime, { recursive: true, mode: 0o755 });
+    fs.chmodSync(releaseRoot, 0o755);
+    for (const base of [productionBase, stagingBase]) {
+      fs.chmodSync(base, 0o1770);
+      fs.chmodSync(path.join(base, 'releases'), 0o750);
+    }
+    const runtimeIdentities = {
+      production: {
+        runtimeSha: 'a'.repeat(40),
+        artifactDigest: 'e'.repeat(64),
+        installedRuntimeDigest: 'f'.repeat(64),
+      },
+      staging: {
+        runtimeSha: 'b'.repeat(40),
+        artifactDigest: 'c'.repeat(64),
+        installedRuntimeDigest: 'd'.repeat(64),
+      },
+    };
+    for (const [role, base, runtime] of [
+      ['production', productionBase, productionRuntime],
+      ['staging', stagingBase, stagingRuntime],
+    ] as const) {
+      writeJson(path.join(runtime, '.complete.json'), {
+        runtimeSha: runtimeIdentities[role].runtimeSha,
+        artifactDigest: runtimeIdentities[role].artifactDigest,
+      }, 0o440);
+      writeJson(path.join(runtime, '.nexus-installed-runtime.json'), {
+        aggregateDigest: runtimeIdentities[role].installedRuntimeDigest,
+      }, 0o440);
+      fs.chmodSync(runtime, 0o550);
+      fs.symlinkSync(runtime, path.join(base, 'current'));
+    }
+    const directoryIdentity = (directory: string) => {
+      const stat = fs.lstatSync(directory, { bigint: true });
+      return {
+        path: directory,
+        dev: String(stat.dev),
+        ino: String(stat.ino),
+      };
+    };
+    const releaseRootIdentity = directoryIdentity(releaseRoot);
+    const filesystem = {
+      production: {
+        releaseRoot: releaseRootIdentity,
+        base: directoryIdentity(productionBase),
+        releases: directoryIdentity(path.join(productionBase, 'releases')),
+      },
+      staging: {
+        releaseRoot: releaseRootIdentity,
+        base: directoryIdentity(stagingBase),
+        releases: directoryIdentity(path.join(stagingBase, 'releases')),
+      },
+    };
+    const source = {
+      production: {
+        base: '/home/dominguez/telegram-hub-bot',
+        ...runtimeIdentities.production,
+      },
+      staging: {
+        base: '/home/dominguez/telegram-hub-bot-staging',
+        ...runtimeIdentities.staging,
+      },
+    };
+    const runtime = {
+      production: productionRuntime,
+      staging: stagingRuntime,
+    };
+    const readinessSha256 = {
+      production: '1'.repeat(64),
+      staging: '2'.repeat(64),
+    };
+    const migrationId = '12345678-1234-4123-8123-123456789abc';
+    const now = Date.now();
+    const drillPayload = {
+      schema: 'nexus.release-layout-fault-drill.v1',
+      migrationId,
+      completedAt: new Date(now - 60_000).toISOString(),
+      maximumRecoverySeconds: 120,
+      source,
+      scenarios: [
+        'failed_health_check',
+        'host_reboot_during_migration',
+        'ssh_disconnect_after_pm2_stop',
+      ].map((scenario, index) => ({
+        id: scenario,
+        status: 'passed',
+        resultSha256: String(index + 3).repeat(64),
+      })),
+    };
+    const layoutDrill = path.join(root, 'layout-migration-fault-drill-envelope.v1.json');
+    const layoutDrillBody = writeJson(
+      layoutDrill,
+      envelope('fault-drill', drillPayload),
+    );
+    const requestPayload = {
+      schema: 'nexus.release-layout-migration-request.v1',
+      migrationId,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60 * 60_000).toISOString(),
+      ownerAuthorization: 'explicit',
+      source,
+      destination: {
+        releaseRoot: '/srv/nexus-release',
+        production: '/srv/nexus-release/production',
+        staging: '/srv/nexus-release/staging',
+      },
+      pm2AttestationSha256: digest(pm2AttestationBody),
+      faultDrillEnvelopeSha256: digest(layoutDrillBody),
+    };
+    const layoutRequest = path.join(root, 'layout-migration-request-envelope.v1.json');
+    const layoutRequestBody = writeJson(
+      layoutRequest,
+      envelope('request', requestPayload),
+    );
+    const common = {
+      migrationId,
+      requestEnvelopeSha256: digest(layoutRequestBody),
+      faultDrillEnvelopeSha256: digest(layoutDrillBody),
+      pm2AttestationSha256: digest(pm2AttestationBody),
+      source,
+      runtime,
+      filesystem,
+      pm2DumpSha256: '6'.repeat(64),
+      readinessSha256,
+    };
+    const layoutTerminal = path.join(root, 'layout-migration-terminal.v1.json');
+    const layoutTerminalBody = writeJson(layoutTerminal, {
+      schema: 'nexus.release-layout-migration-terminal-journal.v1',
+      phase: 'completed',
+      ...common,
+    });
+    const layoutResult = path.join(root, 'layout-migration-result.v1.json');
+    const layoutResultBody = writeJson(layoutResult, {
+      schema: 'nexus.release-layout-migration-result.v1',
+      phase: 'passed',
+      ...common,
+      terminalJournalSha256: digest(layoutTerminalBody),
+    });
+    const layoutAttestation = path.join(root, 'layout-migration.v1.json');
+    writeJson(layoutAttestation, {
+      schema: 'nexus.release-layout-migration.v1',
+      phase: 'passed',
+      releaseRoot,
+      productionBase,
+      stagingBase,
+      previous: {
+        production: '/home/dominguez/telegram-hub-bot',
+        staging: '/home/dominguez/telegram-hub-bot-staging',
+      },
+      soakSeconds: 60,
+      requestEnvelopeSha256: digest(layoutRequestBody),
+      faultDrillEnvelopeSha256: digest(layoutDrillBody),
+      pm2AttestationSha256: digest(pm2AttestationBody),
+      terminalJournalSha256: digest(layoutTerminalBody),
+      resultSha256: digest(layoutResultBody),
+      pm2DumpSha256: '6'.repeat(64),
+      production: {
+        currentRuntime: productionRuntime,
+        ...runtimeIdentities.production,
+        filesystem: filesystem.production,
+      },
+      staging: {
+        currentRuntime: stagingRuntime,
+        ...runtimeIdentities.staging,
+        filesystem: filesystem.staging,
+      },
+      readinessSha256,
+      completedAt: new Date(now).toISOString(),
+    });
+    const stagingBroker = path.join(root, 'bin', 'staging-attestation-broker');
+    fs.writeFileSync(stagingBroker, `#!/usr/bin/env bash
+set -euo pipefail
+[ "$#" -eq 1 ] && [ "$1" = recover-all ] || {
+  printf 'unexpected staging broker fixture invocation: %s\\n' "$*" >&2
+  exit 64
+}
+`, { mode: 0o755 });
+    cleanupV3ControlFixtures = () => {
+      for (const runtimePath of [productionRuntime, stagingRuntime]) {
+        if (fs.existsSync(runtimePath)) fs.chmodSync(runtimePath, 0o750);
+      }
+    };
+
+    return {
+      NEXUS_PROMOTION_WORKER_USER: os.userInfo().username,
+      NEXUS_PROMOTION_RELEASE_ROOT: releaseRoot,
+      NEXUS_PROMOTION_PRODUCTION_BASE: productionBase,
+      NEXUS_PROMOTION_STAGING_BASE: stagingBase,
+      NEXUS_PROMOTION_LAYOUT_ATTESTATION: layoutAttestation,
+      NEXUS_PROMOTION_LAYOUT_RESULT: layoutResult,
+      NEXUS_PROMOTION_LAYOUT_TERMINAL_JOURNAL: layoutTerminal,
+      NEXUS_PROMOTION_LAYOUT_REQUEST: layoutRequest,
+      NEXUS_PROMOTION_LAYOUT_DRILL: layoutDrill,
+      NEXUS_PROMOTION_LAYOUT_AUTH_BIN: path.resolve(
+        'scripts/release-layout-authorization.mjs',
+      ),
+      NEXUS_PROMOTION_PM2_ATTESTATION: pm2Attestation,
+      NEXUS_PROMOTION_PM2_BIN: launcher,
+      NEXUS_PROMOTION_NODE_BIN: process.execPath,
+      NEXUS_PROMOTION_PM2_TRUSTED_LOCK: trustedLock,
+      NEXUS_PROMOTION_PM2_INSTALL_JOURNAL: path.join(
+        root,
+        'pm2-install-in-progress.absent',
+      ),
+      NEXUS_PROMOTION_STAGING_BROKER: stagingBroker,
+      NEXUS_PROMOTION_SELECTOR_SWITCH: path.resolve(
+        'scripts/remote-release-selector-switch.py',
+      ),
+    };
+  }
+
+  function hardenSelectorFixture(
+    fixtureRoot: string,
+    runtimes: string[],
+  ) {
+    const productionBase = path.join(fixtureRoot, 'production');
+    fs.chmodSync(fixtureRoot, 0o755);
+    fs.chmodSync(productionBase, 0o1770);
+    fs.chmodSync(path.join(productionBase, 'releases'), 0o750);
+    for (const runtimePath of runtimes) {
+      fs.chmodSync(runtimePath, 0o550);
+      selectorFixtureRuntimes.push(runtimePath);
+    }
+  }
+
   function runGovernedTerminalRetryFixture(options: {
     outcome: 'failed_before_stop' | 'recovered' | 'recovery_failed';
     recoverySeconds?: number;
@@ -321,8 +692,8 @@ process.stdout.write(JSON.stringify({irreversibleChangedMigrations:[],reviewEvid
     const predecessorArtifactDigest = 'e'.repeat(64);
     const predecessorInstalledRuntimeDigest = 'f'.repeat(64);
     const server = 'ServerDominguez';
-    const stagingBase = '/home/dominguez/staging';
-    const productionBase = '/home/dominguez/production';
+    const stagingBase = '/srv/nexus-release/staging';
+    const productionBase = '/srv/nexus-release/production';
     const targetVersion = '4.14.231';
     const targetRuntime = `${productionBase}/releases/${targetSha}-${artifactDigest.slice(0, 12)}`;
     const predecessorRuntime = `${productionBase}/releases/previous-${predecessorSha.slice(0, 12)}`;
@@ -482,7 +853,7 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "$FIXTURE_SSH_LOG"
 args="$*"
 if [[ "$args" == *"sudo -n $FIXTURE_CONTROL version"* ]]; then
-  printf '%s\\n' nexus-release-promotion-control.v2
+  printf '%s\\n' nexus-release-promotion-control.v3
   exit 0
 fi
 if [[ "$args" == *"sudo -n $FIXTURE_CONTROL status $FIXTURE_OLD_ID"* ]]; then
@@ -614,6 +985,7 @@ exit 0
     privateKeyPath = path.join(root, 'owner-private.pem');
     systemctlLog = path.join(root, 'systemctl.log');
     systemctlActive = path.join(root, 'systemctl.active');
+    selectorFixtureRuntimes = [];
     fs.writeFileSync(path.join(root, 'release-sonar.lock'), '', { mode: 0o660 });
     const pair = generateKeyPairSync('ed25519');
     fs.writeFileSync(privateKeyPath, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
@@ -632,6 +1004,7 @@ case "$format" in
   %g) native=%g ;;
   %s) native=%z ;;
   %U:%G) native=%Su:%Sg ;;
+  %a:%h) native=%Lp:%l ;;
   %u:%g:%a) native=%u:%g:%Lp ;;
   %U:%G:%a) native=%Su:%Sg:%Lp ;;
   %U:%G:%a:%h) native=%Su:%Sg:%Lp:%l ;;
@@ -666,11 +1039,18 @@ fi
 while [ $# -gt 0 ]; do case "$1" in --signal=*|--kill-after=*|[0-9]*s) shift ;; *) break ;; esac; done
 exec "$@"
 `, { mode: 0o755 });
+    v3ControlFixtureEnv = writeV3ControlFixtures();
     writeRequest();
     signRequest();
   });
 
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(() => {
+    for (const runtimePath of selectorFixtureRuntimes) {
+      if (fs.existsSync(runtimePath)) fs.chmodSync(runtimePath, 0o750);
+    }
+    cleanupV3ControlFixtures();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 
   function request(overrides: Record<string, unknown> = {}) {
     const createdAt = new Date();
@@ -680,15 +1060,15 @@ exec "$@"
       createdAt: createdAt.toISOString(),
       expiresAt: new Date(createdAt.getTime() + 30 * 60_000).toISOString(),
       ownerAuthorization: 'explicit',
-      productionBase: '/home/dominguez/telegram-hub-bot',
+      productionBase: '/srv/nexus-release/production',
       predecessor: {
-        runtime: '/home/dominguez/telegram-hub-bot/releases/previous-aaaaaaaaaaaa',
+        runtime: '/srv/nexus-release/production/releases/previous-aaaaaaaaaaaa',
         sha: 'a'.repeat(40),
         artifactDigest: 'e'.repeat(64),
         installedRuntimeDigest: 'f'.repeat(64),
       },
       target: {
-        runtime: '/home/dominguez/telegram-hub-bot/releases/target-bbbbbbbbbbbb',
+        runtime: '/srv/nexus-release/production/releases/target-bbbbbbbbbbbb',
         sha: 'b'.repeat(40),
         sentryRelease: 'b'.repeat(40),
         artifactDigest: 'c'.repeat(64),
@@ -739,6 +1119,7 @@ exec "$@"
   function env(extra: NodeJS.ProcessEnv = {}) {
     return {
       ...process.env,
+      ...v3ControlFixtureEnv,
       NEXUS_RELEASE_TEST_MODE: '1',
       NEXUS_PROMOTION_STATE_ROOT: stateRoot,
       NEXUS_PROMOTION_SYSTEMCTL_BIN: path.join(root, 'bin', 'systemctl'),
@@ -788,6 +1169,10 @@ exec "$@"
   });
 
   it('launches one signed immutable request atomically and reconciles an identical retry', () => {
+    const pm2Ready = run(['assert-root-pm2-ready']);
+    expect(pm2Ready.status, pm2Ready.stderr).toBe(0);
+    const layoutReady = run(['assert-layout-ready']);
+    expect(layoutReady.status, `${root}\n${layoutReady.stderr}`).toBe(0);
     const first = run(['launch', envelopePath]);
     expect(first.status, first.stderr).toBe(0);
     const firstBody = JSON.parse(first.stdout);
@@ -806,7 +1191,7 @@ exec "$@"
     expect(run(['assert-idle']).status).toBe(73);
   });
 
-  it('reattaches non-blockingly after reboot before recovery intent is armed', () => {
+  it('reconciles synchronously after reboot before recovery intent is armed', () => {
     const launch = run(['launch', envelopePath]);
     expect(launch.status, launch.stderr).toBe(0);
     const authoritative = path.join(stateRoot, 'transactions', id, 'state');
@@ -826,14 +1211,17 @@ exec "$@"
     expect(recovered.status, recovered.stderr).toBe(0);
     const unitName = `nexus-release-promotion@${id}.service`;
     const lines = fs.readFileSync(systemctlLog, 'utf8').trim().split('\n');
-    expect(lines.filter((line) => line === `start --no-block ${unitName}`)).toHaveLength(2);
-    expect(lines).not.toContain(`start ${unitName}`);
+    expect(lines.filter((line) => line === `start --no-block ${unitName}`)).toHaveLength(1);
+    expect(lines).toContain(`start ${unitName}`);
     expect(fs.existsSync(path.join(stateRoot, 'transactions', id, 'control', 'recover')))
       .toBe(false);
     expect(fs.existsSync(path.join(stateRoot, 'active.json'))).toBe(true);
     expect(JSON.parse(fs.readFileSync(timingPath, 'utf8'))).toEqual(staleTiming);
-    expect(fs.existsSync(path.join(authoritative, 'journal.json'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')).status)
+      .toBe('recovered');
     expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+    expect(fs.existsSync(path.join(stateRoot, 'boot-recovery-in-progress.v1.json')))
+      .toBe(true);
   });
 
   it('relaunches only the same authoritative transaction when DR escrow is pending', () => {
@@ -891,9 +1279,13 @@ exec "$@"
     const lines = fs.readFileSync(systemctlLog, 'utf8').trim().split('\n');
     expect(lines).toContain(`reset-failed nexus-release-promotion@${id}.service`);
     expect(lines.filter((line) => line === `start --no-block nexus-release-promotion@${id}.service`))
-      .toHaveLength(2);
+      .toHaveLength(1);
+    expect(lines).toContain(`start nexus-release-promotion@${id}.service`);
     expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')).status)
-      .toBe('escrow_pending');
+      .toBe('recovered');
+    expect(fs.existsSync(path.join(stateRoot, 'active.json'))).toBe(true);
+    expect(fs.existsSync(path.join(stateRoot, 'boot-recovery-in-progress.v1.json')))
+      .toBe(true);
   });
 
   it('rejects forged, expired, unsigned, and non-exact-soak owner authority', () => {
@@ -915,6 +1307,8 @@ exec "$@"
     writeRawEnvelope(JSON.parse(fs.readFileSync(requestPath, 'utf8')));
     expect(run(['launch', envelopePath]).status).toBe(77);
     expect(fs.existsSync(path.join(stateRoot, 'active.json'))).toBe(false);
+    expect(fs.existsSync(path.join(stateRoot, 'boot-recovery-in-progress.v1.json')))
+      .toBe(false);
 
     const missingPredecessorIdentity = request();
     delete (missingPredecessorIdentity.predecessor as { artifactDigest?: string }).artifactDigest;
@@ -922,6 +1316,17 @@ exec "$@"
     const missingIdentity = run(['launch', envelopePath]);
     expect(missingIdentity.status).toBe(77);
     expect(missingIdentity.stderr).toContain('verification failed');
+
+    const legacyProduction = request();
+    legacyProduction.productionBase = '/home/dominguez/telegram-hub-bot';
+    (legacyProduction.predecessor as { runtime: string }).runtime =
+      '/home/dominguez/telegram-hub-bot/releases/previous-aaaaaaaaaaaa';
+    (legacyProduction.target as { runtime: string }).runtime =
+      '/home/dominguez/telegram-hub-bot/releases/target-bbbbbbbbbbbb';
+    writeRawEnvelope(legacyProduction);
+    const legacyPath = run(['launch', envelopePath]);
+    expect(legacyPath.status).toBe(77);
+    expect(legacyPath.stderr).toContain('verification failed');
   });
 
   it('rejects a signed envelope for request A when the stored request is replaced with request B', () => {
@@ -1007,7 +1412,9 @@ exit 99
     const lines = fs.readFileSync(systemctlLog, 'utf8').trim().split('\n');
     expect(lines).toContain(`start nexus-release-promotion@${id}.service`);
     expect(lines.some((line) => line.includes(stray))).toBe(false);
-    expect(fs.existsSync(path.join(stateRoot, 'active.json'))).toBe(false);
+    expect(fs.existsSync(path.join(stateRoot, 'active.json'))).toBe(true);
+    expect(fs.existsSync(path.join(stateRoot, 'boot-recovery-in-progress.v1.json')))
+      .toBe(true);
   });
 
   it('fails closed before worker execution when the durable release/Sonar flock is unavailable', () => {
@@ -1179,8 +1586,8 @@ printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-comp
     fs.writeFileSync(path.join(fixture, 'bin', 'pm2'), `#!/usr/bin/env bash
 if [ -n "\${RECOVERY_CALLED:-}" ] && [ -f "$RECOVERY_CALLED" ]; then
   if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
-    { name: 'nexus-hub', pm2_env: { status: 'online', pm_cwd: previous, NEXUS_RELEASE_SHA: 'a'.repeat(40) } },
-    { name: 'content-engine', pm2_env: { status: 'online', pm_cwd: `${previous}/content-engine`, NEXUS_RELEASE_SHA: 'a'.repeat(40) } },
+    { name: 'nexus-hub', pid: 1, pm2_env: { status: 'online', pm_cwd: previous, pm_exec_path: `${previous}/dist/index.js`, exec_interpreter: 'node', NEXUS_RELEASE_SHA: 'a'.repeat(40), SENTRY_RELEASE: 'a'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
+    { name: 'content-engine', pid: 2, pm2_env: { status: 'online', pm_cwd: `${previous}/content-engine`, pm_exec_path: `${previous}/content-engine/.venv/bin/python3.12`, exec_interpreter: 'none', NEXUS_RELEASE_SHA: 'a'.repeat(40), SENTRY_RELEASE: 'a'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
   ])}'; fi
   exit 0
 fi
@@ -1189,8 +1596,8 @@ if [ -n "\${CANDIDATE_DEGRADE_MARKER:-}" ] && [ -f "$CANDIDATE_DEGRADE_MARKER" ]
   exit 0
 fi
 if [ "\${1:-}" = jlist ]; then printf '%s\n' '${JSON.stringify([
-  { name: 'nexus-hub', pm2_env: { status: 'online', pm_cwd: target, NEXUS_RELEASE_SHA: 'b'.repeat(40), SENTRY_RELEASE: 'b'.repeat(40) } },
-  { name: 'content-engine', pm2_env: { status: 'online', pm_cwd: `${target}/content-engine`, NEXUS_RELEASE_SHA: 'b'.repeat(40), SENTRY_RELEASE: 'b'.repeat(40) } },
+  { name: 'nexus-hub', pid: 3, pm2_env: { status: 'online', pm_cwd: target, pm_exec_path: `${target}/dist/index.js`, exec_interpreter: 'node', NEXUS_RELEASE_SHA: 'b'.repeat(40), SENTRY_RELEASE: 'b'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
+  { name: 'content-engine', pid: 4, pm2_env: { status: 'online', pm_cwd: `${target}/content-engine`, pm_exec_path: `${target}/content-engine/.venv/bin/python3.12`, exec_interpreter: 'none', NEXUS_RELEASE_SHA: 'b'.repeat(40), SENTRY_RELEASE: 'b'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
 ])}'; fi
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(fixture, 'bin', 'curl'), `#!/usr/bin/env bash
@@ -1202,6 +1609,11 @@ case "$url" in
   *) exit 1 ;;
 esac
 `, { mode: 0o755 });
+    fs.writeFileSync(
+      path.join(fixture, 'bin', 'sleep'),
+      '#!/usr/bin/env bash\nexit 0\n',
+      { mode: 0o755 },
+    );
     const backups: string[] = [];
     for (let index = 0; index < 11; index += 1) {
       const file = path.join(backupDir, `v4.14.${200 + index}.tar.gz`);
@@ -1297,6 +1709,7 @@ if [ "\${1:-}" = worker-recover ]; then
 fi
 exec bash ${JSON.stringify(runner)} "$@"
 `, { mode: 0o755 });
+    hardenSelectorFixture(fixture, [previous, target]);
 
     const degraded = spawnSync('bash', [broker, 'run', id], {
       encoding: 'utf8',
@@ -1664,8 +2077,8 @@ fi
     const authoritativeArmed = path.join(stateRoot, 'transactions', id, 'state', 'recovery-armed');
     const pm2Log = path.join(fixture, 'pm2.log');
     const pm2Rows = JSON.stringify([
-      { name: 'nexus-hub', pid: 1, pm2_env: { status: 'online', pm_cwd: previous, NEXUS_RELEASE_SHA: 'a'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
-      { name: 'content-engine', pid: 2, pm2_env: { status: 'online', pm_cwd: `${previous}/content-engine`, NEXUS_RELEASE_SHA: 'a'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
+      { name: 'nexus-hub', pid: 1, pm2_env: { status: 'online', pm_cwd: previous, pm_exec_path: `${previous}/dist/index.js`, exec_interpreter: 'node', NEXUS_RELEASE_SHA: 'a'.repeat(40), SENTRY_RELEASE: 'a'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
+      { name: 'content-engine', pid: 2, pm2_env: { status: 'online', pm_cwd: `${previous}/content-engine`, pm_exec_path: `${previous}/content-engine/.venv/bin/python3.12`, exec_interpreter: 'none', NEXUS_RELEASE_SHA: 'a'.repeat(40), SENTRY_RELEASE: 'a'.repeat(40), restart_time: 0, unstable_restarts: 0 } },
     ]);
     fs.writeFileSync(path.join(bin, 'pm2'), `#!/usr/bin/env bash
 set -euo pipefail
@@ -1690,6 +2103,7 @@ if [[ " $* " == *"8200/health"* ]]; then printf '{"status":"healthy","server":{"
 while [ $# -gt 0 ]; do case "$1" in --signal=*|--kill-after=*|[0-9]*s) shift ;; *) break ;; esac; done
 exec "$@"
 `, { mode: 0o755 });
+    hardenSelectorFixture(fixture, [previous, target]);
 
     const result = spawnSync('bash', [broker, 'run', id], {
       encoding: 'utf8',
@@ -1974,12 +2388,16 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     const service = fs.readFileSync(unit, 'utf8');
     const recovery = fs.readFileSync(recoveryUnit, 'utf8');
     const gate = fs.readFileSync(migrationGate, 'utf8');
+    const selectorSource = fs.readFileSync(
+      path.resolve('scripts/remote-release-selector-switch.py'),
+      'utf8',
+    );
     const backupSource = fs.readFileSync(
       path.resolve('scripts/remote-create-release-backup.sh'),
       'utf8',
     );
 
-    expect(clientSource).toContain('nexus-release-promotion-control.v2');
+    expect(clientSource).toContain('nexus-release-promotion-control.v3');
     expect(clientSource).toContain('sign-request');
     expect(clientSource).not.toContain('sign-decision');
     expect(clientSource).not.toContain('awaiting_local_gate');
@@ -2102,16 +2520,42 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
       rootCandidateProofStart,
     );
     expect(brokerSource.slice(rootCandidateProofStart, rootCandidateProofEnd))
-      .toContain('"$TIMEOUT_BIN" 5s "$PM2_BIN" jlist');
-    expect(brokerSource.slice(rootCandidateProofStart, rootCandidateProofEnd))
+      .toContain('verify_exact_pm2_stable "$TARGET_RUNTIME" "$TARGET_SHA"');
+    const pm2CaptureStart = brokerSource.indexOf('capture_pm2_jlist() {');
+    const exactPm2ProofStart = brokerSource.indexOf('verify_exact_pm2_stable() {');
+    const exactPm2ProofEnd = brokerSource.indexOf(
+      '\n}\n\nverify_root_selector()',
+      exactPm2ProofStart,
+    );
+    const pm2Capture = brokerSource.slice(pm2CaptureStart, exactPm2ProofStart);
+    const exactPm2Proof = brokerSource.slice(exactPm2ProofStart, exactPm2ProofEnd);
+    expect(pm2Capture).toContain('"$TIMEOUT_BIN" 5s "$PM2_BIN" jlist');
+    expect(pm2Capture)
       .toContain('"$TIMEOUT_BIN" 5s "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist');
+    expect(exactPm2Proof)
+      .toContain("['nexus-hub',runtime,`${runtime}/dist/index.js`,'node']");
+    expect(exactPm2Proof)
+      .toContain("['content-engine',`${runtime}/content-engine`,");
+    expect(exactPm2Proof)
+      .toContain("`${runtime}/content-engine/.venv/bin/python3.12`,'none']");
+    expect(exactPm2Proof)
+      .toContain('env.pm_exec_path!==executable||env.exec_interpreter!==interpreter');
+    expect(exactPm2Proof)
+      .toContain("||(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha||env.SENTRY_RELEASE!==sha");
     const selectorWriterStart = runnerSource.indexOf('atomic_switch_current() {');
     const selectorWriterEnd = runnerSource.indexOf(
       '\n}\n\nstart_predecessor()',
       selectorWriterStart,
     );
-    expect(runnerSource.slice(selectorWriterStart, selectorWriterEnd))
-      .toContain("descriptor=fs.openSync(productionBase,'r')");
+    const selectorWriter = runnerSource.slice(selectorWriterStart, selectorWriterEnd);
+    expect(selectorWriter)
+      .toContain('"$PYTHON_BIN" "$SELECTOR_SWITCH" switch');
+    expect(selectorWriter)
+      .toContain('--role production --release-root "$(dirname -- "$PROD_BASE")"');
+    expect(selectorWriter)
+      .toContain('--expected "$expected" --target "$target" --allow-test-owner');
+    expect(selectorSource).toContain('base_fd = os.open(base, open_flags)');
+    expect(selectorSource).toContain('dst_dir_fd=base_fd');
     const pm2SaveStart = runnerSource.indexOf('pm2_save_durable() {');
     const pm2SaveEnd = runnerSource.indexOf(
       '\n}\n\nverify_candidate_readiness_snapshot()',
@@ -2273,6 +2717,16 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(attestorSource).toContain('fs.chmodSync(base, 0o1770)');
     expect(attestorSource).toContain("fs.chmodSync(path.join(base, 'releases'), 0o750)");
     expect(fs.readFileSync(control, 'utf8')).toContain('prepare-runtime-target)');
+    expect(controlSource).toContain('VERSION="nexus-release-promotion-control.v3"');
+    expect(controlSource).toContain('prepare-staging-runtime-target)');
+    expect(controlSource).toContain('seal-staging-runtime)');
+    expect(controlSource).toContain('verify-staging-runtime)');
+    expect(controlSource).toContain("staging_binding_path()");
+    expect(controlSource).toContain("staging_recovery_path()");
+    expect(controlSource).toContain('nexus.trusted-staging-runtime-binding.v1');
+    expect(controlSource).toContain('"$TRUSTED_ATTESTOR" seal');
+    expect(controlSource).toContain('"$TRUSTED_ATTESTOR" verify');
+    expect(controlSource).toContain('"$RECOVERY_ATTESTOR" compute');
     expect(fs.readFileSync(control, 'utf8')).toContain('chown root:"$worker_group" "$base" "$base/releases"');
     expect(fs.readFileSync(path.resolve('scripts/release-operator.sh'), 'utf8')).toContain('release_acquire_remote_sonar_lock "$SERVER"');
     const releaseOperator = fs.readFileSync(path.resolve('scripts/release-operator.sh'), 'utf8');
@@ -2284,6 +2738,13 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(installSource).toContain('nexus-release-sonar-lock.conf');
     expect(installSource).toContain('root:dominguez:660');
     expect(installSource).toContain('nexus-release-promotion-control retry-escrow *');
+    expect(installSource).toContain('nexus-release-promotion-control prepare-staging-runtime-target *');
+    expect(installSource).toContain('nexus-release-promotion-control seal-staging-runtime *');
+    expect(installSource).toContain('nexus-release-promotion-control verify-staging-runtime *');
+    expect(installSource).toContain('/var/lib/nexus-release-promotion/staging');
+    expect(installSource).toContain(
+      'release-recovery-runtime-identity.mjs)" = root:root:644',
+    );
     const bootstrapJournal = installSource.indexOf(
       'nexus.release-promotion-bootstrap-journal.v1',
     );
@@ -2354,14 +2815,508 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     );
     expect(service).toContain('RestartPreventExitStatus=75 76');
     expect(service).not.toContain('network-online.target');
-    expect(recovery).toContain('Before=network.target network-online.target multi-user.target pm2-dominguez.service pm2-root.service');
+    expect(recovery).toContain(
+      'Before=network.target network-online.target multi-user.target pm2-dominguez.service',
+    );
+    expect(recovery).not.toContain('pm2-root.service');
     expect(recovery).toContain('TimeoutStartSec=300s');
     expect(recovery).toContain(
       'ConditionPathExists=!/var/lib/nexus-release-promotion/bootstrap-in-progress.v1',
     );
-    expect(installSource).toContain('pm2-dominguez.service pm2-root.service');
+    expect(installSource).toContain('systemctl mask pm2-root.service');
+    expect(installSource).toContain(
+      'pm2-dominguez must be the one enabled PM2 boot authority',
+    );
     expect(installSource).toContain('Requires=nexus-release-promotion-recovery.service');
     expect(installSource).toContain('After=nexus-release-promotion-recovery.service');
     expect(gate).toContain("'--approval-mode', 'promotion'");
+  });
+});
+describe('release layout authorization key handling', () => {
+  const roots: string[] = [];
+  const digest = (value: Buffer | string) =>
+    createHash('sha256').update(value).digest('hex');
+
+  afterEach(() => {
+    while (roots.length > 0) {
+      fs.rmSync(roots.pop()!, { recursive: true, force: true });
+    }
+  });
+
+  function writeJson(file: string, value: unknown) {
+    const body = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+    fs.writeFileSync(file, body, { mode: 0o600 });
+    return body;
+  }
+
+  function runLayoutAuthorization(args: string[]) {
+    return spawnSync(process.execPath, [layoutAuthorization, ...args], {
+      encoding: 'utf8',
+    });
+  }
+
+  function createLayoutAuthorityFixture() {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-layout-authority-')),
+    );
+    roots.push(root);
+    const pair = generateKeyPairSync('ed25519');
+    const privateKey = path.join(root, 'owner-private.pem');
+    const publicKey = path.join(root, 'owner-public.pem');
+    fs.writeFileSync(
+      privateKey,
+      pair.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(
+      publicKey,
+      pair.publicKey.export({ type: 'spki', format: 'pem' }),
+      { mode: 0o600 },
+    );
+    const migrationId = 'abcdef12-3456-4789-8abc-def012345678';
+    const source = {
+      production: {
+        base: '/home/dominguez/telegram-hub-bot',
+        runtimeSha: 'a'.repeat(40),
+        artifactDigest: 'b'.repeat(64),
+        installedRuntimeDigest: 'c'.repeat(64),
+      },
+      staging: {
+        base: '/home/dominguez/telegram-hub-bot-staging',
+        runtimeSha: 'd'.repeat(40),
+        artifactDigest: 'e'.repeat(64),
+        installedRuntimeDigest: 'f'.repeat(64),
+      },
+    };
+    const now = Date.now();
+    const drillInput = path.join(root, 'drill.json');
+    writeJson(drillInput, {
+      schema: 'nexus.release-layout-fault-drill.v1',
+      migrationId,
+      completedAt: new Date(now - 60_000).toISOString(),
+      maximumRecoverySeconds: 120,
+      source,
+      scenarios: [
+        'failed_health_check',
+        'host_reboot_during_migration',
+        'ssh_disconnect_after_pm2_stop',
+      ].map((id, index) => ({
+        id,
+        status: 'passed',
+        resultSha256: String(index + 1).repeat(64),
+      })),
+    });
+    const drillEnvelope = path.join(root, 'drill.envelope.json');
+    const drillSigned = runLayoutAuthorization([
+      'sign-drill',
+      '--input',
+      drillInput,
+      '--private-key',
+      privateKey,
+      '--output',
+      drillEnvelope,
+    ]);
+    expect(drillSigned.status, drillSigned.stderr).toBe(0);
+    const requestInput = path.join(root, 'request.json');
+    writeJson(requestInput, {
+      schema: 'nexus.release-layout-migration-request.v1',
+      migrationId,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60 * 60_000).toISOString(),
+      ownerAuthorization: 'explicit',
+      source,
+      destination: {
+        releaseRoot: '/srv/nexus-release',
+        production: '/srv/nexus-release/production',
+        staging: '/srv/nexus-release/staging',
+      },
+      pm2AttestationSha256: '9'.repeat(64),
+      faultDrillEnvelopeSha256: digest(fs.readFileSync(drillEnvelope)),
+    });
+    const requestEnvelope = path.join(root, 'request.envelope.json');
+    const requestSigned = runLayoutAuthorization([
+      'sign-request',
+      '--input',
+      requestInput,
+      '--private-key',
+      privateKey,
+      '--output',
+      requestEnvelope,
+    ]);
+    expect(requestSigned.status, requestSigned.stderr).toBe(0);
+    return {
+      drillEnvelope,
+      drillInput,
+      privateKey,
+      publicKey,
+      requestEnvelope,
+      requestInput,
+      root,
+    };
+  }
+
+  it('signs and verifies exact layout authority with real Ed25519 PEM keys', () => {
+    const fixture = createLayoutAuthorityFixture();
+    const verified = runLayoutAuthorization([
+      'verify',
+      '--request-envelope',
+      fixture.requestEnvelope,
+      '--fault-drill-envelope',
+      fixture.drillEnvelope,
+      '--public-key',
+      fixture.publicKey,
+    ]);
+    expect(verified.status, verified.stderr).toBe(0);
+    expect(JSON.parse(verified.stdout)).toMatchObject({
+      ok: true,
+      schema: 'nexus.release-layout-authority-verification.v1',
+    });
+
+    const tampered = JSON.parse(
+      fs.readFileSync(fixture.requestEnvelope, 'utf8'),
+    );
+    tampered.payload.destination.production = '/home/dominguez/telegram-hub-bot';
+    fs.writeFileSync(
+      fixture.requestEnvelope,
+      `${JSON.stringify(tampered, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    expect(runLayoutAuthorization([
+      'verify',
+      '--request-envelope',
+      fixture.requestEnvelope,
+      '--fault-drill-envelope',
+      fixture.drillEnvelope,
+      '--public-key',
+      fixture.publicKey,
+    ]).status).not.toBe(0);
+  });
+
+  it('rejects symlinked private and public key inputs', () => {
+    const fixture = createLayoutAuthorityFixture();
+    const privateLink = path.join(fixture.root, 'private-link.pem');
+    const publicLink = path.join(fixture.root, 'public-link.pem');
+    fs.symlinkSync(fixture.privateKey, privateLink);
+    fs.symlinkSync(fixture.publicKey, publicLink);
+    const output = path.join(fixture.root, 'symlinked-key-output.json');
+    expect(runLayoutAuthorization([
+      'sign-drill',
+      '--input',
+      fixture.drillInput,
+      '--private-key',
+      privateLink,
+      '--output',
+      output,
+    ]).status).not.toBe(0);
+    expect(fs.existsSync(output)).toBe(false);
+    expect(runLayoutAuthorization([
+      'verify',
+      '--request-envelope',
+      fixture.requestEnvelope,
+      '--fault-drill-envelope',
+      fixture.drillEnvelope,
+      '--public-key',
+      publicLink,
+    ]).status).not.toBe(0);
+  });
+
+  it('rejects oversized private and public key inputs before parsing', () => {
+    const fixture = createLayoutAuthorityFixture();
+    const oversized = path.join(fixture.root, 'oversized.pem');
+    fs.writeFileSync(oversized, Buffer.alloc(32 * 1024 + 1, 0x61), {
+      mode: 0o600,
+    });
+    const output = path.join(fixture.root, 'oversized-key-output.json');
+    const privateResult = runLayoutAuthorization([
+      'sign-drill',
+      '--input',
+      fixture.drillInput,
+      '--private-key',
+      oversized,
+      '--output',
+      output,
+    ]);
+    expect(privateResult.status).not.toBe(0);
+    expect(privateResult.stderr).toContain(
+      'layout authority input is not a bounded single-link regular file',
+    );
+    expect(fs.existsSync(output)).toBe(false);
+    const publicResult = runLayoutAuthorization([
+      'verify',
+      '--request-envelope',
+      fixture.requestEnvelope,
+      '--fault-drill-envelope',
+      fixture.drillEnvelope,
+      '--public-key',
+      oversized,
+    ]);
+    expect(publicResult.status).not.toBe(0);
+    expect(publicResult.stderr).toContain(
+      'layout authority input is not a bounded single-link regular file',
+    );
+  });
+
+  it('rejects malformed private and public key bytes', () => {
+    const fixture = createLayoutAuthorityFixture();
+    const malformed = path.join(fixture.root, 'malformed.pem');
+    fs.writeFileSync(malformed, 'definitely-not-a-key\n', { mode: 0o600 });
+    const output = path.join(fixture.root, 'malformed-key-output.json');
+    expect(runLayoutAuthorization([
+      'sign-drill',
+      '--input',
+      fixture.drillInput,
+      '--private-key',
+      malformed,
+      '--output',
+      output,
+    ]).status).not.toBe(0);
+    expect(fs.existsSync(output)).toBe(false);
+    expect(runLayoutAuthorization([
+      'verify',
+      '--request-envelope',
+      fixture.requestEnvelope,
+      '--fault-drill-envelope',
+      fixture.drillEnvelope,
+      '--public-key',
+      malformed,
+    ]).status).not.toBe(0);
+  });
+});
+
+describe('promotion bootstrap archive self-binding', () => {
+  const installSource = fs.readFileSync(installer, 'utf8');
+  const archiveVerifier = installSource.match(
+    /# This proof completes before[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\n\nid "\$WORKER_USER"/,
+  )?.[1];
+  const sourceSha = 'a'.repeat(40);
+
+  function sha256(file: string): string {
+    return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  }
+
+  function createFixture() {
+    const temp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'nexus-promotion-bootstrap-'),
+    );
+    const sourceRoot = path.join(temp, 'source');
+    const scripts = path.join(sourceRoot, 'scripts');
+    const drOps = path.join(sourceRoot, 'ops', 'application-dr');
+    const archive = path.join(temp, 'source.tar.gz');
+    const verifier = path.join(temp, 'verify.py');
+    const layout = path.join(drOps, 'install-layout.tsv');
+    const installerSource = path.join(
+      scripts,
+      'remote-promotion-systemd-install.sh',
+    );
+    const promotionInput = path.join(scripts, 'promotion-input.sh');
+    const drInput = path.join(scripts, 'dr-input.sh');
+
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.mkdirSync(drOps, { recursive: true });
+    fs.writeFileSync(
+      layout,
+      '# source<TAB>absolute target<TAB>owner<TAB>mode\n' +
+        'scripts/dr-input.sh\t/usr/local/libexec/nexus-application-dr/dr-input.sh' +
+        '\troot:root\t0755\n',
+    );
+    fs.writeFileSync(installerSource, '#!/usr/bin/env bash\nexit 0\n');
+    fs.writeFileSync(promotionInput, '#!/usr/bin/env bash\necho promotion\n');
+    fs.writeFileSync(drInput, '#!/usr/bin/env bash\necho dr\n');
+    fs.writeFileSync(verifier, archiveVerifier!);
+
+    const buildArchive = (
+      options: {
+        comment?: string;
+        duplicate?: string;
+        missing?: string;
+        unsafeMember?: boolean;
+      } = {},
+    ) => {
+      const result = spawnSync(
+        'python3',
+        [
+          '-c',
+          [
+            'import io,pathlib,sys,tarfile',
+            'archive,root,comment,duplicate,missing,unsafe=sys.argv[1:]',
+            'root=pathlib.Path(root)',
+            'with tarfile.open(archive,"w:gz",format=tarfile.PAX_FORMAT,pax_headers={"comment":comment}) as output:',
+            '  for item in [root,*sorted(root.rglob("*"))]:',
+            '    relative=item.relative_to(root).as_posix()',
+            '    name="source" if relative=="." else "source/"+relative',
+            '    if relative==missing: continue',
+            '    output.add(item,arcname=name,recursive=False)',
+            '  if duplicate:',
+            '    output.add(root/duplicate,arcname="source/"+duplicate,recursive=False)',
+            '  if unsafe=="1":',
+            '    member=tarfile.TarInfo("source/../escape")',
+            '    member.size=1',
+            '    output.addfile(member,io.BytesIO(b"x"))',
+          ].join('\n'),
+          archive,
+          sourceRoot,
+          options.comment ?? sourceSha,
+          options.duplicate ?? '',
+          options.missing ?? '',
+          options.unsafeMember ? '1' : '0',
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      return sha256(archive);
+    };
+
+    const verify = (
+      expectedArchiveSha256: string,
+      declaredSourceSha = sourceSha,
+    ) =>
+      spawnSync(
+        'python3',
+        [
+          verifier,
+          archive,
+          sourceRoot,
+          declaredSourceSha,
+          expectedArchiveSha256,
+          layout,
+          installerSource,
+          'scripts/promotion-input.sh',
+        ],
+        { encoding: 'utf8' },
+      );
+
+    return {
+      archive,
+      buildArchive,
+      drInput,
+      remove: () => fs.rmSync(temp, { recursive: true, force: true }),
+      verify,
+    };
+  }
+
+  it('requires exact protected-main bootstrap arguments and verifies before mutation', () => {
+    const verifierStart = installSource.indexOf(
+      '# This proof completes before the bootstrap journal',
+    );
+    const journal = installSource.indexOf(
+      'BOOTSTRAP_JOURNAL="/var/lib/nexus-release-promotion/bootstrap-in-progress.v1"',
+    );
+    const firstStateWrite = installSource.indexOf(
+      'install -d -o root -g root -m 755',
+    );
+
+    expect(
+      spawnSync('bash', ['-n', installer], { encoding: 'utf8' }).status,
+    ).toBe(0);
+    expect(installSource).toContain('[ "$#" -eq 5 ]');
+    expect(installSource).toContain(
+      'EXPECTED_BOOTSTRAP_ROOT="$BOOTSTRAP_BASE/$SOURCE_SHA"',
+    );
+    expect(installSource).toContain(
+      '[ "$SOURCE_ROOT" = "$EXPECTED_BOOTSTRAP_ROOT/source" ]',
+    );
+    expect(installSource).toContain(
+      '[ "$SOURCE_ARCHIVE" = "$EXPECTED_BOOTSTRAP_ROOT/source.tar.gz" ]',
+    );
+    expect(installSource).toContain(
+      'installer must execute from the exact reviewed bootstrap source path',
+    );
+    expect(installSource).toContain(
+      'archive.pax_headers.get("comment") != source_sha',
+    );
+    expect(installSource).toContain('ops/application-dr/install-layout.tsv');
+    expect(installSource).toContain('duplicate archive member');
+    expect(installSource).toContain('required member is not regular');
+    expect(installSource).toContain('source/archive byte drift for');
+    expect(verifierStart).toBeGreaterThan(-1);
+    expect(journal).toBeGreaterThan(verifierStart);
+    expect(firstStateWrite).toBeGreaterThan(verifierStart);
+  });
+
+  it('rejects an archive changed after owner digest approval', () => {
+    expect(archiveVerifier).toBeTruthy();
+    const fixture = createFixture();
+    try {
+      const approved = fixture.buildArchive();
+      expect(fixture.verify(approved).status).toBe(0);
+      fs.appendFileSync(fixture.archive, 'tamper');
+      const result = fixture.verify(approved);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'archive digest does not match the owner-approved digest',
+      );
+    } finally {
+      fixture.remove();
+    }
+  });
+
+  it('rejects a wrong declared SHA or wrong Git PAX commit', () => {
+    const fixture = createFixture();
+    try {
+      const approved = fixture.buildArchive();
+      const wrongSha = fixture.verify(approved, 'b'.repeat(40));
+      expect(wrongSha.status).not.toBe(0);
+      expect(wrongSha.stderr).toContain(
+        'Git archive commit does not match protected-main source SHA',
+      );
+
+      const wrongPaxApproved = fixture.buildArchive({
+        comment: 'c'.repeat(40),
+      });
+      const wrongPax = fixture.verify(wrongPaxApproved);
+      expect(wrongPax.status).not.toBe(0);
+      expect(wrongPax.stderr).toContain(
+        'Git archive commit does not match protected-main source SHA',
+      );
+    } finally {
+      fixture.remove();
+    }
+  });
+
+  it('rejects missing, duplicate, unsafe, nonregular, and drifted privileged members', () => {
+    const fixture = createFixture();
+    try {
+      let approved = fixture.buildArchive({ missing: 'scripts/dr-input.sh' });
+      let result = fixture.verify(approved);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'missing required member source/scripts/dr-input.sh',
+      );
+
+      approved = fixture.buildArchive({
+        duplicate: 'scripts/promotion-input.sh',
+      });
+      result = fixture.verify(approved);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'duplicate archive member source/scripts/promotion-input.sh',
+      );
+
+      approved = fixture.buildArchive({ unsafeMember: true });
+      result = fixture.verify(approved);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('unsafe archive member source/../escape');
+
+      fs.unlinkSync(fixture.drInput);
+      fs.symlinkSync('promotion-input.sh', fixture.drInput);
+      approved = fixture.buildArchive();
+      result = fixture.verify(approved);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'required member is not regular: source/scripts/dr-input.sh',
+      );
+
+      fs.unlinkSync(fixture.drInput);
+      fs.writeFileSync(fixture.drInput, '#!/usr/bin/env bash\necho dr\n');
+      approved = fixture.buildArchive();
+      fs.writeFileSync(fixture.drInput, '#!/usr/bin/env bash\necho drifted\n');
+      result = fixture.verify(approved);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'source/archive byte drift for scripts/dr-input.sh',
+      );
+    } finally {
+      fixture.remove();
+    }
   });
 });

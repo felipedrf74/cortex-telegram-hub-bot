@@ -28,6 +28,59 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function atomicWritePrivateFile(output, body) {
+  const directory = path.dirname(output);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const directoryStat = fs.lstatSync(directory);
+  if (!directoryStat.isDirectory()
+      || directoryStat.isSymbolicLink()
+      || directoryStat.uid !== process.getuid()
+      || (directoryStat.mode & 0o077) !== 0) {
+    throw new Error('staging evidence output directory is unsafe');
+  }
+  let outputStat = null;
+  try {
+    outputStat = fs.lstatSync(output);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (outputStat && (!outputStat.isFile()
+      || outputStat.isSymbolicLink()
+      || outputStat.uid !== process.getuid()
+      || outputStat.nlink !== 1
+      || (outputStat.mode & 0o077) !== 0)) {
+    throw new Error('staging evidence output path is unsafe');
+  }
+  const temporary = path.join(
+    directory,
+    `.${path.basename(output)}.next.${process.pid}.${createHash('sha256')
+      .update(`${Date.now()}:${randomUUID()}`).digest('hex').slice(0, 16)}`,
+  );
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(descriptor, body);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporary, output);
+    fs.chmodSync(output, 0o600);
+    const directoryDescriptor = fs.openSync(directory, 'r');
+    try {
+      fs.fsyncSync(directoryDescriptor);
+    } finally {
+      fs.closeSync(directoryDescriptor);
+    }
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try {
+      fs.unlinkSync(temporary);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+}
+
 function resolveFile(name, fallback = '') {
   const value = valueOf(name, fallback);
   if (!value) throw new Error(`${name} is required`);
@@ -58,6 +111,9 @@ function matchesTrackedPublicKey(publicPem, relativePath) {
 
 function validateRequest(request, expectedRuntime = '') {
   if (request.schema !== 'nexus.staging-attestation-request.v1') throw new Error('staging request schema is invalid');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(request.requestId ?? '')) {
+    throw new Error('staging request id is invalid');
+  }
   if (!/^[0-9a-f]{40}$/.test(request.runtimeSha ?? '')) throw new Error('staging request runtime SHA is invalid');
   if (!/^[0-9a-f]{64}$/.test(request.artifactDigest ?? '')) throw new Error('staging request artifact digest is invalid');
   if (!/^[0-9a-f]{64}$/.test(request.releaseManifestSha256 ?? '')) throw new Error('release manifest digest is invalid');
@@ -69,23 +125,35 @@ function validateRequest(request, expectedRuntime = '') {
     throw new Error('domain smoke evidence is invalid');
   }
   if (expectedRuntime && request.runtimeSha !== expectedRuntime) throw new Error('staging request runtime SHA mismatch');
-  if (!request.requestId || !request.verifiedAt || !request.expiresAt
+  if (!request.verifiedAt || !request.expiresAt
       || Date.parse(request.expiresAt) <= Date.parse(request.verifiedAt)
       || Date.parse(request.expiresAt) <= Date.now()) {
     throw new Error('staging request lifetime is invalid or expired');
   }
-  if (!request.releaseDir?.startsWith('/home/dominguez/telegram-hub-bot-staging/releases/')) {
+  if (!request.releaseDir?.startsWith('/srv/nexus-release/staging/releases/')) {
     throw new Error('staging release directory is outside the governed root');
   }
   const services = request.remoteIdentity?.services;
   if (!Array.isArray(services) || services.length !== 2) throw new Error('PM2 identity evidence is incomplete');
   const expected = new Map([
-    ['nexus-hub-staging', request.releaseDir],
-    ['content-engine-staging', `${request.releaseDir}/content-engine`],
+    ['nexus-hub-staging', {
+      cwd: request.releaseDir,
+      executable: `${request.releaseDir}/dist/index.js`,
+      interpreter: 'node',
+    }],
+    ['content-engine-staging', {
+      cwd: `${request.releaseDir}/content-engine`,
+      executable: `${request.releaseDir}/content-engine/.venv/bin/python3.12`,
+      interpreter: 'none',
+    }],
   ]);
-  for (const [name, cwd] of expected) {
+  for (const [name, identity] of expected) {
     const service = services.find((entry) => entry?.name === name);
-    if (!service || service.status !== 'online' || service.cwd !== cwd || service.releaseSha !== request.runtimeSha) {
+    if (!service || service.status !== 'online' || service.cwd !== identity.cwd
+        || service.executable !== identity.executable
+        || service.interpreter !== identity.interpreter
+        || service.releaseSha !== request.runtimeSha
+        || service.sentryRelease !== request.runtimeSha) {
       throw new Error(`PM2 identity mismatch: ${name}`);
     }
   }
@@ -153,8 +221,7 @@ if (command === 'request') {
     expiresAt: new Date(now.getTime() + Number(valueOf('--expires-hours', '24')) * 3_600_000).toISOString(),
   };
   validateRequest(request);
-  fs.mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(output, `${JSON.stringify(request, null, 2)}\n`, { mode: 0o600 });
+  atomicWritePrivateFile(output, `${JSON.stringify(request, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ ok: true, request: output, requestId: request.requestId, payload: request }, null, 2)}\n`);
 } else if (command === 'validate-request') {
   const requestFile = resolveFile('--request');
@@ -176,8 +243,7 @@ if (command === 'request') {
     payload: request,
     signature: sign(null, Buffer.from(canonicalJson(request)), createPrivateKey(privatePem)).toString('base64'),
   };
-  fs.mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(output, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  atomicWritePrivateFile(output, `${JSON.stringify(envelope, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ ok: true, attestation: output, requestId: request.requestId }, null, 2)}\n`);
 } else if (command === 'validate-signed' || command === 'validate') {
   const attestationFile = resolveFile('--attestation');

@@ -60,7 +60,7 @@ const INTERFACE_VALUES = Object.freeze({
   promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
   restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
   promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-  controlVersion: 'nexus-release-promotion-control.v2',
+  controlVersion: 'nexus-release-promotion-control.v3',
   recoveryUnit: 'nexus-release-promotion-recovery.service',
 });
 

@@ -96,8 +96,8 @@ function runExpiredUnsignedResumeFixture(
   const binDir = join(fixture, 'bin');
   const requestDir = join(fixture, '.local', 'release', 'transactions');
   const serverLog = join(fixture, '.local', 'server.log');
-  const productionBase = '/home/dominguez/production';
-  const stagingBase = '/home/dominguez/staging';
+  const productionBase = '/srv/nexus-release/production';
+  const stagingBase = '/srv/nexus-release/staging';
   const server = 'fixture-server';
   const oldTransactionId = '20260723T120000Z-4321-abcdef123456';
   const artifactDigest = 'c'.repeat(64);
@@ -288,7 +288,7 @@ server="\${1:-}"; shift || true
 printf '%s\\n' "$*" >> "$NEXUS_TEST_SERVER_LOG"
 if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
   case "\${4:-}" in
-    version) printf 'nexus-release-promotion-control.v2\\n'; exit 0 ;;
+    version) printf 'nexus-release-promotion-control.v3\\n'; exit 0 ;;
     status)
       [ "\${5:-}" = "$NEXUS_TEST_OLD_TRANSACTION_ID" ] || exit 91
       case "$NEXUS_TEST_STATUS_MODE" in
@@ -313,6 +313,10 @@ if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
 fi
 if [ "$#" -eq 1 ] && [[ "$1" == for\\ p\\ in* ]]; then
   printf '/fake/pm2'
+  exit 0
+fi
+if [ "\${1:-}" = test ] && [ "\${2:-}" = -x ] \
+    && [ "\${3:-}" = /usr/local/bin/pm2 ]; then
   exit 0
 fi
 if [ "\${1:-}" = bash ] && [ "\${2:-}" = -s ]; then
@@ -377,7 +381,7 @@ exit 95
 }
 
 describe('exact production promotion operational safety', () => {
-  it('locks staging and rejects an already-active release before rsync', () => {
+  it('locks staging and permits an already-active release only through a bound resume before rsync', () => {
     const operator = source(RELEASE_OPERATOR);
     const staging = operator.indexOf('  staging)');
     const lock = operator.indexOf(
@@ -391,8 +395,14 @@ describe('exact production promotion operational safety', () => {
     expect(lock).toBeGreaterThan(staging);
     expect(activeGuard).toBeGreaterThan(lock);
     expect(rsync).toBeGreaterThan(activeGuard);
-    expect(operator.slice(activeGuard, rsync)).toContain('exit 75');
-    expect(operator.slice(activeGuard, rsync)).toContain('refusing to mutate it');
+    const activeBlock = operator.slice(activeGuard, rsync);
+    expect(activeBlock).toContain('if [ "$CHECKPOINT_BOUND" != true ]');
+    expect(activeBlock).toContain('already active without a bound coordinator checkpoint');
+    expect(activeBlock).toContain('exit 75');
+    expect(activeBlock).toContain('if [ "$ROOT_EVIDENCE_READY" = false ]');
+    expect(activeBlock).toContain('seal-staging-runtime');
+    expect(activeBlock).toContain('prepare-staging-runtime-target');
+    expect(activeBlock).toContain('sealed without the checkpointed root binding');
   });
 
   it('acquires the production lock before any copy or PM2 mutation path', () => {
@@ -885,7 +895,7 @@ printf 'parser_completed\\n'`],
     const fixture = mkdtempSync(join(tmpdir(), 'exact-promotion-raw-request-'));
     const requestPath = join(fixture, 'request.json');
     const transactionId = '20260723T120000Z-4321-abcdef123456';
-    const productionBase = '/home/dominguez/production';
+    const productionBase = '/srv/nexus-release/production';
     const predecessorRuntime = `${productionBase}/releases/previous-aaaaaaaaaaaa`;
     const predecessorSha = 'a'.repeat(40);
     const predecessorArtifactDigest = 'b'.repeat(64);
@@ -1037,7 +1047,7 @@ printf 'parser_completed\\n'`],
     const installedRuntimeDigest = 'd'.repeat(64);
     const recoveryRuntimeDigest = 'e'.repeat(64);
     const backupSha = 'f'.repeat(64);
-    const productionBase = '/home/dominguez/production';
+    const productionBase = '/srv/nexus-release/production';
     const exactBackup = '/home/dominguez/backups/nexushub/v4.14.231.tar.gz';
     try {
       mkdirSync(join(scriptsDir, 'lib'), { recursive: true });
@@ -1061,7 +1071,7 @@ server="\${1:-}"; shift || true
 printf '%s\n' "$*" >> "$NEXUS_TEST_SERVER_LOG"
 if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
   case "\${4:-}" in
-    version) printf 'nexus-release-promotion-control.v2\n' ;;
+    version) printf 'nexus-release-promotion-control.v3\n' ;;
     status)
       [ "\${5:-}" = "$NEXUS_TEST_TRANSACTION_ID" ] || exit 91
       cat "$NEXUS_TEST_STATUS_FIXTURE"
@@ -1080,6 +1090,10 @@ if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
 fi
 if [ "$#" -eq 1 ] && [[ "$1" == for\\ p\\ in* ]]; then
   printf '/usr/local/bin/pm2'
+  exit 0
+fi
+if [ "\${1:-}" = test ] && [ "\${2:-}" = -x ] \
+    && [ "\${3:-}" = /usr/local/bin/pm2 ]; then
   exit 0
 fi
 if [ "\${1:-}" = bash ] && [ "\${2:-}" = -s ]; then
@@ -1372,7 +1386,7 @@ exit 95
       const run = spawnSync('/bin/bash', [
         'scripts/promote-exact-release.sh',
         'fixture-server',
-        '/home/dominguez/staging',
+        '/srv/nexus-release/staging',
         productionBase,
         runtimeSha,
         artifactDigest,
@@ -1460,8 +1474,8 @@ exit 95
         [
           'scripts/promote-exact-release.sh',
           'fixture-server',
-          '/home/dominguez/staging',
-          '/home/dominguez/production',
+          '/srv/nexus-release/staging',
+          '/srv/nexus-release/production',
           sha,
           'a'.repeat(64),
           '1.2.3',

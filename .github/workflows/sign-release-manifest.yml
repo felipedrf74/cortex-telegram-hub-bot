@@ -1,5 +1,5 @@
 name: Release — Sign exact candidate
-run-name: Sign release candidate ${{ inputs.runtime_sha }} run ${{ inputs.candidate_run_id }}
+run-name: Sign release candidate ${{ inputs.runtime_sha }} run ${{ inputs.candidate_run_id }} request ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -10,6 +10,10 @@ on:
         type: string
       candidate_run_id:
         description: Successful RC workflow run ID for the exact runtime SHA
+        required: true
+        type: string
+      request_id:
+        description: Unique coordinator request identifier used for crash-safe run correlation
         required: true
         type: string
       contract_scope:
@@ -42,6 +46,7 @@ jobs:
     env:
       RUNTIME_SHA: ${{ inputs.runtime_sha }}
       CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      REQUEST_ID: ${{ inputs.request_id }}
       CONTRACT_SCOPE: ${{ inputs.contract_scope }}
       IOS_ATTESTATION_BASE64: ${{ inputs.ios_attestation_base64 }}
       IOS_DISTRIBUTION_ATTESTATION_BASE64: ${{ inputs.ios_distribution_attestation_base64 }}
@@ -54,6 +59,10 @@ jobs:
           }
           [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]] || {
             echo "candidate_run_id must contain decimal digits only" >&2
+            exit 64
+          }
+          [[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+            echo "request_id must be a canonical lowercase UUID" >&2
             exit 64
           }
           case "$CONTRACT_SCOPE" in

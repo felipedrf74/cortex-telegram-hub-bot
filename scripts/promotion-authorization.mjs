@@ -148,13 +148,12 @@ function validateRequestPayload(payload, { allowExpired = false } = {}) {
       throw new Error(`signed release recovery evidence digest is invalid: ${base64Key}`);
     }
   }
-  const releasePath = /^\/home\/dominguez\/[A-Za-z0-9._-]+\/releases\/[A-Za-z0-9._-]+$/u;
-  const basePath = /^\/home\/dominguez\/[A-Za-z0-9._-]+$/u;
+  const releasePath = /^\/srv\/nexus-release\/production\/releases\/[A-Za-z0-9._-]+$/u;
+  const basePath = /^\/srv\/nexus-release\/production$/u;
   if (!basePath.test(payload.productionBase || '') || !releasePath.test(payload.target?.runtime || '')) {
     throw new Error('unsafe production path');
   }
-  if (payload.predecessor?.runtime !== payload.productionBase
-      && !releasePath.test(payload.predecessor?.runtime || '')) {
+  if (!releasePath.test(payload.predecessor?.runtime || '')) {
     throw new Error('unsafe predecessor path');
   }
   if (payload.backupDir !== '/home/dominguez/backups/nexushub'

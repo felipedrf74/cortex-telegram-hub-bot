@@ -12,9 +12,9 @@
 #   ./scripts/rollback.sh                     # List available backups (read-only)
 #   ./scripts/rollback.sh --dry-run latest    # Dry-run restore of latest backup
 #   ./scripts/rollback.sh --dry-run v4.9.20   # Dry-run restore of specific version
-#   ./scripts/rollback.sh latest              # Apply rollback to most recent backup
-#   ./scripts/rollback.sh v4.9.20             # Apply rollback to specific version
-#   ./scripts/rollback.sh --backup-file /home/dominguez/backups/nexushub/v4.9.20_...tar.gz
+#   Apply mode is retired. Production recovery must use the signed,
+#   root-owned promotion transaction so selectors, artifacts, database state,
+#   PM2 identity, and rollback evidence remain one atomic authority.
 #
 # Safety rails this script adds on top of restore.sh:
 #   1. Interactive confirmation prompt showing current→target version
@@ -64,6 +64,16 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# The historical apply lane stopped PM2 directly, installed dependencies from
+# the network, overwrote the live database, and mutated current/current.next
+# outside the root-owned v3 journal. Keep only inventory and offline dry-run
+# validation; there is intentionally no environment-variable bypass.
+if [ "$DRY_RUN" != true ] \
+    && { [ -n "$VERSION" ] || [ -n "$BACKUP_FILE_OVERRIDE" ]; }; then
+  echo "❌ Direct rollback apply is retired. Use the signed root-owned promotion recovery transaction." >&2
+  exit 77
+fi
 
 echo "═══════════════════════════════════════════════"
 echo "  🔄 Nexus Hub Rollback Tool"
@@ -177,12 +187,8 @@ echo ""
 if [ -z "$VERSION" ] && [ -z "$BACKUP_FILE_OVERRIDE" ]; then
   echo "Usage:"
   echo "  ./scripts/rollback.sh --dry-run latest      # Validate backup without applying"
-  echo "  ./scripts/rollback.sh latest                # Apply latest rollback"
-  echo "  ./scripts/rollback.sh v4.9.20               # Apply specific version"
   echo ""
-  echo "⚠️  Backups marked [code only] do NOT contain bot.db and will fail --apply."
-  echo "   Use them only for code rollbacks by manually running:"
-  echo "     ssh $SERVER 'cd $REMOTE_DIR && tar xzf <backup>'"
+  echo "Production recovery is available only through the signed root-owned transaction."
   exit 0
 fi
 
@@ -256,8 +262,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  ✅ Dry-run complete — backup is restorable"
     echo "═══════════════════════════════════════════════"
     echo ""
-    echo "To apply this rollback for real:"
-    echo "  ./scripts/rollback.sh $VERSION"
+    echo "To recover production, submit the exact signed root-owned recovery transaction."
   else
     echo "❌ Dry-run failed — this backup is NOT safe to restore"
     exit 1

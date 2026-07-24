@@ -20,8 +20,8 @@ STAGING_ATTESTATION="${10:?signed staging attestation is required}"
 PUBLIC_BASE_URL="${NEXUS_PRODUCTION_PUBLIC_BASE_URL:-https://api.nexushub.me}"
 
 [[ "$SERVER" =~ ^[A-Za-z0-9._@-]+$ ]] || { echo "invalid deploy server" >&2; exit 64; }
-[[ "$STAGING_BASE" == /home/dominguez/* ]] || { echo "unsafe staging base" >&2; exit 64; }
-[[ "$PROD_BASE" == /home/dominguez/* ]] || { echo "unsafe production base" >&2; exit 64; }
+[ "$STAGING_BASE" = /srv/nexus-release/staging ] || { echo "unsafe staging base" >&2; exit 64; }
+[ "$PROD_BASE" = /srv/nexus-release/production ] || { echo "unsafe production base" >&2; exit 64; }
 [[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid runtime SHA" >&2; exit 64; }
 [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid artifact digest" >&2; exit 64; }
 [[ "$TARGET_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "invalid target version" >&2; exit 64; }
@@ -91,17 +91,17 @@ set +e
 SYSTEMD_CONTROL_VERSION="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" version 2>/dev/null)"
 SYSTEMD_CONTROL_EXIT=$?
 set -e
-if [ "$SYSTEMD_CONTROL_EXIT" -eq 0 ] && [ "$SYSTEMD_CONTROL_VERSION" = nexus-release-promotion-control.v2 ]; then
+if [ "$SYSTEMD_CONTROL_EXIT" -eq 0 ] && [ "$SYSTEMD_CONTROL_VERSION" = nexus-release-promotion-control.v3 ]; then
   SYSTEMD_TRANSACTION_AVAILABLE=true
   OWNER_PRIVATE_KEY="${NEXUS_RELEASE_OWNER_PRIVATE_KEY_PATH:-}"
   [ -n "$OWNER_PRIVATE_KEY" ] && [ -f "$OWNER_PRIVATE_KEY" ] && [ ! -L "$OWNER_PRIVATE_KEY" ] || {
-    echo "v2 promotion requires the owner's off-server Ed25519 private key" >&2
+    echo "v3 promotion requires the owner's off-server Ed25519 private key" >&2
     exit 77
   }
   owner_key_mode="$(stat -c '%a' "$OWNER_PRIVATE_KEY" 2>/dev/null || stat -f '%Lp' "$OWNER_PRIVATE_KEY")"
   case "$owner_key_mode" in 400|600) ;; *) echo "owner promotion private key mode must be 400 or 600" >&2; exit 77 ;; esac
-elif [ "${NEXUS_RELEASE_ALLOW_LEGACY_LOCAL_TRANSACTION:-0}" != "1" ]; then
-  echo "root-owned promotion transaction is not provisioned; run the reviewed systemd bootstrap before promotion" >&2
+else
+  echo "root-owned promotion transaction is not provisioned; the legacy local transaction is retired" >&2
   exit 1
 fi
 
@@ -755,10 +755,12 @@ fi
 if [ "$RESUME_EXISTING_TRANSACTION" = true ]; then
   # Status was already reconciled above. Only discover the PM2 binary needed
   # for the final completed identity proof; do not rerun preparation or launch.
-  REMOTE_PM2="$("${SSH[@]}" "$SERVER" 'for p in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do if [ -n "$p" ] && [ -x "$p" ]; then printf "%s" "$p"; exit 0; fi; done; exit 1')"
+  REMOTE_PM2=/usr/local/bin/pm2
+  "${SSH[@]}" "$SERVER" test -x "$REMOTE_PM2"
 else
 "$ROOT/scripts/env-parity-check.sh" --server "$SERVER" --staging-dir "$STAGING_BASE" --prod-dir "$PROD_BASE"
-REMOTE_PM2="$("${SSH[@]}" "$SERVER" 'for p in "$(command -v pm2 2>/dev/null || true)" /usr/local/bin/pm2 "$HOME/.npm-global/bin/pm2"; do if [ -n "$p" ] && [ -x "$p" ]; then printf "%s" "$p"; exit 0; fi; done; exit 1')"
+REMOTE_PM2=/usr/local/bin/pm2
+"${SSH[@]}" "$SERVER" test -x "$REMOTE_PM2"
 CAPACITY_ARGS=(--role production --base-dir "$PROD_BASE" --pm2-bin "$REMOTE_PM2")
 "${SSH[@]}" "$SERVER" bash -s -- "${CAPACITY_ARGS[@]}" < "$ROOT/scripts/remote-release-capacity.sh"
 CURRENT_RUNTIME="$("${SSH[@]}" "$SERVER" bash -s -- "$PROD_BASE" <<'REMOTE_CURRENT'
@@ -2020,6 +2022,8 @@ if [ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ]; then
 fi
 
 restart_previous() {
+  echo "legacy predecessor restart is retired; use the root-owned recovery transaction" >&2
+  return 77
   "${SSH[@]}" "$SERVER" bash -s -- "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_RESTART'
 set -euo pipefail
 runtime="$1"; base_dir="$2"; pm2_bin="$3"
@@ -2029,18 +2033,16 @@ for app in nexus-hub content-engine; do
   if "$pm2_bin" describe "$app" >/dev/null 2>&1; then "$pm2_bin" delete "$app" >/dev/null; fi
 done
 if [ "$runtime" != "$base_dir" ] && [ -f "$runtime/ecosystem.release.config.js" ]; then
-  rm -f "$base_dir/current.next"
-  ln -s "$runtime" "$base_dir/current.next"
-  mv -Tf "$base_dir/current.next" "$base_dir/current"
+  echo "legacy selector mutation is retired; use the root-owned promotion transaction" >&2
+  exit 77
   previous_sha="$(node -e 'const fs=require("fs");const p=process.argv[1];process.stdout.write(JSON.parse(fs.readFileSync(p,"utf8")).runtimeSha||"")' "$runtime/.complete.json")"
   [[ "$previous_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "previous runtime SHA is invalid" >&2; exit 1; }
   env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$runtime" NEXUS_RELEASE_BASE_DIR="$base_dir" \
     NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$previous_sha" \
     "$pm2_bin" start "$runtime/ecosystem.release.config.js" --update-env
 else
-  rm -f "$base_dir/current.next" "$base_dir/current"
-  cd "$base_dir"
-  "$pm2_bin" start ecosystem.config.js --update-env
+  echo "legacy base-runtime restart is retired; use the root-owned promotion transaction" >&2
+  exit 77
 fi
 
 health_file="$(mktemp)"
@@ -2082,6 +2084,8 @@ REMOTE_RESTART
 }
 
 restore_exact_backup() {
+  echo "legacy exact backup restore is retired; use the root-owned recovery transaction" >&2
+  return 77
   "${SSH[@]}" "$SERVER" bash -s -- "$BACKUP_FILE" "$BACKUP_DIR" "$CURRENT_RUNTIME" "$PROD_BASE" "$REMOTE_PM2" <<'REMOTE_RESTORE_EXACT'
 set -euo pipefail
 backup_file="$1"; backup_dir="$2"; previous_runtime="$3"; base_dir="$4"; pm2_bin="$5"
@@ -2136,13 +2140,12 @@ for name in bot.db bot.db-wal bot.db-shm; do
 done
 rm -rf "$base_dir/data/garmin-tokens"
 [ ! -d "$stage/data/garmin-tokens" ] || cp -a "$stage/data/garmin-tokens" "$base_dir/data/garmin-tokens"
-rm -f "$base_dir/current.next" "$base_dir/current"
 for app in nexus-hub content-engine; do
   if "$pm2_bin" describe "$app" >/dev/null 2>&1; then "$pm2_bin" delete "$app" >/dev/null; fi
 done
 if [ "$previous_runtime" != "$base_dir" ]; then
-  ln -s "$previous_runtime" "$base_dir/current.next"
-  mv -Tf "$base_dir/current.next" "$base_dir/current"
+  echo "legacy exact rollback selector mutation is retired" >&2
+  exit 77
   env -i HOME="$HOME" PATH="$PATH" NEXUS_RELEASE_DIR="$previous_runtime" NEXUS_RELEASE_BASE_DIR="$base_dir" \
     NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$previous_sha" \
     "$pm2_bin" start "$previous_runtime/ecosystem.release.config.js" --update-env
@@ -2436,9 +2439,8 @@ CUTOVER_OUTPUT="$("${SSH[@]}" "$SERVER" bash -s -- \
   "${NEXUS_RELEASE_PRODUCTION_STABILITY_SECONDS:-60}" <<'REMOTE_CUTOVER'
 set -euo pipefail
 release_dir="$1"; base_dir="$2"; pm2_bin="$3"; runtime_sha="$4"; target_version="$5"; public_base_url="$6"; stability_seconds="$7"
-rm -f "$base_dir/current.next"
-ln -s "$release_dir" "$base_dir/current.next"
-mv -Tf "$base_dir/current.next" "$base_dir/current"
+echo "legacy production cutover is retired; use the root-owned selector transaction" >&2
+exit 77
 for app in nexus-hub content-engine; do
   if "$pm2_bin" describe "$app" >/dev/null 2>&1; then "$pm2_bin" delete "$app" >/dev/null; fi
 done

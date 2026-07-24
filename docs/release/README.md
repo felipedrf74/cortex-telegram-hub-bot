@@ -140,6 +140,70 @@ production-owner approval, submits one root-owned server transaction, and
 polls its journal. It never approves a protected environment or migration.
 Restarting the coordinator revalidates completed evidence instead of blindly
 repeating the phase.
+The local checkpoint lock is a persistent owner-only regular file held for the
+coordinator lifetime by the host OS (`lockf -k` on macOS or `flock` on Linux).
+It is never deleted and recreated to recover a presumed stale owner. A second
+coordinator exits immediately, inode drift is blocking, and loss of the lock
+holder aborts the active coordinator before another release phase can start.
+
+Start a backend-only coordinated release from a clean checkout of the exact
+protected `origin/main` SHA with:
+
+```bash
+npm run release:resume -- --backend-only
+```
+
+When a current protected-main reuse activation envelope exists, first place it
+in an owner-only regular file, then supply its path:
+
+```bash
+chmod 600 /absolute/path/protected-main-reuse-activation.json
+npm run release:resume -- --backend-only \
+  --protected-reuse-activation /absolute/path/protected-main-reuse-activation.json
+```
+
+Before writing RC dispatch intent, the coordinator accepts only an
+owner-matching, mode-0600, single-link regular file within the bounded input
+size. It atomically snapshots those exact bytes under
+`.local/release/sequence-inputs/` and checkpoints the snapshot path, SHA-256,
+size, and mode. RC base64 is generated only from that bound snapshot. Missing,
+oversize, invalid, linked, or permission-unsafe initial input is recorded as an
+explicit full-RC fallback. Once RC intent exists, an activation cannot be added
+or substituted; any supplied-path or snapshot drift blocks the resume. A
+normal restart may omit the original path because the private snapshot remains
+the authority.
+
+Protected manifest and staging signing are also dispatch-once phases. Before
+dispatch, the coordinator persists the workflow digest, exact main SHA,
+baseline run IDs, request UUID, not-before timestamp, expected run title, and
+dispatch-command digest. A staging run title and dispatch also bind the
+SHA-256 of the exact raw staging-request bytes; a matching UUID with another
+digest is not the same request. An uncertain dispatch is reconciled to exactly one
+post-baseline run; ambiguity or a missing correlation stops for manual review,
+and a started dispatch is never sent again. The signing helpers receive the
+checkpointed `--run-id`, so they only watch, download, validate, and publish
+that exact run. Manifest publication installs the validated bundle first and
+the manifest last; staging-attestation publication is likewise atomic and
+mode 0600.
+
+Staging uses one deterministic request UUID bound to repository, runtime,
+artifact, and signed-manifest digests. The coordinator calls the operator with
+`--no-sign-request`, checkpoints the exact request bytes and installed and
+recovery runtime digests, and then performs the protected signing phase
+itself. If the Mac disconnects after staging has already switched to the exact
+candidate, only the private coordinator checkpoint authorizes resume. That
+path first invokes the root-installed promotion control v3 verifier. Before
+the original switch, root independently verified and sealed the artifact and
+installed tree, computed recovery identity with the root-installed DR helper,
+and durably bound those digests, the request UUID, runtime path, SHA, and
+artifact under `/var/lib/nexus-release-promotion/staging/`. Resume rejects a
+missing or drifted binding before executing any release-owned file. Only then
+may the now root-owned, non-writable, artifact-bound preflight and readiness
+scripts run. Their generated readiness and PM2 evidence is written below the
+staging base's `.release-evidence/<request-id>/`, never into the sealed release
+tree. Authenticated smoke and exact PM2 identity are repeated without
+reinstalling or restarting an already-active candidate. Failed validation
+leaves the active path untouched and blocks signing.
 
 Protected-main exact-SHA reuse remains shadow-only for five production
 releases. Each comparison covers workflow/run, toolchain, lockfiles, test
@@ -231,13 +295,20 @@ archive with `--no-same-owner --no-same-permissions`, and then run:
 ```bash
 sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotion-systemd-install.sh \
   /var/lib/nexus-release-bootstrap/<exact-sha>/source \
+  <exact-40-hex-protected-main-sha> \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/source.tar.gz \
+  <owner-approved-64-hex-source-archive-sha256> \
   /var/lib/nexus-release-bootstrap/<exact-sha>/nexus-owner-promotion-public-key.pem
 sudo /usr/local/sbin/nexus-release-promotion-control version
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
 sudo stat -c '%U:%G:%a %n' /run/lock/nexus-release-sonar.lock
 ```
 
-The installer independently rejects any source, key, or ancestor directory
+The source archive must be the exact protected-main Git archive created with
+`--prefix=source/`; its PAX commit identity, SHA-256, unique regular members,
+and every installed release, DR, Ollama, PM2, and systemd input are verified
+before privileged mutation. The installer independently rejects any source,
+archive, key, or ancestor directory
 that is not canonical, root-owned, and non-writable by group/other. A
 pre-copy digest check against the `/home` input is not sufficient because the
 application identity can change that file between checking and privileged
@@ -272,7 +343,7 @@ off-host. The root promotion broker repeats this exact check before it can arm
 recovery or stop PM2, so missing or older DR provisioning ends only as
 `failed_before_stop`.
 
-The expected control version is `nexus-release-promotion-control.v2`; the lock
+The expected control version is `nexus-release-promotion-control.v3`; the lock
 identity is `root:dominguez:660`. Remove the temporary public-key input after
 the installed copy is verified. Never copy the private key, a signing command,
 or a reusable owner decision onto the server. `dominguez` may submit a signed
@@ -291,6 +362,15 @@ readiness; candidate-provided verification code cannot authorize itself. The
 owner-signed request binds both predecessor and candidate artifact and
 installed-runtime digests plus the candidate recovery-runtime digest and exact
 signed release-manifest and staging-attestation SHA-256 values.
+
+Control v3 also permits only the narrow
+`prepare-staging-runtime-target`, `seal-staging-runtime`, and
+`verify-staging-runtime` commands through sudo. The bootstrap verifies that
+the DR recovery-identity helper is root-owned, creates the non-enumerable
+root-only staging-binding directory, and installs all three commands in the
+same reviewed sudoers transaction. `dominguez` cannot replace the installed
+attestors or the binding. Re-run this exact bootstrap before using the updated
+staging path; an older control version is a hard staging stop.
 
 The Mac seals the copied runtime before submitting the durable transaction.
 Inside that transaction, and before recovery is armed or the worker can reach
@@ -665,14 +745,17 @@ scheduler, or worker:
    `release-signing` job verifies the ServerDominguez signature, independently
    fetches all five protected-main CI and all five RC run/artifact identities,
    and emits a GitHub-signed activation envelope.
-4. Supply that envelope as canonical base64 in the existing RC input
-   `protected_reuse_activation_b64`. The test-plan job revalidates it and the
-   current exact protected-main evidence. It may skip the existing RC Vitest
-   jobs only for a later SHA, only while the activation is unexpired, and only
-   when policy/workflow digest, lockfiles, toolchains, selected-file coverage,
-   required jobs, and exact runtime bundle agree. Python and the remaining
-   release gates still run. The protected manifest signer independently fetches
-   the current protected-main run/artifacts and repeats validation.
+4. Supply the private envelope path through the coordinator's
+   `--protected-reuse-activation` option. The coordinator snapshots and binds
+   the exact bytes before RC intent and forwards their canonical base64 through
+   the existing `protected_reuse_activation_b64` input. The test-plan job
+   revalidates it and the current exact protected-main evidence. It may skip
+   the existing RC Vitest jobs only for a later SHA, only while the activation
+   is unexpired, and only when policy/workflow digest, lockfiles, toolchains,
+   selected-file coverage, required jobs, and exact runtime bundle agree.
+   Python and the remaining release gates still run. The protected manifest
+   signer independently fetches the current protected-main run/artifacts and
+   repeats validation.
 
 Any missing, invalid, ambiguous, policy-drifted, or expired input, an explicit
 `force_full`, or an attempt to reuse one of the five shadow-window SHAs leaves

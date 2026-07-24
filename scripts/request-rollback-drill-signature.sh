@@ -103,7 +103,7 @@ gh workflow run "$SIGNING_WORKFLOW" --ref "$REF" \
   -f "request_sha256=$REQUEST_SHA256" \
   -f "request_b64=$REQUEST_B64"
 
-TITLE="Sign rollback drill $REQUEST_ID"
+TITLE="Sign rollback_drill $REQUEST_ID digest $REQUEST_SHA256"
 RUN_ID=""
 for _ in $(seq 1 30); do
   RUNS="$(gh run list --workflow "$SIGNING_WORKFLOW" --limit 30 \

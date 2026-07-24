@@ -172,7 +172,7 @@ describe('detached staging attestation', () => {
       privateKey: path.join(root, 'private.pem'),
       publicKey: path.join(root, 'public.pem'),
     };
-    const releaseDir = `/home/dominguez/telegram-hub-bot-staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+    const releaseDir = `/srv/nexus-release/staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
     fs.writeFileSync(files.manifest, JSON.stringify({
       schema: 'nexus.release-manifest.v2',
       payload: { runtimeSha, packageVersion: '4.14.219', artifact: { digest: artifactDigest } },
@@ -191,8 +191,12 @@ describe('detached staging attestation', () => {
     fs.writeFileSync(files.identity, JSON.stringify({
       schema: 'nexus.pm2-release-identity.v1',
       services: [
-        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
-        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir,
+          executable: `${releaseDir}/dist/index.js`, interpreter: 'node',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`,
+          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`, interpreter: 'none',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
       ],
     }));
     fs.writeFileSync(files.readiness, JSON.stringify({
@@ -209,8 +213,12 @@ describe('detached staging attestation', () => {
         pm2RestartStable: true,
       },
       services: [
-        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
-        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir,
+          executable: `${releaseDir}/dist/index.js`, interpreter: 'node',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`,
+          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`, interpreter: 'none',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
       ],
     }));
     fs.writeFileSync(files.smoke, 'all domain smoke checks passed\n');
@@ -276,7 +284,7 @@ describe('detached staging attestation', () => {
   it('rejects staging readiness evidence with a failed restart-stability check', () => {
     const root = runtimeFixture();
     const installed = writeInstalled(root);
-    const releaseDir = `/home/dominguez/telegram-hub-bot-staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+    const releaseDir = `/srv/nexus-release/staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
     const files = {
       manifest: path.join(root, 'manifest.json'),
       installed: path.join(root, '.nexus-installed-runtime.json'),
@@ -303,8 +311,12 @@ describe('detached staging attestation', () => {
     }));
     fs.writeFileSync(files.identity, JSON.stringify({
       services: [
-        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
-        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir,
+          executable: `${releaseDir}/dist/index.js`, interpreter: 'node',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`,
+          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`, interpreter: 'none',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
       ],
     }));
     fs.writeFileSync(files.readiness, JSON.stringify({

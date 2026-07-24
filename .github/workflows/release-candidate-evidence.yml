@@ -1,9 +1,13 @@
 name: RC — Release Evidence
-run-name: RC evidence ${{ github.sha }}
+run-name: RC evidence ${{ github.sha }} request ${{ inputs.correlation_nonce }}
 
 on:
   workflow_dispatch:
     inputs:
+      correlation_nonce:
+        description: 'Coordinator-generated UUID binding this exact RC dispatch'
+        required: true
+        type: string
       contract_scope:
         description: 'Classify this candidate as backend-only or shared backend/iOS'
         required: true
@@ -47,6 +51,7 @@ env:
   PYTHON_VERSION: '3.12'
   TZ: Europe/Lisbon
   CONTRACT_SCOPE: ${{ inputs.contract_scope }}
+  CORRELATION_NONCE: ${{ inputs.correlation_nonce }}
   IOS_SHA: ${{ inputs.ios_sha }}
   IOS_BUILD_NUMBER: ${{ inputs.ios_build_number }}
   IOS_CONTRACT_RESULT: ${{ inputs.ios_contract_result }}
@@ -59,6 +64,10 @@ jobs:
     steps:
       - name: Require an explicit, complete contract scope
         run: |
+          [[ "$CORRELATION_NONCE" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+            echo "correlation_nonce must be a coordinator-generated lowercase UUIDv4" >&2
+            exit 64
+          }
           case "$CONTRACT_SCOPE" in
             backend_only)
               [[ -z "$IOS_SHA" && -z "$IOS_BUILD_NUMBER" && -z "$IOS_CONTRACT_RESULT" ]] || {

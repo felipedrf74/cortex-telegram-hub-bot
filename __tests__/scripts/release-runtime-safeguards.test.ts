@@ -1,8 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  closeSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -158,8 +160,8 @@ observed_sha='${runtimeSha}'
 if [ "\${PM2_WRONG_SHA:-0}" = 1 ]; then observed_sha='${'b'.repeat(40)}'; fi
 cat <<JSON
 [
-  {"name":"${backend}","pid":101,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}","NEXUS_RELEASE_SHA":"$observed_sha","restart_time":$restart,"unstable_restarts":0,"pm_uptime":1000}},
-  {"name":"${content}","pid":102,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}/content-engine","NEXUS_RELEASE_SHA":"$observed_sha","restart_time":2,"unstable_restarts":0,"pm_uptime":1000}}
+  {"name":"${backend}","pid":101,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}","pm_exec_path":"${fixture.release}/dist/index.js","exec_interpreter":"node","NEXUS_RELEASE_SHA":"$observed_sha","SENTRY_RELEASE":"$observed_sha","restart_time":$restart,"unstable_restarts":0,"pm_uptime":1000}},
+  {"name":"${content}","pid":102,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}/content-engine","pm_exec_path":"${fixture.release}/content-engine/.venv/bin/python3.12","exec_interpreter":"none","NEXUS_RELEASE_SHA":"$observed_sha","SENTRY_RELEASE":"$observed_sha","restart_time":2,"unstable_restarts":0,"pm_uptime":1000}}
 ]
 JSON
 `);
@@ -281,6 +283,63 @@ describe('exact release extended readiness', () => {
     expect(Date.parse(evidence.stabilityCompletedAt)).toBeGreaterThanOrEqual(
       Date.parse(evidence.stabilityStartedAt),
     );
+  });
+
+  it('writes evidence only through an inherited root-broker descriptor when requested', () => {
+    const fixture = releaseFixture('staging');
+    const bin = join(fixture.root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const curl = join(bin, 'curl');
+    const pm2 = join(bin, 'pm2');
+    writeCurl(curl, fixture);
+    writePm2(pm2, fixture, 'staging');
+    const output = join(fixture.root, 'readiness-fd.json');
+    const descriptor = openSync(output, 'w+', 0o600);
+    let result;
+    try {
+      result = spawnSync('bash', [
+        READINESS,
+        '--role', 'staging',
+        '--base-dir', fixture.base,
+        '--release-dir', fixture.release,
+        '--runtime-sha', runtimeSha,
+        '--pm2-bin', pm2,
+        '--node-bin', process.execPath,
+        '--curl-bin', curl,
+        '--output-fd', '3',
+        '--readiness-attempts', '4',
+        '--poll-seconds', '0',
+        '--stability-seconds', '0',
+      ], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe', descriptor],
+      });
+    } finally {
+      closeSync(descriptor);
+    }
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({
+      schema: 'nexus.release-readiness.v1',
+      role: 'staging',
+      runtimeSha,
+    });
+
+    const conflicting = spawnSync('bash', [
+      READINESS,
+      '--role', 'staging',
+      '--base-dir', fixture.base,
+      '--release-dir', fixture.release,
+      '--runtime-sha', runtimeSha,
+      '--pm2-bin', pm2,
+      '--node-bin', process.execPath,
+      '--curl-bin', curl,
+      '--output', output,
+      '--output-fd', '3',
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env } });
+    expect(conflicting.status).toBe(64);
+    expect(conflicting.stderr).toContain('mutually exclusive');
   });
 
   it('rejects a PM2 restart between independent samples', () => {

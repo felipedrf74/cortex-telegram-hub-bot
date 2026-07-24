@@ -2,10 +2,9 @@
 // Resumable local coordinator for the canonical exact-artifact release path.
 // It never grants production authorization and never promotes without two
 // explicit, contemporaneous owner signals.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -16,6 +15,8 @@ const value = (name, fallback = '') => {
 };
 const has = (name) => args.includes(name);
 const root = path.resolve(value('--root', path.join(import.meta.dirname, '..')));
+const internalLockHeld = has('--internal-lock-held');
+const coordinatorLockFd = 9;
 
 function fail(message, code = 1) {
   process.stderr.write(`${message}\n`);
@@ -26,9 +27,12 @@ for (let index = 0; index < args.length; index += 1) {
   const argument = args[index];
   const withValue = new Set([
     '--root', '--checkpoint', '--rc-run', '--manifest', '--staging-attestation',
-    '--ios-attestation', '--ios-distribution-attestation',
+    '--ios-attestation', '--ios-distribution-attestation', '--protected-reuse-activation',
   ]);
-  const flags = new Set(['--backend-only', '--includes-ios', '--owner-authorized', '--promote', '--status']);
+  const flags = new Set([
+    '--backend-only', '--includes-ios', '--owner-authorized', '--promote', '--status',
+    '--internal-lock-held',
+  ]);
   if (withValue.has(argument)) {
     if (!args[index + 1] || args[index + 1].startsWith('--')) fail(`missing value for ${argument}`, 64);
     index += 1;
@@ -38,10 +42,15 @@ for (let index = 0; index < args.length; index += 1) {
 }
 
 function run(command, commandArgs, options = {}) {
+  const lockStdio = internalLockHeld
+    ? ['ignore', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore',
+      coordinatorLockFd]
+    : undefined;
   return spawnSync(command, commandArgs, {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
+    ...(lockStdio ? { stdio: lockStdio } : {}),
     ...options,
   });
 }
@@ -109,42 +118,184 @@ while (true) {
 }
 
 const lockPath = `${checkpointPath}.lock`;
-let lockHeld = false;
-function acquireLock() {
+let lockIdentity = null;
+let activeChild = null;
+let requestedTerminationSignal = null;
+let terminationEscalationTimer = null;
+
+function openCoordinatorLockFile() {
+  let existing = null;
   try {
-    fs.mkdirSync(lockPath, { mode: 0o700 });
-    fs.writeFileSync(path.join(lockPath, 'owner.json'), `${JSON.stringify({
-      pid: process.pid,
-      host: os.hostname(),
-      createdAt: new Date().toISOString(),
-    })}\n`, { mode: 0o600, flag: 'wx' });
-    lockHeld = true;
+    existing = fs.lstatSync(lockPath);
   } catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    let owner = null;
-    try { owner = JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')); } catch {}
-    const sameHost = owner?.host === os.hostname();
-    let alive = false;
-    if (sameHost && Number.isInteger(owner?.pid) && owner.pid > 1) {
-      try { process.kill(owner.pid, 0); alive = true; } catch {}
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+    fail('release checkpoint lock is a legacy or unsafe entry; owner cleanup is required', 73);
+  }
+  const descriptor = fs.openSync(
+    lockPath,
+    fs.constants.O_RDWR | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0),
+    0o600,
+  );
+  try {
+    const opened = fs.fstatSync(descriptor);
+    const current = fs.lstatSync(lockPath);
+    if (!opened.isFile() || opened.uid !== process.getuid()
+        || (opened.mode & 0o777) !== 0o600 || opened.nlink !== 1
+        || !current.isFile() || current.isSymbolicLink()
+        || current.dev !== opened.dev || current.ino !== opened.ino) {
+      fail('release checkpoint lock is not a private owner regular file', 73);
     }
-    const createdMs = Date.parse(owner?.createdAt || '');
-    const stale = sameHost
-      ? !alive
-      : !Number.isFinite(createdMs) || Date.now() - createdMs > 60 * 60 * 1000;
-    if (!stale) fail('another release resume process owns this checkpoint', 73);
-    fs.rmSync(lockPath, { recursive: true, force: true });
-    acquireLock();
+    return { descriptor, dev: opened.dev, ino: opened.ino };
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
   }
 }
-function releaseLock() {
-  if (lockHeld) fs.rmSync(lockPath, { recursive: true, force: true });
-  lockHeld = false;
+
+function lockCommandForInheritedFd() {
+  if (process.platform === 'darwin' && fs.existsSync('/usr/bin/lockf')) {
+    return {
+      command: '/usr/bin/lockf',
+      args: ['-s', '-t', '0', String(coordinatorLockFd)],
+    };
+  }
+  const flock = ['/usr/bin/flock', '/bin/flock'].find((candidate) => fs.existsSync(candidate));
+  if (flock) {
+    return {
+      command: flock,
+      args: ['-n', String(coordinatorLockFd)],
+    };
+  }
+  fail('an OS-backed release checkpoint lock implementation is unavailable', 69);
 }
-process.on('exit', releaseLock);
-process.on('SIGINT', () => process.exit(130));
-process.on('SIGTERM', () => process.exit(143));
-acquireLock();
+
+function inheritedLockStdio(stdout = 'ignore', stderr = 'ignore', sourceFd = coordinatorLockFd) {
+  return [
+    'ignore', stdout, stderr, 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore',
+    sourceFd,
+  ];
+}
+
+function signalExitCode(signal) {
+  return signal === 'SIGINT' ? 130 : 143;
+}
+
+function killProcessGroup(child, signal) {
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+}
+
+function requestTermination(signal) {
+  if (requestedTerminationSignal) return;
+  requestedTerminationSignal = signal;
+  if (!activeChild) process.exit(signalExitCode(signal));
+  killProcessGroup(activeChild, signal);
+  terminationEscalationTimer = setTimeout(() => {
+    killProcessGroup(activeChild, 'SIGKILL');
+  }, 10_000);
+  terminationEscalationTimer.unref();
+}
+
+process.on('SIGINT', () => requestTermination('SIGINT'));
+process.on('SIGTERM', () => requestTermination('SIGTERM'));
+
+async function launchLockedCoordinator(openedLock) {
+  const childArgs = [
+    path.resolve(process.argv[1]),
+    ...args,
+    '--internal-lock-held',
+  ];
+  const child = spawn(process.execPath, childArgs, {
+    cwd: root,
+    env: process.env,
+    detached: true,
+    stdio: inheritedLockStdio('inherit', 'inherit', openedLock.descriptor),
+  });
+  fs.closeSync(openedLock.descriptor);
+  activeChild = child;
+  const outcome = await new Promise((resolve) => {
+    child.once('error', (error) => resolve({ error, status: null, signal: null }));
+    child.once('close', (status, signal) => resolve({ error: null, status, signal }));
+  });
+  activeChild = null;
+  if (terminationEscalationTimer) clearTimeout(terminationEscalationTimer);
+  if (requestedTerminationSignal) return signalExitCode(requestedTerminationSignal);
+  if (outcome.error) {
+    process.stderr.write(`release coordinator lock child failed: ${outcome.error.message}\n`);
+    return 70;
+  }
+  if (outcome.signal) return 128 + (outcome.signal === 'SIGKILL' ? 9 : 15);
+  return outcome.status ?? 70;
+}
+
+function acquireInheritedCoordinatorLock() {
+  let inherited;
+  try {
+    inherited = fs.fstatSync(coordinatorLockFd);
+  } catch {
+    fail('release coordinator inherited lock descriptor is unavailable', 73);
+  }
+  const current = fs.lstatSync(lockPath);
+  if (!inherited.isFile() || inherited.uid !== process.getuid()
+      || (inherited.mode & 0o777) !== 0o600 || inherited.nlink !== 1
+      || !current.isFile() || current.isSymbolicLink() || current.uid !== process.getuid()
+      || (current.mode & 0o777) !== 0o600 || current.nlink !== 1
+      || current.dev !== inherited.dev || current.ino !== inherited.ino) {
+    fail('release checkpoint inherited lock identity is unsafe', 73);
+  }
+  const invocation = lockCommandForInheritedFd();
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: inheritedLockStdio('pipe', 'pipe'),
+  });
+  if (result.error) {
+    fail(`release checkpoint OS lock acquisition failed: ${result.error.message}`, 69);
+  }
+  if (result.status !== 0) {
+    fail('another release resume process owns this checkpoint', 73);
+  }
+  const after = fs.lstatSync(lockPath);
+  if (!after.isFile() || after.isSymbolicLink() || after.uid !== process.getuid()
+      || (after.mode & 0o777) !== 0o600 || after.nlink !== 1
+      || after.dev !== inherited.dev || after.ino !== inherited.ino) {
+    fail('release checkpoint lock identity changed during acquisition', 73);
+  }
+  lockIdentity = { dev: inherited.dev, ino: inherited.ino };
+}
+
+if (!internalLockHeld) {
+  const openedLock = openCoordinatorLockFile();
+  const exitCode = await launchLockedCoordinator(openedLock);
+  process.exit(exitCode);
+}
+acquireInheritedCoordinatorLock();
+
+function assertCoordinatorLockIdentity() {
+  let inherited;
+  let current;
+  try {
+    inherited = fs.fstatSync(coordinatorLockFd);
+    current = fs.lstatSync(lockPath);
+  } catch {
+    fail('release checkpoint lock identity is unavailable', 73);
+  }
+  if (!lockIdentity || !inherited.isFile()
+      || !current.isFile() || current.isSymbolicLink()
+      || inherited.uid !== process.getuid() || current.uid !== process.getuid()
+      || (inherited.mode & 0o777) !== 0o600 || (current.mode & 0o777) !== 0o600
+      || inherited.nlink !== 1 || current.nlink !== 1
+      || inherited.dev !== lockIdentity.dev || inherited.ino !== lockIdentity.ino
+      || current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
+    fail('release checkpoint lock identity drifted while held', 73);
+  }
+}
 
 function readCheckpoint() {
   if (!fs.existsSync(checkpointPath)) return null;
@@ -156,6 +307,7 @@ function readCheckpoint() {
 }
 
 function writeCheckpoint(state) {
+  assertCoordinatorLockIdentity();
   const temporary = `${checkpointPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   const next = { ...state, updatedAt: new Date().toISOString() };
   try {
@@ -179,6 +331,199 @@ function writeCheckpoint(state) {
 
 function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function sha256Buffer(body) {
+  return crypto.createHash('sha256').update(body).digest('hex');
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => (
+    `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+  )).join(',')}}`;
+}
+
+function readPrivateBoundedJson(file, maximumBytes, label) {
+  const resolved = path.resolve(root, file);
+  let before;
+  try {
+    before = fs.lstatSync(resolved);
+  } catch {
+    throw new Error(`${label} is missing`);
+  }
+  if (!before.isFile() || before.isSymbolicLink() || before.uid !== process.getuid()
+      || (before.mode & 0o077) !== 0 || before.nlink !== 1
+      || before.size <= 0 || before.size > maximumBytes) {
+    throw new Error(`${label} is not a bounded private owner regular file`);
+  }
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  const descriptor = fs.openSync(resolved, fs.constants.O_RDONLY | noFollow);
+  let body;
+  try {
+    const opened = fs.fstatSync(descriptor);
+    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
+      throw new Error(`${label} changed while it was opened`);
+    }
+    body = fs.readFileSync(descriptor);
+    const after = fs.fstatSync(descriptor);
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== body.length) {
+      throw new Error(`${label} changed while it was read`);
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body.toString('utf8'));
+  } catch {
+    throw new Error(`${label} is not valid JSON`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${label} JSON root is invalid`);
+  }
+  return { body, parsed, resolved, mode: before.mode & 0o777 };
+}
+
+function ensurePrivateDirectory(directory) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid()
+      || (stat.mode & 0o077) !== 0) {
+    fail(`release private directory is unsafe: ${directory}`, 64);
+  }
+}
+
+function publishPrivateSnapshot(destination, body) {
+  const directory = path.dirname(destination);
+  ensurePrivateDirectory(directory);
+  let existing = null;
+  try {
+    existing = fs.lstatSync(destination);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (existing) {
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.uid !== process.getuid()
+        || (existing.mode & 0o777) !== 0o600 || existing.nlink !== 1
+        || !fs.readFileSync(destination).equals(body)) {
+      fail('protected-main reuse activation checkpoint snapshot is unsafe or differs', 64);
+    }
+    return;
+  }
+  const temporary = path.join(
+    directory,
+    `.${path.basename(destination)}.next.${process.pid}.${crypto.randomBytes(8).toString('hex')}`,
+  );
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(descriptor, body);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.linkSync(temporary, destination);
+    fsyncDirectory(directory);
+    fs.unlinkSync(temporary);
+    fsyncDirectory(directory);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try {
+      fs.unlinkSync(temporary);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+}
+
+function initialProtectedReuseActivation(inputPath) {
+  if (!inputPath) {
+    return {
+      schema: 'nexus.protected-main-reuse-coordinator-input.v1',
+      status: 'fallback',
+      reason: 'not_supplied',
+    };
+  }
+  try {
+    const input = readPrivateBoundedJson(inputPath, 45_000, 'protected-main reuse activation');
+    const digest = sha256Buffer(input.body);
+    const snapshots = path.join(localRoot, 'sequence-inputs');
+    const snapshotPath = path.join(snapshots, `${runtimeSha}-${digest}.protected-main-reuse-activation.json`);
+    publishPrivateSnapshot(snapshotPath, input.body);
+    return {
+      schema: 'nexus.protected-main-reuse-coordinator-input.v1',
+      status: 'forwarded',
+      reason: null,
+      snapshotPath,
+      sha256: digest,
+      sizeBytes: input.body.length,
+      mode: '0600',
+    };
+  } catch (error) {
+    process.stderr.write(`protected-main reuse activation unavailable; retaining full RC fallback: ${error.message}\n`);
+    return {
+      schema: 'nexus.protected-main-reuse-coordinator-input.v1',
+      status: 'fallback',
+      reason: 'unsafe_invalid_or_oversize',
+    };
+  }
+}
+
+function validateProtectedReuseActivation(binding, suppliedPath = '') {
+  if (binding?.schema !== 'nexus.protected-main-reuse-coordinator-input.v1'
+      || !['forwarded', 'fallback'].includes(binding.status)) {
+    fail('protected-main reuse activation checkpoint binding is invalid', 64);
+  }
+  if (binding.status === 'fallback') {
+    if (suppliedPath) {
+      fail('protected-main reuse activation cannot be added after RC dispatch intent', 64);
+    }
+    return null;
+  }
+  const expectedDirectory = path.join(localRoot, 'sequence-inputs');
+  const expectedPath = path.join(
+    expectedDirectory,
+    `${runtimeSha}-${binding.sha256}.protected-main-reuse-activation.json`,
+  );
+  if (binding.snapshotPath !== expectedPath || binding.mode !== '0600'
+      || !/^[a-f0-9]{64}$/u.test(binding.sha256 || '')
+      || !Number.isSafeInteger(binding.sizeBytes)
+      || binding.sizeBytes <= 0 || binding.sizeBytes > 45_000) {
+    fail('protected-main reuse activation snapshot identity is invalid', 64);
+  }
+  let snapshot;
+  try {
+    snapshot = readPrivateBoundedJson(binding.snapshotPath, 45_000, 'checkpointed protected-main reuse activation');
+  } catch (error) {
+    fail(error.message, 64);
+  }
+  if (snapshot.resolved !== expectedPath || snapshot.mode !== 0o600
+      || snapshot.body.length !== binding.sizeBytes
+      || sha256Buffer(snapshot.body) !== binding.sha256) {
+    fail('protected-main reuse activation snapshot drifted after RC intent', 64);
+  }
+  if (suppliedPath) {
+    let supplied;
+    try {
+      supplied = readPrivateBoundedJson(suppliedPath, 45_000, 'supplied protected-main reuse activation');
+    } catch (error) {
+      fail(error.message, 64);
+    }
+    if (supplied.body.length !== binding.sizeBytes
+        || sha256Buffer(supplied.body) !== binding.sha256) {
+      fail('supplied protected-main reuse activation differs from the checkpoint binding', 64);
+    }
+  }
+  return snapshot.body;
+}
+
+function deterministicUuid(input) {
+  const bytes = crypto.createHash('sha256').update(input).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function productionEvidenceMatches(production, expected) {
@@ -347,13 +692,19 @@ function validateProtectedRepository() {
   return repository.nameWithOwner;
 }
 
-function validateWorkflowRun(runId, { workflowName, requireCodeql = false } = {}) {
+function validateWorkflowRun(runId, {
+  workflowName,
+  expectedTitle = '',
+  requireCodeql = false,
+} = {}) {
   const runView = ghJson(['run', 'view', String(runId), '--json',
-    'databaseId,headSha,headBranch,event,status,conclusion,workflowName,url,jobs'], `GitHub workflow run ${runId}`);
+    'databaseId,displayTitle,headSha,headBranch,event,status,conclusion,workflowName,url,jobs'],
+  `GitHub workflow run ${runId}`);
   if (String(runView.databaseId) !== String(runId) || runView.headSha !== runtimeSha
       || runView.headBranch !== 'main' || runView.event !== (requireCodeql ? 'push' : 'workflow_dispatch')
       || runView.status !== 'completed' || runView.conclusion !== 'success'
-      || runView.workflowName !== workflowName) {
+      || runView.workflowName !== workflowName
+      || (expectedTitle && runView.displayTitle !== expectedTitle)) {
     fail(`GitHub workflow run ${runId} is not a successful exact origin/main run`);
   }
   let codeqlJob = null;
@@ -457,9 +808,23 @@ function revalidateCheckpointTrust(state) {
   }
 }
 
-function releaseCandidateDispatchArgs(scope, iosEvidence) {
+function releaseCandidateDispatchArgs(
+  scope,
+  iosEvidence,
+  protectedReuseActivation,
+  correlationNonce,
+) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+    .test(correlationNonce || '')) {
+    fail('release-candidate correlation nonce is invalid', 64);
+  }
   const dispatchArgs = ['workflow', 'run', 'release-candidate-evidence.yml', '--ref', 'main',
+    '-f', `correlation_nonce=${correlationNonce}`,
     '-f', `contract_scope=${scope}`, '-f', 'force_full=false'];
+  const activationBody = validateProtectedReuseActivation(protectedReuseActivation);
+  if (activationBody) {
+    dispatchArgs.push('-f', `protected_reuse_activation_b64=${activationBody.toString('base64')}`);
+  }
   if (scope === 'shared_backend_ios') {
     let attestation;
     try { attestation = JSON.parse(fs.readFileSync(iosEvidence.compatibilityPath, 'utf8')); } catch {
@@ -478,7 +843,7 @@ function releaseCandidateDispatchArgs(scope, iosEvidence) {
 function releaseCandidateRuns() {
   return ghJson(['run', 'list', '--workflow', 'release-candidate-evidence.yml', '--branch', 'main',
     '--event', 'workflow_dispatch', '--limit', '50', '--json',
-    'databaseId,headSha,status,conclusion,createdAt'], 'release-candidate workflow lookup');
+    'databaseId,displayTitle,headSha,status,conclusion,createdAt'], 'release-candidate workflow lookup');
 }
 
 function correlatedReleaseCandidate(intent) {
@@ -487,7 +852,8 @@ function correlatedReleaseCandidate(intent) {
   if (!Number.isFinite(notBefore)) fail('release-candidate dispatch intent timestamp is invalid');
   const candidates = releaseCandidateRuns().filter((candidate) => {
     const createdAt = Date.parse(candidate.createdAt || '');
-    return candidate.headSha === runtimeSha
+    return candidate.displayTitle === intent.expectedTitle
+      && candidate.headSha === runtimeSha
       && !baseline.has(String(candidate.databaseId))
       && Number.isFinite(createdAt)
       && createdAt >= notBefore;
@@ -519,7 +885,59 @@ function emit(state, extra = {}, code = 0) {
   process.exit(code);
 }
 
-function runStep(state, label, command, commandArgs, env = process.env) {
+function childStatusFromSignal(signal) {
+  const signalNumbers = { SIGINT: 2, SIGTERM: 15, SIGKILL: 9 };
+  return 128 + (signalNumbers[signal] || 1);
+}
+
+async function runSupervised(command, commandArgs, env = process.env) {
+  if (activeChild) fail('release coordinator attempted overlapping external work', 70);
+  assertCoordinatorLockIdentity();
+  const maximumOutputBytes = 16 * 1024 * 1024;
+  const child = spawn(command, commandArgs, {
+    cwd: root,
+    env,
+    detached: true,
+    stdio: inheritedLockStdio('pipe', 'pipe'),
+  });
+  activeChild = child;
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  let stdout = '';
+  let stderr = '';
+  let outputError = null;
+  const capture = (stream, chunk) => {
+    const current = stream === 'stdout' ? stdout : stderr;
+    if (Buffer.byteLength(current) + Buffer.byteLength(chunk) > maximumOutputBytes) {
+      outputError = new Error(`release child ${stream} exceeded the bounded output limit`);
+      killProcessGroup(child, 'SIGKILL');
+      return;
+    }
+    if (stream === 'stdout') stdout += chunk;
+    else stderr += chunk;
+  };
+  child.stdout.on('data', (chunk) => capture('stdout', chunk));
+  child.stderr.on('data', (chunk) => capture('stderr', chunk));
+  const outcome = await new Promise((resolve) => {
+    child.once('error', (error) => resolve({ error, status: null, signal: null }));
+    child.once('close', (status, signal) => resolve({ error: null, status, signal }));
+  });
+  activeChild = null;
+  if (terminationEscalationTimer) {
+    clearTimeout(terminationEscalationTimer);
+    terminationEscalationTimer = null;
+  }
+  if (requestedTerminationSignal) process.exit(signalExitCode(requestedTerminationSignal));
+  return {
+    stdout,
+    stderr,
+    error: outputError || outcome.error,
+    status: outcome.status ?? (outcome.signal ? childStatusFromSignal(outcome.signal) : 1),
+    signal: outcome.signal,
+  };
+}
+
+async function runStep(state, label, command, commandArgs, env = process.env) {
   const attempt = {
     step: label,
     startedAt: new Date().toISOString(),
@@ -531,12 +949,7 @@ function runStep(state, label, command, commandArgs, env = process.env) {
     lastError: null,
     attempts: [...(state.attempts || []), attempt],
   });
-  const result = spawnSync(command, commandArgs, {
-    cwd: root,
-    encoding: 'utf8',
-    env,
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  const result = await runSupervised(command, commandArgs, env);
   if (result.stdout) process.stderr.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.error || result.status !== 0) {
@@ -568,7 +981,15 @@ function dispatchCommandDigest(commandArgs) {
   return crypto.createHash('sha256').update(JSON.stringify(['gh', commandArgs])).digest('hex');
 }
 
-function runReleaseCandidateDispatch(state, commandArgs) {
+async function waitForDispatchPoll() {
+  const delayMs = process.env.NODE_ENV === 'test'
+      && process.env.NEXUS_RELEASE_TEST_ZERO_POLL_DELAY === '1'
+    ? 0
+    : 2_000;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function runReleaseCandidateDispatch(state, commandArgs) {
   const label = 'dispatch_release_candidate';
   const attempt = {
     step: label,
@@ -581,7 +1002,7 @@ function runReleaseCandidateDispatch(state, commandArgs) {
     lastError: null,
     attempts: [...(state.attempts || []), attempt],
   });
-  const result = run('gh', commandArgs);
+  const result = await runSupervised('gh', commandArgs);
   if (result.stdout) process.stderr.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   const attempts = [...state.attempts];
@@ -616,9 +1037,14 @@ function runReleaseCandidateDispatch(state, commandArgs) {
   });
 }
 
-function continueReleaseCandidate(state) {
+async function continueReleaseCandidate(state) {
   const intent = state.rcDispatch;
-  const dispatchArgs = releaseCandidateDispatchArgs(state.contractScope, state.iosEvidence);
+  const dispatchArgs = releaseCandidateDispatchArgs(
+    state.contractScope,
+    state.iosEvidence,
+    state.protectedReuseActivation,
+    intent.correlationNonce,
+  );
   const workflowSha256 = sha256File(path.join(root, '.github', 'workflows', 'release-candidate-evidence.yml'));
   if (intent?.schema !== 'nexus.release-candidate-dispatch-intent.v1'
       || intent.workflow !== 'release-candidate-evidence.yml'
@@ -627,6 +1053,8 @@ function continueReleaseCandidate(state) {
       || intent.contractScope !== state.contractScope
       || intent.commandSha256 !== dispatchCommandDigest(dispatchArgs)
       || !/^[0-9a-f-]{36}$/u.test(intent.correlationNonce || '')
+      || intent.expectedTitle
+        !== `RC evidence ${runtimeSha} request ${intent.correlationNonce}`
       || !Array.isArray(intent.baselineRunIds)) {
     fail('release-candidate dispatch intent identity mismatch', 64);
   }
@@ -651,7 +1079,7 @@ function continueReleaseCandidate(state) {
           dispatchStartedAt: new Date().toISOString(),
         },
       });
-      state = runReleaseCandidateDispatch(state, dispatchArgs);
+      state = await runReleaseCandidateDispatch(state, dispatchArgs);
     } else if (!['dispatch_started', 'dispatch_accepted'].includes(intent.status)) {
       fail('release-candidate dispatch state is invalid', 64);
     }
@@ -659,7 +1087,9 @@ function continueReleaseCandidate(state) {
     let candidate = null;
     for (let attempt = 0; attempt < 30 && !candidate; attempt += 1) {
       candidate = correlatedReleaseCandidate(state.rcDispatch);
-      if (!candidate && attempt < 29) spawnSync('sleep', ['2']);
+      if (!candidate && attempt < 29) {
+        await waitForDispatchPoll();
+      }
     }
     if (!candidate || !/^[0-9]+$/u.test(String(candidate.databaseId || ''))) {
       writeCheckpoint({
@@ -704,10 +1134,13 @@ function continueReleaseCandidate(state) {
     fail('release-candidate run identity differs from its persisted dispatch intent', 64);
   }
 
-  state = runStep(state, 'watch_release_candidate', 'gh', [
+  state = await runStep(state, 'watch_release_candidate', 'gh', [
     'run', 'watch', state.rcRunId, '--exit-status',
   ]);
-  const { runView } = validateWorkflowRun(state.rcRunId, { workflowName: 'RC — Release Evidence' });
+  const { runView } = validateWorkflowRun(state.rcRunId, {
+    workflowName: 'RC — Release Evidence',
+    expectedTitle: state.rcDispatch.expectedTitle,
+  });
   return writeCheckpoint({
     ...state,
     phase: 'rc_complete',
@@ -729,10 +1162,296 @@ function continueReleaseCandidate(state) {
   });
 }
 
+function protectedWorkflowRuns(workflow) {
+  return ghJson(['run', 'list', '--workflow', workflow, '--branch', 'main',
+    '--event', 'workflow_dispatch', '--limit', '50', '--json',
+    'databaseId,displayTitle,headSha,headBranch,event,status,conclusion,createdAt'],
+  `${workflow} run lookup`);
+}
+
+function correlatedProtectedWorkflowRun(intent) {
+  const baseline = new Set((intent.baselineRunIds || []).map(String));
+  const notBefore = Date.parse(intent.candidateNotBefore || '');
+  if (!Number.isFinite(notBefore)) fail(`${intent.workflow} dispatch intent timestamp is invalid`);
+  const candidates = protectedWorkflowRuns(intent.workflow).filter((candidate) => {
+    const createdAt = Date.parse(candidate.createdAt || '');
+    return candidate.displayTitle === intent.expectedTitle
+      && candidate.headSha === runtimeSha
+      && candidate.headBranch === 'main'
+      && candidate.event === 'workflow_dispatch'
+      && !baseline.has(String(candidate.databaseId))
+      && Number.isFinite(createdAt)
+      && createdAt >= notBefore;
+  });
+  if (candidates.length > 1) {
+    fail(`${intent.workflow} dispatch correlation is ambiguous; refusing to select a run`);
+  }
+  return candidates[0] || null;
+}
+
+function validateProtectedWorkflowRun(runId, intent, requireComplete = false) {
+  const runView = ghJson(['run', 'view', String(runId), '--json',
+    'databaseId,displayTitle,headSha,headBranch,event,status,conclusion,workflowName,url'],
+  `${intent.workflow} run ${runId}`);
+  if (String(runView.databaseId) !== String(runId)
+      || runView.displayTitle !== intent.expectedTitle
+      || runView.headSha !== runtimeSha
+      || runView.headBranch !== 'main'
+      || runView.event !== 'workflow_dispatch'
+      || runView.workflowName !== intent.workflowName
+      || (requireComplete && (runView.status !== 'completed' || runView.conclusion !== 'success'))) {
+    fail(`${intent.workflow} run ${runId} does not match its persisted exact-main dispatch intent`);
+  }
+  return runView;
+}
+
+async function runProtectedWorkflowDispatch(state, stateKey, label, dispatchArgs) {
+  const attempt = {
+    step: label,
+    startedAt: new Date().toISOString(),
+    commandSha256: dispatchCommandDigest(dispatchArgs),
+  };
+  state = writeCheckpoint({
+    ...state,
+    inProgressStep: label,
+    lastError: null,
+    attempts: [...(state.attempts || []), attempt],
+  });
+  const result = await runSupervised('gh', dispatchArgs);
+  if (result.stdout) process.stderr.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  const attempts = [...state.attempts];
+  attempts[attempts.length - 1] = {
+    ...attempts.at(-1),
+    completedAt: new Date().toISOString(),
+    status: result.status ?? 1,
+    stdoutSha256: sha256Buffer(Buffer.from(result.stdout || '')),
+    stderrSha256: sha256Buffer(Buffer.from(result.stderr || '')),
+  };
+  if (result.error || result.status !== 0) {
+    writeCheckpoint({
+      ...state,
+      attempts,
+      inProgressStep: null,
+      lastError: { step: label, status: result.status ?? 1, failedAt: new Date().toISOString() },
+      nextAction: `reconcile_${stateKey}_without_redispatch`,
+    });
+    fail(`${label} outcome is uncertain; resume will reconcile without redispatch`, result.status || 1);
+  }
+  return writeCheckpoint({
+    ...state,
+    attempts,
+    inProgressStep: null,
+    lastError: null,
+    nextAction: `identify_${stateKey}`,
+    [stateKey]: {
+      ...state[stateKey],
+      status: 'dispatch_accepted',
+      dispatchAcceptedAt: new Date().toISOString(),
+    },
+  });
+}
+
+async function continueProtectedWorkflowDispatch(state, {
+  stateKey,
+  workflowStateKey,
+  label,
+  dispatchArgs,
+}) {
+  const intent = state[stateKey];
+  if (typeof intent?.workflow !== 'string'
+      || !/^[A-Za-z0-9_.-]+\.ya?ml$/u.test(intent.workflow)) {
+    fail(`${stateKey} workflow identity is invalid`, 64);
+  }
+  const workflowSha256 = sha256File(path.join(root, '.github', 'workflows', intent?.workflow || ''));
+  if (intent?.schema !== 'nexus.protected-workflow-dispatch-intent.v1'
+      || intent.workflowSha256 !== workflowSha256
+      || intent.headSha !== runtimeSha
+      || intent.commandSha256 !== dispatchCommandDigest(dispatchArgs)
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+        .test(intent.requestId || '')
+      || !Array.isArray(intent.baselineRunIds)
+      || typeof intent.expectedTitle !== 'string'
+      || typeof intent.workflowName !== 'string') {
+    fail(`${stateKey} identity mismatch`, 64);
+  }
+  if (intent.status === 'completed') {
+    if (!/^[1-9][0-9]*$/u.test(String(intent.runId || ''))
+        || state.workflows?.[workflowStateKey]?.runId !== String(intent.runId)) {
+      fail(`completed ${stateKey} checkpoint identity is invalid`, 64);
+    }
+    validateProtectedWorkflowRun(intent.runId, intent, true);
+    return state;
+  }
+  if (!intent.runId) {
+    if (intent.status === 'intent_persisted') {
+      state = writeCheckpoint({
+        ...state,
+        nextAction: `dispatch_${stateKey}_once`,
+        [stateKey]: {
+          ...intent,
+          status: 'dispatch_started',
+          dispatchStartedAt: new Date().toISOString(),
+        },
+      });
+      state = await runProtectedWorkflowDispatch(state, stateKey, label, dispatchArgs);
+    } else if (!['dispatch_started', 'dispatch_accepted'].includes(intent.status)) {
+      fail(`${stateKey} dispatch state is invalid`, 64);
+    }
+    let candidate = null;
+    for (let attempt = 0; attempt < 30 && !candidate; attempt += 1) {
+      candidate = correlatedProtectedWorkflowRun(state[stateKey]);
+      if (!candidate && attempt < 29) {
+        await waitForDispatchPoll();
+      }
+    }
+    if (!candidate || !/^[1-9][0-9]*$/u.test(String(candidate.databaseId || ''))) {
+      writeCheckpoint({
+        ...state,
+        nextAction: `manual_${stateKey}_reconciliation_required`,
+        lastError: {
+          step: `identify_${stateKey}`,
+          failedAt: new Date().toISOString(),
+          reason: 'no_unique_correlated_run',
+        },
+      });
+      fail(`${state[stateKey].workflow} run was not uniquely found; refusing automatic redispatch`);
+    }
+    const runId = String(candidate.databaseId);
+    state = writeCheckpoint({
+      ...state,
+      nextAction: `watch_${stateKey}`,
+      lastError: null,
+      [stateKey]: {
+        ...state[stateKey],
+        status: 'run_identified',
+        runId,
+        runCreatedAt: candidate.createdAt,
+        identifiedAt: new Date().toISOString(),
+      },
+      workflows: {
+        ...state.workflows,
+        [workflowStateKey]: {
+          workflow: state[stateKey].workflow,
+          workflowSha256,
+          runId,
+          headSha: runtimeSha,
+          requestId: state[stateKey].requestId,
+          runCreatedAt: candidate.createdAt,
+        },
+      },
+    });
+  } else if (state.workflows?.[workflowStateKey]?.runId !== String(intent.runId)) {
+    fail(`${stateKey} run identity differs from its persisted dispatch intent`, 64);
+  }
+  validateProtectedWorkflowRun(state[stateKey].runId, state[stateKey], false);
+  return state;
+}
+
+function newProtectedWorkflowIntent({
+  workflow,
+  workflowName,
+  expectedTitle,
+  requestId,
+  dispatchArgs,
+  extra = {},
+}) {
+  const createdAt = new Date();
+  return {
+    schema: 'nexus.protected-workflow-dispatch-intent.v1',
+    status: 'intent_persisted',
+    workflow,
+    workflowName,
+    workflowSha256: sha256File(path.join(root, '.github', 'workflows', workflow)),
+    headSha: runtimeSha,
+    requestId,
+    expectedTitle,
+    correlationMode: 'unique_request_id_baseline_and_created_at',
+    baselineRunIds: protectedWorkflowRuns(workflow).map((candidate) => String(candidate.databaseId)),
+    intentCreatedAt: createdAt.toISOString(),
+    candidateNotBefore: new Date(createdAt.getTime() - 60_000).toISOString(),
+    commandSha256: dispatchCommandDigest(dispatchArgs),
+    ...extra,
+  };
+}
+
+function releaseManifestSigningDispatchArgs(state, requestId) {
+  const dispatchArgs = ['workflow', 'run', 'sign-release-manifest.yml', '--ref', 'main',
+    '-f', `runtime_sha=${runtimeSha}`,
+    '-f', `candidate_run_id=${state.rcRunId}`,
+    '-f', `request_id=${requestId}`,
+    '-f', `contract_scope=${state.contractScope}`];
+  if (state.contractScope === 'shared_backend_ios') {
+    const compatibilityPath = path.resolve(state.iosEvidence?.compatibilityPath || '');
+    const distributionPath = path.resolve(state.iosEvidence?.distributionPath || '');
+    const compatibility = fs.readFileSync(compatibilityPath).toString('base64');
+    const distribution = fs.readFileSync(distributionPath).toString('base64');
+    if (!compatibility || compatibility.length > 32_768
+        || !distribution || distribution.length > 131_072) {
+      fail('checkpointed iOS signing evidence is empty or too large', 64);
+    }
+    dispatchArgs.push(
+      '-f', `ios_attestation_base64=${compatibility}`,
+      '-f', `ios_distribution_attestation_base64=${distribution}`,
+    );
+  }
+  return dispatchArgs;
+}
+
+function stagingRequestIdentity(requestPath, expected = null) {
+  let input;
+  try {
+    input = readPrivateBoundedJson(requestPath, 45_000, 'staging attestation request');
+  } catch (error) {
+    fail(error.message, 64);
+  }
+  const request = input.parsed;
+  const digest = sha256Buffer(input.body);
+  if (input.mode !== 0o600 || request.schema !== 'nexus.staging-attestation-request.v1'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+        .test(request.requestId || '')
+      || request.runtimeSha !== runtimeSha
+      || request.artifactDigest !== expected?.artifactDigest
+      || request.releaseManifestSha256 !== expected?.releaseManifestSha256
+      || !/^[a-f0-9]{64}$/u.test(request.installedRuntimeDigest || '')
+      || !/^[a-f0-9]{64}$/u.test(request.recoveryRuntimeDigest || '')
+      || !Number.isFinite(Date.parse(request.verifiedAt || ''))
+      || !Number.isFinite(Date.parse(request.expiresAt || ''))
+      || Date.parse(request.expiresAt) <= Date.now()) {
+    fail('staging attestation request identity is invalid or expired', 64);
+  }
+  if (expected?.requestId && request.requestId !== expected.requestId) {
+    fail('staging attestation request id differs from the checkpoint', 64);
+  }
+  if (expected?.sha256 && (digest !== expected.sha256 || input.body.length !== expected.sizeBytes)) {
+    fail('staging attestation request drifted after it was checkpointed', 64);
+  }
+  return {
+    path: input.resolved,
+    requestId: request.requestId,
+    sha256: digest,
+    sizeBytes: input.body.length,
+    installedRuntimeDigest: request.installedRuntimeDigest,
+    recoveryRuntimeDigest: request.recoveryRuntimeDigest,
+    request,
+    body: input.body,
+  };
+}
+
+function stagingSigningDispatchArgs(requestIdentity) {
+  return ['workflow', 'run', 'sign-staging-attestation.yml', '--ref', 'main',
+    '-f', 'evidence_kind=staging_attestation',
+    '-f', `request_id=${requestIdentity.requestId}`,
+    '-f', `runtime_sha=${runtimeSha}`,
+    '-f', `request_sha256=${requestIdentity.sha256}`,
+    '-f', `request_b64=${requestIdentity.body.toString('base64')}`];
+}
+
 const suppliedScope = has('--backend-only') ? 'backend_only' : has('--includes-ios') ? 'shared_backend_ios' : '';
 if (has('--backend-only') && has('--includes-ios')) fail('release contract scope may be specified only once', 64);
 const suppliedRcRun = value('--rc-run');
 if (suppliedRcRun && !/^[0-9]+$/u.test(suppliedRcRun)) fail('release RC run id is invalid', 64);
+const suppliedProtectedReuseActivation = value('--protected-reuse-activation');
 
 let state = readCheckpoint();
 if (!state) {
@@ -752,9 +1471,16 @@ if (!state) {
   } : null;
   const repository = validateProtectedRepository();
   const security = existingSecurityEvidence();
+  const protectedReuseActivation = initialProtectedReuseActivation(suppliedProtectedReuseActivation);
+  const correlationNonce = crypto.randomUUID();
   const baselineRunIds = releaseCandidateRuns().map((candidate) => String(candidate.databaseId));
   const intentCreatedAt = new Date();
-  const dispatchArgs = releaseCandidateDispatchArgs(suppliedScope, iosEvidence);
+  const dispatchArgs = releaseCandidateDispatchArgs(
+    suppliedScope,
+    iosEvidence,
+    protectedReuseActivation,
+    correlationNonce,
+  );
   state = writeCheckpoint({
     schema: 'nexus.release-sequence-checkpoint.v1',
     runtimeSha,
@@ -771,6 +1497,7 @@ if (!state) {
     lastError: null,
     attempts: [],
     iosEvidence,
+    protectedReuseActivation,
     workflows: { security },
     rcDispatch: {
       schema: 'nexus.release-candidate-dispatch-intent.v1',
@@ -779,8 +1506,9 @@ if (!state) {
       workflowSha256: sha256File(path.join(root, '.github', 'workflows', 'release-candidate-evidence.yml')),
       headSha: runtimeSha,
       contractScope: suppliedScope,
-      correlationNonce: crypto.randomUUID(),
-      correlationMode: 'baseline_run_ids_and_created_at',
+      correlationNonce,
+      expectedTitle: `RC evidence ${runtimeSha} request ${correlationNonce}`,
+      correlationMode: 'unique_run_name_nonce_baseline_and_created_at',
       baselineRunIds,
       intentCreatedAt: intentCreatedAt.toISOString(),
       candidateNotBefore: new Date(intentCreatedAt.getTime() - 60_000).toISOString(),
@@ -788,6 +1516,20 @@ if (!state) {
     },
   });
 } else {
+  if (!state.protectedReuseActivation) {
+    state = writeCheckpoint({
+      ...state,
+      protectedReuseActivation: {
+        schema: 'nexus.protected-main-reuse-coordinator-input.v1',
+        status: 'fallback',
+        reason: 'legacy_checkpoint_without_activation',
+      },
+    });
+  }
+  validateProtectedReuseActivation(
+    state.protectedReuseActivation,
+    suppliedProtectedReuseActivation,
+  );
   if (state.originMainSha !== originMainSha || state.packageVersion !== packageVersion) {
     fail('release checkpoint source or package version identity mismatch', 64);
   }
@@ -805,7 +1547,7 @@ if (!state) {
   if (suppliedScope && suppliedScope !== state.contractScope) fail('release checkpoint contract scope mismatch', 64);
 }
 
-state = continueReleaseCandidate(state);
+state = await continueReleaseCandidate(state);
 if (has('--status')) emit(state);
 
 const suppliedManifestPath = value('--manifest');
@@ -825,29 +1567,65 @@ if (recordedManifestIdentity) {
   }
 }
 
-if (!fs.existsSync(manifestPath)) {
-  const signArgs = [
-    path.join(root, 'scripts', 'request-release-manifest-signature.sh'),
-    runtimeSha,
-    state.rcRunId,
-    root,
-  ];
-  if (state.contractScope === 'backend_only') {
-    signArgs.push('--backend-only');
-  } else {
-    const compatibilityPath = value('--ios-attestation', state.iosEvidence?.compatibilityPath || '');
-    const distributionPath = value('--ios-distribution-attestation', state.iosEvidence?.distributionPath || '');
-    if (!compatibilityPath || !distributionPath) fail('checkpoint iOS evidence paths are unavailable', 64);
+if (!state.manifestSigningDispatch && !fs.existsSync(manifestPath)) {
+  const requestId = crypto.randomUUID();
+  const dispatchArgs = releaseManifestSigningDispatchArgs(state, requestId);
+  state = writeCheckpoint({
+    ...state,
+    phase: 'manifest_signing_dispatch_intent',
+    nextAction: 'dispatch_manifest_signing_once',
+    manifestSigningDispatch: newProtectedWorkflowIntent({
+      workflow: 'sign-release-manifest.yml',
+      workflowName: 'Release — Sign exact candidate',
+      expectedTitle: `Sign release candidate ${runtimeSha} run ${state.rcRunId} request ${requestId}`,
+      requestId,
+      dispatchArgs,
+      extra: {
+        candidateRunId: state.rcRunId,
+        contractScope: state.contractScope,
+      },
+    }),
+  });
+}
+if (state.manifestSigningDispatch) {
+  const dispatchArgs = releaseManifestSigningDispatchArgs(
+    state,
+    state.manifestSigningDispatch.requestId,
+  );
+  state = await continueProtectedWorkflowDispatch(state, {
+    stateKey: 'manifestSigningDispatch',
+    workflowStateKey: 'manifestSigning',
+    label: 'dispatch_manifest_signing',
+    dispatchArgs,
+  });
+  if (!fs.existsSync(manifestPath)) {
+    const signArgs = [
+      path.join(root, 'scripts', 'request-release-manifest-signature.sh'),
+      runtimeSha,
+      state.rcRunId,
+      root,
+    ];
+    if (state.contractScope === 'backend_only') {
+      signArgs.push('--backend-only');
+    } else {
+      const compatibilityPath = value('--ios-attestation', state.iosEvidence?.compatibilityPath || '');
+      const distributionPath = value('--ios-distribution-attestation', state.iosEvidence?.distributionPath || '');
+      if (!compatibilityPath || !distributionPath) fail('checkpoint iOS evidence paths are unavailable', 64);
+      signArgs.push(
+        '--includes-ios',
+        '--ios-attestation', compatibilityPath,
+        '--ios-distribution-attestation', distributionPath,
+      );
+    }
     signArgs.push(
-      '--includes-ios',
-      '--ios-attestation', compatibilityPath,
-      '--ios-distribution-attestation', distributionPath,
+      '--request-id', state.manifestSigningDispatch.requestId,
+      '--run-id', state.manifestSigningDispatch.runId,
     );
+    state = await runStep(state, 'trusted_signing', 'bash', signArgs);
   }
-  state = runStep(state, 'trusted_signing', 'bash', signArgs);
 }
 
-state = runStep(state, 'validate_signed_manifest', 'bash', [
+state = await runStep(state, 'validate_signed_manifest', 'bash', [
   path.join(root, 'scripts', 'release-operator.sh'),
   'status',
   '--manifest', manifestPath,
@@ -865,6 +1643,29 @@ if (recordedManifestIdentity
     && (recordedManifestIdentity.sha256 !== signedManifestSha256
       || recordedManifestIdentity.artifactDigest !== artifactDigest)) {
   fail('signed release manifest identity drifted after it was checkpointed');
+}
+if (state.manifestSigningDispatch) {
+  const runView = validateProtectedWorkflowRun(
+    state.manifestSigningDispatch.runId,
+    state.manifestSigningDispatch,
+    true,
+  );
+  state = writeCheckpoint({
+    ...state,
+    manifestSigningDispatch: {
+      ...state.manifestSigningDispatch,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    },
+    workflows: {
+      ...state.workflows,
+      manifestSigning: {
+        ...state.workflows.manifestSigning,
+        runUrl: runView.url,
+        conclusion: runView.conclusion,
+      },
+    },
+  });
 }
 state = writeCheckpoint({
   ...state,
@@ -896,14 +1697,137 @@ if (recordedStagingIdentity) {
   }
 }
 
+const stagingRequestPath = path.join(
+  root,
+  '.local',
+  'release',
+  'staging',
+  `${runtimeSha}-${artifactDigest}.request.json`,
+);
 if (!fs.existsSync(stagingAttestationPath)) {
-  state = runStep(state, 'stage_exact_artifact', 'bash', [
-    path.join(root, 'scripts', 'release-operator.sh'),
-    'staging',
-    '--manifest', manifestPath,
-  ]);
+  if (!state.stagingAttempt) {
+    const stagingRequestId = deterministicUuid(
+      `nexus.staging-attestation-request.v1:${state.repository}:${runtimeSha}:${artifactDigest}:${signedManifestSha256}`,
+    );
+    state = writeCheckpoint({
+      ...state,
+      phase: 'staging_intent',
+      nextAction: 'stage_exact_artifact_without_signing',
+      stagingAttempt: {
+        schema: 'nexus.staging-attempt.v1',
+        status: 'intent_persisted',
+        requestId: stagingRequestId,
+        runtimeSha,
+        artifactDigest,
+        releaseManifestSha256: signedManifestSha256,
+        requestPath: stagingRequestPath,
+      },
+    });
+  }
+  const attempt = state.stagingAttempt;
+  if (attempt?.schema !== 'nexus.staging-attempt.v1'
+      || attempt.runtimeSha !== runtimeSha
+      || attempt.artifactDigest !== artifactDigest
+      || attempt.releaseManifestSha256 !== signedManifestSha256
+      || attempt.requestPath !== stagingRequestPath
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+        .test(attempt.requestId || '')
+      || !['intent_persisted', 'deploy_started', 'request_ready'].includes(attempt.status)) {
+    fail('staging attempt checkpoint identity is invalid', 64);
+  }
+  let requestIdentity = null;
+  if (attempt.status === 'request_ready') {
+    requestIdentity = stagingRequestIdentity(stagingRequestPath, {
+      requestId: attempt.requestId,
+      artifactDigest,
+      releaseManifestSha256: signedManifestSha256,
+      sha256: attempt.requestSha256,
+      sizeBytes: attempt.requestSizeBytes,
+    });
+  } else {
+    state = writeCheckpoint({
+      ...state,
+      phase: 'staging_deploy_started',
+      nextAction: 'stage_exact_artifact_without_signing',
+      stagingAttempt: {
+        ...attempt,
+        status: 'deploy_started',
+        deployStartedAt: attempt.deployStartedAt || new Date().toISOString(),
+      },
+    });
+    state = await runStep(state, 'stage_exact_artifact', 'bash', [
+      path.join(root, 'scripts', 'release-operator.sh'),
+      'staging',
+      '--manifest', manifestPath,
+      '--no-sign-request',
+      '--request-id', state.stagingAttempt.requestId,
+      '--coordinator-checkpoint', checkpointPath,
+    ]);
+    requestIdentity = stagingRequestIdentity(stagingRequestPath, {
+      requestId: state.stagingAttempt.requestId,
+      artifactDigest,
+      releaseManifestSha256: signedManifestSha256,
+    });
+    state = writeCheckpoint({
+      ...state,
+      phase: 'staging_request_ready',
+      nextAction: 'dispatch_staging_signing_once',
+      stagingAttempt: {
+        ...state.stagingAttempt,
+        status: 'request_ready',
+        requestSha256: requestIdentity.sha256,
+        requestSizeBytes: requestIdentity.sizeBytes,
+        installedRuntimeDigest: requestIdentity.installedRuntimeDigest,
+        recoveryRuntimeDigest: requestIdentity.recoveryRuntimeDigest,
+        requestReadyAt: new Date().toISOString(),
+      },
+    });
+  }
+  if (!state.stagingSigningDispatch) {
+    const dispatchArgs = stagingSigningDispatchArgs(requestIdentity);
+    state = writeCheckpoint({
+      ...state,
+      phase: 'staging_signing_dispatch_intent',
+      nextAction: 'dispatch_staging_signing_once',
+      stagingSigningDispatch: newProtectedWorkflowIntent({
+        workflow: 'sign-staging-attestation.yml',
+        workflowName: 'Release — Sign staging attestation',
+        expectedTitle: `Sign staging_attestation ${requestIdentity.requestId} digest ${requestIdentity.sha256}`,
+        requestId: requestIdentity.requestId,
+        dispatchArgs,
+        extra: {
+          requestSha256: requestIdentity.sha256,
+          artifactDigest,
+          releaseManifestSha256: signedManifestSha256,
+        },
+      }),
+    });
+  }
+  requestIdentity = stagingRequestIdentity(stagingRequestPath, {
+    requestId: state.stagingSigningDispatch.requestId,
+    artifactDigest,
+    releaseManifestSha256: signedManifestSha256,
+    sha256: state.stagingSigningDispatch.requestSha256,
+    sizeBytes: state.stagingAttempt.requestSizeBytes,
+  });
+  const stagingDispatchArgs = stagingSigningDispatchArgs(requestIdentity);
+  state = await continueProtectedWorkflowDispatch(state, {
+    stateKey: 'stagingSigningDispatch',
+    workflowStateKey: 'stagingSigning',
+    label: 'dispatch_staging_signing',
+    dispatchArgs: stagingDispatchArgs,
+  });
+  if (!fs.existsSync(stagingAttestationPath)) {
+    state = await runStep(state, 'trusted_staging_signing', 'bash', [
+      path.join(root, 'scripts', 'request-staging-attestation.sh'),
+      stagingRequestPath,
+      manifestPath,
+      stagingAttestationPath,
+      '--run-id', state.stagingSigningDispatch.runId,
+    ]);
+  }
 }
-state = runStep(state, 'validate_staging_attestation', 'bash', [
+state = await runStep(state, 'validate_staging_attestation', 'bash', [
   path.join(root, 'scripts', 'release-operator.sh'),
   'status',
   '--manifest', manifestPath,
@@ -913,13 +1837,26 @@ let stagingAttestation;
 try { stagingAttestation = JSON.parse(fs.readFileSync(stagingAttestationPath, 'utf8')); } catch {
   fail('signed staging attestation is invalid JSON');
 }
+const finalStagingRequestIdentity = stagingRequestIdentity(stagingRequestPath, {
+  requestId: state.stagingAttempt?.requestId,
+  artifactDigest,
+  releaseManifestSha256: signedManifestSha256,
+  sha256: state.stagingAttempt?.requestSha256,
+  sizeBytes: state.stagingAttempt?.requestSizeBytes,
+});
 const installedRuntimeDigest = stagingAttestation?.payload?.installedRuntimeDigest;
 const recoveryRuntimeDigest = stagingAttestation?.payload?.recoveryRuntimeDigest;
 if (!/^[a-f0-9]{64}$/u.test(installedRuntimeDigest || '')
     || !/^[a-f0-9]{64}$/u.test(recoveryRuntimeDigest || '')
     || stagingAttestation?.payload?.runtimeSha !== runtimeSha
     || stagingAttestation?.payload?.artifactDigest !== artifactDigest
-    || stagingAttestation?.payload?.releaseManifestSha256 !== signedManifestSha256) {
+    || stagingAttestation?.payload?.releaseManifestSha256 !== signedManifestSha256
+    || stagingAttestation?.payload?.requestId !== state.stagingAttempt?.requestId
+    || installedRuntimeDigest !== state.stagingAttempt?.installedRuntimeDigest
+    || recoveryRuntimeDigest !== state.stagingAttempt?.recoveryRuntimeDigest
+    || state.stagingSigningDispatch?.requestSha256 !== finalStagingRequestIdentity.sha256
+    || canonicalJson(stagingAttestation?.payload)
+      !== canonicalJson(finalStagingRequestIdentity.request)) {
   fail('signed staging attestation installed-tree identity is invalid');
 }
 const stagingAttestationSha256 = sha256File(stagingAttestationPath);
@@ -928,6 +1865,29 @@ if (recordedStagingIdentity
       || recordedStagingIdentity.installedRuntimeDigest !== installedRuntimeDigest
       || recordedStagingIdentity.recoveryRuntimeDigest !== recoveryRuntimeDigest)) {
   fail('staging attestation identity drifted after it was checkpointed');
+}
+if (state.stagingSigningDispatch) {
+  const runView = validateProtectedWorkflowRun(
+    state.stagingSigningDispatch.runId,
+    state.stagingSigningDispatch,
+    true,
+  );
+  state = writeCheckpoint({
+    ...state,
+    stagingSigningDispatch: {
+      ...state.stagingSigningDispatch,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    },
+    workflows: {
+      ...state.workflows,
+      stagingSigning: {
+        ...state.workflows.stagingSigning,
+        runUrl: runView.url,
+        conclusion: runView.conclusion,
+      },
+    },
+  });
 }
 state = writeCheckpoint({
   ...state,
@@ -969,7 +1929,7 @@ const productionEvidence = path.join(
   'production',
   `${runtimeSha}-${artifactDigest}.json`,
 );
-state = runStep(state, 'promote_exact_artifact', 'bash', [
+state = await runStep(state, 'promote_exact_artifact', 'bash', [
   path.join(root, 'scripts', 'release-operator.sh'),
   'promote',
   '--manifest', manifestPath,

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,16 @@ describe('resumable exact-release sequence', () => {
   let runtimeSha: string;
   let operations: string;
   let rcRunMarker: string;
+  let manifestRunMarker: string;
+  let stagingRunMarker: string;
+  let stagingActiveMarker: string;
+  let rcDispatchArgs: string;
+  let rcWatchActiveMarker: string;
+  let rcWatchReleaseMarker: string;
+  let rcWatchTerminationReleaseMarker: string;
+  let rcWatchTerminatedMarker: string;
+  let rcWatchCoordinatorPidMarker: string;
+  let rcWatchChildPidMarker: string;
 
   it('durably replaces the local checkpoint before advancing release phases', () => {
     const source = fs.readFileSync(coordinator, 'utf8');
@@ -31,12 +41,38 @@ describe('resumable exact-release sequence', () => {
     expect(directoryFsync).toBeGreaterThan(rename);
   });
 
+  it('uses a persistent OS-backed lock without stale delete/recreate takeover', () => {
+    const source = fs.readFileSync(coordinator, 'utf8');
+
+    expect(source).toContain("'/usr/bin/lockf'");
+    expect(source).toContain("args: ['-s', '-t', '0', String(coordinatorLockFd)]");
+    expect(source).toContain("['/usr/bin/flock', '/bin/flock']");
+    expect(source).toContain("args: ['-n', String(coordinatorLockFd)]");
+    expect(source).toContain('stdio: inheritedLockStdio');
+    expect(source).toContain('detached: true');
+    expect(source).toContain('killProcessGroup(activeChild, signal)');
+    expect(source).toContain('current.dev !== inherited.dev');
+    expect(source).toContain('current.ino !== inherited.ino');
+    expect(source).not.toContain('fs.rmSync(lockPath');
+    expect(source).not.toContain('fs.unlinkSync(lockPath');
+  });
+
   beforeEach(() => {
     fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-sequence-')));
     root = path.join(fixtureRoot, 'repo');
     fs.mkdirSync(root);
     operations = path.join(root, 'operations.log');
     rcRunMarker = path.join(fixtureRoot, 'rc-run-created-at.txt');
+    manifestRunMarker = path.join(fixtureRoot, 'manifest-run-created-at.txt');
+    stagingRunMarker = path.join(fixtureRoot, 'staging-run-created-at.txt');
+    stagingActiveMarker = path.join(fixtureRoot, 'staging-active.txt');
+    rcDispatchArgs = path.join(fixtureRoot, 'rc-dispatch-args.txt');
+    rcWatchActiveMarker = path.join(fixtureRoot, 'rc-watch-active.txt');
+    rcWatchReleaseMarker = path.join(fixtureRoot, 'rc-watch-release.txt');
+    rcWatchTerminationReleaseMarker = path.join(fixtureRoot, 'rc-watch-termination-release.txt');
+    rcWatchTerminatedMarker = path.join(fixtureRoot, 'rc-watch-terminated.txt');
+    rcWatchCoordinatorPidMarker = path.join(fixtureRoot, 'rc-watch-coordinator-pid.txt');
+    rcWatchChildPidMarker = path.join(fixtureRoot, 'rc-watch-child-pid.txt');
     fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
     fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
     fs.writeFileSync(path.join(root, 'tracked.txt'), 'fixture\n');
@@ -44,6 +80,8 @@ describe('resumable exact-release sequence', () => {
     fs.writeFileSync(path.join(root, '.gitignore'), '.local/\noperations.log\n');
     fs.writeFileSync(path.join(root, '.github', 'workflows', 'security.yml'), 'name: Security — supply chain and static analysis\n');
     fs.writeFileSync(path.join(root, '.github', 'workflows', 'release-candidate-evidence.yml'), 'name: RC — Release Evidence\n');
+    fs.writeFileSync(path.join(root, '.github', 'workflows', 'sign-release-manifest.yml'), 'name: Release — Sign exact candidate\n');
+    fs.writeFileSync(path.join(root, '.github', 'workflows', 'sign-staging-attestation.yml'), 'name: Release — Sign staging attestation\n');
     spawnSync('git', ['init', '--initial-branch=main'], { cwd: root });
     spawnSync('git', ['config', 'user.name', 'Release Fixture'], { cwd: root });
     spawnSync('git', ['config', 'user.email', 'release@example.invalid'], { cwd: root });
@@ -57,11 +95,18 @@ describe('resumable exact-release sequence', () => {
 
     const bin = path.join(fixtureRoot, 'bin');
     fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'sleep'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
     fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "$args" in
-  "repo view --json nameWithOwner") printf '{"nameWithOwner":"fixture/repository"}\n' ;;
+  "repo view --json nameWithOwner")
+    if [ -n "\${LOCK_HOLD_MARKER:-}" ]; then
+      : > "$LOCK_HOLD_MARKER"
+      while [ ! -f "$LOCK_RELEASE_MARKER" ]; do sleep 0.02; done
+    fi
+    printf '{"nameWithOwner":"fixture/repository"}\n'
+    ;;
   "api repos/fixture/repository/branches/main")
     protected="\${GH_MAIN_PROTECTED:-true}"
     printf '{"name":"main","protected":%s}\n' "$protected"
@@ -77,6 +122,7 @@ case "$args" in
   "workflow run release-candidate-evidence.yml"*)
     checkpoint=".local/release/checkpoints/$FIXTURE_SHA.json"
     node -e 'const fs=require("node:fs");const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.phase!=="rc_dispatch_started"||x.rcDispatch?.status!=="dispatch_started"||!x.sourceIntent||!x.workflows?.security||x.rcRunId!==null)process.exit(65)' "$checkpoint"
+    printf '%s\n' "$args" > "$RC_DISPATCH_ARGS_FILE"
     date -u '+%Y-%m-%dT%H:%M:%SZ' > "$RC_RUN_MARKER"
     printf 'rc-dispatch\n' >> "$OPERATIONS_LOG"
     if [ "\${GH_INTERRUPT_AFTER_RC_DISPATCH:-0}" = 1 ]; then
@@ -85,12 +131,22 @@ case "$args" in
     ;;
   "run list --workflow release-candidate-evidence.yml"*)
     if [ -f "$RC_RUN_MARKER" ]; then
-      printf '[{"databaseId":123456,"headSha":"%s","status":"completed","conclusion":"success","createdAt":"%s"}]\n' "$FIXTURE_SHA" "$(cat "$RC_RUN_MARKER")"
+      nonce="$(node -e 'const fs=require("node:fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).rcDispatch.correlationNonce)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+      title="RC evidence $FIXTURE_SHA request $nonce"
+      if [ "\${GH_RC_DIFFERENT_TITLE:-0}" = 1 ]; then title="RC evidence $FIXTURE_SHA request 00000000-0000-4000-8000-000000000000"; fi
+      printf '[{"databaseId":123456,"displayTitle":"%s","headSha":"%s","status":"completed","conclusion":"success","createdAt":"%s"}]\n' "$title" "$FIXTURE_SHA" "$(cat "$RC_RUN_MARKER")"
     else
       printf '[]\n'
     fi
     ;;
   "run watch 123456 --exit-status")
+    if [ "\${GH_HOLD_RC_WATCH:-0}" = 1 ]; then
+      printf '%s\n' "$PPID" > "$RC_WATCH_COORDINATOR_PID_MARKER"
+      printf '%s\n' "$$" > "$RC_WATCH_CHILD_PID_MARKER"
+      : > "$RC_WATCH_ACTIVE_MARKER"
+      trap ': > "$RC_WATCH_TERMINATED_MARKER"; while [ ! -f "$RC_WATCH_TERMINATION_RELEASE_MARKER" ]; do /bin/sleep 0.02; done; exit 143' TERM INT
+      while [ ! -f "$RC_WATCH_RELEASE_MARKER" ]; do /bin/sleep 0.02; done
+    fi
     if [ "\${GH_INTERRUPT_RC_WATCH:-0}" = 1 ]; then
       printf 'rc-watch-interrupted\n' >> "$OPERATIONS_LOG"
       exit 75
@@ -98,7 +154,59 @@ case "$args" in
     printf 'rc-watch\n' >> "$OPERATIONS_LOG"
     ;;
   "run view 123456"*)
-    printf '{"databaseId":123456,"headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","workflowName":"RC — Release Evidence","url":"https://example.invalid/runs/123456","jobs":[]}\n' "$FIXTURE_SHA"
+    nonce="$(node -e 'const fs=require("node:fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).rcDispatch.correlationNonce)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+    printf '{"databaseId":123456,"displayTitle":"RC evidence %s request %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","workflowName":"RC — Release Evidence","url":"https://example.invalid/runs/123456","jobs":[]}\n' "$FIXTURE_SHA" "$nonce" "$FIXTURE_SHA"
+    ;;
+  "workflow run sign-release-manifest.yml"*)
+    checkpoint=".local/release/checkpoints/$FIXTURE_SHA.json"
+    node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1]));if(x.manifestSigningDispatch?.status!=="dispatch_started"||!process.argv[2].includes("request_id="+x.manifestSigningDispatch.requestId))process.exit(65)' "$checkpoint" "$args"
+    date -u '+%Y-%m-%dT%H:%M:%SZ' > "$MANIFEST_RUN_MARKER"
+    printf 'manifest-sign-dispatch\n' >> "$OPERATIONS_LOG"
+    if [ "\${GH_INTERRUPT_AFTER_MANIFEST_DISPATCH:-0}" = 1 ]; then exit 75; fi
+    ;;
+  "run list --workflow sign-release-manifest.yml"*)
+    if [ -f "$MANIFEST_RUN_MARKER" ]; then
+      request_id="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).manifestSigningDispatch.requestId)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+      created_at="$(cat "$MANIFEST_RUN_MARKER")"
+      if [ "\${GH_MANIFEST_SIGNING_AMBIGUOUS:-0}" = 1 ]; then
+        printf '[{"databaseId":223344,"displayTitle":"Sign release candidate %s run 123456 request %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","createdAt":"%s"},{"databaseId":223345,"displayTitle":"Sign release candidate %s run 123456 request %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","createdAt":"%s"}]\n' "$FIXTURE_SHA" "$request_id" "$FIXTURE_SHA" "$created_at" "$FIXTURE_SHA" "$request_id" "$FIXTURE_SHA" "$created_at"
+      else
+        printf '[{"databaseId":223344,"displayTitle":"Sign release candidate %s run 123456 request %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","createdAt":"%s"}]\n' "$FIXTURE_SHA" "$request_id" "$FIXTURE_SHA" "$created_at"
+      fi
+    else
+      printf '[]\n'
+    fi
+    ;;
+  "run view 223344"*)
+    request_id="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).manifestSigningDispatch.requestId)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+    printf '{"databaseId":223344,"displayTitle":"Sign release candidate %s run 123456 request %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","workflowName":"Release — Sign exact candidate","url":"https://example.invalid/runs/223344"}\n' "$FIXTURE_SHA" "$request_id" "$FIXTURE_SHA"
+    ;;
+  "workflow run sign-staging-attestation.yml"*)
+    checkpoint=".local/release/checkpoints/$FIXTURE_SHA.json"
+    node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1]));if(x.stagingSigningDispatch?.status!=="dispatch_started"||!process.argv[2].includes("request_id="+x.stagingSigningDispatch.requestId)||!process.argv[2].includes("request_sha256="+x.stagingSigningDispatch.requestSha256))process.exit(65)' "$checkpoint" "$args"
+    date -u '+%Y-%m-%dT%H:%M:%SZ' > "$STAGING_RUN_MARKER"
+    printf 'staging-sign-dispatch\n' >> "$OPERATIONS_LOG"
+    if [ "\${GH_INTERRUPT_AFTER_STAGING_DISPATCH:-0}" = 1 ]; then exit 75; fi
+    ;;
+  "run list --workflow sign-staging-attestation.yml"*)
+    if [ -f "$STAGING_RUN_MARKER" ]; then
+      request_id="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).stagingSigningDispatch.requestId)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+      request_sha="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).stagingSigningDispatch.requestSha256)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+      if [ "\${GH_STAGING_DIFFERENT_REQUEST_DIGEST:-0}" = 1 ]; then request_sha="$(printf 'e%.0s' {1..64})"; fi
+      created_at="$(cat "$STAGING_RUN_MARKER")"
+      if [ "\${GH_STAGING_SIGNING_AMBIGUOUS:-0}" = 1 ]; then
+        printf '[{"databaseId":334455,"displayTitle":"Sign staging_attestation %s digest %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","createdAt":"%s"},{"databaseId":334456,"displayTitle":"Sign staging_attestation %s digest %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","createdAt":"%s"}]\n' "$request_id" "$request_sha" "$FIXTURE_SHA" "$created_at" "$request_id" "$request_sha" "$FIXTURE_SHA" "$created_at"
+      else
+        printf '[{"databaseId":334455,"displayTitle":"Sign staging_attestation %s digest %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","createdAt":"%s"}]\n' "$request_id" "$request_sha" "$FIXTURE_SHA" "$created_at"
+      fi
+    else
+      printf '[]\n'
+    fi
+    ;;
+  "run view 334455"*)
+    request_id="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).stagingSigningDispatch.requestId)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+    request_sha="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).stagingSigningDispatch.requestSha256)' ".local/release/checkpoints/$FIXTURE_SHA.json")"
+    printf '{"databaseId":334455,"displayTitle":"Sign staging_attestation %s digest %s","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success","workflowName":"Release — Sign staging attestation","url":"https://example.invalid/runs/334455"}\n' "$request_id" "$request_sha" "$FIXTURE_SHA"
     ;;
   *) echo "unexpected gh invocation: $args" >&2; exit 64 ;;
 esac
@@ -107,31 +215,77 @@ esac
     fs.writeFileSync(path.join(root, 'scripts', 'request-release-manifest-signature.sh'), `#!/usr/bin/env bash
 set -euo pipefail
 sha="$1"; install_root="$3"
-printf 'sign:%s\n' "$2" >> "$OPERATIONS_LOG"
+run_id=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --run-id) run_id="$2"; shift 2 ;; *) shift ;; esac
+done
+[ "$run_id" = 223344 ] || exit 64
+printf 'manifest-sign:%s\n' "$run_id" >> "$OPERATIONS_LOG"
+if [ "\${MANIFEST_HELPER_INTERRUPT:-0}" = 1 ]; then exit 75; fi
 mkdir -p "$install_root/.local/release/manifests"
 printf '{"payload":{"runtimeSha":"%s","packageVersion":"4.14.231","artifact":{"digest":"%s"}}}\n' "$sha" "${'a'.repeat(64)}" > "$install_root/.local/release/manifests/$sha.json"
 `, { mode: 0o755 });
     fs.writeFileSync(path.join(root, 'scripts', 'release-operator.sh'), `#!/usr/bin/env bash
 set -euo pipefail
+umask 077
 command="$1"; shift
 manifest=""
 staging_attestation=""
+request_id=""
+coordinator_checkpoint=""
+no_sign=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --manifest) manifest="$2"; shift 2 ;;
     --staging-attestation) staging_attestation="$2"; shift 2 ;;
+    --request-id) request_id="$2"; shift 2 ;;
+    --coordinator-checkpoint) coordinator_checkpoint="$2"; shift 2 ;;
+    --no-sign-request) no_sign=1; shift ;;
     *) shift ;;
   esac
 done
 sha="$(node -e 'process.stdout.write(require(process.argv[1]).payload.runtimeSha)' "$manifest")"
 digest="$(node -e 'process.stdout.write(require(process.argv[1]).payload.artifact.digest)' "$manifest")"
-printf '%s\n' "$command" >> "$OPERATIONS_LOG"
+if [ "$command" != staging ]; then printf '%s\n' "$command" >> "$OPERATIONS_LOG"; fi
 case "$command" in
   status) ;;
   staging)
+    [ "$no_sign" = 1 ] && [ -n "$request_id" ] && [ -n "$coordinator_checkpoint" ] || exit 64
+    node -e 'const x=require(process.argv[1]);if(x.stagingAttempt?.status!=="deploy_started"||x.stagingAttempt?.requestId!==process.argv[2])process.exit(65)' "$coordinator_checkpoint" "$request_id"
     mkdir -p .local/release/staging
     manifest_sha="$(node -e 'const fs=require("node:fs"),c=require("node:crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$manifest")"
-    printf '{"payload":{"runtimeSha":"%s","artifactDigest":"%s","releaseManifestSha256":"%s","installedRuntimeDigest":"%s","recoveryRuntimeDigest":"%s"}}\n' "$sha" "$digest" "$manifest_sha" "${'b'.repeat(64)}" "${'c'.repeat(64)}" > ".local/release/staging/$sha-$digest.signed.json"
+    was_active=0
+    [ ! -f "$STAGING_ACTIVE_MARKER" ] || was_active=1
+    printf '%s\n' "$request_id" > "$STAGING_ACTIVE_MARKER"
+    if [ "\${STAGING_INTERRUPT_AFTER_SWITCH:-0}" = 1 ] && [ "$was_active" = 0 ]; then
+      printf 'staging-switch-interrupted\n' >> "$OPERATIONS_LOG"
+      exit 75
+    fi
+    if [ "$was_active" = 1 ]; then
+      printf 'staging-resume\n' >> "$OPERATIONS_LOG"
+    else
+      printf 'staging\n' >> "$OPERATIONS_LOG"
+    fi
+    node - ".local/release/staging/$sha-$digest.request.json" "$request_id" "$sha" "$digest" "$manifest_sha" <<'NODE'
+const fs=require('node:fs');
+const [file,requestId,runtimeSha,artifactDigest,releaseManifestSha256]=process.argv.slice(2);
+const releaseDir='/home/dominguez/telegram-hub-bot-staging/releases/'+runtimeSha+'-'+artifactDigest.slice(0,12);
+const services=[
+ {name:'nexus-hub-staging',status:'online',cwd:releaseDir,releaseSha:runtimeSha},
+ {name:'content-engine-staging',status:'online',cwd:releaseDir+'/content-engine',releaseSha:runtimeSha},
+];
+fs.writeFileSync(file,JSON.stringify({
+ schema:'nexus.staging-attestation-request.v1',requestId,runtimeSha,artifactDigest,
+ releaseManifestSha256,installedRuntimeDigest:'${'b'.repeat(64)}',
+ recoveryRuntimeDigest:'${'c'.repeat(64)}',releaseDir,
+ remoteIdentity:{schema:'nexus.pm2-release-identity.v1',services},
+ remoteReadiness:{schema:'nexus.release-readiness.v1',role:'staging',runtimeSha,
+  checks:{nativeBinding:true,sqliteIntegrity:true,sqliteForeignKeys:true,backendHealth:true,
+   authenticatedContentEngine:true,pm2ExactIdentity:true,pm2RestartStable:true}},
+ smoke:{status:'passed',command:'scripts/staging-smoke.sh',logSha256:'${'d'.repeat(64)}'},
+ verifiedAt:'2026-07-24T12:00:00.000Z',expiresAt:'2027-07-24T12:00:00.000Z',
+},null,2)+'\\n',{mode:0o600});
+NODE
     ;;
   promote)
     mkdir -p .local/release/production
@@ -223,6 +377,31 @@ NODE
   *) exit 64 ;;
 esac
 `, { mode: 0o755 });
+    fs.writeFileSync(path.join(root, 'scripts', 'request-staging-attestation.sh'), `#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+request="$1"; output="$3"; shift 3
+run_id=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --run-id) run_id="$2"; shift 2 ;; *) shift ;; esac
+done
+[ "$run_id" = 334455 ] || exit 64
+printf 'staging-sign:%s\n' "$run_id" >> "$OPERATIONS_LOG"
+if [ "\${STAGING_HELPER_INTERRUPT:-0}" = 1 ]; then exit 75; fi
+mkdir -p "$(dirname "$output")"
+node - "$request" "$output" <<'NODE'
+const fs=require('node:fs');
+const [request,output]=process.argv.slice(2);
+const payload=JSON.parse(fs.readFileSync(request,'utf8'));
+if(process.env.STAGING_HELPER_DIFFERENT_PAYLOAD==='1'){
+ payload.installedRuntimeDigest='e'.repeat(64);
+}
+fs.writeFileSync(output,JSON.stringify({
+ schema:'nexus.staging-attestation.v1',keyId:'fixture',signatureAlgorithm:'ed25519',
+ payload,signature:'fixture',
+})+'\\n',{mode:0o600});
+NODE
+`, { mode: 0o755 });
 
     // The coordinator intentionally rejects any checkout that differs from
     // origin/main, so the executable fixture scripts are part of the exact
@@ -235,19 +414,175 @@ esac
 
   afterEach(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
 
+  function coordinatorEnvironment(env: NodeJS.ProcessEnv = process.env) {
+    return {
+      ...env,
+      NODE_ENV: 'test',
+      NEXUS_RELEASE_TEST_ZERO_POLL_DELAY: '1',
+      OPERATIONS_LOG: operations,
+      FIXTURE_SHA: runtimeSha,
+      RC_RUN_MARKER: rcRunMarker,
+      MANIFEST_RUN_MARKER: manifestRunMarker,
+      STAGING_RUN_MARKER: stagingRunMarker,
+      STAGING_ACTIVE_MARKER: stagingActiveMarker,
+      RC_DISPATCH_ARGS_FILE: rcDispatchArgs,
+      RC_WATCH_ACTIVE_MARKER: rcWatchActiveMarker,
+      RC_WATCH_RELEASE_MARKER: rcWatchReleaseMarker,
+      RC_WATCH_TERMINATION_RELEASE_MARKER: rcWatchTerminationReleaseMarker,
+      RC_WATCH_TERMINATED_MARKER: rcWatchTerminatedMarker,
+      RC_WATCH_COORDINATOR_PID_MARKER: rcWatchCoordinatorPidMarker,
+      RC_WATCH_CHILD_PID_MARKER: rcWatchChildPidMarker,
+      PATH: `${path.join(fixtureRoot, 'bin')}:${env.PATH ?? process.env.PATH ?? ''}`,
+    };
+  }
+
   function run(extra: string[], env: NodeJS.ProcessEnv = process.env) {
     return spawnSync('node', [coordinator, '--root', root, ...extra], {
       cwd: root,
       encoding: 'utf8',
-      env: {
-        ...env,
-        OPERATIONS_LOG: operations,
-        FIXTURE_SHA: runtimeSha,
-        RC_RUN_MARKER: rcRunMarker,
-        PATH: `${path.join(fixtureRoot, 'bin')}:${env.PATH ?? process.env.PATH ?? ''}`,
-      },
+      env: coordinatorEnvironment(env),
     });
   }
+
+  async function waitForFile(file: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!fs.existsSync(file) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(fs.existsSync(file), `timed out waiting for ${file}`).toBe(true);
+  }
+
+  async function waitForProcessExit(pid: number, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    let running = true;
+    while (running && Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ESRCH') throw error;
+        running = false;
+      }
+    }
+    expect(running, `timed out waiting for pid ${pid} to exit`).toBe(false);
+  }
+
+  it('serializes concurrent coordinators while preserving the lock inode', async () => {
+    const holdMarker = path.join(fixtureRoot, 'lock-held');
+    const releaseMarker = path.join(fixtureRoot, 'release-lock-holder');
+    const first = spawn('node', [coordinator, '--root', root, '--backend-only'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: coordinatorEnvironment({
+        ...process.env,
+        LOCK_HOLD_MARKER: holdMarker,
+        LOCK_RELEASE_MARKER: releaseMarker,
+      }),
+    });
+    let firstStdout = '';
+    let firstStderr = '';
+    first.stdout.setEncoding('utf8');
+    first.stderr.setEncoding('utf8');
+    first.stdout.on('data', (chunk) => { firstStdout += chunk; });
+    first.stderr.on('data', (chunk) => { firstStderr += chunk; });
+    const deadline = Date.now() + 5_000;
+    while (!fs.existsSync(holdMarker) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(fs.existsSync(holdMarker)).toBe(true);
+    const lockPath = path.join(
+      root,
+      '.local',
+      'release',
+      'checkpoints',
+      `${runtimeSha}.json.lock`,
+    );
+    const lockedInode = fs.statSync(lockPath).ino;
+
+    const competing = run(['--backend-only']);
+    expect(competing.status).toBe(73);
+    expect(competing.stderr).toContain('another release resume process owns this checkpoint');
+    expect(fs.statSync(lockPath).ino).toBe(lockedInode);
+
+    fs.writeFileSync(releaseMarker, 'continue\n');
+    const firstStatus = await new Promise<number | null>((resolve) => {
+      first.once('exit', (code) => resolve(code));
+    });
+    expect(firstStatus, `${firstStderr}\n${firstStdout}`).toBe(3);
+    expect(fs.statSync(lockPath).ino).toBe(lockedInode);
+
+    const resumed = run([]);
+    expect(resumed.status, resumed.stderr).toBe(3);
+    expect(fs.statSync(lockPath).ino).toBe(lockedInode);
+  });
+
+  it('terminates an active release child before releasing the inherited OS lock', async () => {
+    const first = spawn('node', [coordinator, '--root', root, '--backend-only'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: coordinatorEnvironment({
+        ...process.env,
+        GH_HOLD_RC_WATCH: '1',
+      }),
+    });
+    let firstStderr = '';
+    first.stderr.setEncoding('utf8');
+    first.stderr.on('data', (chunk) => { firstStderr += chunk; });
+    first.stdout.resume();
+    await waitForFile(rcWatchActiveMarker);
+    const innerPid = Number(fs.readFileSync(rcWatchCoordinatorPidMarker, 'utf8').trim());
+    expect(Number.isSafeInteger(innerPid) && innerPid > 1).toBe(true);
+
+    process.kill(innerPid, 'SIGTERM');
+    await waitForFile(rcWatchTerminatedMarker);
+
+    const competing = run(['--backend-only']);
+    expect(competing.status).toBe(73);
+    expect(competing.stderr).toContain('another release resume process owns this checkpoint');
+
+    fs.writeFileSync(rcWatchTerminationReleaseMarker, 'terminate\n');
+    const firstStatus = await new Promise<number | null>((resolve) => {
+      first.once('exit', (code) => resolve(code));
+    });
+    expect(firstStatus, firstStderr).toBe(143);
+
+    const resumed = run(['--backend-only']);
+    expect(resumed.status, resumed.stderr).toBe(3);
+  });
+
+  it('keeps the OS lock in a live release child after coordinator SIGKILL', async () => {
+    const first = spawn('node', [coordinator, '--root', root, '--backend-only'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: coordinatorEnvironment({
+        ...process.env,
+        GH_HOLD_RC_WATCH: '1',
+      }),
+    });
+    first.stdout.resume();
+    first.stderr.resume();
+    await waitForFile(rcWatchActiveMarker);
+    const innerPid = Number(fs.readFileSync(rcWatchCoordinatorPidMarker, 'utf8').trim());
+    const releaseChildPid = Number(fs.readFileSync(rcWatchChildPidMarker, 'utf8').trim());
+    expect(Number.isSafeInteger(innerPid) && innerPid > 1).toBe(true);
+    expect(Number.isSafeInteger(releaseChildPid) && releaseChildPid > 1).toBe(true);
+
+    process.kill(innerPid, 'SIGKILL');
+    const firstStatus = await new Promise<number | null>((resolve) => {
+      first.once('exit', (code) => resolve(code));
+    });
+    expect(firstStatus).toBe(137);
+
+    const competing = run(['--backend-only']);
+    expect(competing.status).toBe(73);
+    expect(competing.stderr).toContain('another release resume process owns this checkpoint');
+
+    fs.writeFileSync(rcWatchReleaseMarker, 'continue\n');
+    await waitForProcessExit(releaseChildPid);
+
+    const resumed = run(['--backend-only']);
+    expect(resumed.status, resumed.stderr).toBe(3);
+  });
 
   it('checkpoints signing and staging, then stops for current owner authorization', () => {
     const first = run(['--backend-only']);
@@ -260,9 +595,12 @@ esac
     expect(fs.readFileSync(operations, 'utf8').trim().split('\n')).toEqual([
       'rc-dispatch',
       'rc-watch',
-      'sign:123456',
+      'manifest-sign-dispatch',
+      'manifest-sign:223344',
       'status',
       'staging',
+      'staging-sign-dispatch',
+      'staging-sign:334455',
       'status',
     ]);
 
@@ -281,7 +619,30 @@ esac
     expect(checkpoint.rcDispatch).toMatchObject({
       status: 'completed',
       runId: '123456',
-      correlationMode: 'baseline_run_ids_and_created_at',
+      correlationMode: 'unique_run_name_nonce_baseline_and_created_at',
+    });
+    expect(checkpoint.rcDispatch.correlationNonce).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(fs.readFileSync(rcDispatchArgs, 'utf8')).toContain(
+      `correlation_nonce=${checkpoint.rcDispatch.correlationNonce}`,
+    );
+    expect(checkpoint.protectedReuseActivation).toMatchObject({
+      status: 'fallback',
+      reason: 'not_supplied',
+    });
+    expect(checkpoint.manifestSigningDispatch).toMatchObject({
+      status: 'completed',
+      runId: '223344',
+    });
+    expect(checkpoint.stagingAttempt).toMatchObject({
+      status: 'request_ready',
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+      requestSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(checkpoint.stagingSigningDispatch).toMatchObject({
+      status: 'completed',
+      runId: '334455',
     });
     expect(checkpoint.signedManifestIdentity).toMatchObject({
       path: path.join(root, '.local', 'release', 'manifests', `${runtimeSha}.json`),
@@ -311,7 +672,10 @@ esac
     expect(JSON.parse(promoted.stdout).phase).toBe('promoted');
 
     const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
-    expect(operationList.filter((entry) => entry.startsWith('sign:'))).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'manifest-sign-dispatch')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry.startsWith('manifest-sign:'))).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry.startsWith('staging-sign:'))).toHaveLength(1);
     expect(operationList.filter((entry) => entry === 'staging')).toHaveLength(1);
     expect(operationList.filter((entry) => entry === 'promote')).toHaveLength(1);
 
@@ -418,6 +782,248 @@ esac
     const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
     expect(operationList.filter((entry) => entry === 'rc-dispatch')).toHaveLength(1);
     expect(operationList.filter((entry) => entry === 'rc-watch')).toHaveLength(1);
+  });
+
+  it('does not select an unrelated same-SHA RC with a different correlation nonce', () => {
+    const result = run(
+      ['--backend-only'],
+      { ...process.env, GH_RC_DIFFERENT_TITLE: '1' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'dispatched release-candidate workflow run was not uniquely found; refusing automatic redispatch',
+    );
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'rc-dispatch')).toHaveLength(1);
+  });
+
+  it('snapshots and forwards only the exact private protected-main reuse activation', () => {
+    const activation = path.join(fixtureRoot, 'protected-main-reuse-activation.json');
+    const body = Buffer.from('{"schema":"nexus.protected-main-reuse-activation.v1","fixture":true}\n');
+    fs.writeFileSync(activation, body, { mode: 0o600 });
+
+    const result = run(['--backend-only', '--protected-reuse-activation', activation]);
+
+    expect(result.status, result.stderr).toBe(3);
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.protectedReuseActivation).toMatchObject({
+      status: 'forwarded',
+      sizeBytes: body.length,
+      mode: '0600',
+    });
+    expect(checkpoint.protectedReuseActivation.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    const snapshot = checkpoint.protectedReuseActivation.snapshotPath;
+    expect(fs.readFileSync(snapshot)).toEqual(body);
+    expect(fs.statSync(snapshot).mode & 0o777).toBe(0o600);
+    const dispatch = fs.readFileSync(rcDispatchArgs, 'utf8');
+    expect(dispatch).toContain(`protected_reuse_activation_b64=${body.toString('base64')}`);
+  });
+
+  it.each([
+    {
+      name: 'group-readable input',
+      prepare(file: string) {
+        fs.writeFileSync(file, '{"schema":"fixture"}\n', { mode: 0o640 });
+      },
+    },
+    {
+      name: 'oversize input',
+      prepare(file: string) {
+        fs.writeFileSync(file, `${JSON.stringify({ payload: 'x'.repeat(45_001) })}\n`, { mode: 0o600 });
+      },
+    },
+  ])('records explicit full-RC fallback for $name', ({ prepare }) => {
+    const activation = path.join(fixtureRoot, 'unsafe-activation.json');
+    prepare(activation);
+
+    const result = run(['--backend-only', '--protected-reuse-activation', activation]);
+
+    expect(result.status, result.stderr).toBe(3);
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.protectedReuseActivation).toMatchObject({
+      status: 'fallback',
+      reason: 'unsafe_invalid_or_oversize',
+    });
+    expect(fs.readFileSync(rcDispatchArgs, 'utf8')).not.toContain('protected_reuse_activation_b64=');
+  });
+
+  it('blocks checkpointed activation snapshot tamper and post-intent substitution', () => {
+    const activation = path.join(fixtureRoot, 'activation.json');
+    fs.writeFileSync(activation, '{"schema":"activation-a"}\n', { mode: 0o600 });
+    expect(run(['--backend-only', '--protected-reuse-activation', activation]).status).toBe(3);
+    const checkpointPath = path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`);
+    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    const snapshotBody = fs.readFileSync(checkpoint.protectedReuseActivation.snapshotPath);
+    fs.appendFileSync(checkpoint.protectedReuseActivation.snapshotPath, ' ');
+
+    const tampered = run([]);
+    expect(tampered.status).toBe(64);
+    expect(tampered.stderr).toContain('activation snapshot drifted');
+
+    fs.writeFileSync(checkpoint.protectedReuseActivation.snapshotPath, snapshotBody, { mode: 0o600 });
+    const replacement = path.join(fixtureRoot, 'activation-b.json');
+    fs.writeFileSync(replacement, '{"schema":"activation-b"}\n', { mode: 0o600 });
+    const substituted = run(['--protected-reuse-activation', replacement]);
+    expect(substituted.status).toBe(64);
+    expect(substituted.stderr).toContain('differs from the checkpoint binding');
+  });
+
+  it('reconciles manifest-signing dispatch failure without a duplicate protected approval', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, GH_INTERRUPT_AFTER_MANIFEST_DISPATCH: '1' },
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(75);
+    expect(interrupted.stderr).toContain('resume will reconcile without redispatch');
+    const checkpointPath = path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`);
+    const interruptedCheckpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    expect(interruptedCheckpoint.manifestSigningDispatch).toMatchObject({
+      status: 'dispatch_started',
+    });
+    expect(interruptedCheckpoint.manifestSigningDispatch.runId).toBeUndefined();
+
+    const resumed = run([]);
+    expect(resumed.status, resumed.stderr).toBe(3);
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'manifest-sign-dispatch')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'manifest-sign:223344')).toHaveLength(1);
+  });
+
+  it('resumes the exact manifest-signing run after watcher/download interruption', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, MANIFEST_HELPER_INTERRUPT: '1' },
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(75);
+    const checkpointPath = path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`);
+    const interruptedCheckpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    expect(interruptedCheckpoint.manifestSigningDispatch).toMatchObject({
+      status: 'run_identified',
+      runId: '223344',
+    });
+
+    expect(run([]).status).toBe(3);
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'manifest-sign-dispatch')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'manifest-sign:223344')).toHaveLength(2);
+  });
+
+  it('fails closed when manifest-signing correlation is ambiguous', () => {
+    const result = run(
+      ['--backend-only'],
+      { ...process.env, GH_MANIFEST_SIGNING_AMBIGUOUS: '1' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('dispatch correlation is ambiguous');
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'manifest-sign-dispatch')).toHaveLength(1);
+  });
+
+  it('revalidates an already-active exact staging release after an interrupted switch', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, STAGING_INTERRUPT_AFTER_SWITCH: '1' },
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(75);
+    const checkpointPath = path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`);
+    const interruptedCheckpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    const requestId = interruptedCheckpoint.stagingAttempt.requestId;
+    expect(interruptedCheckpoint.stagingAttempt.status).toBe('deploy_started');
+
+    const resumed = run([]);
+    expect(resumed.status, resumed.stderr).toBe(3);
+    const completedCheckpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    expect(completedCheckpoint.stagingAttempt.requestId).toBe(requestId);
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'staging-switch-interrupted')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'staging-resume')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'staging')).toHaveLength(0);
+  });
+
+  it('reconciles staging-signing dispatch failure without duplicate dispatch or restaging', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, GH_INTERRUPT_AFTER_STAGING_DISPATCH: '1' },
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(75);
+    expect(interrupted.stderr).toContain('resume will reconcile without redispatch');
+
+    const resumed = run([]);
+    expect(resumed.status, resumed.stderr).toBe(3);
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'staging')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'staging-sign:334455')).toHaveLength(1);
+  });
+
+  it('blocks a checkpointed staging request from drifting before signing resumes', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, STAGING_HELPER_INTERRUPT: '1' },
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(75);
+    const checkpointPath = path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`);
+    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    fs.appendFileSync(checkpoint.stagingAttempt.requestPath, ' ');
+
+    const resumed = run([]);
+    expect(resumed.status).toBe(64);
+    expect(resumed.stderr).toContain('staging attestation request drifted');
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
+  });
+
+  it('fails closed when staging-signing correlation is ambiguous', () => {
+    const result = run(
+      ['--backend-only'],
+      { ...process.env, GH_STAGING_SIGNING_AMBIGUOUS: '1' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('dispatch correlation is ambiguous');
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'staging')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
+  });
+
+  it('does not reconcile an uncertain staging dispatch to the same UUID with another request digest', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, GH_INTERRUPT_AFTER_STAGING_DISPATCH: '1' },
+    );
+    expect(interrupted.status, interrupted.stderr).toBe(75);
+
+    const resumed = run(
+      [],
+      { ...process.env, GH_STAGING_DIFFERENT_REQUEST_DIGEST: '1' },
+    );
+
+    expect(resumed.status).toBe(1);
+    expect(resumed.stderr).toContain(
+      'sign-staging-attestation.yml run was not uniquely found; refusing automatic redispatch',
+    );
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
+  });
+
+  it('rejects a signed staging payload with the same request UUID but different trust digests', () => {
+    const result = run(
+      ['--backend-only'],
+      { ...process.env, STAGING_HELPER_DIFFERENT_PAYLOAD: '1' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('signed staging attestation installed-tree identity is invalid');
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'staging-sign-dispatch')).toHaveLength(1);
   });
 
   it('rejects signed-manifest content and path drift on resume', () => {

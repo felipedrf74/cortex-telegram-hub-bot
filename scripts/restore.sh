@@ -14,14 +14,13 @@
 #      check on the SQLite DB, print row counts for the most important
 #      tables, and report. Does NOT touch production. Safe to run any time.
 #
-#   2) APPLY (--apply): extract over the live install, replacing dist/,
-#      bot.db, etc. The bot MUST be stopped first (`pm2 stop nexus-hub`)
-#      otherwise the open WAL handle will conflict.
+#   Historical APPLY mode is retired. Production restoration is performed only
+#   by the signed root-owned promotion recovery transaction.
 #
 # Usage:
 #   ./scripts/restore.sh                              # dry-run latest backup
 #   ./scripts/restore.sh /path/to/backup.tar.gz       # dry-run a specific one
-#   ./scripts/restore.sh --apply <path>               # apply (DESTRUCTIVE)
+#   ./scripts/restore.sh --apply <path>               # refused (retired)
 #
 # Designed to run BOTH on the production server (where exact promotion creates
 # the backups) AND on a developer Mac (where you'd test it offline).
@@ -94,6 +93,14 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# Fail before archive extraction, PM2 interaction, filesystem replacement, or
+# database mutation. There is deliberately no test/owner/environment bypass:
+# the signed root-owned transaction is the sole production recovery writer.
+if [ "$APPLY" = true ]; then
+  echo "❌ Direct restore apply is retired. Use the signed root-owned promotion recovery transaction." >&2
+  exit 77
+fi
 
 # Default: latest backup in BACKUP_DIR
 if [ -z "$TARBALL" ]; then
@@ -292,8 +299,7 @@ fi
 if [ "$APPLY" != true ]; then
   echo ""
   echo "✅ Dry-run complete. Backup is healthy and restorable."
-  echo "   To actually restore: ./scripts/restore.sh --apply $TARBALL"
-  echo "   ⚠️  Stop the bot first: pm2 stop nexus-hub"
+  echo "   Production recovery requires the exact signed root-owned transaction."
   exit 0
 fi
 

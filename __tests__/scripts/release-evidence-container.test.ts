@@ -156,6 +156,17 @@ describe('release-evidence-container wrapper', () => {
   it('promotes only the exact staged artifact through the versioned cutover path', () => {
     const operator = readFileSync('scripts/release-operator.sh', 'utf8');
     const promote = readFileSync('scripts/promote-exact-release.sh', 'utf8');
+    const stagingStart = operator.indexOf('  staging)');
+    const stagingEnd = operator.indexOf('  promote)', stagingStart);
+    const staging = operator.slice(stagingStart, stagingEnd);
+    const prepareTarget = staging.indexOf('prepare-staging-runtime-target');
+    const transfer = staging.indexOf('rsync -az --delete', prepareTarget);
+    const trustedVerifier = staging.indexOf("<<'REMOTE_VERIFY_BUNDLE'", transfer);
+    const candidateInstall = staging.indexOf("<<'REMOTE_INSTALL'", trustedVerifier);
+    const rootSeal = staging.indexOf('seal-staging-runtime', candidateInstall);
+    const rootAttest = staging.indexOf('attest-staging-runtime', rootSeal);
+    const evidenceParser = staging.indexOf('node - "$ROOT_STAGING_EVIDENCE"', rootAttest);
+    const stagingRequest = staging.indexOf('release-staging-attestation.mjs request', evidenceParser);
 
     expect(operator).toContain('scripts/promote-exact-release.sh');
     expect(operator).toContain('git status --porcelain=v1 --untracked-files=normal');
@@ -167,13 +178,24 @@ describe('release-evidence-container wrapper', () => {
     expect(promote).toContain('promotion failed after production stop began; restarting the untouched predecessor');
     expect(operator.indexOf('resolve_remote_pm2')).toBeLessThan(operator.indexOf('mkdir -p'));
     expect(operator).toContain('release-installed-tree-attestation.mjs write');
-    expect(operator).toContain('remote-release-preflight.sh');
-    expect(operator).toContain('remote-release-readiness.sh');
-    expect(operator).toContain('--readiness-evidence');
+    expect(stagingStart).toBeGreaterThan(-1);
+    expect(stagingEnd).toBeGreaterThan(stagingStart);
+    expect(prepareTarget).toBeGreaterThan(-1);
+    expect(transfer).toBeGreaterThan(prepareTarget);
+    expect(trustedVerifier).toBeGreaterThan(transfer);
+    expect(candidateInstall).toBeGreaterThan(trustedVerifier);
+    expect(rootSeal).toBeGreaterThan(candidateInstall);
+    expect(rootAttest).toBeGreaterThan(rootSeal);
+    expect(evidenceParser).toBeGreaterThan(rootAttest);
+    expect(stagingRequest).toBeGreaterThan(evidenceParser);
+    expect(staging.slice(trustedVerifier, candidateInstall)).not.toContain('$RELEASE_DIR/scripts/');
+    expect(staging.slice(trustedVerifier, candidateInstall)).not.toContain('release-artifact-manifest.mjs');
+    expect(staging.slice(evidenceParser, stagingRequest))
+      .toContain("record.schema!=='nexus.root-staging-attestation-evidence.v1'");
+    expect(staging.slice(evidenceParser, stagingRequest))
+      .toContain('record.outputDigests?.readinessSha256');
     expect(operator).toContain('scripts/staging-smoke.sh');
     expect(operator).toContain('release-staging-attestation.mjs request');
-    expect(operator).toContain('--retry-connrefused');
-    expect(operator).toContain('delete_staging_apps');
     expect(operator).not.toContain('startOrReload');
     expect(operator).not.toContain('--staging-evidence');
     expect(promote).toContain('--expect-aggregate-digest "$installed_digest"');
@@ -310,6 +332,11 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(raw).toContain('git -C trusted-tooling merge-base --is-ancestor "$RUNTIME_SHA" HEAD');
     expect(raw).toContain('rollback-drill-${{ inputs.request_id }}');
     expect(raw).toContain('${#REQUEST_B64} -le 60000');
+    expect(raw).toContain(
+      'run-name: Sign ${{ inputs.evidence_kind }} ${{ inputs.request_id }} digest ${{ inputs.request_sha256 }}',
+    );
+    expect(raw).toContain('request_sha256:');
+    expect(raw).toContain("digest('hex') !== process.env.REQUEST_SHA256");
     expect(raw.match(/secrets\.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM/g)).toHaveLength(1);
     expect(raw).not.toContain('SERVER_SSH_KEY');
     expect(release).toContain('environment: release-signing');
@@ -319,6 +346,8 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(rc).not.toContain('sign_staging');
     expect(request).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(request).toContain('gh workflow run "$SIGNING_WORKFLOW" --ref "$REF"');
+    expect(request).toContain('-f "request_sha256=$REQUEST_SHA256"');
+    expect(request).toContain('signed staging payload differs from the exact checkpointed request');
     expect(rollbackRequest).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(rollbackRequest).toContain('-f "evidence_kind=rollback_drill"');
     expect(rollbackRequest).toContain('-f "request_sha256=$REQUEST_SHA256"');
@@ -367,8 +396,10 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
       ],
       prepare: (root: string, runtimeSha: string) => {
         writeFileSync(join(root, 'staging-request.json'), JSON.stringify({
-          requestId: '11111111-1111-1111-1111-111111111111',
+          requestId: '11111111-1111-1111-8111-111111111111',
           runtimeSha,
+          installedRuntimeDigest: 'b'.repeat(64),
+          recoveryRuntimeDigest: 'c'.repeat(64),
         }));
         writeFileSync(join(root, 'scripts/release-staging-attestation.mjs'), `
           if (process.argv[2] !== 'validate-request') process.exit(70);
@@ -564,12 +595,14 @@ if (args[0] === 'workflow' && args[1] === 'view') process.exit(0);
 if (args[0] === 'workflow' && args[1] === 'run') {
   const fields = args.flatMap((arg, index) => arg === '-f' ? [args[index + 1]] : []);
   const requestId = fields.find((field) => field.startsWith('request_id=')).slice('request_id='.length);
-  fs.writeFileSync(process.env.FAKE_RUN_ID_FILE, requestId);
+  const requestSha = fields.find((field) => field.startsWith('request_sha256=')).slice('request_sha256='.length);
+  fs.writeFileSync(process.env.FAKE_RUN_ID_FILE, requestId + '\\t' + requestSha);
   process.exit(0);
 }
 if (args[0] === 'run' && args[1] === 'list') {
-  const requestId = fs.readFileSync(process.env.FAKE_RUN_ID_FILE, 'utf8');
-  process.stdout.write(JSON.stringify([{ databaseId: 4242, displayTitle: 'Sign rollback drill ' + requestId }]));
+  const [requestId, requestSha] = fs.readFileSync(process.env.FAKE_RUN_ID_FILE, 'utf8').split('\\t');
+  process.stdout.write(JSON.stringify([{ databaseId: 4242,
+    displayTitle: 'Sign rollback_drill ' + requestId + ' digest ' + requestSha }]));
   process.exit(0);
 }
 if (args[0] === 'run' && args[1] === 'watch') process.exit(0);

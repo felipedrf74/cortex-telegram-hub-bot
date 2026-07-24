@@ -950,8 +950,10 @@ describe('trusted release signing boundary', () => {
 
     expect(Number.parseInt(maliciousRunId, 10)).toBe(29407618419);
     expect(/^[0-9]+$/.test(maliciousRunId)).toBe(false);
+    expect(signer).toContain('request ${{ inputs.request_id }}');
     expect(signer).toContain('[[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]]');
     expect(signer).toContain('[[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]');
+    expect(signer).toContain('[[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]');
     expect(signer).toContain('[[ -n "$IOS_ATTESTATION_BASE64" && ${#IOS_ATTESTATION_BASE64} -le 32768 ]]');
     expect(signer).toContain('[[ "$IOS_ATTESTATION_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]');
     expect(signer).toContain('[[ -n "$IOS_DISTRIBUTION_ATTESTATION_BASE64" && ${#IOS_DISTRIBUTION_ATTESTATION_BASE64} -le 131072 ]]');
