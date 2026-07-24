@@ -63,6 +63,12 @@ const digest=(value)=>crypto.createHash('sha256').update(value).digest('hex');
 const readState=()=>JSON.parse(fs.readFileSync(statePath,'utf8'));
 const writeState=(value)=>fs.writeFileSync(statePath,JSON.stringify(value),{mode:0o600});
 const remoteFile=(value)=>path.join(remoteRoot,digest(value));
+if(name==='ssh-keygen'){
+ if(argv.length!==3||argv[0]!=='-y'||argv[1]!=='-f'
+   ||!process.env.FAKE_GUEST_SSH_PUBLIC_KEY)process.exit(2);
+ process.stdout.write(\`\${process.env.FAKE_GUEST_SSH_PUBLIC_KEY}\\n\`);
+ process.exit(0);
+}
 if(name==='systemctl'){
  const [action,unit]=argv;
  const match=String(unit).match(/@guest-([123])\\.service$/u);
@@ -193,7 +199,7 @@ emit({schema:'nexus.promotion-transaction-journal.v1',transactionId:transaction,
  completedAt:['completed','recovered'].includes(current.status)?'2026-07-24T12:00:10Z':null,
  predecessor:{sha:sourceSha},target:{sha:targetSha},sentryRelease:targetSha,...current});
 `;
-  for (const name of ['ssh', 'scp', 'systemctl']) {
+  for (const name of ['ssh', 'scp', 'ssh-keygen', 'systemctl']) {
     const target = path.join(bin, name);
     fs.writeFileSync(target, executable, { mode: 0o700 });
     fs.chmodSync(target, 0o700);
@@ -447,6 +453,17 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       { nowMs: fixture.nowMs },
     )).toThrow('execution_receipt_binding_mismatch:ssh-loss');
     expect(fs.existsSync(destination)).toBe(false);
+
+    const substitutedKey = structuredClone(fixture.execution);
+    substitutedKey.guestSshClientPublicKeySha256 =
+      fixture.plan.trust.productionSshClientPublicKeySha256;
+    const keyDestination = path.join(root, 'substituted-execution-key-bundle');
+    expect(() => collectBundle(
+      { ...fixture, execution: substitutedKey },
+      keyDestination,
+      { nowMs: fixture.nowMs },
+    )).toThrow('execution_receipt_ssh_client_key_mismatch');
+    expect(fs.existsSync(keyDestination)).toBe(false);
   });
 
   it('rejects recovery beyond 120 seconds and a reboot without a changed guest boot id', () => {
@@ -683,16 +700,17 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       FAKE_KVM_REMOTE: fake.remote,
       FAKE_SOURCE_SHA: fixture.plan.release.sourceSha,
       FAKE_TARGET_SHA: fixture.plan.release.targetSha,
+      FAKE_GUEST_SSH_PUBLIC_KEY: fixture.keys.guestSshClientPublicKey,
     };
     const incomplete = spawnSync(
       process.execPath,
       [
         coordinator,
         'execute',
-        '--plan', path.join(inputs, 'plan.json'),
-        '--authorization', path.join(inputs, 'authorization.json'),
-        '--isolation', path.join(inputs, 'isolation.json'),
-        ...keyArgsFor(inputs),
+        '--plan', path.join(canonicalInputs, 'plan.json'),
+        '--authorization', path.join(canonicalInputs, 'authorization.json'),
+        '--isolation', path.join(canonicalInputs, 'isolation.json'),
+        ...keyArgsFor(canonicalInputs),
       ],
       { encoding: 'utf8', env: executionEnv },
     );
@@ -707,19 +725,120 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
     const privateKey = path.join(canonicalRoot, 'guest-ssh-private-key');
     fs.writeFileSync(privateKey, 'fixture-private-key\n', { mode: 0o600 });
     const output = path.join(canonicalRoot, 'execution');
+    const executeArguments = (key: string, destination: string) => [
+      coordinator,
+      'execute',
+      '--plan', path.join(canonicalInputs, 'plan.json'),
+      '--authorization', path.join(canonicalInputs, 'authorization.json'),
+      '--isolation', path.join(canonicalInputs, 'isolation.json'),
+      ...keyArgsFor(canonicalInputs),
+      '--guest-ssh-private-key', key,
+      '--request-dir', requests,
+      '--output-dir', destination,
+    ];
+
+    const mismatchedKeyOutput = path.join(canonicalRoot, 'mismatched-key-execution');
+    const mismatchedKey = spawnSync(
+      process.execPath,
+      executeArguments(privateKey, mismatchedKeyOutput),
+      {
+        encoding: 'utf8',
+        env: {
+          ...executionEnv,
+          FAKE_GUEST_SSH_PUBLIC_KEY: fixture.keys.guestSshHostPublicKey,
+        },
+      },
+    );
+    expect(mismatchedKey.status).toBe(1);
+    expect(JSON.parse(mismatchedKey.stderr)).toEqual({
+      ok: false,
+      code: 'guest_ssh_private_key_public_key_mismatch',
+    });
+    expect(fs.existsSync(mismatchedKeyOutput)).toBe(false);
+
+    const productionKeyOutput = path.join(canonicalRoot, 'production-key-execution');
+    const productionKey = spawnSync(
+      process.execPath,
+      executeArguments(privateKey, productionKeyOutput),
+      {
+        encoding: 'utf8',
+        env: {
+          ...executionEnv,
+          FAKE_GUEST_SSH_PUBLIC_KEY: fixture.keys.productionSshClientPublicKey,
+        },
+      },
+    );
+    expect(productionKey.status).toBe(1);
+    expect(JSON.parse(productionKey.stderr)).toEqual({
+      ok: false,
+      code: 'production_ssh_private_key_reuse',
+    });
+    expect(fs.existsSync(productionKeyOutput)).toBe(false);
+
+    fs.chmodSync(privateKey, 0o644);
+    const unsafeModeOutput = path.join(canonicalRoot, 'unsafe-mode-execution');
+    const unsafeMode = spawnSync(
+      process.execPath,
+      executeArguments(privateKey, unsafeModeOutput),
+      { encoding: 'utf8', env: executionEnv },
+    );
+    expect(unsafeMode.status).toBe(1);
+    expect(JSON.parse(unsafeMode.stderr)).toEqual({
+      ok: false,
+      code: 'guest_ssh_private_key_unsafe',
+    });
+    expect(fs.existsSync(unsafeModeOutput)).toBe(false);
+    fs.chmodSync(privateKey, 0o600);
+
+    const untrustedKeyDirectory = path.join(canonicalRoot, 'untrusted-key-parent');
+    fs.mkdirSync(untrustedKeyDirectory, { mode: 0o700 });
+    const untrustedKey = path.join(untrustedKeyDirectory, 'guest-key');
+    fs.writeFileSync(untrustedKey, 'fixture-private-key\n', { mode: 0o600 });
+    fs.chmodSync(untrustedKeyDirectory, 0o777);
+    const untrustedKeyOutput = path.join(canonicalRoot, 'untrusted-key-execution');
+    const untrustedKeyResult = spawnSync(
+      process.execPath,
+      executeArguments(untrustedKey, untrustedKeyOutput),
+      {
+        encoding: 'utf8',
+        env: {
+          ...executionEnv,
+          NEXUS_ROLLBACK_DRILL_COORDINATOR_TEST_TRUST_ROOT: canonicalRoot,
+        },
+      },
+    );
+    expect(untrustedKeyResult.status).toBe(1);
+    expect(JSON.parse(untrustedKeyResult.stderr)).toEqual({
+      ok: false,
+      code: 'guest_ssh_private_key_untrusted_path',
+    });
+    expect(fs.existsSync(untrustedKeyOutput)).toBe(false);
+
+    const untrustedOutputParent = path.join(canonicalRoot, 'untrusted-output-parent');
+    fs.mkdirSync(untrustedOutputParent, { mode: 0o700 });
+    fs.chmodSync(untrustedOutputParent, 0o777);
+    const untrustedOutput = path.join(untrustedOutputParent, 'execution');
+    const untrustedOutputResult = spawnSync(
+      process.execPath,
+      executeArguments(privateKey, untrustedOutput),
+      {
+        encoding: 'utf8',
+        env: {
+          ...executionEnv,
+          NEXUS_ROLLBACK_DRILL_COORDINATOR_TEST_TRUST_ROOT: canonicalRoot,
+        },
+      },
+    );
+    expect(untrustedOutputResult.status).toBe(1);
+    expect(JSON.parse(untrustedOutputResult.stderr)).toEqual({
+      ok: false,
+      code: 'execution_output_parent_untrusted_path',
+    });
+    expect(fs.existsSync(untrustedOutput)).toBe(false);
+
     const executeResult = spawnSync(
       process.execPath,
-      [
-        coordinator,
-        'execute',
-        '--plan', path.join(canonicalInputs, 'plan.json'),
-        '--authorization', path.join(canonicalInputs, 'authorization.json'),
-        '--isolation', path.join(canonicalInputs, 'isolation.json'),
-        ...keyArgsFor(canonicalInputs),
-        '--guest-ssh-private-key', privateKey,
-        '--request-dir', requests,
-        '--output-dir', output,
-      ],
+      executeArguments(privateKey, output),
       {
         encoding: 'utf8',
         env: executionEnv,
@@ -732,12 +851,20 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       ok: true,
       command: 'execute',
       testMode: true,
+      guestSshClientPublicKeySha256:
+        fixture.plan.trust.guestSshClientPublicKeySha256,
     }));
     expect(result.outcomes.map((entry: any) => entry.drill)).toEqual([
       'ssh-loss',
       'failed-health',
       'guest-reboot',
     ]);
+    const executionReceipt = JSON.parse(
+      fs.readFileSync(path.join(output, 'execution.json'), 'utf8'),
+    );
+    expect(executionReceipt.guestSshClientPublicKeySha256).toBe(
+      fixture.plan.trust.guestSshClientPublicKeySha256,
+    );
     const reboot = JSON.parse(
       fs.readFileSync(path.join(output, 'guest-reboot.json'), 'utf8'),
     );

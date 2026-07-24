@@ -11,6 +11,7 @@ import {
   buildRollbackRequest,
   canonicalJsonBuffer,
   collectBundle,
+  normalizeSshEd25519PublicKey,
   publicKeyIdentity,
   readBoundedJson,
   readBoundedText,
@@ -268,6 +269,7 @@ function executionBinaries() {
     return {
       ssh: '/usr/bin/ssh',
       scp: '/usr/bin/scp',
+      sshKeygen: '/usr/bin/ssh-keygen',
       systemctl: '/usr/bin/systemctl',
     };
   }
@@ -276,6 +278,7 @@ function executionBinaries() {
   return {
     ssh: path.join(directory, 'ssh'),
     scp: path.join(directory, 'scp'),
+    sshKeygen: path.join(directory, 'ssh-keygen'),
     systemctl: path.join(directory, 'systemctl'),
   };
 }
@@ -309,7 +312,7 @@ function requireCanonicalRegularFile(
   }
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
       || stat.size <= 0 || (maxBytes && stat.size > maxBytes)
-      || (modes && !modes.includes(stat.mode & 0o777))) {
+      || (modes && !modes.includes(stat.mode & 0o7777))) {
     fail(`${label}_unsafe`);
   }
   let resolved;
@@ -319,6 +322,7 @@ function requireCanonicalRegularFile(
     fail(`${label}_unsafe`);
   }
   if (resolved !== requested) fail(`${label}_unsafe`);
+  requireTrustedExecutionPath(requested, label);
   return requested;
 }
 
@@ -338,7 +342,74 @@ function requireCanonicalDirectory(input, label) {
     fail(`${label}_unsafe`);
   }
   if (resolved !== requested) fail(`${label}_unsafe`);
+  requireTrustedExecutionPath(requested, label);
   return requested;
+}
+
+function executionTrustPolicy() {
+  if (!TEST_MODE) return { boundary: '/', uid: 0, gid: 0 };
+  const configured = process.env.NEXUS_ROLLBACK_DRILL_COORDINATOR_TEST_TRUST_ROOT;
+  if (!configured) return null;
+  if (!path.isAbsolute(configured)) fail('test_trust_root_invalid');
+  let boundary;
+  try {
+    boundary = fs.realpathSync(configured);
+  } catch {
+    fail('test_trust_root_invalid');
+  }
+  if (boundary !== configured) fail('test_trust_root_invalid');
+  return {
+    boundary,
+    uid: typeof process.getuid === 'function' ? process.getuid() : -1,
+    gid: typeof process.getgid === 'function' ? process.getgid() : -1,
+  };
+}
+
+function requireTrustedExecutionPath(candidate, label) {
+  const policy = executionTrustPolicy();
+  if (!policy) return;
+  if (policy.boundary !== '/'
+      && candidate !== policy.boundary
+      && !candidate.startsWith(`${policy.boundary}${path.sep}`)) {
+    fail(`${label}_untrusted_path`);
+  }
+  let current = candidate;
+  while (true) {
+    let stat;
+    try {
+      stat = fs.lstatSync(current);
+    } catch {
+      fail(`${label}_untrusted_path`);
+    }
+    if (stat.isSymbolicLink() || stat.uid !== policy.uid || stat.gid !== policy.gid
+        || (stat.mode & 0o022) !== 0) {
+      fail(`${label}_untrusted_path`);
+    }
+    if (current === policy.boundary) break;
+    const parent = path.dirname(current);
+    if (parent === current) fail(`${label}_untrusted_path`);
+    current = parent;
+  }
+}
+
+function validateExecutionInputPaths(values) {
+  for (const [flag, label, maximum] of [
+    ['--plan', 'plan', 1024 * 1024],
+    ['--authorization', 'authorization', 1024 * 1024],
+    ['--isolation', 'isolation', 1024 * 1024],
+    ['--guest-owner-public-key', 'guest_owner_public_key', 16 * 1024],
+    ['--production-owner-public-key', 'production_owner_public_key', 16 * 1024],
+    ['--guest-ssh-client-public-key', 'guest_ssh_client_public_key', 16 * 1024],
+    ['--production-ssh-client-public-key', 'production_ssh_client_public_key', 16 * 1024],
+    ['--guest-ssh-host-public-key', 'guest_ssh_host_public_key', 16 * 1024],
+    ['--production-ssh-host-public-key', 'production_ssh_host_public_key', 16 * 1024],
+    ['--release-evidence-public-key', 'release_evidence_public_key', 16 * 1024],
+  ]) {
+    requireCanonicalRegularFile(required(values, flag), label, {
+      maxBytes: maximum,
+      modes: [0o400, 0o440, 0o444, 0o600, 0o640, 0o644],
+    });
+  }
 }
 
 function prepareExecutionOutput(input) {
@@ -399,12 +470,38 @@ function controllerIdentity(plan) {
 }
 
 function keyMaterial(guestSshHostPublicKey) {
-  const parts = guestSshHostPublicKey.trim().split(/\s+/u);
-  if (parts.length < 2 || parts[0] !== 'ssh-ed25519'
-      || !/^[A-Za-z0-9+/]+={0,2}$/u.test(parts[1])) {
+  try {
+    return normalizeSshEd25519PublicKey(guestSshHostPublicKey);
+  } catch {
     fail('guest_ssh_host_key_material_invalid');
   }
-  return `${parts[0]} ${parts[1]}`;
+}
+
+function verifyGuestSshPrivateKey(binaries, privateKey, plan, isolation, keys) {
+  const result = runProgram(
+    binaries.sshKeygen,
+    ['-y', '-f', privateKey],
+    'guest_ssh_private_key_derivation',
+  );
+  if (Buffer.byteLength(result.stdout, 'utf8') > 16 * 1024) {
+    fail('guest_ssh_private_key_public_key_invalid');
+  }
+  let derived;
+  try {
+    derived = normalizeSshEd25519PublicKey(result.stdout);
+  } catch {
+    fail('guest_ssh_private_key_public_key_invalid');
+  }
+  const declared = normalizeSshEd25519PublicKey(keys.guestSshClientPublicKey);
+  const production = normalizeSshEd25519PublicKey(keys.productionSshClientPublicKey);
+  if (derived === production) fail('production_ssh_private_key_reuse');
+  if (derived !== declared) fail('guest_ssh_private_key_public_key_mismatch');
+  const identity = textKeyIdentity(derived);
+  if (identity !== plan.trust.guestSshClientPublicKeySha256
+      || identity !== isolation.guest.keyIdentities.sshClientPublicKeySha256) {
+    fail('guest_ssh_private_key_identity_mismatch');
+  }
+  return identity;
 }
 
 function sshTarget(overlay) {
@@ -1077,6 +1174,13 @@ function executeSequentialDrills(plan, isolation, keys, values) {
     required(values, '--request-dir'),
     'promotion_request_directory',
   );
+  const guestSshClientPublicKeySha256 = verifyGuestSshPrivateKey(
+    binaries,
+    privateKey,
+    plan,
+    isolation,
+    keys,
+  );
   const outputRoot = prepareExecutionOutput(required(values, '--output-dir'));
   const knownHosts = writeKnownHosts(
     outputRoot,
@@ -1128,6 +1232,7 @@ function executeSequentialDrills(plan, isolation, keys, values) {
     receiptSha256: receiptFile.sha256,
     outcomes: receipt.outcomes,
     testMode: TEST_MODE,
+    guestSshClientPublicKeySha256,
   };
 }
 
@@ -1214,6 +1319,7 @@ function main() {
     };
   }
   if (command === 'execute') {
+    validateExecutionInputPaths(values);
     const plan = readPlan(values);
     const keys = readKeys(values);
     validateKeySet(plan, keys);

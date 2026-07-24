@@ -265,6 +265,7 @@ const EXECUTION_FIELDS = Object.freeze([
   'schema',
   'planId',
   'planSha256',
+  'guestSshClientPublicKeySha256',
   'executionMode',
   'maximumActiveGuests',
   'testMode',
@@ -314,6 +315,7 @@ const MANIFEST_EXECUTION_FIELDS = Object.freeze([
   'executionMode',
   'maximumActiveGuests',
   'testMode',
+  'guestSshClientPublicKeySha256',
   'receiptSha256',
   'completedAt',
 ]);
@@ -574,11 +576,31 @@ export function publicKeyIdentity(pem) {
   }
 }
 
-export function textKeyIdentity(value) {
+export function normalizeSshEd25519PublicKey(value) {
   if (typeof value !== 'string' || value.trim().length < 16 || value.length > 16 * 1024) {
     fail('text_public_key_invalid');
   }
-  return sha256Bytes(Buffer.from(value.trim(), 'utf8'));
+  const trimmed = value.trim();
+  if (/[\r\n]/u.test(trimmed)) fail('text_public_key_invalid');
+  const fields = trimmed.split(/[ \t]+/u);
+  if (fields.length < 2 || fields[0] !== 'ssh-ed25519'
+      || !/^[A-Za-z0-9+/]+={0,2}$/u.test(fields[1])) {
+    fail('text_public_key_invalid');
+  }
+  const material = Buffer.from(fields[1], 'base64');
+  const canonicalBase64 = material.toString('base64').replace(/=+$/u, '');
+  if (fields[1].replace(/=+$/u, '') !== canonicalBase64
+      || material.length !== 51
+      || material.readUInt32BE(0) !== 11
+      || material.subarray(4, 15).toString('ascii') !== 'ssh-ed25519'
+      || material.readUInt32BE(15) !== 32) {
+    fail('text_public_key_invalid');
+  }
+  return `ssh-ed25519 ${canonicalBase64}`;
+}
+
+export function textKeyIdentity(value) {
+  return sha256Bytes(Buffer.from(normalizeSshEd25519PublicKey(value), 'utf8'));
 }
 
 function validateCanonicalReleasePaths(release) {
@@ -1107,10 +1129,12 @@ export function validateKeySet(plan, keys) {
   if (keys.guestOwnerPublicKeyPem.trim() === keys.productionOwnerPublicKeyPem.trim()) {
     fail('production_owner_key_reuse');
   }
-  if (keys.guestSshClientPublicKey.trim() === keys.productionSshClientPublicKey.trim()) {
+  if (normalizeSshEd25519PublicKey(keys.guestSshClientPublicKey)
+      === normalizeSshEd25519PublicKey(keys.productionSshClientPublicKey)) {
     fail('production_ssh_client_key_reuse');
   }
-  if (keys.guestSshHostPublicKey.trim() === keys.productionSshHostPublicKey.trim()) {
+  if (normalizeSshEd25519PublicKey(keys.guestSshHostPublicKey)
+      === normalizeSshEd25519PublicKey(keys.productionSshHostPublicKey)) {
     fail('production_ssh_host_key_reuse');
   }
   return identities;
@@ -1600,6 +1624,7 @@ export function buildExecutionReceipt(
     schema: SCHEMAS.execution,
     planId: plan.planId,
     planSha256: sha256Json(plan),
+    guestSshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
     executionMode: EXECUTION_MODE,
     maximumActiveGuests: 1,
     testMode,
@@ -1637,6 +1662,10 @@ export function validateExecutionReceipt(
   if (execution.schema !== SCHEMAS.execution) fail('execution_receipt_schema_unsupported');
   if (execution.planId !== plan.planId || execution.planSha256 !== sha256Json(plan)) {
     fail('execution_receipt_plan_mismatch');
+  }
+  if (execution.guestSshClientPublicKeySha256
+      !== plan.trust.guestSshClientPublicKeySha256) {
+    fail('execution_receipt_ssh_client_key_mismatch');
   }
   if (execution.executionMode !== EXECUTION_MODE || execution.maximumActiveGuests !== 1) {
     fail('execution_receipt_mode_invalid');
@@ -1808,6 +1837,7 @@ function buildManifest(
       executionMode: execution.executionMode,
       maximumActiveGuests: execution.maximumActiveGuests,
       testMode: execution.testMode,
+      guestSshClientPublicKeySha256: execution.guestSshClientPublicKeySha256,
       receiptSha256: sha256Bytes(canonicalJsonBuffer(execution)),
       completedAt: execution.completedAt,
     },
@@ -1857,6 +1887,10 @@ function validateManifestShape(manifest) {
     fail('manifest_execution_invalid');
   }
   assertDigest(manifest.execution.receiptSha256, 'manifest_execution_receipt_digest_invalid');
+  assertDigest(
+    manifest.execution.guestSshClientPublicKeySha256,
+    'manifest_execution_ssh_client_key_digest_invalid',
+  );
   parseIso(manifest.execution.completedAt, 'manifest_execution_completed_at_invalid');
   assertExactFields(manifest.restore, MANIFEST_RESTORE_FIELDS, 'manifest_restore');
   if (manifest.restore.schemaVersion !== SCHEMAS.restore) fail('manifest_restore_schema_invalid');

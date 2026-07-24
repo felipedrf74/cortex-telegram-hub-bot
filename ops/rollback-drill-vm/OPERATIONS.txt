@@ -257,6 +257,18 @@ nexus-rollback-drill-vm@guest-N.service units:
     --request-dir <three-owner-signed-drill-envelopes> \
     --output-dir <new-private-evidence-directory>
 
+Before execution, place every file argument and the request directory below a
+canonical root-owned path whose complete parent chain is not group/world
+writable. The dedicated lab SSH private key must be a root-owned, single-link
+regular file with mode 0400 or 0600. The output directory must not exist and
+its canonical parent must have the same root-trusted chain. The coordinator
+uses the reviewed absolute `/usr/bin/ssh-keygen -y` to derive the private key's
+Ed25519 public material and requires it to equal the normalized
+`ssh-ed25519 <base64>` material in `--guest-ssh-client-public-key`. Its digest
+must also equal the plan and isolation identities. A production key, a
+different lab key, an unsafe mode/owner, or a writable parent fails before the
+evidence directory or any guest is created.
+
 The request directory contains exactly ssh-loss.envelope.json,
 failed-health.envelope.json, and guest-reboot.envelope.json. Each is a
 short-lived owner-signed promotion request bound to the plan's exact
@@ -275,7 +287,8 @@ can finish and does not start the next overlay.
 
 Keep execution.json with all three outcome files. Each outcome binds the exact
 receipt digest plus executionMode and testMode; the receipt binds the ordered
-outcome payload digests, exact plan, single-guest maximum, and completion time.
+outcome payload digests, exact plan, normalized guest SSH client-key digest,
+single-guest maximum, and completion time.
 The evidence collect command requires --execution <execution.json>, revalidates
 every bidirectional binding, and rejects testMode=true before creating a
 machine-evidence directory. Verification requires the same canonical receipt

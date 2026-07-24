@@ -17,6 +17,17 @@ import {
 const digest = (label: string) => createHash('sha256').update(label).digest('hex');
 const iso = (milliseconds: number) => new Date(milliseconds).toISOString();
 
+function deterministicSshEd25519PublicKey(label: string, comment: string) {
+  const algorithm = Buffer.from('ssh-ed25519', 'ascii');
+  const key = createHash('sha256').update(label).digest();
+  const material = Buffer.alloc(4 + algorithm.length + 4 + key.length);
+  material.writeUInt32BE(algorithm.length, 0);
+  algorithm.copy(material, 4);
+  material.writeUInt32BE(key.length, 4 + algorithm.length);
+  key.copy(material, 8 + algorithm.length);
+  return `ssh-ed25519 ${material.toString('base64')} ${comment}`;
+}
+
 function compatibility(label: string) {
   return {
     schemaVersion: 'NexusApplicationRestoreCompatibilityV1',
@@ -145,10 +156,22 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     type: 'spki',
     format: 'pem',
   }).toString();
-  const guestSshClientPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuestClientOnly drill@guest';
-  const productionSshClientPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProductionClient prod@server';
-  const guestSshHostPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuestHostOnly root@guest';
-  const productionSshHostPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProductionHost root@server';
+  const guestSshClientPublicKey = deterministicSshEd25519PublicKey(
+    'guest-client-only',
+    'drill@guest',
+  );
+  const productionSshClientPublicKey = deterministicSshEd25519PublicKey(
+    'production-client',
+    'prod@server',
+  );
+  const guestSshHostPublicKey = deterministicSshEd25519PublicKey(
+    'guest-host-only',
+    'root@guest',
+  );
+  const productionSshHostPublicKey = deterministicSshEd25519PublicKey(
+    'production-host',
+    'root@server',
+  );
   const planId = 'kvm-drill-20260724T120000Z-abcdef123456';
   const baselineSnapshotSha256 = digest('canonical-ubuntu-baseline');
   const targetSha = '3a49f86564f5e9f9523397debb1cf54cecab391c';
