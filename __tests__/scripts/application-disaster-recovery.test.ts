@@ -676,13 +676,13 @@ describe('Nexus application disaster-recovery assets', () => {
     };
     const listing = path.join(root, 'listing.json');
     const script = [
-      'NEXUS_DR_PYTHON_BIN="$1"',
+      'NEXUS_DR_PYTHON_BIN="${NEXUS_FIXTURE_PYTHON:?}"',
       'NEXUS_DR_S3_BUCKET=nexus-recovery',
-      'tmp_dir="$2"',
-      'first_page="$3"',
-      'second_page="$4"',
-      'prefix="$5"',
-      'listing="$6"',
+      'tmp_dir="${NEXUS_FIXTURE_ROOT:?}"',
+      'first_page="${NEXUS_FIXTURE_FIRST_PAGE:?}"',
+      'second_page="${NEXUS_FIXTURE_SECOND_PAGE:?}"',
+      'prefix="${NEXUS_FIXTURE_PREFIX:?}"',
+      'listing="${NEXUS_FIXTURE_LISTING:?}"',
       'die() { printf "%s\\n" "$*" >&2; exit 1; }',
       backup.slice(decoderStart, decoderEnd),
       backup.slice(listStart, listEnd),
@@ -697,17 +697,19 @@ describe('Nexus application disaster-recovery assets', () => {
       '}',
       'list_versioned_objects "$prefix" "$listing" database',
     ].join('\n');
-    const result = spawnSync('/bin/bash', [
-      '-c',
-      script,
-      'nexus-dr-pagination-fixture',
-      python,
-      root,
-      JSON.stringify(firstPage),
-      JSON.stringify(secondPage),
-      prefix,
-      listing,
-    ], { encoding: 'utf8' });
+    const result = spawnSync('/bin/bash', ['-s', '--'], {
+      encoding: 'utf8',
+      input: script,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        NEXUS_FIXTURE_PYTHON: python,
+        NEXUS_FIXTURE_ROOT: root,
+        NEXUS_FIXTURE_FIRST_PAGE: JSON.stringify(firstPage),
+        NEXUS_FIXTURE_SECOND_PAGE: JSON.stringify(secondPage),
+        NEXUS_FIXTURE_PREFIX: prefix,
+        NEXUS_FIXTURE_LISTING: listing,
+      },
+    });
     expect(result.status, result.stderr).toBe(0);
     const value = JSON.parse(fs.readFileSync(listing, 'utf8'));
     expect(value.pages).toHaveLength(2);
