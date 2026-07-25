@@ -1091,6 +1091,94 @@ activation envelope is created by implementation itself; with the currently
 available one eligible production comparison, the path remains shadow-only at
 1/5.
 
+## Inactive v2 production-layout normalization substrate
+
+The repository contains a deliberately unreachable, production-only bridge for
+the exact installed e168 promotion v2 control and strict attestor identities:
+
+- `scripts/trusted-release-runtime-attestation-v2-bridge.mjs` accepts a legacy
+  installed-tree identity only for the exact predecessor named by one
+  owner-signed, single-use, active promotion request. The request's ordinary
+  release manifest and staging attestation must also verify under the current
+  production release-evidence key before any filesystem metadata changes.
+- The strict target never receives a legacy exception. Its artifact,
+  network-independent dependency evidence, installed-tree identity, and
+  inventory are verified read-only first. During strict target sealing only,
+  the shared production `.env` changes from the exact legacy
+  worker:worker `0600` policy to root:worker `0440`. The bridge first requires
+  the production base's parent to be a canonical root-owned directory with no
+  group/world write bit. It then binds every source entry by device, inode,
+  link count, type, owner, group, and mode; opens non-symlinks with
+  `O_NOFOLLOW`; preflights the complete runtime and environment graph; pins the
+  base root-only at mode `0700`; locks every descendant directory
+  shallow-first; re-proves the complete graph; and re-proves each original
+  logical ancestor chain before and after descriptor-bound changes. The base
+  receives its final metadata only after all descendants. It then copies the
+  frozen source into fresh root-owned inodes.
+  The original runtime and environment are quarantined before atomic
+  name replacement. A writable descriptor retained by the application
+  therefore refers only to the quarantined/unlinked source and cannot mutate
+  the sealed target. Later strict verification requires `0440`.
+- Before the first runtime metadata change, the bridge fsyncs a private
+  transaction/authority/runtime/inode-bound normalization journal. Every
+  freeze, rematerialization, runtime swap, environment swap, and commit
+  checkpoint is replaced atomically and parent-directory fsynced. Every
+  `seal` or `verify` invocation runs recovery first; boot/start recovery may
+  also call `recover-normalization`. A committed checkpoint is finished
+  idempotently. Any earlier checkpoint restores the exact verified bytes and
+  original owner/group/mode tuple, or leaves the durable journal fail-closed
+  when an adversarial path replacement makes exact recovery impossible.
+- A predecessor under the modern environment is readable only while the same
+  accepted transaction is in `recovery_required`, or is `running` in the
+  `recovering` phase. A terminal recovered predecessor remains blocked and
+  requires a new owner-authorized remediation. An expired bridge envelope is
+  usable only when it was durably accepted before expiry and the allowed
+  nonterminal journal now exists.
+- `scripts/remote-v2-normalization-attestor-install.sh` is an exact-SHA/PAX
+  source-bound, root transaction. It pins the e168 v2 control and replaced
+  attestor hashes, requires the control to be idle, and holds both the
+  descriptor-reproved root:root `0600` promotion control lock and the existing
+  root:dominguez `0660` release/Sonar mutex through receipt publication,
+  rollback, and marker removal. Under those locks it requires the recovery
+  service and every promotion transaction unit to be provably inactive,
+  repeats that check immediately before either attestor swap, and fails closed
+  if systemd state cannot be queried.
+- Install and strict restore publish a root-owned mode-`0600` maintenance
+  marker both in bridge state and at the control plane's existing
+  `bootstrap-in-progress.v1` boundary. Promotion systemd units therefore stay
+  disabled across process death or reboot until the reviewed recovery command
+  finishes or rolls back the exact transaction. Only the same exact-SHA
+  normalization installer `recover` command may interpret and clear that
+  maintenance schema; the general promotion bootstrap must remain fail-closed
+  rather than treating it as its own bootstrap journal. Installation preserves
+  the strict attestor and journals before replacement. A durable active receipt
+  is finished rather than spuriously rolled back. Strict restoration writes
+  and fsyncs its own bridge/strict/receipt-bound journal before the swap, then
+  resumes an exact terminal restore or restores the bridge at every earlier
+  phase. Strict restoration additionally requires completed promotion, v3
+  escrow, observed 60-second soak, exact target, and production `0440`
+  environment evidence.
+
+This substrate is not an activation path. Nothing installs a service, sudoers
+entry, signer hook, release-operator command, selector, PM2 process, or
+scheduler, and no current release command can create its
+`v2_layout_normalization` owner envelope. Staging normalization is intentionally
+absent: it requires its own owner-signed request and independent journal rather
+than reusing production authority. Before activation, a separate reviewed
+change must prove the two-phase PM2 boot-authority handover with at most one
+daemon, install the authorization creator without exposing owner keys, and
+adopt selectors only after terminal success. Until all three contracts and a
+fault-injection rehearsal exist, installing this bridge in any environment is
+prohibited.
+
+The currently observed legacy production base below `/home/dominguez` does not
+meet the root-exclusive-parent prerequisite because its parent is application
+owned. The bridge intentionally rejects that layout before creating a
+normalization journal or changing runtime metadata. Activation therefore also
+requires a separately reviewed move to a root-exclusive parent (for example,
+the governed `/srv/nexus-release` layout); weakening the parent check or
+normalizing the existing home-directory path in place is not permitted.
+
 ## Required Sequence
 
 1. Start from a clean reviewed runtime SHA.
