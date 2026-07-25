@@ -292,10 +292,74 @@ describe('rollback-drill KVM provisioner', () => {
     expect(accepted.status, accepted.stderr).toBe(0);
     expect(verify(25 * 1024 * 1024 - 1, '0.5').status).not.toBe(0);
     expect(verify(26 * 1024 * 1024, '6.0').status).not.toBe(0);
+    expect(hostPreflight).not.toContain('--kernel');
     expect(hostPreflight).toContain("--since='24 hours ago'");
     expect(hostPreflight).toContain(
       'kernel OOM evidence exists in the last 24 hours',
     );
+  });
+
+  it('distinguishes an empty kernel OOM match set from a journal query failure', () => {
+    const helper = hostPreflight.match(
+      /(assert_no_recent_kernel_oom\(\) \{[\s\S]*?\n\})\nassert_no_recent_kernel_oom/,
+    )?.[1];
+    expect(helper).toBeTruthy();
+
+    const root = temporaryRoot();
+    const fakeBin = join(root, 'bin');
+    const journalctl = join(fakeBin, 'journalctl');
+    const argsFile = join(root, 'journalctl-args');
+    mkdirSync(fakeBin, { mode: 0o700 });
+    writeFileSync(
+      journalctl,
+      [
+        '#!/usr/bin/env bash',
+        'printf "%s\\n" "$@" >"$JOURNAL_ARGS_FILE"',
+        'case "${JOURNAL_MODE:-empty}" in',
+        '  empty) exit 0 ;;',
+        '  oom) printf "%s\\n" "worker invoked oom-killer"; exit 0 ;;',
+        '  unavailable) exit 2 ;;',
+        '  *) exit 64 ;;',
+        'esac',
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+    const harness = [
+      'set -euo pipefail',
+      'die() { echo "$*" >&2; exit 1; }',
+      helper!,
+      'assert_no_recent_kernel_oom',
+      '',
+    ].join('\n');
+    const exercise = (mode: 'empty' | 'oom' | 'unavailable') =>
+      spawnSync('bash', ['-c', harness], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          JOURNAL_ARGS_FILE: argsFile,
+          JOURNAL_MODE: mode,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+        },
+      });
+
+    const empty = exercise('empty');
+    expect(empty.status, empty.stderr).toBe(0);
+    const args = readFileSync(argsFile, 'utf8').split('\n');
+    expect(args).toContain('-k');
+    expect(args).toContain("--since=24 hours ago");
+    expect(args).toContain('--output=cat');
+    expect(args).not.toContain('--grep');
+
+    const oom = exercise('oom');
+    expect(oom.status).not.toBe(0);
+    expect(oom.stderr).toContain(
+      'kernel OOM evidence exists in the last 24 hours',
+    );
+
+    const unavailable = exercise('unavailable');
+    expect(unavailable.status).not.toBe(0);
+    expect(unavailable.stderr).toContain('kernel OOM history is unavailable');
   });
 
   it('rejects missing, duplicate, spoofed, and contended inherited shared-lock descriptors', () => {
