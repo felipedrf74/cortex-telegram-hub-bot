@@ -1,7 +1,12 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto';
+import {
+  createHash,
+  createPublicKey,
+  verify as verifySignature,
+} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   DRILL_NAMES,
@@ -29,6 +34,8 @@ const RUNTIME_AUTHORIZATION_SCHEMA =
 const RUNTIME_READINESS_SCHEMA =
   'nexus.rollback-drill-vm-runtime-readiness.v2';
 const PROMOTION_REQUEST_SCHEMA = 'nexus.promotion-transaction-request.v1';
+const ORDINARY_RELEASE_KEY_ID = 'github-environment-release-signing-2026-07';
+const toolingRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const FULL_SHA = /^[0-9a-f]{40}$/u;
 const DIGEST = /^[0-9a-f]{64}$/u;
@@ -593,7 +600,81 @@ function keyIdentities(keys) {
       === identities.productionSshHostPublicKeySha256) {
     fail('production_ssh_host_key_reuse');
   }
+  const productionReleasePublicKey = readBoundedText(
+    path.join(toolingRoot, 'docs/release/evidence/release-evidence-public-key.pem'),
+    'production_release_evidence_key',
+    16 * 1024,
+  );
+  if (identities.releaseEvidencePublicKeySha256
+      === publicKeyIdentity(productionReleasePublicKey)) {
+    fail('production_release_evidence_key_reuse');
+  }
   return identities;
+}
+
+function validateDrillReleaseEvidence(spec, specPath, keys) {
+  const manifestBody = readRegularFile(
+    resolveSpecPath(
+      specPath,
+      spec.releaseEvidence.releaseManifest,
+      'release_manifest',
+    ),
+    'release_manifest',
+  );
+  const stagingBody = readRegularFile(
+    resolveSpecPath(
+      specPath,
+      spec.releaseEvidence.stagingAttestation,
+      'staging_attestation',
+    ),
+    'staging_attestation',
+  );
+  let manifest;
+  let staging;
+  try {
+    manifest = JSON.parse(manifestBody.toString('utf8'));
+    staging = JSON.parse(stagingBody.toString('utf8'));
+  } catch {
+    fail('drill_release_evidence_json_invalid');
+  }
+  const publicKey = createPublicKey(keys.releaseEvidencePublicKeyPem);
+  for (const [envelope, schema, label] of [
+    [manifest, 'nexus.release-manifest.v2', 'manifest'],
+    [staging, 'nexus.staging-attestation.v1', 'staging'],
+  ]) {
+    exactObject(
+      envelope,
+      ['schema', 'keyId', 'signatureAlgorithm', 'payload', 'signature'],
+      `drill_release_${label}`,
+    );
+    const signature = Buffer.from(envelope.signature ?? '', 'base64');
+    if (envelope.schema !== schema
+        || envelope.keyId !== ORDINARY_RELEASE_KEY_ID
+        || envelope.signatureAlgorithm !== 'ed25519'
+        || signature.length !== 64
+        || signature.toString('base64') !== envelope.signature
+        || !verifySignature(
+          null,
+          Buffer.from(canonicalJson(envelope.payload)),
+          publicKey,
+          signature,
+        )) {
+      fail(`drill_release_${label}_signature_invalid`);
+    }
+  }
+  if (manifest.payload?.runtimeSha !== spec.release.targetSha
+      || manifest.payload?.artifact?.digest
+        !== spec.release.target.artifactDigest
+      || staging.payload?.runtimeSha !== spec.release.targetSha
+      || staging.payload?.artifactDigest !== spec.release.target.artifactDigest
+      || staging.payload?.installedRuntimeDigest
+        !== spec.release.target.installedRuntimeDigest
+      || staging.payload?.recoveryRuntimeDigest
+        !== spec.release.target.recoveryRuntimeDigest
+      || staging.payload?.releaseManifestSha256 !== sha256Bytes(manifestBody)) {
+    fail('drill_release_evidence_binding_invalid');
+  }
+  return { manifestBody, stagingBody };
 }
 
 function readIdentityFile(specPath, candidate, label) {
@@ -891,6 +972,7 @@ function prepare(specPath, requestedOutputDirectory) {
     readBoundedJson(provisionPath, 'provision_receipt'),
   );
   const keys = loadKeys(spec, specPath);
+  validateDrillReleaseEvidence(spec, specPath, keys);
   const { plan, provisionSha256 } = buildPlan(
     spec,
     specPath,
@@ -1386,6 +1468,7 @@ function authorize(specPath, planPath, requestedOutputDirectory) {
   const plan = readBoundedJson(planPath, 'plan');
   assertPlanMatchesSpec(plan, spec);
   const keys = loadKeys(spec, specPath);
+  validateDrillReleaseEvidence(spec, specPath, keys);
   const identities = keyIdentities(keys);
   if (identities.guestOwnerPublicKeySha256
       !== plan.trust.guestOwnerPublicKeySha256) {

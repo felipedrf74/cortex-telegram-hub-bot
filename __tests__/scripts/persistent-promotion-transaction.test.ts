@@ -1538,6 +1538,188 @@ printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-comp
     });
   });
 
+  it('rejects owner-valid drill-key release evidence before application-runtime mutation', () => {
+    const productionEvidence = generateKeyPairSync('ed25519');
+    const drillEvidence = generateKeyPairSync('ed25519');
+    const signedInnerEvidence = (
+      schema: string,
+      payload: Record<string, unknown>,
+    ) => ({
+      schema,
+      keyId: 'github-environment-release-signing-2026-07',
+      signatureAlgorithm: 'ed25519',
+      payload,
+      signature: cryptoSign(
+        null,
+        Buffer.from(canonicalJson(payload)),
+        drillEvidence.privateKey,
+      ).toString('base64'),
+    });
+    const manifestPayload = {
+      runtimeSha: 'b'.repeat(40),
+      packageVersion: '4.14.231',
+      artifact: {
+        digest: 'c'.repeat(64),
+        fileCount: 0,
+        files: [],
+      },
+    };
+    const drillManifestBody = Buffer.from(`${JSON.stringify(signedInnerEvidence(
+      'nexus.release-manifest.v2',
+      manifestPayload,
+    ), null, 2)}\n`);
+    const stagingPayload = {
+      requestId: '11111111-1111-4111-8111-111111111111',
+      runtimeSha: 'b'.repeat(40),
+      artifactDigest: 'c'.repeat(64),
+      releaseManifestSha256:
+        createHash('sha256').update(drillManifestBody).digest('hex'),
+      installedRuntimeDigest: 'd'.repeat(64),
+      recoveryRuntimeDigest: '9'.repeat(64),
+    };
+    const drillStagingBody = Buffer.from(`${JSON.stringify(signedInnerEvidence(
+      'nexus.staging-attestation.v1',
+      stagingPayload,
+    ), null, 2)}\n`);
+    writeRequest({
+      releaseEvidence: {
+        releaseManifestBase64: drillManifestBody.toString('base64'),
+        releaseManifestSha256:
+          createHash('sha256').update(drillManifestBody).digest('hex'),
+        stagingAttestationBase64: drillStagingBody.toString('base64'),
+        stagingAttestationSha256:
+          createHash('sha256').update(drillStagingBody).digest('hex'),
+      },
+    });
+    signRequest();
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+
+    const fixture = path.join(root, 'drill-evidence-production-fixture');
+    const production = path.join(fixture, 'production');
+    const previous = path.join(production, 'releases', 'previous-runtime');
+    const target = path.join(production, 'releases', 'target-runtime');
+    const current = path.join(production, 'current');
+    const fixtureBin = path.join(fixture, 'bin');
+    const fixtureTmp = path.join(fixture, 'tmp');
+    fs.mkdirSync(previous, { recursive: true, mode: 0o750 });
+    fs.mkdirSync(target, { recursive: true, mode: 0o750 });
+    fs.mkdirSync(fixtureBin, { mode: 0o700 });
+    fs.mkdirSync(fixtureTmp, { mode: 0o700 });
+    const runtimeMetadata = [
+      path.join(previous, '.complete.json'),
+      path.join(previous, '.nexus-installed-runtime.json'),
+      path.join(target, '.complete.json'),
+      path.join(target, '.nexus-installed-runtime.json'),
+    ];
+    runtimeMetadata.forEach((file, index) => {
+      fs.writeFileSync(file, `fixture-runtime-metadata-${index}\n`, { mode: 0o640 });
+    });
+    fs.chmodSync(previous, 0o750);
+    fs.chmodSync(target, 0o750);
+    fs.symlinkSync(previous, current);
+    const before = {
+      current: fs.realpathSync(current),
+      runtimeModes: [previous, target].map((directory) =>
+        fs.statSync(directory).mode & 0o777),
+      metadata: runtimeMetadata.map((file) => ({
+        body: fs.readFileSync(file),
+        mode: fs.statSync(file).mode & 0o777,
+      })),
+    };
+
+    const mutationLog = path.join(fixture, 'application-runtime-mutation.log');
+    const attestor = path.join(fixtureBin, 'trusted-attestor.cjs');
+    fs.writeFileSync(attestor, `const fs=require('node:fs');
+const args=process.argv.slice(2),mode=args[0],rootIndex=args.indexOf('--root');
+const runtime=args[rootIndex+1];
+fs.appendFileSync(process.env.MUTATION_LOG,\`trusted_attest \${mode} \${runtime}\\n\`);
+fs.chmodSync(runtime,0o700);
+fs.writeFileSync(runtime+'/.complete.json','mutated\\n');
+`, { mode: 0o700 });
+    const pm2 = path.join(fixtureBin, 'pm2');
+    fs.writeFileSync(pm2, `#!/usr/bin/env bash
+printf 'pm2 %s\\n' "$*" >> "$MUTATION_LOG"
+exit 99
+`, { mode: 0o700 });
+    const selector = path.join(fixtureBin, 'selector.py');
+    fs.writeFileSync(selector, `#!/usr/bin/env python3
+import os
+with open(os.environ["MUTATION_LOG"], "a", encoding="utf-8") as handle:
+    handle.write("selector\\n")
+raise SystemExit(99)
+`, { mode: 0o700 });
+    const worker = path.join(fixtureBin, 'worker');
+    fs.writeFileSync(worker, `#!/usr/bin/env bash
+printf 'worker %s\\n' "$*" >> "$MUTATION_LOG"
+exit 99
+`, { mode: 0o700 });
+    const unshare = path.join(fixtureBin, 'unshare');
+    fs.writeFileSync(unshare, `#!/usr/bin/env bash
+while [ $# -gt 0 ] && [[ "$1" == --* ]]; do shift; done
+exec "$@"
+`, { mode: 0o700 });
+    const isolatedBash = path.join(fixtureBin, 'isolated-bash');
+    fs.writeFileSync(isolatedBash, `#!/usr/bin/env bash
+[ "\${1:-}" = -c ] || exit 64
+shift 6
+exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent \
+  TMPDIR=${JSON.stringify(fixtureTmp)} "$@"
+`, { mode: 0o700 });
+    const productionPublicKey = path.join(fixture, 'production-release-public.pem');
+    fs.writeFileSync(
+      productionPublicKey,
+      productionEvidence.publicKey.export({ type: 'spki', format: 'pem' }),
+      { mode: 0o600 },
+    );
+    const workerUser = spawnSync('id', ['-un'], { encoding: 'utf8' }).stdout.trim();
+    expect(workerUser).not.toBe('');
+
+    const result = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        NEXUS_PROMOTION_TEST_ROOT: fixture,
+        NEXUS_PROMOTION_TEST_EXERCISE_RELEASE_EVIDENCE_PREFLIGHT: '1',
+        NEXUS_PROMOTION_TEST_EXERCISE_TRUSTED_ATTESTOR: '1',
+        NEXUS_PROMOTION_WORKER_USER: workerUser,
+        NEXUS_PROMOTION_UNSHARE_BIN: unshare,
+        NEXUS_PROMOTION_BASH_BIN: isolatedBash,
+        NEXUS_PROMOTION_SETPRIV_BIN: '/usr/bin/true',
+        NEXUS_PROMOTION_RECOVERY_RUNTIME_BIN:
+          path.resolve('scripts/application-dr-recovery-runtime.mjs'),
+        NEXUS_PROMOTION_RECOVERY_IDENTITY_BIN:
+          path.resolve('scripts/release-recovery-runtime-identity.mjs'),
+        NEXUS_PROMOTION_RELEASE_EVIDENCE_PUBLIC_KEY: productionPublicKey,
+        NEXUS_PROMOTION_TRUSTED_ATTESTOR: attestor,
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: worker,
+        NEXUS_PROMOTION_SELECTOR_SWITCH: selector,
+        MUTATION_LOG: mutationLog,
+      }),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('release manifest signature is invalid');
+    expect(fs.existsSync(mutationLog)).toBe(false);
+    expect(fs.realpathSync(current)).toBe(before.current);
+    expect([previous, target].map((directory) =>
+      fs.statSync(directory).mode & 0o777)).toEqual(before.runtimeModes);
+    runtimeMetadata.forEach((file, index) => {
+      expect(fs.readFileSync(file)).toEqual(before.metadata[index].body);
+      expect(fs.statSync(file).mode & 0o777).toBe(before.metadata[index].mode);
+    });
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'cutover-timing.json'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'recovery-runtime-descriptor.json')))
+      .toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8')))
+      .toMatchObject({
+        phase: 'preflight',
+        status: 'failed_before_stop',
+        message: 'exact_runtime_preparation_or_preflight_failed',
+      });
+  });
+
   it.each([
     ['a different transaction escrow ID', {
       DR_ESCROW_ID_OVERRIDE: '20260722T120001Z-1235-fedcba654321',
@@ -2690,8 +2872,13 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
       'prepare_recovery_descriptor_unprivileged',
       descriptorResumeIndex,
     );
+    const firstRuntimeSealIndex = brokerSource.indexOf(
+      'trusted_attest seal "$PREDECESSOR_RUNTIME"',
+      descriptorRebuildIndex,
+    );
     expect(descriptorResumeIndex).toBeGreaterThan(-1);
     expect(descriptorRebuildIndex).toBeGreaterThan(descriptorResumeIndex);
+    expect(firstRuntimeSealIndex).toBeGreaterThan(descriptorRebuildIndex);
     expect(brokerSource.slice(descriptorResumeIndex, descriptorRebuildIndex))
       .toContain('root:root:600:1');
     expect(brokerSource.slice(descriptorResumeIndex, descriptorRebuildIndex))

@@ -8,8 +8,9 @@ source "$ROOT/scripts/lib/release-gates.sh"
 COMMAND="${1:-status}"
 [ $# -gt 0 ] && shift
 usage() {
-  echo "Usage: scripts/release-operator.sh <prepare|staging|promote|status|resume> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request] [--request-id <uuid>] [--coordinator-checkpoint <file>]"
+  echo "Usage: scripts/release-operator.sh <prepare|staging|drill-staging|promote|status|resume> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request] [--request-id <uuid>] [--coordinator-checkpoint <file>] [--acknowledge-first-drill-bootstrap]"
   echo "       prepare requires exactly one contract scope: --backend-only OR --includes-ios --ios-sha <sha> --ios-build-number <number> --ios-contract-result passed"
+  echo "       drill-staging is fail-closed until the governed control-v2 legacy-base adapter lands"
   echo "       resume coordinates RC -> signing -> staging -> explicit owner stop -> promotion with a local checkpoint"
 }
 if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ]; then usage; exit 0; fi
@@ -27,6 +28,7 @@ IOS_BUILD_NUMBER=""
 IOS_CONTRACT_RESULT=""
 STAGING_REQUEST_ID=""
 COORDINATOR_CHECKPOINT=""
+ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
@@ -36,6 +38,10 @@ while [ $# -gt 0 ]; do
     --no-sign-request) SIGN_REQUEST=0; shift ;;
     --request-id) STAGING_REQUEST_ID="$2"; shift 2 ;;
     --coordinator-checkpoint) COORDINATOR_CHECKPOINT="$2"; shift 2 ;;
+    --acknowledge-first-drill-bootstrap)
+      ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP=true
+      shift
+      ;;
     --backend-only)
       [ -z "$CONTRACT_SCOPE" ] || { echo "release contract scope may be specified only once" >&2; exit 64; }
       CONTRACT_SCOPE="backend_only"
@@ -58,8 +64,13 @@ if [ "$COMMAND" != "prepare" ] && [ -n "$CONTRACT_SCOPE$IOS_SHA$IOS_BUILD_NUMBER
   echo "release contract scope arguments are valid only for release:prepare" >&2
   exit 64
 fi
-if [ "$COMMAND" != "staging" ] && [ -n "$STAGING_REQUEST_ID$COORDINATOR_CHECKPOINT" ]; then
-  echo "staging request identity arguments are valid only for release:staging" >&2
+if [ "$COMMAND" != "staging" ] && [ "$COMMAND" != "drill-staging" ] \
+    && [ -n "$STAGING_REQUEST_ID$COORDINATOR_CHECKPOINT" ]; then
+  echo "staging request identity arguments are valid only for release:staging or release:drill-staging" >&2
+  exit 64
+fi
+if [ "$COMMAND" != "drill-staging" ] && [ "$ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP" = true ]; then
+  echo "--acknowledge-first-drill-bootstrap is valid only for release:drill-staging" >&2
   exit 64
 fi
 [ -z "$STAGING_REQUEST_ID" ] \
@@ -201,6 +212,20 @@ resolve_remote_pm2() {
 }
 
 case "$COMMAND" in
+  drill-staging)
+    [ "$ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP" = true ] || {
+      echo "release:drill-staging requires --acknowledge-first-drill-bootstrap" >&2
+      exit 64
+    }
+    # ServerDominguez currently exposes promotion control v2 and the legacy
+    # /home staging bases. Reusing the v3 /srv staging implementation here
+    # would advertise a runnable first-drill path that cannot pass its own
+    # control/layout gates. A later, separately reviewed adapter must provide
+    # those exact v2 bindings before this entry may perform any remote action.
+    echo "release:drill-staging is disabled until the governed control-v2 legacy-base adapter is installed" >&2
+    printf '%s\n' '{"ok":false,"promotable":false,"rollbackDrillEligible":false,"featureEnabled":false,"reason":"governed_control_v2_legacy_base_adapter_required"}'
+    exit 78
+    ;;
   status)
     if [ ! -f "$(absolute_path "$MANIFEST")" ]; then
       printf '{"ok":false,"promotable":false,"reason":"manifest_missing","manifest":"%s"}\n' "$MANIFEST"

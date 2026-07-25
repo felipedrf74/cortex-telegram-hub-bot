@@ -106,6 +106,38 @@ Ed25519 key and is valid for release gating for at most 30 days. Protected
 signing approves the exact reviewed payload but does not replace the underlying
 isolated restore, integrity, health, and retained machine evidence.
 
+First-drill staging uses the ordinary recovery schemas with deliberately
+separate cryptographic authority. Protected evidence kind
+`rollback_drill_staging` downloads and fully validates the exact original
+production-signed manifest artifact, then emits:
+
+1. `nexus.release-manifest.v2`, preserving the exact validated manifest payload;
+2. `nexus.staging-attestation.v1`, preserving the validated request except for
+   its required rebind to the drill-manifest raw digest and protected signing
+   provenance; and
+3. signed `nexus.rollback-drill-staging-bundle.v1`, which binds all source and
+   output raw digests, fixed `isolated-kvm-first-drill` scope, and
+   `promotionAllowed: false`.
+
+The two inner envelopes keep the hardcoded ordinary key id
+`github-environment-release-signing-2026-07`, because the recovery runtime
+requires it, but they are signed exclusively with
+`NEXUS_ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM`. The distinct public half is a
+reviewed non-secret file at
+`docs/release/evidence/rollback-drill-staging-public-key.pem`; it is not a
+GitHub secret. The workflow fails closed while that tracked path or the private
+secret is absent and never exposes the production release private key.
+
+KVM inputs embed only the two ordinary inner envelopes and bind the drill
+public key. Production binds the production public key, so both inner
+signatures fail there despite sharing schema and key id. The root promotion
+bridge runs the production-key recovery verifier before its first
+application-runtime mode/ownership mutation. The bridge update must be
+installed before any drill; current-source request validation alone is not
+sufficient. The outer record is never promotion evidence, and a completed
+three-outcome KVM drill must still produce the existing signed
+`nexus.rollback-drill.v1` freshness evidence.
+
 `release:prepare` creates the governed bundle and an unsigned payload. The RC
 workflow has no private-key access. A separate workflow dispatched on protected
 `main`, approved through the `release-signing` environment, independently

@@ -84,6 +84,7 @@
     "release:prep": "scripts/release-prep.sh",
     "release:prepare": "scripts/release-operator.sh prepare",
     "release:staging": "scripts/release-operator.sh staging",
+    "release:drill-staging": "scripts/release-operator.sh drill-staging",
     "release:promote": "scripts/release-operator.sh promote",
     "release:status": "scripts/release-operator.sh status",
     "release:resume": "scripts/release-operator.sh resume",

@@ -132,6 +132,7 @@ function validateRequestPayload(payload, { allowExpired = false } = {}) {
       || evidenceKeys.some((key) => !Object.prototype.hasOwnProperty.call(releaseEvidence, key))) {
     throw new Error('signed release recovery evidence schema is invalid');
   }
+  const decodedEvidence = {};
   for (const [base64Key, digestKey] of [
     ['releaseManifestBase64', 'releaseManifestSha256'],
     ['stagingAttestationBase64', 'stagingAttestationSha256'],
@@ -147,6 +148,18 @@ function validateRequestPayload(payload, { allowExpired = false } = {}) {
         || rawSha256(decoded) !== releaseEvidence[digestKey]) {
       throw new Error(`signed release recovery evidence digest is invalid: ${base64Key}`);
     }
+    decodedEvidence[base64Key] = decoded;
+  }
+  let stagingAttestation;
+  try {
+    stagingAttestation = JSON.parse(
+      decodedEvidence.stagingAttestationBase64.toString('utf8'),
+    );
+  } catch {
+    throw new Error('signed staging attestation evidence is not valid JSON');
+  }
+  if (stagingAttestation?.schema !== 'nexus.staging-attestation.v1') {
+    throw new Error('production promotion requires an ordinary signed staging attestation');
   }
   const releasePath = /^\/srv\/nexus-release\/production\/releases\/[A-Za-z0-9._-]+$/u;
   const basePath = /^\/srv\/nexus-release\/production$/u;

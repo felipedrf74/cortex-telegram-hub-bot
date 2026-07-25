@@ -319,6 +319,10 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     const release = releaseSigner();
     const releaseRequest = readFileSync('scripts/request-release-manifest-signature.sh', 'utf8');
     const request = readFileSync('scripts/request-staging-attestation.sh', 'utf8');
+    const drillStagingRequest = readFileSync(
+      'scripts/request-rollback-drill-staging-attestation.sh',
+      'utf8',
+    );
     const rollbackRequest = readFileSync('scripts/request-rollback-drill-signature.sh', 'utf8');
 
     expect(raw).toContain('environment: release-signing');
@@ -331,6 +335,26 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(raw).toContain('actions/runs/$GITHUB_RUN_ID');
     expect(raw).toContain('--signing-run-metadata trusted-input/staging-signing-run.json');
     expect(raw).toContain('staging-attestation-${{ inputs.request_id }}');
+    expect(raw).toContain("inputs.evidence_kind == 'rollback_drill_staging'");
+    expect(raw).toContain(
+      'trusted-tooling/scripts/rollback-drill-staging-attestation.mjs validate-request',
+    );
+    expect(raw).toContain(
+      'trusted-tooling/scripts/rollback-drill-staging-attestation.mjs sign',
+    );
+    expect(raw).toContain('NEXUS_ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM');
+    expect(raw).not.toContain('NEXUS_ROLLBACK_DRILL_STAGING_PUBLIC_KEY_PEM');
+    expect(raw).toContain(
+      'trusted-tooling/docs/release/evidence/rollback-drill-staging-public-key.pem',
+    );
+    expect(raw).toContain('Release — Sign exact candidate');
+    expect(raw).toContain('release-manifest-v2-$RUNTIME_SHA');
+    expect(raw).toContain(
+      'rollback-drill-staging-bundle-${{ inputs.request_id }}',
+    );
+    expect(raw).toContain(
+      "inputs.evidence_kind != 'rollback_drill_staging' && secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM",
+    );
     expect(raw).toContain("inputs.evidence_kind == 'rollback_drill'");
     expect(raw).toContain('trusted-tooling/scripts/rollback-drill-check.mjs validate-payload');
     expect(raw).toContain('trusted-tooling/scripts/rollback-drill-check.mjs sign');
@@ -360,6 +384,16 @@ printf '%s\\n' "\$*" >> "\$NODE_LOG"
     expect(request).toContain('-f "request_sha256=$REQUEST_SHA256"');
     expect(request).toContain('signed staging payload differs from the exact checkpointed request');
     expect(request).toContain('protectedSigning.requestedAt');
+    expect(drillStagingRequest)
+      .toContain('-f "evidence_kind=rollback_drill_staging"');
+    expect(drillStagingRequest)
+      .toContain('rollback-drill-staging-bundle-$REQUEST_ID');
+    expect(drillStagingRequest)
+      .toContain('--drill-public-key "$DRILL_PUBLIC_KEY"');
+    expect(drillStagingRequest)
+      .toContain('--manifest-signing-run-id "$MANIFEST_SIGNING_RUN_ID"');
+    expect(drillStagingRequest).toContain('scripts/release-manifest-v2.mjs validate');
+    expect(drillStagingRequest).toContain('[ "${#REQUEST_B64}" -le 60000 ]');
     expect(rollbackRequest).toContain('SIGNING_WORKFLOW="sign-staging-attestation.yml"');
     expect(rollbackRequest).toContain('-f "evidence_kind=rollback_drill"');
     expect(rollbackRequest).toContain('-f "request_sha256=$REQUEST_SHA256"');

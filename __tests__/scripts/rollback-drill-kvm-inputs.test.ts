@@ -104,8 +104,6 @@ function makeInputs(root: string, nowMs: number) {
     'controller-machine-id': 'serverdominguez-machine-id\n',
     'controller-boot-id': 'serverdominguez-boot-id\n',
     'synthetic.seed': 'synthetic-only-seed\n',
-    'release-manifest.envelope.json': '{"signed":"release-manifest"}\n',
-    'staging-attestation.envelope.json': '{"signed":"staging"}\n',
     'ssh-loss.runtime-manifest.json': '{"bundle":"ssh-loss"}\n',
     'failed-health.runtime-manifest.json': '{"bundle":"failed-health"}\n',
     'guest-reboot.runtime-manifest.json': '{"bundle":"guest-reboot"}\n',
@@ -240,6 +238,42 @@ function makeInputs(root: string, nowMs: number) {
       onlineSourceDatabaseSha256: null,
     },
   };
+  const manifestPayload = {
+    runtimeSha: targetSha,
+    artifact: { digest: spec.release.target.artifactDigest },
+  };
+  const manifestEnvelope = {
+    schema: 'nexus.release-manifest.v2',
+    keyId: 'github-environment-release-signing-2026-07',
+    signatureAlgorithm: 'ed25519',
+    payload: manifestPayload,
+    signature: cryptoSign(
+      null,
+      Buffer.from(canonicalJson(manifestPayload)),
+      releaseEvidence.privateKey,
+    ).toString('base64'),
+  };
+  const manifestBody = `${JSON.stringify(manifestEnvelope, null, 2)}\n`;
+  writeText(path.join(root, 'release-manifest.envelope.json'), manifestBody);
+  const stagingPayload = {
+    requestId: '11111111-1111-4111-8111-111111111111',
+    runtimeSha: targetSha,
+    artifactDigest: spec.release.target.artifactDigest,
+    releaseManifestSha256: digest(manifestBody),
+    installedRuntimeDigest: spec.release.target.installedRuntimeDigest,
+    recoveryRuntimeDigest: spec.release.target.recoveryRuntimeDigest,
+  };
+  writeJson(path.join(root, 'staging-attestation.envelope.json'), {
+    schema: 'nexus.staging-attestation.v1',
+    keyId: 'github-environment-release-signing-2026-07',
+    signatureAlgorithm: 'ed25519',
+    payload: stagingPayload,
+    signature: cryptoSign(
+      null,
+      Buffer.from(canonicalJson(stagingPayload)),
+      releaseEvidence.privateKey,
+    ).toString('base64'),
+  });
   const specPath = path.join(root, 'spec.json');
   writeJson(specPath, spec);
   return {
@@ -450,6 +484,27 @@ describe('rollback-drill KVM input generator', () => {
         request,
       ], { encoding: 'utf8' });
       expect(checked.status, checked.stderr).toBe(0);
+      const generatedRequest = JSON.parse(fs.readFileSync(request, 'utf8'));
+      const embeddedManifest = JSON.parse(Buffer.from(
+        generatedRequest.releaseEvidence.releaseManifestBase64,
+        'base64',
+      ).toString('utf8'));
+      const embeddedStaging = JSON.parse(Buffer.from(
+        generatedRequest.releaseEvidence.stagingAttestationBase64,
+        'base64',
+      ).toString('utf8'));
+      expect(embeddedManifest).toMatchObject({
+        schema: 'nexus.release-manifest.v2',
+        keyId: 'github-environment-release-signing-2026-07',
+      });
+      expect(embeddedStaging).toMatchObject({
+        schema: 'nexus.staging-attestation.v1',
+        keyId: 'github-environment-release-signing-2026-07',
+        payload: {
+          releaseManifestSha256:
+            generatedRequest.releaseEvidence.releaseManifestSha256,
+        },
+      });
     }
 
     const payloadPath = path.join(

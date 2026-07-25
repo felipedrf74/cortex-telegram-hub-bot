@@ -9,6 +9,46 @@ required promotion fault drills. It is not a second release lane and it cannot
 authorize production. Repository presence does not install packages, download
 an image, start a guest, sign evidence, or weaken the normal staging gate.
 
+First-drill staging boundary
+----------------------------
+
+Normal release:staging requires a current signed rollback drill, so it cannot
+be used to manufacture the first drill's prerequisite. Protected first-drill
+signing emits ordinary nexus.release-manifest.v2 and
+nexus.staging-attestation.v1 inner envelopes signed by a dedicated drill-only
+Ed25519 key. A separate signed nexus.rollback-drill-staging-bundle.v1 record
+binds their raw digests and carries promotionAllowed=false, but that outer
+record is never embedded in promotion.
+
+Set releaseEvidence.releaseManifest and releaseEvidence.stagingAttestation in
+the KVM input spec to the two inner files, and set
+keys.releaseEvidencePublicKey to the reviewed drill public key. The generator
+verifies both ordinary signatures and their exact runtime/artifact/installed/
+recovery bindings before it creates a plan or promotion requests. Do not use
+the production release public key: production intentionally rejects the drill
+signatures.
+
+That wrapper does not make this environment executable. The
+release:drill-staging operator entry is intentionally disabled, including in
+dry-run mode, until a separately reviewed adapter supports the currently
+installed promotion-control v2 and legacy /home staging bases. It requires the
+literal --acknowledge-first-drill-bootstrap flag and then exits 78 before SSH or
+any remote mutation. Do not route it into the v3 /srv staging branch and do not
+handcraft its ordinary staging request.
+
+Before any live drill, install the reviewed promotion bridge that verifies
+both release-evidence signatures with its root-installed production key before
+the first application-runtime mode/ownership mutation. Current-source request
+validation alone does not guard an older installed bridge.
+
+After an adapter exists, the protected bundle still authorizes only the
+isolated first-drill input. The three real, strictly sequential outcomes and
+execution receipt remain required before the existing protected
+nexus.rollback-drill.v1 freshness envelope can be requested. Staging
+normalization into an ordinary production-promotable attestation is a separate
+future signed action; neither this wrapper nor this operations guide performs
+or implies it.
+
 Trust boundary
 --------------
 
