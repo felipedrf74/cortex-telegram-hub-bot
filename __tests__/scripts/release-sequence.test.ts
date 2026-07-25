@@ -143,8 +143,8 @@ case "$args" in
     if [ "\${GH_HOLD_RC_WATCH:-0}" = 1 ]; then
       printf '%s\n' "$PPID" > "$RC_WATCH_COORDINATOR_PID_MARKER"
       printf '%s\n' "$$" > "$RC_WATCH_CHILD_PID_MARKER"
-      : > "$RC_WATCH_ACTIVE_MARKER"
       trap ': > "$RC_WATCH_TERMINATED_MARKER"; while [ ! -f "$RC_WATCH_TERMINATION_RELEASE_MARKER" ]; do /bin/sleep 0.02; done; exit 143' TERM INT
+      : > "$RC_WATCH_ACTIVE_MARKER"
       while [ ! -f "$RC_WATCH_RELEASE_MARKER" ]; do /bin/sleep 0.02; done
     fi
     if [ "\${GH_INTERRUPT_RC_WATCH:-0}" = 1 ]; then
