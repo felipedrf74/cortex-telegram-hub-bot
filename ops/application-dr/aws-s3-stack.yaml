@@ -35,6 +35,14 @@ Parameters:
       Keep DISABLED until existing governed object versions have been
       inventoried and the write-once backup client has been deployed. ENABLED
       delegates expiry to S3 Lifecycle while Object Lock remains authoritative.
+  LifecycleBootstrapReceiptSha256:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[0-9a-f]{64}$'
+    Description: >-
+      SHA-256 of the exclusive root-owned first-backup bootstrap receipt.
+      Required when LifecycleActivation is ENABLED; keep empty before the
+      owner-observed first backup has completed.
   BucketName:
     Type: String
     Default: ''
@@ -250,6 +258,13 @@ Rules:
         AssertDescription: >-
           RestorePrincipalArn must be a separate read-only role and must not
           equal the write-capable BackupPrincipalArn.
+  LifecycleEnableRequiresFirstBackupReceipt:
+    RuleCondition: !Equals [!Ref LifecycleActivation, ENABLED]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LifecycleBootstrapReceiptSha256, '']]
+        AssertDescription: >-
+          LifecycleActivation may be ENABLED only with the exact SHA-256 of the
+          completed first-backup bootstrap receipt.
 
 Resources:
   DisasterRecoveryBucket:
@@ -453,9 +468,11 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: ListExactPrefixVersions
+              - Sid: ListExactPrefix
                 Effect: Allow
-                Action: s3:ListBucketVersions
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
                 Resource: !GetAtt DisasterRecoveryBucket.Arn
                 Condition:
                   StringLike:
@@ -563,7 +580,7 @@ Resources:
           "Statement": [
             {
               "Effect": "Allow",
-              "Action": "s3:ListBucketVersions",
+              "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
               "Resource": "${DisasterRecoveryBucket.Arn}",
               "Condition": {"StringLike": {"s3:prefix": ["${DrPrefix}/*"]}}
             },
@@ -673,11 +690,12 @@ Resources:
             Principal: '*'
             Action: s3:DeleteObjectVersion
             Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
-          - Sid: AllowExactPrefixVersionListing
+          - Sid: AllowExactPrefixListing
             Effect: Allow
             Principal:
               AWS: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
             Action:
+              - s3:ListBucket
               - s3:ListBucketVersions
             Resource: !GetAtt DisasterRecoveryBucket.Arn
             Condition:
@@ -948,6 +966,11 @@ Outputs:
   LifecycleActivation:
     Description: Fail-closed activation state for governed S3 Lifecycle expiry.
     Value: !Ref LifecycleActivation
+  LifecycleBootstrapReceiptSha256:
+    Description: >-
+      Exact first-backup bootstrap receipt digest reviewed for lifecycle
+      activation; empty before activation.
+    Value: !Ref LifecycleBootstrapReceiptSha256
   RolesAnywhereTrustAnchorArn:
     Condition: ProvisionRolesAnywhere
     Description: Exact trust anchor ARN to bind in both credential-process profiles.

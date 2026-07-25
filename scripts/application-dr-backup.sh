@@ -20,15 +20,42 @@ RECOVERY_ARTIFACT_DIGEST=""
 RECOVERY_INSTALLED_RUNTIME_DIGEST=""
 RECOVERY_RUNTIME_DIGEST=""
 JSON_OUTPUT=false
+BOOTSTRAP_FIRST_BACKUP=false
+BOOTSTRAP_ROLLBACK_BUNDLE=""
+BOOTSTRAP_ROLLBACK_SHA256=""
 
 usage() {
-  echo "Usage: application-dr-backup.sh [--config <root-mode-0600-file>] [--verify-config] [--require-release <rollback.tar.gz>] [--require-recovery-runtime <release-dir> --recovery-descriptor <root-mode-0600-file> --recovery-escrow-id <promotion-transaction-id> --recovery-escrow-phase <pre-mutation|post-soak> --recovery-release-manifest <file> --recovery-staging-attestation <file> --recovery-runtime-sha <sha> --recovery-artifact-digest <sha256> --recovery-installed-runtime-digest <sha256> --recovery-runtime-digest <sha256>] [--json]"
+  echo "Usage: application-dr-backup.sh [--config <root-mode-0600-file>] [--verify-config] [--bootstrap-first-backup --bootstrap-rollback-bundle <exact-v*.tar.gz> --bootstrap-rollback-sha256 <owner-reviewed-sha256>] [--require-release <rollback.tar.gz>] [--require-recovery-runtime <release-dir> --recovery-descriptor <root-mode-0600-file> --recovery-escrow-id <promotion-transaction-id> --recovery-escrow-phase <pre-mutation|post-soak> --recovery-release-manifest <file> --recovery-staging-attestation <file> --recovery-runtime-sha <sha> --recovery-artifact-digest <sha256> --recovery-installed-runtime-digest <sha256> --recovery-runtime-digest <sha256>] [--json]"
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --config) CONFIG="${2:?--config requires a path}"; shift 2 ;;
     --verify-config) ACTION=verify; shift ;;
+    --bootstrap-first-backup)
+      if [ "$BOOTSTRAP_FIRST_BACKUP" != false ]; then
+        echo "--bootstrap-first-backup may be supplied only once" >&2
+        exit 64
+      fi
+      BOOTSTRAP_FIRST_BACKUP=true
+      shift
+      ;;
+    --bootstrap-rollback-bundle)
+      if [ -n "$BOOTSTRAP_ROLLBACK_BUNDLE" ]; then
+        echo "--bootstrap-rollback-bundle may be supplied only once" >&2
+        exit 64
+      fi
+      BOOTSTRAP_ROLLBACK_BUNDLE="${2:?--bootstrap-rollback-bundle requires a path}"
+      shift 2
+      ;;
+    --bootstrap-rollback-sha256)
+      if [ -n "$BOOTSTRAP_ROLLBACK_SHA256" ]; then
+        echo "--bootstrap-rollback-sha256 may be supplied only once" >&2
+        exit 64
+      fi
+      BOOTSTRAP_ROLLBACK_SHA256="${2:?--bootstrap-rollback-sha256 requires a digest}"
+      shift 2
+      ;;
     --require-release) REQUIRED_RELEASE="${2:?--require-release requires a path}"; shift 2 ;;
     --require-recovery-runtime) REQUIRED_RECOVERY_RUNTIME="${2:?--require-recovery-runtime requires a path}"; shift 2 ;;
     --recovery-descriptor) RECOVERY_DESCRIPTOR="${2:?--recovery-descriptor requires a path}"; shift 2 ;;
@@ -241,9 +268,10 @@ VERSION_RETENTION_HELPER="$SCRIPT_DIR/application-dr-version-retention.py"
 STORAGE_CONTROL_HELPER="$SCRIPT_DIR/application-dr-storage-controls.py"
 AWS_CREDENTIAL_BOUNDARY_HELPER="$SCRIPT_DIR/aws-credential-process-boundary.py"
 RECOVERY_ARCHIVE_HELPER="$SCRIPT_DIR/application-dr-recovery-archive.py"
+ROLLBACK_ARCHIVE_HELPER="$SCRIPT_DIR/application-dr-archive.py"
 for helper in "$SQLITE_HELPER" "$RETENTION_HELPER" "$VERSION_RETENTION_HELPER" \
   "$STORAGE_CONTROL_HELPER" "$AWS_CREDENTIAL_BOUNDARY_HELPER" \
-  "$RECOVERY_ARCHIVE_HELPER"; do
+  "$RECOVERY_ARCHIVE_HELPER" "$ROLLBACK_ARCHIVE_HELPER"; do
   [[ -f "$helper" && ! -L "$helper" ]] || die "installed helper is missing: $helper"
   [ "$(stat -c '%U:%G:%a' -- "$helper")" = root:root:644 ] \
     || die "installed helper must be root:root mode 0644: $helper"
@@ -262,16 +290,65 @@ if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
     --helper-sha256 "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256" \
     --expected-role-arn "$NEXUS_DR_AWS_BACKUP_ROLE_ARN" >/dev/null
 fi
-"$NEXUS_DR_PYTHON_BIN" "$STORAGE_CONTROL_HELPER" \
+storage_control_result="$("$NEXUS_DR_PYTHON_BIN" "$STORAGE_CONTROL_HELPER" \
   --evidence "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE" \
   --provider "$NEXUS_DR_STORAGE_PROVIDER" \
   --control-mode "$NEXUS_DR_STORAGE_CONTROL_MODE" \
   --endpoint "$NEXUS_DR_S3_ENDPOINT" \
   --bucket "$NEXUS_DR_S3_BUCKET" \
-  --prefix "$NEXUS_DR_S3_PREFIX" >/dev/null
+  --prefix "$NEXUS_DR_S3_PREFIX")" \
+  || die "storage-control evidence did not verify"
+lifecycle_phase="$("$NEXUS_DR_PYTHON_BIN" -c \
+  'import json,sys; value=json.loads(sys.argv[1]); phase=value.get("lifecyclePhase"); allowed={"enabled","disabled-bootstrap","approved-r2-variance"}; (phase in allowed) or sys.exit("storage-control lifecycle phase is invalid"); print(phase)' \
+  "$storage_control_result")" \
+  || die "storage-control verification result did not verify"
+bootstrap_receipt="$NEXUS_DR_STATE_DIR/lifecycle-bootstrap-receipt.v1.json"
+
+# BEGIN lifecycle bootstrap invocation authorization
+if [ "$BOOTSTRAP_FIRST_BACKUP" != true ] \
+    && { [ -n "$BOOTSTRAP_ROLLBACK_BUNDLE" ] \
+      || [ -n "$BOOTSTRAP_ROLLBACK_SHA256" ]; }; then
+  die "bootstrap rollback identity arguments require --bootstrap-first-backup"
+fi
+if [ "$ACTION" = verify ] && [ "$BOOTSTRAP_FIRST_BACKUP" = true ]; then
+  die "--bootstrap-first-backup cannot be combined with --verify-config"
+fi
+if [ "$BOOTSTRAP_FIRST_BACKUP" = true ] && [ -n "${INVOCATION_ID:-}" ]; then
+  die "--bootstrap-first-backup cannot run from a systemd service or timer"
+fi
+if [ "$ACTION" = backup ]; then
+  if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+    [ "$BOOTSTRAP_FIRST_BACKUP" = true ] \
+      || die "disabled-bootstrap requires explicit --bootstrap-first-backup"
+    [ -n "$BOOTSTRAP_ROLLBACK_BUNDLE" ] \
+      && [ -n "$BOOTSTRAP_ROLLBACK_SHA256" ] \
+      || die "--bootstrap-first-backup requires an exact rollback bundle and owner-reviewed SHA-256"
+    [[ "$BOOTSTRAP_ROLLBACK_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+      || die "bootstrap rollback bundle owner-reviewed SHA-256 is invalid"
+    [[ "$BOOTSTRAP_ROLLBACK_BUNDLE" == "$NEXUS_DR_ROLLBACK_DIR"/v*.tar.gz ]] \
+      && [ "$(dirname -- "$BOOTSTRAP_ROLLBACK_BUNDLE")" = "$NEXUS_DR_ROLLBACK_DIR" ] \
+      || die "bootstrap rollback bundle must be one exact configured v*.tar.gz path"
+    [ -z "$REQUIRED_RELEASE" ] && [ "$recovery_argument_count" -eq 0 ] \
+      || die "--bootstrap-first-backup cannot be combined with promotion recovery escrow"
+  elif [ "$BOOTSTRAP_FIRST_BACKUP" = true ]; then
+    die "--bootstrap-first-backup requires disabled-bootstrap evidence"
+  fi
+fi
+# END lifecycle bootstrap invocation authorization
 
 if [ "$ACTION" = verify ]; then
-  echo "application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days"
+  bootstrap_receipt_state=not-applicable
+  if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+    if [ -L "$bootstrap_receipt" ]; then
+      die "lifecycle bootstrap receipt path is a symlink"
+    elif [ -e "$bootstrap_receipt" ]; then
+      private_root_file "$bootstrap_receipt" "lifecycle bootstrap receipt"
+      die "disabled-bootstrap has been spent; enable lifecycle and install ordinary enabled v2 evidence"
+    else
+      bootstrap_receipt_state=absent
+    fi
+  fi
+  echo "application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE lifecyclePhase=$lifecycle_phase bootstrapReceipt=$bootstrap_receipt_state releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days"
   exit 0
 fi
 
@@ -293,6 +370,101 @@ aws_s3api() {
 
 sha256_file() { sha256sum -- "$1" | awk '{print $1}'; }
 size_file() { stat -c '%s' -- "$1"; }
+
+bootstrap_empty_proof=""
+bootstrap_empty_proof_sha=""
+assert_empty_bootstrap_namespace() {
+  [ "$NEXUS_DR_STORAGE_PROVIDER:$NEXUS_DR_STORAGE_CONTROL_MODE" = \
+      aws-s3:versioned-s3 ] \
+    || die "disabled-bootstrap requires aws-s3:versioned-s3"
+  if [ -L "$bootstrap_receipt" ]; then
+    die "lifecycle bootstrap receipt path is a symlink"
+  elif [ -e "$bootstrap_receipt" ]; then
+    private_root_file "$bootstrap_receipt" "lifecycle bootstrap receipt"
+    die "disabled-bootstrap has already been spent; enable lifecycle with the receipt digest"
+  fi
+
+  local namespace_prefix="$NEXUS_DR_S3_PREFIX/"
+  local versions="$tmp_dir/bootstrap-list-object-versions.json"
+  local objects="$tmp_dir/bootstrap-list-objects-v2.json"
+  bootstrap_empty_proof="$tmp_dir/bootstrap-empty-namespace-proof.json"
+  aws_s3api list-object-versions \
+    --bucket "$NEXUS_DR_S3_BUCKET" \
+    --prefix "$namespace_prefix" \
+    --no-paginate \
+    --max-keys 1 \
+    --output json >"$versions" \
+    || die "disabled-bootstrap live version listing failed"
+  aws_s3api list-objects-v2 \
+    --bucket "$NEXUS_DR_S3_BUCKET" \
+    --prefix "$namespace_prefix" \
+    --no-paginate \
+    --max-keys 1 \
+    --output json >"$objects" \
+    || die "disabled-bootstrap live object listing failed"
+  if ! "$NEXUS_DR_PYTHON_BIN" - "$versions" "$objects" "$namespace_prefix" \
+    "$NEXUS_DR_S3_BUCKET" >"$bootstrap_empty_proof" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+versions_path, objects_path, prefix, bucket = sys.argv[1:]
+
+def load(path, label):
+    try:
+        raw = Path(path).read_bytes()
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"bootstrap {label} listing is unreadable: {error}")
+    if not isinstance(value, dict) or "NextToken" in value:
+        raise SystemExit(f"bootstrap {label} listing is not a direct S3 API response")
+    if value.get("Prefix") not in (None, prefix):
+        raise SystemExit(f"bootstrap {label} listing prefix does not match")
+    if value.get("IsTruncated") is not False:
+        raise SystemExit(f"bootstrap {label} listing is incomplete")
+    return value, hashlib.sha256(raw).hexdigest()
+
+versions, versions_sha = load(versions_path, "version")
+objects, objects_sha = load(objects_path, "object")
+version_rows = versions.get("Versions", [])
+delete_markers = versions.get("DeleteMarkers", [])
+contents = objects.get("Contents", [])
+common_prefixes = objects.get("CommonPrefixes", [])
+if (
+    not isinstance(version_rows, list)
+    or not isinstance(delete_markers, list)
+    or not isinstance(contents, list)
+    or not isinstance(common_prefixes, list)
+    or version_rows
+    or delete_markers
+    or contents
+    or common_prefixes
+    or objects.get("KeyCount") not in (None, 0)
+):
+    raise SystemExit(
+        "disabled-bootstrap requires a live zero-object, zero-version, "
+        "zero-delete-marker namespace",
+    )
+print(json.dumps({
+    "schemaVersion": "NexusApplicationDrBootstrapEmptyNamespaceProofV1",
+    "status": "passed",
+    "bucket": bucket,
+    "prefix": prefix,
+    "listingComplete": True,
+    "objectCount": 0,
+    "versionCount": 0,
+    "deleteMarkerCount": 0,
+    "listObjectsV2ResponseSha256": objects_sha,
+    "listObjectVersionsResponseSha256": versions_sha,
+}, sort_keys=True, separators=(",", ":")))
+PY
+  then
+    die "disabled-bootstrap live empty-namespace proof failed"
+  fi
+  chmod 0600 "$bootstrap_empty_proof"
+  bootstrap_empty_proof_sha="$(sha256_file "$bootstrap_empty_proof")"
+}
 
 aws_version_id_from_json() {
   local document="$1" label="$2"
@@ -985,6 +1157,60 @@ put_encrypted_object() {
   done
 }
 
+# BEGIN bootstrap selected rollback snapshot
+bootstrap_rollback_snapshot=""
+bootstrap_rollback_snapshot_evidence=""
+bootstrap_rollback_extraction_evidence=""
+bootstrap_rollback_database_evidence=""
+bootstrap_rollback_identity=""
+bootstrap_rollback_identity_sha=""
+bootstrap_rollback_basename=""
+if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+  bootstrap_rollback_basename="$(basename -- "$BOOTSTRAP_ROLLBACK_BUNDLE")"
+  bootstrap_rollback_snapshot="$tmp_dir/bootstrap-selected-rollback.tar.gz"
+  bootstrap_rollback_snapshot_evidence="$tmp_dir/bootstrap-selected-rollback-snapshot.json"
+  bootstrap_rollback_extracted="$tmp_dir/bootstrap-selected-rollback-extracted"
+  bootstrap_rollback_extraction_evidence="$tmp_dir/bootstrap-selected-rollback-extraction.json"
+  bootstrap_rollback_database_evidence="$tmp_dir/bootstrap-selected-rollback-database.json"
+  bootstrap_rollback_identity="$tmp_dir/bootstrap-selected-rollback-identity.json"
+  bootstrap_application_uid="$(id -u "$NEXUS_DR_APPLICATION_USER")"
+  "$NEXUS_DR_PYTHON_BIN" "$ROLLBACK_ARCHIVE_HELPER" snapshot \
+    --source-directory "$NEXUS_DR_ROLLBACK_DIR" \
+    --source-name "$bootstrap_rollback_basename" \
+    --destination "$bootstrap_rollback_snapshot" \
+    --expected-sha256 "$BOOTSTRAP_ROLLBACK_SHA256" \
+    --expected-uid "$bootstrap_application_uid" \
+    >"$bootstrap_rollback_snapshot_evidence" \
+    || die "bootstrap rollback bundle descriptor-safe snapshot failed"
+  chmod 0600 "$bootstrap_rollback_snapshot_evidence"
+  [ "$(stat -c '%U:%G:%a' -- "$bootstrap_rollback_snapshot")" = root:root:600 ] \
+    || die "bootstrap rollback snapshot must be root:root mode 0600"
+  install -d -o root -g root -m 0700 "$bootstrap_rollback_extracted"
+  "$NEXUS_DR_PYTHON_BIN" "$ROLLBACK_ARCHIVE_HELPER" \
+    "$bootstrap_rollback_snapshot" "$bootstrap_rollback_extracted" \
+    >"$bootstrap_rollback_extraction_evidence" \
+    || die "bootstrap rollback bundle strict extraction failed"
+  chmod 0600 "$bootstrap_rollback_extraction_evidence"
+  "$NEXUS_DR_PYTHON_BIN" "$SQLITE_HELPER" verify \
+    "$bootstrap_rollback_extracted/data/bot.db" \
+    >"$bootstrap_rollback_database_evidence" \
+    || die "bootstrap rollback bundle database verification failed"
+  chmod 0600 "$bootstrap_rollback_database_evidence"
+  "$NEXUS_DR_PYTHON_BIN" "$ROLLBACK_ARCHIVE_HELPER" bootstrap-identity \
+    --snapshot-evidence "$bootstrap_rollback_snapshot_evidence" \
+    --extraction-evidence "$bootstrap_rollback_extraction_evidence" \
+    --database-evidence "$bootstrap_rollback_database_evidence" \
+    --extracted-root "$bootstrap_rollback_extracted" \
+    --expected-sha256 "$BOOTSTRAP_ROLLBACK_SHA256" \
+    >"$bootstrap_rollback_identity" \
+    || die "bootstrap rollback bundle exact identity verification failed"
+  chmod 0600 "$bootstrap_rollback_identity"
+  bootstrap_rollback_identity_sha="$(sha256_file "$bootstrap_rollback_identity")"
+  [[ "$bootstrap_rollback_identity_sha" =~ ^[a-f0-9]{64}$ ]] \
+    || die "bootstrap rollback bundle identity digest is invalid"
+  assert_empty_bootstrap_namespace
+fi
+# END bootstrap selected rollback snapshot
 created_epoch="$(date -u +%s)"
 database_key_fields="$(database_key_suffixes_from_epoch "$created_epoch")"
 IFS=$'\t' read -r timestamp daily_suffix weekly_suffix monthly_suffix \
@@ -1009,23 +1235,69 @@ hourly_key="$database_root/hourly/nexus-db-$timestamp.sqlite.age"
 daily_key="$database_root/daily/nexus-db-$daily_suffix.sqlite.age"
 weekly_key="$database_root/weekly/nexus-db-$weekly_suffix.sqlite.age"
 monthly_key="$database_root/monthly/nexus-db-$monthly_suffix.sqlite.age"
+hourly_database_collision_policy=fail
+daily_database_collision_policy=period-daily
+weekly_database_collision_policy=period-weekly
+monthly_database_collision_policy=period-monthly
+if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+  hourly_database_collision_policy=fail
+  daily_database_collision_policy=fail
+  weekly_database_collision_policy=fail
+  monthly_database_collision_policy=fail
+fi
 hourly_database_version_id=""
+hourly_database_encrypted_sha=""
+hourly_database_encrypted_size=""
+hourly_database_created_epoch=""
 put_encrypted_object "$hourly_key" "$encrypted" "$encrypted_sha" \
   "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
-  "" 2 fail
+  "" 2 "$hourly_database_collision_policy"
 hourly_database_version_id="$LAST_VERIFIED_VERSION_ID"
+hourly_database_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
+hourly_database_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"
+hourly_database_created_epoch="$LAST_VERIFIED_CREATED_EPOCH"
+daily_database_version_id=""
+daily_database_encrypted_sha=""
+daily_database_encrypted_size=""
+daily_database_created_epoch=""
 put_encrypted_object "$daily_key" "$encrypted" "$encrypted_sha" \
   "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
-  "" 8 period-daily
+  "" 8 "$daily_database_collision_policy"
+daily_database_version_id="$LAST_VERIFIED_VERSION_ID"
+daily_database_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
+daily_database_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"
+daily_database_created_epoch="$LAST_VERIFIED_CREATED_EPOCH"
+weekly_database_version_id=""
+weekly_database_encrypted_sha=""
+weekly_database_encrypted_size=""
+weekly_database_created_epoch=""
 put_encrypted_object "$weekly_key" "$encrypted" "$encrypted_sha" \
   "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
-  "" 35 period-weekly
+  "" 35 "$weekly_database_collision_policy"
+weekly_database_version_id="$LAST_VERIFIED_VERSION_ID"
+weekly_database_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
+weekly_database_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"
+weekly_database_created_epoch="$LAST_VERIFIED_CREATED_EPOCH"
+monthly_database_version_id=""
+monthly_database_encrypted_sha=""
+monthly_database_encrypted_size=""
+monthly_database_created_epoch=""
 put_encrypted_object "$monthly_key" "$encrypted" "$encrypted_sha" \
   "$plaintext_sha" NexusApplicationSqliteRecoveryPointV1 "$created_epoch" \
-  "" 190 period-monthly
+  "" 190 "$monthly_database_collision_policy"
+monthly_database_version_id="$LAST_VERIFIED_VERSION_ID"
+monthly_database_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
+monthly_database_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"
+monthly_database_created_epoch="$LAST_VERIFIED_CREATED_EPOCH"
 if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
   aws_version_id_is_safe "$hourly_database_version_id" \
     || die "hourly database recovery point is missing its exact S3 VersionId"
+  aws_version_id_is_safe "$daily_database_version_id" \
+    || die "daily database recovery point is missing its exact S3 VersionId"
+  aws_version_id_is_safe "$weekly_database_version_id" \
+    || die "weekly database recovery point is missing its exact S3 VersionId"
+  aws_version_id_is_safe "$monthly_database_version_id" \
+    || die "monthly database recovery point is missing its exact S3 VersionId"
 fi
 
 # BEGIN version-aware S3 retention functions
@@ -1381,28 +1653,59 @@ apply_database_retention() {
   esac
 }
 
-confirm_database_after_retention() {
-  local downloaded="$tmp_dir/database-post-retention.age"
-  local confirmed_epoch
-  local -a get_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$hourly_key")
+confirm_database_tier_after_retention() {
+  local tier="$1" key="$2" expected_version_id="$3"
+  local expected_encrypted_sha="$4" expected_encrypted_size="$5"
+  local expected_created_epoch="$6" minimum_retention_days="$7"
+  local downloaded="$tmp_dir/database-$tier-post-retention.age"
+  local -a get_args=(--bucket "$NEXUS_DR_S3_BUCKET" --key "$key")
   if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then
-    get_args+=("--version-id=$hourly_database_version_id")
+    get_args+=("--version-id=$expected_version_id")
   fi
-  verify_remote_object "$hourly_key" "$encrypted_sha" "$plaintext_sha" \
-    NexusApplicationSqliteRecoveryPointV1 "$(size_file "$encrypted")" \
-    "$created_epoch" "" "$hourly_database_version_id"
-  if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ] \
-      && [ "$LAST_VERIFIED_VERSION_ID" != "$hourly_database_version_id" ]; then
-    die "post-retention hourly database VersionId changed"
-  fi
+  verify_remote_object "$key" "$expected_encrypted_sha" "$plaintext_sha" \
+    NexusApplicationSqliteRecoveryPointV1 "$expected_encrypted_size" \
+    "$expected_created_epoch" "" "$expected_version_id" \
+    "$minimum_retention_days"
+  [ "$LAST_VERIFIED_VERSION_ID" = "$expected_version_id" ] \
+    || die "post-retention $tier database VersionId changed"
+  [ "$LAST_VERIFIED_ENCRYPTED_SHA" = "$expected_encrypted_sha" ] \
+    || die "post-retention $tier database encrypted digest identity changed"
+  [ "$LAST_VERIFIED_ENCRYPTED_SIZE" = "$expected_encrypted_size" ] \
+    || die "post-retention $tier database encrypted size identity changed"
+  [ "$LAST_VERIFIED_CREATED_EPOCH" = "$expected_created_epoch" ] \
+    || die "post-retention $tier database creation identity changed"
   aws_s3api get-object "${get_args[@]}" "$downloaded" >/dev/null
-  [ "$(size_file "$downloaded")" = "$(size_file "$encrypted")" ] \
-    || die "post-retention hourly database object size changed"
-  [ "$(sha256_file "$downloaded")" = "$encrypted_sha" ] \
-    || die "post-retention hourly database encrypted digest changed"
+  [ "$(size_file "$downloaded")" = "$expected_encrypted_size" ] \
+    || die "post-retention $tier database object size changed"
+  [ "$(sha256_file "$downloaded")" = "$expected_encrypted_sha" ] \
+    || die "post-retention $tier database encrypted digest changed"
+  rm -f -- "$downloaded"
+}
+
+confirm_database_after_retention() {
+  local confirmed_epoch
+  confirm_database_tier_after_retention \
+    hourly "$hourly_key" "$hourly_database_version_id" \
+    "$hourly_database_encrypted_sha" "$hourly_database_encrypted_size" \
+    "$hourly_database_created_epoch" 2
+  if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+    confirm_database_tier_after_retention \
+      daily "$daily_key" "$daily_database_version_id" \
+      "$daily_database_encrypted_sha" "$daily_database_encrypted_size" \
+      "$daily_database_created_epoch" 8
+    confirm_database_tier_after_retention \
+      weekly "$weekly_key" "$weekly_database_version_id" \
+      "$weekly_database_encrypted_sha" "$weekly_database_encrypted_size" \
+      "$weekly_database_created_epoch" 35
+    confirm_database_tier_after_retention \
+      monthly "$monthly_key" "$monthly_database_version_id" \
+      "$monthly_database_encrypted_sha" "$monthly_database_encrypted_size" \
+      "$monthly_database_created_epoch" 190
+    bootstrap_database_tiers_confirmed=true
+  fi
   confirmed_epoch="$(date -u +%s)"
   [[ "$confirmed_epoch" =~ ^[0-9]+$ ]] \
-    || die "hourly database confirmation time is invalid"
+    || die "database confirmation time is invalid"
   database_confirmed_at="$("$NEXUS_DR_PYTHON_BIN" - "$confirmed_epoch" <<'PY'
 from datetime import datetime, timezone
 import sys
@@ -1410,7 +1713,6 @@ import sys
 print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
 )"
-  rm -f -- "$downloaded"
 }
 
 prune_visible_release_age() {
@@ -1789,6 +2091,7 @@ PY
 
 apply_database_retention
 database_confirmed_at=""
+bootstrap_database_tiers_confirmed=false
 confirm_database_after_retention
 
 release_count=0
@@ -1803,19 +2106,54 @@ required_release_created_epoch=""
 required_release_version_id=""
 required_release_retain_until=""
 required_release_confirmed_at=""
+bootstrap_verified_rollback_count=0
+bootstrap_verified_rollback_key=""
+bootstrap_verified_rollback_encrypted_sha=""
+bootstrap_verified_rollback_encrypted_size=""
+bootstrap_verified_rollback_created_epoch=""
+bootstrap_verified_rollback_version_id=""
+bootstrap_verified_rollback_retain_until=""
 shopt -s nullglob
 rollback_archives=("$NEXUS_DR_ROLLBACK_DIR"/v*.tar.gz)
 shopt -u nullglob
+if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+  ordinary_rollback_archives=()
+  for archive in "${rollback_archives[@]}"; do
+    [ "$archive" = "$BOOTSTRAP_ROLLBACK_BUNDLE" ] \
+      || ordinary_rollback_archives+=("$archive")
+  done
+  rollback_archives=("$bootstrap_rollback_snapshot" "${ordinary_rollback_archives[@]}")
+fi
 for archive in "${rollback_archives[@]}"; do
-  basename="$(basename -- "$archive")"
-  [[ "$basename" =~ ^v[A-Za-z0-9._+-]+\.tar\.gz$ ]] \
-    || die "unsafe release rollback filename: $basename"
-  [[ -f "$archive" && ! -L "$archive" ]] || die "rollback bundle must be a regular non-symlink file"
-  [ "$(realpath -e -- "$archive")" = "$archive" ] || die "rollback bundle must not traverse symlinks"
-  [ "$(stat -c '%U:%a' -- "$archive")" = "$NEXUS_DR_APPLICATION_USER:600" ] \
-    || die "rollback bundle must be application-user owned mode 0600: $basename"
-  tar tzf "$archive" >/dev/null || die "rollback bundle archive validation failed: $basename"
+  bootstrap_selected_archive=false
+  release_collision_policy=exact
+  if [ "$lifecycle_phase" = disabled-bootstrap ] \
+      && [ "$archive" = "$bootstrap_rollback_snapshot" ]; then
+    bootstrap_selected_archive=true
+    release_collision_policy=fail
+    basename="$bootstrap_rollback_basename"
+    [[ -f "$archive" && ! -L "$archive" ]] \
+      && [ "$(realpath -e -- "$archive")" = "$archive" ] \
+      && [ "$(stat -c '%U:%G:%a' -- "$archive")" = root:root:600 ] \
+      || die "bootstrap rollback snapshot identity changed before escrow"
+  else
+    basename="$(basename -- "$archive")"
+    [[ "$basename" =~ ^v[A-Za-z0-9._+-]+\.tar\.gz$ ]] \
+      || die "unsafe release rollback filename: $basename"
+    [[ -f "$archive" && ! -L "$archive" ]] \
+      || die "rollback bundle must be a regular non-symlink file"
+    [ "$(realpath -e -- "$archive")" = "$archive" ] \
+      || die "rollback bundle must not traverse symlinks"
+    [ "$(stat -c '%U:%a' -- "$archive")" = "$NEXUS_DR_APPLICATION_USER:600" ] \
+      || die "rollback bundle must be application-user owned mode 0600: $basename"
+    tar tzf "$archive" >/dev/null \
+      || die "rollback bundle archive validation failed: $basename"
+  fi
   archive_sha="$(sha256_file "$archive")"
+  if [ "$bootstrap_selected_archive" = true ]; then
+    [ "$archive_sha" = "$BOOTSTRAP_ROLLBACK_SHA256" ] \
+      || die "bootstrap rollback snapshot digest changed before escrow"
+  fi
   release_object_basename="$basename"
   if [ -n "$REQUIRED_RELEASE" ] && [ "$archive" = "$REQUIRED_RELEASE" ]; then
     release_object_basename="${basename%.tar.gz}+rollback-escrow-${RECOVERY_ESCROW_ID}+phase-${RECOVERY_ESCROW_PHASE}.tar.gz"
@@ -1839,6 +2177,7 @@ for archive in "${rollback_archives[@]}"; do
     release_requires_fresh_retention=true
   fi
   if [ "$release_requires_fresh_retention" != true ] \
+      && [ "$bootstrap_selected_archive" != true ] \
       && aws_s3api head-object "${release_head_args[@]}" \
         >"$release_head" 2>/dev/null; then
     release_fields="$("$NEXUS_DR_PYTHON_BIN" - "$release_head" "$archive_sha" \
@@ -1990,7 +2329,7 @@ PY
     release_created_epoch="$created_epoch"
     put_encrypted_object "$release_key" "$release_encrypted" "$release_encrypted_sha" \
       "$archive_sha" NexusReleaseRollbackEscrowV1 "$created_epoch" "$basename" \
-      90 exact
+      90 "$release_collision_policy"
     release_version_id="$LAST_VERIFIED_VERSION_ID"
     release_retain_until="$LAST_VERIFIED_RETAIN_UNTIL"
     release_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"
@@ -2008,6 +2347,15 @@ PY
     required_release_created_epoch="$release_created_epoch"
     required_release_version_id="$release_version_id"
     required_release_retain_until="$release_retain_until"
+  fi
+  if [ "$bootstrap_selected_archive" = true ]; then
+    bootstrap_verified_rollback_count=$((bootstrap_verified_rollback_count + 1))
+    bootstrap_verified_rollback_key="$release_key"
+    bootstrap_verified_rollback_encrypted_sha="$release_encrypted_sha"
+    bootstrap_verified_rollback_encrypted_size="$release_encrypted_size"
+    bootstrap_verified_rollback_created_epoch="$release_created_epoch"
+    bootstrap_verified_rollback_version_id="$release_version_id"
+    bootstrap_verified_rollback_retain_until="$release_retain_until"
   fi
   release_count=$((release_count + 1))
 done
@@ -2136,7 +2484,508 @@ print(
     sep="\t",
 )
 PY
+  )
+fi
+
+lifecycle_bootstrap_receipt_path=""
+lifecycle_bootstrap_receipt_sha=""
+if [ "$lifecycle_phase" = disabled-bootstrap ]; then
+  [ "$bootstrap_database_tiers_confirmed" = true ] \
+    || die "disabled-bootstrap database tiers were not confirmed after retention"
+  for bootstrap_database_digest in \
+    "$hourly_database_encrypted_sha" \
+    "$daily_database_encrypted_sha" \
+    "$weekly_database_encrypted_sha" \
+    "$monthly_database_encrypted_sha"; do
+    [[ "$bootstrap_database_digest" =~ ^[a-f0-9]{64}$ ]] \
+      && [ "$bootstrap_database_digest" = "$encrypted_sha" ] \
+      || die "disabled-bootstrap database tier encrypted digest is invalid"
+  done
+  for bootstrap_database_size in \
+    "$hourly_database_encrypted_size" \
+    "$daily_database_encrypted_size" \
+    "$weekly_database_encrypted_size" \
+    "$monthly_database_encrypted_size"; do
+    [[ "$bootstrap_database_size" =~ ^[1-9][0-9]*$ ]] \
+      && [ "$bootstrap_database_size" = "$(size_file "$encrypted")" ] \
+      || die "disabled-bootstrap database tier encrypted size is invalid"
+  done
+  for bootstrap_database_epoch in \
+    "$hourly_database_created_epoch" \
+    "$daily_database_created_epoch" \
+    "$weekly_database_created_epoch" \
+    "$monthly_database_created_epoch"; do
+    [[ "$bootstrap_database_epoch" =~ ^[0-9]+$ ]] \
+      && [ "$bootstrap_database_epoch" = "$created_epoch" ] \
+      || die "disabled-bootstrap database tier creation identity is invalid"
+  done
+  [ "$bootstrap_verified_rollback_count" -eq 1 ] \
+    || die "disabled-bootstrap requires exactly one selected verified rollback bundle"
+  [ -f "$bootstrap_rollback_identity" ] && [ ! -L "$bootstrap_rollback_identity" ] \
+    && [ "$(sha256_file "$bootstrap_rollback_identity")" = \
+      "$bootstrap_rollback_identity_sha" ] \
+    || die "disabled-bootstrap selected rollback identity changed"
+  [[ "$bootstrap_verified_rollback_encrypted_sha" =~ ^[a-f0-9]{64}$ ]] \
+    && [[ "$bootstrap_verified_rollback_encrypted_size" =~ ^[1-9][0-9]*$ ]] \
+    && [[ "$bootstrap_verified_rollback_created_epoch" =~ ^[0-9]+$ ]] \
+    && [ -n "$bootstrap_verified_rollback_key" ] \
+    || die "disabled-bootstrap selected rollback remote identity is incomplete"
+  aws_version_id_is_safe "$bootstrap_verified_rollback_version_id" \
+    || die "disabled-bootstrap selected rollback is missing its exact S3 VersionId"
+  bootstrap_verified_rollback_retain_until="$(
+    validate_aws_retain_until "$bootstrap_verified_rollback_retain_until" \
+      "disabled-bootstrap selected rollback" "$created_epoch"
+  )" || die "disabled-bootstrap selected rollback retention is insufficient"
+  [ -n "$bootstrap_empty_proof" ] && [ -f "$bootstrap_empty_proof" ] \
+    || die "disabled-bootstrap empty-namespace proof is missing"
+  [ "$(sha256_file "$bootstrap_empty_proof")" = "$bootstrap_empty_proof_sha" ] \
+    || die "disabled-bootstrap empty-namespace proof changed"
+  storage_control_evidence_sha="$(sha256_file "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE")"
+  retention_evidence_sha="$(sha256_file "$aws_retention_evidence")"
+  completed_epoch="$(date -u +%s)"
+  "$NEXUS_DR_PYTHON_BIN" - \
+    "$NEXUS_DR_STORAGE_CONTROL_EVIDENCE" \
+    "$storage_control_evidence_sha" \
+    "$bootstrap_empty_proof" \
+    "$bootstrap_empty_proof_sha" \
+    "$aws_retention_evidence" \
+    "$retention_evidence_sha" \
+    "$bootstrap_receipt" \
+    "$created_epoch" \
+    "$completed_epoch" \
+    "$plaintext_sha" \
+    "$hourly_key" \
+    "$hourly_database_version_id" \
+    "$hourly_database_encrypted_sha" \
+    "$hourly_database_encrypted_size" \
+    "$hourly_database_created_epoch" \
+    "$daily_key" \
+    "$daily_database_version_id" \
+    "$daily_database_encrypted_sha" \
+    "$daily_database_encrypted_size" \
+    "$daily_database_created_epoch" \
+    "$weekly_key" \
+    "$weekly_database_version_id" \
+    "$weekly_database_encrypted_sha" \
+    "$weekly_database_encrypted_size" \
+    "$weekly_database_created_epoch" \
+    "$monthly_key" \
+    "$monthly_database_version_id" \
+    "$monthly_database_encrypted_sha" \
+    "$monthly_database_encrypted_size" \
+    "$monthly_database_created_epoch" \
+    "$bootstrap_rollback_identity" \
+    "$bootstrap_rollback_identity_sha" \
+    "$bootstrap_verified_rollback_key" \
+    "$bootstrap_verified_rollback_encrypted_sha" \
+    "$bootstrap_verified_rollback_encrypted_size" \
+    "$bootstrap_verified_rollback_created_epoch" \
+    "$bootstrap_verified_rollback_version_id" \
+    "$bootstrap_verified_rollback_retain_until" <<'PY'
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+(
+    controls_path,
+    controls_sha,
+    empty_proof_path,
+    empty_proof_sha,
+    retention_path,
+    retention_sha,
+    receipt_path,
+    started_epoch_raw,
+    completed_epoch_raw,
+    database_sha,
+    hourly_key,
+    hourly_version_id,
+    hourly_encrypted_sha,
+    hourly_encrypted_size_raw,
+    hourly_created_epoch_raw,
+    daily_key,
+    daily_version_id,
+    daily_encrypted_sha,
+    daily_encrypted_size_raw,
+    daily_created_epoch_raw,
+    weekly_key,
+    weekly_version_id,
+    weekly_encrypted_sha,
+    weekly_encrypted_size_raw,
+    weekly_created_epoch_raw,
+    monthly_key,
+    monthly_version_id,
+    monthly_encrypted_sha,
+    monthly_encrypted_size_raw,
+    monthly_created_epoch_raw,
+    rollback_identity_path,
+    rollback_identity_sha,
+    rollback_key,
+    rollback_encrypted_sha,
+    rollback_encrypted_size_raw,
+    rollback_created_epoch_raw,
+    rollback_version_id,
+    rollback_retain_until_raw,
+) = sys.argv[1:]
+
+def load_exact(path, expected_sha, label):
+    try:
+        raw = Path(path).read_bytes()
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"{label} is unreadable: {error}")
+    if hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise SystemExit(f"{label} digest changed")
+    if not isinstance(value, dict):
+        raise SystemExit(f"{label} is not an object")
+    return value
+
+controls = load_exact(
+    controls_path,
+    controls_sha,
+    "bootstrap storage-control evidence",
 )
+empty_proof = load_exact(
+    empty_proof_path,
+    empty_proof_sha,
+    "bootstrap empty-namespace proof",
+)
+retention = load_exact(
+    retention_path,
+    retention_sha,
+    "bootstrap retention evidence",
+)
+rollback_identity = load_exact(
+    rollback_identity_path,
+    rollback_identity_sha,
+    "bootstrap verified rollback identity",
+)
+if controls.get("schema") != "nexus.application-dr-storage-controls.bootstrap.v1":
+    raise SystemExit("bootstrap receipt requires bootstrap storage-control evidence")
+if (
+    empty_proof.get("schemaVersion")
+        != "NexusApplicationDrBootstrapEmptyNamespaceProofV1"
+    or empty_proof.get("status") != "passed"
+    or empty_proof.get("bucket") != controls.get("bucket")
+    or empty_proof.get("prefix") != f"{controls.get('prefix')}/"
+    or empty_proof.get("listingComplete") is not True
+    or any(
+        empty_proof.get(field) != 0
+        for field in ("objectCount", "versionCount", "deleteMarkerCount")
+    )
+):
+    raise SystemExit("bootstrap empty-namespace proof identity is invalid")
+if (
+    retention.get("schemaVersion") != "NexusApplicationDrRetentionEvidenceV1"
+    or retention.get("inventoryOnly") is not True
+    or retention.get("currentPeriodsVerified") is not True
+    or retention.get("selectedObjectsVerified") is not True
+    or retention.get("maturityStatus") != "warming"
+    or not isinstance(retention.get("tiers"), dict)
+):
+    raise SystemExit("bootstrap retention evidence is invalid")
+
+if not re.fullmatch(r"[0-9a-f]{64}", database_sha):
+    raise SystemExit("first backup plaintext database digest is invalid")
+try:
+    started_epoch = int(started_epoch_raw)
+    completed_epoch = int(completed_epoch_raw)
+    rollback_encrypted_size = int(rollback_encrypted_size_raw)
+    rollback_created_epoch = int(rollback_created_epoch_raw)
+except ValueError as error:
+    raise SystemExit("bootstrap receipt numeric field is invalid") from error
+if (
+    started_epoch < 0
+    or completed_epoch < started_epoch
+    or rollback_encrypted_size <= 0
+    or rollback_created_epoch < started_epoch
+    or rollback_created_epoch > completed_epoch
+):
+    raise SystemExit("bootstrap receipt time or count is invalid")
+
+def valid_version_id(candidate):
+    if not isinstance(candidate, str) or candidate in {"", "null"}:
+        return False
+    try:
+        encoded = candidate.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return (
+        len(encoded) <= 1024
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in candidate
+        )
+    )
+
+tier_inputs = {
+    "hourly": {
+        "key": hourly_key,
+        "versionId": hourly_version_id,
+        "encryptedSha256": hourly_encrypted_sha,
+        "encryptedSizeBytesRaw": hourly_encrypted_size_raw,
+        "createdEpochRaw": hourly_created_epoch_raw,
+    },
+    "daily": {
+        "key": daily_key,
+        "versionId": daily_version_id,
+        "encryptedSha256": daily_encrypted_sha,
+        "encryptedSizeBytesRaw": daily_encrypted_size_raw,
+        "createdEpochRaw": daily_created_epoch_raw,
+    },
+    "weekly": {
+        "key": weekly_key,
+        "versionId": weekly_version_id,
+        "encryptedSha256": weekly_encrypted_sha,
+        "encryptedSizeBytesRaw": weekly_encrypted_size_raw,
+        "createdEpochRaw": weekly_created_epoch_raw,
+    },
+    "monthly": {
+        "key": monthly_key,
+        "versionId": monthly_version_id,
+        "encryptedSha256": monthly_encrypted_sha,
+        "encryptedSizeBytesRaw": monthly_encrypted_size_raw,
+        "createdEpochRaw": monthly_created_epoch_raw,
+    },
+}
+current_versions = {}
+for tier, expected in tier_inputs.items():
+    item = retention["tiers"].get(tier)
+    selected = item.get("selectedVersions") if isinstance(item, dict) else None
+    if not isinstance(selected, list) or len(selected) != 1:
+        raise SystemExit(
+            f"first backup must produce exactly one selected {tier} version",
+        )
+    selected_item = selected[0]
+    if not isinstance(selected_item, dict):
+        raise SystemExit(f"first backup selected {tier} version is invalid")
+    try:
+        encrypted_size = int(expected["encryptedSizeBytesRaw"])
+        tier_created_epoch = int(expected["createdEpochRaw"])
+        created = datetime.fromtimestamp(tier_created_epoch, timezone.utc)
+    except (OSError, OverflowError, ValueError) as error:
+        raise SystemExit(
+            f"first backup {tier} numeric identity is invalid",
+        ) from error
+    suffix = {
+        "hourly": created.strftime("%Y%m%dT%H%M%SZ"),
+        "daily": created.strftime("%Y%m%d"),
+        "weekly": created.strftime("%G-W%V"),
+        "monthly": created.strftime("%Y%m"),
+    }[tier]
+    expected_key = (
+        f"{controls.get('prefix')}/database/{tier}/"
+        f"nexus-db-{suffix}.sqlite.age"
+    )
+    if (
+        expected["key"] != expected_key
+        or selected_item.get("key") != expected["key"]
+        or selected_item.get("versionId") != expected["versionId"]
+        or not valid_version_id(expected["versionId"])
+        or not re.fullmatch(
+            r"[0-9a-f]{64}",
+            str(expected["encryptedSha256"]),
+        )
+        or encrypted_size <= 0
+        or tier_created_epoch != started_epoch
+        or tier_created_epoch > completed_epoch
+    ):
+        raise SystemExit(f"first backup {tier} exact object identity changed")
+    current_versions[tier] = {
+        "key": expected["key"],
+        "versionId": expected["versionId"],
+        "plaintextSha256": database_sha,
+        "encryptedSha256": expected["encryptedSha256"],
+        "encryptedSizeBytes": encrypted_size,
+        "createdAt": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+if len({
+    item["encryptedSha256"]
+    for item in current_versions.values()
+}) != 1 or len({
+    item["encryptedSizeBytes"]
+    for item in current_versions.values()
+}) != 1:
+    raise SystemExit("first backup database tier ciphertext identity diverged")
+archive = rollback_identity.get("archive")
+manifest = rollback_identity.get("manifest")
+package = rollback_identity.get("package")
+rollback_database = rollback_identity.get("database")
+rollback_source = rollback_identity.get("source")
+if (
+    rollback_identity.get("schemaVersion")
+        != "NexusApplicationDrVerifiedRollbackBundleV1"
+    or rollback_identity.get("status") != "verified"
+    or not isinstance(archive, dict)
+    or not isinstance(manifest, dict)
+    or not isinstance(package, dict)
+    or not isinstance(rollback_database, dict)
+    or not isinstance(rollback_source, dict)
+    or not re.fullmatch(r"[a-f0-9]{64}", str(archive.get("sha256", "")))
+    or not isinstance(archive.get("sizeBytes"), int)
+    or isinstance(archive.get("sizeBytes"), bool)
+    or archive["sizeBytes"] <= 0
+    or manifest.get("schema") != "nexus.release-backup.v1"
+    or manifest.get("archivedVersion") != package.get("version")
+    or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("sha256", "")))
+    or not re.fullmatch(r"[a-f0-9]{64}", str(package.get("sha256", "")))
+    or not re.fullmatch(r"[a-f0-9]{64}", str(rollback_database.get("sha256", "")))
+    or rollback_database.get("integrityCheck") != "ok"
+    or rollback_database.get("foreignKeyCheck") != "ok"
+):
+    raise SystemExit("bootstrap verified rollback identity is invalid")
+expected_rollback_key = (
+    f"{controls.get('prefix')}/releases/"
+    f"{archive.get('basename')}.{archive.get('sha256')}.age"
+)
+if (
+    rollback_key != expected_rollback_key
+    or not re.fullmatch(r"[a-f0-9]{64}", rollback_encrypted_sha)
+    or not isinstance(rollback_version_id, str)
+    or rollback_version_id in {"", "null"}
+    or len(rollback_version_id.encode("utf-8")) > 1024
+    or any(
+        ord(character) < 32 or ord(character) == 127
+        for character in rollback_version_id
+    )
+):
+    raise SystemExit("bootstrap rollback remote object identity is invalid")
+try:
+    rollback_retain_until = datetime.fromisoformat(
+        rollback_retain_until_raw.replace("Z", "+00:00"),
+    )
+except ValueError as error:
+    raise SystemExit("bootstrap rollback retention timestamp is invalid") from error
+if (
+    rollback_retain_until.tzinfo is None
+    or int(rollback_retain_until.astimezone(timezone.utc).timestamp())
+        < rollback_created_epoch + 90 * 86400
+):
+    raise SystemExit("bootstrap rollback retention is shorter than 90 days")
+
+def timestamp(epoch):
+    return datetime.fromtimestamp(
+        epoch,
+        timezone.utc,
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+receipt = {
+    "schema": "nexus.application-dr-lifecycle-bootstrap-receipt.v1",
+    "status": "passed",
+    "startedAt": timestamp(started_epoch),
+    "completedAt": timestamp(completed_epoch),
+    "provider": "aws-s3",
+    "controlMode": "versioned-s3",
+    "cloudFormation": {
+        "stackId": controls["cloudFormation"]["stackId"],
+        "stackName": controls["cloudFormation"]["stackName"],
+        "stackStatus": controls["cloudFormation"]["stackStatus"],
+        "changeSetType": controls["cloudFormation"]["changeSetType"],
+        "lifecycleActivation": "DISABLED",
+        "lifecycleEverEnabled": False,
+    },
+    "namespace": {
+        "bucket": controls["bucket"],
+        "prefix": controls["prefix"],
+        "storageControlEvidenceSha256": controls_sha,
+        "emptyNamespaceProofSha256": empty_proof_sha,
+        "preflightObjectCount": 0,
+        "preflightVersionCount": 0,
+        "preflightDeleteMarkerCount": 0,
+    },
+    "bucketControls": {
+        "versioning": controls["versioning"],
+        "encryption": controls["encryption"],
+        "publicAccessBlock": controls["publicAccessBlock"],
+        "ownershipControls": controls["ownershipControls"],
+        "objectLock": controls["objectLock"],
+    },
+    "firstBackup": {
+        "databaseKey": hourly_key,
+        "databaseSha256": database_sha,
+        "databaseEncryptedSha256": hourly_encrypted_sha,
+        "databaseEncryptedSizeBytes":
+            current_versions["hourly"]["encryptedSizeBytes"],
+        "databaseObjectVersionId": hourly_version_id,
+        "currentTierVersions": current_versions,
+        "retentionEvidenceSha256": retention_sha,
+        "verifiedRollbackBundleCount": 1,
+        "verifiedRollbackBundle": {
+            "identityEvidenceSha256": rollback_identity_sha,
+            "snapshotEvidenceSha256":
+                rollback_identity["snapshotEvidenceSha256"],
+            "extractionEvidenceSha256":
+                rollback_identity["extractionEvidenceSha256"],
+            "databaseEvidenceSha256":
+                rollback_identity["databaseEvidenceSha256"],
+            "source": rollback_source,
+            "archive": archive,
+            "manifest": manifest,
+            "package": package,
+            "database": rollback_database,
+            "remoteObject": {
+                "bucket": controls["bucket"],
+                "key": rollback_key,
+                "originalNameMetadata": archive["basename"],
+                "encryptedSha256": rollback_encrypted_sha,
+                "encryptedSizeBytes": rollback_encrypted_size,
+                "createdAt": timestamp(rollback_created_epoch),
+                "objectVersionId": rollback_version_id,
+                "retainUntil": rollback_retain_until.astimezone(
+                    timezone.utc,
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        },
+    },
+    "lifecycleTransition": {
+        "current": "DISABLED",
+        "requiredNext": "ENABLED",
+        "cloudFormationParameter": "LifecycleBootstrapReceiptSha256",
+    },
+}
+encoded = (
+    json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
+).encode("utf-8")
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+try:
+    descriptor = os.open(receipt_path, flags, 0o600)
+except FileExistsError as error:
+    raise SystemExit(
+        "lifecycle bootstrap receipt already exists; bootstrap is single-use",
+    ) from error
+try:
+    with os.fdopen(descriptor, "wb") as target:
+        target.write(encoded)
+        target.flush()
+        os.fsync(target.fileno())
+except BaseException:
+    try:
+        os.unlink(receipt_path)
+    except OSError:
+        pass
+    raise
+directory_flags = os.O_RDONLY
+if hasattr(os, "O_DIRECTORY"):
+    directory_flags |= os.O_DIRECTORY
+directory_descriptor = os.open(
+    str(Path(receipt_path).parent),
+    directory_flags,
+)
+try:
+    os.fsync(directory_descriptor)
+finally:
+    os.close(directory_descriptor)
+PY
+  private_root_file "$bootstrap_receipt" "lifecycle bootstrap receipt"
+  lifecycle_bootstrap_receipt_path="$bootstrap_receipt"
+  lifecycle_bootstrap_receipt_sha="$(sha256_file "$bootstrap_receipt")"
+  [[ "$lifecycle_bootstrap_receipt_sha" =~ ^[a-f0-9]{64}$ ]] \
+    || die "lifecycle bootstrap receipt digest is invalid"
 fi
 
 if [ "$JSON_OUTPUT" = true ]; then
@@ -2158,7 +3007,9 @@ if [ "$JSON_OUTPUT" = true ]; then
     "$RECOVERY_RUNTIME_DIGEST" "$required_recovery_manifest_sha" \
     "$required_recovery_staging_sha" "$RECOVERY_ESCROW_ID" "$RECOVERY_ESCROW_PHASE" \
     "$required_recovery_confirmed_at" "$required_recovery_retain_until" \
-    "$required_recovery_version_id" "$required_recovery_confirmed" <<'PY'
+    "$required_recovery_version_id" "$required_recovery_confirmed" \
+    "$lifecycle_phase" "$lifecycle_bootstrap_receipt_path" \
+    "$lifecycle_bootstrap_receipt_sha" <<'PY'
 import json
 import sys
 (
@@ -2198,6 +3049,9 @@ import sys
     recovery_retain_until,
     recovery_version_id,
     recovery_confirmed,
+    lifecycle_phase,
+    lifecycle_bootstrap_receipt_path,
+    lifecycle_bootstrap_receipt_sha,
 ) = sys.argv[1:]
 retention_evidence = None
 if retention_evidence_path:
@@ -2226,6 +3080,14 @@ print(json.dumps({
     "encrypted": True,
     "storageProvider": provider,
     "storageControlMode": control_mode,
+    "lifecyclePhase": lifecycle_phase,
+    "lifecycleBootstrapReceipt": (
+        None if not lifecycle_bootstrap_receipt_path else {
+            "path": lifecycle_bootstrap_receipt_path,
+            "sha256": lifecycle_bootstrap_receipt_sha,
+            "cloudFormationParameter": "LifecycleBootstrapReceiptSha256",
+        }
+    ),
     "releasePrefixLockVerified": True,
     "databaseKey": database_key,
     "databaseSha256": database_sha,
@@ -2286,5 +3148,5 @@ print(json.dumps({
 }, separators=(",", ":")))
 PY
 else
-  echo "application_dr_backup_complete encrypted=true storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE releasePrefixLock=verified databaseKey=$hourly_key databaseSha256=$plaintext_sha releaseBundles=$release_count databaseRetentionPolicy=24,7,4,6 databaseRetentionMaturity=$database_retention_maturity databaseRetentionFloorObserved=$database_retention_floor_observed databaseRetentionObjectsVerified=$database_retention_objects_verified releaseRetentionPolicyDays=90"
+  echo "application_dr_backup_complete encrypted=true storageProvider=$NEXUS_DR_STORAGE_PROVIDER storageControlMode=$NEXUS_DR_STORAGE_CONTROL_MODE lifecyclePhase=$lifecycle_phase lifecycleBootstrapReceipt=${lifecycle_bootstrap_receipt_path:-none} lifecycleBootstrapReceiptSha256=${lifecycle_bootstrap_receipt_sha:-none} releasePrefixLock=verified databaseKey=$hourly_key databaseSha256=$plaintext_sha releaseBundles=$release_count databaseRetentionPolicy=24,7,4,6 databaseRetentionMaturity=$database_retention_maturity databaseRetentionFloorObserved=$database_retention_floor_observed databaseRetentionObjectsVerified=$database_retention_objects_verified releaseRetentionPolicyDays=90"
 fi

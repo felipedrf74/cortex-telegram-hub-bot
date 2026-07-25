@@ -67,6 +67,103 @@ function writeMigrationLedger(database: string, filenames: string[]) {
   fs.chmodSync(database, 0o600);
 }
 
+function createRollbackBundle(
+  root: string,
+  label: string,
+  options: {
+    missingManifest?: boolean;
+    badManifestSchema?: boolean;
+    badManifestShape?: boolean;
+    invalidTargetVersion?: boolean;
+    corruptDatabase?: boolean;
+  } = {},
+) {
+  const rollbackDirectory = path.join(root, `rollback-${label}`);
+  const fixture = path.join(root, `fixture-${label}`);
+  fs.mkdirSync(rollbackDirectory, { mode: 0o700 });
+  for (const directory of [
+    'dist',
+    'migrations',
+    'prompts',
+    'content-engine',
+    'data',
+    'catalog',
+  ]) {
+    fs.mkdirSync(path.join(fixture, directory), { recursive: true, mode: 0o700 });
+  }
+  fs.writeFileSync(path.join(fixture, 'dist/index.js'), 'runtime\n');
+  fs.writeFileSync(path.join(fixture, 'migrations/001.sql'), 'SELECT 1;\n');
+  fs.writeFileSync(path.join(fixture, 'prompts/default.md'), 'prompt\n');
+  fs.writeFileSync(path.join(fixture, 'content-engine/main.py'), 'print(1)\n');
+  fs.writeFileSync(path.join(fixture, 'content-engine/config.py'), 'VALUE=1\n');
+  fs.writeFileSync(path.join(fixture, 'content-engine/requirements.txt'), 'fastapi\n');
+  fs.writeFileSync(
+    path.join(fixture, 'package.json'),
+    JSON.stringify({ version: '4.14.230' }),
+  );
+  fs.writeFileSync(path.join(fixture, 'package-lock.json'), '{}\n');
+  fs.writeFileSync(path.join(fixture, 'ecosystem.config.js'), 'module.exports={}\n');
+  const database = path.join(fixture, 'data/bot.db');
+  if (options.corruptDatabase) {
+    fs.writeFileSync(database, 'not-a-sqlite-database');
+  } else {
+    execFileSync(python, [
+      '-c',
+      [
+        'import sqlite3,sys',
+        'db=sqlite3.connect(sys.argv[1])',
+        "db.execute('CREATE TABLE proof(id INTEGER PRIMARY KEY, value TEXT NOT NULL)')",
+        "db.execute('INSERT INTO proof(value) VALUES (?)', ('verified',))",
+        'db.commit()',
+        'db.close()',
+      ].join(';'),
+      database,
+    ]);
+  }
+  if (!options.missingManifest) {
+    fs.writeFileSync(
+      path.join(fixture, '.nexus-backup-manifest.json'),
+      JSON.stringify({
+        schema: options.badManifestSchema
+          ? 'nexus.release-backup.invalid'
+          : 'nexus.release-backup.v1',
+        archivedVersion: '4.14.230',
+        targetVersion: options.invalidTargetVersion ? 'not/a/version' : '4.14.231',
+        catalogPresent: true,
+        ...(options.badManifestShape
+          ? {}
+          : { catalogRequiredFromVersion: '4.14.217' }),
+      }),
+    );
+  }
+  const archive = path.join(
+    rollbackDirectory,
+    `v4.14.230_before-v4.14.231_${label}.tar.gz`,
+  );
+  const entries = [
+    'dist',
+    'migrations',
+    'prompts',
+    'content-engine',
+    'data',
+    'catalog',
+    'package.json',
+    'package-lock.json',
+    'ecosystem.config.js',
+  ];
+  if (!options.missingManifest) entries.push('.nexus-backup-manifest.json');
+  execFileSync('tar', ['czf', archive, '-C', fixture, ...entries]);
+  fs.chmodSync(archive, 0o600);
+  return {
+    archive,
+    basename: path.basename(archive),
+    database,
+    fixture,
+    rollbackDirectory,
+    sha256: createHash('sha256').update(fs.readFileSync(archive)).digest('hex'),
+  };
+}
+
 describe('Nexus application disaster-recovery assets', () => {
   it('accepts only the exact Roles Anywhere credential_process boundary', () => {
     const root = privateRoot('nexus-app-dr-aws-boundary-');
@@ -719,12 +816,244 @@ describe('Nexus application disaster-recovery assets', () => {
     );
   });
 
+  it('spends disabled lifecycle bootstrap only on a live empty namespace', () => {
+    const backup = fs.readFileSync(backupScript, 'utf8');
+    const preflightStart = backup.indexOf('bootstrap_empty_proof=""');
+    const preflightEnd = backup.indexOf(
+      '\naws_version_id_from_json() {',
+      preflightStart,
+    );
+    expect(preflightStart).toBeGreaterThan(-1);
+    expect(preflightEnd).toBeGreaterThan(preflightStart);
+    const preflight = backup.slice(preflightStart, preflightEnd);
+    const root = privateRoot('nexus-app-dr-bootstrap-preflight-');
+    const run = (scenario: 'empty' | 'version' | 'object' | 'spent') => {
+      const scenarioRoot = fs.realpathSync(fs.mkdtempSync(path.join(root, `${scenario}-`)));
+      fs.chmodSync(scenarioRoot, 0o700);
+      if (scenario === 'spent') {
+        fs.writeFileSync(
+          path.join(scenarioRoot, 'receipt.json'),
+          '{}\n',
+          { mode: 0o600 },
+        );
+      }
+      const script = [
+        'set -u',
+        `NEXUS_DR_PYTHON_BIN=${JSON.stringify(python)}`,
+        'NEXUS_DR_STORAGE_PROVIDER=aws-s3',
+        'NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3',
+        'NEXUS_DR_S3_BUCKET=nexus-recovery',
+        'NEXUS_DR_S3_PREFIX=nexus-hub/application',
+        `tmp_dir=${JSON.stringify(scenarioRoot)}`,
+        `bootstrap_receipt=${JSON.stringify(path.join(scenarioRoot, 'receipt.json'))}`,
+        `scenario=${JSON.stringify(scenario)}`,
+        'die() { printf "%s\\n" "$*" >&2; exit 1; }',
+        'private_root_file() { return 0; }',
+        'sha256_file() { sha256sum -- "$1" | awk \'{print $1}\'; }',
+        preflight,
+        'aws_s3api() {',
+        '  operation="$1"; shift',
+        '  { printf "%s" "$operation"; printf " <%s>" "$@"; printf "\\n"; } '
+          + '>>"$tmp_dir/calls.log"',
+        '  case "$operation" in',
+        '    list-object-versions)',
+        '      if [ "$scenario" = version ]; then',
+        '        printf \'%s\\n\' \'{"Prefix":"nexus-hub/application/","IsTruncated":false,"Versions":[{"Key":"nexus-hub/application/prior","VersionId":"v1"}],"DeleteMarkers":[]}\'',
+        '      else',
+        '        printf \'%s\\n\' \'{"Prefix":"nexus-hub/application/","IsTruncated":false,"Versions":[],"DeleteMarkers":[]}\'',
+        '      fi',
+        '      ;;',
+        '    list-objects-v2)',
+        '      if [ "$scenario" = object ]; then',
+        '        printf \'%s\\n\' \'{"Prefix":"nexus-hub/application/","IsTruncated":false,"KeyCount":1,"Contents":[{"Key":"nexus-hub/application/prior"}]}\'',
+        '      else',
+        '        printf \'%s\\n\' \'{"Prefix":"nexus-hub/application/","IsTruncated":false,"KeyCount":0,"Contents":[]}\'',
+        '      fi',
+        '      ;;',
+        '    *) return 1 ;;',
+        '  esac',
+        '}',
+        'assert_empty_bootstrap_namespace',
+        'printf "proof=%s\\n" "$bootstrap_empty_proof_sha"',
+      ].join('\n');
+      return {
+        ...spawnSync('/bin/bash', ['-s', '--'], {
+          encoding: 'utf8',
+          input: script,
+          env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+        }),
+        callsPath: path.join(scenarioRoot, 'calls.log'),
+      };
+    };
+
+    const empty = run('empty');
+    expect(empty.status, empty.stderr).toBe(0);
+    expect(empty.stdout).toMatch(/proof=[a-f0-9]{64}/);
+    const calls = fs.readFileSync(empty.callsPath, 'utf8');
+    expect(calls).toContain('list-object-versions');
+    expect(calls).toContain('list-objects-v2');
+    expect(calls).toContain('<--prefix> <nexus-hub/application/>');
+    expect(calls).toContain('<--no-paginate>');
+    expect(calls).toContain('<--max-keys> <1>');
+
+    for (const scenario of ['version', 'object'] as const) {
+      const nonEmpty = run(scenario);
+      expect(nonEmpty.status).not.toBe(0);
+      expect(nonEmpty.stderr).toContain(
+        'requires a live zero-object, zero-version, zero-delete-marker namespace',
+      );
+    }
+    const spent = run('spent');
+    expect(spent.status).not.toBe(0);
+    expect(spent.stderr).toContain('disabled-bootstrap has already been spent');
+    expect(fs.existsSync(spent.callsPath)).toBe(false);
+
+    expect(backup).toContain('nexus.application-dr-lifecycle-bootstrap-receipt.v1');
+    expect(backup).toContain('os.O_WRONLY | os.O_CREAT | os.O_EXCL');
+    expect(backup).toContain('flags |= os.O_NOFOLLOW');
+    expect(backup).toContain('os.fsync(target.fileno())');
+    expect(backup).toContain('os.fsync(directory_descriptor)');
+    expect(backup).toContain(
+      '"cloudFormationParameter": "LifecycleBootstrapReceiptSha256"',
+    );
+    expect(backup).toContain(
+      'first backup must produce exactly one selected {tier} version',
+    );
+    expect(backup).toContain('"verifiedRollbackBundleCount": 1');
+    expect(backup).toContain('"identityEvidenceSha256": rollback_identity_sha');
+    expect(backup).toContain('"objectVersionId": rollback_version_id');
+    expect(backup).toContain('"retainUntil": rollback_retain_until.astimezone(');
+    expect(backup).toContain('"currentTierVersions": current_versions');
+    expect(backup).toContain('"plaintextSha256": database_sha');
+    expect(backup).toContain(
+      '"encryptedSha256": expected["encryptedSha256"]',
+    );
+    expect(backup).toContain('"encryptedSizeBytes": encrypted_size');
+    expect(backup).toContain(
+      'first backup {tier} exact object identity changed',
+    );
+    expect(backup).toContain(
+      'first backup database tier ciphertext identity diverged',
+    );
+    expect(backup).not.toContain('"verifiedRollbackBundles": release_count');
+    expect(backup).toContain(
+      'disabled-bootstrap requires exactly one selected verified rollback bundle',
+    );
+    expect(backup).toContain(
+      '"originalNameMetadata": archive["basename"]',
+    );
+  });
+
+  it('requires an explicit owner-run first backup and excludes the systemd timer', () => {
+    const backup = fs.readFileSync(backupScript, 'utf8');
+    const service = fs.readFileSync(
+      path.join(opsRoot, 'systemd/nexus-application-dr-backup.service'),
+      'utf8',
+    );
+    const authorizationStart = backup.indexOf(
+      '# BEGIN lifecycle bootstrap invocation authorization',
+    );
+    const authorizationEnd = backup.indexOf(
+      '# END lifecycle bootstrap invocation authorization',
+      authorizationStart,
+    );
+    expect(authorizationStart).toBeGreaterThan(-1);
+    expect(authorizationEnd).toBeGreaterThan(authorizationStart);
+    const authorization = backup.slice(authorizationStart, authorizationEnd);
+    const run = (
+      action: 'backup' | 'verify',
+      phase: 'enabled' | 'disabled-bootstrap',
+      flag: boolean,
+      invocationId = '',
+      bundle = flag ? '/rollback/v4.14.230.tar.gz' : '',
+      digest = flag ? 'a'.repeat(64) : '',
+      requiredRelease = '',
+      recoveryArgumentCount = 0,
+    ) => spawnSync('/bin/bash', ['-s', '--'], {
+      encoding: 'utf8',
+      input: [
+        'set -u',
+        `ACTION=${action}`,
+        `lifecycle_phase=${phase}`,
+        `BOOTSTRAP_FIRST_BACKUP=${flag}`,
+        `BOOTSTRAP_ROLLBACK_BUNDLE=${JSON.stringify(bundle)}`,
+        `BOOTSTRAP_ROLLBACK_SHA256=${JSON.stringify(digest)}`,
+        'NEXUS_DR_ROLLBACK_DIR=/rollback',
+        `REQUIRED_RELEASE=${JSON.stringify(requiredRelease)}`,
+        `recovery_argument_count=${recoveryArgumentCount}`,
+        `INVOCATION_ID=${JSON.stringify(invocationId)}`,
+        'die() { printf "%s\\n" "$*" >&2; exit 1; }',
+        authorization,
+        'printf "authorized\\n"',
+      ].join('\n'),
+      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+    });
+
+    expect(run('backup', 'disabled-bootstrap', false).stderr).toContain(
+      'disabled-bootstrap requires explicit --bootstrap-first-backup',
+    );
+    expect(run('backup', 'disabled-bootstrap', true).status).toBe(0);
+    expect(run('backup', 'disabled-bootstrap', true, '', '').stderr).toContain(
+      'requires an exact rollback bundle and owner-reviewed SHA-256',
+    );
+    expect(run(
+      'backup',
+      'disabled-bootstrap',
+      false,
+      '',
+      '/rollback/v4.14.230.tar.gz',
+      'a'.repeat(64),
+    ).stderr).toContain(
+      'bootstrap rollback identity arguments require --bootstrap-first-backup',
+    );
+    expect(run('backup', 'enabled', true).stderr).toContain(
+      '--bootstrap-first-backup requires disabled-bootstrap evidence',
+    );
+    expect(run('verify', 'disabled-bootstrap', true).stderr).toContain(
+      '--bootstrap-first-backup cannot be combined with --verify-config',
+    );
+    expect(run('backup', 'disabled-bootstrap', true, 'systemd-invocation').stderr)
+      .toContain('--bootstrap-first-backup cannot run from a systemd service or timer');
+    expect(run(
+      'backup',
+      'disabled-bootstrap',
+      true,
+      '',
+      '/rollback/v4.14.230.tar.gz',
+      'invalid',
+    ).stderr).toContain('owner-reviewed SHA-256 is invalid');
+    expect(run(
+      'backup',
+      'disabled-bootstrap',
+      true,
+      '',
+      '/outside/v4.14.230.tar.gz',
+    ).stderr).toContain('must be one exact configured v*.tar.gz path');
+    expect(run(
+      'backup',
+      'disabled-bootstrap',
+      true,
+      '',
+      '/rollback/v4.14.230.tar.gz',
+      'a'.repeat(64),
+      '/rollback/v4.14.230.tar.gz',
+    ).stderr).toContain('cannot be combined with promotion recovery escrow');
+
+    expect(service).toContain(
+      'ExecStart=/usr/local/libexec/nexus-application-dr/'
+      + 'application-dr-backup.sh --config /etc/nexus-application-dr/backup.env',
+    );
+    expect(service).not.toContain('--bootstrap-first-backup');
+  });
+
   it('uses conditional checksummed COMPLIANCE writes and exact post-write evidence', () => {
     const backup = fs.readFileSync(backupScript, 'utf8');
     const uploadStart = backup.indexOf('put_encrypted_object() {');
     const uploadEnd = backup.indexOf('created_epoch="$(date -u +%s)"', uploadStart);
     const upload = backup.slice(uploadStart, uploadEnd);
-    const databaseStart = backup.indexOf('hourly_database_version_id=""');
+    const databaseStart = backup.indexOf(
+      'hourly_database_collision_policy=fail',
+    );
     const databaseEnd = backup.indexOf(
       '# BEGIN version-aware S3 retention functions',
       databaseStart,
@@ -742,15 +1071,54 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(upload).toContain('[ "$attempt" -eq 1 ]');
     expect(upload).toContain('verify_existing_period_object');
     expect(upload).toContain('verify_existing_exact_object');
+    expect(backup).toContain(
+      '&& [ "$bootstrap_selected_archive" != true ]',
+    );
+    expect(backup).toContain('release_collision_policy=fail');
+    expect(backup).toContain('90 "$release_collision_policy"');
     expect(backup).toContain('--checksum-mode ENABLED');
     expect(backup).toContain('ChecksumSHA256');
     expect(backup).toContain('ObjectLockMode');
     expect(upload).toContain('VersionId');
 
-    expect(databaseUpload).toContain('"" 2 fail');
-    expect(databaseUpload).toContain('"" 8 period-daily');
-    expect(databaseUpload).toContain('"" 35 period-weekly');
-    expect(databaseUpload).toContain('"" 190 period-monthly');
+    expect(databaseUpload).toContain(
+      'daily_database_collision_policy=period-daily',
+    );
+    expect(databaseUpload).toContain(
+      'weekly_database_collision_policy=period-weekly',
+    );
+    expect(databaseUpload).toContain(
+      'monthly_database_collision_policy=period-monthly',
+    );
+    expect(databaseUpload).toContain(
+      'if [ "$lifecycle_phase" = disabled-bootstrap ]; then',
+    );
+    for (const tier of ['hourly', 'daily', 'weekly', 'monthly']) {
+      expect(databaseUpload).toContain(
+        `${tier}_database_collision_policy=fail`,
+      );
+      expect(databaseUpload).toContain(
+        `${tier}_database_version_id="$LAST_VERIFIED_VERSION_ID"`,
+      );
+      expect(databaseUpload).toContain(
+        `${tier}_database_encrypted_sha="$LAST_VERIFIED_ENCRYPTED_SHA"`,
+      );
+      expect(databaseUpload).toContain(
+        `${tier}_database_encrypted_size="$LAST_VERIFIED_ENCRYPTED_SIZE"`,
+      );
+    }
+    expect(databaseUpload).toContain(
+      '"" 2 "$hourly_database_collision_policy"',
+    );
+    expect(databaseUpload).toContain(
+      '"" 8 "$daily_database_collision_policy"',
+    );
+    expect(databaseUpload).toContain(
+      '"" 35 "$weekly_database_collision_policy"',
+    );
+    expect(databaseUpload).toContain(
+      '"" 190 "$monthly_database_collision_policy"',
+    );
     expect(backup).toContain(
       'required release escrow must be bound to a complete promotion recovery transaction',
     );
@@ -778,8 +1146,61 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(backup).toContain('--maturity-seal "$maturity_seal"');
     expect(backup).toContain('confirm_database_after_retention');
     expect(backup).toContain(
-      'get_args+=("--version-id=$hourly_database_version_id")',
+      'get_args+=("--version-id=$expected_version_id")',
     );
+    expect(backup).toContain('confirm_database_tier_after_retention');
+    expect(backup).toContain(
+      '"encryptedSha256": expected["encryptedSha256"]',
+    );
+    expect(backup).toContain('"encryptedSizeBytes": encrypted_size');
+  });
+
+  it('fails every bootstrap database tier collision without removing enabled period reuse', () => {
+    const backup = fs.readFileSync(backupScript, 'utf8');
+    const policyStart = backup.indexOf(
+      'hourly_database_collision_policy=fail',
+    );
+    const policyEnd = backup.indexOf(
+      'hourly_database_version_id=""',
+      policyStart,
+    );
+    expect(policyStart).toBeGreaterThan(-1);
+    expect(policyEnd).toBeGreaterThan(policyStart);
+    const policy = backup.slice(policyStart, policyEnd);
+    const runPolicy = (phase: 'enabled' | 'disabled-bootstrap') => spawnSync(
+      '/bin/bash',
+      ['-s', '--'],
+      {
+        encoding: 'utf8',
+        input: [
+          'set -u',
+          `lifecycle_phase=${phase}`,
+          policy,
+          'printf "%s\\n" "$hourly_database_collision_policy" '
+            + '"$daily_database_collision_policy" '
+            + '"$weekly_database_collision_policy" '
+            + '"$monthly_database_collision_policy"',
+        ].join('\n'),
+      },
+    );
+
+    const enabled = runPolicy('enabled');
+    expect(enabled.status, enabled.stderr).toBe(0);
+    expect(enabled.stdout.trim().split('\n')).toEqual([
+      'fail',
+      'period-daily',
+      'period-weekly',
+      'period-monthly',
+    ]);
+
+    const bootstrap = runPolicy('disabled-bootstrap');
+    expect(bootstrap.status, bootstrap.stderr).toBe(0);
+    expect(bootstrap.stdout.trim().split('\n')).toEqual([
+      'fail',
+      'fail',
+      'fail',
+      'fail',
+    ]);
   });
 
   it('fails closed across governed AWS write-once collision outcomes', () => {
@@ -787,7 +1208,7 @@ describe('Nexus application disaster-recovery assets', () => {
     const backup = fs.readFileSync(backupScript, 'utf8');
     const functionsStart = backup.indexOf('aws_version_id_from_json() {');
     const functionsEnd = backup.indexOf(
-      'created_epoch="$(date -u +%s)"',
+      '# BEGIN bootstrap selected rollback snapshot',
       functionsStart,
     );
     expect(functionsStart).toBeGreaterThan(-1);
@@ -884,7 +1305,7 @@ describe('Nexus application disaster-recovery assets', () => {
         '          printf "An error occurred (AccessDenied) when calling the PutObject operation\\n" >&2',
         '          return 1',
         '          ;;',
-        '        valid-period-412|invalid-period-412|exact-resume-412|exact-resume-stale-head|hourly-collision)',
+        '        valid-period-412|invalid-period-412|exact-resume-412|exact-resume-stale-head|hourly-collision|bootstrap-tier-collision|bootstrap-selected-collision)',
         '          printf "An error occurred (PreconditionFailed) when calling the PutObject operation\\n" >&2',
         '          return 1',
         '          ;;',
@@ -919,6 +1340,14 @@ describe('Nexus application disaster-recovery assets', () => {
         '    ;;',
         '  hourly-collision)',
         '    key="$database_root/hourly/nexus-db-20260724T000000Z.sqlite.age"',
+        '    collision_policy=fail',
+        '    ;;',
+        '  bootstrap-tier-collision)',
+        '    key="$database_root/daily/nexus-db-20260724.sqlite.age"',
+        '    collision_policy=fail',
+        '    ;;',
+        '  bootstrap-selected-collision)',
+        '    key="$NEXUS_DR_S3_PREFIX/releases/v4.14.230.tar.gz.digest.age"',
         '    collision_policy=fail',
         '    ;;',
         '  *)',
@@ -993,6 +1422,7 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(existingPeriod.status, existingPeriod.stderr).toBe(0);
     expect(existingPeriod.stdout).toContain(`verified=${opaqueVersionId}`);
     expect(existingPeriod.count).toBe(1);
+    expect(existingPeriod.operations).toContain('head-object');
 
     const exactByteLimit = runScenario('valid-period-412', {
       ...validHead,
@@ -1066,6 +1496,20 @@ describe('Nexus application disaster-recovery assets', () => {
     const hourlyCollision = runScenario('hourly-collision');
     expect(hourlyCollision.status).not.toBe(0);
     expect(hourlyCollision.stderr).toContain(
+      'write-once object key already exists',
+    );
+
+    const bootstrapTierCollision = runScenario('bootstrap-tier-collision');
+    expect(bootstrapTierCollision.status).not.toBe(0);
+    expect(bootstrapTierCollision.operations).not.toContain('head-object');
+    expect(bootstrapTierCollision.stderr).toContain(
+      'write-once object key already exists',
+    );
+
+    const bootstrapSelectedCollision = runScenario('bootstrap-selected-collision');
+    expect(bootstrapSelectedCollision.status).not.toBe(0);
+    expect(bootstrapSelectedCollision.operations).not.toContain('head-object');
+    expect(bootstrapSelectedCollision.stderr).toContain(
       'write-once object key already exists',
     );
   });
@@ -1145,6 +1589,7 @@ describe('Nexus application disaster-recovery assets', () => {
       schemaVersion: 'NexusApplicationDrStorageControlsVerificationV2',
       status: 'passed',
       provider: 'aws-s3',
+      lifecyclePhase: 'enabled',
       versioningVerified: true,
       approvedVariance: false,
       databaseWriteOnceVerified: true,
@@ -1153,6 +1598,167 @@ describe('Nexus application disaster-recovery assets', () => {
       lifecycleVerified: true,
       releasePrefixLockVerified: true,
     });
+
+    const bootstrapEvidence = {
+      ...common,
+      schema: 'nexus.application-dr-storage-controls.bootstrap.v1',
+      endpoint: 'https://s3.eu-west-1.amazonaws.com',
+      provider: 'aws-s3',
+      controlMode: 'versioned-s3',
+      cloudFormation: {
+        stackId: 'arn:aws:cloudformation:eu-west-1:111122223333:stack/nexus-application-dr/01234567-89ab-cdef-0123-456789abcdef',
+        stackName: 'nexus-application-dr',
+        stackStatus: 'UPDATE_COMPLETE',
+        changeSetType: 'UPDATE',
+        createdAt: '2026-07-23T10:00:00Z',
+        lastUpdatedAt: '2026-07-23T10:30:00Z',
+        lifecycleActivation: 'DISABLED',
+        lifecycleEverEnabled: false,
+        lifecycleBootstrapReceiptSha256: null,
+      },
+      versioning: { supported: true, status: 'enabled' },
+      encryption: { algorithm: 'AES256' },
+      publicAccessBlock: {
+        blockPublicAcls: true,
+        blockPublicPolicy: true,
+        ignorePublicAcls: true,
+        restrictPublicBuckets: true,
+      },
+      ownershipControls: { objectOwnership: 'BucketOwnerEnforced' },
+      objectLock: { enabled: true },
+      databaseProtection: {
+        writeMode: 'conditional-first-point',
+        objectLock: {
+          supported: true,
+          status: 'enabled',
+          mode: 'COMPLIANCE',
+          retentionFloorDays: {
+            hourly: 2,
+            daily: 8,
+            weekly: 35,
+            monthly: 190,
+          },
+        },
+      },
+      cleanup: {
+        owner: 's3-lifecycle',
+        status: 'disabled',
+        databaseExpirationDays: {
+          hourly: 3,
+          daily: 9,
+          weekly: 36,
+          monthly: 191,
+        },
+        releaseExpirationDays: 92,
+      },
+      releasePrefixLock: {
+        control: 's3-object-lock',
+        status: 'enabled',
+        prefix: 'nexus-hub/application/releases/',
+        retentionDays: 90,
+      },
+      namespaceInventory: {
+        listingComplete: true,
+        objectCount: 0,
+        versionCount: 0,
+        deleteMarkerCount: 0,
+      },
+    };
+    const bootstrapArgs = [
+      storageControlHelper,
+      '--evidence',
+      evidencePath,
+      '--endpoint',
+      bootstrapEvidence.endpoint,
+      '--bucket',
+      common.bucket,
+      '--prefix',
+      common.prefix,
+      '--now-epoch',
+      String(now),
+      '--provider',
+      'aws-s3',
+      '--control-mode',
+      'versioned-s3',
+    ];
+    fs.writeFileSync(evidencePath, JSON.stringify(bootstrapEvidence));
+    const bootstrap = runPython(bootstrapArgs);
+    expect(bootstrap.status, bootstrap.stderr).toBe(0);
+    expect(JSON.parse(bootstrap.stdout)).toMatchObject({
+      schemaVersion: 'NexusApplicationDrStorageControlsBootstrapVerificationV1',
+      status: 'passed',
+      provider: 'aws-s3',
+      lifecyclePhase: 'disabled-bootstrap',
+      bootstrapStackId: bootstrapEvidence.cloudFormation.stackId,
+      namespaceEmpty: true,
+      lifecycleVerified: false,
+      databaseWriteOnceVerified: true,
+      releasePrefixLockVerified: true,
+    });
+
+    fs.writeFileSync(evidencePath, JSON.stringify({
+      ...bootstrapEvidence,
+      cloudFormation: {
+        ...bootstrapEvidence.cloudFormation,
+        stackStatus: 'CREATE_COMPLETE',
+        changeSetType: 'CREATE',
+        lastUpdatedAt: null,
+      },
+    }));
+    const createBootstrap = runPython(bootstrapArgs);
+    expect(createBootstrap.status, createBootstrap.stderr).toBe(0);
+
+    for (const [label, evidence, expected] of [
+      [
+        'non-empty namespace',
+        {
+          ...bootstrapEvidence,
+          namespaceInventory: {
+            ...bootstrapEvidence.namespaceInventory,
+            versionCount: 1,
+          },
+        },
+        'requires a complete zero-object, zero-version',
+      ],
+      [
+        'inconsistent stack operation',
+        {
+          ...bootstrapEvidence,
+          cloudFormation: {
+            ...bootstrapEvidence.cloudFormation,
+            stackStatus: 'CREATE_COMPLETE',
+          },
+        },
+        'requires a completed CREATE or UPDATE stack',
+      ],
+      [
+        'previously enabled lifecycle',
+        {
+          ...bootstrapEvidence,
+          cloudFormation: {
+            ...bootstrapEvidence.cloudFormation,
+            lifecycleEverEnabled: true,
+          },
+        },
+        'requires a completed CREATE or UPDATE stack',
+      ],
+      [
+        'incomplete public access block',
+        {
+          ...bootstrapEvidence,
+          publicAccessBlock: {
+            ...bootstrapEvidence.publicAccessBlock,
+            blockPublicPolicy: false,
+          },
+        },
+        'requires every S3 public-access block',
+      ],
+    ] as const) {
+      fs.writeFileSync(evidencePath, JSON.stringify(evidence));
+      const rejected = runPython(bootstrapArgs);
+      expect(rejected.status, `${label}: ${rejected.stderr}`).not.toBe(0);
+      expect(rejected.stderr).toContain(expected);
+    }
 
     const r2Evidence = {
       ...common,
@@ -1200,6 +1806,7 @@ describe('Nexus application disaster-recovery assets', () => {
       schemaVersion: 'NexusApplicationDrStorageControlsVerificationV2',
       status: 'passed',
       provider: 'cloudflare-r2',
+      lifecyclePhase: 'approved-r2-variance',
       versioningVerified: false,
       approvedVariance: true,
       databaseWriteOnceVerified: false,
@@ -1375,6 +1982,311 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(fs.existsSync(path.join(root, 'escape'))).toBe(false);
   });
 
+  it('snapshots the owner-selected rollback bundle through stable descriptors', () => {
+    const root = privateRoot('nexus-app-dr-bootstrap-snapshot-');
+    const bundle = createRollbackBundle(root, 'positive');
+    const snapshotDirectory = path.join(root, 'snapshots');
+    fs.mkdirSync(snapshotDirectory, { mode: 0o700 });
+    const snapshot = path.join(snapshotDirectory, 'selected.tar.gz');
+    const result = runPython([
+      archiveHelper,
+      'snapshot',
+      '--source-directory',
+      bundle.rollbackDirectory,
+      '--source-name',
+      bundle.basename,
+      '--destination',
+      snapshot,
+      '--expected-sha256',
+      bundle.sha256,
+      '--expected-uid',
+      String(process.getuid?.() ?? fs.statSync(bundle.archive).uid),
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(result.stdout);
+    expect(evidence).toMatchObject({
+      schemaVersion: 'NexusApplicationDrRollbackSnapshotV1',
+      status: 'passed',
+      expectedSha256: bundle.sha256,
+      source: {
+        directory: bundle.rollbackDirectory,
+        basename: bundle.basename,
+      },
+      snapshot: {
+        path: snapshot,
+        sha256: bundle.sha256,
+        sizeBytes: fs.statSync(bundle.archive).size,
+        mode: 0o600,
+        nlink: 1,
+      },
+    });
+    expect(evidence.source.before).toEqual(evidence.source.after);
+    expect(evidence.source.before).toEqual(evidence.source.pathEntryAfter);
+    expect(fs.readFileSync(snapshot)).toEqual(fs.readFileSync(bundle.archive));
+
+    const wrongDigestSnapshot = path.join(snapshotDirectory, 'wrong-digest.tar.gz');
+    const wrongDigest = runPython([
+      archiveHelper,
+      'snapshot',
+      '--source-directory',
+      bundle.rollbackDirectory,
+      '--source-name',
+      bundle.basename,
+      '--destination',
+      wrongDigestSnapshot,
+      '--expected-sha256',
+      '0'.repeat(64),
+      '--expected-uid',
+      String(fs.statSync(bundle.archive).uid),
+    ]);
+    expect(wrongDigest.status).not.toBe(0);
+    expect(wrongDigest.stderr).toContain('does not match owner expectation');
+    expect(fs.existsSync(wrongDigestSnapshot)).toBe(false);
+
+    const occupied = path.join(snapshotDirectory, 'occupied.tar.gz');
+    fs.writeFileSync(occupied, 'do-not-overwrite', { mode: 0o600 });
+    const exclusive = runPython([
+      archiveHelper,
+      'snapshot',
+      '--source-directory',
+      bundle.rollbackDirectory,
+      '--source-name',
+      bundle.basename,
+      '--destination',
+      occupied,
+      '--expected-sha256',
+      bundle.sha256,
+      '--expected-uid',
+      String(fs.statSync(bundle.archive).uid),
+    ]);
+    expect(exclusive.status).not.toBe(0);
+    expect(fs.readFileSync(occupied, 'utf8')).toBe('do-not-overwrite');
+
+    const symlinkName = 'v4.14.230_symlink.tar.gz';
+    fs.symlinkSync(bundle.archive, path.join(bundle.rollbackDirectory, symlinkName));
+    const symlinkResult = runPython([
+      archiveHelper,
+      'snapshot',
+      '--source-directory',
+      bundle.rollbackDirectory,
+      '--source-name',
+      symlinkName,
+      '--destination',
+      path.join(snapshotDirectory, 'symlink.tar.gz'),
+      '--expected-sha256',
+      bundle.sha256,
+      '--expected-uid',
+      String(fs.statSync(bundle.archive).uid),
+    ]);
+    expect(symlinkResult.status).not.toBe(0);
+    expect(fs.existsSync(path.join(snapshotDirectory, 'symlink.tar.gz'))).toBe(false);
+
+    const traversal = runPython([
+      archiveHelper,
+      'snapshot',
+      '--source-directory',
+      bundle.rollbackDirectory,
+      '--source-name',
+      '../v4.14.230_escape.tar.gz',
+      '--destination',
+      path.join(snapshotDirectory, 'traversal.tar.gz'),
+      '--expected-sha256',
+      bundle.sha256,
+      '--expected-uid',
+      String(fs.statSync(bundle.archive).uid),
+    ]);
+    expect(traversal.status).not.toBe(0);
+    expect(traversal.stderr).toContain('bundle name is invalid');
+  });
+
+  it.each([
+    ['path swap', 'swap'],
+    ['same-inode mutation', 'mutate'],
+  ])('rejects a rollback source %s during descriptor snapshot', (_label, mode) => {
+    const root = privateRoot(`nexus-app-dr-bootstrap-race-${mode}-`);
+    const bundle = createRollbackBundle(root, mode);
+    const replacement = path.join(root, `replacement-${mode}.tar.gz`);
+    fs.copyFileSync(bundle.archive, replacement);
+    fs.chmodSync(replacement, 0o600);
+    if (mode === 'swap') {
+      fs.appendFileSync(replacement, 'replacement');
+    }
+    const snapshotDirectory = path.join(root, 'snapshots');
+    fs.mkdirSync(snapshotDirectory, { mode: 0o700 });
+    const destination = path.join(snapshotDirectory, 'selected.tar.gz');
+    const script = [
+      'import importlib.util, os, pathlib, sys',
+      'helper, source_dir, source_name, destination, expected, replacement, mode = sys.argv[1:]',
+      'spec = importlib.util.spec_from_file_location("nexus_archive", helper)',
+      'module = importlib.util.module_from_spec(spec)',
+      'spec.loader.exec_module(module)',
+      'def mutate():',
+      '    if mode == "swap":',
+      '        os.replace(replacement, os.path.join(source_dir, source_name))',
+      '    else:',
+      '        fd = os.open(os.path.join(source_dir, source_name), os.O_WRONLY)',
+      '        try:',
+      '            os.pwrite(fd, b"X", 0)',
+      '            os.fsync(fd)',
+      '        finally:',
+      '            os.close(fd)',
+      'module.secure_snapshot(',
+      '    pathlib.Path(source_dir), source_name, pathlib.Path(destination),',
+      '    expected, os.getuid(),',
+      '    after_open_hook=mutate if mode == "swap" else None,',
+      '    after_copy_hook=mutate if mode == "mutate" else None,',
+      ')',
+    ].join('\n');
+    const result = spawnSync(python, [
+      '-c',
+      script,
+      archiveHelper,
+      bundle.rollbackDirectory,
+      bundle.basename,
+      destination,
+      bundle.sha256,
+      replacement,
+      mode,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('changed during snapshot');
+    expect(fs.existsSync(destination)).toBe(false);
+  });
+
+  it('requires strict manifest and SQLite identity before blessing one rollback bundle', () => {
+    const root = privateRoot('nexus-app-dr-bootstrap-identity-');
+    const runIdentity = (label: string, options: Parameters<typeof createRollbackBundle>[2] = {}) => {
+      const bundle = createRollbackBundle(root, label, options);
+      const runtime = path.join(root, `runtime-${label}`);
+      fs.mkdirSync(runtime, { mode: 0o700 });
+      const snapshot = path.join(runtime, 'selected.tar.gz');
+      const snapshotEvidence = path.join(runtime, 'snapshot.json');
+      const extractionRoot = path.join(runtime, 'extracted');
+      const extractionEvidence = path.join(runtime, 'extraction.json');
+      const databaseEvidence = path.join(runtime, 'database.json');
+      const snapshotResult = runPython([
+        archiveHelper,
+        'snapshot',
+        '--source-directory',
+        bundle.rollbackDirectory,
+        '--source-name',
+        bundle.basename,
+        '--destination',
+        snapshot,
+        '--expected-sha256',
+        bundle.sha256,
+        '--expected-uid',
+        String(fs.statSync(bundle.archive).uid),
+      ]);
+      if (snapshotResult.status !== 0) return { bundle, stage: 'snapshot', result: snapshotResult };
+      fs.writeFileSync(snapshotEvidence, snapshotResult.stdout, { mode: 0o600 });
+      fs.mkdirSync(extractionRoot, { mode: 0o700 });
+      const extractionResult = runPython([archiveHelper, snapshot, extractionRoot]);
+      if (extractionResult.status !== 0) {
+        return { bundle, stage: 'extraction', result: extractionResult };
+      }
+      fs.writeFileSync(extractionEvidence, extractionResult.stdout, { mode: 0o600 });
+      const databaseResult = runPython([
+        sqliteHelper,
+        'verify',
+        path.join(extractionRoot, 'data/bot.db'),
+      ]);
+      if (databaseResult.status !== 0) {
+        return { bundle, stage: 'database', result: databaseResult };
+      }
+      fs.writeFileSync(databaseEvidence, databaseResult.stdout, { mode: 0o600 });
+      const identityResult = runPython([
+        archiveHelper,
+        'bootstrap-identity',
+        '--snapshot-evidence',
+        snapshotEvidence,
+        '--extraction-evidence',
+        extractionEvidence,
+        '--database-evidence',
+        databaseEvidence,
+        '--extracted-root',
+        extractionRoot,
+        '--expected-sha256',
+        bundle.sha256,
+      ]);
+      return {
+        bundle,
+        stage: 'identity',
+        result: identityResult,
+        extractionRoot,
+      };
+    };
+
+    const positive = runIdentity('verified');
+    expect(positive.stage).toBe('identity');
+    expect(positive.result.status, positive.result.stderr).toBe(0);
+    expect(JSON.parse(positive.result.stdout)).toMatchObject({
+      schemaVersion: 'NexusApplicationDrVerifiedRollbackBundleV1',
+      status: 'verified',
+      archive: {
+        basename: positive.bundle.basename,
+        sha256: positive.bundle.sha256,
+        sizeBytes: fs.statSync(positive.bundle.archive).size,
+      },
+      manifest: {
+        schema: 'nexus.release-backup.v1',
+        archivedVersion: '4.14.230',
+        targetVersion: '4.14.231',
+        catalogPresent: true,
+        catalogRequiredFromVersion: '4.14.217',
+      },
+      package: { version: '4.14.230' },
+      database: {
+        integrityCheck: 'ok',
+        foreignKeyCheck: 'ok',
+      },
+    });
+
+    const missingManifest = runIdentity('missing-manifest', { missingManifest: true });
+    expect(missingManifest.stage).toBe('identity');
+    expect(missingManifest.result.status).not.toBe(0);
+    expect(missingManifest.result.stderr).toContain(
+      'bootstrap rollback manifest identity is invalid',
+    );
+
+    const badManifest = runIdentity('bad-manifest', { badManifestSchema: true });
+    expect(badManifest.stage).toBe('extraction');
+    expect(badManifest.result.status).not.toBe(0);
+    expect(badManifest.result.stderr).toContain('manifest schema is invalid');
+
+    const invalidTarget = runIdentity('invalid-target', { invalidTargetVersion: true });
+    expect(invalidTarget.stage).toBe('identity');
+    expect(invalidTarget.result.status).not.toBe(0);
+    expect(invalidTarget.result.stderr).toContain('manifest release identity is invalid');
+
+    const invalidShape = runIdentity('invalid-shape', { badManifestShape: true });
+    expect(invalidShape.stage).toBe('identity');
+    expect(invalidShape.result.status).not.toBe(0);
+    expect(invalidShape.result.stderr).toContain('manifest release identity is invalid');
+
+    const corruptDatabase = runIdentity('corrupt-database', { corruptDatabase: true });
+    expect(corruptDatabase.stage).toBe('database');
+    expect(corruptDatabase.result.status).not.toBe(0);
+
+    const emptyDirectory = path.join(root, 'empty');
+    fs.mkdirSync(emptyDirectory, { mode: 0o700 });
+    const emptyArchive = path.join(root, 'empty.tar.gz');
+    execFileSync(python, [
+      '-c',
+      'import tarfile,sys; tarfile.open(sys.argv[1], "w:gz").close()',
+      emptyArchive,
+    ]);
+    fs.chmodSync(emptyArchive, 0o600);
+    const emptyDestination = path.join(root, 'empty-extracted');
+    fs.mkdirSync(emptyDestination, { mode: 0o700 });
+    const empty = runPython([archiveHelper, emptyArchive, emptyDestination]);
+    expect(empty.status).not.toBe(0);
+    expect(empty.stderr).toContain('rollback bundle is missing required path');
+  });
+
   it('keeps encryption, retention, root-only scheduling, and drill targets fail closed', () => {
     const backup = fs.readFileSync(backupScript, 'utf8');
     const restore = fs.readFileSync(restoreScript, 'utf8');
@@ -1466,6 +2378,7 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(service).toContain('StateDirectoryMode=0700');
     expect(service).toContain('TimeoutStartSec=50min');
     expect(service).toContain('ProtectSystem=strict');
+    expect(service).not.toContain('--bootstrap-first-backup');
 
     expect(config).toContain(
       'NEXUS_DR_S3_ENDPOINT=REPLACE_WITH_STACK_OUTPUT_S3Endpoint',

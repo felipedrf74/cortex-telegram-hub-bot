@@ -378,14 +378,43 @@ Complete the provider-control and root-only configuration procedure in
 ```bash
 sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
   --config /etc/nexus-application-dr/backup.env --verify-config
+```
+
+For a fresh AWS namespace, the first verification reports
+`lifecyclePhase=disabled-bootstrap bootstrapReceipt=absent`. Keep the timer
+disabled and run exactly one owner-observed backup directly; the systemd unit
+cannot supply this single-use flag:
+
+```bash
+sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
+  --config /etc/nexus-application-dr/backup.env \
+  --bootstrap-first-backup \
+  --bootstrap-rollback-bundle /home/dominguez/backups/nexushub/v<exact>.tar.gz \
+  --bootstrap-rollback-sha256 <owner-reviewed-exact-sha256>
+```
+
+The selected path and expected SHA-256 must come from root promotion
+transaction/backup evidence, or from a separately owner-reviewed root-side
+strict-normalization receipt for an older artifact. A new hash printed only by
+the application account is not authority. The receipt binds exactly one
+selected, descriptor-stable, locally verified and off-host rollback identity.
+Bind its exclusive root-owned, owner-reviewed digest into the reviewed
+`LifecycleActivation=ENABLED` change set, replace the bootstrap observation
+with ordinary enabled v2 storage-control evidence, and rerun `--verify-config`.
+Require `lifecyclePhase=enabled bootstrapReceipt=not-applicable`; only then
+enable the timer:
+
+```bash
 sudo systemctl enable --now nexus-application-dr-backup.timer
 ```
 
-Do not launch a release until the exact `--verify-config` command passes and
-one owner-observed backup run has verified its database and release objects
-off-host. The root promotion broker repeats this exact check before it can arm
-recovery or stop PM2, so missing or older DR provisioning ends only as
-`failed_before_stop`.
+Do not launch a release until that final exact `--verify-config` command passes
+with the enabled/not-applicable state and the owner-observed backup has verified
+its database and release objects off-host. The root promotion broker accepts
+only the exact ordinary AWS enabled/not-applicable output or the exact approved
+R2 variance/not-applicable output before it can arm recovery or stop PM2.
+Disabled bootstrap, missing fields, additional output, or older provisioning
+ends only as `failed_before_stop`.
 
 The expected control version is `nexus-release-promotion-control.v3`; the lock
 identity is `root:dominguez:660`. Remove the temporary public-key input after
