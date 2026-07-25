@@ -156,7 +156,17 @@ describe('installed dependency tree attestation', () => {
 });
 
 describe('detached staging attestation', () => {
-  function fixture() {
+  function fixture({
+    protectedSigning = false,
+    signingRunOverrides = {},
+    verifiedAtFractionMs,
+    githubCreatedAtSecondsBefore = 0,
+  }: {
+    protectedSigning?: boolean;
+    signingRunOverrides?: Record<string, unknown>;
+    verifiedAtFractionMs?: number;
+    githubCreatedAtSecondsBefore?: number;
+  } = {}) {
     const root = runtimeFixture();
     const installed = writeInstalled(root);
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -169,10 +179,11 @@ describe('detached staging attestation', () => {
       smoke: path.join(root, 'smoke.log'),
       request: path.join(root, 'request.json'),
       signed: path.join(root, 'signed.json'),
+      signingRun: path.join(root, 'signing-run.json'),
       privateKey: path.join(root, 'private.pem'),
       publicKey: path.join(root, 'public.pem'),
     };
-    const releaseDir = `/home/dominguez/telegram-hub-bot-staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+    const releaseDir = `/srv/nexus-release/staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
     fs.writeFileSync(files.manifest, JSON.stringify({
       schema: 'nexus.release-manifest.v2',
       payload: { runtimeSha, packageVersion: '4.14.219', artifact: { digest: artifactDigest } },
@@ -191,8 +202,12 @@ describe('detached staging attestation', () => {
     fs.writeFileSync(files.identity, JSON.stringify({
       schema: 'nexus.pm2-release-identity.v1',
       services: [
-        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
-        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir,
+          executable: `${releaseDir}/dist/index.js`, interpreter: 'node',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`,
+          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`, interpreter: 'none',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
       ],
     }));
     fs.writeFileSync(files.readiness, JSON.stringify({
@@ -209,8 +224,12 @@ describe('detached staging attestation', () => {
         pm2RestartStable: true,
       },
       services: [
-        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
-        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir,
+          executable: `${releaseDir}/dist/index.js`, interpreter: 'node',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`,
+          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`, interpreter: 'none',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
       ],
     }));
     fs.writeFileSync(files.smoke, 'all domain smoke checks passed\n');
@@ -227,13 +246,66 @@ describe('detached staging attestation', () => {
       '--release-dir', releaseDir,
       '--output', files.request,
     ]);
-    execFileSync(process.execPath, [stagingScript, 'sign',
+    if (verifiedAtFractionMs !== undefined) {
+      const request = JSON.parse(fs.readFileSync(files.request, 'utf8'));
+      const verifiedAtMs =
+        Math.floor((Date.now() - 10_000) / 1_000) * 1_000 + verifiedAtFractionMs;
+      request.verifiedAt = new Date(verifiedAtMs).toISOString();
+      request.expiresAt = new Date(verifiedAtMs + 24 * 60 * 60 * 1_000).toISOString();
+      fs.writeFileSync(files.request, `${JSON.stringify(request, null, 2)}\n`);
+    }
+    const signingArgs = [stagingScript, 'sign',
       '--root', root,
       '--request', files.request,
       '--output', files.signed,
       '--private-key', files.privateKey,
       '--expect-runtime-sha', runtimeSha,
-    ]);
+    ];
+    const {
+      GITHUB_RUN_ID: _githubRunId,
+      GITHUB_RUN_ATTEMPT: _githubRunAttempt,
+      ...unprotectedSigningEnv
+    } = process.env;
+    let signingEnv = unprotectedSigningEnv;
+    if (protectedSigning) {
+      const requestBody = fs.readFileSync(files.request);
+      const request = JSON.parse(requestBody.toString('utf8'));
+      const githubCreatedAtMs = verifiedAtFractionMs === undefined
+        ? Date.parse(request.verifiedAt)
+        : Math.floor(Date.parse(request.verifiedAt) / 1_000) * 1_000
+          - githubCreatedAtSecondsBefore * 1_000;
+      const toolingSha = execFileSync(
+        'git',
+        ['rev-parse', 'HEAD'],
+        { encoding: 'utf8' },
+      ).trim();
+      fs.writeFileSync(files.signingRun, JSON.stringify({
+        id: 40001,
+        run_attempt: 2,
+        path: '.github/workflows/sign-staging-attestation.yml',
+        event: 'workflow_dispatch',
+        head_branch: 'main',
+        head_sha: toolingSha,
+        status: 'in_progress',
+        conclusion: null,
+        display_title:
+          `Sign staging_attestation ${request.requestId} digest ${sha256(requestBody)}`,
+        created_at: new Date(githubCreatedAtMs).toISOString(),
+        run_started_at: request.verifiedAt,
+        repository: { full_name: 'felipedrf74/cortex-telegram-hub-bot' },
+        head_repository: { full_name: 'felipedrf74/cortex-telegram-hub-bot' },
+        ...signingRunOverrides,
+      }));
+      signingArgs.push('--signing-run-metadata', files.signingRun);
+      signingEnv = {
+        ...process.env,
+        GITHUB_RUN_ID: '40001',
+        GITHUB_RUN_ATTEMPT: '2',
+        GITHUB_REPOSITORY: 'felipedrf74/cortex-telegram-hub-bot',
+        GITHUB_SHA: toolingSha,
+      };
+    }
+    execFileSync(process.execPath, signingArgs, { env: signingEnv });
     return { root, files, installed };
   }
 
@@ -258,6 +330,70 @@ describe('detached staging attestation', () => {
     });
   });
 
+  it('binds the protected staging-signing run and signing instant into the signature', () => {
+    const { files } = fixture({ protectedSigning: true });
+    const envelope = JSON.parse(fs.readFileSync(files.signed, 'utf8'));
+
+    expect(envelope.payload.protectedSigning).toMatchObject({
+      workflow: '.github/workflows/sign-staging-attestation.yml',
+      runId: '40001',
+      runAttempt: '2',
+      requestedAt: expect.any(String),
+      signedAt: expect.any(String),
+    });
+    expect(envelope.payload.protectedSigning.requestedAt).toBe(
+      envelope.payload.verifiedAt,
+    );
+    expect(Date.parse(envelope.payload.protectedSigning.signedAt)).toBeGreaterThanOrEqual(
+      Date.parse(envelope.payload.protectedSigning.requestedAt),
+    );
+  });
+
+  it('rejects tampered or mismatched current GitHub staging-signing provenance', () => {
+    expect(() => fixture({
+      protectedSigning: true,
+      signingRunOverrides: {
+        display_title: 'Sign staging_attestation forged digest',
+      },
+    })).toThrow();
+  });
+
+  it('preserves a same-second truncated GitHub created_at as requestedAt', () => {
+    const { files } = fixture({
+      protectedSigning: true,
+      verifiedAtFractionMs: 750,
+    });
+    const envelope = JSON.parse(fs.readFileSync(files.signed, 'utf8'));
+    const requestedAt = envelope.payload.protectedSigning.requestedAt;
+
+    expect(requestedAt).toBe(
+      new Date(Math.floor(Date.parse(envelope.payload.verifiedAt) / 1_000) * 1_000)
+        .toISOString(),
+    );
+    expect(Date.parse(envelope.payload.verifiedAt) - Date.parse(requestedAt)).toBe(750);
+  });
+
+  it('accepts bounded GitHub/Mac clock skew without altering requestedAt', () => {
+    const { files } = fixture({
+      protectedSigning: true,
+      verifiedAtFractionMs: 750,
+      githubCreatedAtSecondsBefore: 4,
+    });
+    const envelope = JSON.parse(fs.readFileSync(files.signed, 'utf8'));
+    const requestedAt = envelope.payload.protectedSigning.requestedAt;
+
+    expect(Date.parse(envelope.payload.verifiedAt) - Date.parse(requestedAt)).toBe(4_750);
+    expect(requestedAt).toBe(JSON.parse(fs.readFileSync(files.signingRun, 'utf8')).created_at);
+  });
+
+  it('rejects GitHub/Mac clock skew beyond the governed tolerance', () => {
+    expect(() => fixture({
+      protectedSigning: true,
+      verifiedAtFractionMs: 750,
+      githubCreatedAtSecondsBefore: 5,
+    })).toThrow('staging signing GitHub run predates verified staging smoke');
+  });
+
   it('rejects a manifest changed after the staging request was signed', () => {
     const { root, files } = fixture();
     fs.appendFileSync(files.manifest, '\n');
@@ -276,7 +412,7 @@ describe('detached staging attestation', () => {
   it('rejects staging readiness evidence with a failed restart-stability check', () => {
     const root = runtimeFixture();
     const installed = writeInstalled(root);
-    const releaseDir = `/home/dominguez/telegram-hub-bot-staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+    const releaseDir = `/srv/nexus-release/staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
     const files = {
       manifest: path.join(root, 'manifest.json'),
       installed: path.join(root, '.nexus-installed-runtime.json'),
@@ -303,8 +439,12 @@ describe('detached staging attestation', () => {
     }));
     fs.writeFileSync(files.identity, JSON.stringify({
       services: [
-        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir, releaseSha: runtimeSha },
-        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`, releaseSha: runtimeSha },
+        { name: 'nexus-hub-staging', status: 'online', cwd: releaseDir,
+          executable: `${releaseDir}/dist/index.js`, interpreter: 'node',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
+        { name: 'content-engine-staging', status: 'online', cwd: `${releaseDir}/content-engine`,
+          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`, interpreter: 'none',
+          releaseSha: runtimeSha, sentryRelease: runtimeSha },
       ],
     }));
     fs.writeFileSync(files.readiness, JSON.stringify({

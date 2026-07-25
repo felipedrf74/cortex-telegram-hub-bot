@@ -14,7 +14,34 @@ npm run release:status
 npm run release:prepare -- --base <sha> --backend-only
 npm run release:staging -- --manifest <path>
 npm run release:promote -- --manifest <path>
+npm run release:resume -- --backend-only
 ```
+
+Prefer `release:resume` for the sequential production path. If a current
+protected-main reuse activation exists, store it as a private mode-0600 regular
+file and add `--protected-reuse-activation <absolute-path>` on the first
+invocation. The coordinator snapshots and digest-binds it before RC intent;
+unsafe initial input records full-RC fallback, while later addition,
+substitution, or snapshot drift is blocking.
+
+The coordinator owns protected signing dispatch and staging signing
+correlation. It persists the unique request and run identity before waiting;
+the staging run title includes the exact raw request SHA-256, and the downloaded
+signed payload must canonically equal those checkpointed request bytes. Resume
+must reconcile or watch that exact request/run, never dispatch a replacement. The
+staging operator's internal `--no-sign-request`, `--request-id`, and
+`--coordinator-checkpoint` controls are coordinator-only. An already-active
+exact staging release may resume only through that private checkpoint and
+must first pass the root-installed control v3 pre-switch binding for installed
+and recovery identity. Only root-sealed, artifact-bound preflight/readiness
+scripts may then run, with generated evidence outside the immutable release
+tree; authenticated smoke and PM2 identity repeat without reinstalling or
+restarting.
+
+The checkpoint lock is a persistent mode-0600 regular file held with OS
+`lockf -k` on macOS or `flock` on Linux. Never delete a presumed stale lock
+directory/file or start a second coordinator; lock contention, inode drift,
+and lock-holder loss are fail-closed.
 
 For a shared backend/iOS contract candidate, replace `--backend-only` with
 `--includes-ios --ios-sha <ios-sha> --ios-build-number <build> --ios-contract-result passed`

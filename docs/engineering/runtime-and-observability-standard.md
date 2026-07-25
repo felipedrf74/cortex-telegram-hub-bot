@@ -253,8 +253,11 @@ Production rollback is **always available**. The default release contract is:
    bind-mounted below the root-controlled `/srv/sonarqube/data` boundary.
 10. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
    `deploy-staging.sh`, and `promote-to-prod.sh` paths must not be restored or
-   invoked. Exact `scripts/rollback.sh` and restore tooling remain available
-   for emergency predecessor recovery.
+   invoked. The signed root-owned promotion transaction is the sole path that
+   may mutate runtime selectors, PM2 state, or the production database during
+   promotion or predecessor recovery. `scripts/rollback.sh` and
+   `scripts/restore.sh` retain read-only dry-run inventory only; their apply
+   modes are retired and must not be used as an emergency mutation path.
 
 ## 9. Incident runbook (must)
 
@@ -268,8 +271,9 @@ When production is degraded:
 4. **`pm2 logs content-engine --lines 200`** if the independent Python process
    is the suspect.
 5. **Use exact release evidence first.** Run `npm run release:status` against
-   the manifest and inspect the current release/backup identity before invoking
-   emergency rollback tooling.
+   the manifest and inspect the current release/backup identity before
+   submitting an owner-authorized signed root-owned predecessor-recovery
+   transaction.
 6. **Update `docs/release/CURRENT_RELEASE_STATE.md`** with the incident
    timeline within 24 h.
 7. **Record durable follow-up in the canonical project tracker** for every

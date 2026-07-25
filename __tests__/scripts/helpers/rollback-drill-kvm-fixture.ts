@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  bindExecutionReceipt,
+  buildExecutionReceipt,
   canonicalJson,
   publicKeyIdentity,
   textKeyIdentity,
@@ -14,6 +16,17 @@ import {
 
 const digest = (label: string) => createHash('sha256').update(label).digest('hex');
 const iso = (milliseconds: number) => new Date(milliseconds).toISOString();
+
+function deterministicSshEd25519PublicKey(label: string, comment: string) {
+  const algorithm = Buffer.from('ssh-ed25519', 'ascii');
+  const key = createHash('sha256').update(label).digest();
+  const material = Buffer.alloc(4 + algorithm.length + 4 + key.length);
+  material.writeUInt32BE(algorithm.length, 0);
+  algorithm.copy(material, 4);
+  material.writeUInt32BE(key.length, 4 + algorithm.length);
+  key.copy(material, 8 + algorithm.length);
+  return `ssh-ed25519 ${material.toString('base64')} ${comment}`;
+}
 
 function compatibility(label: string) {
   return {
@@ -75,8 +88,12 @@ function outcome(
       'terminal_observed',
     ],
   };
-  const initialGuestBoot = isolation.guest.bootIdSha256;
-  const rebootedGuestBoot = digest('guest-boot-after-reboot');
+  const isolationOverlay = isolation.overlays.find(
+    (entry: any) => entry.drill === drill,
+  );
+  const initialGuestBoot = isolationOverlay.readinessBootIdSha256;
+  const rebootedGuestBoot = digest(`${drill}-guest-boot-after-fault-reboot`);
+  const postTerminalGuestBoot = digest(`${drill}-guest-boot-after-clean-reboot`);
   const start = fixtureNow - startOffsetMinutes * 60 * 1000;
   const timeline = events[drill].map((event, index) => ({
     event,
@@ -91,11 +108,14 @@ function outcome(
   return {
     schema: 'nexus.rollback-drill-kvm-outcome.v1',
     planId: plan.planId,
+    executionMode: 'strictly-sequential',
+    testMode: false,
+    executionReceiptSha256: null,
     drill,
     overlayId: plan.overlays.find((entry: any) => entry.drill === drill).overlayId,
     transactionId: `20260724T12000${sequence}Z-${sequence}-${String(sequence).repeat(12)}`,
     requestSha256: digest(`${drill}-request`),
-    controlVersion: 'nexus-release-promotion-control.v2',
+    controlVersion: 'nexus-release-promotion-control.v3',
     terminalStatus: completes ? 'completed' : 'recovered',
     secondLaunchObserved: false,
     productionEvidenceEmitted: false,
@@ -104,6 +124,18 @@ function outcome(
     databaseBackupRestored: !completes,
     journalSha256: digest(`${drill}-journal`),
     recoveryResultSha256: digest(`${drill}-recovery-result`),
+    postTerminalReboot: drill === 'guest-reboot'
+      ? {
+          beforeGuestBootIdSha256: rebootedGuestBoot,
+          afterGuestBootIdSha256: postTerminalGuestBoot,
+          journalSha256: digest(`${drill}-journal`),
+          controlVersion: 'nexus-release-promotion-control.v3',
+          recoveryUnitResult: 'success',
+          assertRootPm2Ready: true,
+          assertIdle: true,
+          exactRuntimeHealthy: true,
+        }
+      : null,
     timeline,
   };
 }
@@ -124,10 +156,22 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     type: 'spki',
     format: 'pem',
   }).toString();
-  const guestSshClientPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuestClientOnly drill@guest';
-  const productionSshClientPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProductionClient prod@server';
-  const guestSshHostPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuestHostOnly root@guest';
-  const productionSshHostPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIProductionHost root@server';
+  const guestSshClientPublicKey = deterministicSshEd25519PublicKey(
+    'guest-client-only',
+    'drill@guest',
+  );
+  const productionSshClientPublicKey = deterministicSshEd25519PublicKey(
+    'production-client',
+    'prod@server',
+  );
+  const guestSshHostPublicKey = deterministicSshEd25519PublicKey(
+    'guest-host-only',
+    'root@guest',
+  );
+  const productionSshHostPublicKey = deterministicSshEd25519PublicKey(
+    'production-host',
+    'root@server',
+  );
   const planId = 'kvm-drill-20260724T120000Z-abcdef123456';
   const baselineSnapshotSha256 = digest('canonical-ubuntu-baseline');
   const targetSha = '3a49f86564f5e9f9523397debb1cf54cecab391c';
@@ -148,11 +192,11 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       sourceVersion: '4.14.230',
       targetVersion: '4.14.231',
       targetBackup: 'nexus-release-4.14.231.tar.zst',
-      productionBase: '/home/dominguez/telegram-hub-bot',
-      stateRoot: '/home/dominguez/nexus-drill-state',
+      productionBase: '/srv/nexus-release/production',
+      stateRoot: '/var/lib/nexus-release-promotion',
       backupDir: '/home/dominguez/backups/nexushub',
       preparedRuntimeDir: '/home/dominguez/backups/nexushub/.runtime-stage-kvmdrill',
-      pm2Bin: '/home/dominguez/.nvm/versions/node/v22.23.1/bin/pm2',
+      pm2Bin: '/usr/local/bin/pm2',
       publicBaseUrl: 'https://rollback-drill.invalid',
     },
     guest: {
@@ -191,7 +235,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       encryptionRequired: true,
     },
     syntheticDatabase: {
-      path: '/home/dominguez/nexus-drill-lab/data/synthetic.db',
+      path: '/srv/nexus-drill-lab/data/synthetic.db',
       marker: `NEXUS_SYNTHETIC_DRILL:${planId}`,
       seedSha256: digest('synthetic-database-seed'),
       origin: 'generated-in-guest',
@@ -243,7 +287,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
       restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
       promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-      controlVersion: 'nexus-release-promotion-control.v2',
+      controlVersion: 'nexus-release-promotion-control.v3',
       recoveryUnit: 'nexus-release-promotion-recovery.service',
     },
   };
@@ -302,8 +346,8 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       ],
     },
     guest: {
-      machineIdSha256: digest('guest-machine-id'),
-      bootIdSha256: digest('guest-initial-boot-id'),
+      machineIdSha256: digest('guest-1-machine-id'),
+      bootIdSha256: digest('guest-1-initial-boot-id'),
       virtualization: 'kvm',
       osId: 'ubuntu',
       osVersionId: '24.04',
@@ -352,13 +396,15 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       },
       productionDataMatches: [],
     },
-    overlays: plan.overlays.map((overlay) => ({
+    overlays: plan.overlays.map((overlay, index) => ({
       drill: overlay.drill,
       overlayId: overlay.overlayId,
       overlayInitialSha256: overlay.overlayInitialSha256,
       baselineSnapshotSha256: overlay.baselineSnapshotSha256,
       machineUuid: overlay.machineUuid,
       sshHostPublicKeySha256: overlay.ssh.hostPublicKeySha256,
+      guestMachineIdSha256: digest(`guest-${index + 1}-machine-id`),
+      readinessBootIdSha256: digest(`guest-${index + 1}-initial-boot-id`),
     })),
   };
 
@@ -434,11 +480,20 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     technicalRestoreScope: 'selected-object-download-through-isolated-application-smoke',
     completedAt: iso(nowMs - 30 * 60 * 1000),
   };
-  const outcomes = {
+  const provisionalOutcomes = {
     'ssh-loss': outcome(nowMs, plan, isolation, 'ssh-loss', 1, 20),
     'failed-health': outcome(nowMs, plan, isolation, 'failed-health', 2, 15),
     'guest-reboot': outcome(nowMs, plan, isolation, 'guest-reboot', 3, 10),
   };
+  const completedAt = Object.values(provisionalOutcomes)
+    .map((entry: any) => entry.timeline.at(-1).observedAt)
+    .sort()
+    .at(-1);
+  const execution = buildExecutionReceipt(plan, provisionalOutcomes, {
+    testMode: false,
+    completedAt,
+  });
+  const outcomes = bindExecutionReceipt(execution, provisionalOutcomes);
   const keys = {
     guestOwnerPublicKeyPem,
     productionOwnerPublicKeyPem,
@@ -453,6 +508,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
     keys,
@@ -465,6 +521,7 @@ export function writeKvmDrillFixture(root: string, fixture: ReturnType<typeof ma
     'plan.json': fixture.plan,
     'authorization.json': fixture.authorization,
     'isolation.json': fixture.isolation,
+    'execution.json': fixture.execution,
     'restore.json': fixture.restore,
     'ssh-loss.json': fixture.outcomes['ssh-loss'],
     'failed-health.json': fixture.outcomes['failed-health'],

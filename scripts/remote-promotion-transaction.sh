@@ -20,6 +20,12 @@ AUTHORIZED_BACKUP_SHA256="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_SHA256:-}"
 AUTHORIZED_BACKUP_SIZE_BYTES="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_SIZE_BYTES:-}"
 AUTHORIZED_BACKUP_DATABASE_SHA256="${NEXUS_PROMOTION_AUTHORIZED_BACKUP_DATABASE_SHA256:-}"
 PM2_STATE_DIR="${NEXUS_PROMOTION_PM2_STATE_DIR:-${PM2_HOME:-$HOME/.pm2}}"
+PYTHON_BIN="${NEXUS_PROMOTION_PYTHON_BIN:-/usr/bin/python3}"
+SELECTOR_SWITCH="${NEXUS_PROMOTION_SELECTOR_SWITCH:-/usr/local/libexec/nexus-release-selector-switch.py}"
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
+    && [ -z "${NEXUS_PROMOTION_SELECTOR_SWITCH:-}" ]; then
+  SELECTOR_SWITCH="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/remote-release-selector-switch.py"
+fi
 [[ "$TRANSACTION_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$ ]] || {
   echo "invalid promotion transaction id" >&2
   exit 64
@@ -414,27 +420,29 @@ if(row&&(row.pm2_env?.status!=="stopped"||Number(row.pid||0)!==0))throw new Erro
 }
 
 atomic_switch_current() {
-  local target="$1" next="$PROD_BASE/current.next" current="$PROD_BASE/current"
-  rm -f "$next" || return 1
-  ln -s "$target" "$next" || return 1
-  node - "$next" "$current" "$target" "$PROD_BASE" <<'NODE'
-const fs=require('fs');const path=require('path');
-const [next,current,target,productionBase]=process.argv.slice(2);
-if(path.dirname(next)!==productionBase||path.dirname(current)!==productionBase){
-  throw new Error('release selector parent is unsafe');
-}
-if(!fs.lstatSync(next).isSymbolicLink()||fs.readlinkSync(next)!==target){
-  throw new Error('next release selector is unsafe');
-}
-try {
-  if(!fs.lstatSync(current).isSymbolicLink())throw new Error('current release selector is unsafe');
-} catch(error) {
-  if(error?.code!=='ENOENT')throw error;
-}
-fs.renameSync(next,current);
-const descriptor=fs.openSync(productionBase,'r');
-try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+  local target="$1" current="$PROD_BASE/current" expected worker_uid worker_gid
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+    "$TIMEOUT_BIN" 5s node - "$current" "$target" <<'NODE'
+const fs=require('fs');const [selector,target]=process.argv.slice(2);
+const stat=fs.lstatSync(selector);
+if(!stat.isSymbolicLink()||stat.uid!==0||stat.gid!==0
+ ||fs.readlinkSync(selector)!==target||fs.realpathSync.native(selector)!==target)process.exit(1);
 NODE
+    if [ "$?" -ne 0 ]; then
+      echo "root production selector was not switched to the exact authorized target" >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [ "$target" = "$RELEASE_DIR" ]; then expected="$PREVIOUS_RUNTIME"
+  elif [ "$target" = "$PREVIOUS_RUNTIME" ]; then expected="$RELEASE_DIR"
+  else echo "test selector target is outside the exact transaction" >&2; return 1
+  fi
+  worker_uid="$(id -u)"; worker_gid="$(id -g)"
+  NEXUS_RELEASE_TEST_MODE=1 "$PYTHON_BIN" "$SELECTOR_SWITCH" switch \
+    --role production --release-root "$(dirname -- "$PROD_BASE")" \
+    --worker-uid "$worker_uid" --worker-gid "$worker_gid" \
+    --expected "$expected" --target "$target" --allow-test-owner >/dev/null
 }
 
 start_predecessor() {
@@ -449,7 +457,8 @@ start_predecessor() {
       NEXUS_RELEASE_ROLE=production NEXUS_RELEASE_SHA="$PREVIOUS_SHA" SENTRY_RELEASE="$PREVIOUS_SHA" \
       "$TIMEOUT_BIN" 15s "$PM2_BIN" start "$PREVIOUS_RUNTIME/ecosystem.release.config.js" --update-env >/dev/null
   else
-    rm -f "$PROD_BASE/current.next" "$PROD_BASE/current" || return 1
+    echo "legacy production predecessor is unsupported by the root selector broker" >&2
+    return 1
     node - "$PROD_BASE" <<'NODE'
 const fs=require('fs');const directory=process.argv[2];
 const stat=fs.lstatSync(directory);

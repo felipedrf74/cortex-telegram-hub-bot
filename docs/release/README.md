@@ -124,12 +124,14 @@ gate.
 
 ## Fast, sequential release policy
 
-The observed planning baseline is approximately 12m25s for protected-main CI
-plus RC and a median 7m15s avoidable operator handoff. The activation target is
-automated readiness in at most 9 minutes and unattended phase-transition delay
-in at most 1 minute, excluding explicit owner approval. Record per-stage p50
-and p95 for ten releases; do not reinterpret the mandatory 60-second soak as
-service unavailability.
+The observed planning baseline is approximately 12m25s from protected-main CI
+through RC plus a median 7m15s avoidable operator handoff. The activation target
+is a p50 of at most 9 minutes for the exact interval from protected-main CI
+`startedAt` through exact RC `completedAt`; CI and RC stage durations remain
+separately reported. For each release, sum every unattended transition, exclude
+explicit approval waits, then calculate p50/p95 across exactly ten releases.
+The unattended p50 target is at most 1 minute. Do not reinterpret the mandatory
+60-second soak as service unavailability.
 
 Keep the existing CI jobs and four Vitest shards. Do not add another matrix,
 custom shard scheduler, competing release lane, background release worker, or
@@ -140,6 +142,70 @@ production-owner approval, submits one root-owned server transaction, and
 polls its journal. It never approves a protected environment or migration.
 Restarting the coordinator revalidates completed evidence instead of blindly
 repeating the phase.
+The local checkpoint lock is a persistent owner-only regular file held for the
+coordinator lifetime by the host OS (`lockf -k` on macOS or `flock` on Linux).
+It is never deleted and recreated to recover a presumed stale owner. A second
+coordinator exits immediately, inode drift is blocking, and loss of the lock
+holder aborts the active coordinator before another release phase can start.
+
+Start a backend-only coordinated release from a clean checkout of the exact
+protected `origin/main` SHA with:
+
+```bash
+npm run release:resume -- --backend-only
+```
+
+When a current protected-main reuse activation envelope exists, first place it
+in an owner-only regular file, then supply its path:
+
+```bash
+chmod 600 /absolute/path/protected-main-reuse-activation.json
+npm run release:resume -- --backend-only \
+  --protected-reuse-activation /absolute/path/protected-main-reuse-activation.json
+```
+
+Before writing RC dispatch intent, the coordinator accepts only an
+owner-matching, mode-0600, single-link regular file within the bounded input
+size. It atomically snapshots those exact bytes under
+`.local/release/sequence-inputs/` and checkpoints the snapshot path, SHA-256,
+size, and mode. RC base64 is generated only from that bound snapshot. Missing,
+oversize, invalid, linked, or permission-unsafe initial input is recorded as an
+explicit full-RC fallback. Once RC intent exists, an activation cannot be added
+or substituted; any supplied-path or snapshot drift blocks the resume. A
+normal restart may omit the original path because the private snapshot remains
+the authority.
+
+Protected manifest and staging signing are also dispatch-once phases. Before
+dispatch, the coordinator persists the workflow digest, exact main SHA,
+baseline run IDs, request UUID, not-before timestamp, expected run title, and
+dispatch-command digest. A staging run title and dispatch also bind the
+SHA-256 of the exact raw staging-request bytes; a matching UUID with another
+digest is not the same request. An uncertain dispatch is reconciled to exactly one
+post-baseline run; ambiguity or a missing correlation stops for manual review,
+and a started dispatch is never sent again. The signing helpers receive the
+checkpointed `--run-id`, so they only watch, download, validate, and publish
+that exact run. Manifest publication installs the validated bundle first and
+the manifest last; staging-attestation publication is likewise atomic and
+mode 0600.
+
+Staging uses one deterministic request UUID bound to repository, runtime,
+artifact, and signed-manifest digests. The coordinator calls the operator with
+`--no-sign-request`, checkpoints the exact request bytes and installed and
+recovery runtime digests, and then performs the protected signing phase
+itself. If the Mac disconnects after staging has already switched to the exact
+candidate, only the private coordinator checkpoint authorizes resume. That
+path first invokes the root-installed promotion control v3 verifier. Before
+the original switch, root independently verified and sealed the artifact and
+installed tree, computed recovery identity with the root-installed DR helper,
+and durably bound those digests, the request UUID, runtime path, SHA, and
+artifact under `/var/lib/nexus-release-promotion/staging/`. Resume rejects a
+missing or drifted binding before executing any release-owned file. Only then
+may the now root-owned, non-writable, artifact-bound preflight and readiness
+scripts run. Their generated readiness and PM2 evidence is written below the
+staging base's `.release-evidence/<request-id>/`, never into the sealed release
+tree. Authenticated smoke and exact PM2 identity are repeated without
+reinstalling or restarting an already-active candidate. Failed validation
+leaves the active path untouched and blocks signing.
 
 Protected-main exact-SHA reuse remains shadow-only for five production
 releases. Each comparison covers workflow/run, toolchain, lockfiles, test
@@ -226,18 +292,64 @@ installer with `sudo` from `/home/dominguez`, an application checkout, or any
 other application-user-writable path. First copy the exact reviewed source
 archive and public key into a new root-owned mode-0700 directory, verify their
 owner-reviewed SHA-256 values after that copy, extract the verified root-owned
-archive with `--no-same-owner --no-same-permissions`, and then run:
+archive with `--no-same-owner --no-same-permissions`, and install the exact
+offline PM2 closure before rewiring the application unit.
+
+Build that closure before the maintenance window on a trusted Ubuntu
+24.04/x86-64 builder with Node 22.23.1 and npm 10.9.8:
+
+```bash
+install -d -m 700 .local/pm2-closure
+node scripts/build-pm2-root-closure.mjs \
+  --output "$PWD/.local/pm2-closure/pm2-6.0.14.tar.gz" \
+  > "$PWD/.local/pm2-closure/build.json"
+sha256sum "$PWD/.local/pm2-closure/pm2-6.0.14.tar.gz"
+```
+
+Copy the archive into the same exact-SHA, root-owned bootstrap directory and
+verify that its server digest equals `archiveSha256` in `build.json`. During the
+owner-approved maintenance window, install the trusted lock and closure from
+the exact reviewed source. This step performs no production network install:
+
+```bash
+sudo install -d -o root -g root -m 755 /usr/local/share/nexus-release
+sudo install -o root -g root -m 644 \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/source/ops/pm2/package-lock.json \
+  /usr/local/share/nexus-release/pm2-package-lock.json
+sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-pm2-root-install.sh \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/pm2-6.0.14.tar.gz \
+  <owner-approved-64-hex-pm2-closure-sha256> \
+  6.0.14
+```
+
+The closure installer is first-install only and refuses an implicit
+replacement. If its root-owned attestation already exists, do not delete or
+overwrite it. Run
+`sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotion-control.sh assert-root-pm2-ready`
+instead; a mismatch requires owner inspection and a separate replacement
+procedure.
+
+Only after that command succeeds, run the five-argument control-plane
+bootstrap:
 
 ```bash
 sudo /var/lib/nexus-release-bootstrap/<exact-sha>/source/scripts/remote-promotion-systemd-install.sh \
   /var/lib/nexus-release-bootstrap/<exact-sha>/source \
+  <exact-40-hex-protected-main-sha> \
+  /var/lib/nexus-release-bootstrap/<exact-sha>/source.tar.gz \
+  <owner-approved-64-hex-source-archive-sha256> \
   /var/lib/nexus-release-bootstrap/<exact-sha>/nexus-owner-promotion-public-key.pem
 sudo /usr/local/sbin/nexus-release-promotion-control version
+sudo /usr/local/sbin/nexus-release-promotion-control assert-root-pm2-ready
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
 sudo stat -c '%U:%G:%a %n' /run/lock/nexus-release-sonar.lock
 ```
 
-The installer independently rejects any source, key, or ancestor directory
+The source archive must be the exact protected-main Git archive created with
+`--prefix=source/`; its PAX commit identity, SHA-256, unique regular members,
+and every installed release, DR, Ollama, PM2, and systemd input are verified
+before privileged mutation. The installer independently rejects any source,
+archive, key, or ancestor directory
 that is not canonical, root-owned, and non-writable by group/other. A
 pre-copy digest check against the `/home` input is not sufficient because the
 application identity can change that file between checking and privileged
@@ -246,6 +358,9 @@ use. It also writes
 the DR/control compatibility set. While that marker exists, promotion commands
 and units fail closed and the sudo contract is withheld; rerun the same
 reviewed bootstrap to finish and clear it.
+The bootstrap refuses to rewire or accept `pm2-dominguez.service` unless the
+root-owned PM2 6.0.14 closure, regular `/usr/local/bin/pm2` launcher, Node
+22.23.1 identity, trusted lock, and installation attestation all validate.
 
 The promotion bootstrap first invokes the exact
 `application-dr-systemd-install.sh` from that same reviewed source. This
@@ -272,7 +387,7 @@ off-host. The root promotion broker repeats this exact check before it can arm
 recovery or stop PM2, so missing or older DR provisioning ends only as
 `failed_before_stop`.
 
-The expected control version is `nexus-release-promotion-control.v2`; the lock
+The expected control version is `nexus-release-promotion-control.v3`; the lock
 identity is `root:dominguez:660`. Remove the temporary public-key input after
 the installed copy is verified. Never copy the private key, a signing command,
 or a reusable owner decision onto the server. `dominguez` may submit a signed
@@ -291,6 +406,15 @@ readiness; candidate-provided verification code cannot authorize itself. The
 owner-signed request binds both predecessor and candidate artifact and
 installed-runtime digests plus the candidate recovery-runtime digest and exact
 signed release-manifest and staging-attestation SHA-256 values.
+
+Control v3 also permits only the narrow
+`prepare-staging-runtime-target`, `seal-staging-runtime`, and
+`verify-staging-runtime` commands through sudo. The bootstrap verifies that
+the DR recovery-identity helper is root-owned, creates the non-enumerable
+root-only staging-binding directory, and installs all three commands in the
+same reviewed sudoers transaction. `dominguez` cannot replace the installed
+attestors or the binding. Re-run this exact bootstrap before using the updated
+staging path; an older control version is a hard staging stop.
 
 The Mac seals the copied runtime before submitting the durable transaction.
 Inside that transaction, and before recovery is armed or the worker can reach
@@ -488,6 +612,13 @@ readiness; do not enable guest egress or copy production data to close this
 gate. The exact commands and authorization schema are in
 `ops/rollback-drill-vm/OPERATIONS.txt`.
 
+The real evidence bundle requires the exact `execution.json` receipt in
+addition to all three outcomes. Each outcome binds the receipt digest and
+repeats its strictly-sequential mode and `testMode=false` identity; the receipt
+binds their ordered payload digests. Collection and verification reject a
+missing, substituted, reordered, or test-mode receipt before rollback freshness
+evidence can be produced.
+
 The installer and provisioner do not start a guest. Starting an explicit slot
 remains a separate owner-observed drill action:
 
@@ -505,32 +636,137 @@ protected rollback-drill signer.
 
 ### Ten-release measurement and shadow readiness
 
-Evaluate the success window from exactly ten chronological production journal
-records. The evaluator is deterministic, accepts only the governed
-`nexus.release-plan-observation-window.v1` schema, and fails closed on unknown
-fields, malformed identity, contradictory promotion/recovery state, copied
-promotion evidence, or a recomputed operator-owned digest:
+Evaluate the success window from exactly ten chronological, terminal root
+promotion transactions. Do not hand-author the ten release records. The
+root-side collector selects the latest ten terminal transactions, discovers
+their uniquely matching signed manifests and staging attestations, and emits the governed
+`nexus.release-plan-observation-window.v2` schema. It also requires the
+immediately preceding ten root journals. Collection and evaluation fail closed
+on missing or ambiguous evidence, unknown fields, malformed identity,
+contradictory promotion/recovery state, copied promotion evidence, or a
+recomputed digest:
 
-- `baseline` contains `releaseCount: 10`, `failedPromotions`, and
-  `escapedReleaseDefects` for the preceding comparison window.
-- Each of the ten `releases` contains a unique `releaseId`, canonical UTC
+- `baseline` contains only `releaseCount: 10`; failed-promotion counts are
+  derived from the preceding root journals and cannot be supplied by an
+  operator.
+- `qualityEvidence` references one
+  `nexus.release-quality-evidence.v1` envelope signed by the existing protected
+  release-evidence key. Its redacted payload binds the exact preceding and
+  current transaction IDs, root-journal digests, runtime SHAs, completion
+  timestamps, per-release escaped-defect counts, and SHA-256 issue-set
+  commitments to the fixed Sentry query
+  `escaped-release-defects-by-release-v1`. Raw issue IDs and issue content do
+  not belong in this evidence.
+- Each of the ten `releases` contains its package `releaseId`, canonical UTC
   `completedAt`, evidence/manifest/staging/production SHA and digest identity,
   automated-readiness timestamps, the exact ordered automated stages
   `protected_main_ci`, `release_candidate`, `protected_signing`,
   `staging_validation`, and `promotion`, ordered handoffs with a nullable
   governed `approvalKind`, cutover/outage/soak timestamps, promotion outcome and
   rollback evidence, an integer escaped-defect count, and SHA-256 references to
-  the signed manifest, signed staging attestation, root promotion journal, and
-  root sealed result. Stage intervals must be positive, sequential,
-  non-overlapping, and disjoint from handoff waits.
+  the signed manifest, signed staging attestation, signed protected timing
+  envelope, root staging evidence, root promotion request, root promotion
+  journal, and root sealed result. Stage intervals must be positive,
+  sequential, non-overlapping, and disjoint from handoff waits.
+- Transaction identity is the v2 uniqueness key. A package version may repeat
+  for a retry only when the root transaction ID and transaction-bound evidence
+  are distinct. A repeated transaction ID or copied transaction evidence fails
+  closed. Legacy v1 observations lack that transaction authority and therefore
+  conservatively retain unique-`releaseId` validation.
 - A passed candidate requires production identity and the completed soak; a
   recovered candidate requires matching rollback and restored-availability
   timestamps; a pre-stop failure has no cutover; failed recovery is explicit.
+  The collector refuses a failed-recovery record when no sealed healthy
+  endpoint exists instead of inventing one.
 
-Run the evaluator on ServerDominguez, not against promotion files copied to the
-Mac. `--evidence-root` contains the signed manifest/staging files and every
-reference is relative, non-symlinked, and digest checked. Promotion references
-must be the canonical
+#### Protected Sentry quality evidence
+
+Quality collection is advisory and never runs from CI, RC, signing, staging,
+or promotion automatically. Configure only the existing GitHub
+`release-signing` environment:
+
+- secret `NEXUS_SENTRY_QUALITY_READ_TOKEN`: a read-only Sentry
+  internal-integration token limited to `project:read` for exact organization
+  release identity and `event:read` for issue aggregation;
+- variable `NEXUS_SENTRY_ORGANIZATION`: the lowercase organization slug;
+- variable `NEXUS_SENTRY_PROJECT_IDS`: a comma-separated allowlist of numeric
+  production project IDs;
+- variable `NEXUS_SENTRY_API_BASE_URL`: the organization region origin, such
+  as `https://us.sentry.io` (an empty value uses `https://sentry.io`).
+
+The token is never a workflow input, CLI argument, artifact, or log value.
+Before counting issues for any successful runtime SHA, the protected job calls
+Sentry's exact organization release endpoint and requires the response version
+to equal that SHA and its project membership to include every configured
+production project ID. A 404, malformed or mismatched release response, or
+missing project binding fails closed and produces no signed zero-defect claim.
+Release metadata and issue response bodies remain in memory; the job uploads
+only the existing signed aggregate schema. It never runs tests for this
+purpose.
+
+After at least 20 terminal root promotion journals exist and the latest one is
+at least 24 hours old, create a fresh request on ServerDominguez from the
+reviewed, root-owned evaluator tree:
+
+```bash
+sudo install -d -o root -g root -m 0700 \
+  /var/lib/nexus-release-observations/quality
+
+sudo /usr/bin/node \
+  /opt/nexus-release-evaluator/current/scripts/release-quality-evidence.mjs \
+  build-server-request \
+  --source-root /opt/nexus-release-evaluator/current \
+  --promotion-evidence-root /var/lib/nexus-release-promotion \
+  --request-id <lowercase-uuid> \
+  --server-private-key /etc/nexus-release/serverdominguez-provenance-private-key.pem \
+  --output /var/lib/nexus-release-observations/quality/<lowercase-uuid>.server-request.json
+```
+
+Request creation reads exactly the latest 20 chronological terminal journals,
+uses the first 10 as baseline and the last 10 as current, and fails while
+`active.json` exists. A completed production release is observed from its root
+journal completion until the next completed production release; intervening
+failed or recovered attempts do not shorten that deployed release's exposure.
+A non-production outcome has an empty interval and a governed zero/empty-set
+commitment. The current successful release ends at the request's fixed
+`observedThrough` cutoff. Sentry is queried sequentially with exact
+`release:<runtime-sha>`, `production`, project allowlist, start, and end
+filters. Only unique issue groups whose `firstSeen` falls in the half-open
+`[start,end)` interval count as escaped defects.
+
+Copy the non-secret server request and server public key to the Mac, then run
+the requester from an exact protected-main checkout:
+
+```bash
+mkdir -p .local/release/quality
+chmod 700 .local/release/quality
+
+scripts/request-release-quality-evidence.sh \
+  /absolute/path/server-request.json \
+  /absolute/path/serverdominguez-provenance-public-key.pem \
+  .local/release/quality/release-quality.json \
+  --server ServerDominguez
+```
+
+The requester validates the server signature, holds the existing
+`/run/lock/nexus-release-sonar.lock` for the whole protected approval, query,
+sign, and download cycle, and refuses local or remote release locks. The
+existing `sign-staging-attestation.yml` job also rejects known queued or active
+release workflows both before and after collection. No new workflow, job,
+matrix, scheduler, or release lane is created. The root request expires after
+15 minutes; create a fresh request rather than extending or editing it.
+
+Copy the resulting mode-0600 `release-quality.json` into the signed
+observation evidence root. The observation collector then verifies its
+protected release-evidence signature and exact 10+10 journal bindings.
+Provider outage, pagination overflow, malformed issue identity, missing
+configuration, active release state, or a query/signature mismatch remains
+`MANUAL_REQUIRED`; never substitute an operator count.
+
+Run the collector and evaluator on ServerDominguez, not against promotion files
+copied to the Mac. `--evidence-root` contains the signed manifest, staging, and
+protected Sentry evidence files; every reference is relative, non-symlinked,
+and digest checked. Promotion references must be the canonical
 `transactions/<transaction-id>/state/{journal.json,result.env,recovery-result.json}`
 paths below the original root-owned state directory. The evaluator verifies
 root UID, non-writable modes, and every path component, so this command needs
@@ -542,6 +778,14 @@ run a user-writable checkout as root. For example:
 
 ```bash
 sudo /usr/bin/node \
+  /opt/nexus-release-evaluator/current/scripts/release-plan-evaluator.mjs \
+  collect-observation \
+  --quality-evidence quality/release-quality.json \
+  --evidence-root /var/lib/nexus-release-observations/signed \
+  --promotion-evidence-root /var/lib/nexus-release-promotion \
+  --output /var/lib/nexus-release-observations/observation-window.json
+
+sudo /usr/bin/node \
   /opt/nexus-release-evaluator/current/scripts/release-plan-evaluator.mjs evaluate \
   --input /var/lib/nexus-release-observations/observation-window.json \
   --evidence-root /var/lib/nexus-release-observations/signed \
@@ -549,11 +793,13 @@ sudo /usr/bin/node \
   --output /var/lib/nexus-release-observations/observation-evaluation.json
 ```
 
-The result reports R-7 median/p50 and p95 for overall automated readiness and
-for each canonical CI, RC, signing, staging, and promotion stage across all ten
-records. It reports unattended phase-transition delay while keeping explicit
-approval time as a separately excluded quantity. It also reports actual service
-unavailability separately from total cutover and the successful-promotion soak.
+The result reports R-7 median/p50 and p95 for the exact protected-main-CI-start
+to RC-completion readiness interval and separately for every canonical CI, RC,
+signing, staging, and promotion stage. It sums unattended transitions within
+each release, excludes explicit approval waits, and computes p50/p95 over the
+ten per-release totals. Approval time remains separately reported as excluded
+time. It also reports actual service unavailability separately from total
+cutover and the successful-promotion soak.
 The promotion-stage duration ends at the root journal's terminal completion, so
 it includes the soak, post-soak DR network escrow, and the required
 before/after-escrow authenticated/PM2 checks; it is never presented as customer
@@ -561,14 +807,63 @@ unavailability. Actual unavailability and original-cutover recovery KPIs use
 the root monotonic integer measurements. Wall timestamps must match those
 measurements within one second and remain exact provenance bindings, but are
 not substituted for the monotonic KPI.
-Signed evidence binds protected-main completion, RC completion, manifest
-generation/signing completion, and staging verification. Root state binds the
-promotion outcome, transaction/Sentry identity, cutover/recovery timestamps,
-and the explicit soak start, completion, and observed monotonic duration. A local observation may
-not supply a trusted start time or handoff simply by containing a timestamp.
-Missing authoritative starts/handoffs return `MANUAL_REQUIRED`, with no p50 or
-p95 computed from those fields. A duration-only soak also returns
+When exact protected-main evidence exists, the protected manifest signer
+fetches the protected-main, RC, and current signing run identities from GitHub.
+Alongside the manifest it writes
+`timing/<runtime-sha>.json`, a
+`nexus.release-protected-timing.v1` envelope signed by the existing release
+evidence key. It binds the manifest digest, repository, SHA, run IDs and
+attempts, GitHub job starts, evidence completion instants, and signing instant.
+The manifest requester installs that file mode 0600 beside the manifest and
+refuses a conflicting existing copy. Missing protected-main evidence does not
+block manifest signing or release acceptance; it omits this advisory envelope,
+and the affected v2 timing window cannot be collected.
+
+Root state contributes
+`staging/<request-id>.evidence.json`,
+`requests/<transaction-id>.json`, the promotion journal, and the sealed result.
+The staging attestation signature also binds the protected staging-signing run
+and signing instant. Root `publishedAt` proves installation/readiness completed.
+The request's `verifiedAt` is created locally only after the richer
+authenticated/domain smoke and is signed with its log digest, but it is
+chronology evidence rather than the metric boundary. The protected workflow
+fetches its exact current GitHub run through `actions:read`, pins protected
+tooling to the dispatch SHA, validates the run/request identity, and binds the
+run's independently sourced raw `created_at` as
+`protectedSigning.requestedAt`. That raw value remains the authoritative end of
+staging validation and start of the staging-signing approval wait. The collector
+requires `publishedAt <= verifiedAt <= signedAt`, `requestedAt <= signedAt`, and
+`requestedAt >= verifiedAt - 5 seconds`; it never rewrites the timestamp.
+Automated readiness is independent of this staging boundary: it starts at exact
+protected-main CI `startedAt` and ends at exact RC `completedAt` from the signed
+protected timing envelope. All five stage intervals and six transition waits
+remain separately derived from governed evidence.
+It marks `release-signing` and `production-owner` waits as explicit approvals
+and excludes them from the unattended-delay KPI. The other transitions remain
+unattended and must not overlap stage execution. The canonical promotion
+request digest must equal the digest sealed by the root journal.
+
+The v2 collector never fills a missing start with an adjacent completion or a
+one-millisecond placeholder. If any signed timing envelope, root staging file,
+root request, or protected staging-signing identity is missing, v2 collection
+fails. A valid older staging attestation whose protected-signing identity lacks
+`requestedAt` remains readable and does not invalidate release acceptance, but
+its staging duration and affected handoffs are `MANUAL_REQUIRED`; authoritative
+CI-to-RC readiness remains evaluable when signed protected timing exists. Its
+locally supplied `verifiedAt` is never promoted into an authoritative staging
+endpoint. Existing v1 operator windows remain readable
+only for backward compatibility; each timing phase without independent
+authority remains `MANUAL_REQUIRED`, with no p50 or p95 computed from it. Root
+state additionally binds promotion outcome, transaction/Sentry identity,
+cutover/recovery timestamps, and the explicit soak start, completion, and
+observed monotonic duration. A duration-only soak also returns
 `MANUAL_REQUIRED`; both root-recorded endpoints are required.
+
+The protected Sentry envelope is an explicit authority input, not a locally
+trusted counter. If no protected process can query Sentry, bind the exact
+transaction windows, and sign the redacted aggregate, do not fabricate or
+locally sign it: collection remains blocked and the legacy v1 evaluation
+continues to report both quality comparisons as `MANUAL_REQUIRED`.
 
 For each successful release, the Mac coordinator also writes a private
 mode-0600 `nexus.production-promotion-evidence.v1` proof and
@@ -591,13 +886,17 @@ timing, but does not independently authorize the two DR object identities or a
 fail-closed per-release checks and `MANUAL_REQUIRED` for a root-authoritative
 ten-release aggregate until the evaluator contract is explicitly extended.
 
-Threshold evaluation covers the
-9-minute readiness median, 1-minute unattended handoff median, 120-second
+Threshold evaluation covers the p50 of the exact protected-main-CI-start to
+RC-completion interval (at most 9 minutes), p50 of the ten per-release
+unattended-transition sums (at most 1 minute, approvals excluded), 120-second
 rollback recovery, the full 60-second soak, exact SHA/artifact/installed-tree
-parity, and no increase over the supplied ten-release baseline in failed
-promotions or escaped defects. Operator-authored baseline counts and escaped
-defect totals are never sufficient for `PASS`; they remain `MANUAL_REQUIRED`
-until independently bound baseline journal and Sentry issue evidence are added.
+parity, and no increase over the preceding ten authoritative promotions in
+failed promotions or escaped defects. The evaluator emits
+`nexus.release-plan-evaluation.v2` and accepts the legacy
+`nexus.release-plan-observation-window.v1` schema for existing evidence, but
+ignores its operator-authored failed-promotion and defect counters; those
+metrics remain `MANUAL_REQUIRED`. Only v2 with the exact root baseline and
+signed Sentry aggregate makes them machine-evaluable.
 No observed rollback also produces `MANUAL_REQUIRED`; absence of failure is not
 recovery evidence. With the current evidence schemas the ten-release declaration
 therefore cannot return `PASS` solely from the observation JSON. Exit status is
@@ -617,10 +916,12 @@ npm run release:shadow:readiness -- --input .local/release/shadow-ledger.json \
 
 The advisory ledger must contain exactly five full
 `nexus.release-evidence-shadow-comparison.v1` records with consecutive sequence
-numbers, unique release IDs and runtime SHAs, canonical comparison/completion
-timestamps, and independently recorded production runtime SHA and manifest
-SHA-256 for each release. The comparison runtime SHA must match that production
-identity exactly. Even five exact matches in this operator-readable ledger
+numbers, unique release IDs and runtime SHAs because this operator-readable v1
+ledger lacks authoritative root transaction identity. It also requires canonical
+comparison/completion timestamps and independently recorded production runtime
+SHA and manifest SHA-256 for each release. The comparison runtime SHA must match
+that production identity exactly. Even five exact matches in this
+operator-readable ledger
 return `MANUAL_REQUIRED`, `activationAllowed: false`, and
 `independent_github_provenance_required`. The local evaluator is deliberately
 non-authorizing.
@@ -636,22 +937,37 @@ scheduler, or worker:
    `NEXUS_SERVERDOMINGUEZ_PROVENANCE_PUBLIC_KEY_PEM`. Never copy the private key
    from the server.
 2. After five eligible production comparisons exist, run the reviewed,
-   root-owned evaluator on ServerDominguez. It validates the complete ten-record
-   observation window, takes only its last five successful exact agreements,
-   and requires those transaction IDs to be the latest five completed
-   root-owned promotion journals:
+   root-owned collector on ServerDominguez. It emits the separate
+   `nexus.release-plan-activation-window.v1` contract from exactly the latest
+   five completed root-owned promotions. Activation therefore does not require
+   an unrelated ten-release KPI window, but it still requires all five signed
+   manifest/staging/GitHub comparison bindings. The activation records omit
+   escaped-defect counters because quality comparison belongs only to the
+   separately authorized ten-release observation contract:
 
    ```bash
    sudo /usr/bin/node \
      /opt/nexus-release-evaluator/current/scripts/release-plan-evaluator.mjs \
+     collect-activation \
+     --evidence-root /var/lib/nexus-release-observations/signed \
+     --promotion-evidence-root /var/lib/nexus-release-promotion \
+     --output /var/lib/nexus-release-observations/activation-window.json
+
+   sudo /usr/bin/node \
+     /opt/nexus-release-evaluator/current/scripts/release-plan-evaluator.mjs \
      activation-request \
-     --input /var/lib/nexus-release-observations/observation-window.json \
+     --input /var/lib/nexus-release-observations/activation-window.json \
      --evidence-root /var/lib/nexus-release-observations/signed \
      --promotion-evidence-root /var/lib/nexus-release-promotion \
      --request-id <lowercase-uuid> \
      --server-private-key /etc/nexus-release/serverdominguez-provenance-private-key.pem \
      --output /var/lib/nexus-release-observations/protected-main-reuse-request.json
    ```
+
+   The activation collector keys these entries by distinct root promotion
+   transaction IDs, not package version. A `releaseId` may repeat for a retry
+   only when its transaction ID, journal digest, and transaction-bound evidence
+   are distinct; duplicate transaction authority fails closed.
 
    Each entry binds its signed manifest, signed staging attestation, root
    journal/result, protected-main run, RC run, SHA, artifact, installed tree,
@@ -665,14 +981,17 @@ scheduler, or worker:
    `release-signing` job verifies the ServerDominguez signature, independently
    fetches all five protected-main CI and all five RC run/artifact identities,
    and emits a GitHub-signed activation envelope.
-4. Supply that envelope as canonical base64 in the existing RC input
-   `protected_reuse_activation_b64`. The test-plan job revalidates it and the
-   current exact protected-main evidence. It may skip the existing RC Vitest
-   jobs only for a later SHA, only while the activation is unexpired, and only
-   when policy/workflow digest, lockfiles, toolchains, selected-file coverage,
-   required jobs, and exact runtime bundle agree. Python and the remaining
-   release gates still run. The protected manifest signer independently fetches
-   the current protected-main run/artifacts and repeats validation.
+4. Supply the private envelope path through the coordinator's
+   `--protected-reuse-activation` option. The coordinator snapshots and binds
+   the exact bytes before RC intent and forwards their canonical base64 through
+   the existing `protected_reuse_activation_b64` input. The test-plan job
+   revalidates it and the current exact protected-main evidence. It may skip
+   the existing RC Vitest jobs only for a later SHA, only while the activation
+   is unexpired, and only when policy/workflow digest, lockfiles, toolchains,
+   selected-file coverage, required jobs, and exact runtime bundle agree.
+   Python and the remaining release gates still run. The protected manifest
+   signer independently fetches the current protected-main run/artifacts and
+   repeats validation.
 
 Any missing, invalid, ambiguous, policy-drifted, or expired input, an explicit
 `force_full`, or an attempt to reuse one of the five shadow-window SHAs leaves

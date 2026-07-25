@@ -1,0 +1,29 @@
+[Unit]
+Description=Recover interrupted Nexus release layout migration
+DefaultDependencies=no
+After=local-fs.target
+Before=network-online.target nexus-release-promotion-recovery.service pm2-dominguez.service
+ConditionPathExists=/var/lib/nexus-release-promotion/layout-migration-in-progress.v1.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=NEXUS_RELEASE_BOOT_RECOVERY=1
+ExecStart=/usr/local/sbin/nexus-release-layout-migrate recover
+# The script enforces the 120-second production-availability deadline from
+# its durable outage journal. This wider unit bound covers staging validation,
+# the availability check, and the mandatory production soak without allowing
+# systemd to kill a healthy recovery after availability has already returned.
+TimeoutStartSec=360s
+KillMode=control-group
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/dominguez /srv/nexus-release /var/lib/nexus-release-promotion /run/lock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

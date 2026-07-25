@@ -7,7 +7,7 @@ if (!releaseDir) throw new Error('NEXUS_RELEASE_DIR is required');
 const role = process.env.NEXUS_RELEASE_ROLE || 'staging';
 const staging = role === 'staging';
 const baseDir = process.env.NEXUS_RELEASE_BASE_DIR
-  || (staging ? '/home/dominguez/telegram-hub-bot-staging' : '/home/dominguez/telegram-hub-bot');
+  || (staging ? '/srv/nexus-release/staging' : '/srv/nexus-release/production');
 const backendPort = staging ? '8201' : '8200';
 const contentPort = staging ? '8101' : '8100';
 const policyEnvironmentNames = Object.freeze([

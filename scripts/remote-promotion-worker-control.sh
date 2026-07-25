@@ -28,6 +28,15 @@ RELEASE_EVIDENCE_PUBLIC_KEY="${NEXUS_PROMOTION_RELEASE_EVIDENCE_PUBLIC_KEY:-/etc
 OUTAGE_BUDGET_SECONDS=120
 PRE_RECOVERY_BUDGET_SECONDS=60
 SYSTEM_NODE_BIN="${NEXUS_PROMOTION_NODE_BIN:-/usr/bin/node}"
+PYTHON_BIN="${NEXUS_PROMOTION_PYTHON_BIN:-/usr/bin/python3}"
+SELECTOR_SWITCH="${NEXUS_PROMOTION_SELECTOR_SWITCH:-/usr/local/libexec/nexus-release-selector-switch.py}"
+BOOT_HEALTH_BIN="${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-/usr/local/sbin/nexus-release-boot-health}"
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+  PYTHON_BIN="${NEXUS_PROMOTION_PYTHON_BIN:-$(command -v python3)}"
+  if [ -z "${NEXUS_PROMOTION_SELECTOR_SWITCH:-}" ]; then
+    SELECTOR_SWITCH="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/remote-release-selector-switch.py"
+  fi
+fi
 
 if [ "$EUID" -ne 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
   echo "promotion worker broker must run as root" >&2
@@ -354,6 +363,42 @@ trusted_attest() {
     "$SYSTEM_NODE_BIN" "$TRUSTED_ATTESTOR" "${args[@]}" >/dev/null
 }
 
+root_switch_selector() {
+  local target="$1" runtime_sha artifact_digest installed_digest expected
+  local worker_uid worker_gid args
+  if [ "$target" = "$TARGET_RUNTIME" ]; then
+    runtime_sha="$TARGET_SHA"; artifact_digest="$ARTIFACT_DIGEST"
+    installed_digest="$INSTALLED_RUNTIME_DIGEST"
+    expected="$PREDECESSOR_RUNTIME"
+  elif [ "$target" = "$PREDECESSOR_RUNTIME" ]; then
+    runtime_sha="$PREDECESSOR_SHA"; artifact_digest="$PREDECESSOR_ARTIFACT_DIGEST"
+    installed_digest="$PREDECESSOR_INSTALLED_RUNTIME_DIGEST"
+    expected="$TARGET_RUNTIME"
+  else
+    echo "root selector target is outside the exact transaction authority" >&2
+    return 1
+  fi
+  [ "$target" != "$PROD_BASE/releases" ] && [[ "$target" == "$PROD_BASE"/releases/* ]] || {
+    echo "root selector target is outside production releases" >&2
+    return 1
+  }
+  trusted_attest verify "$target" "$runtime_sha" "$artifact_digest" "$installed_digest" || return 1
+  [ -x "$PYTHON_BIN" ] && [ -f "$SELECTOR_SWITCH" ] && [ ! -L "$SELECTOR_SWITCH" ] || {
+    echo "root selector switch helper is unavailable" >&2
+    return 1
+  }
+  worker_uid="$(id -u "$WORKER_USER")"
+  worker_gid="$(id -g "$WORKER_USER")"
+  args=(
+    switch --role production --release-root "$(dirname -- "$PROD_BASE")"
+    --worker-uid "$worker_uid" --worker-gid "$worker_gid"
+    --expected "$expected" --target "$target"
+  )
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then args+=(--allow-test-owner); fi
+  "$PYTHON_BIN" "$SELECTOR_SWITCH" "${args[@]}" >/dev/null
+  verify_root_selector "$target"
+}
+
 prepare_recovery_descriptor_unprivileged() (
   set -euo pipefail
   local worker_uid worker_gid preflight_root descriptor_next="" descriptor_fd
@@ -502,8 +547,8 @@ preflight_application_dr() {
     return 1
   }
   case "$verification" in
-    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days') ;;
-    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=cloudflare-r2 storageControlMode=r2-approved-variance releasePrefixLock=verified databaseRetention=24-hourly,7-daily,4-weekly,6-monthly releaseRetention=90-days') ;;
+    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days') ;;
+    'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=cloudflare-r2 storageControlMode=r2-approved-variance releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days') ;;
     *)
       echo "application DR provisioning/config preflight returned invalid evidence" >&2
       return 1
@@ -711,6 +756,11 @@ NODE
 
 write_journal() {
   local phase="$1" status="$2" message="$3" previous_started="" output
+  case "$status" in
+    completed|recovered|failed_before_stop)
+      publish_terminal_pm2_authority
+      ;;
+  esac
   if [ -f "$JOURNAL" ]; then
     previous_started="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.startedAt||"")' "$JOURNAL")"
   fi
@@ -732,6 +782,28 @@ NODE
   chmod 600 "$output"
   root_own "$output"
   durable_publish "$output" "$JOURNAL"
+}
+
+publish_terminal_pm2_authority() {
+  local result
+  # During boot, staging and production journals reconcile sequentially under
+  # one root-owned temporary PM2 cgroup. The final boot prepare publishes one
+  # canonical four-row authority only after both roles are exact.
+  [ ! -f "$STATE_ROOT/boot-recovery-in-progress.v1.json" ] || return 0
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] \
+      && [ -z "${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-}" ]; then
+    return 0
+  fi
+  [ -x "$BOOT_HEALTH_BIN" ] || {
+    echo "root PM2 authority publisher is unavailable" >&2
+    return 1
+  }
+  result="$("$BOOT_HEALTH_BIN" publish-current)"
+  "$SYSTEM_NODE_BIN" -e '
+const x=JSON.parse(process.argv[1]);
+if(x.schema!=="nexus.pm2-resurrection-authority.v2"
+ ||!/^[a-f0-9]{64}$/u.test(x.dumpSha256||""))process.exit(1);
+' "$result"
 }
 
 invoke_worker() {
@@ -910,6 +982,62 @@ invoke_recovery() {
   fi
 }
 
+capture_pm2_jlist() {
+  local output="$1"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    "$TIMEOUT_BIN" 5s "$PM2_BIN" jlist >"$output"
+  else
+    "$TIMEOUT_BIN" 5s "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist >"$output"
+  fi
+}
+
+verify_exact_pm2_stable() {
+  local runtime="$1" sha="$2" baseline final
+  baseline="$(mktemp "$AUTHORITATIVE_DIR/.pm2-baseline.XXXXXXXX")"
+  final="$(mktemp "$AUTHORITATIVE_DIR/.pm2-final.XXXXXXXX")"
+  capture_pm2_jlist "$baseline"
+  sleep 1
+  capture_pm2_jlist "$final"
+  "$SYSTEM_NODE_BIN" - "$baseline" "$final" "$runtime" "$sha" <<'NODE'
+const fs=require('fs');const [baselineFile,finalFile,runtime,sha]=process.argv.slice(2);
+const expected=[
+ ['nexus-hub',runtime,`${runtime}/dist/index.js`,'node'],
+ ['content-engine',`${runtime}/content-engine`,
+  `${runtime}/content-engine/.venv/bin/python3.12`,'none'],
+];
+const validate=(file)=>{
+ const rows=JSON.parse(fs.readFileSync(file,'utf8')),identities=[];
+ for(const [name,cwd,executable,interpreter] of expected){
+  const matches=rows.filter((entry)=>entry?.name===name),row=matches[0],env=row?.pm2_env??{};
+  const identity={name,pid:Number(row?.pid),restartTime:Number(env.restart_time??0),
+   unstableRestarts:Number(env.unstable_restarts??0)};
+  if(matches.length!==1||env.status!=='online'||env.pm_cwd!==cwd
+   ||env.pm_exec_path!==executable||env.exec_interpreter!==interpreter
+   ||(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha||env.SENTRY_RELEASE!==sha
+   ||!Number.isSafeInteger(identity.pid)||identity.pid<=0
+   ||!Number.isSafeInteger(identity.restartTime)||identity.restartTime<0
+   ||!Number.isSafeInteger(identity.unstableRestarts)||identity.unstableRestarts<0)process.exit(1);
+  identities.push(identity);
+ }
+ return identities;
+};
+const before=validate(baselineFile),after=validate(finalFile);
+if(JSON.stringify(before)!==JSON.stringify(after))process.exit(1);
+NODE
+  rm -f -- "$baseline" "$final"
+}
+
+verify_root_selector() {
+  local target="$1"
+  "$SYSTEM_NODE_BIN" - "$PROD_BASE/current" "$target" "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
+const fs=require('fs');const [selector,target,testMode]=process.argv.slice(2);
+const stat=fs.lstatSync(selector);
+const uid=testMode==='1'?process.getuid():0,gid=testMode==='1'?process.getgid():0;
+if(!stat.isSymbolicLink()||stat.uid!==uid||stat.gid!==gid
+ ||fs.readlinkSync(selector)!==target||fs.realpathSync.native(selector)!==target)process.exit(1);
+NODE
+}
+
 verify_predecessor_live() {
   local health
   if [ "$PREDECESSOR_RUNTIME" = "$PROD_BASE" ]; then
@@ -918,23 +1046,12 @@ verify_predecessor_live() {
       return 1
     }
   else
-    [ "$(readlink -f "$PROD_BASE/current")" = "$PREDECESSOR_RUNTIME" ] || {
+    verify_root_selector "$PREDECESSOR_RUNTIME" || {
       echo "predecessor current selector is not restored" >&2
       return 1
     }
   fi
-  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
-    "$TIMEOUT_BIN" 5s "$PM2_BIN" jlist
-  else
-    "$TIMEOUT_BIN" 5s "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist
-  fi | "$SYSTEM_NODE_BIN" -e '
-const fs=require("fs");const rows=JSON.parse(fs.readFileSync(0,"utf8"));
-const root=process.argv[1],sha=process.argv[2];
-for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
- const row=rows.find((entry)=>entry?.name===name),env=row?.pm2_env??{};
- if(env.status!=="online"||env.pm_cwd!==cwd
-   ||(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha)process.exit(1);
-}' "$PREDECESSOR_RUNTIME" "$PREDECESSOR_SHA" || {
+  verify_exact_pm2_stable "$PREDECESSOR_RUNTIME" "$PREDECESSOR_SHA" || {
     echo "predecessor PM2 identity is not restored" >&2
     return 1
   }
@@ -987,6 +1104,7 @@ NODE
 
 recover_and_record() {
   ensure_recovery_attempt_timing "${1:-original_cutover}" || return 1
+  root_switch_selector "$PREDECESSOR_RUNTIME" || return 1
   invoke_recovery || return 1
   verify_predecessor_live || return 1
   seal_recovery_result
@@ -1033,17 +1151,10 @@ seal_worker_result() {
 }
 
 verify_candidate_live() {
-  [ "$(readlink -f "$PROD_BASE/current")" = "$TARGET_RUNTIME" ] || { echo "candidate current identity changed before escrow" >&2; return 1; }
-  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
-    "$TIMEOUT_BIN" 5s "$PM2_BIN" jlist
-  else
-    "$TIMEOUT_BIN" 5s "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist
-  fi | node -e '
-const fs=require("fs");const rows=JSON.parse(fs.readFileSync(0,"utf8"));const root=process.argv[1],sha=process.argv[2];
-for(const [name,cwd] of [["nexus-hub",root],["content-engine",`${root}/content-engine`]]){
- const row=rows.find((x)=>x?.name===name),env=row?.pm2_env??{};
- if(env.status!=="online"||env.pm_cwd!==cwd||(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha||env.SENTRY_RELEASE!==sha)process.exit(1);
-}' "$TARGET_RUNTIME" "$TARGET_SHA"
+  verify_root_selector "$TARGET_RUNTIME" \
+    || { echo "candidate current identity changed before escrow" >&2; return 1; }
+  verify_exact_pm2_stable "$TARGET_RUNTIME" "$TARGET_SHA" \
+    || { echo "candidate PM2 exact identity or restart stability failed" >&2; return 1; }
   trusted_attest verify "$TARGET_RUNTIME" "$TARGET_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST"
 }
 
@@ -1089,19 +1200,25 @@ const crypto=require('crypto'),fs=require('fs');
 const [raw,id,path,sha,artifact,installed,recovery,manifestPath,stagingPath]=process.argv.slice(2);
 const x=JSON.parse(raw),c=x.requiredRecoveryRuntime;
 const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const validAwsVersionId=(value)=>{
+ if(typeof value!=='string'||value==='null')return false;
+ const encoded=Buffer.from(value,'utf8');
+ return encoded.length>=1&&encoded.length<=1024
+  &&encoded.toString('utf8')===value&&!/[\u0000-\u001f\u007f]/u.test(value);
+};
 const pair=(x.storageProvider==='aws-s3'&&x.storageControlMode==='versioned-s3')
  ||(x.storageProvider==='cloudflare-r2'&&x.storageControlMode==='r2-approved-variance');
 const confirmed=Date.parse(c?.confirmedAt||'');
 const databaseConfirmed=Date.parse(x.databaseConfirmedAt||'');
 const providerProof=x.storageProvider==='aws-s3'
- ? /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(c?.objectVersionId||'')
+ ? validAwsVersionId(c?.objectVersionId)
    && Number.isFinite(Date.parse(c?.retainUntil||''))
    && Date.parse(c.retainUntil)>=confirmed+90*86400*1000
    && c.retentionVariance===null&&c.approvedUnversionedVariance===false
  : x.storageProvider==='cloudflare-r2'&&c?.objectVersionId===null&&c?.retainUntil===null
    && c?.retentionVariance==='r2-approved-variance'&&c?.approvedUnversionedVariance===true;
 const databaseProviderProof=x.storageProvider==='aws-s3'
- ? /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(x.databaseObjectVersionId||'')
+ ? validAwsVersionId(x.databaseObjectVersionId)
    &&x.databaseRetentionVariance===null&&x.databaseApprovedUnversionedVariance===false
  : x.storageProvider==='cloudflare-r2'&&x.databaseObjectVersionId===null
    &&x.databaseRetentionVariance==='r2-approved-variance'
@@ -1213,12 +1330,18 @@ for(const line of fs.readFileSync(resultPath,'utf8').split(/\r?\n/u)){
  result.set(match[1],match[2]);
 }
 const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const validAwsVersionId=(value)=>{
+ if(typeof value!=='string'||value==='null')return false;
+ const encoded=Buffer.from(value,'utf8');
+ return encoded.length>=1&&encoded.length<=1024
+  &&encoded.toString('utf8')===value&&!/[\u0000-\u001f\u007f]/u.test(value);
+};
 const pair=(x.storageProvider==='aws-s3'&&x.storageControlMode==='versioned-s3')
  ||(x.storageProvider==='cloudflare-r2'&&x.storageControlMode==='r2-approved-variance');
 const providerProof=(value)=>{
  const confirmed=Date.parse(value?.confirmedAt||'');
  if(!Number.isFinite(confirmed))return false;
- if(x.storageProvider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+ if(x.storageProvider==='aws-s3')return validAwsVersionId(value?.objectVersionId)
   &&Number.isFinite(Date.parse(value?.retainUntil||''))
   &&Date.parse(value.retainUntil)>=confirmed+90*86400*1000
   &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
@@ -1239,7 +1362,7 @@ const databaseProviderProof=(value)=>{
   ||!/^[a-f0-9]{64}$/u.test(value?.encryptedSha256||'')
   ||!Number.isSafeInteger(value?.encryptedSizeBytes)||value.encryptedSizeBytes<=0
   ||!Number.isFinite(Date.parse(value?.confirmedAt||'')))return false;
- if(x.storageProvider==='aws-s3')return /^[A-Za-z0-9._~+=:/-]{1,1024}$/u.test(value?.objectVersionId||'')
+ if(x.storageProvider==='aws-s3')return validAwsVersionId(value?.objectVersionId)
   &&value.retentionVariance===null&&value.approvedUnversionedVariance===false;
  return x.storageProvider==='cloudflare-r2'&&value?.objectVersionId===null
   &&value?.retentionVariance==='r2-approved-variance'
@@ -1519,6 +1642,18 @@ if ! authorize_candidate_from_worker_backup; then
   exit 76
 fi
 write_journal executing running root_candidate_authorization_durable
+
+if ! root_switch_selector "$TARGET_RUNTIME"; then
+  echo "root broker could not atomically select the exact candidate" >&2
+  write_journal recovery_required recovery_required candidate_selector_switch_failed
+  if recover_and_record; then
+    write_journal recovery_complete recovered candidate_selector_switch_failed_recovered
+    durable_remove "$RECOVERY_INTENT"
+    exit 0
+  fi
+  write_journal recovery_failed recovery_failed candidate_selector_switch_recovery_failed
+  exit 76
+fi
 
 set +e
 invoke_worker worker-promote

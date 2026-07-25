@@ -3,6 +3,8 @@
 # identity are deliberately independent, and two PM2 samples must remain stable.
 set -euo pipefail
 umask 077
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 ROLE=""
 BASE_DIR=""
@@ -10,14 +12,15 @@ RELEASE_DIR=""
 RUNTIME_SHA=""
 PM2_BIN=""
 NODE_BIN="/usr/bin/node"
-CURL_BIN="$(command -v curl 2>/dev/null || true)"
+CURL_BIN="/usr/bin/curl"
 OUTPUT=""
+OUTPUT_FD=""
 STABILITY_SECONDS=""
 READINESS_ATTEMPTS=""
 POLL_SECONDS=""
 
 usage() {
-  echo "Usage: remote-release-readiness.sh --role <staging|production> --base-dir <path> --release-dir <path> --runtime-sha <sha> --pm2-bin <path> --output <file> [--node-bin <path>] [--curl-bin <path>] [--readiness-attempts <1-60>] [--poll-seconds <0-10>] [--stability-seconds <0-60>]"
+  echo "Usage: remote-release-readiness.sh --role <staging|production> --base-dir <path> --release-dir <path> --runtime-sha <sha> --pm2-bin <path> (--output <file> | --output-fd <3-63>) [--node-bin <path>] [--curl-bin <path>] [--readiness-attempts <1-60>] [--poll-seconds <0-10>] [--stability-seconds <0-60>]"
 }
 
 while [ $# -gt 0 ]; do
@@ -30,6 +33,7 @@ while [ $# -gt 0 ]; do
     --node-bin) NODE_BIN="$2"; shift 2 ;;
     --curl-bin) CURL_BIN="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
+    --output-fd) OUTPUT_FD="$2"; shift 2 ;;
     --readiness-attempts) READINESS_ATTEMPTS="$2"; shift 2 ;;
     --poll-seconds) POLL_SECONDS="$2"; shift 2 ;;
     --stability-seconds) STABILITY_SECONDS="$2"; shift 2 ;;
@@ -44,7 +48,23 @@ case "$ROLE" in staging|production) ;; *) echo "invalid readiness role" >&2; exi
 [ -x "$PM2_BIN" ] || { echo "PM2 is unavailable for readiness" >&2; exit 1; }
 [ -x "$NODE_BIN" ] || { echo "Node is unavailable for readiness" >&2; exit 1; }
 [ -x "$CURL_BIN" ] || { echo "curl is unavailable for readiness" >&2; exit 1; }
-[ -n "$OUTPUT" ] || { echo "readiness output is required" >&2; exit 64; }
+if [ -n "$OUTPUT" ] && [ -n "$OUTPUT_FD" ]; then
+  echo "readiness output path and descriptor are mutually exclusive" >&2
+  exit 64
+fi
+if [ -n "$OUTPUT_FD" ]; then
+  [[ "$OUTPUT_FD" =~ ^[0-9]+$ ]] \
+    && [ "$OUTPUT_FD" -ge 3 ] && [ "$OUTPUT_FD" -le 63 ] || {
+    echo "readiness output descriptor must be between 3 and 63" >&2
+    exit 64
+  }
+  OUTPUT_TARGET="fd:$OUTPUT_FD"
+elif [ -n "$OUTPUT" ]; then
+  OUTPUT_TARGET="path:$OUTPUT"
+else
+  echo "readiness output is required" >&2
+  exit 64
+fi
 case "$STABILITY_SECONDS" in
   # Span PM2's memory monitor and the configured 60-second minimum-uptime
   # boundary so an early supervised restart cannot escape release evidence.
@@ -125,11 +145,19 @@ const fs = require('fs');
 const [releaseDir, runtimeSha, backendName, contentName, output, raw] = process.argv.slice(2);
 const rows = JSON.parse(fs.readFileSync(raw, 'utf8'));
 const expected = new Map([
-  [backendName, releaseDir],
-  [contentName, `${releaseDir}/content-engine`],
+  [backendName, {
+    cwd: releaseDir,
+    executable: `${releaseDir}/dist/index.js`,
+    interpreter: 'node',
+  }],
+  [contentName, {
+    cwd: `${releaseDir}/content-engine`,
+    executable: `${releaseDir}/content-engine/.venv/bin/python3.12`,
+    interpreter: 'none',
+  }],
 ]);
 const services = [];
-for (const [name, cwd] of expected) {
+for (const [name, identity] of expected) {
   const matches = rows.filter((entry) => entry?.name === name);
   if (matches.length !== 1) throw new Error(`PM2 readiness requires exactly one ${name} process`);
   const row = matches[0];
@@ -139,13 +167,20 @@ for (const [name, cwd] of expected) {
     name,
     status: env.status || null,
     cwd: env.pm_cwd || null,
+    executable: env.pm_exec_path || null,
+    interpreter: env.exec_interpreter || null,
     releaseSha: observedSha,
+    sentryRelease: env.SENTRY_RELEASE || null,
     pid: Number(row.pid || 0),
     restartTime: Number(env.restart_time || 0),
     unstableRestarts: Number(env.unstable_restarts || 0),
     uptime: Number(env.pm_uptime || 0),
   };
-  if (observed.status !== 'online' || observed.cwd !== cwd || observed.releaseSha !== runtimeSha || observed.pid <= 0) {
+  if (observed.status !== 'online' || observed.cwd !== identity.cwd
+      || observed.executable !== identity.executable
+      || observed.interpreter !== identity.interpreter
+      || observed.releaseSha !== runtimeSha || observed.sentryRelease !== runtimeSha
+      || observed.pid <= 0) {
     throw new Error(`PM2 exact identity mismatch: ${name}`);
   }
   for (const key of ['restartTime', 'unstableRestarts', 'uptime']) {
@@ -246,10 +281,10 @@ STABILITY_OBSERVED_SECONDS=$((STABILITY_COMPLETED_MONOTONIC - STABILITY_STARTED_
   exit 1
 }
 
-"$NODE_BIN" - "$baseline" "$final" "$OUTPUT" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" \
+"$NODE_BIN" - "$baseline" "$final" "$OUTPUT_TARGET" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" \
   "$STABILITY_STARTED_AT" "$STABILITY_COMPLETED_AT" "$STABILITY_OBSERVED_SECONDS" <<'NODE'
 const fs = require('fs');
-const [baselinePath, finalPath, output, role, runtimeSha, stabilitySeconds, readinessAttempts,
+const [baselinePath, finalPath, outputTarget, role, runtimeSha, stabilitySeconds, readinessAttempts,
   stabilityStartedAt, stabilityCompletedAt, stabilityObservedSeconds] = process.argv.slice(2);
 const before = JSON.parse(fs.readFileSync(baselinePath, 'utf8')).services;
 const after = JSON.parse(fs.readFileSync(finalPath, 'utf8')).services;
@@ -282,7 +317,24 @@ const evidence = {
   },
   services: after,
 };
-fs.writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+const body = `${JSON.stringify(evidence, null, 2)}\n`;
+if (outputTarget.startsWith('fd:')) {
+  const descriptor = Number(outputTarget.slice(3));
+  if (!Number.isSafeInteger(descriptor) || descriptor < 3 || descriptor > 63) {
+    throw new Error('readiness output descriptor is invalid');
+  }
+  const stat = fs.fstatSync(descriptor);
+  if (!stat.isFile() || stat.nlink !== 1) {
+    throw new Error('readiness output descriptor is not a private regular file');
+  }
+  fs.ftruncateSync(descriptor, 0);
+  fs.writeSync(descriptor, body, 0, 'utf8');
+  fs.fsyncSync(descriptor);
+} else if (outputTarget.startsWith('path:')) {
+  fs.writeFileSync(outputTarget.slice(5), body, { mode: 0o600 });
+} else {
+  throw new Error('readiness output target is invalid');
+}
 NODE
 
 printf 'release_readiness_ok role=%s runtimeSha=%s readinessAttempts=%s stabilitySeconds=%s\n' \

@@ -153,6 +153,105 @@ toolchain, selected-file, job, bundle, Python, staging, or promotion evidence.
 If any check is unavailable or ambiguous, the ordinary RC Vitest path runs.
 Operator-authored ledgers and locally signed evidence are never reusable.
 
+When exact protected-main evidence exists, a newly signed manifest is
+accompanied by a separate `nexus.release-protected-timing.v1` envelope. Its
+`nexus.release-protected-timing-payload.v1` payload is signed with the existing
+GitHub `release-signing` key and binds the exact manifest SHA-256, repository,
+runtime SHA, and three sequential stages:
+
+- protected-main CI: workflow, run ID, run attempt, GitHub start and completion,
+  and the completion sealed by protected-main evidence;
+- release candidate: workflow, run ID, run attempt, GitHub start and completion,
+  and the completion sealed by `nexus.release-test-results.v3`;
+- protected manifest signing: workflow, run ID, run attempt, protected job
+  start, and the protected signing instant.
+
+The signer reads GitHub run/job metadata through its existing read-only
+permission. The requester downloads `timing/<runtime-sha>.json` from the same
+immutable artifact as the manifest, installs it mode 0600, and rejects any
+non-identical existing file. Missing protected-main evidence omits this
+advisory timing envelope but does not change manifest signing or release
+acceptance.
+
+The automated-readiness KPI is the exact interval from protected-main CI
+`startedAt` through release-candidate `completedAt`; it excludes signing and
+staging. CI, RC, signing, staging, and promotion stage durations remain separate
+evidence and metrics.
+
+Ten-release v2 timing also requires the original root-owned
+`staging/<request-id>.evidence.json` and
+`requests/<transaction-id>.json` files. Root staging `startedAt` and
+`publishedAt` delimit root installation/readiness. The request's `verifiedAt`
+is a local chronology claim created only after the exact candidate's
+authenticated/domain smoke succeeds and is sealed together with the smoke-log
+digest, but it is not the authoritative timing endpoint. The protected
+staging-signing workflow reads its exact current GitHub run through the existing
+`actions:read` permission, verifies the run ID/attempt, workflow path,
+`workflow_dispatch` event, protected-main dispatch SHA and repository, exact
+request-digest title, and checked-out tooling SHA, then binds GitHub's
+independently sourced raw `created_at` as `protectedSigning.requestedAt`.
+That value remains the authoritative staging-validation end and protected
+signing approval-wait start. The chronology requires
+`publishedAt <= verifiedAt <= signedAt`, `requestedAt <= signedAt`, and
+`requestedAt >= verifiedAt - 5 seconds`. The raw request time may precede local
+`verifiedAt` by at most five seconds and is never rewritten.
+
+In authoritative observation v2 and activation evidence, transaction identity
+is the uniqueness key. A package `releaseId` or version may recur only with
+distinct root transaction IDs and distinct transaction-bound evidence. Legacy
+observation v1 lacks that authority and conservatively rejects duplicate
+`releaseId` values.
+
+The root promotion request binds explicit production-owner authorization and
+its canonical payload digest must equal `journal.requestSha256`. These sources
+produce six disjoint handoffs. The two protected signing waits and the
+production-owner wait are explicit approvals; protected-main-to-RC,
+signing-to-staging, and promotion submission are unattended. For each
+authoritative release, sum those unattended waits, then calculate p50/p95 over
+exactly ten per-release sums; never pool the individual transitions. No metric
+endpoint is copied from an operator observation or inferred from an adjacent
+completion. Older valid staging attestations without `requestedAt` remain
+readable and do not invalidate a release, but staging duration and affected
+handoffs stay `MANUAL_REQUIRED`; CI-to-RC readiness remains evaluable when its
+signed protected timing exists.
+
+Ten-release quality evaluation uses a separate
+`nexus.release-quality-evidence.v1` envelope signed by that same protected
+release-evidence key. Its `nexus.release-quality-evidence-payload.v1` payload
+fixes the provider to Sentry and the query contract to
+`escaped-release-defects-by-release-v1`; binds exactly the preceding ten and
+current ten root promotion transaction IDs, journal digests, runtime SHAs, and
+completion timestamps; and records only integer escaped-defect totals plus
+SHA-256 commitments for each redacted issue set. A protected source-snapshot
+digest binds the query result without retaining raw issue IDs, titles, user
+data, or event payloads. The root-side observation collector verifies this
+envelope and derives failed-promotion counts directly from those same journal
+windows. If the protected Sentry query/signing path is unavailable, the metric
+remains `MANUAL_REQUIRED`; an operator counter or locally signed replacement
+cannot satisfy it.
+
+The producer begins with
+`nexus.serverdominguez-release-quality-request.v1`, signed by the existing
+ServerDominguez provenance key from exactly the latest 20 terminal root
+journals. It requires a 24-hour-mature current window and expires after 15
+minutes. A completed release's half-open exposure interval starts at its
+journal completion and ends at the next completed release; non-production
+outcomes bind an empty interval and zero/empty-set commitment. The Mac requester
+holds the existing release/Sonar mutex for the entire protected operation.
+`sign-staging-attestation.yml` validates that server request, refuses active
+release workflows before and after collection, and resolves every successful
+runtime SHA sequentially through Sentry's exact organization release endpoint.
+The response must bind that exact version and every configured production
+project ID before the issue query can run. A 404, malformed or mismatched
+release response, or missing project membership fails closed without signing a
+zero-defect result. It then queries issues sequentially by exact runtime SHA,
+production environment, project allowlist, start, and end, and signs only the
+aggregate payload with the existing `release-signing` key. The read-only
+`NEXUS_SENTRY_QUALITY_READ_TOKEN` carries only `project:read` and `event:read`;
+the token, raw release metadata, and raw issue responses never enter workflow
+inputs or artifacts. This operation remains owner-dispatched, advisory, and
+outside all merge and release gates.
+
 `release:staging` installs the signed bundle in a versioned directory while the
 current process remains online, verifies env parity and owner bootstrap, then
 atomically selects it and records native/database, authenticated Content

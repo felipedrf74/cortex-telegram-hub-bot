@@ -11,6 +11,7 @@ const sqliteHelper = path.resolve('scripts/application-dr-sqlite.py');
 const retentionHelper = path.resolve('scripts/application-dr-retention.py');
 const archiveHelper = path.resolve('scripts/application-dr-archive.py');
 const storageControlHelper = path.resolve('scripts/application-dr-storage-controls.py');
+const awsCredentialBoundary = path.resolve('scripts/aws-credential-process-boundary.py');
 const isolatedHarness = path.resolve('scripts/application-dr-isolated-harness.sh');
 const migrationRoot = path.resolve('migrations');
 const migrationLineagePolicy = path.resolve('config/production-migration-lineages.json');
@@ -67,6 +68,169 @@ function writeMigrationLedger(database: string, filenames: string[]) {
 }
 
 describe('Nexus application disaster-recovery assets', () => {
+  it('accepts only the exact Roles Anywhere credential_process boundary', () => {
+    const root = privateRoot('nexus-app-dr-aws-boundary-');
+    const helper = path.join(root, 'aws_signing_helper');
+    const config = path.join(root, 'aws-config');
+    const certificate = path.join(root, 'certificate.pem');
+    const privateKey = path.join(root, 'private-key.pem');
+    fs.writeFileSync(helper, 'reviewed-helper-fixture\n', { mode: 0o700 });
+    fs.writeFileSync(certificate, 'reviewed-certificate-fixture\n', { mode: 0o644 });
+    fs.writeFileSync(privateKey, 'reviewed-private-key-fixture\n', { mode: 0o600 });
+    const helperSha256 = createHash('sha256')
+      .update(fs.readFileSync(helper))
+      .digest('hex');
+    fs.writeFileSync(
+      config,
+      [
+        '[profile nexus-application-dr-backup]',
+        'region = eu-west-1',
+        `credential_process = ${helper} credential-process `
+          + `--certificate ${certificate} `
+          + `--private-key ${privateKey} `
+          + '--trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/ta-1 '
+          + '--profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/profile-1 '
+          + '--role-arn arn:aws:iam::111122223333:role/nexus-application-dr-backup '
+          + '--session-duration 900',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+    const environment: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_SECURITY_TOKEN',
+      'AWS_CREDENTIAL_FILE',
+      'AWS_DEFAULT_PROFILE',
+      'AWS_WEB_IDENTITY_TOKEN_FILE',
+      'AWS_ROLE_ARN',
+      'AWS_ROLE_SESSION_NAME',
+      'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+      'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+      'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+    ]) {
+      delete environment[key];
+    }
+    Object.assign(environment, {
+      AWS_CONFIG_FILE: config,
+      AWS_PROFILE: 'nexus-application-dr-backup',
+      AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+      AWS_EC2_METADATA_DISABLED: 'true',
+      PYTHONDONTWRITEBYTECODE: '1',
+    });
+    const args = [
+      awsCredentialBoundary,
+      '--config', config,
+      '--profile', 'nexus-application-dr-backup',
+      '--region', 'eu-west-1',
+      '--helper', helper,
+      '--helper-sha256', helperSha256,
+      '--expected-role-arn',
+      'arn:aws:iam::111122223333:role/nexus-application-dr-backup',
+      '--expected-owner-uid', String(process.getuid?.() ?? 0),
+      '--trust-boundary', root,
+    ];
+    const accepted = spawnSync(python, args, { encoding: 'utf8', env: environment });
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toMatchObject({
+      status: 'passed',
+      credentialSource: 'iam-roles-anywhere-credential-process',
+      longLivedEnvironmentRejected: true,
+      sharedCredentialsDisabled: true,
+    });
+
+    const approvedConfig = fs.readFileSync(config, 'utf8');
+    fs.writeFileSync(
+      config,
+      approvedConfig.replace('--session-duration 900', '--session-duration 3600'),
+      { mode: 0o600 },
+    );
+    const excessiveSession = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(excessiveSession.status).not.toBe(0);
+    expect(excessiveSession.stderr).toContain(
+      '--session-duration must equal the approved 900-second profile ceiling',
+    );
+
+    fs.writeFileSync(
+      config,
+      approvedConfig.replace(
+        '--session-duration 900',
+        '--role-session-name unapproved --session-duration 900',
+      ),
+      { mode: 0o600 },
+    );
+    const customSessionName = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(customSessionName.status).not.toBe(0);
+    expect(customSessionName.stderr).toContain(
+      'credential_process contains an unapproved option: --role-session-name',
+    );
+    fs.writeFileSync(config, approvedConfig, { mode: 0o600 });
+
+    const longLived = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: { ...environment, AWS_ACCESS_KEY_ID: 'forbidden-static-key' },
+    });
+    expect(longLived.status).not.toBe(0);
+    expect(longLived.stderr).toContain(
+      'alternate or long-lived AWS credential environment is forbidden',
+    );
+
+    fs.chmodSync(privateKey, 0o644);
+    const exposedPrivateKey = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(exposedPrivateKey.status).not.toBe(0);
+    expect(exposedPrivateKey.stderr).toContain(
+      'Roles Anywhere private key mode is outside the trusted allowlist',
+    );
+    fs.chmodSync(privateKey, 0o600);
+
+    fs.appendFileSync(config, 'aws_access_key_id = forbidden-in-profile\n');
+    const selectedProfileStaticKey = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(selectedProfileStaticKey.status).not.toBe(0);
+    expect(selectedProfileStaticKey.stderr).toContain(
+      'selected AWS profile may contain only region and credential_process',
+    );
+
+    fs.writeFileSync(
+      config,
+      [
+        '[profile nexus-application-dr-backup]',
+        'region = eu-west-1',
+        `credential_process = ${helper} credential-process `
+          + `--certificate ${certificate} `
+          + `--private-key ${privateKey} `
+          + '--trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/ta-1 '
+          + '--profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/profile-1 '
+          + '--role-arn arn:aws:iam::111122223333:role/unexpected-writer '
+          + '--session-duration 900',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+    const substitutedRole = spawnSync(python, args, {
+      encoding: 'utf8',
+      env: environment,
+    });
+    expect(substitutedRole.status).not.toBe(0);
+    expect(substitutedRole.stderr).toContain(
+      'credential_process role ARN differs from the exact expected role',
+    );
+  });
+
   it('takes and verifies a private SQLite recovery point through the online backup API', () => {
     const root = privateRoot('nexus-app-dr-sqlite-');
     const source = path.join(root, 'source.sqlite');
@@ -355,7 +519,7 @@ describe('Nexus application disaster-recovery assets', () => {
     );
   });
 
-  it('computes exact count and 90-day deletion plans without touching unknown keys', () => {
+  it('computes exact R2 visible-object pruning plans without touching unknown keys', () => {
     const root = privateRoot('nexus-app-dr-retention-');
     const prefix = 'nexus-hub/application';
     const hourlyListing = path.join(root, 'hourly.json');
@@ -426,414 +590,484 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(fs.statSync(releaseOutput).mode & 0o777).toBe(0o600);
   });
 
-  it('exhausts AWS version pages and deletes exact versions sequentially', () => {
+  it('keeps AWS retention read-only while preserving the explicit R2 pruning variance', () => {
     const backup = fs.readFileSync(backupScript, 'utf8');
     const retentionBlock = backup.match(
       /# BEGIN version-aware S3 retention functions\n([\s\S]*?)# END version-aware S3 retention functions/,
     )?.[1];
+
     expect(retentionBlock).toBeTruthy();
     expect(retentionBlock).toContain('list-object-versions');
     expect(retentionBlock).toContain('--no-paginate');
     expect(retentionBlock).toContain('--max-keys 1000');
     expect(retentionBlock).toContain('--key-marker "$key_marker"');
-    expect(retentionBlock).toContain('--version-id-marker "$version_id_marker"');
-
-    const exactDelete = retentionBlock!.slice(
-      retentionBlock!.indexOf('execute_version_deletion_plan()'),
-      retentionBlock!.indexOf('prune_versioned_count_tier()'),
+    expect(retentionBlock).toContain('"--version-id-marker=$version_id_marker"');
+    expect(retentionBlock).toContain('collect_aws_retention_evidence');
+    expect(retentionBlock).toContain(
+      'aws-s3:versioned-s3)\n      collect_aws_retention_evidence',
     );
-    expect(exactDelete.match(/aws_s3api delete-object/g)).toHaveLength(1);
-    expect(exactDelete).toContain('--version-id "$version_id"');
-    expect(exactDelete).toContain('if ! aws_s3api delete-object');
-
-    const visibleCount = retentionBlock!.slice(
+    const awsCollector = retentionBlock!.slice(
+      retentionBlock!.indexOf('collect_aws_retention_evidence()'),
       retentionBlock!.indexOf('prune_visible_count_tier()'),
-      retentionBlock!.indexOf('prune_count_tier()'),
     );
-    const visibleRelease = retentionBlock!.slice(
+    expect(awsCollector).toContain('"$VERSION_RETENTION_HELPER"');
+    expect(awsCollector).not.toContain('delete-object');
+    expect(awsCollector).not.toContain('DeletionPlan');
+
+    const r2Count = retentionBlock!.slice(
+      retentionBlock!.indexOf('prune_visible_count_tier()'),
+      retentionBlock!.indexOf('apply_database_retention()'),
+    );
+    const r2Release = retentionBlock!.slice(
       retentionBlock!.indexOf('prune_visible_release_age()'),
       retentionBlock!.indexOf('prune_release_age()'),
     );
-    for (const visiblePath of [visibleCount, visibleRelease]) {
-      expect(visiblePath).toContain('cloudflare-r2:r2-approved-variance');
-      expect(visiblePath).toContain('list-objects-v2');
-      expect(visiblePath).toContain('delete-object');
-      expect(visiblePath).not.toContain('--version-id');
+    for (const r2Path of [r2Count, r2Release]) {
+      expect(r2Path).toContain('cloudflare-r2:r2-approved-variance');
+      expect(r2Path).toContain('delete-object');
+      expect(r2Path).not.toContain('--version-id');
     }
-    expect(retentionBlock).toContain(
-      'aws-s3:versioned-s3) prune_versioned_count_tier "$@"',
+    const awsReleaseDispatch = retentionBlock!.slice(
+      retentionBlock!.indexOf('prune_release_age()'),
     );
-    expect(retentionBlock).toContain(
-      'cloudflare-r2:r2-approved-variance) prune_visible_count_tier "$@"',
+    expect(awsReleaseDispatch).toContain(
+      'aws-s3:versioned-s3)\n'
+      + '      # AWS expiry is owned exclusively by reviewed S3 Lifecycle rules.',
     );
-
-    const prefix = 'nexus-hub/application/database';
-    const oldKeyOne = `${prefix}/daily/nexus-db-20260720.sqlite.age`;
-    const oldKeyTwo = `${prefix}/daily/nexus-db-20260721.sqlite.age`;
-    const newestKey = `${prefix}/daily/nexus-db-20260723.sqlite.age`;
-    const firstPage = JSON.stringify({
-      Prefix: `${prefix}/daily/`,
-      IsTruncated: true,
-      NextKeyMarker: oldKeyTwo,
-      NextVersionIdMarker: 'old-version-two',
-      Versions: [
-        {
-          Key: oldKeyOne,
-          VersionId: 'old-version-one',
-          LastModified: '2026-07-20T00:00:00Z',
-          IsLatest: true,
-        },
-        {
-          Key: oldKeyTwo,
-          VersionId: 'old-version-two',
-          LastModified: '2026-07-21T00:00:00Z',
-          IsLatest: true,
-        },
-      ],
-      DeleteMarkers: [],
-    });
-    const finalPage = JSON.stringify({
-      Prefix: `${prefix}/daily/`,
-      KeyMarker: oldKeyTwo,
-      VersionIdMarker: 'old-version-two',
-      IsTruncated: false,
-      Versions: [{
-        Key: newestKey,
-        VersionId: 'newest-version',
-        LastModified: '2026-07-23T00:00:00Z',
-        IsLatest: true,
-      }],
-      DeleteMarkers: [],
-    });
-    const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
-
-    const runMock = (mode: 'success' | 'fail-first') => {
-      const root = privateRoot(`nexus-app-dr-version-pages-${mode}-`);
-      const harness = path.join(root, 'retention-harness.sh');
-      const log = path.join(root, 'aws.log');
-      const source = [
-        '#!/usr/bin/env bash',
-        'set -euo pipefail',
-        `tmp_dir=${shellQuote(root)}`,
-        `mock_log=${shellQuote(log)}`,
-        `mock_mode=${shellQuote(mode)}`,
-        'NEXUS_DR_S3_BUCKET=nexus-recovery',
-        'NEXUS_DR_STORAGE_PROVIDER=aws-s3',
-        'NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3',
-        `NEXUS_DR_PYTHON_BIN=${shellQuote(python)}`,
-        `VERSION_RETENTION_HELPER=${shellQuote(path.resolve(
-          'scripts/application-dr-version-retention.py',
-        ))}`,
-        `RETENTION_HELPER=${shellQuote(retentionHelper)}`,
-        `database_root=${shellQuote(prefix)}`,
-        'NEXUS_DR_S3_PREFIX=nexus-hub/application',
-        'created_epoch=1784808000',
-        'die() { echo "mock retention: $*" >&2; exit 1; }',
-        'aws_s3api() {',
-        '  local action="$1" argument key="" version_id="" key_marker="" version_marker=""',
-        '  shift',
-        '  case "$action" in',
-        '    list-object-versions)',
-        '      printf "LIST" >>"$mock_log"',
-        '      for argument in "$@"; do printf "\\t%s" "$argument" >>"$mock_log"; done',
-        '      printf "\\n" >>"$mock_log"',
-        '      while [ $# -gt 0 ]; do',
-        '        case "$1" in',
-        '          --key-marker) key_marker="$2"; shift 2 ;;',
-        '          --version-id-marker) version_marker="$2"; shift 2 ;;',
-        '          *) shift ;;',
-        '        esac',
-        '      done',
-        '      if [ -z "$key_marker" ] && [ -z "$version_marker" ]; then',
-        `        printf "%s\\n" ${shellQuote(firstPage)}`,
-        '      else',
-        `        [ "$key_marker" = ${shellQuote(oldKeyTwo)} ]`,
-        '        [ "$version_marker" = old-version-two ]',
-        `        printf "%s\\n" ${shellQuote(finalPage)}`,
-        '      fi',
-        '      ;;',
-        '    delete-object)',
-        '      while [ $# -gt 0 ]; do',
-        '        case "$1" in',
-        '          --key) key="$2"; shift 2 ;;',
-        '          --version-id) version_id="$2"; shift 2 ;;',
-        '          *) shift ;;',
-        '        esac',
-        '      done',
-        '      [ -n "$key" ] && [ -n "$version_id" ]',
-        '      printf "DELETE\\t%s\\t%s\\n" "$key" "$version_id" >>"$mock_log"',
-        '      [ "$mock_mode" != fail-first ] || return 42',
-        '      printf "{}\\n"',
-        '      ;;',
-        '    *) return 64 ;;',
-        '  esac',
-        '}',
-        retentionBlock!,
-        'prune_versioned_count_tier daily 1',
-        '',
-      ].join('\n');
-      fs.writeFileSync(harness, source, { mode: 0o700 });
-      const result = spawnSync('bash', [harness], { encoding: 'utf8' });
-      const calls = fs.readFileSync(log, 'utf8').trim().split('\n');
-      return { result, calls };
-    };
-
-    const succeeded = runMock('success');
-    expect(succeeded.result.status, succeeded.result.stderr).toBe(0);
-    const listCalls = succeeded.calls.filter((line) => line.startsWith('LIST\t'));
-    expect(listCalls).toHaveLength(2);
-    expect(listCalls[0]).toContain('\t--no-paginate');
-    expect(listCalls[0]).toContain('\t--max-keys\t1000');
-    expect(listCalls[0]).not.toContain('--key-marker');
-    expect(listCalls[1]).toContain(`\t--key-marker\t${oldKeyTwo}`);
-    expect(listCalls[1]).toContain('\t--version-id-marker\told-version-two');
-    const deleteCalls = succeeded.calls.filter((line) => line.startsWith('DELETE\t'));
-    expect(deleteCalls).toEqual([
-      `DELETE\t${oldKeyOne}\told-version-one`,
-      `DELETE\t${oldKeyTwo}\told-version-two`,
-    ]);
-
-    const failed = runMock('fail-first');
-    expect(failed.result.status).not.toBe(0);
-    expect(failed.result.stderr).toContain('versioned retention deletion failed');
-    expect(failed.calls.filter((line) => line.startsWith('DELETE\t'))).toEqual([
-      `DELETE\t${oldKeyOne}\told-version-one`,
-    ]);
+    expect(awsReleaseDispatch).not.toContain('prune_versioned_release');
+    expect(backup).not.toContain('execute_version_deletion_plan');
+    expect(backup).not.toContain('NexusApplicationDrVersionDeletionPlanV1');
+    expect(backup).not.toContain('--version-id "$version_id"');
   });
 
-  it('captures and re-confirms the exact hourly database object after retention', () => {
+  it('preserves an opaque VersionId through explicit S3 pagination', () => {
     const backup = fs.readFileSync(backupScript, 'utf8');
-    const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
-    const sourceSlice = (start: string, end: string) => {
-      const startIndex = backup.indexOf(start);
-      const endIndex = backup.indexOf(end, startIndex);
-      expect(startIndex).toBeGreaterThanOrEqual(0);
-      expect(endIndex).toBeGreaterThan(startIndex);
-      return backup.slice(startIndex, endIndex);
-    };
-    const versionParser = sourceSlice(
-      'aws_version_id_from_json() {',
-      'aws_retain_until_from_json() {',
+    const decoderStart = backup.indexOf('aws_opaque_from_base64() {');
+    const decoderEnd = backup.indexOf(
+      '\naws_retain_until_from_json() {',
+      decoderStart,
     );
-    const uploadFunctions = sourceSlice(
-      'LAST_VERIFIED_VERSION_ID=""',
-      'created_epoch="$(date -u +%s)"',
-    );
-    const databaseUpload = sourceSlice(
-      'hourly_database_version_id=""',
-      '# BEGIN version-aware S3 retention functions',
-    );
-    // Darwin's Bash 3.2 regex engine caps interval bounds at 255. Production
-    // uses Ubuntu 24.04/glibc and deliberately permits opaque IDs up to 1024.
-    const portableDatabaseUpload = databaseUpload.replace(
-      '{1,1024}',
-      '{1,255}',
-    );
-    expect(portableDatabaseUpload).not.toBe(databaseUpload);
-    const postRetentionConfirmation = sourceSlice(
-      'confirm_database_after_retention() {',
-      'prune_versioned_release_age() {',
-    );
+    const listStart = backup.indexOf('list_versioned_objects() {');
+    const listEnd = backup.indexOf('\naws_retention_evidence=""', listStart);
+    expect(decoderStart).toBeGreaterThan(-1);
+    expect(decoderEnd).toBeGreaterThan(decoderStart);
+    expect(listStart).toBeGreaterThan(-1);
+    expect(listEnd).toBeGreaterThan(listStart);
 
-    const runMock = (
-      provider: 'aws-s3' | 'cloudflare-r2',
-      mode: 'success' | 'missing-put-version' | 'mismatched-post-retention',
-    ) => {
-      const root = privateRoot(`nexus-app-dr-database-version-${provider}-${mode}-`);
-      const harness = path.join(root, 'database-version-harness.sh');
-      const log = path.join(root, 'aws.log');
-      const encrypted = path.join(root, 'database.sqlite.age');
-      fs.writeFileSync(encrypted, 'encrypted-database-recovery-point');
-      const source = [
+    const root = privateRoot('nexus-app-dr-pagination-');
+    const prefix = 'nexus-hub/application/database/';
+    const markerKey = `${prefix}daily/nexus-db-20260724.sqlite.age`;
+    const markerVersion = '--opaque-✓-%2F?generation=1|part';
+    const firstPage = {
+      Prefix: prefix,
+      IsTruncated: true,
+      NextKeyMarker: markerKey,
+      NextVersionIdMarker: markerVersion,
+      Versions: [],
+      DeleteMarkers: [],
+    };
+    const secondPage = {
+      Prefix: prefix,
+      IsTruncated: false,
+      KeyMarker: markerKey,
+      VersionIdMarker: markerVersion,
+      Versions: [],
+      DeleteMarkers: [],
+    };
+    const listing = path.join(root, 'listing.json');
+    const script = [
+      'NEXUS_DR_PYTHON_BIN="${NEXUS_FIXTURE_PYTHON:?}"',
+      'NEXUS_DR_S3_BUCKET=nexus-recovery',
+      'tmp_dir="${NEXUS_FIXTURE_ROOT:?}"',
+      'first_page="${NEXUS_FIXTURE_FIRST_PAGE:?}"',
+      'second_page="${NEXUS_FIXTURE_SECOND_PAGE:?}"',
+      'prefix="${NEXUS_FIXTURE_PREFIX:?}"',
+      'listing="${NEXUS_FIXTURE_LISTING:?}"',
+      'die() { printf "%s\\n" "$*" >&2; exit 1; }',
+      backup.slice(decoderStart, decoderEnd),
+      backup.slice(listStart, listEnd),
+      'page_count=0',
+      'aws_s3api() {',
+      '  operation="$1"; shift',
+      '  [ "$operation" = list-object-versions ] || return 1',
+      '  page_count=$((page_count + 1))',
+      '  printf "<%s>\\n" "$@" >>"$tmp_dir/calls.log"',
+      '  if [ "$page_count" -eq 1 ]; then printf "%s\\n" "$first_page"',
+      '  else printf "%s\\n" "$second_page"; fi',
+      '}',
+      'list_versioned_objects "$prefix" "$listing" database',
+    ].join('\n');
+    const result = spawnSync('/bin/bash', ['-s', '--'], {
+      encoding: 'utf8',
+      input: script,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        NEXUS_FIXTURE_PYTHON: python,
+        NEXUS_FIXTURE_ROOT: root,
+        NEXUS_FIXTURE_FIRST_PAGE: JSON.stringify(firstPage),
+        NEXUS_FIXTURE_SECOND_PAGE: JSON.stringify(secondPage),
+        NEXUS_FIXTURE_PREFIX: prefix,
+        NEXUS_FIXTURE_LISTING: listing,
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const value = JSON.parse(fs.readFileSync(listing, 'utf8'));
+    expect(value.pages).toHaveLength(2);
+    expect(value.pages[0].NextVersionIdMarker).toBe(markerVersion);
+    expect(fs.readFileSync(path.join(root, 'calls.log'), 'utf8')).toContain(
+      `<--version-id-marker=${markerVersion}>`,
+    );
+  });
+
+  it('uses conditional checksummed COMPLIANCE writes and exact post-write evidence', () => {
+    const backup = fs.readFileSync(backupScript, 'utf8');
+    const uploadStart = backup.indexOf('put_encrypted_object() {');
+    const uploadEnd = backup.indexOf('created_epoch="$(date -u +%s)"', uploadStart);
+    const upload = backup.slice(uploadStart, uploadEnd);
+    const databaseStart = backup.indexOf('hourly_database_version_id=""');
+    const databaseEnd = backup.indexOf(
+      '# BEGIN version-aware S3 retention functions',
+      databaseStart,
+    );
+    const databaseUpload = backup.slice(databaseStart, databaseEnd);
+
+    expect(uploadStart).toBeGreaterThan(-1);
+    expect(uploadEnd).toBeGreaterThan(uploadStart);
+    expect(upload).toContain("--if-none-match '*'");
+    expect(upload).toContain('--checksum-algorithm SHA256');
+    expect(upload).toContain('--object-lock-mode COMPLIANCE');
+    expect(upload).toContain('--object-lock-retain-until-date "$retain_until"');
+    expect(upload).toContain('ConditionalRequestConflict');
+    expect(upload).toContain('PreconditionFailed');
+    expect(upload).toContain('[ "$attempt" -eq 1 ]');
+    expect(upload).toContain('verify_existing_period_object');
+    expect(upload).toContain('verify_existing_exact_object');
+    expect(backup).toContain('--checksum-mode ENABLED');
+    expect(backup).toContain('ChecksumSHA256');
+    expect(backup).toContain('ObjectLockMode');
+    expect(upload).toContain('VersionId');
+
+    expect(databaseUpload).toContain('"" 2 fail');
+    expect(databaseUpload).toContain('"" 8 period-daily');
+    expect(databaseUpload).toContain('"" 35 period-weekly');
+    expect(databaseUpload).toContain('"" 190 period-monthly');
+    expect(backup).toContain(
+      'required release escrow must be bound to a complete promotion recovery transaction',
+    );
+    expect(backup).toContain(
+      '+rollback-escrow-${RECOVERY_ESCROW_ID}+phase-${RECOVERY_ESCROW_PHASE}.tar.gz',
+    );
+    expect(backup).toContain('(int(sys.argv[2]) + 1) * 86400');
+    expect(backup).toContain('put-object-retention');
+    expect(backup).toContain('--version-id="$existing_version_id"');
+    expect(backup).toContain(
+      'existing exact object retention does not cover this confirmation',
+    );
+    expect(databaseUpload).toContain(
+      'hourly_database_version_id="$LAST_VERIFIED_VERSION_ID"',
+    );
+    expect(backup).toContain('"databaseRetentionEvidence": retention_evidence');
+    expect(backup).toContain('NexusApplicationDrRetentionEvidenceV1');
+    expect(backup).toContain('verify_aws_retention_evidence_objects');
+    expect(backup).toContain('"selectedObjectsVerified"');
+    expect(backup).toContain('databaseRetentionPolicy=24,7,4,6');
+    expect(backup).toContain(
+      'databaseRetentionMaturity=$database_retention_maturity',
+    );
+    expect(backup).not.toContain('databaseRetention=24,7,4,6');
+    expect(backup).toContain('--maturity-seal "$maturity_seal"');
+    expect(backup).toContain('confirm_database_after_retention');
+    expect(backup).toContain(
+      'get_args+=("--version-id=$hourly_database_version_id")',
+    );
+  });
+
+  it('fails closed across governed AWS write-once collision outcomes', () => {
+    const root = privateRoot('nexus-app-dr-write-once-');
+    const backup = fs.readFileSync(backupScript, 'utf8');
+    const functionsStart = backup.indexOf('aws_version_id_from_json() {');
+    const functionsEnd = backup.indexOf(
+      'created_epoch="$(date -u +%s)"',
+      functionsStart,
+    );
+    expect(functionsStart).toBeGreaterThan(-1);
+    expect(functionsEnd).toBeGreaterThan(functionsStart);
+    const governedFunctions = backup.slice(functionsStart, functionsEnd);
+    const rollover = spawnSync('/bin/bash', ['-c', [
+      `NEXUS_DR_PYTHON_BIN=${JSON.stringify(python)}`,
+      governedFunctions,
+      'database_key_suffixes_from_epoch 1798761599',
+      'database_key_suffixes_from_epoch 1798761600',
+    ].join('\n')], { encoding: 'utf8' });
+    expect(rollover.status, rollover.stderr).toBe(0);
+    expect(rollover.stdout.trim().split('\n')).toEqual([
+      '20261231T235959Z\t20261231\t2026-W53\t202612',
+      '20270101T000000Z\t20270101\t2026-W53\t202701',
+    ]);
+    expect(backup).not.toContain('date -u +%Y%m%d');
+    expect(backup).not.toContain('date -u +%G-W%V');
+    const encrypted = path.join(root, 'recovery-point.age');
+    fs.writeFileSync(encrypted, 'encrypted-recovery-point\n', { mode: 0o600 });
+    const encryptedSha = createHash('sha256')
+      .update(fs.readFileSync(encrypted))
+      .digest('hex');
+    const checksum = createHash('sha256')
+      .update(fs.readFileSync(encrypted))
+      .digest('base64');
+    const plaintextSha = 'b'.repeat(64);
+    const createdEpoch = Date.parse('2026-07-24T00:00:00Z') / 1000;
+    const opaqueVersionId = '--opaque-✓-%2F?generation=1|part';
+    const validHead = {
+      ContentLength: fs.statSync(encrypted).size,
+      ChecksumSHA256: checksum,
+      VersionId: opaqueVersionId,
+      ObjectLockMode: 'COMPLIANCE',
+      ObjectLockRetainUntilDate: '2026-08-02T00:00:00Z',
+      Metadata: {
+        'encrypted-sha256': encryptedSha,
+        'plaintext-sha256': plaintextSha,
+        'schema-version': 'NexusApplicationSqliteRecoveryPointV1',
+        'created-epoch': String(createdEpoch),
+      },
+    };
+    const harness = path.join(root, 'write-once-harness.sh');
+    fs.writeFileSync(
+      harness,
+      [
         '#!/usr/bin/env bash',
-        // macOS ships Bash 3.2, where expanding a declared empty array under
-        // nounset fails even though the Ubuntu 24.04 production Bash accepts it.
-        'set -eo pipefail',
-        `tmp_dir=${shellQuote(root)}`,
-        `mock_log=${shellQuote(log)}`,
-        `mock_mode=${shellQuote(mode)}`,
-        `NEXUS_DR_STORAGE_PROVIDER=${shellQuote(provider)}`,
+        'set -u',
+        'scenario="$1"',
+        'tmp_dir="$2"',
+        'encrypted="$3"',
+        'head_json="$4"',
+        'counter_file="$5"',
+        `NEXUS_DR_PYTHON_BIN=${JSON.stringify(python)}`,
+        'NEXUS_DR_STORAGE_PROVIDER=aws-s3',
         'NEXUS_DR_S3_BUCKET=nexus-recovery',
-        `NEXUS_DR_PYTHON_BIN=${shellQuote(python)}`,
-        `encrypted=${shellQuote(encrypted)}`,
-        'plaintext_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        'created_epoch=1784808000',
-        'database_root=nexus-hub/application/database',
-        'hourly_key="$database_root/hourly/nexus-db-20260723T120000Z.sqlite.age"',
-        'daily_key="$database_root/daily/nexus-db-20260723.sqlite.age"',
-        'weekly_key="$database_root/weekly/nexus-db-2026-W30.sqlite.age"',
-        'monthly_key="$database_root/monthly/nexus-db-202607.sqlite.age"',
-        'encrypted_sha="$(sha256sum -- "$encrypted" | awk \'{print $1}\')"',
-        'hourly_head_count=0',
-        'die() { echo "mock database backup: $*" >&2; exit 1; }',
-        'sha256_file() { sha256sum -- "$1" | awk \'{print $1}\'; }',
-        'size_file() { wc -c <"$1" | awk \'{print $1}\'; }',
-        'version_for_key() {',
-        '  case "$1" in',
-        '    "$hourly_key") printf "hourly-version-123\\n" ;;',
-        '    "$daily_key") printf "daily-version-123\\n" ;;',
-        '    "$weekly_key") printf "weekly-version-123\\n" ;;',
-        '    "$monthly_key") printf "monthly-version-123\\n" ;;',
-        '    *) return 64 ;;',
-        '  esac',
-        '}',
+        'NEXUS_DR_S3_PREFIX=nexus-hub/application',
+        'database_root="$NEXUS_DR_S3_PREFIX/database"',
+        'die() { printf "%s\\n" "$*" >&2; exit 1; }',
+        'size_file() { wc -c <"$1" | tr -d "[:space:]"; }',
+        governedFunctions,
         'aws_s3api() {',
-        '  local action="$1" argument key="" requested_version="" output="" actual_version=""',
+        '  local operation="$1" count=0',
         '  shift',
-        '  printf "%s" "$action" >>"$mock_log"',
-        '  for argument in "$@"; do printf "\\t%s" "$argument" >>"$mock_log"; done',
-        '  printf "\\n" >>"$mock_log"',
-        '  case "$action" in',
+        '  printf "%s\\n" "$operation" >>"$tmp_dir/operations.log"',
+        '  {',
+        '    printf "%s" "$operation"',
+        '    printf " <%s>" "$@"',
+        '    printf "\\n"',
+        '  } >>"$tmp_dir/calls.log"',
+        '  case "$operation" in',
         '    put-object)',
-        '      while [ $# -gt 0 ]; do',
-        '        case "$1" in',
-        '          --key) key="$2"; shift 2 ;;',
-        '          *) shift ;;',
-        '        esac',
-        '      done',
-        '      actual_version="$(version_for_key "$key")"',
-        '      if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then',
-        '        if [ "$mock_mode" = missing-put-version ] && [ "$key" = "$hourly_key" ]; then',
-        '          printf "{}\\n"',
-        '        else',
-        '          printf \'{"VersionId":"%s"}\\n\' "$actual_version"',
-        '        fi',
-        '      else',
-        '        printf "{}\\n"',
+        '      [ ! -f "$counter_file" ] || count="$(<"$counter_file")"',
+        '      count=$((count + 1))',
+        '      printf "%s\\n" "$count" >"$counter_file"',
+        '      case "$scenario" in',
+        '        successful-put)',
+        `          printf '%s\\n' '${JSON.stringify({ VersionId: opaqueVersionId })}'`,
+        '          return 0',
+        '          ;;',
+        '        retry-then-success)',
+        '          if [ "$count" -eq 1 ]; then',
+        '            printf "An error occurred (ConditionalRequestConflict) when calling the PutObject operation\\n" >&2',
+        '            return 1',
+        '          fi',
+        `          printf '%s\\n' '${JSON.stringify({ VersionId: opaqueVersionId })}'`,
+        '          return 0',
+        '          ;;',
+        '        retry-exhausted)',
+        '          printf "An error occurred (ConditionalRequestConflict) when calling the PutObject operation\\n" >&2',
+        '          return 1',
+        '          ;;',
+        '        access-denied)',
+        '          printf "An error occurred (AccessDenied) when calling the PutObject operation\\n" >&2',
+        '          return 1',
+        '          ;;',
+        '        valid-period-412|invalid-period-412|exact-resume-412|exact-resume-stale-head|hourly-collision)',
+        '          printf "An error occurred (PreconditionFailed) when calling the PutObject operation\\n" >&2',
+        '          return 1',
+        '          ;;',
+        '      esac',
+        '      ;;',
+        '    put-object-retention)',
+        '      if [ "$scenario" = exact-resume-412 ]; then',
+        '        "$NEXUS_DR_PYTHON_BIN" - "$head_json" <<\'PY\'',
+        'import json',
+        'from pathlib import Path',
+        'import sys',
+        'path = Path(sys.argv[1])',
+        'value = json.loads(path.read_text(encoding="utf-8"))',
+        'value["ObjectLockRetainUntilDate"] = "2026-08-03T00:00:00Z"',
+        'path.write_text(json.dumps(value), encoding="utf-8")',
+        'PY',
         '      fi',
+        '      return 0',
         '      ;;',
         '    head-object)',
-        '      while [ $# -gt 0 ]; do',
-        '        case "$1" in',
-        '          --key) key="$2"; shift 2 ;;',
-        '          --version-id) requested_version="$2"; shift 2 ;;',
-        '          *) shift ;;',
-        '        esac',
-        '      done',
-        '      actual_version="$(version_for_key "$key")"',
-        '      if [ "$key" = "$hourly_key" ]; then',
-        '        hourly_head_count=$((hourly_head_count + 1))',
-        '        if [ "$mock_mode" = mismatched-post-retention ] \\',
-        '            && [ "$hourly_head_count" -eq 2 ]; then',
-        '          actual_version=wrong-hourly-version',
-        '        fi',
-        '      fi',
-        '      if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then',
-        '        printf \'{"ContentLength":%s,"VersionId":"%s","Metadata":{"encrypted-sha256":"%s","plaintext-sha256":"%s","schema-version":"NexusApplicationSqliteRecoveryPointV1","created-epoch":"%s"}}\\n\' \\',
-        '          "$(size_file "$encrypted")" "$actual_version" "$encrypted_sha" "$plaintext_sha" "$created_epoch"',
-        '      else',
-        '        [ -z "$requested_version" ]',
-        '        printf \'{"ContentLength":%s,"Metadata":{"encrypted-sha256":"%s","plaintext-sha256":"%s","schema-version":"NexusApplicationSqliteRecoveryPointV1","created-epoch":"%s"}}\\n\' \\',
-        '          "$(size_file "$encrypted")" "$encrypted_sha" "$plaintext_sha" "$created_epoch"',
-        '      fi',
+        '      command cat "$head_json"',
+        '      return 0',
         '      ;;',
-        '    get-object)',
-        '      output="${@: -1}"',
-        '      while [ $# -gt 0 ]; do',
-        '        case "$1" in',
-        '          --key) key="$2"; shift 2 ;;',
-        '          --version-id) requested_version="$2"; shift 2 ;;',
-        '          *) shift ;;',
-        '        esac',
-        '      done',
-        '      if [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then',
-        '        [ "$requested_version" = "$(version_for_key "$key")" ]',
-        '      else',
-        '        [ -z "$requested_version" ]',
-        '      fi',
-        '      cp -- "$encrypted" "$output"',
-        '      printf "{}\\n"',
-        '      ;;',
-        '    *) return 64 ;;',
         '  esac',
+        '  printf "unexpected mocked S3 operation: %s\\n" "$operation" >&2',
+        '  return 1',
         '}',
-        versionParser,
-        uploadFunctions,
-        portableDatabaseUpload,
-        postRetentionConfirmation,
-        'confirm_database_after_retention',
-        'printf "RESULT\\t%s\\t%s\\t%s\\n" \\',
-        '  "$NEXUS_DR_STORAGE_PROVIDER" "$hourly_database_version_id" "$database_confirmed_at"',
+        'case "$scenario" in',
+        '  valid-period-412|invalid-period-412)',
+        '    key="$database_root/daily/nexus-db-20260724.sqlite.age"',
+        '    collision_policy=period-daily',
+        '    ;;',
+        '  hourly-collision)',
+        '    key="$database_root/hourly/nexus-db-20260724T000000Z.sqlite.age"',
+        '    collision_policy=fail',
+        '    ;;',
+        '  *)',
+        '    key="$NEXUS_DR_S3_PREFIX/releases/exact-recovery-point.age"',
+        '    collision_policy=exact',
+        '    ;;',
+        'esac',
+        'put_encrypted_object "$key" "$encrypted" "$6" "$7" \\',
+        '  NexusApplicationSqliteRecoveryPointV1 "$8" "" 8 "$collision_policy"',
+        'printf "verified=%s\\n" "$LAST_VERIFIED_VERSION_ID"',
         '',
-      ].join('\n');
-      fs.writeFileSync(harness, source, { mode: 0o700 });
-      const result = spawnSync('bash', [harness], { encoding: 'utf8' });
-      const calls = fs.existsSync(log)
-        ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean)
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+
+    const runScenario = (
+      scenario: string,
+      head: Record<string, unknown> = validHead,
+      invocationEpoch = createdEpoch,
+    ) => {
+      const headPath = path.join(root, `${scenario}-head.json`);
+      const counterPath = path.join(root, `${scenario}-count.txt`);
+      fs.writeFileSync(headPath, JSON.stringify(head), { mode: 0o600 });
+      const result = spawnSync('/bin/bash', [
+        harness,
+        scenario,
+        root,
+        encrypted,
+        headPath,
+        counterPath,
+        encryptedSha,
+        plaintextSha,
+        String(invocationEpoch),
+      ], { encoding: 'utf8' });
+      const count = fs.existsSync(counterPath)
+        ? Number(fs.readFileSync(counterPath, 'utf8').trim())
+        : 0;
+      const operationsPath = path.join(root, 'operations.log');
+      const operations = fs.existsSync(operationsPath)
+        ? fs.readFileSync(operationsPath, 'utf8').trim().split('\n')
         : [];
-      return { result, calls };
+      const callsPath = path.join(root, 'calls.log');
+      const calls = fs.existsSync(callsPath)
+        ? fs.readFileSync(callsPath, 'utf8').trim().split('\n')
+        : [];
+      fs.rmSync(operationsPath, { force: true });
+      fs.rmSync(callsPath, { force: true });
+      return { ...result, count, operations, calls };
     };
 
-    const aws = runMock('aws-s3', 'success');
-    expect(aws.result.status, aws.result.stderr).toBe(0);
-    expect(aws.result.stdout).toMatch(
-      /^RESULT\taws-s3\thourly-version-123\t\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m,
+    const successful = runScenario('successful-put');
+    expect(successful.status, successful.stderr).toBe(0);
+    expect(successful.stdout).toContain(`verified=${opaqueVersionId}`);
+    expect(successful.count).toBe(1);
+    const successfulPut = successful.calls.find(
+      (call) => call.startsWith('put-object '),
     );
-    const hourlyPrefix = '\tnexus-hub/application/database/hourly/';
-    const awsHourlyHeads = aws.calls.filter(
-      (line) => line.startsWith('head-object\t') && line.includes(hourlyPrefix),
+    expect(successfulPut).toContain('<--checksum-algorithm> <SHA256>');
+    expect(successfulPut).toContain('<--if-none-match> <*>');
+    expect(successfulPut).toContain('<--object-lock-mode> <COMPLIANCE>');
+    expect(successfulPut).toContain('<--object-lock-retain-until-date>');
+    expect(successfulPut).toContain('<--metadata>');
+    const successfulHead = successful.calls.find(
+      (call) => call.startsWith('head-object '),
     );
-    expect(awsHourlyHeads).toHaveLength(2);
-    for (const call of awsHourlyHeads) {
-      expect(call).toContain('\t--version-id\thourly-version-123');
+    expect(successfulHead).toContain('<--checksum-mode> <ENABLED>');
+    expect(successfulHead).toContain(
+      `<--version-id=${opaqueVersionId}>`,
+    );
+
+    const existingPeriod = runScenario('valid-period-412');
+    expect(existingPeriod.status, existingPeriod.stderr).toBe(0);
+    expect(existingPeriod.stdout).toContain(`verified=${opaqueVersionId}`);
+    expect(existingPeriod.count).toBe(1);
+
+    const exactByteLimit = runScenario('valid-period-412', {
+      ...validHead,
+      VersionId: 'é'.repeat(512),
+    });
+    expect(exactByteLimit.status, exactByteLimit.stderr).toBe(0);
+
+    for (const invalidVersionId of [
+      null,
+      'null',
+      'unsafe\nversion',
+      'unsafe\u007fversion',
+      `${'é'.repeat(512)}a`,
+    ]) {
+      const invalidVersion = runScenario('valid-period-412', {
+        ...validHead,
+        VersionId: invalidVersionId,
+      });
+      expect(invalidVersion.status).not.toBe(0);
+      expect(invalidVersion.stderr).toContain(
+        'existing daily recovery point did not verify',
+      );
     }
-    const awsGet = aws.calls.find((line) => line.startsWith('get-object\t'));
-    expect(awsGet).toContain('\t--version-id\thourly-version-123');
 
-    const r2 = runMock('cloudflare-r2', 'success');
-    expect(r2.result.status, r2.result.stderr).toBe(0);
-    expect(r2.result.stdout).toMatch(
-      /^RESULT\tcloudflare-r2\t\t\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m,
-    );
-    for (const call of r2.calls.filter(
-      (line) => line.startsWith('head-object\t') || line.startsWith('get-object\t'),
-    )) {
-      expect(call).not.toContain('\t--version-id\t');
-    }
-    expect(backup).toContain('"databaseObjectVersionId": database_version_id or None');
-    expect(backup).toContain(
-      '"databaseRetentionVariance": (\n'
-      + '        "r2-approved-variance"\n'
-      + '        if provider == "cloudflare-r2"',
-    );
-    expect(backup).toContain(
-      '"databaseApprovedUnversionedVariance": provider == "cloudflare-r2"',
+    const invalidPeriod = runScenario('invalid-period-412', {
+      ...validHead,
+      ChecksumSHA256: Buffer.alloc(32).toString('base64'),
+    });
+    expect(invalidPeriod.status).not.toBe(0);
+    expect(invalidPeriod.stderr).toContain(
+      'existing daily recovery point did not verify',
     );
 
-    const missing = runMock('aws-s3', 'missing-put-version');
-    expect(missing.result.status).not.toBe(0);
-    expect(missing.result.stderr).toContain(
-      'put-object response has no valid exact VersionId',
-    );
-    expect(missing.result.stderr).toContain(
-      'put-object did not return an exact S3 VersionId',
-    );
-
-    const mismatched = runMock('aws-s3', 'mismatched-post-retention');
-    expect(mismatched.result.status).not.toBe(0);
-    expect(mismatched.result.stderr).toContain(
-      'uploaded object exact VersionId did not verify',
-    );
-    expect(mismatched.result.stderr).toContain(
-      'uploaded object verification failed: nexus-hub/application/database/hourly/',
-    );
-    expect(mismatched.calls.filter(
-      (line) => line.startsWith('head-object\t')
-        && line.includes(hourlyPrefix),
+    const resumedExact = runScenario('exact-resume-412', {
+      ...validHead,
+      ObjectLockRetainUntilDate: '2026-08-01T00:00:00Z',
+    }, createdEpoch + 86_400);
+    expect(resumedExact.status, resumedExact.stderr).toBe(0);
+    expect(resumedExact.operations).toContain('put-object-retention');
+    expect(resumedExact.operations.filter(
+      (operation) => operation === 'head-object',
     )).toHaveLength(2);
-    expect(mismatched.calls.some((line) => line.startsWith('get-object\t'))).toBe(false);
 
-    const hourlyPrune = backup.indexOf(
-      'prune_count_tier hourly 24 "$hourly_key" "$hourly_database_version_id"',
+    const staleExtensionHead = runScenario('exact-resume-stale-head', {
+      ...validHead,
+      ObjectLockRetainUntilDate: '2026-08-01T00:00:00Z',
+    }, createdEpoch + 86_400);
+    expect(staleExtensionHead.status).not.toBe(0);
+    expect(staleExtensionHead.stderr).toContain(
+      'existing exact object retention does not cover this confirmation',
     );
-    const monthlyPrune = backup.indexOf('prune_count_tier monthly 6', hourlyPrune);
-    const postRetentionCall = backup.indexOf(
-      '\nconfirm_database_after_retention\n',
-      monthlyPrune,
+
+    const retried = runScenario('retry-then-success');
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(retried.count).toBe(2);
+
+    const retryExhausted = runScenario('retry-exhausted');
+    expect(retryExhausted.status).not.toBe(0);
+    expect(retryExhausted.count).toBe(2);
+    expect(retryExhausted.stderr).toContain(
+      'governed AWS put-object failed with code ConditionalRequestConflict',
     );
-    expect(hourlyPrune).toBeGreaterThan(-1);
-    expect(monthlyPrune).toBeGreaterThan(hourlyPrune);
-    expect(postRetentionCall).toBeGreaterThan(monthlyPrune);
+
+    const forbidden = runScenario('access-denied');
+    expect(forbidden.status).not.toBe(0);
+    expect(forbidden.count).toBe(1);
+    expect(forbidden.stderr).toContain(
+      'governed AWS put-object failed with code AccessDenied',
+    );
+
+    const hourlyCollision = runScenario('hourly-collision');
+    expect(hourlyCollision.status).not.toBe(0);
+    expect(hourlyCollision.stderr).toContain(
+      'write-once object key already exists',
+    );
   });
 
   it('requires provider-explicit versioned S3 or an approved R2 lock variance', () => {
@@ -841,7 +1075,7 @@ describe('Nexus application disaster-recovery assets', () => {
     const evidencePath = path.join(root, 'controls.json');
     const now = Date.parse('2026-07-23T12:00:00Z') / 1000;
     const common = {
-      schema: 'nexus.application-dr-storage-controls.v1',
+      schema: 'nexus.application-dr-storage-controls.v2',
       endpoint: 'https://objects.example.invalid',
       bucket: 'nexus-recovery',
       prefix: 'nexus-hub/application',
@@ -867,6 +1101,31 @@ describe('Nexus application disaster-recovery assets', () => {
       provider: 'aws-s3',
       controlMode: 'versioned-s3',
       versioning: { supported: true, status: 'enabled' },
+      databaseProtection: {
+        writeMode: 'conditional-first-point',
+        objectLock: {
+          supported: true,
+          status: 'enabled',
+          mode: 'COMPLIANCE',
+          retentionFloorDays: {
+            hourly: 2,
+            daily: 8,
+            weekly: 35,
+            monthly: 190,
+          },
+        },
+      },
+      cleanup: {
+        owner: 's3-lifecycle',
+        status: 'enabled',
+        databaseExpirationDays: {
+          hourly: 3,
+          daily: 9,
+          weekly: 36,
+          monthly: 191,
+        },
+        releaseExpirationDays: 92,
+      },
       releasePrefixLock: {
         control: 's3-object-lock',
         status: 'enabled',
@@ -883,10 +1142,15 @@ describe('Nexus application disaster-recovery assets', () => {
     ]);
     expect(s3.status, s3.stderr).toBe(0);
     expect(JSON.parse(s3.stdout)).toMatchObject({
+      schemaVersion: 'NexusApplicationDrStorageControlsVerificationV2',
       status: 'passed',
       provider: 'aws-s3',
       versioningVerified: true,
       approvedVariance: false,
+      databaseWriteOnceVerified: true,
+      databaseObjectLockVerified: true,
+      cleanupOwner: 's3-lifecycle',
+      lifecycleVerified: true,
       releasePrefixLockVerified: true,
     });
 
@@ -895,6 +1159,22 @@ describe('Nexus application disaster-recovery assets', () => {
       provider: 'cloudflare-r2',
       controlMode: 'r2-approved-variance',
       versioning: { supported: false, status: 'not-supported' },
+      databaseProtection: {
+        writeMode: 'mutable-period-key',
+        objectLock: { supported: false, status: 'not-supported' },
+        retentionVariance: 'client-count-pruning',
+      },
+      cleanup: {
+        owner: 'client-side-pruning',
+        status: 'enabled',
+        databaseRetainedCounts: {
+          hourly: 24,
+          daily: 7,
+          weekly: 4,
+          monthly: 6,
+        },
+        releaseAgeDays: 90,
+      },
       releasePrefixLock: {
         control: 'cloudflare-r2-prefix-lock',
         status: 'enabled',
@@ -904,7 +1184,7 @@ describe('Nexus application disaster-recovery assets', () => {
       varianceApproval: {
         approvedBy: 'owner',
         approvedAt: '2026-07-23T10:00:00Z',
-        reason: 'r2-has-no-s3-versioning',
+        reason: 'r2-has-no-versioning-or-database-object-lock',
       },
     };
     fs.writeFileSync(evidencePath, JSON.stringify(r2Evidence));
@@ -917,10 +1197,15 @@ describe('Nexus application disaster-recovery assets', () => {
     ]);
     expect(r2.status, r2.stderr).toBe(0);
     expect(JSON.parse(r2.stdout)).toMatchObject({
+      schemaVersion: 'NexusApplicationDrStorageControlsVerificationV2',
       status: 'passed',
       provider: 'cloudflare-r2',
       versioningVerified: false,
       approvedVariance: true,
+      databaseWriteOnceVerified: false,
+      databaseObjectLockVerified: false,
+      cleanupOwner: 'client-side-pruning',
+      lifecycleVerified: false,
       releasePrefixLockVerified: true,
     });
 
@@ -952,6 +1237,75 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(fakeR2Versioning.status).not.toBe(0);
     expect(fakeR2Versioning.stderr).toContain(
       'R2 variance must explicitly record unavailable S3 versioning',
+    );
+
+    fs.writeFileSync(evidencePath, JSON.stringify({
+      ...r2Evidence,
+      databaseProtection: {
+        ...r2Evidence.databaseProtection,
+        objectLock: { supported: true, status: 'enabled' },
+      },
+    }));
+    const fakeR2DatabaseLock = runPython([
+      ...args,
+      '--provider',
+      'cloudflare-r2',
+      '--control-mode',
+      'r2-approved-variance',
+    ]);
+    expect(fakeR2DatabaseLock.status).not.toBe(0);
+    expect(fakeR2DatabaseLock.stderr).toContain(
+      'R2 variance must explicitly record mutable database keys',
+    );
+
+    const awsEvidence = {
+      ...common,
+      provider: 'aws-s3',
+      controlMode: 'versioned-s3',
+      versioning: { supported: true, status: 'enabled' },
+      databaseProtection: {
+        writeMode: 'conditional-first-point',
+        objectLock: {
+          supported: true,
+          status: 'enabled',
+          mode: 'COMPLIANCE',
+          retentionFloorDays: {
+            hourly: 2,
+            daily: 8,
+            weekly: 35,
+            monthly: 190,
+          },
+        },
+      },
+      cleanup: {
+        owner: 's3-lifecycle',
+        status: 'disabled',
+        databaseExpirationDays: {
+          hourly: 3,
+          daily: 9,
+          weekly: 36,
+          monthly: 191,
+        },
+        releaseExpirationDays: 92,
+      },
+      releasePrefixLock: {
+        control: 's3-object-lock',
+        status: 'enabled',
+        prefix: 'nexus-hub/application/releases/',
+        retentionDays: 90,
+      },
+    };
+    fs.writeFileSync(evidencePath, JSON.stringify(awsEvidence));
+    const disabledLifecycle = runPython([
+      ...args,
+      '--provider',
+      'aws-s3',
+      '--control-mode',
+      'versioned-s3',
+    ]);
+    expect(disabledLifecycle.status).not.toBe(0);
+    expect(disabledLifecycle.stderr).toContain(
+      'versioned-s3 requires enabled S3 Lifecycle owned cleanup',
     );
   });
 
@@ -1034,7 +1388,16 @@ describe('Nexus application disaster-recovery assets', () => {
       'utf8',
     );
     const config = fs.readFileSync(path.join(opsRoot, 'backup.env.example'), 'utf8');
+    const awsConfig = fs.readFileSync(path.join(opsRoot, 'aws-config.example'), 'utf8');
     const runbook = fs.readFileSync(path.join(opsRoot, 'OPERATIONS.txt'), 'utf8');
+    const currentReleaseState = fs.readFileSync(
+      path.resolve('docs/release/CURRENT_RELEASE_STATE.md'),
+      'utf8',
+    );
+    const runtimeStandard = fs.readFileSync(
+      path.resolve('docs/engineering/runtime-and-observability-standard.md'),
+      'utf8',
+    );
     const restoreReadiness = JSON.parse(fs.readFileSync(
       path.join(opsRoot, 'restore-readiness.json'),
       'utf8',
@@ -1043,12 +1406,12 @@ describe('Nexus application disaster-recovery assets', () => {
 
     expect(backup).toContain('"$SQLITE_HELPER" snapshot');
     expect(backup).toContain('age --encrypt --recipient');
-    expect(backup).toContain('prune_count_tier hourly 24');
-    expect(backup).toContain('prune_count_tier daily 7');
-    expect(backup).toContain('prune_count_tier weekly 4');
-    expect(backup).toContain('prune_count_tier monthly 6');
+    expect(backup).toContain('apply_database_retention');
+    expect(backup).toContain('prune_visible_count_tier hourly 24 "$hourly_key"');
+    expect(backup).toContain('prune_visible_count_tier daily 7 "$daily_key"');
+    expect(backup).toContain('prune_visible_count_tier weekly 4 "$weekly_key"');
+    expect(backup).toContain('prune_visible_count_tier monthly 6 "$monthly_key"');
     expect(backup).toContain('age --days 90');
-    expect(backup).toContain('--grace-seconds 3600');
     expect(backup).toContain('"$VERSION_RETENTION_HELPER"');
     expect(backup).toContain('--recovery-escrow-id');
     expect(backup).toContain('--recovery-escrow-phase');
@@ -1067,11 +1430,11 @@ describe('Nexus application disaster-recovery assets', () => {
       + '  "$required_recovery_key" "$required_recovery_version_id"',
     );
     expect(backup).toContain(
-      'get_args+=(--version-id "$required_recovery_version_id")',
+      'get_args+=("--version-id=$required_recovery_version_id")',
     );
     expect(backup).toContain('confirm_current_recovery_after_retention');
-    expect(backup).toContain('[ "$key" = "${protected_keys[0]}" ]');
-    expect(backup).toContain('[ "$key" = "${protected_keys[1]}" ]');
+    expect(backup).not.toContain('execute_version_deletion_plan');
+    expect(backup).not.toContain('--version-id "$version_id"');
     const releasePrune = backup.lastIndexOf(
       '\nprune_release_age \\\n',
     );
@@ -1086,6 +1449,14 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(backup).toContain('S3 endpoint must be a credential-free HTTPS origin');
     expect(backup).toContain('NEXUS_DR_STORAGE_PROVIDER');
     expect(backup).toContain('"$STORAGE_CONTROL_HELPER"');
+    expect(backup).toContain(
+      '[ "$(dirname -- "$REQUIRED_RECOVERY_RUNTIME")" = '
+      + '/srv/nexus-release/production/releases ]',
+    );
+    expect(backup).toContain(
+      'required recovery runtime must be an exact governed production release directory',
+    );
+    expect(backup).not.toContain('/home/dominguez');
     expect(backup).not.toContain('remote-create-release-backup.sh');
 
     expect(timer).toContain('OnCalendar=*-*-* *:05:00 UTC');
@@ -1096,11 +1467,71 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(service).toContain('TimeoutStartSec=50min');
     expect(service).toContain('ProtectSystem=strict');
 
-    expect(config).toContain('NEXUS_DR_S3_ENDPOINT=https://');
+    expect(config).toContain(
+      'NEXUS_DR_S3_ENDPOINT=REPLACE_WITH_STACK_OUTPUT_S3Endpoint',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_S3_BUCKET=REPLACE_WITH_STACK_OUTPUT_BucketName',
+    );
     expect(config).toContain('NEXUS_DR_RESTORE_HARNESS=');
     expect(config).toContain('NEXUS_DR_STORAGE_PROVIDER=aws-s3');
     expect(config).toContain('NEXUS_DR_STORAGE_CONTROL_MODE=versioned-s3');
+    expect(config).toContain(
+      'NEXUS_DR_S3_PREFIX=REPLACE_WITH_STACK_OUTPUT_DrPrefix',
+    );
+    expect(config).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
+    expect(config).toContain('AWS_PROFILE=nexus-application-dr-backup');
+    expect(config).toContain(
+      'NEXUS_DR_AWS_BACKUP_ROLE_ARN=REPLACE_WITH_STACK_OUTPUT_BackupPrincipalArn',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_RESTORE_AWS_PROFILE=nexus-application-dr-restore',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_AWS_RESTORE_ROLE_ARN=REPLACE_WITH_STACK_OUTPUT_RestorePrincipalArn',
+    );
+    expect(config).not.toContain('111122223333');
+    expect(config).not.toMatch(/^NEXUS_DR_AWS_(?:BACKUP|RESTORE)_ROLE_ARN=arn:/m);
+    expect(config).not.toMatch(/^AWS_ACCESS_KEY_ID=/m);
+    expect(config).not.toMatch(/^AWS_SECRET_ACCESS_KEY=/m);
+    expect(awsConfig).toContain('[profile nexus-application-dr-backup]');
+    expect(awsConfig).toContain('[profile nexus-application-dr-restore]');
+    expect(awsConfig).toContain('aws_signing_helper credential-process');
+    for (const output of [
+      'RolesAnywhereTrustAnchorArn',
+      'BackupRolesAnywhereProfileArn',
+      'BackupPrincipalArn',
+      'RestoreRolesAnywhereProfileArn',
+      'RestorePrincipalArn',
+    ]) {
+      expect(awsConfig).toContain(`REPLACE_WITH_STACK_OUTPUT_${output}`);
+    }
+    expect(awsConfig).not.toContain('111122223333');
+    expect(awsConfig).not.toMatch(
+      /--(?:trust-anchor|profile|role)-arn arn:aws:/,
+    );
+    expect(backup).toContain('"$AWS_CREDENTIAL_BOUNDARY_HELPER"');
+    expect(backup).toContain('--helper-sha256 "$NEXUS_DR_AWS_SIGNING_HELPER_SHA256"');
+    expect(backup).toContain('--expected-role-arn "$NEXUS_DR_AWS_BACKUP_ROLE_ARN"');
+    expect(backup).toContain(
+      'expected_aws_s3_endpoint="https://s3.${AWS_REGION:-us-east-1}.amazonaws.com"',
+    );
+    expect(restore).toContain('export AWS_PROFILE="$NEXUS_DR_RESTORE_AWS_PROFILE"');
+    expect(restore).toContain('"$AWS_CREDENTIAL_BOUNDARY_HELPER"');
+    expect(restore).toContain('--expected-role-arn "$NEXUS_DR_AWS_RESTORE_ROLE_ARN"');
+    expect(restore).toContain(
+      '"$NEXUS_DR_AWS_BACKUP_ROLE_ARN" != "$NEXUS_DR_AWS_RESTORE_ROLE_ARN"',
+    );
     expect(config).toContain('NEXUS_DR_DRILL_USER=nexus-drill');
+    expect(config).toContain(
+      'NEXUS_DR_DATABASE_PATH=/srv/nexus-release/production/data/bot.db',
+    );
+    expect(config).toContain(
+      'NEXUS_DR_ROLLBACK_DIR=/home/dominguez/backups/nexushub',
+    );
+    expect(config).not.toContain(
+      'NEXUS_DR_DATABASE_PATH=/home/dominguez/telegram-hub-bot/data/bot.db',
+    );
     expect(config).not.toMatch(/AKIA[0-9A-Z]{16}/);
     expect(restore).toContain('RPO breach');
     expect(restore).toContain('technical restore target breached');
@@ -1108,8 +1539,14 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(restore).toContain('technical_elapsed_ns <= 1800000000000');
     expect(restore).toContain('--database-version-id');
     expect(restore).toContain('--release-version-id');
-    expect(restore).toContain('database_head_args+=(--version-id "$DATABASE_VERSION_ID")');
-    expect(restore).toContain('release_head_args+=(--version-id "$RELEASE_VERSION_ID")');
+    expect(restore).toContain(
+      '\\+phase-(pre-mutation|post-soak)\\.tar\\.gz',
+    );
+    expect(restore).toContain(
+      '\\+phase-(?:pre-mutation|post-soak)\\.tar\\.gz',
+    );
+    expect(restore).toContain('database_head_args+=("--version-id=$DATABASE_VERSION_ID")');
+    expect(restore).toContain('release_head_args+=("--version-id=$RELEASE_VERSION_ID")');
     expect(restore).toContain('release key does not match its bound plaintext identity');
     expect(restore).toContain('--range "bytes=0-$database_range_end"');
     expect(restore).toContain('downloaded encrypted recovery runtime size differs from exact HEAD');
@@ -1166,11 +1603,51 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(runbook).toContain('The drill is not a production restore command');
     expect(runbook).toContain('latest ten bundles');
     expect(runbook).toContain('Quarterly restore-drill readiness is MANUAL_REQUIRED');
+    expect(runbook).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
+    expect(runbook).toContain('NEXUS_DR_AWS_SIGNING_HELPER_SHA256');
+    expect(runbook).toContain('nexus-application-dr-restore');
+    expect(runbook).toContain('RolesAnywhereActivation=DISABLED');
+    expect(runbook).toContain('application-dr-crl-parameters.mjs');
+    expect(runbook).toContain('300,000-byte');
+    expect(runbook).toContain('UsePreviousValue');
+    expect(runbook).toContain('--operation rotate');
+    expect(runbook).toContain('superset of every previously');
+    expect(runbook).toContain('900-second credentials');
+    expect(runbook).toContain('does not consult OCSP or CRL distribution points');
     expect(runbook).toContain('cloudflare-r2:r2-approved-variance');
     expect(runbook).toContain('s3:ListBucketVersions');
-    expect(runbook).toContain('s3:DeleteObjectVersion');
+    expect(runbook).toMatch(
+      /backup identity has no\s+`DeleteObject`, `DeleteObjectVersion`/u,
+    );
+    expect(runbook).toMatch(/S3\s+Lifecycle is the only AWS cleanup actor/u);
     expect(runbook).toContain('auto-pagination is disabled');
+    expect(runbook).toContain('legacy mutable-tier writer');
+    expect(runbook).toMatch(/fresh\s+versioned prefix/u);
+    expect(runbook).toMatch(
+      /Never apply the\s+conditional-write deny before its compatible client/u,
+    );
+    expect(runbook).toContain(
+      '"schema": "nexus.application-dr-storage-controls.v2"',
+    );
+    expect(runbook).toContain('"writeMode": "conditional-first-point"');
+    expect(runbook).toContain('"owner": "client-side-pruning"');
     expect(runbook).toContain('private network, mount, and PID namespaces');
+    expect(currentReleaseState).toContain(
+      'signed root-owned promotion transaction is the sole runtime or',
+    );
+    expect(currentReleaseState).toContain(
+      '`scripts/rollback.sh` and `scripts/restore.sh` commands remain available only',
+    );
+    expect(currentReleaseState).toContain('read-only dry-run inventory');
+    expect(runtimeStandard).toContain(
+      'signed root-owned promotion transaction is the sole path that',
+    );
+    expect(runtimeStandard).toContain(
+      '`scripts/restore.sh` retain read-only dry-run inventory only',
+    );
+    expect(runtimeStandard).not.toContain(
+      'restore tooling remain available\n   for emergency predecessor recovery',
+    );
     expect(restoreReadiness).toEqual({
       schema: 'nexus.application-dr-restore-readiness.v1',
       status: 'MANUAL_REQUIRED',
@@ -1185,5 +1662,47 @@ describe('Nexus application disaster-recovery assets', () => {
         'successful_retained_quarterly_restore_evidence',
       ],
     });
+  });
+
+  it('accepts safe opaque UTF-8 restore VersionIds and enforces their byte limit', () => {
+    const source = fs.readFileSync(restoreScript, 'utf8');
+    const start = source.indexOf('aws_version_id_is_safe() {');
+    const end = source.indexOf(
+      '\nif [ "$NEXUS_DR_STORAGE_PROVIDER" = aws-s3 ]; then',
+      start,
+    );
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const helper = source.slice(start, end);
+    const run = (value: string) => spawnSync('/bin/bash', [
+      '-c',
+      [
+        `NEXUS_DR_PYTHON_BIN=${JSON.stringify(python)}`,
+        helper,
+        'aws_version_id_is_safe "$1"',
+      ].join('\n'),
+      'restore-version-id-test',
+      value,
+    ], { encoding: 'utf8' });
+
+    for (const value of [
+      '--opaque-✓-%2F?generation=1|part',
+      'é'.repeat(512),
+    ]) {
+      const accepted = run(value);
+      expect(accepted.status, accepted.stderr).toBe(0);
+    }
+    for (const value of [
+      '',
+      'null',
+      'unsafe\nversion',
+      'unsafe\u007fversion',
+      `${'é'.repeat(512)}a`,
+    ]) {
+      expect(run(value).status).not.toBe(0);
+    }
+
+    expect(source).toContain('len(encoded_version_id)');
+    expect(source).not.toContain('[A-Za-z0-9._~+=:/-]{1,1024}');
   });
 });

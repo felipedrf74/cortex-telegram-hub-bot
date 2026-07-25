@@ -16,6 +16,7 @@ LAYOUT_RELATIVE=ops/sonarqube/install-layout.tsv
 DATA_LAYOUT_RELATIVE=ops/sonarqube/data-layout.tsv
 SHARED_MUTEX=/run/lock/nexus-release-sonar.lock
 STATE_DIR=/var/lib/nexus-sonarqube
+RESTORE_EVIDENCE_DIR="$STATE_DIR/restore-evidence"
 INSTALL_JOURNAL="$STATE_DIR/install-in-progress.v1"
 INSTALL_RECEIPT="$STATE_DIR/install-receipt.v1.json"
 SONAR_SERVICE=nexus-sonarqube.service
@@ -167,6 +168,8 @@ scripts/quality-sonar-start-evidence.mjs	/usr/local/sbin/quality-sonar-start-evi
 scripts/quality-sonar-live-ollama-state.mjs	/usr/local/sbin/quality-sonar-live-ollama-state	root:root	0755
 scripts/quality-sonar-latency-gate.mjs	/usr/local/sbin/quality-sonar-latency-gate.mjs	root:root	0755
 scripts/quality-sonar-backup.sh	/usr/local/sbin/quality-sonar-backup	root:root	0755
+scripts/aws-credential-process-boundary.py	/usr/local/sbin/quality-sonar-aws-credential-process-boundary.py	root:root	0644
+scripts/quality-sonar-retention.mjs	/usr/local/sbin/quality-sonar-retention.mjs	root:root	0755
 scripts/quality-sonar-restore-drill.sh	/usr/local/sbin/quality-sonar-restore-drill	root:root	0755
 scripts/quality-sonar-release-state.sh	/usr/local/sbin/quality-sonar-release-state	root:root	0755
 ops/sonarqube/nexus-sonar-release-monitor.sudoers	/etc/sudoers.d/nexus-sonar-release-monitor	root:root	0440
@@ -315,6 +318,8 @@ while IFS=$'\t' read -r relative target owner mode extra; do
     /usr/local/sbin/quality-sonar-live-ollama-state|\
     /usr/local/sbin/quality-sonar-latency-gate.mjs|\
     /usr/local/sbin/quality-sonar-backup|\
+    /usr/local/sbin/quality-sonar-aws-credential-process-boundary.py|\
+    /usr/local/sbin/quality-sonar-retention.mjs|\
     /usr/local/sbin/quality-sonar-restore-drill|\
     /usr/local/sbin/quality-sonar-release-state|\
     /etc/sudoers.d/nexus-sonar-release-monitor|\
@@ -402,6 +407,7 @@ validate_managed_directory /usr/local/sbin/lib root root 0755
 validate_managed_directory /etc/systemd/system/ollama.service.d root root 0755
 validate_managed_directory /etc/sonarqube root root 0700
 validate_managed_directory "$STATE_DIR" root root 0700
+validate_managed_directory "$RESTORE_EVIDENCE_DIR" root root 0700
 
 if [ -L "$INSTALL_JOURNAL" ]; then
   die "install journal is a symlink"
@@ -610,6 +616,7 @@ ensure_directory /usr/local/sbin/lib root root 0755
 ensure_directory /etc/systemd/system/ollama.service.d root root 0755
 ensure_directory /etc/sonarqube root root 0700
 ensure_directory "$STATE_DIR" root root 0700
+ensure_directory "$RESTORE_EVIDENCE_DIR" root root 0700
 for ((index=0; index<${#data_paths[@]}; index+=1)); do
   ensure_directory \
     "${data_paths[$index]}" \

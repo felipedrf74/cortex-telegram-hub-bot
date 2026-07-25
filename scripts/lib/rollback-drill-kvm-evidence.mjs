@@ -12,6 +12,7 @@ export const SCHEMAS = Object.freeze({
   authorizationPayload: 'nexus.rollback-drill-kvm-owner-authorization-payload.v1',
   isolation: 'nexus.rollback-drill-kvm-isolation.v1',
   drill: 'nexus.rollback-drill-kvm-outcome.v1',
+  execution: 'nexus.rollback-drill-kvm-execution.v1',
   manifest: 'nexus.rollback-drill-kvm-machine-evidence.v1',
   rollbackRequest: 'nexus.rollback-drill-payload.v1',
   restore: 'NexusApplicationRestoreDrillV1',
@@ -60,9 +61,10 @@ const INTERFACE_VALUES = Object.freeze({
   promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
   restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
   promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-  controlVersion: 'nexus-release-promotion-control.v2',
+  controlVersion: 'nexus-release-promotion-control.v3',
   recoveryUnit: 'nexus-release-promotion-recovery.service',
 });
+const EXECUTION_MODE = 'strictly-sequential';
 
 const PLAN_FIELDS = Object.freeze([
   'schema',
@@ -233,11 +235,16 @@ const ISOLATION_OVERLAY_FIELDS = Object.freeze([
   'baselineSnapshotSha256',
   'machineUuid',
   'sshHostPublicKeySha256',
+  'guestMachineIdSha256',
+  'readinessBootIdSha256',
 ]);
 
 const DRILL_FIELDS = Object.freeze([
   'schema',
   'planId',
+  'executionMode',
+  'testMode',
+  'executionReceiptSha256',
   'drill',
   'overlayId',
   'transactionId',
@@ -251,7 +258,34 @@ const DRILL_FIELDS = Object.freeze([
   'databaseBackupRestored',
   'journalSha256',
   'recoveryResultSha256',
+  'postTerminalReboot',
   'timeline',
+]);
+const EXECUTION_FIELDS = Object.freeze([
+  'schema',
+  'planId',
+  'planSha256',
+  'guestSshClientPublicKeySha256',
+  'executionMode',
+  'maximumActiveGuests',
+  'testMode',
+  'outcomes',
+  'completedAt',
+]);
+const EXECUTION_OUTCOME_FIELDS = Object.freeze([
+  'drill',
+  'path',
+  'payloadSha256',
+]);
+const POST_TERMINAL_REBOOT_FIELDS = Object.freeze([
+  'beforeGuestBootIdSha256',
+  'afterGuestBootIdSha256',
+  'journalSha256',
+  'controlVersion',
+  'recoveryUnitResult',
+  'assertRootPm2Ready',
+  'assertIdle',
+  'exactRuntimeHealthy',
 ]);
 const TIMELINE_FIELDS = Object.freeze([
   'event',
@@ -271,9 +305,19 @@ const MANIFEST_FIELDS = Object.freeze([
   'planSha256',
   'authorizationSha256',
   'isolationSha256',
+  'execution',
   'restore',
   'drills',
   'files',
+]);
+const MANIFEST_EXECUTION_FIELDS = Object.freeze([
+  'schema',
+  'executionMode',
+  'maximumActiveGuests',
+  'testMode',
+  'guestSshClientPublicKeySha256',
+  'receiptSha256',
+  'completedAt',
 ]);
 const MANIFEST_RESTORE_FIELDS = Object.freeze([
   'schemaVersion',
@@ -532,27 +576,45 @@ export function publicKeyIdentity(pem) {
   }
 }
 
-export function textKeyIdentity(value) {
+export function normalizeSshEd25519PublicKey(value) {
   if (typeof value !== 'string' || value.trim().length < 16 || value.length > 16 * 1024) {
     fail('text_public_key_invalid');
   }
-  return sha256Bytes(Buffer.from(value.trim(), 'utf8'));
+  const trimmed = value.trim();
+  if (/[\r\n]/u.test(trimmed)) fail('text_public_key_invalid');
+  const fields = trimmed.split(/[ \t]+/u);
+  if (fields.length < 2 || fields[0] !== 'ssh-ed25519'
+      || !/^[A-Za-z0-9+/]+={0,2}$/u.test(fields[1])) {
+    fail('text_public_key_invalid');
+  }
+  const material = Buffer.from(fields[1], 'base64');
+  const canonicalBase64 = material.toString('base64').replace(/=+$/u, '');
+  if (fields[1].replace(/=+$/u, '') !== canonicalBase64
+      || material.length !== 51
+      || material.readUInt32BE(0) !== 11
+      || material.subarray(4, 15).toString('ascii') !== 'ssh-ed25519'
+      || material.readUInt32BE(15) !== 32) {
+    fail('text_public_key_invalid');
+  }
+  return `ssh-ed25519 ${canonicalBase64}`;
+}
+
+export function textKeyIdentity(value) {
+  return sha256Bytes(Buffer.from(normalizeSshEd25519PublicKey(value), 'utf8'));
 }
 
 function validateCanonicalReleasePaths(release) {
-  const productionBasePattern = /^\/home\/dominguez\/[A-Za-z0-9._-]+$/u;
-  if (!productionBasePattern.test(release.productionBase)) fail('production_base_invalid');
-  if (!release.stateRoot.startsWith('/home/dominguez/')
-      || !/^\/home\/dominguez\/[A-Za-z0-9._/-]+$/u.test(release.stateRoot)) {
-    fail('state_root_invalid');
+  if (release.productionBase !== '/srv/nexus-release/production') {
+    fail('production_base_invalid');
   }
+  if (release.stateRoot !== '/var/lib/nexus-release-promotion') fail('state_root_invalid');
   if (release.backupDir !== '/home/dominguez/backups/nexushub') fail('backup_dir_invalid');
   if (!/^\/home\/dominguez\/backups\/nexushub\/\.runtime-stage-[A-Za-z0-9]+$/u.test(
     release.preparedRuntimeDir,
   )) {
     fail('prepared_runtime_dir_invalid');
   }
-  if (!/^\/(?:[^\s/]+\/)+pm2$/u.test(release.pm2Bin)) fail('pm2_path_invalid');
+  if (release.pm2Bin !== '/usr/local/bin/pm2') fail('pm2_path_invalid');
   let publicUrl;
   try {
     publicUrl = new URL(release.publicBaseUrl);
@@ -661,7 +723,7 @@ export function validatePlan(plan, { nowMs = Date.now(), allowExpired = false } 
   assertBoolean(plan.labStorage.encryptionRequired, true, 'lab_storage_encryption_missing');
 
   assertExactFields(plan.syntheticDatabase, DATABASE_FIELDS, 'synthetic_database');
-  if (!/^\/home\/dominguez\/[A-Za-z0-9._/-]+\.db$/u.test(plan.syntheticDatabase.path)
+  if (!/^\/srv\/nexus-drill-lab\/[A-Za-z0-9._/-]+\.db$/u.test(plan.syntheticDatabase.path)
       || startsAtPath(plan.syntheticDatabase.path, plan.release.productionBase)
       || startsAtPath(plan.syntheticDatabase.path, plan.release.backupDir)) {
     fail('synthetic_database_path_invalid');
@@ -845,7 +907,8 @@ function validateMount(mount, index) {
       ].includes(option.toLowerCase()))
       || source.startsWith('host:')
       || source.includes('serverdominguez')
-      || source.includes('/home/dominguez/telegram-hub-bot')) {
+      || source.includes('/home/dominguez/telegram-hub-bot')
+      || source.includes('/srv/nexus-release')) {
     fail('shared_or_production_mount_detected');
   }
 }
@@ -867,7 +930,8 @@ function validateHypervisorDevice(device, index) {
       && (device.mode !== 'overlay'
         || !device.target.startsWith('vd')
         || device.source.includes('/home/dominguez/telegram-hub-bot')
-        || device.source.includes('/home/dominguez/nexus-hub'))) {
+        || device.source.includes('/home/dominguez/nexus-hub')
+        || device.source.includes('/srv/nexus-release'))) {
     fail('hypervisor_disk_not_isolated_overlay');
   }
 }
@@ -995,6 +1059,8 @@ export function validateIsolationEvidence(evidence, plan, { nowMs = Date.now() }
   assertArray(guest.productionDataMatches, 0, 0, 'production_data_detected');
 
   assertArray(evidence.overlays, 3, 3, 'isolation_overlays_invalid');
+  const overlayGuestMachineIds = [];
+  const overlayGuestBootIds = [];
   evidence.overlays.forEach((overlay, index) => {
     assertExactFields(overlay, ISOLATION_OVERLAY_FIELDS, 'isolation_overlay');
     const expected = plan.overlays[index];
@@ -1012,7 +1078,28 @@ export function validateIsolationEvidence(evidence, plan, { nowMs = Date.now() }
     if (overlay.sshHostPublicKeySha256 !== expected.ssh.hostPublicKeySha256) {
       fail('isolation_overlay_ssh_host_key_mismatch');
     }
+    assertDigest(
+      overlay.guestMachineIdSha256,
+      'isolation_overlay_guest_machine_id_invalid',
+    );
+    assertDigest(
+      overlay.readinessBootIdSha256,
+      'isolation_overlay_readiness_boot_id_invalid',
+    );
+    if (overlay.guestMachineIdSha256 === plan.controller.machineIdSha256
+        || overlay.readinessBootIdSha256 === plan.controller.bootIdSha256
+        || overlay.guestMachineIdSha256 === overlay.readinessBootIdSha256) {
+      fail('isolation_overlay_guest_identity_invalid');
+    }
+    overlayGuestMachineIds.push(overlay.guestMachineIdSha256);
+    overlayGuestBootIds.push(overlay.readinessBootIdSha256);
   });
+  unique(overlayGuestMachineIds, 'isolation_overlay_guest_machine_id_reuse');
+  unique(overlayGuestBootIds, 'isolation_overlay_readiness_boot_id_reuse');
+  if (evidence.guest.machineIdSha256 !== evidence.overlays[0].guestMachineIdSha256
+      || evidence.guest.bootIdSha256 !== evidence.overlays[0].readinessBootIdSha256) {
+    fail('isolation_representative_guest_identity_mismatch');
+  }
   return evidence;
 }
 
@@ -1042,10 +1129,12 @@ export function validateKeySet(plan, keys) {
   if (keys.guestOwnerPublicKeyPem.trim() === keys.productionOwnerPublicKeyPem.trim()) {
     fail('production_owner_key_reuse');
   }
-  if (keys.guestSshClientPublicKey.trim() === keys.productionSshClientPublicKey.trim()) {
+  if (normalizeSshEd25519PublicKey(keys.guestSshClientPublicKey)
+      === normalizeSshEd25519PublicKey(keys.productionSshClientPublicKey)) {
     fail('production_ssh_client_key_reuse');
   }
-  if (keys.guestSshHostPublicKey.trim() === keys.productionSshHostPublicKey.trim()) {
+  if (normalizeSshEd25519PublicKey(keys.guestSshHostPublicKey)
+      === normalizeSshEd25519PublicKey(keys.productionSshHostPublicKey)) {
     fail('production_ssh_host_key_reuse');
   }
   return identities;
@@ -1275,13 +1364,22 @@ export function validateDrillOutcome(
   outcome,
   plan,
   isolation,
-  { nowMs = Date.now() } = {},
+  { nowMs = Date.now(), allowUnboundExecution = false } = {},
 ) {
   validatePlan(plan, { nowMs, allowExpired: true });
   validateIsolationEvidence(isolation, plan, { nowMs });
   assertExactFields(outcome, DRILL_FIELDS, 'drill_outcome');
   if (outcome.schema !== SCHEMAS.drill) fail('drill_outcome_schema_unsupported');
   if (outcome.planId !== plan.planId) fail('drill_outcome_plan_id_mismatch');
+  if (outcome.executionMode !== EXECUTION_MODE) fail('drill_execution_mode_invalid');
+  assertBoolean(outcome.testMode, undefined, 'drill_test_mode_invalid');
+  if (allowUnboundExecution && outcome.executionReceiptSha256 === null) {
+    // The coordinator validates the measured outcome before it has enough
+    // information to build the ordered execution receipt. Collection never
+    // permits this provisional state.
+  } else {
+    assertDigest(outcome.executionReceiptSha256, 'drill_execution_receipt_digest_invalid');
+  }
   if (!DRILL_NAMES.includes(outcome.drill)) fail('drill_name_invalid');
   const overlay = plan.overlays.find((entry) => entry.drill === outcome.drill);
   if (!overlay || outcome.overlayId !== overlay.overlayId) fail('drill_overlay_mismatch');
@@ -1312,6 +1410,53 @@ export function validateDrillOutcome(
   );
   assertDigest(outcome.journalSha256, 'drill_journal_digest_invalid');
   assertDigest(outcome.recoveryResultSha256, 'drill_recovery_result_digest_invalid');
+  if (outcome.drill === 'guest-reboot') {
+    assertExactFields(
+      outcome.postTerminalReboot,
+      POST_TERMINAL_REBOOT_FIELDS,
+      'post_terminal_reboot',
+    );
+    assertDigest(
+      outcome.postTerminalReboot.beforeGuestBootIdSha256,
+      'post_terminal_reboot_before_boot_id_invalid',
+    );
+    assertDigest(
+      outcome.postTerminalReboot.afterGuestBootIdSha256,
+      'post_terminal_reboot_after_boot_id_invalid',
+    );
+    assertDigest(
+      outcome.postTerminalReboot.journalSha256,
+      'post_terminal_reboot_journal_digest_invalid',
+    );
+    if (outcome.postTerminalReboot.beforeGuestBootIdSha256
+          === outcome.postTerminalReboot.afterGuestBootIdSha256) {
+      fail('post_terminal_reboot_boot_id_unchanged');
+    }
+    if (outcome.postTerminalReboot.journalSha256 !== outcome.journalSha256) {
+      fail('post_terminal_reboot_journal_changed');
+    }
+    if (outcome.postTerminalReboot.controlVersion !== INTERFACE_VALUES.controlVersion
+        || outcome.postTerminalReboot.recoveryUnitResult !== 'success') {
+      fail('post_terminal_reboot_control_invalid');
+    }
+    assertBoolean(
+      outcome.postTerminalReboot.assertRootPm2Ready,
+      true,
+      'post_terminal_reboot_root_pm2_not_ready',
+    );
+    assertBoolean(
+      outcome.postTerminalReboot.assertIdle,
+      true,
+      'post_terminal_reboot_not_idle',
+    );
+    assertBoolean(
+      outcome.postTerminalReboot.exactRuntimeHealthy,
+      true,
+      'post_terminal_reboot_runtime_unhealthy',
+    );
+  } else if (outcome.postTerminalReboot !== null) {
+    fail('unexpected_post_terminal_reboot');
+  }
 
   if (outcome.drill === 'ssh-loss') {
     const targetCompleted = outcome.terminalStatus === 'completed'
@@ -1331,6 +1476,10 @@ export function validateDrillOutcome(
   }
 
   const expectedEvents = TIMELINE_EVENTS[outcome.drill];
+  const isolationOverlay = isolation.overlays.find(
+    (entry) => entry.overlayId === outcome.overlayId,
+  );
+  if (!isolationOverlay) fail('drill_isolation_overlay_missing');
   assertArray(outcome.timeline, expectedEvents.length, expectedEvents.length, 'drill_timeline_invalid');
   let priorObserved = 0;
   let priorMonotonic = -1;
@@ -1356,7 +1505,8 @@ export function validateDrillOutcome(
       observerBootId = entry.observerBootIdSha256;
       guestBootId = entry.guestBootIdSha256;
       if (observerBootId !== plan.controller.bootIdSha256
-          || guestBootId !== isolation.guest.bootIdSha256) {
+          || guestBootId === plan.controller.bootIdSha256
+          || guestBootId === isolationOverlay.guestMachineIdSha256) {
         fail('drill_initial_boot_identity_mismatch');
       }
     } else if (entry.observerBootIdSha256 !== observerBootId) {
@@ -1375,6 +1525,11 @@ export function validateDrillOutcome(
       if (outcome.timeline[index].guestBootIdSha256 !== expectedBoot) {
         fail('guest_reboot_boot_id_transition_invalid');
       }
+    }
+    if (outcome.postTerminalReboot.beforeGuestBootIdSha256 !== newBootId
+        || outcome.postTerminalReboot.afterGuestBootIdSha256 === newBootId
+        || outcome.postTerminalReboot.afterGuestBootIdSha256 === guestBootId) {
+      fail('post_terminal_reboot_boot_id_transition_invalid');
     }
   } else if (outcome.timeline.some((entry) => entry.guestBootIdSha256 !== guestBootId)) {
     fail('unexpected_guest_boot_id_change');
@@ -1450,11 +1605,125 @@ export function readBoundedJson(file, label = 'input') {
   }
 }
 
-function canonicalSources({ plan, authorization, isolation, restore, outcomes }) {
+function executionOutcomePayload(outcome) {
+  const payload = { ...outcome };
+  delete payload.executionReceiptSha256;
+  return payload;
+}
+
+export function buildExecutionReceipt(
+  plan,
+  outcomes,
+  {
+    testMode,
+    completedAt,
+  },
+) {
+  assertExactFields(outcomes, DRILL_NAMES, 'execution_outcomes');
+  const receipt = {
+    schema: SCHEMAS.execution,
+    planId: plan.planId,
+    planSha256: sha256Json(plan),
+    guestSshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
+    executionMode: EXECUTION_MODE,
+    maximumActiveGuests: 1,
+    testMode,
+    outcomes: DRILL_NAMES.map((drill) => ({
+      drill,
+      path: `${drill}.json`,
+      payloadSha256: sha256Json(executionOutcomePayload(outcomes[drill])),
+    })),
+    completedAt,
+  };
+  return receipt;
+}
+
+export function bindExecutionReceipt(execution, outcomes) {
+  const executionReceiptSha256 = sha256Bytes(canonicalJsonBuffer(execution));
+  return Object.fromEntries(DRILL_NAMES.map((drill) => [
+    drill,
+    {
+      ...outcomes[drill],
+      executionReceiptSha256,
+    },
+  ]));
+}
+
+export function validateExecutionReceipt(
+  execution,
+  plan,
+  outcomes,
+  {
+    nowMs = Date.now(),
+    allowTestMode = false,
+  } = {},
+) {
+  assertExactFields(execution, EXECUTION_FIELDS, 'execution_receipt');
+  if (execution.schema !== SCHEMAS.execution) fail('execution_receipt_schema_unsupported');
+  if (execution.planId !== plan.planId || execution.planSha256 !== sha256Json(plan)) {
+    fail('execution_receipt_plan_mismatch');
+  }
+  if (execution.guestSshClientPublicKeySha256
+      !== plan.trust.guestSshClientPublicKeySha256) {
+    fail('execution_receipt_ssh_client_key_mismatch');
+  }
+  if (execution.executionMode !== EXECUTION_MODE || execution.maximumActiveGuests !== 1) {
+    fail('execution_receipt_mode_invalid');
+  }
+  assertBoolean(execution.testMode, undefined, 'execution_receipt_test_mode_invalid');
+  if (!allowTestMode && execution.testMode !== false) {
+    fail('execution_receipt_test_mode_rejected');
+  }
+  assertArray(
+    execution.outcomes,
+    DRILL_NAMES.length,
+    DRILL_NAMES.length,
+    'execution_receipt_outcomes_invalid',
+  );
+  assertExactFields(outcomes, DRILL_NAMES, 'execution_outcomes');
+  const receiptSha256 = sha256Bytes(canonicalJsonBuffer(execution));
+  let latestOutcome = 0;
+  execution.outcomes.forEach((record, index) => {
+    assertExactFields(record, EXECUTION_OUTCOME_FIELDS, 'execution_receipt_outcome');
+    const drill = DRILL_NAMES[index];
+    if (record.drill !== drill || record.path !== `${drill}.json`) {
+      fail('execution_receipt_outcome_order_invalid');
+    }
+    assertDigest(record.payloadSha256, 'execution_receipt_outcome_digest_invalid');
+    const outcome = outcomes[drill];
+    if (record.payloadSha256 !== sha256Json(executionOutcomePayload(outcome))) {
+      fail(`execution_receipt_outcome_mismatch:${drill}`);
+    }
+    if (outcome.executionMode !== execution.executionMode
+        || outcome.testMode !== execution.testMode
+        || outcome.executionReceiptSha256 !== receiptSha256) {
+      fail(`execution_receipt_binding_mismatch:${drill}`);
+    }
+    latestOutcome = Math.max(
+      latestOutcome,
+      parseIso(outcome.timeline.at(-1)?.observedAt, 'execution_outcome_completed_at_invalid'),
+    );
+  });
+  const completed = parseIso(execution.completedAt, 'execution_receipt_completed_at_invalid');
+  if (completed < latestOutcome || completed > nowMs + CLOCK_SKEW_MS) {
+    fail('execution_receipt_completion_time_invalid');
+  }
+  return execution;
+}
+
+function canonicalSources({
+  plan,
+  authorization,
+  isolation,
+  execution,
+  restore,
+  outcomes,
+}) {
   const sources = new Map([
     ['plan.json', canonicalJsonBuffer(plan)],
     ['owner-authorization.json', canonicalJsonBuffer(authorization)],
     ['isolation.json', canonicalJsonBuffer(isolation)],
+    ['execution.json', canonicalJsonBuffer(execution)],
     ['restore.json', canonicalJsonBuffer(restore)],
   ]);
   for (const drill of DRILL_NAMES) {
@@ -1478,6 +1747,7 @@ function validatedComponents(
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
     keys,
@@ -1516,6 +1786,11 @@ function validatedComponents(
     DRILL_NAMES.map((drill) => outcomes[drill].requestSha256),
     'drill_request_reuse',
   );
+  unique(
+    DRILL_NAMES.map((drill) => outcomes[drill].timeline[0].guestBootIdSha256),
+    'drill_initial_guest_boot_id_reuse',
+  );
+  validateExecutionReceipt(execution, plan, outcomes, { nowMs });
   return validatedOutcomes;
 }
 
@@ -1524,6 +1799,7 @@ function buildManifest(
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
   },
@@ -1533,6 +1809,7 @@ function buildManifest(
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
   });
@@ -1555,6 +1832,15 @@ function buildManifest(
     planSha256: sha256Json(plan),
     authorizationSha256: sha256Json(authorization),
     isolationSha256: sha256Json(isolation),
+    execution: {
+      schema: execution.schema,
+      executionMode: execution.executionMode,
+      maximumActiveGuests: execution.maximumActiveGuests,
+      testMode: execution.testMode,
+      guestSshClientPublicKeySha256: execution.guestSshClientPublicKeySha256,
+      receiptSha256: sha256Bytes(canonicalJsonBuffer(execution)),
+      completedAt: execution.completedAt,
+    },
     restore: {
       schemaVersion: restore.schemaVersion,
       targetBackup: plan.release.targetBackup,
@@ -1593,6 +1879,19 @@ function validateManifestShape(manifest) {
   for (const field of ['planSha256', 'authorizationSha256', 'isolationSha256']) {
     assertDigest(manifest[field], `manifest_${field}_invalid`);
   }
+  assertExactFields(manifest.execution, MANIFEST_EXECUTION_FIELDS, 'manifest_execution');
+  if (manifest.execution.schema !== SCHEMAS.execution
+      || manifest.execution.executionMode !== EXECUTION_MODE
+      || manifest.execution.maximumActiveGuests !== 1
+      || manifest.execution.testMode !== false) {
+    fail('manifest_execution_invalid');
+  }
+  assertDigest(manifest.execution.receiptSha256, 'manifest_execution_receipt_digest_invalid');
+  assertDigest(
+    manifest.execution.guestSshClientPublicKeySha256,
+    'manifest_execution_ssh_client_key_digest_invalid',
+  );
+  parseIso(manifest.execution.completedAt, 'manifest_execution_completed_at_invalid');
   assertExactFields(manifest.restore, MANIFEST_RESTORE_FIELDS, 'manifest_restore');
   if (manifest.restore.schemaVersion !== SCHEMAS.restore) fail('manifest_restore_schema_invalid');
   assertString(manifest.restore.targetBackup, SAFE_BACKUP, 'manifest_target_backup_invalid');
@@ -1629,7 +1928,7 @@ function validateManifestShape(manifest) {
     parseIso(drill.completedAt, 'manifest_drill_completed_at_invalid');
     assertDigest(drill.outcomeSha256, 'manifest_outcome_digest_invalid');
   });
-  assertArray(manifest.files, 7, 7, 'manifest_files_invalid');
+  assertArray(manifest.files, 8, 8, 'manifest_files_invalid');
   const paths = [];
   let total = 0;
   for (const record of manifest.files) {
@@ -1638,6 +1937,7 @@ function validateManifestShape(manifest) {
       'plan.json',
       'owner-authorization.json',
       'isolation.json',
+      'execution.json',
       'restore.json',
       ...DRILL_NAMES.map((drill) => `drills/${drill}.json`),
     ].includes(record.path)) {
@@ -1721,6 +2021,7 @@ function assertExactBundleLayout(bundleDir) {
   const rootEntries = fs.readdirSync(resolved).sort();
   const expectedRoot = [
     'drills',
+    'execution.json',
     'isolation.json',
     'manifest.json',
     'owner-authorization.json',
@@ -1751,6 +2052,7 @@ function readBundleComponents(bundleDir) {
     'bundle_authorization',
   );
   const isolation = readBoundedJson(path.join(resolved, 'isolation.json'), 'bundle_isolation');
+  const execution = readBoundedJson(path.join(resolved, 'execution.json'), 'bundle_execution');
   const restore = readBoundedJson(path.join(resolved, 'restore.json'), 'bundle_restore');
   const outcomes = {};
   for (const drill of DRILL_NAMES) {
@@ -1765,6 +2067,7 @@ function readBundleComponents(bundleDir) {
     plan,
     authorization,
     isolation,
+    execution,
     restore,
     outcomes,
     manifest,
@@ -1848,7 +2151,9 @@ function sshInvocation(overlay, remoteArgv) {
       '-o',
       `HostKeyAlias=${overlay.overlayId}`,
       '-o',
-      'UserKnownHostsFile=<guest-only-known-hosts>',
+      `UserKnownHostsFile=<execution-output>/known-hosts/${overlay.overlayId}`,
+      '-i',
+      '<dedicated-lab-ssh-private-key>',
       `${overlay.ssh.user}@${overlay.ssh.host}`,
       ...remoteArgv,
     ],
@@ -1861,8 +2166,9 @@ export function buildLocalExecutionPlan(plan, { nowMs = Date.now() } = {}) {
     schema: 'nexus.rollback-drill-kvm-local-execution-plan.v1',
     planId: plan.planId,
     mode: plan.mode,
-    executionSupported: false,
-    refusalCode: 'execution_not_implemented',
+    executionSupported: true,
+    executionMode: 'strictly-sequential',
+    maximumActiveGuests: 1,
     guarantees: {
       loopbackSshOnly: true,
       independentOverlayRequired: true,
@@ -1871,19 +2177,33 @@ export function buildLocalExecutionPlan(plan, { nowMs = Date.now() } = {}) {
       automaticProtectedApproval: false,
       productionGateMutation: false,
     },
-    drills: plan.overlays.map((overlay) => ({
+    drills: plan.overlays.map((overlay, index) => ({
       drill: overlay.drill,
       overlayId: overlay.overlayId,
+      guest: `guest-${index + 1}`,
+      hostUnit: `nexus-rollback-drill-vm@guest-${index + 1}.service`,
       endpoint: `${overlay.ssh.host}:${overlay.ssh.port}`,
+      requestFile: `${overlay.drill}.envelope.json`,
       requiredManualBoundary: overlay.drill === 'guest-reboot'
-        ? 'hard-stop and start of only this isolated QEMU guest instance'
+        ? 'hard-stop/start during promotion, followed by one clean post-terminal reboot of only this isolated QEMU guest'
         : overlay.drill === 'failed-health'
           ? 'guest-local candidate health fault after candidate_mutated'
           : 'controller connection drop after predecessor_stopped',
       guestInterfaceInvocations: [
-        sshInvocation(overlay, [plan.interfaces.promotionControl, 'version']),
-        sshInvocation(overlay, [plan.interfaces.promotionControl, 'assert-idle']),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
+          plan.interfaces.promotionControl,
+          'version',
+        ]),
+        sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
+          plan.interfaces.promotionControl,
+          'assert-idle',
+        ]),
+        sshInvocation(overlay, [
+          '/usr/bin/node',
           plan.interfaces.promotionAuthorization,
           'verify-request',
           '--input',
@@ -1892,16 +2212,22 @@ export function buildLocalExecutionPlan(plan, { nowMs = Date.now() } = {}) {
           '<guest-owner-public-key>',
         ]),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
           plan.interfaces.promotionControl,
           'launch',
           '<guest-owner-signed-promotion-envelope>',
         ]),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
           plan.interfaces.promotionControl,
           'status',
           '<transaction-id>',
         ]),
         sshInvocation(overlay, [
+          '/usr/bin/sudo',
+          '-n',
           plan.interfaces.promotionControl,
           'fetch',
           '<transaction-id>',

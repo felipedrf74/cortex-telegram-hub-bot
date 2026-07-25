@@ -6,14 +6,26 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   PROTECTED_MAIN_REUSE_SCOPE,
+  RELEASE_ACTIVATION_WINDOW_SCHEMA,
   RELEASE_OBSERVATION_WINDOW_SCHEMA,
+  RELEASE_OBSERVATION_WINDOW_V2_SCHEMA,
   RELEASE_SHADOW_CHECKS,
   RELEASE_SHADOW_COMPARISON_SCHEMA,
   RELEASE_SHADOW_LEDGER_SCHEMA,
   buildProtectedMainReuseServerPayload,
+  collectReleaseActivationWindow,
+  collectReleaseObservationWindow,
   evaluateReleaseObservationWindow,
   evaluateReleaseShadowReadiness,
+  validateReleaseActivationWindow,
 } from '../../scripts/lib/release-plan-evaluation.mjs';
+import {
+  RELEASE_QUALITY_EVIDENCE_PAYLOAD_SCHEMA,
+  RELEASE_QUALITY_EVIDENCE_SCHEMA,
+  RELEASE_PROTECTED_TIMING_PAYLOAD_SCHEMA,
+  RELEASE_PROTECTED_TIMING_SCHEMA,
+  requireAuthoritativePromotionWindows,
+} from '../../scripts/lib/release-plan-authoritative-evidence.mjs';
 import {
   PROTECTED_MAIN_CI_SCHEMA,
   PROTECTED_MAIN_WORKFLOW,
@@ -34,6 +46,7 @@ let evidenceRoot = '';
 let promotionRoot = '';
 let publicKeyPath = '';
 let signingPrivateKey: KeyObject | null = null;
+let timingReferences = new Map<string, Record<string, { path: string; sha256: string }>>();
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -65,6 +78,7 @@ afterEach(() => {
   promotionRoot = '';
   publicKeyPath = '';
   signingPrivateKey = null;
+  timingReferences = new Map();
 });
 
 function writeEvidenceJson(relativePath: string, value: unknown) {
@@ -124,8 +138,10 @@ function evaluateWindow(window: ReturnType<typeof makeWindow>) {
 
 type RecordOptions = {
   outcome?: 'passed' | 'recovered' | 'failed_before_stop' | 'recovery_failed';
+  releaseId?: string;
   readinessMs?: number;
   unattendedMs?: number;
+  unattendedHandoffsMs?: [number, number, number];
   approvalMs?: number;
   soakMs?: number;
   recoveryMs?: number;
@@ -135,6 +151,8 @@ type RecordOptions = {
   soakObservedSeconds?: number;
   unavailabilityReportedSeconds?: number;
   recoveryReportedSeconds?: number;
+  legacyStagingSigningTiming?: boolean;
+  requestedAtSkewMs?: number;
 };
 
 function iso(value: number) {
@@ -146,12 +164,14 @@ function makeRelease(index: number, options: RecordOptions = {}) {
   const startedAt = BASE_MS + index * DAY_MS;
   const readinessMs = options.readinessMs ?? 300_000 + index * 20_000;
   const firstUnattendedMs = options.unattendedMs ?? 15_000 + index * 1_000;
-  const secondUnattendedMs = options.unattendedMs ?? 25_000 + index * 1_000;
+  const promotionSubmitMs = options.unattendedHandoffsMs?.[2]
+    ?? options.unattendedMs
+    ?? 25_000 + index * 1_000;
   const approvalMs = options.approvalMs ?? 435_000;
   const readinessCompletedAt = startedAt + readinessMs;
   const firstStartedAt = readinessCompletedAt + firstUnattendedMs;
   const approvalStartedAt = firstStartedAt + approvalMs;
-  const secondStartedAt = approvalStartedAt + secondUnattendedMs;
+  const secondStartedAt = approvalStartedAt + promotionSubmitMs;
   const cutoverStartedAt = secondStartedAt + 60_000;
   const unavailableAt = cutoverStartedAt + 1_000;
   const runtimeSha = hex[index].repeat(40);
@@ -219,18 +239,32 @@ function makeRelease(index: number, options: RecordOptions = {}) {
   const ciDurationMs = 100_000 + index * 10_000;
   const releaseCandidateDurationMs = 80_000 + index * 5_000;
   const signingDurationMs = 30_000 + index * 2_000;
-  const firstInternalHandoffMs = options.unattendedMs ?? 2_000;
-  const secondInternalHandoffMs = options.unattendedMs ?? 3_000;
+  const firstInternalHandoffMs = options.unattendedHandoffsMs?.[0]
+    ?? options.unattendedMs
+    ?? 2_000;
+  const secondInternalHandoffMs = options.unattendedHandoffsMs?.[1]
+    ?? options.unattendedMs
+    ?? 3_000;
   const ciCompletedAt = startedAt + ciDurationMs;
   const releaseCandidateStartedAt = ciCompletedAt + firstInternalHandoffMs;
   const releaseCandidateCompletedAt = releaseCandidateStartedAt + releaseCandidateDurationMs;
   const signingStartedAt = releaseCandidateCompletedAt + 60_000;
   const signingCompletedAt = signingStartedAt + signingDurationMs;
   const stagingStartedAt = signingCompletedAt + secondInternalHandoffMs;
+  const rootStagingPublishedAt = stagingStartedAt
+    + Math.max(1_000, Math.floor((readinessCompletedAt - stagingStartedAt) / 2));
+  const smokeVerifiedAt = rootStagingPublishedAt
+    + Math.max(1_000, Math.floor((readinessCompletedAt - rootStagingPublishedAt) / 2));
+  const stagingRequestedAt = options.requestedAtSkewMs === undefined
+    ? readinessCompletedAt
+    : smokeVerifiedAt - options.requestedAtSkewMs;
+  const stagingCompletedAt = options.legacyStagingSigningTiming
+    ? smokeVerifiedAt
+    : stagingRequestedAt;
 
   const reachedProduction = outcome === 'passed';
   const record = {
-    releaseId: `v4.14.${230 + index}`,
+    releaseId: options.releaseId ?? `v4.14.${230 + index}`,
     completedAt: iso(completedAt),
     identity: {
       evidenceRuntimeSha: runtimeSha,
@@ -246,7 +280,7 @@ function makeRelease(index: number, options: RecordOptions = {}) {
     },
     timing: {
       automatedReadinessStartedAt: iso(startedAt),
-      automatedReadinessCompletedAt: iso(readinessCompletedAt),
+      automatedReadinessCompletedAt: iso(stagingCompletedAt),
       automatedStages: [
         {
           phase: 'protected_main_ci',
@@ -266,7 +300,7 @@ function makeRelease(index: number, options: RecordOptions = {}) {
         {
           phase: 'staging_validation',
           startedAt: iso(stagingStartedAt),
-          completedAt: iso(readinessCompletedAt),
+          completedAt: iso(stagingCompletedAt),
         },
         {
           phase: 'promotion',
@@ -294,10 +328,10 @@ function makeRelease(index: number, options: RecordOptions = {}) {
           approvalKind: null,
         },
         {
-          phase: 'protected-signing-request',
-          readyAt: iso(readinessCompletedAt),
+          phase: 'staging-attestation-signing',
+          readyAt: iso(stagingCompletedAt),
           startedAt: iso(firstStartedAt),
-          approvalKind: null,
+          approvalKind: 'release_signing',
         },
         {
           phase: 'production-owner-approval',
@@ -336,6 +370,10 @@ function makeRelease(index: number, options: RecordOptions = {}) {
         runtimeSha,
         artifactDigest,
         completedAt: record.timing.automatedStages[1].completedAt,
+        ci: {
+          runId: String(20_000 + index),
+          runAttempt: '1',
+        },
         protectedMainShadow: {
           evidence: {
             schema: 'nexus.protected-main-ci-evidence.v1',
@@ -343,6 +381,11 @@ function makeRelease(index: number, options: RecordOptions = {}) {
             headSha: runtimeSha,
             completedAt: record.timing.automatedStages[0].completedAt,
             build: { artifactDigest },
+            ci: {
+              repository: 'felipedrf74/cortex-telegram-hub-bot',
+              runId: String(10_000 + index),
+              runAttempt: '1',
+            },
           },
         },
       },
@@ -360,15 +403,23 @@ function makeRelease(index: number, options: RecordOptions = {}) {
     releaseManifestSha256: releaseManifest.sha256,
     installedRuntimeDigest,
     smoke: { status: 'passed' },
-    verifiedAt: record.timing.automatedReadinessCompletedAt,
+    verifiedAt: iso(smokeVerifiedAt),
     expiresAt: iso(Date.parse(record.completedAt) + 3_600_000),
+    protectedSigning: {
+      workflow: '.github/workflows/sign-staging-attestation.yml',
+      runId: String(40_000 + index),
+      runAttempt: '1',
+      ...(!options.legacyStagingSigningTiming
+        ? { requestedAt: iso(stagingRequestedAt) }
+        : {}),
+      signedAt: iso(firstStartedAt),
+    },
   };
   const stagingAttestation = writeEvidenceJson(
     `${releaseDirectory}/staging.json`,
     signedEnvelope('nexus.staging-attestation.v1', stagingPayload),
   );
   const transactionId = `202601${String(index + 1).padStart(2, '0')}T120000Z-${1000 + index}-${hex[index].repeat(12)}`;
-  const requestSha256 = hex[(index + 7) % hex.length].repeat(64);
   const target = {
     runtime: `/home/dominguez/telegram-hub-bot/releases/${runtimeSha}`,
     sha: runtimeSha,
@@ -377,6 +428,72 @@ function makeRelease(index: number, options: RecordOptions = {}) {
     installedRuntimeDigest,
     version: record.releaseId.slice(1),
   };
+  const protectedTiming = writeEvidenceJson(
+    `timing/${runtimeSha}.json`,
+    signedEnvelope(RELEASE_PROTECTED_TIMING_SCHEMA, {
+      schema: RELEASE_PROTECTED_TIMING_PAYLOAD_SCHEMA,
+      repository: 'felipedrf74/cortex-telegram-hub-bot',
+      runtimeSha,
+      releaseManifestSha256: releaseManifest.sha256,
+      generatedAt: record.timing.automatedStages[2].completedAt,
+      stages: {
+        protectedMainCi: {
+          workflow: '.github/workflows/ci.yml',
+          runId: String(10_000 + index),
+          runAttempt: '1',
+          startedAt: record.timing.automatedStages[0].startedAt,
+          completedAt: record.timing.automatedStages[0].completedAt,
+          githubCompletedAt: iso(ciCompletedAt + 1_000),
+        },
+        releaseCandidate: {
+          workflow: '.github/workflows/release-candidate-evidence.yml',
+          runId: String(20_000 + index),
+          runAttempt: '1',
+          startedAt: record.timing.automatedStages[1].startedAt,
+          completedAt: record.timing.automatedStages[1].completedAt,
+          githubCompletedAt: iso(releaseCandidateCompletedAt + 1_000),
+        },
+        protectedSigning: {
+          workflow: '.github/workflows/sign-release-manifest.yml',
+          runId: String(30_000 + index),
+          runAttempt: '1',
+          startedAt: record.timing.automatedStages[2].startedAt,
+          completedAt: record.timing.automatedStages[2].completedAt,
+          githubCompletedAt: record.timing.automatedStages[2].completedAt,
+        },
+      },
+    }),
+  );
+  const rootStagingEvidence = writePromotionJson(
+    `staging/${stagingPayload.requestId}.evidence.json`,
+    {
+      schema: 'nexus.root-staging-attestation-evidence.v1',
+      requestId: stagingPayload.requestId,
+      runtimeSha,
+      artifactDigest: record.identity.stagingArtifactDigest,
+      transaction: {
+        startedAt: record.timing.automatedStages[3].startedAt,
+        readinessCompletedAt: iso(rootStagingPublishedAt - 1_000),
+        publishedAt: iso(rootStagingPublishedAt),
+      },
+    },
+  );
+  const promotionRequestValue = {
+    schema: 'nexus.promotion-transaction-request.v1',
+    transactionId,
+    createdAt: iso(approvalStartedAt),
+    ownerAuthorization: 'explicit',
+    target,
+    releaseEvidence: {
+      releaseManifestSha256: releaseManifest.sha256,
+      stagingAttestationSha256: stagingAttestation.sha256,
+    },
+  };
+  const promotionRequest = writePromotionJson(
+    `requests/${transactionId}.json`,
+    promotionRequestValue,
+  );
+  const requestSha256 = sha256(canonicalJson(promotionRequestValue));
   let promotionResultValue: Record<string, unknown>;
   let promotionResultEnv = '';
   if (outcome === 'passed') {
@@ -452,6 +569,11 @@ function makeRelease(index: number, options: RecordOptions = {}) {
     promotionJournal,
     promotionResult,
   };
+  timingReferences.set(runtimeSha, {
+    protectedTiming,
+    rootStagingEvidence,
+    promotionRequest,
+  });
   return record;
 }
 
@@ -466,6 +588,124 @@ function makeWindow(options: RecordOptions[] = [{}, {}, {}, {}, {}, {}, {}, {}, 
       escapedReleaseDefects: releases.reduce((sum, release) => sum + release.escapedReleaseDefects, 0),
     },
     releases,
+  };
+}
+
+function addBaselinePromotionJournals(
+  statuses: Array<'completed' | 'recovered' | 'failed_before_stop'> =
+    Array.from({ length: 10 }, (_, index) => (index === 9 ? 'recovered' : 'completed')),
+) {
+  ensureEvidenceRoot();
+  for (let index = 0; index < 10; index += 1) {
+    const status = statuses[index] ?? 'completed';
+    const transactionId =
+      `202512${String(index + 1).padStart(2, '0')}T120000Z-${900 + index}-${hex[index].repeat(12)}`;
+    const runtimeSha = hex[(index + 2) % hex.length].repeat(40);
+    const completedAt = iso(BASE_MS - (10 - index) * DAY_MS);
+    writePromotionJson(`transactions/${transactionId}/state/journal.json`, {
+      schema: 'nexus.promotion-transaction-journal.v1',
+      transactionId,
+      requestSha256: hex[(index + 4) % hex.length].repeat(64),
+      phase: status === 'completed' ? 'completed' : 'recovery_complete',
+      status,
+      startedAt: iso(Date.parse(completedAt) - 60_000),
+      updatedAt: completedAt,
+      completedAt,
+      target: {
+        sha: runtimeSha,
+        sentryRelease: runtimeSha,
+        artifactDigest: hex[(index + 5) % hex.length].repeat(64),
+        installedRuntimeDigest: hex[(index + 6) % hex.length].repeat(64),
+        version: `4.14.${210 + index}`,
+      },
+      sentryRelease: runtimeSha,
+    });
+  }
+}
+
+function makeV2Window({
+  currentOptions,
+  baselineStatuses,
+  baselineDefects = Array.from({ length: 10 }, () => 0),
+  currentDefects = Array.from({ length: 10 }, () => 0),
+}: {
+  currentOptions?: RecordOptions[];
+  baselineStatuses?: Array<'completed' | 'recovered' | 'failed_before_stop'>;
+  baselineDefects?: number[];
+  currentDefects?: number[];
+} = {}) {
+  const legacy = makeWindow(currentOptions);
+  addBaselinePromotionJournals(baselineStatuses);
+  const transactionIds = legacy.releases.map((release) => (
+    release.authoritativeEvidence.promotionJournal.path.split('/')[1]
+  ));
+  const windows = requireAuthoritativePromotionWindows(
+    transactionIds,
+    evidenceOptions(),
+    { baselineCount: 10 },
+  );
+  if (!windows.baseline) throw new Error('test baseline promotion window was not created');
+  const qualityPayload = {
+    schema: RELEASE_QUALITY_EVIDENCE_PAYLOAD_SCHEMA,
+    provider: 'sentry',
+    query: 'escaped-release-defects-by-release-v1',
+    generatedAt: iso(Date.parse(legacy.generatedAt) + 1_000),
+    sourceSnapshotSha256: 'a'.repeat(64),
+    baseline: {
+      transactions: windows.baseline.map((entry, index) => ({
+        transactionId: entry.transactionId,
+        promotionJournalSha256: entry.promotionJournalSha256,
+        runtimeSha: entry.runtimeSha,
+        completedAt: entry.completedAt,
+        escapedReleaseDefects: baselineDefects[index] ?? 0,
+        issueSetSha256: hex[(index + 1) % hex.length].repeat(64),
+      })),
+    },
+    current: {
+      transactions: windows.current.map((entry, index) => ({
+        transactionId: entry.transactionId,
+        promotionJournalSha256: entry.promotionJournalSha256,
+        runtimeSha: entry.runtimeSha,
+        completedAt: entry.completedAt,
+        escapedReleaseDefects: currentDefects[index] ?? 0,
+        issueSetSha256: hex[(index + 6) % hex.length].repeat(64),
+      })),
+    },
+  };
+  const qualityEvidence = writeEvidenceJson(
+    'quality/release-quality.json',
+    signedEnvelope(RELEASE_QUALITY_EVIDENCE_SCHEMA, qualityPayload),
+  );
+  return {
+    schema: RELEASE_OBSERVATION_WINDOW_V2_SCHEMA,
+    generatedAt: iso(Date.parse(qualityPayload.generatedAt) + 1_000),
+    baseline: { releaseCount: 10 },
+    releases: legacy.releases.map((release, index) => ({
+      ...release,
+      timing: {
+        ...release.timing,
+        automatedReadinessCompletedAt:
+          release.timing.automatedStages[1].completedAt,
+      },
+      escapedReleaseDefects: currentDefects[index] ?? 0,
+      authoritativeEvidence: {
+        ...release.authoritativeEvidence,
+        ...timingReferences.get(release.identity.evidenceRuntimeSha),
+      },
+    })),
+    qualityEvidence,
+  };
+}
+
+function activationWindowFrom(window: ReturnType<typeof makeWindow>) {
+  return {
+    schema: RELEASE_ACTIVATION_WINDOW_SCHEMA,
+    generatedAt: window.generatedAt,
+    releases: window.releases.slice(-5).map((release) => {
+      const { escapedReleaseDefects: ignored, ...activationRelease } = release;
+      void ignored;
+      return activationRelease;
+    }),
   };
 }
 
@@ -601,6 +841,35 @@ function addFullProtectedMainBindings(window: ReturnType<typeof makeWindow>) {
     )}\n`;
     fs.writeFileSync(stagingPath, rewrittenStaging, { mode: 0o600 });
     stagingRef.sha256 = sha256(rewrittenStaging);
+
+    const timingRefs = timingReferences.get(record.identity.evidenceRuntimeSha);
+    if (!timingRefs) throw new Error('test timing references are missing');
+    const timingPath = path.join(evidenceRoot, timingRefs.protectedTiming.path);
+    const timingEnvelope = JSON.parse(fs.readFileSync(timingPath, 'utf8'));
+    timingEnvelope.payload.releaseManifestSha256 = manifestRef.sha256;
+    const rewrittenTiming = `${JSON.stringify(
+      signedEnvelope(RELEASE_PROTECTED_TIMING_SCHEMA, timingEnvelope.payload),
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(timingPath, rewrittenTiming, { mode: 0o600 });
+    timingRefs.protectedTiming.sha256 = sha256(rewrittenTiming);
+
+    const requestPath = path.join(promotionRoot, timingRefs.promotionRequest.path);
+    const promotionRequest = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+    promotionRequest.releaseEvidence.releaseManifestSha256 = manifestRef.sha256;
+    promotionRequest.releaseEvidence.stagingAttestationSha256 = stagingRef.sha256;
+    const rewrittenRequest = `${JSON.stringify(promotionRequest, null, 2)}\n`;
+    fs.writeFileSync(requestPath, rewrittenRequest, { mode: 0o600 });
+    timingRefs.promotionRequest.sha256 = sha256(rewrittenRequest);
+
+    const journalRef = record.authoritativeEvidence.promotionJournal;
+    const journalPath = path.join(promotionRoot, journalRef.path);
+    const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+    journal.requestSha256 = sha256(canonicalJson(promotionRequest));
+    const rewrittenJournal = `${JSON.stringify(journal, null, 2)}\n`;
+    fs.writeFileSync(journalPath, rewrittenJournal, { mode: 0o600 });
+    journalRef.sha256 = sha256(rewrittenJournal);
   }
   return window;
 }
@@ -612,6 +881,7 @@ describe('release plan observation evaluation', () => {
 
     expect(result).toEqual(evaluateWindow(structuredClone(window)));
     expect(result).toMatchObject({
+      schema: 'nexus.release-plan-evaluation.v2',
       verdict: 'MANUAL_REQUIRED',
       releaseCount: 10,
       metrics: {
@@ -653,17 +923,340 @@ describe('release plan observation evaluation', () => {
           status: 'pass',
         },
         exactShaAndDigestParity: { exactMatchCount: 10, status: 'pass' },
-        failedPromotions: { baselineCount: 1, currentCount: 1, delta: 0, status: 'manual_required' },
-        escapedReleaseDefects: { baselineCount: 0, currentCount: 0, delta: 0, status: 'manual_required' },
+        failedPromotions: {
+          baselineCount: null,
+          currentCount: 1,
+          delta: null,
+          status: 'manual_required',
+        },
+        escapedReleaseDefects: {
+          baselineCount: null,
+          currentCount: null,
+          delta: null,
+          status: 'manual_required',
+        },
       },
       reasons: [
-        'authoritative_automated_readiness_start_evidence_required',
+        'authoritative_ci_rc_timing_evidence_required',
         'authoritative_handoff_timestamps_required',
         'authoritative_total_cutover_start_required',
         'authoritative_failed_promotion_baseline_required',
         'authoritative_sentry_defect_evidence_required',
       ],
     });
+  });
+
+  it('evaluates failed promotions and escaped defects only from root and signed quality authority', () => {
+    const window = makeV2Window();
+    const result = evaluateReleaseObservationWindow(window, evidenceOptions());
+
+    expect(result.metrics.automatedReadiness).toMatchObject({
+      sampleCount: 10,
+      p50Ms: 249_500,
+      measurement: 'protected_main_ci_start_to_release_candidate_completion',
+      status: 'pass',
+    });
+    expect(result.metrics.automatedStageTimings).toMatchObject({
+      protected_main_ci: { sampleCount: 10, status: 'observed' },
+      release_candidate: { sampleCount: 10, status: 'observed' },
+      protected_signing: { sampleCount: 10, status: 'observed' },
+      staging_validation: { sampleCount: 10, status: 'observed' },
+    });
+    expect(result.metrics.unattendedHandoffDelay).toMatchObject({
+      sampleCount: 10,
+      measurement: 'sum_per_release_excluding_explicit_approvals',
+      excludedExplicitApprovalSampleCount: 30,
+      status: 'pass',
+    });
+    expect(result.metrics.failedPromotions).toMatchObject({
+      baselineCount: 1,
+      currentCount: 1,
+      delta: 0,
+      status: 'pass',
+    });
+    expect(result.metrics.escapedReleaseDefects).toMatchObject({
+      baselineCount: 0,
+      currentCount: 0,
+      delta: 0,
+      evidenceSha256: window.qualityEvidence.sha256,
+      status: 'pass',
+    });
+    expect(result.reasons).not.toContain('authoritative_failed_promotion_baseline_required');
+    expect(result.reasons).not.toContain('authoritative_sentry_defect_evidence_required');
+  });
+
+  it('sums unattended transitions per release before evaluating the handoff target', () => {
+    const currentOptions: RecordOptions[] = Array.from({ length: 10 }, () => ({
+      readinessMs: 500_000,
+      unattendedHandoffsMs: [65_000, 0, 0],
+    }));
+    const result = evaluateReleaseObservationWindow(
+      makeV2Window({ currentOptions }),
+      evidenceOptions(),
+    );
+
+    expect(result.metrics.unattendedHandoffDelay).toMatchObject({
+      sampleCount: 10,
+      p50Ms: 65_000,
+      maxMs: 65_000,
+      measurement: 'sum_per_release_excluding_explicit_approvals',
+      status: 'fail',
+    });
+    expect(result.reasons).toContain(
+      'unattended_handoff_sum_per_release_p50_above_1_minute',
+    );
+  });
+
+  it('accepts a repeated package version only across distinct authoritative transactions', () => {
+    const currentOptions: RecordOptions[] = Array.from({ length: 10 }, () => ({}));
+    currentOptions[6] = { releaseId: 'v4.14.235' };
+    const window = makeV2Window({ currentOptions });
+
+    expect(() => evaluateReleaseObservationWindow(window, evidenceOptions())).not.toThrow();
+    const activation = activationWindowFrom(window);
+    expect(() => validateReleaseActivationWindow(activation, evidenceOptions())).not.toThrow();
+    expect(activation.releases[0].releaseId).toBe(activation.releases[1].releaseId);
+
+    const legacy = makeWindow(currentOptions);
+    expect(() => evaluateWindow(legacy)).toThrow('duplicate release IDs');
+  });
+
+  it('preserves raw requestedAt while accepting only the governed five-second skew', () => {
+    const withinTolerance = makeV2Window({
+      currentOptions: [
+        { requestedAtSkewMs: 4_750 },
+        {}, {}, {}, {}, {}, {}, {}, {}, {},
+      ],
+    });
+    const first = withinTolerance.releases[0];
+    const stagingEnvelope = JSON.parse(fs.readFileSync(
+      path.join(evidenceRoot, first.authoritativeEvidence.stagingAttestation.path),
+      'utf8',
+    ));
+
+    expect(() => evaluateReleaseObservationWindow(
+      withinTolerance,
+      evidenceOptions(),
+    )).not.toThrow();
+    expect(first.timing.automatedStages[3].completedAt).toBe(
+      stagingEnvelope.payload.protectedSigning.requestedAt,
+    );
+    expect(
+      Date.parse(stagingEnvelope.payload.verifiedAt)
+        - Date.parse(stagingEnvelope.payload.protectedSigning.requestedAt),
+    ).toBe(4_750);
+
+    const outsideTolerance = makeV2Window({
+      currentOptions: [
+        { requestedAtSkewMs: 5_001 },
+        {}, {}, {}, {}, {}, {}, {}, {}, {},
+      ],
+    });
+    expect(() => evaluateReleaseObservationWindow(
+      outsideTolerance,
+      evidenceOptions(),
+    )).toThrow('stagingAttestation was not valid for this release interval');
+  });
+
+  it('fails quality targets when authoritative current windows regress', () => {
+    const window = makeV2Window({
+      baselineStatuses: Array.from({ length: 10 }, () => 'completed'),
+      currentDefects: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    });
+    const result = evaluateReleaseObservationWindow(window, evidenceOptions());
+
+    expect(result.verdict).toBe('FAIL');
+    expect(result.metrics.failedPromotions).toMatchObject({
+      baselineCount: 0,
+      currentCount: 1,
+      status: 'fail',
+    });
+    expect(result.metrics.escapedReleaseDefects).toMatchObject({
+      baselineCount: 0,
+      currentCount: 1,
+      status: 'fail',
+    });
+    expect(result.reasons).toEqual(expect.arrayContaining([
+      'failed_promotions_increased',
+      'escaped_release_defects_increased',
+    ]));
+  });
+
+  it('rejects operator quality counters and any drift from the signed issue aggregate', () => {
+    const withOperatorBaseline = makeV2Window();
+    Object.assign(withOperatorBaseline.baseline, { failedPromotions: 0 });
+    expect(() => evaluateReleaseObservationWindow(
+      withOperatorBaseline,
+      evidenceOptions(),
+    )).toThrow('fields do not match the governed schema');
+
+    const contradicted = makeV2Window();
+    contradicted.releases[0].escapedReleaseDefects = 1;
+    expect(() => evaluateReleaseObservationWindow(
+      contradicted,
+      evidenceOptions(),
+    )).toThrow('contradicts signed quality evidence');
+
+    const tampered = makeV2Window();
+    const qualityPath = path.join(evidenceRoot, tampered.qualityEvidence.path);
+    const qualityEnvelope = JSON.parse(fs.readFileSync(qualityPath, 'utf8'));
+    qualityEnvelope.payload.current.transactions[0].escapedReleaseDefects = 1;
+    const tamperedBytes = `${JSON.stringify(qualityEnvelope, null, 2)}\n`;
+    fs.writeFileSync(qualityPath, tamperedBytes);
+    tampered.qualityEvidence.sha256 = sha256(tamperedBytes);
+    expect(() => evaluateReleaseObservationWindow(
+      tampered,
+      evidenceOptions(),
+    )).toThrow('release quality evidence signature is invalid');
+  });
+
+  it('collects the ten-record observation window from canonical evidence instead of operator JSON', () => {
+    const source = makeV2Window();
+    const collected = collectReleaseObservationWindow({
+      qualityEvidencePath: source.qualityEvidence.path,
+      now: new Date(source.generatedAt),
+    }, evidenceOptions());
+    const result = evaluateReleaseObservationWindow(collected, evidenceOptions());
+
+    expect(collected).toMatchObject({
+      schema: RELEASE_OBSERVATION_WINDOW_V2_SCHEMA,
+      baseline: { releaseCount: 10 },
+      qualityEvidence: source.qualityEvidence,
+    });
+    expect(collected.releases).toHaveLength(10);
+    expect(collected.releases.map((release) => (
+      release.authoritativeEvidence.promotionJournal.path
+    ))).toEqual(source.releases.map((release) => (
+      release.authoritativeEvidence.promotionJournal.path
+    )));
+    expect(collected.releases[0].timing.automatedReadinessStartedAt).toBe(
+      source.releases[0].timing.automatedStages[0].startedAt,
+    );
+    expect(collected.releases[0].timing.automatedStages).toEqual(
+      source.releases[0].timing.automatedStages,
+    );
+    expect(
+      collected.releases[0].timing.automatedStages[1].completedAt,
+    ).toBe(source.releases[0].timing.automatedReadinessCompletedAt);
+    const rootStaging = JSON.parse(fs.readFileSync(
+      path.join(
+        promotionRoot,
+        source.releases[0].authoritativeEvidence.rootStagingEvidence.path,
+      ),
+      'utf8',
+    ));
+    const stagingEnvelope = JSON.parse(fs.readFileSync(
+      path.join(
+        evidenceRoot,
+        source.releases[0].authoritativeEvidence.stagingAttestation.path,
+      ),
+      'utf8',
+    ));
+    expect(Date.parse(rootStaging.transaction.publishedAt)).toBeLessThan(
+      Date.parse(stagingEnvelope.payload.verifiedAt),
+    );
+    expect(Date.parse(stagingEnvelope.payload.verifiedAt)).toBeLessThan(
+      Date.parse(stagingEnvelope.payload.protectedSigning.requestedAt),
+    );
+    expect(
+      collected.releases[0].timing.automatedStages[3].completedAt,
+    ).toBe(stagingEnvelope.payload.protectedSigning.requestedAt);
+    expect(
+      collected.releases[0].timing.automatedStages[3].completedAt,
+    ).not.toBe(stagingEnvelope.payload.verifiedAt);
+    expect(collected.releases[0].timing.handoffs).toEqual(
+      source.releases[0].timing.handoffs,
+    );
+    expect(result.metrics.failedPromotions.status).toBe('pass');
+    expect(result.metrics.escapedReleaseDefects.status).toBe('pass');
+  });
+
+  it('keeps staging timing separate while old attestations leave only staging handoffs manual', () => {
+    const current = makeV2Window();
+    const currentResult = evaluateReleaseObservationWindow(current, evidenceOptions());
+    const first = current.releases[0];
+    const stagingEnvelope = JSON.parse(fs.readFileSync(
+      path.join(evidenceRoot, first.authoritativeEvidence.stagingAttestation.path),
+      'utf8',
+    ));
+
+    expect(first.timing.automatedStages[3].completedAt).toBe(
+      stagingEnvelope.payload.protectedSigning.requestedAt,
+    );
+    expect(Date.parse(first.timing.automatedStages[3].completedAt)
+      - Date.parse(stagingEnvelope.payload.verifiedAt)).toBeGreaterThan(0);
+    expect(currentResult.metrics.automatedReadiness.status).toBe('pass');
+    expect(currentResult.metrics.automatedStageTimings.staging_validation.status)
+      .toBe('observed');
+
+    const legacy = makeV2Window({
+      currentOptions: Array.from(
+        { length: 10 },
+        () => ({ legacyStagingSigningTiming: true }),
+      ),
+    });
+    const legacyResult = evaluateReleaseObservationWindow(legacy, evidenceOptions());
+
+    expect(legacyResult.metrics.automatedReadiness.status).toBe('pass');
+    expect(legacyResult.metrics.automatedStageTimings).toMatchObject({
+      protected_main_ci: { sampleCount: 10, status: 'observed' },
+      release_candidate: { sampleCount: 10, status: 'observed' },
+      protected_signing: { sampleCount: 10, status: 'observed' },
+      staging_validation: { sampleCount: 0, status: 'manual_required' },
+    });
+    expect(legacyResult.metrics.unattendedHandoffDelay.status).toBe('manual_required');
+  });
+
+  it('rejects timing envelope, root staging, and promotion-request tampering', () => {
+    const timingTamper = makeV2Window();
+    const timingRef = timingTamper.releases[0].authoritativeEvidence.protectedTiming;
+    const timingPath = path.join(evidenceRoot, timingRef.path);
+    const timingEnvelope = JSON.parse(fs.readFileSync(timingPath, 'utf8'));
+    timingEnvelope.payload.stages.protectedMainCi.startedAt = iso(
+      Date.parse(timingEnvelope.payload.stages.protectedMainCi.startedAt) + 1_000,
+    );
+    const timingBytes = `${JSON.stringify(timingEnvelope, null, 2)}\n`;
+    fs.writeFileSync(timingPath, timingBytes);
+    timingRef.sha256 = sha256(timingBytes);
+    expect(() => evaluateReleaseObservationWindow(
+      timingTamper,
+      evidenceOptions(),
+    )).toThrow('protectedTiming signature is invalid');
+
+    const stagingTamper = makeV2Window();
+    const stagingRef = stagingTamper.releases[0].authoritativeEvidence.rootStagingEvidence;
+    const stagingPath = path.join(promotionRoot, stagingRef.path);
+    const rootStaging = JSON.parse(fs.readFileSync(stagingPath, 'utf8'));
+    const stagingAttestationPath = path.join(
+      evidenceRoot,
+      stagingTamper.releases[0].authoritativeEvidence.stagingAttestation.path,
+    );
+    const stagingAttestation = JSON.parse(
+      fs.readFileSync(stagingAttestationPath, 'utf8'),
+    );
+    rootStaging.transaction.publishedAt = iso(
+      Date.parse(stagingAttestation.payload.verifiedAt) + 1_000,
+    );
+    const stagingBytes = `${JSON.stringify(rootStaging, null, 2)}\n`;
+    fs.writeFileSync(stagingPath, stagingBytes);
+    stagingRef.sha256 = sha256(stagingBytes);
+    expect(() => evaluateReleaseObservationWindow(
+      stagingTamper,
+      evidenceOptions(),
+    )).toThrow('rootStagingEvidence timing is invalid');
+
+    const requestTamper = makeV2Window();
+    const requestRef = requestTamper.releases[0].authoritativeEvidence.promotionRequest;
+    const requestPath = path.join(promotionRoot, requestRef.path);
+    const promotionRequest = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+    promotionRequest.createdAt = iso(Date.parse(promotionRequest.createdAt) + 1_000);
+    const requestBytes = `${JSON.stringify(promotionRequest, null, 2)}\n`;
+    fs.writeFileSync(requestPath, requestBytes);
+    requestRef.sha256 = sha256(requestBytes);
+    expect(() => evaluateReleaseObservationWindow(
+      requestTamper,
+      evidenceOptions(),
+    )).toThrow('canonical digest does not match the root journal');
   });
 
   it('requires manual recovery evidence when all ten releases pass without a rollback', () => {
@@ -695,7 +1288,7 @@ describe('release plan observation evaluation', () => {
     expect(result.verdict).toBe('FAIL');
     expect(result.reasons).toEqual(expect.arrayContaining([
       'rollback_recovery_failed_or_above_120_seconds',
-      'authoritative_automated_readiness_start_evidence_required',
+      'authoritative_ci_rc_timing_evidence_required',
       'authoritative_handoff_timestamps_required',
       'authoritative_failed_promotion_baseline_required',
       'authoritative_sentry_defect_evidence_required',
@@ -929,10 +1522,11 @@ describe('release shadow-readiness evaluation', () => {
 });
 
 describe('protected-main reuse authoritative activation request', () => {
-  it('derives five entries only from the latest signed manifests, staging attestations, and root journals', () => {
-    const window = addFullProtectedMainBindings(makeWindow(
+  it('derives five entries from a five-record activation window and the latest root journals', () => {
+    const observation = addFullProtectedMainBindings(makeWindow(
       Array.from({ length: 10 }, () => ({})),
     ));
+    const window = activationWindowFrom(observation);
     const payload = buildProtectedMainReuseServerPayload(window, evidenceOptions(), {
       requestId: 'protected-main-reuse-window-1',
     });
@@ -949,22 +1543,23 @@ describe('protected-main reuse authoritative activation request', () => {
     });
 
     const omittedLatest = structuredClone(window);
-    omittedLatest.releases[9] = structuredClone(omittedLatest.releases[8]);
+    omittedLatest.releases[4] = structuredClone(omittedLatest.releases[3]);
     expect(() => buildProtectedMainReuseServerPayload(
       omittedLatest,
       evidenceOptions(),
       { requestId: 'forged-window' },
     )).toThrow();
 
-    const staleComparison = addFullProtectedMainBindings(makeWindow(
+    const staleObservation = addFullProtectedMainBindings(makeWindow(
       Array.from({ length: 10 }, () => ({})),
     ));
-    const staleRecord = staleComparison.releases[6];
+    const staleComparison = activationWindowFrom(staleObservation);
+    const staleRecord = staleComparison.releases[1];
     const staleManifestRef = staleRecord.authoritativeEvidence.releaseManifest;
     const staleManifestPath = path.join(evidenceRoot, staleManifestRef.path);
     const staleManifest = JSON.parse(fs.readFileSync(staleManifestPath, 'utf8'));
     staleManifest.payload.testPolicy.results.protectedMainShadow.comparison.comparedAt =
-      staleComparison.releases[5].completedAt;
+      staleComparison.releases[0].completedAt;
     const rewrittenManifest = `${JSON.stringify(
       signedEnvelope('nexus.release-manifest.v2', staleManifest.payload),
       null,
@@ -989,6 +1584,28 @@ describe('protected-main reuse authoritative activation request', () => {
       { requestId: 'stale-comparison-window' },
     )).toThrow('comparisons must follow the preceding production release');
   });
+
+  it('collects exactly the latest five completed promotions for activation', () => {
+    addFullProtectedMainBindings(makeWindow(Array.from({ length: 10 }, () => ({}))));
+    const window = collectReleaseActivationWindow(
+      { now: new Date() },
+      evidenceOptions(),
+    );
+
+    expect(window.schema).toBe(RELEASE_ACTIVATION_WINDOW_SCHEMA);
+    expect(window.releases).toHaveLength(5);
+    expect(window.releases.map((release) => release.releaseId)).toEqual([
+      'v4.14.235',
+      'v4.14.236',
+      'v4.14.237',
+      'v4.14.238',
+      'v4.14.239',
+    ]);
+    const payload = buildProtectedMainReuseServerPayload(window, evidenceOptions(), {
+      requestId: 'collected-activation-window',
+    });
+    expect(payload.entries.map((entry) => entry.productionSequence)).toEqual([6, 7, 8, 9, 10]);
+  });
 });
 
 describe('release plan evaluator CLI', () => {
@@ -1007,6 +1624,37 @@ describe('release plan evaluator CLI', () => {
     fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
     return { directory, file };
   }
+
+  it('collects a mode-0600 v2 window without an operator-authored release input', () => {
+    const source = makeV2Window();
+    const destination = temporaryFile('placeholder.json', { unused: true });
+    fs.unlinkSync(destination.file);
+    const collected = spawnSync(process.execPath, [
+      cli,
+      'collect-observation',
+      '--quality-evidence',
+      source.qualityEvidence.path,
+      '--evidence-root',
+      evidenceRoot,
+      '--promotion-evidence-root',
+      promotionRoot,
+      '--public-key',
+      publicKeyPath,
+      '--allow-test-key',
+      '--output',
+      destination.file,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+
+    expect(collected.status).toBe(0);
+    expect(JSON.parse(collected.stdout)).toMatchObject({
+      schema: RELEASE_OBSERVATION_WINDOW_V2_SCHEMA,
+      baseline: { releaseCount: 10 },
+    });
+    expect(fs.statSync(destination.file).mode & 0o777).toBe(0o600);
+  });
 
   it('uses stable exit codes and writes a mode-0600 result', () => {
     const passing = temporaryFile('window.json', makeWindow());

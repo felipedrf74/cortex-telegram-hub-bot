@@ -78,14 +78,45 @@ Explicit preparation
 4. Before Docker installation, capture the maintenance baseline with the
    installed root-owned command:
    `sudo /usr/local/sbin/quality-sonar-preflight --output REPLACE_WITH_NEW_PRIVATE_DIRECTORY`.
+   Preflight first invokes the installed root-owned release authority's
+   `assert-root-pm2-ready` contract and accepts only the complete PM2 6.0.14
+   closure under the pinned `/usr/bin/node` v22.23.1 identity.
    Missing
    firewall tools are recorded as `not_installed`; at least one authoritative
    UFW, nftables, or iptables snapshot is mandatory. Install official Docker
    Engine and Compose only after owner review of listeners, routes, firewall,
    Tailscale, Cloudflare, PM2, health, memory, load, swap, and OOM evidence.
-5. Install /etc/sonarqube/sonarqube.env and /etc/sonarqube/backup.env from the
-   examples with root ownership and mode 0600. Put the project scanner token in
-   a separate Mac-side mode-0600 file; never put it in either Compose file.
+5. Install `/etc/sonarqube/sonarqube.env`, `/etc/sonarqube/backup.env`, and
+   `/etc/sonarqube/aws-config` from their examples with root ownership and
+   mode 0600. The backup profile must use the dedicated IAM Roles Anywhere
+   writer role through the exact root-owned `aws_signing_helper` path and
+   reviewed SHA-256 declared in `backup.env`. Keep
+   `AWS_SHARED_CREDENTIALS_FILE=/dev/null`; long-lived access-key,
+   web-identity, container-credential, and alternate shared-credential
+   environment paths are rejected. The backup uses
+   `nexus-sonarqube-backup`; the isolated restore drill selects the separate
+   `SONAR_RESTORE_AWS_PROFILE=nexus-sonarqube-restore` read-only role and
+   revalidates the same boundary before downloading. Bind both exact role ARNs
+   in `SONAR_BACKUP_AWS_ROLE_ARN` and `SONAR_RESTORE_AWS_ROLE_ARN`; equal or
+   substituted roles fail closed. Approve and test the certificate
+   issuance/rotation/revocation and private-key/PIN custody before enabling
+   unattended backups. Every helper, config, certificate, and private-key
+   path and parent must be canonical, root-owned, and not group/world
+   writable; the private key must be mode 0400 or 0600. HSM, PKCS#11, TPM,
+   and device-backed paths remain unsupported until their owner-approved
+   custody design and validator change are reviewed together. Put the project
+   scanner token in a separate Mac-side mode-0600 file; never put it in either
+   Compose file.
+
+   Provision a separate owner-approved Sonar backup bucket/change set with
+   distinct writer and read-only restore roles. Do not reuse the application
+   DR bucket, prefixes, or roles. The Sonar storage policy must enforce TLS,
+   default encryption, public-access blocking, and access only to the exact
+   configured Sonar prefix. The bucket must have versioning enabled. Its
+   reviewed lifecycle must bound noncurrent versions without weakening the
+   visible 7-daily/4-weekly count tiers. Every successful backup receipt binds
+   the exact encrypted object and checksum object VersionIds; a restore drill
+   must pass both VersionIds and never download the mutable current key.
 6. After Docker is installed, while Sonar remains stopped, run another
    installed `quality-sonar-preflight` into a new root-owned private directory.
    A passing
@@ -136,6 +167,34 @@ Explicit preparation
    `sudo /usr/local/sbin/quality-sonar-release-state --project nexus-hub-backend --json`.
    It receives the schema/status/project/active-count aggregate, never the
    token or unrelated project activity.
+10. After the first healthy start and credential hardening, make the backup
+    schedule operational through the explicit owner action. This command
+    creates and remotely verifies one encrypted backup before it enables the
+    timer; installation alone intentionally leaves the timer disabled:
+
+    ```sh
+    sudo /usr/local/sbin/quality-sonar-backup \
+      --config /etc/sonarqube/backup.env --enable-timer
+    sudo /usr/local/sbin/quality-sonar-backup --verify-freshness \
+      --max-age-hours 26
+    sudo systemctl is-enabled --quiet nexus-sonarqube-backup.timer
+    sudo systemctl is-active --quiet nexus-sonarqube-backup.timer
+    ```
+
+    A failed backup retries every 15 minutes, including a non-blocking
+    release/Sonar mutex collision. It never waits behind or runs alongside a
+    release. Alert on a failed freshness check; a successful systemd unit
+    invocation is not a substitute for the root-owned remote-backup receipt.
+    Retention is reconciled and re-listed by distinct UTC day and ISO week:
+    repeated manual runs or retries cannot consume multiple 7-daily/4-weekly
+    slots. Every selected historical data/checksum pair is then bound to its
+    exact S3 VersionIds, metadata digest, and S3 SHA-256 checksums before the
+    receipt can call it complete. The receipt records both the configured
+    targets and the observed distinct-period counts, and reports
+    `targetReached: false` while a new installation is still accruing its
+    initial retention history.
+    Before a later asset reinstall, stop and disable the timer as required by
+    the transactional installer, then repeat this owner action after review.
 
 Install the reviewed scanner bundle on the Mac before the first scan. The lock
 file pins SonarScanner CLI 8.1.0.6389 for macOS arm64, the official HTTPS
@@ -209,6 +268,11 @@ not weaken or block the production release path.
 
 Backups are PostgreSQL custom-format dumps encrypted with an off-host age
 recipient before upload to S3-compatible storage. The hook retains seven daily
-and four weekly objects. Run the restore/reindex drill quarterly on a separate
-Docker host, or stop the advisory live stack first; the drill refuses to share
-the host with a running live Sonar container.
+and four weekly distinct periods and atomically records the last remotely
+verified success for the 26-hour freshness check. Run the restore/reindex drill
+quarterly on a separate Docker host, or stop the advisory live stack first;
+the drill refuses to share the host with a running live Sonar container. Write
+each drill result to a new direct child of the installer-created, root-owned
+mode-0700 `/var/lib/nexus-sonarqube/restore-evidence` directory, using a name
+such as `sonar-restore-2026Q3.json`; the drill refuses existing files,
+symlinks, subdirectories, and paths outside that boundary.

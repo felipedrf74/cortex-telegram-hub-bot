@@ -199,6 +199,10 @@ if (postgres.image !== lockedPostgresImage || sonar.image !== lockedSonarImage) 
   throw new Error('rendered service image differs from the immutable image lock');
 }
 if (postgres.restart !== 'no' || sonar.restart !== 'no') throw new Error('Docker restart policy must not bypass root start authorization');
+if (Number(postgres.cpus) !== 1 || Number(postgres.mem_limit) !== 2 * 1024 * 1024 * 1024
+    || Number(sonar.cpus) !== 2 || Number(sonar.mem_limit) !== 6 * 1024 * 1024 * 1024) {
+  throw new Error('rendered CPU or memory limits differ from the approved Sonar envelope');
+}
 if ((postgres.ports || []).length !== 0) throw new Error('PostgreSQL must not publish a host port');
 const ports = sonar.ports || [];
 if (ports.length !== 1
@@ -235,6 +239,41 @@ NODE
   echo "sonarqube_compose_config_ok network=loopback-only database=internal"
 }
 
+verify_runtime_limits() {
+  local postgres_id sonar_id temp_dir
+  postgres_id="$("${compose[@]}" ps --quiet postgres)"
+  sonar_id="$("${compose[@]}" ps --quiet sonarqube)"
+  [[ "$postgres_id" =~ ^[a-f0-9]{12,64}$ ]] \
+    && [[ "$sonar_id" =~ ^[a-f0-9]{12,64}$ ]] \
+    || { echo "Unable to resolve the exact running Sonar container identities" >&2; return 1; }
+  temp_dir="$(mktemp -d)"
+  chmod 0700 "$temp_dir"
+  if ! "$DOCKER_BIN" inspect --format '{{json .HostConfig}}' "$postgres_id" >"$temp_dir/postgres.json" \
+      || ! "$DOCKER_BIN" inspect --format '{{json .HostConfig}}' "$sonar_id" >"$temp_dir/sonarqube.json"; then
+    rm -rf "$temp_dir"
+    echo "Unable to inspect the running Sonar resource envelope" >&2
+    return 1
+  fi
+  chmod 0600 "$temp_dir/postgres.json" "$temp_dir/sonarqube.json"
+  if ! "$NODE_BIN" - "$temp_dir/postgres.json" "$temp_dir/sonarqube.json" <<'NODE'
+const fs = require('fs');
+const [postgresPath, sonarPath] = process.argv.slice(2);
+const postgres = JSON.parse(fs.readFileSync(postgresPath, 'utf8'));
+const sonar = JSON.parse(fs.readFileSync(sonarPath, 'utf8'));
+if (Number(postgres.NanoCpus) !== 1_000_000_000
+    || Number(postgres.Memory) !== 2 * 1024 * 1024 * 1024
+    || Number(sonar.NanoCpus) !== 2_000_000_000
+    || Number(sonar.Memory) !== 6 * 1024 * 1024 * 1024) process.exit(1);
+NODE
+  then
+    rm -rf "$temp_dir"
+    echo "Running Sonar containers exceed or omit the approved CPU/RAM envelope" >&2
+    return 1
+  fi
+  rm -rf "$temp_dir"
+  echo "sonarqube_runtime_limits_ok postgresCpu=1 postgresMemoryGiB=2 sonarCpu=2 sonarMemoryGiB=6"
+}
+
 stop_stack() {
   "${compose[@]}" stop -t 3600 sonarqube postgres
   echo "sonarqube_stack_stopped bind_data=preserved"
@@ -251,6 +290,11 @@ start_stack() {
   verify_live_ollama
   verify_prepulled_images
   "${compose[@]}" up -d --pull never
+  if ! verify_runtime_limits; then
+    "${compose[@]}" stop -t 3600 sonarqube postgres >/dev/null 2>&1 || true
+    echo "Sonar runtime resource verification failed; stopped advisory containers" >&2
+    return 1
+  fi
   if ! "$health" --url http://127.0.0.1:9000; then
     "${compose[@]}" stop -t 3600 sonarqube postgres >/dev/null 2>&1 || true
     echo "Sonar failed startup health; stopped advisory containers" >&2

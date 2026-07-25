@@ -1,0 +1,973 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private, versioned, Object Lock enabled S3 storage for encrypted Nexus
+  application disaster-recovery objects. Optionally creates an initially
+  disabled IAM Roles Anywhere identity plane. The stack creates no access keys,
+  login profiles, leaf certificates, or private keys.
+
+Parameters:
+  PrincipalProvisioningMode:
+    Type: String
+    Default: EXTERNAL
+    AllowedValues:
+      - EXTERNAL
+      - IAM_ROLES_ANYWHERE
+    Description: >-
+      EXTERNAL preserves the existing role-ARN contract. IAM_ROLES_ANYWHERE
+      creates dedicated backup and restore roles, profiles, a trust anchor, and
+      its certificate revocation list.
+  RolesAnywhereActivation:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - DISABLED
+      - ENABLED
+    Description: >-
+      Keep DISABLED until the owner approves certificate issuance, revocation,
+      private-key custody, and the credential-helper installation.
+  LifecycleActivation:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - DISABLED
+      - ENABLED
+    Description: >-
+      Keep DISABLED until existing governed object versions have been
+      inventoried and the write-once backup client has been deployed. ENABLED
+      delegates expiry to S3 Lifecycle while Object Lock remains authoritative.
+  BucketName:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional globally unique bucket name. Leave empty to let CloudFormation
+      generate one.
+    AllowedPattern: '^$|^(?![0-9]{1,3}(\.[0-9]{1,3}){3}$)(?!xn--)(?!sthree-)(?!amzn-s3-demo-)(?!.*-s3alias$)(?!.*--ol-s3$)(?!.*\.mrap$)(?!.*--x-s3$)(?!.*--table-s3$)(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  BackupPrincipalArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Existing dedicated backup IAM role ARN used by the approved
+      ServerDominguez temporary-credential path. Required only in EXTERNAL
+      mode. The stack does not create or expose credentials.
+    AllowedPattern: '^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,128}$'
+  RestorePrincipalArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional separate read-only IAM role ARN used only by an isolated
+      restore drill in EXTERNAL mode. Never reuse the backup writer role on the
+      drill host.
+    AllowedPattern: '^$|^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,128}$'
+  TrustAnchorCertificateData:
+    Type: String
+    Default: ''
+    MaxLength: 4096
+    Description: >-
+      PEM-encoded public certificate for an owner-controlled private CA. Used
+      only in IAM_ROLES_ANYWHERE mode. Private key material must never enter
+      CloudFormation.
+  # CloudFormation limits each parameter value to 4,096 bytes. These ordered
+  # chunks preserve CloudFormation ownership while covering the full 300,000
+  # byte IAM Roles Anywhere CRL service limit. Generate every value with
+  # scripts/application-dr-crl-parameters.mjs; never mix generated chunks with
+  # UsePreviousValue.
+  CertificateRevocationListData001: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData002: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData003: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData004: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData005: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData006: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData007: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData008: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData009: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData010: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData011: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData012: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData013: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData014: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData015: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData016: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData017: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData018: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData019: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData020: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData021: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData022: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData023: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData024: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData025: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData026: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData027: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData028: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData029: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData030: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData031: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData032: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData033: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData034: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData035: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData036: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData037: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData038: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData039: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData040: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData041: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData042: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData043: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData044: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData045: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData046: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData047: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData048: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData049: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData050: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData051: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData052: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData053: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData054: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData055: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData056: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData057: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData058: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData059: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData060: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData061: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData062: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData063: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData064: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData065: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData066: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData067: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData068: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData069: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData070: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData071: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData072: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData073: {Type: String, Default: '', MaxLength: 4096}
+  CertificateRevocationListData074: {Type: String, Default: '', MaxLength: 992}
+  CertificateRevocationListSha256:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[0-9a-f]{64}$'
+    Description: >-
+      SHA-256 of the exact reassembled PEM CRL. Generated and verified outside
+      CloudFormation without exposing private key material.
+  CertificateIssuerCommonName:
+    Type: String
+    Default: nexus-application-dr-ca
+    MinLength: 2
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:@/+ -]{0,63}$'
+    Description: Exact issuer CN required on both approved leaf certificates.
+  BackupCertificateSubjectCommonName:
+    Type: String
+    Default: serverdominguez-nexus-dr-backup
+    MinLength: 2
+    MaxLength: 61
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:@/+ -]{0,60}$'
+    Description: Exact subject CN required on the ServerDominguez backup certificate.
+  RestoreCertificateSubjectCommonName:
+    Type: String
+    Default: nexus-isolated-dr-restore
+    MinLength: 2
+    MaxLength: 61
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:@/+ -]{0,60}$'
+    Description: Exact subject CN required on the isolated restore certificate.
+  DrPrefix:
+    Type: String
+    Default: nexus-hub/application
+    Description: Prefix dedicated to Nexus application DR objects.
+    MaxLength: 128
+    AllowedPattern: '^(?!.*\.\.)(?!.*//)[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$'
+    ConstraintDescription: >-
+      Use a bounded non-empty prefix without a leading or trailing slash,
+      repeated slash, or parent-directory component.
+
+Conditions:
+  ProvisionRolesAnywhere: !Equals [!Ref PrincipalProvisioningMode, IAM_ROLES_ANYWHERE]
+  EnableRolesAnywhere: !And
+    - !Condition ProvisionRolesAnywhere
+    - !Equals [!Ref RolesAnywhereActivation, ENABLED]
+  EnableLifecycle: !Equals [!Ref LifecycleActivation, ENABLED]
+  HasExplicitBucketName: !Not [!Equals [!Ref BucketName, '']]
+  HasExternalRestorePrincipal: !Not [!Equals [!Ref RestorePrincipalArn, '']]
+  HasRestorePrincipal: !Or
+    - !Condition ProvisionRolesAnywhere
+    - !Condition HasExternalRestorePrincipal
+
+Rules:
+  ExternalModeRequiresBackupRole:
+    RuleCondition: !Equals [!Ref PrincipalProvisioningMode, EXTERNAL]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref BackupPrincipalArn, '']]
+        AssertDescription: >-
+          BackupPrincipalArn is required when PrincipalProvisioningMode is
+          EXTERNAL.
+      - Assert: !Equals [!Ref RolesAnywhereActivation, DISABLED]
+        AssertDescription: >-
+          RolesAnywhereActivation must remain DISABLED in EXTERNAL mode.
+      - Assert: !Equals [!Ref CertificateRevocationListData001, '']
+        AssertDescription: >-
+          CertificateRevocationListData chunks must remain empty in EXTERNAL
+          mode.
+      - Assert: !Equals [!Ref CertificateRevocationListSha256, '']
+        AssertDescription: >-
+          CertificateRevocationListSha256 must remain empty in EXTERNAL mode.
+  ManagedModeOwnsItsPrincipals:
+    RuleCondition: !Equals [!Ref PrincipalProvisioningMode, IAM_ROLES_ANYWHERE]
+    Assertions:
+      - Assert: !Equals [!Ref BackupPrincipalArn, '']
+        AssertDescription: >-
+          BackupPrincipalArn must be empty when the stack provisions the role.
+      - Assert: !Equals [!Ref RestorePrincipalArn, '']
+        AssertDescription: >-
+          RestorePrincipalArn must be empty when the stack provisions the role.
+      - Assert: !Not [!Equals [!Ref TrustAnchorCertificateData, '']]
+        AssertDescription: >-
+          TrustAnchorCertificateData must contain the reviewed public
+          certificate for the private CA.
+      - Assert: !Not [!Equals [!Ref CertificateRevocationListData001, '']]
+        AssertDescription: >-
+          CertificateRevocationListData001 must begin the private CA's current
+          reviewed CRL.
+      - Assert: !Not [!Equals [!Ref CertificateRevocationListSha256, '']]
+        AssertDescription: >-
+          CertificateRevocationListSha256 must bind the exact generated CRL
+          parameter set.
+      - Assert: !Not
+          - !Equals
+            - !Ref BackupCertificateSubjectCommonName
+            - !Ref RestoreCertificateSubjectCommonName
+        AssertDescription: >-
+          Backup and restore certificates must use distinct subject common
+          names.
+  RestorePrincipalMustBeReadOnlyAndDistinct:
+    RuleCondition: !And
+      - !Equals [!Ref PrincipalProvisioningMode, EXTERNAL]
+      - !Not [!Equals [!Ref RestorePrincipalArn, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref RestorePrincipalArn, !Ref BackupPrincipalArn]]
+        AssertDescription: >-
+          RestorePrincipalArn must be a separate read-only role and must not
+          equal the write-capable BackupPrincipalArn.
+
+Resources:
+  DisasterRecoveryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If [HasExplicitBucketName, !Ref BucketName, !Ref 'AWS::NoValue']
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      ObjectLockEnabled: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: GovernedNamespaceHygiene
+            Prefix: !Sub '${DrPrefix}/'
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+            ExpiredObjectDeleteMarker: true
+          - Id: DatabaseHourlyWriteOnceRetention
+            Prefix: !Sub '${DrPrefix}/database/hourly/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpirationInDays: 3
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          - Id: DatabaseDailyWriteOnceRetention
+            Prefix: !Sub '${DrPrefix}/database/daily/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpirationInDays: 9
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          - Id: DatabaseWeeklyWriteOnceRetention
+            Prefix: !Sub '${DrPrefix}/database/weekly/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpirationInDays: 36
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          - Id: DatabaseMonthlyWriteOnceRetention
+            Prefix: !Sub '${DrPrefix}/database/monthly/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpirationInDays: 191
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          - Id: ReleaseWriteOnceRetention
+            Prefix: !Sub '${DrPrefix}/releases/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpirationInDays: 92
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: encrypted-application-dr
+
+  RolesAnywhereTrustAnchor:
+    Type: AWS::RolesAnywhere::TrustAnchor
+    Condition: ProvisionRolesAnywhere
+    Properties:
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-ca'
+      Source:
+        SourceType: CERTIFICATE_BUNDLE
+        SourceData:
+          X509CertificateData: !Ref TrustAnchorCertificateData
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: application-dr-authentication
+
+  RolesAnywhereCertificateRevocationList:
+    Type: AWS::RolesAnywhere::CRL
+    Condition: ProvisionRolesAnywhere
+    Properties:
+      CrlData: !Join
+        - ''
+        - - !Ref CertificateRevocationListData001
+          - !Ref CertificateRevocationListData002
+          - !Ref CertificateRevocationListData003
+          - !Ref CertificateRevocationListData004
+          - !Ref CertificateRevocationListData005
+          - !Ref CertificateRevocationListData006
+          - !Ref CertificateRevocationListData007
+          - !Ref CertificateRevocationListData008
+          - !Ref CertificateRevocationListData009
+          - !Ref CertificateRevocationListData010
+          - !Ref CertificateRevocationListData011
+          - !Ref CertificateRevocationListData012
+          - !Ref CertificateRevocationListData013
+          - !Ref CertificateRevocationListData014
+          - !Ref CertificateRevocationListData015
+          - !Ref CertificateRevocationListData016
+          - !Ref CertificateRevocationListData017
+          - !Ref CertificateRevocationListData018
+          - !Ref CertificateRevocationListData019
+          - !Ref CertificateRevocationListData020
+          - !Ref CertificateRevocationListData021
+          - !Ref CertificateRevocationListData022
+          - !Ref CertificateRevocationListData023
+          - !Ref CertificateRevocationListData024
+          - !Ref CertificateRevocationListData025
+          - !Ref CertificateRevocationListData026
+          - !Ref CertificateRevocationListData027
+          - !Ref CertificateRevocationListData028
+          - !Ref CertificateRevocationListData029
+          - !Ref CertificateRevocationListData030
+          - !Ref CertificateRevocationListData031
+          - !Ref CertificateRevocationListData032
+          - !Ref CertificateRevocationListData033
+          - !Ref CertificateRevocationListData034
+          - !Ref CertificateRevocationListData035
+          - !Ref CertificateRevocationListData036
+          - !Ref CertificateRevocationListData037
+          - !Ref CertificateRevocationListData038
+          - !Ref CertificateRevocationListData039
+          - !Ref CertificateRevocationListData040
+          - !Ref CertificateRevocationListData041
+          - !Ref CertificateRevocationListData042
+          - !Ref CertificateRevocationListData043
+          - !Ref CertificateRevocationListData044
+          - !Ref CertificateRevocationListData045
+          - !Ref CertificateRevocationListData046
+          - !Ref CertificateRevocationListData047
+          - !Ref CertificateRevocationListData048
+          - !Ref CertificateRevocationListData049
+          - !Ref CertificateRevocationListData050
+          - !Ref CertificateRevocationListData051
+          - !Ref CertificateRevocationListData052
+          - !Ref CertificateRevocationListData053
+          - !Ref CertificateRevocationListData054
+          - !Ref CertificateRevocationListData055
+          - !Ref CertificateRevocationListData056
+          - !Ref CertificateRevocationListData057
+          - !Ref CertificateRevocationListData058
+          - !Ref CertificateRevocationListData059
+          - !Ref CertificateRevocationListData060
+          - !Ref CertificateRevocationListData061
+          - !Ref CertificateRevocationListData062
+          - !Ref CertificateRevocationListData063
+          - !Ref CertificateRevocationListData064
+          - !Ref CertificateRevocationListData065
+          - !Ref CertificateRevocationListData066
+          - !Ref CertificateRevocationListData067
+          - !Ref CertificateRevocationListData068
+          - !Ref CertificateRevocationListData069
+          - !Ref CertificateRevocationListData070
+          - !Ref CertificateRevocationListData071
+          - !Ref CertificateRevocationListData072
+          - !Ref CertificateRevocationListData073
+          - !Ref CertificateRevocationListData074
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-crl'
+      TrustAnchorArn: !GetAtt RolesAnywhereTrustAnchor.TrustAnchorArn
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: application-dr-revocation
+        - Key: crl-sha256
+          Value: !Ref CertificateRevocationListSha256
+
+  BackupRole:
+    Type: AWS::IAM::Role
+    Condition: ProvisionRolesAnywhere
+    Properties:
+      Description: Prefix-scoped writer used only by the Nexus application DR backup.
+      MaxSessionDuration: 3600
+      Path: /nexus/application-dr/
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rolesanywhere.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:SetSourceIdentity
+              - sts:TagSession
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt RolesAnywhereTrustAnchor.TrustAnchorArn
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+                aws:PrincipalTag/x509Issuer/CN: !Ref CertificateIssuerCommonName
+                aws:PrincipalTag/x509Subject/CN: !Ref BackupCertificateSubjectCommonName
+      Policies:
+        - PolicyName: NexusApplicationDrBackup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListExactPrefixVersions
+                Effect: Allow
+                Action: s3:ListBucketVersions
+                Resource: !GetAtt DisasterRecoveryBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - !Sub '${DrPrefix}/*'
+              - Sid: DatabaseObjectIO
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetObjectRetention
+                  - s3:PutObject
+                  - s3:PutObjectRetention
+                Resource:
+                  - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+                  - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+                  - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+                  - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+              - Sid: ReleaseObjectIOAndRetention
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetObjectRetention
+                  - s3:PutObjectRetention
+                Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: application-dr-backup
+
+  RestoreRole:
+    Type: AWS::IAM::Role
+    Condition: ProvisionRolesAnywhere
+    Properties:
+      Description: Read-only role used only by the isolated Nexus application DR drill.
+      MaxSessionDuration: 3600
+      Path: /nexus/application-dr/
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rolesanywhere.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:SetSourceIdentity
+              - sts:TagSession
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt RolesAnywhereTrustAnchor.TrustAnchorArn
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+                aws:PrincipalTag/x509Issuer/CN: !Ref CertificateIssuerCommonName
+                aws:PrincipalTag/x509Subject/CN: !Ref RestoreCertificateSubjectCommonName
+      Policies:
+        - PolicyName: NexusApplicationDrRestore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListExactPrefixVersions
+                Effect: Allow
+                Action: s3:ListBucketVersions
+                Resource: !GetAtt DisasterRecoveryBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - !Sub '${DrPrefix}/*'
+              - Sid: ReadExactPrefixVersions
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetObjectRetention
+                Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: application-dr-restore
+
+  BackupRolesAnywhereProfile:
+    Type: AWS::RolesAnywhere::Profile
+    Condition: ProvisionRolesAnywhere
+    DependsOn: RolesAnywhereCertificateRevocationList
+    Properties:
+      AcceptRoleSessionName: false
+      AttributeMappings:
+        - CertificateField: x509Issuer
+          MappingRules:
+            - Specifier: CN
+        - CertificateField: x509Subject
+          MappingRules:
+            - Specifier: CN
+      DurationSeconds: 900
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-backup'
+      RoleArns:
+        - !GetAtt BackupRole.Arn
+      SessionPolicy: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:ListBucketVersions",
+              "Resource": "${DisasterRecoveryBucket.Arn}",
+              "Condition": {"StringLike": {"s3:prefix": ["${DrPrefix}/*"]}}
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention", "s3:PutObject", "s3:PutObjectRetention"],
+              "Resource": [
+                "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*",
+                "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*",
+                "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*",
+                "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*"
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetObjectRetention", "s3:PutObjectRetention"],
+              "Resource": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*"
+            }
+          ]
+        }
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: application-dr-backup
+
+  RestoreRolesAnywhereProfile:
+    Type: AWS::RolesAnywhere::Profile
+    Condition: ProvisionRolesAnywhere
+    DependsOn: RolesAnywhereCertificateRevocationList
+    Properties:
+      AcceptRoleSessionName: false
+      AttributeMappings:
+        - CertificateField: x509Issuer
+          MappingRules:
+            - Specifier: CN
+        - CertificateField: x509Subject
+          MappingRules:
+            - Specifier: CN
+      DurationSeconds: 900
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-restore'
+      RoleArns:
+        - !GetAtt RestoreRole.Arn
+      SessionPolicy: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:ListBucketVersions",
+              "Resource": "${DisasterRecoveryBucket.Arn}",
+              "Condition": {"StringLike": {"s3:prefix": ["${DrPrefix}/*"]}}
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:GetObjectRetention"],
+              "Resource": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/*"
+            }
+          ]
+        }
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: application-dr-restore
+
+  DisasterRecoveryBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref DisasterRecoveryBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyPlaintextTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt DisasterRecoveryBucket.Arn
+              - !Sub '${DisasterRecoveryBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+                aws:PrincipalIsAWSService: 'false'
+          - Sid: DenyLegacyTls
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt DisasterRecoveryBucket.Arn
+              - !Sub '${DisasterRecoveryBucket.Arn}/*'
+            Condition:
+              NumericLessThan:
+                s3:TlsVersion: 1.2
+              Bool:
+                aws:PrincipalIsAWSService: 'false'
+          - Sid: DenyUnversionedObjectDeletion
+            Effect: Deny
+            Principal: '*'
+            Action: s3:DeleteObject
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+          - Sid: DenyDirectVersionDeletion
+            Effect: Deny
+            Principal: '*'
+            Action: s3:DeleteObjectVersion
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+          - Sid: AllowExactPrefixVersionListing
+            Effect: Allow
+            Principal:
+              AWS: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+            Action:
+              - s3:ListBucketVersions
+            Resource: !GetAtt DisasterRecoveryBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - !Sub '${DrPrefix}/*'
+          - !If
+            - HasRestorePrincipal
+            - Sid: AllowRestoreExactPrefixVersionListing
+              Effect: Allow
+              Principal:
+                AWS: !If [ProvisionRolesAnywhere, !GetAtt RestoreRole.Arn, !Ref RestorePrincipalArn]
+              Action: s3:ListBucketVersions
+              Resource: !GetAtt DisasterRecoveryBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix:
+                    - !Sub '${DrPrefix}/*'
+            - !Ref 'AWS::NoValue'
+          - !If
+            - HasRestorePrincipal
+            - Sid: AllowRestoreReadOnlyObjects
+              Effect: Allow
+              Principal:
+                AWS: !If [ProvisionRolesAnywhere, !GetAtt RestoreRole.Arn, !Ref RestorePrincipalArn]
+              Action:
+                - s3:GetObject
+                - s3:GetObjectVersion
+                - s3:GetObjectRetention
+              Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+            - !Ref 'AWS::NoValue'
+          - Sid: AllowDatabaseObjectIO
+            Effect: Allow
+            Principal:
+              AWS: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetObjectRetention
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource:
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+          - Sid: AllowReleaseObjectIOAndRetention
+            Effect: Allow
+            Principal:
+              AWS: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetObjectRetention
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+          - Sid: DenyBackupPrincipalObjectDeletion
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:BypassGovernanceRetention
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:PutObjectLegalHold
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+          - Sid: DenyBackupPrincipalStorageControlMutation
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:DeleteBucketPolicy
+              - s3:PutBucketObjectLockConfiguration
+              - s3:PutBucketPolicy
+              - s3:PutBucketVersioning
+              - s3:PutLifecycleConfiguration
+            Resource: !GetAtt DisasterRecoveryBucket.Arn
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+          - Sid: DenyBackupPrincipalWritesOutsideGovernedNamespaces
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectLegalHold
+              - s3:PutObjectRetention
+            NotResource:
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+          - Sid: DenyGovernedWritesFromNonBackupPrincipals
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectLegalHold
+              - s3:PutObjectRetention
+            Resource:
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+          - Sid: DenyGovernedPutWithoutIfNoneMatch
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource:
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              StringNotEquals:
+                s3:if-none-match: '*'
+          - Sid: DenyGovernedWriteWithoutRetentionDeadline
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource:
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              'Null':
+                s3:object-lock-remaining-retention-days: 'true'
+          - Sid: DenyGovernedWriteWithoutCompliance
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource:
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*'
+              - !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              StringNotEquals:
+                s3:object-lock-mode: COMPLIANCE
+          - Sid: DenyHourlyRetentionShorterThan2Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 2
+          - Sid: DenyHourlyRetentionLongerThan3Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 3
+          - Sid: DenyDailyRetentionShorterThan8Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 8
+          - Sid: DenyDailyRetentionLongerThan9Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 9
+          - Sid: DenyWeeklyRetentionShorterThan35Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 35
+          - Sid: DenyWeeklyRetentionLongerThan36Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 36
+          - Sid: DenyMonthlyRetentionShorterThan190Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 190
+          - Sid: DenyMonthlyRetentionLongerThan191Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 191
+          - Sid: DenyReleaseRetentionShorterThan90Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              NumericLessThan:
+                s3:object-lock-remaining-retention-days: 90
+          - Sid: DenyReleaseRetentionLongerThan91Days
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:PutObject
+              - s3:PutObjectRetention
+            Resource: !Sub '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+            Condition:
+              NumericGreaterThan:
+                s3:object-lock-remaining-retention-days: 91
+
+Outputs:
+  BucketName:
+    Description: Private DR bucket name.
+    Value: !Ref DisasterRecoveryBucket
+  BucketArn:
+    Description: Private DR bucket ARN.
+    Value: !GetAtt DisasterRecoveryBucket.Arn
+  DrPrefix:
+    Description: Exact prefix granted to the backup principal.
+    Value: !Ref DrPrefix
+  BackupPrincipalArn:
+    Description: Exact writer role ARN to bind in the application DR runtime configuration.
+    Value: !If [ProvisionRolesAnywhere, !GetAtt BackupRole.Arn, !Ref BackupPrincipalArn]
+  RestorePrincipalArn:
+    Condition: HasRestorePrincipal
+    Description: Exact read-only restore role ARN to bind in the drill configuration.
+    Value: !If [ProvisionRolesAnywhere, !GetAtt RestoreRole.Arn, !Ref RestorePrincipalArn]
+  RolesAnywhereActivation:
+    Condition: ProvisionRolesAnywhere
+    Description: Fail-closed activation state for the managed trust anchor, CRL, and profiles.
+    Value: !Ref RolesAnywhereActivation
+  LifecycleActivation:
+    Description: Fail-closed activation state for governed S3 Lifecycle expiry.
+    Value: !Ref LifecycleActivation
+  RolesAnywhereTrustAnchorArn:
+    Condition: ProvisionRolesAnywhere
+    Description: Exact trust anchor ARN to bind in both credential-process profiles.
+    Value: !GetAtt RolesAnywhereTrustAnchor.TrustAnchorArn
+  RolesAnywhereCrlId:
+    Condition: ProvisionRolesAnywhere
+    Description: Managed certificate revocation list identifier.
+    Value: !Ref RolesAnywhereCertificateRevocationList
+  RolesAnywhereCrlSha256:
+    Condition: ProvisionRolesAnywhere
+    Description: Owner-verified SHA-256 of the exact CloudFormation-managed CRL bytes.
+    Value: !Ref CertificateRevocationListSha256
+  BackupRolesAnywhereProfileArn:
+    Condition: ProvisionRolesAnywhere
+    Description: Exact single-role backup profile ARN.
+    Value: !GetAtt BackupRolesAnywhereProfile.ProfileArn
+  RestoreRolesAnywhereProfileArn:
+    Condition: ProvisionRolesAnywhere
+    Description: Exact single-role restore profile ARN.
+    Value: !GetAtt RestoreRolesAnywhereProfile.ProfileArn
+  S3Endpoint:
+    Description: Credential-free regional S3 HTTPS endpoint.
+    Value: !Sub 'https://s3.${AWS::Region}.${AWS::URLSuffix}'

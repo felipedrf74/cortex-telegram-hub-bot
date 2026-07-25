@@ -1,0 +1,10 @@
+# Install as /etc/sonarqube/aws-config, root:root, mode 0600.
+# Replace every placeholder and keep this profile dedicated to the Sonar backup
+# prefix. Do not place the Roles Anywhere private key or PIN in this file.
+[profile nexus-sonarqube-backup]
+region = eu-west-1
+credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-certificate.pem --private-key /etc/sonarqube/roles-anywhere-private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/replace-with-trust-anchor-id --profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/replace-with-profile-id --role-arn arn:aws:iam::111122223333:role/nexus-sonarqube-backup --session-duration 900
+
+[profile nexus-sonarqube-restore]
+region = eu-west-1
+credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-restore-certificate.pem --private-key /etc/sonarqube/roles-anywhere-restore-private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/replace-with-trust-anchor-id --profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/replace-with-restore-profile-id --role-arn arn:aws:iam::111122223333:role/nexus-sonarqube-restore --session-duration 900

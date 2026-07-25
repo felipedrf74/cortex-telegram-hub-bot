@@ -48,7 +48,10 @@ now prove the signed `ReleaseManifestV2`, immutable staging install, exact-artif
 promotion, atomic PM2 switch, and automatic exact rollback path.
 The exact-artifact test, manifest, versioned-release, and documentation path is
 the canonical release process. Its legacy repository-sync wrappers are now
-retired; emergency exact rollback and restore paths remain available.
+retired. The signed root-owned promotion transaction is the sole runtime or
+database mutation path for promotion and predecessor recovery. The legacy
+`scripts/rollback.sh` and `scripts/restore.sh` commands remain available only
+for read-only dry-run inventory; their apply modes are retired.
 
 Every future production deployment, remote branch cleanup, and TestFlight
 expiry still requires explicit owner authorization.

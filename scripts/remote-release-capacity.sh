@@ -39,9 +39,13 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ROLE" in staging|production) ;; *) echo "invalid release capacity role" >&2; exit 64 ;; esac
-[[ "$BASE_DIR" == /home/dominguez/* ]] || {
-  if [ -z "$FIXTURE_ROOT" ]; then echo "unsafe release capacity base path" >&2; exit 64; fi
-}
+case "$ROLE:$BASE_DIR" in
+  staging:/srv/nexus-release/staging \
+    |staging:/home/dominguez/telegram-hub-bot-staging \
+    |production:/srv/nexus-release/production \
+    |production:/home/dominguez/telegram-hub-bot) ;;
+  *) echo "unsafe release capacity base path" >&2; exit 64 ;;
+esac
 [[ "$SONAR_URL" =~ ^https?://(127\.0\.0\.1|localhost)(:[0-9]+)?$ ]] || {
   echo "SonarQube capacity endpoint must be loopback-only" >&2
   exit 64

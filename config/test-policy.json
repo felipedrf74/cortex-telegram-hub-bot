@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-24.4",
+  "version": "2026-07-24.10",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -199,27 +199,35 @@
     }
   },
   "dispositionRules": [
-    { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects the exact ten-release timing and quality window, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery target, exact identity parity, and shadow-only five-release readiness verdict." },
+    { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects root-collected ten-release observation windows, signed redacted Sentry quality authority, root-derived failed-promotion baselines, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery, exact identity parity, and the distinct five-release activation contract." },
+    { "pattern": "__tests__/scripts/release-quality-evidence.test.ts", "disposition": "keep", "reason": "Protects the exact root-signed 10+10 promotion window, 24-hour Sentry observation maturation, successful-release exposure semantics, bounded sequential exact-SHA queries, in-memory redaction, aggregate-only protected signatures, and existing release/Sonar mutual exclusion." },
+    { "pattern": "__tests__/scripts/rollback-drill-kvm-inputs.test.ts", "disposition": "keep", "reason": "Protects the fail-closed detached rollback-drill input chain from unsigned plan preparation through owner-signed readiness, isolated finalization, fresh authorization, and exact protected promotion-request sealing." },
     { "pattern": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts", "disposition": "keep", "reason": "Protects the fail-closed, loopback-only KVM rollback-drill plan, distinct guest and key isolation, bounded deterministic machine evidence, three independent fault outcomes, 120-second recovery target, tamper rejection, and exact rollback-request digest binding." },
-    { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, encrypted off-host retention, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
+    { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, conditional checksummed first-point AWS writes, exact COMPLIANCE identities, monotonic 24/7/4/6 maturity, lifecycle-only AWS cleanup, the explicit R2 client-pruning variance, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
     { "pattern": "__tests__/scripts/application-dr-backup-descriptor.test.ts", "disposition": "keep", "reason": "Protects the unprivileged, exact-identity recovery descriptor passed into the root-owned encrypted backup boundary." },
+    { "pattern": "__tests__/scripts/application-dr-cloudformation.test.ts", "disposition": "keep", "reason": "Protects the retained private versioned S3 policy, exact-tier conditional write-once denies, bounded COMPLIANCE floors, disabled-first lifecycle-only cleanup, writer deletion/control-mutation denial, optional disabled-first IAM Roles Anywhere trust anchor, CloudFormation-owned full-size CRL chunk contract, one-role profiles, distinct read-only restore identity, transport controls, and the absence of generated long-lived IAM credentials." },
+    { "pattern": "__tests__/scripts/application-dr-crl-parameters.test.ts", "disposition": "keep", "reason": "Protects byte-exact generation and read-only live verification of all 74 CloudFormation CRL chunks through the 300,000-byte Roles Anywhere service limit, exact trust-anchor/profile/CRL activation-state parity, monotonic no-unrevocation rotation, immutable evidence, and the absence of any direct CRL mutation command." },
     { "pattern": "__tests__/scripts/application-dr-installer.test.ts", "disposition": "keep", "reason": "Protects transactional installation and rollback of the root-owned DR assets, service state, and isolated drill identity." },
     { "pattern": "__tests__/scripts/application-dr-recovery-runtime.test.ts", "disposition": "keep", "reason": "Protects hostile-archive rejection and exact signed runtime reconstruction without executing candidate-controlled recovery code." },
     { "pattern": "__tests__/scripts/application-dr-required-release-escrow.test.ts", "disposition": "keep", "reason": "Protects phase-distinct, transaction-bound rollback and current-runtime escrow identities, retention, and exact-version confirmation." },
-    { "pattern": "__tests__/scripts/application-dr-version-retention.test.ts", "disposition": "keep", "reason": "Protects paginated exact AWS key/version retention and fail-closed deletion plans while preserving the explicit R2 variance." },
+    { "pattern": "__tests__/scripts/application-dr-version-retention.test.ts", "disposition": "keep", "reason": "Protects paginated read-only AWS retention-floor evidence, current-period visibility, exact version identity, and fail-closed maturity reporting; AWS expiry is lifecycle-owned while the explicit R2 pruning variance remains separately tested." },
     { "pattern": "__tests__/scripts/cloudflared-systemd-migration.test.ts", "disposition": "keep", "reason": "Protects the token-free, exact-input, root-owned Cloudflare replica handoff from a fragile cron child to a boot-persistent systemd connector without interrupting the confirmed public route." },
     { "pattern": "__tests__/scripts/ollama-observation-collector.test.ts", "disposition": "keep", "reason": "Protects the root-owned foreground collector, same-boot sequential samples, raw hash chain, exact-window api_usage aggregation, and fail-closed persistence and reboot behavior." },
     { "pattern": "__tests__/scripts/ollama-operational-transactions.test.ts", "disposition": "keep", "reason": "Protects SHA/PAX/archive-bound immutable Ollama runtime identity, exact asset/drop-in/service predecessor restoration, fail-closed journal/boot handling, and the durable release/Sonar-exclusive 24-hour observation one-shot." },
     { "pattern": "__tests__/scripts/ollama-large-model-cleanup.test.ts", "disposition": "keep", "reason": "Protects the owner-authorized, exact-digest, soak-gated removal of large Ollama models using canonical hash-bound health/request evidence while preserving and re-verifying the retained 3B model." },
     { "pattern": "__tests__/scripts/ollama-systemd-envelope.test.ts", "disposition": "keep", "reason": "Protects the fixed one-model Ollama systemd resource envelope and the separately owner-authorized, evidence-bound transition from 512 MiB to zero swap." },
-    { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, and predecessor restoration when the controlling Mac or SSH session disappears." },
+    { "pattern": "__tests__/scripts/persistent-promotion-transaction.test.ts", "disposition": "keep", "reason": "Protects durable one-shot promotion journaling, systemd recovery, predecessor restoration, and the root-installed v3 staging seal/verify trust chain when the controlling Mac or SSH session disappears." },
     { "pattern": "__tests__/scripts/protected-main-ci-evidence.test.ts", "disposition": "keep", "reason": "Protects exact-SHA, toolchain, lockfile, policy, workflow, result, and artifact identity before protected-main evidence can be shadow-compared or reused." },
     { "pattern": "__tests__/scripts/protected-main-reuse-activation.test.ts", "disposition": "keep", "reason": "Protects the root-signed five-production comparison window, independent protected GitHub run provenance, policy-drift invalidation, and exact-SHA fail-closed reuse authorization." },
     { "pattern": "__tests__/scripts/quality-sonar-live-readiness.test.ts", "disposition": "keep", "reason": "Protects the immediate pre-start SonarQube capacity, retained-model identity, loaded-model state, and effective systemd envelope checks." },
-    { "pattern": "__tests__/scripts/quality-sonar-operations.test.ts", "disposition": "keep", "reason": "Protects advisory-only SonarQube isolation, immutable image locks, local tunnel access, release mutual exclusion, resource ceilings, and recoverable backups." },
+    { "pattern": "__tests__/scripts/quality-sonar-operations.test.ts", "disposition": "keep", "reason": "Protects advisory-only SonarQube isolation, immutable image locks, local tunnel access, release mutual exclusion, resource ceilings, exact-VersionId/S3-checksummed complete-pair retention by distinct UTC day/ISO week, honest retention maturity, and atomic no-overwrite restore evidence." },
     { "pattern": "__tests__/scripts/quality-sonar-scanner-pin.test.ts", "disposition": "keep", "reason": "Protects the immutable SonarScanner archive and launcher identities used by the clean exact-SHA analysis command." },
     { "pattern": "__tests__/scripts/release-sonar-mutex.test.ts", "disposition": "keep", "reason": "Protects prompt shared release/Sonar lock cleanup and immediate reacquisition after the Mac-side FIFO holder closes." },
-    { "pattern": "__tests__/scripts/release-sequence.test.ts", "disposition": "keep", "reason": "Protects the sequential resumable release coordinator, exact-source checks, explicit approvals, checkpoint revalidation, and fail-closed phase transitions." },
+    { "pattern": "__tests__/scripts/release-pm2-boot-authority.test.ts", "disposition": "keep", "reason": "Protects the single root-governed PM2 boot authority, temporary recovery cgroup containment, poisoned runtime-file cleanup, exact four-app resurrection, canonical dump publication, boot SLA incident handling, and ingress ordering across promotion and layout recovery." },
+    { "pattern": "__tests__/scripts/release-sequence.test.ts", "disposition": "keep", "reason": "Protects the sequential resumable release coordinator, exact-source checks, persistent lockf/flock ownership without stale takeover, lock-loss abort, digest-bound protected signer correlation, explicit approvals, checkpoint revalidation, and fail-closed phase transitions." },
+    { "pattern": "__tests__/scripts/release-signing-resume-helpers.test.ts", "disposition": "keep", "reason": "Behaviorally proves that manifest and staging signer helpers watch one persisted exact-main run without redispatch, bind the run and signed payload to exact request bytes and trust digests, publish validated evidence atomically, resume idempotently, and refuse destination drift." },
+    { "pattern": "__tests__/scripts/release-staging-resume.test.ts", "disposition": "keep", "reason": "Behaviorally proves that checkpoint-bound exact-active staging resumes require the root-owned pre-switch installed/recovery binding before any sealed candidate preflight/readiness executes, keep generated evidence outside the immutable tree, and fail unhealthy resumes without link mutation." },
+    { "pattern": "__tests__/scripts/remote-pm2-root-install.test.ts", "disposition": "keep", "reason": "Protects the root-owned offline Node 22 and PM2 6.0.14 closure, immutable package-lock identity, atomic installation, exact launcher, cgroup-governed service handoff, and refusal of network installation or untrusted package content." },
     { "pattern": "__tests__/scripts/remote-release-capacity.test.ts", "disposition": "keep", "reason": "Protects release preflight thresholds for memory, load, swap, OOM, all production/staging PM2 services, rollback-drill freshness, and active Sonar analysis." },
     { "pattern": "__tests__/scripts/release-runtime-dependencies.test.ts", "disposition": "keep", "reason": "Protects the signed Ubuntu 24.04/x86-64 Node archive and Python wheelhouse, exact lockfile inputs, byte digests, safe extraction, and network-independent staging installation." },
     { "pattern": "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts", "disposition": "keep", "reason": "Protects the guest-bound offline runtime bundle, nonce-bound live measurement, crash-resumable readiness publication, exact effective recovery unit, stable stopped-overlay identity, and removal of caller-supplied runtime attestations." },
@@ -435,7 +443,111 @@
       "src/api/routes/dashboard-data-fetchers.ts",
       "src/services/training-exercise-media*.ts"
     ],
-  "cleanupMappings": [
+    "cleanupMappings": [
+    {
+      "test": "__tests__/scripts/application-disaster-recovery.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/application-disaster-recovery.test.ts",
+        "__tests__/scripts/application-dr-version-retention.test.ts"
+      ],
+      "sources": [
+        "scripts/application-dr-backup.sh",
+        "scripts/application-dr-version-retention.py"
+      ],
+      "reason": "Replaced destructive version-delete and post-prune assertions with retained lifecycle-only evidence, opaque VersionId pagination, COMPLIANCE writes, and exact post-write verification."
+    },
+    {
+      "test": "__tests__/scripts/application-dr-version-retention.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/application-dr-version-retention.test.ts",
+        "__tests__/scripts/application-disaster-recovery.test.ts"
+      ],
+      "sources": [
+        "scripts/application-dr-version-retention.py"
+      ],
+      "reason": "Replaced deletion-plan ownership with read-only paginated retention-floor evidence, exact version identity, current-period visibility, and fail-closed maturity reporting."
+    },
+    {
+      "test": "__tests__/scripts/quality-sonar-operations.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/quality-sonar-operations.test.ts"
+      ],
+      "sources": [
+        "scripts/quality-sonar-retention.mjs"
+      ],
+      "reason": "Expanded the retained helper syntax fingerprint to include the dedicated retention implementation while preserving the behavioral Sonar backup, maturity, mutual-exclusion, and restore evidence."
+    },
+    {
+      "test": "__tests__/scripts/release-sequence.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-sequence.test.ts"
+      ],
+      "sources": [
+        "scripts/release-sequence.mjs"
+      ],
+      "reason": "Replaced one generic signing-count assertion with distinct manifest and staging dispatch, watch, correlation, owner-stop, lock-loss, and fail-closed sequential phase checks."
+    },
+    {
+      "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/release-staging-transfer-integrity.test.ts",
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/release-operator.sh"
+      ],
+      "reason": "Replaced inline operator-slice checks with retained extracted trusted-heredoc verification and exact root prepare, seal, attest, evidence, request, and candidate ordering."
+    },
+    {
+      "test": "__tests__/scripts/restore-runtime-artifact.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/restore-runtime-artifact.test.ts",
+        "__tests__/scripts/application-dr-recovery-runtime.test.ts",
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/application-dr-recovery-runtime.mjs",
+        "scripts/remote-promotion-worker-control.sh",
+        "scripts/restore.sh"
+      ],
+      "reason": "Retired direct legacy apply behavior in favor of retained signed runtime reconstruction, exact release-bound identity, and root-owned automatic predecessor recovery."
+    },
+    {
+      "test": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts"
+      ],
+      "sources": [
+        "scripts/lib/rollback-drill-kvm-evidence.mjs",
+        "scripts/rollback-drill-kvm-coordinator.mjs"
+      ],
+      "reason": "Replaced the obsolete execution-not-implemented refusal with retained three-scenario KVM orchestration, bounded evidence, exact request identity, timeout enforcement, and fail-closed fault results."
+    },
+    {
+      "test": "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts"
+      ],
+      "sources": [
+        "scripts/build-rollback-drill-vm-runtime-bundle.sh",
+        "scripts/rollback-drill-vm-runtime-control.sh",
+        "scripts/rollback-drill-vm-runtime-manifest.py"
+      ],
+      "reason": "Replaced permissive nested-link assumptions with retained archive member limits, exact offline Node and PM2 closure identity, hostile-link rejection, and guest admission parity."
+    },
+    {
+      "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-versioned-runtime.test.ts",
+        "__tests__/scripts/persistent-promotion-transaction.test.ts"
+      ],
+      "sources": [
+        "scripts/rollback.sh",
+        "scripts/remote-promotion-worker-control.sh",
+        "scripts/remote-release-selector-switch.py"
+      ],
+      "reason": "Retired direct apply ownership in favor of the retained root promotion transaction, atomic selector switch, exact predecessor restoration, and pre-stop rollback refusal."
+    },
     {
       "test": "__tests__/scripts/persistent-promotion-transaction.test.ts",
       "replacementTests": [

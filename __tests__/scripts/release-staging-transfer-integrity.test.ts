@@ -93,23 +93,48 @@ function uploadArtifactBlocks(raw: string) {
 }
 
 describe('staging transfer integrity', () => {
-  it('runs trusted operator verification after transfer and before candidate execution or links', () => {
+  it('runs trusted verification before candidate execution, then seals and attests through root control', () => {
     const operator = readFileSync(OPERATOR, 'utf8');
-    const transfer = operator.indexOf('rsync -az --delete');
-    const verifier = operator.indexOf("<<'REMOTE_VERIFY_BUNDLE'", transfer);
-    const candidateShell = operator.indexOf("<<'REMOTE'", verifier);
-    const firstLink = operator.indexOf('ln -sfn', verifier);
-    const firstCandidateScript = operator.indexOf('scripts/release-runtime-dependencies.mjs install', verifier);
+    const stagingStart = operator.indexOf('  staging)');
+    const stagingEnd = operator.indexOf('  promote)', stagingStart);
+    const staging = operator.slice(stagingStart, stagingEnd);
+    const rootPrepare = staging.indexOf('prepare-staging-runtime-target');
+    const transfer = staging.indexOf('rsync -az --delete', rootPrepare);
+    const verifier = staging.indexOf("<<'REMOTE_VERIFY_BUNDLE'", transfer);
+    const installShell = staging.indexOf("<<'REMOTE_INSTALL'", verifier);
+    const firstLink = staging.indexOf('ln -sfn', installShell);
+    const firstCandidateScript = staging.indexOf('scripts/release-runtime-dependencies.mjs install', installShell);
+    const rootSeal = staging.indexOf('seal-staging-runtime', firstCandidateScript);
+    const rootAttest = staging.indexOf('attest-staging-runtime', rootSeal);
+    const evidenceParser = staging.indexOf('node - "$ROOT_STAGING_EVIDENCE"', rootAttest);
+    const stagingRequest = staging.indexOf('release-staging-attestation.mjs request', evidenceParser);
+    const trustedVerifier = heredocBody(operator, 'REMOTE_VERIFY_BUNDLE');
 
+    expect(stagingStart).toBeGreaterThan(-1);
+    expect(stagingEnd).toBeGreaterThan(stagingStart);
+    expect(rootPrepare).toBeGreaterThan(-1);
     expect(transfer).toBeGreaterThan(-1);
+    expect(transfer).toBeGreaterThan(rootPrepare);
     expect(verifier).toBeGreaterThan(transfer);
-    expect(candidateShell).toBeGreaterThan(verifier);
-    expect(firstLink).toBeGreaterThan(candidateShell);
-    expect(firstCandidateScript).toBeGreaterThan(candidateShell);
-    expect(operator.slice(verifier, candidateShell)).toContain('remote release artifact runtime SHA mismatch');
-    expect(operator.slice(verifier, candidateShell)).toContain('remote release artifact file list is not strictly sorted');
-    expect(operator.slice(verifier, candidateShell)).toContain('remote release bundle contains a symbolic link');
-    expect(operator.slice(verifier, candidateShell)).toContain('remote release bundle contains an unsupported entry');
+    expect(installShell).toBeGreaterThan(verifier);
+    expect(firstLink).toBeGreaterThan(installShell);
+    expect(firstCandidateScript).toBeGreaterThan(installShell);
+    expect(rootSeal).toBeGreaterThan(firstCandidateScript);
+    expect(rootAttest).toBeGreaterThan(rootSeal);
+    expect(evidenceParser).toBeGreaterThan(rootAttest);
+    expect(stagingRequest).toBeGreaterThan(evidenceParser);
+    expect(trustedVerifier).toContain('remote release artifact runtime SHA mismatch');
+    expect(trustedVerifier).toContain('remote release artifact file list is not strictly sorted');
+    expect(trustedVerifier).toContain('remote release bundle contains a symbolic link');
+    expect(trustedVerifier).toContain('remote release bundle contains an unsupported entry');
+    expect(trustedVerifier).not.toContain('$RELEASE_DIR/scripts/');
+    expect(trustedVerifier).not.toContain('release-artifact-manifest.mjs');
+    expect(staging.slice(evidenceParser, stagingRequest))
+      .toContain("record.schema!=='nexus.root-staging-attestation-evidence.v1'");
+    expect(staging.slice(evidenceParser, stagingRequest))
+      .toContain('record.outputDigests?.bindingSha256');
+    expect(staging.slice(evidenceParser, stagingRequest))
+      .toContain('record.outputDigests?.readinessSha256');
   });
 
   it('accepts an exact transferred bundle and rejects changed-size tampering', () => {

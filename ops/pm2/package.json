@@ -1,0 +1,11 @@
+{
+  "name": "nexus-root-pm2-closure",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": "22.23.1"
+  },
+  "dependencies": {
+    "pm2": "6.0.14"
+  }
+}

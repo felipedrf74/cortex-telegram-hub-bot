@@ -326,10 +326,10 @@ export function classifyChangedFiles({
   registryRealEval = has(/^src\/services\/chat\/registry\/|^src\/services\/registry-(?:driven-eval-scenarios|real-eval-scoring|telemetry-report|adversarial-discovery|adversarial-example-proposer|readable-intents-proposer|cross-tenant-alert-hook)\.ts$|^src\/services\/build-llm-safe-prompt-slice\.ts$|^src\/services\/skills\/|^__tests__\/services\/(?:chat-action-registry-|registry-(?:driven-eval|real-eval|telemetry-report|adversarial|readable-intents|cross-tenant))|^__tests__\/scripts\/registry-feedback-report\.test\.ts$|^scripts\/registry-feedback-report\.ts$/);
 
   flags.releaseOperator = has(/^config\/production-migration-lineages\.json$/)
-    || has(/^scripts\/(?:release-operator|promote-exact-release|build-release-runtime-dependencies|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|remote-promotion-(?:control|worker-control|systemd-install|transaction)|remote-release-capacity|rollback|restore)\.sh$/)
-    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|release-plan-evaluator|release-runtime-dependencies|release-sequence|trusted-release-signer|protected-main-ci-evidence|complete-promotion-migration-gate|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal|rollback-drill-kvm-coordinator)\.mjs$/)
+    || has(/^scripts\/(?:release-operator|request-release-quality-evidence|promote-exact-release|build-release-runtime-dependencies|env-parity-check|remote-release-preflight|remote-release-readiness|remote-prepare-release-backup|remote-create-release-backup|remote-production-shape-migration-rehearsal|remote-start-sanitized-pm2|remote-promotion-(?:control|worker-control|systemd-install|transaction)|remote-release-capacity|rollback|restore)\.sh$/)
+    || has(/^scripts\/(?:release-artifact-manifest|release-bundle|release-manifest-v2|release-plan-evaluator|release-quality-evidence|release-runtime-dependencies|release-sequence|trusted-release-signer|protected-main-ci-evidence|complete-promotion-migration-gate|production-shape-migration-rehearsal|validate-production-shape-migration-rehearsal|rollback-drill-kvm-(?:coordinator|inputs))\.mjs$/)
     || has(/^scripts\/systemd\/nexus-release-promotion/)
-    || has(/^scripts\/lib\/(?:release-artifact-manifest|release-plan-evaluation|production-migration-lineage|production-shape-migration-rehearsal-evidence|rollback-drill-kvm-evidence)\.mjs$/);
+    || has(/^scripts\/lib\/(?:release-artifact-manifest|release-plan-authoritative-evidence|release-plan-evaluation|production-migration-lineage|production-shape-migration-rehearsal-evidence|rollback-drill-kvm-evidence)\.mjs$/);
   flags.operationsTooling = has(/^ops\/(?:sonarqube|application-dr|ollama|cloudflared|rollback-drill-vm)\//)
     || has(/^scripts\/(?:(?:quality-sonar|application-dr|rollback-drill-vm)-|cloudflared-systemd-migrate|ollama-(?:large-model-cleanup|observation-collector|service-envelope-check|soak-evidence|zero-swap-transition))/)
     || has(/^scripts\/lib\/ollama-service-envelope\.mjs$/)
@@ -539,8 +539,10 @@ export function classifyChangedFiles({
         '__tests__/scripts/remote-release-capacity.test.ts',
         '__tests__/scripts/release-runtime-dependencies.test.ts',
         '__tests__/scripts/release-plan-evaluator.test.ts',
+        '__tests__/scripts/release-quality-evidence.test.ts',
         '__tests__/scripts/rollback-drill-check.test.ts',
         '__tests__/scripts/rollback-drill-kvm-coordinator.test.ts',
+        '__tests__/scripts/rollback-drill-kvm-inputs.test.ts',
         '__tests__/scripts/protected-main-ci-evidence.test.ts',
       );
       addVitest(

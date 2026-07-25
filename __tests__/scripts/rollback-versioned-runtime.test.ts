@@ -130,7 +130,7 @@ describe('rollback versioned runtime identity', () => {
     expect(fs.readFileSync(fixture.sshLog, 'utf8')).toContain(archive);
   });
 
-  it('fails before stop or restore when PM2 cwd disagrees with the current symlink', () => {
+  it('retires apply before PM2 inspection, stop, restore, or selector mutation', () => {
     const fixture = createFixture();
     createArchive(
       fixture.backups,
@@ -164,11 +164,10 @@ exit 0
 
     const result = runRollback(fixture, ['latest'], { MUTATION_MARKER: mutationMarker });
 
-    expect(result.status).not.toBe(0);
-    expect(`${result.stdout}${result.stderr}`).toContain(
-      'PM2 cwd does not match active runtime: nexus-hub',
-    );
+    expect(result.status).toBe(77);
+    expect(`${result.stdout}${result.stderr}`).toContain('Direct rollback apply is retired');
     expect(fs.existsSync(mutationMarker)).toBe(false);
     expect(fs.existsSync(fixture.sshLog)).toBe(false);
+    expect(fs.realpathSync(path.join(fixture.base, 'current'))).toBe(fs.realpathSync(release));
   });
 });
