@@ -528,7 +528,7 @@ import sys
 from pathlib import Path
 value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 hypervisor = value.get("hypervisor")
-if value.get("schema") != "nexus.rollback-drill-vm-provision.v1" or not isinstance(hypervisor, dict):
+if value.get("schema") != "nexus.rollback-drill-vm-provision.v2" or not isinstance(hypervisor, dict):
     raise SystemExit("active provision receipt schema is invalid")
 for name in (
     "runnerSha256",

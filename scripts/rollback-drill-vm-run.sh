@@ -165,19 +165,27 @@ except Exception as error:
     raise SystemExit(f"cannot read provision receipt: {error}")
 if set(value) != {
     "schema", "setId", "image", "sshPublicKeySha256",
-    "guestSshHostPublicKeySha256", "ports",
+    "guestSshHostPublicKeySha256s", "ports",
     "setDirectory", "runtimeReadiness", "hypervisor", "guests", "createdAt"
 }:
     raise SystemExit("provision receipt has an unexpected schema")
-if value["schema"] != "nexus.rollback-drill-vm-provision.v1":
+if value["schema"] != "nexus.rollback-drill-vm-provision.v2":
     raise SystemExit("provision receipt schema is invalid")
 if not hex64.fullmatch(value["setId"]):
     raise SystemExit("provision set identity is invalid")
 if not hex64.fullmatch(value["sshPublicKeySha256"]):
     raise SystemExit("SSH public-key digest is invalid")
-if not hex64.fullmatch(value["guestSshHostPublicKeySha256"]):
-    raise SystemExit("SSH host public-key digest is invalid")
-if value["sshPublicKeySha256"] == value["guestSshHostPublicKeySha256"]:
+if (
+    not isinstance(value["guestSshHostPublicKeySha256s"], list)
+    or len(value["guestSshHostPublicKeySha256s"]) != 3
+    or any(
+        not isinstance(identity, str) or not hex64.fullmatch(identity)
+        for identity in value["guestSshHostPublicKeySha256s"]
+    )
+    or len(set(value["guestSshHostPublicKeySha256s"])) != 3
+):
+    raise SystemExit("SSH host public-key identities are invalid")
+if value["sshPublicKeySha256"] in value["guestSshHostPublicKeySha256s"]:
     raise SystemExit("SSH client and host identities must be independent")
 expected_set = f"/var/lib/nexus-rollback-drill-vm/sets/{value['setId']}"
 if value["setDirectory"] != expected_set:
@@ -278,10 +286,10 @@ if re.fullmatch(r"[A-Za-z0-9.+:~_-]+", hypervisor.get("qemuPackageVersion", ""))
 if re.fullmatch(r"[a-z0-9][a-z0-9-]*", hypervisor.get("qemuPackageArchitecture", "")) is None:
     raise SystemExit("QEMU package architecture is invalid")
 set_material = (
-    "schema=nexus.rollback-drill-vm-provision.v1\n"
+    "schema=nexus.rollback-drill-vm-provision.v2\n"
     f"image={image['sha256']}\n"
     f"key={value['sshPublicKeySha256']}\n"
-    f"hostKey={value['guestSshHostPublicKeySha256']}\n"
+    f"hostKeys={','.join(value['guestSshHostPublicKeySha256s'])}\n"
     f"ports={value['ports'][0]},{value['ports'][1]},{value['ports'][2]}\n"
     f"runner={hypervisor['runnerSha256']}\n"
     f"hostPreflight={hypervisor['hostPreflightSha256']}\n"
@@ -310,7 +318,7 @@ for slot, candidate in enumerate(guests, start=1):
     if set(candidate) != {
         "name", "port", "unit", "uuid", "mac", "instanceId", "overlayPath",
         "overlayInitialSha256", "seedPath", "seedSha256", "hostPublicKey",
-        "hostKeyFingerprint"
+        "hostPublicKeySha256", "hostKeyFingerprint"
     }:
         raise SystemExit("guest receipt has an unexpected schema")
     candidate_name = f"guest-{slot}"
@@ -346,22 +354,27 @@ for slot, candidate in enumerate(guests, start=1):
     expected_public_key_sha = hashlib.sha256(
         candidate["hostPublicKey"].strip().encode("utf-8")
     ).hexdigest()
-    if expected_public_key_sha != value["guestSshHostPublicKeySha256"]:
-        raise SystemExit("guest host public key is not the provision-set identity")
+    if (
+        not hex64.fullmatch(candidate["hostPublicKeySha256"])
+        or expected_public_key_sha != candidate["hostPublicKeySha256"]
+        or expected_public_key_sha
+        != value["guestSshHostPublicKeySha256s"][slot - 1]
+    ):
+        raise SystemExit("guest host public key is not its provisioned identity")
     if not fingerprint.fullmatch(candidate["hostKeyFingerprint"]):
         raise SystemExit("guest host-key fingerprint is invalid")
     observed_uuids.add(candidate["uuid"])
     observed_macs.add(candidate["mac"])
     observed_fingerprints.add(candidate["hostKeyFingerprint"])
-if len(observed_uuids) != 3 or len(observed_macs) != 3 or len(observed_fingerprints) != 1:
+if len(observed_uuids) != 3 or len(observed_macs) != 3 or len(observed_fingerprints) != 3:
     raise SystemExit(
-        "guest machine identities must be independent and SSH host identity set-scoped"
+        "guest machine and SSH host identities must be independent"
     )
 entry = next((candidate for candidate in guests if candidate.get("name") == guest_name), None)
 if entry is None or set(entry) != {
     "name", "port", "unit", "uuid", "mac", "instanceId", "overlayPath",
     "overlayInitialSha256", "seedPath", "seedSha256", "hostPublicKey",
-    "hostKeyFingerprint"
+    "hostPublicKeySha256", "hostKeyFingerprint"
 }:
     raise SystemExit("selected guest receipt is invalid")
 index = int(guest_name[-1]) - 1
@@ -594,10 +607,20 @@ if (
 authorization=value["ownerAuthorization"]
 if set(authorization)!={
  "authorizationId","drill","issuedAt","expiresAt","sha256","signatureSha256",
- "ownerPublicKeySha256",
+ "ownerPublicKeySha256","controllerBootIdSha256","issuedMonotonicSeconds",
+ "expiresMonotonicSeconds",
 } or any(
  not hex64.fullmatch(authorization[name])
- for name in ("authorizationId","sha256","signatureSha256","ownerPublicKeySha256")
+ for name in (
+  "authorizationId","sha256","signatureSha256","ownerPublicKeySha256",
+  "controllerBootIdSha256",
+ )
+) or (
+ type(authorization["issuedMonotonicSeconds"]) is not int
+ or type(authorization["expiresMonotonicSeconds"]) is not int
+ or authorization["issuedMonotonicSeconds"]<0
+ or authorization["expiresMonotonicSeconds"]
+    <=authorization["issuedMonotonicSeconds"]
 ):
  raise SystemExit("runtime readiness authorization identity is invalid")
 measurement=value["guestMeasurement"]

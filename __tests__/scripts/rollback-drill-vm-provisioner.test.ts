@@ -705,19 +705,25 @@ describe('rollback-drill KVM provisioner', () => {
     expect(provisioner).toContain('100G');
     expect(provisioner.match(/ssh-keygen -q -t ed25519/g)).toHaveLength(1);
     expect(provisioner).toContain(
-      '"guestSshHostPublicKeySha256": host_key_sha',
+      '"guestSshHostPublicKeySha256s": [',
     );
     expect(provisioner).toContain(
       'printf \'%s\' "$normalized_key" | sha256sum',
     );
     expect(provisioner).toContain(
-      'printf \'%s\' "$set_host_public_key" | sha256sum',
+      'printf \'%s\' "$guest_host_public_key" | sha256sum',
+    );
+    expect(provisioner).toContain(
+      'each rollback-drill guest must have a distinct SSH host key',
     );
     expect(provisioner).toContain('overlay_initial_sha256=');
     expect(provisioner).toContain(
       '"overlayInitialSha256": overlay_initial_sha',
     );
     expect(provisioner).toContain('"hostPublicKey": host_public_key');
+    expect(provisioner).toContain(
+      '"hostPublicKeySha256": host_public_key_sha256',
+    );
     expect(provisioner).toContain('"manager": "qemu-systemd"');
     expect(provisioner).toContain('"qemuSha256": qemu_sha');
     expect(provisioner).toContain('"qemuVersion": qemu_version');
@@ -779,7 +785,7 @@ describe('rollback-drill KVM provisioner', () => {
     expect(runner).toContain('readonly=on');
     expect(runner).toContain('loopback SSH port is already occupied');
     expect(runner).toContain(
-      'guest machine identities must be independent and SSH host identity set-scoped',
+      'guest machine and SSH host identities must be independent',
     );
     expect(runner).toContain(
       'guest host-key fingerprint does not match its public key',

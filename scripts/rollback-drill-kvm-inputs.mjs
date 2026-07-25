@@ -22,9 +22,11 @@ import {
   validateIsolationEvidence,
   validateOwnerAuthorization,
   validatePlan,
+  validateProvisionReceipt,
+  validateReadinessLedger,
 } from './lib/rollback-drill-kvm-evidence.mjs';
 
-const SPEC_SCHEMA = 'nexus.rollback-drill-kvm-input-spec.v1';
+const SPEC_SCHEMA = 'nexus.rollback-drill-kvm-input-spec.v2';
 const OBSERVATION_SCHEMA = 'nexus.rollback-drill-kvm-isolation-observation.v1';
 const GENERATION_SCHEMA = 'nexus.rollback-drill-kvm-input-generation.v1';
 const AUTHORIZATION_MANIFEST_SCHEMA =
@@ -278,9 +280,14 @@ function validateSpec(spec, specPath) {
   );
   resolveSpecPath(specPath, spec.provisionReceipt, 'provision_receipt');
 
-  exactObject(spec.controller, ['machineIdFile', 'bootIdFile'], 'spec_controller');
+  exactObject(
+    spec.controller,
+    ['machineIdFile', 'bootIdFile', 'uptimeFile'],
+    'spec_controller',
+  );
   resolveSpecPath(specPath, spec.controller.machineIdFile, 'controller_machine_id');
   resolveSpecPath(specPath, spec.controller.bootIdFile, 'controller_boot_id');
+  resolveSpecPath(specPath, spec.controller.uptimeFile, 'controller_uptime');
 
   exactObject(spec.release, [
     'sourceSha',
@@ -352,12 +359,23 @@ function validateSpec(spec, specPath) {
     'productionOwnerPublicKey',
     'guestSshClientPublicKey',
     'productionSshClientPublicKey',
-    'guestSshHostPublicKey',
+    'guestSshHostPublicKeys',
     'productionSshHostPublicKey',
     'releaseEvidencePublicKey',
   ], 'spec_keys');
+  exactObject(
+    spec.keys.guestSshHostPublicKeys,
+    DRILL_BINDINGS.map((binding) => binding.guest),
+    'spec_guest_ssh_host_keys',
+  );
   for (const [field, candidate] of Object.entries(spec.keys)) {
-    resolveSpecPath(specPath, candidate, `key_${field}`);
+    if (field === 'guestSshHostPublicKeys') {
+      for (const [guest, guestCandidate] of Object.entries(candidate)) {
+        resolveSpecPath(specPath, guestCandidate, `key_${guest}_ssh_host`);
+      }
+    } else {
+      resolveSpecPath(specPath, candidate, `key_${field}`);
+    }
   }
 
   exactObject(spec.labStorage, ['provider', 'endpoint', 'bucket'], 'spec_lab_storage');
@@ -442,12 +460,13 @@ function readSpec(specPath) {
 }
 
 function validateProvision(receipt) {
+  validateProvisionReceipt(receipt);
   exactObject(receipt, [
     'schema',
     'setId',
     'image',
     'sshPublicKeySha256',
-    'guestSshHostPublicKeySha256',
+    'guestSshHostPublicKeySha256s',
     'ports',
     'setDirectory',
     'runtimeReadiness',
@@ -455,15 +474,23 @@ function validateProvision(receipt) {
     'guests',
     'createdAt',
   ], 'provision');
-  if (receipt.schema !== 'nexus.rollback-drill-vm-provision.v1') {
+  if (receipt.schema !== 'nexus.rollback-drill-vm-provision.v2') {
     fail('provision_schema_unsupported');
   }
   requireDigest(receipt.image?.sha256, 'provision_image_digest_invalid');
   requireDigest(receipt.sshPublicKeySha256, 'provision_ssh_client_digest_invalid');
-  requireDigest(
-    receipt.guestSshHostPublicKeySha256,
-    'provision_ssh_host_digest_invalid',
+  requireArray(
+    receipt.guestSshHostPublicKeySha256s,
+    3,
+    3,
+    'provision_ssh_host_digests_invalid',
   );
+  receipt.guestSshHostPublicKeySha256s.forEach((identity) => {
+    requireDigest(identity, 'provision_ssh_host_digest_invalid');
+  });
+  if (new Set(receipt.guestSshHostPublicKeySha256s).size !== 3) {
+    fail('provision_guest_host_key_reused');
+  }
   requireArray(receipt.ports, 3, 3, 'provision_ports_invalid');
   requireArray(receipt.guests, 3, 3, 'provision_guests_invalid');
   if (new Set(receipt.ports).size !== 3) fail('provision_ports_reused');
@@ -480,6 +507,7 @@ function validateProvision(receipt) {
       'seedPath',
       'seedSha256',
       'hostPublicKey',
+      'hostPublicKeySha256',
       'hostKeyFingerprint',
     ], `provision_guest_${index + 1}`);
     const expectedName = `guest-${index + 1}`;
@@ -495,8 +523,13 @@ function validateProvision(receipt) {
       'provision_overlay_initial_digest_invalid',
     );
     requireDigest(guest.seedSha256, 'provision_seed_digest_invalid');
-    if (textKeyIdentity(guest.hostPublicKey)
-        !== receipt.guestSshHostPublicKeySha256) {
+    requireDigest(
+      guest.hostPublicKeySha256,
+      'provision_guest_host_key_digest_invalid',
+    );
+    if (textKeyIdentity(guest.hostPublicKey) !== guest.hostPublicKeySha256
+        || guest.hostPublicKeySha256
+          !== receipt.guestSshHostPublicKeySha256s[index]) {
       fail('provision_guest_host_key_mismatch');
     }
   });
@@ -541,15 +574,15 @@ function loadKeys(spec, specPath) {
       'production_ssh_client_key',
       16 * 1024,
     ),
-    guestSshHostPublicKey: readBoundedText(
+    guestSshHostPublicKeys: DRILL_BINDINGS.map((binding) => readBoundedText(
       resolveSpecPath(
         specPath,
-        spec.keys.guestSshHostPublicKey,
-        'guest_ssh_host_key',
+        spec.keys.guestSshHostPublicKeys[binding.guest],
+        `${binding.guest}_ssh_host_key`,
       ),
-      'guest_ssh_host_key',
+      `${binding.guest}_ssh_host_key`,
       16 * 1024,
-    ),
+    )),
     productionSshHostPublicKey: readBoundedText(
       resolveSpecPath(
         specPath,
@@ -581,8 +614,8 @@ function keyIdentities(keys) {
       textKeyIdentity(keys.guestSshClientPublicKey),
     productionSshClientPublicKeySha256:
       textKeyIdentity(keys.productionSshClientPublicKey),
-    guestSshHostPublicKeySha256:
-      textKeyIdentity(keys.guestSshHostPublicKey),
+    guestSshHostPublicKeySha256s:
+      keys.guestSshHostPublicKeys.map((key) => textKeyIdentity(key)),
     productionSshHostPublicKeySha256:
       textKeyIdentity(keys.productionSshHostPublicKey),
     releaseEvidencePublicKeySha256:
@@ -596,8 +629,12 @@ function keyIdentities(keys) {
       === identities.productionSshClientPublicKeySha256) {
     fail('production_ssh_client_key_reuse');
   }
-  if (identities.guestSshHostPublicKeySha256
-      === identities.productionSshHostPublicKeySha256) {
+  if (new Set(identities.guestSshHostPublicKeySha256s).size !== 3) {
+    fail('guest_ssh_host_key_reuse');
+  }
+  if (identities.guestSshHostPublicKeySha256s.includes(
+    identities.productionSshHostPublicKeySha256,
+  )) {
     fail('production_ssh_host_key_reuse');
   }
   const productionReleasePublicKey = readBoundedText(
@@ -684,14 +721,40 @@ function readIdentityFile(specPath, candidate, label) {
   return sha256Bytes(Buffer.from(value, 'utf8'));
 }
 
+function readControllerClock(spec, specPath) {
+  const bootIdSha256 = readIdentityFile(
+    specPath,
+    spec.controller.bootIdFile,
+    'controller_boot_id',
+  );
+  const uptimeText = readBoundedText(
+    resolveSpecPath(
+      specPath,
+      spec.controller.uptimeFile,
+      'controller_uptime',
+    ),
+    'controller_uptime',
+    4096,
+  ).trim();
+  const first = uptimeText.split(/\s+/u)[0];
+  if (!/^\d+(?:\.\d{1,9})?$/u.test(first || '')) {
+    fail('controller_uptime_invalid');
+  }
+  const monotonicSeconds = Math.floor(Number(first));
+  if (!Number.isSafeInteger(monotonicSeconds) || monotonicSeconds < 0) {
+    fail('controller_uptime_invalid');
+  }
+  return { bootIdSha256, monotonicSeconds };
+}
+
 function buildPlan(spec, specPath, receipt, keys, issuedAt) {
   const identities = keyIdentities(keys);
   if (identities.guestSshClientPublicKeySha256
       !== receipt.sshPublicKeySha256) {
     fail('provision_guest_ssh_client_key_mismatch');
   }
-  if (identities.guestSshHostPublicKeySha256
-      !== receipt.guestSshHostPublicKeySha256) {
+  if (canonicalJson(identities.guestSshHostPublicKeySha256s)
+      !== canonicalJson(receipt.guestSshHostPublicKeySha256s)) {
     fail('provision_guest_ssh_host_key_mismatch');
   }
   const provisionPath = resolveSpecPath(
@@ -791,7 +854,8 @@ function buildPlan(spec, specPath, receipt, keys, issuedAt) {
           host: '127.0.0.1',
           port: guest.port,
           user: 'dominguez',
-          hostPublicKeySha256: identities.guestSshHostPublicKeySha256,
+          hostPublicKeySha256:
+            identities.guestSshHostPublicKeySha256s[index],
         },
       };
     }),
@@ -808,11 +872,18 @@ function buildRuntimeAuthorizations(
   receipt,
   provisionSha256,
   issuedAt,
+  controllerClock,
 ) {
   const expiresAt = isoSeconds(Math.min(
     issuedAt + 24 * 60 * 60 * 1000,
     Date.parse(plan.expiresAt),
   ));
+  const lifetimeSeconds = (
+    Date.parse(expiresAt) - Date.parse(isoSeconds(issuedAt))
+  ) / 1000;
+  if (!Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds <= 0) {
+    fail('runtime_authorization_monotonic_window_invalid');
+  }
   return DRILL_BINDINGS.map((binding, index) => {
     const guest = receipt.guests[index];
     const bundleManifestPath = resolveSpecPath(
@@ -829,6 +900,10 @@ function buildRuntimeAuthorizations(
       )),
       issuedAt: isoSeconds(issuedAt),
       expiresAt,
+      controllerBootIdSha256: controllerClock.bootIdSha256,
+      issuedMonotonicSeconds: controllerClock.monotonicSeconds,
+      expiresMonotonicSeconds:
+        controllerClock.monotonicSeconds + lifetimeSeconds,
       operation: 'collect-runtime-readiness',
       drill: binding.runtimeDrill,
       setId: receipt.setId,
@@ -837,7 +912,7 @@ function buildRuntimeAuthorizations(
       provisionReceiptSha256: provisionSha256,
       bundleManifestSha256,
       guestSshHostPublicKeySha256:
-        plan.trust.guestSshHostPublicKeySha256,
+        plan.trust.guestSshHostPublicKeySha256s[index],
       ownerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
     };
     return { ...binding, bundleManifestSha256, payload };
@@ -899,6 +974,7 @@ function templateSpec() {
     controller: {
       machineIdFile: '/etc/machine-id',
       bootIdFile: '/proc/sys/kernel/random/boot_id',
+      uptimeFile: '/proc/uptime',
     },
     release: {
       sourceSha: `${required}_40_HEX`,
@@ -925,7 +1001,11 @@ function templateSpec() {
       productionOwnerPublicKey: required,
       guestSshClientPublicKey: required,
       productionSshClientPublicKey: required,
-      guestSshHostPublicKey: required,
+      guestSshHostPublicKeys: {
+        'guest-1': required,
+        'guest-2': required,
+        'guest-3': required,
+      },
       productionSshHostPublicKey: required,
       releaseEvidencePublicKey: required,
     },
@@ -961,7 +1041,7 @@ function templateSpec() {
 }
 
 function prepare(specPath, requestedOutputDirectory) {
-  const issuedAt = nowMs();
+  const issuedAt = Math.floor(nowMs() / 1000) * 1000;
   const spec = readSpec(specPath);
   const provisionPath = resolveSpecPath(
     specPath,
@@ -971,8 +1051,13 @@ function prepare(specPath, requestedOutputDirectory) {
   const receipt = validateProvision(
     readBoundedJson(provisionPath, 'provision_receipt'),
   );
+  if (parseIso(receipt.createdAt, 'provision_created_at_invalid')
+      > issuedAt) {
+    fail('provision_plan_timestamp_binding_invalid');
+  }
   const keys = loadKeys(spec, specPath);
   validateDrillReleaseEvidence(spec, specPath, keys);
+  const controllerClock = readControllerClock(spec, specPath);
   const { plan, provisionSha256 } = buildPlan(
     spec,
     specPath,
@@ -980,6 +1065,9 @@ function prepare(specPath, requestedOutputDirectory) {
     keys,
     issuedAt,
   );
+  if (plan.controller.bootIdSha256 !== controllerClock.bootIdSha256) {
+    fail('controller_boot_id_changed_during_prepare');
+  }
   const runtimeAuthorizations = buildRuntimeAuthorizations(
     spec,
     specPath,
@@ -987,6 +1075,7 @@ function prepare(specPath, requestedOutputDirectory) {
     receipt,
     provisionSha256,
     issuedAt,
+    controllerClock,
   );
   const planBody = canonicalJsonBuffer(plan);
   const runtimeFiles = runtimeAuthorizations.map((entry) => ({
@@ -1116,7 +1205,7 @@ function validateReadiness(
       || readiness.machine?.instanceId !== guest.instanceId
       || readiness.machine?.mac !== guest.mac
       || readiness.machine?.sshHostPublicKeySha256
-        !== receipt.guestSshHostPublicKeySha256
+        !== guest.hostPublicKeySha256
       || readiness.overlay?.path !== guest.overlayPath
       || readiness.overlay?.initialSha256 !== guest.overlayInitialSha256
       || !DIGEST.test(readiness.overlay?.currentSha256 || '')
@@ -1231,12 +1320,13 @@ function validateObservation(value, plan, readinessDigests, currentTime) {
   return value;
 }
 
-function buildIsolation(plan, receipt, observation) {
+function buildIsolation(plan, receipt, observation, readinessLedger) {
   const representative = observation.representativeGuest;
   const isolation = {
     schema: SCHEMAS.isolation,
     planId: plan.planId,
     capturedAt: observation.capturedAt,
+    readinessLedger,
     hypervisor: {
       machineIdSha256: plan.controller.machineIdSha256,
       bootIdSha256: plan.controller.bootIdSha256,
@@ -1280,7 +1370,8 @@ function buildIsolation(plan, receipt, observation) {
       keyIdentities: {
         ownerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
         sshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
-        sshHostPublicKeySha256: plan.trust.guestSshHostPublicKeySha256,
+        sshHostPublicKeySha256:
+          plan.trust.guestSshHostPublicKeySha256s[0],
         releaseEvidencePublicKeySha256:
           plan.trust.releaseEvidencePublicKeySha256,
       },
@@ -1313,6 +1404,10 @@ function finalizeIsolation(flags) {
   const receipt = validateProvision(
     readBoundedJson(provisionFile, 'provision_receipt'),
   );
+  if (parseIso(receipt.createdAt, 'provision_created_at_invalid')
+      > parseIso(plan.createdAt, 'plan_created_at_invalid')) {
+    fail('provision_plan_timestamp_binding_invalid');
+  }
   const provisionSha256 = rawFileSha256(provisionFile);
   const generation = validateGenerationManifest(
     readBoundedJson(
@@ -1337,13 +1432,35 @@ function finalizeIsolation(flags) {
       generation.runtimeAuthorizations[index].bundleManifestSha256,
     )
   ));
+  const readinessLedger = validateReadinessLedger(
+    readBoundedJson(
+      required(flags, '--readiness-ledger'),
+      'readiness_ledger',
+    ),
+    plan,
+  );
+  if (readinessLedger.provisionReceiptSha256 !== provisionSha256
+      || readinessLedger.generationManifestSha256
+        !== rawFileSha256(required(flags, '--generation-manifest'))
+      || canonicalJson(
+        readinessLedger.orderedReadiness.map(
+          (entry) => entry.readinessSha256,
+        ),
+      ) !== canonicalJson(readinessDigests)) {
+    fail('readiness_ledger_input_binding_invalid');
+  }
   const observation = validateObservation(
     readBoundedJson(required(flags, '--observation'), 'isolation_observation'),
     plan,
     readinessDigests,
     currentTime,
   );
-  const isolation = buildIsolation(plan, receipt, observation);
+  const isolation = buildIsolation(
+    plan,
+    receipt,
+    observation,
+    readinessLedger,
+  );
   const output = publishSingleFile(
     required(flags, '--output'),
     canonicalJsonBuffer(isolation),
@@ -1462,11 +1579,18 @@ function validatePromotionRequest(request, currentTime) {
   }
 }
 
-function authorize(specPath, planPath, requestedOutputDirectory) {
+function authorize(
+  specPath,
+  planPath,
+  isolationPath,
+  requestedOutputDirectory,
+) {
   const issuedAt = nowMs();
   const spec = readSpec(specPath);
   const plan = readBoundedJson(planPath, 'plan');
   assertPlanMatchesSpec(plan, spec);
+  const isolation = readBoundedJson(isolationPath, 'isolation');
+  validateIsolationEvidence(isolation, plan, { nowMs: issuedAt });
   const keys = loadKeys(spec, specPath);
   validateDrillReleaseEvidence(spec, specPath, keys);
   const identities = keyIdentities(keys);
@@ -1481,6 +1605,19 @@ function authorize(specPath, planPath, requestedOutputDirectory) {
   if (Date.parse(authorizationExpiresAt) <= issuedAt) {
     fail('authorization_plan_expired');
   }
+  const controllerClock = readControllerClock(spec, specPath);
+  if (controllerClock.bootIdSha256 !== plan.controller.bootIdSha256
+      || controllerClock.bootIdSha256
+        !== isolation.readinessLedger.controllerBootIdSha256) {
+    fail('authorization_controller_boot_changed');
+  }
+  const authorizationLifetimeSeconds = (
+    Date.parse(authorizationExpiresAt) - Date.parse(isoSeconds(issuedAt))
+  ) / 1000;
+  if (!Number.isSafeInteger(authorizationLifetimeSeconds)
+      || authorizationLifetimeSeconds <= 0) {
+    fail('authorization_monotonic_window_invalid');
+  }
   const planAuthorization = {
     schema: SCHEMAS.authorizationPayload,
     action: 'run-isolated-kvm-rollback-drills',
@@ -1489,6 +1626,12 @@ function authorize(specPath, planPath, requestedOutputDirectory) {
     targetSha: plan.release.targetSha,
     targetVersion: plan.release.targetVersion,
     guestOwnerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
+    controllerBootIdSha256: controllerClock.bootIdSha256,
+    approvedMonotonicSeconds: controllerClock.monotonicSeconds,
+    expiresMonotonicSeconds:
+      controllerClock.monotonicSeconds + authorizationLifetimeSeconds,
+    readinessLedger: isolation.readinessLedger,
+    isolationSha256: sha256Json(isolation),
     endpoints: plan.overlays.map((overlay) => ({
       drill: overlay.drill,
       host: overlay.ssh.host,
@@ -1507,6 +1650,9 @@ function authorize(specPath, planPath, requestedOutputDirectory) {
     executionMode: 'strictly-sequential',
     orderedDrills: [...DRILL_NAMES],
     planSha256: sha256Json(plan),
+    isolationSha256: sha256Json(isolation),
+    readinessLedgerSha256:
+      sha256Json(isolation.readinessLedger),
     planAuthorizationPayloadSha256: sha256Json(planAuthorization),
     promotionRequests: requests.map((request, index) => ({
       drill: DRILL_NAMES[index],
@@ -1550,6 +1696,11 @@ function authorize(specPath, planPath, requestedOutputDirectory) {
 function sealPlanAuthorization(flags) {
   const currentTime = nowMs();
   const plan = readBoundedJson(required(flags, '--plan'), 'plan');
+  const isolation = readBoundedJson(
+    required(flags, '--isolation'),
+    'isolation',
+  );
+  validateIsolationEvidence(isolation, plan, { nowMs: currentTime });
   const payload = readBoundedJson(required(flags, '--payload'), 'plan_authorization_payload');
   const publicKey = readBoundedText(
     required(flags, '--guest-owner-public-key'),
@@ -1569,7 +1720,10 @@ function sealPlanAuthorization(flags) {
     payload,
     signature: signature.toString('base64'),
   };
-  validateOwnerAuthorization(envelope, plan, publicKey, { nowMs: currentTime });
+  validateOwnerAuthorization(envelope, plan, publicKey, {
+    nowMs: currentTime,
+    isolation,
+  });
   const output = publishSingleFile(
     required(flags, '--output'),
     canonicalJsonBuffer(envelope),
@@ -1588,15 +1742,17 @@ const COMMAND_FLAGS = Object.freeze({
     '--plan',
     '--generation-manifest',
     '--provision-receipt',
+    '--readiness-ledger',
     '--observation',
     '--ssh-loss-readiness',
     '--failed-health-readiness',
     '--guest-reboot-readiness',
     '--output',
   ]),
-  authorize: new Set(['--spec', '--plan', '--output-dir']),
+  authorize: new Set(['--spec', '--plan', '--isolation', '--output-dir']),
   'seal-plan-authorization': new Set([
     '--plan',
+    '--isolation',
     '--payload',
     '--signature',
     '--guest-owner-public-key',
@@ -1646,6 +1802,7 @@ function main() {
     return authorize(
       required(flags, '--spec'),
       required(flags, '--plan'),
+      required(flags, '--isolation'),
       required(flags, '--output-dir'),
     );
   }

@@ -657,30 +657,46 @@ base_installed=true
 printf '%s  %s\n' "$expected_image_sha256" "$base_target" | sha256sum --check --status \
   || die "installed base image digest drifted"
 
-set_host_key="$download_dir/ssh_host_ed25519_key"
-set_host_key_public="$set_host_key.pub"
-ssh-keygen -q -t ed25519 -N '' -C '' -f "$set_host_key" \
-  || die "cannot create the provision-set SSH host key"
-chmod 0600 "$set_host_key" "$set_host_key_public"
-set_host_public_key="$(cut -d' ' -f1-2 "$set_host_key_public")"
-[[ "$set_host_public_key" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+$ ]] \
-  || die "provision-set SSH host public key is invalid"
-set_host_public_key_sha256="$(
-  printf '%s' "$set_host_public_key" | sha256sum | cut -d' ' -f1
+declare -a guest_host_private_keys=()
+declare -a guest_host_public_keys=()
+declare -a guest_host_public_key_sha256s=()
+declare -a guest_host_key_fingerprints=()
+for index in 1 2 3; do
+  guest_host_key="$download_dir/ssh_host_ed25519_key_guest_$index"
+  guest_host_key_public="$guest_host_key.pub"
+  ssh-keygen -q -t ed25519 -N '' -C '' -f "$guest_host_key" \
+    || die "cannot create the guest-$index SSH host key"
+  chmod 0600 "$guest_host_key" "$guest_host_key_public"
+  guest_host_public_key="$(cut -d' ' -f1-2 "$guest_host_key_public")"
+  [[ "$guest_host_public_key" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+$ ]] \
+    || die "guest-$index SSH host public key is invalid"
+  guest_host_public_key_sha256="$(
+    printf '%s' "$guest_host_public_key" | sha256sum | cut -d' ' -f1
+  )"
+  [[ "$guest_host_public_key_sha256" =~ ^[0-9a-f]{64}$ ]] \
+    || die "cannot derive guest-$index SSH host public-key digest"
+  guest_host_key_fingerprint="$(
+    ssh-keygen -l -E sha256 -f "$guest_host_key_public" | cut -d' ' -f2
+  )"
+  [[ "$guest_host_key_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] \
+    || die "guest-$index SSH host-key fingerprint is invalid"
+  [ "$guest_host_public_key_sha256" != "$ssh_public_key_sha256" ] \
+    || die "lab SSH client and guest-$index host identities must be independent"
+  guest_host_private_keys+=("$guest_host_key")
+  guest_host_public_keys+=("$guest_host_public_key")
+  guest_host_public_key_sha256s+=("$guest_host_public_key_sha256")
+  guest_host_key_fingerprints+=("$guest_host_key_fingerprint")
+done
+[ "$(printf '%s\n' "${guest_host_public_key_sha256s[@]}" | sort -u | wc -l)" -eq 3 ] \
+  || die "each rollback-drill guest must have a distinct SSH host key"
+guest_host_key_set="$(
+  IFS=,
+  printf '%s' "${guest_host_public_key_sha256s[*]}"
 )"
-[[ "$set_host_public_key_sha256" =~ ^[0-9a-f]{64}$ ]] \
-  || die "cannot derive provision-set SSH host public-key digest"
-set_host_key_fingerprint="$(
-  ssh-keygen -l -E sha256 -f "$set_host_key_public" | cut -d' ' -f2
-)"
-[[ "$set_host_key_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] \
-  || die "provision-set SSH host-key fingerprint is invalid"
-[ "$set_host_public_key_sha256" != "$ssh_public_key_sha256" ] \
-  || die "lab SSH client and host identities must be independent"
 
 set_id="$(
-  printf 'schema=nexus.rollback-drill-vm-provision.v1\nimage=%s\nkey=%s\nhostKey=%s\nports=%s,%s,%s\nrunner=%s\nhostPreflight=%s\nruntimeManifest=%s\nruntimeControl=%s\nruntimeReadiness=%s\nruntimeRecoveryUnit=%s\nunit=%s\nqemu=%s\nqemuVersion=%s\nqemuPackage=%s\nqemuPackageVersion=%s\nqemuPackageArchitecture=%s\n' \
-    "$expected_image_sha256" "$ssh_public_key_sha256" "$set_host_public_key_sha256" \
+  printf 'schema=nexus.rollback-drill-vm-provision.v2\nimage=%s\nkey=%s\nhostKeys=%s\nports=%s,%s,%s\nrunner=%s\nhostPreflight=%s\nruntimeManifest=%s\nruntimeControl=%s\nruntimeReadiness=%s\nruntimeRecoveryUnit=%s\nunit=%s\nqemu=%s\nqemuVersion=%s\nqemuPackage=%s\nqemuPackageVersion=%s\nqemuPackageArchitecture=%s\n' \
+    "$expected_image_sha256" "$ssh_public_key_sha256" "$guest_host_key_set" \
     "$port1" "$port2" "$port3" \
     "$runner_sha256" "$host_preflight_sha256" \
     "$runtime_manifest_sha256" "$runtime_control_sha256" \
@@ -735,6 +751,10 @@ for index in 1 2 3; do
   mac="52:54:00:${identity_digest:0:2}:${identity_digest:2:2}:${identity_digest:4:2}"
   instance_id="nexus-rollback-drill-$guest-${set_id:0:16}"
   bitmap_name="nexus-initial-${identity_digest:0:24}"
+  guest_host_key="${guest_host_private_keys[$((index - 1))]}"
+  guest_host_public_key="${guest_host_public_keys[$((index - 1))]}"
+  guest_host_public_key_sha256="${guest_host_public_key_sha256s[$((index - 1))]}"
+  guest_host_key_fingerprint="${guest_host_key_fingerprints[$((index - 1))]}"
 
   "$QEMU_IMG" create -q -f qcow2 -F qcow2 -b "$base_target" "$overlay" 100G \
     || die "cannot create guest overlay: $guest"
@@ -802,8 +822,8 @@ ssh_genkeytypes: []
 ssh_keys:
   ed25519_private: |
 USER_HEAD
-    sed 's/^/    /' "$set_host_key"
-    printf '  ed25519_public: %s\n' "$set_host_public_key"
+    sed 's/^/    /' "$guest_host_key"
+    printf '  ed25519_public: %s\n' "$guest_host_public_key"
     cat <<USER_TAIL
 write_files:
   - path: /etc/ssh/sshd_config.d/99-nexus-rollback-drill.conf
@@ -850,9 +870,10 @@ USER_TAIL
   [[ "$seed_sha256" =~ ^[0-9a-f]{64}$ ]] || die "cannot derive guest seed digest"
   rm -f -- "$meta" "$network" "$user_data"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$guest" "$port" "$vm_uuid" "$mac" "$instance_id" "$seed_sha256" \
-    "$overlay_initial_sha256" "$set_host_key_fingerprint" "$set_host_public_key" \
+    "$overlay_initial_sha256" "$guest_host_key_fingerprint" \
+    "$guest_host_public_key_sha256" "$guest_host_public_key" \
     >>"$guest_records"
 done
 fsync_path "$guest_records"
@@ -861,7 +882,6 @@ created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 receipt="$set_stage/receipt.json"
 python3 - \
   "$receipt" "$set_id" "$expected_image_sha256" "$ssh_public_key_sha256" \
-  "$set_host_public_key_sha256" \
   "$port1" "$port2" "$port3" "$set_target" "$guest_records" "$created_at" \
   "$runner_sha256" "$host_preflight_sha256" \
   "$runtime_manifest_sha256" "$runtime_control_sha256" \
@@ -874,7 +894,7 @@ import sys
 from pathlib import Path
 
 (
-    output, set_id, image_sha, key_sha, host_key_sha, port1, port2, port3,
+    output, set_id, image_sha, key_sha, port1, port2, port3,
     set_directory, records_path, created_at, runner_sha, host_preflight_sha,
     runtime_manifest_sha, runtime_control_sha, runtime_readiness_sha,
     runtime_recovery_unit_sha, unit_sha, qemu_sha, qemu_version, qemu_package,
@@ -885,7 +905,7 @@ guests = []
 for line in Path(records_path).read_text(encoding="utf-8").splitlines():
     (
         name, port, uuid, mac, instance_id, seed_sha, overlay_initial_sha,
-        fingerprint, host_public_key,
+        fingerprint, host_public_key_sha256, host_public_key,
     ) = line.split("\t")
     root = f"{set_directory}/{name}"
     guests.append({
@@ -900,20 +920,22 @@ for line in Path(records_path).read_text(encoding="utf-8").splitlines():
         "seedPath": f"{root}/seed.img",
         "seedSha256": seed_sha,
         "hostPublicKey": host_public_key,
+        "hostPublicKeySha256": host_public_key_sha256,
         "hostKeyFingerprint": fingerprint,
     })
 if len({guest["overlayInitialSha256"] for guest in guests}) != 3:
     raise SystemExit("initial guest overlay digests must be independent")
-if len({guest["hostPublicKey"] for guest in guests}) != 1:
-    raise SystemExit("guest SSH host public key must be provision-set scoped")
-if len({guest["hostKeyFingerprint"] for guest in guests}) != 1:
-    raise SystemExit("guest SSH host fingerprint must be provision-set scoped")
-if hashlib.sha256(
-    guests[0]["hostPublicKey"].strip().encode("utf-8")
-).hexdigest() != host_key_sha:
-    raise SystemExit("guest SSH host public key differs from its set identity")
+if len({guest["hostPublicKey"] for guest in guests}) != 3:
+    raise SystemExit("guest SSH host public keys must be distinct")
+if len({guest["hostKeyFingerprint"] for guest in guests}) != 3:
+    raise SystemExit("guest SSH host fingerprints must be distinct")
+for guest in guests:
+    if hashlib.sha256(
+        guest["hostPublicKey"].strip().encode("utf-8")
+    ).hexdigest() != guest["hostPublicKeySha256"]:
+        raise SystemExit("guest SSH host public key differs from its identity")
 value = {
-    "schema": "nexus.rollback-drill-vm-provision.v1",
+    "schema": "nexus.rollback-drill-vm-provision.v2",
     "setId": set_id,
     "image": {
         "filename": "noble-server-cloudimg-amd64.img",
@@ -921,7 +943,9 @@ value = {
         "basePath": f"/var/lib/nexus-rollback-drill-vm/base/{image_sha}.qcow2",
     },
     "sshPublicKeySha256": key_sha,
-    "guestSshHostPublicKeySha256": host_key_sha,
+    "guestSshHostPublicKeySha256s": [
+        guest["hostPublicKeySha256"] for guest in guests
+    ],
     "ports": ports,
     "setDirectory": set_directory,
     "runtimeReadiness": {

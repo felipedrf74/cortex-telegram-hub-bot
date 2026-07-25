@@ -625,12 +625,12 @@ independently verifies `SHA256SUMS.gpg` with
 `/usr/share/keyrings/ubuntu-cloudimage-keyring.gpg`, requires the exact signed
 `noble-server-cloudimg-amd64.img` entry to match both owner-reviewed values,
 validates the qcow2, and publishes one root-owned immutable base plus three
-independent overlays, cloud-init seeds, and VM identities. One newly generated
-lab-only SSH host identity is scoped to that provision set and shared by its
-three strictly sequential loopback endpoints; it is never a production key.
-An optional unprivileged staging directory is copied through no-follow file
-descriptors into root-private state before the same checks; the staged files
-are never executed.
+independent overlays, cloud-init seeds, VM identities, and newly generated
+lab-only SSH host identities. Each host identity is bound to exactly one guest
+slot in the provision set; all three must be distinct from each other and from
+the production identity. An optional unprivileged staging directory is copied
+through no-follow file descriptors into root-private state before the same
+checks; the staged files are never executed.
 
 Only one guest can hold the non-waiting runtime lock. A separate admission
 lock serializes guest starts with readiness collection. QEMU uses KVM, fixed
@@ -702,12 +702,42 @@ readiness; do not enable guest egress or copy production data to close this
 gate. The exact commands and authorization schema are in
 `ops/rollback-drill-vm/OPERATIONS.txt`.
 
+The protected-main
+`scripts/rollback-drill-kvm-readiness-sequence.mjs` control adds the offline
+admission boundary for this manual phase. One root-owned ledger is derived from
+the exact plan SHA and snapshots the generation, provision, owner-key, and
+three signed runtime-authorization identities. Its fixed non-waiting lock and
+durable active checkpoint admit exactly
+`ssh-loss/guest-1 -> failed-health/guest-2 -> guest-reboot/guest-3`.
+Out-of-order, cross-plan, cross-guest, stale, replayed, or drifted requests fail
+closed. Completion re-verifies the owner and guest signatures, collector
+journal nonce/challenge, and exact live QEMU tuple before atomically advancing.
+An interrupted completion on the same boot resumes from immutable receipts and
+the same active request; it never clears the active guest implicitly. The
+authorization and ledger bind the Linux boot-ID digest plus `/proc/uptime`
+start/deadline, so a reboot, decreasing monotonic clock, or elapsed 24-hour
+window requires a newly prepared and owner-authorized sequence.
+
+This ledger deliberately starts no unit, opens no SSH connection, performs no
+network action, invokes no evidence coordinator, and cannot activate
+production. It is a durable operator checkpoint only. The existing root-owned
+systemd locks remain the physical one-QEMU boundary, and a later reviewed
+adapter must consume the exact active request before this checkpoint can
+authorize automation. Full operator commands and recovery rules remain in
+`ops/rollback-drill-vm/OPERATIONS.txt`.
+
 The real evidence bundle requires the exact `execution.json` receipt in
 addition to all three outcomes. Each outcome binds the receipt digest and
 repeats its strictly-sequential mode and `testMode=false` identity; the receipt
-binds their ordered payload digests. Collection and verification reject a
-missing, substituted, reordered, or test-mode receipt before rollback freshness
-evidence can be produced.
+binds their ordered payload digests plus the immutable completed readiness
+ledger's generation, provision, and ordered readiness digests. Isolation
+contains that same ledger, and the owner signature binds the exact isolation.
+The coordinator verifies the signed chain and live boot/monotonic deadline
+before its first guest-unit start. The final machine-evidence bundle includes a
+separate canonical readiness-ledger file and repeats those identities.
+Collection and verification reject a missing, substituted, reordered, stale,
+different-boot, or test-mode receipt before rollback freshness evidence can be
+produced.
 
 The installer and provisioner do not start a guest. Starting an explicit slot
 remains a separate owner-observed drill action:

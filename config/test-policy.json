@@ -207,6 +207,7 @@
     { "pattern": "__tests__/scripts/rollback-drill-kvm-inputs.test.ts", "disposition": "keep", "reason": "Protects the fail-closed detached rollback-drill input chain from unsigned plan preparation through owner-signed readiness, isolated finalization, fresh authorization, and exact protected promotion-request sealing." },
     { "pattern": "__tests__/scripts/rollback-drill-staging-attestation.test.ts", "disposition": "keep", "reason": "Protects the first-drill-only signed evidence wrapper, exact production-manifest provenance, dedicated drill-key isolation, ordinary recovery-schema compatibility, source/output digest binding, and cryptographic production-key rejection before application-runtime mutation." },
     { "pattern": "__tests__/scripts/rollback-drill-kvm-coordinator.test.ts", "disposition": "keep", "reason": "Protects the fail-closed, loopback-only KVM rollback-drill plan, distinct guest and key isolation, bounded deterministic machine evidence, three independent fault outcomes, 120-second recovery target, tamper rejection, and exact rollback-request digest binding." },
+    { "pattern": "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts", "disposition": "keep", "reason": "Protects strict single-active guest ordering, durable request and receipt checkpoints, exact plan/generation/provision/authorization/runtime tuple binding, owner and guest signature verification, stale/replay/cross-guest rejection, and interruption or reboot resume without production activation." },
     { "pattern": "__tests__/scripts/application-disaster-recovery.test.ts", "disposition": "keep", "reason": "Protects online SQLite recovery points, the explicit owner-only single-use zero-inventory disabled-lifecycle bootstrap, positive verified-rollback receipt floor, systemd/timer exclusion, conditional checksummed first-point AWS writes, exact COMPLIANCE identities, monotonic 24/7/4/6 maturity, lifecycle-only AWS cleanup, the explicit R2 client-pruning variance, exact rollback-archive escrow, isolated restore drills, and root-owned timer assets." },
     { "pattern": "__tests__/scripts/application-dr-backup-descriptor.test.ts", "disposition": "keep", "reason": "Protects the unprivileged, exact-identity recovery descriptor passed into the root-owned encrypted backup boundary." },
     { "pattern": "__tests__/scripts/application-dr-cloudformation.test.ts", "disposition": "keep", "reason": "Protects the retained private versioned S3 policy and executable CloudFormation Guard rules, exact-prefix ListBucket and ListBucketVersions boundaries across the role, Roles Anywhere session, and bucket policy, exact-tier conditional write-once denies, bounded COMPLIANCE floors, receipt-bound disabled-first lifecycle activation, writer deletion/control-mutation denial, optional disabled-first IAM Roles Anywhere trust anchor, CloudFormation-owned full-size CRL chunk contract, one-role profiles, distinct read-only restore identity, transport controls, and the absence of generated long-lived IAM credentials." },
@@ -526,6 +527,19 @@
         "scripts/rollback-drill-kvm-coordinator.mjs"
       ],
       "reason": "Replaced the obsolete execution-not-implemented refusal with retained three-scenario KVM orchestration, bounded evidence, exact request identity, timeout enforcement, and fail-closed fault results."
+    },
+    {
+      "test": "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts",
+      "replacementTests": [
+        "__tests__/scripts/rollback-drill-kvm-readiness-sequence.test.ts"
+      ],
+      "sources": [
+        "scripts/lib/rollback-drill-kvm-evidence.mjs",
+        "scripts/rollback-drill-kvm-inputs.mjs",
+        "scripts/rollback-drill-kvm-readiness-sequence.mjs",
+        "scripts/rollback-drill-vm-runtime-control.sh"
+      ],
+      "reason": "Adds the retained offline admission ledger for three strictly sequential runtime-readiness guests, with durable idempotent checkpoints, exact signed tuple verification, fail-closed replay isolation, and reboot-safe resume."
     },
     {
       "test": "__tests__/scripts/rollback-drill-vm-runtime-bootstrap.test.ts",

@@ -28,7 +28,7 @@ from urllib.parse import urlparse
 
 
 BUNDLE_SCHEMA = "nexus.rollback-drill-vm-runtime-bundle.v1"
-PROVISION_SCHEMA = "nexus.rollback-drill-vm-provision.v1"
+PROVISION_SCHEMA = "nexus.rollback-drill-vm-provision.v2"
 GUEST_MEASUREMENT_SCHEMA = "nexus.rollback-drill-vm-runtime-measurement.v1"
 READINESS_SCHEMA = "nexus.rollback-drill-vm-runtime-readiness.v2"
 PYTHON_PROVENANCE_SCHEMA = "nexus.rollback-drill-vm-python-provenance.v1"
@@ -2502,7 +2502,7 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
             "setId",
             "image",
             "sshPublicKeySha256",
-            "guestSshHostPublicKeySha256",
+            "guestSshHostPublicKeySha256s",
             "ports",
             "setDirectory",
             "runtimeReadiness",
@@ -2541,10 +2541,15 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
         != f"/var/lib/nexus-rollback-drill-vm/base/{image['sha256']}.qcow2"
         or not isinstance(receipt["sshPublicKeySha256"], str)
         or not HEX64.fullmatch(receipt["sshPublicKeySha256"])
-        or not isinstance(receipt["guestSshHostPublicKeySha256"], str)
-        or not HEX64.fullmatch(receipt["guestSshHostPublicKeySha256"])
-        or receipt["guestSshHostPublicKeySha256"]
-        == receipt["sshPublicKeySha256"]
+        or not isinstance(receipt["guestSshHostPublicKeySha256s"], list)
+        or len(receipt["guestSshHostPublicKeySha256s"]) != 3
+        or any(
+            not isinstance(identity, str) or not HEX64.fullmatch(identity)
+            for identity in receipt["guestSshHostPublicKeySha256s"]
+        )
+        or len(set(receipt["guestSshHostPublicKeySha256s"])) != 3
+        or receipt["sshPublicKeySha256"]
+        in receipt["guestSshHostPublicKeySha256s"]
         or receipt["setDirectory"]
         != f"/var/lib/nexus-rollback-drill-vm/sets/{receipt['setId']}"
         or not isinstance(receipt["createdAt"], str)
@@ -2684,10 +2689,11 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
     ):
         fail("provision QEMU package identity is invalid")
     set_material = (
-        "schema=nexus.rollback-drill-vm-provision.v1\n"
+        "schema=nexus.rollback-drill-vm-provision.v2\n"
         f"image={image['sha256']}\n"
         f"key={receipt['sshPublicKeySha256']}\n"
-        f"hostKey={receipt['guestSshHostPublicKeySha256']}\n"
+        "hostKeys="
+        f"{','.join(receipt['guestSshHostPublicKeySha256s'])}\n"
         f"ports={receipt['ports'][0]},{receipt['ports'][1]},"
         f"{receipt['ports'][2]}\n"
         f"runner={hypervisor['runnerSha256']}\n"
@@ -2743,6 +2749,7 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
                 "seedPath",
                 "seedSha256",
                 "hostPublicKey",
+                "hostPublicKeySha256",
                 "hostKeyFingerprint",
             },
             "provision guest",
@@ -2769,6 +2776,8 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
             or not isinstance(candidate["hostKeyFingerprint"], str)
             or not SSH_FINGERPRINT.fullmatch(candidate["hostKeyFingerprint"])
             or not isinstance(candidate["hostPublicKey"], str)
+            or not isinstance(candidate["hostPublicKeySha256"], str)
+            or not HEX64.fullmatch(candidate["hostPublicKeySha256"])
         ):
             fail("provision guest identity is invalid")
         public_fields = candidate["hostPublicKey"].split()
@@ -2784,34 +2793,40 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
         if expected_fingerprint != candidate["hostKeyFingerprint"]:
             fail("provision set host-key fingerprint is invalid")
         canonical_key = " ".join(public_fields)
+        public_key_sha256 = sha256_bytes(canonical_key.encode("utf-8"))
+        if (
+            public_key_sha256 != candidate["hostPublicKeySha256"]
+            or public_key_sha256
+            != receipt["guestSshHostPublicKeySha256s"][slot - 1]
+        ):
+            fail("provision guest host public-key identity is invalid")
         host_key_identities.add(
             (
                 canonical_key,
                 expected_fingerprint,
-                sha256_bytes(canonical_key.encode("utf-8")),
+                public_key_sha256,
             )
         )
         observed_uuids.add(candidate["uuid"])
         observed_macs.add(candidate["mac"])
         observed_overlays.add(candidate["overlayInitialSha256"])
     if (
-        len(host_key_identities) != 1
+        len(host_key_identities) != 3
         or len(observed_uuids) != 3
         or len(observed_macs) != 3
         or len(observed_overlays) != 3
     ):
-        fail("provision guests must share one set host key and unique machines")
+        fail("provision guests must have distinct host keys and unique machines")
     guest = next(entry for entry in guests if entry["name"] == guest_name)
-    canonical_key, fingerprint, public_key_sha256 = next(
-        iter(host_key_identities)
-    )
+    canonical_key = " ".join(guest["hostPublicKey"].split())
+    fingerprint = guest["hostKeyFingerprint"]
+    public_key_sha256 = guest["hostPublicKeySha256"]
     if (
-        public_key_sha256 != receipt["guestSshHostPublicKeySha256"]
-        or guest["hostPublicKey"] != canonical_key
+        guest["hostPublicKey"] != canonical_key
         or guest["hostKeyFingerprint"] != fingerprint
     ):
         fail("selected guest set host-key identity is invalid")
-    return {**guest, "hostPublicKeySha256": public_key_sha256}
+    return guest
 
 
 def validate_python_provenance(
@@ -3410,6 +3425,9 @@ def validate_runtime_readiness(
             "drill",
             "issuedAt",
             "expiresAt",
+            "controllerBootIdSha256",
+            "issuedMonotonicSeconds",
+            "expiresMonotonicSeconds",
             "sha256",
             "signatureSha256",
             "ownerPublicKeySha256",
@@ -3423,6 +3441,9 @@ def validate_runtime_readiness(
             "authorizationId",
             "issuedAt",
             "expiresAt",
+            "controllerBootIdSha256",
+            "issuedMonotonicSeconds",
+            "expiresMonotonicSeconds",
             "operation",
             "drill",
             "setId",
@@ -3460,12 +3481,29 @@ def validate_runtime_readiness(
         )
         or not ISO_UTC.fullmatch(authorization_fields["issuedAt"])
         or not ISO_UTC.fullmatch(authorization_fields["expiresAt"])
+        or not HEX64.fullmatch(
+            authorization_fields["controllerBootIdSha256"]
+        )
+        or type(authorization_fields["issuedMonotonicSeconds"]) is not int
+        or type(authorization_fields["expiresMonotonicSeconds"]) is not int
+        or authorization_fields["issuedMonotonicSeconds"] < 0
+        or authorization_fields["expiresMonotonicSeconds"]
+        <= authorization_fields["issuedMonotonicSeconds"]
         or owner
         != {
             "authorizationId": authorization_fields["authorizationId"],
             "drill": authorization_fields["drill"],
             "issuedAt": authorization_fields["issuedAt"],
             "expiresAt": authorization_fields["expiresAt"],
+            "controllerBootIdSha256": authorization_fields[
+                "controllerBootIdSha256"
+            ],
+            "issuedMonotonicSeconds": authorization_fields[
+                "issuedMonotonicSeconds"
+            ],
+            "expiresMonotonicSeconds": authorization_fields[
+                "expiresMonotonicSeconds"
+            ],
             "sha256": authorization_sha256,
             "signatureSha256": authorization_signature_sha256,
             "ownerPublicKeySha256": authorization_fields[

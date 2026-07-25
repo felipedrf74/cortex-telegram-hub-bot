@@ -643,12 +643,20 @@ PY
     resume_authorization=true
   fi
   auth_json="$(
+    controller_boot_id_sha256="$(
+      tr -d '\n' </proc/sys/kernel/random/boot_id | sha256sum | cut -d' ' -f1
+    )"
+    controller_uptime_seconds="$(
+      awk '{print int($1)}' /proc/uptime
+    )"
     python3 - "$authorization" "$PINNED_OWNER_SHA256" "$SET_ID" "$guest" "$PORT" \
       "$provision_sha" "$manifest_sha" "$HOST_PUBLIC_KEY_SHA256" "$drill" \
-      "$resume_authorization" <<'PY'
+      "$resume_authorization" "$controller_boot_id_sha256" \
+      "$controller_uptime_seconds" <<'PY'
 import datetime,hashlib,json,pathlib,re,sys
 (
  path,owner_sha,set_id,guest,port,provision,manifest,host_key_sha,drill,resume,
+ controller_boot_sha,controller_uptime,
 )=sys.argv[1:]
 body=pathlib.Path(path).read_bytes()
 try:value=json.loads(body.decode("utf-8","strict"))
@@ -660,6 +668,7 @@ if set(value)!={
  "schema","authorizationId","issuedAt","expiresAt","operation","drill","setId",
  "guest","port","provisionReceiptSha256","bundleManifestSha256",
  "guestSshHostPublicKeySha256","ownerPublicKeySha256",
+ "controllerBootIdSha256","issuedMonotonicSeconds","expiresMonotonicSeconds",
 }:
  raise SystemExit("authorization schema is invalid")
 hex64=re.compile(r"^[0-9a-f]{64}$")
@@ -673,6 +682,7 @@ if (
  or value["bundleManifestSha256"]!=manifest
  or value["guestSshHostPublicKeySha256"]!=host_key_sha
  or value["ownerPublicKeySha256"]!=owner_sha
+ or value["controllerBootIdSha256"]!=controller_boot_sha
 ):
  raise SystemExit("authorization identity is outside the selected boundary")
 def timestamp(name):
@@ -686,14 +696,26 @@ def timestamp(name):
  except ValueError:raise SystemExit(f"authorization {name} is invalid")
 issued=timestamp("issuedAt");expires=timestamp("expiresAt")
 now=datetime.datetime.now(datetime.timezone.utc)
+if not controller_uptime.isdigit():
+ raise SystemExit("controller monotonic clock is invalid")
+uptime=int(controller_uptime)
+issued_mono=value["issuedMonotonicSeconds"]
+expires_mono=value["expiresMonotonicSeconds"]
 if (
  issued>now or (expires<=now and resume!="true") or expires<=issued
  or expires-issued>datetime.timedelta(hours=24)
+ or type(issued_mono) is not int or type(expires_mono) is not int
+ or issued_mono<0 or expires_mono<=issued_mono
+ or expires_mono-issued_mono!=int((expires-issued).total_seconds())
+ or issued_mono>uptime or expires_mono<=uptime
 ):
  raise SystemExit("authorization validity window is outside policy")
 print(json.dumps({
  "authorizationId":value["authorizationId"],"issuedAt":value["issuedAt"],
  "expiresAt":value["expiresAt"],
+ "controllerBootIdSha256":value["controllerBootIdSha256"],
+ "issuedMonotonicSeconds":issued_mono,
+ "expiresMonotonicSeconds":expires_mono,
 },separators=(",",":"),sort_keys=True))
 PY
   )" || die "owner authorization validation failed"
@@ -1285,6 +1307,9 @@ PY
 
   auth_issued="$(printf '%s' "$auth_json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuedAt"])')"
   auth_expires="$(printf '%s' "$auth_json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["expiresAt"])')"
+  auth_controller_boot="$(printf '%s' "$auth_json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["controllerBootIdSha256"])')"
+  auth_issued_monotonic="$(printf '%s' "$auth_json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuedMonotonicSeconds"])')"
+  auth_expires_monotonic="$(printf '%s' "$auth_json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["expiresMonotonicSeconds"])')"
   readiness_dir="$READINESS_PARENT/$SET_ID"
   install -d -o root -g nexus-drill-vm -m 0750 "$READINESS_PARENT" "$readiness_dir"
   fsync_path "$readiness_dir"
@@ -1295,6 +1320,7 @@ PY
   readiness_stage="$(mktemp "$readiness_dir/.readiness.XXXXXXXX")"
   python3 - "$readiness_stage" "$SET_ID" "$guest" "$PORT" "$provision_sha" \
     "$manifest_sha" "$auth_id" "$drill" "$auth_issued" "$auth_expires" \
+    "$auth_controller_boot" "$auth_issued_monotonic" "$auth_expires_monotonic" \
     "$auth_sha" "$auth_sig_sha" "$PINNED_OWNER_SHA256" "$measurement_sha" \
     "$signature_sha" "$challenge" "$MACHINE_UUID" "$INSTANCE_ID" "$MAC" \
     "$HOST_KEY_FINGERPRINT" "$HOST_PUBLIC_KEY_SHA256" "$UNIT" "$supervisor_pid" \
@@ -1305,6 +1331,7 @@ PY
 import datetime,json,os,sys
 (
  output,set_id,guest,port,provision,manifest,auth_id,drill,issued,expires,
+ controller_boot,issued_monotonic,expires_monotonic,
  auth_sha,auth_sig_sha,owner_sha,measurement_sha,measurement_sig_sha,challenge,
  uuid,instance_id,mac,host_fingerprint,host_public_sha,unit,supervisor,
  supervisor_start,proof_systemd_state,lock_holder,holder_pid,holder_start,nonce,
@@ -1321,6 +1348,9 @@ value={
  "provisionReceiptSha256":provision,"bundleManifestSha256":manifest,
  "ownerAuthorization":{
   "authorizationId":auth_id,"drill":drill,"issuedAt":issued,"expiresAt":expires,
+  "controllerBootIdSha256":controller_boot,
+  "issuedMonotonicSeconds":int(issued_monotonic),
+  "expiresMonotonicSeconds":int(expires_monotonic),
   "sha256":auth_sha,"signatureSha256":auth_sig_sha,
   "ownerPublicKeySha256":owner_sha,
  },

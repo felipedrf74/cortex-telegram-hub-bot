@@ -69,9 +69,9 @@ function hostKey(index: number): { publicKey: string; fingerprint: string } {
 
 function provisionReceipt() {
   const imageSha = "b".repeat(64);
-  const setHostKey = hostKey(1);
+  const guestHostKeys = [1, 2, 3].map((slot) => hostKey(slot));
   const clientKeySha = "c".repeat(64);
-  const hostKeySha = sha256(setHostKey.publicKey);
+  const hostKeyShas = guestHostKeys.map((key) => sha256(key.publicKey));
   const ports = [22_991, 22_992, 22_993];
   const hypervisor = {
     manager: "qemu-systemd",
@@ -119,10 +119,10 @@ function provisionReceipt() {
     productionDataAttached: false,
   };
   const setMaterial =
-    "schema=nexus.rollback-drill-vm-provision.v1\n" +
+    "schema=nexus.rollback-drill-vm-provision.v2\n" +
     `image=${imageSha}\n` +
     `key=${clientKeySha}\n` +
-    `hostKey=${hostKeySha}\n` +
+    `hostKeys=${hostKeyShas.join(",")}\n` +
     `ports=${ports.join(",")}\n` +
     `runner=${hypervisor.runnerSha256}\n` +
     `hostPreflight=${hypervisor.hostPreflightSha256}\n` +
@@ -150,12 +150,13 @@ function provisionReceipt() {
       overlayInitialSha256: String(slot).repeat(64),
       seedPath: `/var/lib/nexus-rollback-drill-vm/sets/${setId}/${name}/seed.img`,
       seedSha256: String(slot + 3).repeat(64),
-      hostPublicKey: setHostKey.publicKey,
-      hostKeyFingerprint: setHostKey.fingerprint,
+      hostPublicKey: guestHostKeys[slot - 1].publicKey,
+      hostPublicKeySha256: hostKeyShas[slot - 1],
+      hostKeyFingerprint: guestHostKeys[slot - 1].fingerprint,
     };
   });
   return {
-    schema: "nexus.rollback-drill-vm-provision.v1",
+    schema: "nexus.rollback-drill-vm-provision.v2",
     setId,
     image: {
       filename: "noble-server-cloudimg-amd64.img",
@@ -163,7 +164,7 @@ function provisionReceipt() {
       basePath: `/var/lib/nexus-rollback-drill-vm/base/${imageSha}.qcow2`,
     },
     sshPublicKeySha256: clientKeySha,
-    guestSshHostPublicKeySha256: hostKeySha,
+    guestSshHostPublicKeySha256s: hostKeyShas,
     ports,
     setDirectory: `/var/lib/nexus-rollback-drill-vm/sets/${setId}`,
     runtimeReadiness: {
@@ -823,6 +824,9 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
       authorizationId: "1".repeat(64),
       issuedAt: "2026-07-24T00:00:00Z",
       expiresAt: "2026-07-24T12:00:00Z",
+      controllerBootIdSha256: "3".repeat(64),
+      issuedMonotonicSeconds: 100_000,
+      expiresMonotonicSeconds: 143_200,
       operation: "collect-runtime-readiness",
       drill: "failed-health-check",
       setId: receipt.setId,
@@ -854,6 +858,12 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
         drill: authorization.drill,
         issuedAt: authorization.issuedAt,
         expiresAt: authorization.expiresAt,
+        controllerBootIdSha256:
+          authorization.controllerBootIdSha256,
+        issuedMonotonicSeconds:
+          authorization.issuedMonotonicSeconds,
+        expiresMonotonicSeconds:
+          authorization.expiresMonotonicSeconds,
         sha256: sha256(readFileSync(authorizationPath)),
         signatureSha256: sha256(readFileSync(authorizationSignaturePath)),
         ownerPublicKeySha256: authorization.ownerPublicKeySha256,
