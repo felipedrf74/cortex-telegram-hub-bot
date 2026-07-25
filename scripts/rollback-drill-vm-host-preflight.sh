@@ -15,7 +15,7 @@ die() {
 }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root through the reviewed systemd unit"
-for command in id journalctl python3; do
+for command in grep id journalctl mktemp python3 rm; do
   command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
 
@@ -49,17 +49,33 @@ if load15_milli >= maximum_load15_milli:
     )
 PY
 
-oom_evidence="$(
-  journalctl \
-    --kernel \
-    --since='24 hours ago' \
-    --no-pager \
-    --quiet \
-    --lines=1 \
-    --output=short-unix \
-    --grep='Out of memory|oom-kill|Killed process|invoked oom-killer'
-)" || die "kernel OOM history is unavailable"
-[ -z "$oom_evidence" ] \
-  || die "kernel OOM evidence exists in the last 24 hours"
+assert_no_recent_kernel_oom() {
+  local grep_status kernel_history
+  kernel_history="$(mktemp)" \
+    || die "temporary kernel OOM history file is unavailable"
+  trap 'rm -f -- "${kernel_history:-}"' EXIT RETURN
+  if ! journalctl \
+      -k \
+      --since='24 hours ago' \
+      --no-pager \
+      --quiet \
+      --output=cat \
+      >"$kernel_history"; then
+    rm -f -- "$kernel_history"
+    die "kernel OOM history is unavailable"
+  fi
+  if grep -Eq \
+    'Out of memory|oom-kill|Killed process|invoked oom-killer' \
+    "$kernel_history"; then
+    rm -f -- "$kernel_history"
+    die "kernel OOM evidence exists in the last 24 hours"
+  else
+    grep_status=$?
+  fi
+  rm -f -- "$kernel_history"
+  [ "$grep_status" -eq 1 ] || die "kernel OOM history scan failed"
+  trap - EXIT RETURN
+}
+assert_no_recent_kernel_oom
 
 printf '{"ok":true,"schema":"nexus.rollback-drill-vm-host-preflight.v1","minimumAvailableGiB":25,"maximumLoad15Exclusive":6,"kernelOomWindowHours":24}\n'
