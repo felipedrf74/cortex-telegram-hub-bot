@@ -12,7 +12,11 @@ from typing import Any, NoReturn
 
 
 SCHEMA = "nexus.application-dr-storage-controls.v2"
+BOOTSTRAP_SCHEMA = "nexus.application-dr-storage-controls.bootstrap.v1"
 RESULT_SCHEMA = "NexusApplicationDrStorageControlsVerificationV2"
+BOOTSTRAP_RESULT_SCHEMA = (
+    "NexusApplicationDrStorageControlsBootstrapVerificationV1"
+)
 MAX_EVIDENCE_AGE_SECONDS = 30 * 24 * 60 * 60
 MAX_CLOCK_SKEW_SECONDS = 5 * 60
 DATABASE_RETENTION_FLOOR_DAYS = {
@@ -40,6 +44,13 @@ PROVIDER_MODES = {
 }
 REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{5,255}$")
 APPROVER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$")
+STACK_ID_PATTERN = re.compile(
+    r"^arn:(aws|aws-us-gov|aws-cn):cloudformation:"
+    r"([a-z0-9-]+):([0-9]{12}):stack/"
+    r"([A-Za-z][A-Za-z0-9-]{0,127})/"
+    r"([A-Za-z0-9-]{1,128})$",
+)
+STACK_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,127}$")
 
 
 def fail(message: str) -> NoReturn:
@@ -87,6 +98,335 @@ def exact_integer_map(
     return result
 
 
+def validate_common_identity(
+    root: dict[str, Any],
+    *,
+    provider: str,
+    control_mode: str,
+    endpoint: str,
+    bucket: str,
+    prefix: str,
+    now_epoch: int,
+) -> tuple[int, int]:
+    expected_identity = {
+        "provider": provider,
+        "controlMode": control_mode,
+        "endpoint": endpoint,
+        "bucket": bucket,
+        "prefix": prefix,
+    }
+    for field, expected in expected_identity.items():
+        if root[field] != expected:
+            fail(f"storage-control evidence {field} does not match configuration")
+
+    verified_epoch = canonical_timestamp(root["verifiedAt"], "verifiedAt")
+    age_seconds = now_epoch - verified_epoch
+    if age_seconds < -MAX_CLOCK_SKEW_SECONDS:
+        fail("storage-control evidence is dated in the future")
+    if age_seconds > MAX_EVIDENCE_AGE_SECONDS:
+        fail("storage-control evidence is older than 30 days")
+    reference = root["verificationReference"]
+    if not isinstance(reference, str) or not REFERENCE_PATTERN.fullmatch(reference):
+        fail("verificationReference must be a bounded private evidence identifier")
+    return verified_epoch, age_seconds
+
+
+def validate_aws_write_once_controls(
+    root: dict[str, Any],
+    *,
+    prefix: str,
+    lifecycle_status: str,
+) -> dict[str, Any]:
+    versioning = exact_object(
+        root["versioning"],
+        {"supported", "status"},
+        "versioning evidence",
+    )
+    if versioning != {"supported": True, "status": "enabled"}:
+        fail("versioned-s3 requires enabled bucket versioning")
+
+    database_protection = exact_object(
+        root["databaseProtection"],
+        {"writeMode", "objectLock"},
+        "AWS database-protection evidence",
+    )
+    if database_protection["writeMode"] != "conditional-first-point":
+        fail("versioned-s3 requires conditional first-point database writes")
+    database_lock = exact_object(
+        database_protection["objectLock"],
+        {"supported", "status", "mode", "retentionFloorDays"},
+        "AWS database Object Lock evidence",
+    )
+    if (
+        database_lock["supported"] is not True
+        or database_lock["status"] != "enabled"
+        or database_lock["mode"] != "COMPLIANCE"
+    ):
+        fail("versioned-s3 requires enabled COMPLIANCE locks for database tiers")
+    exact_integer_map(
+        database_lock["retentionFloorDays"],
+        DATABASE_RETENTION_FLOOR_DAYS,
+        "AWS database retention floors",
+    )
+
+    cleanup = exact_object(
+        root["cleanup"],
+        {
+            "owner",
+            "status",
+            "databaseExpirationDays",
+            "releaseExpirationDays",
+        },
+        "AWS cleanup evidence",
+    )
+    if (
+        cleanup["owner"] != "s3-lifecycle"
+        or cleanup["status"] != lifecycle_status
+    ):
+        fail(
+            "versioned-s3 requires "
+            f"{lifecycle_status} S3 Lifecycle owned cleanup",
+        )
+    exact_integer_map(
+        cleanup["databaseExpirationDays"],
+        DATABASE_LIFECYCLE_EXPIRATION_DAYS,
+        "AWS database lifecycle expiration",
+    )
+    if (
+        isinstance(cleanup["releaseExpirationDays"], bool)
+        or cleanup["releaseExpirationDays"]
+        != RELEASE_LIFECYCLE_EXPIRATION_DAYS
+    ):
+        fail("AWS release lifecycle expiration must equal 92 days")
+
+    release_lock = exact_object(
+        root["releasePrefixLock"],
+        {"control", "status", "prefix", "retentionDays"},
+        "release-prefix lock evidence",
+    )
+    expected_release_prefix = f"{prefix.rstrip('/')}/releases/"
+    if (
+        release_lock["control"] != "s3-object-lock"
+        or release_lock["status"] != "enabled"
+        or release_lock["prefix"] != expected_release_prefix
+        or not isinstance(release_lock["retentionDays"], int)
+        or isinstance(release_lock["retentionDays"], bool)
+        or release_lock["retentionDays"] < 90
+    ):
+        fail(
+            "release-prefix lock must cover the exact releases prefix "
+            "for at least 90 days",
+        )
+    return release_lock
+
+
+def validate_bootstrap_evidence(
+    evidence: Any,
+    *,
+    provider: str,
+    control_mode: str,
+    endpoint: str,
+    bucket: str,
+    prefix: str,
+    now_epoch: int,
+) -> dict[str, Any]:
+    if provider != "aws-s3" or control_mode != "versioned-s3":
+        fail("disabled-bootstrap is available only for aws-s3:versioned-s3")
+    root = exact_object(
+        evidence,
+        {
+            "schema",
+            "provider",
+            "controlMode",
+            "endpoint",
+            "bucket",
+            "prefix",
+            "verifiedAt",
+            "verificationReference",
+            "cloudFormation",
+            "versioning",
+            "encryption",
+            "publicAccessBlock",
+            "ownershipControls",
+            "objectLock",
+            "databaseProtection",
+            "cleanup",
+            "releasePrefixLock",
+            "namespaceInventory",
+        },
+        "bootstrap storage-control evidence",
+    )
+    if root["schema"] != BOOTSTRAP_SCHEMA:
+        fail("bootstrap storage-control evidence schema is invalid")
+    verified_epoch, age_seconds = validate_common_identity(
+        root,
+        provider=provider,
+        control_mode=control_mode,
+        endpoint=endpoint,
+        bucket=bucket,
+        prefix=prefix,
+        now_epoch=now_epoch,
+    )
+
+    stack = exact_object(
+        root["cloudFormation"],
+        {
+            "stackId",
+            "stackName",
+            "stackStatus",
+            "changeSetType",
+            "createdAt",
+            "lastUpdatedAt",
+            "lifecycleActivation",
+            "lifecycleEverEnabled",
+            "lifecycleBootstrapReceiptSha256",
+        },
+        "bootstrap CloudFormation evidence",
+    )
+    stack_id = stack["stackId"]
+    stack_match = (
+        STACK_ID_PATTERN.fullmatch(stack_id)
+        if isinstance(stack_id, str)
+        else None
+    )
+    if stack_match is None:
+        fail("bootstrap stackId is invalid")
+    stack_name = stack["stackName"]
+    if (
+        not isinstance(stack_name, str)
+        or not STACK_NAME_PATTERN.fullmatch(stack_name)
+        or stack_match.group(4) != stack_name
+    ):
+        fail("bootstrap stackName does not match stackId")
+    endpoint_match = re.fullmatch(
+        r"https://s3\.([a-z0-9-]+)\.amazonaws\.com",
+        endpoint,
+    )
+    if endpoint_match is None or stack_match.group(2) != endpoint_match.group(1):
+        fail("bootstrap stack region does not match the configured S3 endpoint")
+    created_epoch = canonical_timestamp(
+        stack["createdAt"],
+        "cloudFormation.createdAt",
+    )
+    if created_epoch > verified_epoch:
+        fail("bootstrap stack creation cannot be newer than its control verification")
+    change_set_type = stack["changeSetType"]
+    stack_status = stack["stackStatus"]
+    last_updated_at = stack["lastUpdatedAt"]
+    if change_set_type == "CREATE":
+        stack_operation_valid = (
+            stack_status == "CREATE_COMPLETE"
+            and last_updated_at is None
+        )
+    elif change_set_type == "UPDATE":
+        if last_updated_at is None:
+            stack_operation_valid = False
+        else:
+            last_updated_epoch = canonical_timestamp(
+                last_updated_at,
+                "cloudFormation.lastUpdatedAt",
+            )
+            stack_operation_valid = (
+                stack_status == "UPDATE_COMPLETE"
+                and created_epoch <= last_updated_epoch <= verified_epoch
+            )
+    else:
+        stack_operation_valid = False
+    if (
+        not stack_operation_valid
+        or stack["lifecycleActivation"] != "DISABLED"
+        or stack["lifecycleEverEnabled"] is not False
+        or stack["lifecycleBootstrapReceiptSha256"] is not None
+    ):
+        fail(
+            "disabled-bootstrap requires a completed CREATE or UPDATE stack "
+            "whose lifecycle has never been enabled and has no prior receipt",
+        )
+
+    encryption = exact_object(
+        root["encryption"],
+        {"algorithm"},
+        "bootstrap bucket encryption evidence",
+    )
+    if encryption != {"algorithm": "AES256"}:
+        fail("disabled-bootstrap requires exact AES256 bucket encryption")
+    public_access = exact_object(
+        root["publicAccessBlock"],
+        {
+            "blockPublicAcls",
+            "blockPublicPolicy",
+            "ignorePublicAcls",
+            "restrictPublicBuckets",
+        },
+        "bootstrap public-access-block evidence",
+    )
+    if any(value is not True for value in public_access.values()):
+        fail("disabled-bootstrap requires every S3 public-access block")
+    ownership = exact_object(
+        root["ownershipControls"],
+        {"objectOwnership"},
+        "bootstrap ownership evidence",
+    )
+    if ownership != {"objectOwnership": "BucketOwnerEnforced"}:
+        fail("disabled-bootstrap requires BucketOwnerEnforced ownership")
+    object_lock = exact_object(
+        root["objectLock"],
+        {"enabled"},
+        "bootstrap bucket Object Lock evidence",
+    )
+    if object_lock != {"enabled": True}:
+        fail("disabled-bootstrap requires bucket Object Lock")
+
+    release_lock = validate_aws_write_once_controls(
+        root,
+        prefix=prefix,
+        lifecycle_status="disabled",
+    )
+    inventory = exact_object(
+        root["namespaceInventory"],
+        {
+            "listingComplete",
+            "objectCount",
+            "versionCount",
+            "deleteMarkerCount",
+        },
+        "bootstrap namespace inventory",
+    )
+    if (
+        inventory["listingComplete"] is not True
+        or any(
+            isinstance(inventory[field], bool)
+            or not isinstance(inventory[field], int)
+            or inventory[field] != 0
+            for field in ("objectCount", "versionCount", "deleteMarkerCount")
+        )
+    ):
+        fail(
+            "disabled-bootstrap requires a complete zero-object, zero-version, "
+            "zero-delete-marker namespace inventory",
+        )
+
+    return {
+        "schemaVersion": BOOTSTRAP_RESULT_SCHEMA,
+        "status": "passed",
+        "provider": provider,
+        "controlMode": control_mode,
+        "lifecyclePhase": "disabled-bootstrap",
+        "bootstrapStackId": stack_id,
+        "namespaceEmpty": True,
+        "versioningRequired": True,
+        "versioningVerified": True,
+        "approvedVariance": False,
+        "databaseWriteOnceVerified": True,
+        "databaseObjectLockVerified": True,
+        "cleanupOwner": "s3-lifecycle",
+        "lifecycleVerified": False,
+        "releasePrefixLockVerified": True,
+        "releaseRetentionDays": release_lock["retentionDays"],
+        "evidenceAgeSeconds": max(0, age_seconds),
+    }
+
+
 def validate_evidence(
     evidence: Any,
     *,
@@ -97,6 +437,16 @@ def validate_evidence(
     prefix: str,
     now_epoch: int,
 ) -> dict[str, Any]:
+    if isinstance(evidence, dict) and evidence.get("schema") == BOOTSTRAP_SCHEMA:
+        return validate_bootstrap_evidence(
+            evidence,
+            provider=provider,
+            control_mode=control_mode,
+            endpoint=endpoint,
+            bucket=bucket,
+            prefix=prefix,
+            now_epoch=now_epoch,
+        )
     expected_mode = PROVIDER_MODES.get(provider)
     if expected_mode is None:
         fail("object-store provider must be aws-s3 or cloudflare-r2")
@@ -125,26 +475,15 @@ def validate_evidence(
     root = exact_object(evidence, expected_fields, "storage-control evidence")
     if root["schema"] != SCHEMA:
         fail("storage-control evidence schema is invalid")
-    expected_identity = {
-        "provider": provider,
-        "controlMode": control_mode,
-        "endpoint": endpoint,
-        "bucket": bucket,
-        "prefix": prefix,
-    }
-    for field, expected in expected_identity.items():
-        if root[field] != expected:
-            fail(f"storage-control evidence {field} does not match configuration")
-
-    verified_epoch = canonical_timestamp(root["verifiedAt"], "verifiedAt")
-    age_seconds = now_epoch - verified_epoch
-    if age_seconds < -MAX_CLOCK_SKEW_SECONDS:
-        fail("storage-control evidence is dated in the future")
-    if age_seconds > MAX_EVIDENCE_AGE_SECONDS:
-        fail("storage-control evidence is older than 30 days")
-    reference = root["verificationReference"]
-    if not isinstance(reference, str) or not REFERENCE_PATTERN.fullmatch(reference):
-        fail("verificationReference must be a bounded private evidence identifier")
+    verified_epoch, age_seconds = validate_common_identity(
+        root,
+        provider=provider,
+        control_mode=control_mode,
+        endpoint=endpoint,
+        bucket=bucket,
+        prefix=prefix,
+        now_epoch=now_epoch,
+    )
 
     versioning = exact_object(
         root["versioning"],
@@ -167,56 +506,11 @@ def validate_evidence(
         fail("release-prefix lock must cover the exact releases prefix for at least 90 days")
 
     if provider == "aws-s3":
-        if versioning != {"supported": True, "status": "enabled"}:
-            fail("versioned-s3 requires enabled bucket versioning")
-        if release_lock["control"] != "s3-object-lock":
-            fail("versioned-s3 requires S3 Object Lock evidence for release objects")
-        database_protection = exact_object(
-            root["databaseProtection"],
-            {"writeMode", "objectLock"},
-            "AWS database-protection evidence",
+        release_lock = validate_aws_write_once_controls(
+            root,
+            prefix=prefix,
+            lifecycle_status="enabled",
         )
-        if database_protection["writeMode"] != "conditional-first-point":
-            fail("versioned-s3 requires conditional first-point database writes")
-        database_lock = exact_object(
-            database_protection["objectLock"],
-            {"supported", "status", "mode", "retentionFloorDays"},
-            "AWS database Object Lock evidence",
-        )
-        if (
-            database_lock["supported"] is not True
-            or database_lock["status"] != "enabled"
-            or database_lock["mode"] != "COMPLIANCE"
-        ):
-            fail("versioned-s3 requires enabled COMPLIANCE locks for database tiers")
-        exact_integer_map(
-            database_lock["retentionFloorDays"],
-            DATABASE_RETENTION_FLOOR_DAYS,
-            "AWS database retention floors",
-        )
-        cleanup = exact_object(
-            root["cleanup"],
-            {
-                "owner",
-                "status",
-                "databaseExpirationDays",
-                "releaseExpirationDays",
-            },
-            "AWS cleanup evidence",
-        )
-        if cleanup["owner"] != "s3-lifecycle" or cleanup["status"] != "enabled":
-            fail("versioned-s3 requires enabled S3 Lifecycle owned cleanup")
-        exact_integer_map(
-            cleanup["databaseExpirationDays"],
-            DATABASE_LIFECYCLE_EXPIRATION_DAYS,
-            "AWS database lifecycle expiration",
-        )
-        if (
-            isinstance(cleanup["releaseExpirationDays"], bool)
-            or cleanup["releaseExpirationDays"]
-            != RELEASE_LIFECYCLE_EXPIRATION_DAYS
-        ):
-            fail("AWS release lifecycle expiration must equal 92 days")
     else:
         if versioning != {"supported": False, "status": "not-supported"}:
             fail("R2 variance must explicitly record unavailable S3 versioning")
@@ -291,6 +585,11 @@ def validate_evidence(
         "status": "passed",
         "provider": provider,
         "controlMode": control_mode,
+        "lifecyclePhase": (
+            "enabled"
+            if provider == "aws-s3"
+            else "approved-r2-variance"
+        ),
         "versioningRequired": provider == "aws-s3",
         "versioningVerified": provider == "aws-s3",
         "approvedVariance": provider == "cloudflare-r2",

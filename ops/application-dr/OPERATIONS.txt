@@ -27,8 +27,9 @@ Object-store preparation
 ------------------------
 
 Create a private object-store bucket reachable only over HTTPS. For
-`aws-s3:versioned-s3`, grant the ServerDominguez identity only prefix-scoped
-`s3:ListBucketVersions`, object Get/Head/Put, and the narrowly scoped
+`aws-s3:versioned-s3`, grant the ServerDominguez backup identity only
+exact-prefix-scoped `s3:ListBucket` and `s3:ListBucketVersions`, object
+Get/Head/Put, and the narrowly scoped
 GetObjectRetention/PutObjectRetention actions required to apply the final
 COMPLIANCE deadline during each initial upload. The backup identity has no
 `DeleteObject`, `DeleteObjectVersion`, legal-hold, bucket-policy, lifecycle,
@@ -65,6 +66,19 @@ growth, but it still cannot shorten retention, delete versions, change legal
 holds, or mutate bucket controls. Alert on unexpected retention changes and
 disable the Roles Anywhere profile and trust anchor during credential response.
 
+Before preparing every change set, validate the exact reviewed template with
+both structural linting and the repository policy-as-code rules:
+
+  cfn-lint ops/application-dr/aws-s3-stack.yaml
+  cfn-guard validate --rules ops/application-dr/aws-s3-stack.guard \
+    --data ops/application-dr/aws-s3-stack.yaml --type CFNTemplate \
+    --show-summary all
+
+Both commands must pass. Guard protects the retained Object Lock bucket and
+policy, versioning, AES256 encryption, complete public-access blocking,
+bucket-owner-enforced ownership, the exact two-role/two-profile managed
+identity plane, absence of IAM users/access keys, and disabled-first lifecycle.
+
 Generate the initial CRL parameters from a private mode-0700 working directory:
 
   node scripts/application-dr-crl-parameters.mjs generate \
@@ -85,6 +99,16 @@ role, trust-anchor, CRL, and profile outputs into the root-only runtime
 configuration. Never infer a generated IAM role path/name or CRL identifier
 from a label.
 
+Keep `LifecycleBootstrapReceiptSha256` empty in this CREATE change set. The
+disabled-lifecycle exception is not the ordinary storage-control contract. It
+is a single-use bootstrap for a fresh namespace whose lifecycle has never been
+enabled and whose complete object, version, and delete-marker inventories are
+all zero. A completed Roles Anywhere activation update is allowed only while
+that lifecycle history remains false and the receipt parameter remains empty.
+Record those observations in the strict
+`nexus.application-dr-storage-controls.bootstrap.v1` evidence shape below. Do
+not relabel an existing v2 observation or a legacy prefix as bootstrap evidence.
+
 After the first stack operation, run the helper's read-only `verify` command
 with `--expected-enabled false`. It must bind the exact account, region, trust
 anchor, exact backup and restore profile ARNs/IDs, CRL ID/name, returned CRL
@@ -95,13 +119,53 @@ profiles, and CRL to all equal `--expected-enabled`. Then review a second
 change set that re-supplies the same 74 chunks and digest while changing only
 `RolesAnywhereActivation=ENABLED`; after completion, run the same verification
 with `--expected-enabled true`. The positive backup-certificate credential
-test and the revoked-certificate rejection test must both pass before the
-backup timer can be enabled. After the write-once client, two distinct leaf
-certificates, pinned helper, and owner-approved custody/revocation tests pass,
-run one owner-observed locked backup and inventory every exact VersionId.
-Review a later change set that changes only `LifecycleActivation` to
-`ENABLED`. Creating or executing any change set, selecting the server
-credential path, and writing any live DR configuration require explicit owner
+test and the revoked-certificate rejection test must both pass. Keep the backup
+timer disabled throughout this bootstrap. After the write-once client, two
+distinct leaf certificates, pinned helper, owner-approved custody/revocation
+tests, and at least one local `v*.tar.gz` rollback bundle pass, the owner runs
+exactly one observed backup directly:
+
+  sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
+    --config /etc/nexus-application-dr/backup.env \
+    --bootstrap-first-backup \
+    --bootstrap-rollback-bundle /home/dominguez/backups/nexushub/v<exact>.tar.gz \
+    --bootstrap-rollback-sha256 <owner-reviewed-exact-sha256>
+
+The selected path and expected SHA-256 must come from the exact root promotion
+transaction/backup evidence that created or accepted that rollback artifact.
+If that evidence predates the strict archive normalization contract, use a
+separately owner-reviewed root-side normalization receipt. Never authorize the
+bootstrap with a fresh hash printed only by the application account.
+
+The installed systemd service deliberately cannot supply
+`--bootstrap-first-backup`, and the backup command rejects that flag when
+systemd supplies an invocation identity. Under the existing local backup lock,
+the client re-lists the exact prefix with both `ListObjectVersions` and
+`ListObjectsV2`, requires both direct responses to be complete and empty, and
+then writes the first locked recovery point and verifies at least one rollback
+bundle off-host. A successful first run creates
+`/var/lib/nexus-application-dr/lifecycle-bootstrap-receipt.v1.json` exclusively
+as root:root mode 0600. It binds the stack, bucket controls, exact prefix,
+empty-namespace proof, storage-control evidence, four current tier VersionIds,
+retention evidence, and exactly one selected verified rollback identity,
+including its descriptor-stable source proof, manifest/package/database
+digests and versions, S3 VersionId, OriginalName metadata, and 90-day
+COMPLIANCE deadline. If the
+first run fails after any write but before its receipt is complete, do not retry
+on that prefix: its live nonempty preflight will fail. Bind a fresh prefix
+through another reviewed change set and restart the bootstrap.
+
+Use only the receipt path and SHA-256 emitted by the successful backup result;
+never derive an activation digest from a receipt left by an interrupted run.
+Review a later change set that sets `LifecycleActivation=ENABLED` and
+`LifecycleBootstrapReceiptSha256=<exact receipt digest>` together. The template
+rejects lifecycle enablement without a 64-hex receipt digest. After completion,
+replace the bootstrap evidence with ordinary enabled v2 storage-control
+evidence and run the final ordinary verification. It must return the exact AWS
+readiness state `lifecyclePhase=enabled bootstrapReceipt=not-applicable`.
+Only after that final verification may the owner enable the timer. Creating or
+executing any change set, selecting the server credential path, writing any
+live DR configuration, and accepting the receipt digest require explicit owner
 approval.
 
 The final `If-None-Match: *` bucket policy is intentionally incompatible with
@@ -203,7 +267,86 @@ Record the observed provider controls in
 The verificationReference is a bounded identifier for a private provider
 control-plane export or screenshot; do not put credentials, URLs with tokens,
 or raw private evidence in this JSON. Refresh the control observation at least
-every 30 days. The exact versioned-S3 shape is:
+every 30 days.
+
+For exactly the fresh, never-activated namespace before its first backup, the
+single-use bootstrap shape is. Use the exact completed CREATE or UPDATE
+operation identity; an UPDATE is expected after Roles Anywhere activation:
+
+  {
+    "schema": "nexus.application-dr-storage-controls.bootstrap.v1",
+    "provider": "aws-s3",
+    "controlMode": "versioned-s3",
+    "endpoint": "https://s3.<region>.amazonaws.com",
+    "bucket": "<exact configured bucket>",
+    "prefix": "<exact configured prefix>",
+    "verifiedAt": "YYYY-MM-DDTHH:MM:SSZ",
+    "verificationReference": "private-evidence:s3-bootstrap-YYYYMMDD",
+    "cloudFormation": {
+      "stackId": "<exact CloudFormation stack ARN>",
+      "stackName": "nexus-application-dr",
+      "stackStatus": "<CREATE_COMPLETE or UPDATE_COMPLETE>",
+      "changeSetType": "<CREATE or UPDATE>",
+      "createdAt": "YYYY-MM-DDTHH:MM:SSZ",
+      "lastUpdatedAt": "<null for CREATE or canonical timestamp for UPDATE>",
+      "lifecycleActivation": "DISABLED",
+      "lifecycleEverEnabled": false,
+      "lifecycleBootstrapReceiptSha256": null
+    },
+    "versioning": {"supported": true, "status": "enabled"},
+    "encryption": {"algorithm": "AES256"},
+    "publicAccessBlock": {
+      "blockPublicAcls": true,
+      "blockPublicPolicy": true,
+      "ignorePublicAcls": true,
+      "restrictPublicBuckets": true
+    },
+    "ownershipControls": {"objectOwnership": "BucketOwnerEnforced"},
+    "objectLock": {"enabled": true},
+    "databaseProtection": {
+      "writeMode": "conditional-first-point",
+      "objectLock": {
+        "supported": true,
+        "status": "enabled",
+        "mode": "COMPLIANCE",
+        "retentionFloorDays": {
+          "hourly": 2,
+          "daily": 8,
+          "weekly": 35,
+          "monthly": 190
+        }
+      }
+    },
+    "cleanup": {
+      "owner": "s3-lifecycle",
+      "status": "disabled",
+      "databaseExpirationDays": {
+        "hourly": 3,
+        "daily": 9,
+        "weekly": 36,
+        "monthly": 191
+      },
+      "releaseExpirationDays": 92
+    },
+    "releasePrefixLock": {
+      "control": "s3-object-lock",
+      "status": "enabled",
+      "prefix": "<exact configured prefix>/releases/",
+      "retentionDays": 90
+    },
+    "namespaceInventory": {
+      "listingComplete": true,
+      "objectCount": 0,
+      "versionCount": 0,
+      "deleteMarkerCount": 0
+    }
+  }
+
+This bootstrap evidence does not authorize a second backup. The receipt path
+and any live object/version/delete marker make bootstrap single-use. Every
+ordinary AWS backup still requires the enabled v2 evidence below.
+
+The exact ordinary versioned-S3 shape is:
 
   {
     "schema": "nexus.application-dr-storage-controls.v2",
@@ -331,18 +474,34 @@ Install in an approved maintenance window
    regular file with mode 0600, 0640, or 0660. Confirm the rollback directory is
    canonical, application-user-owned mode 0700 and its v*.tar.gz files are mode
    0600. Remediate permissions deliberately; do not relax script validation.
-5. Run the following before enabling the timer:
+5. Keep `nexus-application-dr-backup.timer` disabled and run:
 
      sudo systemd-tmpfiles --create
      sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
        --config /etc/nexus-application-dr/backup.env --verify-config
+
+   Ordinary AWS evidence must return
+   `lifecyclePhase=enabled bootstrapReceipt=not-applicable`. A fresh AWS
+   namespace instead returns
+   `lifecyclePhase=disabled-bootstrap bootstrapReceipt=absent`; in that case
+   follow the single-use owner-run bootstrap sequence above while the timer
+   remains disabled. Do not pass `--bootstrap-first-backup` to
+   `--verify-config`, a systemd unit, or a timer.
+6. For a fresh namespace, owner-review the completed receipt and its emitted
+   SHA-256, execute the CloudFormation update that sets
+   `LifecycleActivation=ENABLED` and the exact
+   `LifecycleBootstrapReceiptSha256`, install new ordinary enabled v2 evidence,
+   and rerun `--verify-config`. Require the exact enabled/not-applicable state.
+7. Only after step 6 (or an already-enabled ordinary verification in step 5)
+   succeeds, run:
+
      sudo systemctl daemon-reload
      sudo systemctl enable --now nexus-application-dr-backup.timer
 
-6. Run one owner-observed service invocation, inspect its journal, and verify
-   the four database objects and every current release rollback object through
-   a read-only bucket listing. Alert on a failed service or a timer whose last
-   successful invocation is more than one hour old.
+8. Run one owner-observed ordinary service invocation, inspect its journal, and
+   verify the four database objects and every current release rollback object
+   through a read-only bucket listing. Alert on a failed service or a timer
+   whose last successful invocation is more than one hour old.
 
 Backup and retention behavior
 -----------------------------

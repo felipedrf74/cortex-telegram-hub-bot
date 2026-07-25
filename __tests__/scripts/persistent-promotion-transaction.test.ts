@@ -142,7 +142,7 @@ describe('persistent systemd promotion transaction v2', () => {
     fs.writeFileSync(file, `#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" --verify-config "* ]]; then
-  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days'
+  printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 lifecyclePhase=enabled bootstrapReceipt=not-applicable releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days'
   exit 0
 fi
 required=""
@@ -1674,7 +1674,6 @@ exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent \
     );
     const workerUser = spawnSync('id', ['-un'], { encoding: 'utf8' }).stdout.trim();
     expect(workerUser).not.toBe('');
-
     const result = spawnSync('bash', [broker, 'run', id], {
       encoding: 'utf8',
       env: env({
@@ -1718,6 +1717,143 @@ exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent \
         status: 'failed_before_stop',
         message: 'exact_runtime_preparation_or_preflight_failed',
       });
+  });
+
+  it('rejects single-use disabled-bootstrap evidence before any promotion mutation', () => {
+    const launch = run(['launch', envelopePath]);
+    expect(launch.status, launch.stderr).toBe(0);
+    const fixture = path.join(root, 'bootstrap-dr-fixture');
+    const previous = path.join(fixture, 'production', 'releases', 'previous-runtime');
+    const current = path.join(fixture, 'production', 'current');
+    const mutationMarker = path.join(fixture, 'worker-mutated');
+    const mutationScript = path.join(root, 'bin', 'bootstrap-mutation-sentinel');
+    const bootstrapDr = path.join(root, 'bin', 'bootstrap-application-dr-backup');
+    fs.mkdirSync(previous, { recursive: true });
+    fs.symlinkSync(previous, current);
+    fs.writeFileSync(
+      mutationScript,
+      '#!/usr/bin/env bash\n: > "$MUTATION_MARKER"\nexit 99\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(bootstrapDr, `#!/usr/bin/env bash
+printf '%s\\n' 'application_dr_backup_config_ok encryption=age transport=s3-compatible storageProvider=aws-s3 storageControlMode=versioned-s3 lifecyclePhase=disabled-bootstrap bootstrapReceipt=absent releasePrefixLock=verified databaseRetentionPolicy=24-hourly,7-daily,4-weekly,6-monthly releaseRetentionPolicy=90-days'
+`, { mode: 0o755 });
+
+    const result = spawnSync('bash', [broker, 'run', id], {
+      encoding: 'utf8',
+      env: env({
+        NEXUS_PROMOTION_DR_BACKUP_BIN: bootstrapDr,
+        NEXUS_PROMOTION_TRANSACTION_SCRIPT: mutationScript,
+        NEXUS_PROMOTION_TEST_ROOT: fixture,
+        MUTATION_MARKER: mutationMarker,
+      }),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(
+      'application DR provisioning/config preflight returned invalid evidence',
+    );
+    expect(fs.existsSync(mutationMarker)).toBe(false);
+    expect(fs.realpathSync(current)).toBe(previous);
+    const authoritative = path.join(stateRoot, 'transactions', id, 'state');
+    expect(fs.existsSync(path.join(authoritative, 'recovery-armed'))).toBe(false);
+    expect(fs.existsSync(path.join(authoritative, 'cutover-timing.json'))).toBe(false);
+    expect(JSON.parse(
+      fs.readFileSync(path.join(authoritative, 'journal.json'), 'utf8'),
+    )).toMatchObject({
+      phase: 'preflight',
+      status: 'failed_before_stop',
+      message: 'application_dr_provisioning_or_config_invalid',
+    });
+  });
+
+  it('keeps the producer and promotion DR readiness contracts exactly synchronized', () => {
+    const brokerSource = fs.readFileSync(broker, 'utf8');
+    const producerSource = fs.readFileSync(
+      path.resolve('scripts/application-dr-backup.sh'),
+      'utf8',
+    );
+    const templateMatch = producerSource.match(
+      /echo "(application_dr_backup_config_ok[^"\n]+)"/u,
+    );
+    expect(templateMatch).not.toBeNull();
+    const materialize = (
+      provider: string,
+      controlMode: string,
+      phase: string,
+      receipt: string,
+    ) => templateMatch![1]
+      .replace('$NEXUS_DR_STORAGE_PROVIDER', provider)
+      .replace('$NEXUS_DR_STORAGE_CONTROL_MODE', controlMode)
+      .replace('$lifecycle_phase', phase)
+      .replace('$bootstrap_receipt_state', receipt);
+    const awsReady = materialize(
+      'aws-s3',
+      'versioned-s3',
+      'enabled',
+      'not-applicable',
+    );
+    const r2Ready = materialize(
+      'cloudflare-r2',
+      'r2-approved-variance',
+      'approved-r2-variance',
+      'not-applicable',
+    );
+    const disabledBootstrap = materialize(
+      'aws-s3',
+      'versioned-s3',
+      'disabled-bootstrap',
+      'absent',
+    );
+    const preflightStart = brokerSource.indexOf('preflight_application_dr() {');
+    const preflightEnd = brokerSource.indexOf(
+      '\n}\n\nwrite_cutover_timing()',
+      preflightStart,
+    );
+    expect(preflightStart).toBeGreaterThan(-1);
+    expect(preflightEnd).toBeGreaterThan(preflightStart);
+    const preflight = brokerSource.slice(preflightStart, preflightEnd + 2);
+    const accepted = [...preflight.matchAll(
+      /'(application_dr_backup_config_ok[^']+)'\) ;;/gu,
+    )].map((match) => match[1]);
+    expect(accepted).toEqual([awsReady, r2Ready]);
+    expect(accepted).not.toContain(disabledBootstrap);
+
+    const dr = path.join(root, 'bin', 'contract-application-dr-backup');
+    fs.writeFileSync(
+      dr,
+      '#!/usr/bin/env bash\nprintf \'%s\\n\' "$DR_OUTPUT"\n',
+      { mode: 0o755 },
+    );
+    const runPreflight = (output: string) => spawnSync('/bin/bash', ['-s', '--'], {
+      encoding: 'utf8',
+      input: [
+        'set -u',
+        'TIMEOUT_BIN=timeout_fixture',
+        `DR_BACKUP_BIN=${JSON.stringify(dr)}`,
+        `DR_CONFIG=${JSON.stringify(drConfig)}`,
+        'timeout_fixture() { shift 3; "$@"; }',
+        preflight,
+        'preflight_application_dr',
+      ].join('\n'),
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        DR_OUTPUT: output,
+      },
+    });
+
+    expect(runPreflight(awsReady).status).toBe(0);
+    expect(runPreflight(r2Ready).status).toBe(0);
+    const oldCompleteAws = awsReady.replace(
+      ' lifecyclePhase=enabled bootstrapReceipt=not-applicable',
+      '',
+    );
+    expect(runPreflight(oldCompleteAws).stderr).toContain(
+      'application DR provisioning/config preflight returned invalid evidence',
+    );
+    expect(runPreflight(disabledBootstrap).stderr).toContain(
+      'application DR provisioning/config preflight returned invalid evidence',
+    );
   });
 
   it.each([
@@ -2588,6 +2724,10 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
       path.resolve('scripts/remote-create-release-backup.sh'),
       'utf8',
     );
+    const applicationDrBackupSource = fs.readFileSync(
+      path.resolve('scripts/application-dr-backup.sh'),
+      'utf8',
+    );
 
     expect(clientSource).toContain('nexus-release-promotion-control.v3');
     expect(clientSource).toContain('sign-request');
@@ -2800,6 +2940,10 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(brokerSource.lastIndexOf('\nwrite_cutover_timing\n'))
       .toBeLessThan(recoveryIntentArmIndex);
     expect(brokerSource).toContain('"$DR_BACKUP_BIN" --config "$DR_CONFIG" --verify-config');
+    expect(applicationDrBackupSource).toContain(
+      'lifecyclePhase=$lifecycle_phase bootstrapReceipt=$bootstrap_receipt_state',
+    );
+    expect(brokerSource).not.toContain('--bootstrap-first-backup');
     expect(brokerSource.match(/--recovery-escrow-id "\$TRANSACTION_ID"/gu)).toHaveLength(2);
     expect(brokerSource.match(/--recovery-descriptor "\$RECOVERY_DESCRIPTOR"/gu)).toHaveLength(2);
     expect(brokerSource.match(/--recovery-escrow-phase pre-mutation/gu)).toHaveLength(1);

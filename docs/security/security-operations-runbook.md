@@ -99,7 +99,25 @@ logs, command output, chat, or release evidence.
   S3 Object Lock for release objects. AWS database recovery points are
   write-once first points protected by tier-specific COMPLIANCE locks and
   lifecycle expiry; observed 24/7/4/6 counts are minimum floors and take time
-  to mature. Cloudflare R2 is accepted only through
+  to mature. A fresh AWS namespace may use the distinct single-use bootstrap
+  evidence only while lifecycle has never been enabled, the receipt parameter
+  remains empty, and complete object/version/delete-marker inventories are
+  zero. A completed identity-plane update may precede this backup. The first
+  backup is an explicit owner-run command with `--bootstrap-first-backup`,
+  one exact `--bootstrap-rollback-bundle`, and its
+  `--bootstrap-rollback-sha256`; systemd and the timer cannot supply those
+  arguments. The expected SHA must come from root promotion transaction/backup
+  evidence or a separately owner-reviewed root-side strict-normalization
+  receipt, never a fresh application-account hash. Keep the timer disabled
+  while it repeats both live empty-prefix listings under its lock, snapshots
+  and verifies exactly that rollback identity, and creates an exclusive
+  root-owned receipt. Lifecycle
+  activation must carry that owner-reviewed exact receipt digest, and every
+  later backup requires ordinary enabled v2 evidence plus a final
+  `lifecyclePhase=enabled bootstrapReceipt=not-applicable` verification before
+  the timer is enabled.
+  A partial bootstrap never retries on the now-nonempty prefix. Cloudflare R2
+  is accepted only through
   the owner-approved `r2-approved-variance`, with current private control-plane
   evidence for an exact releases-prefix bucket lock of at least 90 days. The
   mode-0600 v2 control evidence must be refreshed within 30 days. AWS evidence
@@ -108,7 +126,8 @@ logs, command output, chat, or release evidence.
   cleanup owner. R2 evidence must state that database versioning and Object Lock
   are unavailable and that client-side count pruning is the approved variance;
   never claim R2 versioning.
-- Scope AWS backup IAM to `s3:ListBucketVersions` and exact-tier
+- Scope AWS backup IAM and its Roles Anywhere session and bucket policies to
+  exact-prefix `s3:ListBucket` plus `s3:ListBucketVersions`, and exact-tier
   Get/Head/conditional Put plus bounded Object Lock actions. Explicitly deny
   `DeleteObject`, `DeleteObjectVersion`, legal-hold changes, and bucket-policy,
   lifecycle, versioning, or Object Lock mutation to the backup principal. AWS
