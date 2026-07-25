@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-24.10",
+  "version": "2026-07-25.1",
   "defaultTier": "full",
   "releaseEvidence": {
     "defaultTier": "changed-critical-cannot-skip",
@@ -200,6 +200,8 @@
     }
   },
   "dispositionRules": [
+    { "pattern": "__tests__/scripts/v2-normalization-attestor-bridge.test.ts", "disposition": "keep", "reason": "Protects the inactive production-only v2 normalization bridge's exact owner authorization, e168 control/attestor identity, ordinary production release-evidence signatures, root-exclusive-parent prerequisite, complete runtime/environment graph preflight, root-only namespace guard, descriptor/inode-bound rematerialization, retained-writable-FD isolation, adversarial rename/symlink/detachment rejection, fsynced per-phase normalization recovery, explicit 0600-to-0440 environment transition, recovery-only legacy allowance, and absence of staging or activation authority." },
+    { "pattern": "__tests__/scripts/v2-normalization-attestor-installer-transactions.test.ts", "disposition": "keep", "reason": "Behaviorally protects the inactive bridge install and strict-restore maintenance transactions across exact control/Sonar locks, fail-closed markers, per-phase SIGKILL recovery, durable receipt finish versus exact rollback, concurrent launch exclusion, and journal-removal crash edges." },
     { "pattern": "__tests__/scripts/release-plan-evaluator.test.ts", "disposition": "keep", "reason": "Protects root-collected ten-release observation windows, signed redacted Sentry quality authority, root-derived failed-promotion baselines, sequential per-stage p50/p95 evidence, approval-excluded handoff metrics, outage-versus-soak separation, rollback recovery, exact identity parity, and the distinct five-release activation contract." },
     { "pattern": "__tests__/scripts/release-quality-evidence.test.ts", "disposition": "keep", "reason": "Protects the exact root-signed 10+10 promotion window, 24-hour Sentry observation maturation, successful-release exposure semantics, bounded sequential exact-SHA queries, in-memory redaction, aggregate-only protected signatures, and existing release/Sonar mutual exclusion." },
     { "pattern": "__tests__/scripts/rollback-drill-kvm-inputs.test.ts", "disposition": "keep", "reason": "Protects the fail-closed detached rollback-drill input chain from unsigned plan preparation through owner-signed readiness, isolated finalization, fresh authorization, and exact protected promotion-request sealing." },
