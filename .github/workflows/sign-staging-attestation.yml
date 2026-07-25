@@ -11,6 +11,7 @@ on:
         type: choice
         options:
           - staging_attestation
+          - rollback_drill_staging
           - rollback_drill
           - protected_main_reuse_activation
           - release_quality
@@ -94,7 +95,7 @@ jobs:
           }
           NODE
           case "$EVIDENCE_KIND" in
-            staging_attestation|rollback_drill|protected_main_reuse_activation|release_quality) ;;
+            staging_attestation|rollback_drill_staging|rollback_drill|protected_main_reuse_activation|release_quality) ;;
             *)
               echo "unsupported operational evidence kind" >&2
               exit 64
@@ -128,8 +129,105 @@ jobs:
             --request .local/release/staging/request.json \
             --expect-runtime-sha "$RUNTIME_SHA"
 
+      - name: Decode and validate non-promotable rollback-drill staging request
+        if: ${{ inputs.evidence_kind == 'rollback_drill_staging' }}
+        env:
+          REQUEST_B64: ${{ inputs.request_b64 }}
+          REQUEST_SHA256: ${{ inputs.request_sha256 }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          DRILL_PUBLIC_KEY=trusted-tooling/docs/release/evidence/rollback-drill-staging-public-key.pem
+          [[ -f "$DRILL_PUBLIC_KEY" && ! -L "$DRILL_PUBLIC_KEY" ]] || {
+            echo "reviewed rollback-drill staging public key is not committed" >&2
+            exit 77
+          }
+          git -C trusted-tooling cat-file -e "${RUNTIME_SHA}^{commit}"
+          git -C trusted-tooling merge-base --is-ancestor "$RUNTIME_SHA" HEAD
+          install -d -m 700 .local/release/rollback-drill-staging
+          node - <<'NODE'
+          const fs = require('fs');
+          const crypto = require('crypto');
+          const request = Buffer.from(process.env.REQUEST_B64, 'base64');
+          const parsed = JSON.parse(request);
+          if (parsed.requestId !== process.env.REQUEST_ID) throw new Error('request id mismatch');
+          if (crypto.createHash('sha256').update(request).digest('hex') !== process.env.REQUEST_SHA256) {
+            throw new Error('rollback-drill staging request digest mismatch');
+          }
+          fs.writeFileSync(
+            '.local/release/rollback-drill-staging/request.json',
+            request,
+            { mode: 0o600 },
+          );
+          NODE
+          node trusted-tooling/scripts/rollback-drill-staging-attestation.mjs validate-request \
+            --root "$GITHUB_WORKSPACE" \
+            --request .local/release/rollback-drill-staging/request.json \
+            --expect-runtime-sha "$RUNTIME_SHA"
+
+      - name: Fetch and validate exact production-signed source manifest for rollback drill
+        if: ${{ inputs.evidence_kind == 'rollback_drill_staging' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+        run: |
+          manifest_run_id="$(
+            node -e 'process.stdout.write(require("./.local/release/rollback-drill-staging/request.json").manifestSigningRunId)'
+          )"
+          [[ "$manifest_run_id" =~ ^[1-9][0-9]*$ ]] || exit 64
+          gh run view "$manifest_run_id" \
+            --json databaseId,headSha,headBranch,event,status,conclusion,workflowName \
+            > .local/release/rollback-drill-staging/manifest-run.json
+          node - "$manifest_run_id" "$RUNTIME_SHA" <<'NODE'
+          const fs=require('fs');
+          const [id,sha]=process.argv.slice(2);
+          const run=JSON.parse(fs.readFileSync(
+            '.local/release/rollback-drill-staging/manifest-run.json',
+            'utf8',
+          ));
+          if(String(run.databaseId)!==id||run.headSha!==sha||run.headBranch!=='main'
+            ||run.event!=='workflow_dispatch'||run.status!=='completed'
+            ||run.conclusion!=='success'||run.workflowName!=='Release — Sign exact candidate'){
+            throw new Error('source release-manifest signing run identity is invalid');
+          }
+          NODE
+          install -d -m 700 .local/release/rollback-drill-staging/source
+          gh run download "$manifest_run_id" \
+            --name "release-manifest-v2-$RUNTIME_SHA" \
+            --dir .local/release/rollback-drill-staging/source
+          manifest="$(
+            find .local/release/rollback-drill-staging/source -type f \
+              -path "*/.local/release/manifests/$RUNTIME_SHA.json" -print
+          )"
+          [[ "$(printf '%s\n' "$manifest" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] || {
+            echo "source release manifest is missing or ambiguous" >&2
+            exit 1
+          }
+          marker="$(
+            find .local/release/rollback-drill-staging/source -type f \
+              -path "*/.local/release/bundles/$RUNTIME_SHA/*/.complete.json" -print
+          )"
+          [[ "$(printf '%s\n' "$marker" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] || {
+            echo "source release bundle is missing or ambiguous" >&2
+            exit 1
+          }
+          bundle="$(dirname "$marker")"
+          node trusted-tooling/scripts/release-manifest-v2.mjs validate \
+            --manifest "$manifest" \
+            --root "$bundle" \
+            --verify-bundle \
+            --public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
+            --expect-runtime-sha "$RUNTIME_SHA"
+          node trusted-tooling/scripts/rollback-drill-staging-attestation.mjs validate-inputs \
+            --root "$GITHUB_WORKSPACE" \
+            --request .local/release/rollback-drill-staging/request.json \
+            --manifest "$manifest" \
+            --production-public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
+            --expect-runtime-sha "$RUNTIME_SHA"
+          printf '%s' "$manifest" > .local/release/rollback-drill-staging/source-manifest-path
+
       - name: Fetch independent current staging-signing run provenance
-        if: ${{ inputs.evidence_kind == 'staging_attestation' }}
+        if: ${{ inputs.evidence_kind == 'staging_attestation' || inputs.evidence_kind == 'rollback_drill_staging' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -314,7 +412,8 @@ jobs:
 
       - name: Sign protected operational evidence
         env:
-          SIGNING_PRIVATE_KEY_PEM: ${{ secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM }}
+          SIGNING_PRIVATE_KEY_PEM: ${{ inputs.evidence_kind != 'rollback_drill_staging' && secrets.NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM || '' }}
+          ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM: ${{ inputs.evidence_kind == 'rollback_drill_staging' && secrets.NEXUS_ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM || '' }}
           NEXUS_SENTRY_QUALITY_READ_TOKEN: ${{ inputs.evidence_kind == 'release_quality' && secrets.NEXUS_SENTRY_QUALITY_READ_TOKEN || '' }}
           NEXUS_SENTRY_ORGANIZATION: ${{ inputs.evidence_kind == 'release_quality' && vars.NEXUS_SENTRY_ORGANIZATION || '' }}
           NEXUS_SENTRY_PROJECT_IDS: ${{ inputs.evidence_kind == 'release_quality' && vars.NEXUS_SENTRY_PROJECT_IDS || '' }}
@@ -331,6 +430,22 @@ jobs:
                   --request .local/release/staging/request.json \
                   --signing-run-metadata trusted-input/staging-signing-run.json \
                   --output .local/release/staging/staging-attestation.json \
+                  --expect-runtime-sha "$RUNTIME_SHA"
+              ;;
+            rollback_drill_staging)
+              [[ -n "$ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM" ]] || {
+                echo "protected rollback-drill staging private key is not configured" >&2
+                exit 77
+              }
+              NEXUS_ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM="$ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM" \
+                node trusted-tooling/scripts/rollback-drill-staging-attestation.mjs sign \
+                  --root "$GITHUB_WORKSPACE" \
+                  --request .local/release/rollback-drill-staging/request.json \
+                  --manifest "$(< .local/release/rollback-drill-staging/source-manifest-path)" \
+                  --signing-run-metadata trusted-input/staging-signing-run.json \
+                  --output-dir .local/release/rollback-drill-staging/signed \
+                  --drill-public-key trusted-tooling/docs/release/evidence/rollback-drill-staging-public-key.pem \
+                  --production-public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
                   --expect-runtime-sha "$RUNTIME_SHA"
               ;;
             rollback_drill)
@@ -379,6 +494,20 @@ jobs:
             --root "$GITHUB_WORKSPACE" \
             --attestation .local/release/staging/staging-attestation.json \
             --public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
+            --expect-runtime-sha "$RUNTIME_SHA"
+
+      - name: Validate signed non-promotable rollback-drill staging attestation
+        if: ${{ inputs.evidence_kind == 'rollback_drill_staging' }}
+        env:
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+        run: |
+          node trusted-tooling/scripts/rollback-drill-staging-attestation.mjs validate \
+            --root "$GITHUB_WORKSPACE" \
+            --bundle .local/release/rollback-drill-staging/signed \
+            --request .local/release/rollback-drill-staging/request.json \
+            --source-manifest "$(< .local/release/rollback-drill-staging/source-manifest-path)" \
+            --drill-public-key trusted-tooling/docs/release/evidence/rollback-drill-staging-public-key.pem \
+            --production-public-key trusted-tooling/docs/release/evidence/release-evidence-public-key.pem \
             --expect-runtime-sha "$RUNTIME_SHA"
 
       - name: Validate signed rollback drill
@@ -436,6 +565,16 @@ jobs:
         with:
           name: staging-attestation-${{ inputs.request_id }}
           path: .local/release/staging/staging-attestation.json
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload signed non-promotable rollback-drill staging bundle
+        if: ${{ inputs.evidence_kind == 'rollback_drill_staging' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rollback-drill-staging-bundle-${{ inputs.request_id }}
+          path: .local/release/rollback-drill-staging/signed
           include-hidden-files: true
           retention-days: 14
           if-no-files-found: error

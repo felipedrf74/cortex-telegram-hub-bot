@@ -355,7 +355,10 @@ monotonic_seconds() {
 
 trusted_attest() {
   local mode="$1" runtime="$2" sha="$3" artifact="$4" installed="$5" args group_id
-  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then return 0; fi
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
+      && [ "${NEXUS_PROMOTION_TEST_EXERCISE_TRUSTED_ATTESTOR:-0}" != "1" ]; then
+    return 0
+  fi
   group_id="$(id -g "$WORKER_USER")"
   args=("$mode" --root "$runtime" --base "$PROD_BASE" --runtime-sha "$sha" \
     --artifact-digest "$artifact" --installed-runtime-digest "$installed" --group-id "$group_id")
@@ -401,7 +404,7 @@ root_switch_selector() {
 
 prepare_recovery_descriptor_unprivileged() (
   set -euo pipefail
-  local worker_uid worker_gid preflight_root descriptor_next="" descriptor_fd
+  local worker_uid worker_gid preflight_root preflight_parent descriptor_next="" descriptor_fd
   worker_uid="$(id -u "$WORKER_USER")"
   worker_gid="$(id -g "$WORKER_USER")"
   [[ "$worker_uid" =~ ^[0-9]+$ && "$worker_gid" =~ ^[0-9]+$ \
@@ -415,8 +418,15 @@ prepare_recovery_descriptor_unprivileged() (
       return 1
     }
   done
-  preflight_root="$(mktemp -d "/run/nexus-release-recovery-${TRANSACTION_ID}.XXXXXX")"
-  [[ "$preflight_root" == /run/nexus-release-recovery-"$TRANSACTION_ID".* \
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
+      && [ "${NEXUS_PROMOTION_TEST_EXERCISE_RELEASE_EVIDENCE_PREFLIGHT:-0}" = "1" ]; then
+    preflight_parent="${NEXUS_PROMOTION_TEST_ROOT:?}/run"
+    install -d -m 0700 "$preflight_parent"
+  else
+    preflight_parent=/run
+  fi
+  preflight_root="$(mktemp -d "$preflight_parent/nexus-release-recovery-${TRANSACTION_ID}.XXXXXX")"
+  [[ "$preflight_root" == "$preflight_parent"/nexus-release-recovery-"$TRANSACTION_ID".* \
       && -d "$preflight_root" && ! -L "$preflight_root" ]] || {
     echo "recovery verification preflight directory is unsafe" >&2
     return 1
@@ -430,14 +440,24 @@ prepare_recovery_descriptor_unprivileged() (
     rm -rf -- "$preflight_root"
   }
   trap cleanup_recovery_preflight EXIT
-  chown root:"$worker_gid" "$preflight_root"
-  chmod 0710 "$preflight_root"
-  install -o root -g root -m 0644 -- \
-    "$RELEASE_MANIFEST" "$preflight_root/release-manifest.json"
-  install -o root -g root -m 0644 -- \
-    "$STAGING_ATTESTATION" "$preflight_root/staging-attestation.json"
-  install -o root -g root -m 0644 -- \
-    "$RELEASE_EVIDENCE_PUBLIC_KEY" "$preflight_root/release-evidence-public-key.pem"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    chmod 0710 "$preflight_root"
+    install -m 0644 -- \
+      "$RELEASE_MANIFEST" "$preflight_root/release-manifest.json"
+    install -m 0644 -- \
+      "$STAGING_ATTESTATION" "$preflight_root/staging-attestation.json"
+    install -m 0644 -- \
+      "$RELEASE_EVIDENCE_PUBLIC_KEY" "$preflight_root/release-evidence-public-key.pem"
+  else
+    chown root:"$worker_gid" "$preflight_root"
+    chmod 0710 "$preflight_root"
+    install -o root -g root -m 0644 -- \
+      "$RELEASE_MANIFEST" "$preflight_root/release-manifest.json"
+    install -o root -g root -m 0644 -- \
+      "$STAGING_ATTESTATION" "$preflight_root/staging-attestation.json"
+    install -o root -g root -m 0644 -- \
+      "$RELEASE_EVIDENCE_PUBLIC_KEY" "$preflight_root/release-evidence-public-key.pem"
+  fi
 
   descriptor_next="$(mktemp "$RECOVERY_DESCRIPTOR.next.XXXXXXXX")"
   [[ "$descriptor_next" == "$RECOVERY_DESCRIPTOR".next.* ]] \
@@ -447,7 +467,12 @@ prepare_recovery_descriptor_unprivileged() (
   }
   chmod 0600 "$descriptor_next"
   root_own "$descriptor_next"
-  exec {descriptor_fd}<>"$descriptor_next"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    descriptor_fd=9
+    exec 9<>"$descriptor_next"
+  else
+    exec {descriptor_fd}<>"$descriptor_next"
+  fi
   "$UNSHARE_BIN" --mount --net --fork \
     "$BASH_BIN" -c '
       set -euo pipefail
@@ -484,7 +509,11 @@ prepare_recovery_descriptor_unprivileged() (
       --installed-runtime-digest "$INSTALLED_RUNTIME_DIGEST" \
       --recovery-runtime-digest "$RECOVERY_RUNTIME_DIGEST" \
       --output-fd "$descriptor_fd" >/dev/null
-  exec {descriptor_fd}>&-
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    exec 9>&-
+  else
+    exec {descriptor_fd}>&-
+  fi
   [ -f "$descriptor_next" ] && [ ! -L "$descriptor_next" ] \
     && [ "$(stat -c '%U:%G:%a' "$descriptor_next")" = root:root:600 ] \
     && [ "$(stat -c '%s' "$descriptor_next")" -gt 0 ] \
@@ -496,13 +525,10 @@ prepare_recovery_descriptor_unprivileged() (
 )
 
 prepare_exact_runtimes() {
-  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then return 0; fi
-  # Seal first, then attest again from root-owned code. Candidate code cannot
-  # change between this boundary and the sequential worker execution.
-  trusted_attest seal "$PREDECESSOR_RUNTIME" "$PREDECESSOR_SHA" \
-    "$PREDECESSOR_ARTIFACT_DIGEST" "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" || return 1
-  trusted_attest seal "$TARGET_RUNTIME" "$TARGET_SHA" "$ARTIFACT_DIGEST" \
-    "$INSTALLED_RUNTIME_DIGEST" || return 1
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
+      && [ "${NEXUS_PROMOTION_TEST_EXERCISE_RELEASE_EVIDENCE_PREFLIGHT:-0}" != "1" ]; then
+    return 0
+  fi
   for helper in "$RECOVERY_RUNTIME_BIN" "$RECOVERY_IDENTITY_BIN" "$RELEASE_EVIDENCE_PUBLIC_KEY"; do
     [ -f "$helper" ] && [ ! -L "$helper" ] || {
       echo "root-installed recovery identity tooling is unavailable: $helper" >&2
@@ -523,7 +549,15 @@ prepare_exact_runtimes() {
     }
     durable_remove "$RECOVERY_DESCRIPTOR"
   fi
+  # Verify the exact request's manifest and staging signatures with the
+  # root-installed production release key before changing either runtime's
+  # mode/ownership. Drill-key evidence therefore fails before the first seal.
   prepare_recovery_descriptor_unprivileged || return 1
+  # Only production-key-valid evidence may cross this mutation boundary.
+  trusted_attest seal "$PREDECESSOR_RUNTIME" "$PREDECESSOR_SHA" \
+    "$PREDECESSOR_ARTIFACT_DIGEST" "$PREDECESSOR_INSTALLED_RUNTIME_DIGEST" || return 1
+  trusted_attest seal "$TARGET_RUNTIME" "$TARGET_SHA" "$ARTIFACT_DIGEST" \
+    "$INSTALLED_RUNTIME_DIGEST" || return 1
   "$RUNUSER_BIN" -u "$WORKER_USER" -- /bin/bash "$TARGET_RUNTIME/scripts/remote-release-capacity.sh" \
     --role production --base-dir "$PROD_BASE" --pm2-bin "$PM2_BIN" || return 1
   "$RUNUSER_BIN" -u "$WORKER_USER" -- /bin/bash "$TARGET_RUNTIME/scripts/remote-release-preflight.sh" \

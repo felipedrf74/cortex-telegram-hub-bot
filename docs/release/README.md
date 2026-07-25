@@ -482,6 +482,67 @@ operator-authored claim does not prove a drill happened; retain the underlying
 isolated-host machine evidence and never include production rows, user content,
 credentials, or raw logs in the request.
 
+#### Cryptographically isolated first-drill staging evidence
+
+The first rollback drill has a bootstrap dependency: normal staging requires a
+fresh signed rollback drill, but rollback freshness cannot exist until the
+isolated staging candidate has been installed and verified. The bounded
+signer records that result without changing either ordinary recovery schema.
+It first downloads and fully validates the exact production-signed
+`ReleaseManifestV2` artifact named by the request. It then clones that manifest
+payload into an ordinary `nexus.release-manifest.v2` envelope and clones the
+validated staging request into an ordinary `nexus.staging-attestation.v1`
+envelope. Both inner envelopes retain key id
+`github-environment-release-signing-2026-07` but are signed only by the
+dedicated drill private key. The staging payload changes only its manifest
+digest, which must bind the drill-signed manifest bytes, and protected signing
+provenance.
+
+A signed `nexus.rollback-drill-staging-bundle.v1` outer record binds the raw
+source-manifest, source-request, drill-manifest, and drill-attestation digests.
+It carries fixed scope `isolated-kvm-first-drill` and
+`promotionAllowed: false`, but it is never embedded in a promotion request.
+The KVM request generator consumes only the two ordinary inner files and binds
+the drill public key as its release-evidence key. The recovery verifier accepts
+that pair with the drill public key. Production retains the production public
+key, so both drill signatures fail cryptographically before the first
+application-runtime mode/ownership mutation.
+
+Only `NEXUS_ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM` is a protected
+`release-signing` environment secret. The public half is a reviewed non-secret
+file at
+`docs/release/evidence/rollback-drill-staging-public-key.pem`; signing fails
+closed while that file is absent. The production release private key is not
+exposed to this branch. After the future governed staging adapter has produced
+the exact ordinary request, protected signing is requested with:
+
+```bash
+scripts/request-rollback-drill-staging-attestation.sh \
+  .local/release/rollback-drill-staging/<sha>-<digest>.request.json \
+  .local/release/manifests/<sha>.json \
+  .local/release/rollback-drill-staging/<sha>-<digest>.bundle \
+  --manifest-signing-run-id <exact-protected-run-id>
+```
+
+This is preparation only. `npm run release:drill-staging` currently requires
+`--acknowledge-first-drill-bootstrap` and then exits with code 78 before any
+remote action because ServerDominguez still has promotion control v2 and the
+legacy `/home` staging layout. It must remain disabled until a separately
+reviewed v2 legacy-base adapter binds those exact paths and control semantics.
+It must not silently reuse the v3 `/srv` staging implementation.
+
+The outer record is not rollback-freshness evidence and cannot authorize
+production. The two inner files are ordinary recovery inputs, but their drill
+signatures are invalid under the production public key. The root promotion
+bridge verifies both with that production key before its first
+application-runtime mode/ownership mutation. The reviewed bridge change must
+be installed before any live drill; current-source authorization alone is
+insufficient. After the three real KVM fault outcomes pass, use the existing
+`nexus.rollback-drill.v1` protected signer to establish freshness. Converting
+the resulting isolated staging state into a normal production-promotable
+staging attestation is a separate future protected normalization action; this
+wrapper neither implements nor implies that normalization.
+
 Before the first owner-authorized production use, run these three drills on an
 isolated staging host and retain machine evidence under the normal ignored
 release-evidence path. These are required procedures, not claims that the
