@@ -720,6 +720,10 @@ exit 3
       '#!/usr/bin/env node\nprocess.stdout.write("fixture");\n',
       { mode: 0o755 },
     );
+    const orderingDirectory = path.join(pm2PackageRoot, 'ordering', 'locale');
+    fs.mkdirSync(orderingDirectory, { recursive: true, mode: 0o755 });
+    fs.writeFileSync(path.join(orderingDirectory, 'af.js'), 'module.exports = {};\n');
+    fs.writeFileSync(path.join(pm2PackageRoot, 'ordering', 'locale.json'), '{}\n');
     const closureFiles = () => {
       const files: Array<{
         path: string;
@@ -1667,6 +1671,57 @@ exec "$@"
     expect(fs.statSync(envelopePath).nlink).toBe(1);
     expect(fs.statSync(envelopePath).mode & 0o777).toBe(0o600);
     expect(fs.readFileSync(envelopePath)).toEqual(original);
+  });
+
+  it('accepts a legacy component-ordered PM2 closure attestation only when payload bytes match', () => {
+    const attestationPath = v3ControlFixtureEnv.NEXUS_PROMOTION_PM2_ATTESTATION!;
+    const attestation = JSON.parse(fs.readFileSync(attestationPath, 'utf8')) as {
+      closureDigest: string;
+      closureRoot: string;
+    };
+    const legacyFiles: Array<{
+      path: string;
+      size: number;
+      mode: number;
+      sha256: string;
+    }> = [];
+    const walk = (directory: string) => {
+      for (const name of fs.readdirSync(directory).sort()) {
+        const absolute = path.join(directory, name);
+        const identity = fs.lstatSync(absolute);
+        if (identity.isDirectory()) walk(absolute);
+        else if (identity.isFile()) {
+          const body = fs.readFileSync(absolute);
+          legacyFiles.push({
+            path: path.relative(attestation.closureRoot, absolute).split(path.sep).join('/'),
+            size: body.length,
+            mode: identity.mode & 0o7777,
+            sha256: createHash('sha256').update(body).digest('hex'),
+          });
+        }
+      }
+    };
+    walk(attestation.closureRoot);
+    const legacyDigest = createHash('sha256').update(canonicalJson({
+      schema: 'nexus.pm2-root-closure.v1',
+      files: legacyFiles,
+    })).digest('hex');
+    expect(legacyDigest).not.toBe(attestation.closureDigest);
+    attestation.closureDigest = legacyDigest;
+    fs.writeFileSync(attestationPath, `${JSON.stringify(attestation, null, 2)}\n`, {
+      mode: 0o600,
+    });
+
+    const ready = run(['assert-root-pm2-ready']);
+    expect(ready.status, ready.stderr).toBe(0);
+    expect(JSON.parse(ready.stdout).closureDigest).toBe(legacyDigest);
+
+    attestation.closureDigest = '9'.repeat(64);
+    fs.writeFileSync(attestationPath, `${JSON.stringify(attestation, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    const unrelatedDigest = run(['assert-root-pm2-ready']);
+    expect(unrelatedDigest.status).not.toBe(0);
   });
 
   it('launches one signed immutable request atomically and reconciles an identical retry', () => {
@@ -4293,6 +4348,12 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     );
     expect(installSource).toContain(
       "schema:'nexus.pm2-root-closure-payload.v1',files:payloadFiles",
+    );
+    expect(installSource).toContain(
+      'record.closureDigest!==legacyDigest&&record.closureDigest!==normalizedDigest',
+    );
+    expect(installSource).toContain(
+      "const payloadFiles=normalizedFiles.filter((identity)=>identity.path!=='closure-manifest.json')",
     );
     expect(installSource).toContain('fsync_path "$temporary"');
     expect(installSource).toContain('mv -fT -- "$temporary" "$target"');

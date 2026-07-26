@@ -568,9 +568,14 @@ const walk=(directory)=>{
  }
 };
 walk(closureRoot);
-files.sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0);
-const closureDigest=sha256(canonical({schema:'nexus.pm2-root-closure.v1',files}));
-if(files.length!==record.fileCount||closureDigest!==record.closureDigest)process.exit(1);
+const legacyDigest=sha256(canonical({schema:'nexus.pm2-root-closure.v1',files}));
+const normalizedFiles=[...files].sort((left,right)=>
+ left.path<right.path?-1:left.path>right.path?1:0);
+const normalizedDigest=sha256(canonical({
+ schema:'nexus.pm2-root-closure.v1',files:normalizedFiles,
+}));
+if(files.length!==record.fileCount
+ ||(record.closureDigest!==legacyDigest&&record.closureDigest!==normalizedDigest))process.exit(1);
 const packageIdentity=JSON.parse(readStable(
  path.join(closureRoot,'node_modules','pm2','package.json')));
 if(packageIdentity.name!=='pm2'||packageIdentity.version!==expectedVersion)process.exit(1);
@@ -581,7 +586,7 @@ const lockPackages=Object.entries(trustedLock.packages??{}).filter(([packagePath
  .sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0);
 if(lockPackages.some((identity)=>String(identity.resolved??'').startsWith('https://')
  &&(!identity.version||!identity.integrity)))process.exit(1);
-const payloadFiles=files.filter((identity)=>identity.path!=='closure-manifest.json');
+const payloadFiles=normalizedFiles.filter((identity)=>identity.path!=='closure-manifest.json');
 const payloadDigest=sha256(canonical({
  schema:'nexus.pm2-root-closure-payload.v1',files:payloadFiles,
 }));

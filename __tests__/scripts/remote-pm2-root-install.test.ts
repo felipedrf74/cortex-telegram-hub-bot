@@ -18,6 +18,28 @@ const canonical = (value: unknown): string => {
   return `{${Object.keys(record).sort()
     .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`;
 };
+const closureFiles = (closure: string) => {
+  const files: Array<{ path: string; size: number; mode: number; sha256: string }> = [];
+  const walk = (directory: string) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const absolute = path.join(directory, name);
+      const stat = fs.lstatSync(absolute);
+      if (stat.isDirectory()) walk(absolute);
+      else {
+        const body = fs.readFileSync(absolute);
+        files.push({
+          path: path.relative(closure, absolute).split(path.sep).join('/'),
+          size: body.length,
+          mode: stat.mode & 0o111 ? 0o755 : 0o644,
+          sha256: sha256(body),
+        });
+      }
+    }
+  };
+  walk(closure);
+  return files.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+};
 
 afterEach(() => {
   while (roots.length > 0) fs.rmSync(roots.pop()!, { recursive: true, force: true });
@@ -61,26 +83,15 @@ function fixture(options: { manifestLockDigest?: string } = {}) {
   const pm2Bin = path.join(closure, 'node_modules', 'pm2', 'bin', 'pm2');
   fs.mkdirSync(path.dirname(pm2Bin), { recursive: true });
   fs.writeFileSync(pm2Bin, '#!/usr/bin/env node\nprocess.stdout.write("fixture");\n', { mode: 0o755 });
+  const orderingDirectory = path.join(closure, 'node_modules', 'pm2', 'ordering', 'locale');
+  fs.mkdirSync(orderingDirectory, { recursive: true });
+  fs.writeFileSync(path.join(orderingDirectory, 'af.js'), 'module.exports = {};\n');
+  fs.writeFileSync(
+    path.join(closure, 'node_modules', 'pm2', 'ordering', 'locale.json'),
+    '{}\n',
+  );
 
-  const files: Array<{ path: string; size: number; mode: number; sha256: string }> = [];
-  const walk = (directory: string) => {
-    for (const name of fs.readdirSync(directory).sort()) {
-      const absolute = path.join(directory, name);
-      const stat = fs.lstatSync(absolute);
-      if (stat.isDirectory()) walk(absolute);
-      else {
-        const body = fs.readFileSync(absolute);
-        files.push({
-          path: path.relative(closure, absolute).split(path.sep).join('/'),
-          size: body.length,
-          mode: stat.mode & 0o111 ? 0o755 : 0o644,
-          sha256: sha256(body),
-        });
-      }
-    }
-  };
-  walk(closure);
-  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  const files = closureFiles(closure);
   const payload = { schema: 'nexus.pm2-root-closure-payload.v1', files };
   fs.writeFileSync(path.join(closure, 'closure-manifest.json'), `${JSON.stringify({
     schema: 'nexus.pm2-root-closure-manifest.v1',
@@ -94,6 +105,10 @@ function fixture(options: { manifestLockDigest?: string } = {}) {
     fileCount: files.length,
     files,
   }, null, 2)}\n`);
+  const expectedClosureDigest = sha256(canonical({
+    schema: 'nexus.pm2-root-closure.v1',
+    files: closureFiles(closure),
+  }));
   const archive = path.join(root, 'pm2-closure.tar.gz');
   const packed = spawnSync('python3', ['-c', [
     'import pathlib,sys,tarfile',
@@ -105,7 +120,13 @@ function fixture(options: { manifestLockDigest?: string } = {}) {
   const lockTarget = path.join(testRoot, 'usr', 'local', 'share', 'nexus-release');
   fs.mkdirSync(lockTarget, { recursive: true });
   fs.copyFileSync(trustedLock, path.join(lockTarget, 'pm2-package-lock.json'));
-  return { root, testRoot, archive, archiveSha256: sha256(fs.readFileSync(archive)) };
+  return {
+    root,
+    testRoot,
+    archive,
+    archiveSha256: sha256(fs.readFileSync(archive)),
+    expectedClosureDigest,
+  };
 }
 
 function install(f: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}) {
@@ -146,6 +167,7 @@ describe('offline root PM2 closure installation', () => {
       sourceArchiveSha256: f.archiveSha256,
       node: { path: process.execPath, version: 'v22.23.1' },
     });
+    expect(receipt.closureDigest).toBe(f.expectedClosureDigest);
     expect(receipt.packageLockSha256).toBe(sha256(fs.readFileSync(trustedLock)));
   });
 

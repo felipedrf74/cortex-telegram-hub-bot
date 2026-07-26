@@ -603,9 +603,14 @@ const walk=(directory)=>{
  }
 };
 walk(closureRoot);
-files.sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0);
-const digest=sha256(canonical({schema:'nexus.pm2-root-closure.v1',files}));
-if(files.length!==record.fileCount||digest!==record.closureDigest)process.exit(1);
+const legacyDigest=sha256(canonical({schema:'nexus.pm2-root-closure.v1',files}));
+const normalizedFiles=[...files].sort((left,right)=>
+ left.path<right.path?-1:left.path>right.path?1:0);
+const normalizedDigest=sha256(canonical({
+ schema:'nexus.pm2-root-closure.v1',files:normalizedFiles,
+}));
+if(files.length!==record.fileCount
+ ||(record.closureDigest!==legacyDigest&&record.closureDigest!==normalizedDigest))process.exit(1);
 const packageIdentity=JSON.parse(fs.readFileSync(
  path.join(closureRoot,'node_modules','pm2','package.json'),'utf8'));
 if(packageIdentity.name!=='pm2'||packageIdentity.version!==record.version)process.exit(1);
@@ -618,7 +623,7 @@ const lockPackages=Object.entries(trustedLock.packages??{}).filter(([packagePath
  .sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0);
 if(lockPackages.some((entry)=>String(entry.resolved??'').startsWith('https://')
   &&(!entry.version||!entry.integrity)))process.exit(1);
-const payloadFiles=files.filter((entry)=>entry.path!=='closure-manifest.json');
+const payloadFiles=normalizedFiles.filter((entry)=>entry.path!=='closure-manifest.json');
 const payloadDigest=sha256(canonical({schema:'nexus.pm2-root-closure-payload.v1',files:payloadFiles}));
 const installedPackages=[];
 for(const identity of lockPackages){
@@ -642,7 +647,7 @@ if(manifest.schema!=='nexus.pm2-root-closure-manifest.v1'
  ||manifest.fileCount!==payloadFiles.length||manifest.payloadDigest!==payloadDigest
  ||record.payloadDigest!==payloadDigest)process.exit(1);
 process.stdout.write(`${JSON.stringify({ok:true,schema:record.schema,version:record.version,
- closureDigest:digest,payloadDigest,packageLockSha256:record.packageLockSha256,
+ closureDigest:record.closureDigest,payloadDigest,packageLockSha256:record.packageLockSha256,
  launcher,launcherSha256:record.launcherSha256,node:record.node,entrypoint})}\n`);
 NODE
 }
