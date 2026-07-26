@@ -131,6 +131,20 @@ describe('release-evidence-container wrapper', () => {
     expect(raw).toContain('contract_scope must be explicitly selected');
     expect(raw).toContain('.local/release/test-results.json');
     expect(raw).toContain('timeout-minutes: 30');
+    expect(raw).toContain(
+      "--json-output '.local/release/rc-test-results/vitest-results-${{ matrix.shard }}.json'",
+    );
+    expect(raw).toContain(
+      'path: .local/release/rc-test-results/vitest-results-${{ matrix.shard }}.json',
+    );
+    expect(raw).toContain(
+      '--output .local/release/rc-test-results/vitest-results-selected.json',
+    );
+    expect(raw).toContain(
+      'path: .local/release/rc-test-results/vitest-results-selected.json',
+    );
+    expect(raw).not.toMatch(/--json-output 'vitest-results-\$\{\{ matrix\.shard \}\}\.json'/u);
+    expect(raw).not.toContain('--output vitest-results-selected.json');
   });
 
   it('uses the trusted production build as the release-candidate typecheck', () => {
