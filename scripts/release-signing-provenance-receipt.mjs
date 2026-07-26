@@ -17,7 +17,7 @@ const SHA = /^[0-9a-f]{40}$/u;
 const DIGEST = /^[0-9a-f]{64}$/u;
 const ARTIFACT_DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const RUN_ID = /^[1-9][0-9]*$/u;
-const REQUEST_ID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const SIGNING_RUN_TITLE = /^Sign release candidate ([0-9a-f]{40}) run ([1-9][0-9]*) request (?:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u;
 
 function fail(message) {
   throw new Error(message);
@@ -213,17 +213,15 @@ function validateRunMetadata(run, expected) {
   const runId = String(run?.id ?? '');
   const runAttempt = String(run?.run_attempt ?? '');
   const displayTitle = String(run?.display_title ?? '');
-  const expectedTitle = new RegExp(
-    `^Sign release candidate ${expected.runtimeSha} run ${expected.candidateRunId} request ${REQUEST_ID}$`,
-    'u',
-  );
+  const titleIdentity = SIGNING_RUN_TITLE.exec(displayTitle);
   const createdAt = githubTimestamp(
     run?.created_at,
     'release signing run created_at',
   );
   if (runId !== expected.signingRunId
       || runAttempt !== expected.signingRunAttempt
-      || !expectedTitle.test(displayTitle)
+      || titleIdentity?.[1] !== expected.runtimeSha
+      || titleIdentity?.[2] !== expected.candidateRunId
       || ![WORKFLOW_NAME, displayTitle].includes(run?.name)
       || run?.path !== WORKFLOW_PATH
       || run?.event !== 'workflow_dispatch'
