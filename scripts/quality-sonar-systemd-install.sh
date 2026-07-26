@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Transactionally install the advisory SonarQube control assets from the exact
 # root-owned protected-main bootstrap archive. This installer never installs or
-# invokes Docker, writes secrets, starts/stops/enables units, or writes Sonar
-# application/database data.
+# mutates Docker, writes secrets, starts runtime units, or writes Sonar
+# application/database contents. It reads Docker authority and its userns map,
+# then enables only its journal-conditioned recovery unit so an interrupted
+# asset replacement is repaired on the next boot.
 set -euo pipefail
 umask 077
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -15,13 +17,29 @@ BOOTSTRAP_BASE=/var/lib/nexus-release-bootstrap
 LAYOUT_RELATIVE=ops/sonarqube/install-layout.tsv
 DATA_LAYOUT_RELATIVE=ops/sonarqube/data-layout.tsv
 SHARED_MUTEX=/run/lock/nexus-release-sonar.lock
+SHARED_MUTEX_CONFIG=/etc/tmpfiles.d/nexus-release-sonar-lock.conf
+CONTROL_PARENT=/var/lib/nexus-release-promotion
+CONTROL_ROOT="$CONTROL_PARENT/sonarqube-install-control"
+CONTROL_ROOT_INTENT="$CONTROL_PARENT/sonarqube-install-control-in-progress.v1.json"
+CONTROL_ROOT_RECEIPT="$CONTROL_PARENT/sonarqube-install-control.v1.json"
 STATE_DIR=/var/lib/nexus-sonarqube
 RESTORE_EVIDENCE_DIR="$STATE_DIR/restore-evidence"
-INSTALL_JOURNAL="$STATE_DIR/install-in-progress.v1"
+INSTALL_JOURNAL="$CONTROL_ROOT/asset-install-in-progress.v2"
 INSTALL_RECEIPT="$STATE_DIR/install-receipt.v1.json"
+INSTALL_RECOVERY_PROGRAM="$CONTROL_ROOT/install-recovery-program.v2.py"
+INSTALL_RECOVERY_RECEIPT="$CONTROL_ROOT/asset-install-recovery-receipt.v1.json"
+DIRECTORY_JOURNAL="$CONTROL_ROOT/directory-install-in-progress.v1.json"
+DIRECTORY_RECOVERY_RECEIPT="$CONTROL_ROOT/directory-install-recovery-receipt.v1.json"
+RECOVERY_ANCHOR_RECEIPT="$CONTROL_ROOT/recovery-anchor-enrollment.v2.json"
+RECOVERY_ANCHOR_INTENT="$CONTROL_ROOT/recovery-anchor-enrollment-in-progress.v2.json"
+ANCHOR_UNENROLL_JOURNAL="$CONTROL_ROOT/recovery-anchor-unenrollment-in-progress.v1.json"
+ANCHOR_UNENROLL_RESULT="$CONTROL_ROOT/recovery-anchor-unenrollment-result.v1.json"
+ANCHOR_UNENROLL_ARCHIVE="$CONTROL_ROOT/recovery-anchor-unenrollment-result-archive.v1.json"
+INSTALL_COMMIT="$CONTROL_ROOT/install-commit.v1.json"
 SONAR_SERVICE=nexus-sonarqube.service
 BACKUP_SERVICE=nexus-sonarqube-backup.service
 BACKUP_TIMER=nexus-sonarqube-backup.timer
+INSTALL_RECOVERY_SERVICE=nexus-sonarqube-install-recovery.service
 
 die() {
   echo "SonarQube asset installer: $*" >&2
@@ -149,6 +167,7 @@ ops/sonarqube/sonar-project.properties	/srv/sonarqube/sonar-project.properties	r
 ops/sonarqube/systemd/nexus-sonarqube.service	/etc/systemd/system/nexus-sonarqube.service	root:root	0644
 ops/sonarqube/systemd/nexus-sonarqube-backup.service	/etc/systemd/system/nexus-sonarqube-backup.service	root:root	0644
 ops/sonarqube/systemd/nexus-sonarqube-backup.timer	/etc/systemd/system/nexus-sonarqube-backup.timer	root:root	0644
+ops/sonarqube/systemd/nexus-sonarqube-install-recovery.service	/etc/systemd/system/nexus-sonarqube-install-recovery.service	root:root	0644
 scripts/quality-sonar-stack.sh	/usr/local/sbin/quality-sonar-stack	root:root	0755
 scripts/quality-sonar-resolve-images.sh	/usr/local/sbin/quality-sonar-resolve-images	root:root	0755
 scripts/quality-sonar-health.sh	/usr/local/sbin/quality-sonar-health	root:root	0755
@@ -171,9 +190,12 @@ scripts/quality-sonar-backup.sh	/usr/local/sbin/quality-sonar-backup	root:root	0
 scripts/aws-credential-process-boundary.py	/usr/local/sbin/quality-sonar-aws-credential-process-boundary.py	root:root	0644
 scripts/quality-sonar-retention.mjs	/usr/local/sbin/quality-sonar-retention.mjs	root:root	0755
 scripts/quality-sonar-restore-drill.sh	/usr/local/sbin/quality-sonar-restore-drill	root:root	0755
+scripts/quality-sonar-stack-receipt.mjs	/usr/local/sbin/quality-sonar-stack-receipt.mjs	root:root	0700
+scripts/quality-sonar-aws-stack-state.mjs	/usr/local/sbin/quality-sonar-aws-stack-state	root:root	0700
+scripts/quality-sonar-cloudformation-activate.py	/usr/local/sbin/quality-sonar-cloudformation-activate	root:root	0700
 scripts/quality-sonar-release-state.sh	/usr/local/sbin/quality-sonar-release-state	root:root	0755
+scripts/quality-sonar-install-transaction.py	/usr/local/sbin/quality-sonar-install-transaction.py	root:root	0700
 ops/sonarqube/nexus-sonar-release-monitor.sudoers	/etc/sudoers.d/nexus-sonar-release-monitor	root:root	0440
-ops/sonarqube/nexus-release-sonar-lock.conf	/etc/tmpfiles.d/nexus-release-sonar-lock.conf	root:root	0644
 LAYOUT
 )"
 actual_layout="$(tail -n +2 "$LAYOUT")"
@@ -184,11 +206,11 @@ expected_data_layout="$(
   cat <<'DATA_LAYOUT'
 /srv/sonarqube	0:0	0750	root-controlled stack boundary
 /srv/sonarqube/data	0:0	0750	root-controlled persistent-data boundary
-/srv/sonarqube/data/postgresql	999:999	0700	pinned PostgreSQL container data
-/srv/sonarqube/data/sonarqube	1000:1000	0750	pinned SonarQube application data
-/srv/sonarqube/data/extensions	1000:1000	0750	pinned SonarQube extensions
-/srv/sonarqube/data/logs	1000:1000	0750	pinned SonarQube logs
-/srv/sonarqube/data/temp	1000:1000	0750	pinned SonarQube search temporary data
+/srv/sonarqube/data/postgresql	999:999	0700	userns-mapped PostgreSQL container data
+/srv/sonarqube/data/sonarqube	1000:1000	0750	userns-mapped SonarQube application data
+/srv/sonarqube/data/extensions	1000:1000	0750	userns-mapped SonarQube extensions
+/srv/sonarqube/data/logs	1000:1000	0750	userns-mapped SonarQube logs
+/srv/sonarqube/data/temp	1000:1000	0750	userns-mapped SonarQube search temporary data
 DATA_LAYOUT
 )"
 actual_data_layout="$(tail -n +2 "$DATA_LAYOUT")"
@@ -211,6 +233,7 @@ source_root_path = pathlib.Path(source_root)
 required = {
     "ops/sonarqube/install-layout.tsv",
     "ops/sonarqube/data-layout.tsv",
+    "ops/sonarqube/nexus-release-sonar-lock.conf",
     "scripts/quality-sonar-systemd-install.sh",
 }
 with open(layout_path, "r", encoding="utf-8") as layout:
@@ -258,6 +281,130 @@ for path in (data_layout_path, installer_path):
         raise SystemExit("Sonar install archive verifier: required source is a symlink")
 PY
 
+# Recovery must precede any live mapping or managed-directory validation. A
+# power loss may leave a `creating` directory at the installer's restrictive
+# bootstrap owner/mode; only the durable external journal may classify and
+# remove it.
+# The promotion control plane owns this lock rule because the release path,
+# Sonar operations, scans, and backups all share the mutex. Sonar may use the
+# exact global predecessor but must never bootstrap or retire it. Recreate only
+# the volatile /run file from that preserved, archive-matching rule so
+# post-reboot recovery can take the same lock before any managed mutation.
+validate_root_trusted_path \
+  "$SHARED_MUTEX_CONFIG" "shared release/Sonar tmpfiles config" file
+[ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX_CONFIG")" = root:root:644 ] \
+  || die "shared release/Sonar tmpfiles config must be root:root mode 0644"
+SHARED_MUTEX_CONFIG_SHA256="$(
+  sha256sum -- "$SHARED_MUTEX_CONFIG" | cut -d' ' -f1
+)"
+[ "$SHARED_MUTEX_CONFIG_SHA256" = \
+    "$(sha256sum -- "$SOURCE_ROOT/ops/sonarqube/nexus-release-sonar-lock.conf" \
+      | cut -d' ' -f1)" ] \
+  || die "shared release/Sonar tmpfiles config differs from protected main"
+SHARED_MUTEX_CONFIG_UID="$(stat -c '%u' -- "$SHARED_MUTEX_CONFIG")"
+SHARED_MUTEX_CONFIG_GID="$(stat -c '%g' -- "$SHARED_MUTEX_CONFIG")"
+SHARED_MUTEX_CONFIG_MODE="0$(stat -c '%a' -- "$SHARED_MUTEX_CONFIG")"
+SHARED_MUTEX_CONFIG_DEV="$(stat -c '%d' -- "$SHARED_MUTEX_CONFIG")"
+SHARED_MUTEX_CONFIG_INO="$(stat -c '%i' -- "$SHARED_MUTEX_CONFIG")"
+SHARED_MUTEX_CONFIG_NLINK="$(stat -c '%h' -- "$SHARED_MUTEX_CONFIG")"
+systemd-tmpfiles --create "$SHARED_MUTEX_CONFIG" \
+  || die "shared release/Sonar mutex could not be materialized from its global rule"
+[ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
+  && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \
+  || die "shared release/Sonar mutex is unavailable after tmpfiles materialization"
+
+if [ ! -e "$ANCHOR_UNENROLL_JOURNAL" ] \
+    && [ ! -L "$ANCHOR_UNENROLL_JOURNAL" ] \
+    && { [ -e "$ANCHOR_UNENROLL_RESULT" ] \
+      || [ -L "$ANCHOR_UNENROLL_RESULT" ]; }; then
+  [ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
+    && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \
+    || die "shared release/Sonar mutex is unavailable for anchor cleanup"
+  python3 "$SOURCE_ROOT/scripts/quality-sonar-install-transaction.py" \
+    resume-anchor-cleanup \
+    --result "$ANCHOR_UNENROLL_RESULT" \
+    --lock "$SHARED_MUTEX" \
+    || die "durable post-commit anchor cleanup could not be resumed"
+  python3 "$SOURCE_ROOT/scripts/quality-sonar-install-transaction.py" \
+    retire-anchor-cleanup-result \
+    --result "$ANCHOR_UNENROLL_RESULT" \
+    --archive "$ANCHOR_UNENROLL_ARCHIVE" \
+    --lock "$SHARED_MUTEX" \
+    || die "completed anchor cleanup evidence could not be archived"
+fi
+
+control_recovery_required=false
+for control_marker in \
+  "$INSTALL_JOURNAL" "$DIRECTORY_JOURNAL" "$RECOVERY_ANCHOR_INTENT" \
+  "$ANCHOR_UNENROLL_JOURNAL"; do
+  if [ -L "$control_marker" ]; then
+    die "Sonar install control marker is a symlink: $control_marker"
+  elif [ -e "$control_marker" ]; then
+    [ -f "$control_marker" ] \
+      && [ "$(stat -c '%U:%G:%a' -- "$control_marker")" = root:root:600 ] \
+      || die "Sonar install control marker is unsafe: $control_marker"
+    control_recovery_required=true
+  fi
+done
+if [ "$control_recovery_required" = true ] \
+    && [ -f "$INSTALL_RECOVERY_PROGRAM" ]; then
+  [ ! -L "$INSTALL_RECOVERY_PROGRAM" ] \
+    && [ "$(realpath -e -- "$INSTALL_RECOVERY_PROGRAM")" = "$INSTALL_RECOVERY_PROGRAM" ] \
+    && [ "$(stat -c '%U:%G:%a' -- "$INSTALL_RECOVERY_PROGRAM")" = root:root:600 ] \
+    || die "unfinished installation requires its exact retained recovery program"
+  [ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
+    && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \
+    || die "shared release/Sonar mutex is unavailable for install recovery"
+  python3 "$INSTALL_RECOVERY_PROGRAM" auto-recover \
+    --program "$INSTALL_RECOVERY_PROGRAM" \
+    --lock "$SHARED_MUTEX" \
+    --asset-journal "$INSTALL_JOURNAL" \
+    --asset-receipt "$INSTALL_RECOVERY_RECEIPT" \
+    --directory-journal "$DIRECTORY_JOURNAL" \
+    --directory-receipt "$DIRECTORY_RECOVERY_RECEIPT" \
+    --anchor-intent "$RECOVERY_ANCHOR_INTENT" \
+    --anchor-receipt "$RECOVERY_ANCHOR_RECEIPT" \
+    --unenroll-journal "$ANCHOR_UNENROLL_JOURNAL" \
+    --unenroll-result "$ANCHOR_UNENROLL_RESULT" \
+    --install-commit "$INSTALL_COMMIT"
+  die "recovered interrupted Sonar installation state; review evidence and rerun"
+elif [ "$control_recovery_required" = true ] \
+    && { [ -e "$INSTALL_JOURNAL" ] || [ -e "$DIRECTORY_JOURNAL" ] \
+      || [ -e "$ANCHOR_UNENROLL_JOURNAL" ]; }; then
+  die "unfinished Sonar installation lacks its retained recovery program"
+fi
+
+# Docker must be installed fresh with daemon-wide userns-remap before the
+# installer can safely materialize writable bind directories. Resolve the live
+# subordinate ranges from the already archive-verified source verifier; never
+# assume that container UID/GID 999 or 1000 is unused on the host.
+userns_map_json="$(
+  bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh" --print-userns-map
+)" || die "live Docker user-namespace mapping rejected Sonar asset installation"
+IFS=$'\t' read -r mapped_postgres_owner mapped_sonar_owner < <(
+  /usr/bin/node - "$userns_map_json" <<'NODE'
+const value = JSON.parse(process.argv[2]);
+if (value?.schema !== 'nexus.docker-userns-map.v1'
+    || value?.status !== 'passed'
+    || value?.postgres?.hostUid !== value.subuidBase + 999
+    || value?.postgres?.hostGid !== value.subgidBase + 999
+    || value?.sonarqube?.hostUid !== value.subuidBase + 1000
+    || value?.sonarqube?.hostGid !== value.subgidBase + 1000) process.exit(1);
+process.stdout.write(
+  `${value.postgres.hostUid}:${value.postgres.hostGid}\t`
+  + `${value.sonarqube.hostUid}:${value.sonarqube.hostGid}\n`,
+);
+NODE
+) || die "Docker user-namespace mapping output is malformed"
+[[ "$mapped_postgres_owner" =~ ^[0-9]+:[0-9]+$ ]] \
+  && [[ "$mapped_sonar_owner" =~ ^[0-9]+:[0-9]+$ ]] \
+  || die "Docker user-namespace mapped owners are malformed"
+userns_map_sha256="$(
+  printf '%s' "$userns_map_json" | sha256sum | cut -d' ' -f1
+)"
+[[ "$userns_map_sha256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "Docker user-namespace mapping digest is malformed"
+
 sources=()
 targets=()
 owners=()
@@ -267,6 +414,8 @@ had_targets=()
 declare -A seen_sources=()
 declare -A seen_targets=()
 service_index=-1
+recovery_program_index=-1
+recovery_service_index=-1
 
 while IFS=$'\t' read -r relative target owner mode extra; do
   [ -z "$extra" ] || die "install layout contains an extra column"
@@ -299,6 +448,7 @@ while IFS=$'\t' read -r relative target owner mode extra; do
     /etc/systemd/system/nexus-sonarqube.service|\
     /etc/systemd/system/nexus-sonarqube-backup.service|\
     /etc/systemd/system/nexus-sonarqube-backup.timer|\
+    /etc/systemd/system/nexus-sonarqube-install-recovery.service|\
     /usr/local/sbin/quality-sonar-stack|\
     /usr/local/sbin/quality-sonar-resolve-images|\
     /usr/local/sbin/quality-sonar-health|\
@@ -321,9 +471,12 @@ while IFS=$'\t' read -r relative target owner mode extra; do
     /usr/local/sbin/quality-sonar-aws-credential-process-boundary.py|\
     /usr/local/sbin/quality-sonar-retention.mjs|\
     /usr/local/sbin/quality-sonar-restore-drill|\
+    /usr/local/sbin/quality-sonar-stack-receipt.mjs|\
+    /usr/local/sbin/quality-sonar-aws-stack-state|\
+    /usr/local/sbin/quality-sonar-cloudformation-activate|\
     /usr/local/sbin/quality-sonar-release-state|\
-    /etc/sudoers.d/nexus-sonar-release-monitor|\
-    /etc/tmpfiles.d/nexus-release-sonar-lock.conf) ;;
+    /usr/local/sbin/quality-sonar-install-transaction.py|\
+    /etc/sudoers.d/nexus-sonar-release-monitor) ;;
     *) die "install target is outside the exact allowlist: $target" ;;
   esac
 
@@ -348,17 +501,28 @@ while IFS=$'\t' read -r relative target owner mode extra; do
   if [ "$target" = "/etc/systemd/system/$SONAR_SERVICE" ]; then
     service_index=$((${#targets[@]} - 1))
   fi
+  if [ "$target" = "/usr/local/sbin/quality-sonar-install-transaction.py" ]; then
+    recovery_program_index=$((${#targets[@]} - 1))
+  fi
+  if [ "$target" = "/etc/systemd/system/$INSTALL_RECOVERY_SERVICE" ]; then
+    recovery_service_index=$((${#targets[@]} - 1))
+  fi
 done <<< "$actual_layout"
 
 planned="${#sources[@]}"
 [ "$planned" -gt 0 ] || die "install layout is empty"
 [ "$service_index" -ge 0 ] || die "install layout omits the journal-guarded Sonar service"
+[ "$recovery_program_index" -ge 0 ] \
+  || die "install layout omits the retained recovery program"
+[ "$recovery_service_index" -ge 0 ] \
+  || die "install layout omits the boot recovery service"
 
 data_paths=()
 data_owners=()
 data_groups=()
 data_modes=()
 while IFS=$'\t' read -r path numeric_owner mode purpose extra; do
+  host_owner=""
   [ -z "$extra" ] || die "data layout contains an extra column"
   [ -n "$path" ] && [ -n "$numeric_owner" ] && [ -n "$mode" ] && [ -n "$purpose" ] \
     || die "data layout contains an incomplete row"
@@ -367,6 +531,12 @@ while IFS=$'\t' read -r path numeric_owner mode purpose extra; do
     || die "data layout path is outside the exact allowlist"
   [[ "$numeric_owner" =~ ^[0-9]+:[0-9]+$ ]] \
     || die "data layout owner must be numeric"
+  case "$numeric_owner" in
+    0:0) host_owner=0:0 ;;
+    999:999) host_owner="$mapped_postgres_owner" ;;
+    1000:1000) host_owner="$mapped_sonar_owner" ;;
+    *) die "data layout container owner is outside the exact allowlist" ;;
+  esac
   case "$mode" in 0700|0750) ;; *) die "data layout mode is outside the allowlist" ;; esac
   validate_existing_target_ancestor "$(dirname -- "$path")"
   if [ -L "$path" ]; then
@@ -375,12 +545,12 @@ while IFS=$'\t' read -r path numeric_owner mode purpose extra; do
     [ -d "$path" ] || die "existing Sonar directory is not a directory: $path"
     [ "$(realpath -e -- "$path")" = "$path" ] \
       || die "existing Sonar directory traverses a symlink: $path"
-    [ "$(stat -c '%u:%g' -- "$path")" = "$numeric_owner" ] \
-      || die "existing Sonar directory owner differs from the data layout: $path"
+    [ "$(stat -c '%u:%g' -- "$path")" = "$host_owner" ] \
+      || die "existing Sonar directory owner differs from the mapped data layout: $path"
     [ "$(stat -c '%a' -- "$path")" = "${mode#0}" ] \
       || die "existing Sonar directory mode differs from the data layout: $path"
   fi
-  IFS=: read -r numeric_uid numeric_gid <<< "$numeric_owner"
+  IFS=: read -r numeric_uid numeric_gid <<< "$host_owner"
   data_paths+=("$path")
   data_owners+=("$numeric_uid")
   data_groups+=("$numeric_gid")
@@ -406,17 +576,14 @@ validate_managed_directory() {
 validate_managed_directory /usr/local/sbin/lib root root 0755
 validate_managed_directory /etc/systemd/system/ollama.service.d root root 0755
 validate_managed_directory /etc/sonarqube root root 0700
+validate_managed_directory "$CONTROL_PARENT" root root 0755
+validate_managed_directory "$CONTROL_ROOT" root root 0700
 validate_managed_directory "$STATE_DIR" root root 0700
 validate_managed_directory "$RESTORE_EVIDENCE_DIR" root root 0700
+[ -d "$CONTROL_PARENT" ] && [ ! -L "$CONTROL_PARENT" ] \
+  && [ "$(realpath -e -- "$CONTROL_PARENT")" = "$CONTROL_PARENT" ] \
+  || die "root promotion state must preexist before Sonar control enrollment"
 
-if [ -L "$INSTALL_JOURNAL" ]; then
-  die "install journal is a symlink"
-elif [ -e "$INSTALL_JOURNAL" ]; then
-  [ -f "$INSTALL_JOURNAL" ] \
-    && [ "$(stat -c '%U:%G:%a' -- "$INSTALL_JOURNAL")" = root:root:600 ] \
-    || die "preexisting install journal is unsafe"
-  die "an incomplete Sonar asset installation requires owner inspection"
-fi
 if [ -L "$INSTALL_RECEIPT" ]; then
   die "install receipt is a symlink"
 elif [ -e "$INSTALL_RECEIPT" ]; then
@@ -469,6 +636,11 @@ for source_path in "${sources[@]}"; do
   case "$source_path" in
     *.sh) bash -n "$source_path" ;;
     *.mjs) node --check "$source_path" >/dev/null ;;
+    *.py)
+      python3 -c \
+        'import pathlib,sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], "exec")' \
+        "$source_path"
+      ;;
   esac
 done
 bash "$SOURCE_ROOT/scripts/quality-sonar-resolve-images.sh" \
@@ -498,98 +670,98 @@ if compose.count('restart: "no"') != 2:
     raise SystemExit("Sonar Compose prevalidation: both restart policies must be disabled")
 PY
 
-created_dirs=()
+# This live, read-only gate precedes the first managed-directory creation or
+# target staging operation. Docker, its user-namespace map, the protected host
+# identities, mapped bind identities, systemd updater inventory, memory, load,
+# swap, recent OOM state, and four-process PM2 stability must all be safe.
+# Interrupted-install recovery above remains available regardless of capacity.
+bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh" \
+  --verify-runtime-boundary-only \
+  --sample-seconds 1 >/dev/null \
+  || die "live pre-install runtime boundary rejected Sonar asset installation"
+
+# The external control root is a separate, harmless prerequisite. Its intent
+# is persisted in the already boot-recoverable release state before the only
+# mkdir in this bootstrap phase.
+python3 "${sources[$recovery_program_index]}" bootstrap-control-root \
+  --parent "$CONTROL_PARENT" \
+  --root "$CONTROL_ROOT" \
+  --intent "$CONTROL_ROOT_INTENT" \
+  --receipt "$CONTROL_ROOT_RECEIPT" \
+  --source-sha "$SOURCE_SHA" \
+  --archive-sha256 "$EXPECTED_ARCHIVE_SHA256"
+
 stage_paths=()
 backup_paths=()
-committed_indices=()
-receipt_stage=""
-receipt_backup=""
 receipt_assets=""
-journal_tmp=""
-receipt_had_target=false
-receipt_committed=false
+transaction_dir=""
+transaction_plan=""
+directory_plan=""
 journal_armed=false
-rollback_abandoned=false
+directory_armed=false
 install_succeeded=false
+lock_open=true
 
 cleanup_install() {
-  local rc=$? position index target backup stage rollback_failed=false
+  local rc=$? stage backup recovery_failed=false
   trap - EXIT INT TERM
   set +e
-  if [ "$install_succeeded" != true ] && [ "$rollback_abandoned" = false ]; then
-    if [ "$receipt_committed" = true ]; then
-      if [ "$receipt_had_target" = true ]; then
-        if [ -f "$receipt_backup" ] \
-            && mv -fT -- "$receipt_backup" "$INSTALL_RECEIPT" \
-            && fsync_path "$STATE_DIR"; then
-          receipt_backup=""
-        else
-          rollback_failed=true
-          echo "SonarQube asset installer: failed to restore the prior install receipt" >&2
-        fi
-      elif ! durable_remove "$INSTALL_RECEIPT"; then
-        rollback_failed=true
-        echo "SonarQube asset installer: failed to remove the new install receipt" >&2
-      fi
+  if [ "$install_succeeded" != true ] \
+      && { [ -e "$INSTALL_JOURNAL" ] || [ -e "$DIRECTORY_JOURNAL" ]; }; then
+    if [ "$lock_open" = true ]; then
+      exec 9>&-
+      lock_open=false
     fi
-    for ((position=${#committed_indices[@]} - 1; position >= 0; position -= 1)); do
-      index="${committed_indices[$position]}"
-      target="${targets[$index]}"
-      backup="${backup_paths[$index]:-}"
-      if [ "${had_targets[$index]}" = true ]; then
-        if [ -n "$backup" ] && [ -f "$backup" ]; then
-          if mv -fT -- "$backup" "$target" \
-              && fsync_path "$(dirname -- "$target")"; then
-            backup_paths[$index]=""
-          else
-            rollback_failed=true
-            echo "SonarQube asset installer: failed to restore $target from $backup" >&2
-          fi
-        fi
-      elif ! durable_remove "$target"; then
-        rollback_failed=true
-        echo "SonarQube asset installer: failed to remove new target $target" >&2
-      fi
-    done
-    if [ "${#committed_indices[@]}" -gt 0 ] \
-        && ! systemctl daemon-reload >/dev/null 2>&1; then
-      rollback_failed=true
-      echo "SonarQube asset installer: failed to reload systemd after rollback" >&2
+    if python3 "$INSTALL_RECOVERY_PROGRAM" auto-recover \
+        --program "$INSTALL_RECOVERY_PROGRAM" \
+        --lock "$SHARED_MUTEX" \
+        --asset-journal "$INSTALL_JOURNAL" \
+        --asset-receipt "$INSTALL_RECOVERY_RECEIPT" \
+        --directory-journal "$DIRECTORY_JOURNAL" \
+        --directory-receipt "$DIRECTORY_RECOVERY_RECEIPT" \
+        --anchor-intent "$RECOVERY_ANCHOR_INTENT" \
+        --anchor-receipt "$RECOVERY_ANCHOR_RECEIPT" \
+        --unenroll-journal "$ANCHOR_UNENROLL_JOURNAL" \
+        --unenroll-result "$ANCHOR_UNENROLL_RESULT" \
+        --install-commit "$INSTALL_COMMIT"; then
+      journal_armed=false
+      directory_armed=false
+      stage_paths=()
+      backup_paths=()
+      transaction_dir=""
+      transaction_plan=""
+      directory_plan=""
+    else
+      recovery_failed=true
+      echo "SonarQube asset installer: exact recovery failed; control journals retained for boot recovery" >&2
     fi
-  elif [ "$install_succeeded" != true ]; then
-    rollback_failed=true
-    echo "SonarQube asset installer: installation stopped after rollback backups were retired" >&2
   fi
 
-  [ -z "$journal_tmp" ] || durable_remove "$journal_tmp"
-  [ -z "$receipt_stage" ] || durable_remove "$receipt_stage"
-  [ -z "$receipt_assets" ] || durable_remove "$receipt_assets"
-  for stage in "${stage_paths[@]:-}"; do
-    [ -z "$stage" ] || durable_remove "$stage"
-  done
-  if [ "$install_succeeded" = true ]; then
-    [ -z "$receipt_backup" ] || durable_remove "$receipt_backup"
+  if [ "$lock_open" = true ]; then
+    exec 9>&-
+    lock_open=false
+  fi
+  if [ "$journal_armed" = false ] \
+      && [ "$directory_armed" = false ] \
+      && [ "$install_succeeded" != true ]; then
+    [ -z "$receipt_assets" ] || durable_remove "$receipt_assets"
+    for stage in "${stage_paths[@]:-}"; do
+      [ -z "$stage" ] || durable_remove "$stage"
+    done
     for backup in "${backup_paths[@]:-}"; do
       [ -z "$backup" ] || durable_remove "$backup"
     done
-  fi
-
-  if [ "$install_succeeded" != true ] \
-      && [ "$rollback_failed" = false ] \
-      && [ "$journal_armed" = true ]; then
-    if durable_remove "$INSTALL_JOURNAL"; then
-      journal_armed=false
-    else
-      rollback_failed=true
-      echo "SonarQube asset installer: failed to clear the install journal after rollback" >&2
+    if [ -n "$transaction_plan" ]; then
+      durable_remove "$transaction_plan"
+    fi
+    if [ -n "$directory_plan" ]; then
+      durable_remove "$directory_plan"
+    fi
+    if [ -n "$transaction_dir" ]; then
+      rmdir -- "$transaction_dir" >/dev/null 2>&1 || true
     fi
   fi
-  if [ "$install_succeeded" != true ] && [ "$rollback_failed" = false ]; then
-    for ((position=${#created_dirs[@]} - 1; position >= 0; position -= 1)); do
-      rmdir -- "${created_dirs[$position]}" >/dev/null 2>&1 || true
-    done
-  fi
-  if [ "$rollback_failed" = true ]; then
+  if [ "$recovery_failed" = true ]; then
     rc=1
   fi
   exit "$rc"
@@ -597,44 +769,101 @@ cleanup_install() {
 trap cleanup_install EXIT
 trap 'exit 130' INT TERM
 
-ensure_directory() {
-  local path="$1" owner="$2" group="$3" mode="$4" parent
-  if [ -d "$path" ]; then
-    return
+# Enroll the boot-recovery anchors before the first managed Sonar directory.
+# The helper writes its external intent before creating any absent anchor and
+# resumes an interrupted enrollment from the same exact source/archive binding.
+python3 "${sources[$recovery_program_index]}" enroll-anchors \
+  --intent "$RECOVERY_ANCHOR_INTENT" \
+  --receipt "$RECOVERY_ANCHOR_RECEIPT" \
+  --source-root "$SOURCE_ROOT" \
+  --source-sha "$SOURCE_SHA" \
+  --archive-sha256 "$EXPECTED_ARCHIVE_SHA256"
+[ -f "$INSTALL_RECOVERY_PROGRAM" ] && [ ! -L "$INSTALL_RECOVERY_PROGRAM" ] \
+  && [ "$(stat -c '%U:%G:%a' -- "$INSTALL_RECOVERY_PROGRAM")" = root:root:600 ] \
+  || die "recovery-anchor enrollment did not retain its exact program"
+had_targets[$recovery_program_index]=true
+had_targets[$recovery_service_index]=true
+
+# Reopen the exact derived Docker mapping immediately before the directory
+# transaction. A concurrent root remap cannot make the earlier high-ID
+# calculation stale.
+fresh_userns_map_json="$(
+  bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh" --print-userns-map
+)" || die "live Docker user-namespace mapping changed before directory mutation"
+fresh_userns_map_sha256="$(
+  printf '%s' "$fresh_userns_map_json" | sha256sum | cut -d' ' -f1
+)"
+[ "$fresh_userns_map_json" = "$userns_map_json" ] \
+  && [ "$fresh_userns_map_sha256" = "$userns_map_sha256" ] \
+  || die "Docker user-namespace mapping receipt drifted before directory mutation"
+
+install_transaction_id="$(
+  python3 -c 'import secrets; print(secrets.token_hex(32))'
+)"
+[[ "$install_transaction_id" =~ ^[0-9a-f]{64}$ ]] \
+  || die "could not create a unique Sonar install transaction identity"
+
+directory_plan="$(mktemp -p "$CONTROL_ROOT" ".directory-plan.XXXXXX")"
+chmod 0600 "$directory_plan"
+append_directory_plan() {
+  local index="$1" path="$2" uid="$3" gid="$4" mode="$5"
+  local had=false predecessor_uid=- predecessor_gid=- predecessor_mode=-
+  local predecessor_dev=- predecessor_ino=-
+  if [ -e "$path" ]; then
+    [ -d "$path" ] && [ ! -L "$path" ] \
+      && [ "$(realpath -e -- "$path")" = "$path" ] \
+      || die "directory predecessor is unsafe: $path"
+    [ "$(stat -c '%u:%g' -- "$path")" = "$uid:$gid" ] \
+      && [ "0$(stat -c '%a' -- "$path")" = "$mode" ] \
+      || die "directory predecessor identity drifted: $path"
+    had=true
+    predecessor_uid="$(stat -c '%u' -- "$path")"
+    predecessor_gid="$(stat -c '%g' -- "$path")"
+    predecessor_mode="0$(stat -c '%a' -- "$path")"
+    predecessor_dev="$(stat -c '%d' -- "$path")"
+    predecessor_ino="$(stat -c '%i' -- "$path")"
   fi
-  parent="$(dirname -- "$path")"
-  [ -d "$parent" ] && [ ! -L "$parent" ] \
-    && [ "$(realpath -e -- "$parent")" = "$parent" ] \
-    || die "managed directory parent must already exist and be canonical: $parent"
-  install -d -o "$owner" -g "$group" -m "$mode" -- "$path"
-  created_dirs+=("$path")
-  fsync_path "$path"
-  fsync_path "$parent"
+  printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$index" "$path" "$uid" "$gid" "$mode" "$had" \
+    "$predecessor_uid" "$predecessor_gid" "$predecessor_mode" \
+    "$predecessor_dev" "$predecessor_ino" >>"$directory_plan"
 }
 
-ensure_directory /usr/local/sbin/lib root root 0755
-ensure_directory /etc/systemd/system/ollama.service.d root root 0755
-ensure_directory /etc/sonarqube root root 0700
-ensure_directory "$STATE_DIR" root root 0700
-ensure_directory "$RESTORE_EVIDENCE_DIR" root root 0700
+append_directory_plan 0 /usr/local/sbin/lib 0 0 0755
+append_directory_plan 1 /etc/systemd/system/ollama.service.d 0 0 0755
+append_directory_plan 2 /etc/sonarqube 0 0 0700
+append_directory_plan 3 "$STATE_DIR" 0 0 0700
+append_directory_plan 4 "$RESTORE_EVIDENCE_DIR" 0 0 0700
 for ((index=0; index<${#data_paths[@]}; index+=1)); do
-  ensure_directory \
+  append_directory_plan \
+    "$((index + 5))" \
     "${data_paths[$index]}" \
     "${data_owners[$index]}" \
     "${data_groups[$index]}" \
     "${data_modes[$index]}"
 done
+fsync_path "$directory_plan"
+fsync_path "$CONTROL_ROOT"
 
-journal_tmp="$(mktemp -p "$STATE_DIR" ".install-in-progress.v1.tmp.XXXXXX")"
-printf '{"schema":"nexus.sonarqube-asset-install-journal.v1","status":"in_progress","sourceSha":"%s","archiveSha256":"%s"}\n' \
-  "$SOURCE_SHA" "$EXPECTED_ARCHIVE_SHA256" >"$journal_tmp"
-chmod 0600 "$journal_tmp"
-fsync_path "$journal_tmp"
-mv -fT -- "$journal_tmp" "$INSTALL_JOURNAL"
-journal_tmp=""
-fsync_path "$STATE_DIR"
-journal_armed=true
+python3 "$INSTALL_RECOVERY_PROGRAM" begin-directories \
+  --journal "$DIRECTORY_JOURNAL" \
+  --plan "$directory_plan" \
+  --program "$INSTALL_RECOVERY_PROGRAM" \
+  --install-transaction-id "$install_transaction_id" \
+  --source-sha "$SOURCE_SHA" \
+  --archive-sha256 "$EXPECTED_ARCHIVE_SHA256" \
+  --userns-map-sha256 "$userns_map_sha256"
+directory_armed=true
+for ((index=0; index<5+${#data_paths[@]}; index+=1)); do
+  python3 "$INSTALL_RECOVERY_PROGRAM" create-directory \
+    --journal "$DIRECTORY_JOURNAL" \
+    --program "$INSTALL_RECOVERY_PROGRAM" \
+    --index "$index"
+done
 
+# Stage every asset and bind every predecessor before the journal. Stages and
+# hard-link backups do not mutate a live target. Once the journal exists, its
+# complete inventory is sufficient for recovery without shell memory.
 for ((index=0; index<planned; index+=1)); do
   target="${targets[$index]}"
   target_parent="$(dirname -- "$target")"
@@ -647,64 +876,59 @@ for ((index=0; index<planned; index+=1)); do
   fsync_path "$stage"
   stage_paths[$index]="$stage"
   backup_paths[$index]=""
-done
-
-commit_asset() {
-  local index="$1" target target_parent backup
-  target="${targets[$index]}"
-  target_parent="$(dirname -- "$target")"
-  committed_indices+=("$index")
   if [ "${had_targets[$index]}" = true ]; then
     backup="$(mktemp -p "$target_parent" ".nexus-sonarqube.backup.XXXXXX")"
     rm -f -- "$backup"
-    backup_paths[$index]="$backup"
     ln -- "$target" "$backup"
     fsync_path "$target_parent"
+    backup_paths[$index]="$backup"
   fi
-  mv -fT -- "${stage_paths[$index]}" "$target"
-  fsync_path "$target_parent"
-  stage_paths[$index]=""
-}
-
-# Commit the journal-aware service first. A reboot during the remaining
-# replacements reloads this unit from disk and refuses Sonar startup.
-commit_asset "$service_index"
-for ((index=0; index<planned; index+=1)); do
-  [ "$index" -eq "$service_index" ] && continue
-  commit_asset "$index"
 done
-
-systemctl daemon-reload
-systemd-analyze verify \
-  /etc/systemd/system/nexus-sonarqube.service \
-  /etc/systemd/system/nexus-sonarqube-backup.service \
-  /etc/systemd/system/nexus-sonarqube-backup.timer \
-  /etc/systemd/system/nexus-ollama-observation@.service >/dev/null
-systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
-[ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
-  && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \
-  || die "shared release/Sonar mutex changed during installation"
-assert_units_untouched_and_disabled
 
 receipt_assets="$(mktemp -p "$STATE_DIR" ".install-assets.XXXXXX")"
 for ((index=0; index<planned; index+=1)); do
   printf '%s\t%s\t%s:%s\t%s\n' \
     "${targets[$index]}" \
-    "$(sha256sum -- "${targets[$index]}" | cut -d' ' -f1)" \
+    "$(sha256sum -- "${stage_paths[$index]}" | cut -d' ' -f1)" \
     "${owners[$index]}" "${groups[$index]}" "${modes[$index]}" \
     >>"$receipt_assets"
 done
 chmod 0600 "$receipt_assets"
-receipt_stage="$(mktemp -p "$STATE_DIR" ".install-receipt.v1.stage.XXXXXX")"
+current_lock_identity="$(
+  stat -c '%u:%g:0%a:%d:%i:%h' -- "$SHARED_MUTEX_CONFIG"
+)"
+[ "$current_lock_identity" = \
+    "$SHARED_MUTEX_CONFIG_UID:$SHARED_MUTEX_CONFIG_GID:$SHARED_MUTEX_CONFIG_MODE:$SHARED_MUTEX_CONFIG_DEV:$SHARED_MUTEX_CONFIG_INO:$SHARED_MUTEX_CONFIG_NLINK" ] \
+  && [ "$(sha256sum -- "$SHARED_MUTEX_CONFIG" | cut -d' ' -f1)" = \
+    "$SHARED_MUTEX_CONFIG_SHA256" ] \
+  || die "promotion-owned shared lock config changed before receipt staging"
+receipt_index="$planned"
+receipt_stage="$(mktemp -p "$STATE_DIR" ".nexus-sonarqube.stage.XXXXXX")"
 python3 - \
   "$SOURCE_SHA" "$EXPECTED_ARCHIVE_SHA256" "$receipt_assets" \
-  "$receipt_stage" <<'PY'
+  "$receipt_stage" "$SHARED_MUTEX_CONFIG" "$SHARED_MUTEX_CONFIG_SHA256" \
+  "$SHARED_MUTEX_CONFIG_UID" "$SHARED_MUTEX_CONFIG_GID" \
+  "$SHARED_MUTEX_CONFIG_MODE" "$SHARED_MUTEX_CONFIG_DEV" \
+  "$SHARED_MUTEX_CONFIG_INO" "$SHARED_MUTEX_CONFIG_NLINK" <<'PY'
 import datetime
 import json
 import pathlib
 import sys
 
-source_sha, archive_sha256, assets_path, output_path = sys.argv[1:]
+(
+    source_sha,
+    archive_sha256,
+    assets_path,
+    output_path,
+    dependency_target,
+    dependency_sha256,
+    dependency_uid,
+    dependency_gid,
+    dependency_mode,
+    dependency_dev,
+    dependency_ino,
+    dependency_nlink,
+) = sys.argv[1:]
 assets = []
 for line in pathlib.Path(assets_path).read_text(encoding="utf-8").splitlines():
     target, digest, owner, mode = line.split("\t")
@@ -721,9 +945,21 @@ receipt = {
     "archiveSha256": archive_sha256,
     "installedAssets": len(assets),
     "assets": assets,
+    "preservedDependencies": [{
+        "name": "releaseSonarLockConfig",
+        "target": dependency_target,
+        "sha256": dependency_sha256,
+        "uid": int(dependency_uid),
+        "gid": int(dependency_gid),
+        "mode": dependency_mode,
+        "dev": int(dependency_dev),
+        "ino": int(dependency_ino),
+        "nlink": int(dependency_nlink),
+    }],
     "configurationWritten": False,
     "dockerTouched": False,
     "servicesEnabled": False,
+    "installRecoveryServiceEnabled": True,
     "applicationDataWritten": False,
     "installedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
 }
@@ -736,34 +972,114 @@ chmod 0600 "$receipt_stage"
 fsync_path "$receipt_stage"
 durable_remove "$receipt_assets"
 receipt_assets=""
-
+targets[$receipt_index]="$INSTALL_RECEIPT"
+owners[$receipt_index]=root
+groups[$receipt_index]=root
+modes[$receipt_index]=0600
+stage_paths[$receipt_index]="$receipt_stage"
+backup_paths[$receipt_index]=""
+had_targets[$receipt_index]=false
 if [ -e "$INSTALL_RECEIPT" ]; then
-  receipt_had_target=true
-  receipt_backup="$(mktemp -p "$STATE_DIR" ".install-receipt.v1.backup.XXXXXX")"
+  had_targets[$receipt_index]=true
+  receipt_backup="$(
+    mktemp -p "$STATE_DIR" ".nexus-sonarqube.backup.XXXXXX"
+  )"
   rm -f -- "$receipt_backup"
   ln -- "$INSTALL_RECEIPT" "$receipt_backup"
   fsync_path "$STATE_DIR"
+  backup_paths[$receipt_index]="$receipt_backup"
 fi
-# A normal signal may not observe a renamed receipt without its rollback state.
-# Power loss remains fail-closed because the durable install journal persists.
-trap '' INT TERM
-mv -fT -- "$receipt_stage" "$INSTALL_RECEIPT"
-receipt_stage=""
-receipt_committed=true
-trap 'exit 130' INT TERM
-fsync_path "$STATE_DIR"
+total_planned=$((planned + 1))
 
-rollback_abandoned=true
-for backup in "${backup_paths[@]:-}"; do
-  [ -z "$backup" ] || durable_remove "$backup"
+transaction_dir="$(mktemp -d -p "$CONTROL_ROOT" ".install-transaction.v2.XXXXXX")"
+chmod 0700 "$transaction_dir"
+transaction_plan="$transaction_dir/plan.tsv"
+: >"$transaction_plan"
+chmod 0600 "$transaction_plan"
+for ((index=0; index<total_planned; index+=1)); do
+  target="${targets[$index]}"
+  stage="${stage_paths[$index]}"
+  backup="${backup_paths[$index]:-}"
+  kind=layout
+  [ "$index" -ne "$receipt_index" ] || kind=receipt
+  predecessor_sha=-
+  predecessor_uid=-
+  predecessor_gid=-
+  predecessor_mode=-
+  backup_field=-
+  if [ "${had_targets[$index]}" = true ]; then
+    backup_field="$backup"
+    predecessor_sha="$(sha256sum -- "$backup" | cut -d' ' -f1)"
+    predecessor_uid="$(stat -c '%u' -- "$backup")"
+    predecessor_gid="$(stat -c '%g' -- "$backup")"
+    predecessor_mode="0$(stat -c '%a' -- "$backup")"
+  fi
+  printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$index" "$kind" "$target" "$stage" "$backup_field" \
+    "${had_targets[$index]}" \
+    "$(sha256sum -- "$stage" | cut -d' ' -f1)" \
+    "$(stat -c '%u' -- "$stage")" "$(stat -c '%g' -- "$stage")" \
+    "${modes[$index]}" "$predecessor_sha" "$predecessor_uid" \
+    "$predecessor_gid" "$predecessor_mode" >>"$transaction_plan"
 done
-if [ -n "$receipt_backup" ]; then
-  durable_remove "$receipt_backup"
-  receipt_backup=""
-fi
-durable_remove "$INSTALL_JOURNAL"
+fsync_path "$transaction_plan"
+fsync_path "$transaction_dir"
+
+python3 "$INSTALL_RECOVERY_PROGRAM" begin \
+  --journal "$INSTALL_JOURNAL" \
+  --plan "$transaction_plan" \
+  --program "$INSTALL_RECOVERY_PROGRAM" \
+  --install-transaction-id "$install_transaction_id" \
+  --source-sha "$SOURCE_SHA" \
+  --archive-sha256 "$EXPECTED_ARCHIVE_SHA256"
+journal_armed=true
+
+commit_asset() {
+  local index="$1" target target_parent
+  target="${targets[$index]}"
+  target_parent="$(dirname -- "$target")"
+  mv -fT -- "${stage_paths[$index]}" "$target"
+  fsync_path "$target_parent"
+  python3 "$INSTALL_RECOVERY_PROGRAM" checkpoint \
+    --journal "$INSTALL_JOURNAL" \
+    --program "$INSTALL_RECOVERY_PROGRAM" \
+    --phase "committed-$index" \
+    --committed-index "$index"
+}
+
+# Commit the journal-aware runtime service first. A reboot during the remaining
+# replacements reloads this unit from disk and refuses Sonar startup until the
+# enabled recovery unit has restored every predecessor.
+commit_asset "$service_index"
+for ((index=0; index<planned; index+=1)); do
+  [ "$index" -eq "$service_index" ] && continue
+  commit_asset "$index"
+done
+commit_asset "$receipt_index"
+
+systemctl daemon-reload
+systemd-analyze verify \
+  /etc/systemd/system/nexus-sonarqube.service \
+  /etc/systemd/system/nexus-sonarqube-backup.service \
+  /etc/systemd/system/nexus-sonarqube-backup.timer \
+  /etc/systemd/system/nexus-sonarqube-install-recovery.service \
+  /etc/systemd/system/nexus-ollama-observation@.service >/dev/null
+systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
+[ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
+  && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \
+  || die "shared release/Sonar mutex changed during installation"
+assert_units_untouched_and_disabled
+[ "$(unit_state "$INSTALL_RECOVERY_SERVICE")" = enabled ] \
+  || die "Sonar install recovery service lost its durable enablement"
+
+python3 "$INSTALL_RECOVERY_PROGRAM" commit-install \
+  --asset-journal "$INSTALL_JOURNAL" \
+  --directory-journal "$DIRECTORY_JOURNAL" \
+  --program "$INSTALL_RECOVERY_PROGRAM" \
+  --marker "$INSTALL_COMMIT"
 journal_armed=false
+directory_armed=false
 install_succeeded=true
 
-printf '{"ok":true,"schema":"nexus.sonarqube-asset-install.v1","sourceSha":"%s","archiveSha256":"%s","installedAssets":%d,"configurationWritten":false,"dockerTouched":false,"servicesEnabled":false,"applicationDataWritten":false}\n' \
+printf '{"ok":true,"schema":"nexus.sonarqube-asset-install.v1","sourceSha":"%s","archiveSha256":"%s","installedAssets":%d,"configurationWritten":false,"dockerTouched":false,"servicesEnabled":false,"installRecoveryServiceEnabled":true,"applicationDataWritten":false}\n' \
   "$SOURCE_SHA" "$EXPECTED_ARCHIVE_SHA256" "$planned"

@@ -6,6 +6,13 @@ scripts/application-dr-retention.py	/usr/local/libexec/nexus-application-dr/appl
 scripts/application-dr-version-retention.py	/usr/local/libexec/nexus-application-dr/application-dr-version-retention.py	root:root	0644
 scripts/application-dr-storage-controls.py	/usr/local/libexec/nexus-application-dr/application-dr-storage-controls.py	root:root	0644
 scripts/aws-credential-process-boundary.py	/usr/local/libexec/nexus-application-dr/aws-credential-process-boundary.py	root:root	0644
+scripts/application-dr-crl-parameters.mjs	/usr/local/libexec/nexus-application-dr/application-dr-crl-parameters.mjs	root:root	0755
+scripts/application-dr-cloudformation-activate.py	/usr/local/libexec/nexus-application-dr/application-dr-cloudformation-activate.py	root:root	0755
+scripts/application-dr-cloudformation-parameter-digest.py	/usr/local/libexec/nexus-application-dr/application-dr-cloudformation-parameter-digest.py	root:root	0755
+scripts/application-dr-install-transaction.py	/usr/local/libexec/nexus-application-dr/application-dr-install-transaction.py	root:root	0755
+scripts/application-dr-roles-anywhere-probe.py	/usr/local/libexec/nexus-application-dr/application-dr-roles-anywhere-probe.py	root:root	0755
+scripts/application-dr-health-check.py	/usr/local/libexec/nexus-application-dr/application-dr-health-check.py	root:root	0755
+scripts/application-dr-alert.py	/usr/local/libexec/nexus-application-dr/application-dr-alert.py	root:root	0755
 scripts/application-dr-recovery-runtime.mjs	/usr/local/libexec/nexus-application-dr/application-dr-recovery-runtime.mjs	root:root	0644
 scripts/release-recovery-runtime-identity.mjs	/usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs	root:root	0644
 scripts/application-dr-recovery-archive.py	/usr/local/libexec/nexus-application-dr/application-dr-recovery-archive.py	root:root	0644
@@ -16,3 +23,7 @@ scripts/application-dr-isolated-harness.sh	/usr/local/libexec/nexus-application-
 docs/release/evidence/release-evidence-public-key.pem	/etc/nexus-application-dr/release-evidence-public-key.pem	root:root	0644
 ops/application-dr/systemd/nexus-application-dr-backup.service	/etc/systemd/system/nexus-application-dr-backup.service	root:root	0644
 ops/application-dr/systemd/nexus-application-dr-backup.timer	/etc/systemd/system/nexus-application-dr-backup.timer	root:root	0644
+ops/application-dr/systemd/nexus-application-dr-health.service	/etc/systemd/system/nexus-application-dr-health.service	root:root	0644
+ops/application-dr/systemd/nexus-application-dr-health.timer	/etc/systemd/system/nexus-application-dr-health.timer	root:root	0644
+ops/application-dr/systemd/nexus-application-dr-alert@.service	/etc/systemd/system/nexus-application-dr-alert@.service	root:root	0644
+ops/application-dr/systemd/nexus-application-dr-install-recovery.service	/etc/systemd/system/nexus-application-dr-install-recovery.service	root:root	0644

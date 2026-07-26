@@ -10,7 +10,7 @@ Group=nexus-release
 UMask=0077
 Environment=NEXUS_PROMOTION_STATE_ROOT=/var/lib/nexus-release-promotion
 ExecStart=/usr/bin/sudo -n /usr/local/sbin/nexus-release-promotion-worker-control run %i
-TimeoutStartSec=28min
+TimeoutStartSec=40min
 TimeoutStopSec=120s
 KillSignal=SIGTERM
 Restart=on-failure

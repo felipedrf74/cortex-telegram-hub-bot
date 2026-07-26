@@ -1,25 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+while IFS= read -r git_environment_name; do
+  unset "$git_environment_name"
+done < <(compgen -e | LC_ALL=C sort | grep '^GIT_' || true)
+export GIT_NO_REPLACE_OBJECTS=1
+
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 BASE_REF="$(git for-each-ref --format='%(refname:short)' refs/remotes/origin/main 2>/dev/null | head -1)"
 BASE_REF="${BASE_REF:-main}"
+ZERO_SHA="0000000000000000000000000000000000000000"
+PUSH_INPUT_VALID=true
+PUSH_UPDATE_COUNT=0
+NON_DELETE_PUSH_SHAS=()
+PUSH_LOCAL_REF=""
+PUSH_LOCAL_OBJECT_SHA=""
+PUSH_REMOTE_REF=""
+
+while IFS=' ' read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA EXTRA; do
+  [ -z "${LOCAL_REF:-}${LOCAL_SHA:-}${REMOTE_REF:-}${REMOTE_SHA:-}${EXTRA:-}" ] && continue
+  PUSH_UPDATE_COUNT=$((PUSH_UPDATE_COUNT + 1))
+  if [ -n "${EXTRA:-}" ] \
+     || ! [[ "${LOCAL_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+     || ! [[ "${REMOTE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+     || [ -z "${LOCAL_REF:-}" ] \
+     || [ -z "${REMOTE_REF:-}" ]; then
+    PUSH_INPUT_VALID=false
+    continue
+  fi
+  if [ "$LOCAL_SHA" != "$ZERO_SHA" ]; then
+    NON_DELETE_PUSH_SHAS+=("$LOCAL_SHA")
+    PUSH_LOCAL_REF="$LOCAL_REF"
+    PUSH_LOCAL_OBJECT_SHA="$LOCAL_SHA"
+    PUSH_REMOTE_REF="$REMOTE_REF"
+  fi
+done
 
 export NEXUS_SKIP_SHADOW_PARITY_WRITE="${NEXUS_SKIP_SHADOW_PARITY_WRITE:-1}"
 
 echo "🔍 Pre-push risk gate: $BRANCH (base: $BASE_REF)"
 
-if [ "${NEXUS_PREPUSH_SKIP_VITEST:-0}" = "1" ]; then
-  if [ -z "${NEXUS_EMERGENCY_SKIP_REASON:-}" ]; then
-    echo "❌ NEXUS_PREPUSH_SKIP_VITEST=1 requires NEXUS_EMERGENCY_SKIP_REASON"
-    exit 1
-  fi
-  echo "⚠️ skipping Vitest via emergency override: $NEXUS_EMERGENCY_SKIP_REASON"
-  npx tsc --noEmit
-  scripts/risk-gate.sh --base "$BASE_REF" --skip-typecheck --skip-python --skip-migrations --dry-run
+if [ "$PUSH_UPDATE_COUNT" -eq 0 ]; then
+  echo "✅ No ref updates — push is already up to date"
   exit 0
 fi
 
@@ -27,12 +52,65 @@ ARGS=(--base "$BASE_REF")
 if [ "${NEXUS_PREPUSH_FULL_VITEST:-0}" = "1" ]; then
   ARGS+=(--full)
 fi
+if [ "$PUSH_INPUT_VALID" = "true" ] \
+   && [ "$PUSH_UPDATE_COUNT" -eq 1 ] \
+   && [ "${#NON_DELETE_PUSH_SHAS[@]}" -eq 1 ]; then
+  local_ref_object="$(git rev-parse --verify "$PUSH_LOCAL_REF")"
+  [ "$local_ref_object" = "$PUSH_LOCAL_OBJECT_SHA" ] || {
+    echo "❌ pre-push local ref does not match the supplied object SHA" >&2
+    exit 64
+  }
+  object_type="$(git cat-file -t "$PUSH_LOCAL_OBJECT_SHA")"
+  case "$PUSH_REMOTE_REF:$object_type" in
+    refs/heads/*:commit)
+      PUSHED_COMMIT_SHA="$PUSH_LOCAL_OBJECT_SHA"
+      ;;
+    refs/tags/*:tag|refs/tags/*:commit)
+      PUSHED_COMMIT_SHA="$(git rev-parse --verify "${PUSH_LOCAL_OBJECT_SHA}^{commit}")"
+      ;;
+    *)
+      echo "❌ pre-push supports only one branch commit or one commit-resolving tag" >&2
+      exit 64
+      ;;
+  esac
+  ARGS+=(--local-reuse-context pre-push --local-pushed-sha "$PUSHED_COMMIT_SHA")
+else
+  echo "❌ pre-push requires exactly one well-formed non-delete ref update" >&2
+  exit 64
+fi
 
-scripts/risk-gate.sh "${ARGS[@]}"
-
-if [ "$BRANCH" = "main" ]; then
+if [ "$PUSH_REMOTE_REF" = "refs/heads/main" ]; then
   echo "🔨 Build verification (pushing to main)"
   npm run build > /dev/null
+  # The build begins with the same default-project tsc compilation, so retain
+  # one type analysis and let the risk gate own all remaining checks.
+  ARGS+=(--skip-typecheck)
 fi
+
+env \
+  -u BASH_ENV \
+  -u DYLD_INSERT_LIBRARIES \
+  -u DYLD_LIBRARY_PATH \
+  -u LD_PRELOAD \
+  -u NODE_OPTIONS \
+  -u NODE_PATH \
+  -u PYTHONHOME \
+  -u PYTHONPATH \
+  node scripts/local-full-vitest-receipt.mjs \
+  check-pushed-candidate \
+  --pushed-sha "$PUSHED_COMMIT_SHA"
+scripts/risk-gate.sh "${ARGS[@]}"
+env \
+  -u BASH_ENV \
+  -u DYLD_INSERT_LIBRARIES \
+  -u DYLD_LIBRARY_PATH \
+  -u LD_PRELOAD \
+  -u NODE_OPTIONS \
+  -u NODE_PATH \
+  -u PYTHONHOME \
+  -u PYTHONPATH \
+  node scripts/local-full-vitest-receipt.mjs \
+  check-pushed-candidate \
+  --pushed-sha "$PUSHED_COMMIT_SHA"
 
 echo "✅ All checks passed — pushing"

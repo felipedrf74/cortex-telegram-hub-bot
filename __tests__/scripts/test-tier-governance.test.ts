@@ -35,11 +35,142 @@ function listedTier(tier: string) {
   }).trim().split('\n').filter(Boolean);
 }
 
+function createInventoryFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-inventory-fixture-'));
+  tempRoots.push(root);
+  for (const directory of [
+    'config',
+    '__tests__/scripts',
+    '__tests__/evaluation',
+  ]) {
+    fs.mkdirSync(path.join(root, directory), { recursive: true });
+  }
+  for (const [file, body] of [
+    ['__tests__/scripts/keep.test.ts', "import value from '../../src/value.js';\nvoid value;\n"],
+    ['__tests__/scripts/other.test.ts', 'export {};\n'],
+    ['__tests__/evaluation/subjective.test.ts', 'export {};\n'],
+    ['__tests__/evaluation/second.test.ts', 'export {};\n'],
+  ]) {
+    fs.writeFileSync(path.join(root, file), body);
+  }
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({
+    lockfileVersion: 3,
+    packages: { 'node_modules/vitest': { version: '4.0.18' } },
+  }));
+  fs.writeFileSync(path.join(root, 'config/test-policy.json'), JSON.stringify({
+    version: 'inventory-fixture.v1',
+    defaultTier: 'full',
+    tiers: {
+      fast: { include: ['__tests__/scripts/**/*.test.ts'] },
+      critical: { include: ['__tests__/scripts/keep.test.ts'] },
+      evaluate: { dispositions: ['eval'] },
+    },
+    dispositionRules: [
+      {
+        pattern: '__tests__/evaluation/**/*.test.ts',
+        disposition: 'eval',
+        reason: 'bounded evaluation fixture',
+      },
+      {
+        pattern: '__tests__/**/*.test.ts',
+        disposition: 'keep',
+        reason: 'bounded deterministic fixture',
+      },
+    ],
+    timingExceptions: [],
+    inventoryEvidence: {
+      disposition: { maximumPatternFallbackFiles: 4 },
+      timing: {
+        minimumScopePercent: 100,
+        minimumSamplesForPercentiles: 5,
+        maximumSamplesForPercentiles: 5,
+      },
+      uniqueCoverage: { minimumPercent: 0 },
+      lastFailure: { minimumPercent: 0 },
+    },
+  }, null, 2));
+  const policy = loadTestPolicy(root);
+  const files = walkTestFiles(root);
+  return {
+    root,
+    policy,
+    files,
+    partitions: partitionTestFiles(files, policy),
+  };
+}
+
 afterEach(() => {
   while (tempRoots.length) fs.rmSync(tempRoots.pop()!, { recursive: true, force: true });
 });
 
 describe('governed test tier partitions', () => {
+  it('rejects traversal and symlink parents for JSON reporter output', () => {
+    const packageBefore = fs.readFileSync('package.json', 'utf8');
+    const traversal = spawnSync(process.execPath, [
+      'scripts/run-test-tier.mjs',
+      'deterministic',
+      '--list',
+      '--json-output',
+      '.local/../package.json',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: cleanGitEnv(),
+    });
+    expect(traversal.status).not.toBe(0);
+    expect(traversal.stderr).toContain('must stay strictly under .local');
+    expect(fs.readFileSync('package.json', 'utf8')).toBe(packageBefore);
+
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-json-output-outside-'));
+    tempRoots.push(outside);
+    fs.mkdirSync('.local', { recursive: true });
+    const linkName = `json-output-link-${process.pid}-${Date.now()}`;
+    const link = path.join('.local', linkName);
+    fs.symlinkSync(outside, link);
+    try {
+      const symlinked = spawnSync(process.execPath, [
+        'scripts/run-test-tier.mjs',
+        'deterministic',
+        '--list',
+        '--json-output',
+        `${link}/report.json`,
+      ], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: cleanGitEnv(),
+      });
+      expect(symlinked.status).not.toBe(0);
+      expect(symlinked.stderr).toContain('parent must be a real directory');
+      expect(fs.readdirSync(outside)).toEqual([]);
+    } finally {
+      fs.unlinkSync(link);
+    }
+
+    const hardlinkTarget = path.join(outside, 'must-remain.json');
+    fs.writeFileSync(hardlinkTarget, 'preserve-me\n');
+    const hardlinkName = `json-output-hardlink-${process.pid}-${Date.now()}.json`;
+    const hardlink = path.join('.local', hardlinkName);
+    fs.linkSync(hardlinkTarget, hardlink);
+    try {
+      const hardlinked = spawnSync(process.execPath, [
+        'scripts/run-test-tier.mjs',
+        'deterministic',
+        '--list',
+        '--json-output',
+        `.local/${hardlinkName}`,
+      ], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: cleanGitEnv(),
+      });
+      expect(hardlinked.status).not.toBe(0);
+      expect(hardlinked.stderr).toContain('must not be hardlinked');
+      expect(fs.readFileSync(hardlinkTarget, 'utf8')).toBe('preserve-me\n');
+    } finally {
+      fs.unlinkSync(hardlink);
+    }
+  });
+
   it('resolves exact and pattern disposition provenance in policy order', () => {
     const policy = {
       dispositionRules: [
@@ -55,6 +186,34 @@ describe('governed test tier partitions', () => {
     expect(resolveTestDisposition('__tests__/nested/other.test.ts', policy)).toMatchObject({
       disposition: 'keep',
       provenance: { kind: 'pattern', pattern: '__tests__/**/*.test.ts', ruleIndex: 1 },
+    });
+  });
+
+  it('preserves the earliest matching disposition across cached exact and glob rules', () => {
+    const earlierGlob = {
+      dispositionRules: [
+        { pattern: '__tests__/**/*.test.ts', disposition: 'keep', reason: 'earlier glob' },
+        { pattern: '__tests__/exact.test.ts', disposition: 'eval', reason: 'later exact' },
+      ],
+    };
+    const earlierExact = {
+      dispositionRules: [
+        { pattern: '__tests__/exact.test.ts', disposition: 'eval', reason: 'earlier exact' },
+        { pattern: '__tests__/**/*.test.ts', disposition: 'keep', reason: 'later glob' },
+      ],
+    };
+
+    expect(resolveTestDisposition('__tests__/exact.test.ts', earlierGlob)).toMatchObject({
+      disposition: 'keep',
+      provenance: { kind: 'pattern', ruleIndex: 0 },
+    });
+    expect(resolveTestDisposition('__tests__/exact.test.ts', earlierExact)).toMatchObject({
+      disposition: 'eval',
+      provenance: { kind: 'exact', ruleIndex: 0 },
+    });
+    expect(resolveTestDisposition('__tests__/exact.test.ts', earlierExact)).toMatchObject({
+      disposition: 'eval',
+      provenance: { kind: 'exact', ruleIndex: 0 },
     });
   });
 
@@ -114,15 +273,14 @@ describe('governed test tier partitions', () => {
   }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-inventory-'));
     tempRoots.push(temp);
-    const policy = loadTestPolicy();
-    const files = walkTestFiles();
-    const partitions = partitionTestFiles(files, policy);
+    const fixture = createInventoryFixture();
+    const { files, partitions } = fixture;
     const reportPath = path.join(temp, 'results.json');
     const outputPath = path.join(temp, 'inventory.json');
     fs.writeFileSync(reportPath, JSON.stringify({
       success: true,
       testResults: partitions.evaluation.map((file, index) => ({
-        name: path.resolve(file),
+        name: path.resolve(fixture.root, file),
         startTime: index * 100,
         endTime: index * 100 + 25,
       })),
@@ -130,6 +288,7 @@ describe('governed test tier partitions', () => {
 
     const inventoryRun = spawnSync(process.execPath, [
       'scripts/test-inventory.mjs',
+      '--root', fixture.root,
       '--timings', reportPath,
       '--timing-history-dir', path.join(temp, 'missing-history'),
       '--timing-scope', 'evaluate',
@@ -191,8 +350,8 @@ describe('governed test tier partitions', () => {
   }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-history-'));
     tempRoots.push(temp);
-    const policy = loadTestPolicy();
-    const partitions = partitionTestFiles(walkTestFiles(), policy);
+    const fixture = createInventoryFixture();
+    const { partitions } = fixture;
     const reportPath = path.join(temp, 'results.json');
     const templatePath = path.join(temp, 'template.json');
     const outputPath = path.join(temp, 'inventory.json');
@@ -204,7 +363,7 @@ describe('governed test tier partitions', () => {
       fs.writeFileSync(reportPath, JSON.stringify({
         success: true,
         testResults: partitions.evaluation.map((file, index) => ({
-          name: path.resolve(file),
+          name: path.resolve(fixture.root, file),
           startTime: index * 100,
           endTime: index * 100 + runtimeMs,
         })),
@@ -220,6 +379,7 @@ describe('governed test tier partitions', () => {
     writeReport(5);
     execFileSync(process.execPath, [
       'scripts/test-inventory.mjs',
+      '--root', fixture.root,
       '--timings', reportPath,
       '--timing-scope', 'evaluate',
       '--output', templatePath,
@@ -266,6 +426,7 @@ describe('governed test tier partitions', () => {
     writeReport(50);
     const inventoryRun = spawnSync(process.execPath, [
       'scripts/test-inventory.mjs',
+      '--root', fixture.root,
       '--timings', reportPath,
       '--timing-history-dir', historyRoot,
       '--timing-scope', 'evaluate',
@@ -319,12 +480,13 @@ describe('governed test tier partitions', () => {
   }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-bounds-'));
     tempRoots.push(temp);
-    const partitions = partitionTestFiles(walkTestFiles(), loadTestPolicy());
+    const fixture = createInventoryFixture();
+    const { partitions } = fixture;
     const reportPath = path.join(temp, 'results.json');
     fs.writeFileSync(reportPath, JSON.stringify({
       success: true,
       testResults: partitions.evaluation.map((file, index) => ({
-        name: path.resolve(file),
+        name: path.resolve(fixture.root, file),
         startTime: index * 100,
         endTime: index * 100 + 25,
       })),
@@ -333,6 +495,7 @@ describe('governed test tier partitions', () => {
       const outputPath = path.join(temp, `${label}.json`);
       const result = spawnSync(process.execPath, [
         'scripts/test-inventory.mjs',
+        '--root', fixture.root,
         '--timings', reportPath,
         '--timing-history-dir', historyRoot,
         '--timing-scope', 'evaluate',
@@ -495,9 +658,11 @@ describe('governed test tier partitions', () => {
   it('keeps cold shared-runner timing advisory without hiding correctness evidence', { timeout: 30_000 }, () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-test-timing-advisory-'));
     tempRoots.push(temp);
-    const policy = loadTestPolicy();
-    const partitions = partitionTestFiles(walkTestFiles(), policy);
-    const exceptions = new Set((policy.timingExceptions ?? []).map(({ file }: { file: string }) => file));
+    const fixture = createInventoryFixture();
+    const { partitions, policy } = fixture;
+    const exceptions = new Set((policy.timingExceptions ?? []).map(
+      ({ file }: { file: string }) => file,
+    ));
     const slowFile = partitions.evaluation.find((file) => !exceptions.has(file));
     expect(slowFile).toBeTruthy();
     const reportPath = path.join(temp, 'results.json');
@@ -505,7 +670,7 @@ describe('governed test tier partitions', () => {
     fs.writeFileSync(reportPath, JSON.stringify({
       success: true,
       testResults: partitions.evaluation.map((file, index) => ({
-        name: path.resolve(file),
+        name: path.resolve(fixture.root, file),
         startTime: index * 20_000,
         endTime: index * 20_000 + (file === slowFile ? 10_001 : 25),
       })),
@@ -513,6 +678,7 @@ describe('governed test tier partitions', () => {
 
     const advisory = spawnSync(process.execPath, [
       'scripts/test-inventory.mjs',
+      '--root', fixture.root,
       '--timings', reportPath,
       '--timing-scope', 'evaluate',
       '--timing-mode', 'advisory',
@@ -528,6 +694,7 @@ describe('governed test tier partitions', () => {
 
     const enforced = spawnSync(process.execPath, [
       'scripts/test-inventory.mjs',
+      '--root', fixture.root,
       '--timings', reportPath,
       '--timing-scope', 'evaluate',
       '--timing-mode', 'enforce',

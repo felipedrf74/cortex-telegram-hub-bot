@@ -166,21 +166,13 @@ describe('R4 P2 — CI workflow + pre-commit hook + cannot-skip dashboard regist
   it('.husky/pre-commit isolates nested test repositories from hook-local Git variables', () => {
     const hook = readFileSync(HUSKY_PRE_COMMIT, 'utf8');
     const riskGate = readFileSync(RISK_GATE, 'utf8');
-    for (const key of [
-      'GIT_DIR',
-      'GIT_WORK_TREE',
-      'GIT_INDEX_FILE',
-      'GIT_PREFIX',
-      'GIT_COMMON_DIR',
-      'GIT_OBJECT_DIRECTORY',
-      'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-      'GIT_NAMESPACE',
-    ]) {
-      expect(hook).toContain(`-u ${key}`);
-      expect(riskGate).toContain(`-u ${key}`);
+    for (const source of [hook, riskGate]) {
+      expect(source).toContain('compgen -e');
+      expect(source).toContain("grep '^GIT_'");
+      expect(source).toContain('unset "$git_environment_name"');
+      expect(source).toContain('export GIT_NO_REPLACE_OBJECTS=1');
     }
-    expect(hook).toMatch(/env[\s\\]+(?:-u GIT_[A-Z_]+[\s\\]+)+scripts\/risk-gate\.sh/);
-    expect(riskGate).toContain('NEXUS_RISK_GATE_GIT_ENV_SANITIZED=1');
+    expect(hook).toContain('scripts/risk-gate.sh "${ARGS[@]}"');
   });
 
   it('cannot-skip-gate dashboard registers the science-policy check', () => {

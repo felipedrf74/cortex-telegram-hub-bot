@@ -1,0 +1,31 @@
+[Unit]
+Description=Verify hourly Nexus application disaster-recovery freshness
+After=nexus-application-dr-backup.service
+OnFailure=nexus-application-dr-alert@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/nexus-application-dr/application-dr-health-check.py --state-dir /var/lib/nexus-application-dr --service nexus-application-dr-backup.service --systemctl /usr/bin/systemctl --max-age-seconds 3600 --output /var/lib/nexus-application-dr/health-current.v1.json
+UMask=0077
+StateDirectory=nexus-application-dr
+StateDirectoryMode=0700
+TimeoutStartSec=30s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus-application-dr
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true

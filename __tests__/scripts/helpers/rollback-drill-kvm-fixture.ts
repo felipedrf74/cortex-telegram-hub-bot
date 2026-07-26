@@ -115,7 +115,7 @@ function outcome(
     overlayId: plan.overlays.find((entry: any) => entry.drill === drill).overlayId,
     transactionId: `20260724T12000${sequence}Z-${sequence}-${String(sequence).repeat(12)}`,
     requestSha256: digest(`${drill}-request`),
-    controlVersion: 'nexus-release-promotion-control.v3',
+    controlVersion: 'nexus-release-promotion-control.v4',
     terminalStatus: completes ? 'completed' : 'recovered',
     secondLaunchObserved: false,
     productionEvidenceEmitted: false,
@@ -129,7 +129,7 @@ function outcome(
           beforeGuestBootIdSha256: rebootedGuestBoot,
           afterGuestBootIdSha256: postTerminalGuestBoot,
           journalSha256: digest(`${drill}-journal`),
-          controlVersion: 'nexus-release-promotion-control.v3',
+          controlVersion: 'nexus-release-promotion-control.v4',
           recoveryUnitResult: 'success',
           assertRootPm2Ready: true,
           assertIdle: true,
@@ -164,10 +164,12 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     'production-client',
     'prod@server',
   );
-  const guestSshHostPublicKey = deterministicSshEd25519PublicKey(
-    'guest-host-only',
-    'root@guest',
-  );
+  const guestSshHostPublicKeys = [1, 2, 3].map((index) => (
+    deterministicSshEd25519PublicKey(
+      `guest-${index}-host-only`,
+      `root@guest-${index}`,
+    )
+  ));
   const productionSshHostPublicKey = deterministicSshEd25519PublicKey(
     'production-host',
     'root@server',
@@ -176,7 +178,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
   const baselineSnapshotSha256 = digest('canonical-ubuntu-baseline');
   const targetSha = '3a49f86564f5e9f9523397debb1cf54cecab391c';
   const plan = {
-    schema: 'nexus.rollback-drill-kvm-plan.v1',
+    schema: 'nexus.rollback-drill-kvm-plan.v2',
     planId,
     createdAt: iso(nowMs - 60 * 60 * 1000),
     expiresAt: iso(nowMs + 6 * 60 * 60 * 1000),
@@ -218,7 +220,8 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       productionOwnerPublicKeySha256: publicKeyIdentity(productionOwnerPublicKeyPem),
       guestSshClientPublicKeySha256: textKeyIdentity(guestSshClientPublicKey),
       productionSshClientPublicKeySha256: textKeyIdentity(productionSshClientPublicKey),
-      guestSshHostPublicKeySha256: textKeyIdentity(guestSshHostPublicKey),
+      guestSshHostPublicKeySha256s:
+        guestSshHostPublicKeys.map((key) => textKeyIdentity(key)),
       productionSshHostPublicKeySha256: textKeyIdentity(productionSshHostPublicKey),
       releaseEvidencePublicKeySha256: publicKeyIdentity(releaseEvidencePublicKeyPem),
     },
@@ -253,7 +256,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
           host: '127.0.0.1',
           port: 22221,
           user: 'dominguez',
-          hostPublicKeySha256: textKeyIdentity(guestSshHostPublicKey),
+          hostPublicKeySha256: textKeyIdentity(guestSshHostPublicKeys[0]),
         },
       },
       {
@@ -266,7 +269,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
           host: '127.0.0.1',
           port: 22222,
           user: 'dominguez',
-          hostPublicKeySha256: textKeyIdentity(guestSshHostPublicKey),
+          hostPublicKeySha256: textKeyIdentity(guestSshHostPublicKeys[1]),
         },
       },
       {
@@ -279,7 +282,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
           host: '127.0.0.1',
           port: 22223,
           user: 'dominguez',
-          hostPublicKeySha256: textKeyIdentity(guestSshHostPublicKey),
+          hostPublicKeySha256: textKeyIdentity(guestSshHostPublicKeys[2]),
         },
       },
     ],
@@ -287,11 +290,42 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
       restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
       promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-      controlVersion: 'nexus-release-promotion-control.v3',
+      controlVersion: 'nexus-release-promotion-control.v4',
       recoveryUnit: 'nexus-release-promotion-recovery.service',
     },
   };
 
+  const readinessLedger = {
+    schema: 'nexus.rollback-drill-kvm-readiness-ledger.v1',
+    status: 'all_runtime_readiness_complete',
+    sequenceId: digest('readiness-sequence'),
+    planId,
+    planSha256: digest(canonicalJson(plan)),
+    generationManifestSha256: digest('generation-manifest'),
+    provisionReceiptSha256: digest('provision-receipt'),
+    guestOwnerPublicKeySha256:
+      plan.trust.guestOwnerPublicKeySha256,
+    controllerBootIdSha256: plan.controller.bootIdSha256,
+    monotonicStartedSeconds: 100_000,
+    monotonicDeadlineSeconds: 186_400,
+    monotonicCompletedSeconds: 100_900,
+    completedAt: iso(nowMs - 45 * 60 * 1000),
+    orderedReadiness: [
+      ['ssh-loss', 'ssh-disconnect-after-pm2-stop', 'guest-1'],
+      ['failed-health', 'failed-health-check', 'guest-2'],
+      ['guest-reboot', 'host-reboot-during-promotion', 'guest-3'],
+    ].map(([drill, runtimeDrill, guest], index) => ({
+      drill,
+      runtimeDrill,
+      guest,
+      requestSha256: digest(`readiness-request-${index + 1}`),
+      readinessSha256: digest(`readiness-receipt-${index + 1}`),
+      completedAt: iso(
+        nowMs - (47 - index) * 60 * 1000,
+      ),
+    })),
+    stateSha256: digest('readiness-state'),
+  };
   const authorizationPayload = {
     schema: 'nexus.rollback-drill-kvm-owner-authorization-payload.v1',
     action: 'run-isolated-kvm-rollback-drills',
@@ -300,13 +334,18 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     targetSha: plan.release.targetSha,
     targetVersion: plan.release.targetVersion,
     guestOwnerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
+    controllerBootIdSha256: plan.controller.bootIdSha256,
+    approvedMonotonicSeconds: 101_000,
+    expiresMonotonicSeconds: 121_100,
+    readinessLedger,
+    isolationSha256: digest('pending-isolation'),
     endpoints: plan.overlays.map((overlay) => ({
       drill: overlay.drill,
       host: overlay.ssh.host,
       port: overlay.ssh.port,
       hostPublicKeySha256: overlay.ssh.hostPublicKeySha256,
     })),
-    approvedAt: iso(nowMs - 50 * 60 * 1000),
+    approvedAt: iso(nowMs - 35 * 60 * 1000),
     expiresAt: iso(nowMs + 5 * 60 * 60 * 1000),
   };
   const authorization = {
@@ -325,6 +364,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     schema: 'nexus.rollback-drill-kvm-isolation.v1',
     planId,
     capturedAt: iso(nowMs - 40 * 60 * 1000),
+    readinessLedger,
     hypervisor: {
       machineIdSha256: plan.controller.machineIdSha256,
       bootIdSha256: plan.controller.bootIdSha256,
@@ -384,7 +424,8 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       keyIdentities: {
         ownerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
         sshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
-        sshHostPublicKeySha256: plan.trust.guestSshHostPublicKeySha256,
+        sshHostPublicKeySha256:
+          plan.trust.guestSshHostPublicKeySha256s[0],
         releaseEvidencePublicKeySha256: plan.trust.releaseEvidencePublicKeySha256,
       },
       syntheticDatabase: {
@@ -407,6 +448,13 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
       readinessBootIdSha256: digest(`guest-${index + 1}-initial-boot-id`),
     })),
   };
+  authorizationPayload.isolationSha256 =
+    digest(canonicalJson(isolation));
+  authorization.signature = cryptoSign(
+    null,
+    Buffer.from(canonicalJson(authorizationPayload)),
+    guestOwner.privateKey,
+  ).toString('base64');
 
   const pre = compatibility('pre');
   const post = compatibility('post');
@@ -489,7 +537,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     .map((entry: any) => entry.timeline.at(-1).observedAt)
     .sort()
     .at(-1);
-  const execution = buildExecutionReceipt(plan, provisionalOutcomes, {
+  const execution = buildExecutionReceipt(plan, isolation, provisionalOutcomes, {
     testMode: false,
     completedAt,
   });
@@ -499,7 +547,7 @@ export function makeKvmDrillFixture(nowMs = Date.now()) {
     productionOwnerPublicKeyPem,
     guestSshClientPublicKey,
     productionSshClientPublicKey,
-    guestSshHostPublicKey,
+    guestSshHostPublicKeys,
     productionSshHostPublicKey,
     releaseEvidencePublicKeyPem,
   };
@@ -530,7 +578,9 @@ export function writeKvmDrillFixture(root: string, fixture: ReturnType<typeof ma
     'production-owner.pem': fixture.keys.productionOwnerPublicKeyPem,
     'guest-ssh-client.pub': fixture.keys.guestSshClientPublicKey,
     'production-ssh-client.pub': fixture.keys.productionSshClientPublicKey,
-    'guest-ssh-host.pub': fixture.keys.guestSshHostPublicKey,
+    'guest-1-ssh-host.pub': fixture.keys.guestSshHostPublicKeys[0],
+    'guest-2-ssh-host.pub': fixture.keys.guestSshHostPublicKeys[1],
+    'guest-3-ssh-host.pub': fixture.keys.guestSshHostPublicKeys[2],
     'production-ssh-host.pub': fixture.keys.productionSshHostPublicKey,
     'release-evidence.pem': fixture.keys.releaseEvidencePublicKeyPem,
   };

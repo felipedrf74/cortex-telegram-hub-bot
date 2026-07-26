@@ -4,6 +4,8 @@ After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/nexus-application-dr/backup.env
 ConditionPathExists=!/var/lib/nexus-application-dr/install-in-progress.v1
+ConditionPathExists=!/var/lib/nexus-release-promotion/active.json
+OnFailure=nexus-application-dr-alert@%n.service
 
 [Service]
 Type=oneshot

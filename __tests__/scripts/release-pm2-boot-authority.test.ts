@@ -156,7 +156,13 @@ remove_untrusted_pm2_runtime_files
     expect(installer).toContain(
       'ExecStartPost=+/usr/local/sbin/nexus-release-promotion-control boot-postcheck',
     );
-    expect(installer).toContain('[Unit]\nRequires=pm2-dominguez.service\nAfter=pm2-dominguez.service');
+    expect(installer).toContain(
+      '[Unit]\n'
+      + 'Requires=nexus-release-layout-recovery.service '
+      + 'nexus-release-promotion-recovery.service pm2-dominguez.service\n'
+      + 'After=nexus-release-layout-recovery.service '
+      + 'nexus-release-promotion-recovery.service pm2-dominguez.service',
+    );
     expect(installer).toContain(
       'a cloudflared process bypasses the governed ingress unit',
     );

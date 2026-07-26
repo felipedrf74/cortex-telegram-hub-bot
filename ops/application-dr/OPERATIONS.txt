@@ -78,6 +78,10 @@ Both commands must pass. Guard protects the retained Object Lock bucket and
 policy, versioning, AES256 encryption, complete public-access blocking,
 bucket-owner-enforced ownership, the exact two-role/two-profile managed
 identity plane, absence of IAM users/access keys, and disabled-first lifecycle.
+The template defaults both activation controls to DISABLED and rejects a
+pre-staged lifecycle receipt. CloudFormation rules cannot observe an earlier
+stack state, so every later DISABLED-to-ENABLED update is enforced by the
+reviewed external activation controller described below.
 
 Generate the initial CRL parameters from a private mode-0700 working directory:
 
@@ -90,17 +94,32 @@ Generate the initial CRL parameters from a private mode-0700 working directory:
     --evidence-out /absolute/private/crl-parameters-evidence.json
 
 The first managed-mode change set must use
-`RolesAnywhereActivation=DISABLED` and `LifecycleActivation=DISABLED`, include
-`CAPABILITY_IAM`, supply all 74 generated chunk values plus
-`CertificateRevocationListSha256`, and be reviewed before execution. Never use
+`RolesAnywhereActivation=DISABLED`, `LifecycleActivation=DISABLED`,
+`LifecycleBootstrapReceiptSha256=''`, and `CAPABILITY_IAM`, supply all 74
+generated chunk values plus `CertificateRevocationListSha256`, and be reviewed
+before execution. Never use
 `UsePreviousValue` for a CRL chunk: every change set supplies one complete,
 byte-identical generated parameter set. Bind the stack's exact bucket, prefix,
 role, trust-anchor, CRL, and profile outputs into the root-only runtime
 configuration. Never infer a generated IAM role path/name or CRL identifier
 from a label.
 
-Keep `LifecycleBootstrapReceiptSha256` empty in this CREATE change set. The
-disabled-lifecycle exception is not the ordinary storage-control contract. It
+The template does not publish or accept a claimed prior-stack identifier.
+CloudFormation template rules cannot prove historical state, so a direct
+enabled-first CREATE is procedurally forbidden and is not activation evidence.
+The owner must review and execute the initial CREATE with both controls
+disabled, retain its exact stack ARN and completed live-state verification,
+enable CloudFormation termination protection before any activation review,
+and use that existing stack only through the external activation controller.
+For an existing disabled stack created from an earlier template, install the
+static `RolesAnywhereActivationRollbackAlarm` in a separate disabled-state
+change set first. That preactivation change set must not enable any identity or
+lifecycle resource. Wait until the alarm naturally reaches `ALARM` with no
+metric publisher. The later exact enable change set must not add or modify the
+alarm; its resource changes remain limited to the four managed Roles Anywhere
+controls.
+
+The disabled-lifecycle exception is not the ordinary storage-control contract. It
 is a single-use bootstrap for a fresh namespace whose lifecycle has never been
 enabled and whose complete object, version, and delete-marker inventories are
 all zero. A completed Roles Anywhere activation update is allowed only while
@@ -115,15 +134,208 @@ anchor, exact backup and restore profile ARNs/IDs, CRL ID/name, returned CRL
 bytes, digest tag, CA certificate, and generation evidence in a new mode-0600
 live receipt. Supply `--backup-profile-arn` and `--restore-profile-arn` from
 the exact CloudFormation outputs; the verifier requires the trust anchor, both
-profiles, and CRL to all equal `--expected-enabled`. Then review a second
-change set that re-supplies the same 74 chunks and digest while changing only
-`RolesAnywhereActivation=ENABLED`; after completion, run the same verification
-with `--expected-enabled true`. The positive backup-certificate credential
-test and the revoked-certificate rejection test must both pass. Keep the backup
-timer disabled throughout this bootstrap. After the write-once client, two
-distinct leaf certificates, pinned helper, owner-approved custody/revocation
-tests, and at least one local `v*.tar.gz` rollback bundle pass, the owner runs
-exactly one observed backup directly:
+profiles, and CRL to all equal `--expected-enabled`. Then prepare one UPDATE
+change set that re-supplies every explicit parameter and the same 74 chunks
+and digest while changing only `RolesAnywhereActivation=ENABLED`. Capture the
+complete `describe-change-set --include-property-values` JSON as a new
+root-owned mode-0600 file. It must retain the current tags, notification ARNs,
+and execution-role identity. It must attach exactly the stack output
+`RolesAnywhereActivationRollbackAlarmArn` as an
+`AWS::CloudWatch::Alarm` rollback trigger with
+`MonitoringTimeInMinutes=30`; it must use standard
+rollback-enabled deployment and must not import resources, revert drift, use
+nested stacks, or add any resource change outside the four managed Roles
+Anywhere controls.
+
+CloudFormation saves rollback-trigger configuration on the stack, inherits a
+saved list when a later update omits it, replaces it when a new list is
+supplied, and clears it only when the request supplies an explicit empty list.
+Create the ENABLE change set with the exact stack output, not a hand-derived
+alarm name:
+
+  aws cloudformation create-change-set \
+    --stack-name '<exact stack ARN>' \
+    --change-set-name '<owner-reviewed unique name>' \
+    --change-set-type UPDATE \
+    --capabilities CAPABILITY_IAM \
+    --parameters file:///absolute/private/complete-explicit-parameters.json \
+    --template-body file://ops/application-dr/aws-s3-stack.yaml \
+    --rollback-configuration \
+      '{"RollbackTriggers":[{"Arn":"<exact RolesAnywhereActivationRollbackAlarmArn output>","Type":"AWS::CloudWatch::Alarm"}],"MonitoringTimeInMinutes":30}'
+
+Derive the controller's current-parameter digest from a fresh private AWS
+response rather than reproducing JSON normalization by hand:
+
+  umask 077
+  aws cloudformation describe-stacks \
+    --stack-name '<exact stack ARN>' \
+    --output json > /absolute/private/current-stack.json
+  /usr/local/libexec/nexus-application-dr/application-dr-cloudformation-parameter-digest.py \
+    --describe-stacks-json /absolute/private/current-stack.json \
+    --expected-owner-uid 0 \
+    --trust-boundary /absolute/private
+
+The helper emits only the canonical digest, parameter count, and hashed stack
+identity; it never emits parameter values.
+
+Some AWS CLI/API versions omit `RoleARN` from `describe-change-set`. Therefore
+the authorization that creates the change set must deny `iam:PassRole`
+entirely when the current stack has no execution role, or allow it only for
+the exact current stack execution-role ARN. The create request must omit
+`--role-arn` when the current stack has none. The controller compares RoleARN
+when AWS returns it and always compares the final stack controls, but that
+post-update check is detection, not a substitute for this pre-execution IAM
+boundary.
+
+Run the installed controller first in read-only inspection mode:
+
+  sudo /usr/local/libexec/nexus-application-dr/application-dr-cloudformation-activate.py \
+    --operation inspect \
+    --transition roles-anywhere \
+    --stack-id <exact existing stack ARN> \
+    --change-set-id <exact reviewed UPDATE change-set ARN> \
+    --reviewed-change-set /var/lib/nexus-application-dr/evidence/roles-anywhere-change-set.json \
+    --reviewed-change-set-sha256 <owner-reviewed file SHA-256> \
+    --expected-template-sha256 <owner-reviewed current/proposed template SHA-256> \
+    --expected-current-parameters-sha256 <owner-reviewed canonical current-parameters SHA-256> \
+    --region eu-west-1 \
+    --aws-bin /usr/local/bin/aws \
+    --aws-config /etc/nexus-application-dr/aws-activation-config \
+    --aws-profile nexus-application-dr-activation \
+    --review-receipt /var/lib/nexus-application-dr/evidence/roles-anywhere-review.v1.json \
+    --journal /var/lib/nexus-application-dr/evidence/roles-anywhere-activation-journal.v1.json \
+    --post-enable-crl-verifier-bin /usr/local/libexec/nexus-application-dr/application-dr-crl-parameters.mjs \
+    --post-enable-crl-verifier-bin-sha256 <owner-reviewed installed verifier SHA-256> \
+    --post-enable-crl-verifier-arguments /var/lib/nexus-application-dr/evidence/roles-anywhere-crl-verifier-arguments.v1.json \
+    --post-enable-crl-verifier-arguments-sha256 <owner-reviewed verifier-argument-file SHA-256> \
+    --post-enable-crl-evidence /var/lib/nexus-application-dr/evidence/crl-live-enabled.v1.json \
+    --post-enable-probe-bin /usr/local/libexec/nexus-application-dr/application-dr-roles-anywhere-probe.py \
+    --post-enable-probe-bin-sha256 <owner-reviewed installed probe SHA-256> \
+    --post-enable-probe-arguments /var/lib/nexus-application-dr/evidence/roles-anywhere-probe-arguments.v1.json \
+    --post-enable-probe-arguments-sha256 <owner-reviewed argument-file SHA-256> \
+    --post-enable-probe-evidence /var/lib/nexus-application-dr/evidence/roles-anywhere-probe.v1.json
+
+Inspection never executes the change set. It verifies the current stack and
+live controls twice, compares the complete live change-set JSON and both
+current/proposed template bytes with the reviewed digests, requires termination
+protection and an idle `ALARM`, enforces the exact parameter, rollback trigger,
+alarm, executable, argument, and resource transition, and writes one immutable
+mode-0600 review receipt. The two argument files are exact JSON argv arrays for
+the read-only enabled-state CRL verifier and bounded positive/revoked probe;
+their output paths must equal the corresponding controller evidence paths.
+After the owner reviews that receipt and its SHA-256, repeat the exact command
+with `--operation execute` instead of `inspect` and add:
+
+  --review-receipt-sha256 <owner-approved review receipt SHA-256> \
+  --evidence-out /var/lib/nexus-application-dr/evidence/roles-anywhere-activation.v1.json \
+  --execute-reviewed-change-set
+
+Execution re-runs every inspection check, requires unchanged reviewed files and
+receipt bytes, writes and fsyncs a root-private journal before publishing the
+first metric, primes the exact alarm to `OK`, re-observes the exact predecessor,
+change set, proposed template, and owner-approved receipt, then checkpoints
+`execution-attempted` before executing only the exact change-set ARN. It keeps
+one sequential lease alive only while the reviewed transition continues to
+pass. After the identity resources are enabled it
+first runs the reviewed read-only CRL verifier to create the fresh enabled-state
+evidence consumed by the positive/revoked probe. It then verifies the exact
+stack parameters, resource identities, stack-level controls, trust anchor,
+byte-identical and digest-tagged CRL, both profiles, disabled S3 lifecycle,
+positive credential path, and revoked credential denial. These steps are
+sequential; there is no external evidence producer or parallel heartbeat. It
+continues those checks through
+CloudFormation's 30-minute monitoring period and publishes pass evidence only
+after `UPDATE_COMPLETE`.
+
+If the controller, host, or short-lived AWS credentials disappear, no
+background publisher remains. The exact alarm is 24 consecutive 30-second
+missing-data-breaching periods, so the stack-scoped lease expires in
+approximately 12 minutes and CloudFormation owns rollback. This longer bound
+applies only to disabled identity provisioning: the application release is not
+cut over and both backup and health timers remain disabled. It is deliberately
+distinct from the production promotion recovery objective of 120 seconds. The
+lease contract permits at most seven validated AWS calls of at most 30 seconds
+each between renewals, a 210-second AWS chunk. Each external verifier has a
+300-second outer bound. The larger bounded chunk therefore leaves at least 420
+seconds in the 720-second alarm window, including a 120-second required safety
+margin. A failed, timed-out, or structurally invalid observation never renews
+the lease. No concurrent publisher, service, or timer may emit
+`Nexus/ApplicationDR ActivationLease` for the stack.
+
+After interruption, never repeat `execute`. Resume the exact journal:
+
+  sudo /usr/local/libexec/nexus-application-dr/application-dr-cloudformation-activate.py \
+    <the exact reviewed execute arguments, without --execute-reviewed-change-set> \
+    --operation recover-or-finalize
+
+Recovery never starts or repeats the change set. It re-inspects the exact
+journal-bound stack and change set, then either proves execution never began
+and records a safe abort, resumes exact verification of the accepted operation,
+or waits without renewing an `ALARM` lease until CloudFormation restores the
+reviewed predecessor. An `execution-attempted` checkpoint whose acceptance is
+still ambiguous remains fail-closed for another recovery inspection. Use a
+separate owner-approved,
+short-lived activation profile. Never widen or reuse the backup/restore role
+for CloudFormation authority. If the execution host is not ServerDominguez,
+use the exact reviewed controller from the same protected source with explicit
+owner UID and trust-boundary pins; do not copy credentials to the server.
+
+The first reviewed argument file runs
+`application-dr-crl-parameters.mjs verify` with
+`--expected-enabled true`, the exact trust-anchor/profile/CRL outputs, CA and
+CRL files, generation evidence, owner activation profile, and
+`--evidence-out` exactly equal to `--post-enable-crl-evidence`. The positive
+backup-certificate credential test and revoked-certificate rejection test then
+run inside the monitored controller through the installed bounded probe. Its
+second reviewed argument file uses this exact contract:
+
+  sudo /usr/local/libexec/nexus-application-dr/application-dr-roles-anywhere-probe.py \
+    --positive-config /etc/nexus-application-dr/aws-config \
+    --positive-profile nexus-application-dr-backup \
+    --revoked-config /etc/nexus-application-dr/aws-revoked-test-config \
+    --revoked-profile nexus-application-dr-revoked \
+    --region eu-west-1 \
+    --expected-role-arn <exact BackupPrincipalArn output> \
+    --expected-trust-anchor-arn <exact RolesAnywhereTrustAnchorArn output> \
+    --expected-profile-arn <exact BackupRolesAnywhereProfileArn output> \
+    --expected-bucket <exact BucketName output> \
+    --expected-prefix <exact DrPrefix output> \
+    --expected-positive-certificate-sha256 <reviewed public certificate digest> \
+    --expected-revoked-certificate-sha256 <reviewed public certificate digest> \
+    --ca-certificate /etc/nexus-application-dr/roles-anywhere-ca-certificate.pem \
+    --crl /etc/nexus-application-dr/roles-anywhere-crl.pem \
+    --live-crl-evidence /var/lib/nexus-application-dr/evidence/crl-live-enabled.v1.json \
+    --aws-bin /usr/local/bin/aws \
+    --openssl-bin /usr/bin/openssl \
+    --python-bin /usr/bin/python3.12 \
+    --boundary-helper /usr/local/libexec/nexus-application-dr/aws-credential-process-boundary.py \
+    --signing-helper /usr/local/libexec/nexus-application-dr/aws_signing_helper \
+    --signing-helper-sha256 <reviewed helper digest> \
+    --output /var/lib/nexus-application-dr/evidence/roles-anywhere-probe.v1.json \
+    --expected-owner-uid 0 \
+    --trust-boundary /
+
+The positive and revoked profiles must differ only in their leaf certificate
+and private-key paths. The probe binds both profiles to the exact enabled
+trust anchor, backup profile, locally verified CA/CRL bytes, and a fresh
+read-only live-CRL receipt. OpenSSL must prove that both leaf certificates are
+otherwise valid, that each certificate matches its private key, that the
+positive certificate passes CRL checking, and that the reviewed revoked
+certificate fails it. The probe then sandwiches the denied revoked
+credential attempt between two successful exact-role calls and verifies the
+prefix-scoped list permission. It does not depend on machine-specific AWS
+error wording. It hashes bounded public results into mode-0600 evidence and
+never persists temporary credentials, private-key bytes or digests, account
+identifiers, object keys, or raw denial text. The probe runs subprocesses with
+a minimal environment that discards endpoint, proxy, CA, loader, and Python
+overrides. Keep the revoked test configuration and all private-key custody
+outside version control; remove the revoked test private key from
+ServerDominguez after retaining the probe evidence.
+
+Keep the backup timer disabled throughout this bootstrap. After the write-once
+client, two distinct leaf certificates, pinned helper,
+owner-approved custody/revocation tests, and at least one local `v*.tar.gz`
+rollback bundle pass, the owner runs exactly one observed backup directly:
 
   sudo /usr/local/libexec/nexus-application-dr/application-dr-backup.sh \
     --config /etc/nexus-application-dr/backup.env \
@@ -158,8 +370,33 @@ through another reviewed change set and restart the bootstrap.
 Use only the receipt path and SHA-256 emitted by the successful backup result;
 never derive an activation digest from a receipt left by an interrupted run.
 Review a later change set that sets `LifecycleActivation=ENABLED` and
-`LifecycleBootstrapReceiptSha256=<exact receipt digest>` together. The template
-rejects lifecycle enablement without a 64-hex receipt digest. After completion,
+`LifecycleBootstrapReceiptSha256=<exact receipt digest>` together and changes
+only the `DisasterRecoveryBucket` lifecycle properties. Because an omitted
+rollback-trigger list would inherit the Roles Anywhere trigger, create this
+change set with an explicit empty rollback configuration:
+
+  --rollback-configuration \
+    '{"RollbackTriggers":[],"MonitoringTimeInMinutes":0}'
+
+Use the same controller
+inspect-then-owner-review-then-execute sequence with
+`--transition lifecycle`, plus the exact
+`--bootstrap-receipt /var/lib/nexus-application-dr/lifecycle-bootstrap-receipt.v1.json`
+and `--bootstrap-receipt-sha256 <owner-approved receipt SHA-256>` arguments and
+a distinct root-private `--journal` path. The lifecycle transition uses the
+same pre-call `execution-attempted` checkpoint and
+`recover-or-finalize` contract as Roles Anywhere. Recovery re-inspects the
+exact stack and change set and never repeats `execute-change-set`; it records
+either the exact enabled lifecycle or the exact reviewed predecessor.
+The controller requires the existing Roles Anywhere plane to remain enabled,
+the lifecycle and receipt parameter to remain disabled/empty before execution,
+the exact prior activation trigger to be present before execution, the change
+set to clear it explicitly, all other stack-level controls to remain unchanged,
+and the final live
+lifecycle to contain exactly the six governed rules with the enabled statuses.
+The template rejects lifecycle enablement without a 64-hex receipt digest and,
+while lifecycle remains disabled, rejects any pre-staged receipt digest. After
+completion,
 replace the bootstrap evidence with ordinary enabled v2 storage-control
 evidence and run the final ordinary verification. It must return the exact AWS
 readiness state `lifecyclePhase=enabled bootstrapReceipt=not-applicable`.
@@ -452,17 +689,47 @@ Install in an approved maintenance window
        <reviewed-root>
 
    The transactional installer validates `install-layout.tsv`, installs every
-   exact asset with its declared root owner/mode, creates the private
+   exact asset, including the two-step CloudFormation activation controller,
+   with its declared root owner/mode, creates the private
    `nexus-drill` nologin account without supplementary groups, and preserves
-   the timer's prior enabled/active state. It rolls back partial file and
-   account changes on failure. Do not copy these files manually or run the
+   the matched timers' prior enabled/active state. On the first upgrade from
+   the backup-only layout, it gives the new health timer the already-approved
+   backup timer state; a disabled backup remains disabled. It rolls back that
+   timer adoption together with partial file and account changes on failure.
+   Do not copy these files manually or run the
    installer from an application-user-writable checkout. The promotion
    bootstrap invokes this same installer first so its worker and DR interface
    cannot drift. A host interruption leaves the durable root-only
    `/var/lib/nexus-application-dr/install-in-progress.v1` marker in place.
-   The backup unit and direct backup command then fail closed; rerun the same
-   reviewed installer to replace the complete compatibility set and clear the
-   marker.
+   Before any account or installed-target mutation, the installer also retains
+   its exact mode-0600 recovery program, source/predecessor digests, exact
+   systemd enabled/active states, drill-account creation obligation, and
+   per-target commit checkpoints in root-private state. In-process failure and
+   reboot recovery both invoke that same retained verifier. It restores and
+   proves every prior timer/recovery-service state and verifies removal of any
+   transaction-created user and private group before it may remove the
+   journal. A failed disable, stop, user deletion, or group deletion retains
+   the journal and leaves both timers stopped. It commits
+   and enables `nexus-application-dr-install-recovery.service` before any
+   application asset. Once that enrollment checkpoint is durable, a reboot
+   rolls an interrupted transaction back before either DR timer or service may
+   start. Before enrollment, the durable journal already blocks backup writes;
+   the read-only health check verifies the marker with that exact
+   journal-bound recovery program and reports `installing` for at most 15
+   minutes. A malformed, unrecoverable, future-dated, or older marker fails
+   closed and alerts rather than masking stale recovery evidence.
+   Recovery preflights the complete exact target set before changing any
+   target; an unknown, missing, or digest-mismatched target leaves the journal
+   and both timers fail closed for owner review. The backup unit and direct
+   backup command also refuse to run while the marker exists.
+   Rerunning the same reviewed installer invokes only the transaction-bound
+   retained recovery program, emits
+   `install-recovery-receipt.v2.json`, and stops for review; run the installer
+   once more only after that rolled-back receipt is accepted. A successful
+   install verifies every installed digest and mode, removes and fsyncs the
+   journal as its commit point, and only then emits
+   `install-receipt.v2.json`; a pass receipt can never authorize a transaction
+   that remains recoverable.
 3. Create `/etc/nexus-application-dr/backup.env` from `backup.env.example`,
    `/etc/nexus-application-dr/aws-config` from `aws-config.example`, and the
    provider control evidence described above, all root:root mode 0600. Install
@@ -488,7 +755,8 @@ Install in an approved maintenance window
    remains disabled. Do not pass `--bootstrap-first-backup` to
    `--verify-config`, a systemd unit, or a timer.
 6. For a fresh namespace, owner-review the completed receipt and its emitted
-   SHA-256, execute the CloudFormation update that sets
+   SHA-256, use the controller's lifecycle inspect/approval/execute sequence
+   for the CloudFormation update that sets
    `LifecycleActivation=ENABLED` and the exact
    `LifecycleBootstrapReceiptSha256`, install new ordinary enabled v2 evidence,
    and rerun `--verify-config`. Require the exact enabled/not-applicable state.
@@ -496,12 +764,23 @@ Install in an approved maintenance window
    succeeds, run:
 
      sudo systemctl daemon-reload
-     sudo systemctl enable --now nexus-application-dr-backup.timer
+     sudo systemctl enable --now \
+       nexus-application-dr-backup.timer \
+       nexus-application-dr-health.timer
 
 8. Run one owner-observed ordinary service invocation, inspect its journal, and
    verify the four database objects and every current release rollback object
-   through a read-only bucket listing. Alert on a failed service or a timer
-   whose last successful invocation is more than one hour old.
+   through a read-only bucket listing. The backup writes only a bounded
+   root-owned `last-success.v1.json`; the five-minute health timer fails if
+   that evidence is invalid or older than one hour while no backup is in
+   progress. Both services invoke the installed `OnFailure` hook, which emits
+   an `auth.alert` journal/syslog record and maintains redacted mode-0600 alert
+   evidence below `/var/lib/nexus-application-dr/alerts/`. Confirm both timer
+   states match. The health unit deliberately has no backup-config existence
+   condition, so deleting or corrupting configuration cannot silence stale
+   recovery-point monitoring. Deliberately fault one test invocation, observe
+   its alert, then require a successful backup plus health check to mark the
+   alert resolved before declaring monitoring ready.
 
 Backup and retention behavior
 -----------------------------
@@ -510,6 +789,14 @@ The hourly service is a sequential one-shot task. A non-blocking lock prevents
 overlap; a second invocation fails visibly. The snapshot is taken near minute
 05 of every UTC hour and the unit has a 50-minute deadline. Missing or delayed
 runs are failures, not silently accepted RPO exceptions.
+
+The scheduled unit does not start while the root promotion journal has an
+active transaction. Promotion itself creates exact encrypted database and
+recovery-runtime escrow points before mutation and after the soak, so this
+prevents a redundant timer invocation from racing the sequential release
+without weakening its DR checks. The five-minute health check remains active
+and alerts if an interrupted release leaves both the transaction and the
+hourly recovery point stale.
 
 The service creates and integrity-checks a transactionally consistent SQLite
 snapshot while Nexus remains online. It encrypts the snapshot in a root-only
@@ -521,6 +808,20 @@ metadata, calendar identity, COMPLIANCE mode, and deadline:
   database/daily    first point per UTC date, >=8-day lock, 9-day lifecycle
   database/weekly   first point per ISO week, >=35-day lock, 36-day lifecycle
   database/monthly  first point per UTC month, >=190-day lock, 191-day lifecycle
+
+The plan's `24 hourly, 7 daily, 4 weekly, 6 monthly` contract is a minimum
+consecutive recovery-point floor, not an exact remote object count. Exact
+count pruning is incompatible with COMPLIANCE Object Lock and with
+asynchronous S3 Lifecycle expiration. The lock windows cover the worst age of
+the oldest selected calendar point plus scheduling slack: one additional day
+for the hourly and daily tiers, one additional ISO week for weekly, and enough
+day variance to cover six unequal calendar months for monthly. Each lifecycle
+threshold is one further day beyond the corresponding lock floor, so Lifecycle
+does not make an object eligible while its governed minimum lock can still be
+active. S3 may retain additional objects after eligibility. Readiness therefore
+selects exactly the newest consecutive 24/7/4/6 period identities from the
+complete version inventory, verifies each exact VersionId, and reports any
+additional visible points without treating them as a policy violation.
 
 AWS sends `If-None-Match: *` for every governed object. A collision on the
 unique hourly key is a hard failure. A daily, weekly, or monthly 412 is

@@ -379,6 +379,35 @@ function selectQualifyingNightly({ nightlyDirectory, headSha, nowMs, policyDiges
   return { evidence: candidates[0] ?? null, staleEvidence: staleCandidates[0] ?? null };
 }
 
+function probeNightly() {
+  const headSha = valueOf('--head', git('rev-parse', 'HEAD'));
+  if (!/^[0-9a-f]{40}$/.test(headSha) || git('rev-parse', 'HEAD') !== headSha) {
+    fail('nightly probe head must be the exact checkout SHA');
+  }
+  const nightlyDirectory = path.resolve(
+    root,
+    valueOf('--nightly-dir', '.local/release/nightly-evidence'),
+  );
+  const nowMs = Date.parse(valueOf('--now', new Date().toISOString()));
+  if (!Number.isFinite(nowMs)) fail('nightly probe reference time is invalid');
+  const policy = validateReleaseEvidencePolicy();
+  const qualifying = selectQualifyingNightly({
+    nightlyDirectory,
+    headSha,
+    nowMs,
+    policyDigest: currentPolicyDigest(),
+    policy,
+  });
+  const result = {
+    usable: qualifying.evidence !== null,
+    runId: qualifying.evidence ? String(qualifying.evidence.ci.runId) : null,
+    completedAt: qualifying.evidence?.completedAt ?? null,
+    staleEvidencePresent: qualifying.staleEvidence !== null,
+  };
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  if (!result.usable) process.exitCode = 3;
+}
+
 function runJson(commandName, commandArgs) {
   const result = spawnSync(commandName, commandArgs, {
     cwd: root,
@@ -471,7 +500,7 @@ function writePlan() {
   process.stdout.write(`${JSON.stringify(selection, null, 2)}\n`);
 }
 
-function runSelected() {
+async function runSelected() {
   const selectionPath = path.resolve(root, valueOf('--selection'));
   const output = path.resolve(root, valueOf('--output', '.local/release/rc-test-results/vitest-results-selected.json'));
   const selection = validateReleaseSelection(readJson(selectionPath), {
@@ -481,10 +510,32 @@ function runSelected() {
   if (selection.fullRequired) fail('selected Vitest runner cannot execute a full-sharded plan');
   fs.mkdirSync(path.dirname(output), { recursive: true, mode: 0o700 });
   const vitest = path.join(root, 'node_modules/vitest/vitest.mjs');
-  const result = spawnSync(process.execPath, [
-    vitest, 'run', '--reporter=json', `--outputFile=${output}`, ...selection.selected.files,
-  ], { cwd: root, stdio: 'inherit', env: cleanGitEnv({ NODE_ENV: 'test' }) });
-  process.exit(result.status ?? 1);
+  const { prepareMigratedDatabaseTemplate } = await import(
+    './lib/migrated-test-database-template-runner.mjs'
+  );
+  const template = prepareMigratedDatabaseTemplate(root);
+  let status = 1;
+  try {
+    const child = template.spawnChild(process.execPath, [
+      vitest, 'run', '--reporter=json', `--outputFile=${output}`, ...selection.selected.files,
+    ], {
+      cwd: root,
+      stdio: 'inherit',
+      env: cleanGitEnv({ NODE_ENV: 'test', ...template.env }),
+    });
+    status = await new Promise((resolve) => {
+      child.once('close', (code, signal) => {
+        if (Number.isInteger(code)) {
+          resolve(code);
+          return;
+        }
+        resolve(128 + ({ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }[signal] ?? 1));
+      });
+    });
+  } finally {
+    template.cleanup();
+  }
+  process.exit(status);
 }
 
 function writeNightly() {
@@ -725,10 +776,11 @@ function bindProtectedMainShadow() {
 if (process.argv[1]
     && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url))) {
   if (command === 'plan') writePlan();
-  else if (command === 'run-selected') runSelected();
+  else if (command === 'probe-nightly') probeNightly();
+  else if (command === 'run-selected') await runSelected();
   else if (command === 'write-nightly') writeNightly();
   else if (command === 'write-result') writeResult();
   else if (command === 'write-reused-result') await writeReusedResult();
   else if (command === 'bind-protected-main-shadow') bindProtectedMainShadow();
-  else fail('Usage: release-test-evidence.mjs <plan|run-selected|write-nightly|write-result|write-reused-result|bind-protected-main-shadow> [options]');
+  else fail('Usage: release-test-evidence.mjs <plan|probe-nightly|run-selected|write-nightly|write-result|write-reused-result|bind-protected-main-shadow> [options]');
 }

@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+while IFS= read -r git_environment_name; do
+  unset "$git_environment_name"
+done < <(compgen -e | LC_ALL=C sort | grep '^GIT_' || true)
+export GIT_NO_REPLACE_OBJECTS=1
+
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 echo "🔍 Pre-commit risk gate"
 
 # Watch training-principles.json and .science-policy-hash together.
-SCIENCE_POLICY_TOUCHED="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^src/services/coach-kernel/knowledge/entities/(training-principles\.json|\.science-policy-hash)$' || true)"
+SCIENCE_POLICY_TOUCHED="$(git diff --cached --name-only --diff-filter=ACMRTD --no-renames | grep -E '^src/services/coach-kernel/knowledge/entities/(training-principles\.json|\.science-policy-hash)$' || true)"
 if [ "${NEXUS_PRECOMMIT_SKIP_SCIENCE_POLICY:-0}" != "1" ] && [ -n "$SCIENCE_POLICY_TOUCHED" ]; then
   echo "🧪 training-principles changed — running science-policy version check"
   node "$ROOT/scripts/ci/science-policy-version-check.mjs"
 fi
 
-STAGED_FILES_FOR_IDENTITY="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
+STAGED_FILES_FOR_IDENTITY="$(git diff --cached --name-only --diff-filter=ACMRTD --no-renames 2>/dev/null || true)"
 if [ "${NEXUS_PRECOMMIT_SKIP_IDENTITY_REFRESH:-0}" != "1" ] && \
    echo "$STAGED_FILES_FOR_IDENTITY" \
    | grep -E '(^|/)(docs/release/CURRENT_RELEASE_STATE\.md|docs/release/OPEN_ITEMS\.md|docs/release/release-pipeline-optimization-report\.md|docs/release/current-release-index\.md|docs/qa/QA_BACKEND_REPORT\.md|docs/qa/QA_IOS_REPORT\.md)$' \
@@ -32,32 +37,17 @@ if [ "${NEXUS_PRECOMMIT_SKIP_IDENTITY_REFRESH:-0}" != "1" ] && \
   fi
 fi
 
-STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR | tr '\n' ',' | sed 's/,$//')"
-if [ -z "$STAGED_FILES" ]; then
+if git diff --cached --quiet --exit-code; then
   echo "🧪 nothing staged — skipping risk gate"
   exit 0
 fi
 
-ARGS=(--files "$STAGED_FILES")
+ARGS=(--staged --local-reuse-context pre-commit)
 if [ "${NEXUS_PRECOMMIT_FULL_VITEST:-0}" = "1" ]; then
   ARGS+=(--full)
 fi
 
-# Git exports repository-local variables to hooks. They are correct for this
-# checkout, but unsafe for tests that intentionally create foreign temporary
-# repositories: an inherited GIT_DIR can redirect `git init` back into the
-# caller's repository. Let the risk gate rediscover this worktree from cwd and
-# keep every nested fixture isolated from the committing repository.
-env \
-  -u GIT_DIR \
-  -u GIT_WORK_TREE \
-  -u GIT_INDEX_FILE \
-  -u GIT_PREFIX \
-  -u GIT_COMMON_DIR \
-  -u GIT_OBJECT_DIRECTORY \
-  -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-  -u GIT_NAMESPACE \
-  scripts/risk-gate.sh "${ARGS[@]}"
+scripts/risk-gate.sh "${ARGS[@]}"
 
 if [ "${NEXUS_PRECOMMIT_SKIP_SANDBOX_NUDGE:-0}" != "1" ] \
    && [ -f "$ROOT/docker-compose.local.yml" ]; then

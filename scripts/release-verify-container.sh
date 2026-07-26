@@ -10,9 +10,14 @@ cd "$ROOT"
 IMAGE="${NEXUS_RELEASE_TEST_IMAGE:-nexus-hub-release-test:local}"
 SKIP_BUILD="${NEXUS_RELEASE_TEST_SKIP_BUILD:-0}"
 VERIFY_ARGS=()
+CONTRACT_ONLY=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --contract-only)
+      CONTRACT_ONLY=true
+      shift
+      ;;
     --shard)
       VERIFY_ARGS+=("$1" "$2")
       shift 2
@@ -33,7 +38,15 @@ if [ "$SKIP_BUILD" != "1" ]; then
   DOCKER_BUILDKIT=1 docker build -f Dockerfile.release-test -t "$IMAGE" .
 fi
 
-cmd=(./scripts/release-verify.sh)
+if [ "$CONTRACT_ONLY" = true ]; then
+  [ "${#VERIFY_ARGS[@]}" -eq 0 ] || {
+    echo "--contract-only does not accept release-verify test flags" >&2
+    exit 64
+  }
+  cmd=(node scripts/release-container-contract.mjs)
+else
+  cmd=(./scripts/release-verify.sh)
+fi
 git_mount=()
 if [ -f "$ROOT/.git" ]; then
   git_dir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"

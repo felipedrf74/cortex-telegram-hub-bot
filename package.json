@@ -99,6 +99,7 @@
     "release:evidence:container": "scripts/release-evidence-container.sh",
     "release:evidence:keygen": "node scripts/release-evidence-keygen.mjs",
     "release:rollback-drill-check": "node scripts/rollback-drill-check.mjs",
+    "release:layout-fault-drill": "node scripts/release-layout-fault-drill.mjs",
     "release:metrics:collect": "node scripts/release-plan-evaluator.mjs collect-observation",
     "release:metrics:evaluate": "node scripts/release-plan-evaluator.mjs evaluate",
     "release:quality:evidence": "node scripts/release-quality-evidence.mjs",

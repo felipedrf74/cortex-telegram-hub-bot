@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -651,6 +652,78 @@ describe('changed-area-classifier process-boundary integration', () => {
     }
   });
 
+  it('classifies the exact staged index and forces full coverage for a test rename', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-classifier-staged-rename-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    try {
+      installClassifierFixture(repo);
+      mkdirSync(join(repo, '__tests__'), { recursive: true });
+      writeFileSync(join(repo, '__tests__/old behavior.test.ts'), 'export const value = 1;\n');
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      mkdirSync(join(repo, 'archive'), { recursive: true });
+      git('mv', '__tests__/old behavior.test.ts', 'archive/old behavior.test.ts');
+
+      const result = JSON.parse(execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--staged'],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      ));
+
+      expect(result.baseRef).toBe('staged-index');
+      expect(result.changedFiles).toEqual([
+        '__tests__/old behavior.test.ts',
+        'archive/old behavior.test.ts',
+      ]);
+      expect(result.vitest.mode).toBe('full');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('forces full coverage for a staged test-file type change', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-classifier-staged-type-change-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    try {
+      installClassifierFixture(repo);
+      mkdirSync(join(repo, '__tests__'), { recursive: true });
+      writeFileSync(join(repo, '__tests__/typed.test.ts'), 'export const value = 1;\n');
+      writeFileSync(join(repo, 'replacement-target.ts'), 'export const replacement = true;\n');
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      rmSync(join(repo, '__tests__/typed.test.ts'));
+      symlinkSync('../replacement-target.ts', join(repo, '__tests__/typed.test.ts'));
+      git('add', '__tests__/typed.test.ts');
+
+      const result = JSON.parse(execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--staged'],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      ));
+
+      expect(result.changedFiles).toContain('__tests__/typed.test.ts');
+      expect(result.vitest.mode).toBe('full');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('reads candidate source state while enforcing the trusted policy path', () => {
     const candidate = mkdtempSync(join(tmpdir(), 'nexus-classifier-candidate-'));
     const trusted = mkdtempSync(join(tmpdir(), 'nexus-classifier-policy-'));
@@ -709,6 +782,7 @@ describe('changed-area-classifier process-boundary integration', () => {
     const files = ['__tests__/services/product-learning.test.ts', 'src/services/product-learning.ts', ...Array.from({ length: 2_000 }, (_, index) => `docs/generated-${index}.md`)];
     const raw = execFileSync('bash', ['scripts/changed-area-classifier.sh', '--json', '--files', files.join(',')], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
     const result = JSON.parse(raw);
+    expect(result.head).toMatch(/^[0-9a-f]{40}$/);
     expect(result.flags).toMatchObject({ backendSrc: true, backendTest: true, docsOnly: false });
     expect(result.vitest.mode).toBe('changed-only');
   });

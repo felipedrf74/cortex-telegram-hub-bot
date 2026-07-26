@@ -24,9 +24,58 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ "$(id -u)" -eq 0 ] || { echo "Sonar release-state monitor must run as root" >&2; exit 1; }
 [[ "$PROJECT_KEY" =~ ^[A-Za-z0-9_.:-]+$ ]] || { echo "Invalid Sonar project key" >&2; exit 64; }
 [ "$JSON_OUTPUT" = true ] || { echo "--json is required" >&2; exit 64; }
+
+parse_active_tasks() {
+  local component_file="$1" project_key="$2"
+  "$NODE_BIN" - "$component_file" "$project_key" <<'NODE'
+const fs = require('fs');
+const [componentPath, projectKey] = process.argv.slice(2);
+const value = JSON.parse(fs.readFileSync(componentPath, 'utf8'));
+if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !Array.isArray(value.queue)) process.exit(1);
+
+const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const seen = new Set();
+function validateTask(task, statuses) {
+  if (!task || typeof task !== 'object' || Array.isArray(task)
+      || !idPattern.test(task.id || '') || !statuses.has(task.status)
+      || (task.componentKey !== undefined && task.componentKey !== projectKey)
+      || seen.has(task.id)) process.exit(1);
+  seen.add(task.id);
+}
+
+for (const task of value.queue) {
+  validateTask(task, new Set(['PENDING', 'IN_PROGRESS']));
+}
+
+let currentActive = 0;
+if (value.current !== undefined && value.current !== null) {
+  validateTask(
+    value.current,
+    new Set(['IN_PROGRESS', 'SUCCESS', 'FAILED', 'CANCELED']),
+  );
+  currentActive = value.current.status === 'IN_PROGRESS' ? 1 : 0;
+}
+process.stdout.write(String(value.queue.length + currentActive));
+NODE
+}
+
+[ -x "$NODE_BIN" ] || { echo "node is required" >&2; exit 1; }
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] \
+    && [ -n "${NEXUS_SONAR_RELEASE_STATE_COMPONENT_FILE:-}" ]; then
+  fixture="$NEXUS_SONAR_RELEASE_STATE_COMPONENT_FILE"
+  [ -f "$fixture" ] && [ ! -L "$fixture" ] || {
+    echo "Sonar CE test fixture is missing or unsafe" >&2
+    exit 1
+  }
+  parse_active_tasks "$fixture" "$PROJECT_KEY" \
+    || { echo "Sonar CE project response is invalid" >&2; exit 1; }
+  exit 0
+fi
+
+[ "$(id -u)" -eq 0 ] || { echo "Sonar release-state monitor must run as root" >&2; exit 1; }
 [ -x "$CURL_BIN" ] && [ -x "$NODE_BIN" ] || { echo "curl and node are required" >&2; exit 1; }
 
 tmp_root="$(mktemp -d)"
@@ -68,14 +117,8 @@ unset token
   -H @"$auth_header" --get \
   --data-urlencode "component=$PROJECT_KEY" \
   "$SONAR_URL/api/ce/component" -o "$component_body"
-active_tasks="$($NODE_BIN -e '
-  const x=require(process.argv[1]);
-  if (!Array.isArray(x.queue)) process.exit(1);
-  for (const task of x.queue) {
-    if (!task || !["PENDING", "IN_PROGRESS"].includes(task.status)) process.exit(1);
-  }
-  process.stdout.write(String(x.queue.length));
-' "$component_body")" || { echo "Sonar CE project response is invalid" >&2; exit 1; }
+active_tasks="$(parse_active_tasks "$component_body" "$PROJECT_KEY")" \
+  || { echo "Sonar CE project response is invalid" >&2; exit 1; }
 
 printf '{"schema":"nexus.sonarqube-release-state.v1","status":"passed","projectKey":"%s","activeTasks":%s}\n' \
   "$PROJECT_KEY" "$active_tasks"

@@ -124,7 +124,7 @@ def selector_identity(base: str, base_fd: int, target: str) -> dict[str, object]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("switch", "verify"))
+    parser.add_argument("command", choices=("initialize", "switch", "verify"))
     parser.add_argument("--role", choices=("production", "staging"), required=True)
     parser.add_argument("--expected")
     parser.add_argument("--target", required=True)
@@ -173,6 +173,8 @@ def main() -> int:
         legacy_base = canonical_legacy
     if args.command == "switch" and not expected:
         fail("--expected is required for selector switch")
+    if args.command == "initialize" and expected:
+        fail("--expected is not permitted for selector initialization")
     if not (
         is_beneath(target, base)
         or (
@@ -245,6 +247,62 @@ def main() -> int:
         pinned = os.fstat(base_fd)
         if (pinned.st_dev, pinned.st_ino) != (base_stat.st_dev, base_stat.st_ino):
             fail("release base changed before selector operation")
+        if args.command == "initialize":
+            try:
+                os.stat("current", dir_fd=base_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                fail("release current selector already exists")
+
+            for _ in range(32):
+                temporary = f".current.next.{secrets.token_hex(16)}"
+                try:
+                    os.symlink(target, temporary, dir_fd=base_fd)
+                    break
+                except FileExistsError:
+                    temporary = ""
+            if not temporary:
+                fail("could not allocate a unique release selector entry")
+            staged = os.stat(temporary, dir_fd=base_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISLNK(staged.st_mode)
+                or staged.st_uid != root_uid
+                or staged.st_gid != root_gid
+                or os.readlink(temporary, dir_fd=base_fd) != target
+            ):
+                fail("staged release selector identity is unsafe")
+            try:
+                os.link(
+                    temporary,
+                    "current",
+                    src_dir_fd=base_fd,
+                    dst_dir_fd=base_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
+                raise RuntimeError(
+                    "release current selector appeared before initialization"
+                ) from error
+            os.unlink(temporary, dir_fd=base_fd)
+            temporary = ""
+            os.fsync(base_fd)
+            _, final_target = read_selector(
+                base_fd,
+                root_uid=root_uid,
+                root_gid=root_gid,
+                worker_uid=args.worker_uid,
+                worker_gid=args.worker_gid,
+                adopt_owner=False,
+            )
+            if final_target != target or os.path.realpath(
+                os.path.join(base, "current")
+            ) != target:
+                fail("release selector initialization is inconsistent")
+            identity = selector_identity(base, base_fd, target)
+            print(json.dumps({**identity, "initialized": True}, separators=(",", ":")))
+            return 0
+
         _, observed_target = read_selector(
             base_fd,
             root_uid=root_uid,

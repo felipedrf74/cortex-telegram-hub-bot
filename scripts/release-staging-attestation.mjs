@@ -181,6 +181,11 @@ function validateSigningRunMetadata(run, request, requestBody) {
 
 function validateRequest(request, expectedRuntime = '') {
   if (request.schema !== 'nexus.staging-attestation-request.v1') throw new Error('staging request schema is invalid');
+  if (request.drillBootstrap !== undefined) {
+    throw new Error(
+      'drill-only legacy staging evidence cannot satisfy an ordinary staging or promotion gate',
+    );
+  }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(request.requestId ?? '')) {
     throw new Error('staging request id is invalid');
   }

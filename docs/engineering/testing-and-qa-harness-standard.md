@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-07-23
+Last verified: 2026-07-25
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. `config/test-policy.json` is the
 machine-readable tier/disposition policy; `docs/release/README.md` describes
@@ -100,7 +100,7 @@ The stable commands are:
 | `npm run test:fast` | Deterministic unit, schema, policy, and release-tooling subset; target ≤90 s. |
 | `npm run test:changed -- --base <sha>` | Static changed dependencies ∪ critical ∪ cannot-skip/focused risks; unresolved production impact fails closed to all Vitest files. |
 | `npm run test:critical` | Auth, tenant, migration, billing, provider fallback, public contract, release-safety, and production-regression set. |
-| `npm run test:release -- --base <sha>` | Local release gate: Node/toolchain check, typecheck, build, migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. |
+| `npm run test:release -- --base <sha>` | Local diagnostic release gate: Node/toolchain check, production build (including the default-project typecheck), migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. The canonical production path is `npm run release:resume`. |
 | `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards; files with the `eval` disposition are excluded. |
 | `npm run test:evaluate` | Exactly the files with the `eval` disposition: persona, provider-quality, subjective product, and long-running evaluation corpora. Runs on the scheduled/manual `evaluation.yml` workflow, outside release correctness evidence. |
 | `npm run test:profile` | Full machine-readable timings and inventory under ignored `.local/`. |
@@ -115,6 +115,13 @@ The classifier maps changed files to:
 - XCTest mode (skip/focused) and class names
 - Staging smoke domains (generic 17 + per-domain smokes)
 - Cannot-skip safety gates (tenant-auth-security, etc.)
+
+The exact release operator supplies staging smoke with the base SHA from the
+validated signed RC selection. A smoke run from an exact protected-main
+checkout must not reclassify against `origin/main` and silently produce an
+empty domain diff. Repeated assertions for one endpoint may reuse one response
+and one private SSH transport, but every assertion remains independently
+recorded and no staging acceptance check may be cached across releases.
 
 **Cannot-skip gates take precedence over minimization.** The release-candidate
 workflow runs the exact `changed ∪ critical ∪ cannot-skip` selection only when
@@ -145,7 +152,22 @@ comparison exists, so activation remains off.
 Weekly Stryker mutation analysis remains advisory and outside signing,
 staging, and promotion. Mutation output may drive a focused regression test or
 test-removal decision, but it is not release evidence and never substitutes for
-the deterministic suite.
+the deterministic suite. The weekly plan retains every added line in each
+changed critical source, coalesces adjacent lines into exact Stryker ranges,
+and runs one source per process in a single sequential lane. The persisted
+batch plan must reach `complete` for every source before the advisory verdict
+is valid; a crash, timeout, missing report, deletion-only fallback failure, or
+pending batch leaves the sweep failed rather than silently sampling or
+deferring coverage. If exact changed ranges generate no Stryker mutants, that
+source is rerun in its own full-file process and both reports are retained.
+Its timeout is ratcheted only from measured successful sweeps and does not
+affect customer release readiness.
+
+A critical source may declare an explicit retained owner-test mapping when its
+transitive Vitest graph is unstable or needlessly broad. The mapping is
+validated fail-closed, applies only to that source's sequential batch, and
+never relaxes the global mutation threshold or the zero-`NoCoverage`
+requirement.
 
 ## 5. Two-user / two-tenant matrix (must)
 

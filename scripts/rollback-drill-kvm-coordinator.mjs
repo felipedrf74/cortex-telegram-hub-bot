@@ -54,7 +54,9 @@ const FLAGS = Object.freeze({
     '--production-owner-public-key',
     '--guest-ssh-client-public-key',
     '--production-ssh-client-public-key',
-    '--guest-ssh-host-public-key',
+    '--guest-1-ssh-host-public-key',
+    '--guest-2-ssh-host-public-key',
+    '--guest-3-ssh-host-public-key',
     '--production-ssh-host-public-key',
     '--release-evidence-public-key',
     '--output-dir',
@@ -65,7 +67,9 @@ const FLAGS = Object.freeze({
     '--production-owner-public-key',
     '--guest-ssh-client-public-key',
     '--production-ssh-client-public-key',
-    '--guest-ssh-host-public-key',
+    '--guest-1-ssh-host-public-key',
+    '--guest-2-ssh-host-public-key',
+    '--guest-3-ssh-host-public-key',
     '--production-ssh-host-public-key',
     '--release-evidence-public-key',
   ]),
@@ -75,7 +79,9 @@ const FLAGS = Object.freeze({
     '--production-owner-public-key',
     '--guest-ssh-client-public-key',
     '--production-ssh-client-public-key',
-    '--guest-ssh-host-public-key',
+    '--guest-1-ssh-host-public-key',
+    '--guest-2-ssh-host-public-key',
+    '--guest-3-ssh-host-public-key',
     '--production-ssh-host-public-key',
     '--release-evidence-public-key',
     '--operator',
@@ -89,7 +95,9 @@ const FLAGS = Object.freeze({
     '--production-owner-public-key',
     '--guest-ssh-client-public-key',
     '--production-ssh-client-public-key',
-    '--guest-ssh-host-public-key',
+    '--guest-1-ssh-host-public-key',
+    '--guest-2-ssh-host-public-key',
+    '--guest-3-ssh-host-public-key',
     '--production-ssh-host-public-key',
     '--release-evidence-public-key',
     '--guest-ssh-private-key',
@@ -163,10 +171,12 @@ function readKeys(values) {
       'production_ssh_client_public_key',
       16 * 1024,
     ),
-    guestSshHostPublicKey: readBoundedText(
-      required(values, '--guest-ssh-host-public-key'),
-      'guest_ssh_host_public_key',
-      16 * 1024,
+    guestSshHostPublicKeys: ['guest-1', 'guest-2', 'guest-3'].map(
+      (guest) => readBoundedText(
+        required(values, `--${guest}-ssh-host-public-key`),
+        `${guest}_ssh_host_public_key`,
+        16 * 1024,
+      ),
     ),
     productionSshHostPublicKey: readBoundedText(
       required(values, '--production-ssh-host-public-key'),
@@ -211,7 +221,8 @@ function keySummary(plan) {
   return {
     guestOwnerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
     guestSshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
-    guestSshHostPublicKeySha256: plan.trust.guestSshHostPublicKeySha256,
+    guestSshHostPublicKeySha256s:
+      plan.trust.guestSshHostPublicKeySha256s,
     releaseEvidencePublicKeySha256: plan.trust.releaseEvidencePublicKeySha256,
   };
 }
@@ -401,7 +412,9 @@ function validateExecutionInputPaths(values) {
     ['--production-owner-public-key', 'production_owner_public_key', 16 * 1024],
     ['--guest-ssh-client-public-key', 'guest_ssh_client_public_key', 16 * 1024],
     ['--production-ssh-client-public-key', 'production_ssh_client_public_key', 16 * 1024],
-    ['--guest-ssh-host-public-key', 'guest_ssh_host_public_key', 16 * 1024],
+    ['--guest-1-ssh-host-public-key', 'guest_1_ssh_host_public_key', 16 * 1024],
+    ['--guest-2-ssh-host-public-key', 'guest_2_ssh_host_public_key', 16 * 1024],
+    ['--guest-3-ssh-host-public-key', 'guest_3_ssh_host_public_key', 16 * 1024],
     ['--production-ssh-host-public-key', 'production_ssh_host_public_key', 16 * 1024],
     ['--release-evidence-public-key', 'release_evidence_public_key', 16 * 1024],
   ]) {
@@ -457,10 +470,21 @@ function controllerIdentity(plan) {
   const rawBootId = TEST_MODE
     ? process.env.NEXUS_ROLLBACK_DRILL_CONTROLLER_BOOT_ID
     : fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8');
-  if (!rawMachineId || !rawBootId) fail('controller_identity_unavailable');
+  const rawUptime = TEST_MODE
+    ? process.env.NEXUS_ROLLBACK_DRILL_CONTROLLER_UPTIME_SECONDS
+    : fs.readFileSync('/proc/uptime', 'utf8').trim().split(/\s+/u)[0];
+  if (!rawMachineId || !rawBootId
+      || !/^\d+(?:\.\d{1,9})?$/u.test(rawUptime || '')) {
+    fail('controller_identity_unavailable');
+  }
+  const monotonicSeconds = Math.floor(Number(rawUptime));
+  if (!Number.isSafeInteger(monotonicSeconds) || monotonicSeconds < 0) {
+    fail('controller_identity_unavailable');
+  }
   const identity = {
     machineIdSha256: sha256Bytes(rawMachineId.trim()),
     bootIdSha256: sha256Bytes(rawBootId.trim()),
+    monotonicSeconds,
   };
   if (identity.machineIdSha256 !== plan.controller.machineIdSha256
       || identity.bootIdSha256 !== plan.controller.bootIdSha256) {
@@ -1141,13 +1165,16 @@ function executeOneDrill(context) {
   }
 }
 
-function writeKnownHosts(outputRoot, plan, guestSshHostPublicKey) {
+function writeKnownHosts(outputRoot, plan, guestSshHostPublicKeys) {
   const directory = path.join(outputRoot, 'known-hosts');
   fs.mkdirSync(directory, { mode: 0o700 });
   fs.chmodSync(directory, 0o700);
-  const material = keyMaterial(guestSshHostPublicKey);
   const paths = new Map();
-  for (const overlay of plan.overlays) {
+  for (const [index, overlay] of plan.overlays.entries()) {
+    const material = keyMaterial(guestSshHostPublicKeys[index]);
+    if (textKeyIdentity(material) !== overlay.ssh.hostPublicKeySha256) {
+      fail('guest_ssh_host_key_overlay_mismatch');
+    }
     const destination = path.join(directory, overlay.overlayId);
     const descriptor = fs.openSync(destination, 'wx', 0o600);
     try {
@@ -1162,9 +1189,14 @@ function writeKnownHosts(outputRoot, plan, guestSshHostPublicKey) {
   return paths;
 }
 
-function executeSequentialDrills(plan, isolation, keys, values) {
+function executeSequentialDrills(
+  plan,
+  isolation,
+  keys,
+  values,
+  controller,
+) {
   const binaries = executionBinaries();
-  const controller = controllerIdentity(plan);
   const privateKey = requireCanonicalRegularFile(
     required(values, '--guest-ssh-private-key'),
     'guest_ssh_private_key',
@@ -1185,7 +1217,7 @@ function executeSequentialDrills(plan, isolation, keys, values) {
   const knownHosts = writeKnownHosts(
     outputRoot,
     plan,
-    keys.guestSshHostPublicKey,
+    keys.guestSshHostPublicKeys,
   );
   const provisionalOutcomes = {};
   const transactionIds = new Set();
@@ -1216,12 +1248,18 @@ function executeSequentialDrills(plan, isolation, keys, values) {
     requestDigests.add(outcome.requestSha256);
     provisionalOutcomes[overlay.drill] = outcome;
   }
-  const receipt = buildExecutionReceipt(plan, provisionalOutcomes, {
+  const receipt = buildExecutionReceipt(plan, isolation, provisionalOutcomes, {
     testMode: TEST_MODE,
     completedAt: new Date().toISOString(),
   });
   const outcomes = bindExecutionReceipt(receipt, provisionalOutcomes);
-  validateExecutionReceipt(receipt, plan, outcomes, { allowTestMode: TEST_MODE });
+  validateExecutionReceipt(
+    receipt,
+    plan,
+    isolation,
+    outcomes,
+    { allowTestMode: TEST_MODE },
+  );
   for (const overlay of plan.overlays) {
     validateDrillOutcome(outcomes[overlay.drill], plan, isolation);
     publishCanonicalJson(outputRoot, `${overlay.drill}.json`, outcomes[overlay.drill]);
@@ -1323,21 +1361,33 @@ function main() {
     const plan = readPlan(values);
     const keys = readKeys(values);
     validateKeySet(plan, keys);
-    validateOwnerAuthorization(
-      readBoundedJson(required(values, '--authorization'), 'authorization'),
-      plan,
-      keys.guestOwnerPublicKeyPem,
-    );
     const isolation = readBoundedJson(required(values, '--isolation'), 'isolation');
     validateIsolationEvidence(
       isolation,
       plan,
     );
+    const controller = controllerIdentity(plan);
+    validateOwnerAuthorization(
+      readBoundedJson(required(values, '--authorization'), 'authorization'),
+      plan,
+      keys.guestOwnerPublicKeyPem,
+      {
+        isolation,
+        currentBootIdSha256: controller.bootIdSha256,
+        currentMonotonicSeconds: controller.monotonicSeconds,
+      },
+    );
     return {
       ok: true,
       command,
       planId: plan.planId,
-      ...executeSequentialDrills(plan, isolation, keys, values),
+      ...executeSequentialDrills(
+        plan,
+        isolation,
+        keys,
+        values,
+        controller,
+      ),
     };
   }
   fail('command_unsupported');

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
 const nightlyWorkflow = readFileSync('.github/workflows/nightly.yml', 'utf8');
+const securityWorkflow = readFileSync('.github/workflows/security.yml', 'utf8');
 const baseResolver = readFileSync('scripts/resolve-ci-change-base.sh', 'utf8');
 
 describe('required CI test sharding', () => {
@@ -23,6 +24,37 @@ describe('required CI test sharding', () => {
     expect(workflow).toContain("needs.classify.outputs.vitest_mode != 'full'");
     expect(workflow).toContain('name: Run focused Vitest gate');
     expect(workflow).toContain('scripts/risk-gate.sh \\');
+  });
+
+  it('uses exact cached installs without duplicating the required security audit', () => {
+    expect(workflow).toContain("NPM_CONFIG_AUDIT: 'false'");
+    expect(workflow).toContain("NPM_CONFIG_FUND: 'false'");
+    expect(workflow).toContain("NPM_CONFIG_PREFER_OFFLINE: 'true'");
+    expect(workflow).toContain("PIP_DISABLE_PIP_VERSION_CHECK: '1'");
+    expect(workflow).toContain('content-engine/requirements-dev.txt');
+    expect(securityWorkflow).toContain('name: Dependency audit');
+    expect(securityWorkflow).toContain('npm audit --audit-level=high --omit=dev');
+  });
+
+  it('keeps interpreted CodeQL source extraction independent from install and build work', () => {
+    const codeqlJob = securityWorkflow.match(
+      /  codeql:\n(?<body>[\s\S]*?)(?=\n  dependency-audit:)/,
+    )?.groups?.body ?? '';
+
+    expect(codeqlJob).toContain('languages: javascript-typescript');
+    expect(codeqlJob).toContain('actions/setup-node@');
+    expect(codeqlJob).toContain('Initialize broad required CodeQL scan');
+    expect(codeqlJob).toContain('Initialize manual deployed-source shadow');
+    expect(codeqlJob).toContain('config-file: ./.github/codeql/deployed-source-shadow.yml');
+    expect(codeqlJob).toContain("github.event_name == 'workflow_dispatch'");
+    expect(codeqlJob).toContain('scope:deployed-source-shadow');
+    expect(codeqlJob).not.toContain('npm ci');
+    expect(codeqlJob).not.toContain('npm run build');
+    expect(codeqlJob).toContain('upload: always');
+    expect(codeqlJob).toContain('upload-database: false');
+    expect(codeqlJob).toContain('wait-for-processing: true');
+    expect(codeqlJob.indexOf('github/codeql-action/init@'))
+      .toBeLessThan(codeqlJob.indexOf('github/codeql-action/analyze@'));
   });
 
   it('fails CI when the generated project map drifts', () => {

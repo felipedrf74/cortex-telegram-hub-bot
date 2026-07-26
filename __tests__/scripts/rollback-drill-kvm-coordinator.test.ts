@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,7 @@ import {
   buildLocalExecutionPlan,
   buildRollbackRequest,
   collectBundle,
+  sha256Json,
   verifyBundle,
   validateDrillOutcome,
   validateIsolationEvidence,
@@ -28,7 +30,9 @@ const keyArgsFor = (inputs: string) => [
   '--production-owner-public-key', path.join(inputs, 'production-owner.pem'),
   '--guest-ssh-client-public-key', path.join(inputs, 'guest-ssh-client.pub'),
   '--production-ssh-client-public-key', path.join(inputs, 'production-ssh-client.pub'),
-  '--guest-ssh-host-public-key', path.join(inputs, 'guest-ssh-host.pub'),
+  '--guest-1-ssh-host-public-key', path.join(inputs, 'guest-1-ssh-host.pub'),
+  '--guest-2-ssh-host-public-key', path.join(inputs, 'guest-2-ssh-host.pub'),
+  '--guest-3-ssh-host-public-key', path.join(inputs, 'guest-3-ssh-host.pub'),
   '--production-ssh-host-public-key', path.join(inputs, 'production-ssh-host.pub'),
   '--release-evidence-public-key', path.join(inputs, 'release-evidence.pem'),
 ];
@@ -149,7 +153,7 @@ if(command[0]==='/usr/local/bin/pm2'&&command[1]==='jlist'){
 const sudoIndex=command[0]==='/usr/bin/sudo'?2:-1;
 if(sudoIndex<0)process.exit(2);
 const controlCommand=command[sudoIndex+1];
-if(controlCommand==='version'){emit('nexus-release-promotion-control.v3\\n');process.exit(0);}
+if(controlCommand==='version'){emit('nexus-release-promotion-control.v4\\n');process.exit(0);}
 if(controlCommand==='assert-idle'||controlCommand==='assert-root-pm2-ready')process.exit(0);
 if(controlCommand==='launch'){
  const envelope=JSON.parse(fs.readFileSync(remoteFile(command[sudoIndex+2]),'utf8'));
@@ -297,16 +301,20 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
       .toThrow('guest_memory_threshold_invalid');
   });
 
-  it('rejects production owner, SSH client, and SSH host key reuse', () => {
+  it('rejects production owner, SSH client, and any guest SSH host key reuse', () => {
     for (const [guestField, productionField, expected] of [
       ['guestOwnerPublicKeySha256', 'productionOwnerPublicKeySha256', 'production_owner_key_reuse'],
       ['guestSshClientPublicKeySha256', 'productionSshClientPublicKeySha256', 'production_ssh_client_key_reuse'],
-      ['guestSshHostPublicKeySha256', 'productionSshHostPublicKeySha256', 'production_ssh_host_key_reuse'],
     ] as const) {
       const changed = structuredClone(fixture.plan);
       changed.trust[productionField] = changed.trust[guestField];
       expect(() => validatePlan(changed, { nowMs: fixture.nowMs })).toThrow(expected);
     }
+    const changed = structuredClone(fixture.plan);
+    changed.trust.productionSshHostPublicKeySha256 =
+      changed.trust.guestSshHostPublicKeySha256s[1];
+    expect(() => validatePlan(changed, { nowMs: fixture.nowMs }))
+      .toThrow('production_ssh_host_key_reuse');
   });
 
   it('rejects unknown plan fields before any execution can be considered', () => {
@@ -429,10 +437,15 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
         },
       ]),
     );
-    const execution = buildExecutionReceipt(fixture.plan, provisionalOutcomes, {
+    const execution = buildExecutionReceipt(
+      fixture.plan,
+      fixture.isolation,
+      provisionalOutcomes,
+      {
       testMode: true,
       completedAt: fixture.execution.completedAt,
-    });
+      },
+    );
     const outcomes = bindExecutionReceipt(execution, provisionalOutcomes);
     const destination = path.join(root, 'test-mode-bundle');
     expect(() => collectBundle(
@@ -696,6 +709,7 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
         'serverdominguez-machine-id',
       NEXUS_ROLLBACK_DRILL_CONTROLLER_BOOT_ID:
         'serverdominguez-boot-id',
+      NEXUS_ROLLBACK_DRILL_CONTROLLER_UPTIME_SECONDS: '101500',
       FAKE_KVM_STATE: fake.state,
       FAKE_KVM_REMOTE: fake.remote,
       FAKE_SOURCE_SHA: fixture.plan.release.sourceSha,
@@ -725,17 +739,81 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
     const privateKey = path.join(canonicalRoot, 'guest-ssh-private-key');
     fs.writeFileSync(privateKey, 'fixture-private-key\n', { mode: 0o600 });
     const output = path.join(canonicalRoot, 'execution');
-    const executeArguments = (key: string, destination: string) => [
+    const executeArguments = (
+      key: string,
+      destination: string,
+      isolationPath = path.join(canonicalInputs, 'isolation.json'),
+    ) => [
       coordinator,
       'execute',
       '--plan', path.join(canonicalInputs, 'plan.json'),
       '--authorization', path.join(canonicalInputs, 'authorization.json'),
-      '--isolation', path.join(canonicalInputs, 'isolation.json'),
+      '--isolation', isolationPath,
       ...keyArgsFor(canonicalInputs),
       '--guest-ssh-private-key', key,
       '--request-dir', requests,
       '--output-dir', destination,
     ];
+
+    const tamperedIsolation = structuredClone(fixture.isolation);
+    tamperedIsolation.readinessLedger.stateSha256 =
+      createHash('sha256').update('substituted-ledger-state').digest('hex');
+    const tamperedIsolationPath = path.join(
+      canonicalInputs,
+      'tampered-isolation.json',
+    );
+    fs.writeFileSync(
+      tamperedIsolationPath,
+      JSON.stringify(tamperedIsolation),
+      { mode: 0o600 },
+    );
+    const tamperedOutput = path.join(
+      canonicalRoot,
+      'tampered-ledger-execution',
+    );
+    const tamperedLedger = spawnSync(
+      process.execPath,
+      executeArguments(
+        privateKey,
+        tamperedOutput,
+        tamperedIsolationPath,
+      ),
+      { encoding: 'utf8', env: executionEnv },
+    );
+    expect(tamperedLedger.status).toBe(1);
+    expect(JSON.parse(tamperedLedger.stderr)).toEqual({
+      ok: false,
+      code: 'owner_authorization_isolation_mismatch',
+    });
+    expect(fs.existsSync(tamperedOutput)).toBe(false);
+    expect(Object.values(
+      JSON.parse(fs.readFileSync(fake.state, 'utf8')).guests,
+    ).every((guest: any) => guest.everStarted === false)).toBe(true);
+
+    const expiredAuthorizationOutput = path.join(
+      canonicalRoot,
+      'expired-authorization-execution',
+    );
+    const expiredAuthorization = spawnSync(
+      process.execPath,
+      executeArguments(privateKey, expiredAuthorizationOutput),
+      {
+        encoding: 'utf8',
+        env: {
+          ...executionEnv,
+          NEXUS_ROLLBACK_DRILL_CONTROLLER_UPTIME_SECONDS: '121100',
+        },
+      },
+    );
+    expect(expiredAuthorization.status).toBe(1);
+    expect(JSON.parse(expiredAuthorization.stderr)).toEqual({
+      ok: false,
+      code: 'owner_authorization_monotonic_expired',
+    });
+    expect(fs.existsSync(expiredAuthorizationOutput)).toBe(false);
+    expect(Object.values(
+      JSON.parse(fs.readFileSync(fake.state, 'utf8')).guests,
+    ).every((guest: any) => guest.everStarted === false)).toBe(true);
 
     const mismatchedKeyOutput = path.join(canonicalRoot, 'mismatched-key-execution');
     const mismatchedKey = spawnSync(
@@ -745,7 +823,7 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
         encoding: 'utf8',
         env: {
           ...executionEnv,
-          FAKE_GUEST_SSH_PUBLIC_KEY: fixture.keys.guestSshHostPublicKey,
+          FAKE_GUEST_SSH_PUBLIC_KEY: fixture.keys.guestSshHostPublicKeys[0],
         },
       },
     );
@@ -865,6 +943,18 @@ describe('rollback-drill KVM coordinator and evidence bundle', () => {
     expect(executionReceipt.guestSshClientPublicKeySha256).toBe(
       fixture.plan.trust.guestSshClientPublicKeySha256,
     );
+    expect(executionReceipt).toMatchObject({
+      readinessLedgerSha256:
+        sha256Json(fixture.isolation.readinessLedger),
+      generationManifestSha256:
+        fixture.isolation.readinessLedger.generationManifestSha256,
+      provisionReceiptSha256:
+        fixture.isolation.readinessLedger.provisionReceiptSha256,
+      orderedReadinessSha256s:
+        fixture.isolation.readinessLedger.orderedReadiness.map(
+          (entry: any) => entry.readinessSha256,
+        ),
+    });
     const reboot = JSON.parse(
       fs.readFileSync(path.join(output, 'guest-reboot.json'), 'utf8'),
     );

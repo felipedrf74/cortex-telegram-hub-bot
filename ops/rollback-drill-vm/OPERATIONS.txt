@@ -28,21 +28,69 @@ recovery bindings before it creates a plan or promotion requests. Do not use
 the production release public key: production intentionally rejects the drill
 signatures.
 
-That wrapper does not make this environment executable. The
-release:drill-staging operator entry is intentionally disabled, including in
-dry-run mode, until a separately reviewed adapter supports the currently
-installed promotion-control v2 and legacy /home staging bases. It requires the
-literal --acknowledge-first-drill-bootstrap flag and then exits 78 before SSH or
-any remote mutation. Do not route it into the v3 /srv staging branch and do not
-handcraft its ordinary staging request.
+That wrapper does not install or activate the environment. The reviewed
+release:drill-staging adapter supports only the exact promotion-control v2
+digest and /home/dominguez/telegram-hub-bot-staging base. Dry-run remains local
+and non-promotable. Non-dry execution requires the literal
+--acknowledge-first-drill-bootstrap flag, a clean checkout at the exact signed
+runtime SHA, and the separately root-installed legacy staging broker. Do not
+route it into the v3 /srv staging branch and do not handcraft its staging
+request.
+
+Install the broker only from the same root-owned, SHA-bound protected-main
+archive described below:
+
+  sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/remote-rollback-drill-legacy-staging-install.sh \
+    install \
+    /var/lib/nexus-release-bootstrap/<sha>/source \
+    <40-hex-protected-main-sha> \
+    /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+    <64-hex-root-side-archive-sha256>
+
+The installer validates the Git PAX commit and every privileged member before
+installing its root broker, tools, systemd transaction/recovery units,
+fail-closed PM2 dependency drop-ins, and NOSETENV allowlisted sudoers commands.
+The application account cannot invoke broker
+run or recover-all. It also verifies, but does not replace, the
+application-DR-owned mode-0644 SQLite helper at
+/usr/local/libexec/nexus-application-dr/application-dr-sqlite.py against the
+reviewed source/archive and SHA-256
+e1f1a92d4dc49bd6fe6c1d8c1a3573ec2db61f6374a1831b2765a5541943708d.
+The root worker holds the ordinary-promotion and
+release/Sonar locks, performs the network-independent dependency installation
+and candidate preflight before arming the outage, fsyncs predecessor and outage
+state before changing either of the two staging PM2 names, root-pins and seals
+both runtime identities, stops only those
+allowlisted apps, and refuses selector mutation until no database/WAL/SHM
+handle remains and a verified stopped-state SQLite recovery point is fsynced
+into the root journal. Database and recovery-point inputs above 2 GiB fail
+closed. Only the backup schema, digest, size, original uid/gid/mode, and
+creation time enter the journal; evidence exposes only digest and size. Failure
+or reboot keeps the apps stopped, rejects missing/corrupt backup bytes, removes
+WAL/SHM sidecars, recreates a deleted/truncated database with its journaled
+metadata, atomically restores the shared database, restores the exact
+root-pinned predecessor selector, and re-attests predecessor readiness before
+reporting recovery. Both PM2 units require successful boot recovery and a
+final no-unfinished-journal guard. The exact-SHA PM2 identity and authenticated
+readiness probe run inside the root transaction before terminal completion and
+serve as the required legacy drill smoke. The Mac only submits and polls the
+transaction, so closing SSH does not cancel the root one-shot.
+
+Do not retire this exact control-v2 adapter while any transaction is active.
+Run `sudo /usr/local/sbin/nexus-rollback-drill-legacy-staging-broker
+assert-terminal-retirement-ready`; its success still requires the
+`nexus.release-layout-fault-drill.v1` successor integration to be installed
+before adapter removal.
 
 Before any live drill, install the reviewed promotion bridge that verifies
 both release-evidence signatures with its root-installed production key before
 the first application-runtime mode/ownership mutation. Current-source request
 validation alone does not guard an older installed bridge.
 
-After an adapter exists, the protected bundle still authorizes only the
-isolated first-drill input. The three real, strictly sequential outcomes and
+The protected bundle still authorizes only the isolated first-drill input. Its
+drillBootstrap field and canonical digest are rejected by the ordinary staging
+validator, and both inner signatures remain invalid under the production key.
+The three real, strictly sequential outcomes and
 execution receipt remain required before the existing protected
 nexus.rollback-drill.v1 freshness envelope can be requested. Staging
 normalization into an ordinary production-promotable attestation is a separate
@@ -75,8 +123,13 @@ Trust boundary
    static systemd template. Before any commit it proves the archive's PAX
    commit identity, compares every privileged source byte with its regular
    archive member, syntax-checks the shell/Python assets, and verifies the
-   systemd template. It does not download an image, provision a guest, start a
-   service, or enable a unit.
+   systemd templates. It does not download an image, provision a guest, or
+   start a service. It enables only
+   nexus-release-layout-fault-drill-recovery.service so an authenticated
+   nonterminal controller journal resumes after host boot; the three guest
+   templates and owner-submitted transaction template remain static and
+   disabled. The host recovery unit orders after dev-kvm.device and both host
+   and guest boot recovery use bounded four-attempt retry windows.
 4. From Canonical's signed SHA256SUMS, independently record the reviewed digest
    of noble-server-cloudimg-amd64.img. Then provision exactly three guests:
 
@@ -92,7 +145,16 @@ Trust boundary
    /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg, requires the signed digest
    to equal the owner-reviewed digest, validates qcow2 structure, installs an
    immutable root-owned base named by digest, and atomically publishes three
-   independent overlays and cloud-init seeds.
+   independent overlays and cloud-init seeds. It also creates a dedicated
+   root-only hypervisor Ed25519 evidence key and one guest Ed25519 evidence key
+   per seed, then atomically publishes the root-owned mode-0600
+   /var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json.
+   That manifest binds the active provision receipt/set, QEMU and runner
+   digests, guest SSH host-key digests, fixed scenario-to-guest mapping, and
+   exact SHA-256 digests for the root controller, controller unit, deep
+   verifier, guest executor, and guest boot-recovery unit.
+   A provision journal or disagreement between that manifest and active.json
+   blocks release-layout proof verification.
 
    When the three exact files were pre-staged under an unprivileged directory,
    add:
@@ -104,6 +166,40 @@ Trust boundary
    state, detects a concurrent source change, and performs the same signature,
    owner-reviewed size/digest, and qcow2 validation after the copy. It does not
    execute a staged file and does not use the network in this mode.
+
+Release-layout successor evidence
+---------------------------------
+
+Install the dedicated lab SSH private key corresponding to the public key used
+at provision time as the root-owned, single-link, mode-0600
+/etc/nexus-release/rollback-drill-vm-ssh-private.pem. The guest account has
+NOSETENV sudo access only to the fixed runtime-control and fault-executor
+subcommands; it cannot read a guest evidence private key or author evidence
+bytes.
+
+Create the nonce-bound plan with the protected-main
+release-layout-fault-drill.mjs `prepare` command. Submit it only to the installed
+root controller:
+
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller submit <plan.json>
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller status <plan-id>
+
+The systemd one-shot runs failed health, guest reboot, and SSH disconnect
+strictly sequentially, with at most one active guest. The controller observes
+the live QEMU PID and command line, loopback-only SSH boundary, guest boot IDs,
+and host monotonic recovery interval. Each root-only guest executor performs
+and restores an actual selector, process, and SQLite recovery fixture, while
+its boot recovery unit resumes an armed transaction after reboot. The guest
+signs only after exact predecessor, database, and health restoration; the
+hypervisor signs the bound isolation observation. Test-mode execution is
+cryptographically ineligible for sealing.
+
+After `status` reports `completed`, the owner-signable payload is the immutable
+root-owned file below
+/var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/<plan-id>/.
+Do not hand-author result JSON, copy evidence private keys, or use OpenSSL to
+manufacture a scenario result. The deep verifier intentionally exposes no
+manual `record` command.
 
 Runtime-readiness gate
 ----------------------
@@ -140,17 +236,17 @@ The protected source archive must be rooted at source/. The guest copies the
 same signed archive to
 /var/lib/nexus-release-bootstrap/<protected-main-sha>/source.tar.gz, verifies
 its digest and Git PAX commit identity, safely extracts only its source/
-sibling, and invokes the five-argument v3 promotion installer from that
+sibling, and invokes the five-argument v4 promotion installer from that
 root-owned source tree.
 
-The readiness measurement binds every installed v3 core promotion asset,
+The readiness measurement binds every installed v4 core promotion asset,
 every application-DR install-layout asset, and all seven Ollama operational
 assets by source, destination, owner, mode, size, and digest. It separately
 binds generated keys, sudoers, service drop-ins, sealed production/staging
 environments, the PM2 installation attestation, effective systemd unit state,
 and NeedDaemonReload=false. A missing asset or an installer that provides only
 a subset of that union fails closed. Before readiness is signed, the guest
-invokes the installed v3 promotion control's assert-root-pm2-ready command;
+invokes the installed v4 promotion control's assert-root-pm2-ready command;
 failure prevents readiness publication and therefore prevents every drill.
 
 Each provisioned guest is assigned to one drill. Start its first boot, collect
@@ -175,9 +271,11 @@ signed bundle:
 Create compact, sorted canonical JSON with no trailing newline using schema
 `nexus.rollback-drill-vm-runtime-authorization.v1`. The signed authorization
 must bind a unique 64-hex authorizationId, issuedAt, expiresAt no more than 24
-hours later, operation `collect-runtime-readiness`, one allowlisted drill,
-setId, guest, port, provision receipt digest, bundle manifest digest, guest SSH
-host public-key digest, and pinned owner public-key digest. Sign those exact
+hours later, the current Linux boot-ID SHA-256, matching `/proc/uptime`
+issued/deadline seconds, operation `collect-runtime-readiness`, one allowlisted
+drill, setId, guest, port, provision receipt digest, bundle manifest digest,
+guest SSH host public-key digest, and pinned owner public-key digest. The
+monotonic lifetime must equal the wall-clock lifetime exactly. Sign those exact
 bytes with the same lab owner key:
 
   openssl pkeyutl -sign -inkey <lab-owner-private-key.pem> -rawin \
@@ -211,6 +309,74 @@ stopped overlay before publication. The evidence coordinator must reject a
 drill while the provision receipt alone is the only readiness input. Never
 enable guest egress, download through cloud-init, copy production executables
 or data, or interpret SSH readiness as promotion readiness.
+
+Sequential readiness admission
+------------------------------
+
+Use the protected-main
+`scripts/rollback-drill-kvm-readiness-sequence.mjs` control before operating
+the three runtime-readiness guests. It is an offline, root-only admission
+ledger, not a guest runner. It snapshots the exact plan, generation manifest,
+provision receipt, lab owner public key, and all three signed runtime
+authorizations under
+`/var/lib/nexus-rollback-drill-vm/readiness-sequences/<plan-sha256>`.
+The fixed non-waiting control lock permits only one state transition at a time.
+An existing plan ledger is never reinitialized or overwritten. Every command
+rechecks the current Linux boot ID and monotonic uptime. A reboot, decreasing
+uptime, or elapsed monotonic deadline fails closed and requires a newly
+prepared and owner-authorized sequence.
+
+Initialize once. The authorization directory must contain the canonical
+`ssh-loss`, `failed-health`, and `guest-reboot` `.json` and `.sig` pairs:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-readiness-sequence.mjs init \
+    --plan <plan.json> \
+    --generation-manifest <generation-manifest.json> \
+    --provision-receipt <provision-receipt.json> \
+    --runtime-authorization-dir <runtime-authorization-directory> \
+    --guest-owner-public-key <lab-owner-public-key.pem>
+
+Use the request path emitted by `init` or `status`; never handcraft or copy a
+request from another plan. Immediately before operating a guest, checkpoint
+the exact next request:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-readiness-sequence.mjs claim \
+    --plan <plan.json> \
+    --request <emitted-request.json>
+
+Only the fixed order `ssh-loss/guest-1`, `failed-health/guest-2`, then
+`guest-reboot/guest-3` is admitted. A second active guest, a later request, a
+completed request replay, a stale new claim, request drift, or a request from
+another plan fails closed. Claim persists before any later operator action.
+Do not resume this authorization after a host reboot. Re-run preparation and
+owner authorization against the new boot identity before starting a guest.
+
+After the root collector has stopped the admitted guest and published its
+readiness v2 receipt and evidence directory, complete the checkpoint:
+
+  sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-readiness-sequence.mjs complete \
+    --plan <plan.json> \
+    --request <same-emitted-request.json> \
+    --readiness <runtime-readiness-v2.json> \
+    --evidence-dir <collector-evidence-directory>
+
+Completion independently verifies the owner Ed25519 authorization signature,
+the guest SSHSIG host-key signature, the fresh journal challenge and handoff
+nonce, and the exact plan, provision, bundle, guest, drill, port, systemd, and
+live QEMU tuple. It publishes immutable receipt snapshots before advancing the
+ledger. An interruption between receipt publication and state advancement is
+idempotently resumed with the same command. Use `status --plan <plan.json>` at
+any time for read-only recovery guidance. The third completion publishes
+immutable `completed-ledger.json`, binding the exact plan, generation,
+provision, ordered request/readiness digests, boot ID, monotonic window, and
+terminal state digest.
+
+This control invokes no `systemctl`, SSH, QEMU, network, evidence-coordinator,
+promotion, or production action. Until a separately reviewed adapter consumes
+its exact active request, a claim is only a durable operator checkpoint. The
+existing systemd admission, active-guest, and release/Sonar locks remain the
+physical one-QEMU enforcement boundary. Do not activate production or submit a
+promotion from this readiness phase.
 
 Input generation and signing
 ----------------------------
@@ -259,6 +425,7 @@ three readiness receipts, in the fixed sequential order:
     --plan <prepared>/plan.json \
     --generation-manifest <prepared>/generation-manifest.json \
     --provision-receipt <provision-receipt.json> \
+    --readiness-ledger <completed-ledger.json> \
     --observation <completed-isolation-observation.json> \
     --ssh-loss-readiness <ssh-loss-readiness-v2.json> \
     --failed-health-readiness <failed-health-readiness-v2.json> \
@@ -272,6 +439,7 @@ payload and three unsigned promotion requests. This avoids expiring a
   sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs authorize \
     --spec <completed-input-spec.json> \
     --plan <prepared>/plan.json \
+    --isolation <new-isolation.json> \
     --output-dir <new-root-private-authorization-directory>
 
 Sign the exact compact plan payload with the lab owner key, then let the
@@ -285,6 +453,7 @@ not verify:
 
   sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs seal-plan-authorization \
     --plan <prepared>/plan.json \
+    --isolation <new-isolation.json> \
     --payload <authorization>/plan-owner-authorization.payload.json \
     --signature <authorization>/plan-owner-authorization.sig \
     --guest-owner-public-key <lab-owner-public-key.pem> \
@@ -300,7 +469,11 @@ promotion signer and publish the results under the coordinator's exact names:
 
 The generated manifests always declare `strictly-sequential` execution and the
 order `ssh-loss`, `failed-health`, `guest-reboot`. They do not create a second
-release lane or permit concurrent guests.
+release lane or permit concurrent guests. The owner-signed plan authorization
+binds the exact isolation digest and completed readiness ledger. The
+coordinator rechecks that binding and the live boot/monotonic deadline before
+its first `systemctl start`; the execution receipt and final machine-evidence
+bundle repeat the generation, provision, and ordered readiness digests.
 
 Isolation
 ---------
@@ -328,10 +501,10 @@ Isolation
 
   A shared non-waiting lock rejects a second active guest.
 - Each guest has a unique qcow2 overlay, cloud-init instance id, VM UUID, and
-  MAC. One newly generated Ed25519 SSH host identity is scoped to the
-  provision set and shared only by its three strictly sequential loopback
-  endpoints. The only login is dominguez through the dedicated lab public
-  key. Password and root SSH login are disabled.
+  MAC, and newly generated Ed25519 SSH host identity. Each host identity is
+  bound to exactly one guest slot and all three identities must be distinct.
+  The only login is dominguez through the dedicated lab public key. Password
+  and root SSH login are disabled.
 - QEMU uses KVM and user-mode networking with one explicit
   127.0.0.1:<port> -> guest:22 forward. restrict=on blocks guest-initiated
   networking. There is no bridge, tap, shared filesystem, host block device,
@@ -355,6 +528,10 @@ Isolation
 
 Evidence and drills
 -------------------
+
+The plan, input-spec, and provision-receipt v2 cutover is intentionally
+fail-closed. Do not resume an in-flight v1 set or plan: retire it, provision a
+fresh three-key v2 set, and generate new owner-signable inputs.
 
 Use one independently sealed guest for each fault scenario. Connect with strict
 host-key checking and a per-guest known_hosts file populated from the provision
@@ -380,7 +557,9 @@ nexus-rollback-drill-vm@guest-N.service units:
     --production-owner-public-key <production-owner.pem> \
     --guest-ssh-client-public-key <guest-ssh-client.pub> \
     --production-ssh-client-public-key <production-ssh-client.pub> \
-    --guest-ssh-host-public-key <guest-ssh-host.pub> \
+    --guest-1-ssh-host-public-key <guest-1-ssh-host.pub> \
+    --guest-2-ssh-host-public-key <guest-2-ssh-host.pub> \
+    --guest-3-ssh-host-public-key <guest-3-ssh-host.pub> \
     --production-ssh-host-public-key <production-ssh-host.pub> \
     --release-evidence-public-key <release-evidence.pem> \
     --guest-ssh-private-key <mode-0600-dedicated-lab-key> \
@@ -408,12 +587,12 @@ plane's invalid_worker_completion recovery path; the coordinator does not
 invent an unreviewed runtime mutation.
 
 Execution is strictly sequential. The coordinator starts one guest unit,
-constructs a private per-overlay known_hosts file from the separately
-validated lab host key, copies and re-verifies the exact signed request,
-launches once, and polls the root control journal. It stops a guest only after
-a terminal outcome is fully measured. If execution fails after launch, it
-leaves that isolated guest running so the durable guest recovery transaction
-can finish and does not start the next overlay.
+constructs a private per-overlay known_hosts file from that guest's separately
+validated, provision-bound lab host key, copies and re-verifies the exact
+signed request, launches once, and polls the root control journal. It stops a
+guest only after a terminal outcome is fully measured. If execution fails
+after launch, it leaves that isolated guest running so the durable guest
+recovery transaction can finish and does not start the next overlay.
 
 Keep execution.json with all three outcome files. Each outcome binds the exact
 receipt digest plus executionMode and testMode; the receipt binds the ordered

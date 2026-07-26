@@ -74,7 +74,7 @@ const result = {
     node: process.version,
     python: cp.execFileSync(pythonBin, ['--version'], { encoding: 'utf8' }).trim(),
   },
-  commands: ['typecheck', 'build', 'migration-rehearsal', 'changed-critical-union', 'content-engine-pytest', 'artifact-validation'],
+  commands: ['build-with-typecheck', 'migration-rehearsal', 'changed-critical-union', 'content-engine-pytest', 'artifact-validation'],
 };
 fs.writeFileSync(process.env.RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
 NODE
@@ -93,7 +93,8 @@ trap on_exit EXIT
 PYTHON_BIN="$(resolve_content_engine_python)"
 export RESULT_PYTHON_BIN="$PYTHON_BIN"
 
-npm run typecheck
+# The production build begins with the same default-project `tsc` compilation.
+# A separate `tsc --noEmit` pass would repeat the complete type analysis.
 npm run build
 node scripts/migration-safety-check.mjs \
   --base "$BASE_SHA" \

@@ -7,6 +7,7 @@ ops/sonarqube/sonar-project.properties	/srv/sonarqube/sonar-project.properties	r
 ops/sonarqube/systemd/nexus-sonarqube.service	/etc/systemd/system/nexus-sonarqube.service	root:root	0644
 ops/sonarqube/systemd/nexus-sonarqube-backup.service	/etc/systemd/system/nexus-sonarqube-backup.service	root:root	0644
 ops/sonarqube/systemd/nexus-sonarqube-backup.timer	/etc/systemd/system/nexus-sonarqube-backup.timer	root:root	0644
+ops/sonarqube/systemd/nexus-sonarqube-install-recovery.service	/etc/systemd/system/nexus-sonarqube-install-recovery.service	root:root	0644
 scripts/quality-sonar-stack.sh	/usr/local/sbin/quality-sonar-stack	root:root	0755
 scripts/quality-sonar-resolve-images.sh	/usr/local/sbin/quality-sonar-resolve-images	root:root	0755
 scripts/quality-sonar-health.sh	/usr/local/sbin/quality-sonar-health	root:root	0755
@@ -29,6 +30,9 @@ scripts/quality-sonar-backup.sh	/usr/local/sbin/quality-sonar-backup	root:root	0
 scripts/aws-credential-process-boundary.py	/usr/local/sbin/quality-sonar-aws-credential-process-boundary.py	root:root	0644
 scripts/quality-sonar-retention.mjs	/usr/local/sbin/quality-sonar-retention.mjs	root:root	0755
 scripts/quality-sonar-restore-drill.sh	/usr/local/sbin/quality-sonar-restore-drill	root:root	0755
+scripts/quality-sonar-stack-receipt.mjs	/usr/local/sbin/quality-sonar-stack-receipt.mjs	root:root	0700
+scripts/quality-sonar-aws-stack-state.mjs	/usr/local/sbin/quality-sonar-aws-stack-state	root:root	0700
+scripts/quality-sonar-cloudformation-activate.py	/usr/local/sbin/quality-sonar-cloudformation-activate	root:root	0700
 scripts/quality-sonar-release-state.sh	/usr/local/sbin/quality-sonar-release-state	root:root	0755
+scripts/quality-sonar-install-transaction.py	/usr/local/sbin/quality-sonar-install-transaction.py	root:root	0700
 ops/sonarqube/nexus-sonar-release-monitor.sudoers	/etc/sudoers.d/nexus-sonar-release-monitor	root:root	0440
-ops/sonarqube/nexus-release-sonar-lock.conf	/etc/tmpfiles.d/nexus-release-sonar-lock.conf	root:root	0644

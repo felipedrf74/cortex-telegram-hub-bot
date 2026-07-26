@@ -185,6 +185,47 @@ describe('application DR versioned-S3 retention evidence', () => {
     expect(JSON.stringify(evidence)).not.toContain('deletions');
   });
 
+  it('selects exactly the 24/7/4/6 floor while Object Lock and Lifecycle retain safety-margin points', () => {
+    const values = [
+      ...matureVersions(),
+      version(
+        `${prefix}/hourly/nexus-db-20260722T120000Z.sqlite.age`,
+        'hourly-safety-margin',
+        '2026-07-22T12:00:00Z',
+      ),
+      version(
+        `${prefix}/daily/nexus-db-20260716.sqlite.age`,
+        'daily-safety-margin',
+        '2026-07-16T00:00:00Z',
+      ),
+      version(
+        `${prefix}/weekly/nexus-db-2026-W26.sqlite.age`,
+        'weekly-safety-margin',
+        '2026-06-22T00:00:00Z',
+      ),
+      version(
+        `${prefix}/monthly/nexus-db-202601.sqlite.age`,
+        'monthly-safety-margin',
+        '2026-01-01T00:00:00Z',
+      ),
+    ];
+    const { result, evidence } = runEvidence(
+      directListing(values),
+      'safety-margin-points',
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(evidence.floorObserved).toBe(true);
+    expect(evidence.tiers.hourly.visiblePoints).toBe(25);
+    expect(evidence.tiers.daily.visiblePoints).toBe(8);
+    expect(evidence.tiers.weekly.visiblePoints).toBe(5);
+    expect(evidence.tiers.monthly.visiblePoints).toBe(7);
+    expect(evidence.tiers.hourly.selectedVersions).toHaveLength(24);
+    expect(evidence.tiers.daily.selectedVersions).toHaveLength(7);
+    expect(evidence.tiers.weekly.selectedVersions).toHaveLength(4);
+    expect(evidence.tiers.monthly.selectedVersions).toHaveLength(6);
+  });
+
   it('accepts a fully exhausted, exact two-page service marker chain', () => {
     const values = warmingVersions();
     values[1] = {

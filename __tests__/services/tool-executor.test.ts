@@ -1419,6 +1419,71 @@ describe('executeToolCall — Notes', () => {
     );
   });
 
+  it('save_note — treats a non-string domain as a normal note without calling string methods', async () => {
+    const note = { id: 2, content: 'Keep this as an ordinary note.' };
+    vi.mocked(saveNote).mockReturnValue(note as any);
+
+    const result = await execAsUser('save_note', {
+      content: note.content,
+      domain: 42,
+      tags: ['ordinary'],
+    });
+
+    expect(result).toEqual(note);
+    expect(saveNote).toHaveBeenCalledWith(AUTH_USER_ID, {
+      content: note.content,
+      domain: 42,
+      tags: ['ordinary'],
+    });
+    expect(mockCaptureChatContentIdea).not.toHaveBeenCalled();
+  });
+
+  it('save_note — normalizes whitespace and casing around the content idea domain', async () => {
+    const content = 'Explain normalized content capture.';
+    const consentReceipt = issueContentIdeaCaptureConsent({
+      tenantId: AUTH_USER_ID,
+      userId: AUTH_USER_ID,
+      sourceMessageId: 'message-content-capture-normalized-domain',
+      message: `Save this idea: ${content}`,
+    });
+    expect(consentReceipt).not.toBeNull();
+    mockCaptureChatContentIdea.mockReturnValue({
+      item: {
+        id: 93,
+        title: content,
+        productionState: 'inbox',
+        nextAction: { action: 'develop_brief' },
+      },
+      artifact: { id: 94 },
+      replayed: false,
+      created: true,
+    });
+    vi.mocked(saveNote).mockClear();
+
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: AUTH_USER_ID,
+      confirmedDestructiveAction: true,
+      confirmationSource: 'explicit_current_turn',
+      contentIdeaCaptureConsent: consentReceipt,
+    }, () => executeToolCallWithoutContext('save_note', {
+      content,
+      domain: '  CONTENT_IDEA  ',
+    }, AUTH_USER_ID, AUTH_USER_ID));
+
+    expect(result).toEqual({
+      success: true,
+      destination: 'content_workspace',
+      item_id: 93,
+      title: content,
+      status: 'inbox',
+      next_action: 'develop_brief',
+      replayed: false,
+    });
+    expect(mockCaptureChatContentIdea).toHaveBeenCalledOnce();
+    expect(saveNote).not.toHaveBeenCalled();
+  });
+
   it('save_note — rejects content idea capture without a matching current-turn consent receipt', async () => {
     const content = 'A thought that should remain private.';
     const result = await execAsUser('save_note', {

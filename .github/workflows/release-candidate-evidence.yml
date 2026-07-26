@@ -48,8 +48,18 @@ concurrency:
 
 env:
   NODE_VERSION: '22.23.1'
-  PYTHON_VERSION: '3.12'
+  # ServerDominguez /usr/bin/python3.12 reports 3.12.3. The offline installer
+  # rejects patch drift, so build and test the artifact against that contract.
+  PYTHON_VERSION: '3.12.3'
   TZ: Europe/Lisbon
+  # Security scanning remains owned by the required security workflow. Keep
+  # lockfile installs exact while avoiding duplicate advisory/funding network
+  # calls and preferring the setup-node integrity-checked cache.
+  NPM_CONFIG_AUDIT: 'false'
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_PREFER_OFFLINE: 'true'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PIP_NO_INPUT: '1'
   CONTRACT_SCOPE: ${{ inputs.contract_scope }}
   CORRELATION_NONCE: ${{ inputs.correlation_nonce }}
   IOS_SHA: ${{ inputs.ios_sha }}
@@ -125,13 +135,23 @@ jobs:
           gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=main&status=success&per_page=10" \
             --jq '.workflow_runs[].id' > .local/release/nightly-run-ids.txt
+          considered=0
+          usable=false
           while IFS= read -r run_id; do
             [ -n "$run_id" ] || continue
+            considered=$((considered + 1))
             gh run download "$run_id" \
               --repo "$GITHUB_REPOSITORY" \
               --pattern 'nightly-full-suite-evidence-*' \
               --dir ".local/release/nightly-evidence/$run_id" >/dev/null 2>&1 || true
+            if node scripts/release-test-evidence.mjs probe-nightly \
+              --head "$GITHUB_SHA" \
+              --nightly-dir .local/release/nightly-evidence; then
+              usable=true
+              break
+            fi
           done < .local/release/nightly-run-ids.txt
+          echo "Inspected $considered recent nightly run(s); usable=$usable."
 
       - name: Resolve exact release test selection
         id: plan
@@ -324,7 +344,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-          cache-dependency-path: content-engine/requirements.txt
+          cache-dependency-path: |
+            content-engine/requirements.txt
+            content-engine/requirements-dev.txt
 
       - name: Record exact Python test toolchain
         id: python_identity
@@ -363,16 +385,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - name: Setup Node.js with npm cache for an RC-built artifact
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
+      - name: Setup Node.js without dependency cache for exact reuse
+        if: ${{ needs.test-plan.outputs.reuse_allowed == 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: content-engine/requirements.txt
 
-      - run: npm ci
+      - name: Install build dependencies only for an RC-built artifact
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        run: npm ci
 
       - name: Verify production artifact build platform
         run: |
@@ -380,7 +415,9 @@ jobs:
           . /etc/os-release
           test "$ID" = 'ubuntu'
           test "$VERSION_ID" = '24.04'
-          test "$(python --version)" = '${{ needs.python-full.outputs.python_version }}'
+          if [[ '${{ needs.test-plan.outputs.reuse_allowed }}' != 'true' ]]; then
+            test "$(python --version)" = '${{ needs.python-full.outputs.python_version }}'
+          fi
 
       - name: Stop when selected test prerequisites failed
         if: ${{ needs.contract-binding.result != 'success' || needs.test-plan.result != 'success' || needs.python-full.result != 'success' || (needs.test-plan.outputs.reuse_allowed != 'true' && needs.test-plan.outputs.full_required == 'true' && needs.vitest-full.result != 'success') || (needs.test-plan.outputs.reuse_allowed != 'true' && needs.test-plan.outputs.full_required == 'false' && needs.vitest-selected.result != 'success') }}
@@ -417,51 +454,8 @@ jobs:
           name: pytest-results
           path: .local/release/rc-test-results
 
-      - name: Typecheck
-        id: typecheck
-        continue-on-error: true
-        run: npx tsc --noEmit
-
-      - name: Science policy
-        id: science_policy
-        continue-on-error: true
-        run: npm run science-policy:check
-
-      - name: Build
-        id: build
-        continue-on-error: true
-        run: npm run build
-
-      - name: Migration rehearsal
-        id: migrations
-        continue-on-error: true
-        run: node scripts/migration-safety-check.mjs
-
-      - name: Cannot-skip dashboard
-        id: cannot_skip_dashboard
-        continue-on-error: true
-        run: scripts/cannot-skip-gate-dashboard.sh --json --no-evidence > .local/release/cannot-skip-dashboard.json
-
-      - name: Build release-test container
-        id: release_test_image
-        continue-on-error: true
-        run: DOCKER_BUILDKIT=1 docker build -f Dockerfile.release-test -t nexus-hub-release-test:ci .
-
-      - name: Sandbox smoke / container release gate contract
-        id: sandbox_smoke
-        continue-on-error: true
-        env:
-          NEXUS_RELEASE_TEST_IMAGE: nexus-hub-release-test:ci
-          NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
-        run: scripts/release-verify-container.sh --skip-vitest --skip-pytest
-
-      - name: Build immutable runtime bundle
-        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
-        run: |
-          scripts/build-release-runtime-dependencies.sh
-          node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
-
       - name: Reuse and verify the exact protected-main runtime bundle
+        id: reuse_bundle
         if: ${{ needs.test-plan.outputs.reuse_allowed == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -482,11 +476,95 @@ jobs:
             --verify-bundle "$bundle_root" \
             --expected-runtime-sha "$GITHUB_SHA" \
             --expected-digest "$ARTIFACT_DIGEST"
+          node scripts/release-runtime-dependencies.mjs verify --root "$bundle_root"
+          test "$(jq -r '.target.python' \
+            "$bundle_root/dist/runtime-dependencies/lock.json")" \
+            = '${{ needs.python-full.outputs.python_version }}'
+          test -d "$bundle_root/dist" && test ! -L "$bundle_root/dist"
+          test ! -e ./dist && test ! -L ./dist
+          cp -a "$bundle_root/dist" ./dist
+          node scripts/release-runtime-dependencies.mjs extract-node \
+            --root "$GITHUB_WORKSPACE"
+
+      - name: Science policy
+        id: science_policy
+        continue-on-error: true
+        run: npm run science-policy:check
+
+      - name: Build
+        id: build
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        continue-on-error: true
+        run: npm run build
+
+      - name: Migration rehearsal
+        id: migrations
+        continue-on-error: true
+        run: node scripts/migration-safety-check.mjs
+
+      - name: Cannot-skip dashboard
+        id: cannot_skip_dashboard
+        continue-on-error: true
+        run: scripts/cannot-skip-gate-dashboard.sh --json --no-evidence > .local/release/cannot-skip-dashboard.json
+
+      - name: Set up release-test Buildx cache
+        id: release_test_buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          version: v0.35.0
+          driver-opts: |
+            image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+
+      - name: Build release-test container
+        id: release_test_image
+        if: ${{ steps.release_test_buildx.outcome == 'success' }}
+        continue-on-error: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: Dockerfile.release-test
+          load: true
+          push: false
+          tags: nexus-hub-release-test:ci
+          provenance: false
+          cache-from: type=gha,scope=nexus-release-test
+          cache-to: type=gha,scope=nexus-release-test,mode=min,ignore-error=true,timeout=2m
+
+      - name: Build without Buildx only when Buildx setup is unavailable
+        id: release_test_image_fallback
+        if: ${{ steps.release_test_buildx.outcome != 'success' }}
+        continue-on-error: true
+        run: DOCKER_BUILDKIT=1 docker build -f Dockerfile.release-test -t nexus-hub-release-test:ci .
+
+      - name: Sandbox smoke / container release gate contract
+        id: sandbox_smoke
+        continue-on-error: true
+        env:
+          NEXUS_RELEASE_TEST_IMAGE: nexus-hub-release-test:ci
+          NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
+        run: scripts/release-verify-container.sh --contract-only
+
+      - name: Report advisory sandbox build path
+        if: ${{ always() }}
+        env:
+          BUILDX_SETUP_OUTCOME: ${{ steps.release_test_buildx.outcome }}
+          BUILDX_BUILD_OUTCOME: ${{ steps.release_test_image.outcome }}
+          DOCKER_FALLBACK_OUTCOME: ${{ steps.release_test_image_fallback.outcome }}
+        run: |
+          printf '{"schema":"nexus.release-optimization-telemetry.v1","metric":"sandbox-build-path","buildxSetup":"%s","buildxBuild":"%s","dockerFallback":"%s","advisory":true}\n' \
+            "$BUILDX_SETUP_OUTCOME" "$BUILDX_BUILD_OUTCOME" "$DOCKER_FALLBACK_OUTCOME"
+
+      - name: Build immutable runtime bundle
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        run: |
+          scripts/build-release-runtime-dependencies.sh
+          node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
 
       - name: Write exact release-test result
         id: write_test_result
         env:
-          NEXUS_RELEASE_VERDICT: ${{ steps.typecheck.outcome == 'success' && steps.science_policy.outcome == 'success' && steps.build.outcome == 'success' && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && steps.release_test_image.outcome == 'success' && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
+          NEXUS_RELEASE_VERDICT: ${{ steps.science_policy.outcome == 'success' && ((needs.test-plan.outputs.reuse_allowed == 'true' && steps.reuse_bundle.outcome == 'success') || (needs.test-plan.outputs.reuse_allowed != 'true' && steps.build.outcome == 'success')) && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && (steps.release_test_image.outcome == 'success' || steps.release_test_image_fallback.outcome == 'success') && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
           NEXUS_RELEASE_PYTHON_VERSION: ${{ needs.python-full.outputs.python_version }}
         run: |
           if [[ '${{ needs.test-plan.outputs.reuse_allowed }}' == 'true' ]]; then
@@ -615,5 +693,8 @@ jobs:
             .local/release/protected-main-shadow-comparison.json
             .local/release/cannot-skip-dashboard.json
             .local/release/rc-test-results/*
+          # Runtime dependency archives are already gzip-compressed and
+          # digest-bound. Avoid a second expensive compression pass.
+          compression-level: 0
           include-hidden-files: true
           retention-days: 30

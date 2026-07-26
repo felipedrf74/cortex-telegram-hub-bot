@@ -9,6 +9,7 @@ STATE_ROOT="/var/lib/nexus-rollback-drill-vm"
 BASE_DIR="$STATE_ROOT/base"
 SETS_DIR="$STATE_ROOT/sets"
 ACTIVE_RECEIPT="$STATE_ROOT/active.json"
+LAYOUT_TRUST_MANIFEST="$STATE_ROOT/release-layout-evidence-trust.v1.json"
 INSTALL_JOURNAL="$STATE_ROOT/install-in-progress.v1"
 PROVISION_JOURNAL="$STATE_ROOT/provision-in-progress.v1"
 CONTROL_LOCK="$STATE_ROOT/control.lock"
@@ -23,6 +24,12 @@ RUNTIME_MANIFEST="/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest"
 RUNTIME_CONTROL_SOURCE="/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest"
 RUNTIME_READINESS="/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness"
 RUNTIME_RECOVERY_UNIT_SOURCE="/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service"
+FAULT_DRILL_CONTROLLER="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller"
+FAULT_DRILL_GUEST_SOURCE="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest"
+FAULT_DRILL_VERIFIER="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs"
+FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service"
+FAULT_DRILL_CONTROLLER_UNIT="/etc/systemd/system/nexus-release-layout-fault-drill@.service"
+FAULT_DRILL_CONTROLLER_RECOVERY_UNIT="/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service"
 UNIT_PATH="/etc/systemd/system/nexus-rollback-drill-vm@.service"
 SHARED_MUTEX="/run/lock/nexus-release-sonar.lock"
 QEMU_IMG="/usr/bin/qemu-img"
@@ -31,12 +38,21 @@ CLOUD_LOCALDS="/usr/bin/cloud-localds"
 CURL="/usr/bin/curl"
 GPGV="/usr/bin/gpgv"
 DPKG_QUERY="/usr/bin/dpkg-query"
+OPENSSL="/usr/bin/openssl"
 UNIT_TEMPLATE="nexus-rollback-drill-vm@.service"
 
 die() {
   echo "rollback drill VM provisioner: $*" >&2
   exit 1
 }
+
+# BEGIN nexus.rollback-drill-vm-set-id.v2
+derive_set_id() {
+  [ "$#" -eq 24 ] || return 64
+  printf 'schema=nexus.rollback-drill-vm-provision.v2\nimage=%s\nkey=%s\nhostKeys=%s\nports=%s,%s,%s\nrunner=%s\nhostPreflight=%s\nruntimeManifest=%s\nruntimeControl=%s\nruntimeReadiness=%s\nruntimeRecoveryUnit=%s\nfaultDrillController=%s\nfaultDrillControllerUnit=%s\nfaultDrillControllerRecoveryUnit=%s\nfaultDrillGuest=%s\nfaultDrillGuestRecoveryUnit=%s\nfaultDrillVerifier=%s\nunit=%s\nqemu=%s\nqemuVersion=%s\nqemuPackage=%s\nqemuPackageVersion=%s\nqemuPackageArchitecture=%s\n' \
+    "$@" | sha256sum | cut -d' ' -f1
+}
+# END nexus.rollback-drill-vm-set-id.v2
 
 usage() {
   cat <<'USAGE'
@@ -57,7 +73,8 @@ for command in cat chgrp chmod chown cut date dirname find flock getent id \
   stat systemctl tr; do
   command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
-for executable in "$QEMU_IMG" "$QEMU_BIN" "$CLOUD_LOCALDS" "$CURL" "$GPGV" "$DPKG_QUERY"; do
+for executable in "$QEMU_IMG" "$QEMU_BIN" "$CLOUD_LOCALDS" "$CURL" "$GPGV" \
+  "$DPKG_QUERY" "$OPENSSL"; do
   [[ -x "$executable" && ! -L "$executable" ]] \
     || die "required executable is missing or unsafe: $executable"
 done
@@ -230,6 +247,12 @@ validate_root_trusted_path "$RUNTIME_MANIFEST" "installed runtime manifest helpe
 validate_root_trusted_path "$RUNTIME_CONTROL_SOURCE" "installed guest runtime control" file
 validate_root_trusted_path "$RUNTIME_READINESS" "installed runtime readiness collector" file
 validate_root_trusted_path "$RUNTIME_RECOVERY_UNIT_SOURCE" "installed guest runtime recovery unit" file
+validate_root_trusted_path "$FAULT_DRILL_CONTROLLER" "installed fault-drill controller" file
+validate_root_trusted_path "$FAULT_DRILL_GUEST_SOURCE" "installed guest fault executor" file
+validate_root_trusted_path "$FAULT_DRILL_VERIFIER" "installed fault-drill verifier" file
+validate_root_trusted_path "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE" "installed guest fault recovery unit" file
+validate_root_trusted_path "$FAULT_DRILL_CONTROLLER_UNIT" "installed fault-drill controller unit" file
+validate_root_trusted_path "$FAULT_DRILL_CONTROLLER_RECOVERY_UNIT" "installed fault-drill controller recovery unit" file
 validate_root_trusted_path "$UNIT_PATH" "installed VM unit" file
 validate_root_trusted_path "$QEMU_BIN" "QEMU system emulator" file
 runner_sha256="$(sha256sum -- "$RUNNER" | cut -d' ' -f1)"
@@ -238,6 +261,18 @@ runtime_manifest_sha256="$(sha256sum -- "$RUNTIME_MANIFEST" | cut -d' ' -f1)"
 runtime_control_sha256="$(sha256sum -- "$RUNTIME_CONTROL_SOURCE" | cut -d' ' -f1)"
 runtime_readiness_sha256="$(sha256sum -- "$RUNTIME_READINESS" | cut -d' ' -f1)"
 runtime_recovery_unit_sha256="$(sha256sum -- "$RUNTIME_RECOVERY_UNIT_SOURCE" | cut -d' ' -f1)"
+fault_drill_controller_sha256="$(sha256sum -- "$FAULT_DRILL_CONTROLLER" | cut -d' ' -f1)"
+fault_drill_guest_sha256="$(sha256sum -- "$FAULT_DRILL_GUEST_SOURCE" | cut -d' ' -f1)"
+fault_drill_verifier_sha256="$(sha256sum -- "$FAULT_DRILL_VERIFIER" | cut -d' ' -f1)"
+fault_drill_guest_recovery_unit_sha256="$(
+  sha256sum -- "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE" | cut -d' ' -f1
+)"
+fault_drill_controller_unit_sha256="$(
+  sha256sum -- "$FAULT_DRILL_CONTROLLER_UNIT" | cut -d' ' -f1
+)"
+fault_drill_controller_recovery_unit_sha256="$(
+  sha256sum -- "$FAULT_DRILL_CONTROLLER_RECOVERY_UNIT" | cut -d' ' -f1
+)"
 unit_sha256="$(sha256sum -- "$UNIT_PATH" | cut -d' ' -f1)"
 qemu_sha256="$(sha256sum -- "$QEMU_BIN" | cut -d' ' -f1)"
 qemu_version="$(
@@ -369,6 +404,8 @@ assert_template_static
   || die "provision journal is present; owner inspection is required"
 [[ ! -e "$ACTIVE_RECEIPT" && ! -L "$ACTIVE_RECEIPT" ]] \
   || die "an active guest set already exists; replacement is not automatic"
+[[ ! -e "$LAYOUT_TRUST_MANIFEST" && ! -L "$LAYOUT_TRUST_MANIFEST" ]] \
+  || die "a release-layout evidence trust mapping already exists; replacement is not automatic"
 
 for directory in "$BASE_DIR" "$SETS_DIR"; do
   if [ -L "$directory" ]; then
@@ -435,12 +472,14 @@ download_dir=""
 set_stage=""
 set_target=""
 active_stage=""
+trust_stage=""
 base_stage=""
 journal_stage=""
 base_target="$BASE_DIR/$expected_image_sha256.qcow2"
 base_installed=false
 set_committed=false
 active_committed=false
+trust_committed=false
 journal_armed=false
 transaction_succeeded=false
 
@@ -463,6 +502,10 @@ cleanup_transaction() {
       rm -f -- "$ACTIVE_RECEIPT" && fsync_path "$STATE_ROOT" \
         || rollback_failed=true
     fi
+    if [ "$trust_committed" = true ]; then
+      rm -f -- "$LAYOUT_TRUST_MANIFEST" && fsync_path "$STATE_ROOT" \
+        || rollback_failed=true
+    fi
     if [ "$set_committed" = true ]; then
       safe_remove_tree "$set_target" "$SETS_DIR/" || rollback_failed=true
     elif [ -n "$set_stage" ] && [ -e "$set_stage" ]; then
@@ -475,6 +518,10 @@ cleanup_transaction() {
   fi
   if [ -n "$active_stage" ] && [ -e "$active_stage" ]; then
     rm -f -- "$active_stage" && fsync_path "$STATE_ROOT" \
+      || rollback_failed=true
+  fi
+  if [ -n "$trust_stage" ] && [ -e "$trust_stage" ]; then
+    rm -f -- "$trust_stage" && fsync_path "$STATE_ROOT" \
       || rollback_failed=true
   fi
   if [ -n "$base_stage" ] && [ -e "$base_stage" ]; then
@@ -657,38 +704,55 @@ base_installed=true
 printf '%s  %s\n' "$expected_image_sha256" "$base_target" | sha256sum --check --status \
   || die "installed base image digest drifted"
 
-set_host_key="$download_dir/ssh_host_ed25519_key"
-set_host_key_public="$set_host_key.pub"
-ssh-keygen -q -t ed25519 -N '' -C '' -f "$set_host_key" \
-  || die "cannot create the provision-set SSH host key"
-chmod 0600 "$set_host_key" "$set_host_key_public"
-set_host_public_key="$(cut -d' ' -f1-2 "$set_host_key_public")"
-[[ "$set_host_public_key" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+$ ]] \
-  || die "provision-set SSH host public key is invalid"
-set_host_public_key_sha256="$(
-  printf '%s' "$set_host_public_key" | sha256sum | cut -d' ' -f1
+declare -a guest_host_private_keys=()
+declare -a guest_host_public_keys=()
+declare -a guest_host_public_key_sha256s=()
+declare -a guest_host_key_fingerprints=()
+for index in 1 2 3; do
+  guest_host_key="$download_dir/ssh_host_ed25519_key_guest_$index"
+  guest_host_key_public="$guest_host_key.pub"
+  ssh-keygen -q -t ed25519 -N '' -C '' -f "$guest_host_key" \
+    || die "cannot create the guest-$index SSH host key"
+  chmod 0600 "$guest_host_key" "$guest_host_key_public"
+  guest_host_public_key="$(cut -d' ' -f1-2 "$guest_host_key_public")"
+  [[ "$guest_host_public_key" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+$ ]] \
+    || die "guest-$index SSH host public key is invalid"
+  guest_host_public_key_sha256="$(
+    printf '%s' "$guest_host_public_key" | sha256sum | cut -d' ' -f1
+  )"
+  [[ "$guest_host_public_key_sha256" =~ ^[0-9a-f]{64}$ ]] \
+    || die "cannot derive guest-$index SSH host public-key digest"
+  guest_host_key_fingerprint="$(
+    ssh-keygen -l -E sha256 -f "$guest_host_key_public" | cut -d' ' -f2
+  )"
+  [[ "$guest_host_key_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] \
+    || die "guest-$index SSH host-key fingerprint is invalid"
+  [ "$guest_host_public_key_sha256" != "$ssh_public_key_sha256" ] \
+    || die "lab SSH client and guest-$index host identities must be independent"
+  guest_host_private_keys+=("$guest_host_key")
+  guest_host_public_keys+=("$guest_host_public_key")
+  guest_host_public_key_sha256s+=("$guest_host_public_key_sha256")
+  guest_host_key_fingerprints+=("$guest_host_key_fingerprint")
+done
+[ "$(printf '%s\n' "${guest_host_public_key_sha256s[@]}" | sort -u | wc -l)" -eq 3 ] \
+  || die "each rollback-drill guest must have a distinct SSH host key"
+guest_host_key_set="$(
+  IFS=,
+  printf '%s' "${guest_host_public_key_sha256s[*]}"
 )"
-[[ "$set_host_public_key_sha256" =~ ^[0-9a-f]{64}$ ]] \
-  || die "cannot derive provision-set SSH host public-key digest"
-set_host_key_fingerprint="$(
-  ssh-keygen -l -E sha256 -f "$set_host_key_public" | cut -d' ' -f2
-)"
-[[ "$set_host_key_fingerprint" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] \
-  || die "provision-set SSH host-key fingerprint is invalid"
-[ "$set_host_public_key_sha256" != "$ssh_public_key_sha256" ] \
-  || die "lab SSH client and host identities must be independent"
 
-set_id="$(
-  printf 'schema=nexus.rollback-drill-vm-provision.v1\nimage=%s\nkey=%s\nhostKey=%s\nports=%s,%s,%s\nrunner=%s\nhostPreflight=%s\nruntimeManifest=%s\nruntimeControl=%s\nruntimeReadiness=%s\nruntimeRecoveryUnit=%s\nunit=%s\nqemu=%s\nqemuVersion=%s\nqemuPackage=%s\nqemuPackageVersion=%s\nqemuPackageArchitecture=%s\n' \
-    "$expected_image_sha256" "$ssh_public_key_sha256" "$set_host_public_key_sha256" \
-    "$port1" "$port2" "$port3" \
-    "$runner_sha256" "$host_preflight_sha256" \
-    "$runtime_manifest_sha256" "$runtime_control_sha256" \
-    "$runtime_readiness_sha256" "$runtime_recovery_unit_sha256" \
-    "$unit_sha256" "$qemu_sha256" "$qemu_version" \
-    "$qemu_package_name" "$qemu_package_version" "$qemu_package_architecture" \
-    | sha256sum | cut -d' ' -f1
-)"
+set_id="$(derive_set_id \
+  "$expected_image_sha256" "$ssh_public_key_sha256" "$guest_host_key_set" \
+  "$port1" "$port2" "$port3" \
+  "$runner_sha256" "$host_preflight_sha256" \
+  "$runtime_manifest_sha256" "$runtime_control_sha256" \
+  "$runtime_readiness_sha256" "$runtime_recovery_unit_sha256" \
+  "$fault_drill_controller_sha256" "$fault_drill_controller_unit_sha256" \
+  "$fault_drill_controller_recovery_unit_sha256" \
+  "$fault_drill_guest_sha256" "$fault_drill_guest_recovery_unit_sha256" \
+  "$fault_drill_verifier_sha256" \
+  "$unit_sha256" "$qemu_sha256" "$qemu_version" \
+  "$qemu_package_name" "$qemu_package_version" "$qemu_package_architecture")"
 [[ "$set_id" =~ ^[0-9a-f]{64}$ ]] || die "cannot derive provision set identity"
 set_target="$SETS_DIR/$set_id"
 [[ ! -e "$set_target" && ! -L "$set_target" ]] \
@@ -696,6 +760,36 @@ set_target="$SETS_DIR/$set_id"
 set_stage="$(mktemp -d -p "$SETS_DIR" .stage.XXXXXX)"
 chown root:"$EXPECTED_USER" "$set_stage"
 chmod 0750 "$set_stage"
+layout_hypervisor_private="$set_stage/release-layout-hypervisor-evidence-private.pem"
+layout_hypervisor_public="$set_stage/release-layout-hypervisor-evidence-public.pem"
+"$OPENSSL" genpkey -algorithm ED25519 -out "$layout_hypervisor_private" \
+  || die "cannot generate the release-layout hypervisor evidence key"
+"$OPENSSL" pkey -in "$layout_hypervisor_private" -pubout \
+  -out "$layout_hypervisor_public" \
+  || die "cannot derive the release-layout hypervisor public key"
+chown root:root "$layout_hypervisor_private" "$layout_hypervisor_public"
+chmod 0600 "$layout_hypervisor_private"
+chmod 0644 "$layout_hypervisor_public"
+fsync_path "$layout_hypervisor_private"
+fsync_path "$layout_hypervisor_public"
+declare -a layout_guest_private_keys=()
+declare -a layout_guest_public_keys=()
+for index in 1 2 3; do
+  layout_guest_private="$download_dir/release_layout_guest_${index}_private.pem"
+  layout_guest_public="$set_stage/release-layout-guest-${index}-evidence-public.pem"
+  "$OPENSSL" genpkey -algorithm ED25519 -out "$layout_guest_private" \
+    || die "cannot generate the guest-$index release-layout evidence key"
+  "$OPENSSL" pkey -in "$layout_guest_private" -pubout \
+    -out "$layout_guest_public" \
+    || die "cannot derive the guest-$index release-layout public key"
+  chown root:root "$layout_guest_private" "$layout_guest_public"
+  chmod 0600 "$layout_guest_private"
+  chmod 0644 "$layout_guest_public"
+  fsync_path "$layout_guest_private"
+  fsync_path "$layout_guest_public"
+  layout_guest_private_keys+=("$layout_guest_private")
+  layout_guest_public_keys+=("$layout_guest_public")
+done
 guest_records="$set_stage/.guest-records.tsv"
 : >"$guest_records"
 chmod 0600 "$guest_records"
@@ -713,6 +807,18 @@ PY
 )"
 runtime_recovery_unit_base64="$(
   python3 - "$RUNTIME_RECOVERY_UNIT_SOURCE" <<'PY'
+import base64,pathlib,sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
+fault_drill_guest_base64="$(
+  python3 - "$FAULT_DRILL_GUEST_SOURCE" <<'PY'
+import base64,pathlib,sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)"
+fault_drill_guest_recovery_unit_base64="$(
+  python3 - "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE" <<'PY'
 import base64,pathlib,sys
 print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
 PY
@@ -735,6 +841,19 @@ for index in 1 2 3; do
   mac="52:54:00:${identity_digest:0:2}:${identity_digest:2:2}:${identity_digest:4:2}"
   instance_id="nexus-rollback-drill-$guest-${set_id:0:16}"
   bitmap_name="nexus-initial-${identity_digest:0:24}"
+  guest_host_key="${guest_host_private_keys[$((index - 1))]}"
+  guest_host_public_key="${guest_host_public_keys[$((index - 1))]}"
+  guest_host_public_key_sha256="${guest_host_public_key_sha256s[$((index - 1))]}"
+  guest_host_key_fingerprint="${guest_host_key_fingerprints[$((index - 1))]}"
+  layout_guest_private="${layout_guest_private_keys[$((index - 1))]}"
+  layout_guest_private_base64="$(
+    python3 - "$layout_guest_private" <<'PY'
+import base64
+import pathlib
+import sys
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+  )" || die "cannot encode the guest-$index release-layout evidence key"
 
   "$QEMU_IMG" create -q -f qcow2 -F qcow2 -b "$base_target" "$overlay" 100G \
     || die "cannot create guest overlay: $guest"
@@ -793,8 +912,6 @@ users:
     gecos: Nexus rollback drill operator
     shell: /bin/bash
     lock_passwd: true
-    sudo:
-      - ALL=(ALL) NOPASSWD:ALL
     ssh_authorized_keys:
       - $normalized_key
 ssh_deletekeys: true
@@ -802,10 +919,26 @@ ssh_genkeytypes: []
 ssh_keys:
   ed25519_private: |
 USER_HEAD
-    sed 's/^/    /' "$set_host_key"
-    printf '  ed25519_public: %s\n' "$set_host_public_key"
+    sed 's/^/    /' "$guest_host_key"
+    printf '  ed25519_public: %s\n' "$guest_host_public_key"
     cat <<USER_TAIL
 write_files:
+  - path: /etc/nexus-release/release-layout-evidence-private.pem
+    owner: root:root
+    permissions: '0600'
+    encoding: b64
+    content: $layout_guest_private_base64
+  - path: /etc/sudoers.d/nexus-rollback-drill-vm
+    owner: root:root
+    permissions: '0440'
+    content: |
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-rollback-drill-vm-runtime-control *
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-release-layout-fault-guest stage *
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-release-layout-fault-guest run *
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-release-layout-fault-guest recover-if-present *
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-release-layout-fault-guest seal *
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-release-layout-fault-guest fetch *
+      dominguez ALL=(root) NOPASSWD: NOSETENV: /usr/local/sbin/nexus-release-layout-fault-guest cleanup *
   - path: /etc/ssh/sshd_config.d/99-nexus-rollback-drill.conf
     owner: root:root
     permissions: '0644'
@@ -830,10 +963,24 @@ write_files:
     permissions: '0644'
     encoding: b64
     content: $runtime_recovery_unit_base64
+  - path: /usr/local/sbin/nexus-release-layout-fault-guest
+    owner: root:root
+    permissions: '0755'
+    encoding: b64
+    content: $fault_drill_guest_base64
+  - path: /etc/systemd/system/nexus-release-layout-fault-guest-recovery.service
+    owner: root:root
+    permissions: '0644'
+    encoding: b64
+    content: $fault_drill_guest_recovery_unit_base64
 runcmd:
+  - [install, -d, -o, root, -g, root, -m, '0700', /var/lib/nexus-release-layout-fault-guest]
+  - [install, -o, root, -g, root, -m, '0600', /dev/null, /var/lib/nexus-release-layout-fault-guest/mutation.lock]
   - [systemctl, daemon-reload]
   - [systemctl, enable, nexus-rollback-drill-vm-runtime-recovery.service]
+  - [systemctl, enable, nexus-release-layout-fault-guest-recovery.service]
   - [systemctl, start, nexus-rollback-drill-vm-runtime-recovery.service]
+  - [systemctl, start, nexus-release-layout-fault-guest-recovery.service]
   - [systemctl, restart, ssh.service]
 final_message: "nexus rollback drill guest ready"
 USER_TAIL
@@ -850,9 +997,10 @@ USER_TAIL
   [[ "$seed_sha256" =~ ^[0-9a-f]{64}$ ]] || die "cannot derive guest seed digest"
   rm -f -- "$meta" "$network" "$user_data"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$guest" "$port" "$vm_uuid" "$mac" "$instance_id" "$seed_sha256" \
-    "$overlay_initial_sha256" "$set_host_key_fingerprint" "$set_host_public_key" \
+    "$overlay_initial_sha256" "$guest_host_key_fingerprint" \
+    "$guest_host_public_key_sha256" "$guest_host_public_key" \
     >>"$guest_records"
 done
 fsync_path "$guest_records"
@@ -861,11 +1009,14 @@ created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 receipt="$set_stage/receipt.json"
 python3 - \
   "$receipt" "$set_id" "$expected_image_sha256" "$ssh_public_key_sha256" \
-  "$set_host_public_key_sha256" \
   "$port1" "$port2" "$port3" "$set_target" "$guest_records" "$created_at" \
   "$runner_sha256" "$host_preflight_sha256" \
   "$runtime_manifest_sha256" "$runtime_control_sha256" \
   "$runtime_readiness_sha256" "$runtime_recovery_unit_sha256" \
+  "$fault_drill_controller_sha256" "$fault_drill_controller_unit_sha256" \
+  "$fault_drill_controller_recovery_unit_sha256" \
+  "$fault_drill_guest_sha256" "$fault_drill_guest_recovery_unit_sha256" \
+  "$fault_drill_verifier_sha256" \
   "$unit_sha256" "$qemu_sha256" "$qemu_version" \
   "$qemu_package_name" "$qemu_package_version" "$qemu_package_architecture" <<'PY'
 import hashlib
@@ -874,18 +1025,22 @@ import sys
 from pathlib import Path
 
 (
-    output, set_id, image_sha, key_sha, host_key_sha, port1, port2, port3,
+    output, set_id, image_sha, key_sha, port1, port2, port3,
     set_directory, records_path, created_at, runner_sha, host_preflight_sha,
     runtime_manifest_sha, runtime_control_sha, runtime_readiness_sha,
-    runtime_recovery_unit_sha, unit_sha, qemu_sha, qemu_version, qemu_package,
-    qemu_package_version, qemu_package_architecture,
+    runtime_recovery_unit_sha, fault_drill_controller_sha,
+    fault_drill_controller_unit_sha, fault_drill_controller_recovery_unit_sha,
+    fault_drill_guest_sha,
+    fault_drill_guest_recovery_unit_sha, fault_drill_verifier_sha,
+    unit_sha, qemu_sha, qemu_version, qemu_package, qemu_package_version,
+    qemu_package_architecture,
 ) = sys.argv[1:]
 ports = [int(port1), int(port2), int(port3)]
 guests = []
 for line in Path(records_path).read_text(encoding="utf-8").splitlines():
     (
         name, port, uuid, mac, instance_id, seed_sha, overlay_initial_sha,
-        fingerprint, host_public_key,
+        fingerprint, host_public_key_sha256, host_public_key,
     ) = line.split("\t")
     root = f"{set_directory}/{name}"
     guests.append({
@@ -900,20 +1055,22 @@ for line in Path(records_path).read_text(encoding="utf-8").splitlines():
         "seedPath": f"{root}/seed.img",
         "seedSha256": seed_sha,
         "hostPublicKey": host_public_key,
+        "hostPublicKeySha256": host_public_key_sha256,
         "hostKeyFingerprint": fingerprint,
     })
 if len({guest["overlayInitialSha256"] for guest in guests}) != 3:
     raise SystemExit("initial guest overlay digests must be independent")
-if len({guest["hostPublicKey"] for guest in guests}) != 1:
-    raise SystemExit("guest SSH host public key must be provision-set scoped")
-if len({guest["hostKeyFingerprint"] for guest in guests}) != 1:
-    raise SystemExit("guest SSH host fingerprint must be provision-set scoped")
-if hashlib.sha256(
-    guests[0]["hostPublicKey"].strip().encode("utf-8")
-).hexdigest() != host_key_sha:
-    raise SystemExit("guest SSH host public key differs from its set identity")
+if len({guest["hostPublicKey"] for guest in guests}) != 3:
+    raise SystemExit("guest SSH host public keys must be distinct")
+if len({guest["hostKeyFingerprint"] for guest in guests}) != 3:
+    raise SystemExit("guest SSH host fingerprints must be distinct")
+for guest in guests:
+    if hashlib.sha256(
+        guest["hostPublicKey"].strip().encode("utf-8")
+    ).hexdigest() != guest["hostPublicKeySha256"]:
+        raise SystemExit("guest SSH host public key differs from its identity")
 value = {
-    "schema": "nexus.rollback-drill-vm-provision.v1",
+    "schema": "nexus.rollback-drill-vm-provision.v2",
     "setId": set_id,
     "image": {
         "filename": "noble-server-cloudimg-amd64.img",
@@ -921,7 +1078,9 @@ value = {
         "basePath": f"/var/lib/nexus-rollback-drill-vm/base/{image_sha}.qcow2",
     },
     "sshPublicKeySha256": key_sha,
-    "guestSshHostPublicKeySha256": host_key_sha,
+    "guestSshHostPublicKeySha256s": [
+        guest["hostPublicKeySha256"] for guest in guests
+    ],
     "ports": ports,
     "setDirectory": set_directory,
     "runtimeReadiness": {
@@ -954,6 +1113,18 @@ value = {
         "runtimeReadinessSha256": runtime_readiness_sha,
         "runtimeRecoveryUnitSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service",
         "runtimeRecoveryUnitSha256": runtime_recovery_unit_sha,
+        "faultDrillControllerPath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller",
+        "faultDrillControllerSha256": fault_drill_controller_sha,
+        "faultDrillControllerUnitPath": "/etc/systemd/system/nexus-release-layout-fault-drill@.service",
+        "faultDrillControllerUnitSha256": fault_drill_controller_unit_sha,
+        "faultDrillControllerRecoveryUnitPath": "/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service",
+        "faultDrillControllerRecoveryUnitSha256": fault_drill_controller_recovery_unit_sha,
+        "faultDrillGuestExecutorSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest",
+        "faultDrillGuestExecutorSha256": fault_drill_guest_sha,
+        "faultDrillGuestRecoveryUnitSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service",
+        "faultDrillGuestRecoveryUnitSha256": fault_drill_guest_recovery_unit_sha,
+        "faultDrillVerifierPath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs",
+        "faultDrillVerifierSha256": fault_drill_verifier_sha,
         "sharedMutexPath": "/run/lock/nexus-release-sonar.lock",
         "guestAdmissionLockPath": "/run/nexus-rollback-drill-vm/admission.lock",
         "hostAvailableMemoryFloorGiB": 25,
@@ -979,6 +1150,84 @@ value = {
 }
 Path(output).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+layout_trust="$set_stage/release-layout-evidence-trust.v1.json"
+python3 - "$layout_trust" "$receipt" "$layout_hypervisor_public" \
+  "${layout_guest_public_keys[0]}" "${layout_guest_public_keys[1]}" \
+  "${layout_guest_public_keys[2]}" "$created_at" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+output, receipt_path, hypervisor_key_path, guest_1_key_path, \
+    guest_2_key_path, guest_3_key_path, created_at = sys.argv[1:]
+receipt_body = Path(receipt_path).read_bytes()
+receipt = json.loads(receipt_body)
+guest_by_name = {guest["name"]: guest for guest in receipt["guests"]}
+public_keys = {
+    "guest-1": Path(guest_1_key_path).read_text(encoding="ascii"),
+    "guest-2": Path(guest_2_key_path).read_text(encoding="ascii"),
+    "guest-3": Path(guest_3_key_path).read_text(encoding="ascii"),
+}
+scenario_guests = {
+    "failed_health_check": "guest-2",
+    "host_reboot_during_migration": "guest-3",
+    "ssh_disconnect_after_pm2_stop": "guest-1",
+}
+hypervisor_public_key = Path(hypervisor_key_path).read_text(encoding="ascii")
+value = {
+    "schema": "nexus.release-layout-kvm-trust.v1",
+    "provision": {
+        "schema": receipt["schema"],
+        "setId": receipt["setId"],
+        "receiptSha256": hashlib.sha256(receipt_body).hexdigest(),
+    },
+    "hypervisor": {
+        "publicKeyPem": hypervisor_public_key,
+        "publicKeySha256": hashlib.sha256(
+            hypervisor_public_key.encode("ascii")
+        ).hexdigest(),
+        "qemuSha256": receipt["hypervisor"]["qemuSha256"],
+        "runnerSha256": receipt["hypervisor"]["runnerSha256"],
+        "controllerPath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller",
+        "controllerSha256": receipt["hypervisor"]["faultDrillControllerSha256"],
+        "controllerRecoveryUnitPath": "/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service",
+        "controllerRecoveryUnitSha256": receipt["hypervisor"]["faultDrillControllerRecoveryUnitSha256"],
+        "controllerUnitPath": "/etc/systemd/system/nexus-release-layout-fault-drill@.service",
+        "controllerUnitSha256": receipt["hypervisor"]["faultDrillControllerUnitSha256"],
+        "verifierPath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs",
+        "verifierSha256": receipt["hypervisor"]["faultDrillVerifierSha256"],
+    },
+    "guests": {
+        scenario: {
+            "guestId": guest,
+            "publicKeyPem": public_keys[guest],
+            "publicKeySha256": hashlib.sha256(
+                public_keys[guest].encode("ascii")
+            ).hexdigest(),
+            "sshHostPublicKeySha256":
+                guest_by_name[guest]["hostPublicKeySha256"],
+            "executorPath": "/usr/local/sbin/nexus-release-layout-fault-guest",
+            "executorSha256":
+                receipt["hypervisor"]["faultDrillGuestExecutorSha256"],
+            "recoveryUnitPath":
+                "/etc/systemd/system/"
+                "nexus-release-layout-fault-guest-recovery.service",
+            "recoveryUnitSha256":
+                receipt["hypervisor"]["faultDrillGuestRecoveryUnitSha256"],
+        }
+        for scenario, guest in scenario_guests.items()
+    },
+    "createdAt": created_at,
+}
+Path(output).write_text(
+    json.dumps(value, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+chown root:root "$layout_trust"
+chmod 0600 "$layout_trust"
+fsync_path "$layout_trust"
 rm -f -- "$guest_records"
 chown root:"$EXPECTED_USER" "$receipt"
 chmod 0640 "$receipt"
@@ -993,10 +1242,17 @@ fsync_path "$set_stage"
 active_stage="$(mktemp -p "$STATE_ROOT" .active.XXXXXX)"
 install -o root -g "$EXPECTED_USER" -m 0640 -- "$receipt" "$active_stage"
 fsync_path "$active_stage"
+trust_stage="$(mktemp -p "$STATE_ROOT" .layout-trust.XXXXXX)"
+install -o root -g root -m 0600 -- "$layout_trust" "$trust_stage"
+fsync_path "$trust_stage"
 mv -T -- "$set_stage" "$set_target"
 set_stage=""
 set_committed=true
 fsync_path "$SETS_DIR"
+mv -fT -- "$trust_stage" "$LAYOUT_TRUST_MANIFEST"
+trust_stage=""
+trust_committed=true
+fsync_path "$STATE_ROOT"
 mv -fT -- "$active_stage" "$ACTIVE_RECEIPT"
 active_stage=""
 active_committed=true
@@ -1006,5 +1262,6 @@ rm -f -- "$PROVISION_JOURNAL"
 fsync_path "$STATE_ROOT"
 journal_armed=false
 transaction_succeeded=true
-printf '{"ok":true,"schema":"nexus.rollback-drill-vm-provision-result.v1","setId":"%s","imageSha256":"%s","guestCount":3,"servicesStarted":false,"servicesEnabled":false,"drillReady":false,"runtimeStatus":"ssh_only_bootstrap_required"}\n' \
-  "$set_id" "$expected_image_sha256"
+printf '{"ok":true,"schema":"nexus.rollback-drill-vm-provision-result.v1","setId":"%s","imageSha256":"%s","guestCount":3,"servicesStarted":false,"servicesEnabled":false,"drillReady":false,"runtimeStatus":"ssh_only_bootstrap_required","layoutTrustManifestSha256":"%s"}\n' \
+  "$set_id" "$expected_image_sha256" \
+  "$(sha256sum -- "$LAYOUT_TRUST_MANIFEST" | cut -d' ' -f1)"

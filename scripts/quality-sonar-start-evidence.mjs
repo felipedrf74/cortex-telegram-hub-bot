@@ -40,6 +40,7 @@ const REQUIRED_SNAPSHOTS = new Set([
   'pm2-after.json',
   'pm2-before.json',
   'routes.txt',
+  'runtime-authority.json',
   'sysctl.txt',
   'tailscale.txt',
 ]);
@@ -161,6 +162,85 @@ function parseCapacity(raw) {
   return Object.fromEntries(expected.map((key) => [key, parseInteger(values[key], key)]));
 }
 
+function parseRuntimeAuthority(raw, dockerEngineCaptured) {
+  const value = JSON.parse(raw);
+  exactKeys(value, [
+    'automaticUpdaterCount',
+    'containerUserIds',
+    'dockerAuthority',
+    'dockerUserns',
+    'host',
+    'protectedAccounts',
+    'schema',
+    'status',
+  ], 'runtime-authority.json');
+  const userns = value.dockerUserns;
+  if (dockerEngineCaptured) {
+    exactKeys(userns, [
+      'account',
+      'daemonSetting',
+      'dockerRootDir',
+      'namespacedRoot',
+      'postgres',
+      'rangeSize',
+      'schema',
+      'sonarqube',
+      'status',
+      'subgidBase',
+      'subuidBase',
+    ], 'runtime-authority.json dockerUserns');
+    exactKeys(userns.postgres, [
+      'containerGid',
+      'containerUid',
+      'hostGid',
+      'hostUid',
+    ], 'runtime-authority.json dockerUserns postgres');
+    exactKeys(userns.sonarqube, [
+      'containerGid',
+      'containerUid',
+      'hostGid',
+      'hostUid',
+    ], 'runtime-authority.json dockerUserns sonarqube');
+  }
+  if (value.schema !== 'nexus.sonarqube-runtime-authority.v1'
+      || value.status !== 'passed' || value.host !== EXPECTED_HOST
+      || JSON.stringify(value.protectedAccounts) !== JSON.stringify(['dominguez', 'nexus-release'])
+      || JSON.stringify(value.containerUserIds) !== JSON.stringify([999, 1000])
+      || value.automaticUpdaterCount !== 0
+      || !['not_installed', 'root_socket_userns_remap'].includes(value.dockerAuthority)
+      || (dockerEngineCaptured && (
+        value.dockerAuthority !== 'root_socket_userns_remap'
+        || userns?.schema !== 'nexus.docker-userns-map.v1'
+        || userns?.status !== 'passed'
+        || userns?.daemonSetting !== 'default'
+        || userns?.account !== 'dockremap'
+        || userns?.rangeSize !== 65536
+        || !Number.isSafeInteger(userns?.subuidBase)
+        || !Number.isSafeInteger(userns?.subgidBase)
+        || userns.subuidBase < 100000
+        || userns.subgidBase < 100000
+        || userns.postgres.containerUid !== 999
+        || userns.postgres.containerGid !== 999
+        || userns.postgres.hostUid !== userns.subuidBase + 999
+        || userns.postgres.hostGid !== userns.subgidBase + 999
+        || userns.sonarqube.containerUid !== 1000
+        || userns.sonarqube.containerGid !== 1000
+        || userns.sonarqube.hostUid !== userns.subuidBase + 1000
+        || userns.sonarqube.hostGid !== userns.subgidBase + 1000
+        || typeof userns.dockerRootDir !== 'string'
+        || !userns.dockerRootDir.startsWith('/')
+        || userns.dockerRootDir === '/'
+        || userns.namespacedRoot
+          !== `${userns.dockerRootDir}/${userns.subuidBase}.${userns.subgidBase}`
+      ))
+      || (!dockerEngineCaptured && (
+        value.dockerAuthority !== 'not_installed' || userns !== null
+      ))) {
+    fail('runtime-authority.json does not prove the approved host boundary');
+  }
+  return value;
+}
+
 function verifySnapshots(directory, expectedListDigest = null) {
   const root = secureDirectory(directory, 'preflight directory');
   const listPath = resolve(root, 'checksums.sha256');
@@ -188,13 +268,18 @@ function verifySnapshots(directory, expectedListDigest = null) {
   if (secureFile(resolve(root, 'failures.txt'), 'preflight failures').length !== 0) {
     fail('preflight contains recorded failures');
   }
+  const dockerEngineCaptured = /^client=[0-9][0-9A-Za-z.+-]* server=[0-9][0-9A-Za-z.+-]*\n?$/.test(
+    secureFile(resolve(root, 'docker.txt'), 'Docker version snapshot').toString('utf8'),
+  );
+  parseRuntimeAuthority(
+    secureFile(resolve(root, 'runtime-authority.json'), 'runtime authority snapshot').toString('utf8'),
+    dockerEngineCaptured,
+  );
   return {
     root,
     listDigest,
     capacity: parseCapacity(secureFile(resolve(root, 'capacity.env'), 'preflight capacity').toString('utf8')),
-    dockerEngineCaptured: /^client=[0-9][0-9A-Za-z.+-]* server=[0-9][0-9A-Za-z.+-]*\n?$/.test(
-      secureFile(resolve(root, 'docker.txt'), 'Docker version snapshot').toString('utf8'),
-    ),
+    dockerEngineCaptured,
   };
 }
 

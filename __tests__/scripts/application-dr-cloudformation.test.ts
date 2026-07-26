@@ -15,6 +15,14 @@ const guardBinary = [
 ].find((candidate): candidate is string => (
   typeof candidate === 'string' && fs.existsSync(candidate)
 ));
+const cfnLintBinary = [
+  process.env.CFN_LINT_BIN,
+  '/opt/homebrew/bin/cfn-lint',
+  '/usr/local/bin/cfn-lint',
+  '/usr/bin/cfn-lint',
+].find((candidate): candidate is string => (
+  typeof candidate === 'string' && fs.existsSync(candidate)
+));
 
 describe('application DR CloudFormation', () => {
   it('creates only retained, private, versioned and encrypted Object Lock storage', () => {
@@ -84,6 +92,10 @@ describe('application DR CloudFormation', () => {
     expect(guard).toContain("'s3:GetObjectRetention'");
     expect(guard).toContain(
       "Parameters.LifecycleActivation.Default == 'DISABLED'",
+    );
+    expect(guard).not.toContain('PriorDisabledStackId');
+    expect(guard).not.toContain(
+      'disabled_first_activation_is_stack_identity_bound',
     );
     expect(guard).toContain(
       'Rules.LifecycleEnableRequiresFirstBackupReceipt.RuleCondition == {',
@@ -198,6 +210,44 @@ describe('application DR CloudFormation', () => {
     },
   );
 
+  it.runIf(cfnLintBinary !== undefined)(
+    'passes the CloudFormation parser and rejects duplicate mapping keys',
+    () => {
+      const valid = spawnSync(cfnLintBinary, [
+        '--format', 'json',
+        '--regions', 'eu-west-1',
+        '--template', templatePath,
+      ], { encoding: 'utf8' });
+      expect(valid.status, `${valid.stdout}\n${valid.stderr}`).toBe(0);
+
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-dr-cfn-lint-'));
+      try {
+        const duplicate = path.join(root, 'duplicate-key.yaml');
+        const body = fs.readFileSync(templatePath, 'utf8');
+        const mutated = body.replace(
+          '        AssertDescription: >-\n'
+          + '          RestorePrincipalArn must be a separate read-only role',
+          '        AssertDescription: exact duplicate must fail parsing\n'
+          + '        AssertDescription: >-\n'
+          + '          RestorePrincipalArn must be a separate read-only role',
+        );
+        expect(mutated).not.toBe(body);
+        fs.writeFileSync(duplicate, mutated);
+        const invalid = spawnSync(cfnLintBinary, [
+          '--format', 'json',
+          '--regions', 'eu-west-1',
+          '--template', duplicate,
+        ], { encoding: 'utf8' });
+        expect(
+          invalid.status,
+          `${invalid.stdout}\n${invalid.stderr}`,
+        ).not.toBe(0);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('grants only exact governed tiers and denies all direct object deletion', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
@@ -289,7 +339,7 @@ describe('application DR CloudFormation', () => {
     );
   });
 
-  it('can provision a disabled-first, exact-identity IAM Roles Anywhere plane', () => {
+  it('can provision a disabled-by-default, exact-identity IAM Roles Anywhere plane', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
     expect(template).toContain(
@@ -299,6 +349,17 @@ describe('application DR CloudFormation', () => {
     );
     expect(template).toContain('RolesAnywhereActivation:');
     expect(template).toContain('Default: DISABLED');
+    expect(template).not.toContain('PriorDisabledStackId');
+    expect(template).not.toContain('EnabledControlRequiresPriorDisabledStack:');
+    expect(template).not.toContain('DisabledControlsRejectPriorStackClaim:');
+    expect(template).not.toContain('DisabledStackId:');
+    expect(template).toContain(
+      'condition cannot prove prior stack history',
+    );
+    expect(template).toContain(
+      'reviewed\n'
+      + '      external activation controller',
+    );
     expect(template).toContain('Type: AWS::RolesAnywhere::TrustAnchor');
     expect(template).toContain('Type: AWS::RolesAnywhere::CRL');
     expect(template.match(/Type: AWS::RolesAnywhere::Profile/g)).toHaveLength(2);
@@ -398,11 +459,15 @@ describe('application DR CloudFormation', () => {
       + "    AllowedPattern: '^$|^[0-9a-f]{64}$'",
     );
     expect(template).toContain('LifecycleEnableRequiresFirstBackupReceipt:');
+    expect(template).toContain('DisabledLifecycleRejectsBootstrapReceipt:');
     expect(template).toContain(
       'RuleCondition: !Equals [!Ref LifecycleActivation, ENABLED]',
     );
     expect(template).toContain(
       "Assert: !Not [!Equals [!Ref LifecycleBootstrapReceiptSha256, '']]",
+    );
+    expect(template).toContain(
+      "Assert: !Equals [!Ref LifecycleBootstrapReceiptSha256, '']",
     );
     expect(template).toContain(
       'Value: !Ref LifecycleBootstrapReceiptSha256',
@@ -487,6 +552,20 @@ describe('application DR CloudFormation', () => {
     expect(operations).toMatch(/does not create an\s+IAM access key/u);
     expect(operations).toContain('IAM Roles Anywhere');
     expect(operations).toContain('RolesAnywhereActivation=DISABLED');
+    expect(operations).toContain(
+      'application-dr-cloudformation-activate.py',
+    );
+    expect(operations).toContain('--operation inspect');
+    expect(operations).toContain('--execute-reviewed-change-set');
+    expect(operations).toMatch(
+      /standard\s+rollback-enabled deployment/u,
+    );
+    expect(operations).toContain('iam:PassRole');
+    expect(operations).toContain(
+      'omit `RoleARN` from `describe-change-set`',
+    );
+    expect(operations).not.toContain('PriorDisabledStackId');
+    expect(operations).not.toContain('DisabledStackId');
     expect(operations).toContain('application-dr-crl-parameters.mjs');
     expect(operations).toContain('74');
     expect(operations).toContain('300,000');

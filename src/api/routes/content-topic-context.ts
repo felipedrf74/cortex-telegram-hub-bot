@@ -6,8 +6,7 @@ import { resolveContentWorkspaceIdentifier } from '../../services/content-worksp
 import { parseOptionalPositiveInt } from './content-script-utils';
 
 export function parseOptionalPositiveId(value: unknown): number | null {
-  const parsed = parseOptionalPositiveInt(value);
-  return parsed != null && parsed > 0 ? parsed : null;
+  return parseOptionalPositiveInt(value);
 }
 
 export function parseOptionalText(value: unknown): string | null {

@@ -12,12 +12,14 @@ from pathlib import Path
 import re
 import shlex
 import stat
+import subprocess
 from typing import NoReturn
 
 
 RESULT_SCHEMA = "NexusAwsCredentialProcessBoundaryV1"
 PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+SERIAL_PATTERN = re.compile(r"^[0-9A-Fa-f:]{1,512}$")
 REGION_PATTERN = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d$")
 ROLES_ANYWHERE_ARN_PATTERN = re.compile(
     r"^arn:(aws|aws-us-gov|aws-cn):rolesanywhere:([a-z0-9-]+):(\d{12}):"
@@ -66,6 +68,49 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def normalize_serial(value: str, label: str) -> str:
+    if SERIAL_PATTERN.fullmatch(value) is None:
+        fail(f"{label} is not a bounded hexadecimal certificate serial")
+    compact = value.replace(":", "").lower().lstrip("0")
+    return compact or "0"
+
+
+def certificate_serial(openssl: Path, certificate: Path) -> str:
+    try:
+        result = subprocess.run(
+            [
+                str(openssl),
+                "x509",
+                "-in",
+                str(certificate),
+                "-noout",
+                "-serial",
+            ],
+            check=False,
+            capture_output=True,
+            env={
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            },
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        fail("OpenSSL certificate serial inspection exceeded its deadline")
+    if (
+        result.returncode != 0
+        or len(result.stdout) > 4096
+        or result.stderr
+    ):
+        fail("OpenSSL could not inspect the exact Roles Anywhere certificate")
+    try:
+        output = result.stdout.decode("ascii").strip()
+    except UnicodeDecodeError:
+        fail("OpenSSL returned a non-ASCII certificate serial")
+    match = re.fullmatch(r"serial=([0-9A-Fa-f:]{1,512})", output)
+    if match is None:
+        fail("OpenSSL returned an invalid certificate serial")
+    return normalize_serial(match.group(1), "Roles Anywhere certificate serial")
 
 
 def trusted_path(
@@ -168,6 +213,8 @@ def validate_arns(
     values: dict[str, str],
     region: str,
     expected_role_arn: str,
+    expected_trust_anchor_arn: str | None,
+    expected_profile_arn: str | None,
 ) -> None:
     trust_anchor = ROLES_ANYWHERE_ARN_PATTERN.fullmatch(values["--trust-anchor-arn"])
     profile = ROLES_ANYWHERE_ARN_PATTERN.fullmatch(values["--profile-arn"])
@@ -180,6 +227,16 @@ def validate_arns(
         fail("credential_process role ARN is invalid")
     if values["--role-arn"] != expected_role_arn:
         fail("credential_process role ARN differs from the exact expected role")
+    if (
+        expected_trust_anchor_arn is not None
+        and values["--trust-anchor-arn"] != expected_trust_anchor_arn
+    ):
+        fail("credential_process trust-anchor ARN differs from the exact expected anchor")
+    if (
+        expected_profile_arn is not None
+        and values["--profile-arn"] != expected_profile_arn
+    ):
+        fail("credential_process profile ARN differs from the exact expected profile")
     if (
         trust_anchor.group(1) != profile.group(1)
         or trust_anchor.group(1) != role.group(1)
@@ -201,6 +258,9 @@ def main() -> None:
     parser.add_argument("--helper", required=True, type=Path)
     parser.add_argument("--helper-sha256", required=True)
     parser.add_argument("--expected-role-arn", required=True)
+    parser.add_argument("--expected-trust-anchor-arn")
+    parser.add_argument("--expected-profile-arn")
+    parser.add_argument("--openssl-bin", type=Path)
     parser.add_argument("--expected-owner-uid", type=int, default=0)
     parser.add_argument("--trust-boundary", type=Path, default=Path("/"))
     args = parser.parse_args()
@@ -213,6 +273,25 @@ def main() -> None:
         fail("reviewed aws_signing_helper SHA-256 is invalid")
     if ROLE_ARN_PATTERN.fullmatch(args.expected_role_arn) is None:
         fail("exact expected role ARN is invalid")
+    exact_identity_values = (
+        args.expected_trust_anchor_arn,
+        args.expected_profile_arn,
+        args.openssl_bin,
+    )
+    if any(value is not None for value in exact_identity_values):
+        if any(value is None for value in exact_identity_values):
+            fail(
+                "exact credential identity inspection requires trust-anchor, profile, "
+                "and OpenSSL together",
+            )
+        trust_anchor = ROLES_ANYWHERE_ARN_PATTERN.fullmatch(
+            args.expected_trust_anchor_arn,
+        )
+        profile = ROLES_ANYWHERE_ARN_PATTERN.fullmatch(args.expected_profile_arn)
+        if trust_anchor is None or trust_anchor.group(4) != "trust-anchor":
+            fail("exact expected trust-anchor ARN is invalid")
+        if profile is None or profile.group(4) != "profile":
+            fail("exact expected profile ARN is invalid")
     if not args.config.is_absolute() or args.config == Path("/"):
         fail("AWS config must use an absolute non-root path")
     if not args.helper.is_absolute() or args.helper == Path("/"):
@@ -237,6 +316,17 @@ def main() -> None:
         allowed_modes={0o500, 0o700, 0o755},
         executable=True,
     )
+    if args.openssl_bin is not None:
+        if not args.openssl_bin.is_absolute() or args.openssl_bin == Path("/"):
+            fail("OpenSSL must use an absolute non-root path")
+        trusted_path(
+            args.openssl_bin,
+            label="OpenSSL",
+            expected_owner_uid=args.expected_owner_uid,
+            trust_boundary=args.trust_boundary,
+            allowed_modes={0o500, 0o700, 0o755},
+            executable=True,
+        )
 
     present = [key for key in FORBIDDEN_ENVIRONMENT_KEYS if key in os.environ]
     if present:
@@ -278,9 +368,16 @@ def main() -> None:
         fail("selected AWS profile region differs from the configured AWS region")
 
     values = parse_process(selected["credential_process"], args.helper)
-    validate_arns(values, args.region, args.expected_role_arn)
+    validate_arns(
+        values,
+        args.region,
+        args.expected_role_arn,
+        args.expected_trust_anchor_arn,
+        args.expected_profile_arn,
+    )
+    certificate = Path(values["--certificate"])
     trusted_path(
-        Path(values["--certificate"]),
+        certificate,
         label="Roles Anywhere certificate",
         expected_owner_uid=args.expected_owner_uid,
         trust_boundary=args.trust_boundary,
@@ -312,6 +409,19 @@ def main() -> None:
                 "credentialSource": "iam-roles-anywhere-credential-process",
                 "longLivedEnvironmentRejected": True,
                 "sharedCredentialsDisabled": True,
+                **(
+                    {
+                        "certificateSerial": certificate_serial(
+                            args.openssl_bin,
+                            certificate,
+                        ),
+                        "profileArn": args.expected_profile_arn,
+                        "roleArn": args.expected_role_arn,
+                        "trustAnchorArn": args.expected_trust_anchor_arn,
+                    }
+                    if args.openssl_bin is not None
+                    else {}
+                ),
             },
             sort_keys=True,
             separators=(",", ":"),

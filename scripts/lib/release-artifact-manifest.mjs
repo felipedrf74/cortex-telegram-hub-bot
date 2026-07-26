@@ -95,6 +95,10 @@ function gitValue(root, commandArgs) {
 }
 
 function shouldSkip(relativePath) {
+  if (relativePath.startsWith('dist/')
+      && (relativePath.endsWith('.d.ts') || relativePath.endsWith('.d.ts.map'))) {
+    return true;
+  }
   return [
     '/.venv',
     '/__pycache__/',
@@ -336,10 +340,11 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
       throw new Error(`release bundle artifact is not a regular file: ${relativePath}`);
     }
     const body = fs.readFileSync(fullPath);
-    if (entry.size !== body.length || entry.sha256 !== sha256(body)) {
+    const bodySha256 = sha256(body);
+    if (entry.size !== body.length || entry.sha256 !== bodySha256) {
       throw new Error(`release bundle artifact byte identity mismatch: ${relativePath}`);
     }
-    return { path: relativePath, size: body.length, sha256: sha256(body) };
+    return { path: relativePath, size: body.length, sha256: bodySha256 };
   });
   validateReleaseScriptStaticEsmDependencyClosure(bundleRoot, seen);
   if (canonicalJson(files) !== canonicalJson(

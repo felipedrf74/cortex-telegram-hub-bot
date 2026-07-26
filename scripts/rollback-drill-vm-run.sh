@@ -21,6 +21,12 @@ RUNTIME_MANIFEST_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-manife
 RUNTIME_CONTROL_SOURCE_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest"
 RUNTIME_READINESS_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness"
 RUNTIME_RECOVERY_UNIT_SOURCE_PATH="/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service"
+FAULT_DRILL_CONTROLLER_PATH="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller"
+FAULT_DRILL_CONTROLLER_UNIT_PATH="/etc/systemd/system/nexus-release-layout-fault-drill@.service"
+FAULT_DRILL_CONTROLLER_RECOVERY_UNIT_PATH="/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service"
+FAULT_DRILL_GUEST_SOURCE_PATH="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest"
+FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE_PATH="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service"
+FAULT_DRILL_VERIFIER_PATH="/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs"
 UNIT_PATH="/etc/systemd/system/nexus-rollback-drill-vm@.service"
 
 die() {
@@ -165,19 +171,27 @@ except Exception as error:
     raise SystemExit(f"cannot read provision receipt: {error}")
 if set(value) != {
     "schema", "setId", "image", "sshPublicKeySha256",
-    "guestSshHostPublicKeySha256", "ports",
+    "guestSshHostPublicKeySha256s", "ports",
     "setDirectory", "runtimeReadiness", "hypervisor", "guests", "createdAt"
 }:
     raise SystemExit("provision receipt has an unexpected schema")
-if value["schema"] != "nexus.rollback-drill-vm-provision.v1":
+if value["schema"] != "nexus.rollback-drill-vm-provision.v2":
     raise SystemExit("provision receipt schema is invalid")
 if not hex64.fullmatch(value["setId"]):
     raise SystemExit("provision set identity is invalid")
 if not hex64.fullmatch(value["sshPublicKeySha256"]):
     raise SystemExit("SSH public-key digest is invalid")
-if not hex64.fullmatch(value["guestSshHostPublicKeySha256"]):
-    raise SystemExit("SSH host public-key digest is invalid")
-if value["sshPublicKeySha256"] == value["guestSshHostPublicKeySha256"]:
+if (
+    not isinstance(value["guestSshHostPublicKeySha256s"], list)
+    or len(value["guestSshHostPublicKeySha256s"]) != 3
+    or any(
+        not isinstance(identity, str) or not hex64.fullmatch(identity)
+        for identity in value["guestSshHostPublicKeySha256s"]
+    )
+    or len(set(value["guestSshHostPublicKeySha256s"])) != 3
+):
+    raise SystemExit("SSH host public-key identities are invalid")
+if value["sshPublicKeySha256"] in value["guestSshHostPublicKeySha256s"]:
     raise SystemExit("SSH client and host identities must be independent")
 expected_set = f"/var/lib/nexus-rollback-drill-vm/sets/{value['setId']}"
 if value["setDirectory"] != expected_set:
@@ -217,6 +231,14 @@ if set(hypervisor) != {
     "runtimeControlSourcePath", "runtimeControlSha256",
     "runtimeReadinessPath", "runtimeReadinessSha256",
     "runtimeRecoveryUnitSourcePath", "runtimeRecoveryUnitSha256",
+    "faultDrillControllerPath", "faultDrillControllerSha256",
+    "faultDrillControllerUnitPath", "faultDrillControllerUnitSha256",
+    "faultDrillControllerRecoveryUnitPath",
+    "faultDrillControllerRecoveryUnitSha256",
+    "faultDrillGuestExecutorSourcePath", "faultDrillGuestExecutorSha256",
+    "faultDrillGuestRecoveryUnitSourcePath",
+    "faultDrillGuestRecoveryUnitSha256",
+    "faultDrillVerifierPath", "faultDrillVerifierSha256",
     "sharedMutexPath", "guestAdmissionLockPath", "hostAvailableMemoryFloorGiB",
     "hostLoad15CeilingExclusive", "unitTemplate", "unitPath", "unitSha256",
     "vcpus", "memoryMiB", "memorySwapMaxMiB", "diskBytes",
@@ -234,6 +256,12 @@ expected_hypervisor = {
     "runtimeControlSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest",
     "runtimeReadinessPath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness",
     "runtimeRecoveryUnitSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service",
+    "faultDrillControllerPath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller",
+    "faultDrillControllerUnitPath": "/etc/systemd/system/nexus-release-layout-fault-drill@.service",
+    "faultDrillControllerRecoveryUnitPath": "/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service",
+    "faultDrillGuestExecutorSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest",
+    "faultDrillGuestRecoveryUnitSourcePath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service",
+    "faultDrillVerifierPath": "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs",
     "sharedMutexPath": "/run/lock/nexus-release-sonar.lock",
     "guestAdmissionLockPath": "/run/nexus-rollback-drill-vm/admission.lock",
     "hostAvailableMemoryFloorGiB": 25,
@@ -264,6 +292,12 @@ for name in (
     "runtimeControlSha256",
     "runtimeReadinessSha256",
     "runtimeRecoveryUnitSha256",
+    "faultDrillControllerSha256",
+    "faultDrillControllerUnitSha256",
+    "faultDrillControllerRecoveryUnitSha256",
+    "faultDrillGuestExecutorSha256",
+    "faultDrillGuestRecoveryUnitSha256",
+    "faultDrillVerifierSha256",
 ):
     if not hex64.fullmatch(hypervisor.get(name, "")):
         raise SystemExit(f"{name} digest is invalid")
@@ -278,10 +312,10 @@ if re.fullmatch(r"[A-Za-z0-9.+:~_-]+", hypervisor.get("qemuPackageVersion", ""))
 if re.fullmatch(r"[a-z0-9][a-z0-9-]*", hypervisor.get("qemuPackageArchitecture", "")) is None:
     raise SystemExit("QEMU package architecture is invalid")
 set_material = (
-    "schema=nexus.rollback-drill-vm-provision.v1\n"
+    "schema=nexus.rollback-drill-vm-provision.v2\n"
     f"image={image['sha256']}\n"
     f"key={value['sshPublicKeySha256']}\n"
-    f"hostKey={value['guestSshHostPublicKeySha256']}\n"
+    f"hostKeys={','.join(value['guestSshHostPublicKeySha256s'])}\n"
     f"ports={value['ports'][0]},{value['ports'][1]},{value['ports'][2]}\n"
     f"runner={hypervisor['runnerSha256']}\n"
     f"hostPreflight={hypervisor['hostPreflightSha256']}\n"
@@ -289,6 +323,12 @@ set_material = (
     f"runtimeControl={hypervisor['runtimeControlSha256']}\n"
     f"runtimeReadiness={hypervisor['runtimeReadinessSha256']}\n"
     f"runtimeRecoveryUnit={hypervisor['runtimeRecoveryUnitSha256']}\n"
+    f"faultDrillController={hypervisor['faultDrillControllerSha256']}\n"
+    f"faultDrillControllerUnit={hypervisor['faultDrillControllerUnitSha256']}\n"
+    f"faultDrillControllerRecoveryUnit={hypervisor['faultDrillControllerRecoveryUnitSha256']}\n"
+    f"faultDrillGuest={hypervisor['faultDrillGuestExecutorSha256']}\n"
+    f"faultDrillGuestRecoveryUnit={hypervisor['faultDrillGuestRecoveryUnitSha256']}\n"
+    f"faultDrillVerifier={hypervisor['faultDrillVerifierSha256']}\n"
     f"unit={hypervisor['unitSha256']}\n"
     f"qemu={hypervisor['qemuSha256']}\n"
     f"qemuVersion={hypervisor['qemuVersion']}\n"
@@ -310,7 +350,7 @@ for slot, candidate in enumerate(guests, start=1):
     if set(candidate) != {
         "name", "port", "unit", "uuid", "mac", "instanceId", "overlayPath",
         "overlayInitialSha256", "seedPath", "seedSha256", "hostPublicKey",
-        "hostKeyFingerprint"
+        "hostPublicKeySha256", "hostKeyFingerprint"
     }:
         raise SystemExit("guest receipt has an unexpected schema")
     candidate_name = f"guest-{slot}"
@@ -346,22 +386,27 @@ for slot, candidate in enumerate(guests, start=1):
     expected_public_key_sha = hashlib.sha256(
         candidate["hostPublicKey"].strip().encode("utf-8")
     ).hexdigest()
-    if expected_public_key_sha != value["guestSshHostPublicKeySha256"]:
-        raise SystemExit("guest host public key is not the provision-set identity")
+    if (
+        not hex64.fullmatch(candidate["hostPublicKeySha256"])
+        or expected_public_key_sha != candidate["hostPublicKeySha256"]
+        or expected_public_key_sha
+        != value["guestSshHostPublicKeySha256s"][slot - 1]
+    ):
+        raise SystemExit("guest host public key is not its provisioned identity")
     if not fingerprint.fullmatch(candidate["hostKeyFingerprint"]):
         raise SystemExit("guest host-key fingerprint is invalid")
     observed_uuids.add(candidate["uuid"])
     observed_macs.add(candidate["mac"])
     observed_fingerprints.add(candidate["hostKeyFingerprint"])
-if len(observed_uuids) != 3 or len(observed_macs) != 3 or len(observed_fingerprints) != 1:
+if len(observed_uuids) != 3 or len(observed_macs) != 3 or len(observed_fingerprints) != 3:
     raise SystemExit(
-        "guest machine identities must be independent and SSH host identity set-scoped"
+        "guest machine and SSH host identities must be independent"
     )
 entry = next((candidate for candidate in guests if candidate.get("name") == guest_name), None)
 if entry is None or set(entry) != {
     "name", "port", "unit", "uuid", "mac", "instanceId", "overlayPath",
     "overlayInitialSha256", "seedPath", "seedSha256", "hostPublicKey",
-    "hostKeyFingerprint"
+    "hostPublicKeySha256", "hostKeyFingerprint"
 }:
     raise SystemExit("selected guest receipt is invalid")
 index = int(guest_name[-1]) - 1
@@ -388,6 +433,12 @@ for output in (
     hypervisor["hostPreflightSha256"],
     hypervisor["runtimeManifestSha256"], hypervisor["runtimeControlSha256"],
     hypervisor["runtimeReadinessSha256"], hypervisor["runtimeRecoveryUnitSha256"],
+    hypervisor["faultDrillControllerSha256"],
+    hypervisor["faultDrillControllerUnitSha256"],
+    hypervisor["faultDrillControllerRecoveryUnitSha256"],
+    hypervisor["faultDrillGuestExecutorSha256"],
+    hypervisor["faultDrillGuestRecoveryUnitSha256"],
+    hypervisor["faultDrillVerifierSha256"],
     hypervisor["qemuSha256"], hypervisor["qemuVersion"],
     hypervisor["qemuPackage"], hypervisor["qemuPackageVersion"],
     hypervisor["qemuPackageArchitecture"],
@@ -395,7 +446,7 @@ for output in (
     print(output)
 PY
 )
-[ "${#selected[@]}" -eq 23 ] || die "provision receipt selection failed"
+[ "${#selected[@]}" -eq 29 ] || die "provision receipt selection failed"
 set_directory="${selected[0]}"
 base_path="${selected[1]}"
 base_sha256="${selected[2]}"
@@ -414,11 +465,17 @@ runtime_manifest_sha256="${selected[14]}"
 runtime_control_sha256="${selected[15]}"
 runtime_readiness_sha256="${selected[16]}"
 runtime_recovery_unit_sha256="${selected[17]}"
-qemu_sha256="${selected[18]}"
-qemu_version="${selected[19]}"
-qemu_package="${selected[20]}"
-qemu_package_version="${selected[21]}"
-qemu_package_architecture="${selected[22]}"
+fault_drill_controller_sha256="${selected[18]}"
+fault_drill_controller_unit_sha256="${selected[19]}"
+fault_drill_controller_recovery_unit_sha256="${selected[20]}"
+fault_drill_guest_sha256="${selected[21]}"
+fault_drill_guest_recovery_unit_sha256="${selected[22]}"
+fault_drill_verifier_sha256="${selected[23]}"
+qemu_sha256="${selected[24]}"
+qemu_version="${selected[25]}"
+qemu_package="${selected[26]}"
+qemu_package_version="${selected[27]}"
+qemu_package_architecture="${selected[28]}"
 
 for directory in "$STATE_ROOT" "$STATE_ROOT/base" "$STATE_ROOT/sets" "$set_directory" "$(dirname -- "$overlay_path")"; do
   [[ -d "$directory" && ! -L "$directory" ]] \
@@ -460,6 +517,18 @@ done
   || die "installed runtime readiness collector is unsafe"
 [[ -f "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH" && ! -L "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH" ]] \
   || die "installed guest runtime recovery unit source is unsafe"
+[[ -f "$FAULT_DRILL_CONTROLLER_PATH" && ! -L "$FAULT_DRILL_CONTROLLER_PATH" ]] \
+  || die "installed fault-drill controller is unsafe"
+[[ -f "$FAULT_DRILL_CONTROLLER_UNIT_PATH" && ! -L "$FAULT_DRILL_CONTROLLER_UNIT_PATH" ]] \
+  || die "installed fault-drill controller unit is unsafe"
+[[ -f "$FAULT_DRILL_CONTROLLER_RECOVERY_UNIT_PATH" && ! -L "$FAULT_DRILL_CONTROLLER_RECOVERY_UNIT_PATH" ]] \
+  || die "installed fault-drill controller recovery unit is unsafe"
+[[ -f "$FAULT_DRILL_GUEST_SOURCE_PATH" && ! -L "$FAULT_DRILL_GUEST_SOURCE_PATH" ]] \
+  || die "installed guest fault executor source is unsafe"
+[[ -f "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE_PATH" && ! -L "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE_PATH" ]] \
+  || die "installed guest fault recovery unit source is unsafe"
+[[ -f "$FAULT_DRILL_VERIFIER_PATH" && ! -L "$FAULT_DRILL_VERIFIER_PATH" ]] \
+  || die "installed fault-drill verifier is unsafe"
 [ "$(stat -c '%U:%G:%a' -- "$RUNNER_PATH")" = root:root:755 ] \
   || die "installed runner ownership or mode is unsafe"
 [ "$(stat -c '%U:%G:%a' -- "$UNIT_PATH")" = root:root:644 ] \
@@ -474,6 +543,18 @@ done
   || die "installed runtime readiness collector ownership or mode is unsafe"
 [ "$(stat -c '%U:%G:%a' -- "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH")" = root:root:644 ] \
   || die "installed guest runtime recovery unit source ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$FAULT_DRILL_CONTROLLER_PATH")" = root:root:755 ] \
+  || die "installed fault-drill controller ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$FAULT_DRILL_CONTROLLER_UNIT_PATH")" = root:root:644 ] \
+  || die "installed fault-drill controller unit ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$FAULT_DRILL_CONTROLLER_RECOVERY_UNIT_PATH")" = root:root:644 ] \
+  || die "installed fault-drill controller recovery unit ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$FAULT_DRILL_GUEST_SOURCE_PATH")" = root:root:755 ] \
+  || die "installed guest fault executor source ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE_PATH")" = root:root:644 ] \
+  || die "installed guest fault recovery unit source ownership or mode is unsafe"
+[ "$(stat -c '%U:%G:%a' -- "$FAULT_DRILL_VERIFIER_PATH")" = root:root:755 ] \
+  || die "installed fault-drill verifier ownership or mode is unsafe"
 printf '%s  %s\n' "$runner_sha256" "$RUNNER_PATH" | sha256sum --check --status \
   || die "installed runner digest drifted"
 printf '%s  %s\n' "$unit_sha256" "$UNIT_PATH" | sha256sum --check --status \
@@ -488,6 +569,18 @@ printf '%s  %s\n' "$runtime_readiness_sha256" "$RUNTIME_READINESS_PATH" | sha256
   || die "installed runtime readiness collector digest drifted"
 printf '%s  %s\n' "$runtime_recovery_unit_sha256" "$RUNTIME_RECOVERY_UNIT_SOURCE_PATH" | sha256sum --check --status \
   || die "installed guest runtime recovery unit source digest drifted"
+printf '%s  %s\n' "$fault_drill_controller_sha256" "$FAULT_DRILL_CONTROLLER_PATH" | sha256sum --check --status \
+  || die "installed fault-drill controller digest drifted"
+printf '%s  %s\n' "$fault_drill_controller_unit_sha256" "$FAULT_DRILL_CONTROLLER_UNIT_PATH" | sha256sum --check --status \
+  || die "installed fault-drill controller unit digest drifted"
+printf '%s  %s\n' "$fault_drill_controller_recovery_unit_sha256" "$FAULT_DRILL_CONTROLLER_RECOVERY_UNIT_PATH" | sha256sum --check --status \
+  || die "installed fault-drill controller recovery unit digest drifted"
+printf '%s  %s\n' "$fault_drill_guest_sha256" "$FAULT_DRILL_GUEST_SOURCE_PATH" | sha256sum --check --status \
+  || die "installed guest fault executor source digest drifted"
+printf '%s  %s\n' "$fault_drill_guest_recovery_unit_sha256" "$FAULT_DRILL_GUEST_RECOVERY_UNIT_SOURCE_PATH" | sha256sum --check --status \
+  || die "installed guest fault recovery unit source digest drifted"
+printf '%s  %s\n' "$fault_drill_verifier_sha256" "$FAULT_DRILL_VERIFIER_PATH" | sha256sum --check --status \
+  || die "installed fault-drill verifier digest drifted"
 printf '%s  %s\n' "$qemu_sha256" "$QEMU_BIN" | sha256sum --check --status \
   || die "installed QEMU binary digest drifted"
 printf '%s  %s\n' "$base_sha256" "$base_path" | sha256sum --check --status \
@@ -594,10 +687,20 @@ if (
 authorization=value["ownerAuthorization"]
 if set(authorization)!={
  "authorizationId","drill","issuedAt","expiresAt","sha256","signatureSha256",
- "ownerPublicKeySha256",
+ "ownerPublicKeySha256","controllerBootIdSha256","issuedMonotonicSeconds",
+ "expiresMonotonicSeconds",
 } or any(
  not hex64.fullmatch(authorization[name])
- for name in ("authorizationId","sha256","signatureSha256","ownerPublicKeySha256")
+ for name in (
+  "authorizationId","sha256","signatureSha256","ownerPublicKeySha256",
+  "controllerBootIdSha256",
+ )
+) or (
+ type(authorization["issuedMonotonicSeconds"]) is not int
+ or type(authorization["expiresMonotonicSeconds"]) is not int
+ or authorization["issuedMonotonicSeconds"]<0
+ or authorization["expiresMonotonicSeconds"]
+    <=authorization["issuedMonotonicSeconds"]
 ):
  raise SystemExit("runtime readiness authorization identity is invalid")
 measurement=value["guestMeasurement"]

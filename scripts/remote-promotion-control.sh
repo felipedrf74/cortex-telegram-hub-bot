@@ -5,7 +5,7 @@
 set -euo pipefail
 umask 077
 
-VERSION="nexus-release-promotion-control.v3"
+VERSION="nexus-release-promotion-control.v4"
 STATE_ROOT="${NEXUS_PROMOTION_STATE_ROOT:-/var/lib/nexus-release-promotion}"
 SYSTEMCTL_BIN="${NEXUS_PROMOTION_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
 AUTH_BIN="${NEXUS_PROMOTION_AUTH_BIN:-/usr/local/libexec/nexus-promotion-authorization.mjs}"
@@ -26,9 +26,14 @@ BOOTSTRAP_JOURNAL="/var/lib/nexus-release-promotion/bootstrap-in-progress.v1"
 LAYOUT_ATTESTATION="${NEXUS_PROMOTION_LAYOUT_ATTESTATION:-/var/lib/nexus-release-promotion/layout-migration.v1.json}"
 LAYOUT_RESULT="${NEXUS_PROMOTION_LAYOUT_RESULT:-/var/lib/nexus-release-promotion/layout-migration-result.v1.json}"
 LAYOUT_TERMINAL_JOURNAL="${NEXUS_PROMOTION_LAYOUT_TERMINAL_JOURNAL:-/var/lib/nexus-release-promotion/layout-migration-terminal.v1.json}"
+LAYOUT_ACTIVATION_ACTIVE="${NEXUS_PROMOTION_LAYOUT_ACTIVATION_ACTIVE:-$STATE_ROOT/layout-activation/active.v1.json}"
 LAYOUT_REQUEST="${NEXUS_PROMOTION_LAYOUT_REQUEST:-/var/lib/nexus-release-promotion/layout-migration-request-envelope.v1.json}"
 LAYOUT_DRILL="${NEXUS_PROMOTION_LAYOUT_DRILL:-/var/lib/nexus-release-promotion/layout-migration-fault-drill-envelope.v1.json}"
 LAYOUT_AUTH_BIN="${NEXUS_PROMOTION_LAYOUT_AUTH_BIN:-/usr/local/libexec/nexus-release-layout-authorization.mjs}"
+LAYOUT_DRILL_VERIFY_BIN="${NEXUS_PROMOTION_LAYOUT_DRILL_VERIFY_BIN:-/usr/local/libexec/nexus-release-layout-fault-drill.mjs}"
+LAYOUT_KVM_TRUST_MANIFEST="${NEXUS_PROMOTION_LAYOUT_KVM_TRUST_MANIFEST:-/var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json}"
+LAYOUT_KVM_PROVISION_RECEIPT="${NEXUS_PROMOTION_LAYOUT_KVM_PROVISION_RECEIPT:-/var/lib/nexus-rollback-drill-vm/active.json}"
+LAYOUT_KVM_PROVISION_JOURNAL="${NEXUS_PROMOTION_LAYOUT_KVM_PROVISION_JOURNAL:-/var/lib/nexus-rollback-drill-vm/provision-in-progress.v1}"
 PM2_ATTESTATION="${NEXUS_PROMOTION_PM2_ATTESTATION:-/var/lib/nexus-release-promotion/pm2-root-install.v1.json}"
 ROOT_PM2_BIN="${NEXUS_PROMOTION_PM2_BIN:-/usr/local/bin/pm2}"
 ROOT_NODE_BIN="${NEXUS_PROMOTION_NODE_BIN:-/usr/bin/node}"
@@ -38,6 +43,10 @@ BOOT_HEALTH_BIN="${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-/usr/local/sbin/nexus-releas
 BOOT_RECOVERY="$STATE_ROOT/boot-recovery-in-progress.v1.json"
 BOOT_PENDING="$STATE_ROOT/boot-health-pending.v1.json"
 BOOT_PROOF="$STATE_ROOT/boot-health-proof.v1.json"
+COMPAT_HOME="${NEXUS_PROMOTION_COMPAT_HOME:-/home/dominguez}"
+COMPAT_PRODUCTION="${NEXUS_PROMOTION_COMPAT_PRODUCTION:-/home/dominguez/telegram-hub-bot}"
+COMPAT_STAGING="${NEXUS_PROMOTION_COMPAT_STAGING:-/home/dominguez/telegram-hub-bot-staging}"
+FINDMNT_BIN="${NEXUS_PROMOTION_FINDMNT_BIN:-/usr/bin/findmnt}"
 
 if [ "$EUID" -ne 0 ] && [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
   echo "promotion control must run as root" >&2
@@ -226,7 +235,11 @@ ensure_state_root() {
 }
 
 assert_layout_ready() {
-  local worker_gid identity evidence
+  local worker_uid worker_gid identity evidence
+  [ ! -e "$LAYOUT_ACTIVATION_ACTIVE" ] && [ ! -L "$LAYOUT_ACTIVATION_ACTIVE" ] || {
+    echo "release layout activation is active; ordinary releases remain blocked" >&2
+    return 75
+  }
   [ ! -e "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] || {
     echo "boot recovery or SLA incident is unresolved; releases remain blocked" >&2
     return 75
@@ -239,6 +252,10 @@ assert_layout_ready() {
   }
   [ -f "$LAYOUT_AUTH_BIN" ] && [ ! -L "$LAYOUT_AUTH_BIN" ] || {
     echo "root-installed layout authority verifier is unavailable" >&2
+    return 75
+  }
+  [ -f "$LAYOUT_DRILL_VERIFY_BIN" ] && [ ! -L "$LAYOUT_DRILL_VERIFY_BIN" ] || {
+    echo "root-installed layout machine-proof verifier is unavailable" >&2
     return 75
   }
   for evidence in "$LAYOUT_ATTESTATION" "$LAYOUT_RESULT" "$LAYOUT_TERMINAL_JOURNAL" \
@@ -264,15 +281,49 @@ assert_layout_ready() {
     --fault-drill-envelope "$LAYOUT_DRILL" \
     --public-key "$OWNER_PUBLIC_KEY" \
     --allow-expired >/dev/null
+  [ ! -e "$LAYOUT_KVM_PROVISION_JOURNAL" ] \
+    && [ ! -L "$LAYOUT_KVM_PROVISION_JOURNAL" ] || {
+    echo "rollback-drill KVM provisioning is incomplete" >&2
+    return 75
+  }
+  "$SYSTEM_NODE_BIN" "$LAYOUT_DRILL_VERIFY_BIN" verify-envelope \
+    --input "$LAYOUT_DRILL" \
+    --trust-manifest "$LAYOUT_KVM_TRUST_MANIFEST" \
+    --provision-receipt "$LAYOUT_KVM_PROVISION_RECEIPT" \
+    --require-root-trust --allow-expired >/dev/null
+  worker_uid="$(id -u "$WORKER_USER")"
   worker_gid="$(id -g "$WORKER_USER")"
-  "$SYSTEM_NODE_BIN" - "$LAYOUT_ATTESTATION" "$LAYOUT_RESULT" \
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != 1 ]; then
+    [ -x "$FINDMNT_BIN" ] || {
+      echo "findmnt is required to attest compatibility bind mounts" >&2
+      return 75
+    }
+    local compatibility_path compatibility_target compatibility_mount_target
+    while IFS=$'\t' read -r compatibility_path compatibility_target; do
+      compatibility_mount_target="$("$FINDMNT_BIN" --mountpoint "$compatibility_path" \
+        --noheadings --output TARGET)" || return 75
+      [ "$compatibility_mount_target" = "$compatibility_path" ] || return 75
+      [ "$(stat -c '%d:%i' -- "$compatibility_path")" \
+          = "$(stat -c '%d:%i' -- "$compatibility_target")" ] || return 75
+    done <<EOF
+$COMPAT_PRODUCTION	$PRODUCTION_BASE
+$COMPAT_STAGING	$STAGING_BASE
+EOF
+  fi
+    "$SYSTEM_NODE_BIN" - "$LAYOUT_ATTESTATION" "$LAYOUT_RESULT" \
     "$LAYOUT_TERMINAL_JOURNAL" "$LAYOUT_REQUEST" "$LAYOUT_DRILL" "$PM2_ATTESTATION" \
-    "$RELEASE_ROOT" "$PRODUCTION_BASE" "$STAGING_BASE" "$worker_gid" \
-    "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
+    "$RELEASE_ROOT" "$PRODUCTION_BASE" "$STAGING_BASE" "$worker_uid" "$worker_gid" \
+    "${NEXUS_RELEASE_TEST_MODE:-0}" "$COMPAT_HOME" "$COMPAT_PRODUCTION" \
+    "$COMPAT_STAGING" "$FINDMNT_BIN" <<'NODE'
 const crypto=require('crypto');const fs=require('fs');const path=require('path');
+const {execFileSync}=require('child_process');
 const [file,resultFile,terminalFile,requestFile,drillFile,pm2File,
- releaseRoot,productionBase,stagingBase,workerGidRaw,testMode]=process.argv.slice(2);
+ releaseRoot,productionBase,stagingBase,workerUidRaw,workerGidRaw,testMode,
+ compatHome,compatProduction,compatStaging,findmntBin]=process.argv.slice(2);
+const workerUid=Number(workerUidRaw);
 const workerGid=Number(workerGidRaw);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
 const sha256=(body)=>crypto.createHash('sha256').update(body).digest('hex');
 const canonical=(value)=>value===null||typeof value!=='object'?JSON.stringify(value)
  :Array.isArray(value)?`[${value.map(canonical).join(',')}]`
@@ -325,15 +376,90 @@ if(value.schema!=='nexus.release-layout-migration.v1'
  ||!/^[a-f0-9]{64}$/u.test(value.pm2DumpSha256||'')
  ||value.pm2DumpSha256!==result.pm2DumpSha256
  ||value.pm2DumpSha256!==terminal.pm2DumpSha256
- ||canonical(result.readinessSha256)!==canonical(terminal.readinessSha256)
- ||canonical(value.readinessSha256)!==canonical(result.readinessSha256)
+	 ||canonical(result.readinessSha256)!==canonical(terminal.readinessSha256)
+	 ||canonical(value.readinessSha256)!==canonical(result.readinessSha256)
+	 ||canonical(value.unavailability)!==canonical(result.unavailability)
+	 ||canonical(value.unavailability)!==canonical(terminal.unavailability)
+	 ||value.unavailability?.schema!=='nexus.release-layout-unavailability.v1'
+	 ||value.unavailability?.targetMet!==true
+	 ||value.unavailability?.timingBasis!=='same_boot_monotonic'
+	 ||!Number.isSafeInteger(value.unavailability?.durationMilliseconds)
+	 ||value.unavailability.durationMilliseconds<0
+	 ||value.unavailability.durationMilliseconds>120000
+	 ||value.unavailability?.targetMilliseconds!==120000
+	 ||!Number.isSafeInteger(value.unavailability?.start?.epochMs)
+	 ||!Number.isSafeInteger(value.unavailability?.start?.monotonicMs)
+	 ||!Number.isSafeInteger(value.unavailability?.end?.epochMs)
+	 ||!Number.isSafeInteger(value.unavailability?.end?.monotonicMs)
+	 ||value.unavailability.start.bootId!==value.unavailability.end.bootId
+	 ||value.unavailability.end.monotonicMs-value.unavailability.start.monotonicMs
+	   !==value.unavailability.durationMilliseconds
+	 ||canonical(value.databaseRecovery)!==canonical(result.databaseRecovery)
+	 ||canonical(value.databaseRecovery)!==canonical(terminal.databaseRecovery)
+	 ||canonical(value.compatibility)!==canonical(result.compatibility)
+	 ||canonical(value.compatibility)!==canonical(terminal.compatibility)
+	 ||!/^[a-f0-9]{64}$/u.test(value.databaseRecovery?.recoveryPointSha256||'')
+	 ||!Number.isSafeInteger(value.databaseRecovery?.recoveryPointSizeBytes)
+	 ||value.databaseRecovery.recoveryPointSizeBytes<=0
+	 ||value.databaseRecovery.recoveryPointSizeBytes>2*1024*1024*1024
+	 ||!/^[a-f0-9]{64}$/u.test(value.databaseRecovery?.snapshotEvidenceSha256||'')
+	 ||!/^[a-f0-9]{64}$/u.test(value.databaseRecovery?.stoppedBoundarySha256||'')
+	 ||!Number.isSafeInteger(value.databaseRecovery?.stoppedBoundarySizeBytes)
+	 ||value.databaseRecovery.stoppedBoundarySizeBytes<=0
+	 ||value.databaseRecovery.stoppedBoundarySizeBytes>2*1024*1024*1024
+	 ||!/^[a-f0-9]{64}$/u.test(value.databaseRecovery?.stoppedBoundaryEvidenceSha256||'')
+	 ||!/^[a-f0-9]{64}$/u.test(value.databaseRecovery?.stoppedBoundaryCopyEvidenceSha256||'')
+	 ||value.databaseRecovery?.restoredFromRecoveryPoint!==false
+	 ||value.databaseRecovery?.integrityCheck!=='ok'
+	 ||value.databaseRecovery?.foreignKeyCheck!=='ok'
  ||drill.maximumRecoverySeconds>120
  ||!Array.isArray(drill.scenarios)||drill.scenarios.length!==3
  ||drill.scenarios.some((scenario)=>scenario.status!=='passed'
    ||!/^[a-f0-9]{64}$/u.test(scenario.resultSha256||''))
  ||!Number.isFinite(Date.parse(value.completedAt||'')))process.exit(1);
-const rootUid=testMode==='1'?process.getuid():0;
-const rootGid=testMode==='1'?process.getgid():0;
+const home=fs.lstatSync(compatHome,{bigint:true});
+if(!home.isDirectory()||home.isSymbolicLink()
+ ||value.compatibility?.home?.path!==compatHome
+ ||value.compatibility.home.dev!==String(home.dev)
+ ||value.compatibility.home.ino!==String(home.ino)
+ ||value.compatibility.home.uid!==Number(home.uid)
+ ||value.compatibility.home.gid!==Number(home.gid)
+ ||value.compatibility.home.mode!==Number(home.mode&0o7777n)
+ ||Number(home.uid)!==workerUid
+ ||Number(home.gid)!==workerGid
+ ||(Number(home.mode&0o0022n)!==0))process.exit(1);
+for(const [role,mountPath,target] of [
+ ['production',compatProduction,productionBase],['staging',compatStaging,stagingBase],
+]){
+ const stat=fs.lstatSync(mountPath,{bigint:true});
+ const targetStat=fs.lstatSync(target,{bigint:true}),record=value.compatibility?.[role];
+ const expectedKind=testMode==='1'?'test-symlink-equivalent':'bind-mount';
+ let live;
+ if(testMode==='1'){
+  if(!stat.isSymbolicLink()||fs.readlinkSync(mountPath)!==target
+   ||fs.realpathSync.native(mountPath)!==target)process.exit(1);
+  live={kind:expectedKind,path:mountPath,target,
+   findmnt:{source:'test-equivalent',target:mountPath,options:['bind']},
+   mountIdentity:{dev:String(targetStat.dev),ino:String(targetStat.ino)},
+   targetIdentity:{dev:String(targetStat.dev),ino:String(targetStat.ino)}};
+ }else if(!stat.isDirectory()||stat.isSymbolicLink()
+  ||String(stat.dev)!==String(targetStat.dev)
+  ||String(stat.ino)!==String(targetStat.ino))process.exit(1);
+ else{
+  const mount=JSON.parse(execFileSync(findmntBin,
+   ['--json','--mountpoint',mountPath,'--output','SOURCE,TARGET,OPTIONS'],
+   {encoding:'utf8'})).filesystems;
+  if(!Array.isArray(mount)||mount.length!==1||mount[0].target!==mountPath
+   ||typeof mount[0].source!=='string'||typeof mount[0].options!=='string')process.exit(1);
+  live={kind:expectedKind,path:mountPath,target,
+   findmnt:{source:mount[0].source,target:mount[0].target,
+    options:mount[0].options.split(',').filter(Boolean).sort()},
+   mountIdentity:{dev:String(stat.dev),ino:String(stat.ino)},
+   targetIdentity:{dev:String(targetStat.dev),ino:String(targetStat.ino)}};
+ }
+ const identitySha256=sha256(Buffer.from(canonical(live)));
+ if(canonical(record)!==canonical({...live,identitySha256}))process.exit(1);
+}
 const statEntry=(entryPath,uid,gid,mode)=>{
  const stat=fs.lstatSync(entryPath,{bigint:true});
  if(!stat.isDirectory()||stat.isSymbolicLink()
@@ -539,7 +665,25 @@ ensure_transaction_dirs() {
 }
 
 acquire_control_lock() {
+  local inherited_fd="${NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD:-}"
   command -v flock >/dev/null 2>&1 || { echo "flock is required for promotion serialization" >&2; exit 1; }
+  if [ -n "$inherited_fd" ]; then
+    case "$inherited_fd" in
+      *[!0-9]*|0|1|2) echo "inherited promotion control lock fd is invalid" >&2; exit 1 ;;
+    esac
+    [ -f "$STATE_ROOT/.control.lock" ] \
+      && [ ! -L "$STATE_ROOT/.control.lock" ] \
+      && [ -e "/dev/fd/$inherited_fd" ] \
+      && [ "$STATE_ROOT/.control.lock" -ef "/dev/fd/$inherited_fd" ] || {
+      echo "inherited promotion control lock identity is invalid" >&2
+      exit 1
+    }
+    flock -n -x "$inherited_fd" || {
+      echo "inherited promotion control lock is not held exclusively" >&2
+      exit 1
+    }
+    return
+  fi
   exec 9>"$STATE_ROOT/.control.lock"
   chmod 600 "$STATE_ROOT/.control.lock"; root_own "$STATE_ROOT/.control.lock"
   flock -x 9
@@ -577,6 +721,19 @@ journal_status() {
 const fs=require('fs');const [file,id,digest]=process.argv.slice(2);const x=JSON.parse(fs.readFileSync(file,'utf8'));
 if(x.schema!=='nexus.promotion-transaction-journal.v1'||x.transactionId!==id||x.requestSha256!==digest)process.exit(1);
 process.stdout.write(String(x.status||''));
+NODE
+}
+
+journal_phase() {
+  local id="$1" request_sha="$2" journal
+  journal="$(journal_path "$id")"
+  [ -f "$journal" ] && [ ! -L "$journal" ] || return 1
+  node - "$journal" "$id" "$request_sha" <<'NODE'
+const fs=require('fs');const [file,id,digest]=process.argv.slice(2);
+const x=JSON.parse(fs.readFileSync(file,'utf8'));
+if(x.schema!=='nexus.promotion-transaction-journal.v1'||x.transactionId!==id
+ ||x.requestSha256!==digest||typeof x.phase!=='string')process.exit(1);
+process.stdout.write(x.phase);
 NODE
 }
 
@@ -1193,6 +1350,10 @@ case "$COMMAND" in
     ;;
   assert-idle)
     ensure_state_root; acquire_control_lock; clear_terminal_active
+    [ ! -e "$LAYOUT_ACTIVATION_ACTIVE" ] && [ ! -L "$LAYOUT_ACTIVATION_ACTIVE" ] || {
+      echo "release layout activation is active" >&2
+      exit 73
+    }
     [ ! -e "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] || {
       echo "boot recovery or SLA incident is unresolved" >&2
       exit 73
@@ -1495,8 +1656,23 @@ NODE
     fi
     request_sha="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.requestSha256||"")' "$authority")"
     journal="$(journal_path "$transaction_id")"
-    if [ -f "$journal" ]; then cat "$journal"; else
-      printf '{"schema":"nexus.promotion-transaction-journal.v1","transactionId":"%s","requestSha256":"%s","phase":"submitted","status":"pending"}\n' "$transaction_id" "$request_sha"
+    unit_active=false
+    if "$SYSTEMCTL_BIN" is-active --quiet "$(unit_name "$transaction_id")"; then
+      unit_active=true
+    fi
+    if [ -f "$journal" ]; then
+      "$SYSTEM_NODE_BIN" - "$journal" "$unit_active" <<'NODE'
+const fs=require('fs');
+const [file,unitActiveRaw]=process.argv.slice(2);
+const value=JSON.parse(fs.readFileSync(file,'utf8'));
+if(value===null||typeof value!=='object'||Array.isArray(value)
+ ||!['true','false'].includes(unitActiveRaw))process.exit(1);
+value.unitActive=unitActiveRaw==='true';
+process.stdout.write(`${JSON.stringify(value)}\n`);
+NODE
+    else
+      printf '{"schema":"nexus.promotion-transaction-journal.v1","transactionId":"%s","requestSha256":"%s","phase":"submitted","status":"pending","unitActive":%s}\n' \
+        "$transaction_id" "$request_sha" "$unit_active"
     fi
     ;;
   ensure-started)
@@ -1616,8 +1792,13 @@ NODE
           echo "authoritative promotion journal is invalid at boot" >&2
           exit 1
         }
+        transaction_phase="$(journal_phase "$transaction_id" "$request_sha")" || {
+          echo "authoritative promotion journal phase is invalid at boot" >&2
+          exit 1
+        }
       else
         status=""
+        transaction_phase=""
       fi
       transaction_state="$(state_dir "$transaction_id")"
       if ! journal_terminal "$transaction_id" "$request_sha"; then
@@ -1629,7 +1810,8 @@ NODE
           # Pre-mutation work still runs synchronously at boot. The recovery
           # unit never launches a competing background release lane.
           :
-        elif [ "$status" != escrow_pending ]; then
+        elif [ "$status" != escrow_pending ] \
+            && [ "$transaction_phase" != waiting_for_dr_lease ]; then
           write_recovery_control "$transaction_id"
         fi
         unit="$(unit_name "$transaction_id")"

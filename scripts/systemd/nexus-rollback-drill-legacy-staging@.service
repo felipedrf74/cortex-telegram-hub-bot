@@ -1,0 +1,31 @@
+[Unit]
+Description=Nexus non-promotable legacy staging drill transaction %i
+ConditionPathExists=/var/lib/nexus-rollback-drill-legacy-staging/install-receipt.v1.json
+After=local-fs.target nexus-rollback-drill-legacy-staging-recovery.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker run %i
+TimeoutStartSec=30min
+TimeoutStopSec=125s
+KillSignal=SIGTERM
+Restart=on-failure
+RestartPreventExitStatus=64 66 75 76 77
+RestartSec=2s
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/dominguez/telegram-hub-bot-staging
+ReadWritePaths=/home/dominguez/.pm2
+ReadWritePaths=/var/lib/nexus-rollback-drill-legacy-staging
+ReadWritePaths=/var/lib/nexus-release-promotion
+ReadWritePaths=/run/lock
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+NoNewPrivileges=false
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

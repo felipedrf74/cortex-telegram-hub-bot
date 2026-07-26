@@ -14,19 +14,28 @@ OLLAMA_SOAK_POINTER="${SONAR_OLLAMA_SOAK_POINTER:-/etc/sonarqube/ollama-soak-evi
 OLLAMA_CLEANUP_POINTER="${SONAR_OLLAMA_CLEANUP_POINTER:-/etc/sonarqube/ollama-cleanup-result.path}"
 BACKUP_CONFIG="${SONAR_BACKUP_CONFIG:-/etc/sonarqube/backup.env}"
 SHARED_MUTEX=/run/lock/nexus-release-sonar.lock
-INSTALL_JOURNAL=/var/lib/nexus-sonarqube/install-in-progress.v1
+INSTALL_CONTROL_ROOT=/var/lib/nexus-release-promotion/sonarqube-install-control
+INSTALL_JOURNALS=(
+  "$INSTALL_CONTROL_ROOT/asset-install-in-progress.v2"
+  "$INSTALL_CONTROL_ROOT/directory-install-in-progress.v1.json"
+  "$INSTALL_CONTROL_ROOT/recovery-anchor-unenrollment-in-progress.v1.json"
+)
 DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
 NODE_BIN="$(command -v node 2>/dev/null || true)"
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
 SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+unset DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+export DOCKER_HOST=unix:///var/run/docker.sock
 
 usage() { echo "Usage: quality-sonar-stack.sh <config|start|stop|restart|status>"; }
 case "$ACTION" in config|start|stop|restart|status) ;; -h|--help|'') usage; [ -n "$ACTION" ] && exit 0 || exit 64 ;; *) usage >&2; exit 64 ;; esac
 
 [ "$(id -u)" -eq 0 ] || { echo "The Sonar stack wrapper must run as root" >&2; exit 1; }
-[ ! -e "$INSTALL_JOURNAL" ] && [ ! -L "$INSTALL_JOURNAL" ] \
-  || { echo "Sonar asset installation is incomplete; inspect and rerun the root installer" >&2; exit 1; }
+for install_journal in "${INSTALL_JOURNALS[@]}"; do
+  [ ! -e "$install_journal" ] && [ ! -L "$install_journal" ] \
+    || { echo "Sonar asset installation is incomplete; inspect and rerun the root installer" >&2; exit 1; }
+done
 [ -x "$DOCKER_BIN" ] || { echo "Docker Engine is not installed" >&2; exit 1; }
 [ -x "$NODE_BIN" ] || { echo "Node.js is required to validate the rendered Sonar stack" >&2; exit 1; }
 for path in "$COMPOSE_FILE" "$LOCK_FILE" "$SECRETS_FILE"; do
@@ -48,6 +57,8 @@ live_ollama="$SCRIPT_DIR/quality-sonar-live-ollama-state.mjs"
 [ -x "$live_ollama" ] || live_ollama=/usr/local/sbin/quality-sonar-live-ollama-state
 backup="$SCRIPT_DIR/quality-sonar-backup.sh"
 [ -x "$backup" ] || backup=/usr/local/sbin/quality-sonar-backup
+runtime_boundary="$SCRIPT_DIR/quality-sonar-preflight.sh"
+[ -x "$runtime_boundary" ] || runtime_boundary=/usr/local/sbin/quality-sonar-preflight
 
 compose=("$DOCKER_BIN" compose --project-directory "$STACK_DIR" --env-file "$LOCK_FILE" --env-file "$SECRETS_FILE" -f "$COMPOSE_FILE")
 
@@ -91,12 +102,43 @@ assert_directory() {
   [ "$(stat -c '%a' "$path")" = "$expected_mode" ] || { echo "Unexpected Sonar bind-directory mode: $path" >&2; return 1; }
 }
 
+read_userns_mapped_owners() {
+  local mapping="${1:-}"
+  if [ -z "$mapping" ]; then
+    mapping="$("$runtime_boundary" --print-userns-map)" || return 1
+  fi
+  "$NODE_BIN" - "$mapping" <<'NODE'
+const value = JSON.parse(process.argv[2]);
+if (value?.schema !== 'nexus.docker-userns-map.v1'
+    || value?.status !== 'passed'
+    || value?.postgres?.hostUid !== value.subuidBase + 999
+    || value?.postgres?.hostGid !== value.subgidBase + 999
+    || value?.sonarqube?.hostUid !== value.subuidBase + 1000
+    || value?.sonarqube?.hostGid !== value.subgidBase + 1000) process.exit(1);
+process.stdout.write(
+  `${value.postgres.hostUid}:${value.postgres.hostGid}\t`
+  + `${value.sonarqube.hostUid}:${value.sonarqube.hostGid}\n`,
+);
+NODE
+}
+
 validate_data_layout() {
+  local mapping="${1:-}" postgres_owner sonar_owner
+  IFS=$'\t' read -r postgres_owner sonar_owner < <(read_userns_mapped_owners "$mapping") \
+    || {
+      echo "Unable to derive the reviewed Docker user-namespace owners" >&2
+      return 1
+    }
+  [[ "$postgres_owner" =~ ^[0-9]+:[0-9]+$ ]] \
+    && [[ "$sonar_owner" =~ ^[0-9]+:[0-9]+$ ]] || {
+    echo "Docker user-namespace owners are malformed" >&2
+    return 1
+  }
   assert_directory /srv/sonarqube 0:0 750
   assert_directory /srv/sonarqube/data 0:0 750
-  assert_directory /srv/sonarqube/data/postgresql 999:999 700
+  assert_directory /srv/sonarqube/data/postgresql "$postgres_owner" 700
   for path in sonarqube extensions logs temp; do
-    assert_directory "/srv/sonarqube/data/$path" 1000:1000 750
+    assert_directory "/srv/sonarqube/data/$path" "$sonar_owner" 750
   done
 }
 
@@ -136,6 +178,16 @@ verify_start_evidence() {
 verify_backup_readiness() {
   [ -x "$backup" ] || { echo "Sonar backup verifier is unavailable" >&2; return 1; }
   "$backup" --config "$BACKUP_CONFIG" --verify-config >/dev/null
+}
+
+verify_live_runtime_boundary() {
+  [ -x "$runtime_boundary" ] || {
+    echo "Live Sonar runtime-boundary verifier is unavailable" >&2
+    return 1
+  }
+  "$runtime_boundary" \
+    --verify-runtime-boundary-only \
+    --sample-seconds 1 >/dev/null
 }
 
 verify_live_ollama() (
@@ -199,6 +251,9 @@ if (postgres.image !== lockedPostgresImage || sonar.image !== lockedSonarImage) 
   throw new Error('rendered service image differs from the immutable image lock');
 }
 if (postgres.restart !== 'no' || sonar.restart !== 'no') throw new Error('Docker restart policy must not bypass root start authorization');
+if (postgres.userns_mode || sonar.userns_mode) {
+  throw new Error('service-level userns override is forbidden');
+}
 if (Number(postgres.cpus) !== 1 || Number(postgres.mem_limit) !== 2 * 1024 * 1024 * 1024
     || Number(sonar.cpus) !== 2 || Number(sonar.mem_limit) !== 6 * 1024 * 1024 * 1024) {
   throw new Error('rendered CPU or memory limits differ from the approved Sonar envelope');
@@ -263,7 +318,9 @@ const sonar = JSON.parse(fs.readFileSync(sonarPath, 'utf8'));
 if (Number(postgres.NanoCpus) !== 1_000_000_000
     || Number(postgres.Memory) !== 2 * 1024 * 1024 * 1024
     || Number(sonar.NanoCpus) !== 2_000_000_000
-    || Number(sonar.Memory) !== 6 * 1024 * 1024 * 1024) process.exit(1);
+    || Number(sonar.Memory) !== 6 * 1024 * 1024 * 1024
+    || postgres.UsernsMode === 'host'
+    || sonar.UsernsMode === 'host') process.exit(1);
 NODE
   then
     rm -rf "$temp_dir"
@@ -280,15 +337,32 @@ stop_stack() {
 }
 
 start_stack() {
+  local userns_mapping_before userns_mapping_final
   verify_start_evidence
   verify_backup_readiness
-  validate_data_layout
+  userns_mapping_before="$("$runtime_boundary" --print-userns-map)" || {
+    echo "Unable to bind the Docker user-namespace mapping before start" >&2
+    return 1
+  }
+  validate_data_layout "$userns_mapping_before"
   validate_config >/dev/null
   # This is intentionally the final authorization read before Compose starts:
   # historical evidence cannot hide a reintroduced model, digest drift, or an
   # expanded effective service envelope.
   verify_live_ollama
   verify_prepulled_images
+  # Final pre-Compose read: no stored result can hide current memory/load,
+  # swap/OOM/PM2 pressure, a protected-account authority collision, or a
+  # newly installed automatic image updater.
+  verify_live_runtime_boundary
+  userns_mapping_final="$("$runtime_boundary" --print-userns-map)" || {
+    echo "Unable to reopen the Docker user-namespace mapping before Compose" >&2
+    return 1
+  }
+  [ "$userns_mapping_final" = "$userns_mapping_before" ] || {
+    echo "Docker user-namespace mapping changed before Compose" >&2
+    return 1
+  }
   "${compose[@]}" up -d --pull never
   if ! verify_runtime_limits; then
     "${compose[@]}" stop -t 3600 sonarqube postgres >/dev/null 2>&1 || true

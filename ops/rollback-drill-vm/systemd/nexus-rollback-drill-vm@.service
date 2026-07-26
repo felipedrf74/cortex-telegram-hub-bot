@@ -6,7 +6,8 @@ ConditionPathExists=/run/nexus-rollback-drill-vm/admission.lock
 ConditionPathExists=/var/lib/nexus-rollback-drill-vm/active.json
 ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/install-in-progress.v1
 ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/provision-in-progress.v1
-After=systemd-tmpfiles-setup.service
+Wants=dev-kvm.device
+After=systemd-tmpfiles-setup.service dev-kvm.device
 
 [Service]
 Type=simple

@@ -88,6 +88,9 @@ if (process.env.CONTENT_WORKSPACE_V1_MODE !== 'write'
 }
 console.log('fixture-private-owner=41');
 `);
+  writeFileSync(join(release, 'dist', 'tools', 'portal-session-token.js'), `
+process.stdout.write(JSON.stringify({ token: 'fixture-session-token-123456' }));
+`);
   const db = new Database(join(data, 'bot.db'));
   db.exec('CREATE TABLE fixture (id INTEGER PRIMARY KEY)');
   db.close();
@@ -134,6 +137,10 @@ case "$url" in
     delay="\${CURL_DELAY_BACKEND_ATTEMPTS:-0}"
     [ "$count" -gt "$delay" ] || exit 7
     printf '%s\n' '{"status":"healthy","server":{"status":"online"},"database":"connected"}' > "$output"
+    ;;
+  *:8200/api/snapshot|*:8201/api/snapshot)
+    [ -n "$header" ] && grep -q 'x-portal-session: fixture-session-token-123456' "\${header#@}"
+    printf '%s\n' '{"version":"4.14.999","uptime":123}' > "$output"
     ;;
   *:8100/ready|*:8101/ready)
     [ -n "$header" ] && grep -q 'x-internal-secret: do-not-print-internal' "\${header#@}"

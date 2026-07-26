@@ -99,18 +99,28 @@ cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT
 chmod 700 "$tmp_dir"
 backend_health="$tmp_dir/backend-health.json"
-content_ready="$tmp_dir/content-ready.json"
+initial_backend_snapshot="$tmp_dir/initial-backend-snapshot.json"
+final_backend_snapshot="$tmp_dir/final-backend-snapshot.json"
+initial_content_ready="$tmp_dir/initial-content-ready.json"
+final_content_ready="$tmp_dir/final-content-ready.json"
 content_header="$tmp_dir/content-header"
+portal_header="$tmp_dir/portal-header"
 baseline="$tmp_dir/pm2-baseline.json"
 final="$tmp_dir/pm2-final.json"
 probe_error="$tmp_dir/probe-error.log"
 : > "$backend_health"
-: > "$content_ready"
+: > "$initial_backend_snapshot"
+: > "$final_backend_snapshot"
+: > "$initial_content_ready"
+: > "$final_content_ready"
 : > "$content_header"
+: > "$portal_header"
 : > "$baseline"
 : > "$final"
 : > "$probe_error"
-chmod 600 "$backend_health" "$content_ready" "$content_header" "$baseline" "$final" "$probe_error"
+chmod 600 "$backend_health" "$initial_backend_snapshot" \
+  "$final_backend_snapshot" "$initial_content_ready" "$final_content_ready" \
+  "$content_header" "$portal_header" "$baseline" "$final" "$probe_error"
 
 # This both loads the native addon with the exact runtime Node and checks the
 # live database before release success can suppress automatic rollback.
@@ -219,8 +229,36 @@ NODE
 printf 'x-internal-secret: %s\n' "$internal_secret" > "$content_header"
 unset internal_secret
 
+require_session="$(awk -F= '$1=="PORTAL_REQUIRE_SESSION_AUTH" {print substr($0,index($0,"=")+1); exit}' \
+  "$BASE_DIR/.env" 2>/dev/null || true)"
+if [ "$require_session" = true ]; then
+  portal_token="$(cd "$RELEASE_DIR" \
+    && DOTENV_CONFIG_PATH="$BASE_DIR/.env" "$NODE_BIN" -r dotenv/config \
+      dist/tools/portal-session-token.js \
+      --actor release-readiness@nexushub.me --scope admin \
+      --ttl-ms 300000 --json \
+    | "$NODE_BIN" -e '
+let body="";
+process.stdin.on("data",(chunk)=>body+=chunk);
+process.stdin.on("end",()=>{
+ const value=JSON.parse(body);
+ if(typeof value.token!=="string"||value.token.length<16)process.exit(1);
+ process.stdout.write(value.token);
+});')"
+  [ -n "$portal_token" ] \
+    || { echo "authenticated backend readiness session is unavailable" >&2; exit 1; }
+  printf 'x-portal-session: %s\n' "$portal_token" >"$portal_header"
+else
+  portal_token="$(awk -F= '$1=="PORTAL_TOKEN" {print substr($0,index($0,"=")+1); exit}' \
+    "$BASE_DIR/.env" 2>/dev/null || true)"
+  [ -n "$portal_token" ] \
+    || { echo "authenticated backend readiness credential is missing" >&2; exit 1; }
+  printf 'Authorization: Bearer %s\n' "$portal_token" >"$portal_header"
+fi
+unset portal_token require_session
+
 validate_content_ready() {
-  "$NODE_BIN" - "$content_ready" <<'NODE'
+  "$NODE_BIN" - "$1" <<'NODE'
 const fs = require('fs');
 const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (body.status !== 'ready' || body.internalAuthConfigured !== true) {
@@ -229,13 +267,25 @@ if (body.status !== 'ready' || body.internalAuthConfigured !== true) {
 NODE
 }
 
-monotonic_seconds() {
-  "$NODE_BIN" -e 'process.stdout.write(String(Number(process.hrtime.bigint() / 1000000000n)))'
+validate_backend_snapshot() {
+  "$NODE_BIN" - "$1" <<'NODE'
+const fs = require('fs');
+const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+if (typeof body.version !== 'string' || body.version.length === 0
+    || !Number.isFinite(body.uptime) || body.uptime < 0) {
+  throw new Error('authenticated backend snapshot is invalid');
+}
+NODE
+}
+
+monotonic_nanoseconds() {
+  "$NODE_BIN" -e 'process.stdout.write(process.hrtime.bigint().toString())'
 }
 
 probe_readiness() {
   : > "$backend_health"
-  : > "$content_ready"
+  : > "$initial_backend_snapshot"
+  : > "$initial_content_ready"
   : > "$probe_error"
   {
     snapshot_pm2 "$baseline" \
@@ -243,8 +293,13 @@ probe_readiness() {
         "http://127.0.0.1:$BACKEND_PORT/health" -o "$backend_health" \
       && validate_backend_health \
       && "$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
-        -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" -o "$content_ready" \
-      && validate_content_ready
+        -H @"$portal_header" "http://127.0.0.1:$BACKEND_PORT/api/snapshot" \
+        -o "$initial_backend_snapshot" \
+      && validate_backend_snapshot "$initial_backend_snapshot" \
+      && "$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+        -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" \
+        -o "$initial_content_ready" \
+      && validate_content_ready "$initial_content_ready"
   } >"$probe_error" 2>&1
 }
 
@@ -270,22 +325,48 @@ if [ "$ready" != true ]; then
 fi
 
 STABILITY_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-STABILITY_STARTED_MONOTONIC="$(monotonic_seconds)"
+STABILITY_STARTED_MONOTONIC_NS="$(monotonic_nanoseconds)"
 [ "$STABILITY_SECONDS" -eq 0 ] || sleep "$STABILITY_SECONDS"
 snapshot_pm2 "$final"
-STABILITY_COMPLETED_MONOTONIC="$(monotonic_seconds)"
+: >"$final_backend_snapshot"
+: >"$final_content_ready"
+"$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+  -H @"$portal_header" "http://127.0.0.1:$BACKEND_PORT/api/snapshot" \
+  -o "$final_backend_snapshot"
+validate_backend_snapshot "$final_backend_snapshot"
+"$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+  -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" \
+  -o "$final_content_ready"
+validate_content_ready "$final_content_ready"
+STABILITY_COMPLETED_MONOTONIC_NS="$(monotonic_nanoseconds)"
 STABILITY_COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-STABILITY_OBSERVED_SECONDS=$((STABILITY_COMPLETED_MONOTONIC - STABILITY_STARTED_MONOTONIC))
-[ "$STABILITY_OBSERVED_SECONDS" -ge "$STABILITY_SECONDS" ] || {
-  echo "PM2 stability observation did not cover the configured soak" >&2
-  exit 1
-}
+STABILITY_OBSERVED_NS="$("$NODE_BIN" -e '
+const started=BigInt(process.argv[1]),completed=BigInt(process.argv[2]);
+if(completed<started)process.exit(1);
+process.stdout.write(String(completed-started));' \
+  "$STABILITY_STARTED_MONOTONIC_NS" "$STABILITY_COMPLETED_MONOTONIC_NS")"
+"$NODE_BIN" -e '
+const observed=BigInt(process.argv[1]);
+const required=BigInt(process.argv[2])*1000000000n;
+if(observed<required)process.exit(1);' \
+  "$STABILITY_OBSERVED_NS" "$STABILITY_SECONDS" || {
+    echo "release stability observation did not cover the configured soak" >&2
+    exit 1
+  }
 
 "$NODE_BIN" - "$baseline" "$final" "$OUTPUT_TARGET" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" \
-  "$STABILITY_STARTED_AT" "$STABILITY_COMPLETED_AT" "$STABILITY_OBSERVED_SECONDS" <<'NODE'
+  "$STABILITY_STARTED_AT" "$STABILITY_COMPLETED_AT" \
+  "$STABILITY_STARTED_MONOTONIC_NS" "$STABILITY_COMPLETED_MONOTONIC_NS" \
+  "$STABILITY_OBSERVED_NS" "$initial_backend_snapshot" \
+  "$final_backend_snapshot" "$initial_content_ready" \
+  "$final_content_ready" <<'NODE'
+const crypto = require('crypto');
 const fs = require('fs');
 const [baselinePath, finalPath, outputTarget, role, runtimeSha, stabilitySeconds, readinessAttempts,
-  stabilityStartedAt, stabilityCompletedAt, stabilityObservedSeconds] = process.argv.slice(2);
+  stabilityStartedAt, stabilityCompletedAt, stabilityStartedMonotonicNs,
+  stabilityCompletedMonotonicNs, stabilityObservedNanoseconds,
+  initialBackendPath, finalBackendPath, initialContentPath, finalContentPath] =
+  process.argv.slice(2);
 const before = JSON.parse(fs.readFileSync(baselinePath, 'utf8')).services;
 const after = JSON.parse(fs.readFileSync(finalPath, 'utf8')).services;
 for (const initial of before) {
@@ -296,6 +377,35 @@ for (const initial of before) {
     throw new Error(`PM2 restart stability failed: ${initial.name}`);
   }
 }
+const digest = (body) => crypto.createHash('sha256').update(body).digest('hex');
+const endpoint = (backendPath, contentPath) => {
+  const backendBody = fs.readFileSync(backendPath);
+  const contentBody = fs.readFileSync(contentPath);
+  const backend = JSON.parse(backendBody);
+  const content = JSON.parse(contentBody);
+  if (typeof backend.version !== 'string' || backend.version.length === 0
+      || !Number.isFinite(backend.uptime) || backend.uptime < 0
+      || content.status !== 'ready'
+      || content.internalAuthConfigured !== true) {
+    throw new Error('readiness endpoint evidence is invalid');
+  }
+  return {
+    backendSnapshotSha256: digest(backendBody),
+    backendVersion: backend.version,
+    backendUptime: backend.uptime,
+    contentReadySha256: digest(contentBody),
+    contentStatus: content.status,
+    internalAuthConfigured: content.internalAuthConfigured,
+  };
+};
+const observed = BigInt(stabilityObservedNanoseconds);
+const started = BigInt(stabilityStartedMonotonicNs);
+const completed = BigInt(stabilityCompletedMonotonicNs);
+const requiredSeconds = Number(stabilitySeconds);
+if (completed - started !== observed
+    || observed < BigInt(requiredSeconds) * 1000000000n) {
+  throw new Error('monotonic readiness soak evidence is invalid');
+}
 const evidence = {
   schema: 'nexus.release-readiness.v1',
   role,
@@ -304,13 +414,24 @@ const evidence = {
   stabilitySeconds: Number(stabilitySeconds),
   stabilityStartedAt,
   stabilityCompletedAt,
-  stabilityObservedSeconds: Number(stabilityObservedSeconds),
+  stabilityObservedSeconds: Number(observed) / 1_000_000_000,
   readinessAttempts: Number(readinessAttempts),
+  soak: {
+    schema: 'nexus.release-readiness-soak.v1',
+    clock: 'monotonic',
+    requiredSeconds,
+    startedMonotonicNs: stabilityStartedMonotonicNs,
+    completedMonotonicNs: stabilityCompletedMonotonicNs,
+    observedNanoseconds: stabilityObservedNanoseconds,
+    initial: endpoint(initialBackendPath, initialContentPath),
+    final: endpoint(finalBackendPath, finalContentPath),
+  },
   checks: {
     nativeBinding: true,
     sqliteIntegrity: true,
     sqliteForeignKeys: true,
     backendHealth: true,
+    authenticatedBackendSnapshot: true,
     authenticatedContentEngine: true,
     pm2ExactIdentity: true,
     pm2RestartStable: true,

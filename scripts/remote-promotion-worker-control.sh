@@ -21,6 +21,10 @@ FLOCK_BIN="${NEXUS_PROMOTION_FLOCK_BIN:-/usr/bin/flock}"
 RELEASE_SONAR_LOCK="${NEXUS_PROMOTION_RELEASE_SONAR_LOCK:-/run/lock/nexus-release-sonar.lock}"
 DR_BACKUP_BIN="${NEXUS_PROMOTION_DR_BACKUP_BIN:-/usr/local/libexec/nexus-application-dr/application-dr-backup.sh}"
 DR_CONFIG="${NEXUS_PROMOTION_DR_CONFIG:-/etc/nexus-application-dr/backup.env}"
+DR_BACKUP_LOCK="${NEXUS_PROMOTION_DR_BACKUP_LOCK:-/var/lib/nexus-application-dr/backup.lock}"
+DR_LEASE_FLOCK_BIN="${NEXUS_PROMOTION_DR_FLOCK_BIN:-$FLOCK_BIN}"
+DR_SYSTEMCTL_BIN="${NEXUS_PROMOTION_DR_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+DR_BACKUP_SERVICE=nexus-application-dr-backup.service
 TRUSTED_ATTESTOR="${NEXUS_PROMOTION_TRUSTED_ATTESTOR:-/usr/local/libexec/nexus-trusted-release-runtime-attestation.mjs}"
 RECOVERY_RUNTIME_BIN="${NEXUS_PROMOTION_RECOVERY_RUNTIME_BIN:-/usr/local/libexec/nexus-application-dr/application-dr-recovery-runtime.mjs}"
 RECOVERY_IDENTITY_BIN="${NEXUS_PROMOTION_RECOVERY_IDENTITY_BIN:-/usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs}"
@@ -31,8 +35,15 @@ SYSTEM_NODE_BIN="${NEXUS_PROMOTION_NODE_BIN:-/usr/bin/node}"
 PYTHON_BIN="${NEXUS_PROMOTION_PYTHON_BIN:-/usr/bin/python3}"
 SELECTOR_SWITCH="${NEXUS_PROMOTION_SELECTOR_SWITCH:-/usr/local/libexec/nexus-release-selector-switch.py}"
 BOOT_HEALTH_BIN="${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-/usr/local/sbin/nexus-release-boot-health}"
+SLEEP_BIN="${NEXUS_PROMOTION_SLEEP_BIN:-/usr/bin/sleep}"
+ESCROW_MAX_ATTEMPTS=8
+ESCROW_RETRY_BUDGET_SECONDS=1200
+DR_LEASE_WAIT_SECONDS=120
+DR_LEASE_POLL_SECONDS=2
+DR_LEASE_MAX_PROBES=61
 if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
   PYTHON_BIN="${NEXUS_PROMOTION_PYTHON_BIN:-$(command -v python3)}"
+  SLEEP_BIN="${NEXUS_PROMOTION_SLEEP_BIN:-$(command -v sleep)}"
   if [ -z "${NEXUS_PROMOTION_SELECTOR_SWITCH:-}" ]; then
     SELECTOR_SWITCH="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/remote-release-selector-switch.py"
   fi
@@ -353,8 +364,88 @@ monotonic_seconds() {
   return 1
 }
 
+remaining_before_deadline() {
+  local deadline="$1" maximum="${2:-}" current remaining
+  [[ "$deadline" =~ ^[0-9]+$ ]] || return 1
+  current="$(monotonic_seconds)" || return 1
+  remaining=$((deadline - current))
+  [ "$remaining" -gt 0 ] || return 1
+  if [ -n "$maximum" ]; then
+    [[ "$maximum" =~ ^[1-9][0-9]*$ ]] || return 1
+    [ "$remaining" -le "$maximum" ] || remaining="$maximum"
+  fi
+  printf '%s\n' "$remaining"
+}
+
+current_boot_id() {
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
+      && [[ "${NEXUS_PROMOTION_TEST_BOOT_ID:-}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+    printf '%s\n' "$NEXUS_PROMOTION_TEST_BOOT_ID"
+    return 0
+  fi
+  if [ -r /proc/sys/kernel/random/boot_id ]; then
+    tr -d '\n' < /proc/sys/kernel/random/boot_id
+    printf '\n'
+    return 0
+  fi
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
+    printf 'test-boot\n'
+    return 0
+  fi
+  echo "kernel boot identity is unavailable" >&2
+  return 1
+}
+
+PROMOTION_BOOT_ID="$(current_boot_id)"
+PROMOTION_INVOCATION_ID="${INVOCATION_ID:-}"
+if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
+    && [ -n "${NEXUS_PROMOTION_TEST_INVOCATION_ID:-}" ]; then
+  PROMOTION_INVOCATION_ID="$NEXUS_PROMOTION_TEST_INVOCATION_ID"
+fi
+if [ -z "$PROMOTION_INVOCATION_ID" ]; then
+  PROMOTION_INVOCATION_ID="manual-${PROMOTION_BOOT_ID}-$$"
+fi
+[[ "$PROMOTION_INVOCATION_ID" =~ ^[A-Za-z0-9._:-]{1,192}$ ]] || {
+  echo "promotion invocation identity is invalid" >&2
+  exit 1
+}
+PROMOTION_INVOCATION_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+PROMOTION_INVOCATION_STARTED_MONOTONIC_SECONDS="$(monotonic_seconds)"
+
+# These fields are reconstructed from the authoritative journal before an
+# escrow cycle resumes, and every mutation is durably journaled before the
+# associated network operation or wait begins.
+ESCROW_RETRY_ATTEMPT=0
+ESCROW_RETRY_CYCLE_STARTED_AT=""
+ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS=0
+ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS=0
+ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+ESCROW_RETRY_LAST_ATTEMPT_AT=""
+ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS=0
+ESCROW_RETRY_ERROR_CLASS=""
+ESCROW_RETRY_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+ESCROW_RETRY_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+ESCROW_RETRY_EXHAUSTED_AT=""
+ESCROW_RETRY_EXHAUSTION_REASON=""
+DR_LEASE_PROBE_ATTEMPT=0
+DR_LEASE_WAIT_STARTED_AT=""
+DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS=0
+DR_LEASE_DEADLINE_MONOTONIC_SECONDS=0
+DR_LEASE_NEXT_PROBE_AT=""
+DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS=0
+DR_LEASE_LAST_PROBE_AT=""
+DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS=0
+DR_LEASE_ACQUIRED_AT=""
+DR_LEASE_ERROR_CLASS=""
+DR_LEASE_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+DR_LEASE_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+
 trusted_attest() {
-  local mode="$1" runtime="$2" sha="$3" artifact="$4" installed="$5" args group_id
+  local mode="$1" runtime="$2" sha="$3" artifact="$4" installed="$5"
+  local timeout_seconds="${6:-30}" args group_id
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ "$timeout_seconds" -le 30 ] || timeout_seconds=30
   if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ] \
       && [ "${NEXUS_PROMOTION_TEST_EXERCISE_TRUSTED_ATTESTOR:-0}" != "1" ]; then
     return 0
@@ -362,7 +453,7 @@ trusted_attest() {
   group_id="$(id -g "$WORKER_USER")"
   args=("$mode" --root "$runtime" --base "$PROD_BASE" --runtime-sha "$sha" \
     --artifact-digest "$artifact" --installed-runtime-digest "$installed" --group-id "$group_id")
-  "$TIMEOUT_BIN" --signal=TERM --kill-after=5s 30s \
+  "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${timeout_seconds}s" \
     "$SYSTEM_NODE_BIN" "$TRUSTED_ATTESTOR" "${args[@]}" >/dev/null
 }
 
@@ -784,33 +875,212 @@ const statuses=new Set(['running','recovery_required','escrow_pending','complete
  'recovered','failed_before_stop','recovery_failed']);
 if(x.schema!=='nexus.promotion-transaction-journal.v1'||x.transactionId!==id
  ||x.requestSha256!==digest||!statuses.has(x.status))process.exit(1);
+const timestamp=(value)=>typeof value==='string'&&Number.isFinite(Date.parse(value));
+const identifier=(value)=>typeof value==='string'&&/^[A-Za-z0-9._:-]{1,192}$/u.test(value);
+if(x.phaseTiming!==undefined){
+ const p=x.phaseTiming;
+ if(p===null||typeof p!=='object'||!Number.isSafeInteger(p.sequence)||p.sequence<1
+  ||!timestamp(p.startedAt)||!timestamp(p.segmentStartedAt)
+  ||!Number.isSafeInteger(p.startedMonotonicSeconds)||p.startedMonotonicSeconds<0
+  ||!Number.isSafeInteger(p.updatedMonotonicSeconds)
+  ||p.updatedMonotonicSeconds<p.startedMonotonicSeconds
+  ||!Number.isSafeInteger(p.elapsedSeconds)||p.elapsedSeconds<0
+  ||!identifier(p.bootId)||!identifier(p.invocationId)
+  ||!['monotonic','monotonic_after_boot_change'].includes(p.timingSource))process.exit(1);
+}
+if(x.invocation!==undefined){
+ const i=x.invocation;
+ if(i===null||typeof i!=='object'||!identifier(i.id)||!identifier(i.bootId)
+  ||!timestamp(i.startedAt)||!Number.isSafeInteger(i.startedMonotonicSeconds)
+  ||!Number.isSafeInteger(i.updatedMonotonicSeconds)
+  ||i.updatedMonotonicSeconds<i.startedMonotonicSeconds
+  ||!Number.isSafeInteger(i.elapsedSeconds)||i.elapsedSeconds<0
+  ||!Number.isSafeInteger(i.pid)||i.pid<1
+  ||!(i.resumedFromInvocationId===null||identifier(i.resumedFromInvocationId)))process.exit(1);
+}
+if(x.escrowRetry!==undefined){
+ const r=x.escrowRetry;
+ const nullableTimestamp=(value)=>value===null||timestamp(value);
+ const nullableInteger=(value)=>value===null
+  ||(Number.isSafeInteger(value)&&value>=0);
+ const nullableClass=(value)=>value===null
+  ||(typeof value==='string'&&/^[a-z0-9_]{1,96}$/u.test(value));
+ if(r===null||typeof r!=='object'||!Number.isSafeInteger(r.attempt)
+  ||r.attempt<0||r.attempt>8||r.maxAttempts!==8||r.budgetSeconds!==1200
+  ||!nullableTimestamp(r.cycleStartedAt)
+  ||!nullableInteger(r.cycleStartedMonotonicSeconds)
+  ||!nullableInteger(r.deadlineMonotonicSeconds)
+  ||!nullableTimestamp(r.nextAttemptAt)
+  ||!nullableInteger(r.nextAttemptMonotonicSeconds)
+  ||!nullableTimestamp(r.lastAttemptAt)
+  ||!nullableInteger(r.lastAttemptMonotonicSeconds)
+  ||!nullableClass(r.errorClass)||!identifier(r.bootId)
+  ||!(r.cycleInvocationId===null||identifier(r.cycleInvocationId))
+  ||!nullableTimestamp(r.exhaustedAt)||!nullableClass(r.exhaustionReason)
+  ||(r.attempt===0&&(r.cycleStartedAt!==null
+    ||r.cycleStartedMonotonicSeconds!==null||r.deadlineMonotonicSeconds!==null))
+  ||(r.attempt>0&&(!timestamp(r.cycleStartedAt)
+    ||!Number.isSafeInteger(r.cycleStartedMonotonicSeconds)
+    ||!Number.isSafeInteger(r.deadlineMonotonicSeconds)
+    ||r.deadlineMonotonicSeconds<=r.cycleStartedMonotonicSeconds)))process.exit(1);
+}
+if(x.drLease!==undefined){
+ const l=x.drLease;
+ const nullableTimestamp=(value)=>value===null||timestamp(value);
+ const nullableInteger=(value)=>value===null
+  ||(Number.isSafeInteger(value)&&value>=0);
+ const nullableClass=(value)=>value===null
+  ||(typeof value==='string'&&/^[a-z0-9_]{1,96}$/u.test(value));
+ if(l===null||typeof l!=='object'||!Number.isSafeInteger(l.probeAttempt)
+  ||l.probeAttempt<0||l.probeAttempt>61
+  ||l.waitBudgetSeconds!==120||l.pollSeconds!==2||l.maxProbes!==61
+  ||!nullableTimestamp(l.waitStartedAt)
+  ||!nullableInteger(l.waitStartedMonotonicSeconds)
+  ||!nullableInteger(l.deadlineMonotonicSeconds)
+  ||!nullableTimestamp(l.nextProbeAt)
+  ||!nullableInteger(l.nextProbeMonotonicSeconds)
+  ||!nullableTimestamp(l.lastProbeAt)
+  ||!nullableInteger(l.lastProbeMonotonicSeconds)
+  ||!nullableTimestamp(l.acquiredAt)||!nullableClass(l.errorClass)
+  ||!identifier(l.bootId)
+  ||!(l.cycleInvocationId===null||identifier(l.cycleInvocationId))
+  ||((l.nextProbeAt===null)!==(l.nextProbeMonotonicSeconds===null))
+  ||((l.lastProbeAt===null)!==(l.lastProbeMonotonicSeconds===null))
+  ||(l.waitStartedAt===null&&(l.waitStartedMonotonicSeconds!==null
+    ||l.deadlineMonotonicSeconds!==null))
+  ||(l.waitStartedAt!==null&&(!Number.isSafeInteger(l.waitStartedMonotonicSeconds)
+    ||!Number.isSafeInteger(l.deadlineMonotonicSeconds)
+    ||l.deadlineMonotonicSeconds-l.waitStartedMonotonicSeconds!==120)))process.exit(1);
+}
 process.stdout.write(String(x.status||''));
 NODE
 }
 
+journal_phase() {
+  [ -f "$JOURNAL" ] || return 1
+  node - "$JOURNAL" "$TRANSACTION_ID" "$request_sha" <<'NODE'
+const fs=require('fs');const [file,id,digest]=process.argv.slice(2);
+const x=JSON.parse(fs.readFileSync(file,'utf8'));
+if(x.schema!=='nexus.promotion-transaction-journal.v1'||x.transactionId!==id
+ ||x.requestSha256!==digest||typeof x.phase!=='string')process.exit(1);
+process.stdout.write(x.phase);
+NODE
+}
+
 write_journal() {
-  local phase="$1" status="$2" message="$3" previous_started="" output
+  local phase="$1" status="$2" message="$3" output current_mono
   case "$status" in
     completed|recovered|failed_before_stop)
       publish_terminal_pm2_authority
       ;;
   esac
-  if [ -f "$JOURNAL" ]; then
-    previous_started="$(node -e 'const x=require(process.argv[1]);process.stdout.write(x.startedAt||"")' "$JOURNAL")"
-  fi
+  current_mono="$(monotonic_seconds)"
   output="$(durable_staging_file "$JOURNAL")"
-  node - "$output" "$REQUEST" "$request_sha" "$phase" "$status" "$message" "$previous_started" \
-    "$RECOVERY_INTENT" "$ESCROW_CONFIRMATION" "$RECOVERY_RESULT" <<'NODE'
+  node - "$output" "$REQUEST" "$request_sha" "$phase" "$status" "$message" \
+    "$JOURNAL" "$RECOVERY_INTENT" "$ESCROW_CONFIRMATION" "$RECOVERY_RESULT" \
+    "$PROMOTION_BOOT_ID" "$current_mono" "$PROMOTION_INVOCATION_ID" \
+    "$PROMOTION_INVOCATION_STARTED_AT" "$PROMOTION_INVOCATION_STARTED_MONOTONIC_SECONDS" "$$" \
+    "$ESCROW_RETRY_ATTEMPT" "$ESCROW_RETRY_CYCLE_STARTED_AT" \
+    "$ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS" \
+    "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS" "$ESCROW_RETRY_NEXT_ATTEMPT_AT" \
+    "$ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS" "$ESCROW_RETRY_LAST_ATTEMPT_AT" \
+    "$ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS" "$ESCROW_RETRY_ERROR_CLASS" \
+    "$ESCROW_RETRY_STATE_BOOT_ID" "$ESCROW_RETRY_CYCLE_INVOCATION_ID" \
+    "$ESCROW_RETRY_EXHAUSTED_AT" "$ESCROW_RETRY_EXHAUSTION_REASON" \
+    "$ESCROW_MAX_ATTEMPTS" "$ESCROW_RETRY_BUDGET_SECONDS" \
+    "$DR_LEASE_PROBE_ATTEMPT" "$DR_LEASE_WAIT_STARTED_AT" \
+    "$DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS" "$DR_LEASE_DEADLINE_MONOTONIC_SECONDS" \
+    "$DR_LEASE_NEXT_PROBE_AT" "$DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS" \
+    "$DR_LEASE_LAST_PROBE_AT" "$DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS" \
+    "$DR_LEASE_ACQUIRED_AT" "$DR_LEASE_ERROR_CLASS" "$DR_LEASE_STATE_BOOT_ID" \
+    "$DR_LEASE_CYCLE_INVOCATION_ID" "$DR_LEASE_WAIT_SECONDS" \
+    "$DR_LEASE_POLL_SECONDS" "$DR_LEASE_MAX_PROBES" <<'NODE'
 const fs=require('fs');
-const [output,requestPath,requestSha256,phase,status,message,previousStarted,recoveryPath,escrowPath,recoveryResultPath]=process.argv.slice(2);
+const [output,requestPath,requestSha256,phase,status,message,journalPath,recoveryPath,
+ escrowPath,recoveryResultPath,bootId,currentMonoRaw,invocationId,invocationStartedAt,
+ invocationStartedMonoRaw,pidRaw,retryAttemptRaw,retryCycleStartedAt,
+ retryCycleStartedMonoRaw,retryDeadlineMonoRaw,retryNextAt,retryNextMonoRaw,
+ retryLastAt,retryLastMonoRaw,retryErrorClass,retryBootId,retryCycleInvocationId,
+ retryExhaustedAt,retryExhaustionReason,retryMaxRaw,retryBudgetRaw,
+ leaseAttemptRaw,leaseStartedAt,leaseStartedMonoRaw,leaseDeadlineMonoRaw,
+ leaseNextAt,leaseNextMonoRaw,leaseLastAt,leaseLastMonoRaw,leaseAcquiredAt,
+ leaseErrorClass,leaseBootId,leaseCycleInvocationId,leaseBudgetRaw,
+ leasePollRaw,leaseMaxProbesRaw]=process.argv.slice(2);
 const request=JSON.parse(fs.readFileSync(requestPath,'utf8'));const now=new Date().toISOString();
 const terminal=['completed','recovered','failed_before_stop','recovery_failed'].includes(status);
 let recovery=null;try{recovery=JSON.parse(fs.readFileSync(recoveryResultPath,'utf8'));}catch{}
+let previous=null;try{previous=JSON.parse(fs.readFileSync(journalPath,'utf8'));}catch{}
+const integer=(value)=>Number(value);
+const nullableString=(value)=>value===''?null:value;
+const currentMono=integer(currentMonoRaw);
+const retryAttempt=integer(retryAttemptRaw);
+const leaseAttempt=integer(leaseAttemptRaw);
+const samePhase=previous?.phase===phase;
+const hasPreviousPhaseTiming=previous?.phaseTiming
+ &&typeof previous.phaseTiming==='object';
+const samePhaseBoot=samePhase&&previous?.phaseTiming?.bootId===bootId;
+const phaseStartedAt=samePhase
+ ? previous?.phaseTiming?.startedAt||previous?.updatedAt||previous?.startedAt||now
+ : now;
+const phaseSegmentStartedAt=samePhaseBoot
+ ? previous.phaseTiming.segmentStartedAt
+ : now;
+const phaseStartedMono=samePhaseBoot
+ ? previous.phaseTiming.startedMonotonicSeconds
+ : currentMono;
+const phaseSequence=Number.isSafeInteger(previous?.phaseTiming?.sequence)
+ ? previous.phaseTiming.sequence+(samePhase?0:1)
+ : 1;
+const previousInvocationId=previous?.invocation?.id;
 fs.writeFileSync(output,`${JSON.stringify({
   schema:'nexus.promotion-transaction-journal.v1',transactionId:request.transactionId,requestSha256,
-  phase,status,message,startedAt:previousStarted||now,updatedAt:now,completedAt:terminal?now:null,
+  phase,status,message,startedAt:previous?.startedAt||now,updatedAt:now,completedAt:terminal?now:null,
   predecessor:request.predecessor,target:request.target,sentryRelease:request.target.sentryRelease,
   recoveryArmed:fs.existsSync(recoveryPath),escrowConfirmed:fs.existsSync(escrowPath),recovery,
+  phaseTiming:{
+   sequence:phaseSequence,startedAt:phaseStartedAt,segmentStartedAt:phaseSegmentStartedAt,
+   startedMonotonicSeconds:phaseStartedMono,updatedMonotonicSeconds:currentMono,
+   elapsedSeconds:Math.max(0,currentMono-phaseStartedMono),bootId,invocationId,
+   timingSource:samePhase&&hasPreviousPhaseTiming&&!samePhaseBoot
+    ?'monotonic_after_boot_change':'monotonic',
+  },
+  invocation:{
+   id:invocationId,pid:integer(pidRaw),bootId,startedAt:invocationStartedAt,
+   startedMonotonicSeconds:integer(invocationStartedMonoRaw),
+   updatedMonotonicSeconds:currentMono,
+   elapsedSeconds:Math.max(0,currentMono-integer(invocationStartedMonoRaw)),
+   resumedFromInvocationId:previousInvocationId&&previousInvocationId!==invocationId
+    ?previousInvocationId:null,
+  },
+  escrowRetry:{
+   attempt:retryAttempt,maxAttempts:integer(retryMaxRaw),
+   budgetSeconds:integer(retryBudgetRaw),
+   cycleStartedAt:nullableString(retryCycleStartedAt),
+   cycleStartedMonotonicSeconds:retryAttempt===0?null:integer(retryCycleStartedMonoRaw),
+   deadlineMonotonicSeconds:retryAttempt===0?null:integer(retryDeadlineMonoRaw),
+   nextAttemptAt:nullableString(retryNextAt),
+   nextAttemptMonotonicSeconds:retryNextAt===''?null:integer(retryNextMonoRaw),
+   lastAttemptAt:nullableString(retryLastAt),
+   lastAttemptMonotonicSeconds:retryLastAt===''?null:integer(retryLastMonoRaw),
+   errorClass:nullableString(retryErrorClass),bootId:retryBootId,
+   cycleInvocationId:nullableString(retryCycleInvocationId),
+   exhaustedAt:nullableString(retryExhaustedAt),
+   exhaustionReason:nullableString(retryExhaustionReason),
+  },
+  drLease:{
+   probeAttempt:leaseAttempt,waitBudgetSeconds:integer(leaseBudgetRaw),
+   pollSeconds:integer(leasePollRaw),maxProbes:integer(leaseMaxProbesRaw),
+   waitStartedAt:nullableString(leaseStartedAt),
+   waitStartedMonotonicSeconds:leaseStartedAt===''?null:integer(leaseStartedMonoRaw),
+   deadlineMonotonicSeconds:leaseStartedAt===''?null:integer(leaseDeadlineMonoRaw),
+   nextProbeAt:nullableString(leaseNextAt),
+   nextProbeMonotonicSeconds:leaseNextAt===''?null:integer(leaseNextMonoRaw),
+   lastProbeAt:nullableString(leaseLastAt),
+   lastProbeMonotonicSeconds:leaseLastAt===''?null:integer(leaseLastMonoRaw),
+   acquiredAt:nullableString(leaseAcquiredAt),
+   errorClass:nullableString(leaseErrorClass),bootId:leaseBootId,
+   cycleInvocationId:nullableString(leaseCycleInvocationId),
+  },
 },null,2)}\n`,{mode:0o600,flag:'w'});
 NODE
   chmod 600 "$output"
@@ -841,18 +1111,20 @@ if(x.schema!=="nexus.pm2-resurrection-authority.v2"
 }
 
 invoke_worker() {
-  local mode="$1"
+  local mode="$1" verify_timeout_seconds="${2:-55}"
   local timing started_at started_mono phase_deadline outage_deadline boot_id
   local recovery_fields recovery_phase="" backup_file="" backup_sha="" backup_size=""
   local backup_database_sha="" pm2_state_dir
   if [ "$mode" = worker-verify-candidate ]; then
+    [[ "$verify_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || return 1
+    [ "$verify_timeout_seconds" -le 55 ] || verify_timeout_seconds=55
     if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
-      "$TIMEOUT_BIN" --signal=TERM --kill-after=5s 55s \
+      "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${verify_timeout_seconds}s" \
         env NEXUS_PROMOTION_STATE_ROOT="$STATE_ROOT" \
           NEXUS_PROMOTION_REQUEST_SHA256="$request_sha" \
           bash "$TRANSACTION_SCRIPT" "$mode" "$TRANSACTION_ID"
     else
-      "$TIMEOUT_BIN" --signal=TERM --kill-after=5s 55s \
+      "$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${verify_timeout_seconds}s" \
         "$RUNUSER_BIN" -u "$WORKER_USER" -- /usr/bin/env \
           NEXUS_PROMOTION_STATE_ROOT="$STATE_ROOT" \
           NEXUS_PROMOTION_REQUEST_SHA256="$request_sha" \
@@ -914,8 +1186,14 @@ PRE_ESCROW_READINESS_JSON=""
 POST_ESCROW_READINESS_JSON=""
 ESCROW_CANDIDATE_DEGRADED=false
 refresh_candidate_readiness() {
-  local raw
-  raw="$(invoke_worker worker-verify-candidate)" || {
+  local deadline="${1:-}" raw timeout_seconds=55
+  if [ -n "$deadline" ]; then
+    timeout_seconds="$(remaining_before_deadline "$deadline" 55)" || {
+      echo "candidate refreshed readiness exceeded the escrow retry budget" >&2
+      return 1
+    }
+  fi
+  raw="$(invoke_worker worker-verify-candidate "$timeout_seconds")" || {
     echo "candidate refreshed readiness failed" >&2
     return 1
   }
@@ -1017,22 +1295,54 @@ invoke_recovery() {
 }
 
 capture_pm2_jlist() {
-  local output="$1"
+  local output="$1" timeout_seconds="${2:-5}"
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ "$timeout_seconds" -le 5 ] || timeout_seconds=5
   if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = "1" ]; then
-    "$TIMEOUT_BIN" 5s "$PM2_BIN" jlist >"$output"
+    "$TIMEOUT_BIN" "${timeout_seconds}s" "$PM2_BIN" jlist >"$output"
   else
-    "$TIMEOUT_BIN" 5s "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist >"$output"
+    "$TIMEOUT_BIN" "${timeout_seconds}s" "$RUNUSER_BIN" -u "$WORKER_USER" -- "$PM2_BIN" jlist >"$output"
   fi
 }
 
 verify_exact_pm2_stable() {
-  local runtime="$1" sha="$2" baseline final
+  local runtime="$1" sha="$2" deadline="${3:-}" baseline final timeout_seconds=5
+  local remaining
   baseline="$(mktemp "$AUTHORITATIVE_DIR/.pm2-baseline.XXXXXXXX")"
   final="$(mktemp "$AUTHORITATIVE_DIR/.pm2-final.XXXXXXXX")"
-  capture_pm2_jlist "$baseline"
-  sleep 1
-  capture_pm2_jlist "$final"
-  "$SYSTEM_NODE_BIN" - "$baseline" "$final" "$runtime" "$sha" <<'NODE'
+  if [ -n "$deadline" ]; then
+    timeout_seconds="$(remaining_before_deadline "$deadline" 5)" || {
+      rm -f -- "$baseline" "$final"
+      return 1
+    }
+  fi
+  if ! capture_pm2_jlist "$baseline" "$timeout_seconds"; then
+    rm -f -- "$baseline" "$final"
+    return 1
+  fi
+  if [ -n "$deadline" ]; then
+    remaining="$(remaining_before_deadline "$deadline")" || {
+      rm -f -- "$baseline" "$final"
+      return 1
+    }
+    [ "$remaining" -gt 1 ] || {
+      rm -f -- "$baseline" "$final"
+      return 1
+    }
+  fi
+  "$SLEEP_BIN" 1
+  timeout_seconds=5
+  if [ -n "$deadline" ]; then
+    timeout_seconds="$(remaining_before_deadline "$deadline" 5)" || {
+      rm -f -- "$baseline" "$final"
+      return 1
+    }
+  fi
+  if ! capture_pm2_jlist "$final" "$timeout_seconds"; then
+    rm -f -- "$baseline" "$final"
+    return 1
+  fi
+  if ! "$SYSTEM_NODE_BIN" - "$baseline" "$final" "$runtime" "$sha" <<'NODE'
 const fs=require('fs');const [baselineFile,finalFile,runtime,sha]=process.argv.slice(2);
 const expected=[
  ['nexus-hub',runtime,`${runtime}/dist/index.js`,'node'],
@@ -1058,6 +1368,10 @@ const validate=(file)=>{
 const before=validate(baselineFile),after=validate(finalFile);
 if(JSON.stringify(before)!==JSON.stringify(after))process.exit(1);
 NODE
+  then
+    rm -f -- "$baseline" "$final"
+    return 1
+  fi
   rm -f -- "$baseline" "$final"
 }
 
@@ -1185,11 +1499,16 @@ seal_worker_result() {
 }
 
 verify_candidate_live() {
+  local deadline="${1:-}" timeout_seconds=30
   verify_root_selector "$TARGET_RUNTIME" \
     || { echo "candidate current identity changed before escrow" >&2; return 1; }
-  verify_exact_pm2_stable "$TARGET_RUNTIME" "$TARGET_SHA" \
+  verify_exact_pm2_stable "$TARGET_RUNTIME" "$TARGET_SHA" "$deadline" \
     || { echo "candidate PM2 exact identity or restart stability failed" >&2; return 1; }
-  trusted_attest verify "$TARGET_RUNTIME" "$TARGET_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST"
+  if [ -n "$deadline" ]; then
+    timeout_seconds="$(remaining_before_deadline "$deadline" 30)" || return 1
+  fi
+  trusted_attest verify "$TARGET_RUNTIME" "$TARGET_SHA" "$ARTIFACT_DIGEST" \
+    "$INSTALLED_RUNTIME_DIGEST" "$timeout_seconds"
 }
 
 prune_local_backups_as_application_user() {
@@ -1304,19 +1623,45 @@ NODE
 }
 
 escrow_exact_backup() {
-  local backup_file="$1" backup_sha="$2" observed_sha dr_output confirmation_json output
+  local backup_file="$1" backup_sha="$2" deadline="${3:-}"
+  local observed_sha dr_output confirmation_json output timeout_seconds=300
   ESCROW_CANDIDATE_DEGRADED=false
+  ESCROW_RETRY_ERROR_CLASS=""
   PRE_ESCROW_READINESS_JSON="$CANDIDATE_READINESS_JSON"
   POST_ESCROW_READINESS_JSON=""
-  [ -f "$backup_file" ] && [ ! -L "$backup_file" ] || { echo "promotion backup file is unavailable" >&2; return 1; }
+  [ -f "$backup_file" ] && [ ! -L "$backup_file" ] || {
+    ESCROW_RETRY_ERROR_CLASS=rollback_backup_unavailable
+    echo "promotion backup file is unavailable" >&2
+    return 1
+  }
   observed_sha="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$backup_file")" || {
+    ESCROW_RETRY_ERROR_CLASS=rollback_backup_digest_unavailable
     echo "promotion backup digest could not be computed before escrow" >&2
     return 1
   }
-  [ "$observed_sha" = "$backup_sha" ] || { echo "promotion backup digest changed before escrow" >&2; return 1; }
-  [ -x "$DR_BACKUP_BIN" ] || { echo "application DR backup tooling is unavailable" >&2; return 1; }
-  [ -f "$DR_CONFIG" ] && [ ! -L "$DR_CONFIG" ] || { echo "application DR configuration is unavailable" >&2; return 1; }
-  dr_output="$("$TIMEOUT_BIN" --signal=TERM --kill-after=5s 300s \
+  [ "$observed_sha" = "$backup_sha" ] || {
+    ESCROW_RETRY_ERROR_CLASS=rollback_backup_digest_mismatch
+    echo "promotion backup digest changed before escrow" >&2
+    return 1
+  }
+  [ -x "$DR_BACKUP_BIN" ] || {
+    ESCROW_RETRY_ERROR_CLASS=dr_tool_unavailable
+    echo "application DR backup tooling is unavailable" >&2
+    return 1
+  }
+  [ -f "$DR_CONFIG" ] && [ ! -L "$DR_CONFIG" ] || {
+    ESCROW_RETRY_ERROR_CLASS=dr_configuration_unavailable
+    echo "application DR configuration is unavailable" >&2
+    return 1
+  }
+  if [ -n "$deadline" ]; then
+    timeout_seconds="$(remaining_before_deadline "$deadline" 300)" || {
+      ESCROW_RETRY_ERROR_CLASS=retry_time_budget_exhausted
+      echo "encrypted off-host rollback escrow retry budget is exhausted" >&2
+      return 1
+    }
+  fi
+  dr_output="$("$TIMEOUT_BIN" --signal=TERM --kill-after=5s "${timeout_seconds}s" \
     "$DR_BACKUP_BIN" --config "$DR_CONFIG" --require-release "$backup_file" \
     --require-recovery-runtime "$TARGET_RUNTIME" \
     --recovery-escrow-id "$TRANSACTION_ID" \
@@ -1329,16 +1674,18 @@ escrow_exact_backup() {
     --recovery-installed-runtime-digest "$INSTALLED_RUNTIME_DIGEST" \
     --recovery-runtime-digest "$RECOVERY_RUNTIME_DIGEST" \
     --json)" || {
+    ESCROW_RETRY_ERROR_CLASS=dr_escrow_command_failed
     echo "encrypted off-host rollback escrow failed" >&2
     return 1
   }
   confirmation_json="$(printf '%s\n' "$dr_output" | tail -n 1)"
-  # Off-host escrow can consume most of its five-minute bound. Re-prove the
+  # Off-host escrow can consume most of its bounded retry window. Re-prove the
   # exact candidate after the upload/retention confirmations, before a
   # completed journal can be written. A degraded candidate is a recovery
   # event, not an escrow retry.
-  if ! verify_candidate_live || ! refresh_candidate_readiness; then
+  if ! verify_candidate_live "$deadline" || ! refresh_candidate_readiness "$deadline"; then
     ESCROW_CANDIDATE_DEGRADED=true
+    ESCROW_RETRY_ERROR_CLASS=candidate_degraded_during_escrow
     echo "candidate degraded while encrypted off-host escrow was running" >&2
     return 1
   fi
@@ -1471,10 +1818,14 @@ if(x.schema!=='nexus.application-dr-backup-result.v1'||x.status!=='passed'||x.en
  ||stableCurrentFields.some((field)=>c[field]!==preCurrent?.[field]))process.exit(1);
 NODE
   then
+    ESCROW_RETRY_ERROR_CLASS=dr_escrow_evidence_invalid
     echo "encrypted off-host rollback escrow returned invalid storage-control evidence" >&2
     return 1
   fi
-  output="$(durable_staging_file "$ESCROW_CONFIRMATION")" || return 1
+  if ! output="$(durable_staging_file "$ESCROW_CONFIRMATION")"; then
+    ESCROW_RETRY_ERROR_CLASS=dr_escrow_confirmation_persist_failed
+    return 1
+  fi
   if ! node - "$output" "$TRANSACTION_ID" "$request_sha" "$confirmation_json" \
     "$PREFLIGHT_RECOVERY_CONFIRMATION" "$SEALED_RESULT" \
     "$PRE_ESCROW_READINESS_JSON" "$POST_ESCROW_READINESS_JSON" <<'NODE'
@@ -1517,41 +1868,534 @@ fs.writeFileSync(output,`${JSON.stringify({schema:'nexus.promotion-dr-escrow.v3'
  {mode:0o600,flag:'w'});
 NODE
   then
+    ESCROW_RETRY_ERROR_CLASS=dr_escrow_confirmation_persist_failed
     echo "encrypted off-host release recovery escrow evidence could not be persisted" >&2
     return 1
   fi
-  chmod 600 "$output" || return 1
-  root_own "$output" || return 1
-  durable_publish "$output" "$ESCROW_CONFIRMATION" || return 1
+  if ! chmod 600 "$output" \
+      || ! root_own "$output" \
+      || ! durable_publish "$output" "$ESCROW_CONFIRMATION"; then
+    ESCROW_RETRY_ERROR_CLASS=dr_escrow_confirmation_persist_failed
+    return 1
+  fi
   # Count retention is legal only after the predecessor and current candidate
   # recovery plaintext identities are proved in encrypted off-host storage.
-  prune_local_backups_as_application_user || return 1
+  if ! prune_local_backups_as_application_user; then
+    ESCROW_RETRY_ERROR_CLASS=local_backup_prune_failed
+    return 1
+  fi
+}
+
+load_dr_lease_state() {
+  local fields
+  [ -f "$JOURNAL" ] || return 0
+  fields="$(node - "$JOURNAL" <<'NODE'
+const fs=require('fs');const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const none='~',l=x.drLease;
+if(l===undefined){
+ process.stdout.write([0,none,0,0,none,0,none,0,none,none,none,none].join('\t'));
+ process.exit(0);
+}
+const value=(input)=>input===null?none:input;
+process.stdout.write([
+ l.probeAttempt,value(l.waitStartedAt),value(l.waitStartedMonotonicSeconds),
+ value(l.deadlineMonotonicSeconds),value(l.nextProbeAt),
+ value(l.nextProbeMonotonicSeconds),value(l.lastProbeAt),
+ value(l.lastProbeMonotonicSeconds),value(l.acquiredAt),value(l.errorClass),
+ l.bootId,value(l.cycleInvocationId),
+].join('\t'));
+NODE
+)" || {
+    echo "authoritative DR backup lease state is invalid" >&2
+    return 1
+  }
+  IFS=$'\t' read -r DR_LEASE_PROBE_ATTEMPT DR_LEASE_WAIT_STARTED_AT \
+    DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS DR_LEASE_DEADLINE_MONOTONIC_SECONDS \
+    DR_LEASE_NEXT_PROBE_AT DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS \
+    DR_LEASE_LAST_PROBE_AT DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS \
+    DR_LEASE_ACQUIRED_AT DR_LEASE_ERROR_CLASS DR_LEASE_STATE_BOOT_ID \
+    DR_LEASE_CYCLE_INVOCATION_ID <<<"$fields"
+  [ "$DR_LEASE_WAIT_STARTED_AT" != '~' ] || DR_LEASE_WAIT_STARTED_AT=""
+  [ "$DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS" != '~' ] \
+    || DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS=0
+  [ "$DR_LEASE_DEADLINE_MONOTONIC_SECONDS" != '~' ] \
+    || DR_LEASE_DEADLINE_MONOTONIC_SECONDS=0
+  [ "$DR_LEASE_NEXT_PROBE_AT" != '~' ] || DR_LEASE_NEXT_PROBE_AT=""
+  [ "$DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS" != '~' ] \
+    || DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS=0
+  [ "$DR_LEASE_LAST_PROBE_AT" != '~' ] || DR_LEASE_LAST_PROBE_AT=""
+  [ "$DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS" != '~' ] \
+    || DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS=0
+  [ "$DR_LEASE_ACQUIRED_AT" != '~' ] || DR_LEASE_ACQUIRED_AT=""
+  [ "$DR_LEASE_ERROR_CLASS" != '~' ] || DR_LEASE_ERROR_CLASS=""
+  [ "$DR_LEASE_STATE_BOOT_ID" != '~' ] \
+    || DR_LEASE_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+  [ "$DR_LEASE_CYCLE_INVOCATION_ID" != '~' ] \
+    || DR_LEASE_CYCLE_INVOCATION_ID=""
+}
+
+verify_active_marker_for_dr_lease() {
+  node - "$ACTIVE" "$TRANSACTION_ID" "$request_sha" <<'NODE'
+const fs=require('fs');const [file,id,digest]=process.argv.slice(2);
+const stat=fs.lstatSync(file),x=JSON.parse(fs.readFileSync(file,'utf8'));
+if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+ ||x.schema!=='nexus.promotion-active.v1'||x.transactionId!==id
+ ||x.requestSha256!==digest||!Number.isFinite(Date.parse(x.activatedAt||'')))process.exit(1);
+NODE
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+    [ "$(stat -c '%U:%G:%a:%h' "$ACTIVE")" = root:root:600:1 ]
+  fi
+}
+
+dr_backup_service_state() {
+  local state
+  state="$("$DR_SYSTEMCTL_BIN" is-active "$DR_BACKUP_SERVICE" 2>/dev/null || true)"
+  case "$state" in
+    active|activating|reloading|deactivating) printf 'busy\n' ;;
+    inactive|failed) printf 'idle\n' ;;
+    *)
+      echo "application DR backup service state is unavailable" >&2
+      return 1
+      ;;
+  esac
+}
+
+wait_for_dr_backup_lease() {
+  local current_mono now flock_status delay remaining service_state busy_class
+  load_dr_lease_state || return 1
+  verify_active_marker_for_dr_lease || {
+    DR_LEASE_ERROR_CLASS=promotion_active_marker_invalid
+    echo "durable active promotion marker is invalid before DR lease admission" >&2
+    return 1
+  }
+  current_mono="$(monotonic_seconds)"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ -z "$DR_LEASE_WAIT_STARTED_AT" ]; then
+    DR_LEASE_PROBE_ATTEMPT=0
+    DR_LEASE_WAIT_STARTED_AT="$now"
+    DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS="$current_mono"
+    DR_LEASE_DEADLINE_MONOTONIC_SECONDS=$((current_mono + DR_LEASE_WAIT_SECONDS))
+    DR_LEASE_NEXT_PROBE_AT=""
+    DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS=0
+    DR_LEASE_LAST_PROBE_AT=""
+    DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS=0
+    DR_LEASE_ACQUIRED_AT=""
+    DR_LEASE_ERROR_CLASS=""
+    DR_LEASE_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+    DR_LEASE_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+  elif [ "$DR_LEASE_STATE_BOOT_ID" != "$PROMOTION_BOOT_ID" ]; then
+    # Monotonic deadlines cannot cross a reboot. The active marker still bars
+    # a new timer invocation, while the prior backup process and its kernel
+    # flock cannot survive the boot. Start one fresh bounded admission segment.
+    DR_LEASE_PROBE_ATTEMPT=0
+    DR_LEASE_WAIT_STARTED_AT="$now"
+    DR_LEASE_WAIT_STARTED_MONOTONIC_SECONDS="$current_mono"
+    DR_LEASE_DEADLINE_MONOTONIC_SECONDS=$((current_mono + DR_LEASE_WAIT_SECONDS))
+    DR_LEASE_NEXT_PROBE_AT=""
+    DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS=0
+    DR_LEASE_LAST_PROBE_AT=""
+    DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS=0
+    DR_LEASE_ACQUIRED_AT=""
+    DR_LEASE_ERROR_CLASS=""
+    DR_LEASE_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+    DR_LEASE_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+  else
+    # An acquired probe is intentionally released before preparation so the
+    # transaction's own pre/post escrow backup calls can use the same lock.
+    # A process restart must therefore prove current lock availability again.
+    DR_LEASE_ACQUIRED_AT=""
+    DR_LEASE_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+  fi
+
+  write_journal waiting_for_dr_lease running dr_backup_admission_wait_started
+  [ -x "$DR_LEASE_FLOCK_BIN" ] || {
+    DR_LEASE_ERROR_CLASS=dr_backup_lock_probe_unavailable
+    write_journal waiting_for_dr_lease running dr_backup_lease_probe_unavailable
+    echo "application DR backup lock probe tooling is unavailable" >&2
+    return 1
+  }
+  [ -x "$DR_SYSTEMCTL_BIN" ] || {
+    DR_LEASE_ERROR_CLASS=dr_backup_service_probe_unavailable
+    write_journal waiting_for_dr_lease running dr_backup_service_probe_unavailable
+    echo "application DR backup service probe tooling is unavailable" >&2
+    return 1
+  }
+  [ -f "$DR_BACKUP_LOCK" ] && [ ! -L "$DR_BACKUP_LOCK" ] || {
+    DR_LEASE_ERROR_CLASS=dr_backup_lock_unavailable
+    write_journal waiting_for_dr_lease running dr_backup_lease_unavailable
+    echo "application DR backup lock is unavailable" >&2
+    return 1
+  }
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ]; then
+    [ "$(stat -c '%U:%G:%a:%h' "$DR_BACKUP_LOCK")" = root:root:600:1 ] || {
+      DR_LEASE_ERROR_CLASS=dr_backup_lock_identity_invalid
+      write_journal waiting_for_dr_lease running dr_backup_lease_identity_invalid
+      echo "application DR backup lock identity is invalid" >&2
+      return 1
+    }
+  fi
+  exec 7<>"$DR_BACKUP_LOCK"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != "1" ] \
+      && [ ! "$DR_BACKUP_LOCK" -ef "/proc/$$/fd/7" ]; then
+    DR_LEASE_ERROR_CLASS=dr_backup_lock_identity_changed
+    exec 7>&-
+    write_journal waiting_for_dr_lease running dr_backup_lease_identity_changed
+    echo "application DR backup lock identity changed during admission" >&2
+    return 1
+  fi
+
+  while [ "$DR_LEASE_PROBE_ATTEMPT" -lt "$DR_LEASE_MAX_PROBES" ]; do
+    current_mono="$(monotonic_seconds)"
+    if [ "$DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS" -gt "$current_mono" ]; then
+      remaining=$((DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS - current_mono))
+      if ! "$SLEEP_BIN" "$remaining"; then
+        DR_LEASE_ERROR_CLASS=dr_backup_lease_sleep_failed
+        exec 7>&-
+        write_journal waiting_for_dr_lease running dr_backup_lease_sleep_failed
+        return 1
+      fi
+    fi
+    DR_LEASE_PROBE_ATTEMPT=$((DR_LEASE_PROBE_ATTEMPT + 1))
+    DR_LEASE_LAST_PROBE_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    DR_LEASE_LAST_PROBE_MONOTONIC_SECONDS="$(monotonic_seconds)"
+    DR_LEASE_NEXT_PROBE_AT=""
+    DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS=0
+    DR_LEASE_ERROR_CLASS=""
+    write_journal waiting_for_dr_lease running dr_backup_lease_probe_started
+    service_state="$(dr_backup_service_state)" || {
+      DR_LEASE_ERROR_CLASS=dr_backup_service_probe_failed
+      exec 7>&-
+      write_journal waiting_for_dr_lease running dr_backup_service_probe_failed
+      return 1
+    }
+    busy_class=dr_backup_lease_busy
+    if [ "$service_state" = busy ]; then
+      flock_status=75
+      busy_class=dr_backup_service_active
+    else
+      set +e
+      "$DR_LEASE_FLOCK_BIN" -n -E 75 -x 7
+      flock_status=$?
+      set -e
+      if [ "$flock_status" -eq 0 ]; then
+        service_state="$(dr_backup_service_state)" || {
+          DR_LEASE_ERROR_CLASS=dr_backup_service_probe_failed
+          exec 7>&-
+          write_journal waiting_for_dr_lease running dr_backup_service_probe_failed
+          return 1
+        }
+        if [ "$service_state" = busy ]; then
+          "$DR_LEASE_FLOCK_BIN" -u 7 || {
+            DR_LEASE_ERROR_CLASS=dr_backup_lock_release_failed
+            exec 7>&-
+            write_journal waiting_for_dr_lease running dr_backup_lock_release_failed
+            return 1
+          }
+          flock_status=75
+          busy_class=dr_backup_service_active
+        fi
+      fi
+    fi
+    if [ "$flock_status" -eq 0 ]; then
+      DR_LEASE_ACQUIRED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      DR_LEASE_ERROR_CLASS=""
+      write_journal waiting_for_dr_lease running dr_backup_lease_acquired
+      exec 7>&-
+      return 0
+    fi
+    if [ "$flock_status" -ne 75 ]; then
+      DR_LEASE_ERROR_CLASS=dr_backup_lock_probe_failed
+      exec 7>&-
+      write_journal waiting_for_dr_lease running dr_backup_lease_probe_failed
+      echo "application DR backup lock probe failed" >&2
+      return 1
+    fi
+    current_mono="$(monotonic_seconds)"
+    if [ "$current_mono" -ge "$DR_LEASE_DEADLINE_MONOTONIC_SECONDS" ]; then
+      DR_LEASE_ERROR_CLASS=dr_backup_lease_timeout
+      exec 7>&-
+      write_journal waiting_for_dr_lease running dr_backup_lease_wait_timed_out
+      echo "application DR backup lease wait timed out before cutover" >&2
+      return 1
+    fi
+    delay="$DR_LEASE_POLL_SECONDS"
+    remaining=$((DR_LEASE_DEADLINE_MONOTONIC_SECONDS - current_mono))
+    [ "$delay" -le "$remaining" ] || delay="$remaining"
+    DR_LEASE_NEXT_PROBE_MONOTONIC_SECONDS=$((current_mono + delay))
+    DR_LEASE_NEXT_PROBE_AT="$(timestamp_after_seconds "$delay")"
+    DR_LEASE_ERROR_CLASS="$busy_class"
+    write_journal waiting_for_dr_lease running dr_backup_lease_probe_scheduled
+  done
+
+  DR_LEASE_ERROR_CLASS=dr_backup_lease_probe_limit
+  exec 7>&-
+  write_journal waiting_for_dr_lease running dr_backup_lease_probe_limit_reached
+  echo "application DR backup lease probe limit reached before cutover" >&2
+  return 1
+}
+
+load_escrow_retry_state() {
+  local fields previous_invocation
+  fields="$(node - "$JOURNAL" <<'NODE'
+const fs=require('fs');const x=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const none='~';const r=x.escrowRetry;
+if(r===undefined){
+ process.stdout.write([
+  0,none,0,0,none,0,none,0,none,none,none,none,none,
+  x.invocation?.id||none,
+ ].join('\t'));
+ process.exit(0);
+}
+const timestamp=(value)=>typeof value==='string'&&Number.isFinite(Date.parse(value));
+const identifier=(value)=>typeof value==='string'&&/^[A-Za-z0-9._:-]{1,192}$/u.test(value);
+const nullableTimestamp=(value)=>value===null||timestamp(value);
+const nullableInteger=(value)=>value===null
+ ||(Number.isSafeInteger(value)&&value>=0);
+const nullableClass=(value)=>value===null
+ ||(typeof value==='string'&&/^[a-z0-9_]{1,96}$/u.test(value));
+if(r===null||typeof r!=='object'||!Number.isSafeInteger(r.attempt)
+ ||r.attempt<0||r.attempt>8||r.maxAttempts!==8||r.budgetSeconds!==1200
+ ||!nullableTimestamp(r.cycleStartedAt)
+ ||!nullableInteger(r.cycleStartedMonotonicSeconds)
+ ||!nullableInteger(r.deadlineMonotonicSeconds)
+ ||!nullableTimestamp(r.nextAttemptAt)
+ ||!nullableInteger(r.nextAttemptMonotonicSeconds)
+ ||!nullableTimestamp(r.lastAttemptAt)
+ ||!nullableInteger(r.lastAttemptMonotonicSeconds)
+ ||!nullableClass(r.errorClass)||!identifier(r.bootId)
+ ||!(r.cycleInvocationId===null||identifier(r.cycleInvocationId))
+ ||!nullableTimestamp(r.exhaustedAt)||!nullableClass(r.exhaustionReason)
+ ||(r.attempt===0&&(r.cycleStartedAt!==null
+   ||r.cycleStartedMonotonicSeconds!==null||r.deadlineMonotonicSeconds!==null))
+ ||(r.attempt>0&&(!timestamp(r.cycleStartedAt)
+   ||!Number.isSafeInteger(r.cycleStartedMonotonicSeconds)
+   ||!Number.isSafeInteger(r.deadlineMonotonicSeconds)
+   ||r.deadlineMonotonicSeconds<=r.cycleStartedMonotonicSeconds)))process.exit(1);
+const value=(input)=>input===null?none:input;
+process.stdout.write([
+ r.attempt,value(r.cycleStartedAt),value(r.cycleStartedMonotonicSeconds),
+ value(r.deadlineMonotonicSeconds),value(r.nextAttemptAt),
+ value(r.nextAttemptMonotonicSeconds),value(r.lastAttemptAt),
+ value(r.lastAttemptMonotonicSeconds),value(r.errorClass),r.bootId,
+ value(r.cycleInvocationId),value(r.exhaustedAt),value(r.exhaustionReason),
+ x.invocation?.id||none,
+].join('\t'));
+NODE
+)" || {
+    echo "authoritative rollback escrow retry state is invalid" >&2
+    return 1
+  }
+  IFS=$'\t' read -r ESCROW_RETRY_ATTEMPT ESCROW_RETRY_CYCLE_STARTED_AT \
+    ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS \
+    ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS ESCROW_RETRY_NEXT_ATTEMPT_AT \
+    ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS ESCROW_RETRY_LAST_ATTEMPT_AT \
+    ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS ESCROW_RETRY_ERROR_CLASS \
+    ESCROW_RETRY_STATE_BOOT_ID ESCROW_RETRY_CYCLE_INVOCATION_ID \
+    ESCROW_RETRY_EXHAUSTED_AT ESCROW_RETRY_EXHAUSTION_REASON \
+    previous_invocation <<<"$fields"
+  [ "$ESCROW_RETRY_CYCLE_STARTED_AT" != '~' ] || ESCROW_RETRY_CYCLE_STARTED_AT=""
+  [ "$ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS" != '~' ] \
+    || ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS=0
+  [ "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS" != '~' ] \
+    || ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS=0
+  [ "$ESCROW_RETRY_NEXT_ATTEMPT_AT" != '~' ] || ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+  [ "$ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS" != '~' ] \
+    || ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+  [ "$ESCROW_RETRY_LAST_ATTEMPT_AT" != '~' ] || ESCROW_RETRY_LAST_ATTEMPT_AT=""
+  [ "$ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS" != '~' ] \
+    || ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS=0
+  [ "$ESCROW_RETRY_ERROR_CLASS" != '~' ] || ESCROW_RETRY_ERROR_CLASS=""
+  [ "$ESCROW_RETRY_STATE_BOOT_ID" != '~' ] \
+    || ESCROW_RETRY_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+  [ "$ESCROW_RETRY_CYCLE_INVOCATION_ID" != '~' ] \
+    || ESCROW_RETRY_CYCLE_INVOCATION_ID=""
+  [ "$ESCROW_RETRY_EXHAUSTED_AT" != '~' ] || ESCROW_RETRY_EXHAUSTED_AT=""
+  [ "$ESCROW_RETRY_EXHAUSTION_REASON" != '~' ] || ESCROW_RETRY_EXHAUSTION_REASON=""
+  ESCROW_RETRY_PREVIOUS_INVOCATION_ID="$previous_invocation"
+  [ "$ESCROW_RETRY_PREVIOUS_INVOCATION_ID" != '~' ] \
+    || ESCROW_RETRY_PREVIOUS_INVOCATION_ID=""
+}
+
+begin_or_resume_escrow_retry_cycle() {
+  local current_mono now
+  load_escrow_retry_state || return 1
+  current_mono="$(monotonic_seconds)"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  if [ -n "$ESCROW_RETRY_EXHAUSTED_AT" ]; then
+    # The eight-attempt ceiling belongs to the authoritative transaction, not
+    # a process lifetime. Re-launching this same oneshot therefore reports the
+    # already-exhausted state instead of silently opening another retry cycle.
+    return 75
+  fi
+
+  if [ "$ESCROW_RETRY_ATTEMPT" -eq 0 ]; then
+    ESCROW_RETRY_CYCLE_STARTED_AT="$now"
+    ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS="$current_mono"
+    ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS=$((current_mono + ESCROW_RETRY_BUDGET_SECONDS))
+    ESCROW_RETRY_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+    ESCROW_RETRY_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+  elif [ "$ESCROW_RETRY_STATE_BOOT_ID" != "$PROMOTION_BOOT_ID" ]; then
+    # Kernel monotonic values cannot be compared across boots. Retain the
+    # consumed attempt count but begin a fresh bounded monotonic segment. Boot
+    # reconciliation will re-prove the candidate and normally recover before
+    # networking if it is no longer available.
+    ESCROW_RETRY_CYCLE_STARTED_AT="$now"
+    ESCROW_RETRY_CYCLE_STARTED_MONOTONIC_SECONDS="$current_mono"
+    ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS=$((current_mono + ESCROW_RETRY_BUDGET_SECONDS))
+    ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+    ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+    ESCROW_RETRY_LAST_ATTEMPT_AT=""
+    ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS=0
+    ESCROW_RETRY_STATE_BOOT_ID="$PROMOTION_BOOT_ID"
+    ESCROW_RETRY_CYCLE_INVOCATION_ID="$PROMOTION_INVOCATION_ID"
+  fi
+}
+
+escrow_retry_delay_seconds() {
+  case "$1" in
+    1) printf '5\n' ;;
+    2) printf '10\n' ;;
+    3) printf '20\n' ;;
+    4) printf '40\n' ;;
+    5) printf '80\n' ;;
+    *) printf '160\n' ;;
+  esac
+}
+
+timestamp_after_seconds() {
+  "$SYSTEM_NODE_BIN" -e \
+    'process.stdout.write(new Date(Date.now()+Number(process.argv[1])*1000).toISOString())' \
+    "$1"
+}
+
+recover_escrow_candidate() {
+  local start_message="$1" success_message="$2" failure_message="$3"
+  ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+  ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+  write_journal recovering running "$start_message"
+  if recover_and_record post_availability_detection; then
+    write_journal recovery_complete recovered "$success_message"
+    durable_remove "$RECOVERY_INTENT"
+    return 0
+  fi
+  write_journal recovery_failed recovery_failed "$failure_message"
+  return 76
 }
 
 finish_escrow() {
-  local result backup_file backup_sha
+  local result backup_file backup_sha current_mono delay remaining begin_status
   result="$(read_and_validate_result "$SEALED_RESULT")" || return 1
   IFS=$'\t' read -r backup_file backup_sha <<<"$result"
-  verify_candidate_live || return 1
-  if ! escrow_exact_backup "$backup_file" "$backup_sha"; then
-    if [ "$ESCROW_CANDIDATE_DEGRADED" = true ]; then
-      write_journal recovering running candidate_degraded_during_escrow
-      if recover_and_record post_availability_detection; then
-        write_journal recovery_complete recovered escrow_candidate_degradation_recovered
-        durable_remove "$RECOVERY_INTENT"
+  if begin_or_resume_escrow_retry_cycle; then
+    begin_status=0
+  else
+    begin_status=$?
+  fi
+  case "$begin_status" in
+    0) ;;
+    75) return 75 ;;
+    *) return 1 ;;
+  esac
+
+  while [ "$ESCROW_RETRY_ATTEMPT" -lt "$ESCROW_MAX_ATTEMPTS" ]; do
+    current_mono="$(monotonic_seconds)"
+    if [ "$current_mono" -ge "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS" ]; then
+      ESCROW_RETRY_ERROR_CLASS=retry_time_budget_exhausted
+      ESCROW_RETRY_EXHAUSTION_REASON=time_budget
+      break
+    fi
+    if [ "$ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS" -gt "$current_mono" ]; then
+      remaining=$((ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS - current_mono))
+      "$SLEEP_BIN" "$remaining"
+      current_mono="$(monotonic_seconds)"
+      if [ "$current_mono" -ge "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS" ]; then
+        ESCROW_RETRY_ERROR_CLASS=retry_time_budget_exhausted
+        ESCROW_RETRY_EXHAUSTION_REASON=time_budget
+        break
+      fi
+    fi
+
+    # Every attempt after the initial escrow call is a retry. Re-proving both
+    # exact runtime identity and authenticated readiness here makes a resumed
+    # or delayed retry fail over to the predecessor instead of preserving a
+    # degraded candidate merely because off-host storage is unavailable.
+    if ! verify_candidate_live "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS" \
+        || ! refresh_candidate_readiness "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS"; then
+      ESCROW_RETRY_ERROR_CLASS=candidate_invalid_before_escrow_retry
+      if recover_escrow_candidate \
+          escrow_retry_candidate_invalid \
+          escrow_retry_candidate_recovered \
+          escrow_retry_candidate_recovery_failed; then
         return 0
       fi
-      write_journal recovery_failed recovery_failed escrow_candidate_degradation_recovery_failed
       return 76
     fi
-    write_journal awaiting_dr_escrow escrow_pending candidate_available_escrow_retry_required
-    return 75
-  fi
-  write_journal completed completed exact_candidate_and_recovery_runtime_escrowed
-  durable_remove "$RECOVERY_INTENT"
+
+    ESCROW_RETRY_ATTEMPT=$((ESCROW_RETRY_ATTEMPT + 1))
+    ESCROW_RETRY_LAST_ATTEMPT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ESCROW_RETRY_LAST_ATTEMPT_MONOTONIC_SECONDS="$(monotonic_seconds)"
+    ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+    ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+    ESCROW_RETRY_ERROR_CLASS=""
+    write_journal awaiting_dr_escrow escrow_pending rollback_escrow_attempt_started
+
+    if escrow_exact_backup "$backup_file" "$backup_sha" \
+        "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS"; then
+      ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+      ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+      ESCROW_RETRY_ERROR_CLASS=""
+      ESCROW_RETRY_EXHAUSTED_AT=""
+      ESCROW_RETRY_EXHAUSTION_REASON=""
+      write_journal completed completed exact_candidate_and_recovery_runtime_escrowed
+      durable_remove "$RECOVERY_INTENT"
+      return 0
+    fi
+    if [ "$ESCROW_CANDIDATE_DEGRADED" = true ]; then
+      if recover_escrow_candidate \
+          candidate_degraded_during_escrow \
+          escrow_candidate_degradation_recovered \
+          escrow_candidate_degradation_recovery_failed; then
+        return 0
+      fi
+      return 76
+    fi
+    [ -n "$ESCROW_RETRY_ERROR_CLASS" ] \
+      || ESCROW_RETRY_ERROR_CLASS=dr_escrow_unknown_failure
+    current_mono="$(monotonic_seconds)"
+    if [ "$ESCROW_RETRY_ATTEMPT" -ge "$ESCROW_MAX_ATTEMPTS" ]; then
+      ESCROW_RETRY_EXHAUSTION_REASON=attempt_limit
+      break
+    fi
+    if [ "$current_mono" -ge "$ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS" ]; then
+      ESCROW_RETRY_EXHAUSTION_REASON=time_budget
+      break
+    fi
+    delay="$(escrow_retry_delay_seconds "$ESCROW_RETRY_ATTEMPT")"
+    remaining=$((ESCROW_RETRY_DEADLINE_MONOTONIC_SECONDS - current_mono))
+    [ "$delay" -le "$remaining" ] || delay="$remaining"
+    if [ "$delay" -le 0 ]; then
+      ESCROW_RETRY_EXHAUSTION_REASON=time_budget
+      break
+    fi
+    ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=$((current_mono + delay))
+    ESCROW_RETRY_NEXT_ATTEMPT_AT="$(timestamp_after_seconds "$delay")"
+    write_journal awaiting_dr_escrow escrow_pending rollback_escrow_retry_scheduled
+  done
+
+  [ -n "$ESCROW_RETRY_EXHAUSTION_REASON" ] \
+    || ESCROW_RETRY_EXHAUSTION_REASON=attempt_limit
+  [ -n "$ESCROW_RETRY_ERROR_CLASS" ] \
+    || ESCROW_RETRY_ERROR_CLASS=retry_attempt_interrupted
+  ESCROW_RETRY_EXHAUSTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ESCROW_RETRY_NEXT_ATTEMPT_AT=""
+  ESCROW_RETRY_NEXT_ATTEMPT_MONOTONIC_SECONDS=0
+  write_journal awaiting_dr_escrow escrow_pending rollback_escrow_retry_exhausted
+  return 75
 }
 
 existing_status=""
+existing_phase=""
 if [ -e "$JOURNAL" ] || [ -L "$JOURNAL" ]; then
   [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || {
     echo "authoritative promotion journal is unsafe" >&2
@@ -1561,6 +2405,11 @@ if [ -e "$JOURNAL" ] || [ -L "$JOURNAL" ]; then
     echo "authoritative promotion journal is invalid" >&2
     exit 1
   }
+  existing_phase="$(journal_phase)" || {
+    echo "authoritative promotion journal phase is invalid" >&2
+    exit 1
+  }
+  load_dr_lease_state || exit 1
 fi
 case "$existing_status" in
   completed|recovered|failed_before_stop)
@@ -1574,6 +2423,7 @@ case "$existing_status" in
     fi
     ;;
   escrow_pending)
+    load_escrow_retry_state || exit 1
     recovery_fields="$(read_recovery_intent)" || {
       echo "escrow-pending transaction is missing root candidate recovery authority" >&2
       exit 76
@@ -1592,26 +2442,24 @@ case "$existing_status" in
       write_journal recovery_failed recovery_failed escrow_pending_candidate_recovery_failed
       exit 76
     fi
-    # The journal transition is persisted before RECOVERY_INTENT is removed.
-    # A crash in that tiny interval can safely resume escrow only after the
-    # exact candidate is proved live again.
-    if ! verify_candidate_live || ! refresh_candidate_readiness; then
-      write_journal recovering running escrow_pending_candidate_invalid
-      if recover_and_record post_availability_detection; then
-        write_journal recovery_complete recovered escrow_pending_candidate_recovered
-        durable_remove "$RECOVERY_INTENT"
-        exit 0
-      fi
-      write_journal recovery_failed recovery_failed escrow_pending_candidate_recovery_failed
-      exit 76
-    fi
+    # finish_escrow re-proves exact identity and authenticated readiness before
+    # every resumed network attempt, including the first attempt after reboot.
     finish_escrow
     exit $?
     ;;
 esac
 
+resume_dr_lease=false
+if [ "$existing_status" = running ] \
+    && [ "$existing_phase" = waiting_for_dr_lease ] \
+    && [ "$ACTION" = run ] \
+    && [ ! -f "$CONTROL_DIR/recover" ] \
+    && [ ! -f "$RECOVERY_INTENT" ]; then
+  resume_dr_lease=true
+fi
+
 if [ -f "$RECOVERY_INTENT" ] \
-    || [ "$existing_status" = running ] \
+    || { [ "$existing_status" = running ] && [ "$resume_dr_lease" != true ]; } \
     || [ "$existing_status" = recovery_required ] \
     || [ "$ACTION" = recover ] \
     || [ -f "$CONTROL_DIR/recover" ]; then
@@ -1628,6 +2476,22 @@ if [ -f "$RECOVERY_INTENT" ] \
   write_journal recovery_failed recovery_failed explicit_or_boot_recovery_failed
   exit 76
 fi
+
+# The control plane durably publishes active.json before starting this oneshot.
+# That marker prevents a new hourly timer unit from entering. Probe the
+# existing application DR flock until any already-running backup exits, before
+# expensive runtime preparation and before cutover timing or recovery intent
+# can authorize the first PM2 stop.
+if ! wait_for_dr_backup_lease; then
+  if [ "$DR_LEASE_ERROR_CLASS" = dr_backup_lease_timeout ] \
+      || [ "$DR_LEASE_ERROR_CLASS" = dr_backup_lease_probe_limit ]; then
+    write_journal preflight failed_before_stop dr_backup_lease_timeout_before_cutover
+  else
+    write_journal preflight failed_before_stop dr_backup_lease_admission_failed_before_cutover
+  fi
+  exit 0
+fi
+write_journal preflight running dr_backup_lease_acquired_before_expensive_preparation
 
 # Static DR readiness must fail before sealing or any cutover-side mutation.
 if ! preflight_application_dr; then

@@ -7,10 +7,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const SCHEMAS = Object.freeze({
-  plan: 'nexus.rollback-drill-kvm-plan.v1',
+  plan: 'nexus.rollback-drill-kvm-plan.v2',
   authorizationEnvelope: 'nexus.rollback-drill-kvm-owner-authorization.v1',
   authorizationPayload: 'nexus.rollback-drill-kvm-owner-authorization-payload.v1',
   isolation: 'nexus.rollback-drill-kvm-isolation.v1',
+  readinessLedger: 'nexus.rollback-drill-kvm-readiness-ledger.v1',
   drill: 'nexus.rollback-drill-kvm-outcome.v1',
   execution: 'nexus.rollback-drill-kvm-execution.v1',
   manifest: 'nexus.rollback-drill-kvm-machine-evidence.v1',
@@ -35,6 +36,14 @@ const SAFE_BACKUP = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u;
 const SAFE_OPERATOR = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,63}$/u;
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const PROVISION_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const PROVISION_MAC = /^52:54:00(?::[0-9a-f]{2}){3}$/u;
+const SSH_FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/u;
+const SAFE_PACKAGE =
+  /^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$/u;
+const SAFE_PACKAGE_VERSION = /^[A-Za-z0-9.+:~_-]+$/u;
+const SAFE_PACKAGE_ARCH = /^[a-z0-9][a-z0-9-]*$/u;
 const LOOPBACKS = new Set(['127.0.0.1', '::1']);
 const GUEST_USER = 'dominguez';
 const MAX_JSON_BYTES = 512 * 1024;
@@ -61,7 +70,7 @@ const INTERFACE_VALUES = Object.freeze({
   promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
   restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
   promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-  controlVersion: 'nexus-release-promotion-control.v3',
+  controlVersion: 'nexus-release-promotion-control.v4',
   recoveryUnit: 'nexus-release-promotion-recovery.service',
 });
 const EXECUTION_MODE = 'strictly-sequential';
@@ -110,10 +119,151 @@ const TRUST_FIELDS = Object.freeze([
   'productionOwnerPublicKeySha256',
   'guestSshClientPublicKeySha256',
   'productionSshClientPublicKeySha256',
-  'guestSshHostPublicKeySha256',
+  'guestSshHostPublicKeySha256s',
   'productionSshHostPublicKeySha256',
   'releaseEvidencePublicKeySha256',
 ]);
+const PROVISION_FIELDS = Object.freeze([
+  'schema',
+  'setId',
+  'image',
+  'sshPublicKeySha256',
+  'guestSshHostPublicKeySha256s',
+  'ports',
+  'setDirectory',
+  'runtimeReadiness',
+  'hypervisor',
+  'guests',
+  'createdAt',
+]);
+const PROVISION_IMAGE_FIELDS = Object.freeze([
+  'filename',
+  'sha256',
+  'basePath',
+]);
+const PROVISION_RUNTIME_READINESS_FIELDS = Object.freeze([
+  'status',
+  'drillReady',
+  'requirements',
+]);
+const PROVISION_HYPERVISOR_FIELDS = Object.freeze([
+  'manager',
+  'qemuBinary',
+  'qemuSha256',
+  'qemuVersion',
+  'qemuPackage',
+  'qemuPackageVersion',
+  'qemuPackageArchitecture',
+  'runnerPath',
+  'runnerSha256',
+  'hostPreflightPath',
+  'hostPreflightSha256',
+  'runtimeManifestPath',
+  'runtimeManifestSha256',
+  'runtimeControlSourcePath',
+  'runtimeControlSha256',
+  'runtimeReadinessPath',
+  'runtimeReadinessSha256',
+  'runtimeRecoveryUnitSourcePath',
+  'runtimeRecoveryUnitSha256',
+  'faultDrillControllerPath',
+  'faultDrillControllerSha256',
+  'faultDrillControllerUnitPath',
+  'faultDrillControllerUnitSha256',
+  'faultDrillControllerRecoveryUnitPath',
+  'faultDrillControllerRecoveryUnitSha256',
+  'faultDrillGuestExecutorSourcePath',
+  'faultDrillGuestExecutorSha256',
+  'faultDrillGuestRecoveryUnitSourcePath',
+  'faultDrillGuestRecoveryUnitSha256',
+  'faultDrillVerifierPath',
+  'faultDrillVerifierSha256',
+  'sharedMutexPath',
+  'guestAdmissionLockPath',
+  'hostAvailableMemoryFloorGiB',
+  'hostLoad15CeilingExclusive',
+  'unitTemplate',
+  'unitPath',
+  'unitSha256',
+  'vcpus',
+  'memoryMiB',
+  'memorySwapMaxMiB',
+  'diskBytes',
+  'networkMode',
+  'loopbackHost',
+  'singleActiveGuest',
+  'bridgeAttached',
+  'tapAttached',
+  'sharedFilesystemAttached',
+  'hostBlockDeviceAttached',
+  'productionDataAttached',
+]);
+const PROVISION_GUEST_FIELDS = Object.freeze([
+  'name',
+  'port',
+  'unit',
+  'uuid',
+  'mac',
+  'instanceId',
+  'overlayPath',
+  'overlayInitialSha256',
+  'seedPath',
+  'seedSha256',
+  'hostPublicKey',
+  'hostPublicKeySha256',
+  'hostKeyFingerprint',
+]);
+const PROVISION_REQUIREMENTS = Object.freeze([
+  'node-22.23.1',
+  'python-3.12.x',
+  'pm2-6.0.14-root-closure-at-/opt/nexus-release/pm2/6.0.14-via-/usr/local/bin/pm2',
+  'digest-bound-offline-toolchain-evidence',
+]);
+const EXPECTED_PROVISION_HYPERVISOR = Object.freeze({
+  manager: 'qemu-systemd',
+  qemuBinary: '/usr/bin/qemu-system-x86_64',
+  runnerPath: '/usr/local/libexec/nexus-rollback-drill-vm/run',
+  hostPreflightPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/host-preflight',
+  runtimeManifestPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest',
+  runtimeControlSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest',
+  runtimeReadinessPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness',
+  runtimeRecoveryUnitSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service',
+  faultDrillControllerPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller',
+  faultDrillControllerUnitPath:
+    '/etc/systemd/system/nexus-release-layout-fault-drill@.service',
+  faultDrillControllerRecoveryUnitPath:
+    '/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service',
+  faultDrillGuestExecutorSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest',
+  faultDrillGuestRecoveryUnitSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service',
+  faultDrillVerifierPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs',
+  sharedMutexPath: '/run/lock/nexus-release-sonar.lock',
+  guestAdmissionLockPath: '/run/nexus-rollback-drill-vm/admission.lock',
+  hostAvailableMemoryFloorGiB: 25,
+  hostLoad15CeilingExclusive: 6,
+  unitTemplate: 'nexus-rollback-drill-vm@.service',
+  unitPath: '/etc/systemd/system/nexus-rollback-drill-vm@.service',
+  vcpus: 4,
+  memoryMiB: 14336,
+  memorySwapMaxMiB: 512,
+  diskBytes: 100 * 1024 * 1024 * 1024,
+  networkMode: 'qemu-user-restrict',
+  loopbackHost: '127.0.0.1',
+  singleActiveGuest: true,
+  bridgeAttached: false,
+  tapAttached: false,
+  sharedFilesystemAttached: false,
+  hostBlockDeviceAttached: false,
+  productionDataAttached: false,
+});
 const STORAGE_FIELDS = Object.freeze([
   'provider',
   'isolation',
@@ -165,6 +315,11 @@ const AUTH_PAYLOAD_FIELDS = Object.freeze([
   'targetSha',
   'targetVersion',
   'guestOwnerPublicKeySha256',
+  'controllerBootIdSha256',
+  'approvedMonotonicSeconds',
+  'expiresMonotonicSeconds',
+  'readinessLedger',
+  'isolationSha256',
   'endpoints',
   'approvedAt',
   'expiresAt',
@@ -175,9 +330,35 @@ const ISOLATION_FIELDS = Object.freeze([
   'schema',
   'planId',
   'capturedAt',
+  'readinessLedger',
   'hypervisor',
   'guest',
   'overlays',
+]);
+const READINESS_LEDGER_FIELDS = Object.freeze([
+  'schema',
+  'status',
+  'sequenceId',
+  'planId',
+  'planSha256',
+  'generationManifestSha256',
+  'provisionReceiptSha256',
+  'guestOwnerPublicKeySha256',
+  'controllerBootIdSha256',
+  'monotonicStartedSeconds',
+  'monotonicDeadlineSeconds',
+  'monotonicCompletedSeconds',
+  'completedAt',
+  'orderedReadiness',
+  'stateSha256',
+]);
+const READINESS_LEDGER_ENTRY_FIELDS = Object.freeze([
+  'drill',
+  'runtimeDrill',
+  'guest',
+  'requestSha256',
+  'readinessSha256',
+  'completedAt',
 ]);
 const HYPERVISOR_FIELDS = Object.freeze([
   'machineIdSha256',
@@ -265,6 +446,10 @@ const EXECUTION_FIELDS = Object.freeze([
   'schema',
   'planId',
   'planSha256',
+  'readinessLedgerSha256',
+  'generationManifestSha256',
+  'provisionReceiptSha256',
+  'orderedReadinessSha256s',
   'guestSshClientPublicKeySha256',
   'executionMode',
   'maximumActiveGuests',
@@ -305,10 +490,19 @@ const MANIFEST_FIELDS = Object.freeze([
   'planSha256',
   'authorizationSha256',
   'isolationSha256',
+  'readiness',
   'execution',
   'restore',
   'drills',
   'files',
+]);
+const MANIFEST_READINESS_FIELDS = Object.freeze([
+  'schema',
+  'sequenceId',
+  'ledgerSha256',
+  'generationManifestSha256',
+  'provisionReceiptSha256',
+  'orderedReadinessSha256s',
 ]);
 const MANIFEST_EXECUTION_FIELDS = Object.freeze([
   'schema',
@@ -316,6 +510,10 @@ const MANIFEST_EXECUTION_FIELDS = Object.freeze([
   'maximumActiveGuests',
   'testMode',
   'guestSshClientPublicKeySha256',
+  'readinessLedgerSha256',
+  'generationManifestSha256',
+  'provisionReceiptSha256',
+  'orderedReadinessSha256s',
   'receiptSha256',
   'completedAt',
 ]);
@@ -556,7 +754,7 @@ export function canonicalJson(value) {
 }
 
 export function canonicalJsonBuffer(value) {
-  return Buffer.from(`${canonicalJson(value)}\n`, 'utf8');
+  return Buffer.from(canonicalJson(value), 'utf8');
 }
 
 export function sha256Bytes(value) {
@@ -601,6 +799,213 @@ export function normalizeSshEd25519PublicKey(value) {
 
 export function textKeyIdentity(value) {
   return sha256Bytes(Buffer.from(normalizeSshEd25519PublicKey(value), 'utf8'));
+}
+
+function sshEd25519Fingerprint(value) {
+  let canonical;
+  try {
+    canonical = normalizeSshEd25519PublicKey(value);
+  } catch {
+    fail('provision_guest_binding_invalid');
+  }
+  if (canonical !== value) fail('provision_guest_binding_invalid');
+  const keyBlob = Buffer.from(canonical.split(' ')[1], 'base64');
+  return `SHA256:${createHash('sha256')
+    .update(keyBlob)
+    .digest('base64')
+    .replace(/=+$/u, '')}`;
+}
+
+export function validateProvisionReceipt(receipt) {
+  assertExactFields(receipt, PROVISION_FIELDS, 'provision');
+  if (receipt.schema !== 'nexus.rollback-drill-vm-provision.v2') {
+    fail('provision_schema_unsupported');
+  }
+  assertDigest(receipt.setId, 'provision_set_id_invalid');
+  assertArray(receipt.ports, 3, 3, 'provision_ports_invalid');
+  unique(receipt.ports, 'provision_ports_reused');
+  assertArray(
+    receipt.guestSshHostPublicKeySha256s,
+    3,
+    3,
+    'provision_ssh_host_digests_invalid',
+  );
+  unique(
+    receipt.guestSshHostPublicKeySha256s,
+    'provision_guest_host_key_reused',
+  );
+  assertArray(receipt.guests, 3, 3, 'provision_guests_invalid');
+
+  assertExactFields(receipt.image, PROVISION_IMAGE_FIELDS, 'provision_image');
+  assertDigest(receipt.image.sha256, 'provision_image_digest_invalid');
+  if (receipt.image.filename !== 'noble-server-cloudimg-amd64.img'
+      || receipt.image.basePath
+        !== `/var/lib/nexus-rollback-drill-vm/base/${receipt.image.sha256}.qcow2`
+      || receipt.setDirectory
+        !== `/var/lib/nexus-rollback-drill-vm/sets/${receipt.setId}`) {
+    fail('provision_image_or_set_binding_invalid');
+  }
+  assertDigest(
+    receipt.sshPublicKeySha256,
+    'provision_ssh_client_digest_invalid',
+  );
+  receipt.guestSshHostPublicKeySha256s.forEach((identity) => {
+    assertDigest(identity, 'provision_ssh_host_digest_invalid');
+    if (identity === receipt.sshPublicKeySha256) {
+      fail('provision_client_host_key_reuse');
+    }
+  });
+  receipt.ports.forEach((port) => {
+    assertInteger(port, 1024, 65535, 'provision_guest_port_invalid');
+  });
+
+  assertExactFields(
+    receipt.runtimeReadiness,
+    PROVISION_RUNTIME_READINESS_FIELDS,
+    'provision_runtime_readiness',
+  );
+  if (receipt.runtimeReadiness.status
+        !== 'ssh_only_bootstrap_required'
+      || receipt.runtimeReadiness.drillReady !== false
+      || canonicalJson(receipt.runtimeReadiness.requirements)
+        !== canonicalJson(PROVISION_REQUIREMENTS)) {
+    fail('provision_runtime_readiness_invalid');
+  }
+
+  assertExactFields(
+    receipt.hypervisor,
+    PROVISION_HYPERVISOR_FIELDS,
+    'provision_hypervisor',
+  );
+  for (const [field, expected] of Object.entries(
+    EXPECTED_PROVISION_HYPERVISOR,
+  )) {
+    if (receipt.hypervisor[field] !== expected) {
+      fail(`provision_hypervisor_binding_invalid:${field}`);
+    }
+  }
+  for (const field of [
+    'qemuSha256',
+    'runnerSha256',
+    'hostPreflightSha256',
+    'runtimeManifestSha256',
+    'runtimeControlSha256',
+    'runtimeReadinessSha256',
+    'runtimeRecoveryUnitSha256',
+    'faultDrillControllerSha256',
+    'faultDrillControllerUnitSha256',
+    'faultDrillControllerRecoveryUnitSha256',
+    'faultDrillGuestExecutorSha256',
+    'faultDrillGuestRecoveryUnitSha256',
+    'faultDrillVerifierSha256',
+    'unitSha256',
+  ]) {
+    assertDigest(
+      receipt.hypervisor[field],
+      `provision_hypervisor_digest_invalid:${field}`,
+    );
+  }
+  if (!/^QEMU emulator version [ -~]{1,230}$/u.test(
+    receipt.hypervisor.qemuVersion,
+  ) || !SAFE_PACKAGE.test(receipt.hypervisor.qemuPackage)
+      || !SAFE_PACKAGE_VERSION.test(receipt.hypervisor.qemuPackageVersion)
+      || !SAFE_PACKAGE_ARCH.test(
+        receipt.hypervisor.qemuPackageArchitecture,
+      )) {
+    fail('provision_qemu_package_identity_invalid');
+  }
+  parseIso(receipt.createdAt, 'provision_created_at_invalid');
+
+  const observed = {
+    uuids: [],
+    macs: [],
+    overlays: [],
+    seeds: [],
+    hostKeys: [],
+    fingerprints: [],
+  };
+  receipt.guests.forEach((guest, index) => {
+    assertExactFields(
+      guest,
+      PROVISION_GUEST_FIELDS,
+      `provision_guest_${index + 1}`,
+    );
+    const expectedName = `guest-${index + 1}`;
+    const expectedRoot = `${receipt.setDirectory}/${expectedName}`;
+    assertString(guest.uuid, PROVISION_UUID, 'provision_guest_uuid_invalid');
+    assertString(guest.mac, PROVISION_MAC, 'provision_guest_mac_invalid');
+    assertString(
+      guest.hostKeyFingerprint,
+      SSH_FINGERPRINT,
+      'provision_guest_host_fingerprint_invalid',
+    );
+    assertDigest(
+      guest.hostPublicKeySha256,
+      'provision_guest_host_key_digest_invalid',
+    );
+    if (guest.name !== expectedName
+        || guest.port !== receipt.ports[index]
+        || guest.unit !== `nexus-rollback-drill-vm@${expectedName}.service`
+        || guest.instanceId
+          !== `nexus-rollback-drill-${expectedName}-${receipt.setId.slice(0, 16)}`
+        || guest.overlayPath !== `${expectedRoot}/root.qcow2`
+        || guest.seedPath !== `${expectedRoot}/seed.img`
+        || textKeyIdentity(guest.hostPublicKey)
+          !== guest.hostPublicKeySha256
+        || guest.hostPublicKeySha256
+          !== receipt.guestSshHostPublicKeySha256s[index]
+        || sshEd25519Fingerprint(guest.hostPublicKey)
+          !== guest.hostKeyFingerprint) {
+      fail('provision_guest_binding_invalid');
+    }
+    assertDigest(
+      guest.overlayInitialSha256,
+      'provision_overlay_initial_digest_invalid',
+    );
+    assertDigest(guest.seedSha256, 'provision_seed_digest_invalid');
+    observed.uuids.push(guest.uuid);
+    observed.macs.push(guest.mac);
+    observed.overlays.push(guest.overlayInitialSha256);
+    observed.seeds.push(guest.seedSha256);
+    observed.hostKeys.push(guest.hostPublicKeySha256);
+    observed.fingerprints.push(guest.hostKeyFingerprint);
+  });
+  if (Object.values(observed).some(
+    (identities) => new Set(identities).size !== 3,
+  )) {
+    fail('provision_guest_identity_reused');
+  }
+
+  const setMaterial = [
+    'schema=nexus.rollback-drill-vm-provision.v2',
+    `image=${receipt.image.sha256}`,
+    `key=${receipt.sshPublicKeySha256}`,
+    `hostKeys=${receipt.guestSshHostPublicKeySha256s.join(',')}`,
+    `ports=${receipt.ports.join(',')}`,
+    `runner=${receipt.hypervisor.runnerSha256}`,
+    `hostPreflight=${receipt.hypervisor.hostPreflightSha256}`,
+    `runtimeManifest=${receipt.hypervisor.runtimeManifestSha256}`,
+    `runtimeControl=${receipt.hypervisor.runtimeControlSha256}`,
+    `runtimeReadiness=${receipt.hypervisor.runtimeReadinessSha256}`,
+    `runtimeRecoveryUnit=${receipt.hypervisor.runtimeRecoveryUnitSha256}`,
+    `faultDrillController=${receipt.hypervisor.faultDrillControllerSha256}`,
+    `faultDrillControllerUnit=${receipt.hypervisor.faultDrillControllerUnitSha256}`,
+    `faultDrillControllerRecoveryUnit=${receipt.hypervisor.faultDrillControllerRecoveryUnitSha256}`,
+    `faultDrillGuest=${receipt.hypervisor.faultDrillGuestExecutorSha256}`,
+    `faultDrillGuestRecoveryUnit=${receipt.hypervisor.faultDrillGuestRecoveryUnitSha256}`,
+    `faultDrillVerifier=${receipt.hypervisor.faultDrillVerifierSha256}`,
+    `unit=${receipt.hypervisor.unitSha256}`,
+    `qemu=${receipt.hypervisor.qemuSha256}`,
+    `qemuVersion=${receipt.hypervisor.qemuVersion}`,
+    `qemuPackage=${receipt.hypervisor.qemuPackage}`,
+    `qemuPackageVersion=${receipt.hypervisor.qemuPackageVersion}`,
+    `qemuPackageArchitecture=${receipt.hypervisor.qemuPackageArchitecture}`,
+    '',
+  ].join('\n');
+  if (sha256Bytes(Buffer.from(setMaterial, 'utf8')) !== receipt.setId) {
+    fail('provision_set_identity_invalid');
+  }
+  return receipt;
 }
 
 function validateCanonicalReleasePaths(release) {
@@ -682,13 +1087,34 @@ export function validatePlan(plan, { nowMs = Date.now(), allowExpired = false } 
   }
 
   assertExactFields(plan.trust, TRUST_FIELDS, 'trust');
-  for (const field of TRUST_FIELDS) assertDigest(plan.trust[field], `trust_${field}_invalid`);
+  for (const field of TRUST_FIELDS.filter(
+    (field) => field !== 'guestSshHostPublicKeySha256s',
+  )) {
+    assertDigest(plan.trust[field], `trust_${field}_invalid`);
+  }
+  assertArray(
+    plan.trust.guestSshHostPublicKeySha256s,
+    3,
+    3,
+    'trust_guest_ssh_host_keys_invalid',
+  );
+  plan.trust.guestSshHostPublicKeySha256s.forEach((digest) => {
+    assertDigest(digest, 'trust_guest_ssh_host_key_invalid');
+  });
+  unique(
+    plan.trust.guestSshHostPublicKeySha256s,
+    'trust_guest_ssh_host_key_reuse',
+  );
   for (const [guestField, productionField, code] of [
     ['guestOwnerPublicKeySha256', 'productionOwnerPublicKeySha256', 'production_owner_key_reuse'],
     ['guestSshClientPublicKeySha256', 'productionSshClientPublicKeySha256', 'production_ssh_client_key_reuse'],
-    ['guestSshHostPublicKeySha256', 'productionSshHostPublicKeySha256', 'production_ssh_host_key_reuse'],
   ]) {
     if (plan.trust[guestField] === plan.trust[productionField]) fail(code);
+  }
+  if (plan.trust.guestSshHostPublicKeySha256s.includes(
+    plan.trust.productionSshHostPublicKeySha256,
+  )) {
+    fail('production_ssh_host_key_reuse');
   }
 
   assertExactFields(plan.labStorage, STORAGE_FIELDS, 'lab_storage');
@@ -759,7 +1185,8 @@ export function validatePlan(plan, { nowMs = Date.now(), allowExpired = false } 
     assertInteger(overlay.ssh.port, 1024, 65535, 'ssh_forwarded_port_invalid');
     if (overlay.ssh.user !== GUEST_USER) fail('ssh_guest_user_invalid');
     assertDigest(overlay.ssh.hostPublicKeySha256, 'ssh_host_key_invalid');
-    if (overlay.ssh.hostPublicKeySha256 !== plan.trust.guestSshHostPublicKeySha256) {
+    if (overlay.ssh.hostPublicKeySha256
+        !== plan.trust.guestSshHostPublicKeySha256s[index]) {
       fail('ssh_host_key_not_guest');
     }
     overlayIds.push(overlay.overlayId);
@@ -795,11 +1222,120 @@ function canonicalSignature(signature) {
   return bytes;
 }
 
+export function validateReadinessLedger(ledger, plan) {
+  assertExactFields(ledger, READINESS_LEDGER_FIELDS, 'readiness_ledger');
+  if (ledger.schema !== SCHEMAS.readinessLedger
+      || ledger.status !== 'all_runtime_readiness_complete'
+      || ledger.planId !== plan.planId
+      || ledger.planSha256 !== sha256Json(plan)
+      || ledger.guestOwnerPublicKeySha256
+        !== plan.trust.guestOwnerPublicKeySha256
+      || ledger.controllerBootIdSha256
+        !== plan.controller.bootIdSha256) {
+    fail('readiness_ledger_binding_invalid');
+  }
+  for (const field of [
+    'sequenceId',
+    'generationManifestSha256',
+    'provisionReceiptSha256',
+    'stateSha256',
+  ]) {
+    assertDigest(ledger[field], `readiness_ledger_${field}_invalid`);
+  }
+  assertInteger(
+    ledger.monotonicStartedSeconds,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'readiness_ledger_monotonic_start_invalid',
+  );
+  assertInteger(
+    ledger.monotonicDeadlineSeconds,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    'readiness_ledger_monotonic_deadline_invalid',
+  );
+  assertInteger(
+    ledger.monotonicCompletedSeconds,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'readiness_ledger_monotonic_completion_invalid',
+  );
+  if (ledger.monotonicDeadlineSeconds <= ledger.monotonicStartedSeconds
+      || ledger.monotonicDeadlineSeconds - ledger.monotonicStartedSeconds
+        > 24 * 60 * 60
+      || ledger.monotonicCompletedSeconds < ledger.monotonicStartedSeconds
+      || ledger.monotonicCompletedSeconds > ledger.monotonicDeadlineSeconds) {
+    fail('readiness_ledger_monotonic_window_invalid');
+  }
+  const completedAt = parseIso(
+    ledger.completedAt,
+    'readiness_ledger_completed_at_invalid',
+  );
+  if (completedAt < Date.parse(plan.createdAt) - CLOCK_SKEW_MS
+      || completedAt > Date.parse(plan.expiresAt)) {
+    fail('readiness_ledger_completed_at_binding_invalid');
+  }
+  assertArray(
+    ledger.orderedReadiness,
+    DRILL_NAMES.length,
+    DRILL_NAMES.length,
+    'readiness_ledger_entries_invalid',
+  );
+  let previousCompletion = 0;
+  const requestDigests = [];
+  const readinessDigests = [];
+  ledger.orderedReadiness.forEach((entry, index) => {
+    assertExactFields(
+      entry,
+      READINESS_LEDGER_ENTRY_FIELDS,
+      'readiness_ledger_entry',
+    );
+    const expectedDrill = DRILL_NAMES[index];
+    const expectedRuntimeDrill = [
+      'ssh-disconnect-after-pm2-stop',
+      'failed-health-check',
+      'host-reboot-during-promotion',
+    ][index];
+    if (entry.drill !== expectedDrill
+        || entry.runtimeDrill !== expectedRuntimeDrill
+        || entry.guest !== `guest-${index + 1}`) {
+      fail('readiness_ledger_order_invalid');
+    }
+    assertDigest(
+      entry.requestSha256,
+      'readiness_ledger_request_digest_invalid',
+    );
+    assertDigest(
+      entry.readinessSha256,
+      'readiness_ledger_readiness_digest_invalid',
+    );
+    const entryCompleted = parseIso(
+      entry.completedAt,
+      'readiness_ledger_entry_completed_at_invalid',
+    );
+    if (entryCompleted < previousCompletion || entryCompleted > completedAt) {
+      fail('readiness_ledger_entry_chronology_invalid');
+    }
+    previousCompletion = entryCompleted;
+    requestDigests.push(entry.requestSha256);
+    readinessDigests.push(entry.readinessSha256);
+  });
+  unique(requestDigests, 'readiness_ledger_request_reuse');
+  unique(readinessDigests, 'readiness_ledger_readiness_reuse');
+  return ledger;
+}
+
 export function validateOwnerAuthorization(
   envelope,
   plan,
   guestOwnerPublicKeyPem,
-  { nowMs = Date.now(), allowExpired = false } = {},
+  {
+    nowMs = Date.now(),
+    allowExpired = false,
+    isolation = null,
+    currentBootIdSha256 = null,
+    currentMonotonicSeconds = null,
+  } = {},
 ) {
   validatePlan(plan, { nowMs, allowExpired });
   assertExactFields(envelope, AUTH_ENVELOPE_FIELDS, 'owner_authorization');
@@ -834,6 +1370,32 @@ export function validateOwnerAuthorization(
   if (payload.guestOwnerPublicKeySha256 !== guestOwnerKeyIdentity) {
     fail('owner_authorization_guest_key_mismatch');
   }
+  if (payload.controllerBootIdSha256 !== plan.controller.bootIdSha256) {
+    fail('owner_authorization_boot_id_mismatch');
+  }
+  assertInteger(
+    payload.approvedMonotonicSeconds,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    'owner_authorization_monotonic_start_invalid',
+  );
+  assertInteger(
+    payload.expiresMonotonicSeconds,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    'owner_authorization_monotonic_deadline_invalid',
+  );
+  validateReadinessLedger(payload.readinessLedger, plan);
+  assertDigest(
+    payload.isolationSha256,
+    'owner_authorization_isolation_digest_invalid',
+  );
+  if (isolation
+      && (canonicalJson(payload.readinessLedger)
+        !== canonicalJson(isolation.readinessLedger)
+        || payload.isolationSha256 !== sha256Json(isolation))) {
+    fail('owner_authorization_isolation_mismatch');
+  }
   assertArray(payload.endpoints, 3, 3, 'owner_authorization_endpoints_invalid');
   payload.endpoints.forEach((endpoint, index) => {
     assertExactFields(endpoint, AUTH_ENDPOINT_FIELDS, 'owner_authorization_endpoint');
@@ -853,6 +1415,31 @@ export function validateOwnerAuthorization(
       || expires > Date.parse(plan.expiresAt)
       || expires - approved > 24 * 60 * 60 * 1000) {
     fail('owner_authorization_lifetime_invalid');
+  }
+  const wallLifetimeSeconds = (expires - approved) / 1000;
+  if (!Number.isSafeInteger(wallLifetimeSeconds)
+      || payload.expiresMonotonicSeconds
+        - payload.approvedMonotonicSeconds !== wallLifetimeSeconds
+      || payload.expiresMonotonicSeconds
+        <= payload.approvedMonotonicSeconds) {
+    fail('owner_authorization_monotonic_window_invalid');
+  }
+  if (currentBootIdSha256 !== null
+      && currentBootIdSha256 !== payload.controllerBootIdSha256) {
+    fail('owner_authorization_boot_changed');
+  }
+  if (currentMonotonicSeconds !== null) {
+    assertInteger(
+      currentMonotonicSeconds,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      'owner_authorization_current_monotonic_invalid',
+    );
+    if (currentMonotonicSeconds < payload.approvedMonotonicSeconds
+        || (!allowExpired
+          && currentMonotonicSeconds >= payload.expiresMonotonicSeconds)) {
+      fail('owner_authorization_monotonic_expired');
+    }
   }
   if (!allowExpired && expires < nowMs) fail('owner_authorization_expired');
 
@@ -946,6 +1533,10 @@ export function validateIsolationEvidence(evidence, plan, { nowMs = Date.now() }
       || captured > nowMs + CLOCK_SKEW_MS) {
     fail('isolation_capture_time_invalid');
   }
+  validateReadinessLedger(evidence.readinessLedger, plan);
+  if (Date.parse(evidence.readinessLedger.completedAt) > captured) {
+    fail('isolation_readiness_ledger_chronology_invalid');
+  }
 
   assertExactFields(evidence.hypervisor, HYPERVISOR_FIELDS, 'hypervisor');
   if (evidence.hypervisor.machineIdSha256 !== plan.controller.machineIdSha256
@@ -1037,7 +1628,7 @@ export function validateIsolationEvidence(evidence, plan, { nowMs = Date.now() }
   const expectedKeyIdentities = {
     ownerPublicKeySha256: plan.trust.guestOwnerPublicKeySha256,
     sshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
-    sshHostPublicKeySha256: plan.trust.guestSshHostPublicKeySha256,
+    sshHostPublicKeySha256: plan.trust.guestSshHostPublicKeySha256s[0],
     releaseEvidencePublicKeySha256: plan.trust.releaseEvidencePublicKeySha256,
   };
   for (const [field, expected] of Object.entries(expectedKeyIdentities)) {
@@ -1109,22 +1700,31 @@ export function validateKeySet(plan, keys) {
     'productionOwnerPublicKeyPem',
     'guestSshClientPublicKey',
     'productionSshClientPublicKey',
-    'guestSshHostPublicKey',
+    'guestSshHostPublicKeys',
     'productionSshHostPublicKey',
     'releaseEvidencePublicKeyPem',
   ];
   assertExactFields(keys, expectedFields, 'key_set');
+  assertArray(
+    keys.guestSshHostPublicKeys,
+    3,
+    3,
+    'guest_ssh_host_public_keys_invalid',
+  );
   const identities = {
     guestOwnerPublicKeySha256: publicKeyIdentity(keys.guestOwnerPublicKeyPem),
     productionOwnerPublicKeySha256: publicKeyIdentity(keys.productionOwnerPublicKeyPem),
     guestSshClientPublicKeySha256: textKeyIdentity(keys.guestSshClientPublicKey),
     productionSshClientPublicKeySha256: textKeyIdentity(keys.productionSshClientPublicKey),
-    guestSshHostPublicKeySha256: textKeyIdentity(keys.guestSshHostPublicKey),
+    guestSshHostPublicKeySha256s:
+      keys.guestSshHostPublicKeys.map((key) => textKeyIdentity(key)),
     productionSshHostPublicKeySha256: textKeyIdentity(keys.productionSshHostPublicKey),
     releaseEvidencePublicKeySha256: publicKeyIdentity(keys.releaseEvidencePublicKeyPem),
   };
   for (const [field, actual] of Object.entries(identities)) {
-    if (actual !== plan.trust[field]) fail(`key_file_identity_mismatch:${field}`);
+    if (canonicalJson(actual) !== canonicalJson(plan.trust[field])) {
+      fail(`key_file_identity_mismatch:${field}`);
+    }
   }
   if (keys.guestOwnerPublicKeyPem.trim() === keys.productionOwnerPublicKeyPem.trim()) {
     fail('production_owner_key_reuse');
@@ -1133,8 +1733,13 @@ export function validateKeySet(plan, keys) {
       === normalizeSshEd25519PublicKey(keys.productionSshClientPublicKey)) {
     fail('production_ssh_client_key_reuse');
   }
-  if (normalizeSshEd25519PublicKey(keys.guestSshHostPublicKey)
-      === normalizeSshEd25519PublicKey(keys.productionSshHostPublicKey)) {
+  const normalizedGuestHostKeys = keys.guestSshHostPublicKeys.map(
+    (key) => normalizeSshEd25519PublicKey(key),
+  );
+  unique(normalizedGuestHostKeys, 'guest_ssh_host_key_reuse');
+  if (normalizedGuestHostKeys.includes(
+    normalizeSshEd25519PublicKey(keys.productionSshHostPublicKey),
+  )) {
     fail('production_ssh_host_key_reuse');
   }
   return identities;
@@ -1613,6 +2218,7 @@ function executionOutcomePayload(outcome) {
 
 export function buildExecutionReceipt(
   plan,
+  isolation,
   outcomes,
   {
     testMode,
@@ -1620,10 +2226,21 @@ export function buildExecutionReceipt(
   },
 ) {
   assertExactFields(outcomes, DRILL_NAMES, 'execution_outcomes');
+  validateIsolationEvidence(isolation, plan, {
+    nowMs: Math.max(Date.now(), Date.parse(isolation.capturedAt)),
+  });
+  const readinessLedger = isolation.readinessLedger;
   const receipt = {
     schema: SCHEMAS.execution,
     planId: plan.planId,
     planSha256: sha256Json(plan),
+    readinessLedgerSha256: sha256Json(readinessLedger),
+    generationManifestSha256:
+      readinessLedger.generationManifestSha256,
+    provisionReceiptSha256:
+      readinessLedger.provisionReceiptSha256,
+    orderedReadinessSha256s:
+      readinessLedger.orderedReadiness.map((entry) => entry.readinessSha256),
     guestSshClientPublicKeySha256: plan.trust.guestSshClientPublicKeySha256,
     executionMode: EXECUTION_MODE,
     maximumActiveGuests: 1,
@@ -1652,6 +2269,7 @@ export function bindExecutionReceipt(execution, outcomes) {
 export function validateExecutionReceipt(
   execution,
   plan,
+  isolation,
   outcomes,
   {
     nowMs = Date.now(),
@@ -1662,6 +2280,31 @@ export function validateExecutionReceipt(
   if (execution.schema !== SCHEMAS.execution) fail('execution_receipt_schema_unsupported');
   if (execution.planId !== plan.planId || execution.planSha256 !== sha256Json(plan)) {
     fail('execution_receipt_plan_mismatch');
+  }
+  validateReadinessLedger(isolation.readinessLedger, plan);
+  if (execution.readinessLedgerSha256
+        !== sha256Json(isolation.readinessLedger)
+      || execution.generationManifestSha256
+        !== isolation.readinessLedger.generationManifestSha256
+      || execution.provisionReceiptSha256
+        !== isolation.readinessLedger.provisionReceiptSha256
+      || canonicalJson(execution.orderedReadinessSha256s)
+        !== canonicalJson(
+          isolation.readinessLedger.orderedReadiness.map(
+            (entry) => entry.readinessSha256,
+          ),
+        )) {
+    fail('execution_receipt_readiness_ledger_mismatch');
+  }
+  for (const field of [
+    'readinessLedgerSha256',
+    'generationManifestSha256',
+    'provisionReceiptSha256',
+  ]) {
+    assertDigest(
+      execution[field],
+      `execution_receipt_${field}_invalid`,
+    );
   }
   if (execution.guestSshClientPublicKeySha256
       !== plan.trust.guestSshClientPublicKeySha256) {
@@ -1723,6 +2366,10 @@ function canonicalSources({
     ['plan.json', canonicalJsonBuffer(plan)],
     ['owner-authorization.json', canonicalJsonBuffer(authorization)],
     ['isolation.json', canonicalJsonBuffer(isolation)],
+    [
+      'readiness-ledger.json',
+      canonicalJsonBuffer(isolation.readinessLedger),
+    ],
     ['execution.json', canonicalJsonBuffer(execution)],
     ['restore.json', canonicalJsonBuffer(restore)],
   ]);
@@ -1763,7 +2410,7 @@ function validatedComponents(
     authorization,
     plan,
     keys.guestOwnerPublicKeyPem,
-    { nowMs, allowExpired },
+    { nowMs, allowExpired, isolation },
   );
   validateIsolationEvidence(isolation, plan, { nowMs });
   validateRestoreEvidence(restore, plan, { nowMs });
@@ -1790,7 +2437,7 @@ function validatedComponents(
     DRILL_NAMES.map((drill) => outcomes[drill].timeline[0].guestBootIdSha256),
     'drill_initial_guest_boot_id_reuse',
   );
-  validateExecutionReceipt(execution, plan, outcomes, { nowMs });
+  validateExecutionReceipt(execution, plan, isolation, outcomes, { nowMs });
   return validatedOutcomes;
 }
 
@@ -1832,12 +2479,31 @@ function buildManifest(
     planSha256: sha256Json(plan),
     authorizationSha256: sha256Json(authorization),
     isolationSha256: sha256Json(isolation),
+    readiness: {
+      schema: isolation.readinessLedger.schema,
+      sequenceId: isolation.readinessLedger.sequenceId,
+      ledgerSha256: sha256Json(isolation.readinessLedger),
+      generationManifestSha256:
+        isolation.readinessLedger.generationManifestSha256,
+      provisionReceiptSha256:
+        isolation.readinessLedger.provisionReceiptSha256,
+      orderedReadinessSha256s:
+        isolation.readinessLedger.orderedReadiness.map(
+          (entry) => entry.readinessSha256,
+        ),
+    },
     execution: {
       schema: execution.schema,
       executionMode: execution.executionMode,
       maximumActiveGuests: execution.maximumActiveGuests,
       testMode: execution.testMode,
       guestSshClientPublicKeySha256: execution.guestSshClientPublicKeySha256,
+      readinessLedgerSha256: execution.readinessLedgerSha256,
+      generationManifestSha256:
+        execution.generationManifestSha256,
+      provisionReceiptSha256: execution.provisionReceiptSha256,
+      orderedReadinessSha256s:
+        execution.orderedReadinessSha256s,
       receiptSha256: sha256Bytes(canonicalJsonBuffer(execution)),
       completedAt: execution.completedAt,
     },
@@ -1879,6 +2545,34 @@ function validateManifestShape(manifest) {
   for (const field of ['planSha256', 'authorizationSha256', 'isolationSha256']) {
     assertDigest(manifest[field], `manifest_${field}_invalid`);
   }
+  assertExactFields(
+    manifest.readiness,
+    MANIFEST_READINESS_FIELDS,
+    'manifest_readiness',
+  );
+  if (manifest.readiness.schema !== SCHEMAS.readinessLedger) {
+    fail('manifest_readiness_schema_invalid');
+  }
+  for (const field of [
+    'sequenceId',
+    'ledgerSha256',
+    'generationManifestSha256',
+    'provisionReceiptSha256',
+  ]) {
+    assertDigest(
+      manifest.readiness[field],
+      `manifest_readiness_${field}_invalid`,
+    );
+  }
+  assertArray(
+    manifest.readiness.orderedReadinessSha256s,
+    DRILL_NAMES.length,
+    DRILL_NAMES.length,
+    'manifest_readiness_digests_invalid',
+  );
+  manifest.readiness.orderedReadinessSha256s.forEach((digest) => {
+    assertDigest(digest, 'manifest_readiness_digest_invalid');
+  });
   assertExactFields(manifest.execution, MANIFEST_EXECUTION_FIELDS, 'manifest_execution');
   if (manifest.execution.schema !== SCHEMAS.execution
       || manifest.execution.executionMode !== EXECUTION_MODE
@@ -1891,6 +2585,25 @@ function validateManifestShape(manifest) {
     manifest.execution.guestSshClientPublicKeySha256,
     'manifest_execution_ssh_client_key_digest_invalid',
   );
+  for (const field of [
+    'readinessLedgerSha256',
+    'generationManifestSha256',
+    'provisionReceiptSha256',
+  ]) {
+    assertDigest(
+      manifest.execution[field],
+      `manifest_execution_${field}_invalid`,
+    );
+  }
+  assertArray(
+    manifest.execution.orderedReadinessSha256s,
+    DRILL_NAMES.length,
+    DRILL_NAMES.length,
+    'manifest_execution_readiness_digests_invalid',
+  );
+  manifest.execution.orderedReadinessSha256s.forEach((digest) => {
+    assertDigest(digest, 'manifest_execution_readiness_digest_invalid');
+  });
   parseIso(manifest.execution.completedAt, 'manifest_execution_completed_at_invalid');
   assertExactFields(manifest.restore, MANIFEST_RESTORE_FIELDS, 'manifest_restore');
   if (manifest.restore.schemaVersion !== SCHEMAS.restore) fail('manifest_restore_schema_invalid');
@@ -1928,7 +2641,7 @@ function validateManifestShape(manifest) {
     parseIso(drill.completedAt, 'manifest_drill_completed_at_invalid');
     assertDigest(drill.outcomeSha256, 'manifest_outcome_digest_invalid');
   });
-  assertArray(manifest.files, 8, 8, 'manifest_files_invalid');
+  assertArray(manifest.files, 9, 9, 'manifest_files_invalid');
   const paths = [];
   let total = 0;
   for (const record of manifest.files) {
@@ -1937,6 +2650,7 @@ function validateManifestShape(manifest) {
       'plan.json',
       'owner-authorization.json',
       'isolation.json',
+      'readiness-ledger.json',
       'execution.json',
       'restore.json',
       ...DRILL_NAMES.map((drill) => `drills/${drill}.json`),
@@ -2026,6 +2740,7 @@ function assertExactBundleLayout(bundleDir) {
     'manifest.json',
     'owner-authorization.json',
     'plan.json',
+    'readiness-ledger.json',
     'restore.json',
   ].sort();
   if (rootEntries.length !== expectedRoot.length
@@ -2052,6 +2767,14 @@ function readBundleComponents(bundleDir) {
     'bundle_authorization',
   );
   const isolation = readBoundedJson(path.join(resolved, 'isolation.json'), 'bundle_isolation');
+  const readinessLedger = readBoundedJson(
+    path.join(resolved, 'readiness-ledger.json'),
+    'bundle_readiness_ledger',
+  );
+  if (canonicalJson(readinessLedger)
+      !== canonicalJson(isolation.readinessLedger)) {
+    fail('bundle_readiness_ledger_mismatch');
+  }
   const execution = readBoundedJson(path.join(resolved, 'execution.json'), 'bundle_execution');
   const restore = readBoundedJson(path.join(resolved, 'restore.json'), 'bundle_restore');
   const outcomes = {};
@@ -2067,6 +2790,7 @@ function readBundleComponents(bundleDir) {
     plan,
     authorization,
     isolation,
+    readinessLedger,
     execution,
     restore,
     outcomes,

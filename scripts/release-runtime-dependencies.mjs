@@ -143,7 +143,7 @@ function loadAndVerify() {
   return lock;
 }
 
-function assertInstallPlatform(lock, pythonBin) {
+function assertNodeInstallPlatform(lock) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || process.version !== lock.target.node) {
     fail('installed runtime Node platform does not match the dependency artifact');
   }
@@ -151,20 +151,30 @@ function assertInstallPlatform(lock, pythonBin) {
   if (!/^ID=ubuntu$/m.test(osRelease) || !/^VERSION_ID="?24\.04"?$/m.test(osRelease)) {
     fail('installed runtime OS does not match Ubuntu 24.04');
   }
+}
+
+function assertInstallPlatform(lock, pythonBin) {
+  assertNodeInstallPlatform(lock);
   const python = execFileSync(pythonBin, ['--version'], { encoding: 'utf8' }).trim();
   if (python !== lock.target.python) fail('installed runtime Python patch does not match the dependency artifact');
 }
 
-function install() {
-  const lock = loadAndVerify();
-  const pythonBin = valueOf('--python-bin', '/usr/bin/python3.12');
-  assertInstallPlatform(lock, pythonBin);
-  const nodeModules = path.join(root, 'node_modules');
-  const venv = path.join(root, 'content-engine/.venv');
-  if (fs.existsSync(nodeModules) || fs.existsSync(venv)) {
-    fail('network-independent install requires absent dependency trees');
+function lexicalPathExists(target) {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
   }
-  const archive = path.join(root, lock.nodeArchive.path);
+}
+
+export function extractNodeModules(lock, destinationRoot, pythonBin = 'python') {
+  const nodeModules = path.join(destinationRoot, 'node_modules');
+  if (lexicalPathExists(nodeModules)) {
+    fail('network-independent Node extraction requires an absent dependency tree');
+  }
+  const archive = path.join(destinationRoot, lock.nodeArchive.path);
   const extractionProgram = String.raw`
 import pathlib, posixpath, sys, tarfile
 archive, destination = sys.argv[1:]
@@ -184,8 +194,31 @@ with tarfile.open(archive, mode='r:gz') as handle:
                 raise SystemExit('escaping node archive link')
     handle.extractall(destination, filter='data')
 `;
-  execFileSync(pythonBin, ['-c', extractionProgram, archive, root], { stdio: 'inherit' });
+  execFileSync(pythonBin, ['-c', extractionProgram, archive, destinationRoot], { stdio: 'inherit' });
   if (!fs.statSync(nodeModules).isDirectory()) fail('Node dependency archive did not create node_modules');
+}
+
+function extractNode() {
+  const lock = loadAndVerify();
+  assertNodeInstallPlatform(lock);
+  extractNodeModules(lock, root);
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    schema: 'nexus.network-independent-node-extraction.v1',
+    dependencyLockDigest: sha256(canonicalJson(lock)),
+  })}\n`);
+}
+
+function install() {
+  const lock = loadAndVerify();
+  const pythonBin = valueOf('--python-bin', '/usr/bin/python3.12');
+  assertInstallPlatform(lock, pythonBin);
+  const nodeModules = path.join(root, 'node_modules');
+  const venv = path.join(root, 'content-engine/.venv');
+  if (lexicalPathExists(nodeModules) || lexicalPathExists(venv)) {
+    fail('network-independent install requires absent dependency trees');
+  }
+  extractNodeModules(lock, root, pythonBin);
   execFileSync(pythonBin, ['-m', 'venv', venv], { stdio: 'inherit' });
   const pip = path.join(venv, 'bin/pip');
   const wheelhouse = path.join(root, 'dist/runtime-dependencies/python-wheelhouse');
@@ -223,6 +256,7 @@ if (process.argv[1]
   else if (command === 'verify') {
     const lock = loadAndVerify();
     process.stdout.write(`${JSON.stringify({ ok: true, digest: sha256(canonicalJson(lock)) })}\n`);
-  } else if (command === 'install') install();
-  else fail('Usage: release-runtime-dependencies.mjs <write-lock|verify|install> --root <release>');
+  } else if (command === 'extract-node') extractNode();
+  else if (command === 'install') install();
+  else fail('Usage: release-runtime-dependencies.mjs <write-lock|verify|extract-node|install> --root <release>');
 }

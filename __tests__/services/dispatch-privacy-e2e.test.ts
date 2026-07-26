@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rm } from 'fs/promises';
 import * as path from 'path';
 
-const { mockConfig, mockAuditState, mockAuditInsert } = vi.hoisted(() => ({
+const { mockConfig, mockAuditState, mockAuditInsert, mockRequestContext } = vi.hoisted(() => ({
   mockConfig: {
     ollama: {
       enabled: true,
@@ -43,6 +43,9 @@ const { mockConfig, mockAuditState, mockAuditInsert } = vi.hoisted(() => ({
   },
   mockAuditState: { insertFails: false },
   mockAuditInsert: vi.fn(),
+  mockRequestContext: {
+    value: {} as { userId?: number; tenantId?: number },
+  },
 }));
 
 vi.mock('../../src/config', () => ({ config: mockConfig }));
@@ -75,7 +78,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 vi.mock('../../src/utils/request-context', () => ({
   generateRequestId: () => 'test-request-id',
-  getCurrentContext: () => ({}),
+  getCurrentContext: () => mockRequestContext.value,
   getCurrentRequestId: () => 'test-request-id',
   runWithContext: (_context: unknown, fn: () => unknown) => fn(),
 }));
@@ -97,6 +100,10 @@ vi.mock('../../src/services/anthropic', () => ({
 const cloudCallDomainSpy = vi.fn();
 const cloudStructuredGenerationSpy = vi.fn();
 const cloudResponseQueue: Array<{ text: string; toolCalls: unknown[]; stopReason: string }> = [];
+const callCloudStructuredGeneration = async (request: unknown) => {
+  cloudStructuredGenerationSpy(request);
+  return cloudResponseQueue.shift() ?? { text: 'cloud reply', stopReason: 'stop' };
+};
 const cloudProvider = {
   name: 'gemini',
   classify: async () => ({ domain: 'content' as const, confidence: 1 }),
@@ -104,10 +111,7 @@ const cloudProvider = {
     cloudCallDomainSpy(...args);
     return cloudResponseQueue.shift() ?? { text: 'cloud reply', toolCalls: [], stopReason: 'stop' };
   },
-  callStructuredGeneration: async (request: unknown) => {
-    cloudStructuredGenerationSpy(request);
-    return cloudResponseQueue.shift() ?? { text: 'cloud reply', stopReason: 'stop' };
-  },
+  callStructuredGeneration: callCloudStructuredGeneration,
   continueWithToolResults: async () => ({ text: 'cloud reply', toolCalls: [], stopReason: 'stop' }),
 };
 
@@ -147,7 +151,10 @@ beforeEach(() => {
   mockAuditInsert.mockClear();
   mockAuditState.insertFails = false;
   cloudResponseQueue.length = 0;
+  mockRequestContext.value = {};
+  cloudProvider.callStructuredGeneration = callCloudStructuredGeneration;
   mockConfig.localLLMEvaluation.enabled = true;
+  mockConfig.localLLMEvaluation.requireLocalForScriptGen = false;
   mockConfig.cloudReasoningFallback.privacy.mode = 'redacted_only';
   mockConfig.cloudReasoningFallback.privacy.allowRawPrivateData = false;
 });
@@ -159,6 +166,133 @@ afterEach(async () => {
 });
 
 describe('small-only production dispatch', () => {
+  it('keeps calibrated runtime roles local and gates offline evaluation independently', async () => {
+    const localReason = vi.fn(async () => ({ text: 'local reply', stopReason: 'stop' }));
+    const primary = { ...ollamaPrimaryThatFails, localReason } as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: {
+        primary,
+        fallback: 'approved_cloud_reasoning',
+      },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    mockConfig.localLLMEvaluation.enabled = false;
+    await expect(trp.dispatchLocalReasoning({
+      workloadRole: 'validated_local_chat',
+      prompt: 'bounded local chat',
+    })).resolves.toMatchObject({ text: 'local reply' });
+    await expect(trp.dispatchLocalReasoning({
+      workloadRole: 'classifier_shadow',
+      prompt: 'bounded classifier shadow',
+    })).resolves.toMatchObject({ text: 'local reply' });
+    expect(localReason).toHaveBeenCalledTimes(2);
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+
+    await expect(trp.dispatchLocalReasoning({
+      workloadRole: 'offline_evaluation',
+      prompt: 'public offline evaluation',
+      containsPrivateData: false,
+    })).resolves.toMatchObject({ text: 'cloud reply' });
+    expect(localReason).toHaveBeenCalledTimes(2);
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(1);
+
+    mockConfig.localLLMEvaluation.enabled = true;
+    await expect(trp.dispatchLocalReasoning({
+      workloadRole: 'offline_evaluation',
+      prompt: 'enabled offline evaluation',
+    })).resolves.toMatchObject({ text: 'local reply' });
+    expect(localReason).toHaveBeenCalledTimes(3);
+
+    await expect(trp.dispatchLocalReasoning({
+      workloadRole: 'unapproved_generic_role',
+      prompt: 'public generic reasoning',
+      containsPrivateData: false,
+    })).resolves.toMatchObject({ text: 'cloud reply' });
+    expect(localReason).toHaveBeenCalledTimes(3);
+    expect(cloudStructuredGenerationSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires both evaluation flags before script generation can execute locally', async () => {
+    const generateScript = vi.fn(async () => ({ source: 'local' }));
+    const primary = { ...ollamaPrimaryThatFails, generateScript } as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      scriptGeneration: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+    const task = {
+      workloadRole: 'offline_evaluation',
+      description: 'classification is intentionally absent',
+    };
+
+    mockConfig.localLLMEvaluation.enabled = true;
+    mockConfig.localLLMEvaluation.requireLocalForScriptGen = false;
+    await expect(trp.dispatchScriptGeneration(task)).rejects.toMatchObject({
+      providerMetadata: { warning: 'privacy_classification_required' },
+    });
+    expect(generateScript).not.toHaveBeenCalled();
+
+    mockConfig.localLLMEvaluation.requireLocalForScriptGen = true;
+    await expect(trp.dispatchScriptGeneration(task)).resolves.toEqual({ source: 'local' });
+    expect(generateScript).toHaveBeenCalledTimes(1);
+
+    mockConfig.localLLMEvaluation.enabled = false;
+    await expect(trp.dispatchScriptGeneration(task)).rejects.toMatchObject({
+      providerMetadata: { warning: 'privacy_classification_required' },
+    });
+    expect(generateScript).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply the Ollama cloud bypass to another provider or another fallback policy', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const otherLocalReason = vi.fn(async () => ({ text: 'other local' }));
+    const otherPrimary = {
+      ...ollamaPrimaryThatFails,
+      name: 'test-local',
+      localReason: otherLocalReason,
+    } as unknown as AIProvider;
+    const otherTrp = new TaskRoutingProvider({
+      classify: { primary: otherPrimary },
+      chat: { primary: otherPrimary },
+      'tool-use': { primary: otherPrimary },
+      localReasoning: { primary: otherPrimary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await expect(otherTrp.dispatchLocalReasoning({
+      workloadRole: 'unapproved_generic_role',
+      prompt: 'kept on the configured non-Ollama provider',
+    })).resolves.toEqual({ text: 'other local' });
+    expect(otherLocalReason).toHaveBeenCalledTimes(1);
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+
+    const ollamaLocalReason = vi.fn(async () => ({ text: 'ollama local' }));
+    const ollamaPrimary = {
+      ...ollamaPrimaryThatFails,
+      localReason: ollamaLocalReason,
+    } as unknown as AIProvider;
+    const noneFallbackTrp = new TaskRoutingProvider({
+      classify: { primary: ollamaPrimary },
+      chat: { primary: ollamaPrimary },
+      'tool-use': { primary: ollamaPrimary },
+      localReasoning: { primary: ollamaPrimary, fallback: 'none' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await expect(noneFallbackTrp.dispatchLocalReasoning({
+      workloadRole: 'unapproved_generic_role',
+      prompt: 'kept local because cloud fallback is disabled',
+    })).resolves.toEqual({ text: 'ollama local' });
+    expect(ollamaLocalReason).toHaveBeenCalledTimes(1);
+    expect(cloudStructuredGenerationSpy).not.toHaveBeenCalled();
+  });
+
   it('goes directly through the approved cloud gate when local reasoning evaluation is disabled', async () => {
     mockConfig.localLLMEvaluation.enabled = false;
     const localReason = vi.fn(async () => {
@@ -250,6 +384,173 @@ describe('small-only production dispatch', () => {
       userPrompt: 'public architecture question',
     }));
     expect(cloudCallDomainSpy).not.toHaveBeenCalled();
+  });
+
+  it('enforces every local-reasoning input and cloud-response boundary', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    await expect(trp.dispatchLocalReasoning({
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'missing_prompt',
+    });
+    await expect(trp.dispatchLocalReasoning({
+      prompt: '   ',
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'missing_prompt',
+    });
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'public request',
+      systemContext: 42,
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'invalid_system_context',
+    });
+
+    (cloudProvider as {
+      callStructuredGeneration?: typeof callCloudStructuredGeneration;
+    }).callStructuredGeneration = undefined;
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'public request',
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'structured_generation_capability_missing',
+    });
+    cloudProvider.callStructuredGeneration = callCloudStructuredGeneration;
+
+    cloudResponseQueue.push({
+      text: undefined as unknown as string,
+      toolCalls: [],
+      stopReason: 'stop',
+    });
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'public request',
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'missing_text',
+    });
+
+    cloudResponseQueue.push({
+      text: 'partial answer',
+      toolCalls: [],
+      stopReason: 'max_tokens',
+    });
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'public request',
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'truncated_output',
+    });
+
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['answer'],
+      properties: { answer: { type: 'string' } },
+    } as const;
+    cloudResponseQueue.push({
+      text: 'not-json',
+      toolCalls: [],
+      stopReason: 'stop',
+    });
+    await expect(trp.dispatchLocalReasoning({
+      prompt: 'public request',
+      outputSchema: schema,
+      containsPrivateData: false,
+    })).rejects.toMatchObject({
+      code: 'CLOUD_LOCAL_REASONING_CONTRACT_INVALID',
+      reason: 'invalid_json',
+    });
+
+    expect(trp.getProviderHealth()['gemini'].metrics).toMatchObject({
+      fallbackTriggerCount: 4,
+      usageCount: 4,
+      failureCount: 4,
+    });
+  });
+
+  it('normalizes identity and token bounds and omits absent optional response fields', async () => {
+    mockConfig.localLLMEvaluation.enabled = false;
+    const primary = ollamaPrimaryThatFails as unknown as AIProvider;
+    const trp = new TaskRoutingProvider({
+      classify: { primary },
+      chat: { primary },
+      'tool-use': { primary },
+      localReasoning: { primary, fallback: 'approved_cloud_reasoning' },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+
+    mockRequestContext.value = { userId: 42.9, tenantId: 88.8 };
+    await trp.dispatchLocalReasoning({
+      prompt: 'bounded from context',
+      containsPrivateData: false,
+      numPredict: 9000,
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 88,
+      maxTokens: 4096,
+      responseFormat: 'text',
+      systemPrompt: 'You are an expert reasoning assistant.\n\nUse no tools or external state. Return only the requested answer.',
+    }));
+    expect(cloudStructuredGenerationSpy.mock.calls.at(-1)?.[0]).not.toHaveProperty('jsonSchema');
+
+    mockRequestContext.value = { userId: -5.3 };
+    await trp.dispatchLocalReasoning({
+      prompt: 'bounded negative context',
+      containsPrivateData: false,
+      numPredict: 0,
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 0,
+      tenantId: 0,
+      maxTokens: 2048,
+    }));
+
+    mockRequestContext.value = {};
+    await trp.dispatchLocalReasoning({
+      prompt: 'bounded explicit identity',
+      containsPrivateData: false,
+      userId: 7.9,
+      tenantId: Number.NaN,
+      numPredict: 12.9,
+    });
+    expect(cloudStructuredGenerationSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      maxTokens: 12,
+    }));
+
+    cloudResponseQueue.push({
+      text: 'answer without a stop reason',
+      toolCalls: [],
+    } as unknown as { text: string; toolCalls: unknown[]; stopReason: string });
+    const result = await trp.dispatchLocalReasoning({
+      prompt: 'omit absent stop reason',
+      containsPrivateData: false,
+    }) as Record<string, unknown>;
+    expect(result.text).toBe('answer without a stop reason');
+    expect(result).not.toHaveProperty('stopReason');
+    expect(trp.getProviderHealth()['gemini'].metrics).toMatchObject({
+      fallbackTriggerCount: 4,
+      usageCount: 4,
+      failureCount: 0,
+    });
   });
 
   it('uses provider JSON mode and enforces the supplied schema before returning parsed output', async () => {

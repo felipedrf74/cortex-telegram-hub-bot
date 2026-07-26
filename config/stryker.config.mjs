@@ -21,7 +21,10 @@ export default {
   testRunner: 'vitest',
   mutate,
   ...(testFiles === undefined ? {} : { testFiles }),
-  vitest: { related: true },
+  vitest: {
+    related: true,
+    configFile: 'config/vitest.stryker.config.ts',
+  },
   // Static module-initialization mutants require the entire related suite for
   // every candidate and dominated more than 90% of the measured cleanup-lane
   // runtime. Keep them in the non-release weekly lane; the PR gate still
@@ -39,7 +42,11 @@ export default {
   ignorePatterns: ['/.local', '/.local/**'],
   tempDirName: '.local/stryker-tmp',
   cleanTempDir: true,
-  concurrency: 2,
+  // The weekly lane is advisory and intentionally sequential. The gate runs
+  // one source per Stryker process: a combined 40-source instrumented graph
+  // crashed Vitest even with one worker, while the bounded source processes
+  // retain every changed range and complete without duplicating runners.
+  concurrency: 1,
   // GitHub's shared runner can take longer than five minutes for Stryker's
   // instrumented correctness baseline even though the ordinary four-shard
   // suite is healthy. This only widens the pre-mutation dry-run allowance;

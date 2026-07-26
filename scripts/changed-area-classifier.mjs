@@ -30,17 +30,24 @@ function usage() {
 Usage:
   scripts/changed-area-classifier.sh [--base <ref>] [--format json|markdown]
                                      [--files <comma-separated paths>]
+                                     [--staged]
   scripts/changed-area-classifier.sh --json
 `;
 }
 
 function parseArgs(argv) {
-  const options = { baseRef: '', format: 'markdown', explicitFiles: null };
+  const options = {
+    baseRef: '',
+    format: 'markdown',
+    explicitFiles: null,
+    stagedOnly: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--base') options.baseRef = argv[++index] ?? '';
     else if (argument === '--format') options.format = argv[++index] ?? '';
     else if (argument === '--files') options.explicitFiles = (argv[++index] ?? '').split(',').filter(Boolean);
+    else if (argument === '--staged') options.stagedOnly = true;
     else if (argument === '--json') options.format = 'json';
     else if (argument === '--markdown') options.format = 'markdown';
     else if (argument === '--quiet') {
@@ -55,6 +62,10 @@ function parseArgs(argv) {
   }
   if (!['json', 'markdown', 'md'].includes(options.format)) {
     process.stderr.write(`Unknown format: ${options.format}\n`);
+    process.exit(64);
+  }
+  if (options.stagedOnly && (options.baseRef || (options.explicitFiles?.length ?? 0) > 0)) {
+    process.stderr.write('--staged cannot be combined with --base or --files\n');
     process.exit(64);
   }
   return options;
@@ -107,11 +118,22 @@ function collectGitChanges(baseRef) {
     git(['ls-files', '--others', '--exclude-standard', '-z'], { allowFailure: true }) ?? '',
   );
   const records = [...committed, ...staged, ...unstaged];
-  const testTopologyChanged = records.some((record) => /^[DR]/.test(record.status)
+  const testTopologyChanged = records.some((record) => /^[DRT]/.test(record.status)
     && record.paths.some((file) => /^__tests__\/.+\.test\.ts$/.test(file)));
   return {
     files: [...records.flatMap((record) => record.paths), ...untracked],
     testTopologyChanged,
+  };
+}
+
+function collectStagedChanges() {
+  const records = parseGitNameStatusRecordsZ(
+    git(['diff', '--cached', '--name-status', '-z'], { allowFailure: true }) ?? '',
+  );
+  return {
+    files: records.flatMap((record) => record.paths),
+    testTopologyChanged: records.some((record) => /^[DRT]/.test(record.status)
+      && record.paths.some((file) => /^__tests__\/.+\.test\.ts$/.test(file))),
   };
 }
 
@@ -124,18 +146,22 @@ try {
   // Preserve the shell classifier's contract: an empty --files value falls
   // back to the Git diff instead of classifying an artificial empty change.
   const explicit = (options.explicitFiles?.length ?? 0) > 0;
-  const baseRef = explicit
-    ? (options.baseRef || 'explicit-files')
-    : resolveBase(options.baseRef);
-  const impactResolved = explicit ? true : isAncestor(baseRef);
-  const changes = explicit
+  const baseRef = options.stagedOnly
+    ? 'staged-index'
+    : explicit
+      ? (options.baseRef || 'explicit-files')
+      : resolveBase(options.baseRef);
+  const impactResolved = options.stagedOnly || explicit ? true : isAncestor(baseRef);
+  const changes = options.stagedOnly
+    ? collectStagedChanges()
+    : explicit
     ? {
       files: options.explicitFiles,
       testTopologyChanged: options.explicitFiles.some((file) => /^__tests__\/.+\.test\.ts$/.test(file)
         && !fs.existsSync(path.join(root, file))),
     }
     : collectGitChanges(baseRef);
-  const head = git(['rev-parse', '--short', 'HEAD'], { allowFailure: true }) ?? 'unknown';
+  const head = git(['rev-parse', 'HEAD'], { allowFailure: true }) ?? 'unknown';
   const result = classifyChangedFiles({
     files: changes.files,
     root,

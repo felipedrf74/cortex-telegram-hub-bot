@@ -3,6 +3,32 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('risk-gate dry run', () => {
+  it('rejects a JSON evidence path that traverses outside .local', () => {
+    const packageBefore = readFileSync('package.json', 'utf8');
+    const result = spawnSync(
+      'bash',
+      [
+        'scripts/risk-gate.sh',
+        '--dry-run',
+        '--full',
+        '--skip-typecheck',
+        '--skip-python',
+        '--skip-migrations',
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NEXUS_RISK_GATE_JSON_OUTPUT: '.local/../package.json',
+        },
+      },
+    );
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain('must be a canonical path under .local');
+    expect(readFileSync('package.json', 'utf8')).toBe(packageBefore);
+  });
+
   it('resolves symbolic and hook fallback bases to one immutable commit', () => {
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const raw = execFileSync(
@@ -96,7 +122,7 @@ describe('risk-gate dry run', () => {
     expect(py313Index).toBeLessThan(defaultVenvIndex);
   });
 
-  it('escalates to full Vitest when the classifier fails', () => {
+  it('fails fast when the classifier fails', () => {
     const result = spawnSync(
       'bash',
       [
@@ -111,11 +137,10 @@ describe('risk-gate dry run', () => {
       { encoding: 'utf8' },
     );
 
-    expect(result.status).toBe(0);
+    expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('classifier failed');
-    expect(result.stdout).toContain('vitest mode: full');
-    expect(result.stdout).toContain('node scripts/run-test-tier.mjs deterministic --reporter dot');
-    expect(result.stdout).not.toContain('--changed');
+    expect(result.stderr).toContain('refusing an incomplete local safety gate');
+    expect(result.stdout).not.toContain('node scripts/run-test-tier.mjs deterministic');
   });
 
   it('supports a validated full-suite shard for parallel CI', () => {
@@ -204,7 +229,7 @@ describe('risk-gate dry run', () => {
     expect(result.stderr).toContain('--vitest-shard requires an I/N value');
   });
 
-  it('keeps classifier-failure escalation compatible with a valid shard', () => {
+  it('does not let a valid shard override classifier failure', () => {
     const result = spawnSync(
       'bash',
       [
@@ -221,10 +246,9 @@ describe('risk-gate dry run', () => {
       { encoding: 'utf8' },
     );
 
-    expect(result.status).toBe(0);
+    expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('classifier failed');
-    expect(result.stdout).toContain('vitest mode: full');
-    expect(result.stdout).toContain('vitest shard: 3/4');
-    expect(result.stdout).toContain('--shard 3/4');
+    expect(result.stderr).toContain('refusing an incomplete local safety gate');
+    expect(result.stdout).not.toContain('--shard 3/4');
   });
 });

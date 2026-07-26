@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-export function loadTestPolicy() {
-  return JSON.parse(fs.readFileSync(path.join(root, 'config/test-policy.json'), 'utf8'));
+export function loadTestPolicy(sourceRoot = root) {
+  return JSON.parse(fs.readFileSync(path.join(sourceRoot, 'config/test-policy.json'), 'utf8'));
 }
 
 export function globToRegExp(glob) {
@@ -61,17 +61,40 @@ export function dispositionRuleProvenance(rule, ruleIndex) {
   };
 }
 
-export function resolveTestDisposition(file, policy) {
+const dispositionMatcherCache = new WeakMap();
+
+function dispositionMatchers(policy) {
+  const cached = dispositionMatcherCache.get(policy);
+  if (cached) return cached;
+  const exact = new Map();
+  const patterns = [];
   for (const [ruleIndex, rule] of (policy.dispositionRules ?? []).entries()) {
-    if (globToRegExp(rule.pattern).test(file)) {
-      return {
-        disposition: rule.disposition,
-        reason: rule.reason,
-        provenance: dispositionRuleProvenance(rule, ruleIndex),
-      };
+    if (/[*?]/.test(rule.pattern)) {
+      patterns.push({ rule, ruleIndex, matcher: globToRegExp(rule.pattern) });
+    } else if (!exact.has(rule.pattern)) {
+      exact.set(rule.pattern, { rule, ruleIndex });
     }
   }
-  return null;
+  const compiled = { exact, patterns };
+  dispositionMatcherCache.set(policy, compiled);
+  return compiled;
+}
+
+export function resolveTestDisposition(file, policy) {
+  const matchers = dispositionMatchers(policy);
+  let selected = matchers.exact.get(file) ?? null;
+  for (const candidate of matchers.patterns) {
+    if (candidate.matcher.test(file)
+        && (selected === null || candidate.ruleIndex < selected.ruleIndex)) {
+      selected = candidate;
+    }
+  }
+  if (selected === null) return null;
+  return {
+    disposition: selected.rule.disposition,
+    reason: selected.rule.reason,
+    provenance: dispositionRuleProvenance(selected.rule, selected.ruleIndex),
+  };
 }
 
 export function partitionTestFiles(files, policy) {

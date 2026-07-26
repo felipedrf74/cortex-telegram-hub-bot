@@ -160,6 +160,11 @@ cleanup_download() {
   case "$DOWNLOAD" in "$INSTALL_RELEASE"/.signing-download-"$REQUEST_ID".*) rm -rf "$DOWNLOAD" ;; esac
 }
 trap cleanup_download EXIT
+REPOSITORY="felipedrf74/cortex-telegram-hub-bot"
+gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" \
+  >"$DOWNLOAD/signing-run.json"
+gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+  >"$DOWNLOAD/signing-artifacts.json"
 gh run download "$RUN_ID" \
   --name "release-manifest-v2-$RUNTIME_SHA" \
   --dir "$DOWNLOAD"
@@ -181,6 +186,9 @@ BUNDLE_MARKERS="$(find "$DOWNLOAD" -type f -path "*/.local/release/bundles/$RUNT
 [ "$(printf '%s\n' "$BUNDLE_MARKERS" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] \
   || { echo "signed release artifact bundle is missing or ambiguous" >&2; exit 1; }
 BUNDLE="$(dirname "$BUNDLE_MARKERS")"
+PROVENANCES="$(find "$DOWNLOAD" -type f -path "*/.local/release/signing-provenance.json" -print)"
+[ "$(printf '%s\n' "$PROVENANCES" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] \
+  || { echo "release signing provenance is missing or ambiguous" >&2; exit 1; }
 node scripts/release-manifest-v2.mjs validate \
   --manifest "$MANIFEST" \
   --root "$BUNDLE" \
@@ -194,7 +202,8 @@ ARTIFACT_DIGEST="$(node -e 'process.stdout.write(require(process.argv[1]).payloa
 DESTINATION_BUNDLE_PARENT="$INSTALL_RELEASE/bundles/$RUNTIME_SHA"
 DESTINATION_BUNDLE="$DESTINATION_BUNDLE_PARENT/$ARTIFACT_DIGEST"
 install -d -m 700 "$INSTALL_RELEASE/manifests" "$INSTALL_RELEASE/timing" \
-  "$INSTALL_RELEASE/bundles" "$DESTINATION_BUNDLE_PARENT"
+  "$INSTALL_RELEASE/bundles" "$DESTINATION_BUNDLE_PARENT" \
+  "$INSTALL_RELEASE/signing-provenance"
 if [ -e "$DESTINATION_BUNDLE" ] || [ -L "$DESTINATION_BUNDLE" ]; then
   [ -d "$DESTINATION_BUNDLE" ] && [ ! -L "$DESTINATION_BUNDLE" ] || {
     echo "existing release bundle destination is unsafe" >&2
@@ -256,6 +265,16 @@ node scripts/release-manifest-v2.mjs validate \
   --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
   --expect-runtime-sha "$RUNTIME_SHA" \
   "${MANIFEST_EXPECTATIONS[@]}" >/dev/null
+node scripts/release-signing-provenance-receipt.mjs install \
+  --source-provenance "$PROVENANCES" \
+  --run-metadata "$DOWNLOAD/signing-run.json" \
+  --artifact-metadata "$DOWNLOAD/signing-artifacts.json" \
+  --manifest "$INSTALL_RELEASE/manifests/$RUNTIME_SHA.json" \
+  --runtime-sha "$RUNTIME_SHA" \
+  --candidate-run-id "$CANDIDATE_RUN_ID" \
+  --signing-run-id "$RUN_ID" \
+  --destination "$INSTALL_RELEASE/signing-provenance/$RUNTIME_SHA.json" \
+  >/dev/null
 if [ -n "$TIMING" ]; then
   TIMING_DESTINATION="$INSTALL_RELEASE/timing/$RUNTIME_SHA.json"
   if [ -e "$TIMING_DESTINATION" ] || [ -L "$TIMING_DESTINATION" ]; then
@@ -273,5 +292,6 @@ NODE
     install -m 600 "$TIMING" "$TIMING_DESTINATION"
   fi
 fi
-printf '{"ok":true,"runtimeSha":"%s","requestId":"%s","runId":"%s","manifest":"%s"}\n' \
-  "$RUNTIME_SHA" "$REQUEST_ID" "$RUN_ID" "$INSTALL_RELEASE/manifests/$RUNTIME_SHA.json"
+printf '{"ok":true,"runtimeSha":"%s","requestId":"%s","runId":"%s","manifest":"%s","signingProvenanceReceipt":"%s"}\n' \
+  "$RUNTIME_SHA" "$REQUEST_ID" "$RUN_ID" "$INSTALL_RELEASE/manifests/$RUNTIME_SHA.json" \
+  "$INSTALL_RELEASE/signing-provenance/$RUNTIME_SHA.json"

@@ -13,13 +13,22 @@ const value = (name) => {
   if (index === -1 || !args[index + 1]) throw new Error(`missing ${name}`);
   return args[index + 1];
 };
+const optionalValue = (name) => {
+  const index = args.indexOf(name);
+  return index === -1 ? null : args[index + 1] || null;
+};
 const root = path.resolve(value('--root'));
 const base = path.resolve(value('--base'));
+const legacyLinkBase = optionalValue('--legacy-link-base');
 const expectedRuntimeSha = value('--runtime-sha');
 const expectedArtifactDigest = value('--artifact-digest');
 const expectedInstalledDigest = value('--installed-runtime-digest');
 const SHA = /^[a-f0-9]{40}$/u;
 const DIGEST = /^[a-f0-9]{64}$/u;
+const LEGACY_BASES = new Set([
+  '/home/dominguez/telegram-hub-bot',
+  '/home/dominguez/telegram-hub-bot-staging',
+]);
 
 function canonicalJson(input) {
   if (input === null || typeof input !== 'object') return JSON.stringify(input);
@@ -198,6 +207,63 @@ function assertSealedPermissions(groupId) {
   walk(root);
 }
 
+function assertLegacyIntake(groupId, ownerId, frozen = false) {
+  if (!Number.isSafeInteger(groupId) || groupId < 0
+      || !Number.isSafeInteger(ownerId) || ownerId <= 0) {
+    throw new Error('invalid legacy intake identity');
+  }
+  const productionBase = process.env.NODE_ENV === 'test'
+    ? process.env.NEXUS_LAYOUT_TEST_LEGACY_BASE
+    : null;
+  const protectedPredecessor = /^\/srv\/nexus-release\/layout-predecessors\/[0-9a-f-]{36}\/(?:production|staging)$/u;
+  const testProtectedPredecessor = process.env.NODE_ENV === 'test'
+    ? process.env.NEXUS_LAYOUT_TEST_PROTECTED_PREDECESSOR
+    : null;
+  const frozenBaseAllowed = frozen
+    && (protectedPredecessor.test(base) || base === testProtectedPredecessor);
+  if ((!LEGACY_BASES.has(base) && base !== productionBase && !frozenBaseAllowed)
+      || (frozen && (!legacyLinkBase || !LEGACY_BASES.has(path.resolve(legacyLinkBase))
+        && path.resolve(legacyLinkBase) !== productionBase))) {
+    throw new Error('legacy intake base is outside the fixed compatibility layout');
+  }
+  const anchors = [
+    [base, new Set(frozen ? [0o700] : [0o755]), 'legacy base'],
+    [path.join(base, 'releases'), new Set([0o700, 0o750, 0o775]), 'legacy releases directory'],
+    [root, new Set([0o700, 0o750, 0o755]), 'legacy active runtime'],
+  ];
+  const frozenRootId = process.env.NODE_ENV === 'test' ? process.getuid() : 0;
+  const frozenRootGroup = process.env.NODE_ENV === 'test' ? process.getgid() : 0;
+  for (const [index, [absolute, modes, label]] of anchors.entries()) {
+    const identity = fs.lstatSync(absolute);
+    if (!identity.isDirectory() || identity.isSymbolicLink()
+        || identity.uid !== (frozen && index === 0 ? frozenRootId : ownerId)
+        || identity.gid !== (frozen && index === 0 ? frozenRootGroup : groupId)
+        || !modes.has(identity.mode & 0o7777)) {
+      throw new Error(`${label} ownership or mode is outside the intake contract`);
+    }
+  }
+  const seen = new Set();
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(root, absolute).split(path.sep).join('/');
+      const identity = fs.lstatSync(absolute);
+      if (identity.isDirectory()) {
+        if (identity.nlink < 2) throw new Error(`legacy intake directory link count is invalid: ${relative}`);
+        walk(absolute);
+      } else if (identity.isFile()) {
+        if (identity.nlink !== 1) throw new Error(`legacy intake hard link is prohibited: ${relative}`);
+        const inode = `${identity.dev}:${identity.ino}`;
+        if (seen.has(inode)) throw new Error(`legacy intake inode is repeated: ${relative}`);
+        seen.add(inode);
+      } else if (!identity.isSymbolicLink()) {
+        throw new Error(`legacy intake special entry is prohibited: ${relative}`);
+      }
+    }
+  };
+  walk(root);
+}
+
 function verify(requireSealed = false, groupId = null) {
   if (!SHA.test(expectedRuntimeSha) || !DIGEST.test(expectedArtifactDigest)
       || !DIGEST.test(expectedInstalledDigest)) throw new Error('expected runtime identity is invalid');
@@ -250,10 +316,13 @@ function verify(requireSealed = false, groupId = null) {
     '.nexus-release-readiness-staging.json',
     '.nexus-release-readiness-production.json',
   ]);
+  const linkBase = command === 'legacy-frozen-intake'
+    ? path.resolve(legacyLinkBase)
+    : base;
   const expectedLinks = new Map([
-    ['.env', path.join(base, '.env')],
-    ['data', path.join(base, 'data')],
-    ['logs', path.join(base, 'logs')],
+    ['.env', path.join(linkBase, '.env')],
+    ['data', path.join(linkBase, 'data')],
+    ['logs', path.join(linkBase, 'logs')],
   ]);
   const walk = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -281,14 +350,13 @@ function verify(requireSealed = false, groupId = null) {
 function seal() {
   const groupId = Number(value('--group-id'));
   if (!Number.isSafeInteger(groupId) || groupId < 0) throw new Error('invalid application group id');
-  // Protect the release entry against rename/replacement before inspecting
-  // app-owned candidate bytes. Sticky group-write on the base keeps the
-  // worker's atomic `current` switch legal without allowing it to replace the
-  // root-owned releases directory.
-  fs.chownSync(base, 0, groupId);
-  fs.chmodSync(base, 0o1770);
-  fs.chownSync(path.join(base, 'releases'), 0, groupId);
-  fs.chmodSync(path.join(base, 'releases'), 0o750);
+  // Revoke traversal of the candidate first. Layout activation constructs its
+  // copy below root-only 0700 anchors, so an application process can neither
+  // race this initial verification nor retain a descriptor into the copy.
+  // Publish the worker-readable anchors only after every candidate entry is
+  // root-owned and non-writable.
+  fs.chownSync(root, 0, 0);
+  fs.chmodSync(root, 0o700);
   verify();
   const entries = [];
   const collect = (directory) => {
@@ -309,6 +377,10 @@ function seal() {
   }
   fs.chownSync(root, 0, groupId);
   fs.chmodSync(root, 0o550);
+  fs.chownSync(path.join(base, 'releases'), 0, groupId);
+  fs.chmodSync(path.join(base, 'releases'), 0o750);
+  fs.chownSync(base, 0, groupId);
+  fs.chmodSync(base, 0o1770);
   return verify(true, groupId);
 }
 
@@ -317,8 +389,23 @@ try {
   if (command === 'verify' && (!Number.isSafeInteger(verifyGroupId) || verifyGroupId < 0)) {
     throw new Error('invalid application group id');
   }
-  const result = command === 'verify' ? verify(true, verifyGroupId) : command === 'seal' ? seal() : null;
-  if (!result) throw new Error('Usage: trusted-release-runtime-attestation.mjs <verify|seal> --root <release> --base <base> --runtime-sha <sha> --artifact-digest <sha256> --installed-runtime-digest <sha256> --group-id <gid>');
+  const intakeGroupId = command === 'legacy-intake' ? Number(value('--group-id')) : null;
+  const frozenIntake = command === 'legacy-frozen-intake';
+  const intakeOwnerId = command === 'legacy-intake' || frozenIntake
+    ? Number(value('--owner-id')) : null;
+  const effectiveIntakeGroupId = command === 'legacy-intake' || frozenIntake
+    ? Number(value('--group-id')) : intakeGroupId;
+  let result = null;
+  if (command === 'verify') result = verify(true, verifyGroupId);
+  else if (command === 'seal') result = seal();
+  else if (command === 'legacy-intake') {
+    assertLegacyIntake(intakeGroupId, intakeOwnerId);
+    result = verify(false);
+  } else if (frozenIntake) {
+    assertLegacyIntake(effectiveIntakeGroupId, intakeOwnerId, true);
+    result = verify(false);
+  }
+  if (!result) throw new Error('Usage: trusted-release-runtime-attestation.mjs <verify|seal|legacy-intake|legacy-frozen-intake> --root <release> --base <base> --runtime-sha <sha> --artifact-digest <sha256> --installed-runtime-digest <sha256> --group-id <gid> [--owner-id <uid>] [--legacy-link-base <legacy-base>]');
   process.stdout.write(`${JSON.stringify({ ok: true, sealed: command === 'seal', ...result })}\n`);
 } catch (error) {
   process.stderr.write(`trusted_release_runtime_attestation_failed:${error instanceof Error ? error.message : String(error)}\n`);

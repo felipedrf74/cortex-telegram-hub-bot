@@ -112,6 +112,111 @@ install_compatible_operational_asset() {
   install_file_atomically "$source" "$target" root root "$mode"
 }
 
+install_release_sonar_lock_config() {
+  local source="$1" target="$2" control_root="$3" lock_fd="$4"
+  local expected_uid="$5" expected_gid="$6"
+  local anchor_receipt="$control_root/recovery-anchor-enrollment.v2.json"
+  local anchor_program="$control_root/install-recovery-program.v2.py"
+  local protected_state=false marker protected_lock_identity
+  flock -n "$lock_fd" || {
+    echo "shared release/Sonar mutex is held by another operation" >&2
+    return 75
+  }
+  for marker in \
+    "$control_root/recovery-anchor-enrollment-in-progress.v2.json" \
+    "$anchor_receipt" \
+    "$control_root/recovery-anchor-unenrollment-in-progress.v1.json" \
+    "$control_root/recovery-anchor-unenrollment-result.v1.json"; do
+    if [ -L "$marker" ]; then
+      echo "active Sonar recovery state is a symlink: $marker" >&2
+      return 1
+    elif [ -e "$marker" ]; then
+      [ -f "$marker" ] \
+        && [ "$(stat -c '%u:%g:%a:%h' -- "$marker")" \
+          = "$expected_uid:$expected_gid:600:1" ] || {
+        echo "active Sonar recovery state is unsafe: $marker" >&2
+        return 1
+      }
+      protected_state=true
+    fi
+  done
+  if [ -e "$anchor_receipt" ]; then
+    [ -f "$anchor_program" ] && [ ! -L "$anchor_program" ] \
+      && [ "$(stat -c '%u:%g:%a:%h' -- "$anchor_program")" \
+        = "$expected_uid:$expected_gid:600:1" ] || {
+      echo "enrolled Sonar recovery-anchor authority is unsafe" >&2
+      return 1
+    }
+    python3 "$anchor_program" validate-anchor-current \
+      --receipt "$anchor_receipt" || {
+      echo "enrolled Sonar recovery anchors differ from their receipt" >&2
+      return 1
+    }
+  fi
+  if [ "$protected_state" = true ]; then
+    protected_lock_identity="$(
+      stat -c '%d:%i:%h' -- "$target" 2>/dev/null
+    )" || {
+      echo "active Sonar recovery state lost its lock config" >&2
+      return 1
+    }
+    [ -f "$target" ] && [ ! -L "$target" ] \
+      && [ "$(stat -c '%u:%g:%a:%h' -- "$target")" \
+        = "$expected_uid:$expected_gid:644:1" ] \
+      && [ "$(sha256sum -- "$target" | cut -d' ' -f1)" \
+        = "$(sha256sum -- "$source" | cut -d' ' -f1)" ] || {
+      echo "active Sonar recovery state protects a different lock config" >&2
+      return 1
+    }
+    [ "$(stat -c '%d:%i:%h' -- "$target")" \
+      = "$protected_lock_identity" ] || {
+      echo "active Sonar recovery lock config inode changed" >&2
+      return 1
+    }
+    return
+  fi
+  if [ -e "$target" ] \
+      && [ ! -L "$target" ] \
+      && [ -f "$target" ] \
+      && [ "$(stat -c '%u:%g:%a:%h' -- "$target")" \
+        = "$expected_uid:$expected_gid:644:1" ] \
+      && [ "$(sha256sum -- "$target" | cut -d' ' -f1)" \
+        = "$(sha256sum -- "$source" | cut -d' ' -f1)" ]; then
+    return
+  fi
+  install_file_atomically "$source" "$target" root root 644
+}
+
+materialize_release_sonar_mutex() {
+  local reviewed_rule="$1" mutex="$2" expected_gid="$3"
+  if [ -L "$mutex" ]; then
+    echo "shared release/Sonar mutex is a symlink" >&2
+    return 1
+  elif [ ! -e "$mutex" ]; then
+    systemd-tmpfiles --create "$reviewed_rule" || {
+      echo "shared release/Sonar mutex could not be materialized" >&2
+      return 1
+    }
+  fi
+  [ -f "$mutex" ] && [ ! -L "$mutex" ] \
+    && [ "$(stat -c '%u:%g:%a:%h' -- "$mutex")" \
+      = "0:$expected_gid:660:1" ] || {
+    echo "shared release/Sonar mutex ownership or mode is invalid" >&2
+    return 1
+  }
+  exec 7<>"$mutex"
+  [ "$mutex" -ef /proc/self/fd/7 ] \
+    && [ "$(stat -Lc '%u:%g:%a:%h' -- /proc/self/fd/7)" \
+      = "0:$expected_gid:660:1" ] || {
+    echo "opened shared release/Sonar mutex identity is invalid" >&2
+    return 1
+  }
+  flock -n 7 || {
+    echo "shared release/Sonar mutex is held by another operation" >&2
+    return 75
+  }
+}
+
 ensure_compatible_operational_directory() {
   local target="$1" mode="$2" parent
   if [ -L "$target" ] || { [ -e "$target" ] && [ ! -d "$target" ]; }; then
@@ -198,6 +303,7 @@ PROMOTION_REQUIRED_INPUTS=(
   scripts/remote-pm2-dump-authority.py
   scripts/remote-release-boot-health.sh
   scripts/release-layout-authorization.mjs
+  scripts/release-layout-fault-drill.mjs
   scripts/remote-release-layout-migrate.sh
   ops/pm2/package-lock.json
   scripts/remote-promotion-control.sh
@@ -624,6 +730,52 @@ if set(shlex.split(properties["UnsetEnvironment"])) != expected_unset:
 PY
 }
 
+worker_group_gid="$(getent group "$WORKER_GROUP" | cut -d: -f3)"
+[[ "$worker_group_gid" =~ ^[0-9]+$ ]] \
+  || die "promotion worker group has no numeric gid"
+materialize_release_sonar_mutex \
+  "$SOURCE_ROOT/ops/sonarqube/nexus-release-sonar-lock.conf" \
+  /run/lock/nexus-release-sonar.lock "$worker_group_gid"
+
+# This legacy bootstrap rewires PM2 and ingress boot authority. It is no longer
+# a safe way to activate a compatibility /home layout. The non-disruptive
+# Phase A installer and the signed, recoverable layout transaction must finish
+# first; the separately journaled Phase B handover then proves that these boot
+# changes are authorized and reversible.
+LAYOUT_PHASE_B_RECEIPT=/var/lib/nexus-release-promotion/layout-activation/phase-b-receipt.v1.json
+LAYOUT_ATTESTATION=/var/lib/nexus-release-promotion/layout-migration.v1.json
+LAYOUT_ACTIVATION_ACTIVE=/var/lib/nexus-release-promotion/layout-activation/active.v1.json
+[ ! -e "$LAYOUT_ACTIVATION_ACTIVE" ] && [ ! -L "$LAYOUT_ACTIVATION_ACTIVE" ] \
+  || die "release layout activation is still active; legacy bootstrap remains blocked"
+[ -f "$LAYOUT_PHASE_B_RECEIPT" ] && [ ! -L "$LAYOUT_PHASE_B_RECEIPT" ] \
+  && [ "$(stat -c '%U:%G:%a:%h' "$LAYOUT_PHASE_B_RECEIPT")" = root:root:600:1 ] \
+  || die "safe Phase B layout handover is incomplete; legacy bootstrap remains blocked"
+[ -f "$LAYOUT_ATTESTATION" ] && [ ! -L "$LAYOUT_ATTESTATION" ] \
+  && [ "$(stat -c '%U:%G:%a:%h' "$LAYOUT_ATTESTATION")" = root:root:600:1 ] \
+  || die "successful release-layout attestation is unavailable"
+node - "$LAYOUT_PHASE_B_RECEIPT" "$LAYOUT_ATTESTATION" "$SOURCE_SHA" \
+  "$EXPECTED_ARCHIVE_SHA256" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');
+const [receiptFile,attestationFile,sourceSha,archiveSha]=process.argv.slice(2);
+const receipt=JSON.parse(fs.readFileSync(receiptFile));
+const attestationSha=crypto.createHash('sha256').update(fs.readFileSync(attestationFile)).digest('hex');
+if(receipt.schema!=='nexus.release-layout-phase-b-receipt.v1'
+ ||receipt.status!=='completed'||receipt.sourceSha!==sourceSha
+ ||receipt.sourceArchiveSha256!==archiveSha
+ ||receipt.layoutAttestationSha256!==attestationSha
+ ||receipt.serviceRestarted!==false||receipt.ingressRestarted!==false
+ ||receipt.runningServiceIdentity?.runtimeUnchanged!==true
+ ||!/^[a-f0-9]{64}$/u.test(receipt.runningServiceIdentity?.beforeSha256??'')
+ ||!/^[a-f0-9]{64}$/u.test(receipt.runningServiceIdentity?.afterSha256??'')
+ ||!/^[a-f0-9]{64}$/u.test(receipt.runningServiceIdentity?.runtimeSha256??'')
+ ||JSON.stringify(receipt.runningServiceIdentity?.before)
+   !==JSON.stringify(receipt.runningServiceIdentity?.after)
+ ||receipt.rebootRequired!==true)process.exit(1);
+NODE
+[ -x /usr/local/sbin/nexus-release-promotion-control ] \
+  || die "root promotion control is unavailable"
+/usr/local/sbin/nexus-release-promotion-control assert-layout-ready >/dev/null
+
 # The PM2 closure is a separate, owner-approved maintenance artifact because
 # the five-argument promotion bootstrap does not accept arbitrary package
 # bytes. Prove it against this exact protected-main lock before writing the
@@ -721,12 +873,37 @@ APPLICATION_DR_INSTALL_RESULT="$(
 node -e '
 const value=JSON.parse(process.argv[1]);
 const keys=Object.keys(value).sort().join(",");
-if(keys!=="configurationWritten,drillUser,installedAssets,ok,schema,timerEnabled"
- ||value.ok!==true||value.schema!=="nexus.application-dr-install.v1"
+if(keys!=="configurationWritten,drillUser,healthTimerEnabled,installedAssets,ok,receipt,schema,timerEnabled"
+ ||value.ok!==true||value.schema!=="nexus.application-dr-install.v2"
  ||!Number.isSafeInteger(value.installedAssets)||value.installedAssets<1
  ||value.drillUser!=="nexus-drill"||typeof value.timerEnabled!=="boolean"
+ ||typeof value.healthTimerEnabled!=="boolean"
+ ||value.healthTimerEnabled!==value.timerEnabled
+ ||value.receipt!=="/var/lib/nexus-application-dr/install-receipt.v2.json"
  ||value.configurationWritten!==false)process.exit(1);' \
   "$APPLICATION_DR_INSTALL_RESULT"
+APPLICATION_DR_INSTALL_RECEIPT=/var/lib/nexus-application-dr/install-receipt.v2.json
+[ -f "$APPLICATION_DR_INSTALL_RECEIPT" ] \
+  && [ ! -L "$APPLICATION_DR_INSTALL_RECEIPT" ] \
+  && [ "$(stat -c '%U:%G:%a:%h' -- "$APPLICATION_DR_INSTALL_RECEIPT")" = root:root:600:1 ] \
+  || {
+    echo "application DR install receipt is unavailable or unsafe" >&2
+    exit 1
+  }
+node - "$APPLICATION_DR_INSTALL_RECEIPT" "$APPLICATION_DR_INSTALL_RESULT" <<'NODE'
+const fs=require('fs');
+const [receiptPath,resultJson]=process.argv.slice(2);
+const receipt=JSON.parse(fs.readFileSync(receiptPath,'utf8'));
+const result=JSON.parse(resultJson);
+const keys=Object.keys(receipt).sort().join(',');
+if(keys!=='configurationWritten,installedAssets,observedAt,schema,status,transactionBindingSha256'
+ ||receipt.schema!=='nexus.application-dr-install.v2'
+ ||receipt.status!=='passed'
+ ||receipt.configurationWritten!==false
+ ||receipt.installedAssets!==result.installedAssets
+ ||!/^[a-f0-9]{64}$/u.test(receipt.transactionBindingSha256??'')
+ ||!Number.isFinite(Date.parse(receipt.observedAt??'')))process.exit(1);
+NODE
 [ -f /usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs ] \
   && [ ! -L /usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs ] \
   && [ "$(stat -c '%U:%G:%a' /usr/local/libexec/nexus-application-dr/release-recovery-runtime-identity.mjs)" = root:root:644 ] || {
@@ -831,18 +1008,10 @@ esac
 
 install -d -o root -g root -m 755 /usr/local/libexec /usr/local/sbin /etc/nexus-release
 install -d -o root -g root -m 755 /etc/tmpfiles.d
-install_file_atomically \
+install_release_sonar_lock_config \
   "$SOURCE_ROOT/ops/sonarqube/nexus-release-sonar-lock.conf" \
-  /etc/tmpfiles.d/nexus-release-sonar-lock.conf root root 644
-systemd-tmpfiles --create /etc/tmpfiles.d/nexus-release-sonar-lock.conf
-[ -f /run/lock/nexus-release-sonar.lock ] && [ ! -L /run/lock/nexus-release-sonar.lock ] || {
-  echo "shared release/Sonar mutex was not materialized as a regular file" >&2
-  exit 1
-}
-[ "$(stat -c '%U:%G:%a' /run/lock/nexus-release-sonar.lock)" = root:dominguez:660 ] || {
-  echo "shared release/Sonar mutex ownership or mode is invalid" >&2
-  exit 1
-}
+  /etc/tmpfiles.d/nexus-release-sonar-lock.conf \
+  /var/lib/nexus-release-promotion/sonarqube-install-control 7 0 0
 install_file_atomically \
   "$SOURCE_ROOT/scripts/promotion-authorization.mjs" \
   /usr/local/libexec/nexus-promotion-authorization.mjs root root 755
@@ -873,6 +1042,9 @@ install_file_atomically \
 install_file_atomically \
   "$SOURCE_ROOT/scripts/release-layout-authorization.mjs" \
   /usr/local/libexec/nexus-release-layout-authorization.mjs root root 700
+install_file_atomically \
+  "$SOURCE_ROOT/scripts/release-layout-fault-drill.mjs" \
+  /usr/local/libexec/nexus-release-layout-fault-drill.mjs root root 700
 install_file_atomically \
   "$SOURCE_ROOT/scripts/remote-release-layout-migrate.sh" \
   /usr/local/sbin/nexus-release-layout-migrate root root 700
@@ -934,8 +1106,8 @@ pm2_dropin=/etc/systemd/system/pm2-dominguez.service.d
 install -d -o root -g root -m 755 "$pm2_dropin"
 publish_text_atomically "$pm2_dropin/nexus-release-recovery.conf" 644 <<'EOF'
 [Unit]
-Requires=nexus-release-promotion-recovery.service
-After=nexus-release-promotion-recovery.service
+Requires=nexus-release-layout-recovery.service nexus-release-promotion-recovery.service
+After=nexus-release-layout-recovery.service nexus-release-promotion-recovery.service
 
 [Service]
 Type=forking
@@ -959,6 +1131,7 @@ Environment="PM2_DUMP_BACKUP_FILE_PATH=/var/lib/nexus-release-promotion/pm2-auth
 Environment="PM2_DAEMON_TITLE=NexusPM2:/opt/nexus-release/pm2/6.0.14"
 UnsetEnvironment=NODE_OPTIONS NODE_PATH PM2_NODE_OPTIONS PYTHONPATH PYTHONHOME PYTHONINSPECT PYTHONSTARTUP PYTHONBREAKPOINT LD_PRELOAD LD_LIBRARY_PATH
 ExecCondition=
+ExecCondition=+/usr/local/sbin/nexus-release-layout-activation-control assert-boot-safe
 ExecStartPre=
 ExecStart=
 ExecStart=/usr/local/bin/pm2 resurrect
@@ -1056,8 +1229,8 @@ cloudflared_dropin=/etc/systemd/system/nexus-cloudflared.service.d
 install -d -o root -g root -m 755 "$cloudflared_dropin"
 publish_text_atomically "$cloudflared_dropin/nexus-release-ready.conf" 644 <<'EOF'
 [Unit]
-Requires=pm2-dominguez.service
-After=pm2-dominguez.service
+Requires=nexus-release-layout-recovery.service nexus-release-promotion-recovery.service pm2-dominguez.service
+After=nexus-release-layout-recovery.service nexus-release-promotion-recovery.service pm2-dominguez.service
 EOF
 install -d -o root -g "$SERVICE_GROUP" -m 755 \
   /var/lib/nexus-release-promotion \
@@ -1329,5 +1502,5 @@ fsync_path /var/lib/nexus-release-promotion
 ENV_SEAL_COMMITTED=true
 durable_remove "$BOOTSTRAP_JOURNAL"
 provenance_public_sha256="$(sha256sum "$SERVER_PROVENANCE_PUBLIC_KEY" | cut -d' ' -f1)"
-printf '{"ok":true,"controlVersion":"nexus-release-promotion-control.v3","applicationDrAssetsInstalled":true,"applicationDrConfigurationWritten":false,"serviceUser":"%s","workerUser":"%s","serverProvenancePublicKey":"%s","serverProvenancePublicKeySha256":"%s"}\n' \
+printf '{"ok":true,"controlVersion":"nexus-release-promotion-control.v4","applicationDrAssetsInstalled":true,"applicationDrConfigurationWritten":false,"serviceUser":"%s","workerUser":"%s","serverProvenancePublicKey":"%s","serverProvenancePublicKeySha256":"%s"}\n' \
   "$SERVICE_USER" "$WORKER_USER" "$SERVER_PROVENANCE_PUBLIC_KEY" "$provenance_public_sha256"

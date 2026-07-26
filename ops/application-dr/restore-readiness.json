@@ -8,6 +8,9 @@
   "manualEvidenceRequired": [
     "root_installed_application_dr_assets_and_dedicated_nologin_user",
     "provider_control_plane_storage_evidence",
+    "reviewed_two_step_cloudformation_activation_evidence",
+    "positive_and_revoked_roles_anywhere_probe_evidence",
+    "hourly_freshness_and_failure_alert_evidence",
     "off_host_age_identity",
     "successful_retained_quarterly_restore_evidence"
   ]

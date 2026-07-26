@@ -4,6 +4,24 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
 
+function workflowJob(source: string, jobName: string): string {
+  const marker = `  ${jobName}:\n`;
+  const start = source.indexOf(marker);
+  if (start < 0) return '';
+  const body = source.slice(start + marker.length);
+  const nextJob = body.search(/^  [a-zA-Z0-9_-]+:\n/m);
+  return nextJob < 0 ? body : body.slice(0, nextJob);
+}
+
+function workflowStep(source: string, stepName: string): string {
+  const marker = `      - name: ${stepName}\n`;
+  const start = source.indexOf(marker);
+  if (start < 0) return '';
+  const body = source.slice(start + marker.length);
+  const nextStep = body.search(/^      - (?:name:|uses:|run:)/m);
+  return nextStep < 0 ? body : body.slice(0, nextStep);
+}
+
 describe('privileged GitHub workflow action pinning', () => {
   it('pins write-capable workflow actions to immutable commit SHAs', () => {
     const mutableReferences: string[] = [];
@@ -33,7 +51,7 @@ describe('privileged GitHub workflow action pinning', () => {
       path.join(repoRoot, '.github/workflows/release-candidate-evidence.yml'),
       'utf8',
     );
-    const releaseEvidenceJob = workflow.match(/  release-evidence:\n(?<body>[\s\S]*?)(?=\n  [a-zA-Z0-9_-]+:\n|$)/)?.groups?.body || '';
+    const releaseEvidenceJob = workflowJob(workflow, 'release-evidence');
 
     expect(releaseEvidenceJob).toContain('needs: [contract-binding, test-plan, vitest-full, vitest-selected, python-full]');
     expect(releaseEvidenceJob).toContain('if: ${{ always() }}');
@@ -51,6 +69,8 @@ describe('privileged GitHub workflow action pinning', () => {
     expect(releaseEvidenceJob).toContain('--includes-ios');
     expect(releaseEvidenceJob).toContain('--backend-only');
     expect(releaseEvidenceJob).toContain('release-candidate-v2-${{ github.sha }}');
+    expect(workflowStep(workflow, 'Upload unsigned release candidate and evidence'))
+      .toContain('compression-level: 0');
     expect(releaseEvidenceJob).not.toContain('NEXUS_RELEASE_EVIDENCE_PRIVATE_KEY_PEM');
 
     const signer = fs.readFileSync(
@@ -69,5 +89,44 @@ describe('privileged GitHub workflow action pinning', () => {
     expect(signer).not.toContain('--ios-evidence-run-id');
     expect(signer).not.toContain('--ios-sha "$IOS_SHA"');
     expect(signer).toContain('release-manifest-v2-${{ env.RUNTIME_SHA }}');
+    expect(workflowStep(signer, 'Upload signed immutable release artifact'))
+      .toContain('compression-level: 0');
+
+    const ci = fs.readFileSync(
+      path.join(repoRoot, '.github/workflows/ci.yml'),
+      'utf8',
+    );
+    expect(workflowStep(ci, 'Upload exact runtime release bundle'))
+      .toContain('compression-level: 0');
+
+    const protectedMainEvidenceJob = workflowJob(ci, 'protected_main_evidence');
+    expect(protectedMainEvidenceJob).toContain('fetch-depth: 0');
+    expect(protectedMainEvidenceJob).toContain('node scripts/protected-main-ci-evidence.mjs write');
+  });
+
+  it('binds idempotent release closeout to the exact promoted transaction', () => {
+    const release = fs.readFileSync(
+      path.join(repoRoot, '.github/workflows/release.yml'),
+      'utf8',
+    );
+    const releaseJob = workflowJob(release, 'release');
+
+    expect(release).toContain('runtime_sha:');
+    expect(release).toContain('artifact_digest:');
+    expect(release).toContain('promotion_transaction_id:');
+    expect(release).toContain('promotion_evidence_sha256:');
+    expect(releaseJob).toContain('if: ${{ github.actor == github.repository_owner }}');
+    expect(releaseJob).toContain('ref: ${{ inputs.runtime_sha }}');
+    expect(releaseJob).toContain('fetch-depth: 1');
+    expect(releaseJob).toContain('[ "$(git rev-parse HEAD)" = "$RUNTIME_SHA" ]');
+    expect(releaseJob).toContain('git ls-remote --exit-code --tags origin');
+    expect(releaseJob).toContain('remote_tag_target');
+    expect(releaseJob).toContain("if: ${{ steps.release.outputs.tag_exists != 'true' }}");
+    expect(releaseJob).toContain('target_commitish: ${{ steps.release.outputs.runtime_sha }}');
+    expect(releaseJob).toContain('body_path: .local/release/release-notes.md');
+    expect(releaseJob).toContain('jq -n');
+    expect(releaseJob).toContain('--data-binary @"$RUNNER_TEMP/notion-release.json"');
+    expect(releaseJob).not.toContain('${{ github.event.inputs.changelog }}');
+    expect(releaseJob).not.toContain('EXPECTED="${{');
   });
 });

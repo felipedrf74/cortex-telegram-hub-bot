@@ -5,6 +5,51 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string) => readFileSync(path, 'utf8');
 
 describe('canonical staging gate Ollama integration', () => {
+  it('reuses one private SSH transport while keeping every smoke probe sequential', () => {
+    const canonical = read('scripts/staging-smoke.sh');
+
+    expect(canonical).toContain('SSH_CONTROL_DIR="$(mktemp -d /tmp/nexus-staging-ssh.XXXXXX)"');
+    expect(canonical).toContain('chmod 700 "$SSH_CONTROL_DIR"');
+    expect(canonical).toContain('-o ControlMaster=auto');
+    expect(canonical).toContain('-o ControlPersist=30');
+    expect(canonical).toContain('-o "ControlPath=$SSH_CONTROL_PATH"');
+    expect(canonical).toContain('-O exit "$SERVER"');
+    expect(canonical).toContain('trap cleanup_smoke_transport EXIT');
+    expect(canonical.match(/smoke_ssh "\$SERVER"/g)?.length).toBeGreaterThanOrEqual(9);
+    expect(canonical).not.toMatch(/(^|[^_])ssh "\$SERVER"/m);
+    expect(canonical).not.toContain('ControlMaster=yes');
+    expect(canonical).not.toMatch(/smoke_ssh [^\n]*[ \t]&[ \t]*(?:$|#)/m);
+    expect(canonical).toContain('ENDPOINT_CACHE_URLS=()');
+    expect(canonical).toContain('ENDPOINT_CACHE_RESULTS=()');
+    expect(canonical).toContain('fetch_endpoint_once "$url"');
+    expect(canonical).toContain('ENDPOINT_RESULT="${ENDPOINT_CACHE_RESULTS[$index]}"');
+    expect(canonical).toContain('IOS_RESPONSE_CACHE_KEYS=()');
+    expect(canonical).toContain('fetch_ios_remote_response');
+    expect(canonical).toContain('fetch_ios_response_once');
+    expect(canonical).toContain('curl_args=(-sS --connect-timeout 2 --max-time 10');
+    expect(canonical).toContain('if ! http_code="$(curl "${curl_args[@]}" "$url" 2>/dev/null)"; then');
+    expect(canonical).not.toContain("curl \"${curl_args[@]}\" \"$url\" 2>/dev/null || printf '000'");
+    expect(canonical).toContain('body_size');
+    expect(canonical).not.toContain('/tmp/_smoke_body');
+    expect(canonical).not.toContain('/tmp/_smoke_chat_body');
+    expect(canonical).toContain('"failed" "disabled_by_kill_switch"');
+    expect(canonical).not.toContain('"passed" "skipped_by_kill_switch"');
+    expect(canonical).toContain('CLASSIFIER_BASE_SHA="${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-origin/main}"');
+    expect(canonical).toContain('--base "$CLASSIFIER_BASE_SHA"');
+    expect(canonical).toContain('CLASSIFIER_HEAD="$(git -C "$LOCAL_DIR" rev-parse HEAD)"');
+    expect(canonical).not.toContain('rev-parse --short=8 HEAD');
+    expect(canonical).toContain('value?.baseRef === process.argv[1]');
+    expect(canonical).toContain('signed release changed-area classification failed or drifted');
+    expect(canonical).toContain('signed release domain probes cannot be disabled');
+    expect(canonical).toContain('signed release changed-area classifier is missing or not executable');
+    expect(canonical).toContain('DB_CHECK_RC=0');
+    expect(canonical).toContain('DB_CHECK_RC=$?');
+    expect(canonical).toContain('DB_CHECK="FAILED (staging DB integrity transport status $DB_CHECK_RC)"');
+    expect(canonical).not.toContain('DB_CHECK="${DB_CHECK:-FAILED}"');
+    expect(canonical).toContain('bash -s -- "$STAGING_DIR"');
+    expect(canonical).not.toContain('cd /home/dominguez/telegram-hub-bot-staging');
+  });
+
   it('runs the exact-release policy smoke once in the existing sequential gate', () => {
     const canonical = read('scripts/staging-smoke.sh');
     const ollama = read('scripts/staging-smoke-ollama.sh');
@@ -94,6 +139,9 @@ describe('canonical staging gate Ollama integration', () => {
     })).toThrow();
 
     expect(operator).toContain('scripts/staging-smoke.sh');
+    expect(operator).toContain('manifest_field payload.testPolicy.results.selection.baseSha');
+    expect(operator).toContain('NEXUS_SMOKE_CLASSIFIER_BASE_SHA="$SMOKE_CLASSIFIER_BASE_SHA"');
+    expect(operator).toContain('NEXUS_SMOKE_DOMAIN_PROBES=1');
     expect(operator).not.toContain('scripts/staging-smoke-ollama.sh');
   });
 });

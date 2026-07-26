@@ -60,11 +60,11 @@ import {
 
 describe('content-intelligence', () => {
   beforeEach(() => {
-    mockAll.mockReset();
-    mockGetUnreadNotifications.mockReset();
-    mockReadRankedSignals.mockReset();
-    mockGetFilmingRecommendation.mockReset();
-    mockGetTopics.mockReset();
+    mockAll.mockReset().mockReturnValue([]);
+    mockGetUnreadNotifications.mockReset().mockReturnValue([]);
+    mockReadRankedSignals.mockReset().mockReturnValue([]);
+    mockGetFilmingRecommendation.mockReset().mockResolvedValue(null);
+    mockGetTopics.mockReset().mockReturnValue([]);
     clearTenantScopeAnomaliesForTests();
   });
 
@@ -84,6 +84,34 @@ describe('content-intelligence', () => {
     );
   });
 
+  it('rejects an invalid explicit tenant even when the pillar user is valid', () => {
+    expect(getActiveContentPillars(7001, 0)).toEqual([]);
+    expect(mockAll).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()).toEqual([
+      expect.objectContaining({
+        operation: 'get_active_content_pillars',
+        userId: 7001,
+        details: { tenantId: 0 },
+      }),
+    ]);
+  });
+
+  it('reads and deduplicates active pillars for a valid explicit tenant', () => {
+    mockAll.mockReturnValue([
+      { name: 'Endurance', keywords: '["fueling","recovery"]', user_id: 7001, weight: 3 },
+      { name: 'Endurance', keywords: '["duplicate"]', user_id: 7001, weight: 2 },
+      { name: 'Strength', keywords: 'not-json', user_id: 7001, weight: 1 },
+    ]);
+
+    expect(getActiveContentPillars(7001, 9001)).toEqual([
+      { name: 'Endurance', keywordCount: 2 },
+      { name: 'Strength', keywordCount: 0 },
+    ]);
+    expect(mockAll).toHaveBeenCalledOnce();
+    expect(mockAll).toHaveBeenCalledWith(9001, 7001);
+    expect(getTenantScopeAnomalies()).toEqual([]);
+  });
+
   it('fails closed on invalid tenant scope for content desk items', () => {
     expect(getContentDeskItems(0, 3)).toEqual([]);
     expect(mockGetUnreadNotifications).not.toHaveBeenCalled();
@@ -98,6 +126,70 @@ describe('content-intelligence', () => {
         }),
       ]),
     );
+  });
+
+  it('rejects an invalid explicit tenant even when the desk user is valid', () => {
+    expect(getContentDeskItems(7001, 3, 0)).toEqual([]);
+    expect(mockGetUnreadNotifications).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()).toEqual([
+      expect.objectContaining({
+        operation: 'get_content_desk_items',
+        userId: 7001,
+        details: { limit: 3, tenantId: 0 },
+      }),
+    ]);
+  });
+
+  it('requests a bounded notification window and returns only eligible desk items', () => {
+    mockGetUnreadNotifications.mockReturnValue([
+      {
+        id: 1,
+        type: 'delivery_receipt',
+        title: 'Ignored',
+        body: 'Not a content desk item.',
+        createdAt: '2026-07-25T08:00:00.000Z',
+      },
+      {
+        id: 2,
+        type: 'topic_candidates_ready',
+        title: 'Topic candidates',
+        body: 'Three candidates are ready.',
+        createdAt: '2026-07-25T09:00:00.000Z',
+      },
+      {
+        id: 3,
+        type: 'script_ready',
+        title: 'Script ready',
+        body: 'The script is ready to record.',
+        createdAt: '2026-07-25T10:00:00.000Z',
+      },
+      {
+        id: 4,
+        type: 'weekly_package_ready',
+        title: 'Weekly package',
+        body: 'The weekly package is ready.',
+        createdAt: '2026-07-25T11:00:00.000Z',
+      },
+    ]);
+
+    expect(getContentDeskItems(7001, 2, 9001)).toEqual([
+      {
+        id: 2,
+        type: 'topic_candidates_ready',
+        title: 'Topic candidates',
+        body: 'Three candidates are ready.',
+        createdAt: '2026-07-25T09:00:00.000Z',
+      },
+      {
+        id: 3,
+        type: 'script_ready',
+        title: 'Script ready',
+        body: 'The script is ready to record.',
+        createdAt: '2026-07-25T10:00:00.000Z',
+      },
+    ]);
+    expect(mockGetUnreadNotifications).toHaveBeenCalledOnce();
+    expect(mockGetUnreadNotifications).toHaveBeenCalledWith(7001, 6, 9001);
   });
 
   it('localizes filming recommendation copy to pt-BR instead of pt-PT wording', () => {
@@ -171,6 +263,97 @@ describe('content-intelligence', () => {
       confidence: 'high',
       sourceType: 'topic_ready',
     });
+  });
+
+  it('loads every execution-hint dependency with secure defaults when options are omitted', async () => {
+    mockGetTopics.mockReturnValue([
+      {
+        id: 22,
+        user_id: 7001,
+        title: 'Default-loaded ready topic',
+        notes: null,
+        scheduled_date: '2026-07-28',
+        status: 'ready',
+        created_at: '2026-07-25T10:00:00.000Z',
+        updated_at: '2026-07-25T10:00:00.000Z',
+      },
+    ]);
+
+    await expect(getNextContentExecutionHint(7001)).resolves.toMatchObject({
+      mode: 'publish_ready',
+      title: 'Default-loaded ready topic',
+    });
+    expect(mockGetTopics).toHaveBeenCalledOnce();
+    expect(mockGetTopics).toHaveBeenCalledWith(7001, {
+      includeTerminal: false,
+      limit: 100,
+      tenantId: undefined,
+    });
+    expect(mockGetUnreadNotifications).toHaveBeenCalledOnce();
+    expect(mockGetUnreadNotifications).toHaveBeenCalledWith(7001, 12, 7001);
+    expect(mockReadRankedSignals).toHaveBeenCalledOnce();
+    expect(mockReadRankedSignals).toHaveBeenCalledWith(
+      'content-intelligence',
+      expect.arrayContaining(['reaction_opportunity', 'pipeline_bottleneck']),
+      {
+        userId: 7001,
+        tenantId: undefined,
+        limit: 4,
+        minConfidence: 0.2,
+      },
+    );
+    expect(mockGetFilmingRecommendation).toHaveBeenCalledOnce();
+    expect(mockGetFilmingRecommendation).toHaveBeenCalledWith(
+      7001,
+      expect.arrayContaining([expect.objectContaining({ id: 22 })]),
+      undefined,
+    );
+    expect(mockAll).toHaveBeenCalledOnce();
+    expect(mockAll).toHaveBeenCalledWith(7001, 7001);
+  });
+
+  it('propagates an explicit tenant through every default execution-hint dependency', async () => {
+    await expect(getNextContentExecutionHint(7001, { tenantId: 9001 })).resolves.toBeNull();
+
+    expect(mockGetTopics).toHaveBeenCalledWith(7001, {
+      includeTerminal: false,
+      limit: 100,
+      tenantId: 9001,
+    });
+    expect(mockGetUnreadNotifications).toHaveBeenCalledWith(7001, 12, 9001);
+    expect(mockReadRankedSignals).toHaveBeenCalledWith(
+      'content-intelligence',
+      expect.any(Array),
+      expect.objectContaining({ userId: 7001, tenantId: 9001, limit: 4 }),
+    );
+    expect(mockGetFilmingRecommendation).toHaveBeenCalledWith(7001, [], 9001);
+    expect(mockAll).toHaveBeenCalledWith(9001, 7001);
+  });
+
+  it('honors provided execution-hint collections without loading replacements', async () => {
+    await expect(getNextContentExecutionHint(7001, {
+      topics: [],
+      deskItems: [],
+      rankedSignals: [],
+      filmingRecommendation: {
+        date: '2026-07-29',
+        score: 82,
+        confidence: 'high',
+        reason: 'The calendar has a protected filming block.',
+        reasons: ['The calendar has a protected filming block.'],
+        calendarReservationMessage: null,
+      },
+      pillars: [],
+    })).resolves.toMatchObject({
+      mode: 'film_window',
+      scheduledDate: '2026-07-29',
+    });
+
+    expect(mockGetTopics).not.toHaveBeenCalled();
+    expect(mockGetUnreadNotifications).not.toHaveBeenCalled();
+    expect(mockReadRankedSignals).not.toHaveBeenCalled();
+    expect(mockGetFilmingRecommendation).not.toHaveBeenCalled();
+    expect(mockAll).not.toHaveBeenCalled();
   });
 
   it('falls back to a reaction window when nothing is publish-ready', async () => {

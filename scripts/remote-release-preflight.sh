@@ -10,9 +10,10 @@ BASE_DIR=""
 RELEASE_DIR=""
 NODE_BIN="/usr/bin/node"
 REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE=false
+ENVIRONMENT_CONTRACT="legacy-operator-private"
 
 usage() {
-  echo "Usage: remote-release-preflight.sh --role <staging|production> --base-dir <path> --release-dir <path> [--node-bin <path>] [--require-content-workspace-owner-write]"
+  echo "Usage: remote-release-preflight.sh --role <staging|production> --base-dir <path> --release-dir <path> [--node-bin <path>] [--environment-contract <legacy-operator-private|authoritative-root-group-readonly>] [--require-content-workspace-owner-write]"
 }
 
 while [ $# -gt 0 ]; do
@@ -21,6 +22,7 @@ while [ $# -gt 0 ]; do
     --base-dir) BASE_DIR="$2"; shift 2 ;;
     --release-dir) RELEASE_DIR="$2"; shift 2 ;;
     --node-bin) NODE_BIN="$2"; shift 2 ;;
+    --environment-contract) ENVIRONMENT_CONTRACT="$2"; shift 2 ;;
     --require-content-workspace-owner-write) REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
@@ -28,6 +30,10 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ROLE" in staging|production) ;; *) echo "invalid release role" >&2; exit 64 ;; esac
+case "$ENVIRONMENT_CONTRACT" in
+  legacy-operator-private|authoritative-root-group-readonly) ;;
+  *) echo "invalid release environment ownership contract" >&2; exit 64 ;;
+esac
 [ "$REQUIRE_CONTENT_WORKSPACE_OWNER_WRITE" = false ] || [ "$ROLE" = production ] || {
   echo "Content workspace owner-write preflight is production-only" >&2
   exit 64
@@ -51,13 +57,28 @@ ENV_FILE="$BASE_DIR/.env"
 }
 
 env_mode="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE" 2>/dev/null || true)"
-case "$env_mode" in 400|600) ;; *) echo "release environment mode must be 400 or 600" >&2; exit 1 ;; esac
-env_owner="$(stat -c '%U' "$ENV_FILE" 2>/dev/null || stat -f '%Su' "$ENV_FILE" 2>/dev/null || true)"
-current_owner="$(id -un)"
-[ -n "$env_owner" ] && [ "$env_owner" = "$current_owner" ] || {
-  echo "release environment owner does not match the operator" >&2
-  exit 1
-}
+env_uid="$(stat -c '%u' "$ENV_FILE" 2>/dev/null || stat -f '%u' "$ENV_FILE" 2>/dev/null || true)"
+env_gid="$(stat -c '%g' "$ENV_FILE" 2>/dev/null || stat -f '%g' "$ENV_FILE" 2>/dev/null || true)"
+current_uid="$(id -u)"
+current_gid="$(id -g)"
+if [ "$ENVIRONMENT_CONTRACT" = authoritative-root-group-readonly ]; then
+  authority_uid=0
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then authority_uid="$current_uid"; fi
+  [ "$env_mode" = 440 ] && [ "$env_uid" = "$authority_uid" ] \
+    && [ "$env_gid" = "$current_gid" ] || {
+    echo "authoritative release environment must be root:operator-group mode 440" >&2
+    exit 1
+  }
+else
+  case "$env_mode" in 400|600) ;; *)
+    echo "legacy release environment mode must be 400 or 600" >&2
+    exit 1
+  esac
+  [ "$env_uid" = "$current_uid" ] || {
+    echo "legacy release environment owner does not match the operator" >&2
+    exit 1
+  }
+fi
 
 "$NODE_BIN" - "$ENV_FILE" "$ROLE" <<'NODE'
 const fs = require('fs');

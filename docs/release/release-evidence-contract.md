@@ -22,19 +22,20 @@ readable for audit but cannot be reused for promotion.
 
 ## Commands and Storage
 
+The coordinated exact-artifact flow is canonical:
+
 ```bash
-npm run release:prepare -- --base <sha> --backend-only
-gh workflow run release-candidate-evidence.yml --ref <candidate-ref> -f contract_scope=backend_only
-scripts/request-release-manifest-signature.sh <sha> <rc-run-id> --backend-only
-npm run release:status -- --manifest .local/release/manifests/<sha>.json
-npm run release:staging -- --manifest .local/release/manifests/<sha>.json
-NEXUS_RELEASE_OWNER_AUTHORIZED=1 npm run release:promote -- --manifest .local/release/manifests/<sha>.json
+npm run release:resume -- --backend-only
+
+# Run only after the persisted owner stop and a fresh explicit decision:
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:resume -- --owner-authorized --promote
 ```
 
-Shared backend/iOS releases replace `--backend-only` with
-`--includes-ios --ios-sha <ios-sha> --ios-build-number <build> --ios-contract-result passed`
-when preparing and dispatching the RC. These fields express candidate intent;
-they are not accepted as signing proof. After the RC artifact exists, derive
+Shared backend/iOS releases replace the initial `--backend-only` with
+`--includes-ios`, then supply the two signed attestations when the coordinator
+requests them. Those proofs are not inferred from candidate intent. After the
+RC artifact exists, derive
 its exact iOS evidence request with protected-main tooling:
 
 ```bash
@@ -119,6 +120,29 @@ production-signed manifest artifact, then emits:
    output raw digests, fixed `isolated-kvm-first-drill` scope, and
    `promotionAllowed: false`.
 
+For the control-v2 legacy staging bootstrap, the source request additionally
+contains exact `nexus.rollback-drill-legacy-staging-bootstrap.v1` evidence:
+root broker and control digests, predecessor/current selector identities, the
+fsynced transaction journal digest, the stopped-state SQLite recovery-point
+SHA-256 and byte count, the 60-second soak, and the 120-second recovery target.
+The root journal retains only the bounded recovery-point schema, digest, size,
+original uid/gid/mode, and creation time; staging evidence exposes only digest
+and size and never database bytes or a database or backup path. Selector
+mutation is forbidden until both allowlisted staging
+PM2 apps are stopped, file-handle checks pass, the exact reviewed
+application-DR SQLite helper has created and verified the recovery point, and
+that identity is fsynced. Recovery verifies the same journal-bound bytes,
+removes WAL/SHM sidecars while the apps remain stopped, recreates a missing or
+truncated database with its journaled metadata, restores the database and
+predecessor selector, and only then starts and proves the root-pinned,
+re-attested predecessor. Missing or corrupt recovery bytes fail closed.
+Candidate completion also requires the in-lock exact-SHA PM2/service identity
+and authenticated readiness record; that root record is the legacy drill
+smoke, so no required Mac smoke occurs after terminal completion. The
+protected signing request
+and outer bundle bind the canonical `drillBootstrap` SHA-256. Unknown fields or any
+`promotionAllowed` value other than `false` fail closed.
+
 The two inner envelopes keep the hardcoded ordinary key id
 `github-environment-release-signing-2026-07`, because the recovery runtime
 requires it, but they are signed exclusively with
@@ -127,6 +151,11 @@ reviewed non-secret file at
 `docs/release/evidence/rollback-drill-staging-public-key.pem`; it is not a
 GitHub secret. The workflow fails closed while that tracked path or the private
 secret is absent and never exposes the production release private key.
+
+`scripts/release-staging-attestation.mjs` rejects `drillBootstrap` before
+ordinary signing or promotion validation. Thus the drill-only source cannot be
+normalized merely by substituting a production signature; normalization
+remains a separate future owner-authorized contract.
 
 KVM inputs embed only the two ordinary inner envelopes and bind the drill
 public key. Production binds the production public key, so both inner
@@ -138,9 +167,60 @@ sufficient. The outer record is never promotion evidence, and a completed
 three-outcome KVM drill must still produce the existing signed
 `nexus.rollback-drill.v1` freshness evidence.
 
-`release:prepare` creates the governed bundle and an unsigned payload. The RC
-workflow has no private-key access. A separate workflow dispatched on protected
-`main`, approved through the `release-signing` environment, independently
+Release-layout activation has a separate, stricter evidence boundary. Its three
+required results must bind a fresh plan nonce to independently signed
+hypervisor isolation facts, guest boot identity, exact layout-control
+execution, stopped-boundary database restoration, health restoration, and a
+trusted monotonic observer. KVM provisioning creates a random dedicated
+Ed25519 hypervisor evidence key and three distinct dedicated guest evidence
+keys, then publishes their public identities in a root-owned mode-0600 trust
+manifest. That manifest independently binds the active provision receipt and
+set ID, QEMU/runner digests, fixed scenario-to-guest mapping, and each guest
+SSH host-key digest. It also binds the exact root controller, controller unit,
+deep verifier, guest executor, and guest boot-recovery unit digests; the
+protected plan cannot nominate its own trusted keys or producer code.
+The plan uses a random 256-bit challenge. Every isolation and execution record
+repeats the challenge, canonical plan digest, and scenario identity; the
+canonical plan binds the migration identity, and the guest execution also
+repeats it directly. The hypervisor-signed record additionally binds the exact guest
+execution digest, guest boot identity, monotonic observer record, and live QEMU
+process/command-line observation. Only the fixed root controller may create
+scenario results; the public verifier exposes no manual `record` command.
+`collect` re-verifies the producer digests, nested evidence, signatures,
+ordering, recovery timing, and canonical result digests before emitting
+`nexus.release-layout-fault-drill.v1`.
+
+The owner signature is necessary but not sufficient. The root activation
+broker verifies the immutable trust manifest and active provision receipt,
+then independently verifies the nested machine proof before and after copying
+the signed envelopes, revalidates the exact Phase A receipt and root-owned PM2
+closure, and journals the authority, machine-proof, PM2, and Phase A receipt
+digests. It also records an acceptance instant that must be within the signed
+request's creation/expiry window before publishing active authority. The
+systemd worker repeats all those checks before `submitted` may transition to
+`running`. An accepted transaction may be resumed after wall-clock expiry only
+when its immutable journal and bounded acceptance instant revalidate; this is
+not a new authorization decision. Invalid signatures, arbitrary plan keys,
+reused signer keys, challenge drift, cross-plan results, self-reported unsigned
+JSON, and stale or incomplete plans fail before a transaction can mutate the
+layout. If the host stops after journal durability but before active-marker
+publication, boot recovery revalidates and resumes at most one nonterminal
+orphan transaction. Multiple, malformed, permission-unsafe,
+identity-inconsistent, or out-of-window orphan journals remain fail-closed.
+
+After terminal activation, ordinary promotion may pass `--allow-expired` only
+to the nested machine-proof verifier used alongside the already-expired owner
+authority path. This relaxes current wall-clock freshness only; the verifier
+still revalidates every plan, nonce, digest, signer identity, raw signature,
+scenario, and recovery outcome.
+
+The coordinator binds the governed RC bundle and requests the protected
+unsigned/signing transition without invoking legacy `release:prepare`.
+`release:prepare` remains a diagnostic/manual fallback and repeats local gate,
+build, bundle, and unsigned-payload work, so it must not precede a normal
+coordinated release. The RC workflow has no private-key access. A separate
+workflow dispatched on protected `main`, approved through the
+`release-signing` environment, independently
 checks the exact RC run, jobs, head SHA, artifact identity, test outputs, and
 bundle bytes before signing with protected-main code. The same boundary signs
 staging attestations; candidate code is never executed with the key.
@@ -204,6 +284,18 @@ immutable artifact as the manifest, installs it mode 0600, and rejects any
 non-identical existing file. Missing protected-main evidence omits this
 advisory timing envelope but does not change manifest signing or release
 acceptance.
+
+The same exact signer artifact contains
+`.local/release/signing-provenance.json`. The requester validates it against
+the authenticated completed GitHub run and unique digest-bearing artifact,
+then atomically installs a mode-0600 SHA-scoped receipt at
+`.local/release/signing-provenance/<runtime-sha>.json`. That receipt binds the
+repository, runtime SHA, RC candidate run/attempt, protected manifest-signing
+workflow path/run/attempt, manifest and payload digests, release artifact
+digest, and downloaded GitHub artifact ID/digest. Drill staging verifies the
+receipt against the exact manifest and fresh GitHub run/artifact metadata
+before it may request drill-only protected signing. The RC run stored in the
+release manifest is never accepted as the protected manifest-signing run.
 
 The automated-readiness KPI is the exact interval from protected-main CI
 `startedAt` through release-candidate `completedAt`; it excludes signing and
@@ -334,10 +426,100 @@ after exact path, size, whole-archive digest, safe-entry extraction, SQLite
 integrity/foreign-key checks, and stopped-state database digest agreement.
 These controls are implemented locally; live SSH-loss, failed-health, and
 reboot timing remain `MANUAL_REQUIRED` until their staging drills are retained.
+
+Before expensive preparation or any PM2 mutation, the same journal enters
+`waiting_for_dr_lease` after revalidating the durable active marker. Its
+additive `drLease` record binds probe count, 120-second same-boot monotonic
+deadline, two-second cadence, boot and invocation identity, next/last probe,
+acquisition time, and failure class. The broker requires both the existing
+hourly backup service to be idle and the root-owned application-DR flock to be
+available, rechecks service state while holding the flock, then releases it
+before promotion-owned recovery work. The active marker prevents a new timer
+backup from starting. A timeout or probe/identity failure becomes
+`failed_before_stop`; reboot starts one fresh bounded monotonic segment because
+neither the old backup process nor its kernel lock can survive the boot.
+
+Post-soak escrow retry is likewise server-owned inside the existing promotion
+oneshot. The additive `escrowRetry` record binds a transaction-wide maximum of
+eight consumed attempts, a 1,200-second same-boot monotonic budget, next/last
+attempt, error and exhaustion class, boot ID, and systemd invocation identity.
+Attempt state is durable before each off-host call, and exact live candidate
+identity plus authenticated readiness are reproved before every attempt. Each
+off-host call, PM2 identity proof, runtime attestation, and authenticated
+readiness proof is capped to the remaining budget. Candidate degradation
+restores the predecessor immediately. An exhausted relaunch cannot make a
+ninth call and returns 75; the Mac reads the journal but does not run a second
+retry controller. This contract requires exact
+`nexus-release-promotion-control.v4`; v3 is rejected before staging or
+promotion. `phaseTiming` and `invocation` fields add monotonic segment timing,
+boot ID, systemd invocation/PID, and resume lineage.
+
+After the local production proof passes, the coordinator checkpoint binds its
+mode-0600 path and SHA-256 together with runtime, artifact, installed/recovery
+runtime, manifest, staging, package-version, and root transaction identities.
+Post-availability release closeout consumes that exact runtime SHA, artifact
+digest, transaction ID, and production-proof digest. It checks out the runtime
+SHA directly and may reuse an existing tag only when the remote tag peels to
+that same commit. GitHub Release and documentation publication remain
+resumable closeout evidence; they cannot replace or retroactively change the
+terminal production verdict.
+
 Repository-sync deployment
 wrappers were retired after two staging rehearsals and two owner-authorized
 production releases proved this contract on 2026-07-15; exact rollback and
 restore remain the emergency recovery paths.
+
+The one-time `/home/dominguez` to `/srv/nexus-release` layout transaction uses
+its own root journal and does not replace ordinary promotion evidence. Before
+the stopped predecessor is moved, an online recovery point binds its path,
+digest, size, source device/inode, and SQLite integrity evidence. After PM2 is
+stopped and a root `/proc` scan proves no descriptor, mapping, executable, cwd,
+or root reference remains below the protected predecessor, the transaction
+checkpoints WAL and creates a separate mode-0600 stopped-boundary copy through
+no-follow descriptors. The journal binds that copy's digest, size, source
+device/inode, observation-evidence digest, and copy-evidence digest. Recovery
+first checkpoints and re-attests the stopped live database at the same bound
+inode, preserving writes accepted after cutover. An unhealthy or
+identity-drifted live database falls back to the stopped copy; it may use the
+earlier online point only if failure preceded the stopped boundary. Snapshot
+restore rejects unsafe sidecars and removes exact regular WAL, shared-memory,
+and rollback-journal sidecars before the predecessor starts.
+
+Terminal layout evidence additionally binds the exact protected predecessor
+and rematerialized runtime SHA/artifact/installed-tree identities, PM2 dump,
+readiness records, same-boot monotonic unavailability, worker-home identity,
+and live compatibility mount source/target/options plus mount and target
+device/inode. Publication consists of one terminal journal, result, and
+attestation whose raw digests cross-bind. Ordinary promotion remains blocked
+while the activation, migration, Phase A install, Phase B handover, or recovery
+marker exists, and after publication it revalidates all three records and the
+live bind mounts.
+
+Phase A activation-install evidence is a root-only exact-source transaction
+receipt. Its durable journal snapshots every replaceable file, original
+owner/group/mode/bytes, source archive identity, legacy adapter state, and
+systemd enablement before control replacement. Legacy retirement additionally
+requires the canonical plan emitted from the receipt-valid v2 installer while
+both release locks are held. Phase A revalidates its exact schema and byte
+digest, active receipt/control, terminal-journal aggregate, fixed 12-target
+allowlist, active target identities, and predecessor backups. The plan binds
+the shared application-DR SQLite helper separately as a retained dependency;
+it is not a retirement target and must remain byte/metadata-identical before
+and after installation and rollback. Phase A records completed adapter-asset
+retirement in its durable journal before removing the v2 receipt.
+
+The boot recovery executable, unit, PM2 guard, and machine-proof verifier remain as digest-bound
+recovery anchors if rollback is needed, and PM2 cannot start until either the
+complete Phase A receipt or the recovery-anchor rollback receipt verifies.
+Phase A also records the existing PM2 and ingress runtime identity before and
+after installation, the exact installed asset digests, root-PM2 prerequisite
+result, and legacy-v2 retirement receipt. Phase A evaluates the PM2 closure
+with the exact reviewed source control before replacing an older installed
+control, then requires the newly installed control to return byte-identical
+proof. None of these repository or installation receipts proves live
+activation. The environment remains `NOT_ACTIVATED` until all three real KVM
+outcomes, explicit owner authorization, and the terminal root transaction
+evidence are retained.
 
 Changed or irreversible migrations still require owner approval and backup
 proof. A release manifest does not make an unsafe down-migration safe.
