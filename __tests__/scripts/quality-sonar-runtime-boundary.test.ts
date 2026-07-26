@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -33,6 +34,18 @@ function fixture() {
   const dockerRows = join(root, 'docker-rows.tsv');
   const socket = join(root, 'docker.sock');
   const daemonConfig = join(root, 'etc', 'docker', 'daemon.json');
+  const snap = join(bin, 'snap');
+  const snapDockerCli = join(root, 'snap', 'bin', 'docker');
+  const snapDockerMount = join(root, 'snap', 'docker');
+  const snapDockerData = join(root, 'var', 'snap', 'docker');
+  const snapDockerBlobDir = join(root, 'var', 'lib', 'snapd', 'snaps');
+  const snapDockerUnitDropin = join(
+    root,
+    'etc',
+    'systemd',
+    'system',
+    'snap.docker.dockerd.service.d',
+  );
   const subuid = join(root, 'etc', 'subuid');
   const subgid = join(root, 'etc', 'subgid');
   const dockerRoot = join(root, 'var', 'lib', 'docker');
@@ -62,6 +75,9 @@ function fixture() {
       'userns-remap': 'default',
     })}\n`,
   );
+  // Preserve the established Docker-present fixture setup while making the
+  // default boundary represent the new pre-Docker host state.
+  rmSync(daemonConfig);
   writeFileSync(subuid, 'dockremap:231072:65536\nother:400000:65536\n');
   writeFileSync(subgid, 'dockremap:296608:65536\nother:500000:65536\n');
 
@@ -199,7 +215,31 @@ process.stdout.write(process.env.TEST_KERNEL_JOURNAL || '');
 `);
   executable(join(bin, 'systemctl'), `#!/usr/bin/env node
 const args = process.argv.slice(2);
+if (args[0] === 'show'
+    && [
+      'docker.service',
+      'docker.socket',
+      'containerd.service',
+      'snap.docker.dockerd.service',
+    ].includes(args[1])) {
+  const prefix = args[1] === 'docker.service'
+    ? 'TEST_DOCKER_SERVICE'
+    : args[1] === 'docker.socket'
+      ? 'TEST_DOCKER_SOCKET_UNIT'
+      : args[1] === 'containerd.service'
+        ? 'TEST_CONTAINERD_SERVICE'
+        : 'TEST_SNAP_DOCKER_SERVICE';
+  process.stdout.write(
+    'LoadState=' + (process.env[prefix + '_LOAD_STATE'] || 'not-found') + '\\n'
+    + 'UnitFileState=' + (process.env[prefix + '_UNIT_FILE_STATE'] || '') + '\\n',
+  );
+  process.exit(0);
+}
 if (args[0] === 'list-unit-files') {
+  if (args.includes('snap.docker.*')) {
+    process.stdout.write(process.env.TEST_SNAP_DOCKER_UNIT_FILES || '');
+    process.exit(0);
+  }
   const type = args.find(value => value.startsWith('--type='))?.slice(7);
   process.stdout.write(type === 'timer'
     ? (process.env.TEST_TIMER_UNIT_FILES || '')
@@ -207,6 +247,10 @@ if (args[0] === 'list-unit-files') {
   process.exit(0);
 }
 if (args[0] === 'list-units') {
+  if (args.includes('snap.docker.*')) {
+    process.stdout.write(process.env.TEST_SNAP_DOCKER_LOADED_UNITS || '');
+    process.exit(0);
+  }
   const type = args.find(value => value.startsWith('--type='))?.slice(7);
   process.stdout.write(type === 'timer'
     ? (process.env.TEST_LOADED_TIMERS || '')
@@ -214,6 +258,21 @@ if (args[0] === 'list-units') {
   process.exit(0);
 }
 process.exit(1);
+`);
+  executable(join(bin, 'dpkg-query'), `#!/usr/bin/env node
+const packageName = process.argv.at(-1);
+const installed = new Set(
+  (process.env.TEST_DOCKER_PACKAGES || '').split(',').filter(Boolean),
+);
+if (!installed.has(packageName)) process.exit(1);
+process.stdout.write('ii ');
+`);
+  executable(snap, `#!/usr/bin/env node
+if (process.env.TEST_SNAP_LIST_FAILURE === '1') process.exit(1);
+process.stdout.write('Name Version Rev Tracking Publisher Notes\\n');
+if (process.env.TEST_DOCKER_SNAP_INSTALLED === '1') {
+  process.stdout.write('docker 28.5.1 1234 latest/stable canonical** -\\n');
+}
 `);
   executable(join(bin, 'sleep'), `#!/usr/bin/env node
 const { writeFileSync } = require('node:fs');
@@ -287,6 +346,13 @@ process.stdout.write(process.env.TEST_DOCKER_ACL || 'user::rw-\\ngroup::rw-\\not
     NEXUS_SONAR_HOSTNAME_BIN: join(bin, 'hostname'),
     NEXUS_SONAR_SLEEP_BIN: join(bin, 'sleep'),
     NEXUS_SONAR_REALPATH_BIN: join(bin, 'realpath'),
+    NEXUS_SONAR_DPKG_QUERY_BIN: join(bin, 'dpkg-query'),
+    NEXUS_SONAR_SNAP_BIN: snap,
+    NEXUS_SONAR_SNAP_DOCKER_CLI: snapDockerCli,
+    NEXUS_SONAR_SNAP_DOCKER_MOUNT: snapDockerMount,
+    NEXUS_SONAR_SNAP_DOCKER_DATA: snapDockerData,
+    NEXUS_SONAR_SNAP_DOCKER_BLOB_DIR: snapDockerBlobDir,
+    NEXUS_SONAR_SNAP_DOCKER_UNIT_DROPIN: snapDockerUnitDropin,
     NEXUS_SONAR_DOCKER_BIN: '/nonexistent/docker',
     TEST_REAL_NODE: process.execPath,
     TEST_PM2_IDENTITY: JSON.stringify(identity),
@@ -303,6 +369,11 @@ process.stdout.write(process.env.TEST_DOCKER_ACL || 'user::rw-\\ngroup::rw-\\not
     docker: join(bin, 'docker'),
     dockerRows,
     daemonConfig,
+    snapDockerCli,
+    snapDockerMount,
+    snapDockerData,
+    snapDockerBlobDir,
+    snapDockerUnitDropin,
     subuid,
     subgid,
     runuserCount,
@@ -316,6 +387,15 @@ function runBoundary(
   requireDocker = false,
 ) {
   writeFileSync(value.runuserCount, '0\n');
+  if (requireDocker && !existsSync(value.daemonConfig)) {
+    writeFileSync(
+      value.daemonConfig,
+      `${JSON.stringify({
+        features: { 'containerd-snapshotter': false },
+        'userns-remap': 'default',
+      })}\n`,
+    );
+  }
   return spawnSync(
     'bash',
     [
@@ -357,6 +437,182 @@ describe('Sonar live runtime boundary', () => {
       '"dockerAuthority":"not_installed"',
     );
     expect(result.stdout).toContain('sonar_live_capacity_ok');
+  });
+
+  it('rejects hidden Docker socket and daemon-configuration state when the CLI is absent', () => {
+    const socketValue = fixture();
+    writeFileSync(socketValue.socket, '');
+    const socketResult = runBoundary(socketValue);
+    expect(socketResult.status).not.toBe(0);
+    expect(socketResult.stderr).toContain('Docker socket path already exists');
+
+    const configValue = fixture();
+    writeFileSync(configValue.daemonConfig, '{}\n');
+    const configResult = runBoundary(configValue);
+    expect(configResult.status).not.toBe(0);
+    expect(configResult.stderr).toContain(
+      'Docker daemon configuration already exists',
+    );
+  });
+
+  it('rejects a Docker CLI that appears before daemon authority is complete', () => {
+    const value = fixture();
+    const result = runBoundary(value, {
+      NEXUS_SONAR_DOCKER_BIN: value.docker,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'Docker socket is missing, not a socket, or a symlink',
+    );
+  });
+
+  it.each([
+    ['docker-ce'],
+    ['docker.io'],
+    ['containerd'],
+    ['containerd.io'],
+  ])('rejects a retained %s package record before Docker', (packageName) => {
+    const value = fixture();
+    const result = runBoundary(value, {
+      TEST_DOCKER_PACKAGES: packageName,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      `Docker/containerd package record already exists: ${packageName}`,
+    );
+  });
+
+  it('rejects an installed Docker Snap through the bounded Snap inventory', () => {
+    const value = fixture();
+    const result = runBoundary(value, {
+      TEST_DOCKER_SNAP_INSTALLED: '1',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'Docker Snap package record already exists',
+    );
+  });
+
+  it('fails closed when the authoritative Snap inventory is unavailable', () => {
+    const value = fixture();
+    const result = runBoundary(value, {
+      TEST_SNAP_LIST_FAILURE: '1',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'Unable to prove Docker Snap package absence',
+    );
+  });
+
+  it('rejects alternate Docker Snap CLI, configuration, and package-blob evidence', () => {
+    const cliValue = fixture();
+    mkdirSync(join(cliValue.root, 'snap', 'bin'), { recursive: true });
+    writeFileSync(cliValue.snapDockerCli, '');
+    const cliResult = runBoundary(cliValue);
+    expect(cliResult.status).not.toBe(0);
+    expect(cliResult.stderr).toContain(
+      `Docker Snap installation evidence already exists: ${cliValue.snapDockerCli}`,
+    );
+
+    const configValue = fixture();
+    mkdirSync(configValue.snapDockerData, { recursive: true });
+    const configResult = runBoundary(configValue);
+    expect(configResult.status).not.toBe(0);
+    expect(configResult.stderr).toContain(
+      `Docker Snap installation evidence already exists: ${configValue.snapDockerData}`,
+    );
+
+    const blobValue = fixture();
+    mkdirSync(blobValue.snapDockerBlobDir, { recursive: true });
+    const blobPath = join(blobValue.snapDockerBlobDir, 'docker_1234.snap');
+    writeFileSync(blobPath, '');
+    const blobResult = runBoundary(blobValue);
+    expect(blobResult.status).not.toBe(0);
+    expect(blobResult.stderr).toContain(
+      `Docker Snap package blob already exists: ${blobPath}`,
+    );
+  });
+
+  it('rejects installed and loaded Docker Snap systemd unit evidence', () => {
+    const installedValue = fixture();
+    const installed = runBoundary(installedValue, {
+      TEST_SNAP_DOCKER_UNIT_FILES:
+        'snap.docker.dockerd.service enabled enabled\n',
+    });
+    expect(installed.status).not.toBe(0);
+    expect(installed.stderr).toContain(
+      'Docker Snap systemd unit already exists',
+    );
+
+    const loadedValue = fixture();
+    const loaded = runBoundary(loadedValue, {
+      TEST_SNAP_DOCKER_LOADED_UNITS:
+        'snap.docker.dockerd.service loaded active running Docker\n',
+    });
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain(
+      'Docker Snap systemd unit already exists',
+    );
+
+    const exactValue = fixture();
+    const exact = runBoundary(exactValue, {
+      TEST_SNAP_DOCKER_SERVICE_LOAD_STATE: 'loaded',
+    });
+    expect(exact.status).not.toBe(0);
+    expect(exact.stderr).toContain(
+      'Container-runtime systemd unit already exists: snap.docker.dockerd.service',
+    );
+  });
+
+  it.each([
+    {
+      environment: { TEST_DOCKER_SERVICE_LOAD_STATE: 'loaded' },
+      unit: 'docker.service',
+    },
+    {
+      environment: { TEST_DOCKER_SOCKET_UNIT_UNIT_FILE_STATE: 'enabled' },
+      unit: 'docker.socket',
+    },
+    {
+      environment: { TEST_CONTAINERD_SERVICE_LOAD_STATE: 'loaded' },
+      unit: 'containerd.service',
+    },
+  ])('rejects a loaded or enabled $unit before Docker', ({ environment, unit }) => {
+    const value = fixture();
+    const result = runBoundary(value, environment);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      `Container-runtime systemd unit already exists: ${unit}`,
+    );
+  });
+
+  it.each(['dockerd', 'containerd'])(
+    'rejects a hidden %s process before Docker',
+    (processName) => {
+      const value = fixture();
+      const processDirectory = join(value.proc, '4242');
+      mkdirSync(processDirectory);
+      writeFileSync(join(processDirectory, 'comm'), `${processName}\n`);
+      const result = runBoundary(value);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        `Container-runtime process is already active: ${processName}`,
+      );
+    },
+  );
+
+  it('rejects a container-runtime package installed between fresh absence probes', () => {
+    const value = fixture();
+    const initial = runBoundary(value);
+    expect(initial.status, initial.stderr).toBe(0);
+
+    const postCapture = runBoundary(value, {
+      TEST_DOCKER_PACKAGES: 'containerd.io',
+    });
+    expect(postCapture.status).not.toBe(0);
+    expect(postCapture.stderr).toContain(
+      'Docker/containerd package record already exists: containerd.io',
+    );
   });
 
   it('rejects protected release-account Docker authority before capacity authorization', () => {
@@ -520,9 +776,14 @@ describe('Sonar live runtime boundary', () => {
       'utf8',
     );
     const stack = readFileSync('scripts/quality-sonar-stack.sh', 'utf8');
+    const fullInstallGateComment = installer.indexOf(
+      '# This live, read-only gate precedes the first managed-directory creation',
+    );
     const installGate = installer.indexOf(
       'bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh"',
+      fullInstallGateComment,
     );
+    expect(fullInstallGateComment).toBeGreaterThan(0);
     expect(installGate).toBeGreaterThan(0);
     expect(installer.slice(installGate)).toContain(
       '--verify-runtime-boundary-only',

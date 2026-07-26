@@ -13,6 +13,14 @@ SOURCE_ROOT="${1:-}"
 SOURCE_SHA="${2:-}"
 SOURCE_ARCHIVE="${3:-}"
 EXPECTED_ARCHIVE_SHA256="${4:-}"
+PRE_DOCKER_PREFLIGHT_ONLY=false
+PRE_DOCKER_PREFLIGHT_OUTPUT=""
+if [ "${5:-}" = "--pre-docker-preflight-only" ] && [ "$#" -eq 6 ]; then
+  PRE_DOCKER_PREFLIGHT_ONLY=true
+  PRE_DOCKER_PREFLIGHT_OUTPUT="$6"
+elif [ "$#" -ne 4 ]; then
+  PRE_DOCKER_PREFLIGHT_ONLY=invalid
+fi
 BOOTSTRAP_BASE=/var/lib/nexus-release-bootstrap
 LAYOUT_RELATIVE=ops/sonarqube/install-layout.tsv
 DATA_LAYOUT_RELATIVE=ops/sonarqube/data-layout.tsv
@@ -50,11 +58,12 @@ usage() {
   cat <<'EOF'
 Usage: sudo scripts/quality-sonar-systemd-install.sh \
   <root-owned-source-root> <40-hex-source-sha> \
-  <root-owned-source-archive> <64-hex-archive-sha256>
+  <root-owned-source-archive> <64-hex-archive-sha256> \
+  [--pre-docker-preflight-only <new-private-output-directory>]
 EOF
 }
 
-[ $# -eq 4 ] || {
+[ "$PRE_DOCKER_PREFLIGHT_ONLY" != invalid ] || {
   usage >&2
   exit 64
 }
@@ -142,6 +151,19 @@ validate_existing_target_ancestor() {
 
 validate_root_trusted_path "$SOURCE_ROOT" "bootstrap source root" directory
 validate_root_trusted_path "$SOURCE_ARCHIVE" "bootstrap source archive" file
+if [ "$PRE_DOCKER_PREFLIGHT_ONLY" = true ]; then
+  [[ "$PRE_DOCKER_PREFLIGHT_OUTPUT" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+    && [ "$PRE_DOCKER_PREFLIGHT_OUTPUT" != / ] \
+    && [ "$(realpath -m -- "$PRE_DOCKER_PREFLIGHT_OUTPUT")" \
+      = "$PRE_DOCKER_PREFLIGHT_OUTPUT" ] \
+    || die "pre-Docker preflight output must be a safe canonical absolute path"
+  [ ! -e "$PRE_DOCKER_PREFLIGHT_OUTPUT" ] \
+    && [ ! -L "$PRE_DOCKER_PREFLIGHT_OUTPUT" ] \
+    || die "pre-Docker preflight output must not already exist"
+  validate_root_trusted_path \
+    "$(dirname -- "$PRE_DOCKER_PREFLIGHT_OUTPUT")" \
+    "pre-Docker preflight output parent" directory
+fi
 
 archive_sha256="$(sha256sum -- "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
 [ "$archive_sha256" = "$EXPECTED_ARCHIVE_SHA256" ] \
@@ -307,6 +329,94 @@ SHARED_MUTEX_CONFIG_MODE="0$(stat -c '%a' -- "$SHARED_MUTEX_CONFIG")"
 SHARED_MUTEX_CONFIG_DEV="$(stat -c '%d' -- "$SHARED_MUTEX_CONFIG")"
 SHARED_MUTEX_CONFIG_INO="$(stat -c '%i' -- "$SHARED_MUTEX_CONFIG")"
 SHARED_MUTEX_CONFIG_NLINK="$(stat -c '%h' -- "$SHARED_MUTEX_CONFIG")"
+
+if [ "$PRE_DOCKER_PREFLIGHT_ONLY" = true ]; then
+  # This is the sole pre-Docker entry point. It validates the complete exact
+  # archive above, requires the promotion-owned mutex to preexist, and holds
+  # that mutex until result.json is published last by the read-only recorder.
+  # It never materializes the mutex, resumes an install, creates a Sonar
+  # control/data directory, installs an asset, or invokes Docker mutation.
+  [ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \
+    && [ "$(stat -c '%U:%G:%a' -- "$SHARED_MUTEX")" = root:dominguez:660 ] \
+    || die "pre-Docker preflight requires the existing shared release/Sonar mutex"
+  exec 9<>"$SHARED_MUTEX"
+  flock -n 9 \
+    || die "a release, advisory scan, stack operation, or installer holds the shared mutex"
+
+  bash -n "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh"
+  /usr/bin/node --check \
+    "$SOURCE_ROOT/scripts/quality-sonar-start-evidence.mjs" >/dev/null
+  assert_pre_docker_absent_boundary() {
+    local phase="$1" pre_docker_boundary
+    pre_docker_boundary="$(
+      bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh" \
+        --verify-runtime-boundary-only \
+        --allow-docker-absent \
+        --sample-seconds 0
+    )" || die "pre-Docker runtime boundary rejected $phase baseline capture"
+    /usr/bin/node - "$pre_docker_boundary" <<'NODE' \
+      || die "pre-Docker runtime boundary did not prove Docker absent during $phase"
+const lines = process.argv[2].trim().split('\n');
+let authority;
+try {
+  authority = JSON.parse(lines[0] || '');
+} catch {
+  process.exit(1);
+}
+if (authority?.schema !== 'nexus.sonarqube-runtime-authority.v1'
+    || authority?.status !== 'passed'
+    || authority?.dockerAuthority !== 'not_installed'
+    || authority?.dockerUserns !== null) process.exit(1);
+NODE
+  }
+  assert_pre_docker_absent_boundary initial
+
+  bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh" \
+    --output "$PRE_DOCKER_PREFLIGHT_OUTPUT" \
+    || die "pre-Docker network/capacity baseline failed"
+  validate_root_trusted_path \
+    "$PRE_DOCKER_PREFLIGHT_OUTPUT" \
+    "pre-Docker preflight evidence" directory
+  [ "$(stat -c '%U:%G:%a' -- "$PRE_DOCKER_PREFLIGHT_OUTPUT")" \
+      = root:root:700 ] \
+    || die "pre-Docker preflight evidence directory identity is unsafe"
+  for evidence_file in result.json runtime-authority.json; do
+    validate_root_trusted_path \
+      "$PRE_DOCKER_PREFLIGHT_OUTPUT/$evidence_file" \
+      "pre-Docker preflight $evidence_file" file
+    [ "$(stat -c '%U:%G:%a' \
+        -- "$PRE_DOCKER_PREFLIGHT_OUTPUT/$evidence_file")" = root:root:600 ] \
+      || die "pre-Docker preflight $evidence_file identity is unsafe"
+  done
+  /usr/bin/node - \
+    "$PRE_DOCKER_PREFLIGHT_OUTPUT/result.json" \
+    "$PRE_DOCKER_PREFLIGHT_OUTPUT/runtime-authority.json" <<'NODE' \
+    || die "pre-Docker evidence does not prove Docker remained absent"
+const fs = require('fs');
+const [resultPath, authorityPath] = process.argv.slice(2);
+const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+const authority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
+if (result?.schema !== 'nexus.sonarqube-host-preflight.v1'
+    || result?.status !== 'passed'
+    || result?.host !== 'serverdominguez'
+    || result?.dockerEngineCaptured !== false
+    || authority?.schema !== 'nexus.sonarqube-runtime-authority.v1'
+    || authority?.status !== 'passed'
+    || authority?.dockerAuthority !== 'not_installed'
+    || authority?.dockerUserns !== null) process.exit(1);
+NODE
+  # Reopen every live absence signal after result.json exists and after all
+  # evidence validation. A CLI/socket/config/package/unit/process that appeared
+  # during the network/capacity sample invalidates the baseline.
+  assert_pre_docker_absent_boundary post-capture
+  result_sha256="$(
+    sha256sum -- "$PRE_DOCKER_PREFLIGHT_OUTPUT/result.json" | cut -d' ' -f1
+  )"
+  printf '{"ok":true,"schema":"nexus.sonarqube-pre-docker-preflight.v1","sourceSha":"%s","archiveSha256":"%s","resultSha256":"%s","preflightOnly":true,"dockerTouched":false,"assetsInstalled":false,"configurationWritten":false}\n' \
+    "$SOURCE_SHA" "$EXPECTED_ARCHIVE_SHA256" "$result_sha256"
+  exit 0
+fi
+
 systemd-tmpfiles --create "$SHARED_MUTEX_CONFIG" \
   || die "shared release/Sonar mutex could not be materialized from its global rule"
 [ -f "$SHARED_MUTEX" ] && [ ! -L "$SHARED_MUTEX" ] \

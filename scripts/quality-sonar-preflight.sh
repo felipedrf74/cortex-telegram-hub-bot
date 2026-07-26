@@ -27,6 +27,26 @@ DOCKER_DAEMON_CONFIG=/etc/docker/daemon.json
 SUBUID_FILE=/etc/subuid
 SUBGID_FILE=/etc/subgid
 DOCKER_USERNS_ACCOUNT=dockremap
+DPKG_QUERY_BIN=/usr/bin/dpkg-query
+DOCKER_PROCESS_SCAN_LIMIT=65536
+SNAP_INVENTORY_MAX_BYTES=262144
+SNAP_UNIT_INVENTORY_MAX_BYTES=65536
+SNAP_BIN=/usr/bin/snap
+SNAP_DOCKER_CLI=/snap/bin/docker
+SNAP_DOCKER_MOUNT=/snap/docker
+SNAP_DOCKER_DATA=/var/snap/docker
+SNAP_DOCKER_BLOB_DIR=/var/lib/snapd/snaps
+SNAP_DOCKER_UNIT_DROPIN=/etc/systemd/system/snap.docker.dockerd.service.d
+RUNUSER_BIN=/usr/sbin/runuser
+SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
+JOURNALCTL_BIN="$(command -v journalctl 2>/dev/null || true)"
+GETENT_BIN="$(command -v getent 2>/dev/null || true)"
+GETFACL_BIN="$(command -v getfacl 2>/dev/null || true)"
+ID_BIN="$(command -v id 2>/dev/null || true)"
+HOSTNAME_BIN="$(command -v hostname 2>/dev/null || true)"
+SLEEP_BIN="$(command -v sleep 2>/dev/null || true)"
+REALPATH_BIN="$(command -v realpath 2>/dev/null || true)"
+DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
 if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then
   PM2_BIN="${NEXUS_SONAR_PM2_BIN:-$PM2_BIN}"
   PM2_USER_HOME="${NEXUS_SONAR_PM2_USER_HOME:-$PM2_USER_HOME}"
@@ -38,17 +58,24 @@ if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then
   DOCKER_DAEMON_CONFIG="${NEXUS_SONAR_DOCKER_DAEMON_CONFIG:-$DOCKER_DAEMON_CONFIG}"
   SUBUID_FILE="${NEXUS_SONAR_SUBUID_FILE:-$SUBUID_FILE}"
   SUBGID_FILE="${NEXUS_SONAR_SUBGID_FILE:-$SUBGID_FILE}"
+  DPKG_QUERY_BIN="${NEXUS_SONAR_DPKG_QUERY_BIN:-$DPKG_QUERY_BIN}"
+  SNAP_BIN="${NEXUS_SONAR_SNAP_BIN:-$SNAP_BIN}"
+  SNAP_DOCKER_CLI="${NEXUS_SONAR_SNAP_DOCKER_CLI:-$SNAP_DOCKER_CLI}"
+  SNAP_DOCKER_MOUNT="${NEXUS_SONAR_SNAP_DOCKER_MOUNT:-$SNAP_DOCKER_MOUNT}"
+  SNAP_DOCKER_DATA="${NEXUS_SONAR_SNAP_DOCKER_DATA:-$SNAP_DOCKER_DATA}"
+  SNAP_DOCKER_BLOB_DIR="${NEXUS_SONAR_SNAP_DOCKER_BLOB_DIR:-$SNAP_DOCKER_BLOB_DIR}"
+  SNAP_DOCKER_UNIT_DROPIN="${NEXUS_SONAR_SNAP_DOCKER_UNIT_DROPIN:-$SNAP_DOCKER_UNIT_DROPIN}"
+  RUNUSER_BIN="${NEXUS_SONAR_RUNUSER_BIN:-$RUNUSER_BIN}"
+  SYSTEMCTL_BIN="${NEXUS_SONAR_SYSTEMCTL_BIN:-$SYSTEMCTL_BIN}"
+  JOURNALCTL_BIN="${NEXUS_SONAR_JOURNALCTL_BIN:-$JOURNALCTL_BIN}"
+  GETENT_BIN="${NEXUS_SONAR_GETENT_BIN:-$GETENT_BIN}"
+  GETFACL_BIN="${NEXUS_SONAR_GETFACL_BIN:-$GETFACL_BIN}"
+  ID_BIN="${NEXUS_SONAR_ID_BIN:-$ID_BIN}"
+  HOSTNAME_BIN="${NEXUS_SONAR_HOSTNAME_BIN:-$HOSTNAME_BIN}"
+  SLEEP_BIN="${NEXUS_SONAR_SLEEP_BIN:-$SLEEP_BIN}"
+  REALPATH_BIN="${NEXUS_SONAR_REALPATH_BIN:-$REALPATH_BIN}"
+  DOCKER_BIN="${NEXUS_SONAR_DOCKER_BIN:-$DOCKER_BIN}"
 fi
-RUNUSER_BIN="${NEXUS_SONAR_RUNUSER_BIN:-/usr/sbin/runuser}"
-SYSTEMCTL_BIN="${NEXUS_SONAR_SYSTEMCTL_BIN:-$(command -v systemctl 2>/dev/null || true)}"
-JOURNALCTL_BIN="${NEXUS_SONAR_JOURNALCTL_BIN:-$(command -v journalctl 2>/dev/null || true)}"
-GETENT_BIN="${NEXUS_SONAR_GETENT_BIN:-$(command -v getent 2>/dev/null || true)}"
-GETFACL_BIN="${NEXUS_SONAR_GETFACL_BIN:-$(command -v getfacl 2>/dev/null || true)}"
-ID_BIN="${NEXUS_SONAR_ID_BIN:-$(command -v id 2>/dev/null || true)}"
-HOSTNAME_BIN="${NEXUS_SONAR_HOSTNAME_BIN:-$(command -v hostname 2>/dev/null || true)}"
-SLEEP_BIN="${NEXUS_SONAR_SLEEP_BIN:-$(command -v sleep 2>/dev/null || true)}"
-REALPATH_BIN="${NEXUS_SONAR_REALPATH_BIN:-$(command -v realpath 2>/dev/null || true)}"
-DOCKER_BIN="${NEXUS_SONAR_DOCKER_BIN:-$(command -v docker 2>/dev/null || true)}"
 CLOUDFLARED_UNIT=nexus-cloudflared.service
 CURL_BIN="$(command -v curl 2>/dev/null || true)"
 NODE_BIN="$ROOT_NODE_BIN"
@@ -294,6 +321,244 @@ docker_cli() {
 
 DOCKER_USERNS_JSON=null
 DOCKER_AUTHORITY=""
+
+verify_snap_docker_not_installed() {
+  local evidence_path snap_inventory snap_inventory_status
+  local unit_inventory unit_inventory_mode
+  local snap_blob
+  local -a snap_blobs=()
+
+  for evidence_path in \
+    "$SNAP_DOCKER_CLI" \
+    "$SNAP_DOCKER_MOUNT" \
+    "$SNAP_DOCKER_DATA" \
+    "$SNAP_DOCKER_UNIT_DROPIN"; do
+    [ ! -e "$evidence_path" ] && [ ! -L "$evidence_path" ] || {
+      echo "Docker Snap installation evidence already exists: $evidence_path" >&2
+      return 1
+    }
+  done
+
+  if [ -e "$SNAP_DOCKER_BLOB_DIR" ] || [ -L "$SNAP_DOCKER_BLOB_DIR" ]; then
+    [ -d "$SNAP_DOCKER_BLOB_DIR" ] \
+      && [ ! -L "$SNAP_DOCKER_BLOB_DIR" ] \
+      && [ -r "$SNAP_DOCKER_BLOB_DIR" ] \
+      && [ -x "$SNAP_DOCKER_BLOB_DIR" ] || {
+      echo "Unable to inspect the Docker Snap package-blob directory" >&2
+      return 1
+    }
+    shopt -s nullglob
+    snap_blobs=("$SNAP_DOCKER_BLOB_DIR"/docker_*.snap)
+    shopt -u nullglob
+    if [ "${#snap_blobs[@]}" -ne 0 ]; then
+      snap_blob="${snap_blobs[0]}"
+      echo "Docker Snap package blob already exists: $snap_blob" >&2
+      return 1
+    fi
+  fi
+
+  if [ -e "$SNAP_BIN" ] || [ -L "$SNAP_BIN" ]; then
+    [ -f "$SNAP_BIN" ] && [ ! -L "$SNAP_BIN" ] && [ -x "$SNAP_BIN" ] || {
+      echo "Snap inventory command is present but unsafe" >&2
+      return 1
+    }
+    if ! snap_inventory="$(LC_ALL=C "$SNAP_BIN" list --all 2>&1)"; then
+      echo "Unable to prove Docker Snap package absence" >&2
+      return 1
+    fi
+    if "$NODE_BIN" - "$snap_inventory" "$SNAP_INVENTORY_MAX_BYTES" <<'NODE'
+const [raw, maxBytesRaw] = process.argv.slice(2);
+const maxBytes = Number(maxBytesRaw);
+if (!Number.isSafeInteger(maxBytes)
+    || Buffer.byteLength(raw, 'utf8') > maxBytes) process.exit(1);
+const trimmed = raw.trim();
+if (/^No snaps are installed yet\.(?:\s+Try .*)?$/u.test(trimmed)) {
+  process.exit(0);
+}
+const lines = trimmed.split(/\r?\n/u);
+if (lines.length < 1 || lines.length > 4097
+    || lines[0].trim().split(/\s+/u)[0] !== 'Name') process.exit(1);
+for (const line of lines.slice(1)) {
+  const fields = line.trim().split(/\s+/u);
+  if (fields.length < 2 || !/^[a-z0-9][a-z0-9_-]*$/u.test(fields[0])) {
+    process.exit(1);
+  }
+  if (/^docker(?:_[a-z0-9-]+)?$/u.test(fields[0])) process.exit(10);
+}
+NODE
+    then
+      :
+    else
+      snap_inventory_status=$?
+      if [ "$snap_inventory_status" -eq 10 ]; then
+        echo "Docker Snap package record already exists" >&2
+      else
+        echo "Unable to validate the bounded Snap package inventory" >&2
+      fi
+      return 1
+    fi
+  fi
+
+  for unit_inventory_mode in list-unit-files list-units; do
+    if [ "$unit_inventory_mode" = list-unit-files ]; then
+      unit_inventory="$(
+        "$SYSTEMCTL_BIN" list-unit-files 'snap.docker.*' \
+          --no-legend --no-pager
+      )" || {
+        echo "Unable to inspect Docker Snap installed units" >&2
+        return 1
+      }
+    else
+      unit_inventory="$(
+        "$SYSTEMCTL_BIN" list-units --all 'snap.docker.*' \
+          --no-legend --no-pager
+      )" || {
+        echo "Unable to inspect Docker Snap loaded units" >&2
+        return 1
+      }
+    fi
+    [ "${#unit_inventory}" -le "$SNAP_UNIT_INVENTORY_MAX_BYTES" ] || {
+      echo "Docker Snap systemd inventory exceeded its bounded limit" >&2
+      return 1
+    }
+    [ -z "$(printf '%s' "$unit_inventory" | tr -d '[:space:]')" ] || {
+      echo "Docker Snap systemd unit already exists" >&2
+      return 1
+    }
+  done
+}
+
+verify_docker_not_installed() {
+  local package package_status package_rc unit unit_state load_state
+  local unit_file_state key value remainder proc_dir process_name
+  local scanned_processes=0 load_state_seen unit_file_state_seen
+  local -a docker_packages=(
+    docker-ce
+    docker-ce-cli
+    docker-ce-rootless-extras
+    docker-buildx-plugin
+    docker-compose-plugin
+    docker.io
+    docker-compose
+    docker-compose-v2
+    moby-engine
+    moby-cli
+    containerd
+    containerd.io
+  )
+
+  [ ! -x "$DOCKER_BIN" ] || {
+    echo "Docker CLI is already installed" >&2
+    return 1
+  }
+  [ ! -e "$DOCKER_SOCKET" ] && [ ! -L "$DOCKER_SOCKET" ] || {
+    echo "Docker socket path already exists" >&2
+    return 1
+  }
+  [ ! -e "$DOCKER_DAEMON_CONFIG" ] \
+    && [ ! -L "$DOCKER_DAEMON_CONFIG" ] || {
+    echo "Docker daemon configuration already exists" >&2
+    return 1
+  }
+
+  [ -x "$DPKG_QUERY_BIN" ] || {
+    echo "dpkg-query is required to prove Docker package absence" >&2
+    return 1
+  }
+  for package in "${docker_packages[@]}"; do
+    if package_status="$(
+      LC_ALL=C "$DPKG_QUERY_BIN" -W -f='${db:Status-Abbrev}' \
+        "$package" 2>/dev/null
+    )"; then
+      echo "Docker/containerd package record already exists: $package ($package_status)" >&2
+      return 1
+    else
+      package_rc=$?
+    fi
+    [ "$package_rc" -eq 1 ] || {
+      echo "Unable to prove Docker package absence: $package" >&2
+      return 1
+    }
+  done
+
+  [ -x "$SYSTEMCTL_BIN" ] || {
+    echo "systemctl is required to prove Docker unit absence" >&2
+    return 1
+  }
+  verify_snap_docker_not_installed || return 1
+  for unit in \
+    docker.service docker.socket containerd.service \
+    snap.docker.dockerd.service; do
+    unit_state="$(
+      "$SYSTEMCTL_BIN" show "$unit" \
+        -p LoadState -p UnitFileState --no-pager
+    )" || {
+      echo "Unable to inspect container-runtime unit state: $unit" >&2
+      return 1
+    }
+    load_state=""
+    unit_file_state=""
+    load_state_seen=false
+    unit_file_state_seen=false
+    while IFS== read -r key value remainder; do
+      [ -z "${remainder:-}" ] || {
+        echo "Container-runtime unit state is malformed: $unit" >&2
+        return 1
+      }
+      case "$key" in
+        LoadState)
+          [ "$load_state_seen" = false ] || {
+            echo "Container-runtime unit state repeats LoadState: $unit" >&2
+            return 1
+          }
+          load_state="$value"
+          load_state_seen=true
+          ;;
+        UnitFileState)
+          [ "$unit_file_state_seen" = false ] || {
+            echo "Container-runtime unit state repeats UnitFileState: $unit" >&2
+            return 1
+          }
+          unit_file_state="$value"
+          unit_file_state_seen=true
+          ;;
+        *)
+          echo "Container-runtime unit state has an unknown field: $unit" >&2
+          return 1
+          ;;
+      esac
+    done <<<"$unit_state"
+    [ "$load_state_seen" = true ] \
+      && [ "$unit_file_state_seen" = true ] \
+      && [ "$load_state" = not-found ] \
+      && [ -z "$unit_file_state" ] || {
+      echo "Container-runtime systemd unit already exists: $unit" >&2
+      return 1
+    }
+  done
+
+  for proc_dir in "$PROC_ROOT"/[0-9]*; do
+    [ -d "$proc_dir" ] || continue
+    scanned_processes=$((scanned_processes + 1))
+    [ "$scanned_processes" -le "$DOCKER_PROCESS_SCAN_LIMIT" ] || {
+      echo "Container-runtime process scan exceeded its bounded limit" >&2
+      return 1
+    }
+    if ! process_name="$(tr -d '\r\n' <"$proc_dir/comm" 2>/dev/null)"; then
+      [ ! -e "$proc_dir" ] || {
+        echo "Unable to inspect a live process during Docker absence proof" >&2
+        return 1
+      }
+      continue
+    fi
+    case "$process_name" in
+      dockerd|containerd)
+        echo "Container-runtime process is already active: $process_name" >&2
+        return 1
+        ;;
+    esac
+  done
+}
 
 resolve_docker_userns_mapping() {
   local mapping docker_info docker_root namespaced_root root_identity root_mode
@@ -558,6 +823,7 @@ verify_docker_socket_authority() {
       echo "Docker Engine is required for the live runtime boundary" >&2
       return 1
     }
+    verify_docker_not_installed || return 1
     DOCKER_AUTHORITY=not_installed
     return 0
   fi

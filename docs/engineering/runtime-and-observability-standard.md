@@ -263,6 +263,13 @@ Production rollback is **always available**. The default release contract is:
    preflight, and every start re-prove the daemon setting, live userns option,
    subordinate ranges, namespaced storage root, protected-account isolation,
    and exact mapped owners.
+   The one-time pre-Docker maintenance baseline separately proves absence
+   before and after its full sample across the Docker CLI/socket/config,
+   bounded Docker/containerd package records, exact Docker/containerd systemd
+   units, and a bounded `dockerd`/`containerd` process scan. Standalone
+   containerd is not allowed on ServerDominguez during this phase; approving
+   another container runtime requires revisiting host placement rather than
+   weakening this absence proof.
 10. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
    `deploy-staging.sh`, and `promote-to-prod.sh` paths must not be restored or
    invoked. The signed root-owned promotion transaction is the sole path that

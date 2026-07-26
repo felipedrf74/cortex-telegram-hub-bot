@@ -83,6 +83,80 @@ describe('advisory SonarQube operational assets', () => {
     expect(recoveryTargets).toEqual(layoutTargets);
   });
 
+  it('captures a fail-closed pre-Docker baseline without entering the asset transaction', () => {
+    const installer = read('scripts/quality-sonar-systemd-install.sh');
+    const archiveVerifier = installer.indexOf(
+      '# Prove that the reviewed archive came from the declared Git commit',
+    );
+    const preDockerBranch = installer.indexOf(
+      'if [ "$PRE_DOCKER_PREFLIGHT_ONLY" = true ]; then',
+      archiveVerifier,
+    );
+    const fullInstallMutexMaterialization = installer.indexOf(
+      'systemd-tmpfiles --create "$SHARED_MUTEX_CONFIG"',
+    );
+    const interruptedInstallRecovery = installer.indexOf(
+      'control_recovery_required=false',
+    );
+    const dockerMapping = installer.indexOf('userns_map_json="$(');
+    const assetTransaction = installer.indexOf(
+      'python3 "$INSTALL_RECOVERY_PROGRAM" begin \\\n',
+    );
+    const preDockerBlock = installer.slice(
+      preDockerBranch,
+      fullInstallMutexMaterialization,
+    );
+
+    expect(installer).toContain(
+      '[--pre-docker-preflight-only <new-private-output-directory>]',
+    );
+    expect(preDockerBranch).toBeGreaterThan(archiveVerifier);
+    expect(preDockerBranch).toBeLessThan(fullInstallMutexMaterialization);
+    expect(preDockerBranch).toBeLessThan(interruptedInstallRecovery);
+    expect(preDockerBranch).toBeLessThan(dockerMapping);
+    expect(preDockerBranch).toBeLessThan(assetTransaction);
+    expect(preDockerBlock).toContain('exec 9<>"$SHARED_MUTEX"');
+    expect(preDockerBlock).toContain('flock -n 9');
+    expect(preDockerBlock).toContain('--verify-runtime-boundary-only');
+    expect(preDockerBlock).toContain('--allow-docker-absent');
+    expect(preDockerBlock).toContain(
+      '--output "$PRE_DOCKER_PREFLIGHT_OUTPUT"',
+    );
+    const initialAbsenceProbe = preDockerBlock.indexOf(
+      'assert_pre_docker_absent_boundary initial',
+    );
+    const fullEvidenceCapture = preDockerBlock.indexOf(
+      '--output "$PRE_DOCKER_PREFLIGHT_OUTPUT"',
+    );
+    const postCaptureAbsenceProbe = preDockerBlock.indexOf(
+      'assert_pre_docker_absent_boundary post-capture',
+    );
+    expect(initialAbsenceProbe).toBeGreaterThan(-1);
+    expect(initialAbsenceProbe).toBeLessThan(fullEvidenceCapture);
+    expect(postCaptureAbsenceProbe).toBeGreaterThan(fullEvidenceCapture);
+    expect(postCaptureAbsenceProbe).toBeGreaterThan(
+      preDockerBlock.indexOf(
+        'pre-Docker evidence does not prove Docker remained absent',
+      ),
+    );
+    expect(preDockerBlock).toContain(
+      "result?.dockerEngineCaptured !== false",
+    );
+    expect(preDockerBlock).toContain(
+      "authority?.dockerAuthority !== 'not_installed'",
+    );
+    expect(preDockerBlock).toContain(
+      '"preflightOnly":true,"dockerTouched":false,"assetsInstalled":false,"configurationWritten":false',
+    );
+    expect(preDockerBlock).not.toContain('systemd-tmpfiles --create');
+    expect(preDockerBlock).not.toContain('bootstrap-control-root');
+    expect(preDockerBlock).not.toContain('enroll-anchors');
+    expect(preDockerBlock).not.toContain('create-directory');
+    expect(preDockerBlock).not.toMatch(
+      /\b(?:apt|apt-get|docker)\s+(?:install|pull|run|compose|start)\b/,
+    );
+  });
+
   it('behaviorally rejects an installed source asset that drifted from the Git archive', () => {
     const installer = read('scripts/quality-sonar-systemd-install.sh');
     const verifier = installer.match(
@@ -1467,8 +1541,9 @@ describe('advisory SonarQube operational assets', () => {
     expect(preflight).toContain('value.closureDigest');
     expect(preflight).toContain('value.payloadDigest');
     expect(preflight).not.toContain('/home/dominguez/.npm-global/bin/pm2');
+    expect(preflight).toContain('RUNUSER_BIN=/usr/sbin/runuser');
     expect(preflight).toContain(
-      'RUNUSER_BIN="${NEXUS_SONAR_RUNUSER_BIN:-/usr/sbin/runuser}"',
+      'RUNUSER_BIN="${NEXUS_SONAR_RUNUSER_BIN:-$RUNUSER_BIN}"',
     );
     expect(preflight).toContain('CLOUDFLARED_UNIT=nexus-cloudflared.service');
     expect(preflight).toContain('"$RUNUSER_BIN" -u "$PM2_USER" --');

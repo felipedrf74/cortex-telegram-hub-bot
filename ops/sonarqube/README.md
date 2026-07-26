@@ -29,8 +29,10 @@ Safety contract
   installation, and start enumerate Docker containers plus installed and
   loaded systemd service/timer units and reject known updaters. Resolve, review,
   and commit each image digest explicitly.
-- Run scripts/quality-sonar-preflight.sh before installing Docker. It is
-  read-only and stores private network/health evidence below its output path.
+- Run the exact archive-validating asset installer with
+  `--pre-docker-preflight-only` before installing Docker. It executes the
+  reviewed preflight read-only and stores private network/health evidence
+  below its new output path without installing any asset.
 - The live database and Sonar state use explicit host bind mounts below
   `/srv/sonarqube/data`; there are no opaque Docker named volumes. Root owns
   the stack and data boundaries. The writable children are owned by the
@@ -64,8 +66,9 @@ Explicit preparation
    and sole retained `qwen2.5:3b-instruct-q4_K_M` digest. A copied or
    hand-authored aggregate cannot authorize installation.
 3. Prepare the same exact root-owned bootstrap already verified by the release
-   owner. Retain this command, but do not invoke it until Step 4 has installed
-   Docker and proved its user-namespace map:
+   owner. Retain this full asset-install command, but do not invoke it until
+   Step 4 has captured the pre-Docker baseline, installed Docker, and proved
+   its user-namespace map:
 
    ```sh
    sudo /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source/scripts/quality-sonar-systemd-install.sh \
@@ -202,9 +205,42 @@ Explicit preparation
    0700, and SonarQube's mapped children are mode 0750. The Compose file sets
    `create_host_path: false`, and the stack wrapper re-derives and checks the
    same mapping rather than letting Docker create or silently chown a path.
-4. Before Docker installation, capture the maintenance baseline with the
-   installed root-owned command:
-   `sudo /usr/local/sbin/quality-sonar-preflight --output REPLACE_WITH_NEW_PRIVATE_DIRECTORY`.
+4. Before Docker installation, capture the maintenance baseline through the
+   exact archive-validating installer in its preflight-only mode. The output
+   parent must already be canonical, root-owned, and not group/world writable;
+   `/var/lib/nexus-release-promotion` is the reviewed existing parent:
+
+   ```sh
+   sudo /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source/scripts/quality-sonar-systemd-install.sh \
+     /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source \
+     REPLACE_WITH_40_HEX_SHA \
+     /var/lib/nexus-release-bootstrap/REPLACE_WITH_40_HEX_SHA/source.tar.gz \
+     REPLACE_WITH_64_HEX_ARCHIVE_SHA256 \
+     --pre-docker-preflight-only \
+     /var/lib/nexus-release-promotion/sonar-pre-docker-baseline-REPLACE_WITH_UTC_TIMESTAMP
+   ```
+
+   This mode revalidates the exact Git-archive identity and every allowlisted
+   source byte, requires the already provisioned release/Sonar mutex, and holds
+   it for the complete network/capacity sample. It requires Docker to be absent
+   both before collection and in a second fresh probe after `result.json` and
+   all snapshot validation. Absence requires no Docker CLI or socket path, no
+   `/etc/docker/daemon.json`, no record for the bounded Docker/containerd
+   package allowlist, no loaded or enabled `docker.service`, `docker.socket`,
+   or `containerd.service`, and no `dockerd` or `containerd` process in a
+   bounded `/proc` scan. ServerDominguez admits no standalone containerd during
+   this phase: a `containerd` package, unit, or process is treated as container
+   runtime presence because it makes a fresh official-Docker baseline
+   ambiguous. If another approved workload ever requires standalone
+   containerd, stop and revise this host-placement policy rather than adding an
+   exception during rollout. The mode installs no asset, creates no Sonar
+   control/data directory, materializes no lock, resumes no prior Sonar
+   transaction, and changes no Docker or host configuration. The private
+   evidence directory is its only output; `result.json` is the success commit
+   marker and is written last with exclusive-create semantics. A failed
+   directory remains honest incomplete evidence without that marker and must
+   not be reused.
+
    Preflight first invokes the installed root-owned release authority's
    `assert-root-pm2-ready` contract and accepts only the complete PM2 6.0.14
    closure under the pinned `/usr/bin/node` v22.23.1 identity.

@@ -886,6 +886,24 @@ The scanner and release transaction use the same non-waiting host flock, and
 release preflight also consumes only the root helper's project-scoped active
 Compute Engine count. Sonar start itself requires a fresh same-boot 16-GiB
 no-pressure preflight and the exact completed small-model soak/cleanup chain.
+Before Docker exists, capture the owner-reviewed network/capacity maintenance
+baseline only through the exact root-bootstrap asset installer with
+`--pre-docker-preflight-only`. That path revalidates the Git archive and all
+allowlisted source bytes, takes the existing non-waiting release/Sonar mutex,
+requires Docker to remain absent in fresh probes before and after capture, and
+publishes only a new root-private evidence directory whose `result.json` is
+written last. Docker absence is fail-closed across the CLI, socket path,
+daemon configuration, a bounded Docker/containerd package list,
+`docker.service`, `docker.socket`, `containerd.service`, and bounded
+`dockerd`/`containerd` process inspection. Standalone containerd is not
+permitted during the pre-Docker phase because it makes the fresh-host boundary
+ambiguous; a future approved containerd workload requires a reviewed placement
+policy change rather than an operator exception. The preflight-only path does not
+materialize the mutex, resume or start an install, create a Sonar control/data
+directory, or install any asset. This baseline cannot authorize Compose:
+asset installation still requires the unchanged post-Docker userns/runtime
+gate, and stack start still requires a fresh post-Docker preflight with
+`dockerEngineCaptured=true`.
 That chain is not an operator-authored summary: it is the canonical output of
 the root-owned durable ServerDominguez systemd one-shot, which holds the
 release/Sonar mutex and owns one foreground collector independently of the
@@ -2050,6 +2068,12 @@ startup guard, layout controls, and sudoers surface while leaving the running
 PM2 and ingress process identity unchanged. It requires the already-installed
 root-owned PM2 closure, holds the ordinary control and release/Sonar locks,
 then consumes the legacy installer's canonical, receipt-bound retirement plan.
+Before replacing promotion control or enabling its recovery unit, Phase A
+installs and journals the complete boot call graph: the filesystem and staging
+brokers, PM2 capture/dump authorities, boot-health bridge, temporary PM2 unit,
+and promotion-recovery unit. A stale partial control plane therefore cannot
+become a new PM2 boot dependency. Phase B additionally requires its Phase A
+receipt to bind the same protected source SHA and archive digest.
 That plan must bind every legacy-v2 transaction as terminal, all 12 adapter
 targets and their predecessor dispositions, the v2 control and service state,
 and the shared application-DR SQLite helper as a retained dependency. Phase A

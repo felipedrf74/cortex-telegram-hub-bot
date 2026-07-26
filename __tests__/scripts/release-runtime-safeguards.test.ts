@@ -405,6 +405,77 @@ describe('canonical environment parity', () => {
     return { root, bin, staging, production };
   }
 
+  function installStatFixture(bin: string) {
+    executable(join(bin, 'stat'), `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}:\${2:-}" in
+  -c:%a|-f:%Lp) printf '%s\\n' "\${FIXTURE_STAT_MODE:?}" ;;
+  -c:%u|-f:%u) printf '%s\\n' "\${FIXTURE_STAT_UID:?}" ;;
+  -c:%g|-f:%g) printf '%s\\n' "\${FIXTURE_STAT_GID:?}" ;;
+  *) exit 64 ;;
+esac
+`);
+  }
+
+  function installCanonicalSshFixture(bin: string) {
+    executable(join(bin, 'ssh'), `#!/usr/bin/env bash
+set -euo pipefail
+shift
+[ "$#" -eq 6 ] && [ "$1" = bash ] && [ "$2" = -s ] && [ "$3" = -- ]
+exec "$1" "$2" "$3" "\${FIXTURE_STAGING_DIR:?}" "\${FIXTURE_PRODUCTION_DIR:?}" "$6"
+`);
+  }
+
+  function installIdFixture(bin: string) {
+    executable(join(bin, 'id'), `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  -u) printf '%s\\n' "\${FIXTURE_ID_UID:?}" ;;
+  -g) printf '%s\\n' "\${FIXTURE_ID_GID:?}" ;;
+  -un) printf '%s\\n' "\${FIXTURE_ID_NAME:?}" ;;
+  *) exit 64 ;;
+esac
+`);
+  }
+
+  function runParityWithIdentity(
+    fixture: ReturnType<typeof parityFixture>,
+    identity: {
+      mode: string;
+      uid: number;
+      gid: number;
+      canonical?: boolean;
+      workerName?: string;
+      workerUid?: number;
+      workerGid?: number;
+    },
+  ) {
+    installStatFixture(fixture.bin);
+    if (identity.canonical) {
+      installCanonicalSshFixture(fixture.bin);
+      installIdFixture(fixture.bin);
+    }
+    return spawnSync('bash', [
+      ENV_PARITY, '--server', 'fixture',
+      '--staging-dir', identity.canonical ? '/srv/nexus-release/staging' : fixture.staging,
+      '--prod-dir', identity.canonical ? '/srv/nexus-release/production' : fixture.production,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${fixture.bin}:${process.env.PATH}`,
+        FIXTURE_STAT_MODE: identity.mode,
+        FIXTURE_STAT_UID: String(identity.uid),
+        FIXTURE_STAT_GID: String(identity.gid),
+        FIXTURE_ID_NAME: identity.workerName ?? 'dominguez',
+        FIXTURE_ID_UID: String(identity.workerUid ?? process.getuid()),
+        FIXTURE_ID_GID: String(identity.workerGid ?? process.getgid()),
+        FIXTURE_STAGING_DIR: fixture.staging,
+        FIXTURE_PRODUCTION_DIR: fixture.production,
+      },
+    });
+  }
+
   it('compares configuration shape without comparing or exposing secret values', () => {
     const fixture = parityFixture();
     const output = execFileSync('bash', [
@@ -415,9 +486,70 @@ describe('canonical environment parity', () => {
     expect(output).not.toContain('prod');
   });
 
+  it('accepts canonical staging and production environments sealed root:worker 0440', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '440', uid: 0, gid: process.getgid(), canonical: true,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('env_parity_ok');
+  });
+
+  it('retains compatibility with worker-owned private 0400 environments', () => {
+    const fixture = parityFixture();
+    chmodSync(join(fixture.staging, '.env'), 0o400);
+    chmodSync(join(fixture.production, '.env'), 0o400);
+    const output = execFileSync('bash', [
+      ENV_PARITY, '--server', 'fixture', '--staging-dir', fixture.staging, '--prod-dir', fixture.production,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}` } });
+    expect(output).toContain('env_parity_ok');
+  });
+
+  it('rejects canonical mode when the environment group is not the SSH worker group', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '440', uid: 0, gid: process.getgid() + 1, canonical: true,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_group');
+  });
+
+  it('rejects root or another SSH identity even when canonical metadata matches it', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '440',
+      uid: 0,
+      gid: 0,
+      canonical: true,
+      workerName: 'root',
+      workerUid: 0,
+      workerGid: 0,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_worker');
+  });
+
+  it('does not permit the legacy worker-private identity on canonical /srv paths', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '600', uid: process.getuid(), gid: process.getgid(), canonical: true,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_mode');
+  });
+
+  it('rejects a worker-owned legacy environment assigned to a foreign group', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '600', uid: process.getuid(), gid: process.getgid() + 1,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_group');
+  });
+
   it('fails on unsafe env permissions and missing production backup keys', () => {
     const fixture = parityFixture();
-    chmodSync(join(fixture.production, '.env'), 0o644);
+    chmodSync(join(fixture.production, '.env'), 0o620);
     const unsafe = spawnSync('bash', [
       ENV_PARITY, '--server', 'fixture', '--staging-dir', fixture.staging, '--prod-dir', fixture.production,
     ], { encoding: 'utf8', env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}` } });
