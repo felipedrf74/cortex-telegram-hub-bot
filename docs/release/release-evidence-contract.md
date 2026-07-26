@@ -167,6 +167,49 @@ sufficient. The outer record is never promotion evidence, and a completed
 three-outcome KVM drill must still produce the existing signed
 `nexus.rollback-drill.v1` freshness evidence.
 
+The reviewed layout-freshness adapter is the only normalization from that
+three-outcome evidence into the unchanged ordinary rollback request. It
+accepts the exact owner-signed
+`nexus.release-layout-fault-drill-envelope.v1`, the root-pinned trust manifest
+and provision receipt, and production-signed release manifests matching the
+plan's production and staging SHA/artifact identities. It independently
+verifies the owner signature against the installed protected server key,
+every nested hypervisor and guest signature, descriptor-pinned root
+trust/provision digests, pairwise key separation, the 120-second recovery
+bound, and a completion no more than 30 days old. Release-manifest expiry
+does not make an old manifest promotable again; the adapter uses that
+historical signature only to bind the package version to the already signed
+runtime SHA and artifact digest.
+
+Guest execution evidence v2 signs one bounded canonical pre-fault synthetic
+target-backup artifact containing the exact `release.json`, `health`, and real
+isolated SQLite bytes used by guest recovery. The execution repeats the raw
+artifact base64, byte count, and SHA-256. All three scenarios must carry
+byte-identical artifacts and must prove exact release and database restoration
+from those bytes. The adapter publishes those exact bytes without rewrapping;
+their raw SHA-256 becomes `targetBackupSha256`. It separately derives
+`nexus.rollback-drill-layout-recovery-set.v1` as cross-bound machine evidence,
+whose canonical containing-record SHA-256 becomes `machineEvidenceSha256`.
+
+For this isolated synthetic drill, `targetBackup` names the governed synthetic
+target-release and SQLite archive, not a production-data backup.
+`backupContainsDatabase: true` is emitted only after all three signed
+executions agree on the archive and prove exact before/after recovery. The
+adapter publishes the archive first, machine evidence second, and the exact
+ordinary `nexus.rollback-drill-payload.v1` request last. All are owner-only,
+no-overwrite outputs. Interrupted publication may resume only from an exact
+contiguous prefix. The adapter has no caller-key/test-mode bypass, no protected
+signing key, and creates no staging or promotion authority; the existing
+protected rollback signer must still validate and sign that request.
+
+The deep verifier continues to read legacy guest execution v1 for historical
+layout-activation evidence, but the freshness adapter rejects it because it
+lacks signed target-backup bytes. Before guest producer v2 or journal v3 is
+installed, active v1 transactions must finish or be explicitly retired.
+Producer/verifier digests, the runtime bundle, trust/provision evidence, owner
+plan, and all three scenario results must be regenerated. A legacy signed
+envelope cannot be normalized into freshness evidence.
+
 Release-layout activation has a separate, stricter evidence boundary. Its three
 required results must bind a fresh plan nonce to independently signed
 hypervisor isolation facts, guest boot identity, exact layout-control

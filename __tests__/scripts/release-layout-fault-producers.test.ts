@@ -414,6 +414,7 @@ describe('trusted release-layout fault producers', () => {
       mode: 0o600,
     });
 
+    const targetBackups: Buffer[] = [];
     for (const scenario of scenarios) {
       fixtureProcessRoots.add(path.join(
         stateRoot,
@@ -468,6 +469,7 @@ describe('trusted release-layout fault producers', () => {
         'journal.v1.json',
       ), 'utf8'));
       expect(journal).toMatchObject({
+        schema: 'nexus.release-layout-fault-guest-journal.v3',
         status: 'recovered',
         testMode: true,
         observations: {
@@ -484,6 +486,28 @@ describe('trusted release-layout fault producers', () => {
       expect(journal.observations.databaseAfterSha256).toBe(
         journal.observations.databaseBeforeSha256,
       );
+      const targetBackup = fs.readFileSync(journal.fixture.targetBackup);
+      const target = JSON.parse(targetBackup.toString('utf8'));
+      const releaseBytes = Buffer.from(target.release.contentBase64, 'base64');
+      const databaseBytes = Buffer.from(
+        target.database.contentBase64,
+        'base64',
+      );
+      expect(sha256(targetBackup)).toBe(
+        journal.observations.targetBackupSha256,
+      );
+      expect(sha256(releaseBytes)).toBe(
+        journal.observations.predecessorSha256,
+      );
+      expect(sha256(databaseBytes)).toBe(
+        journal.observations.databaseBeforeSha256,
+      );
+      expect(fs.readFileSync(path.join(
+        journal.fixture.predecessor,
+        'release.json',
+      ))).toEqual(releaseBytes);
+      expect(fs.readFileSync(journal.fixture.database)).toEqual(databaseBytes);
+      targetBackups.push(targetBackup);
       expect(fs.realpathSync(journal.fixture.current)).toBe(
         fs.realpathSync(journal.fixture.predecessor),
       );
@@ -504,6 +528,10 @@ describe('trusted release-layout fault producers', () => {
       const cleaned = run('cleanup', plan.planId, scenario);
       expect(cleaned.status, cleaned.stderr).toBe(0);
     }
+    expect(targetBackups).toHaveLength(3);
+    expect(targetBackups.every(
+      (backup) => backup.equals(targetBackups[0]),
+    )).toBe(true);
   }, 30_000);
 
   it('has no manual result-recording surface and binds the root controller unit', () => {
@@ -783,6 +811,7 @@ describe('trusted release-layout fault producers', () => {
     ['after_fixture_release_write', 'ssh_disconnect_after_pm2_stop'],
     ['after_fixture_database_create', 'ssh_disconnect_after_pm2_stop'],
     ['after_fixture_backup_write', 'ssh_disconnect_after_pm2_stop'],
+    ['after_target_backup_write', 'ssh_disconnect_after_pm2_stop'],
     ['after_fixture_initialized', 'ssh_disconnect_after_pm2_stop'],
     ['after_predecessor_spawn_journal_before_pid', 'ssh_disconnect_after_pm2_stop'],
     ['after_predecessor_pid_write', 'ssh_disconnect_after_pm2_stop'],
@@ -833,7 +862,7 @@ describe('trusted release-layout fault producers', () => {
         'journal.v1.json',
       ), 'utf8'));
       expect(journal).toMatchObject({
-        schema: 'nexus.release-layout-fault-guest-journal.v2',
+        schema: 'nexus.release-layout-fault-guest-journal.v3',
         status: 'recovered',
         phase: 'recovered',
         observations: {

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const VERSION = 'nexus-release-layout-fault-guest.v1';
+const VERSION = 'nexus-release-layout-fault-guest.v2';
 const TEST_MODE = process.env.NODE_ENV === 'test'
   && process.env.NEXUS_RELEASE_FAULT_GUEST_TEST_MODE === '1';
 const STATE_ROOT = TEST_MODE
@@ -55,6 +55,11 @@ const SCENARIO_GUESTS = Object.freeze({
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const BOOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const DIGEST = /^[0-9a-f]{64}$/u;
+const MAX_DATABASE_BACKUP_BYTES = 32 * 1024;
+const MAX_TARGET_BACKUP_BYTES = 64 * 1024;
+const MAX_EXECUTION_EVIDENCE_BYTES = 128 * 1024;
+const TARGET_BACKUP_SCHEMA =
+  'nexus.release-layout-guest-target-backup.v1';
 const MUTATION_LOCK = STATE_ROOT
   ? path.join(STATE_ROOT, 'mutation.lock')
   : '';
@@ -100,6 +105,149 @@ function safeFile(file, label, {
     fail(`${label} identity is unsafe`);
   }
   return resolved;
+}
+
+function readStableBytes(file, label, {
+  maximum,
+  mode,
+  rootOwned = false,
+}) {
+  const resolved = path.resolve(file);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(
+      resolved,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+  } catch {
+    fail(`${label} is unavailable or unsafe`);
+  }
+  try {
+    const before = fs.fstatSync(descriptor);
+    const named = fs.lstatSync(resolved);
+    if (!before.isFile() || named.isSymbolicLink() || before.nlink !== 1
+        || before.dev !== named.dev || before.ino !== named.ino
+        || before.size < 1 || before.size > maximum
+        || (mode !== undefined && (before.mode & 0o7777) !== mode)
+        || (!TEST_MODE && rootOwned
+          && (before.uid !== 0 || before.gid !== 0))) {
+      fail(`${label} identity is unsafe`);
+    }
+    const body = fs.readFileSync(descriptor);
+    const after = fs.fstatSync(descriptor);
+    if (before.dev !== after.dev || before.ino !== after.ino
+        || before.size !== after.size || before.mtimeMs !== after.mtimeMs
+        || before.ctimeMs !== after.ctimeMs || body.length !== after.size) {
+      fail(`${label} changed while it was read`);
+    }
+    return body;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function validateSqliteBackup(body) {
+  const header = Buffer.from('SQLite format 3\0', 'binary');
+  if (!Buffer.isBuffer(body) || body.length < 512
+      || !body.subarray(0, header.length).equals(header)) {
+    fail('recovered database backup is not SQLite');
+  }
+  const encodedPageSize = body.readUInt16BE(16);
+  const pageSize = encodedPageSize === 1 ? 65_536 : encodedPageSize;
+  const pageCount = body.readUInt32BE(28);
+  if (pageSize < 512 || pageSize > 65_536
+      || (pageSize & (pageSize - 1)) !== 0
+      || pageCount < 1 || pageCount * pageSize !== body.length) {
+    fail('recovered database backup SQLite layout is invalid');
+  }
+}
+
+function canonicalBase64(value, label, maximum) {
+  if (typeof value !== 'string' || value.length < 4
+      || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value)) {
+    fail(`${label} is not canonical base64`);
+  }
+  const body = Buffer.from(value, 'base64');
+  if (body.length < 1 || body.length > maximum
+      || body.toString('base64') !== value) {
+    fail(`${label} size or encoding is invalid`);
+  }
+  return body;
+}
+
+function targetBackupEntry(pathname, body) {
+  return {
+    path: pathname,
+    bytes: body.length,
+    sha256: sha256(body),
+    contentEncoding: 'base64',
+    contentBase64: body.toString('base64'),
+  };
+}
+
+function parseTargetBackup(body, plan) {
+  if (body.length < 2 || body.length > MAX_TARGET_BACKUP_BYTES) {
+    fail('target backup size is invalid');
+  }
+  let backup;
+  try {
+    backup = JSON.parse(body.toString('utf8'));
+  } catch {
+    fail('target backup is not JSON');
+  }
+  exactKeys(
+    backup,
+    ['database', 'health', 'release', 'schema', 'sourceSha256'],
+    'target backup',
+  );
+  if (backup.schema !== TARGET_BACKUP_SCHEMA
+      || backup.sourceSha256 !== sourceDigest(plan)) {
+    fail('target backup identity is invalid');
+  }
+  const entries = [
+    ['release', backup.release, 'release.json', 128 * 1024],
+    ['health', backup.health, 'health', 1024],
+    [
+      'database',
+      backup.database,
+      'database.sqlite',
+      MAX_DATABASE_BACKUP_BYTES,
+    ],
+  ];
+  const decoded = {};
+  for (const [label, entry, expectedPath, maximum] of entries) {
+    exactKeys(
+      entry,
+      ['bytes', 'contentBase64', 'contentEncoding', 'path', 'sha256'],
+      `target backup ${label}`,
+    );
+    const entryBody = canonicalBase64(
+      entry.contentBase64,
+      `target backup ${label}`,
+      maximum,
+    );
+    if (entry.path !== expectedPath || entry.contentEncoding !== 'base64'
+        || entry.bytes !== entryBody.length
+        || !DIGEST.test(entry.sha256 ?? '')
+        || sha256(entryBody) !== entry.sha256) {
+      fail(`target backup ${label} identity is invalid`);
+    }
+    decoded[label] = entryBody;
+  }
+  const expectedRelease = Buffer.from(`${canonicalJson(plan.source)}\n`);
+  if (!decoded.release.equals(expectedRelease)
+      || !decoded.health.equals(Buffer.from('ok\n'))) {
+    fail('target backup restored release identity is invalid');
+  }
+  validateSqliteBackup(decoded.database);
+  if (sha256(decoded.database) !== backup.database.sha256) {
+    fail('target backup database identity is invalid');
+  }
+  const canonical = Buffer.from(canonicalJson(backup), 'utf8');
+  if (!body.equals(canonical)) {
+    fail('target backup bytes are not canonical');
+  }
+  return { backup, decoded };
 }
 
 function readJson(file, label, maximum) {
@@ -252,10 +400,6 @@ function durableAppend(file, bytes) {
     fs.closeSync(descriptor);
   }
   fsyncDirectory(path.dirname(file));
-}
-
-function durableCopy(source, destination) {
-  durableWrite(destination, fs.readFileSync(source));
 }
 
 function nowMilliseconds() {
@@ -604,6 +748,7 @@ function fixtureIntent(plan, scenarioId) {
   const current = path.join(fixture, 'current');
   const database = path.join(fixture, 'database.sqlite');
   const databaseBackup = path.join(fixture, 'database.pre-fault.sqlite');
+  const targetBackup = path.join(fixture, 'target-backup.v1.json');
   return {
     root,
     fixture,
@@ -612,6 +757,7 @@ function fixtureIntent(plan, scenarioId) {
     current,
     database,
     databaseBackup,
+    targetBackup,
     predecessorSha256: sha256(Buffer.from(`${canonicalJson(plan.source)}\n`)),
   };
 }
@@ -642,6 +788,43 @@ function removeFixtureRegularFile(file, label) {
   durableRemove(file);
 }
 
+function createTargetBackup(plan, fixture) {
+  const release = readStableBytes(
+    path.join(fixture.predecessor, 'release.json'),
+    'predecessor release identity',
+    { maximum: 128 * 1024, mode: 0o600, rootOwned: true },
+  );
+  const healthBody = readStableBytes(
+    path.join(fixture.predecessor, 'health'),
+    'predecessor health identity',
+    { maximum: 1024, mode: 0o600, rootOwned: true },
+  );
+  const database = readStableBytes(
+    fixture.databaseBackup,
+    'database backup',
+    {
+      maximum: MAX_DATABASE_BACKUP_BYTES,
+      mode: 0o600,
+      rootOwned: true,
+    },
+  );
+  validateSqliteBackup(database);
+  const backup = {
+    schema: TARGET_BACKUP_SCHEMA,
+    sourceSha256: sourceDigest(plan),
+    release: targetBackupEntry('release.json', release),
+    health: targetBackupEntry('health', healthBody),
+    database: targetBackupEntry('database.sqlite', database),
+  };
+  const body = Buffer.from(canonicalJson(backup), 'utf8');
+  if (body.length > MAX_TARGET_BACKUP_BYTES) {
+    fail('target backup exceeds its signed size bound');
+  }
+  parseTargetBackup(body, plan);
+  durableWrite(fixture.targetBackup, body);
+  return { body, sha256: sha256(body) };
+}
+
 function initializeFixture(plan, scenarioId, fixture = fixtureIntent(
   plan,
   scenarioId,
@@ -653,6 +836,7 @@ function initializeFixture(plan, scenarioId, fixture = fixtureIntent(
   stopFixtureService(fixture.fixture);
   removeFixtureRegularFile(fixture.database, 'fixture database');
   removeFixtureRegularFile(fixture.databaseBackup, 'fixture database backup');
+  removeFixtureRegularFile(fixture.targetBackup, 'fixture target backup');
   durableWrite(
     path.join(fixture.predecessor, 'release.json'),
     Buffer.from(`${canonicalJson(plan.source)}\n`),
@@ -694,11 +878,14 @@ function initializeFixture(plan, scenarioId, fixture = fixtureIntent(
   maybeCrash('after_fixture_database_create');
   durableWrite(fixture.databaseBackup, fs.readFileSync(fixture.database));
   maybeCrash('after_fixture_backup_write');
+  const targetBackup = createTargetBackup(plan, fixture);
+  maybeCrash('after_target_backup_write');
   return {
     ...fixture,
     predecessorSha256:
       fileSha256(path.join(fixture.predecessor, 'release.json')),
     databaseBeforeSha256: fileSha256(fixture.database),
+    targetBackupSha256: targetBackup.sha256,
   };
 }
 
@@ -729,7 +916,7 @@ function armFault(plan, scenarioId) {
   const startedMonotonicMilliseconds = monotonicMilliseconds();
   const authenticatedAt = new Date(nowMilliseconds()).toISOString();
   let journal = {
-    schema: 'nexus.release-layout-fault-guest-journal.v2',
+    schema: 'nexus.release-layout-fault-guest-journal.v3',
     status: 'prepared',
     phase: 'fixture_initialization_intent',
     authentication: {
@@ -751,6 +938,7 @@ function armFault(plan, scenarioId) {
       current: fixture.current,
       database: fixture.database,
       databaseBackup: fixture.databaseBackup,
+      targetBackup: fixture.targetBackup,
     },
     observations: {
       bootIdBefore,
@@ -761,6 +949,7 @@ function armFault(plan, scenarioId) {
       restoredSha256: null,
       databaseBeforeSha256: null,
       databaseAfterSha256: null,
+      targetBackupSha256: null,
       fixtureProcessPid: null,
       candidateHealthFailureObserved: false,
       processStoppedObserved: false,
@@ -789,6 +978,7 @@ function armFault(plan, scenarioId) {
     observations: {
       predecessorSha256: initializedFixture.predecessorSha256,
       databaseBeforeSha256: initializedFixture.databaseBeforeSha256,
+      targetBackupSha256: initializedFixture.targetBackupSha256,
     },
   });
   maybeCrash('after_fixture_initialized');
@@ -916,6 +1106,7 @@ function validateJournal(journal, plan, scenarioId) {
     'databaseBackup',
     'predecessor',
     'root',
+    'targetBackup',
   ], 'guest journal fixture');
   exactKeys(journal.observations, [
     'bootIdAfter',
@@ -931,6 +1122,7 @@ function validateJournal(journal, plan, scenarioId) {
     'processStoppedObserved',
     'restoredSha256',
     'startMonotonicMilliseconds',
+    'targetBackupSha256',
   ], 'guest journal observations');
   const authenticatedAt = Date.parse(journal.authentication.authenticatedAt ?? '');
   const planCreatedAt = Date.parse(plan.createdAt ?? '');
@@ -969,7 +1161,7 @@ function validateJournal(journal, plan, scenarioId) {
     'starting_recovered_predecessor',
     'recovered',
   ];
-  if (journal.schema !== 'nexus.release-layout-fault-guest-journal.v2'
+  if (journal.schema !== 'nexus.release-layout-fault-guest-journal.v3'
       || journal.planId !== plan.planId || journal.planSha256 !== planDigest(plan)
       || journal.migrationId !== plan.migrationId
       || journal.scenarioId !== scenarioId
@@ -995,6 +1187,7 @@ function validateJournal(journal, plan, scenarioId) {
     current: expectedFixture.current,
     database: expectedFixture.database,
     databaseBackup: expectedFixture.databaseBackup,
+    targetBackup: expectedFixture.targetBackup,
   })) {
     fail('guest journal fixture identity is invalid');
   }
@@ -1049,6 +1242,8 @@ function validateJournal(journal, plan, scenarioId) {
         && !DIGEST.test(journal.observations.restoredSha256 ?? ''))
       || (journal.observations.databaseAfterSha256 !== null
         && !DIGEST.test(journal.observations.databaseAfterSha256 ?? ''))
+      || (journal.observations.targetBackupSha256 !== null
+        && !DIGEST.test(journal.observations.targetBackupSha256 ?? ''))
       || (journal.observations.fixtureProcessPid !== null
         && (!Number.isSafeInteger(journal.observations.fixtureProcessPid)
           || journal.observations.fixtureProcessPid <= 1))
@@ -1076,7 +1271,8 @@ function validateJournal(journal, plan, scenarioId) {
     'stopping_for_recovery',
     'reinitializing_fixture',
   ].includes(journal.phase);
-  if ((journal.observations.databaseBeforeSha256 === null)
+  if ((journal.observations.databaseBeforeSha256 === null
+        || journal.observations.targetBackupSha256 === null)
         !== initializationMayBeIncomplete
       && journal.phase !== 'stopping_for_recovery') {
     fail('guest journal fixture checkpoint is invalid');
@@ -1137,10 +1333,25 @@ function recover(planId, scenarioId) {
       observations: {
         predecessorSha256: initialized.predecessorSha256,
         databaseBeforeSha256: initialized.databaseBeforeSha256,
+        targetBackupSha256: initialized.targetBackupSha256,
       },
     });
   }
 
+  const targetBackupBody = readStableBytes(
+    fixture.targetBackup,
+    'target backup',
+    {
+      maximum: MAX_TARGET_BACKUP_BYTES,
+      mode: 0o600,
+      rootOwned: true,
+    },
+  );
+  if (sha256(targetBackupBody)
+      !== journal.observations.targetBackupSha256) {
+    fail('target backup differs from the recovery journal');
+  }
+  const targetBackup = parseTargetBackup(targetBackupBody, plan);
   journal = checkpointJournal(file, journal, {
     status: 'recovering',
     phase: 'restoring_selector',
@@ -1157,6 +1368,14 @@ function recover(planId, scenarioId) {
       fail('release selector points outside the recovery fixture');
     }
   }
+  durableWrite(
+    path.join(fixture.predecessor, 'release.json'),
+    targetBackup.decoded.release,
+  );
+  durableWrite(
+    path.join(fixture.predecessor, 'health'),
+    targetBackup.decoded.health,
+  );
   durableSymlink(fixture.predecessor, fixture.current);
   maybeCrash('after_recovery_selector_restore');
   journal = checkpointJournal(file, journal, {
@@ -1168,7 +1387,7 @@ function recover(planId, scenarioId) {
     status: 'recovering',
     phase: 'restoring_database',
   });
-  durableCopy(fixture.databaseBackup, fixture.database);
+  durableWrite(fixture.database, targetBackup.decoded.database);
   maybeCrash('after_recovery_database_restore');
   journal = checkpointJournal(file, journal, {
     status: 'recovering',
@@ -1319,12 +1538,37 @@ function seal(planId, scenarioId, observerFile) {
       { maximum: 1024, mode: 0o600, rootOwned: true },
     ));
     const existing = JSON.parse(body.toString('utf8'));
-    if (signature.length !== 64
+    const existingTargetBackup = canonicalBase64(
+      existing.faultObservation?.targetBackupBase64,
+      'existing sealed target backup',
+      MAX_TARGET_BACKUP_BYTES,
+    );
+    if (body.length > MAX_EXECUTION_EVIDENCE_BYTES
+        || signature.length !== 64
         || !cryptoVerify(null, body, createPublicKey(privateKey), signature)
         || existing.planId !== planId || existing.scenarioId !== scenarioId
         || existing.planSha256 !== planDigest(plan)
+        || existing.schema
+          !== 'nexus.release-layout-guest-execution-evidence.v2'
+        || existing.controlVersion !== VERSION
+        || existing.faultObservation?.targetBackupBytes
+          !== existingTargetBackup.length
+        || sha256(existingTargetBackup)
+          !== existing.faultObservation?.targetBackupSha256
+        || existing.faultObservation?.targetBackupSha256
+          !== journal.observations.targetBackupSha256
         || existing.terminalStatus !== 'recovered') {
       fail('existing sealed guest evidence is invalid');
+    }
+    const parsedExistingTargetBackup = parseTargetBackup(
+      existingTargetBackup,
+      plan,
+    );
+    if (parsedExistingTargetBackup.backup.release.sha256
+          !== existing.faultObservation.predecessorSha256
+        || parsedExistingTargetBackup.backup.database.sha256
+          !== existing.faultObservation.databaseBeforeSha256) {
+      fail('existing sealed target backup recovery identity is invalid');
     }
     process.stdout.write(`${JSON.stringify({
       ok: true,
@@ -1345,8 +1589,26 @@ function seal(planId, scenarioId, observerFile) {
   if ((scenarioId === 'host_reboot_during_migration') !== rebooted) {
     fail('guest boot boundary differs from the requested fault');
   }
+  const targetBackup = readStableBytes(
+    journal.fixture.targetBackup,
+    'recovered target backup',
+    {
+      maximum: MAX_TARGET_BACKUP_BYTES,
+      mode: 0o600,
+      rootOwned: true,
+    },
+  );
+  const targetBackupSha256 = sha256(targetBackup);
+  const parsedTargetBackup = parseTargetBackup(targetBackup, plan);
+  if (targetBackupSha256 !== journal.observations.targetBackupSha256
+      || parsedTargetBackup.backup.release.sha256
+        !== journal.observations.predecessorSha256
+      || parsedTargetBackup.backup.database.sha256
+        !== journal.observations.databaseBeforeSha256) {
+    fail('recovered target backup differs from the verified release');
+  }
   const execution = {
-    schema: 'nexus.release-layout-guest-execution-evidence.v1',
+    schema: 'nexus.release-layout-guest-execution-evidence.v2',
     planId: plan.planId,
     planSha256: planDigest(plan),
     challengeNonce: plan.challengeNonce,
@@ -1375,6 +1637,9 @@ function seal(planId, scenarioId, observerFile) {
       restoredSha256: journal.observations.restoredSha256,
       databaseBeforeSha256: journal.observations.databaseBeforeSha256,
       databaseAfterSha256: journal.observations.databaseAfterSha256,
+      targetBackupSha256,
+      targetBackupBytes: targetBackup.length,
+      targetBackupBase64: targetBackup.toString('base64'),
       candidateHealthFailureObserved:
         journal.observations.candidateHealthFailureObserved,
       processStoppedObserved: journal.observations.processStoppedObserved,
@@ -1383,6 +1648,9 @@ function seal(planId, scenarioId, observerFile) {
     completedAt: journal.completedAt,
   };
   const body = Buffer.from(`${JSON.stringify(execution, null, 2)}\n`);
+  if (body.length > MAX_EXECUTION_EVIDENCE_BYTES) {
+    fail('guest execution evidence exceeds its verifier size bound');
+  }
   const signature = cryptoSign(null, body, privateKey);
   if (signature.length !== 64) fail('guest evidence signature length is invalid');
   durableWrite(executionFile, body);
