@@ -68,6 +68,16 @@ function fixture() {
   );
   writeFileSync(runuserCount, '0\n');
   writeFileSync(dockerRows, '');
+  writeFileSync(
+    daemonConfig,
+    `${JSON.stringify({
+      features: { 'containerd-snapshotter': false },
+      'userns-remap': 'default',
+    })}\n`,
+  );
+  // Preserve the established Docker-present fixture setup while making the
+  // default boundary represent the new pre-Docker host state.
+  rmSync(daemonConfig);
   writeFileSync(subuid, 'dockremap:231072:65536\nother:400000:65536\n');
   writeFileSync(subgid, 'dockremap:296608:65536\nother:500000:65536\n');
 
@@ -773,17 +783,12 @@ describe('Sonar live runtime boundary', () => {
       'bash "$SOURCE_ROOT/scripts/quality-sonar-preflight.sh"',
       fullInstallGateComment,
     );
-    const bootstrapControlRoot = installer.indexOf(
-      'python3 "${sources[$recovery_program_index]}" bootstrap-control-root',
-      installGate,
-    );
     expect(fullInstallGateComment).toBeGreaterThan(0);
     expect(installGate).toBeGreaterThan(0);
-    expect(installer.slice(installGate, bootstrapControlRoot)).toContain(
+    expect(installer.slice(installGate)).toContain(
       '--verify-runtime-boundary-only',
     );
-    expect(installer.slice(installGate, bootstrapControlRoot))
-      .not.toContain('--allow-docker-absent');
+    expect(installer.slice(installGate)).not.toContain('--allow-docker-absent');
     expect(installer).toContain('--print-userns-map');
     expect(installer).toContain(
       'value?.postgres?.hostUid !== value.subuidBase + 999',
