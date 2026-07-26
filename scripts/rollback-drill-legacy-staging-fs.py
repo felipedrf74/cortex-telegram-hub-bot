@@ -1343,8 +1343,12 @@ def assert_no_database_handles(
         target = f"/proc/{os.getpid()}/fd/{descriptor}"
         if not test_mode and not os.path.exists(target):
             fail("descriptor-bound process handle inspection requires procfs")
+        # psmisc fuser does not accept `--` as an option terminator (23.7 on
+        # Ubuntu 24.04 treats it as a missing process specification).  The
+        # descriptor target is an internally constructed absolute /proc path,
+        # so it cannot be parsed as an option and needs no terminator.
         process = subprocess.Popen(
-            [fuser, "--", target],
+            [fuser, target],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

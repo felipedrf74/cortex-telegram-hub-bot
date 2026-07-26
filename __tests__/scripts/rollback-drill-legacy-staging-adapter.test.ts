@@ -72,9 +72,43 @@ function makeTreeWritable(root: string) {
   }
 }
 
+function fixtureParent(
+  platform: NodeJS.Platform = process.platform,
+  linuxHome = os.homedir(),
+) {
+  if (platform !== 'linux') return os.tmpdir();
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (typeof uid !== 'number' || typeof gid !== 'number'
+      || !Number.isInteger(uid) || !Number.isInteger(gid)) {
+    throw new Error('Linux fixture ownership is unavailable');
+  }
+  const home = fs.realpathSync(linuxHome);
+  const filesystemRoot = path.parse(home).root;
+  if (!path.isAbsolute(home) || home === filesystemRoot) {
+    throw new Error('Linux fixture home is unsafe');
+  }
+  let current = filesystemRoot;
+  for (const component of path.relative(filesystemRoot, home).split(path.sep)) {
+    current = path.join(current, component);
+    const observed = fs.lstatSync(current);
+    if (observed.isSymbolicLink()
+        || !observed.isDirectory()
+        || ![0, uid].includes(observed.uid)
+        || (observed.mode & 0o022) !== 0) {
+      throw new Error('Linux fixture home ancestry is unsafe');
+    }
+  }
+  const observed = fs.lstatSync(home);
+  if (observed.uid !== uid || observed.gid !== gid) {
+    throw new Error('Linux fixture home is not runner-owned');
+  }
+  return home;
+}
+
 function fixture() {
   const root = fs.realpathSync(
-    fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-legacy-drill-adapter-')),
+    fs.mkdtempSync(path.join(fixtureParent(), 'nexus-legacy-drill-adapter-')),
   );
   fs.chmodSync(root, 0o700);
   roots.push(root);
@@ -96,7 +130,7 @@ function fixture() {
   fs.chmodSync(sqliteHelper, 0o644);
   fs.writeFileSync(
     fuser,
-    '#!/bin/sh\nprintf "%s\\n" "$PPID"\nexit 0\n',
+    '#!/bin/sh\n[ "$1" != "--" ] || exit 2\nprintf "%s\\n" "$PPID"\nexit 0\n',
     { mode: 0o755 },
   );
   const database = path.join(data, 'bot.db');
@@ -1045,6 +1079,20 @@ describe('legacy staging drill adapter', () => {
 });
 
 describe('root broker and installer contracts', () => {
+  it('requires safe runner-owned ancestry for Linux fixture roots', () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-linux-fixture-parent-')),
+    );
+    fs.chmodSync(root, 0o700);
+    roots.push(root);
+    const home = path.join(root, 'runner-home');
+    fs.mkdirSync(home, { mode: 0o700 });
+    expect(fixtureParent('linux', home)).toBe(home);
+    fs.chmodSync(home, 0o777);
+    expect(() => fixtureParent('linux', home))
+      .toThrow('Linux fixture home ancestry is unsafe');
+  });
+
   it('does not publish a selector when the bound release pathname is swapped', async () => {
     const state = fixture();
     const releases = path.join(state.base, 'releases');

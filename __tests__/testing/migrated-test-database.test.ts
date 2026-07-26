@@ -382,44 +382,48 @@ describe('migrated test database templates', () => {
     }
   });
 
-  it('lets the tier runner override ambient template values and clean up after test failure', () => {
-    if (process.env.NEXUS_MIGRATED_TEMPLATE_RUNNER_FAILURE_PROBE === '1') {
-      throw new Error('intentional migrated-template runner failure probe');
-    }
+  it(
+    'lets the tier runner override ambient template values and clean up after test failure',
+    { timeout: 35_000 },
+    () => {
+      if (process.env.NEXUS_MIGRATED_TEMPLATE_RUNNER_FAILURE_PROBE === '1') {
+        throw new Error('intentional migrated-template runner failure probe');
+      }
 
-    const probeTemporaryDirectory = fs.mkdtempSync(path.join(fixtureRoot, 'runner-probe-'));
-    fs.chmodSync(probeTemporaryDirectory, 0o700);
-    const child = spawnSync(
-      process.execPath,
-      [
-        'scripts/run-test-tier.mjs',
-        'deterministic',
-        '__tests__/testing/migrated-test-database.test.ts',
-      ],
-      {
-        cwd: path.resolve(__dirname, '../..'),
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          TMPDIR: `${probeTemporaryDirectory}${path.sep}`,
-          NEXUS_MIGRATED_TEMPLATE_RUNNER_FAILURE_PROBE: '1',
-          NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_PATH: '/ambient/template.sqlite',
-          NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_RECEIPT_PATH: '/ambient/template-receipt.json',
-          NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_SHA256: '0'.repeat(64),
-          NEXUS_MIGRATED_TEST_DATABASE_MIGRATION_SHA256: '1'.repeat(64),
+      const probeTemporaryDirectory = fs.mkdtempSync(path.join(fixtureRoot, 'runner-probe-'));
+      fs.chmodSync(probeTemporaryDirectory, 0o700);
+      const child = spawnSync(
+        process.execPath,
+        [
+          'scripts/run-test-tier.mjs',
+          'deterministic',
+          '__tests__/testing/migrated-test-database.test.ts',
+        ],
+        {
+          cwd: path.resolve(__dirname, '../..'),
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            TMPDIR: `${probeTemporaryDirectory}${path.sep}`,
+            NEXUS_MIGRATED_TEMPLATE_RUNNER_FAILURE_PROBE: '1',
+            NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_PATH: '/ambient/template.sqlite',
+            NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_RECEIPT_PATH: '/ambient/template-receipt.json',
+            NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_SHA256: '0'.repeat(64),
+            NEXUS_MIGRATED_TEST_DATABASE_MIGRATION_SHA256: '1'.repeat(64),
+          },
+          timeout: 30_000,
         },
-        timeout: 30_000,
-      },
-    );
+      );
 
-    expect(child.error).toBeUndefined();
-    expect(child.status).not.toBe(0);
-    expect(`${child.stdout}${child.stderr}`).toContain(
-      'intentional migrated-template runner failure probe',
-    );
-    expect(
-      fs.readdirSync(probeTemporaryDirectory)
-        .filter((entry) => entry.startsWith('nexus-migrated-test-database-')),
-    ).toEqual([]);
-  });
+      expect(child.error).toBeUndefined();
+      expect(child.status).not.toBe(0);
+      expect(`${child.stdout}${child.stderr}`).toContain(
+        'intentional migrated-template runner failure probe',
+      );
+      expect(
+        fs.readdirSync(probeTemporaryDirectory)
+          .filter((entry) => entry.startsWith('nexus-migrated-test-database-')),
+      ).toEqual([]);
+    },
+  );
 });
