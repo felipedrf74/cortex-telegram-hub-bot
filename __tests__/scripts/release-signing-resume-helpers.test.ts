@@ -70,7 +70,8 @@ if(args[0]==='api'){
    workflow_run:{id:4242,head_sha:'${runtimeSha}'}}]}));
  }else{
   process.stdout.write(JSON.stringify({id:4242,run_attempt:1,
-   name:'Release — Sign exact candidate',
+   name:'Sign release candidate ${runtimeSha} run 123456 request ${requestId}',
+   display_title:'Sign release candidate ${runtimeSha} run 123456 request ${requestId}',
    path:'.github/workflows/sign-release-manifest.yml',
    event:'workflow_dispatch',head_branch:'main',head_sha:'${runtimeSha}',
    status:'completed',conclusion:'success',created_at:'${runCreatedAt}',
@@ -156,10 +157,12 @@ process.exit(92);
     });
     const liveRun = path.join(root, 'live-signing-run.json');
     const liveArtifacts = path.join(root, 'live-signing-artifacts.json');
-    fs.writeFileSync(liveRun, `${JSON.stringify({
+    const liveRunIdentity = {
       id: 4242,
       run_attempt: 1,
-      name: 'Release — Sign exact candidate',
+      name: `Sign release candidate ${runtimeSha} run 123456 request ${requestId}`,
+      display_title:
+        `Sign release candidate ${runtimeSha} run 123456 request ${requestId}`,
       path: '.github/workflows/sign-release-manifest.yml',
       event: 'workflow_dispatch',
       head_branch: 'main',
@@ -168,7 +171,12 @@ process.exit(92);
       conclusion: 'success',
       created_at: runCreatedAt,
       repository: { full_name: 'felipedrf74/cortex-telegram-hub-bot' },
-    })}\n`, { mode: 0o600 });
+    };
+    fs.writeFileSync(
+      liveRun,
+      `${JSON.stringify(liveRunIdentity)}\n`,
+      { mode: 0o600 },
+    );
     fs.writeFileSync(liveArtifacts, `${JSON.stringify({
       artifacts: [{
         id: 9001,
@@ -193,6 +201,21 @@ process.exit(92);
       { cwd: root, encoding: 'utf8' },
     );
     expect(verifyReceipt(receipt).status).toBe(0);
+    fs.writeFileSync(
+      liveRun,
+      `${JSON.stringify({
+        ...liveRunIdentity,
+        name: 'forged release signing title',
+        display_title: 'forged release signing title',
+      })}\n`,
+      { mode: 0o600 },
+    );
+    expect(verifyReceipt(receipt).status).not.toBe(0);
+    fs.writeFileSync(
+      liveRun,
+      `${JSON.stringify(liveRunIdentity)}\n`,
+      { mode: 0o600 },
+    );
     const exactReceipt = JSON.parse(fs.readFileSync(receipt, 'utf8'));
     const substitutions: Array<{
       label: string;
