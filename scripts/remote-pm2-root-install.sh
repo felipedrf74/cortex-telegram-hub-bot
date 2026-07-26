@@ -373,6 +373,7 @@ for candidate in sorted(root.rglob("*")):
         "mode": stat.S_IMODE(observed.st_mode),
         "sha256": hashlib.sha256(body).hexdigest(),
     })
+files.sort(key=lambda item: item["path"])
 payload = {"schema": "nexus.pm2-root-closure.v1", "files": files}
 body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 print(json.dumps({
