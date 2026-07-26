@@ -503,7 +503,7 @@ function fixture({
   writeJson(faultFile, faultEnvelope);
   const ownerPublicKeyFile = path.join(root, 'owner-public.pem');
   fs.writeFileSync(ownerPublicKeyFile, publicPem(ownerKey.publicKey), {
-    mode: 0o644,
+    mode: 0o400,
   });
   const releasePublicKeyFile = path.join(root, 'release-public.pem');
   fs.writeFileSync(releasePublicKeyFile, publicPem(releaseKey.publicKey), {
@@ -514,6 +514,9 @@ function fixture({
 const fs = require('node:fs');
 const ownerPath = '/etc/nexus-release/owner-promotion-public-key.pem';
 const originalOpenSync = fs.openSync.bind(fs);
+const originalCloseSync = fs.closeSync.bind(fs);
+let faultEnvelopeDescriptor = null;
+let faultEnvelopeSwapped = false;
 fs.openSync = (file, ...args) => {
   const pathname = typeof file === 'string' ? file : String(file);
   if (pathname === ownerPath) {
@@ -522,7 +525,24 @@ fs.openSync = (file, ...args) => {
   if (pathname === process.env.NEXUS_TEST_TRACKED_RELEASE_KEY_PATH) {
     return originalOpenSync(process.env.NEXUS_TEST_RELEASE_KEY, ...args);
   }
-  return originalOpenSync(file, ...args);
+  const descriptor = originalOpenSync(file, ...args);
+  if (pathname === process.env.NEXUS_TEST_FAULT_SWAP_PATH) {
+    faultEnvelopeDescriptor = descriptor;
+  }
+  return descriptor;
+};
+fs.closeSync = (descriptor) => {
+  const result = originalCloseSync(descriptor);
+  if (!faultEnvelopeSwapped
+      && descriptor === faultEnvelopeDescriptor
+      && process.env.NEXUS_TEST_FAULT_SWAP_REPLACEMENT) {
+    fs.renameSync(
+      process.env.NEXUS_TEST_FAULT_SWAP_REPLACEMENT,
+      process.env.NEXUS_TEST_FAULT_SWAP_PATH,
+    );
+    faultEnvelopeSwapped = true;
+  }
+  return result;
 };
 const rootIdentity = (identity) => {
   if (!identity) return identity;
@@ -816,6 +836,25 @@ describe('rollback drill layout freshness adapter', () => {
     );
     expect(canonicalConsumer.status, canonicalConsumer.stderr).toBe(0);
     expect(JSON.parse(canonicalConsumer.stdout).ok).toBe(true);
+  });
+
+  it('deep-verifies the exact owner-signed bytes captured before a path swap', () => {
+    const value = fixture();
+    const replacement = path.join(value.root, 'fault-envelope-replacement.json');
+    fs.writeFileSync(replacement, '{}\n', { mode: 0o644 });
+
+    const result = invoke(value, [], {
+      environmentOverrides: {
+        NEXUS_TEST_FAULT_SWAP_PATH: value.faultFile,
+        NEXUS_TEST_FAULT_SWAP_REPLACEMENT: replacement,
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(fs.readFileSync(value.faultFile, 'utf8'))).toEqual({});
+    expect(fs.existsSync(value.backupOutput)).toBe(true);
+    expect(fs.existsSync(value.machineOutput)).toBe(true);
+    expect(fs.existsSync(value.output)).toBe(true);
   });
 
   it('rejects an invalid owner signature before publishing evidence', () => {

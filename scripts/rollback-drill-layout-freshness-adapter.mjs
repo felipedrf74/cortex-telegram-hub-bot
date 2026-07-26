@@ -98,7 +98,15 @@ function requiredOption(args, name) {
   return value;
 }
 
-function readSafeBytes(file, label, maximum = MAX_INPUT_BYTES) {
+function readSafeBytes(
+  file,
+  label,
+  maximum = MAX_INPUT_BYTES,
+  {
+    exactMode,
+    rootOwned = false,
+  } = {},
+) {
   const resolved = path.resolve(file);
   let descriptor;
   try {
@@ -112,7 +120,10 @@ function readSafeBytes(file, label, maximum = MAX_INPUT_BYTES) {
   try {
     const before = fs.fstatSync(descriptor);
     if (!before.isFile() || before.nlink !== 1 || before.size < 2
-        || before.size > maximum || (before.mode & 0o022) !== 0) {
+        || before.size > maximum || (before.mode & 0o022) !== 0
+        || (exactMode !== undefined
+          && (before.mode & 0o7777) !== exactMode)
+        || (rootOwned && (before.uid !== 0 || before.gid !== 0))) {
       fail(`${label} is not a bounded non-writable single-link regular file`);
     }
     const body = fs.readFileSync(descriptor);
@@ -339,7 +350,8 @@ function validateFaultFreshness(drill) {
 }
 
 function verifyDeepProof({
-  envelopePath,
+  envelopeBody,
+  temporaryParent,
   trustManifestPath,
   provisionReceiptPath,
 }) {
@@ -348,14 +360,26 @@ function verifyDeepProof({
     'scripts/release-layout-fault-drill.mjs',
   );
   let stdout;
+  let envelopeTemporary;
   try {
+    envelopeTemporary = writeTemporary(
+      temporaryParent,
+      'fault-drill-envelope.verify',
+      envelopeBody,
+    );
+    const identity = fs.lstatSync(envelopeTemporary);
+    if (!identity.isFile() || identity.isSymbolicLink()
+        || identity.nlink !== 1 || identity.uid !== 0 || identity.gid !== 0
+        || (identity.mode & 0o7777) !== 0o600) {
+      fail('captured fault-drill envelope verification file is unsafe');
+    }
     stdout = execFileSync(
       process.execPath,
       [
         verifier,
         'verify-envelope',
         '--input',
-        envelopePath,
+        envelopeTemporary,
         '--trust-manifest',
         trustManifestPath,
         '--provision-receipt',
@@ -374,6 +398,11 @@ function verifyDeepProof({
     );
   } catch {
     fail('nested KVM proof or root-pinned trust verification failed');
+  } finally {
+    if (envelopeTemporary) {
+      fs.rmSync(envelopeTemporary, { force: true });
+      fsyncDirectory(temporaryParent);
+    }
   }
   let proof;
   try {
@@ -780,6 +809,10 @@ function buildRequest(args) {
     requiredOption(args, '--fault-drill-envelope'),
     'signed layout fault-drill envelope',
   );
+  const requestOutputPolicy = safeOutputParent(
+    requiredOption(args, '--output'),
+    'rollback request output',
+  );
   const trustInput = readSafeBytes(
     requiredOption(args, '--trust-manifest'),
     'root-pinned layout trust manifest',
@@ -810,6 +843,10 @@ function buildRequest(args) {
     ownerKeyPath,
     'layout owner public key',
     32 * 1024,
+    {
+      exactMode: 0o400,
+      rootOwned: true,
+    },
   );
   const trackedReleaseKeyPath = path.join(
     toolingRoot,
@@ -844,7 +881,8 @@ function buildRequest(args) {
   });
   validateFaultFreshness(drill);
   const deepProof = verifyDeepProof({
-    envelopePath: faultInput.path,
+    envelopeBody: faultInput.body,
+    temporaryParent: requestOutputPolicy.parent,
     trustManifestPath: trustInput.path,
     provisionReceiptPath: provisionInput.path,
   });
