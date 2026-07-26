@@ -1046,6 +1046,8 @@ describe('rollback-drill KVM provisioner', () => {
       ['scripts/rollback-drill-vm-run.sh', 0o755],
       ['scripts/rollback-drill-vm-host-preflight.sh', 0o755],
       ['scripts/rollback-drill-vm-manifest.py', 0o644],
+      ['scripts/release-layout-fault-drill-controller.mjs', 0o755],
+      ['scripts/release-layout-fault-drill-guest.mjs', 0o755],
     ] as const) {
       const mode = statSync(path).mode & 0o777;
       expect(mode & 0o022, `${path} is writable by group or world`).toBe(0);
