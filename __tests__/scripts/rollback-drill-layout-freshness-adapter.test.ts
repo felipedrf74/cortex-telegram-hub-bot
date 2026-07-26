@@ -503,7 +503,7 @@ function fixture({
   writeJson(faultFile, faultEnvelope);
   const ownerPublicKeyFile = path.join(root, 'owner-public.pem');
   fs.writeFileSync(ownerPublicKeyFile, publicPem(ownerKey.publicKey), {
-    mode: 0o400,
+    mode: 0o644,
   });
   const releasePublicKeyFile = path.join(root, 'release-public.pem');
   fs.writeFileSync(releasePublicKeyFile, publicPem(releaseKey.publicKey), {

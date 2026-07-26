@@ -844,7 +844,7 @@ function buildRequest(args) {
     'layout owner public key',
     32 * 1024,
     {
-      exactMode: 0o400,
+      exactMode: 0o644,
       rootOwned: true,
     },
   );
