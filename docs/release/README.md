@@ -1421,7 +1421,8 @@ active, a trusted Ubuntu 24.04/x86-64 builder creates a guest-bound,
 owner-signed, content-addressed bundle from clean protected `origin/main`,
 pinned Node 22.23.1 release inputs, an offline PM2 6.0.14 lock closure, and the
 exact promotion controls. PM2 is installed at
-`/opt/nexus-rollback-drill-vm/runtime/pm2-6.0.14/bin/pm2`.
+`/opt/nexus-release/pm2/6.0.14` and launched through the root-owned
+`/usr/local/bin/pm2`.
 
 The host independently pins the lab owner public key, registers the signed
 bundle, and accepts one canonical owner authorization valid for at most 24

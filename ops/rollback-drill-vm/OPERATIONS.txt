@@ -128,8 +128,14 @@ Trust boundary
    nexus-release-layout-fault-drill-recovery.service so an authenticated
    nonterminal controller journal resumes after host boot; the three guest
    templates and owner-submitted transaction template remain static and
-   disabled. The host recovery unit orders after dev-kvm.device and both host
-   and guest boot recovery use bounded four-attempt retry windows.
+   disabled. The guest and recovery units do not wait on `dev-kvm.device`:
+   hosts that expose a valid static or container-provided KVM node may not
+   publish a corresponding active systemd device unit. The guest's root
+   preflight validates the live KVM device before every explicit start. The
+   controller and enabled recovery service use a failing character-device
+   preflight, so a late `/dev/kvm` appearance enters the existing bounded
+   restart policy instead of being condition-skipped as successful. Both host
+   and guest boot recovery retain bounded four-attempt retry windows.
 4. From Canonical's signed SHA256SUMS, independently record the reviewed digest
    of noble-server-cloudimg-amd64.img. Then provision exactly three guests:
 
@@ -282,6 +288,13 @@ signed bundle:
   sudo /usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness \
     register-bundle <copied-content-addressed-bundle> \
     <bundle-manifest-sha256>
+
+The pin command's expected SHA-256 is the digest of the exact PEM file bytes,
+which also binds the signed bundle's embedded key file. Runtime
+authorizations and readiness receipts use the canonical SHA-256 of that same
+key's SPKI DER identity, matching the plan and readiness-sequence controls.
+The collector derives both identities from the independently pinned key and
+does not let the operator substitute either value.
 
 Create three compact, sorted canonical JSON payloads with no trailing newline
 using schema
