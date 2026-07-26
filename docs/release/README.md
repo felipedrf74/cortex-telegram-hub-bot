@@ -1499,6 +1499,77 @@ a successful VM boot are not fault-drill evidence: retain the three actual
 machine results and pass only the bounded request through the existing
 protected rollback-drill signer.
 
+After the root controller has completed all three real scenarios and the owner
+has signed the exact `fault-drill.json`, derive the ordinary freshness request
+with the reviewed adapter. Run it only from the exact protected-main,
+root-owned source tree used by the KVM controls. The source manifest must match
+the signed production identity in the drill plan and the target manifest must
+match its signed staging identity; when both identities are the same release,
+the same production-signed manifest may be supplied to both options. Copy
+signed manifests into a root-owned, non-writable evidence directory before
+running this command:
+
+```bash
+sudo install -d -o root -g root -m 0700 \
+  /var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/<plan-id>/ordinary-freshness
+
+sudo /usr/bin/node \
+  /var/lib/nexus-release-bootstrap/<sha>/source/scripts/\
+rollback-drill-layout-freshness-adapter.mjs build-request \
+  --fault-drill-envelope <owner-signed-fault-drill-envelope.json> \
+  --owner-public-key /etc/nexus-release/owner-promotion-public-key.pem \
+  --trust-manifest \
+    /var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json \
+  --provision-receipt /var/lib/nexus-rollback-drill-vm/active.json \
+  --source-release-manifest <production-signed-source-manifest.json> \
+  --target-release-manifest <production-signed-target-manifest.json> \
+  --operator felipe \
+  --backup-output \
+    /var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/\
+<plan-id>/ordinary-freshness/target-backup.v1.json \
+  --machine-evidence-output \
+    /var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/\
+<plan-id>/ordinary-freshness/machine-evidence.json \
+  --output \
+    /var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/\
+<plan-id>/ordinary-freshness/rollback-drill-request.json
+```
+
+The adapter re-verifies the owner signature, the root-bound provision/trust
+chain, every nested hypervisor and guest signature, pairwise signing-key
+separation, signed release SHA/artifact/version bindings, the recovery timing,
+and the 30-day freshness window. Guest execution evidence v2 embeds the raw,
+bounded, canonical pre-fault synthetic target-backup bytes used to restore
+`release.json`, `health`, and a real isolated SQLite database. All three
+scenarios must sign the same archive bytes, size, and SHA-256. The adapter
+publishes those exact bytes first, the cross-bound machine evidence second, and
+the ordinary request last, mode `0600`, without overwriting any path. A restart
+accepts only an exact contiguous publication prefix and resumes at the first
+missing file. An expired release manifest remains acceptable only as signed
+historical version/SHA/artifact metadata; it does not regain promotion
+authority.
+
+This is an isolated synthetic release-layout recovery. Production data,
+production secrets, and production network access remain forbidden. The
+archive must not be described as a production-data restore. Existing guest
+execution v1 evidence remains valid for historical layout-activation
+verification, but it cannot satisfy ordinary rollback freshness because it
+does not contain governed target-backup bytes. There is no caller-key or
+test-mode switch in the adapter.
+
+Before installing the v2 guest producer or v3 guest journal contract, finish
+or explicitly retire every active v1 transaction. The producer and verifier
+digests change, so regenerate the KVM runtime bundle, trust manifest, provision
+receipt, owner plan, and all three scenarios. No existing signed envelope can
+be upgraded by the adapter.
+
+Copy all three outputs through the existing private evidence channel, verify
+their digests, then run
+`scripts/request-rollback-drill-signature.sh` on the exact request from a clean
+protected-main Mac checkout. The adapter never signs
+`nexus.rollback-drill.v1`, never authorizes staging or promotion, and never
+converts the owner-signed layout envelope directly into production evidence.
+
 ### Ten-release measurement and shadow readiness
 
 Evaluate the success window from exactly ten chronological, terminal root

@@ -31,8 +31,10 @@ const PROOF_SCHEMA = 'nexus.release-layout-kvm-proof.v1';
 const RESULT_SCHEMA = 'nexus.release-layout-fault-scenario-result.v2';
 const HYPERVISOR_EVIDENCE_SCHEMA =
   'nexus.release-layout-hypervisor-isolation-evidence.v1';
-const GUEST_EVIDENCE_SCHEMA =
+const LEGACY_GUEST_EVIDENCE_SCHEMA =
   'nexus.release-layout-guest-execution-evidence.v1';
+const GUEST_EVIDENCE_SCHEMA =
+  'nexus.release-layout-guest-execution-evidence.v2';
 const TRUST_SCHEMA = 'nexus.release-layout-kvm-trust.v1';
 const PROVISION_SCHEMA = 'nexus.rollback-drill-vm-provision.v2';
 const PLAN_VERIFICATION_SCHEMA =
@@ -55,6 +57,10 @@ const SCENARIO_GUEST_IDS = Object.freeze({
   ssh_disconnect_after_pm2_stop: 'guest-1',
 });
 const MAX_EVIDENCE_BYTES = 128 * 1024;
+const MAX_DATABASE_BACKUP_BYTES = 32 * 1024;
+const MAX_TARGET_BACKUP_BYTES = 64 * 1024;
+const TARGET_BACKUP_SCHEMA =
+  'nexus.release-layout-guest-target-backup.v1';
 
 function nowMs() {
   const injected = process.env.NODE_ENV === 'test'
@@ -119,6 +125,83 @@ function strictBase64(value, label, { exactBytes, maximumBytes } = {}) {
     fail(`${label} size or encoding is invalid`);
   }
   return body;
+}
+
+function validateSqliteBackup(body) {
+  const header = Buffer.from('SQLite format 3\0', 'binary');
+  if (body.length < 512
+      || !body.subarray(0, header.length).equals(header)) {
+    fail('layout guest signed database backup is not SQLite');
+  }
+  const encodedPageSize = body.readUInt16BE(16);
+  const pageSize = encodedPageSize === 1 ? 65_536 : encodedPageSize;
+  const pageCount = body.readUInt32BE(28);
+  if (pageSize < 512 || pageSize > 65_536
+      || (pageSize & (pageSize - 1)) !== 0
+      || pageCount < 1 || pageCount * pageSize !== body.length) {
+    fail('layout guest signed database backup SQLite layout is invalid');
+  }
+}
+
+function validateTargetBackup(body, plan) {
+  if (body.length < 2 || body.length > MAX_TARGET_BACKUP_BYTES) {
+    fail('layout guest target backup size is invalid');
+  }
+  let backup;
+  try {
+    backup = JSON.parse(body.toString('utf8'));
+  } catch {
+    fail('layout guest target backup is not JSON');
+  }
+  exactKeys(
+    backup,
+    ['database', 'health', 'release', 'schema', 'sourceSha256'],
+    'layout guest target backup',
+  );
+  if (backup.schema !== TARGET_BACKUP_SCHEMA
+      || backup.sourceSha256 !== sourceSha256(plan.source)) {
+    fail('layout guest target backup identity is invalid');
+  }
+  const definitions = [
+    ['release', backup.release, 'release.json', 128 * 1024],
+    ['health', backup.health, 'health', 1024],
+    [
+      'database',
+      backup.database,
+      'database.sqlite',
+      MAX_DATABASE_BACKUP_BYTES,
+    ],
+  ];
+  const decoded = {};
+  for (const [label, entry, expectedPath, maximumBytes] of definitions) {
+    exactKeys(
+      entry,
+      ['bytes', 'contentBase64', 'contentEncoding', 'path', 'sha256'],
+      `layout guest target backup ${label}`,
+    );
+    const entryBody = strictBase64(
+      entry.contentBase64,
+      `layout guest target backup ${label}`,
+      { maximumBytes },
+    );
+    if (entry.path !== expectedPath || entry.contentEncoding !== 'base64'
+        || entry.bytes !== entryBody.length
+        || !DIGEST.test(entry.sha256 ?? '')
+        || sha256(entryBody) !== entry.sha256) {
+      fail(`layout guest target backup ${label} identity is invalid`);
+    }
+    decoded[label] = entryBody;
+  }
+  if (!decoded.release.equals(
+    Buffer.from(`${canonicalJson(plan.source)}\n`, 'utf8'),
+  ) || !decoded.health.equals(Buffer.from('ok\n'))) {
+    fail('layout guest target backup release identity is invalid');
+  }
+  validateSqliteBackup(decoded.database);
+  if (!body.equals(Buffer.from(canonicalJson(backup), 'utf8'))) {
+    fail('layout guest target backup bytes are not canonical');
+  }
+  return backup;
 }
 
 function parseEvidenceBody(value, label) {
@@ -796,6 +879,7 @@ function validateIsolation(
 }
 
 function validateExecution(value, plan, scenarioId, expectedPlanSha256) {
+  const hasSignedBackup = value?.schema === GUEST_EVIDENCE_SCHEMA;
   exactKeys(value, [
     'challengeNonce',
     'completedAt',
@@ -824,7 +908,7 @@ function validateExecution(value, plan, scenarioId, expectedPlanSha256) {
     value.producer,
     `layout ${scenarioId} execution producer`,
   );
-  exactKeys(value.faultObservation, [
+  const faultObservationFields = [
     'candidateHealthFailureObserved',
     'databaseAfterSha256',
     'databaseBeforeSha256',
@@ -833,13 +917,31 @@ function validateExecution(value, plan, scenarioId, expectedPlanSha256) {
     'predecessorSha256',
     'processStoppedObserved',
     'restoredSha256',
-  ], 'layout guest fault observation');
-  if (value.schema !== GUEST_EVIDENCE_SCHEMA
+  ];
+  if (hasSignedBackup) {
+    faultObservationFields.push(
+      'targetBackupBase64',
+      'targetBackupBytes',
+      'targetBackupSha256',
+    );
+  }
+  exactKeys(
+    value.faultObservation,
+    faultObservationFields,
+    'layout guest fault observation',
+  );
+  if (![LEGACY_GUEST_EVIDENCE_SCHEMA, GUEST_EVIDENCE_SCHEMA].includes(
+    value.schema,
+  )
       || value.planId !== plan.planId || value.migrationId !== plan.migrationId
       || value.planSha256 !== expectedPlanSha256
       || value.challengeNonce !== plan.challengeNonce
       || value.scenarioId !== scenarioId
-      || value.controlVersion !== 'nexus-release-layout-fault-guest.v1'
+      || value.controlVersion !== (
+        hasSignedBackup
+          ? 'nexus-release-layout-fault-guest.v2'
+          : 'nexus-release-layout-fault-guest.v1'
+      )
       || value.executionMode !== 'strictly-sequential' || value.testMode !== false
       || value.productionEvidenceEmitted !== false || value.promotionControlInvoked !== false
       || value.faultInjected !== scenarioId || value.terminalStatus !== 'recovered'
@@ -862,6 +964,30 @@ function validateExecution(value, plan, scenarioId, expectedPlanSha256) {
       || value.faultObservation.durableRecoveryArmed !== true
       || !Number.isFinite(Date.parse(value.completedAt ?? ''))) {
     fail('layout fault execution identity is invalid');
+  }
+  if (hasSignedBackup) {
+    const targetBackup = strictBase64(
+      value.faultObservation.targetBackupBase64,
+      'layout guest target backup',
+      { maximumBytes: MAX_TARGET_BACKUP_BYTES },
+    );
+    if (targetBackup.length < 2
+        || value.faultObservation.targetBackupBytes
+          !== targetBackup.length
+        || !DIGEST.test(
+          value.faultObservation.targetBackupSha256 ?? '',
+        )
+        || sha256(targetBackup)
+          !== value.faultObservation.targetBackupSha256) {
+      fail('layout guest signed target backup is invalid');
+    }
+    const target = validateTargetBackup(targetBackup, plan);
+    if (target.release.sha256
+          !== value.faultObservation.predecessorSha256
+        || target.database.sha256
+          !== value.faultObservation.databaseBeforeSha256) {
+      fail('layout guest target backup recovery identity is invalid');
+    }
   }
   const completed = Date.parse(value.completedAt);
   if (completed < Date.parse(plan.createdAt) || completed > Date.parse(plan.expiresAt)) {
