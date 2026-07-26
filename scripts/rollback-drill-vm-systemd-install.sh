@@ -19,6 +19,7 @@ INSTALL_JOURNAL="$STATE_ROOT/install-in-progress.v1"
 CONTROL_LOCK="$STATE_ROOT/control.lock"
 ACTIVE_RECEIPT="$STATE_ROOT/active.json"
 UNIT_TEMPLATE="nexus-rollback-drill-vm@.service"
+UNIT_TEMPLATE_PROBE="nexus-rollback-drill-vm@guest-1.service"
 SHARED_MUTEX="/run/lock/nexus-release-sonar.lock"
 FAULT_CONTROLLER_RECOVERY_UNIT="nexus-release-layout-fault-drill-recovery.service"
 FAULT_CONTROLLER_RECOVERY_WANTS="/etc/systemd/system/multi-user.target.wants/$FAULT_CONTROLLER_RECOVERY_UNIT"
@@ -139,7 +140,10 @@ assert_guest_unit_inactive() {
 
 assert_template_static() {
   local missing_allowed="$1"
-  read_systemd_unit_state "$UNIT_TEMPLATE"
+  # systemd rejects a bare template name for `show` on supported Ubuntu
+  # hosts. Query one fixed, never-started instance to inspect the template's
+  # load and unit-file state without changing service state.
+  read_systemd_unit_state "$UNIT_TEMPLATE_PROBE"
   [ "$SYSTEMD_ACTIVE_STATE" = inactive ] \
     || die "guest template is not safely inactive: $SYSTEMD_ACTIVE_STATE"
   case "$SYSTEMD_LOAD_STATE:$SYSTEMD_UNIT_FILE_STATE" in

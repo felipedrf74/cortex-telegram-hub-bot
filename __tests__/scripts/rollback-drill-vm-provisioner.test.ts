@@ -218,6 +218,9 @@ describe('rollback-drill KVM provisioner', () => {
     expect(installer).toContain(
       'must belong only to its private group and kvm',
     );
+    expect(installer).toContain(
+      'UNIT_TEMPLATE_PROBE="nexus-rollback-drill-vm@guest-1.service"',
+    );
     expect(installer).toContain('assert_template_static false');
     expect(installer).toContain(
       '"$unit_verify_path" "$runtime_recovery_verify_path"',
@@ -657,7 +660,17 @@ describe('rollback-drill KVM provisioner', () => {
           [
             'die() { echo "$*" >&2; exit 1; }',
             'UNIT_TEMPLATE=nexus-rollback-drill-vm@.service',
-            'systemctl() { printf "%s" "$MOCK_OUTPUT"; return "$MOCK_STATUS"; }',
+            'UNIT_TEMPLATE_PROBE=nexus-rollback-drill-vm@guest-1.service',
+            'systemctl() {',
+            '  local last=""',
+            '  for last in "$@"; do :; done',
+            '  if [ "$last" != "$MOCK_EXPECTED_UNIT" ]; then',
+            '    printf "unexpected systemd unit: %s\\n" "$last" >&2',
+            '    return 64',
+            '  fi',
+            '  printf "%s" "$MOCK_OUTPUT"',
+            '  return "$MOCK_STATUS"',
+            '}',
             helpers!,
             assertion,
           ].join('\n'),
@@ -668,6 +681,8 @@ describe('rollback-drill KVM provisioner', () => {
             ...process.env,
             MOCK_OUTPUT: output,
             MOCK_STATUS: String(status),
+            MOCK_EXPECTED_UNIT:
+              'nexus-rollback-drill-vm@guest-1.service',
           },
         },
       );
@@ -684,6 +699,12 @@ describe('rollback-drill KVM provisioner', () => {
       'assert_guest_unit_inactive nexus-rollback-drill-vm@guest-1.service true',
     );
     expect(missing.status, missing.stderr).toBe(0);
+    const staticTemplate = exercise(
+      'LoadState=loaded\nActiveState=inactive\nUnitFileState=static\n',
+      0,
+      'assert_template_static false',
+    );
+    expect(staticTemplate.status, staticTemplate.stderr).toBe(0);
     const transportError = exercise(
       'Failed to connect to bus: No such file or directory\n',
       1,
