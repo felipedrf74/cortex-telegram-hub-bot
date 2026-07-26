@@ -4,9 +4,15 @@ const { getDbMock } = vi.hoisted(() => ({
   getDbMock: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
-  getDb: getDbMock,
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return {
+    ...actual,
+    getDb: getDbMock,
+  };
+});
 
 import {
   contentPrivateScopeParams,

@@ -23,56 +23,116 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/utils/request-context', () => ({
-  runWithContext: (_context: unknown, work: () => unknown) => work(),
-}));
+vi.mock('../../src/utils/request-context', async () => {
+  const actual = await vi.importActual<typeof import('../../src/utils/request-context')>(
+    '../../src/utils/request-context',
+  );
+  return {
+    ...actual,
+    runWithContext: (_context: unknown, work: () => unknown) => work(),
+  };
+});
 
-vi.mock('../../src/services/channel-learner', () => ({
-  planChannelRelearnScopes: () => state.plan(),
-  processChannelRelearnScope: (...args: unknown[]) => state.processScope(...args),
-}));
+vi.mock('../../src/services/channel-learner', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/channel-learner')>(
+    '../../src/services/channel-learner',
+  );
+  return {
+    ...actual,
+    planChannelRelearnScopes: () => state.plan(),
+    processChannelRelearnScope: (...args: unknown[]) => state.processScope(...args),
+  };
+});
 
-vi.mock('../../src/services/agent-job-runner', () => ({
-  AgentJobOutputValidationError: MockAgentJobOutputValidationError,
-  runGovernedAgentJob: (...args: unknown[]) => state.runGoverned(...args),
-}));
+vi.mock('../../src/services/agent-job-runner', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/agent-job-runner')>(
+    '../../src/services/agent-job-runner',
+  );
+  return {
+    ...actual,
+    AgentJobOutputValidationError: MockAgentJobOutputValidationError,
+    runGovernedAgentJob: (...args: unknown[]) => state.runGoverned(...args),
+  };
+});
 
-vi.mock('../../src/services/autoresearch', () => ({
-  computePromptStateHash: vi.fn(),
-  getScheduledTarget: vi.fn(),
-  runAutoresearch: vi.fn(),
-}));
+vi.mock('../../src/services/autoresearch', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/autoresearch')>(
+    '../../src/services/autoresearch',
+  );
+  return {
+    ...actual,
+    computePromptStateHash: vi.fn(),
+    getScheduledTarget: vi.fn(),
+    runAutoresearch: vi.fn(),
+  };
+});
 
-vi.mock('../../src/services/content-workflow', () => ({
-  generateAndStoreTopicCandidates: vi.fn(),
-  generateWeeklyPackage: vi.fn(),
-  getMissingScheduledInventoryCount: vi.fn(),
-}));
+vi.mock('../../src/services/content-workflow', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-workflow')>(
+    '../../src/services/content-workflow',
+  );
+  return {
+    ...actual,
+    generateAndStoreTopicCandidates: vi.fn(),
+    generateWeeklyPackage: vi.fn(),
+    getMissingScheduledInventoryCount: vi.fn(),
+  };
+});
 
-vi.mock('../../src/services/database', () => ({
-  getDb: vi.fn(),
-}));
+vi.mock('../../src/services/database', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  );
+  return {
+    ...actual,
+    getDb: vi.fn(),
+  };
+});
 
-vi.mock('../../src/services/eval-criteria', () => ({
-  getEvalTarget: vi.fn(),
-}));
+vi.mock('../../src/services/eval-criteria', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/eval-criteria')>(
+    '../../src/services/eval-criteria',
+  );
+  return {
+    ...actual,
+    getEvalTarget: vi.fn(),
+  };
+});
 
 vi.mock('../../src/services/agent-job-targets', () => ({
   listActiveAgentJobTenantTargets: vi.fn(() => []),
 }));
 
-vi.mock('../../src/services/ai-automation-policy', () => ({
-  recordAiAutomationEligibilitySkip: vi.fn(),
-  resolveAiAutomationEligibility: vi.fn(),
-}));
+vi.mock('../../src/services/ai-automation-policy', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/ai-automation-policy')>(
+    '../../src/services/ai-automation-policy',
+  );
+  return {
+    ...actual,
+    recordAiAutomationEligibilitySkip: vi.fn(),
+    resolveAiAutomationEligibility: vi.fn(),
+  };
+});
 
-vi.mock('../../src/services/entitlement', () => ({
-  isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
-}));
+vi.mock('../../src/services/entitlement', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/entitlement')>(
+    '../../src/services/entitlement',
+  );
+  return {
+    ...actual,
+    isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
+  };
+});
 
-vi.mock('../../src/services/operator-alerts', () => ({
-  recordOperatorAlert: vi.fn(),
-}));
+vi.mock('../../src/services/operator-alerts', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/operator-alerts')>(
+    '../../src/services/operator-alerts',
+  );
+  return {
+    ...actual,
+    recordOperatorAlert: vi.fn(),
+  };
+});
 
 type ChannelResult = {
   analyzed: number;

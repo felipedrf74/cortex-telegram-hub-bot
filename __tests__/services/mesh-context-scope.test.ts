@@ -73,12 +73,18 @@ vi.mock('../../src/services/content-dashboard-service', () => ({
   getVoiceDna: (...args: unknown[]) => mockGetVoiceDna(...args),
 }));
 
-vi.mock('../../src/services/content-intelligence', () => ({
-  getActiveContentPillars: (...args: unknown[]) => mockGetActiveContentPillars(...args),
-  getContentDeskItems: (...args: unknown[]) => mockGetContentDeskItems(...args),
-  getNextContentExecutionHint: (...args: unknown[]) => mockGetNextContentExecutionHint(...args),
-  getRankedContentSignals: (...args: unknown[]) => mockGetRankedContentSignals(...args),
-}));
+vi.mock('../../src/services/content-intelligence', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-intelligence')>(
+    '../../src/services/content-intelligence',
+  );
+  return {
+    ...actual,
+    getActiveContentPillars: (...args: unknown[]) => mockGetActiveContentPillars(...args),
+    getContentDeskItems: (...args: unknown[]) => mockGetContentDeskItems(...args),
+    getNextContentExecutionHint: (...args: unknown[]) => mockGetNextContentExecutionHint(...args),
+    getRankedContentSignals: (...args: unknown[]) => mockGetRankedContentSignals(...args),
+  };
+});
 
 vi.mock('../../src/services/finance-tracker', () => ({
   getMonthlySummary: (...args: unknown[]) => mockGetMonthlySummary(...args),

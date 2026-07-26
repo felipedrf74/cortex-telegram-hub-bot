@@ -74,41 +74,86 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/error-monitor', () => ({
-  captureError: (...args: unknown[]) => state.captureError(...args),
-}));
+vi.mock('../../src/services/error-monitor', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/error-monitor')>(
+    '../../src/services/error-monitor',
+  );
+  return {
+    ...actual,
+    captureError: (...args: unknown[]) => state.captureError(...args),
+  };
+});
 
-vi.mock('../../src/services/runtime-flags', () => ({
-  areModelProviderCallsDisabled: () => state.modelCallsDisabled,
-  isAnthropicRuntimeEnabled: () => state.anthropicEnabled,
-}));
+vi.mock('../../src/services/runtime-flags', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/runtime-flags')>(
+    '../../src/services/runtime-flags',
+  );
+  return {
+    ...actual,
+    areModelProviderCallsDisabled: () => state.modelCallsDisabled,
+    isAnthropicRuntimeEnabled: () => state.anthropicEnabled,
+  };
+});
 
 vi.mock('../../src/services/anthropic-provider', () => ({
   AnthropicProvider: MockAnthropicProvider,
 }));
 
 vi.mock('../../src/services/openai-provider', () => ({
+  OPENAI_COST_PER_MTK: {},
   OpenAIProvider: MockOpenAIProvider,
+  _sleep: vi.fn(),
+  completeOneShot: vi.fn(),
+  completeOneShotWithWebSearch: vi.fn(),
+  completeVisionOneShot: vi.fn(),
   isOpenAIConfigured: () => state.openaiConfigured,
 }));
 
 vi.mock('../../src/services/gemini-provider', () => ({
   GeminiProvider: MockGeminiProvider,
+  _sleep: vi.fn(),
+  completeOneShot: vi.fn(),
+  completeOneShotWithFallback: vi.fn(),
+  completeOneShotWithSearch: vi.fn(),
+  completeVisionOneShot: vi.fn(),
+  completeVisionOneShotWithFallback: vi.fn(),
+  computeGeminiCost: vi.fn(),
   isGeminiProviderConfigured: () => state.geminiConfigured,
+  resolveGeminiCostModelKey: vi.fn(),
+  scrubSearchGroundingPromptForPrivacy: vi.fn(),
 }));
 
 vi.mock('../../src/services/ollama-provider', () => ({
   OllamaProvider: MockOllamaProvider,
+  _resetLocalReasoningOneShotProviderForTests: vi.fn(),
+  completeLocalReasoningOneShot: vi.fn(),
   isOllamaConfigured: () => state.ollamaConfigured,
+  normalizeClassificationPayload: vi.fn(),
+  stripThinkBlocks: vi.fn(),
 }));
 
 vi.mock('../../src/services/provider-fallback', () => ({
+  AIProviderTruncatedError: class extends Error {},
+  CircuitBreaker: class {},
+  CircuitState: {
+    CLOSED: 'closed',
+    HALF_OPEN: 'half-open',
+    OPEN: 'open',
+  },
   TaskRoutingProvider: MockTaskRoutingProvider,
+  resolveTaskType: vi.fn(),
+  shouldBypassOllamaForToolOrWrite: vi.fn(),
 }));
 
-vi.mock('../../src/services/operator-alerts', () => ({
-  recordOperatorAlert: (...args: unknown[]) => state.operatorAlert(...args),
-}));
+vi.mock('../../src/services/operator-alerts', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/operator-alerts')>(
+    '../../src/services/operator-alerts',
+  );
+  return {
+    ...actual,
+    recordOperatorAlert: (...args: unknown[]) => state.operatorAlert(...args),
+  };
+});
 
 type RegistryModule = typeof import('../../src/services/provider-registry');
 

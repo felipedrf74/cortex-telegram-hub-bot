@@ -1470,11 +1470,12 @@ REMOTE_TRANSACTION_REQUEST
 
   result_env="$request_dir/${PROMOTION_RUN_ID}.result.env"
   escrow_json="$request_dir/${PROMOTION_RUN_ID}.escrow.json"
-  # The root transaction has a 28-minute upper bound that contains two
-  # separately bounded DR phases, candidate checks, cutover, and the soak.
-  # Keep the polling client outside that ceiling so it can observe and fetch
-  # the durable terminal result instead of timing out first.
-  deadline=$((SECONDS + 2100))
+  # The root transaction has a 40-minute upper bound that contains the
+  # separately bounded DR lease, pre-mutation escrow, cutover/recovery,
+  # stability soak, and post-soak escrow retry phases plus preparation margin.
+  # Keep the polling client five minutes outside that ceiling so it can
+  # observe and fetch the durable terminal result instead of timing out first.
+  deadline=$((SECONDS + 2700))
   while [ "$SECONDS" -lt "$deadline" ]; do
     if [ -z "$status_json" ]; then
       if ! status_json="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" status "$PROMOTION_RUN_ID" 2>/dev/null)"; then

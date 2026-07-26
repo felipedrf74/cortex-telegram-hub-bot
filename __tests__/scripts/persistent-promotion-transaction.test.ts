@@ -3733,14 +3733,14 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(clientSource).not.toContain('retry-escrow "$PROMOTION_RUN_ID"');
     expect(clientSource).toContain('server-owned rollback escrow retries were exhausted');
     expect(clientSource).toContain('x.escrowRetry.exhaustedAt===null?"pending":"exhausted"');
-    expect(clientSource).toContain('deadline=$((SECONDS + 2100))');
+    expect(clientSource).toContain('deadline=$((SECONDS + 2700))');
     expect(clientSource).toContain('ensure_started_interval_seconds=15');
     expect(clientSource).toContain(
       'const unitActivity=x.unitActive===true?"active":x.unitActive===false?"inactive":"unknown"',
     );
     const recoverableReconcileStart = clientSource.indexOf(
       'pending|recovery_required)',
-      clientSource.indexOf('deadline=$((SECONDS + 2100))'),
+      clientSource.indexOf('deadline=$((SECONDS + 2700))'),
     );
     const recoverableReconcileEnd = clientSource.indexOf(
       '\n        ;;',
@@ -4357,7 +4357,46 @@ case "\${1:-}" in describe|stop|delete|start|save) exit 0 ;; jlist) printf '[]\\
     expect(installSource).not.toContain('promotion-control continue');
     expect(installSource).not.toContain('promotion-control escrow-inflight');
     expect(service).toContain('User=nexus-release');
-    expect(service).toContain('TimeoutStartSec=28min');
+    expect(service).toContain('TimeoutStartSec=40min');
+    const promotionTimeoutMinutes = Number(
+      /^TimeoutStartSec=(\d+)min$/mu.exec(service)?.[1],
+    );
+    const clientPollSeconds = Number(
+      /deadline=\$\(\(SECONDS \+ (\d+)\)\)/u.exec(clientSource)?.[1],
+    );
+    const drLeaseSeconds = Number(
+      /^DR_LEASE_WAIT_SECONDS=(\d+)$/mu.exec(brokerSource)?.[1],
+    );
+    const escrowRetrySeconds = Number(
+      /^ESCROW_RETRY_BUDGET_SECONDS=(\d+)$/mu.exec(brokerSource)?.[1],
+    );
+    const outageSeconds = Number(
+      /^OUTAGE_BUDGET_SECONDS=(\d+)$/mu.exec(brokerSource)?.[1],
+    );
+    const preRecoverySeconds = Number(
+      /^PRE_RECOVERY_BUDGET_SECONDS=(\d+)$/mu.exec(brokerSource)?.[1],
+    );
+    const preMutationEscrowSeconds = Number(
+      /--kill-after=5s (\d+)s \\\n    "\$DR_BACKUP_BIN" --config/u.exec(brokerSource)?.[1],
+    );
+    const maximumObservedSoakSeconds = Number(
+      /Number\(m\.get\('NEXUS_SOAK_OBSERVED_SECONDS'\)\)>(\d+)/u
+        .exec(brokerSource)?.[1],
+    );
+    const preparationMarginSeconds = 300;
+    const requiredTransactionSeconds = drLeaseSeconds
+      + preMutationEscrowSeconds
+      + outageSeconds
+      + preRecoverySeconds
+      + maximumObservedSoakSeconds
+      + escrowRetrySeconds
+      + preparationMarginSeconds;
+    expect(promotionTimeoutMinutes * 60).toBeGreaterThanOrEqual(
+      requiredTransactionSeconds,
+    );
+    expect(clientPollSeconds).toBeGreaterThanOrEqual(
+      promotionTimeoutMinutes * 60 + preparationMarginSeconds,
+    );
     expect(service).toContain(
       'ConditionPathExists=!/var/lib/nexus-release-promotion/bootstrap-in-progress.v1',
     );
