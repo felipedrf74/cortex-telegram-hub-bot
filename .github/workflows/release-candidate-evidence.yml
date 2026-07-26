@@ -277,14 +277,16 @@ jobs:
           node scripts/run-test-tier.mjs deterministic \
             --shard '${{ matrix.shard }}/4' \
             --reporter json \
-            --json-output 'vitest-results-${{ matrix.shard }}.json'
+            --json-output '.local/release/rc-test-results/vitest-results-${{ matrix.shard }}.json'
 
       - name: Upload shard result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vitest-results-${{ matrix.shard }}
-          path: vitest-results-${{ matrix.shard }}.json
+          path: .local/release/rc-test-results/vitest-results-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
   vitest-selected:
@@ -320,14 +322,16 @@ jobs:
         run: |
           node scripts/release-test-evidence.mjs run-selected \
             --selection .local/release/test-selection.json \
-            --output vitest-results-selected.json
+            --output .local/release/rc-test-results/vitest-results-selected.json
 
       - name: Upload selected result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vitest-results-selected
-          path: vitest-results-selected.json
+          path: .local/release/rc-test-results/vitest-results-selected.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
   python-full:
