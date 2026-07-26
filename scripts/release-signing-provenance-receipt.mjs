@@ -17,6 +17,7 @@ const SHA = /^[0-9a-f]{40}$/u;
 const DIGEST = /^[0-9a-f]{64}$/u;
 const ARTIFACT_DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const RUN_ID = /^[1-9][0-9]*$/u;
+const REQUEST_ID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 
 function fail(message) {
   throw new Error(message);
@@ -211,13 +212,19 @@ function validateSourceProvenance(source, body, expected) {
 function validateRunMetadata(run, expected) {
   const runId = String(run?.id ?? '');
   const runAttempt = String(run?.run_attempt ?? '');
+  const displayTitle = String(run?.display_title ?? '');
+  const expectedTitle = new RegExp(
+    `^Sign release candidate ${expected.runtimeSha} run ${expected.candidateRunId} request ${REQUEST_ID}$`,
+    'u',
+  );
   const createdAt = githubTimestamp(
     run?.created_at,
     'release signing run created_at',
   );
   if (runId !== expected.signingRunId
       || runAttempt !== expected.signingRunAttempt
-      || run?.name !== WORKFLOW_NAME
+      || !expectedTitle.test(displayTitle)
+      || ![WORKFLOW_NAME, displayTitle].includes(run?.name)
       || run?.path !== WORKFLOW_PATH
       || run?.event !== 'workflow_dispatch'
       || run?.head_branch !== 'main'
@@ -235,7 +242,7 @@ function validateRunMetadata(run, expected) {
     headSha: run.head_sha,
     runAttempt,
     runId,
-    workflow: run.name,
+    workflow: WORKFLOW_NAME,
     workflowPath: run.path,
   };
 }
@@ -483,6 +490,7 @@ function installReceipt() {
     'release signing run metadata',
   );
   const protectedSigning = validateRunMetadata(run, {
+    candidateRunId,
     runtimeSha,
     signedAt: Date.parse(sourceIdentity.signedAt),
     signingRunAttempt: sourceIdentity.signingRunAttempt,
@@ -549,6 +557,7 @@ function verifyReceipt() {
       'live release signing run metadata',
     );
     const liveRun = validateRunMetadata(run, {
+      candidateRunId: validated.candidate.runId,
       runtimeSha,
       signedAt: Date.parse(validated.sourceProvenance.signedAt),
       signingRunAttempt: validated.protectedSigning.runAttempt,
