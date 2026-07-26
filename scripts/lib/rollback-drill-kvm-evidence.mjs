@@ -70,7 +70,7 @@ const INTERFACE_VALUES = Object.freeze({
   promotionControl: '/usr/local/sbin/nexus-release-promotion-control',
   restoreDrill: '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
   promotionAuthorization: '/usr/local/libexec/nexus-promotion-authorization.mjs',
-  controlVersion: 'nexus-release-promotion-control.v3',
+  controlVersion: 'nexus-release-promotion-control.v4',
   recoveryUnit: 'nexus-release-promotion-recovery.service',
 });
 const EXECUTION_MODE = 'strictly-sequential';
@@ -166,6 +166,18 @@ const PROVISION_HYPERVISOR_FIELDS = Object.freeze([
   'runtimeReadinessSha256',
   'runtimeRecoveryUnitSourcePath',
   'runtimeRecoveryUnitSha256',
+  'faultDrillControllerPath',
+  'faultDrillControllerSha256',
+  'faultDrillControllerUnitPath',
+  'faultDrillControllerUnitSha256',
+  'faultDrillControllerRecoveryUnitPath',
+  'faultDrillControllerRecoveryUnitSha256',
+  'faultDrillGuestExecutorSourcePath',
+  'faultDrillGuestExecutorSha256',
+  'faultDrillGuestRecoveryUnitSourcePath',
+  'faultDrillGuestRecoveryUnitSha256',
+  'faultDrillVerifierPath',
+  'faultDrillVerifierSha256',
   'sharedMutexPath',
   'guestAdmissionLockPath',
   'hostAvailableMemoryFloorGiB',
@@ -221,6 +233,18 @@ const EXPECTED_PROVISION_HYPERVISOR = Object.freeze({
     '/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness',
   runtimeRecoveryUnitSourcePath:
     '/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service',
+  faultDrillControllerPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller',
+  faultDrillControllerUnitPath:
+    '/etc/systemd/system/nexus-release-layout-fault-drill@.service',
+  faultDrillControllerRecoveryUnitPath:
+    '/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service',
+  faultDrillGuestExecutorSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest',
+  faultDrillGuestRecoveryUnitSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service',
+  faultDrillVerifierPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs',
   sharedMutexPath: '/run/lock/nexus-release-sonar.lock',
   guestAdmissionLockPath: '/run/nexus-rollback-drill-vm/admission.lock',
   hostAvailableMemoryFloorGiB: 25,
@@ -868,6 +892,12 @@ export function validateProvisionReceipt(receipt) {
     'runtimeControlSha256',
     'runtimeReadinessSha256',
     'runtimeRecoveryUnitSha256',
+    'faultDrillControllerSha256',
+    'faultDrillControllerUnitSha256',
+    'faultDrillControllerRecoveryUnitSha256',
+    'faultDrillGuestExecutorSha256',
+    'faultDrillGuestRecoveryUnitSha256',
+    'faultDrillVerifierSha256',
     'unitSha256',
   ]) {
     assertDigest(
@@ -958,6 +988,12 @@ export function validateProvisionReceipt(receipt) {
     `runtimeControl=${receipt.hypervisor.runtimeControlSha256}`,
     `runtimeReadiness=${receipt.hypervisor.runtimeReadinessSha256}`,
     `runtimeRecoveryUnit=${receipt.hypervisor.runtimeRecoveryUnitSha256}`,
+    `faultDrillController=${receipt.hypervisor.faultDrillControllerSha256}`,
+    `faultDrillControllerUnit=${receipt.hypervisor.faultDrillControllerUnitSha256}`,
+    `faultDrillControllerRecoveryUnit=${receipt.hypervisor.faultDrillControllerRecoveryUnitSha256}`,
+    `faultDrillGuest=${receipt.hypervisor.faultDrillGuestExecutorSha256}`,
+    `faultDrillGuestRecoveryUnit=${receipt.hypervisor.faultDrillGuestRecoveryUnitSha256}`,
+    `faultDrillVerifier=${receipt.hypervisor.faultDrillVerifierSha256}`,
     `unit=${receipt.hypervisor.unitSha256}`,
     `qemu=${receipt.hypervisor.qemuSha256}`,
     `qemuVersion=${receipt.hypervisor.qemuVersion}`,

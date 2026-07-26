@@ -362,10 +362,80 @@ describe('OllamaProvider — explicit workload roles', () => {
       },
     })).rejects.toMatchObject({
       kind: 'unsupported_capability',
-      meta: expect.objectContaining({ capability: 'local_workload_role_not_allowed' }),
+      meta: expect.objectContaining({
+        taskType: 'localReasoning',
+        capability: 'local_workload_role_not_allowed',
+        workloadRole: 'missing',
+      }),
     });
     expect(assertBudgetMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports an unsupported named workload role without dispatching', async () => {
+    const p = new OllamaProvider();
+    await expect((p.chatPrimitive as unknown as (args: unknown) => Promise<unknown>)({
+      taskType: 'localReasoning',
+      workloadRole: 'unapproved_local_role',
+      category: 'generic_reasoning',
+      request: {
+        model: 'qwen2.5:3b-instruct-q4_K_M',
+        messages: [{ role: 'user', content: 'complex request' }],
+        stream: false,
+      },
+    })).rejects.toMatchObject({
+      kind: 'unsupported_capability',
+      meta: expect.objectContaining({
+        taskType: 'localReasoning',
+        capability: 'local_workload_role_not_allowed',
+        workloadRole: 'unapproved_local_role',
+      }),
+    });
+    expect(assertBudgetMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('allows offline evaluation for local reasoning while independently denying optional local script generation', async () => {
+    const mod = await import('../../src/config');
+    const originalRequired = mod.config.localLLMEvaluation.requireLocalForScriptGen;
+    mod.config.localLLMEvaluation.requireLocalForScriptGen = false;
+    const request = {
+      model: 'qwen2.5:3b-instruct-q4_K_M',
+      messages: [{ role: 'user' as const, content: 'bounded evaluation' }],
+      stream: false,
+    };
+    try {
+      const provider = new OllamaProvider();
+      await expect((provider.chatPrimitive as unknown as (args: unknown) => Promise<unknown>)({
+        taskType: 'scriptGeneration',
+        workloadRole: 'offline_evaluation',
+        category: 'script_evaluation',
+        request,
+      })).rejects.toMatchObject({
+        kind: 'unsupported_capability',
+        meta: expect.objectContaining({
+          taskType: 'scriptGeneration',
+          workloadRole: 'offline_evaluation',
+        }),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({ content: 'bounded result' }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      await expect(provider.chatPrimitive({
+        taskType: 'localReasoning',
+        workloadRole: 'offline_evaluation',
+        category: 'reasoning_evaluation',
+        request,
+      })).resolves.toMatchObject({
+        response: {
+          message: { content: 'bounded result' },
+        },
+      });
+    } finally {
+      mod.config.localLLMEvaluation.requireLocalForScriptGen = originalRequired;
+    }
   });
 });
 

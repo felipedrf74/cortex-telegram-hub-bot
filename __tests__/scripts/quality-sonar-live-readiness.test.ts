@@ -136,6 +136,9 @@ describe('Sonar start live Ollama and backup readiness', () => {
     expect(stack).toContain('http://127.0.0.1:11434/api/tags');
     expect(stack).toContain('http://127.0.0.1:11434/api/ps');
     expect(backup).toContain('age --encrypt --recipient "$SONAR_BACKUP_AGE_RECIPIENT"');
-    expect(backup).toContain('s3api head-bucket --bucket "$SONAR_BACKUP_S3_BUCKET"');
+    expect(backup).toContain('s3api list-objects-v2');
+    expect(backup).toContain('--prefix "$SONAR_BACKUP_S3_PREFIX/"');
+    expect(backup).toContain('--max-keys 1 --no-paginate');
+    expect(backup).toContain('remoteBucket=exact-prefix-list-ok');
   });
 });

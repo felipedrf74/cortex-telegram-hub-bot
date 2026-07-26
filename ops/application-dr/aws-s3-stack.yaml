@@ -24,7 +24,9 @@ Parameters:
       - ENABLED
     Description: >-
       Keep DISABLED until the owner approves certificate issuance, revocation,
-      private-key custody, and the credential-helper installation.
+      private-key custody, and the credential-helper installation. A template
+      condition cannot prove prior stack history; use only the reviewed
+      external activation controller for the DISABLED-to-ENABLED transition.
   LifecycleActivation:
     Type: String
     Default: DISABLED
@@ -265,7 +267,13 @@ Rules:
         AssertDescription: >-
           LifecycleActivation may be ENABLED only with the exact SHA-256 of the
           completed first-backup bootstrap receipt.
-
+  DisabledLifecycleRejectsBootstrapReceipt:
+    RuleCondition: !Equals [!Ref LifecycleActivation, DISABLED]
+    Assertions:
+      - Assert: !Equals [!Ref LifecycleBootstrapReceiptSha256, '']
+        AssertDescription: >-
+          The lifecycle bootstrap receipt must remain empty until the
+          owner-observed first backup has completed.
 Resources:
   DisasterRecoveryBucket:
     Type: AWS::S3::Bucket
@@ -438,6 +446,28 @@ Resources:
           Value: application-dr-revocation
         - Key: crl-sha256
           Value: !Ref CertificateRevocationListSha256
+
+  RolesAnywhereActivationRollbackAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: ProvisionRolesAnywhere
+    Properties:
+      AlarmDescription: >-
+        Rolls back a reviewed Roles Anywhere enablement when its stack-scoped
+        controller lease stops before exact state and probes complete.
+      AlarmName: !Sub '${AWS::StackName}-roles-anywhere-activation-rollback'
+      ComparisonOperator: LessThanThreshold
+      DatapointsToAlarm: 24
+      Dimensions:
+        - Name: StackName
+          Value: !Ref 'AWS::StackName'
+      EvaluationPeriods: 24
+      MetricName: ActivationLease
+      Namespace: Nexus/ApplicationDR
+      Period: 30
+      Statistic: Minimum
+      Threshold: 1
+      TreatMissingData: breaching
+      Unit: Count
 
   BackupRole:
     Type: AWS::IAM::Role
@@ -963,6 +993,10 @@ Outputs:
     Condition: ProvisionRolesAnywhere
     Description: Fail-closed activation state for the managed trust anchor, CRL, and profiles.
     Value: !Ref RolesAnywhereActivation
+  RolesAnywhereActivationRollbackAlarmArn:
+    Condition: ProvisionRolesAnywhere
+    Description: Precreated CloudWatch alarm ARN required by the ENABLE change set rollback configuration.
+    Value: !GetAtt RolesAnywhereActivationRollbackAlarm.Arn
   LifecycleActivation:
     Description: Fail-closed activation state for governed S3 Lifecycle expiry.
     Value: !Ref LifecycleActivation

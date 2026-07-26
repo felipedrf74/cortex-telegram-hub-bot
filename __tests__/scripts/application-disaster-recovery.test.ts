@@ -2299,6 +2299,18 @@ describe('Nexus application disaster-recovery assets', () => {
       path.join(opsRoot, 'systemd/nexus-application-dr-backup.service'),
       'utf8',
     );
+    const healthService = fs.readFileSync(
+      path.join(opsRoot, 'systemd/nexus-application-dr-health.service'),
+      'utf8',
+    );
+    const healthTimer = fs.readFileSync(
+      path.join(opsRoot, 'systemd/nexus-application-dr-health.timer'),
+      'utf8',
+    );
+    const alertService = fs.readFileSync(
+      path.join(opsRoot, 'systemd/nexus-application-dr-alert@.service'),
+      'utf8',
+    );
     const config = fs.readFileSync(path.join(opsRoot, 'backup.env.example'), 'utf8');
     const awsConfig = fs.readFileSync(path.join(opsRoot, 'aws-config.example'), 'utf8');
     const runbook = fs.readFileSync(path.join(opsRoot, 'OPERATIONS.txt'), 'utf8');
@@ -2370,6 +2382,17 @@ describe('Nexus application disaster-recovery assets', () => {
     );
     expect(backup).not.toContain('/home/dominguez');
     expect(backup).not.toContain('remote-create-release-backup.sh');
+    expect(backup).toContain(
+      'last_success="$NEXUS_DR_STATE_DIR/last-success.v1.json"',
+    );
+    expect(backup).toContain(
+      '"schema": "nexus.application-dr-last-success.v1"',
+    );
+    expect(backup).toContain('while offset < len(body):');
+    expect(backup).toContain(
+      'could not write complete last-success evidence',
+    );
+    expect(backup).toContain('os.replace(temporary, target)');
 
     expect(timer).toContain('OnCalendar=*-*-* *:05:00 UTC');
     expect(timer).toContain('RandomizedDelaySec=0');
@@ -2378,7 +2401,24 @@ describe('Nexus application disaster-recovery assets', () => {
     expect(service).toContain('StateDirectoryMode=0700');
     expect(service).toContain('TimeoutStartSec=50min');
     expect(service).toContain('ProtectSystem=strict');
+    expect(service).toContain(
+      'OnFailure=nexus-application-dr-alert@%n.service',
+    );
+    expect(service).toContain(
+      'ConditionPathExists=!/var/lib/nexus-release-promotion/active.json',
+    );
     expect(service).not.toContain('--bootstrap-first-backup');
+    expect(healthTimer).toContain('OnCalendar=*-*-* *:00/5:00 UTC');
+    expect(healthTimer).toContain('Persistent=true');
+    expect(healthService).toContain('--max-age-seconds 3600');
+    expect(healthService).toContain(
+      'OnFailure=nexus-application-dr-alert@%n.service',
+    );
+    expect(healthService).not.toContain(
+      'ConditionPathExists=/etc/nexus-application-dr/backup.env',
+    );
+    expect(alertService).toContain('--unit %i');
+    expect(alertService).toContain('--logger /usr/bin/logger');
 
     expect(config).toContain(
       'NEXUS_DR_S3_ENDPOINT=REPLACE_WITH_STACK_OUTPUT_S3Endpoint',
@@ -2571,6 +2611,9 @@ describe('Nexus application disaster-recovery assets', () => {
       manualEvidenceRequired: [
         'root_installed_application_dr_assets_and_dedicated_nologin_user',
         'provider_control_plane_storage_evidence',
+        'reviewed_two_step_cloudformation_activation_evidence',
+        'positive_and_revoked_roles_anywhere_probe_evidence',
+        'hourly_freshness_and_failure_alert_evidence',
         'off_host_age_identity',
         'successful_retained_quarterly_restore_evidence',
       ],

@@ -2988,6 +2988,92 @@ PY
     || die "lifecycle bootstrap receipt digest is invalid"
 fi
 
+last_success="$NEXUS_DR_STATE_DIR/last-success.v1.json"
+if [ -L "$last_success" ]; then
+  die "last-success evidence path is a symlink"
+elif [ -e "$last_success" ]; then
+  private_root_file "$last_success" "last-success evidence"
+fi
+success_epoch="$(date -u +%s)"
+"$NEXUS_DR_PYTHON_BIN" - \
+  "$NEXUS_DR_STATE_DIR" "$last_success" "$created_epoch" "$success_epoch" \
+  "$NEXUS_DR_STORAGE_PROVIDER" "$NEXUS_DR_STORAGE_CONTROL_MODE" \
+  "$lifecycle_phase" <<'PY'
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import secrets
+import sys
+
+(
+    state_dir_raw,
+    target_raw,
+    started_raw,
+    completed_raw,
+    provider,
+    control_mode,
+    lifecycle_phase,
+) = sys.argv[1:]
+state_dir = Path(state_dir_raw)
+target = Path(target_raw)
+if target.parent != state_dir or target.name != "last-success.v1.json":
+    raise SystemExit("last-success evidence path escaped the state directory")
+try:
+    started = int(started_raw)
+    completed = int(completed_raw)
+except ValueError as error:
+    raise SystemExit("last-success evidence time is invalid") from error
+if started < 0 or completed < started or completed - started > 3600:
+    raise SystemExit("last-success evidence interval is invalid")
+
+def timestamp(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+    )
+
+payload = {
+    "schema": "nexus.application-dr-last-success.v1",
+    "status": "passed",
+    "startedAt": timestamp(started),
+    "completedAt": timestamp(completed),
+    "storageProvider": provider,
+    "storageControlMode": control_mode,
+    "lifecyclePhase": lifecycle_phase,
+}
+temporary = state_dir / (
+    f".last-success.v1.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+)
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+descriptor = os.open(temporary, flags, 0o600)
+try:
+    body = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    offset = 0
+    while offset < len(body):
+        written = os.write(descriptor, body[offset:])
+        if written <= 0:
+            raise SystemExit("could not write complete last-success evidence")
+        offset += written
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+try:
+    os.replace(temporary, target)
+    directory = os.open(state_dir, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+PY
+private_root_file "$last_success" "last-success evidence"
+
 if [ "$JSON_OUTPUT" = true ]; then
   "$NEXUS_DR_PYTHON_BIN" - "$hourly_key" "$plaintext_sha" \
     "$encrypted_sha" "$(size_file "$encrypted")" \

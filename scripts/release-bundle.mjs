@@ -60,7 +60,14 @@ for (const entry of artifact.files) {
   const source = path.join(root, entry.path);
   const destination = path.join(outputRoot, entry.path);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  // Hosted runners and local APFS worktrees may support copy-on-write clones.
+  // COPYFILE_FICLONE falls back to an ordinary copy when cloning is
+  // unavailable; COPYFILE_EXCL preserves the immutable no-overwrite contract.
+  fs.copyFileSync(
+    source,
+    destination,
+    fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE,
+  );
 }
 fs.writeFileSync(
   path.join(outputRoot, 'artifact-manifest.json'),

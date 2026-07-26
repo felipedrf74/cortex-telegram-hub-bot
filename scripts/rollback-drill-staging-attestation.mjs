@@ -12,6 +12,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  canonicalJson as canonicalLegacyJson,
+  sha256 as legacySha256,
+  validateLegacyStagingRequest,
+} from './rollback-drill-legacy-staging-adapter.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? '';
@@ -46,6 +51,7 @@ const RUN_ID = /^[1-9][0-9]*$/u;
 
 const REQUEST_KEYS = [
   'artifactDigest',
+  'drillBootstrapSha256',
   'expiresAt',
   'installedRuntimeDigest',
   'manifestSigningRunId',
@@ -145,6 +151,14 @@ function validateOrdinaryStagingRequest(body, expectedRuntimeSha = '') {
   if (request?.schema !== STAGING_REQUEST_SCHEMA) {
     throw new Error('ordinary staging request schema is invalid');
   }
+  if (request.drillBootstrap !== undefined) {
+    validateLegacyStagingRequest(
+      request,
+      expectedRuntimeSha,
+      { allowProtectedSigning: false },
+    );
+    return request;
+  }
   const temporaryRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), 'nexus-rollback-drill-staging-request-'),
   );
@@ -211,6 +225,12 @@ function validateRequest(request, expectedRuntimeSha = '') {
     throw new Error('ordinary staging request digest mismatch');
   }
   const staging = validateOrdinaryStagingRequest(stagingBody, request.runtimeSha);
+  const expectedBootstrapSha256 = staging.drillBootstrap === undefined
+    ? null
+    : legacySha256(canonicalLegacyJson(staging.drillBootstrap));
+  if (request.drillBootstrapSha256 !== expectedBootstrapSha256) {
+    throw new Error('rollback-drill staging bootstrap digest mismatch');
+  }
   for (const field of [
     'requestId',
     'runtimeSha',
@@ -521,6 +541,7 @@ function validateSignedBundle(bundleDirectory) {
     throw new Error('rollback-drill staging binding payload is invalid');
   }
   assertExactKeys(payload.source, [
+    'drillBootstrapSha256',
     'manifestSigningRunId',
     'releaseManifestPayloadSha256',
     'releaseManifestSha256',
@@ -545,6 +566,19 @@ function validateSignedBundle(bundleDirectory) {
       || payload.runtimeSha !== manifest.payload?.runtimeSha
       || payload.artifactDigest !== manifest.payload?.artifact?.digest) {
     throw new Error('rollback-drill staging inner evidence binding is invalid');
+  }
+  const observedBootstrapSha256 = staging.payload?.drillBootstrap === undefined
+    ? null
+    : legacySha256(canonicalLegacyJson(staging.payload.drillBootstrap));
+  if (payload.source.drillBootstrapSha256 !== observedBootstrapSha256) {
+    throw new Error('rollback-drill staging bootstrap source binding is invalid');
+  }
+  if (staging.payload?.drillBootstrap !== undefined) {
+    validateLegacyStagingRequest(
+      staging.payload,
+      payload.runtimeSha,
+      { allowProtectedSigning: true },
+    );
   }
   return { bodies, binding, manifest, staging };
 }
@@ -575,6 +609,9 @@ if (command === 'request') {
     requestId: staging.requestId,
     runtimeSha: staging.runtimeSha,
     artifactDigest: staging.artifactDigest,
+    drillBootstrapSha256: staging.drillBootstrap === undefined
+      ? null
+      : legacySha256(canonicalLegacyJson(staging.drillBootstrap)),
     installedRuntimeDigest: staging.installedRuntimeDigest,
     recoveryRuntimeDigest: staging.recoveryRuntimeDigest,
     manifestSigningRunId,
@@ -681,6 +718,7 @@ if (command === 'request') {
     runtimeSha: validated.request.runtimeSha,
     artifactDigest: validated.request.artifactDigest,
     source: {
+      drillBootstrapSha256: validated.request.drillBootstrapSha256,
       manifestSigningRunId: validated.request.manifestSigningRunId,
       releaseManifestSha256: validated.request.releaseManifestSha256,
       releaseManifestPayloadSha256: validated.request.releaseManifestPayloadSha256,
@@ -734,6 +772,8 @@ if (command === 'request') {
         || source.releaseManifestPayloadSha256
           !== inputs.request.releaseManifestPayloadSha256
         || source.stagingRequestSha256 !== inputs.request.stagingRequestSha256
+        || source.drillBootstrapSha256
+          !== inputs.request.drillBootstrapSha256
         || source.manifestSigningRunId !== inputs.request.manifestSigningRunId
         || canonicalJson(validated.manifest.payload)
           !== canonicalJson(inputs.manifest.payload)) {

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { isCriticalModule } from './mutation-gate.mjs';
+import { isCriticalModule, parseAddedLines } from './mutation-gate.mjs';
 import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
 import { loadTestPolicy, root } from './lib/test-policy.mjs';
 
@@ -109,17 +109,7 @@ function changedProductionFiles(base) {
   return result.stdout.trim().split('\n').filter((file) => file.endsWith('.ts') && fs.existsSync(path.join(root, file))).sort();
 }
 
-export function parseAddedLines(diff) {
-  const lines = new Set();
-  for (const line of String(diff).split('\n')) {
-    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-    if (!match) continue;
-    const start = Number(match[1]);
-    const count = match[2] === undefined ? 1 : Number(match[2]);
-    for (let offset = 0; offset < count; offset += 1) lines.add(start + offset);
-  }
-  return lines;
-}
+export { parseAddedLines };
 
 function changedLinesForFile(base, file) {
   const result = runGit(['diff', '--unified=0', '--no-color', base, 'HEAD', '--', file]);

@@ -28,21 +28,69 @@ recovery bindings before it creates a plan or promotion requests. Do not use
 the production release public key: production intentionally rejects the drill
 signatures.
 
-That wrapper does not make this environment executable. The
-release:drill-staging operator entry is intentionally disabled, including in
-dry-run mode, until a separately reviewed adapter supports the currently
-installed promotion-control v2 and legacy /home staging bases. It requires the
-literal --acknowledge-first-drill-bootstrap flag and then exits 78 before SSH or
-any remote mutation. Do not route it into the v3 /srv staging branch and do not
-handcraft its ordinary staging request.
+That wrapper does not install or activate the environment. The reviewed
+release:drill-staging adapter supports only the exact promotion-control v2
+digest and /home/dominguez/telegram-hub-bot-staging base. Dry-run remains local
+and non-promotable. Non-dry execution requires the literal
+--acknowledge-first-drill-bootstrap flag, a clean checkout at the exact signed
+runtime SHA, and the separately root-installed legacy staging broker. Do not
+route it into the v3 /srv staging branch and do not handcraft its staging
+request.
+
+Install the broker only from the same root-owned, SHA-bound protected-main
+archive described below:
+
+  sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/remote-rollback-drill-legacy-staging-install.sh \
+    install \
+    /var/lib/nexus-release-bootstrap/<sha>/source \
+    <40-hex-protected-main-sha> \
+    /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+    <64-hex-root-side-archive-sha256>
+
+The installer validates the Git PAX commit and every privileged member before
+installing its root broker, tools, systemd transaction/recovery units,
+fail-closed PM2 dependency drop-ins, and NOSETENV allowlisted sudoers commands.
+The application account cannot invoke broker
+run or recover-all. It also verifies, but does not replace, the
+application-DR-owned mode-0644 SQLite helper at
+/usr/local/libexec/nexus-application-dr/application-dr-sqlite.py against the
+reviewed source/archive and SHA-256
+e1f1a92d4dc49bd6fe6c1d8c1a3573ec2db61f6374a1831b2765a5541943708d.
+The root worker holds the ordinary-promotion and
+release/Sonar locks, performs the network-independent dependency installation
+and candidate preflight before arming the outage, fsyncs predecessor and outage
+state before changing either of the two staging PM2 names, root-pins and seals
+both runtime identities, stops only those
+allowlisted apps, and refuses selector mutation until no database/WAL/SHM
+handle remains and a verified stopped-state SQLite recovery point is fsynced
+into the root journal. Database and recovery-point inputs above 2 GiB fail
+closed. Only the backup schema, digest, size, original uid/gid/mode, and
+creation time enter the journal; evidence exposes only digest and size. Failure
+or reboot keeps the apps stopped, rejects missing/corrupt backup bytes, removes
+WAL/SHM sidecars, recreates a deleted/truncated database with its journaled
+metadata, atomically restores the shared database, restores the exact
+root-pinned predecessor selector, and re-attests predecessor readiness before
+reporting recovery. Both PM2 units require successful boot recovery and a
+final no-unfinished-journal guard. The exact-SHA PM2 identity and authenticated
+readiness probe run inside the root transaction before terminal completion and
+serve as the required legacy drill smoke. The Mac only submits and polls the
+transaction, so closing SSH does not cancel the root one-shot.
+
+Do not retire this exact control-v2 adapter while any transaction is active.
+Run `sudo /usr/local/sbin/nexus-rollback-drill-legacy-staging-broker
+assert-terminal-retirement-ready`; its success still requires the
+`nexus.release-layout-fault-drill.v1` successor integration to be installed
+before adapter removal.
 
 Before any live drill, install the reviewed promotion bridge that verifies
 both release-evidence signatures with its root-installed production key before
 the first application-runtime mode/ownership mutation. Current-source request
 validation alone does not guard an older installed bridge.
 
-After an adapter exists, the protected bundle still authorizes only the
-isolated first-drill input. The three real, strictly sequential outcomes and
+The protected bundle still authorizes only the isolated first-drill input. Its
+drillBootstrap field and canonical digest are rejected by the ordinary staging
+validator, and both inner signatures remain invalid under the production key.
+The three real, strictly sequential outcomes and
 execution receipt remain required before the existing protected
 nexus.rollback-drill.v1 freshness envelope can be requested. Staging
 normalization into an ordinary production-promotable attestation is a separate
@@ -75,8 +123,13 @@ Trust boundary
    static systemd template. Before any commit it proves the archive's PAX
    commit identity, compares every privileged source byte with its regular
    archive member, syntax-checks the shell/Python assets, and verifies the
-   systemd template. It does not download an image, provision a guest, start a
-   service, or enable a unit.
+   systemd templates. It does not download an image, provision a guest, or
+   start a service. It enables only
+   nexus-release-layout-fault-drill-recovery.service so an authenticated
+   nonterminal controller journal resumes after host boot; the three guest
+   templates and owner-submitted transaction template remain static and
+   disabled. The host recovery unit orders after dev-kvm.device and both host
+   and guest boot recovery use bounded four-attempt retry windows.
 4. From Canonical's signed SHA256SUMS, independently record the reviewed digest
    of noble-server-cloudimg-amd64.img. Then provision exactly three guests:
 
@@ -92,7 +145,16 @@ Trust boundary
    /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg, requires the signed digest
    to equal the owner-reviewed digest, validates qcow2 structure, installs an
    immutable root-owned base named by digest, and atomically publishes three
-   independent overlays and cloud-init seeds.
+   independent overlays and cloud-init seeds. It also creates a dedicated
+   root-only hypervisor Ed25519 evidence key and one guest Ed25519 evidence key
+   per seed, then atomically publishes the root-owned mode-0600
+   /var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json.
+   That manifest binds the active provision receipt/set, QEMU and runner
+   digests, guest SSH host-key digests, fixed scenario-to-guest mapping, and
+   exact SHA-256 digests for the root controller, controller unit, deep
+   verifier, guest executor, and guest boot-recovery unit.
+   A provision journal or disagreement between that manifest and active.json
+   blocks release-layout proof verification.
 
    When the three exact files were pre-staged under an unprivileged directory,
    add:
@@ -104,6 +166,40 @@ Trust boundary
    state, detects a concurrent source change, and performs the same signature,
    owner-reviewed size/digest, and qcow2 validation after the copy. It does not
    execute a staged file and does not use the network in this mode.
+
+Release-layout successor evidence
+---------------------------------
+
+Install the dedicated lab SSH private key corresponding to the public key used
+at provision time as the root-owned, single-link, mode-0600
+/etc/nexus-release/rollback-drill-vm-ssh-private.pem. The guest account has
+NOSETENV sudo access only to the fixed runtime-control and fault-executor
+subcommands; it cannot read a guest evidence private key or author evidence
+bytes.
+
+Create the nonce-bound plan with the protected-main
+release-layout-fault-drill.mjs `prepare` command. Submit it only to the installed
+root controller:
+
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller submit <plan.json>
+  sudo /usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller status <plan-id>
+
+The systemd one-shot runs failed health, guest reboot, and SSH disconnect
+strictly sequentially, with at most one active guest. The controller observes
+the live QEMU PID and command line, loopback-only SSH boundary, guest boot IDs,
+and host monotonic recovery interval. Each root-only guest executor performs
+and restores an actual selector, process, and SQLite recovery fixture, while
+its boot recovery unit resumes an armed transaction after reboot. The guest
+signs only after exact predecessor, database, and health restoration; the
+hypervisor signs the bound isolation observation. Test-mode execution is
+cryptographically ineligible for sealing.
+
+After `status` reports `completed`, the owner-signable payload is the immutable
+root-owned file below
+/var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/<plan-id>/.
+Do not hand-author result JSON, copy evidence private keys, or use OpenSSL to
+manufacture a scenario result. The deep verifier intentionally exposes no
+manual `record` command.
 
 Runtime-readiness gate
 ----------------------
@@ -140,17 +236,17 @@ The protected source archive must be rooted at source/. The guest copies the
 same signed archive to
 /var/lib/nexus-release-bootstrap/<protected-main-sha>/source.tar.gz, verifies
 its digest and Git PAX commit identity, safely extracts only its source/
-sibling, and invokes the five-argument v3 promotion installer from that
+sibling, and invokes the five-argument v4 promotion installer from that
 root-owned source tree.
 
-The readiness measurement binds every installed v3 core promotion asset,
+The readiness measurement binds every installed v4 core promotion asset,
 every application-DR install-layout asset, and all seven Ollama operational
 assets by source, destination, owner, mode, size, and digest. It separately
 binds generated keys, sudoers, service drop-ins, sealed production/staging
 environments, the PM2 installation attestation, effective systemd unit state,
 and NeedDaemonReload=false. A missing asset or an installer that provides only
 a subset of that union fails closed. Before readiness is signed, the guest
-invokes the installed v3 promotion control's assert-root-pm2-ready command;
+invokes the installed v4 promotion control's assert-root-pm2-ready command;
 failure prevents readiness publication and therefore prevents every drill.
 
 Each provisioned guest is assigned to one drill. Start its first boot, collect

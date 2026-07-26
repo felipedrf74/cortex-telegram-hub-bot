@@ -7,7 +7,7 @@ import {
   matchFiles,
   partitionTestFiles,
   resolveTestDisposition,
-  root,
+  root as repositoryRoot,
   walkTestFiles,
 } from './lib/test-policy.mjs';
 
@@ -22,13 +22,14 @@ const valueOf = (name, fallback = null) => {
   const index = args.indexOf(name);
   return index === -1 ? fallback : args[index + 1];
 };
+const root = path.resolve(valueOf('--root', repositoryRoot));
 const timingsPath = valueOf('--timings');
 const timingScope = timingsPath ? valueOf('--timing-scope', 'all') : 'none';
 const timingHistoryDir = valueOf('--timing-history-dir');
 const enforceEvidence = args.includes('--enforce-evidence');
 const timingMode = valueOf('--timing-mode', 'enforce');
-const policy = loadTestPolicy();
-const files = walkTestFiles();
+const policy = loadTestPolicy(root);
+const files = walkTestFiles(root);
 const partitions = partitionTestFiles(files, policy);
 const currentTimingSamplesByFile = new Map();
 

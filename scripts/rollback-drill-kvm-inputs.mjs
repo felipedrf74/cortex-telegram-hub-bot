@@ -92,7 +92,7 @@ const INTERFACES = Object.freeze({
     '/usr/local/libexec/nexus-application-dr/application-dr-restore-drill.sh',
   promotionAuthorization:
     '/usr/local/libexec/nexus-promotion-authorization.mjs',
-  controlVersion: 'nexus-release-promotion-control.v3',
+  controlVersion: 'nexus-release-promotion-control.v4',
   recoveryUnit: 'nexus-release-promotion-recovery.service',
 });
 

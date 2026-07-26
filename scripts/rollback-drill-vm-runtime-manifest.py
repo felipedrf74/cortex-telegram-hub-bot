@@ -163,6 +163,12 @@ CONTROL_FILES = (
         0o700,
     ),
     (
+        "scripts/release-layout-fault-drill.mjs",
+        "/usr/local/libexec/nexus-release-layout-fault-drill.mjs",
+        "root:root",
+        0o700,
+    ),
+    (
         "scripts/remote-release-layout-migrate.sh",
         "/usr/local/sbin/nexus-release-layout-migrate",
         "root:root",
@@ -1635,7 +1641,7 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         "promotion control target",
     )
     if (
-        control["version"] != "nexus-release-promotion-control.v3"
+        control["version"] != "nexus-release-promotion-control.v4"
         or not FULL_SHA.fullmatch(control["sourceCommit"])
         or control["archivePath"] != CONTROL_ARCHIVE
         or not HEX64.fullmatch(control["archiveSha256"])
@@ -2588,6 +2594,18 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
             "runtimeReadinessSha256",
             "runtimeRecoveryUnitSourcePath",
             "runtimeRecoveryUnitSha256",
+            "faultDrillControllerPath",
+            "faultDrillControllerSha256",
+            "faultDrillControllerUnitPath",
+            "faultDrillControllerUnitSha256",
+            "faultDrillControllerRecoveryUnitPath",
+            "faultDrillControllerRecoveryUnitSha256",
+            "faultDrillGuestExecutorSourcePath",
+            "faultDrillGuestExecutorSha256",
+            "faultDrillGuestRecoveryUnitSourcePath",
+            "faultDrillGuestRecoveryUnitSha256",
+            "faultDrillVerifierPath",
+            "faultDrillVerifierSha256",
             "sharedMutexPath",
             "guestAdmissionLockPath",
             "hostAvailableMemoryFloorGiB",
@@ -2631,6 +2649,29 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
             "/usr/local/libexec/nexus-rollback-drill-vm/"
             "runtime-recovery.service"
         ),
+        "faultDrillControllerPath": (
+            "/usr/local/libexec/nexus-rollback-drill-vm/"
+            "release-layout-fault-controller"
+        ),
+        "faultDrillControllerUnitPath": (
+            "/etc/systemd/system/nexus-release-layout-fault-drill@.service"
+        ),
+        "faultDrillControllerRecoveryUnitPath": (
+            "/etc/systemd/system/"
+            "nexus-release-layout-fault-drill-recovery.service"
+        ),
+        "faultDrillGuestExecutorSourcePath": (
+            "/usr/local/libexec/nexus-rollback-drill-vm/"
+            "release-layout-fault-guest"
+        ),
+        "faultDrillGuestRecoveryUnitSourcePath": (
+            "/usr/local/libexec/nexus-rollback-drill-vm/"
+            "release-layout-fault-guest-recovery.service"
+        ),
+        "faultDrillVerifierPath": (
+            "/usr/local/libexec/nexus-rollback-drill-vm/"
+            "release-layout-fault-drill.mjs"
+        ),
         "sharedMutexPath": "/run/lock/nexus-release-sonar.lock",
         "guestAdmissionLockPath": (
             "/run/nexus-rollback-drill-vm/admission.lock"
@@ -2667,6 +2708,12 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
         "runtimeControlSha256",
         "runtimeReadinessSha256",
         "runtimeRecoveryUnitSha256",
+        "faultDrillControllerSha256",
+        "faultDrillControllerUnitSha256",
+        "faultDrillControllerRecoveryUnitSha256",
+        "faultDrillGuestExecutorSha256",
+        "faultDrillGuestRecoveryUnitSha256",
+        "faultDrillVerifierSha256",
         "unitSha256",
     )
     if any(
@@ -2702,6 +2749,14 @@ def provision_guest(receipt: dict[str, Any], guest_name: str) -> dict[str, Any]:
         f"runtimeControl={hypervisor['runtimeControlSha256']}\n"
         f"runtimeReadiness={hypervisor['runtimeReadinessSha256']}\n"
         f"runtimeRecoveryUnit={hypervisor['runtimeRecoveryUnitSha256']}\n"
+        f"faultDrillController={hypervisor['faultDrillControllerSha256']}\n"
+        f"faultDrillControllerUnit={hypervisor['faultDrillControllerUnitSha256']}\n"
+        "faultDrillControllerRecoveryUnit="
+        f"{hypervisor['faultDrillControllerRecoveryUnitSha256']}\n"
+        f"faultDrillGuest={hypervisor['faultDrillGuestExecutorSha256']}\n"
+        "faultDrillGuestRecoveryUnit="
+        f"{hypervisor['faultDrillGuestRecoveryUnitSha256']}\n"
+        f"faultDrillVerifier={hypervisor['faultDrillVerifierSha256']}\n"
         f"unit={hypervisor['unitSha256']}\n"
         f"qemu={hypervisor['qemuSha256']}\n"
         f"qemuVersion={hypervisor['qemuVersion']}\n"
@@ -3158,7 +3213,7 @@ def validate_guest_measurement(
         "guest promotion control identity",
     )
     if (
-        control["version"] != "nexus-release-promotion-control.v3"
+        control["version"] != "nexus-release-promotion-control.v4"
         or not FULL_SHA.fullmatch(control["sourceCommit"])
         or control["assertIdle"] is not True
         or not isinstance(control["files"], list)
@@ -3785,7 +3840,7 @@ def build_command(args: argparse.Namespace) -> None:
                 **pm2_runtime_identity,
             },
             "control": {
-                "version": "nexus-release-promotion-control.v3",
+                "version": "nexus-release-promotion-control.v4",
                 "sourceCommit": args.source_commit,
                 "archivePath": CONTROL_ARCHIVE,
                 "archiveSha256": sha256_file(root / CONTROL_ARCHIVE),

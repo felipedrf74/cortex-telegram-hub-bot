@@ -6,6 +6,10 @@ const mockGetUnreadNotifications = vi.fn();
 const mockGetFilmingRecommendation = vi.fn();
 const mockGetTopics = vi.fn();
 const mockGetUpcomingTopicCount = vi.fn();
+const mockGetActiveContentPillars = vi.fn();
+const mockGetContentDeskItems = vi.fn();
+const mockGetNextContentExecutionHint = vi.fn();
+const mockGetRankedContentSignals = vi.fn();
 const mockGetKnowledgeStats = vi.fn();
 const mockGetVoiceDna = vi.fn();
 const mockGetMonthlySummary = vi.fn();
@@ -67,6 +71,13 @@ vi.mock('../../src/services/content-scheduler', () => ({
 vi.mock('../../src/services/content-dashboard-service', () => ({
   getKnowledgeStats: (...args: unknown[]) => mockGetKnowledgeStats(...args),
   getVoiceDna: (...args: unknown[]) => mockGetVoiceDna(...args),
+}));
+
+vi.mock('../../src/services/content-intelligence', () => ({
+  getActiveContentPillars: (...args: unknown[]) => mockGetActiveContentPillars(...args),
+  getContentDeskItems: (...args: unknown[]) => mockGetContentDeskItems(...args),
+  getNextContentExecutionHint: (...args: unknown[]) => mockGetNextContentExecutionHint(...args),
+  getRankedContentSignals: (...args: unknown[]) => mockGetRankedContentSignals(...args),
 }));
 
 vi.mock('../../src/services/finance-tracker', () => ({
@@ -132,6 +143,10 @@ describe('mesh context scope hardening', () => {
       mockGetFilmingRecommendation,
       mockGetTopics,
       mockGetUpcomingTopicCount,
+      mockGetActiveContentPillars,
+      mockGetContentDeskItems,
+      mockGetNextContentExecutionHint,
+      mockGetRankedContentSignals,
       mockGetKnowledgeStats,
       mockGetVoiceDna,
       mockGetMonthlySummary,
@@ -152,6 +167,75 @@ describe('mesh context scope hardening', () => {
       mockGetEvents,
       mockHasWritableCalendarForUser,
     ].forEach((mock) => mock.mockReset());
+  });
+
+  it('keeps valid content reads on the explicit tenant and returns the exact owned mesh values', async () => {
+    const unreadNotifications = [{ id: 11 }, { id: 12 }];
+    const deskItems = [{ id: 21, title: 'Ready draft' }];
+    const monitoredPillars = [{ id: 31, name: 'Product' }];
+    const recentSignals = [{ id: 41, type: 'trend', title: 'Signal' }];
+
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetUnreadNotifications.mockReturnValue(unreadNotifications);
+    mockGetContentDeskItems.mockReturnValue(deskItems);
+    mockGetActiveContentPillars.mockReturnValue(monitoredPillars);
+    mockGetRankedContentSignals.mockReturnValue(recentSignals);
+    mockGetUpcomingTopicCount.mockReturnValue(3);
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context).toMatchObject({
+      userId: 42,
+      upcomingTopicCount: 3,
+      unreadNotifications,
+      deskItems,
+      monitoredPillars,
+      recentSignals,
+    });
+    expect(mockGetUnreadNotifications).toHaveBeenCalledWith(42, 10, 91);
+    expect(mockGetContentDeskItems).toHaveBeenCalledWith(42, 4, 91);
+    expect(mockGetActiveContentPillars).toHaveBeenCalledWith(42, 91);
+    expect(mockGetUpcomingTopicCount).toHaveBeenCalledWith(42, 14, 91);
+  });
+
+  it('uses exact empty content fallbacks when tenant-owned readers throw', async () => {
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetUnreadNotifications.mockImplementation(() => {
+      throw new Error('notification read failed');
+    });
+    mockGetContentDeskItems.mockImplementation(() => {
+      throw new Error('desk read failed');
+    });
+    mockGetActiveContentPillars.mockImplementation(() => {
+      throw new Error('pillar read failed');
+    });
+    mockGetRankedContentSignals.mockReturnValue([]);
+    mockGetUpcomingTopicCount.mockImplementation(() => {
+      throw new Error('topic count failed');
+    });
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context.unreadNotifications).toEqual([]);
+    expect(context.deskItems).toEqual([]);
+    expect(context.monitoredPillars).toEqual([]);
+    expect(context.upcomingTopicCount).toBe(0);
   });
 
   it('fails closed for invalid user scope across all mesh readers and records anomalies', async () => {

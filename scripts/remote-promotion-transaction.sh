@@ -907,9 +907,14 @@ for _ in $(seq 1 8); do
         }' "$RELEASE_DIR" "$RUNTIME_SHA"; then
     identity_available=true
   fi
-  if curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "$PUBLIC_BASE_URL/health" > "$availability_health" \
-      && node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.status!=="healthy"||x.server?.status!=="online"||x.database!=="connected")process.exit(1)' "$availability_health"; then
-    public_available=true
+  # Do not spend the public-network timeout while the candidate is already
+  # known to be unavailable locally or is not the exact active PM2 identity.
+  if [ "$local_available" = true ] && [ "$content_available" = true ] \
+      && [ "$identity_available" = true ]; then
+    if curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "$PUBLIC_BASE_URL/health" > "$availability_health" \
+        && node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.status!=="healthy"||x.server?.status!=="online"||x.database!=="connected")process.exit(1)' "$availability_health"; then
+      public_available=true
+    fi
   fi
   if [ "$local_available" = true ] && [ "$content_available" = true ] \
       && [ "$identity_available" = true ] && [ "$public_available" = true ]; then

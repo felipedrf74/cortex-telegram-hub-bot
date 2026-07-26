@@ -106,6 +106,24 @@ describe('root-pinned staging evidence and exact-active resume', () => {
     expect(fs.readlinkSync(path.join(base, 'current'))).toBe(candidate);
 
     fs.rmSync(path.join(base, 'current'));
+    const initialized = run(
+      'initialize',
+      ...common,
+      '--target', predecessor,
+      '--layout-transition',
+      '--legacy-base', legacyBase,
+    );
+    expect(initialized.status, initialized.stderr).toBe(0);
+    expect(fs.readlinkSync(path.join(base, 'current'))).toBe(predecessor);
+    expect(run(
+      'initialize',
+      ...common,
+      '--target', candidate,
+      '--layout-transition',
+      '--legacy-base', legacyBase,
+    ).status).not.toBe(0);
+
+    fs.rmSync(path.join(base, 'current'));
     const oldLegacyRuntime = path.join(legacyBase, 'releases', 'predecessor');
     fs.symlinkSync(oldLegacyRuntime, path.join(base, 'current'));
     const forwardLayout = run(

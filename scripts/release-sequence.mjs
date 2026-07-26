@@ -702,12 +702,13 @@ function validateWorkflowRun(runId, {
   workflowName,
   expectedTitle = '',
   requireCodeql = false,
+  expectedEvent = requireCodeql ? 'push' : 'workflow_dispatch',
 } = {}) {
   const runView = ghJson(['run', 'view', String(runId), '--json',
     'databaseId,displayTitle,headSha,headBranch,event,status,conclusion,workflowName,url,jobs'],
   `GitHub workflow run ${runId}`);
   if (String(runView.databaseId) !== String(runId) || runView.headSha !== runtimeSha
-      || runView.headBranch !== 'main' || runView.event !== (requireCodeql ? 'push' : 'workflow_dispatch')
+      || runView.headBranch !== 'main' || runView.event !== expectedEvent
       || runView.status !== 'completed' || runView.conclusion !== 'success'
       || runView.workflowName !== workflowName
       || (expectedTitle && runView.displayTitle !== expectedTitle)) {
@@ -726,25 +727,543 @@ function validateWorkflowRun(runId, {
   return { runView, codeqlJob };
 }
 
-function existingSecurityEvidence() {
-  const runs = ghJson(['run', 'list', '--workflow', 'security.yml', '--branch', 'main', '--event', 'push',
-    '--limit', '50', '--json', 'databaseId,headSha,status,conclusion,createdAt'], 'security workflow lookup');
-  const exact = runs.find((candidate) => candidate.headSha === runtimeSha
-    && candidate.status === 'completed' && candidate.conclusion === 'success');
-  if (!exact) fail('successful security.yml evidence for exact origin/main is missing');
-  const { runView, codeqlJob } = validateWorkflowRun(exact.databaseId, {
-    workflowName: 'Security — supply chain and static analysis',
-    requireCodeql: true,
-  });
-  return {
+const protectedWorkflowDefinitions = Object.freeze({
+  protectedMainCi: Object.freeze({
+    workflow: 'ci.yml',
+    workflowName: 'CI — Risk-based parallel matrix',
+    label: 'protected-main CI',
+    requireCodeql: false,
+  }),
+  security: Object.freeze({
     workflow: 'security.yml',
-    workflowSha256: sha256File(path.join(root, '.github', 'workflows', 'security.yml')),
+    workflowName: 'Security — supply chain and static analysis',
+    label: 'security.yml',
+    requireCodeql: true,
+  }),
+});
+
+function positiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function pathScopedProtectedWorkflowDatabaseId(repository, definition) {
+  const identity = ghJson([
+    'api',
+    `repos/${repository}/actions/workflows/${definition.workflow}`,
+  ], `${definition.label} path-scoped workflow identity`);
+  if (!positiveSafeInteger(identity?.id)
+      || identity.name !== definition.workflowName
+      || identity.path !== `.github/workflows/${definition.workflow}`
+      || identity.state !== 'active') {
+    fail(`${definition.label} path-scoped workflow identity is invalid`);
+  }
+  return identity.id;
+}
+
+function protectedWorkflowWaitMs() {
+  if (process.env.NODE_ENV === 'test'
+      && /^\d+$/.test(process.env.NEXUS_RELEASE_TEST_PROTECTED_TIMEOUT_MS || '')) {
+    return Number(process.env.NEXUS_RELEASE_TEST_PROTECTED_TIMEOUT_MS);
+  }
+  return 45 * 60 * 1_000;
+}
+
+function protectedWorkflowTestPollLimit() {
+  if (process.env.NODE_ENV !== 'test'
+      || !/^[1-9]\d*$/.test(process.env.NEXUS_RELEASE_TEST_PROTECTED_POLL_LIMIT || '')) {
+    return null;
+  }
+  return Number(process.env.NEXUS_RELEASE_TEST_PROTECTED_POLL_LIMIT);
+}
+
+function initialProtectedWorkflowState(
+  definition,
+  workflowDatabaseId,
+  startedAt,
+  deadlineAt,
+) {
+  return {
+    schema: 'nexus.release-required-workflow.v1',
+    status: 'awaiting_run',
+    workflow: definition.workflow,
+    workflowName: definition.workflowName,
+    workflowDatabaseId,
+    workflowSha256: sha256File(path.join(root, '.github', 'workflows', definition.workflow)),
+    event: 'push',
+    headBranch: 'main',
+    headSha: runtimeSha,
+    startedAt,
+    deadlineAt,
+    pollCount: 0,
+    runId: null,
+    attempt: null,
+  };
+}
+
+function validateProtectedWorkflowBinding(record, definition) {
+  const allowedStatuses = new Set([
+    'awaiting_run', 'run_identified', 'pending', 'completed', 'terminal_failure', 'timed_out',
+  ]);
+  if (record?.schema !== 'nexus.release-required-workflow.v1'
+      || !allowedStatuses.has(record.status)
+      || record.workflow !== definition.workflow
+      || record.workflowName !== definition.workflowName
+      || !positiveSafeInteger(record.workflowDatabaseId)
+      || record.workflowSha256
+        !== sha256File(path.join(root, '.github', 'workflows', definition.workflow))
+      || record.event !== 'push'
+      || record.headBranch !== 'main'
+      || record.headSha !== runtimeSha
+      || !Number.isFinite(Date.parse(record.startedAt || ''))
+      || !Number.isFinite(Date.parse(record.deadlineAt || ''))
+      || Date.parse(record.deadlineAt) <= Date.parse(record.startedAt)
+      || !Number.isSafeInteger(record.pollCount)
+      || record.pollCount < 0
+      || (record.runId !== null && !/^[0-9]+$/u.test(String(record.runId)))
+      || (record.attempt !== null && !positiveSafeInteger(record.attempt))
+      || ((record.runId === null) !== (record.attempt === null))) {
+    fail(`release checkpoint ${definition.label} binding is invalid`, 64);
+  }
+  if (['run_identified', 'pending', 'completed', 'terminal_failure'].includes(record.status)
+      && (!/^[0-9]+$/u.test(String(record.runId || ''))
+        || !positiveSafeInteger(record.attempt))) {
+    fail(`release checkpoint ${definition.label} run or attempt identity is invalid`, 64);
+  }
+}
+
+function validateProtectedWorkflowSet(state) {
+  const controls = state.protectedMainChecks;
+  if (controls?.schema !== 'nexus.release-required-workflows.v1'
+      || !['pending', 'completed'].includes(controls.status)
+      || !Number.isFinite(Date.parse(controls.startedAt || ''))
+      || !Number.isFinite(Date.parse(controls.deadlineAt || ''))
+      || Date.parse(controls.deadlineAt) <= Date.parse(controls.startedAt)
+      || controls.headSha !== runtimeSha) {
+    fail('release checkpoint protected workflow controls are invalid', 64);
+  }
+  for (const [key, definition] of Object.entries(protectedWorkflowDefinitions)) {
+    validateProtectedWorkflowBinding(state.workflows?.[key], definition);
+    if (state.workflows[key].startedAt !== controls.startedAt
+        || state.workflows[key].deadlineAt !== controls.deadlineAt) {
+      fail(`release checkpoint ${definition.label} deadline binding is invalid`, 64);
+    }
+  }
+  const completed = Object.keys(protectedWorkflowDefinitions)
+    .every((key) => state.workflows[key].status === 'completed');
+  if (controls.status === 'completed' && !completed) {
+    fail('release checkpoint protected workflow completion is inconsistent', 64);
+  }
+  if (state.rcDispatch && controls.status !== 'completed') {
+    fail('release-candidate intent predates required protected workflow success', 64);
+  }
+}
+
+function listProtectedWorkflowRuns(definition) {
+  const runs = ghJson([
+    'run', 'list', '--workflow', definition.workflow, '--branch', 'main', '--event', 'push',
+    '--commit', runtimeSha, '--limit', '50', '--json',
+    'attempt,databaseId,headSha,headBranch,event,status,conclusion,createdAt,workflowDatabaseId,workflowName',
+  ], `${definition.label} workflow lookup`);
+  if (!Array.isArray(runs)) fail(`${definition.label} workflow lookup is not an array`);
+  return runs;
+}
+
+function exactProtectedWorkflowCandidate(definition, expectedWorkflowDatabaseId) {
+  const candidates = listProtectedWorkflowRuns(definition).filter((candidate) => (
+    candidate.headSha === runtimeSha
+      && candidate.headBranch === 'main'
+      && candidate.event === 'push'
+      && candidate.workflowName === definition.workflowName
+      && /^[0-9]+$/u.test(String(candidate.databaseId || ''))
+  ));
+  const byRunId = new Map(candidates.map((candidate) => [String(candidate.databaseId), candidate]));
+  if (byRunId.size > 1) {
+    fail(`${definition.label} exact-SHA workflow lookup is ambiguous`);
+  }
+  const candidate = [...byRunId.values()][0] || null;
+  if (candidate && (!positiveSafeInteger(candidate.attempt)
+      || !positiveSafeInteger(candidate.workflowDatabaseId)
+      || candidate.workflowDatabaseId !== expectedWorkflowDatabaseId
+      || !Number.isFinite(Date.parse(candidate.createdAt || '')))) {
+    fail(`${definition.label} path-scoped run attempt identity is invalid`);
+  }
+  return candidate;
+}
+
+function inspectProtectedWorkflowRun(runId, attempt, workflowDatabaseId, definition) {
+  const runView = ghJson(['run', 'view', String(runId), '--attempt', String(attempt), '--json',
+    'attempt,databaseId,displayTitle,headSha,headBranch,event,status,conclusion,workflowDatabaseId,workflowName,url,jobs'],
+  `${definition.label} workflow run ${runId}`);
+  if (String(runView.databaseId) !== String(runId)
+      || runView.attempt !== attempt
+      || runView.workflowDatabaseId !== workflowDatabaseId
+      || runView.headSha !== runtimeSha
+      || runView.headBranch !== 'main'
+      || runView.event !== 'push'
+      || runView.workflowName !== definition.workflowName
+      || typeof runView.url !== 'string'
+      || runView.url.length === 0) {
+    fail(`${definition.label} workflow run ${runId} is not exact protected main`);
+  }
+  const pendingStatuses = new Set(['requested', 'waiting', 'pending', 'queued', 'in_progress']);
+  if (pendingStatuses.has(runView.status)) {
+    if (runView.conclusion !== null && runView.conclusion !== '') {
+      fail(`${definition.label} pending workflow run has a terminal conclusion`);
+    }
+    return { outcome: 'pending', runView, codeqlJob: null };
+  }
+  if (runView.status !== 'completed' || typeof runView.conclusion !== 'string'
+      || runView.conclusion.length === 0) {
+    fail(`${definition.label} workflow run status is invalid`);
+  }
+  if (runView.conclusion !== 'success') {
+    return { outcome: 'terminal_failure', runView, codeqlJob: null };
+  }
+  let codeqlJob = null;
+  if (definition.requireCodeql) {
+    codeqlJob = (runView.jobs || []).find((job) => job.name === 'CodeQL JavaScript/TypeScript');
+    if (!codeqlJob || codeqlJob.status !== 'completed' || codeqlJob.conclusion !== 'success'
+        || !/^[0-9]+$/u.test(String(codeqlJob.databaseId || codeqlJob.id || ''))) {
+      fail('exact origin/main CodeQL job is missing, failed, or has no stable identity');
+    }
+  }
+  return { outcome: 'success', runView, codeqlJob };
+}
+
+function persistProtectedWorkflowFailure(state, key, definition, reason, extra = {}) {
+  const failed = writeCheckpoint({
+    ...state,
+    phase: 'protected_workflows_failed',
+    nextAction: 'owner_review_required_protected_workflow',
+    lastError: {
+      step: `wait_${key}`,
+      reason,
+      failedAt: new Date().toISOString(),
+      ...extra,
+    },
+    workflows: {
+      ...state.workflows,
+      [key]: {
+        ...state.workflows[key],
+        status: reason === 'timeout' ? 'timed_out' : 'terminal_failure',
+        ...extra,
+      },
+    },
+  });
+  const conclusion = extra.observedConclusion ? ` (${extra.observedConclusion})` : '';
+  fail(`${definition.label} did not reach exact-SHA terminal success${conclusion}`,
+    reason === 'timeout' ? 124 : 1);
+  return failed;
+}
+
+async function continueProtectedWorkflow(state, key, definition) {
+  let record = state.workflows[key];
+  validateProtectedWorkflowBinding(record, definition);
+  if (record.status === 'completed') return state;
+  if (record.status === 'terminal_failure') {
+    fail(`${definition.label} previously reached a non-success terminal conclusion`);
+  }
+  if (record.status === 'timed_out') {
+    fail(`${definition.label} exact-SHA success wait previously timed out`, 124);
+  }
+
+  while (record.status !== 'completed') {
+    const pollLimit = protectedWorkflowTestPollLimit();
+    if (Date.now() >= Date.parse(record.deadlineAt)
+        || (pollLimit !== null && record.pollCount >= pollLimit)) {
+      return persistProtectedWorkflowFailure(state, key, definition, 'timeout', {
+        observedStatus: record.observedStatus || null,
+        observedConclusion: record.observedConclusion || null,
+      });
+    }
+    if (!record.runId) {
+      const candidate = exactProtectedWorkflowCandidate(
+        definition,
+        record.workflowDatabaseId,
+      );
+      if (!candidate) {
+        state = writeCheckpoint({
+          ...state,
+          workflows: {
+            ...state.workflows,
+            [key]: {
+              ...record,
+              status: 'awaiting_run',
+              pollCount: record.pollCount + 1,
+              lastPolledAt: new Date().toISOString(),
+            },
+          },
+        });
+        record = state.workflows[key];
+        await waitForDispatchPoll();
+        continue;
+      }
+      state = writeCheckpoint({
+        ...state,
+        phase: 'protected_workflows_wait',
+        nextAction: `poll_exact_sha_${key}`,
+        workflows: {
+          ...state.workflows,
+          [key]: {
+            ...record,
+            status: 'run_identified',
+            runId: String(candidate.databaseId),
+            attempt: candidate.attempt,
+            runCreatedAt: candidate.createdAt,
+            identifiedAt: new Date().toISOString(),
+          },
+        },
+      });
+      record = state.workflows[key];
+    }
+
+    const observation = inspectProtectedWorkflowRun(
+      record.runId,
+      record.attempt,
+      record.workflowDatabaseId,
+      definition,
+    );
+    if (observation.outcome === 'terminal_failure') {
+      return persistProtectedWorkflowFailure(state, key, definition, 'terminal_failure', {
+        observedStatus: observation.runView.status,
+        observedConclusion: observation.runView.conclusion,
+        runUrl: observation.runView.url,
+      });
+    }
+    if (observation.outcome === 'pending') {
+      state = writeCheckpoint({
+        ...state,
+        phase: 'protected_workflows_wait',
+        nextAction: `poll_exact_sha_${key}`,
+        workflows: {
+          ...state.workflows,
+          [key]: {
+            ...record,
+            status: 'pending',
+            pollCount: record.pollCount + 1,
+            observedStatus: observation.runView.status,
+            observedConclusion: null,
+            runUrl: observation.runView.url,
+            lastPolledAt: new Date().toISOString(),
+          },
+        },
+      });
+      record = state.workflows[key];
+      await waitForDispatchPoll();
+      continue;
+    }
+
+    const codeqlJobId = observation.codeqlJob
+      ? String(observation.codeqlJob.databaseId || observation.codeqlJob.id || '')
+      : null;
+    state = writeCheckpoint({
+      ...state,
+      workflows: {
+        ...state.workflows,
+        [key]: {
+          ...record,
+          status: 'completed',
+          pollCount: record.pollCount + 1,
+          observedStatus: observation.runView.status,
+          observedConclusion: observation.runView.conclusion,
+          runUrl: observation.runView.url,
+          completedAt: new Date().toISOString(),
+          ...(definition.requireCodeql ? {
+            codeqlJobId,
+            codeqlConclusion: observation.codeqlJob.conclusion,
+          } : {}),
+        },
+      },
+    });
+    record = state.workflows[key];
+  }
+  return state;
+}
+
+async function continueProtectedWorkflows(state) {
+  validateProtectedWorkflowSet(state);
+  if (state.protectedMainChecks.status === 'completed') {
+    return state;
+  }
+  for (const [key, definition] of Object.entries(protectedWorkflowDefinitions)) {
+    state = await continueProtectedWorkflow(state, key, definition);
+  }
+  return writeCheckpoint({
+    ...state,
+    phase: 'protected_workflows_complete',
+    nextAction: 'persist_release_candidate_dispatch_intent',
+    lastError: null,
+    protectedMainChecks: {
+      ...state.protectedMainChecks,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    },
+  });
+}
+
+function revalidateCompletedProtectedWorkflow(
+  record,
+  definition,
+  repository,
+  { requireLatestAttempt = true } = {},
+) {
+  validateProtectedWorkflowBinding(record, definition);
+  const workflowDatabaseId = pathScopedProtectedWorkflowDatabaseId(repository, definition);
+  if (workflowDatabaseId !== record.workflowDatabaseId) {
+    fail(`release checkpoint ${definition.label} workflow database identity drifted`, 64);
+  }
+  let latest = {
+    attempt: record.attempt,
+    workflowDatabaseId: record.workflowDatabaseId,
+  };
+  if (requireLatestAttempt) {
+    latest = exactProtectedWorkflowCandidate(definition, workflowDatabaseId);
+    if (!latest
+        || String(latest.databaseId) !== String(record.runId)
+        || latest.attempt !== record.attempt
+        || latest.workflowDatabaseId !== record.workflowDatabaseId) {
+      fail(`release checkpoint ${definition.label} is not bound to its latest exact-SHA attempt`, 64);
+    }
+  }
+  const observation = inspectProtectedWorkflowRun(
+    record.runId,
+    record.attempt,
+    record.workflowDatabaseId,
+    definition,
+  );
+  if (observation.outcome !== 'success') {
+    const conclusion = observation.runView?.conclusion || observation.runView?.status || 'unknown';
+    fail(`release checkpoint ${definition.label} latest attempt is not successful (${conclusion})`);
+  }
+  const { runView, codeqlJob } = observation;
+  if (runView.url !== record.runUrl
+      || runView.headSha !== record.headSha
+      || runView.conclusion !== record.observedConclusion) {
+    fail(`release checkpoint ${definition.label} evidence no longer matches its exact run`, 64);
+  }
+  if (definition.requireCodeql) {
+    const codeqlJobId = String(codeqlJob.databaseId || codeqlJob.id || '');
+    if (codeqlJobId !== String(record.codeqlJobId)
+        || codeqlJob.conclusion !== record.codeqlConclusion) {
+      fail('release checkpoint CodeQL evidence no longer matches the exact stored run and job', 64);
+    }
+  }
+  return {
+    attempt: latest.attempt,
+    conclusion: runView.conclusion,
+    headSha: runView.headSha,
     runId: String(runView.databaseId),
     runUrl: runView.url,
-    headSha: runView.headSha,
-    codeqlJobId: String(codeqlJob.databaseId || codeqlJob.id || ''),
-    codeqlConclusion: codeqlJob.conclusion,
+    workflowPath: `.github/workflows/${definition.workflow}`,
+    workflowDatabaseId,
+    verifiedAt: new Date().toISOString(),
   };
+}
+
+function revalidateAndCheckpointCompletedProtectedWorkflows(state) {
+  for (const [key, definition] of Object.entries(protectedWorkflowDefinitions)) {
+    if (state.protectedMainChecks.status === 'pending'
+        && Date.now() >= Date.parse(state.protectedMainChecks.deadlineAt)) {
+      fail('required protected workflow revalidation exceeded the global deadline', 124);
+    }
+    if (state.workflows?.[key]?.status !== 'completed') {
+      fail(`cannot aggregate release readiness before ${definition.label} succeeds`, 64);
+    }
+    const latest = revalidateCompletedProtectedWorkflow(
+      state.workflows[key],
+      definition,
+      state.repository,
+    );
+    state = writeCheckpoint({
+      ...state,
+      workflows: {
+        ...state.workflows,
+        [key]: {
+          ...state.workflows[key],
+          latestAttemptVerified: latest.attempt,
+          latestWorkflowDatabaseIdVerified: latest.workflowDatabaseId,
+          latestAttemptVerifiedAt: latest.verifiedAt,
+          latestVerification: {
+            schema: 'nexus.release-required-workflow-latest-verification.v1',
+            attempt: latest.attempt,
+            conclusion: latest.conclusion,
+            headSha: latest.headSha,
+            runId: latest.runId,
+            runUrl: latest.runUrl,
+            workflowPath: latest.workflowPath,
+            workflowDatabaseId: latest.workflowDatabaseId,
+            verifiedAt: latest.verifiedAt,
+          },
+        },
+      },
+    });
+  }
+  return state;
+}
+
+function protectedWorkflowVerificationFreshnessMs() {
+  const override = process.env.NEXUS_RELEASE_TEST_PROTECTED_FRESHNESS_MS || '';
+  if (process.env.NODE_ENV === 'test' && /^[1-9]\d*$/.test(override)) {
+    const parsed = Number(override);
+    if (Number.isSafeInteger(parsed) && parsed <= 60_000) return parsed;
+  }
+  return 60_000;
+}
+
+function assertFreshProtectedWorkflowVerification(state, label) {
+  const now = Date.now();
+  const maximumAgeMs = protectedWorkflowVerificationFreshnessMs();
+  for (const [key, definition] of Object.entries(protectedWorkflowDefinitions)) {
+    const workflow = state.workflows?.[key];
+    const latest = workflow?.latestVerification;
+    const verifiedAt = Date.parse(latest?.verifiedAt || '');
+    if (workflow?.status !== 'completed'
+        || latest?.schema !== 'nexus.release-required-workflow-latest-verification.v1'
+        || latest.attempt !== workflow.attempt
+        || latest.conclusion !== 'success'
+        || latest.headSha !== runtimeSha
+        || latest.runId !== String(workflow.runId)
+        || latest.runUrl !== workflow.runUrl
+        || latest.workflowPath !== `.github/workflows/${definition.workflow}`
+        || latest.workflowDatabaseId !== workflow.workflowDatabaseId
+        || workflow.latestAttemptVerified !== latest.attempt
+        || workflow.latestWorkflowDatabaseIdVerified !== latest.workflowDatabaseId
+        || workflow.latestAttemptVerifiedAt !== latest.verifiedAt
+        || !Number.isFinite(verifiedAt)
+        || now - verifiedAt < 0
+        || now - verifiedAt > maximumAgeMs) {
+      fail(`${definition.label} protected verification changed or expired before ${label}`, 64);
+    }
+  }
+}
+
+function protectedWorkflowDispatchBinding(state) {
+  return {
+    schema: 'nexus.release-candidate-protected-workflow-binding.v1',
+    workflows: Object.fromEntries(
+      Object.entries(protectedWorkflowDefinitions).map(([key]) => [
+        key,
+        state.workflows?.[key]?.latestVerification,
+      ]),
+    ),
+  };
+}
+
+function validateProtectedWorkflowDispatchBinding(state) {
+  if (canonicalJson(state.rcDispatch?.protectedWorkflowBinding)
+      !== canonicalJson(protectedWorkflowDispatchBinding(state))) {
+    fail('release-candidate protected workflow dispatch binding drifted', 64);
+  }
+}
+
+async function waitForReleaseCandidateTestPause() {
+  const delay = process.env.NEXUS_RELEASE_TEST_RC_PRESPAWN_DELAY_MS || '';
+  if (process.env.NODE_ENV !== 'test' || !/^[1-9]\d*$/.test(delay)) return;
+  const delayMs = Number(delay);
+  if (!Number.isSafeInteger(delayMs) || delayMs > 5_000) {
+    fail('release-candidate test pause is invalid', 64);
+  }
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function revalidateCheckpointTrust(state) {
@@ -753,30 +1272,18 @@ function revalidateCheckpointTrust(state) {
     fail('release checkpoint repository identity no longer matches protected main', 64);
   }
 
-  const recorded = state.workflows?.security;
-  const workflowSha256 = sha256File(path.join(root, '.github', 'workflows', 'security.yml'));
-  if (recorded?.workflow !== 'security.yml'
-      || !/^[0-9]+$/u.test(String(recorded.runId || ''))
-      || !/^[0-9]+$/u.test(String(recorded.codeqlJobId || ''))
-      || recorded.headSha !== runtimeSha
-      || recorded.codeqlConclusion !== 'success'
-      || recorded.workflowSha256 !== workflowSha256
-      || typeof recorded.runUrl !== 'string'
-      || recorded.runUrl.length === 0) {
-    fail('release checkpoint security evidence identity is invalid', 64);
-  }
-
-  const { runView, codeqlJob } = validateWorkflowRun(recorded.runId, {
-    workflowName: 'Security — supply chain and static analysis',
-    requireCodeql: true,
-  });
-  const codeqlJobId = String(codeqlJob.databaseId || codeqlJob.id || '');
-  if (String(runView.databaseId) !== String(recorded.runId)
-      || runView.headSha !== recorded.headSha
-      || runView.url !== recorded.runUrl
-      || codeqlJobId !== String(recorded.codeqlJobId)
-      || codeqlJob.conclusion !== recorded.codeqlConclusion) {
-    fail('release checkpoint CodeQL evidence no longer matches the exact stored run and job', 64);
+  validateProtectedWorkflowSet(state);
+  const requireLatestAttempt = !state.rcDispatch
+    || state.rcDispatch.status === 'intent_persisted';
+  for (const [key, definition] of Object.entries(protectedWorkflowDefinitions)) {
+    if (state.workflows[key].status === 'completed') {
+      revalidateCompletedProtectedWorkflow(
+        state.workflows[key],
+        definition,
+        state.repository,
+        { requireLatestAttempt },
+      );
+    }
   }
 
   if (state.phase === 'promoted') {
@@ -808,7 +1315,8 @@ function revalidateCheckpointTrust(state) {
       releaseManifestSha256: identity.releaseManifestSha256,
       stagingAttestationSha256: identity.stagingAttestationSha256,
       packageVersion: state.packageVersion,
-    })) {
+    }) || identity.packageVersion !== state.packageVersion
+      || identity.transactionId !== production.transactionId) {
       fail('production promotion evidence no longer proves the exact checkpoint identity');
     }
   }
@@ -896,10 +1404,16 @@ function childStatusFromSignal(signal) {
   return 128 + (signalNumbers[signal] || 1);
 }
 
-async function runSupervised(command, commandArgs, env = process.env) {
+async function runSupervised(
+  command,
+  commandArgs,
+  env = process.env,
+  beforeSpawn = null,
+) {
   if (activeChild) fail('release coordinator attempted overlapping external work', 70);
   assertCoordinatorLockIdentity();
   const maximumOutputBytes = 16 * 1024 * 1024;
+  if (beforeSpawn) beforeSpawn();
   const child = spawn(command, commandArgs, {
     cwd: root,
     env,
@@ -1008,7 +1522,7 @@ async function runReleaseCandidateDispatch(state, commandArgs) {
     lastError: null,
     attempts: [...(state.attempts || []), attempt],
   });
-  const result = await runSupervised('gh', commandArgs);
+  const result = await runSupervised('gh', commandArgs, process.env);
   if (result.stdout) process.stderr.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   const attempts = [...state.attempts];
@@ -1064,6 +1578,9 @@ async function continueReleaseCandidate(state) {
       || !Array.isArray(intent.baselineRunIds)) {
     fail('release-candidate dispatch intent identity mismatch', 64);
   }
+  if (intent.status !== 'intent_persisted') {
+    validateProtectedWorkflowDispatchBinding(state);
+  }
   if (state.rcDispatch?.status === 'completed') {
     if (!/^[0-9]+$/u.test(state.rcRunId || '')
         || state.workflows?.releaseCandidate?.runId !== state.rcRunId
@@ -1075,6 +1592,13 @@ async function continueReleaseCandidate(state) {
 
   if (!state.rcRunId) {
     if (intent.status === 'intent_persisted') {
+      // Any laptop pause or other delay belongs before the final live
+      // revalidation. A validation failure therefore leaves the durable
+      // dispatch intent safely retryable; only persist dispatch_started once
+      // every fail-closed check has passed and the next operation is spawn.
+      await waitForReleaseCandidateTestPause();
+      state = revalidateAndCheckpointCompletedProtectedWorkflows(state);
+      assertFreshProtectedWorkflowVerification(state, 'release-candidate dispatch transition');
       state = writeCheckpoint({
         ...state,
         phase: 'rc_dispatch_started',
@@ -1083,6 +1607,7 @@ async function continueReleaseCandidate(state) {
           ...intent,
           status: 'dispatch_started',
           dispatchStartedAt: new Date().toISOString(),
+          protectedWorkflowBinding: protectedWorkflowDispatchBinding(state),
         },
       });
       state = await runReleaseCandidateDispatch(state, dispatchArgs);
@@ -1205,6 +1730,8 @@ function validateProtectedWorkflowRun(runId, intent, requireComplete = false) {
       || runView.headBranch !== 'main'
       || runView.event !== 'workflow_dispatch'
       || runView.workflowName !== intent.workflowName
+      || typeof runView.url !== 'string'
+      || runView.url.length === 0
       || (requireComplete && (runView.status !== 'completed' || runView.conclusion !== 'success'))) {
     fail(`${intent.workflow} run ${runId} does not match its persisted exact-main dispatch intent`);
   }
@@ -1350,7 +1877,43 @@ async function continueProtectedWorkflowDispatch(state, {
   } else if (state.workflows?.[workflowStateKey]?.runId !== String(intent.runId)) {
     fail(`${stateKey} run identity differs from its persisted dispatch intent`, 64);
   }
-  validateProtectedWorkflowRun(state[stateKey].runId, state[stateKey], false);
+  const runView = validateProtectedWorkflowRun(
+    state[stateKey].runId,
+    state[stateKey],
+    false,
+  );
+  state = writeCheckpoint({
+    ...state,
+    [stateKey]: {
+      ...state[stateKey],
+      runUrl: runView.url,
+      observedStatus: runView.status,
+      observedConclusion: runView.conclusion,
+    },
+    workflows: {
+      ...state.workflows,
+      [workflowStateKey]: {
+        ...state.workflows[workflowStateKey],
+        runUrl: runView.url,
+        observedStatus: runView.status,
+        observedConclusion: runView.conclusion,
+      },
+    },
+  });
+  const noticeStatus = runView.status === 'waiting'
+    ? 'approval_required'
+    : runView.status === 'completed' && runView.conclusion === 'success'
+      ? 'already_completed'
+      : runView.status === 'completed'
+        ? 'terminal_failure'
+      : 'workflow_pending';
+  process.stderr.write(`${JSON.stringify({
+    schema: 'nexus.release-protected-workflow-notice.v1',
+    status: noticeStatus,
+    workflow: state[stateKey].workflowName,
+    runId: String(state[stateKey].runId),
+    url: runView.url,
+  })}\n`);
   return state;
 }
 
@@ -1453,6 +2016,42 @@ function stagingSigningDispatchArgs(requestIdentity) {
     '-f', `request_b64=${requestIdentity.body.toString('base64')}`];
 }
 
+function ensureReleaseCandidateDispatchIntent(state) {
+  if (state.rcDispatch) return state;
+  if (state.protectedMainChecks?.status !== 'completed') {
+    fail('release-candidate dispatch requires terminal success from all protected workflows', 64);
+  }
+  const correlationNonce = crypto.randomUUID();
+  const baselineRunIds = releaseCandidateRuns().map((candidate) => String(candidate.databaseId));
+  const intentCreatedAt = new Date();
+  const dispatchArgs = releaseCandidateDispatchArgs(
+    state.contractScope,
+    state.iosEvidence,
+    state.protectedReuseActivation,
+    correlationNonce,
+  );
+  return writeCheckpoint({
+    ...state,
+    phase: 'rc_dispatch_intent',
+    nextAction: 'dispatch_release_candidate_once',
+    rcDispatch: {
+      schema: 'nexus.release-candidate-dispatch-intent.v1',
+      status: 'intent_persisted',
+      workflow: 'release-candidate-evidence.yml',
+      workflowSha256: sha256File(path.join(root, '.github', 'workflows', 'release-candidate-evidence.yml')),
+      headSha: runtimeSha,
+      contractScope: state.contractScope,
+      correlationNonce,
+      expectedTitle: `RC evidence ${runtimeSha} request ${correlationNonce}`,
+      correlationMode: 'unique_run_name_nonce_baseline_and_created_at',
+      baselineRunIds,
+      intentCreatedAt: intentCreatedAt.toISOString(),
+      candidateNotBefore: new Date(intentCreatedAt.getTime() - 60_000).toISOString(),
+      commandSha256: dispatchCommandDigest(dispatchArgs),
+    },
+  });
+}
+
 const suppliedScope = has('--backend-only') ? 'backend_only' : has('--includes-ios') ? 'shared_backend_ios' : '';
 if (has('--backend-only') && has('--includes-ios')) fail('release contract scope may be specified only once', 64);
 const suppliedRcRun = value('--rc-run');
@@ -1480,17 +2079,12 @@ if (!state) {
     distributionPath: path.resolve(root, iosDistributionAttestation),
   } : null;
   const repository = validateProtectedRepository();
-  const security = existingSecurityEvidence();
   const protectedReuseActivation = initialProtectedReuseActivation(suppliedProtectedReuseActivation);
-  const correlationNonce = crypto.randomUUID();
-  const baselineRunIds = releaseCandidateRuns().map((candidate) => String(candidate.databaseId));
-  const intentCreatedAt = new Date();
-  const dispatchArgs = releaseCandidateDispatchArgs(
-    suppliedScope,
-    iosEvidence,
-    protectedReuseActivation,
-    correlationNonce,
-  );
+  const sequenceStartedAt = new Date();
+  const deadlineAt = new Date(
+    sequenceStartedAt.getTime() + protectedWorkflowWaitMs(),
+  ).toISOString();
+  const startedAt = sequenceStartedAt.toISOString();
   state = writeCheckpoint({
     schema: 'nexus.release-sequence-checkpoint.v1',
     runtimeSha,
@@ -1500,30 +2094,33 @@ if (!state) {
     sourceIntent: { runtimeSha, originMainSha, packageVersion, repository },
     rcRunId: null,
     contractScope: suppliedScope,
-    phase: 'rc_dispatch_intent',
-    nextAction: 'dispatch_release_candidate_once',
-    createdAt: intentCreatedAt.toISOString(),
+    phase: 'protected_workflows_wait',
+    nextAction: 'poll_exact_sha_protectedMainCi',
+    createdAt: startedAt,
     inProgressStep: null,
     lastError: null,
     attempts: [],
     iosEvidence,
     protectedReuseActivation,
-    workflows: { security },
-    rcDispatch: {
-      schema: 'nexus.release-candidate-dispatch-intent.v1',
-      status: 'intent_persisted',
-      workflow: 'release-candidate-evidence.yml',
-      workflowSha256: sha256File(path.join(root, '.github', 'workflows', 'release-candidate-evidence.yml')),
+    protectedMainChecks: {
+      schema: 'nexus.release-required-workflows.v1',
+      status: 'pending',
       headSha: runtimeSha,
-      contractScope: suppliedScope,
-      correlationNonce,
-      expectedTitle: `RC evidence ${runtimeSha} request ${correlationNonce}`,
-      correlationMode: 'unique_run_name_nonce_baseline_and_created_at',
-      baselineRunIds,
-      intentCreatedAt: intentCreatedAt.toISOString(),
-      candidateNotBefore: new Date(intentCreatedAt.getTime() - 60_000).toISOString(),
-      commandSha256: dispatchCommandDigest(dispatchArgs),
+      startedAt,
+      deadlineAt,
     },
+    workflows: Object.fromEntries(
+      Object.entries(protectedWorkflowDefinitions).map(([key, definition]) => [
+        key,
+        initialProtectedWorkflowState(
+          definition,
+          pathScopedProtectedWorkflowDatabaseId(repository, definition),
+          startedAt,
+          deadlineAt,
+        ),
+      ]),
+    ),
+    rcDispatch: null,
   });
 } else {
   if (!state.protectedReuseActivation) {
@@ -1546,11 +2143,8 @@ if (!state) {
   if (state.sourceIntent?.runtimeSha !== runtimeSha
       || state.sourceIntent?.originMainSha !== originMainSha
       || state.sourceIntent?.packageVersion !== packageVersion
-      || state.sourceIntent?.repository !== state.repository
-      || state.workflows?.security?.headSha !== runtimeSha
-      || state.workflows?.security?.workflowSha256
-        !== sha256File(path.join(root, '.github', 'workflows', 'security.yml'))) {
-    fail('release checkpoint source or security intent identity mismatch', 64);
+      || state.sourceIntent?.repository !== state.repository) {
+    fail('release checkpoint source intent identity mismatch', 64);
   }
   revalidateCheckpointTrust(state);
   if (suppliedRcRun && suppliedRcRun !== state.rcRunId) fail('release checkpoint RC run identity mismatch', 64);
@@ -1558,6 +2152,8 @@ if (!state) {
   if (phaseAtProcessStart === 'promoted') emit(state);
 }
 
+state = await continueProtectedWorkflows(state);
+state = ensureReleaseCandidateDispatchIntent(state);
 state = await continueReleaseCandidate(state);
 if (has('--status')) emit(state);
 
@@ -1978,6 +2574,8 @@ state = writeCheckpoint({
     recoveryRuntimeDigest,
     releaseManifestSha256: signedManifestSha256,
     stagingAttestationSha256,
+    packageVersion,
+    transactionId: production.transactionId,
     backupSha256: production.backupSha256,
     rollbackEscrowEvidenceSha256: production.rollbackEscrow.evidenceSha256,
   },

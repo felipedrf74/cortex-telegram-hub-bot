@@ -98,6 +98,24 @@ function provisionReceipt() {
     runtimeRecoveryUnitSourcePath:
       "/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service",
     runtimeRecoveryUnitSha256: "d".repeat(64),
+    faultDrillControllerPath:
+      "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller",
+    faultDrillControllerSha256: "a".repeat(64),
+    faultDrillControllerUnitPath:
+      "/etc/systemd/system/nexus-release-layout-fault-drill@.service",
+    faultDrillControllerUnitSha256: "b".repeat(64),
+    faultDrillControllerRecoveryUnitPath:
+      "/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service",
+    faultDrillControllerRecoveryUnitSha256: "c".repeat(64),
+    faultDrillGuestExecutorSourcePath:
+      "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest",
+    faultDrillGuestExecutorSha256: "f".repeat(64),
+    faultDrillGuestRecoveryUnitSourcePath:
+      "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service",
+    faultDrillGuestRecoveryUnitSha256: "0".repeat(64),
+    faultDrillVerifierPath:
+      "/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs",
+    faultDrillVerifierSha256: "1".repeat(64),
     sharedMutexPath: "/run/lock/nexus-release-sonar.lock",
     guestAdmissionLockPath: "/run/nexus-rollback-drill-vm/admission.lock",
     hostAvailableMemoryFloorGiB: 25,
@@ -130,6 +148,12 @@ function provisionReceipt() {
     `runtimeControl=${hypervisor.runtimeControlSha256}\n` +
     `runtimeReadiness=${hypervisor.runtimeReadinessSha256}\n` +
     `runtimeRecoveryUnit=${hypervisor.runtimeRecoveryUnitSha256}\n` +
+    `faultDrillController=${hypervisor.faultDrillControllerSha256}\n` +
+    `faultDrillControllerUnit=${hypervisor.faultDrillControllerUnitSha256}\n` +
+    `faultDrillControllerRecoveryUnit=${hypervisor.faultDrillControllerRecoveryUnitSha256}\n` +
+    `faultDrillGuest=${hypervisor.faultDrillGuestExecutorSha256}\n` +
+    `faultDrillGuestRecoveryUnit=${hypervisor.faultDrillGuestRecoveryUnitSha256}\n` +
+    `faultDrillVerifier=${hypervisor.faultDrillVerifierSha256}\n` +
     `unit=${hypervisor.unitSha256}\n` +
     `qemu=${hypervisor.qemuSha256}\n` +
     `qemuVersion=${hypervisor.qemuVersion}\n` +
@@ -330,7 +354,7 @@ function structuralManifest(publicKey: Buffer) {
         packageLockSha256: digest("c"),
       },
       control: {
-        version: "nexus-release-promotion-control.v3",
+        version: "nexus-release-promotion-control.v4",
         sourceCommit: "5".repeat(40),
         archivePath: "payload/control-source.tar.gz",
         archiveSha256: digest("6"),
@@ -1672,7 +1696,7 @@ exit "$status"
     expect(statSync(candidate).nlink).toBe(2);
   });
 
-  it("does not publish readiness when the installed v3 PM2 assertion fails", () => {
+  it("does not publish readiness when the installed v4 PM2 assertion fails", () => {
     const root = temporaryRoot();
     const control = join(root, "promotion-control");
     const log = join(root, "control.log");
@@ -1716,7 +1740,7 @@ exit "$status"
     );
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
-      "installed v3 promotion control rejected the root PM2 closure",
+      "installed v4 promotion control rejected the root PM2 closure",
     );
     expect(existsSync(marker)).toBe(false);
     expect(readFileSync(log, "utf8").trim()).toBe("assert-root-pm2-ready");

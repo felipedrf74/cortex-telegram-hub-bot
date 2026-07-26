@@ -32,8 +32,14 @@ describe('content topic context helpers', () => {
   it('parses positive ids and non-empty text defensively', () => {
     expect(parseOptionalPositiveId('42')).toBe(42);
     expect(parseOptionalPositiveId(12.6)).toBe(13);
+    expect(parseOptionalPositiveId(0)).toBeNull();
+    expect(parseOptionalPositiveId(-7)).toBeNull();
+    expect(parseOptionalPositiveId(Number.POSITIVE_INFINITY)).toBeNull();
     expect(parseOptionalPositiveId('0')).toBeNull();
+    expect(parseOptionalPositiveId(' -3 ')).toBeNull();
+    expect(parseOptionalPositiveId('   ')).toBeNull();
     expect(parseOptionalPositiveId('nope')).toBeNull();
+    expect(parseOptionalPositiveId(undefined)).toBeNull();
     expect(parseOptionalText('  hook  ')).toBe('hook');
     expect(parseOptionalText('   ')).toBeNull();
   });

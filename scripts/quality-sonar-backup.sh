@@ -262,6 +262,7 @@ required=(
   SONAR_BACKUP_AWS_SIGNING_HELPER
   SONAR_BACKUP_AWS_SIGNING_HELPER_SHA256
   SONAR_BACKUP_AWS_ROLE_ARN
+  SONAR_AWS_ACTIVATION_EVIDENCE
 )
 for key in "${required[@]}"; do
   [ -n "${!key:-}" ] || { echo "Backup configuration is missing $key" >&2; exit 1; }
@@ -282,6 +283,108 @@ expected_aws_s3_endpoint="https://s3.${AWS_REGION:-us-east-1}.amazonaws.com"
   || { echo "AWS_PROFILE must be nexus-sonarqube-backup" >&2; exit 1; }
 [[ "$SONAR_BACKUP_AWS_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$ ]] \
   || { echo "Sonar backup role ARN is invalid" >&2; exit 1; }
+[[ "$SONAR_AWS_ACTIVATION_EVIDENCE" == /* ]] \
+  && [ "$SONAR_AWS_ACTIVATION_EVIDENCE" != / ] \
+  && [ -f "$SONAR_AWS_ACTIVATION_EVIDENCE" ] \
+  && [ ! -L "$SONAR_AWS_ACTIVATION_EVIDENCE" ] \
+  || { echo "Durable Sonar post-enable evidence is missing" >&2; exit 1; }
+activation_mode="$(stat -c '%a' "$SONAR_AWS_ACTIVATION_EVIDENCE" 2>/dev/null || stat -f '%Lp' "$SONAR_AWS_ACTIVATION_EVIDENCE")"
+activation_owner="$(stat -c '%U' "$SONAR_AWS_ACTIVATION_EVIDENCE" 2>/dev/null || stat -f '%Su' "$SONAR_AWS_ACTIVATION_EVIDENCE")"
+[ "$activation_mode" = 600 ] && [ "$activation_owner" = root ] \
+  || { echo "Durable Sonar post-enable evidence must be root-owned mode 0600" >&2; exit 1; }
+node - "$SONAR_AWS_ACTIVATION_EVIDENCE" "$SONAR_BACKUP_S3_BUCKET" \
+  "$SONAR_BACKUP_S3_PREFIX" "$SONAR_BACKUP_AWS_ROLE_ARN" <<'NODE'
+const fs = require('fs');
+const [file, bucket, prefix, roleArn] = process.argv.slice(2);
+const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+const probes = value.postEnableCredentialProbes;
+if (value.schema !== 'nexus.sonarqube-aws-stack-live-verification.v3'
+    || value.rolesAnywhereActivation !== 'ENABLED'
+    || value.bucketName !== bucket
+    || value.sonarPrefix !== prefix
+    || value.backupRoleArn !== roleArn
+    || value.exactTrustAnchorStateVerified !== true
+    || value.exactCrlStateVerified !== true
+    || value.exactProfileStateVerified !== true
+    || probes?.exactProbeProfileBindingsPassed !== true
+    || probes?.positiveCredentialsPassed !== true
+    || probes?.exactPrefixListingPassed !== true
+    || probes?.revokedCertificateSerialPresentInLiveCrl !== true
+    || !/^[0-9a-f]{64}$/u.test(
+      probes?.revokedCertificateSerialSha256 || '',
+    )
+    || probes?.revokedCertificateDenied !== true
+    || probes?.revocationDenialClassified !== true
+    || probes?.revokedCredentialProcessFailed !== true
+    || probes?.postDenialPositiveCredentialsPassed !== true
+    || value.authorization?.activation?.successfulTransition !== true) {
+  throw new Error('Sonar post-enable evidence is incomplete or mismatched');
+}
+NODE
+
+if [ "$ACTION" = enable ]; then
+  [ -n "${SONAR_AWS_LIFECYCLE_EVIDENCE:-}" ] \
+    || { echo "Timer enablement requires SONAR_AWS_LIFECYCLE_EVIDENCE" >&2; exit 1; }
+  [[ "$SONAR_AWS_LIFECYCLE_EVIDENCE" == /* ]] \
+    && [ "$SONAR_AWS_LIFECYCLE_EVIDENCE" != / ] \
+    && [ -f "$SONAR_AWS_LIFECYCLE_EVIDENCE" ] \
+    && [ ! -L "$SONAR_AWS_LIFECYCLE_EVIDENCE" ] \
+    || { echo "Durable Sonar lifecycle-transition evidence is missing" >&2; exit 1; }
+  lifecycle_mode="$(stat -c '%a' "$SONAR_AWS_LIFECYCLE_EVIDENCE" 2>/dev/null || stat -f '%Lp' "$SONAR_AWS_LIFECYCLE_EVIDENCE")"
+  lifecycle_owner="$(stat -c '%U' "$SONAR_AWS_LIFECYCLE_EVIDENCE" 2>/dev/null || stat -f '%Su' "$SONAR_AWS_LIFECYCLE_EVIDENCE")"
+  [ "$lifecycle_mode" = 600 ] && [ "$lifecycle_owner" = root ] \
+    || { echo "Durable Sonar lifecycle-transition evidence must be root-owned mode 0600" >&2; exit 1; }
+  node - "$SONAR_AWS_ACTIVATION_EVIDENCE" "$SONAR_AWS_LIFECYCLE_EVIDENCE" \
+    "$SONAR_BACKUP_S3_BUCKET" "$SONAR_BACKUP_S3_PREFIX" \
+    "$SONAR_BACKUP_AWS_ROLE_ARN" <<'NODE'
+const fs = require('fs');
+const [activationFile, lifecycleFile, bucket, prefix, roleArn] =
+  process.argv.slice(2);
+const activation = JSON.parse(fs.readFileSync(activationFile, 'utf8'));
+const lifecycle = JSON.parse(fs.readFileSync(lifecycleFile, 'utf8'));
+if (lifecycle.schema !== 'nexus.sonarqube-aws-stack-live-verification.v3'
+    || lifecycle.authorization?.mode !== 'lifecycle-transition'
+    || lifecycle.authorization?.activation?.successfulTransition !== true
+    || lifecycle.authorization?.lifecycle?.successfulTransition !== true
+    || lifecycle.rolesAnywhereActivation !== 'ENABLED'
+    || lifecycle.lifecycleActivation !== 'ENABLED'
+    || !/^[0-9a-f]{64}$/u.test(
+      lifecycle.lifecycleBootstrapReceiptSha256 || '',
+    )
+    || lifecycle.bucketName !== bucket
+    || lifecycle.sonarPrefix !== prefix
+    || lifecycle.backupRoleArn !== roleArn
+    || lifecycle.stackId !== activation.stackId
+    || lifecycle.protectedMainTemplateSha256
+      !== activation.protectedMainTemplateSha256
+    || lifecycle.rolesAnywhereActivationReceiptSha256
+      !== activation.rolesAnywhereActivationReceiptSha256
+    || lifecycle.exactBucketStateVerified !== true
+    || lifecycle.exactTrustAnchorStateVerified !== true
+    || lifecycle.exactCrlStateVerified !== true
+    || lifecycle.exactProfileStateVerified !== true
+    || lifecycle.postEnableCredentialProbes?.exactProbeProfileBindingsPassed
+      !== true
+    || lifecycle.postEnableCredentialProbes?.positiveCredentialsPassed !== true
+    || lifecycle.postEnableCredentialProbes?.exactPrefixListingPassed !== true
+    || lifecycle.postEnableCredentialProbes
+      ?.revokedCertificateSerialPresentInLiveCrl !== true
+    || !/^[0-9a-f]{64}$/u.test(
+      lifecycle.postEnableCredentialProbes
+        ?.revokedCertificateSerialSha256 || '',
+    )
+    || lifecycle.postEnableCredentialProbes?.revokedCertificateDenied !== true
+    || lifecycle.postEnableCredentialProbes?.revocationDenialClassified !== true
+    || lifecycle.postEnableCredentialProbes?.revokedCredentialProcessFailed
+      !== true
+    || lifecycle.postEnableCredentialProbes
+      ?.postDenialPositiveCredentialsPassed !== true) {
+  throw new Error(
+    'Sonar lifecycle-transition evidence is incomplete or mismatched',
+  );
+}
+NODE
+fi
 
 for file in "$AWS_CONFIG_FILE"; do
   [[ "$file" == /* ]] && [ -f "$file" ] && [ ! -L "$file" ] \
@@ -330,10 +433,34 @@ if [ "$ACTION" = verify ]; then
   age --encrypt --recipient "$SONAR_BACKUP_AGE_RECIPIENT" \
     --output "$probe_dir/probe.age" "$probe_dir/probe.txt"
   [ -s "$probe_dir/probe.age" ] || { echo "age encryption readiness probe failed" >&2; exit 1; }
+  bucket_probe="$probe_dir/exact-prefix-list.json"
   aws --cli-connect-timeout 5 --cli-read-timeout 10 \
       --endpoint-url "$SONAR_BACKUP_S3_ENDPOINT" \
       --region "${AWS_REGION:-us-east-1}" \
-      s3api head-bucket --bucket "$SONAR_BACKUP_S3_BUCKET" >/dev/null
+      s3api list-objects-v2 \
+      --bucket "$SONAR_BACKUP_S3_BUCKET" \
+      --prefix "$SONAR_BACKUP_S3_PREFIX/" \
+      --max-keys 1 --no-paginate --output json >"$bucket_probe"
+  node - "$bucket_probe" "$SONAR_BACKUP_S3_PREFIX/" <<'NODE'
+const fs = require('fs');
+const [file, expectedPrefix] = process.argv.slice(2);
+const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+const contents = value.Contents ?? [];
+if (typeof value.IsTruncated !== 'boolean'
+    || value.Prefix !== expectedPrefix
+    || value.MaxKeys !== 1
+    || !Number.isSafeInteger(value.KeyCount)
+    || value.KeyCount < 0
+    || value.KeyCount > 1
+    || !Array.isArray(contents)
+    || contents.length !== value.KeyCount
+    || contents.some(
+      (entry) => typeof entry?.Key !== 'string'
+        || !entry.Key.startsWith(expectedPrefix),
+    )) {
+  throw new Error('Sonar exact-prefix bucket probe is invalid');
+}
+NODE
   versioning_probe="$probe_dir/versioning.json"
   aws --cli-connect-timeout 5 --cli-read-timeout 10 \
       --endpoint-url "$SONAR_BACKUP_S3_ENDPOINT" \
@@ -344,7 +471,7 @@ if [ "$ACTION" = verify ]; then
     'const v=require(process.argv[1]);if(v.Status!=="Enabled")process.exit(1)' \
     "$versioning_probe" \
     || { echo "Sonar backup bucket versioning must be enabled" >&2; exit 1; }
-  echo "sonar_backup_config_ok encryption=age transport=s3-compatible remoteBucket=head-ok retention=7-daily,4-weekly"
+  echo "sonar_backup_config_ok encryption=age transport=s3-compatible remoteBucket=exact-prefix-list-ok retention=7-daily,4-weekly"
   exit 0
 fi
 

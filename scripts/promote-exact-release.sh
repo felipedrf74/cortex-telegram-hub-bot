@@ -91,11 +91,11 @@ set +e
 SYSTEMD_CONTROL_VERSION="$("${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" version 2>/dev/null)"
 SYSTEMD_CONTROL_EXIT=$?
 set -e
-if [ "$SYSTEMD_CONTROL_EXIT" -eq 0 ] && [ "$SYSTEMD_CONTROL_VERSION" = nexus-release-promotion-control.v3 ]; then
+if [ "$SYSTEMD_CONTROL_EXIT" -eq 0 ] && [ "$SYSTEMD_CONTROL_VERSION" = nexus-release-promotion-control.v4 ]; then
   SYSTEMD_TRANSACTION_AVAILABLE=true
   OWNER_PRIVATE_KEY="${NEXUS_RELEASE_OWNER_PRIVATE_KEY_PATH:-}"
   [ -n "$OWNER_PRIVATE_KEY" ] && [ -f "$OWNER_PRIVATE_KEY" ] && [ ! -L "$OWNER_PRIVATE_KEY" ] || {
-    echo "v3 promotion requires the owner's off-server Ed25519 private key" >&2
+    echo "v4 promotion requires the owner's off-server Ed25519 private key" >&2
     exit 77
   }
   owner_key_mode="$(stat -c '%a' "$OWNER_PRIVATE_KEY" 2>/dev/null || stat -f '%Lp' "$OWNER_PRIVATE_KEY")"
@@ -1156,13 +1156,25 @@ fi
 run_systemd_transaction() {
   local request_dir request_file signed_request_file remote_inbox remote_request status_json="" phase="" transaction_status=""
   local result_env escrow_json deadline request_signing request_sha request_mode validated_request_sha
-  local local_request_directory escrow_retry_attempts=0 next_escrow_retry_at=0 escrow_retry_delay retry_status
+  local local_request_directory escrow_retry_state
+  local candidate_available_reported=false
+  local ensure_started_interval_seconds=15 last_ensure_started_at=$((SECONDS - 15))
+  local last_reconciled_status="" unit_activity=unknown last_unit_activity=unknown
+  local should_ensure_started=false
   request_dir="$ROOT/.local/release/transactions"
   request_file="$request_dir/${PROMOTION_RUN_ID}.request.json"
   signed_request_file="$request_dir/${PROMOTION_RUN_ID}.request.envelope.json"
   if [ "$RESUME_EXISTING_TRANSACTION" = true ]; then
     request_sha="$RESUME_REQUEST_SHA"
     status_json="$RESUME_STATUS_JSON"
+    # Resume discovery already reconciled every non-terminal start state.
+    # Treat that call as the first throttled reconciliation in this poller.
+    case "${resume_status:-}" in
+      pending|recovery_required)
+        last_ensure_started_at="$SECONDS"
+        last_reconciled_status="$resume_status"
+        ;;
+    esac
   else
     for local_request_directory in "$ROOT/.local" "$ROOT/.local/release" "$request_dir"; do
       [ -d "$local_request_directory" ] && [ ! -L "$local_request_directory" ] || {
@@ -1423,10 +1435,6 @@ LOCAL_REQUEST_VALIDATION
     fi
     [[ "$request_sha" =~ ^[a-f0-9]{64}$ ]] || { echo "owner-signed request digest is invalid" >&2; return 1; }
 
-    # Recheck capacity immediately before handing the durable service its
-    # authority; a Sonar analysis or pressure spike after the earlier preflight
-    # must not overlap the production critical section.
-    "${SSH[@]}" "$SERVER" bash -s -- "${CAPACITY_ARGS[@]}" < "$ROOT/scripts/remote-release-capacity.sh"
     remote_inbox="$PROD_BASE/.local/release/transaction-inbox"
     remote_request="$remote_inbox/$PROMOTION_RUN_ID.request.envelope.json"
     "${SSH[@]}" "$SERVER" install -d -m 700 "$remote_inbox"
@@ -1454,6 +1462,10 @@ REMOTE_TRANSACTION_REQUEST
       "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" ensure-started \
         "$PROMOTION_RUN_ID" "$request_sha" >/dev/null
     fi
+    # A successful launch performs the same inactive-unit start check. A lost
+    # launch response was reconciled immediately above with ensure-started.
+    last_ensure_started_at="$SECONDS"
+    last_reconciled_status=pending
   fi
 
   result_env="$request_dir/${PROMOTION_RUN_ID}.result.env"
@@ -1472,18 +1484,48 @@ REMOTE_TRANSACTION_REQUEST
         continue
       fi
     fi
-    read -r phase transaction_status < <(printf '%s' "$status_json" | node -e '
+    read -r phase transaction_status unit_activity escrow_retry_state < <(printf '%s' "$status_json" | node -e '
       let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{
         const x=JSON.parse(b),id=process.argv[1],digest=process.argv[2];
         const statuses=new Set(["pending","running","recovery_required","escrow_pending",
           "completed","recovered","failed_before_stop","recovery_failed"]);
         if(x.schema!=="nexus.promotion-transaction-journal.v1"||x.transactionId!==id
-          ||x.requestSha256!==digest||typeof x.phase!=="string"||!statuses.has(x.status))process.exit(1);
-        process.stdout.write(`${x.phase} ${x.status}\n`);
+          ||x.requestSha256!==digest||typeof x.phase!=="string"||!statuses.has(x.status)
+          ||(x.unitActive!==undefined&&typeof x.unitActive!=="boolean"))process.exit(1);
+        const unitActivity=x.unitActive===true?"active":x.unitActive===false?"inactive":"unknown";
+        let escrowRetryState="unknown";
+        if(x.escrowRetry!==undefined){
+          if(x.escrowRetry===null||typeof x.escrowRetry!=="object"
+            ||!(x.escrowRetry.exhaustedAt===null
+              ||(typeof x.escrowRetry.exhaustedAt==="string"
+                &&Number.isFinite(Date.parse(x.escrowRetry.exhaustedAt)))))process.exit(1);
+          escrowRetryState=x.escrowRetry.exhaustedAt===null?"pending":"exhausted";
+        }
+        process.stdout.write(`${x.phase} ${x.status} ${unitActivity} ${escrowRetryState}\n`);
       });' "$PROMOTION_RUN_ID" "$request_sha") || {
       echo "authoritative promotion transaction status is invalid" >&2
       return 1
     }
+    case "$phase:$transaction_status" in
+      candidate_available:running|verifying_candidate:running)
+        if [ "$candidate_available_reported" != true ]; then
+          echo "✅ Exact candidate is serving customers; final soak and escrow verification continue."
+          candidate_available_reported=true
+        fi
+        ;;
+      awaiting_dr_escrow:escrow_pending)
+        if [ "$candidate_available_reported" != true ]; then
+          echo "✅ Exact candidate is serving customers; stability soak passed and final escrow verification continues."
+          candidate_available_reported=true
+        fi
+        ;;
+      completed:completed)
+        if [ "$candidate_available_reported" != true ]; then
+          echo "✅ Exact candidate is serving customers; stability soak and escrow verification are complete."
+          candidate_available_reported=true
+        fi
+        ;;
+    esac
     case "$transaction_status" in
       completed) break ;;
       recovered|failed_before_stop|recovery_failed)
@@ -1492,28 +1534,41 @@ REMOTE_TRANSACTION_REQUEST
         return 1
         ;;
       escrow_pending)
-        # The service has its own short retry policy. If a sustained object-store
-        # outage exhausts systemd's start-rate limit, resume the same immutable,
-        # owner-authorized transaction through the root control. This retries
-        # escrow only; it cannot repeat the cutover or create a second lane.
-        if [ "$escrow_retry_attempts" -lt 8 ] && [ "$SECONDS" -ge "$next_escrow_retry_at" ]; then
-          set +e
-          "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" retry-escrow "$PROMOTION_RUN_ID" >/dev/null 2>&1
-          retry_status=$?
-          set -e
-          escrow_retry_attempts=$((escrow_retry_attempts + 1))
-          escrow_retry_delay=$((10 * (1 << (escrow_retry_attempts > 5 ? 5 : escrow_retry_attempts - 1))))
-          next_escrow_retry_at=$((SECONDS + escrow_retry_delay))
-          # A lost SSH response is reconciled by the next authoritative status
-          # read. Persistent denial remains bounded by the retry count/deadline.
-          [ "$retry_status" -eq 0 ] || true
+        # The existing systemd oneshot owns the complete bounded retry cycle.
+        # The Mac observes only durable status and never opens another retry
+        # loop or becomes required to keep rollback protection alive.
+        if [ "$escrow_retry_state" = exhausted ]; then
+          printf '%s\n' "$status_json" >&2
+          echo "server-owned rollback escrow retries were exhausted" >&2
+          return 75
         fi
         ;;
-      pending|running|recovery_required)
+      pending|recovery_required)
         # Close the accepted-authority/systemd-start crash window. The root
         # control reuses only the already persisted exact request digest.
-        "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" ensure-started \
-          "$PROMOTION_RUN_ID" "$request_sha" >/dev/null 2>&1 || true
+        # Pending or recovery authority reconciles immediately on transition,
+        # then at most once per interval. Ordinary running polls stay
+        # read-only; the server-owned recovery unit remains authoritative if
+        # the client disconnects or the transaction unit exits unexpectedly.
+        should_ensure_started=false
+        if [ "$transaction_status" != "$last_reconciled_status" ]; then
+          should_ensure_started=true
+        elif [ "$unit_activity" = inactive ] && [ "$last_unit_activity" != inactive ]; then
+          should_ensure_started=true
+        elif [ "$((SECONDS - last_ensure_started_at))" -ge "$ensure_started_interval_seconds" ]; then
+          should_ensure_started=true
+        fi
+        if [ "$should_ensure_started" = true ]; then
+          "${SSH[@]}" "$SERVER" sudo -n "$SYSTEMD_CONTROL" ensure-started \
+            "$PROMOTION_RUN_ID" "$request_sha" >/dev/null 2>&1 || true
+          last_ensure_started_at="$SECONDS"
+        fi
+        last_reconciled_status="$transaction_status"
+        last_unit_activity="$unit_activity"
+        ;;
+      running)
+        last_reconciled_status=running
+        last_unit_activity="$unit_activity"
         ;;
     esac
     status_json=""
@@ -2018,8 +2073,9 @@ if(lstat(file)){
 }
 NODE
   fsync_local_directory "$ROOT/.local/release/production"
-  printf '{"ok":true,"runtimeSha":"%s","artifactDigest":"%s","installedRuntimeDigest":"%s","cutoverSeconds":%s,"backupWindowSeconds":%s,"backupOutageSeconds":%s,"finalUnavailabilitySeconds":%s,"totalUnavailabilitySeconds":%s,"verificationSoakSeconds":%s,"soakObservedSeconds":%s,"sentryRelease":"%s","exactBackup":"%s","backupSha256":"%s","escrowObjectKey":"%s","transactionId":"%s","transactionMode":"systemd_oneshot"}\n' \
-    "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" "$SOAK_OBSERVED_SECONDS" "$RUNTIME_SHA" "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" "$PROMOTION_RUN_ID"
+  PRODUCTION_EVIDENCE_SHA256="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$SYSTEMD_RESULT_PATH")"
+  printf '{"ok":true,"runtimeSha":"%s","artifactDigest":"%s","installedRuntimeDigest":"%s","packageVersion":"%s","cutoverSeconds":%s,"backupWindowSeconds":%s,"backupOutageSeconds":%s,"finalUnavailabilitySeconds":%s,"totalUnavailabilitySeconds":%s,"verificationSoakSeconds":%s,"soakObservedSeconds":%s,"sentryRelease":"%s","exactBackup":"%s","backupSha256":"%s","escrowObjectKey":"%s","transactionId":"%s","transactionMode":"systemd_oneshot","promotionEvidence":"%s","promotionEvidenceSha256":"%s"}\n' \
+    "$RUNTIME_SHA" "$ARTIFACT_DIGEST" "$INSTALLED_RUNTIME_DIGEST" "$TARGET_VERSION" "$CUTOVER_SECONDS" "$BACKUP_WINDOW_SECONDS" "$BACKUP_OUTAGE_SECONDS" "$FINAL_UNAVAILABILITY_SECONDS" "$TOTAL_UNAVAILABILITY_SECONDS" "$VERIFICATION_SOAK_SECONDS" "$SOAK_OBSERVED_SECONDS" "$RUNTIME_SHA" "$BACKUP_FILE" "$BACKUP_SHA256" "$ESCROW_OBJECT_KEY" "$PROMOTION_RUN_ID" "$SYSTEMD_RESULT_PATH" "$PRODUCTION_EVIDENCE_SHA256"
 }
 
 if [ "$SYSTEMD_TRANSACTION_AVAILABLE" = true ]; then

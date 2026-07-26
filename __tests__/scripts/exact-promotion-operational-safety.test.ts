@@ -288,7 +288,7 @@ server="\${1:-}"; shift || true
 printf '%s\\n' "$*" >> "$NEXUS_TEST_SERVER_LOG"
 if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
   case "\${4:-}" in
-    version) printf 'nexus-release-promotion-control.v3\\n'; exit 0 ;;
+    version) printf 'nexus-release-promotion-control.v4\\n'; exit 0 ;;
     status)
       [ "\${5:-}" = "$NEXUS_TEST_OLD_TRANSACTION_ID" ] || exit 91
       case "$NEXUS_TEST_STATUS_MODE" in
@@ -1071,7 +1071,7 @@ server="\${1:-}"; shift || true
 printf '%s\n' "$*" >> "$NEXUS_TEST_SERVER_LOG"
 if [ "\${1:-}" = sudo ] && [ "\${2:-}" = -n ]; then
   case "\${4:-}" in
-    version) printf 'nexus-release-promotion-control.v3\n' ;;
+    version) printf 'nexus-release-promotion-control.v4\n' ;;
     status)
       [ "\${5:-}" = "$NEXUS_TEST_TRANSACTION_ID" ] || exit 91
       cat "$NEXUS_TEST_STATUS_FIXTURE"

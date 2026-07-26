@@ -1,10 +1,19 @@
 # Install as /etc/sonarqube/aws-config, root:root, mode 0600.
 # Replace every placeholder and keep this profile dedicated to the Sonar backup
 # prefix. Do not place the Roles Anywhere private key or PIN in this file.
+# Copy the exact role/profile/trust-anchor ARNs from the named outputs of the
+# reviewed ops/sonarqube/aws-s3-stack.yaml change set. The deliberately
+# non-ARN REPLACE_WITH_STACK_OUTPUT_* values must never be inferred.
 [profile nexus-sonarqube-backup]
 region = eu-west-1
-credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-certificate.pem --private-key /etc/sonarqube/roles-anywhere-private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/replace-with-trust-anchor-id --profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/replace-with-profile-id --role-arn arn:aws:iam::111122223333:role/nexus-sonarqube-backup --session-duration 900
+credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-certificate.pem --private-key /etc/sonarqube/roles-anywhere-private-key.pem --trust-anchor-arn REPLACE_WITH_STACK_OUTPUT_RolesAnywhereTrustAnchorArn --profile-arn REPLACE_WITH_STACK_OUTPUT_BackupRolesAnywhereProfileArn --role-arn REPLACE_WITH_STACK_OUTPUT_BackupPrincipalArn --session-duration 900
 
 [profile nexus-sonarqube-restore]
 region = eu-west-1
-credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-restore-certificate.pem --private-key /etc/sonarqube/roles-anywhere-restore-private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:eu-west-1:111122223333:trust-anchor/replace-with-trust-anchor-id --profile-arn arn:aws:rolesanywhere:eu-west-1:111122223333:profile/replace-with-restore-profile-id --role-arn arn:aws:iam::111122223333:role/nexus-sonarqube-restore --session-duration 900
+credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-restore-certificate.pem --private-key /etc/sonarqube/roles-anywhere-restore-private-key.pem --trust-anchor-arn REPLACE_WITH_STACK_OUTPUT_RolesAnywhereTrustAnchorArn --profile-arn REPLACE_WITH_STACK_OUTPUT_RestoreRolesAnywhereProfileArn --role-arn REPLACE_WITH_STACK_OUTPUT_RestorePrincipalArn --session-duration 900
+
+# Activation proof only. The certificate serial must be present in the exact
+# CloudFormation-managed CRL. Never use this profile for backups.
+[profile nexus-sonarqube-revoked-probe]
+region = eu-west-1
+credential_process = /usr/local/sbin/nexus-sonarqube-aws-signing-helper credential-process --certificate /etc/sonarqube/roles-anywhere-revoked-certificate.pem --private-key /etc/sonarqube/roles-anywhere-revoked-private-key.pem --trust-anchor-arn REPLACE_WITH_STACK_OUTPUT_RolesAnywhereTrustAnchorArn --profile-arn REPLACE_WITH_STACK_OUTPUT_BackupRolesAnywhereProfileArn --role-arn REPLACE_WITH_STACK_OUTPUT_BackupPrincipalArn --session-duration 900

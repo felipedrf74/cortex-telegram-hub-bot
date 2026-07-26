@@ -270,6 +270,7 @@ STATE_ROOT="$TEST_ROOT/state"
 BASE_DIR="$STATE_ROOT/base"
 SETS_DIR="$STATE_ROOT/sets"
 ACTIVE_RECEIPT="$STATE_ROOT/active.json"
+LAYOUT_TRUST_MANIFEST="$STATE_ROOT/release-layout-evidence-trust.v1.json"
 PROVISION_JOURNAL="$STATE_ROOT/provision-in-progress.v1"
 mkdir -p "$BASE_DIR" "$SETS_DIR"
 printf 'journal\n' >"$PROVISION_JOURNAL"
@@ -280,12 +281,14 @@ printf 'download\n' >"$download_dir/input"
 set_stage=""
 set_target="$SETS_DIR/set-id"
 active_stage=""
+trust_stage=""
 base_stage=""
 journal_stage=""
 base_target="$BASE_DIR/base.qcow2"
 base_installed=false
 set_committed=false
 active_committed=false
+trust_committed=false
 journal_armed=true
 transaction_succeeded=false
 
@@ -314,6 +317,8 @@ case "$SCENARIO" in
     mkdir -p "$set_target"
     printf 'overlay\n' >"$set_target/root.qcow2"
     set_committed=true
+    printf 'trust\n' >"$LAYOUT_TRUST_MANIFEST"
+    trust_committed=true
     printf 'active\n' >"$ACTIVE_RECEIPT"
     active_committed=true
     ;;
@@ -480,7 +485,15 @@ describe('rollback-drill VM provision transaction failures', () => {
     ['base', ['base/base.qcow2']],
     ['staged-set', ['base/base.qcow2', 'sets/.stage.case']],
     ['committed-set', ['base/base.qcow2', 'sets/set-id']],
-    ['active', ['active.json', 'base/base.qcow2', 'sets/set-id']],
+    [
+      'active',
+      [
+        'active.json',
+        'release-layout-evidence-trust.v1.json',
+        'base/base.qcow2',
+        'sets/set-id',
+      ],
+    ],
   ])(
     'rolls back the %s publication boundary and removes the journal',
     (scenario, removedPaths) => {

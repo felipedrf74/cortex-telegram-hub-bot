@@ -1,28 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const coordinator = path.resolve('scripts/release-sequence.mjs');
 
 describe('resumable exact-release sequence', () => {
-  let root: string;
-  let fixtureRoot: string;
-  let runtimeSha: string;
-  let operations: string;
-  let rcRunMarker: string;
-  let manifestRunMarker: string;
-  let stagingRunMarker: string;
-  let stagingActiveMarker: string;
-  let rcDispatchArgs: string;
-  let rcWatchActiveMarker: string;
-  let rcWatchReleaseMarker: string;
-  let rcWatchTerminationReleaseMarker: string;
-  let rcWatchTerminatedMarker: string;
-  let rcWatchCoordinatorPidMarker: string;
-  let rcWatchChildPidMarker: string;
-
   it('durably replaces the local checkpoint before advancing release phases', () => {
     const source = fs.readFileSync(coordinator, 'utf8');
     const start = source.indexOf('function writeCheckpoint(state) {');
@@ -56,28 +41,72 @@ describe('resumable exact-release sequence', () => {
     expect(source).not.toContain('fs.rmSync(lockPath');
     expect(source).not.toContain('fs.unlinkSync(lockPath');
   });
+});
 
-  beforeEach(() => {
-    fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-sequence-')));
+function fixtureTreeDigest(directory: string) {
+  const digest = createHash('sha256');
+
+  function visit(current: string, relative: string) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      const entryPath = path.join(current, entry.name);
+      const relativePath = path.posix.join(relative, entry.name);
+      const stat = fs.lstatSync(entryPath);
+      digest.update(`${entry.isDirectory() ? 'd' : entry.isSymbolicLink() ? 'l' : 'f'}\0`);
+      digest.update(`${relativePath}\0${stat.mode & 0o777}\0`);
+      if (entry.isDirectory()) {
+        visit(entryPath, relativePath);
+      } else if (entry.isSymbolicLink()) {
+        digest.update(fs.readlinkSync(entryPath));
+      } else {
+        digest.update(fs.readFileSync(entryPath));
+      }
+      digest.update('\0');
+    }
+  }
+
+  visit(directory, '');
+  return digest.digest('hex');
+}
+
+describe('resumable exact-release sequence', () => {
+  let root: string;
+  let fixtureRoot: string;
+  let runtimeSha: string;
+  let operations: string;
+  let rcRunMarker: string;
+  let manifestRunMarker: string;
+  let stagingRunMarker: string;
+  let stagingActiveMarker: string;
+  let rcDispatchArgs: string;
+  let rcWatchActiveMarker: string;
+  let rcWatchReleaseMarker: string;
+  let rcWatchTerminationReleaseMarker: string;
+  let rcWatchTerminatedMarker: string;
+  let rcWatchCoordinatorPidMarker: string;
+  let rcWatchChildPidMarker: string;
+  let ciViewCountMarker: string;
+  let securityViewCountMarker: string;
+  let ciViewInterruptMarker: string;
+  let seedFixtureRoot: string;
+  let seedRepo: string;
+  let seedOrigin: string;
+  let seedBin: string;
+  let seedRuntimeSha: string;
+  let seedDigest: string;
+
+  beforeAll(() => {
+    fixtureRoot = fs.realpathSync(fs.mkdtempSync(
+      path.join(os.tmpdir(), 'nexus-release-sequence-seed-'),
+    ));
     root = path.join(fixtureRoot, 'repo');
     fs.mkdirSync(root);
-    operations = path.join(root, 'operations.log');
-    rcRunMarker = path.join(fixtureRoot, 'rc-run-created-at.txt');
-    manifestRunMarker = path.join(fixtureRoot, 'manifest-run-created-at.txt');
-    stagingRunMarker = path.join(fixtureRoot, 'staging-run-created-at.txt');
-    stagingActiveMarker = path.join(fixtureRoot, 'staging-active.txt');
-    rcDispatchArgs = path.join(fixtureRoot, 'rc-dispatch-args.txt');
-    rcWatchActiveMarker = path.join(fixtureRoot, 'rc-watch-active.txt');
-    rcWatchReleaseMarker = path.join(fixtureRoot, 'rc-watch-release.txt');
-    rcWatchTerminationReleaseMarker = path.join(fixtureRoot, 'rc-watch-termination-release.txt');
-    rcWatchTerminatedMarker = path.join(fixtureRoot, 'rc-watch-terminated.txt');
-    rcWatchCoordinatorPidMarker = path.join(fixtureRoot, 'rc-watch-coordinator-pid.txt');
-    rcWatchChildPidMarker = path.join(fixtureRoot, 'rc-watch-child-pid.txt');
     fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
     fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
     fs.writeFileSync(path.join(root, 'tracked.txt'), 'fixture\n');
     fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture","version":"4.14.231"}\n');
     fs.writeFileSync(path.join(root, '.gitignore'), '.local/\noperations.log\n');
+    fs.writeFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'name: CI — Risk-based parallel matrix\n');
     fs.writeFileSync(path.join(root, '.github', 'workflows', 'security.yml'), 'name: Security — supply chain and static analysis\n');
     fs.writeFileSync(path.join(root, '.github', 'workflows', 'release-candidate-evidence.yml'), 'name: RC — Release Evidence\n');
     fs.writeFileSync(path.join(root, '.github', 'workflows', 'sign-release-manifest.yml'), 'name: Release — Sign exact candidate\n');
@@ -99,6 +128,9 @@ describe('resumable exact-release sequence', () => {
     fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
+next_observation() {
+  node -e 'const fs=require("node:fs");const values=process.argv[1].split(",");const file=process.argv[2];let count=0;try{count=Number(fs.readFileSync(file,"utf8"))||0}catch{};fs.writeFileSync(file,String(count+1));process.stdout.write(values[Math.min(count,values.length-1)])' "$1" "$2"
+}
 case "$args" in
   "repo view --json nameWithOwner")
     if [ -n "\${LOCK_HOLD_MARKER:-}" ]; then
@@ -111,17 +143,64 @@ case "$args" in
     protected="\${GH_MAIN_PROTECTED:-true}"
     printf '{"name":"main","protected":%s}\n' "$protected"
     ;;
+  "api repos/fixture/repository/actions/workflows/ci.yml")
+    workflow_id="\${GH_CI_LOOKUP_WORKFLOW_ID:-7001}"
+    printf '{"id":%s,"name":"CI — Risk-based parallel matrix","path":".github/workflows/ci.yml","state":"active"}\n' "$workflow_id"
+    ;;
+  "api repos/fixture/repository/actions/workflows/security.yml")
+    workflow_id="\${GH_SECURITY_LOOKUP_WORKFLOW_ID:-7002}"
+    printf '{"id":%s,"name":"Security — supply chain and static analysis","path":".github/workflows/security.yml","state":"active"}\n' "$workflow_id"
+    ;;
+  "run list --workflow ci.yml"*)
+    if [ "\${GH_CI_MISSING:-0}" = 1 ]; then printf '[]\n'; else
+      attempt="\${GH_CI_LIST_ATTEMPT:-1}"
+      if [ "\${GH_CI_ATTEMPT_ADVANCES_AFTER_SECURITY:-0}" = 1 ] && [ -f "$SECURITY_VIEW_COUNT_MARKER" ]; then
+        attempt=2
+      fi
+      workflow_id="\${GH_CI_LIST_WORKFLOW_ID:-7001}"
+      printf '[{"attempt":%s,"databaseId":8001,"headSha":"%s","headBranch":"main","event":"push","status":"queued","conclusion":null,"createdAt":"2026-07-22T11:59:00Z","workflowDatabaseId":%s,"workflowName":"CI — Risk-based parallel matrix"}]\n' "$attempt" "$FIXTURE_SHA" "$workflow_id"
+    fi
+    ;;
+  "run view 8001"*)
+    case " $args " in *" --attempt 1 "*) ;; *) exit 65 ;; esac
+    if [ "\${GH_INTERRUPT_CI_VIEW_ONCE:-0}" = 1 ] && [ ! -f "$CI_VIEW_INTERRUPT_MARKER" ]; then
+      : > "$CI_VIEW_INTERRUPT_MARKER"
+      exit 75
+    fi
+    observation="$(next_observation "\${GH_CI_SEQUENCE:-success}" "$CI_VIEW_COUNT_MARKER")"
+    case "$observation" in
+      pending) status=in_progress; conclusion=null ;;
+      success) status=completed; conclusion='"success"' ;;
+      failure|cancelled|timed_out) status=completed; conclusion="\\"$observation\\"" ;;
+      *) exit 64 ;;
+    esac
+    attempt="\${GH_CI_VIEW_ATTEMPT:-1}"
+    workflow_id="\${GH_CI_VIEW_WORKFLOW_ID:-7001}"
+    printf '{"attempt":%s,"databaseId":8001,"headSha":"%s","headBranch":"main","event":"push","status":"%s","conclusion":%s,"workflowDatabaseId":%s,"workflowName":"CI — Risk-based parallel matrix","url":"https://example.invalid/runs/8001","jobs":[]}\n' "$attempt" "$FIXTURE_SHA" "$status" "$conclusion" "$workflow_id"
+    ;;
   "run list --workflow security.yml"*)
-    conclusion="\${GH_SECURITY_CONCLUSION:-success}"
-    printf '[{"databaseId":9001,"headSha":"%s","status":"completed","conclusion":"%s","createdAt":"2026-07-22T12:00:00Z"}]\n' "$FIXTURE_SHA" "$conclusion"
+    if [ "\${GH_SECURITY_MISSING:-0}" = 1 ]; then printf '[]\n'; else
+      attempt="\${GH_SECURITY_LIST_ATTEMPT:-1}"
+      workflow_id="\${GH_SECURITY_LIST_WORKFLOW_ID:-7002}"
+      printf '[{"attempt":%s,"databaseId":9001,"headSha":"%s","headBranch":"main","event":"push","status":"queued","conclusion":null,"createdAt":"2026-07-22T12:00:00Z","workflowDatabaseId":%s,"workflowName":"Security — supply chain and static analysis"}]\n' "$attempt" "$FIXTURE_SHA" "$workflow_id"
+    fi
     ;;
   "run view 9001"*)
-    conclusion="\${GH_SECURITY_CONCLUSION:-success}"
-    printf '{"databaseId":9001,"headSha":"%s","headBranch":"main","event":"push","status":"completed","conclusion":"%s","workflowName":"Security — supply chain and static analysis","url":"https://example.invalid/runs/9001","jobs":[{"databaseId":9101,"name":"CodeQL JavaScript/TypeScript","status":"completed","conclusion":"%s"}]}\n' "$FIXTURE_SHA" "$conclusion" "$conclusion"
+    case " $args " in *" --attempt 1 "*) ;; *) exit 65 ;; esac
+    observation="$(next_observation "\${GH_SECURITY_SEQUENCE:-\${GH_SECURITY_CONCLUSION:-success}}" "$SECURITY_VIEW_COUNT_MARKER")"
+    case "$observation" in
+      pending) status=in_progress; conclusion=null; job_status=in_progress; job_conclusion=null ;;
+      success) status=completed; conclusion='"success"'; job_status=completed; job_conclusion='"success"' ;;
+      failure|cancelled|timed_out) status=completed; conclusion="\\"$observation\\""; job_status=completed; job_conclusion="\\"$observation\\"" ;;
+      *) exit 64 ;;
+    esac
+    attempt="\${GH_SECURITY_VIEW_ATTEMPT:-1}"
+    workflow_id="\${GH_SECURITY_VIEW_WORKFLOW_ID:-7002}"
+    printf '{"attempt":%s,"databaseId":9001,"headSha":"%s","headBranch":"main","event":"push","status":"%s","conclusion":%s,"workflowDatabaseId":%s,"workflowName":"Security — supply chain and static analysis","url":"https://example.invalid/runs/9001","jobs":[{"databaseId":9101,"name":"CodeQL JavaScript/TypeScript","status":"%s","conclusion":%s}]}\n' "$attempt" "$FIXTURE_SHA" "$status" "$conclusion" "$workflow_id" "$job_status" "$job_conclusion"
     ;;
   "workflow run release-candidate-evidence.yml"*)
     checkpoint=".local/release/checkpoints/$FIXTURE_SHA.json"
-    node -e 'const fs=require("node:fs");const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.phase!=="rc_dispatch_started"||x.rcDispatch?.status!=="dispatch_started"||!x.sourceIntent||!x.workflows?.security||x.rcRunId!==null)process.exit(65)' "$checkpoint"
+    node -e 'const fs=require("node:fs");const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(x.phase!=="rc_dispatch_started"||x.rcDispatch?.status!=="dispatch_started"||!x.sourceIntent||x.protectedMainChecks?.status!=="completed"||x.workflows?.protectedMainCi?.status!=="completed"||x.workflows?.security?.status!=="completed"||x.rcRunId!==null)process.exit(65)' "$checkpoint"
     printf '%s\n' "$args" > "$RC_DISPATCH_ARGS_FILE"
     date -u '+%Y-%m-%dT%H:%M:%SZ' > "$RC_RUN_MARKER"
     printf 'rc-dispatch\n' >> "$OPERATIONS_LOG"
@@ -410,9 +489,54 @@ NODE
     spawnSync('git', ['commit', '-m', 'fixture release scripts'], { cwd: root });
     spawnSync('git', ['push', 'origin', 'main'], { cwd: root });
     runtimeSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+
+    seedFixtureRoot = fixtureRoot;
+    seedRepo = root;
+    seedOrigin = path.join(fixtureRoot, 'origin.git');
+    seedBin = path.join(fixtureRoot, 'bin');
+    seedRuntimeSha = runtimeSha;
+    seedDigest = fixtureTreeDigest(fixtureRoot);
+    expect(seedRuntimeSha).toMatch(/^[a-f0-9]{40}$/u);
+  });
+
+  beforeEach(() => {
+    expect(fixtureTreeDigest(seedFixtureRoot)).toBe(seedDigest);
+
+    fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-sequence-')));
+    root = path.join(fixtureRoot, 'repo');
+    const remote = path.join(fixtureRoot, 'origin.git');
+    const bin = path.join(fixtureRoot, 'bin');
+    fs.cpSync(seedRepo, root, { recursive: true });
+    fs.cpSync(seedOrigin, remote, { recursive: true });
+    fs.cpSync(seedBin, bin, { recursive: true });
+    expect(fixtureTreeDigest(fixtureRoot)).toBe(seedDigest);
+
+    // The copied Git config still points to the immutable seed origin. Replace
+    // that exact path without starting another Git process in every test.
+    const gitConfigPath = path.join(root, '.git', 'config');
+    const seedGitConfig = fs.readFileSync(gitConfigPath, 'utf8');
+    expect(seedGitConfig.split(seedOrigin)).toHaveLength(2);
+    fs.writeFileSync(gitConfigPath, seedGitConfig.replace(seedOrigin, remote));
+    runtimeSha = seedRuntimeSha;
+    operations = path.join(root, 'operations.log');
+    rcRunMarker = path.join(fixtureRoot, 'rc-run-created-at.txt');
+    manifestRunMarker = path.join(fixtureRoot, 'manifest-run-created-at.txt');
+    stagingRunMarker = path.join(fixtureRoot, 'staging-run-created-at.txt');
+    stagingActiveMarker = path.join(fixtureRoot, 'staging-active.txt');
+    rcDispatchArgs = path.join(fixtureRoot, 'rc-dispatch-args.txt');
+    rcWatchActiveMarker = path.join(fixtureRoot, 'rc-watch-active.txt');
+    rcWatchReleaseMarker = path.join(fixtureRoot, 'rc-watch-release.txt');
+    rcWatchTerminationReleaseMarker = path.join(fixtureRoot, 'rc-watch-termination-release.txt');
+    rcWatchTerminatedMarker = path.join(fixtureRoot, 'rc-watch-terminated.txt');
+    rcWatchCoordinatorPidMarker = path.join(fixtureRoot, 'rc-watch-coordinator-pid.txt');
+    rcWatchChildPidMarker = path.join(fixtureRoot, 'rc-watch-child-pid.txt');
+    ciViewCountMarker = path.join(fixtureRoot, 'ci-view-count.txt');
+    securityViewCountMarker = path.join(fixtureRoot, 'security-view-count.txt');
+    ciViewInterruptMarker = path.join(fixtureRoot, 'ci-view-interrupt.txt');
   });
 
   afterEach(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+  afterAll(() => fs.rmSync(seedFixtureRoot, { recursive: true, force: true }));
 
   function coordinatorEnvironment(env: NodeJS.ProcessEnv = process.env) {
     return {
@@ -432,6 +556,9 @@ NODE
       RC_WATCH_TERMINATED_MARKER: rcWatchTerminatedMarker,
       RC_WATCH_COORDINATOR_PID_MARKER: rcWatchCoordinatorPidMarker,
       RC_WATCH_CHILD_PID_MARKER: rcWatchChildPidMarker,
+      CI_VIEW_COUNT_MARKER: ciViewCountMarker,
+      SECURITY_VIEW_COUNT_MARKER: securityViewCountMarker,
+      CI_VIEW_INTERRUPT_MARKER: ciViewInterruptMarker,
       PATH: `${path.join(fixtureRoot, 'bin')}:${env.PATH ?? process.env.PATH ?? ''}`,
     };
   }
@@ -592,6 +719,11 @@ NODE
     expect(output.phase).toBe('owner_stop');
     expect(output.manualRequired).toBe(true);
     expect(output.reason).toBe('owner_stop_requires_new_invocation');
+    expect(first.stderr).toContain(
+      '"schema":"nexus.release-protected-workflow-notice.v1"',
+    );
+    expect(first.stderr).toContain('"url":"https://example.invalid/runs/223344"');
+    expect(first.stderr).toContain('"url":"https://example.invalid/runs/334455"');
     expect(fs.readFileSync(operations, 'utf8').trim().split('\n')).toEqual([
       'rc-dispatch',
       'rc-watch',
@@ -634,6 +766,7 @@ NODE
     expect(checkpoint.manifestSigningDispatch).toMatchObject({
       status: 'completed',
       runId: '223344',
+      runUrl: 'https://example.invalid/runs/223344',
     });
     expect(checkpoint.stagingAttempt).toMatchObject({
       status: 'request_ready',
@@ -643,6 +776,7 @@ NODE
     expect(checkpoint.stagingSigningDispatch).toMatchObject({
       status: 'completed',
       runId: '334455',
+      runUrl: 'https://example.invalid/runs/334455',
     });
     expect(checkpoint.signedManifestIdentity).toMatchObject({
       path: path.join(root, '.local', 'release', 'manifests', `${runtimeSha}.json`),
@@ -713,6 +847,8 @@ NODE
       artifactDigest: 'a'.repeat(64),
       installedRuntimeDigest: 'b'.repeat(64),
       recoveryRuntimeDigest: 'c'.repeat(64),
+      packageVersion: '4.14.231',
+      transactionId: 'release-test-1234',
       backupSha256: 'e'.repeat(64),
       rollbackEscrowEvidenceSha256: 'f'.repeat(64),
     });
@@ -765,15 +901,345 @@ NODE
     expect(mismatch.stderr).toContain('checkpoint RC run identity mismatch');
   });
 
-  it('rejects an arbitrary RC id at sequence start and fails when exact-SHA CodeQL evidence is absent', () => {
+  it('rejects an arbitrary RC id at sequence start and checkpoints terminal CodeQL failure', () => {
     const arbitrary = run(['--rc-run', '123456', '--backend-only']);
     expect(arbitrary.status).toBe(64);
     expect(arbitrary.stderr).toContain('dispatches its own RC');
 
     const missingSecurity = run(['--backend-only'], { ...process.env, GH_SECURITY_CONCLUSION: 'failure' });
     expect(missingSecurity.status).toBe(1);
-    expect(missingSecurity.stderr).toContain('security.yml evidence for exact origin/main is missing');
-    expect(fs.existsSync(path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`))).toBe(false);
+    expect(missingSecurity.stderr).toContain(
+      'security.yml did not reach exact-SHA terminal success (failure)',
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.workflows.security).toMatchObject({
+      status: 'terminal_failure',
+      runId: '9001',
+      observedStatus: 'completed',
+      observedConclusion: 'failure',
+    });
+    expect(checkpoint.rcDispatch).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+  });
+
+  it('polls pending exact-SHA CI and CodeQL to success before dispatching RC once', () => {
+    const result = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        GH_CI_SEQUENCE: 'pending,success',
+        GH_SECURITY_SEQUENCE: 'pending,success',
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(3);
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.protectedMainChecks).toMatchObject({
+      schema: 'nexus.release-required-workflows.v1',
+      status: 'completed',
+      headSha: runtimeSha,
+    });
+    expect(checkpoint.workflows.protectedMainCi).toMatchObject({
+      workflow: 'ci.yml',
+      workflowName: 'CI — Risk-based parallel matrix',
+      workflowDatabaseId: 7001,
+      workflowSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      status: 'completed',
+      runId: '8001',
+      attempt: 1,
+      headSha: runtimeSha,
+      observedConclusion: 'success',
+      pollCount: 2,
+      latestAttemptVerified: 1,
+      latestWorkflowDatabaseIdVerified: 7001,
+      latestAttemptVerifiedAt: expect.any(String),
+    });
+    expect(checkpoint.workflows.security).toMatchObject({
+      workflow: 'security.yml',
+      workflowDatabaseId: 7002,
+      status: 'completed',
+      runId: '9001',
+      attempt: 1,
+      codeqlJobId: '9101',
+      codeqlConclusion: 'success',
+      pollCount: 2,
+      latestAttemptVerified: 1,
+      latestWorkflowDatabaseIdVerified: 7002,
+      latestAttemptVerifiedAt: expect.any(String),
+    });
+    // Successful polling remains distinct from one final live latest-attempt
+    // check at the pre-dispatch boundary. The earlier duplicate revalidation
+    // set is intentionally absent.
+    expect(fs.readFileSync(ciViewCountMarker, 'utf8')).toBe('3');
+    expect(fs.readFileSync(securityViewCountMarker, 'utf8')).toBe('3');
+    expect(
+      fs.readFileSync(operations, 'utf8').trim().split('\n')
+        .filter((entry) => entry === 'rc-dispatch'),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      label: 'protected-main CI failure',
+      env: { GH_CI_SEQUENCE: 'failure' },
+      workflowKey: 'protectedMainCi',
+      conclusion: 'failure',
+      message: 'protected-main CI did not reach exact-SHA terminal success (failure)',
+    },
+    {
+      label: 'security cancellation',
+      env: { GH_SECURITY_SEQUENCE: 'cancelled' },
+      workflowKey: 'security',
+      conclusion: 'cancelled',
+      message: 'security.yml did not reach exact-SHA terminal success (cancelled)',
+    },
+  ])('fails closed without RC dispatch on $label', ({
+    env, workflowKey, conclusion, message,
+  }) => {
+    const result = run(['--backend-only'], { ...process.env, ...env });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(message);
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.workflows[workflowKey]).toMatchObject({
+      status: 'terminal_failure',
+      observedStatus: 'completed',
+      observedConclusion: conclusion,
+    });
+    expect(checkpoint.rcDispatch).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+  });
+
+  it('fails closed on a checkpointed protected-workflow timeout', () => {
+    const result = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        GH_CI_SEQUENCE: 'pending',
+        NEXUS_RELEASE_TEST_PROTECTED_POLL_LIMIT: '1',
+      },
+    );
+
+    expect(result.status).toBe(124);
+    expect(result.stderr).toContain(
+      'protected-main CI did not reach exact-SHA terminal success',
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.workflows.protectedMainCi).toMatchObject({
+      status: 'timed_out',
+      runId: '8001',
+      observedStatus: 'in_progress',
+      pollCount: 1,
+    });
+    expect(checkpoint.rcDispatch).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+  });
+
+  it('rechecks CI after the sequential security wait and blocks changed success', () => {
+    const result = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        GH_CI_SEQUENCE: 'success,failure',
+        GH_SECURITY_SEQUENCE: 'pending,success',
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'release checkpoint protected-main CI latest attempt is not successful (failure)',
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.protectedMainChecks.status).toBe('completed');
+    expect(checkpoint.workflows.protectedMainCi).toMatchObject({
+      status: 'completed',
+      runId: '8001',
+      attempt: 1,
+      workflowDatabaseId: 7001,
+    });
+    expect(checkpoint.workflows.security.status).toBe('completed');
+    expect(checkpoint.rcDispatch).toMatchObject({
+      schema: 'nexus.release-candidate-dispatch-intent.v1',
+      status: 'intent_persisted',
+    });
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+  });
+
+  it('blocks a newer unverified CI attempt at the final pre-dispatch boundary', () => {
+    const result = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        GH_CI_ATTEMPT_ADVANCES_AFTER_SECURITY: '1',
+      },
+    );
+
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      'release checkpoint protected-main CI is not bound to its latest exact-SHA attempt',
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.workflows.protectedMainCi).toMatchObject({
+      status: 'completed',
+      attempt: 1,
+      workflowDatabaseId: 7001,
+    });
+    expect(checkpoint.rcDispatch).toMatchObject({
+      schema: 'nexus.release-candidate-dispatch-intent.v1',
+      status: 'intent_persisted',
+    });
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+  });
+
+  it.each([
+    {
+      label: 'attempt',
+      env: { GH_CI_VIEW_ATTEMPT: '2' },
+    },
+    {
+      label: 'workflow database identity',
+      env: { GH_CI_VIEW_WORKFLOW_ID: '7999' },
+    },
+  ])('rejects protected-main CI $label substitution without RC dispatch', ({ env }) => {
+    const result = run(['--backend-only'], { ...process.env, ...env });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'protected-main CI workflow run 8001 is not exact protected main',
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(
+      path.join(root, '.local', 'release', 'checkpoints', `${runtimeSha}.json`),
+      'utf8',
+    ));
+    expect(checkpoint.workflows.protectedMainCi).toMatchObject({
+      status: 'run_identified',
+      runId: '8001',
+      attempt: 1,
+      workflowDatabaseId: 7001,
+    });
+    expect(checkpoint.rcDispatch).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+  });
+
+  it('resumes a checkpointed exact-SHA CI run and never duplicates RC dispatch', () => {
+    const interrupted = run(
+      ['--backend-only'],
+      { ...process.env, GH_INTERRUPT_CI_VIEW_ONCE: '1' },
+    );
+    expect(interrupted.status).toBe(75);
+    const checkpointPath = path.join(
+      root,
+      '.local',
+      'release',
+      'checkpoints',
+      `${runtimeSha}.json`,
+    );
+    const interruptedCheckpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    expect(interruptedCheckpoint.workflows.protectedMainCi).toMatchObject({
+      status: 'run_identified',
+      runId: '8001',
+    });
+    expect(interruptedCheckpoint.rcDispatch).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+
+    const resumed = run(
+      ['--backend-only'],
+      { ...process.env, GH_INTERRUPT_CI_VIEW_ONCE: '1' },
+    );
+    expect(resumed.status, resumed.stderr).toBe(3);
+    const operationList = fs.readFileSync(operations, 'utf8').trim().split('\n');
+    expect(operationList.filter((entry) => entry === 'rc-dispatch')).toHaveLength(1);
+    expect(operationList.filter((entry) => entry === 'rc-watch')).toHaveLength(1);
+  });
+
+  it('performs the final live workflow revalidation after a laptop pause', () => {
+    const paused = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        NEXUS_RELEASE_TEST_PROTECTED_FRESHNESS_MS: '1000',
+        NEXUS_RELEASE_TEST_RC_PRESPAWN_DELAY_MS: '1200',
+      },
+    );
+
+    expect(paused.status, paused.stderr).toBe(3);
+    const checkpointPath = path.join(
+      root,
+      '.local',
+      'release',
+      'checkpoints',
+      `${runtimeSha}.json`,
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    expect(checkpoint.phase).toBe('owner_stop');
+    expect(checkpoint.rcDispatch).toMatchObject({
+      status: 'completed',
+      protectedWorkflowBinding: {
+        schema: 'nexus.release-candidate-protected-workflow-binding.v1',
+      },
+    });
+    expect(checkpoint.rcDispatch.protectedWorkflowBinding.workflows.protectedMainCi)
+      .toEqual(checkpoint.workflows.protectedMainCi.latestVerification);
+    expect(checkpoint.rcDispatch.protectedWorkflowBinding.workflows.security)
+      .toEqual(checkpoint.workflows.security.latestVerification);
+    expect(checkpoint.inProgressStep).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(true);
+    expect(
+      fs.readFileSync(operations, 'utf8').trim().split('\n')
+        .filter((entry) => entry === 'rc-dispatch'),
+    ).toHaveLength(1);
+  });
+
+  it('keeps the RC intent retryable when the final live workflow revalidation fails', () => {
+    const failed = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        GH_CI_SEQUENCE: 'success,failure',
+      },
+    );
+
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain(
+      'release checkpoint protected-main CI latest attempt is not successful (failure)',
+    );
+    const checkpointPath = path.join(
+      root,
+      '.local',
+      'release',
+      'checkpoints',
+      `${runtimeSha}.json`,
+    );
+    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    expect(checkpoint.phase).toBe('rc_dispatch_intent');
+    expect(checkpoint.rcDispatch).toMatchObject({ status: 'intent_persisted' });
+    expect(checkpoint.inProgressStep).toBeNull();
+    expect(fs.existsSync(rcRunMarker)).toBe(false);
+
+    const resumed = run(['--backend-only']);
+    expect(resumed.status, resumed.stderr).toBe(3);
+    expect(
+      fs.readFileSync(operations, 'utf8').trim().split('\n')
+        .filter((entry) => entry === 'rc-dispatch'),
+    ).toHaveLength(1);
   });
 
   it('revalidates branch protection and the exact stored CodeQL run on every resume', () => {
@@ -785,7 +1251,27 @@ NODE
 
     const failedCodeql = run(['--backend-only'], { ...process.env, GH_SECURITY_CONCLUSION: 'failure' });
     expect(failedCodeql.status).toBe(1);
-    expect(failedCodeql.stderr).toContain('is not a successful exact origin/main run');
+    expect(failedCodeql.stderr).toContain(
+      'release checkpoint security.yml latest attempt is not successful (failure)',
+    );
+  });
+
+  it('keeps immutable protected evidence resumable after a newer workflow attempt', () => {
+    expect(run(['--backend-only']).status).toBe(3);
+
+    const resumed = run(
+      ['--backend-only'],
+      {
+        ...process.env,
+        GH_CI_LIST_ATTEMPT: '2',
+        GH_SECURITY_LIST_ATTEMPT: '2',
+      },
+    );
+    expect(resumed.status, resumed.stderr).toBe(3);
+    expect(
+      fs.readFileSync(operations, 'utf8').trim().split('\n')
+        .filter((entry) => entry === 'rc-dispatch'),
+    ).toHaveLength(1);
   });
 
   it('rejects locally rewritten CodeQL job identity even when the live run still succeeds', () => {

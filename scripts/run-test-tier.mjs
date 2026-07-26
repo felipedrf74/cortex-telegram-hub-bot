@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { prepareMigratedDatabaseTemplate } from './lib/migrated-test-database-template-runner.mjs';
 import {
   loadTestPolicy,
   matchFiles,
@@ -24,7 +25,73 @@ const jsonOutput = valueOf('--json-output');
 const shard = valueOf('--shard');
 const coverage = args.includes('--coverage');
 const listOnly = args.includes('--list');
+const noCache = args.includes('--no-cache');
 const requestedFiles = args.filter((value) => value.startsWith('__tests__/') && value.endsWith('.test.ts'));
+
+function preparePrivateJsonOutput(requestedPath) {
+  if (typeof requestedPath !== 'string'
+      || requestedPath.length === 0
+      || requestedPath.includes('\0')
+      || requestedPath.includes('\n')
+      || requestedPath.includes('\r')) {
+    throw new Error('JSON output path is invalid');
+  }
+  const localRoot = path.join(root, '.local');
+  const absolute = path.resolve(root, requestedPath);
+  const relative = path.relative(localRoot, absolute);
+  if (!relative
+      || relative === '..'
+      || relative.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relative)) {
+    throw new Error('JSON output must stay strictly under .local/');
+  }
+
+  const parent = path.dirname(absolute);
+  const parentRelative = path.relative(root, parent);
+  let current = root;
+  for (const segment of parentRelative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const stat = fs.lstatSync(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error(`JSON output parent must be a real directory: ${current}`);
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      fs.mkdirSync(current, { mode: 0o700 });
+    }
+    fs.chmodSync(current, 0o700);
+  }
+
+  try {
+    const stat = fs.lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error('JSON output must be a regular file');
+    }
+    if (stat.nlink !== 1) {
+      throw new Error('JSON output must not be hardlinked');
+    }
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      throw new Error('JSON output must be owned by the current user');
+    }
+    fs.unlinkSync(absolute);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const descriptor = fs.openSync(
+    absolute,
+    fs.constants.O_CREAT
+      | fs.constants.O_EXCL
+      | fs.constants.O_WRONLY
+      | (fs.constants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  fs.closeSync(descriptor);
+  fs.chmodSync(absolute, 0o600);
+  return absolute;
+}
+
+const jsonOutputPath = jsonOutput ? preparePrivateJsonOutput(jsonOutput) : null;
 
 function requestedSubset(governedFiles) {
   if (requestedFiles.length === 0) return governedFiles;
@@ -39,41 +106,64 @@ function requestedSubset(governedFiles) {
 
 function reporterArgs() {
   const resolved = [`--reporter=${reporter}`];
-  if (jsonOutput) {
+  if (jsonOutputPath) {
     if (reporter !== 'json') resolved.push('--reporter=json');
-    resolved.push(`--outputFile=${path.resolve(root, jsonOutput)}`);
+    resolved.push(`--outputFile=${jsonOutputPath}`);
   }
   return resolved;
 }
 
-function runVitest(files, extra = [], envOverrides = {}) {
+function childStatus(code, signal) {
+  if (Number.isInteger(code)) return code;
+  return 128 + ({ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }[signal] ?? 1);
+}
+
+function waitForChild(child) {
+  return new Promise((resolve) => {
+    child.once('close', (code, signal) => resolve(childStatus(code, signal)));
+  });
+}
+
+async function runVitest(files, extra = [], envOverrides = {}) {
   if (files.length === 0) throw new Error(`No tests resolved for tier ${tier}`);
   if (listOnly) {
     process.stdout.write(`${files.join('\n')}\n`);
     process.exit(0);
   }
-  if (jsonOutput) fs.mkdirSync(path.dirname(path.resolve(root, jsonOutput)), { recursive: true });
-  const result = spawnSync(process.execPath, [
-    vitest,
-    'run',
-    ...reporterArgs(),
-    ...(coverage ? ['--coverage'] : []),
-    ...extra,
-    ...files,
-  ], {
-    cwd: root,
-    stdio: 'inherit',
-    env: { ...process.env, NODE_ENV: 'test', ...envOverrides },
-  });
-  process.exit(result.status ?? 1);
+  const template = prepareMigratedDatabaseTemplate(root);
+  let status = 1;
+  try {
+    const child = template.spawnChild(process.execPath, [
+      vitest,
+      'run',
+      ...reporterArgs(),
+      ...(noCache ? ['--no-cache'] : []),
+      ...(coverage ? ['--coverage'] : []),
+      ...extra,
+      ...files,
+    ], {
+      cwd: root,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        ...envOverrides,
+        ...template.env,
+      },
+    });
+    status = await waitForChild(child);
+  } finally {
+    template.cleanup();
+  }
+  process.exit(status);
 }
 
 if (tier === 'fast' || tier === 'critical') {
-  runVitest(requestedSubset(matchFiles(partitions.deterministic, policy.tiers[tier].include)));
+  await runVitest(requestedSubset(matchFiles(partitions.deterministic, policy.tiers[tier].include)));
 }
 
 if (tier === 'evaluate') {
-  runVitest(requestedSubset(partitions.evaluation));
+  await runVitest(requestedSubset(partitions.evaluation));
 }
 
 if (tier === 'changed') {
@@ -96,36 +186,55 @@ if (tier === 'changed') {
     process.stderr.write(selection.stderr);
     process.exit(selection.status ?? 1);
   }
-  runVitest(selection.stdout.trim().split('\n').filter(Boolean));
+  await runVitest(selection.stdout.trim().split('\n').filter(Boolean));
 }
 
 if (tier === 'full-sharded') {
   const files = requestedSubset(partitions.deterministic);
-  if (listOnly) runVitest(files);
-  if (shard) runVitest(files, [`--shard=${shard}`]);
-  const children = [1, 2, 3, 4].map((shard) => spawn(
-    process.execPath,
-    [vitest, 'run', ...reporterArgs(), `--shard=${shard}/4`, ...files],
-    { cwd: root, stdio: 'inherit', env: { ...process.env, NODE_ENV: 'test' } },
-  ));
-  const statuses = await Promise.all(children.map((child) => new Promise((resolve) => {
-    child.on('exit', (code) => resolve(code ?? 1));
-  })));
+  if (listOnly) await runVitest(files);
+  if (shard) await runVitest(files, [`--shard=${shard}`]);
+  const template = prepareMigratedDatabaseTemplate(root);
+  let statuses;
+  try {
+    const children = [1, 2, 3, 4].map((shard) => template.spawnChild(
+      process.execPath,
+      [vitest, 'run', ...reporterArgs(), `--shard=${shard}/4`, ...files],
+      {
+        cwd: root,
+        stdio: 'inherit',
+        env: { ...process.env, NODE_ENV: 'test', ...template.env },
+      },
+    ));
+    statuses = await Promise.all(children.map(waitForChild));
+  } finally {
+    template.cleanup();
+  }
   process.exit(statuses.every((status) => status === 0) ? 0 : 1);
 }
 
 if (tier === 'deterministic') {
-  runVitest(requestedSubset(partitions.deterministic), shard ? [`--shard=${shard}`] : []);
+  await runVitest(requestedSubset(partitions.deterministic), shard ? [`--shard=${shard}`] : []);
 }
 
 if (tier === 'profile') {
   const outputDir = path.join(root, '.local/test-profile');
   fs.mkdirSync(outputDir, { recursive: true });
   const output = path.join(outputDir, 'vitest-results.json');
-  const result = spawnSync(process.execPath, [
-    vitest, 'run', '--reporter=json', `--outputFile=${output}`, ...allFiles,
-  ], { cwd: root, stdio: 'inherit', env: { ...process.env, NODE_ENV: 'test' } });
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  const template = prepareMigratedDatabaseTemplate(root);
+  let testStatus = 1;
+  try {
+    const child = template.spawnChild(process.execPath, [
+      vitest, 'run', '--reporter=json', `--outputFile=${output}`, ...allFiles,
+    ], {
+      cwd: root,
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: 'test', ...template.env },
+    });
+    testStatus = await waitForChild(child);
+  } finally {
+    template.cleanup();
+  }
+  if (testStatus !== 0) process.exit(testStatus);
   const inventory = spawnSync(process.execPath, [
     'scripts/test-inventory.mjs', '--timings', output, '--timing-scope', 'all', '--enforce-evidence',
   ], {
@@ -136,7 +245,7 @@ if (tier === 'profile') {
 }
 
 if (tier === 'benchmark') {
-  runVitest(
+  await runVitest(
     ['__tests__/services/training-m4-capacity-snapshots.test.ts'],
     [],
     { NEXUS_BENCHMARKS: '1' },

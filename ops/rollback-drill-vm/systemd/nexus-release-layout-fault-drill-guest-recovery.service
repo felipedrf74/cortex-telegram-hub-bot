@@ -1,0 +1,38 @@
+[Unit]
+Description=Recover an interrupted Nexus release-layout fault scenario
+DefaultDependencies=no
+After=local-fs.target
+Before=cloud-final.service ssh.service multi-user.target
+ConditionPathExists=/usr/local/sbin/nexus-release-layout-fault-guest
+ConditionPathExists=/var/lib/nexus-release-layout-fault-guest
+StartLimitIntervalSec=120s
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/nexus-release-layout-fault-guest recover-all
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=120s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus-release-layout-fault-guest /run
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

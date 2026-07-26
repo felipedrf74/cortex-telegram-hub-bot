@@ -156,6 +156,24 @@ describe('rollback-drill KVM provisioner', () => {
     expect(layout).toContain(
       'nexus-rollback-drill-vm@.service\t/etc/systemd/system/nexus-rollback-drill-vm@.service\troot:root\t0644',
     );
+    expect(layout).toContain(
+      'scripts/release-layout-fault-drill-controller.mjs\t/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller\troot:root\t0755',
+    );
+    expect(layout).toContain(
+      'scripts/release-layout-fault-drill-guest.mjs\t/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest\troot:root\t0755',
+    );
+    expect(layout).toContain(
+      'scripts/release-layout-fault-drill.mjs\t/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs\troot:root\t0755',
+    );
+    expect(layout).toContain(
+      'nexus-release-layout-fault-drill-guest-recovery.service\t/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service\troot:root\t0644',
+    );
+    expect(layout).toContain(
+      'nexus-release-layout-fault-drill@.service\t/etc/systemd/system/nexus-release-layout-fault-drill@.service\troot:root\t0644',
+    );
+    expect(layout).toContain(
+      'nexus-release-layout-fault-drill-recovery.service\t/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service\troot:root\t0644',
+    );
     expect(installer).toContain(
       'EXPECTED_BOOTSTRAP_ROOT="$BOOTSTRAP_BASE/$SOURCE_SHA"',
     );
@@ -195,7 +213,7 @@ describe('rollback-drill KVM provisioner', () => {
     expect(installer).toContain(
       'active guest set binds a different guest recovery unit; replacement is not automatic',
     );
-    expect(installer).toContain('"installedAssets":10');
+    expect(installer).toContain('"installedAssets":16');
     expect(installer).toContain('--groups kvm');
     expect(installer).toContain(
       'must belong only to its private group and kvm',
@@ -218,7 +236,62 @@ describe('rollback-drill KVM provisioner', () => {
     );
     expect(installer).not.toContain('systemctl is-active');
     expect(installer).not.toContain('systemctl is-enabled');
-    expect(installer).not.toMatch(/systemctl\s+(?:start|restart|enable)\b/);
+    expect(installer).not.toMatch(/systemctl\s+(?:start|restart)\b/);
+    expect(installer).toContain(
+      'systemctl enable -- "$FAULT_CONTROLLER_RECOVERY_UNIT"',
+    );
+    expect(installer).toContain(
+      'systemctl disable -- "$FAULT_CONTROLLER_RECOVERY_UNIT"',
+    );
+    expect(installer).toContain('"recoveryServiceEnabled":true');
+    expect(operations).toContain(
+      'It enables only\n   nexus-release-layout-fault-drill-recovery.service',
+    );
+    expect(operations).not.toContain(
+      'start a\n   service, or enable a unit',
+    );
+    expect(provisioner).toContain(
+      'LAYOUT_TRUST_MANIFEST="$STATE_ROOT/release-layout-evidence-trust.v1.json"',
+    );
+    expect(provisioner).toContain(
+      '"$OPENSSL" genpkey -algorithm ED25519 '
+        + '-out "$layout_hypervisor_private"',
+    );
+    expect(provisioner).toContain(
+      '"$OPENSSL" genpkey -algorithm ED25519 '
+        + '-out "$layout_guest_private"',
+    );
+    expect(provisioner).toContain(
+      '/etc/nexus-release/release-layout-evidence-private.pem',
+    );
+    expect(provisioner).toContain(
+      '/usr/local/sbin/nexus-release-layout-fault-guest',
+    );
+    expect(provisioner).toContain(
+      'nexus-release-layout-fault-guest-recovery.service',
+    );
+    expect(provisioner).toContain(
+      '/var/lib/nexus-release-layout-fault-guest/mutation.lock',
+    );
+    expect(provisioner).toContain('NOSETENV:');
+    expect(provisioner).not.toContain('NOPASSWD:ALL');
+    expect(provisioner).toContain(
+      '"failed_health_check": "guest-2"',
+    );
+    expect(provisioner).toContain(
+      '"host_reboot_during_migration": "guest-3"',
+    );
+    expect(provisioner).toContain(
+      '"ssh_disconnect_after_pm2_stop": "guest-1"',
+    );
+    expect(provisioner.indexOf(
+      'mv -fT -- "$trust_stage" "$LAYOUT_TRUST_MANIFEST"',
+    )).toBeLessThan(provisioner.indexOf(
+      'mv -fT -- "$active_stage" "$ACTIVE_RECEIPT"',
+    ));
+    expect(provisioner).toContain(
+      'rm -f -- "$LAYOUT_TRUST_MANIFEST" && fsync_path "$STATE_ROOT"',
+    );
     expect(unit).toContain(
       'ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/install-in-progress.v1',
     );
@@ -256,6 +329,9 @@ describe('rollback-drill KVM provisioner', () => {
     );
     expect(tmpfiles).toContain(
       'd /run/nexus-rollback-drill-vm/handoff 0750 root nexus-drill-vm -',
+    );
+    expect(tmpfiles).toContain(
+      'f /run/nexus-rollback-drill-vm/release-layout-fault-controller.lock 0600 root root -',
     );
   });
 

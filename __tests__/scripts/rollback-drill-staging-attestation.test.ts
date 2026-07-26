@@ -20,6 +20,9 @@ const installedRuntimeDigest = 'c'.repeat(64);
 const recoveryRuntimeDigest = 'd'.repeat(64);
 const requestId = '11111111-1111-4111-8111-111111111111';
 const ordinaryKeyId = 'github-environment-release-signing-2026-07';
+const legacyBase = '/home/dominguez/telegram-hub-bot-staging';
+const controlSha =
+  'fb66d9257ec0b7b6f2c582d326c5ed3f6c01071f5792a4045c42199b6691edf1';
 
 function canonicalJson(value: any): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -33,7 +36,7 @@ function sha256(value: string | Buffer) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function fixture() {
+function fixture({ legacy = false } = {}) {
   const root = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-rollback-drill-staging-')),
   );
@@ -64,10 +67,16 @@ function fixture() {
     drill.privateKey.export({ format: 'pem', type: 'pkcs8' }),
     { mode: 0o600 },
   );
+  const generatedAt = new Date(Date.now() - 60_000).toISOString();
   const manifestPayload = {
+    schema: 'nexus.release-manifest-payload.v2',
     runtimeSha,
     packageVersion: '4.14.999',
     artifact: { digest: artifactDigest, fileCount: 0, files: [] },
+    source: { dirty: false },
+    ci: { runId: '40001' },
+    generatedAt,
+    expiresAt: new Date(Date.parse(generatedAt) + 60 * 60_000).toISOString(),
   };
   const sourceManifest = {
     schema: 'nexus.release-manifest.v2',
@@ -82,9 +91,60 @@ function fixture() {
   };
   const sourceManifestBody = Buffer.from(`${JSON.stringify(sourceManifest, null, 2)}\n`);
   fs.writeFileSync(files.sourceManifest, sourceManifestBody);
+  const sourceProvenance = {
+    rootRequestSha256: '9'.repeat(64),
+    releaseManifestSha256: sha256(sourceManifestBody),
+    releaseManifestPayloadSha256: sha256(canonicalJson(manifestPayload)),
+    releaseManifestSignatureSha256:
+      sha256(Buffer.from(sourceManifest.signature, 'base64')),
+    releaseManifestSigningRunId: String(manifestPayload.ci.runId),
+    releaseManifestSigningRunSha256:
+      sha256(canonicalJson(manifestPayload.ci)),
+  };
   const verifiedAt = new Date(Date.now() - 10_000).toISOString();
+  const base = legacy ? legacyBase : '/srv/nexus-release/staging';
   const releaseDir =
-    `/srv/nexus-release/staging/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+    `${base}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
+  const predecessor =
+    `${base}/releases/${'1'.repeat(40)}-${'2'.repeat(12)}`;
+  const selector = (target: string) => ({
+    path: `${base}/current`,
+    target,
+    dev: '10',
+    ino: target === predecessor ? '20' : '21',
+    uid: 1000,
+    gid: 1000,
+    mode: 0o777,
+  });
+  const publishedAt = new Date(Date.now() - 11_000).toISOString();
+  const remoteServices = [
+    {
+      name: 'nexus-hub-staging',
+      status: 'online',
+      cwd: releaseDir,
+      executable: `${releaseDir}/dist/index.js`,
+      interpreter: 'node',
+      releaseSha: runtimeSha,
+      sentryRelease: runtimeSha,
+    },
+    {
+      name: 'content-engine-staging',
+      status: 'online',
+      cwd: `${releaseDir}/content-engine`,
+      executable: `${releaseDir}/content-engine/.venv/bin/python3.12`,
+      interpreter: 'none',
+      releaseSha: runtimeSha,
+      sentryRelease: runtimeSha,
+    },
+  ];
+  const endpoint = (uptime: number) => ({
+    backendSnapshotSha256: 'e'.repeat(64),
+    backendVersion: '4.14.999',
+    backendUptime: uptime,
+    contentReadySha256: 'f'.repeat(64),
+    contentStatus: 'ready',
+    internalAuthConfigured: true,
+  });
   const stagingRequest = {
     schema: 'nexus.staging-attestation-request.v1',
     requestId,
@@ -96,26 +156,7 @@ function fixture() {
     releaseDir,
     remoteIdentity: {
       schema: 'nexus.pm2-release-identity.v1',
-      services: [
-        {
-          name: 'nexus-hub-staging',
-          status: 'online',
-          cwd: releaseDir,
-          executable: `${releaseDir}/dist/index.js`,
-          interpreter: 'node',
-          releaseSha: runtimeSha,
-          sentryRelease: runtimeSha,
-        },
-        {
-          name: 'content-engine-staging',
-          status: 'online',
-          cwd: `${releaseDir}/content-engine`,
-          executable: `${releaseDir}/content-engine/.venv/bin/python3.12`,
-          interpreter: 'none',
-          releaseSha: runtimeSha,
-          sentryRelease: runtimeSha,
-        },
-      ],
+      services: remoteServices,
     },
     remoteReadiness: {
       schema: 'nexus.release-readiness.v1',
@@ -126,18 +167,89 @@ function fixture() {
         sqliteIntegrity: true,
         sqliteForeignKeys: true,
         backendHealth: true,
+        ...(legacy ? { authenticatedBackendSnapshot: true } : {}),
         authenticatedContentEngine: true,
         pm2ExactIdentity: true,
         pm2RestartStable: true,
       },
+      ...(legacy ? {
+        checkedAt: new Date(Date.now() - 10_000).toISOString(),
+        readinessAttempts: 1,
+        services: remoteServices,
+        stabilitySeconds: 60,
+        stabilityStartedAt: new Date(Date.now() - 75_000).toISOString(),
+        stabilityCompletedAt: new Date(Date.now() - 15_000).toISOString(),
+        stabilityObservedSeconds: 60,
+        soak: {
+          schema: 'nexus.release-readiness-soak.v1',
+          clock: 'monotonic',
+          requiredSeconds: 60,
+          startedMonotonicNs: '1000000000',
+          completedMonotonicNs: '61000000000',
+          observedNanoseconds: '60000000000',
+          initial: endpoint(100),
+          final: endpoint(160),
+        },
+      } : {}),
     },
     smoke: {
       status: 'passed',
-      command: 'scripts/staging-smoke.sh',
+      command: legacy
+        ? 'scripts/remote-release-readiness.sh'
+        : 'scripts/staging-smoke.sh',
       logSha256: 'f'.repeat(64),
     },
     verifiedAt,
     expiresAt: new Date(Date.parse(verifiedAt) + 60 * 60_000).toISOString(),
+    ...(legacy ? {
+      drillBootstrap: {
+        schema: 'nexus.rollback-drill-legacy-staging-bootstrap.v1',
+        profile: 'isolated-kvm-first-drill',
+        promotionAllowed: false,
+        transactionId: requestId,
+        base,
+        broker: {
+          version: 'nexus-rollback-drill-legacy-staging-broker.v1',
+          sha256: '3'.repeat(64),
+          adapterSha256: '4'.repeat(64),
+        },
+        control: {
+          version: 'nexus-release-promotion-control.v2',
+          sha256: controlSha,
+        },
+        predecessor: {
+          runtime: predecessor,
+          runtimeSha: '1'.repeat(40),
+          artifactDigest: '2'.repeat(64),
+          markerSha256: '5'.repeat(64),
+          installedAttestationSha256: 'a'.repeat(64),
+          recoveryAttestationSha256: 'b'.repeat(64),
+          metadataSha256: 'c'.repeat(64),
+          runtimeIdentity: {
+            dev: '10',
+            ino: '30',
+            uid: 0,
+            gid: 0,
+            mode: 0o555,
+          },
+          selector: selector(predecessor),
+        },
+        currentSelector: selector(releaseDir),
+        brokerReceiptSha256: '6'.repeat(64),
+        sourceProvenance,
+        transaction: {
+          databaseBackupSha256: '8'.repeat(64),
+          databaseBackupSizeBytes: 4096,
+          journalSha256: '7'.repeat(64),
+          preparedAt: new Date(Date.now() - 20_000).toISOString(),
+          selectorSwitchedAt: new Date(Date.now() - 15_000).toISOString(),
+          readinessCompletedAt: new Date(Date.now() - 12_000).toISOString(),
+          publishedAt,
+          stabilitySeconds: 60,
+          recoveryTargetSeconds: 120,
+        },
+      },
+    } : {}),
   };
   fs.writeFileSync(files.stagingRequest, `${JSON.stringify(stagingRequest, null, 2)}\n`);
   execFileSync(process.execPath, [
@@ -358,8 +470,155 @@ describe('rollback-drill ordinary release-evidence bundle', () => {
   });
 });
 
+describe('rollback-drill legacy staging bootstrap binding', () => {
+  it('accepts only the governed five-second protected-signing chronology', async () => {
+    const state = fixture({ legacy: true });
+    const { validateLegacyStagingRequest } = await import(
+      '../../scripts/rollback-drill-legacy-staging-adapter.mjs'
+    );
+    const verifiedAtMs = Date.parse(state.stagingRequest.verifiedAt);
+    const request = structuredClone(state.stagingRequest);
+    request.protectedSigning = {
+      workflow: '.github/workflows/sign-staging-attestation.yml',
+      runId: '50001',
+      runAttempt: '2',
+      requestedAt: new Date(verifiedAtMs - 5_000).toISOString(),
+      signedAt: new Date(verifiedAtMs + 1_000).toISOString(),
+    };
+    expect(() => validateLegacyStagingRequest(request, runtimeSha))
+      .not.toThrow();
+
+    request.protectedSigning.requestedAt =
+      new Date(verifiedAtMs - 5_001).toISOString();
+    expect(() => validateLegacyStagingRequest(request, runtimeSha))
+      .toThrow('protected signing identity is invalid');
+
+    request.protectedSigning.requestedAt =
+      new Date(verifiedAtMs - 1_000).toISOString();
+    request.protectedSigning.signedAt =
+      new Date(verifiedAtMs - 1).toISOString();
+    expect(() => validateLegacyStagingRequest(request, runtimeSha))
+      .toThrow('protected signing identity is invalid');
+  });
+
+  it('binds the bootstrap in protected drill evidence while ordinary staging rejects it', () => {
+    const state = fixture({ legacy: true });
+    const result = JSON.parse(execFileSync(process.execPath, [
+      script,
+      'validate',
+      '--root', state.root,
+      '--bundle', state.files.signedBundle,
+      '--request', state.files.signingRequest,
+      '--source-manifest', state.files.sourceManifest,
+      '--drill-public-key', state.files.drillPublic,
+      '--production-public-key', state.files.productionPublic,
+      '--expect-runtime-sha', runtimeSha,
+      '--allow-test-key',
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    }));
+    const signingRequest = JSON.parse(
+      fs.readFileSync(state.files.signingRequest, 'utf8'),
+    );
+    const signedStaging = JSON.parse(fs.readFileSync(
+      path.join(state.files.signedBundle, 'staging-attestation.json'),
+      'utf8',
+    ));
+    expect(result).toMatchObject({
+      ok: true,
+      promotable: false,
+      rollbackDrillEligible: true,
+      scope: 'isolated-kvm-first-drill',
+    });
+    expect(signingRequest.drillBootstrapSha256).toBe(
+      sha256(canonicalJson(state.stagingRequest.drillBootstrap)),
+    );
+    expect(signedStaging.payload).toMatchObject({
+      drillBootstrap: {
+        profile: 'isolated-kvm-first-drill',
+        promotionAllowed: false,
+        base: legacyBase,
+      },
+    });
+
+    const rawOrdinary = spawnSync(process.execPath, [
+      ordinaryStaging,
+      'validate-request',
+      '--root', state.root,
+      '--request', state.files.stagingRequest,
+      '--expect-runtime-sha', runtimeSha,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(rawOrdinary.status).not.toBe(0);
+    expect(`${rawOrdinary.stdout}${rawOrdinary.stderr}`)
+      .toContain('drill-only legacy staging evidence cannot satisfy');
+
+    const productionSignedPath = path.join(
+      state.root,
+      'production-signed-legacy-staging.json',
+    );
+    const productionEnvelope = {
+      schema: 'nexus.staging-attestation.v1',
+      keyId: ordinaryKeyId,
+      signatureAlgorithm: 'ed25519',
+      payload: state.stagingRequest,
+      signature: cryptoSign(
+        null,
+        Buffer.from(canonicalJson(state.stagingRequest)),
+        state.production.privateKey,
+      ).toString('base64'),
+    };
+    fs.writeFileSync(
+      productionSignedPath,
+      `${JSON.stringify(productionEnvelope, null, 2)}\n`,
+    );
+    const signedOrdinary = spawnSync(process.execPath, [
+      ordinaryStaging,
+      'validate-signed',
+      '--root', state.root,
+      '--attestation', productionSignedPath,
+      '--public-key', state.files.productionPublic,
+      '--allow-test-key',
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(signedOrdinary.status).not.toBe(0);
+    expect(`${signedOrdinary.stdout}${signedOrdinary.stderr}`)
+      .toContain('drill-only legacy staging evidence cannot satisfy');
+  });
+
+  it('rejects any mutation of the drill-only bootstrap binding', () => {
+    const state = fixture({ legacy: true });
+    const request = JSON.parse(
+      fs.readFileSync(state.files.signingRequest, 'utf8'),
+    );
+    request.drillBootstrapSha256 = '9'.repeat(64);
+    fs.writeFileSync(
+      state.files.signingRequest,
+      `${JSON.stringify(request, null, 2)}\n`,
+    );
+    const result = spawnSync(process.execPath, [
+      script,
+      'validate-request',
+      '--root', state.root,
+      '--request', state.files.signingRequest,
+      '--expect-runtime-sha', runtimeSha,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`)
+      .toContain('bootstrap digest mismatch');
+  });
+});
+
 describe('drill-staging operator entry', () => {
-  it('requires acknowledgement and remains disabled before the v2 adapter review', () => {
+  it('requires acknowledgement and exposes only a non-promotable dry-run', () => {
     const missingAcknowledgement = spawnSync('bash', [
       releaseOperator,
       'drill-staging',
@@ -369,21 +628,23 @@ describe('drill-staging operator entry', () => {
     expect(missingAcknowledgement.stderr)
       .toContain('--acknowledge-first-drill-bootstrap');
 
-    const disabled = spawnSync('bash', [
+    const dryRun = spawnSync('bash', [
       releaseOperator,
       'drill-staging',
       '--dry-run',
       '--acknowledge-first-drill-bootstrap',
     ], { encoding: 'utf8' });
-    expect(disabled.status).toBe(78);
-    expect(disabled.stderr)
-      .toContain('disabled until the governed control-v2 legacy-base adapter is installed');
-    expect(JSON.parse(disabled.stdout)).toMatchObject({
-      ok: false,
+    expect(dryRun.status).toBe(0);
+    expect(JSON.parse(dryRun.stdout)).toMatchObject({
+      ok: true,
+      dryRun: true,
       promotable: false,
       rollbackDrillEligible: false,
-      featureEnabled: false,
-      reason: 'governed_control_v2_legacy_base_adapter_required',
+      featureEnabled: true,
+      reason: 'execution_and_protected_drill_signature_required',
+      base: legacyBase,
+      broker:
+        '/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker',
     });
   });
 });

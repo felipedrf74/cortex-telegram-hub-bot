@@ -8,6 +8,7 @@ import { cleanGitEnv, resolveExactCommit } from './lib/git-ref.mjs';
 import {
   globToRegExp,
   loadTestPolicy,
+  resolveTestDisposition,
   root,
 } from './lib/test-policy.mjs';
 
@@ -362,6 +363,118 @@ export function parseMutationTarget(target) {
   return { file: match[1], startLine, endLine };
 }
 
+export function parseAddedLines(diff) {
+  const lines = new Set();
+  for (const line of String(diff).split('\n')) {
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    for (let offset = 0; offset < count; offset += 1) lines.add(start + offset);
+  }
+  return lines;
+}
+
+export function coalesceMutationLineTargets(file, lineNumbers) {
+  const lines = [...new Set(lineNumbers)]
+    .filter((line) => Number.isSafeInteger(line) && line >= 1)
+    .sort((left, right) => left - right);
+  const targets = [];
+  let start = null;
+  let end = null;
+  for (const line of lines) {
+    if (start === null) {
+      start = line;
+      end = line;
+    } else if (line === end + 1) {
+      end = line;
+    } else {
+      targets.push(`${file}:${start}-${end}`);
+      start = line;
+      end = line;
+    }
+  }
+  if (start !== null) targets.push(`${file}:${start}-${end}`);
+  return targets;
+}
+
+export function buildWeeklyMutationSelection(
+  plan,
+  readDiff = (base, file) => {
+    const result = git(['diff', '--unified=0', '--no-color', base, 'HEAD', '--', file]);
+    if (result.status !== 0) {
+      throw new Error(result.stderr || `Unable to resolve changed mutation lines for ${file}`);
+    }
+    return result.stdout;
+  },
+) {
+  if (plan?.scope !== 'changed-critical') {
+    return {
+      ...plan,
+      mutationBatches: plan?.targets?.length > 0
+        ? [{
+            index: 0,
+            sources: [...plan.governedSources],
+            targets: [...plan.targets],
+          }]
+        : [],
+    };
+  }
+  const targets = [];
+  const selection = [];
+  const mutationBatches = [];
+  const ownerTestFilesBySource = new Map(
+    (plan.ownerTestMappings ?? []).map((mapping) => [mapping.source, mapping.testFiles]),
+  );
+  for (const [index, source] of plan.governedSources.entries()) {
+    const addedLines = [...parseAddedLines(readDiff(plan.base, source))]
+      .sort((left, right) => left - right);
+    // A deletion-only critical edit has no new-line range. Preserve the prior
+    // fail-closed full-file behavior instead of silently dropping that source.
+    const sourceTargets = addedLines.length > 0
+      ? coalesceMutationLineTargets(source, addedLines)
+      : [source];
+    const ownerTestFiles = ownerTestFilesBySource.get(source) ?? [];
+    targets.push(...sourceTargets);
+    selection.push({
+      source,
+      addedLines: addedLines.length,
+      ranges: sourceTargets.length,
+      fallback: addedLines.length === 0 ? 'full-file-deletion-only' : null,
+      ownerTestFiles,
+    });
+    mutationBatches.push({
+      index,
+      sources: [source],
+      targets: sourceTargets,
+      ...(ownerTestFiles.length > 0 ? { testFiles: ownerTestFiles } : {}),
+    });
+  }
+  return {
+    ...plan,
+    targets,
+    weeklySelection: selection,
+    mutationBatches,
+  };
+}
+
+export function resolveEmptyRangeFallback({ generatedMutants, targets, sources }) {
+  if (
+    generatedMutants === 0
+    && Array.isArray(targets)
+    && targets.length > 0
+    && targets.every((target) => parseMutationTarget(target) !== null)
+    && Array.isArray(sources)
+    && sources.length === 1
+  ) {
+    return {
+      reason: 'full-file-no-generated-mutants',
+      targets: [sources[0]],
+    };
+  }
+  return null;
+}
+
 function mutationTargetPattern(target) {
   return typeof target === 'object' && target !== null ? target.pattern : null;
 }
@@ -499,6 +612,64 @@ export function validateMutationException(
   return errors;
 }
 
+export function validateMutationOwnerTestMapping(
+  mapping,
+  exists = fs.existsSync,
+  criticalModulePatterns = [],
+  testPolicy = loadTestPolicy(),
+) {
+  if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
+    return ['mutation owner-test mapping must be an object'];
+  }
+  const errors = [];
+  if (
+    typeof mapping.source !== 'string'
+    || !mapping.source.startsWith('src/')
+    || path.isAbsolute(mapping.source)
+    || mapping.source.includes('..')
+  ) {
+    errors.push(`invalid mutation owner source: ${String(mapping.source)}`);
+  } else if (!exists(path.join(root, mapping.source))) {
+    errors.push(`mutation owner source does not exist: ${mapping.source}`);
+  } else if (!isCriticalModule(mapping.source, criticalModulePatterns)) {
+    errors.push(`mutation owner source is outside governed critical module patterns: ${mapping.source}`);
+  }
+  if (!Array.isArray(mapping.testFiles) || mapping.testFiles.length === 0) {
+    errors.push(`mutation owner testFiles must contain at least one retained test: ${String(mapping.source)}`);
+  } else {
+    const seen = new Set();
+    for (const testFile of mapping.testFiles) {
+      if (
+        typeof testFile !== 'string'
+        || !testFile.startsWith('__tests__/')
+        || !testFile.endsWith('.test.ts')
+        || path.isAbsolute(testFile)
+        || testFile.includes('..')
+      ) {
+        errors.push(`invalid mutation owner test file: ${String(testFile)}`);
+      } else if (seen.has(testFile)) {
+        errors.push(`duplicate mutation owner test file: ${testFile}`);
+      } else if (!exists(path.join(root, testFile))) {
+        errors.push(`mutation owner test file does not exist: ${testFile}`);
+      } else {
+        const resolution = resolveTestDisposition(testFile, testPolicy);
+        if (resolution === null) {
+          errors.push(`mutation owner test file has no policy disposition: ${testFile}`);
+        } else if (resolution.disposition !== 'keep') {
+          errors.push(
+            `mutation owner test file must have keep disposition, found ${resolution.disposition}: ${testFile}`,
+          );
+        }
+      }
+      seen.add(testFile);
+    }
+  }
+  if (typeof mapping.reason !== 'string' || mapping.reason.trim().length < 20) {
+    errors.push(`mutation owner reason is insufficient: ${String(mapping.source)}`);
+  }
+  return errors;
+}
+
 export function buildStrykerInvocation({ config, targets, thresholds, testFiles, scope = 'changed-critical' }) {
   const env = {
     NEXUS_MUTATE_FILES: JSON.stringify(targets),
@@ -512,6 +683,52 @@ export function buildStrykerInvocation({ config, targets, thresholds, testFiles,
     args: ['run', config],
     env,
   };
+}
+
+export function buildStrykerEnvironment(baseEnvironment, invocationEnvironment) {
+  const environment = {
+    ...baseEnvironment,
+    NODE_ENV: 'test',
+    ...invocationEnvironment,
+  };
+  if (!Object.hasOwn(invocationEnvironment, 'NEXUS_MUTATION_TEST_FILES')) {
+    delete environment.NEXUS_MUTATION_TEST_FILES;
+  }
+  return environment;
+}
+
+export function validateMutationExecutionReport(
+  report,
+  { targets, testFiles = [] },
+) {
+  const errors = [];
+  const config = report?.config;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return ['Stryker report is missing its effective config'];
+  }
+  if (JSON.stringify(config.mutate) !== JSON.stringify(targets)) {
+    errors.push('Stryker report mutate targets differ from the batch execution targets');
+  }
+  if (testFiles.length > 0) {
+    if (JSON.stringify(config.testFiles) !== JSON.stringify(testFiles)) {
+      errors.push('Stryker report testFiles differ from the batch owner-test mapping');
+    }
+  } else if (config.testFiles !== undefined) {
+    errors.push('Stryker report unexpectedly narrows an unmapped batch with testFiles');
+  }
+  if (config.concurrency !== 1) {
+    errors.push(`Stryker report concurrency must be 1, found ${String(config.concurrency)}`);
+  }
+  if (config.testRunner !== 'vitest') {
+    errors.push(`Stryker report testRunner must be vitest, found ${String(config.testRunner)}`);
+  }
+  if (
+    config.vitest?.related !== true
+    || config.vitest?.configFile !== 'config/vitest.stryker.config.ts'
+  ) {
+    errors.push('Stryker report Vitest binding differs from the governed sequential config');
+  }
+  return errors;
 }
 
 function normalizedReportPath(file) {
@@ -690,6 +907,96 @@ export function validateMutationReport(
   };
 }
 
+export function mergeMutationReports(reports) {
+  if (!Array.isArray(reports) || reports.length === 0) {
+    throw new Error('at least one mutation report is required');
+  }
+  const mergedFiles = new Map();
+  const mergedTestFiles = new Map();
+  const merged = {
+    ...reports[0],
+    files: {},
+    testFiles: {},
+  };
+  for (const [reportIndex, report] of reports.entries()) {
+    if (!report || typeof report !== 'object' || !report.files || typeof report.files !== 'object') {
+      throw new Error(`mutation batch ${reportIndex} is missing its files map`);
+    }
+    const canonicalTestIdByBatchId = new Map();
+    const batchCanonicalTestIds = new Set();
+    for (const [file, details] of Object.entries(report.testFiles ?? {})) {
+      const normalized = normalizedReportPath(file);
+      const tests = Array.isArray(details?.tests) ? details.tests : [];
+      const canonicalTests = tests.map((test) => {
+        const batchId = String(test?.id);
+        const name = String(test?.name ?? '');
+        const canonicalId = JSON.stringify([normalized, name]);
+        if (batchCanonicalTestIds.has(canonicalId)) {
+          throw new Error(`mutation batch ${reportIndex} repeats logical test: ${normalized} ${name}`);
+        }
+        batchCanonicalTestIds.add(canonicalId);
+        const priorCanonicalId = canonicalTestIdByBatchId.get(batchId);
+        if (priorCanonicalId !== undefined && priorCanonicalId !== canonicalId) {
+          throw new Error(`mutation batch ${reportIndex} repeats test id ${batchId} for different tests`);
+        }
+        canonicalTestIdByBatchId.set(batchId, canonicalId);
+        return { ...test, id: canonicalId, name };
+      });
+      const prior = mergedTestFiles.get(normalized);
+      if (prior !== undefined && prior.source !== details?.source) {
+        throw new Error(`mutation batches disagree on retained test source: ${normalized}`);
+      }
+      const testById = new Map((prior?.tests ?? []).map((test) => [String(test.id), test]));
+      for (const test of canonicalTests) {
+        const existing = testById.get(test.id);
+        if (existing !== undefined && existing.name !== test.name) {
+          throw new Error(`mutation batches disagree on retained test identity: ${normalized}`);
+        }
+        testById.set(test.id, existing ?? test);
+      }
+      mergedTestFiles.set(normalized, {
+        ...(prior ?? details),
+        tests: [...testById.values()].sort((left, right) => String(left.id).localeCompare(String(right.id))),
+      });
+    }
+    const rewriteTestIds = (ids, label) => {
+      if (!Array.isArray(ids)) return ids;
+      return ids.map((id) => {
+        const canonicalId = canonicalTestIdByBatchId.get(String(id));
+        if (canonicalId === undefined) {
+          throw new Error(`mutation batch ${reportIndex} ${label} references unknown test id ${String(id)}`);
+        }
+        return canonicalId;
+      });
+    };
+    for (const [file, details] of Object.entries(report.files)) {
+      const normalized = normalizedReportPath(file);
+      if (mergedFiles.has(normalized)) {
+        throw new Error(`mutation batches repeat governed source: ${normalized}`);
+      }
+      mergedFiles.set(normalized, {
+        ...details,
+        mutants: Array.isArray(details?.mutants)
+          ? details.mutants.map((mutant) => ({
+            ...mutant,
+            ...(Array.isArray(mutant?.coveredBy)
+              ? { coveredBy: rewriteTestIds(mutant.coveredBy, 'coveredBy') }
+              : {}),
+            ...(Array.isArray(mutant?.killedBy)
+              ? { killedBy: rewriteTestIds(mutant.killedBy, 'killedBy') }
+              : {}),
+          }))
+          : details?.mutants,
+      });
+    }
+  }
+  merged.files = Object.fromEntries([...mergedFiles.entries()]
+    .sort(([left], [right]) => left.localeCompare(right)));
+  merged.testFiles = Object.fromEntries([...mergedTestFiles.entries()]
+    .sort(([left], [right]) => left.localeCompare(right)));
+  return merged;
+}
+
 export function resolveImportedSourcePaths(testFile, source, exists = fs.existsSync) {
   const resolved = new Set();
   for (const specifier of extractRelativeImports(source)) {
@@ -828,6 +1135,8 @@ export function buildMutationPlan({
   scope = 'changed-critical',
   cleanupMappings = [],
   mutationExceptions = [],
+  ownerTestMappings = [],
+  testPolicy = loadTestPolicy(),
   exists = fs.existsSync,
   readCurrent = (file) => (
     exists(path.join(root, file)) ? fs.readFileSync(path.join(root, file), 'utf8') : ''
@@ -979,6 +1288,23 @@ export function buildMutationPlan({
     }
     exceptionByFile.set(exception.file, exception);
   }
+  const ownerTestMappingBySource = new Map();
+  const invalidOwnerTestMappings = [];
+  for (const mapping of ownerTestMappings) {
+    const errors = validateMutationOwnerTestMapping(mapping, exists, patterns, testPolicy);
+    if (ownerTestMappingBySource.has(mapping?.source)) {
+      errors.push(`duplicate mutation owner source: ${String(mapping?.source)}`);
+    }
+    if (errors.length > 0) {
+      invalidOwnerTestMappings.push({ source: mapping?.source ?? null, errors });
+      continue;
+    }
+    ownerTestMappingBySource.set(mapping.source, {
+      source: mapping.source,
+      testFiles: [...new Set(mapping.testFiles)].sort(),
+      reason: mapping.reason.trim(),
+    });
+  }
   const excludedTargets = [];
   const targets = [];
   for (const [file, sourceTargets] of [...candidateTargets.entries()].sort(([left], [right]) => left.localeCompare(right))) {
@@ -1029,6 +1355,9 @@ export function buildMutationPlan({
     excludedTargets,
     invalidMutationExemptions,
     expiredMutationExemptions,
+    ownerTestMappings: [...ownerTestMappingBySource.values()]
+      .sort((left, right) => left.source.localeCompare(right.source)),
+    invalidOwnerTestMappings,
     targets,
     governedSources,
     governedRanges,
@@ -1045,6 +1374,7 @@ export function mutationPlanExitCode(plan) {
     plan?.invalidCleanupMappings,
     plan?.invalidMutationExemptions,
     plan?.expiredMutationExemptions,
+    plan?.invalidOwnerTestMappings,
   ].some((issues) => Array.isArray(issues) && issues.length > 0) ? 3 : 0;
 }
 
@@ -1073,14 +1403,17 @@ function main() {
 
   const policy = loadTestPolicy();
   const changes = parseChangedFiles(exactBase);
-  const plan = buildMutationPlan({
+  const preliminaryPlan = buildMutationPlan({
     base: exactBase,
     changes,
     patterns: policy.mutation.criticalModulePatterns,
     scope,
     cleanupMappings: policy.mutation.cleanupMappings,
     mutationExceptions: policy.mutation.exceptions,
+    ownerTestMappings: policy.mutation.ownerTestMappings ?? [],
+    testPolicy: policy,
   });
+  const plan = buildWeeklyMutationSelection(preliminaryPlan);
   const outputDir = path.join(root, '.local/mutation');
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(path.join(outputDir, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
@@ -1088,7 +1421,7 @@ function main() {
 
   const planExitCode = mutationPlanExitCode(plan);
   if (planExitCode !== 0) {
-    console.error('Mutation cleanup mappings and exceptions must be valid and fail-closed.');
+    console.error('Mutation mappings and exceptions must be valid and fail-closed.');
     process.exit(planExitCode);
   }
 
@@ -1100,36 +1433,126 @@ function main() {
   const thresholds = policy.mutation.thresholds;
   const config = path.join(root, 'config/stryker.config.mjs');
   const reportPath = path.join(outputDir, 'mutation-report.json');
+  const batchesDir = path.join(outputDir, 'batches');
+  const batchStatePath = path.join(outputDir, 'batch-state.json');
   fs.rmSync(reportPath, { force: true });
-  const invocation = buildStrykerInvocation({
-    config,
-    targets: plan.targets,
-    thresholds,
-    testFiles: plan.testFiles,
+  fs.rmSync(batchesDir, { recursive: true, force: true });
+  fs.mkdirSync(batchesDir, { recursive: true });
+  const batchState = {
+    schema: 'nexus.mutation-batch-state.v1',
+    base: plan.base,
+    head: plan.head,
     scope,
-  });
-  const result = spawnSync(
-    path.join(root, 'node_modules/.bin/stryker'),
-    invocation.args,
-    {
-      cwd: root,
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        NODE_ENV: 'test',
-        ...invocation.env,
-      },
-    },
-  );
-  if (result.status !== 0) process.exit(result.status ?? 1);
+    status: 'in_progress',
+    batches: plan.mutationBatches.map((batch) => ({
+      ...batch,
+      status: 'pending',
+      report: `batches/${String(batch.index).padStart(3, '0')}-report.json`,
+    })),
+  };
+  const writeBatchState = () => {
+    fs.writeFileSync(batchStatePath, `${JSON.stringify(batchState, null, 2)}\n`);
+  };
+  writeBatchState();
+
+  const reports = [];
+  for (const batch of batchState.batches) {
+    batch.status = 'running';
+    writeBatchState();
+    const batchThresholds = plan.mutationBatches.length > 1
+      ? { ...thresholds, break: 0 }
+      : thresholds;
+    let report;
+    let executionTargets = [...batch.targets];
+    while (true) {
+      fs.rmSync(reportPath, { force: true });
+      const invocation = buildStrykerInvocation({
+        config,
+        targets: executionTargets,
+        thresholds: batchThresholds,
+        testFiles: batch.testFiles ?? plan.testFiles,
+        scope,
+      });
+      const result = spawnSync(
+        path.join(root, 'node_modules/.bin/stryker'),
+        invocation.args,
+        {
+          cwd: root,
+          stdio: 'inherit',
+          env: buildStrykerEnvironment(process.env, invocation.env),
+        },
+      );
+      if (result.status !== 0) {
+        batch.status = 'failed';
+        batch.exitStatus = result.status ?? null;
+        batch.signal = result.signal ?? null;
+        batchState.status = 'failed';
+        writeBatchState();
+        process.exit(result.status ?? 1);
+      }
+
+      try {
+        report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+      } catch (error) {
+        batch.status = 'failed';
+        batch.error = error instanceof Error ? error.message : String(error);
+        batchState.status = 'failed';
+        writeBatchState();
+        console.error(`Unable to read fresh Stryker JSON report: ${batch.error}`);
+        process.exit(4);
+      }
+      const executionBindingErrors = validateMutationExecutionReport(report, {
+        targets: executionTargets,
+        testFiles: batch.testFiles ?? plan.testFiles,
+      });
+      if (executionBindingErrors.length > 0) {
+        batch.status = 'failed';
+        batch.errors = executionBindingErrors;
+        batchState.status = 'failed';
+        writeBatchState();
+        console.error(executionBindingErrors.join('\n'));
+        process.exit(4);
+      }
+      const generatedMutants = Object.values(report.files ?? {})
+        .reduce((sum, details) => sum + (Array.isArray(details?.mutants) ? details.mutants.length : 0), 0);
+      const fallback = resolveEmptyRangeFallback({
+        generatedMutants,
+        targets: executionTargets,
+        sources: batch.sources,
+      });
+      if (fallback) {
+        const emptyRangeReport = `batches/${String(batch.index).padStart(3, '0')}-empty-range-report.json`;
+        fs.renameSync(reportPath, path.join(outputDir, emptyRangeReport));
+        batch.emptyRangeReport = emptyRangeReport;
+        batch.fallback = fallback.reason;
+        executionTargets = fallback.targets;
+        batch.status = 'running-full-file-fallback';
+        writeBatchState();
+        continue;
+      }
+      break;
+    }
+    const batchReportPath = path.join(outputDir, batch.report);
+    fs.renameSync(reportPath, batchReportPath);
+    reports.push(report);
+    batch.status = 'complete';
+    batch.executedTargets = executionTargets;
+    batch.mutants = Object.values(report.files ?? {})
+      .reduce((sum, details) => sum + (Array.isArray(details?.mutants) ? details.mutants.length : 0), 0);
+    writeBatchState();
+  }
 
   let report;
   try {
-    report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    report = mergeMutationReports(reports);
   } catch (error) {
-    console.error(`Unable to read fresh Stryker JSON report: ${error instanceof Error ? error.message : String(error)}`);
+    batchState.status = 'failed';
+    batchState.error = error instanceof Error ? error.message : String(error);
+    writeBatchState();
+    console.error(`Unable to merge Stryker batch reports: ${batchState.error}`);
     process.exit(4);
   }
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   const reportValidation = validateMutationReport(report, {
     governedSources: plan.governedSources,
     governedRanges: plan.governedRanges,
@@ -1141,9 +1564,14 @@ function main() {
   );
   console.log(JSON.stringify(reportValidation, null, 2));
   if (!reportValidation.valid) {
+    batchState.status = 'failed';
+    batchState.error = 'governed-source integrity validation failed';
+    writeBatchState();
     console.error('Stryker report failed governed-source integrity validation.');
     process.exit(4);
   }
+  batchState.status = 'complete';
+  writeBatchState();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

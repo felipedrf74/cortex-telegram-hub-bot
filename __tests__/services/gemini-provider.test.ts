@@ -272,6 +272,64 @@ describe('GeminiProvider', () => {
     );
   });
 
+  it('rejects a model name that merely contains gemini without calling the provider', async () => {
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'Return plain text.',
+      userPrompt: 'Do not dispatch this request.',
+      model: 'not-gemini-2.5-pro',
+      maxTokens: 128,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_reasoning',
+      responseFormat: 'text',
+    })).rejects.toThrow('Gemini structured generation requires a Gemini model');
+
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it('accepts the exact gemini model, preserves a non-STOP reason, and keeps text mode schema-free', async () => {
+    mockGeminiResponse('bounded text', [], 'MAX_TOKENS');
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'Return bounded plain text.',
+      userPrompt: 'Summarize safely.',
+      model: 'gemini',
+      maxTokens: 128,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_reasoning',
+      responseFormat: 'text',
+    });
+
+    expect(result).toEqual({ text: 'bounded text', stopReason: 'MAX_TOKENS' });
+    const generationConfig = lastGenerateRequest().config;
+    expect(generationConfig.responseMimeType).toBeUndefined();
+    expect(Object.hasOwn(generationConfig, 'responseJsonSchema')).toBe(false);
+  });
+
+  it('falls back to STOP when structured generation returns no candidates', async () => {
+    mockGenerateContent.mockResolvedValue({
+      text: 'bounded text',
+      functionCalls: [],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        totalTokenCount: 150,
+      },
+    });
+
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'Return bounded plain text.',
+      userPrompt: 'Summarize safely.',
+      model: 'gemini-2.5-pro',
+      maxTokens: 128,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_reasoning',
+      responseFormat: 'text',
+    })).resolves.toEqual({ text: 'bounded text', stopReason: 'STOP' });
+  });
+
   it('scrubs sensitive user context before Google Search grounding', async () => {
     mockGeminiResponse('Search result summary.');
     mockGenerateContent.mockClear();

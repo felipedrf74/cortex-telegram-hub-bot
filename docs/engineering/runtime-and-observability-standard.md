@@ -249,8 +249,20 @@ Production rollback is **always available**. The default release contract is:
    soak and cleanup evidence chain. Each window is backed by canonical,
    mode-0600 path+SHA-256 health/request records that cover the full interval,
    preserve the retained-model digest, and report zero health failures,
-   OOMs, restart deltas, pressure, or large/unapproved-model requests. Live Sonar state is
-   bind-mounted below the root-controlled `/srv/sonarqube/data` boundary.
+   OOMs, restart deltas, pressure, or large/unapproved-model requests. The
+   installer repeats a live one-second capacity/PM2 check before its first host
+   mutation, and stack start repeats it directly before Compose. Both gates
+   reject Docker socket/group/ACL authority for `dominguez` or
+   `nexus-release`, known automatic-updater containers or systemd units, and
+   any missing or ambiguous daemon-wide user-namespace mapping. Because the
+   production host already uses IDs 999/1000, fresh Docker must use
+   `userns-remap: default` with one non-overlapping 65536-ID `dockremap` range
+   and the incompatible containerd image store disabled. Container IDs
+   999/1000 remain internal; bind directories below the root-controlled
+   `/srv/sonarqube/data` boundary use the derived high host IDs. Installer,
+   preflight, and every start re-prove the daemon setting, live userns option,
+   subordinate ranges, namespaced storage root, protected-account isolation,
+   and exact mapped owners.
 10. **Legacy repository-sync wrappers are retired.** The deleted `deploy.sh`,
    `deploy-staging.sh`, and `promote-to-prod.sh` paths must not be restored or
    invoked. The signed root-owned promotion transaction is the sole path that
@@ -258,6 +270,45 @@ Production rollback is **always available**. The default release contract is:
    promotion or predecessor recovery. `scripts/rollback.sh` and
    `scripts/restore.sh` retain read-only dry-run inventory only; their apply
    modes are retired and must not be used as an emergency mutation path.
+11. **Release-layout activation is boot-recoverable and evidence-gated.**
+    The future `/srv/nexus-release` authority may be installed only by the
+    exact protected-main two-phase activation transaction. Phase A must leave
+    the running PM2 and ingress process identity unchanged, retire the legacy
+    v2 adapter from its exact receipt-bound canonical target plan before
+    replacing its control, retain the shared application-DR SQLite helper
+    unchanged, and arm a boot-first installer recovery unit plus PM2 guard
+    before any control replacement. The journal must bind every active adapter
+    byte, predecessor disposition, service state, and plan digest, and must
+    checkpoint asset retirement before withdrawing the v2 receipt. Phase B may
+    hand over boot authority only after the signed layout transaction publishes
+    terminal evidence, and it must not restart either service. The migration
+    must preserve `/home/dominguez`, protect complete role predecessors below a
+    root-only transaction, capture an exact stopped-boundary SQLite copy after
+    process quiescence, preserve a healthy bound live database during recovery,
+    and keep recovered roots pinned while runtime and database bytes are
+    re-attested. Missing compatibility bind mounts on clean boot are
+    reconstructed only from cross-bound terminal evidence. The exact reviewed
+    source control must prove the root-owned PM2 closure before replacing an
+    older installed interface, and the installed control must return the same
+    proof afterward. KVM provisioning must publish a root-owned mode-0600 trust
+    manifest that independently binds the active provision receipt/set,
+    QEMU/runner identities, fixed scenario-to-guest mapping, one dedicated
+    hypervisor Ed25519 key, three pairwise-distinct guest Ed25519 keys, and
+    each guest SSH host-key digest. A random plan challenge must bind all three
+    real fault outcomes, but the plan may not choose the trusted keys or guest
+    mapping. The broker verifies the root trust and nested signatures before
+    and after copying authority and once more immediately before the systemd
+    transaction enters `running`. A durable submitted journal whose active
+    marker was interrupted may be reconciled only when it is the sole
+    nonterminal orphan, its full admission identity revalidates, and its
+    acceptance instant falls inside the signed request lifetime. The same
+    accepted bytes may resume after current wall-clock expiry; ambiguous,
+    out-of-window, or unsafe orphan state blocks recovery. The Phase A boot
+    recovery sandbox may write only the named recovery families including
+    `/etc/nexus-release`; the Phase B recovery sandbox may write the required
+    `/etc/systemd/system` drop-ins, never a broad `/etc` path. Do not install
+    or run the one-time migration until ServerDominguez retains those live
+    prerequisites and explicit owner authorization.
 
 ## 9. Incident runbook (must)
 

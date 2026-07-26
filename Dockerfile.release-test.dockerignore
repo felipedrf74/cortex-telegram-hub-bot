@@ -1,8 +1,9 @@
-# Keep release-test context complete enough to run tests, while excluding
-# secrets, local state, and bulky generated output.
+# Keep the pinned Debian sandbox context complete enough to smoke the trusted
+# compiled tree. The exact Ubuntu dependency payload is intentionally outside
+# this compatibility image and remains governed by artifact/staging checks.
 
 node_modules
-dist
+dist/runtime-dependencies
 content-engine/.venv
 content-engine/.venv313
 content-engine/__pycache__

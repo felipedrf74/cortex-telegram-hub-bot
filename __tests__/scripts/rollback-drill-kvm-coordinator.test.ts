@@ -153,7 +153,7 @@ if(command[0]==='/usr/local/bin/pm2'&&command[1]==='jlist'){
 const sudoIndex=command[0]==='/usr/bin/sudo'?2:-1;
 if(sudoIndex<0)process.exit(2);
 const controlCommand=command[sudoIndex+1];
-if(controlCommand==='version'){emit('nexus-release-promotion-control.v3\\n');process.exit(0);}
+if(controlCommand==='version'){emit('nexus-release-promotion-control.v4\\n');process.exit(0);}
 if(controlCommand==='assert-idle'||controlCommand==='assert-root-pm2-ready')process.exit(0);
 if(controlCommand==='launch'){
  const envelope=JSON.parse(fs.readFileSync(remoteFile(command[sudoIndex+2]),'utf8'));

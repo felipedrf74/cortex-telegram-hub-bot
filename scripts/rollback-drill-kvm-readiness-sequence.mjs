@@ -254,6 +254,18 @@ const PROVISION_HYPERVISOR_FIELDS = Object.freeze([
   'runtimeReadinessSha256',
   'runtimeRecoveryUnitSourcePath',
   'runtimeRecoveryUnitSha256',
+  'faultDrillControllerPath',
+  'faultDrillControllerSha256',
+  'faultDrillControllerUnitPath',
+  'faultDrillControllerUnitSha256',
+  'faultDrillControllerRecoveryUnitPath',
+  'faultDrillControllerRecoveryUnitSha256',
+  'faultDrillGuestExecutorSourcePath',
+  'faultDrillGuestExecutorSha256',
+  'faultDrillGuestRecoveryUnitSourcePath',
+  'faultDrillGuestRecoveryUnitSha256',
+  'faultDrillVerifierPath',
+  'faultDrillVerifierSha256',
   'sharedMutexPath',
   'guestAdmissionLockPath',
   'hostAvailableMemoryFloorGiB',
@@ -309,6 +321,18 @@ const EXPECTED_HYPERVISOR = Object.freeze({
     '/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness',
   runtimeRecoveryUnitSourcePath:
     '/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service',
+  faultDrillControllerPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller',
+  faultDrillControllerUnitPath:
+    '/etc/systemd/system/nexus-release-layout-fault-drill@.service',
+  faultDrillControllerRecoveryUnitPath:
+    '/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service',
+  faultDrillGuestExecutorSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest',
+  faultDrillGuestRecoveryUnitSourcePath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service',
+  faultDrillVerifierPath:
+    '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs',
   sharedMutexPath: '/run/lock/nexus-release-sonar.lock',
   guestAdmissionLockPath: '/run/nexus-rollback-drill-vm/admission.lock',
   hostAvailableMemoryFloorGiB: 25,
@@ -964,6 +988,12 @@ function validateProvision(provision) {
     'runtimeControlSha256',
     'runtimeReadinessSha256',
     'runtimeRecoveryUnitSha256',
+    'faultDrillControllerSha256',
+    'faultDrillControllerUnitSha256',
+    'faultDrillControllerRecoveryUnitSha256',
+    'faultDrillGuestExecutorSha256',
+    'faultDrillGuestRecoveryUnitSha256',
+    'faultDrillVerifierSha256',
     'unitSha256',
   ]) {
     requireDigest(
@@ -1047,6 +1077,12 @@ function validateProvision(provision) {
     `runtimeControl=${provision.hypervisor.runtimeControlSha256}`,
     `runtimeReadiness=${provision.hypervisor.runtimeReadinessSha256}`,
     `runtimeRecoveryUnit=${provision.hypervisor.runtimeRecoveryUnitSha256}`,
+    `faultDrillController=${provision.hypervisor.faultDrillControllerSha256}`,
+    `faultDrillControllerUnit=${provision.hypervisor.faultDrillControllerUnitSha256}`,
+    `faultDrillControllerRecoveryUnit=${provision.hypervisor.faultDrillControllerRecoveryUnitSha256}`,
+    `faultDrillGuest=${provision.hypervisor.faultDrillGuestExecutorSha256}`,
+    `faultDrillGuestRecoveryUnit=${provision.hypervisor.faultDrillGuestRecoveryUnitSha256}`,
+    `faultDrillVerifier=${provision.hypervisor.faultDrillVerifierSha256}`,
     `unit=${provision.hypervisor.unitSha256}`,
     `qemu=${provision.hypervisor.qemuSha256}`,
     `qemuVersion=${provision.hypervisor.qemuVersion}`,
@@ -2173,7 +2209,7 @@ function validateMeasurementRuntime(context, measurement) {
     MEASUREMENT_CONTROL_FIELDS,
     'receipt_measurement_control',
   );
-  if (control.version !== 'nexus-release-promotion-control.v3'
+  if (control.version !== 'nexus-release-promotion-control.v4'
       || control.sourceCommit !== context.plan.sourceRootSha
       || control.assertIdle !== true
       || !Array.isArray(control.files)

@@ -401,6 +401,34 @@ describe('microsoft-auth access token cache', () => {
     const stored = oauthStore.getTokens(25, 'outlook');
     expect(stored?.refreshToken).toBe('rotated-refresh-25');
     expect(stored?.expiresAt).toBe('2026-05-08T13:00:00.000Z');
+    expect(mockState.logger.info).toHaveBeenCalledWith(
+      { userId: 25, cacheKey: 'user:25' },
+      'microsoft_auth_refresh_token_rotated_persisted',
+    );
+  });
+
+  it('NEX-13: rotates every matching owner token and preserves a string expiry', async () => {
+    mockState.ownerRefs = [111111, 222222];
+    const { microsoftAuth, oauthStore } = await loadModulesWithMsalClients();
+    storeOutlookTokens(oauthStore, 111111, 'shared-owner-refresh');
+    storeOutlookTokens(oauthStore, 222222, 'shared-owner-refresh');
+    mockState.confidentialAcquire.mockResolvedValue({
+      accessToken: 'owner-access',
+      refreshToken: ' rotated-owner-refresh ',
+      expiresOn: '2026-05-08T14:00:00Z',
+    });
+
+    await expect(microsoftAuth.__testing.getAccessTokenForOwner()).resolves.toBe('owner-access');
+
+    oauthStore._resetDecryptCacheForTests();
+    expect(oauthStore.getTokens(111111, 'outlook')).toMatchObject({
+      refreshToken: 'rotated-owner-refresh',
+      expiresAt: '2026-05-08T14:00:00Z',
+    });
+    expect(oauthStore.getTokens(222222, 'outlook')).toMatchObject({
+      refreshToken: 'rotated-owner-refresh',
+      expiresAt: '2026-05-08T14:00:00Z',
+    });
   });
 
   it('NEX-13: does not rewrite the stored token when MSAL returns the same refresh token', async () => {

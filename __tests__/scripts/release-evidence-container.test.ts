@@ -79,6 +79,9 @@ function assertBuiltInOnlyModuleClosure(entrypoints: string[]) {
 describe('release-evidence-container wrapper', () => {
   const script = () => readFileSync('scripts/release-evidence-container.sh', 'utf8');
   const workflow = () => readFileSync('.github/workflows/release-candidate-evidence.yml', 'utf8');
+  const packageJson = () => JSON.parse(readFileSync('package.json', 'utf8')) as {
+    scripts: Record<string, string>;
+  };
   const releaseSigner = () => readFileSync('.github/workflows/sign-release-manifest.yml', 'utf8');
   const stagingSigner = () => readFileSync('.github/workflows/sign-staging-attestation.yml', 'utf8');
 
@@ -130,6 +133,144 @@ describe('release-evidence-container wrapper', () => {
     expect(raw).toContain('timeout-minutes: 30');
   });
 
+  it('uses the trusted production build as the release-candidate typecheck', () => {
+    const raw = workflow();
+    const releaseEvidenceStart = raw.indexOf('\n  release-evidence:\n');
+    const releaseEvidence = raw.slice(releaseEvidenceStart);
+    const localReleaseVerify = readFileSync('scripts/release-verify.sh', 'utf8');
+    const buildScript = packageJson().scripts.build;
+
+    expect(releaseEvidenceStart).toBeGreaterThan(-1);
+    expect(buildScript.split('&&', 1)[0]?.trim()).toBe('tsc');
+    expect(releaseEvidence).toContain('- name: Build\n');
+    expect(releaseEvidence).toContain('id: build\n');
+    expect(releaseEvidence).toContain("if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}");
+    expect(releaseEvidence).toContain('run: npm run build\n');
+    expect(releaseEvidence).toContain("steps.build.outcome == 'success'");
+    expect(releaseEvidence).not.toContain('- name: Typecheck\n');
+    expect(releaseEvidence).not.toContain('npx tsc --noEmit');
+    expect(releaseEvidence).not.toContain('steps.typecheck.outcome');
+    expect(localReleaseVerify).not.toContain('npm run typecheck');
+    expect(localReleaseVerify).toContain('npm run build');
+  });
+
+  it('restores exact dependency caches without repeating advisory network calls', () => {
+    const raw = workflow();
+    const pythonFull = raw.slice(
+      raw.indexOf('\n  python-full:\n'),
+      raw.indexOf('\n  release-evidence:\n'),
+    );
+    const releaseEvidence = raw.slice(raw.indexOf('\n  release-evidence:\n'));
+
+    expect(raw).toContain("NPM_CONFIG_AUDIT: 'false'");
+    expect(raw).toContain("NPM_CONFIG_FUND: 'false'");
+    expect(raw).toContain("NPM_CONFIG_PREFER_OFFLINE: 'true'");
+    expect(raw).toContain("PIP_DISABLE_PIP_VERSION_CHECK: '1'");
+    expect(raw).toContain('content-engine/requirements-dev.txt');
+    expect(pythonFull).not.toContain('needs.test-plan.outputs.reuse_allowed');
+    expect(releaseEvidence).toMatch(
+      /actions\/setup-python@[a-f0-9]+[\s\S]*?cache: 'pip'[\s\S]*?cache-dependency-path: content-engine\/requirements\.txt/u,
+    );
+    expect(releaseEvidence).toContain('Setup Node.js with npm cache for an RC-built artifact');
+    expect(releaseEvidence).toContain('Setup Node.js without dependency cache for exact reuse');
+    expect(releaseEvidence).toContain("if: ${{ needs.test-plan.outputs.reuse_allowed == 'true' }}");
+    const aggregatePython = releaseEvidence.slice(
+      releaseEvidence.indexOf('actions/setup-python@'),
+      releaseEvidence.indexOf('- name: Install build dependencies only for an RC-built artifact'),
+    );
+    expect(aggregatePython).toContain(
+      "if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}",
+    );
+  });
+
+  it('uses the compiled Ubuntu artifact and fast ABI checks instead of rebuilding inside the container', () => {
+    const raw = workflow();
+    const dockerIgnore = readFileSync('Dockerfile.release-test.dockerignore', 'utf8');
+    const dockerfile = readFileSync('Dockerfile.release-test', 'utf8');
+    const wrapper = readFileSync('scripts/release-verify-container.sh', 'utf8');
+    const contract = readFileSync('scripts/release-container-contract.mjs', 'utf8');
+
+    expect(raw).toContain('scripts/release-verify-container.sh --contract-only');
+    expect(raw).not.toContain('scripts/release-verify-container.sh --skip-vitest --skip-pytest');
+    expect(raw).toContain('docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4');
+    expect(raw).toContain('docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7');
+    expect(raw).toContain('version: v0.35.0');
+    expect(raw).toContain(
+      'image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec',
+    );
+    expect(raw).toContain('cache-from: type=gha,scope=nexus-release-test');
+    expect(raw).toContain('cache-to: type=gha,scope=nexus-release-test,mode=min,ignore-error=true,timeout=2m');
+    expect(raw).toContain('load: true');
+    expect(raw).toContain('push: false');
+    expect(raw).toContain('provenance: false');
+    expect(raw).toContain('name: Report advisory sandbox build path');
+    expect(raw).toContain('"metric":"sandbox-build-path"');
+    expect(raw).toContain('id: release_test_buildx');
+    expect(raw).toContain("if: ${{ steps.release_test_buildx.outcome == 'success' }}");
+    expect(raw).toContain('id: release_test_image_fallback');
+    expect(raw).toContain(
+      "if: ${{ steps.release_test_buildx.outcome != 'success' }}",
+    );
+    expect(raw).not.toContain(
+      "steps.release_test_buildx.outcome != 'success' || steps.release_test_image.outcome != 'success'",
+    );
+    expect(raw).toContain(
+      "(steps.release_test_image.outcome == 'success' || steps.release_test_image_fallback.outcome == 'success')",
+    );
+    expect(dockerIgnore.split('\n')).not.toContain('dist');
+    expect(dockerIgnore.split('\n')).toContain('dist/runtime-dependencies');
+    expect(dockerfile).toContain('pip install -r content-engine/requirements.txt');
+    expect(dockerfile).not.toContain('content-engine/requirements-dev.txt');
+    expect(wrapper).toContain('cmd=(node scripts/release-container-contract.mjs)');
+    expect(contract).toContain("process.version !== 'v22.23.1'");
+    expect(contract).toContain("schema: 'nexus.release-container-contract.v2'");
+    expect(contract).toContain("os: 'debian'");
+    expect(contract).toContain("osVersion: '12'");
+    expect(contract).toContain('nodeLockfileNativeCompatibilityPassed: true');
+    expect(contract).toContain('pythonRequirementsCompatibilityPassed: true');
+    expect(contract).not.toContain('nodeNativeAbiVerified');
+    expect(contract).not.toContain('pythonRuntimeVerified');
+    expect(contract).toContain("import('better-sqlite3')");
+    expect(contract).toContain("import('sharp')");
+    expect(contract).toContain("'dist/index.js'");
+    expect(contract).toContain("required('python'");
+    expect(contract).toContain("scripts/notification-release-gate.sh");
+    expect(contract).not.toContain('npm run build');
+    expect(contract).not.toContain('npm run typecheck');
+    expect(contract).not.toContain('migration-safety-check');
+    expect(contract).not.toContain('run-test-tier.mjs');
+    expect(contract).not.toContain('pytest');
+  });
+
+  it('does not reinstall or rebuild when the exact protected-main bundle is reusable', () => {
+    const raw = workflow();
+    const releaseEvidence = raw.slice(raw.indexOf('\n  release-evidence:\n'));
+    const installStep = releaseEvidence.slice(
+      releaseEvidence.indexOf('Install build dependencies only for an RC-built artifact'),
+      releaseEvidence.indexOf('- name: Verify production artifact build platform'),
+    );
+    const reuseStep = releaseEvidence.slice(
+      releaseEvidence.indexOf('Reuse and verify the exact protected-main runtime bundle'),
+      releaseEvidence.indexOf('- name: Science policy'),
+    );
+    const buildStep = releaseEvidence.slice(
+      releaseEvidence.indexOf('- name: Build\n'),
+      releaseEvidence.indexOf('- name: Migration rehearsal'),
+    );
+
+    expect(installStep).toContain("needs.test-plan.outputs.reuse_allowed != 'true'");
+    expect(reuseStep).toContain('id: reuse_bundle');
+    expect(reuseStep).toContain("needs.test-plan.outputs.reuse_allowed == 'true'");
+    expect(reuseStep).toContain('release-artifact-manifest.mjs');
+    expect(reuseStep).toContain('release-runtime-dependencies.mjs verify');
+    expect(reuseStep).toContain("needs.python-full.outputs.python_version");
+    expect(reuseStep).toContain('test ! -e ./dist && test ! -L ./dist');
+    expect(reuseStep).toContain('cp -a "$bundle_root/dist" ./dist');
+    expect(reuseStep).toContain('release-runtime-dependencies.mjs extract-node');
+    expect(buildStep).toContain("needs.test-plan.outputs.reuse_allowed != 'true'");
+    expect(releaseEvidence).toContain("steps.reuse_bundle.outcome == 'success'");
+  });
+
   it('keeps the RC planner dependency-free and skips its redundant install', () => {
     const raw = workflow();
     const planner = raw.slice(
@@ -140,6 +281,8 @@ describe('release-evidence-container wrapper', () => {
     expect(planner).not.toContain('npm ci');
     expect(planner).not.toContain("cache: 'npm'");
     expect(planner).not.toMatch(/\btsc\b/u);
+    expect(planner).toContain('release-test-evidence.mjs probe-nightly');
+    expect(planner).toMatch(/probe-nightly[\s\S]*?usable=true[\s\S]*?break/u);
     assertBuiltInOnlyModuleClosure([
       'scripts/release-test-evidence.mjs',
       'scripts/protected-main-reuse-activation.mjs',
@@ -159,6 +302,7 @@ describe('release-evidence-container wrapper', () => {
     const stagingStart = operator.indexOf('  staging)');
     const stagingEnd = operator.indexOf('  promote)', stagingStart);
     const staging = operator.slice(stagingStart, stagingEnd);
+    const production = operator.slice(stagingEnd, operator.indexOf('  *) echo', stagingEnd));
     const prepareTarget = staging.indexOf('prepare-staging-runtime-target');
     const transfer = staging.indexOf('rsync -az --delete', prepareTarget);
     const trustedVerifier = staging.indexOf("<<'REMOTE_VERIFY_BUNDLE'", transfer);
@@ -198,8 +342,17 @@ describe('release-evidence-container wrapper', () => {
       .toContain('record.outputDigests?.readinessSha256');
     expect(operator).toContain('scripts/staging-smoke.sh');
     expect(operator).toContain('release-staging-attestation.mjs request');
+    expect(staging).toContain('--copy-dest="$ACTIVE_STAGING"');
+    expect(staging).toContain('--checksum');
+    expect(staging).toContain('--stats');
+    expect(staging).toContain('"metric":"staging-smoke"');
+    expect(staging).not.toContain('--link-dest=');
     expect(operator).not.toContain('startOrReload');
     expect(operator).not.toContain('--staging-evidence');
+    expect(production).toContain('resolve_manifest_bundle');
+    expect(production).toContain('node scripts/reward-check.mjs --area release --enforce');
+    expect(production).not.toContain('\n    validate_manifest\n');
+    expect(production).not.toContain('\n    validate_staging_attestation ');
     expect(promote).toContain('--expect-aggregate-digest "$installed_digest"');
     expect(promote).toContain('(env.NEXUS_RELEASE_SHA||env.GIT_COMMIT)!==sha');
     expect(promote).toContain('active PM2/current identity mismatch');

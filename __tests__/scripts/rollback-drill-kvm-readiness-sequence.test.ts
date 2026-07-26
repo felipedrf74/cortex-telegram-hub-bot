@@ -23,6 +23,7 @@ import {
   canonicalJson,
   publicKeyIdentity,
   textKeyIdentity,
+  validateProvisionReceipt,
 } from '../../scripts/lib/rollback-drill-kvm-evidence.mjs';
 import {
   makeKvmDrillFixture,
@@ -212,6 +213,26 @@ function createFixture() {
     runtimeRecoveryUnitSourcePath:
       '/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service',
     runtimeRecoveryUnitSha256: digest('runtime-recovery'),
+    faultDrillControllerPath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller',
+    faultDrillControllerSha256: digest('fault-drill-controller'),
+    faultDrillControllerUnitPath:
+      '/etc/systemd/system/nexus-release-layout-fault-drill@.service',
+    faultDrillControllerUnitSha256: digest('fault-drill-controller-unit'),
+    faultDrillControllerRecoveryUnitPath:
+      '/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service',
+    faultDrillControllerRecoveryUnitSha256:
+      digest('fault-drill-controller-recovery-unit'),
+    faultDrillGuestExecutorSourcePath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest',
+    faultDrillGuestExecutorSha256: digest('fault-drill-guest'),
+    faultDrillGuestRecoveryUnitSourcePath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service',
+    faultDrillGuestRecoveryUnitSha256:
+      digest('fault-drill-guest-recovery-unit'),
+    faultDrillVerifierPath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs',
+    faultDrillVerifierSha256: digest('fault-drill-verifier'),
     sharedMutexPath: '/run/lock/nexus-release-sonar.lock',
     guestAdmissionLockPath: '/run/nexus-rollback-drill-vm/admission.lock',
     hostAvailableMemoryFloorGiB: 25,
@@ -244,6 +265,12 @@ function createFixture() {
     `runtimeControl=${hypervisor.runtimeControlSha256}`,
     `runtimeReadiness=${hypervisor.runtimeReadinessSha256}`,
     `runtimeRecoveryUnit=${hypervisor.runtimeRecoveryUnitSha256}`,
+    `faultDrillController=${hypervisor.faultDrillControllerSha256}`,
+    `faultDrillControllerUnit=${hypervisor.faultDrillControllerUnitSha256}`,
+    `faultDrillControllerRecoveryUnit=${hypervisor.faultDrillControllerRecoveryUnitSha256}`,
+    `faultDrillGuest=${hypervisor.faultDrillGuestExecutorSha256}`,
+    `faultDrillGuestRecoveryUnit=${hypervisor.faultDrillGuestRecoveryUnitSha256}`,
+    `faultDrillVerifier=${hypervisor.faultDrillVerifierSha256}`,
     `unit=${hypervisor.unitSha256}`,
     `qemu=${hypervisor.qemuSha256}`,
     `qemuVersion=${hypervisor.qemuVersion}`,
@@ -467,7 +494,7 @@ function readinessFixture(fixture: Fixture, index: number) {
     },
   };
   const controlMeasurement = {
-    version: 'nexus-release-promotion-control.v3',
+    version: 'nexus-release-promotion-control.v4',
     sourceCommit: fixture.plan.sourceRootSha,
     files: [],
     generatedFiles: [],
@@ -789,6 +816,155 @@ afterEach(() => {
 });
 
 describe('rollback-drill KVM readiness sequence', () => {
+  it('accepts the exact receipt emitted by the real provision producer in both consumers', () => {
+    const fixture = createFixture();
+    const producer = readFileSync(
+      path.resolve('scripts/rollback-drill-vm-provision.sh'),
+      'utf8',
+    );
+    const setHelperStart = producer.indexOf('derive_set_id() {');
+    const setHelperEnd = producer.indexOf(
+      '\n# END nexus.rollback-drill-vm-set-id.v2',
+      setHelperStart,
+    );
+    const receiptBlock = producer.indexOf(
+      'receipt="$set_stage/receipt.json"',
+    );
+    const pythonStart = producer.indexOf('import hashlib\n', receiptBlock);
+    const pythonEnd = producer.indexOf('\nPY\nlayout_trust=', pythonStart);
+    expect(receiptBlock).toBeGreaterThan(0);
+    expect(setHelperStart).toBeGreaterThan(0);
+    expect(setHelperEnd).toBeGreaterThan(setHelperStart);
+    expect(pythonStart).toBeGreaterThan(receiptBlock);
+    expect(pythonEnd).toBeGreaterThan(pythonStart);
+    const setHelper = producer.slice(setHelperStart, setHelperEnd);
+    const producerProgram = producer.slice(pythonStart, pythonEnd);
+    const records = path.join(fixture.root, 'producer-guest-records.tsv');
+    privateFile(
+      records,
+      `${fixture.provision.guests.map((guest: any) => [
+        guest.name,
+        guest.port,
+        guest.uuid,
+        guest.mac,
+        guest.instanceId,
+        guest.seedSha256,
+        guest.overlayInitialSha256,
+        guest.hostKeyFingerprint,
+        guest.hostPublicKeySha256,
+        guest.hostPublicKey,
+      ].join('\t')).join('\n')}\n`,
+    );
+    const hypervisor = fixture.provision.hypervisor;
+    const setIdentity = spawnSync(
+      '/bin/bash',
+      [
+        '-c',
+        `${setHelper}\nderive_set_id "$@"`,
+        'nexus-rollback-drill-set-id',
+        fixture.provision.image.sha256,
+        fixture.provision.sshPublicKeySha256,
+        fixture.provision.guestSshHostPublicKeySha256s.join(','),
+        ...fixture.provision.ports.map(String),
+        hypervisor.runnerSha256,
+        hypervisor.hostPreflightSha256,
+        hypervisor.runtimeManifestSha256,
+        hypervisor.runtimeControlSha256,
+        hypervisor.runtimeReadinessSha256,
+        hypervisor.runtimeRecoveryUnitSha256,
+        hypervisor.faultDrillControllerSha256,
+        hypervisor.faultDrillControllerUnitSha256,
+        hypervisor.faultDrillControllerRecoveryUnitSha256,
+        hypervisor.faultDrillGuestExecutorSha256,
+        hypervisor.faultDrillGuestRecoveryUnitSha256,
+        hypervisor.faultDrillVerifierSha256,
+        hypervisor.unitSha256,
+        hypervisor.qemuSha256,
+        hypervisor.qemuVersion,
+        hypervisor.qemuPackage,
+        hypervisor.qemuPackageVersion,
+        hypervisor.qemuPackageArchitecture,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(setIdentity.status, setIdentity.stderr).toBe(0);
+    const producerSetId = setIdentity.stdout.trim();
+    expect(producerSetId).toMatch(/^[0-9a-f]{64}$/u);
+    expect(producerSetId).toBe(fixture.provision.setId);
+    const produced = spawnSync(
+      '/usr/bin/python3',
+      [
+        '-c',
+        producerProgram,
+        fixture.provisionPath,
+        producerSetId,
+        fixture.provision.image.sha256,
+        fixture.provision.sshPublicKeySha256,
+        ...fixture.provision.ports.map(String),
+        `/var/lib/nexus-rollback-drill-vm/sets/${producerSetId}`,
+        records,
+        fixture.provision.createdAt,
+        hypervisor.runnerSha256,
+        hypervisor.hostPreflightSha256,
+        hypervisor.runtimeManifestSha256,
+        hypervisor.runtimeControlSha256,
+        hypervisor.runtimeReadinessSha256,
+        hypervisor.runtimeRecoveryUnitSha256,
+        hypervisor.faultDrillControllerSha256,
+        hypervisor.faultDrillControllerUnitSha256,
+        hypervisor.faultDrillControllerRecoveryUnitSha256,
+        hypervisor.faultDrillGuestExecutorSha256,
+        hypervisor.faultDrillGuestRecoveryUnitSha256,
+        hypervisor.faultDrillVerifierSha256,
+        hypervisor.unitSha256,
+        hypervisor.qemuSha256,
+        hypervisor.qemuVersion,
+        hypervisor.qemuPackage,
+        hypervisor.qemuPackageVersion,
+        hypervisor.qemuPackageArchitecture,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(produced.status, produced.stderr).toBe(0);
+
+    const producedBody = readFileSync(fixture.provisionPath);
+    const producedReceipt = JSON.parse(producedBody.toString('utf8'));
+    expect(() => validateProvisionReceipt(producedReceipt)).not.toThrow();
+    fixture.provision = producedReceipt;
+    fixture.provisionBody = producedBody;
+    const provisionSha256 = digest(producedBody);
+    for (const [index, binding] of bindings.entries()) {
+      const authorization = fixture.runtime[binding.drill];
+      authorization.payload.setId = producedReceipt.setId;
+      authorization.payload.provisionReceiptSha256 = provisionSha256;
+      authorization.body = Buffer.from(canonicalJson(authorization.payload));
+      authorization.signature = cryptoSign(
+        null,
+        authorization.body,
+        fixture.guestOwner.privateKey,
+      );
+      privateFile(
+        path.join(fixture.runtimeDirectory, `${binding.drill}.json`),
+        authorization.body,
+      );
+      privateFile(
+        path.join(fixture.runtimeDirectory, `${binding.drill}.sig`),
+        authorization.signature,
+      );
+      fixture.generation.runtimeAuthorizations[index].payloadSha256 =
+        digest(authorization.body);
+    }
+    fixture.generation.provisionReceiptSha256 = provisionSha256;
+    privateFile(
+      fixture.generationPath,
+      canonicalJson(fixture.generation),
+    );
+
+    const initialized = run(fixture, initArgs(fixture));
+    expect(initialized.result.status, initialized.result.stderr).toBe(0);
+    expect(initialized.body.status).toBe('initialized_inactive');
+  });
+
   it('admits and completes only the fixed guest order with one active request', () => {
     const fixture = createFixture();
     const initialized = run(fixture, initArgs(fixture));

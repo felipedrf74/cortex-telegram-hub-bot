@@ -258,7 +258,7 @@ PY
 
 assert_promotion_runtime_ready() {
   "$CONTROL_BIN" assert-root-pm2-ready >/dev/null \
-    || die "installed v3 promotion control rejected the root PM2 closure"
+    || die "installed v4 promotion control rejected the root PM2 closure"
   "$CONTROL_BIN" assert-idle >/dev/null \
     || die "promotion control is not idle before live runtime measurement"
 }
@@ -1796,7 +1796,7 @@ for record in "${expected_services[@]}"; do
     "$fragment_path" "$drop_in_paths" "$effective_sha256" "$need_reload" \
     >>"$service_observed"
 done
-[ "$("$CONTROL_BIN" version)" = nexus-release-promotion-control.v3 ] \
+[ "$("$CONTROL_BIN" version)" = nexus-release-promotion-control.v4 ] \
   || die "promotion control version differs from policy"
 assert_promotion_runtime_ready
 
@@ -1895,7 +1895,7 @@ value={
   },
  },
  "control":{
-  "version":"nexus-release-promotion-control.v3",
+  "version":"nexus-release-promotion-control.v4",
   "sourceCommit":control_commit,
   "files":files,
   "generatedFiles":generated_files,

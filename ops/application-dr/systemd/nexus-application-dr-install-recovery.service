@@ -1,0 +1,31 @@
+[Unit]
+Description=Recover an interrupted Nexus application DR installation
+DefaultDependencies=no
+After=local-fs.target
+Before=nexus-application-dr-backup.service
+Before=nexus-application-dr-backup.timer
+Before=nexus-application-dr-health.service
+Before=nexus-application-dr-health.timer
+ConditionPathExists=/var/lib/nexus-application-dr/install-in-progress.v1
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /var/lib/nexus-application-dr/install-recovery-program.v2.py recover --journal /var/lib/nexus-application-dr/install-in-progress.v1 --receipt /var/lib/nexus-application-dr/install-recovery-receipt.v2.json --program /var/lib/nexus-application-dr/install-recovery-program.v2.py --lock /var/lib/nexus-application-dr/backup.lock
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/usr/local/libexec/nexus-application-dr
+ReadWritePaths=/etc/nexus-application-dr
+ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/etc/passwd
+ReadWritePaths=/etc/group
+ReadWritePaths=/etc/shadow
+ReadWritePaths=/etc/gshadow
+ReadWritePaths=/var/lib/nexus-application-dr
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,7 @@ COMMAND="${1:-status}"
 usage() {
   echo "Usage: scripts/release-operator.sh <prepare|staging|drill-staging|promote|status|resume> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request] [--request-id <uuid>] [--coordinator-checkpoint <file>] [--acknowledge-first-drill-bootstrap]"
   echo "       prepare requires exactly one contract scope: --backend-only OR --includes-ios --ios-sha <sha> --ios-build-number <number> --ios-contract-result passed"
-  echo "       drill-staging is fail-closed until the governed control-v2 legacy-base adapter lands"
+  echo "       drill-staging uses the installed control-v2 legacy-base broker and always remains non-promotable"
   echo "       resume coordinates RC -> signing -> staging -> explicit owner stop -> promotion with a local checkpoint"
 }
 if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ]; then usage; exit 0; fi
@@ -217,14 +217,476 @@ case "$COMMAND" in
       echo "release:drill-staging requires --acknowledge-first-drill-bootstrap" >&2
       exit 64
     }
-    # ServerDominguez currently exposes promotion control v2 and the legacy
-    # /home staging bases. Reusing the v3 /srv staging implementation here
-    # would advertise a runnable first-drill path that cannot pass its own
-    # control/layout gates. A later, separately reviewed adapter must provide
-    # those exact v2 bindings before this entry may perform any remote action.
-    echo "release:drill-staging is disabled until the governed control-v2 legacy-base adapter is installed" >&2
-    printf '%s\n' '{"ok":false,"promotable":false,"rollbackDrillEligible":false,"featureEnabled":false,"reason":"governed_control_v2_legacy_base_adapter_required"}'
-    exit 78
+    SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
+    BASE_DIR=/home/dominguez/telegram-hub-bot-staging
+    BROKER="${NEXUS_LEGACY_DRILL_BROKER:-/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker}"
+    [ "${STAGING_PATH:-$BASE_DIR}" = "$BASE_DIR" ] || {
+      echo "release:drill-staging accepts only the governed legacy staging base" >&2
+      exit 64
+    }
+    [ "$BROKER" = /usr/local/sbin/nexus-rollback-drill-legacy-staging-broker ] || {
+      echo "release:drill-staging accepts only the root-installed broker path" >&2
+      exit 64
+    }
+    if [ "$DRY_RUN" = true ]; then
+      printf '{"ok":true,"dryRun":true,"promotable":false,"rollbackDrillEligible":false,"featureEnabled":true,"reason":"execution_and_protected_drill_signature_required","server":"%s","base":"%s","broker":"%s"}\n' \
+        "$SERVER" "$BASE_DIR" "$BROKER"
+      exit 0
+    fi
+    if ! release_require_clean_tree "$ROOT"; then
+      echo "release:drill-staging requires a clean checkout bound to the signed runtime SHA" >&2
+      exit 1
+    fi
+    validate_manifest
+    if [ -n "$STAGING_REQUEST_ID" ]; then
+      validate_staging_coordinator_checkpoint || {
+        echo "drill-staging coordinator checkpoint validation failed" >&2
+        exit 1
+      }
+    else
+      STAGING_REQUEST_ID="$(node -e 'process.stdout.write(require("crypto").randomUUID())')"
+    fi
+    RELEASE_DIR="$BASE_DIR/releases/${RUNTIME_SHA}-${DIGEST:0:12}"
+    EVIDENCE_DIR="$ROOT/.local/release/rollback-drill-staging"
+    EVIDENCE_BASE="$EVIDENCE_DIR/${RUNTIME_SHA}-${DIGEST}-${STAGING_REQUEST_ID}"
+    INSPECTION="$EVIDENCE_BASE.broker-inspection.json"
+    TRANSACTION_REQUEST="$EVIDENCE_BASE.transaction-request.json"
+    ROOT_EVIDENCE="$EVIDENCE_BASE.root-evidence.json"
+    STAGING_REQUEST="$EVIDENCE_BASE.request.json"
+    SIGNED_BUNDLE="$EVIDENCE_BASE.bundle"
+    DRILL_CHECKPOINT="$EVIDENCE_BASE.checkpoint.json"
+    install -d -m 700 "$ROOT/.local" "$ROOT/.local/release" "$EVIDENCE_DIR"
+    DRILL_CHECKPOINT_STATUS="$(
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        ensure-operator-checkpoint \
+        --output "$DRILL_CHECKPOINT" \
+        --manifest "$(absolute_path "$MANIFEST")" \
+        --request-id "$STAGING_REQUEST_ID" \
+        --runtime-sha "$RUNTIME_SHA" \
+        --artifact-digest "$DIGEST" \
+        --release-dir "$RELEASE_DIR" \
+        --server "$SERVER" \
+        --base "$BASE_DIR" \
+        --broker "$BROKER" \
+        --evidence-base "$EVIDENCE_BASE"
+    )"
+    DRILL_CHECKPOINT_RESUMED="$(
+      node -e '
+const x=JSON.parse(process.argv[1]);
+if(x.ok!==true||x.promotable!==false||typeof x.resumed!=="boolean")process.exit(1);
+process.stdout.write(String(x.resumed));' "$DRILL_CHECKPOINT_STATUS"
+    )" || {
+      echo "legacy staging checkpoint status is invalid" >&2
+      exit 1
+    }
+
+    DRILL_TEMPORARY=
+    cleanup_drill_temporary() {
+      if [ -n "$DRILL_TEMPORARY" ]; then
+        case "$DRILL_TEMPORARY" in
+          "$EVIDENCE_DIR"/.*."$STAGING_REQUEST_ID".*)
+            rm -f -- "$DRILL_TEMPORARY"
+            ;;
+        esac
+      fi
+    }
+    cleanup_drill_staging_state() {
+      cleanup_drill_temporary
+      release_cleanup_all_locks
+    }
+    validate_private_drill_file() {
+      node - "$1" "$EVIDENCE_DIR" "$2" <<'NODE'
+const fs=require('node:fs');const path=require('node:path');
+const [file,evidenceDir,label]=process.argv.slice(2);
+const resolved=path.resolve(file),expectedParent=path.resolve(evidenceDir);
+if(path.dirname(resolved)!==expectedParent)throw new Error(`${label} path is outside the evidence directory`);
+const parent=fs.lstatSync(expectedParent);
+if(!parent.isDirectory()||parent.isSymbolicLink()
+ ||fs.realpathSync.native(expectedParent)!==expectedParent
+ ||parent.uid!==process.getuid()||(parent.mode&0o7777)!==0o700){
+ throw new Error(`${label} evidence directory is unsafe`);
+}
+const before=fs.lstatSync(resolved);
+if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1
+ ||before.uid!==process.getuid()||(before.mode&0o7777)!==0o600
+ ||before.size<=0||before.size>32*1024*1024){
+ throw new Error(`${label} is not a private bounded owner file`);
+}
+const descriptor=fs.openSync(resolved,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));
+try{
+ const opened=fs.fstatSync(descriptor);
+ if(opened.dev!==before.dev||opened.ino!==before.ino||opened.size!==before.size
+  ||opened.mtimeMs!==before.mtimeMs)throw new Error(`${label} changed while opened`);
+ const body=fs.readFileSync(descriptor);
+ const after=fs.fstatSync(descriptor);
+ if(after.dev!==opened.dev||after.ino!==opened.ino||after.size!==body.length
+  ||after.mtimeMs!==opened.mtimeMs)throw new Error(`${label} changed while read`);
+}finally{fs.closeSync(descriptor);}
+NODE
+    }
+    publish_fetched_drill_file() {
+      local temporary="$1" destination="$2" label="$3"
+      validate_private_drill_file "$temporary" "$label"
+      if [ -e "$destination" ] || [ -L "$destination" ]; then
+        validate_private_drill_file "$destination" "$label"
+        cmp -s -- "$temporary" "$destination" || {
+          echo "$label differs from the exact request-scoped checkpoint" >&2
+          return 1
+        }
+        rm -f -- "$temporary"
+      else
+        mv -- "$temporary" "$destination"
+        node -e '
+const fs=require("node:fs");const path=require("node:path");
+const descriptor=fs.openSync(path.dirname(process.argv[1]),"r");
+try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}' "$destination"
+      fi
+      DRILL_TEMPORARY=
+    }
+    parse_drill_status() {
+      node - "$1" "$STAGING_REQUEST_ID" "$RUNTIME_SHA" "$DIGEST" <<'NODE'
+const [raw,id,runtimeSha,artifactDigest]=process.argv.slice(2);
+const x=JSON.parse(raw);
+const keys=['artifactDigest','ok','phase','promotable','recoveryTargetMet',
+ 'requestId','runtimeSha','successful','terminal'];
+if(!x||typeof x!=='object'||Array.isArray(x)
+ ||Object.keys(x).sort().join(',')!==keys.sort().join(',')
+ ||x.ok!==true||x.promotable!==false||x.requestId!==id
+ ||x.runtimeSha!==runtimeSha||x.artifactDigest!==artifactDigest
+ ||typeof x.phase!=='string'||typeof x.terminal!=='boolean'
+ ||typeof x.successful!=='boolean'
+ ||!(x.recoveryTargetMet===null||typeof x.recoveryTargetMet==='boolean')){
+ process.exit(1);
+}
+process.stdout.write(`${x.phase}\t${x.terminal}\t${x.successful}`);
+NODE
+    }
+
+    trap cleanup_drill_staging_state EXIT
+    release_acquire_local_lock "$ROOT" "rollback-drill-staging"
+    REMOTE_TRANSACTION=false
+    TERMINAL=false
+    SUCCESSFUL=false
+    TRANSACTION_PHASE=missing
+    set +e
+    INITIAL_STATUS_JSON="$(
+      ssh "$SERVER" sudo -n "$BROKER" status "$STAGING_REQUEST_ID"
+    )"
+    INITIAL_STATUS_CODE=$?
+    set -e
+    case "$INITIAL_STATUS_CODE" in
+      0)
+        STATUS_FIELDS="$(parse_drill_status "$INITIAL_STATUS_JSON")" || {
+          echo "root broker returned invalid exact-identity transaction status" >&2
+          exit 1
+        }
+        IFS=$'\t' read -r TRANSACTION_PHASE TERMINAL SUCCESSFUL \
+          <<<"$STATUS_FIELDS"
+        REMOTE_TRANSACTION=true
+        ;;
+      66) ;;
+      255)
+        echo "root broker status is unreachable; exact request checkpoint retained" >&2
+        exit 75
+        ;;
+      *)
+        echo "root broker transaction status failed closed" >&2
+        exit "$INITIAL_STATUS_CODE"
+        ;;
+    esac
+    if [ "$REMOTE_TRANSACTION" = true ]; then
+      [ "$DRILL_CHECKPOINT_RESUMED" = true ] || {
+        echo "remote transaction predates the durable local request checkpoint" >&2
+        exit 75
+      }
+      validate_private_drill_file \
+        "$TRANSACTION_REQUEST" "legacy staging transaction request" || {
+          echo "remote transaction exists without its local exact request state" >&2
+          exit 75
+        }
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        validate-transaction-request \
+        --request "$TRANSACTION_REQUEST" \
+        --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
+        --expect-request-id "$STAGING_REQUEST_ID" \
+        --allow-expired-resume true >/dev/null
+    fi
+
+    if [ "$REMOTE_TRANSACTION" = false ]; then
+      DRILL_TEMPORARY="$(
+        mktemp "$EVIDENCE_DIR/.broker-inspection.$STAGING_REQUEST_ID.XXXXXXXX"
+      )"
+      ssh "$SERVER" sudo -n "$BROKER" inspect >"$DRILL_TEMPORARY"
+      chmod 600 "$DRILL_TEMPORARY"
+      INSPECTION_STATUS="$(
+        node scripts/rollback-drill-legacy-staging-adapter.mjs \
+          validate-inspection --inspection "$DRILL_TEMPORARY"
+      )"
+      BROKER_FIELDS="$(
+        node -e '
+const x=JSON.parse(process.argv[1]);
+if(x.ok!==true||x.promotable!==false
+ ||!/^[a-f0-9]{64}$/.test(x.broker?.sha256??"")
+ ||!/^[a-f0-9]{64}$/.test(x.broker?.adapterSha256??""))process.exit(1);
+process.stdout.write(`${x.broker.sha256}\t${x.broker.adapterSha256}`);' \
+          "$INSPECTION_STATUS"
+      )" || {
+        echo "validated broker inspection omitted its exact executable identity" >&2
+        exit 1
+      }
+      IFS=$'\t' read -r BROKER_SHA256 ADAPTER_SHA256 <<<"$BROKER_FIELDS"
+      publish_fetched_drill_file \
+        "$DRILL_TEMPORARY" "$INSPECTION" "legacy staging broker inspection"
+    PREPARED="$(
+      ssh "$SERVER" sudo -n "$BROKER" prepare \
+        "$STAGING_REQUEST_ID" "$RUNTIME_SHA" "$DIGEST"
+    )"
+    PREPARED_FIELDS="$(
+      node - "$PREPARED" "$STAGING_REQUEST_ID" "$RELEASE_DIR" "$BASE_DIR" <<'NODE'
+const path=require('node:path');
+const [raw,requestId,releaseDir,base]=process.argv.slice(2);
+const x=JSON.parse(raw);
+const expectedUpload=`${base}/.local/release/legacy-staging-drill/${requestId}/request.json`;
+const keys=['ok','promotable','releaseDir','requestId','requestUpload'];
+if(!x||typeof x!=='object'||Array.isArray(x)
+ ||Object.keys(x).sort().join(',')!==keys.sort().join(',')
+ ||x.ok!==true||x.promotable!==false||x.requestId!==requestId
+ ||x.releaseDir!==releaseDir||x.requestUpload!==expectedUpload
+ ||path.posix.normalize(x.releaseDir)!==x.releaseDir
+ ||path.posix.normalize(x.requestUpload)!==x.requestUpload)process.exit(1);
+process.stdout.write(`${x.releaseDir}\t${x.requestUpload}`);
+NODE
+    )" || {
+      echo "root broker returned an invalid preparation binding" >&2
+      exit 1
+    }
+    IFS=$'\t' read -r PREPARED_RELEASE_DIR REQUEST_UPLOAD \
+      <<<"$PREPARED_FIELDS"
+    [ "$PREPARED_RELEASE_DIR" = "$RELEASE_DIR" ] || {
+      echo "root broker release directory differs from the signed artifact" >&2
+      exit 1
+    }
+    rsync -az --delete --chmod=D700,Fu+rw,go-rwx \
+      "$BUNDLE/" "$SERVER:$RELEASE_DIR/"
+    if [ -e "$TRANSACTION_REQUEST" ] || [ -L "$TRANSACTION_REQUEST" ]; then
+      validate_private_drill_file \
+        "$TRANSACTION_REQUEST" "legacy staging transaction request"
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        validate-transaction-request \
+        --request "$TRANSACTION_REQUEST" \
+        --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
+        --expect-request-id "$STAGING_REQUEST_ID" \
+        --expect-broker-sha256 "$BROKER_SHA256" \
+        --expect-adapter-sha256 "$ADAPTER_SHA256" >/dev/null
+    else
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        build-transaction-request \
+        --manifest "$(absolute_path "$MANIFEST")" \
+        --inspection "$INSPECTION" \
+        --request-id "$STAGING_REQUEST_ID" \
+        --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
+        --output "$TRANSACTION_REQUEST" >/dev/null
+    fi
+    scp -q "$TRANSACTION_REQUEST" "$SERVER:$REQUEST_UPLOAD"
+    ssh "$SERVER" chmod 600 -- "$REQUEST_UPLOAD"
+    SUBMITTED="$(
+      ssh "$SERVER" sudo -n "$BROKER" launch "$STAGING_REQUEST_ID"
+    )"
+    node -e '
+const x=JSON.parse(process.argv[1]),id=process.argv[2];
+if(x.ok!==true||x.promotable!==false||x.requestId!==id
+ ||x.status!=="submitted")process.exit(1);' \
+      "$SUBMITTED" "$STAGING_REQUEST_ID" || {
+      echo "root broker did not durably accept the transaction" >&2
+      exit 1
+    }
+    fi
+
+    for _ in $(seq 1 900); do
+      [ "$TERMINAL" = false ] || break
+      set +e
+      STATUS_JSON="$(
+        ssh "$SERVER" sudo -n "$BROKER" status "$STAGING_REQUEST_ID"
+      )"
+      STATUS_CODE=$?
+      set -e
+      if [ "$STATUS_CODE" -eq 255 ]; then
+        sleep 2
+        continue
+      fi
+      [ "$STATUS_CODE" -eq 0 ] || {
+        echo "root broker transaction status failed closed" >&2
+        exit "$STATUS_CODE"
+      }
+      STATUS_FIELDS="$(parse_drill_status "$STATUS_JSON")" || {
+        echo "root broker returned invalid exact-identity transaction status" >&2
+        exit 1
+      }
+      IFS=$'\t' read -r TRANSACTION_PHASE TERMINAL SUCCESSFUL \
+        <<<"$STATUS_FIELDS"
+      [ "$TERMINAL" = true ] || sleep 2
+    done
+    [ "$TERMINAL" = true ] || {
+      echo "legacy staging drill did not reach a terminal state within 30 minutes" >&2
+      exit 75
+    }
+    [ "$SUCCESSFUL" = true ] && [ "$TRANSACTION_PHASE" = completed ] || {
+      echo "legacy staging drill recovered its predecessor; no staging evidence is eligible" >&2
+      exit 75
+    }
+    DRILL_TEMPORARY="$(
+      mktemp "$EVIDENCE_DIR/.root-evidence.$STAGING_REQUEST_ID.XXXXXXXX"
+    )"
+    ssh "$SERVER" sudo -n "$BROKER" fetch-evidence \
+      "$STAGING_REQUEST_ID" >"$DRILL_TEMPORARY"
+    chmod 600 "$DRILL_TEMPORARY"
+    ROOT_EVIDENCE_STATUS="$(
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        validate-broker-evidence --evidence "$DRILL_TEMPORARY"
+    )"
+    node -e '
+const x=JSON.parse(process.argv[1]);
+if(x.ok!==true||x.promotable!==false||x.requestId!==process.argv[2]
+ ||x.runtimeSha!==process.argv[3]||x.artifactDigest!==process.argv[4]){
+ process.exit(1);
+}' "$ROOT_EVIDENCE_STATUS" "$STAGING_REQUEST_ID" "$RUNTIME_SHA" "$DIGEST" || {
+      echo "terminal broker evidence differs from the exact request checkpoint" >&2
+      exit 1
+    }
+    publish_fetched_drill_file \
+      "$DRILL_TEMPORARY" "$ROOT_EVIDENCE" "legacy staging root evidence"
+    if [ -e "$STAGING_REQUEST" ] || [ -L "$STAGING_REQUEST" ]; then
+      validate_private_drill_file \
+        "$STAGING_REQUEST" "legacy staging attestation request"
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        validate-staging-request \
+        --request "$STAGING_REQUEST" \
+        --manifest "$(absolute_path "$MANIFEST")" \
+        --evidence "$ROOT_EVIDENCE" \
+        --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
+        --expect-runtime-sha "$RUNTIME_SHA" >/dev/null
+    else
+      node scripts/rollback-drill-legacy-staging-adapter.mjs \
+        build-staging-request \
+        --manifest "$(absolute_path "$MANIFEST")" \
+        --evidence "$ROOT_EVIDENCE" \
+        --public-key "$ROOT/docs/release/evidence/release-evidence-public-key.pem" \
+        --output "$STAGING_REQUEST" >/dev/null
+    fi
+    MANIFEST_SIGNING_RECEIPT="$ROOT/.local/release/signing-provenance/$RUNTIME_SHA.json"
+    MANIFEST_SIGNING_RECEIPT_STATUS="$(
+      node scripts/release-signing-provenance-receipt.mjs verify \
+        --receipt "$MANIFEST_SIGNING_RECEIPT" \
+        --manifest "$(absolute_path "$MANIFEST")" \
+        --expect-runtime-sha "$RUNTIME_SHA"
+    )" || {
+      echo "exact SHA-scoped manifest-signing provenance receipt is invalid" >&2
+      exit 1
+    }
+    MANIFEST_SIGNING_RUN_ID="$(
+      node -e '
+const result=JSON.parse(process.argv[1]);
+if(result.ok!==true||result.runtimeSha!==process.argv[2]
+    ||!/^[1-9][0-9]*$/.test(result.signingRunId??"")
+    ||!/^[1-9][0-9]*$/.test(result.signingRunAttempt??"")){
+  process.exit(1);
+}
+process.stdout.write(result.signingRunId);' \
+        "$MANIFEST_SIGNING_RECEIPT_STATUS" "$RUNTIME_SHA"
+    )" || {
+      echo "manifest-signing provenance receipt status is invalid" >&2
+      exit 1
+    }
+    [[ "$MANIFEST_SIGNING_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+      echo "manifest-signing provenance receipt does not bind an exact protected run" >&2
+      exit 1
+    }
+    command -v gh >/dev/null 2>&1 \
+      || { echo "GitHub CLI is required to revalidate manifest-signing provenance" >&2; exit 1; }
+    gh auth status >/dev/null 2>&1 \
+      || { echo "GitHub CLI authentication is required to revalidate manifest-signing provenance" >&2; exit 1; }
+    SIGNING_METADATA_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/nexus-signing-provenance.XXXXXXXX")"
+    cleanup_signing_metadata() {
+      case "$SIGNING_METADATA_DIRECTORY" in
+        "${TMPDIR:-/tmp}"/nexus-signing-provenance.*)
+          rm -rf "$SIGNING_METADATA_DIRECTORY"
+          ;;
+      esac
+    }
+    cleanup_drill_staging_exit() {
+      cleanup_signing_metadata
+      release_cleanup_all_locks
+    }
+    trap cleanup_drill_staging_exit EXIT
+    gh api \
+      "repos/felipedrf74/cortex-telegram-hub-bot/actions/runs/$MANIFEST_SIGNING_RUN_ID" \
+      >"$SIGNING_METADATA_DIRECTORY/run.json"
+    gh api \
+      "repos/felipedrf74/cortex-telegram-hub-bot/actions/runs/$MANIFEST_SIGNING_RUN_ID/artifacts?per_page=100" \
+      >"$SIGNING_METADATA_DIRECTORY/artifacts.json"
+    node scripts/release-signing-provenance-receipt.mjs verify \
+      --receipt "$MANIFEST_SIGNING_RECEIPT" \
+      --manifest "$(absolute_path "$MANIFEST")" \
+      --expect-runtime-sha "$RUNTIME_SHA" \
+      --run-metadata "$SIGNING_METADATA_DIRECTORY/run.json" \
+      --artifact-metadata "$SIGNING_METADATA_DIRECTORY/artifacts.json" \
+      >/dev/null || {
+        echo "live manifest-signing provenance differs from the SHA-scoped receipt" >&2
+        exit 1
+      }
+    if [ "$SIGN_REQUEST" = 1 ]; then
+      if [ -e "$SIGNED_BUNDLE" ] || [ -L "$SIGNED_BUNDLE" ]; then
+        SIGNED_BUNDLE_STATUS="$(
+          node scripts/rollback-drill-staging-attestation.mjs \
+            validate-signed \
+            --bundle "$SIGNED_BUNDLE" \
+            --drill-public-key \
+              "$ROOT/docs/release/evidence/rollback-drill-staging-public-key.pem" \
+            --production-public-key \
+              "$ROOT/docs/release/evidence/release-evidence-public-key.pem"
+        )"
+        node - "$SIGNED_BUNDLE" "$STAGING_REQUEST" \
+          "$(absolute_path "$MANIFEST")" "$STAGING_REQUEST_ID" \
+          "$RUNTIME_SHA" "$DIGEST" <<'NODE'
+const crypto=require('node:crypto');const fs=require('node:fs');const path=require('node:path');
+const [bundle,requestFile,manifestFile,requestId,runtimeSha,artifactDigest]=
+ process.argv.slice(2);
+const identity=fs.lstatSync(bundle);
+if(!identity.isDirectory()||identity.isSymbolicLink()
+ ||identity.uid!==process.getuid()||(identity.mode&0o7777)!==0o700){
+ throw new Error('signed drill bundle directory is unsafe');
+}
+const digest=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const names=['drill-binding.json','release-manifest.json','staging-attestation.json'];
+for(const name of names){
+ const file=path.join(bundle,name),observed=fs.lstatSync(file);
+ if(!observed.isFile()||observed.isSymbolicLink()||observed.nlink!==1
+  ||observed.uid!==process.getuid()||(observed.mode&0o7777)!==0o600){
+  throw new Error(`signed drill bundle file is unsafe: ${name}`);
+ }
+}
+if(fs.readdirSync(bundle).sort().join(',')!==names.sort().join(',')){
+ throw new Error('signed drill bundle has unexpected files');
+}
+const binding=JSON.parse(fs.readFileSync(path.join(bundle,'drill-binding.json')));
+if(binding.payload?.requestId!==requestId||binding.payload?.runtimeSha!==runtimeSha
+ ||binding.payload?.artifactDigest!==artifactDigest
+ ||binding.payload?.source?.stagingRequestSha256!==digest(requestFile)
+ ||binding.payload?.source?.releaseManifestSha256!==digest(manifestFile)){
+ throw new Error('signed drill bundle differs from exact local request sources');
+}
+NODE
+        printf '%s\n' "$SIGNED_BUNDLE_STATUS"
+      else
+        scripts/request-rollback-drill-staging-attestation.sh \
+          "$STAGING_REQUEST" "$(absolute_path "$MANIFEST")" "$SIGNED_BUNDLE" \
+          --manifest-signing-run-id "$MANIFEST_SIGNING_RUN_ID" \
+          --bundle-root "$BUNDLE"
+      fi
+    else
+      printf '{"ok":true,"staged":true,"promotable":false,"rollbackDrillEligible":false,"reason":"protected_drill_signature_required","request":"%s","rootEvidence":"%s"}\n' \
+        "$STAGING_REQUEST" "$ROOT_EVIDENCE"
+    fi
     ;;
   status)
     if [ ! -f "$(absolute_path "$MANIFEST")" ]; then
@@ -239,6 +701,7 @@ case "$COMMAND" in
     fi
     ;;
   prepare)
+    echo "NOTICE: release:prepare is a diagnostic/manual fallback; use release:resume for the canonical production flow." >&2
     CONTRACT_ARGS=()
     MANIFEST_EXPECTATIONS=()
     case "$CONTRACT_SCOPE" in
@@ -332,8 +795,8 @@ case "$COMMAND" in
     release_acquire_remote_lock "$SERVER" "$BASE_DIR" "staging-deploy"
     release_acquire_remote_sonar_lock "$SERVER"
     CONTROL_VERSION="$(ssh "$SERVER" sudo -n "$SYSTEMD_CONTROL" version)"
-    [ "$CONTROL_VERSION" = nexus-release-promotion-control.v3 ] || {
-      echo "root-owned release control v3 is required before staging" >&2
+    [ "$CONTROL_VERSION" = nexus-release-promotion-control.v4 ] || {
+      echo "root-owned release control v4 is required before staging" >&2
       exit 75
     }
     ssh "$SERVER" sudo -n "$SYSTEMD_CONTROL" assert-layout-ready >/dev/null || {
@@ -362,6 +825,17 @@ REMOTE_ACTIVE_STAGING
       ""|"$BASE_DIR"/releases/*) ;;
       *) echo "unsafe active staging runtime: $ACTIVE_STAGING" >&2; exit 1 ;;
     esac
+    RSYNC_BASIS_ARGS=()
+    if [ -n "$ACTIVE_STAGING" ] && [ "$ACTIVE_STAGING" != "$RELEASE_DIR" ]; then
+      # The remote staging and global release locks pin this exact predecessor
+      # while rsync runs. --checksum lets --copy-dest reuse identical bytes
+      # even though deterministic artifact creation gives them fresh mtimes.
+      # The basis is copied into the new release (never hard-linked), reducing
+      # network transfer without sharing mutable inodes. The trusted
+      # full-bundle verifier below remains authoritative and rejects any basis
+      # or transfer drift.
+      RSYNC_BASIS_ARGS=(--copy-dest="$ACTIVE_STAGING" --checksum)
+    fi
     ROOT_EVIDENCE_READY=false
     SEALED_CANDIDATE=false
     if [ "$CHECKPOINT_BOUND" = true ]; then
@@ -411,7 +885,8 @@ process.stdout.write(x.aggregateDigest);' "$RELEASE_DIR/.nexus-installed-runtime
         echo "staging runtime target is sealed without the checkpointed root binding" >&2
         exit 75
       }
-      rsync -az --delete --chmod=D700,Fu+rw,go-rwx "$BUNDLE/" "$SERVER:$RELEASE_DIR/"
+      rsync -az --delete --stats --chmod=D700,Fu+rw,go-rwx \
+        "${RSYNC_BASIS_ARGS[@]}" "$BUNDLE/" "$SERVER:$RELEASE_DIR/"
       else
         echo "staging installed-runtime evidence lookup failed closed" >&2
         exit "$INSTALLED_LOOKUP_STATUS"
@@ -664,7 +1139,30 @@ for(const [output,value] of [
  fs.chmodSync(output,0o600);
 }
 NODE
-    if ! STAGING_PATH="$RELEASE_DIR" NEXUS_SMOKE_EVIDENCE=0 scripts/staging-smoke.sh > "$SMOKE_LOG" 2>&1; then
+    SMOKE_CLASSIFIER_BASE_SHA="$(
+      manifest_field payload.testPolicy.results.selection.baseSha
+    )" || {
+      echo "signed release test selection base SHA is missing" >&2
+      exit 1
+    }
+    [[ "$SMOKE_CLASSIFIER_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+      && git merge-base --is-ancestor "$SMOKE_CLASSIFIER_BASE_SHA" "$RUNTIME_SHA" || {
+      echo "signed release test selection base is invalid for staging smoke" >&2
+      exit 1
+    }
+    SMOKE_STARTED_EPOCH="$(date +%s)"
+    set +e
+    STAGING_PATH="$RELEASE_DIR" \
+      NEXUS_SMOKE_CLASSIFIER_BASE_SHA="$SMOKE_CLASSIFIER_BASE_SHA" \
+      NEXUS_SMOKE_DOMAIN_PROBES=1 \
+      NEXUS_SMOKE_EVIDENCE=0 \
+      scripts/staging-smoke.sh > "$SMOKE_LOG" 2>&1
+    SMOKE_STATUS=$?
+    set -e
+    SMOKE_DURATION_SECONDS=$(($(date +%s) - SMOKE_STARTED_EPOCH))
+    printf 'release optimization telemetry: {"schema":"nexus.release-optimization-telemetry.v1","metric":"staging-smoke","elapsedSeconds":%s,"advisory":true}\n' \
+      "$SMOKE_DURATION_SECONDS" >> "$SMOKE_LOG"
+    if [ "$SMOKE_STATUS" -ne 0 ]; then
       sed -n '1,240p' "$SMOKE_LOG" >&2
       echo "candidate domain smoke failed; staging is not attestable" >&2
       exit 1
@@ -690,9 +1188,12 @@ NODE
       echo "release:promote requires a clean checkout bound to the signed runtime SHA" >&2
       exit 1
     fi
-    validate_manifest
+    # Resolve only cheap, bounded metadata here. The enforced release reward
+    # check below owns the single immediate full manifest, bundle, and signed
+    # staging validation before any remote production action.
+    resolve_manifest_bundle
     VERSION="$(manifest_field payload.packageVersion)"
-    validate_staging_attestation "$RUNTIME_SHA" "$DIGEST" >/dev/null
+    resolve_staging_attestation "$RUNTIME_SHA" "$DIGEST"
     validate_rollback_drill_freshness
     [ "${NEXUS_RELEASE_OWNER_AUTHORIZED:-0}" = "1" ] || {
       echo "promotion requires explicit owner authorization: NEXUS_RELEASE_OWNER_AUTHORIZED=1" >&2

@@ -341,6 +341,9 @@ jobs:
         with:
           name: release-manifest-v2-${{ env.RUNTIME_SHA }}
           path: signed-artifact/
+          # The signed artifact currently carries the already-compressed exact
+          # runtime bundle. Preserve bytes while skipping redundant deflate.
+          compression-level: 0
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error

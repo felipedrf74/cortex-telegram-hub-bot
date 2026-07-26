@@ -199,6 +199,26 @@ function makeInputs(root: string, nowMs: number) {
     runtimeRecoveryUnitSourcePath:
       '/usr/local/libexec/nexus-rollback-drill-vm/runtime-recovery.service',
     runtimeRecoveryUnitSha256: digest('runtime-recovery'),
+    faultDrillControllerPath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller',
+    faultDrillControllerSha256: digest('fault-drill-controller'),
+    faultDrillControllerUnitPath:
+      '/etc/systemd/system/nexus-release-layout-fault-drill@.service',
+    faultDrillControllerUnitSha256: digest('fault-drill-controller-unit'),
+    faultDrillControllerRecoveryUnitPath:
+      '/etc/systemd/system/nexus-release-layout-fault-drill-recovery.service',
+    faultDrillControllerRecoveryUnitSha256:
+      digest('fault-drill-controller-recovery-unit'),
+    faultDrillGuestExecutorSourcePath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest',
+    faultDrillGuestExecutorSha256: digest('fault-drill-guest'),
+    faultDrillGuestRecoveryUnitSourcePath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest-recovery.service',
+    faultDrillGuestRecoveryUnitSha256:
+      digest('fault-drill-guest-recovery-unit'),
+    faultDrillVerifierPath:
+      '/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs',
+    faultDrillVerifierSha256: digest('fault-drill-verifier'),
     sharedMutexPath: '/run/lock/nexus-release-sonar.lock',
     guestAdmissionLockPath: '/run/nexus-rollback-drill-vm/admission.lock',
     hostAvailableMemoryFloorGiB: 25,
@@ -231,6 +251,12 @@ function makeInputs(root: string, nowMs: number) {
     `runtimeControl=${hypervisor.runtimeControlSha256}`,
     `runtimeReadiness=${hypervisor.runtimeReadinessSha256}`,
     `runtimeRecoveryUnit=${hypervisor.runtimeRecoveryUnitSha256}`,
+    `faultDrillController=${hypervisor.faultDrillControllerSha256}`,
+    `faultDrillControllerUnit=${hypervisor.faultDrillControllerUnitSha256}`,
+    `faultDrillControllerRecoveryUnit=${hypervisor.faultDrillControllerRecoveryUnitSha256}`,
+    `faultDrillGuest=${hypervisor.faultDrillGuestExecutorSha256}`,
+    `faultDrillGuestRecoveryUnit=${hypervisor.faultDrillGuestRecoveryUnitSha256}`,
+    `faultDrillVerifier=${hypervisor.faultDrillVerifierSha256}`,
     `unit=${hypervisor.unitSha256}`,
     `qemu=${hypervisor.qemuSha256}`,
     `qemuVersion=${hypervisor.qemuVersion}`,

@@ -44,6 +44,9 @@ describe('release-artifact-manifest', () => {
     fs.mkdirSync(path.join(tmp, 'content-engine/services'), { recursive: true });
     fs.mkdirSync(path.join(tmp, 'scripts/lib'), { recursive: true });
     fs.writeFileSync(path.join(tmp, 'dist/index.js'), 'console.log("one");\n');
+    fs.writeFileSync(path.join(tmp, 'dist/index.js.map'), '{"version":3}\n');
+    fs.writeFileSync(path.join(tmp, 'dist/index.d.ts'), 'export declare const value: number;\n');
+    fs.writeFileSync(path.join(tmp, 'dist/index.d.ts.map'), '{"version":3}\n');
     fs.writeFileSync(
       path.join(tmp, 'catalog/training/exercise-media/v1/compiled-manifest.json'),
       '{"packageHash":"one"}\n',
@@ -136,6 +139,20 @@ describe('release-artifact-manifest', () => {
     expect(manifest.files.map((entry: { path: string }) => entry.path)).toContain(
       'src/services/chat-turn-contract.ts',
     );
+  });
+
+  it('keeps runtime source maps but omits declaration-only build outputs', () => {
+    const manifest = JSON.parse(execFileSync(
+      'node',
+      [script, '--root', tmp, '--format', 'json'],
+      { encoding: 'utf8' },
+    ));
+    const paths = manifest.files.map((entry: { path: string }) => entry.path);
+
+    expect(paths).toContain('dist/index.js');
+    expect(paths).toContain('dist/index.js.map');
+    expect(paths).not.toContain('dist/index.d.ts');
+    expect(paths).not.toContain('dist/index.d.ts.map');
   });
 
   it('includes every declared dependency of the production-shape rehearsal', () => {

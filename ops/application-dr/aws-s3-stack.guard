@@ -7,6 +7,7 @@ let s3_buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
 let s3_bucket_policies = Resources.*[ Type == 'AWS::S3::BucketPolicy' ]
 let iam_roles = Resources.*[ Type == 'AWS::IAM::Role' ]
 let roles_anywhere_profiles = Resources.*[ Type == 'AWS::RolesAnywhere::Profile' ]
+let cloudwatch_alarms = Resources.*[ Type == 'AWS::CloudWatch::Alarm' ]
 let iam_users = Resources.*[ Type == 'AWS::IAM::User' ]
 let iam_access_keys = Resources.*[ Type == 'AWS::IAM::AccessKey' ]
 let retained_lifecycle_rules = Resources.DisasterRecoveryBucket.Properties.LifecycleConfiguration.Rules[
@@ -118,6 +119,7 @@ let s3_bucket_count = count(%s3_buckets)
 let s3_bucket_policy_count = count(%s3_bucket_policies)
 let iam_role_count = count(%iam_roles)
 let roles_anywhere_profile_count = count(%roles_anywhere_profiles)
+let cloudwatch_alarm_count = count(%cloudwatch_alarms)
 let iam_user_count = count(%iam_users)
 let iam_access_key_count = count(%iam_access_keys)
 let retained_lifecycle_rule_count = count(%retained_lifecycle_rules)
@@ -236,6 +238,8 @@ rule managed_identity_plane_is_exact_and_ephemeral {
     <<Managed mode must contain exactly the backup and restore IAM roles.>>
   %roles_anywhere_profile_count == 2
     <<Managed mode must contain exactly the backup and restore Roles Anywhere profiles.>>
+  %cloudwatch_alarm_count == 1
+    <<Managed mode must contain exactly one activation rollback alarm.>>
   %iam_user_count == 0
     <<The application DR template must not create IAM users.>>
   %iam_access_key_count == 0
@@ -269,6 +273,26 @@ rule managed_identity_plane_is_exact_and_ephemeral {
   Resources.RolesAnywhereCertificateRevocationList.Properties.Enabled.'Fn::If'[1] == true
   Resources.RolesAnywhereCertificateRevocationList.Properties.Enabled.'Fn::If'[2] == false
   Resources.RolesAnywhereCertificateRevocationList.Properties.TrustAnchorArn.'Fn::GetAtt' == 'RolesAnywhereTrustAnchor.TrustAnchorArn'
+
+  Resources.RolesAnywhereActivationRollbackAlarm {
+    Type == 'AWS::CloudWatch::Alarm'
+    Condition == 'ProvisionRolesAnywhere'
+    Properties.ComparisonOperator == 'LessThanThreshold'
+    Properties.DatapointsToAlarm == 24
+    Properties.Dimensions == [
+      {"Name": "StackName", "Value": {"Ref": "AWS::StackName"}}
+    ]
+    Properties.EvaluationPeriods == 24
+    Properties.MetricName == 'ActivationLease'
+    Properties.Namespace == 'Nexus/ApplicationDR'
+    Properties.Period == 30
+    Properties.Statistic == 'Minimum'
+    Properties.Threshold == 1
+    Properties.TreatMissingData == 'breaching'
+    Properties.Unit == 'Count'
+  }
+  Outputs.RolesAnywhereActivationRollbackAlarmArn.Value.'Fn::GetAtt' ==
+    'RolesAnywhereActivationRollbackAlarm.Arn'
 
   %backup_trust_statement_count == 1
   %restore_trust_statement_count == 1
@@ -732,6 +756,19 @@ rule lifecycle_remains_disabled_until_receipt_bound_activation {
     ]
   }
     <<Lifecycle enablement must reject an empty bootstrap receipt digest.>>
+  Rules.DisabledLifecycleRejectsBootstrapReceipt.RuleCondition == {
+    "Fn::Equals": [
+      {"Ref": "LifecycleActivation"},
+      "DISABLED"
+    ]
+  }
+  Rules.DisabledLifecycleRejectsBootstrapReceipt.Assertions[0].Assert == {
+    "Fn::Equals": [
+      {"Ref": "LifecycleBootstrapReceiptSha256"},
+      ""
+    ]
+  }
+    <<A disabled lifecycle must not pre-stage an arbitrary bootstrap receipt.>>
   Conditions.EnableLifecycle == {
     "Fn::Equals": [
       {"Ref": "LifecycleActivation"},

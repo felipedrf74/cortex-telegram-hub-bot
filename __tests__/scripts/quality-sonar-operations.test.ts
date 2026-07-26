@@ -2,11 +2,15 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +32,9 @@ describe('advisory SonarQube operational assets', () => {
     expect(syntax.status, syntax.stderr).toBe(0);
 
     const script = read(installer);
+    const recoveryProgram = read(
+      'scripts/quality-sonar-install-transaction.py',
+    );
     const declaredInstall = read('ops/sonarqube/install-layout.tsv')
       .split('\n').slice(1).join('\n').trim();
     const declaredData = read('ops/sonarqube/data-layout.tsv')
@@ -53,18 +60,33 @@ describe('advisory SonarQube operational assets', () => {
     expect(script).toContain(
       'installer must execute from the exact reviewed bootstrap source path',
     );
+    expect(recoveryProgram).toContain('managed directory parent');
     expect(script).toContain(
-      'managed directory parent must already exist and be canonical',
+      'append_directory_plan 4 "$RESTORE_EVIDENCE_DIR" 0 0 0700',
     );
-    expect(script).toContain(
-      'ensure_directory "$RESTORE_EVIDENCE_DIR" root root 0700',
-    );
+    expect(script).toContain('bootstrap-control-root');
+    expect(script).toContain('begin-directories');
+    expect(script).toContain('create-directory');
+    const targetBlock = recoveryProgram.match(
+      /PRODUCTION_TARGETS = frozenset\(\{\n([\s\S]*?)\n\}\)/,
+    )?.[1];
+    expect(targetBlock).toBeTruthy();
+    const recoveryTargets = [
+      ...(targetBlock?.matchAll(/^\s*"([^"]+)",$/gm) ?? []),
+    ].map((match) => match[1]).sort();
+    const layoutTargets = read('ops/sonarqube/install-layout.tsv')
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map((line) => line.split('\t')[1])
+      .sort();
+    expect(recoveryTargets).toEqual(layoutTargets);
   });
 
   it('behaviorally rejects an installed source asset that drifted from the Git archive', () => {
     const installer = read('scripts/quality-sonar-systemd-install.sh');
     const verifier = installer.match(
-      /# Prove that the reviewed archive[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\n\nsources=\(\)/,
+      /# Prove that the reviewed archive[\s\S]*?<<'PY'\n([\s\S]*?)\nPY\n\n# Recovery must precede/,
     )?.[1];
     expect(verifier).toBeTruthy();
 
@@ -79,6 +101,10 @@ describe('advisory SonarQube operational assets', () => {
     const dataLayoutPath = join(sourceOps, 'data-layout.tsv');
     const installerPath = join(sourceScripts, 'quality-sonar-systemd-install.sh');
     const assetPath = join(sourceScripts, 'asset.sh');
+    const lockConfigPath = join(
+      sourceOps,
+      'nexus-release-sonar-lock.conf',
+    );
 
     try {
       mkdirSync(sourceScripts, { recursive: true });
@@ -91,6 +117,10 @@ describe('advisory SonarQube operational assets', () => {
       writeFileSync(dataLayoutPath, '# data layout\n');
       writeFileSync(installerPath, '#!/usr/bin/env bash\n');
       writeFileSync(assetPath, '#!/usr/bin/env bash\necho reviewed\n');
+      writeFileSync(
+        lockConfigPath,
+        'f /run/lock/nexus-release-sonar.lock 0660 root dominguez -\n',
+      );
       writeFileSync(verifierPath, verifier!);
 
       const createArchive = spawnSync(
@@ -140,30 +170,30 @@ describe('advisory SonarQube operational assets', () => {
 
   it('serializes, prevalidates, atomically installs, and rolls back without runtime mutation', () => {
     const script = read('scripts/quality-sonar-systemd-install.sh');
+    const transaction = read('scripts/quality-sonar-install-transaction.py');
     const lock = script.indexOf('exec 9<>"$SHARED_MUTEX"');
     const prevalidate = script.indexOf(
       '# Complete every source-only validation before creating a directory',
     );
     const firstDirectory = script.indexOf(
-      'ensure_directory /usr/local/sbin/lib root root 0755',
-    );
-    const journalWrite = script.indexOf(
-      'mv -fT -- "$journal_tmp" "$INSTALL_JOURNAL"',
+      'python3 "$INSTALL_RECOVERY_PROGRAM" create-directory',
     );
     const stage = script.indexOf(
       'stage="$(mktemp -p "$target_parent" ".nexus-sonarqube.stage.XXXXXX")"',
     );
+    const predecessor = script.indexOf('ln -- "$target" "$backup"');
+    const journalWrite = script.indexOf(
+      'python3 "$INSTALL_RECOVERY_PROGRAM" begin \\\n',
+    );
     const firstCommit = script.indexOf('commit_asset "$service_index"');
-    const receipt = script.indexOf(
-      'mv -fT -- "$receipt_stage" "$INSTALL_RECEIPT"',
+    const complete = script.indexOf(
+      'python3 "$INSTALL_RECOVERY_PROGRAM" commit-install',
     );
-    const receiptCommitted = script.indexOf(
-      'receipt_committed=true',
-      receipt,
+    const directoryJournal = script.indexOf(
+      'python3 "$INSTALL_RECOVERY_PROGRAM" begin-directories',
     );
-    const receiptDirectoryFsync = script.indexOf(
-      'fsync_path "$STATE_DIR"',
-      receipt,
+    const anchorEnrollment = script.indexOf(
+      'python3 "${sources[$recovery_program_index]}" enroll-anchors',
     );
 
     expect(script).toContain('flock -n 9');
@@ -174,21 +204,31 @@ describe('advisory SonarQube operational assets', () => {
     expect(script).toContain('Sonar Compose prevalidation');
     expect(lock).toBeGreaterThan(-1);
     expect(prevalidate).toBeGreaterThan(lock);
+    expect(anchorEnrollment).toBeGreaterThan(prevalidate);
+    expect(directoryJournal).toBeGreaterThan(anchorEnrollment);
     expect(firstDirectory).toBeGreaterThan(prevalidate);
-    expect(journalWrite).toBeGreaterThan(firstDirectory);
-    expect(stage).toBeGreaterThan(journalWrite);
+    expect(firstDirectory).toBeGreaterThan(directoryJournal);
+    expect(stage).toBeGreaterThan(firstDirectory);
+    expect(predecessor).toBeGreaterThan(stage);
+    expect(journalWrite).toBeGreaterThan(predecessor);
     expect(firstCommit).toBeGreaterThan(stage);
-    expect(receipt).toBeGreaterThan(firstCommit);
-    expect(receiptCommitted).toBeGreaterThan(receipt);
-    expect(receiptDirectoryFsync).toBeGreaterThan(receiptCommitted);
-    expect(script.slice(receipt, receiptCommitted)).not.toContain('fsync_path');
+    expect(firstCommit).toBeGreaterThan(journalWrite);
+    expect(complete).toBeGreaterThan(firstCommit);
     expect(script).toContain('ln -- "$target" "$backup"');
     expect(script).toContain('mv -fT -- "${stage_paths[$index]}" "$target"');
+    expect(script).toContain('"preservedDependencies": [{');
     expect(script).toContain(
-      'for ((position=${#committed_indices[@]} - 1; position >= 0; position -= 1)); do',
+      'promotion-owned shared lock config changed before receipt staging',
     );
-    expect(script).toContain('mv -fT -- "$backup" "$target"');
-    expect(script).toContain('failed to reload systemd after rollback');
+    expect(
+      read('ops/sonarqube/install-layout.tsv'),
+    ).not.toContain('/etc/tmpfiles.d/nexus-release-sonar-lock.conf');
+    expect(script).toContain(
+      'python3 "$INSTALL_RECOVERY_PROGRAM" auto-recover',
+    );
+    expect(script).toContain(
+      'control journals retained for boot recovery',
+    );
     expect(script).toContain('inactive:3|failed:3|unknown:4|not-found:4');
     expect(script).not.toContain('! systemctl is-active "$unit"');
     expect(script).toContain('"configurationWritten":false');
@@ -196,7 +236,10 @@ describe('advisory SonarQube operational assets', () => {
     expect(script).toContain('"servicesEnabled":false');
     expect(script).toContain('"applicationDataWritten":false');
     expect(script).not.toMatch(/^\s*(?:sudo\s+)?(?:apt|apt-get|docker)\b/m);
-    expect(script).not.toMatch(/systemctl\s+(?:start|stop|restart|enable|disable)\b/);
+    expect(transaction).toContain(
+      'run_systemctl(["enable", RECOVERY_SERVICE])',
+    );
+    expect(script).not.toMatch(/systemctl\s+(?:start|stop|restart|disable)\b/);
   });
 
   it('rejects an unknown systemctl transport result instead of assuming inactivity', () => {
@@ -248,14 +291,883 @@ describe('advisory SonarQube operational assets', () => {
   });
 
   it('guards stack and backup startup after an interrupted asset install', () => {
-    const condition =
-      'ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1';
-    expect(read('ops/sonarqube/systemd/nexus-sonarqube.service')).toContain(condition);
-    expect(read('ops/sonarqube/systemd/nexus-sonarqube-backup.service')).toContain(condition);
-    expect(read('ops/sonarqube/systemd/nexus-sonarqube-backup.timer')).toContain(condition);
+    const conditions = [
+      'ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/asset-install-in-progress.v2',
+      'ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/directory-install-in-progress.v1.json',
+      'ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-unenrollment-in-progress.v1.json',
+    ];
+    for (const runtimeUnit of [
+      'ops/sonarqube/systemd/nexus-sonarqube.service',
+      'ops/sonarqube/systemd/nexus-sonarqube-backup.service',
+      'ops/sonarqube/systemd/nexus-sonarqube-backup.timer',
+    ]) {
+      for (const condition of conditions) {
+        expect(read(runtimeUnit)).toContain(condition);
+      }
+    }
     expect(read('scripts/quality-sonar-stack.sh')).toContain(
       'Sonar asset installation is incomplete',
     );
+    const recovery = read(
+      'ops/sonarqube/systemd/nexus-sonarqube-install-recovery.service',
+    );
+    expect(recovery).toContain(
+      'ConditionPathIsDirectory=/var/lib/nexus-release-promotion/sonarqube-install-control',
+    );
+    expect(recovery).toContain(
+      'Before=nexus-sonarqube.service nexus-sonarqube-backup.service nexus-sonarqube-backup.timer',
+    );
+    expect(recovery).toContain(
+      '/var/lib/nexus-release-promotion/sonarqube-install-control/install-recovery-program.v2.py auto-recover',
+    );
+    expect(recovery).toContain('RestrictAddressFamilies=AF_UNIX');
+    for (const runtimeUnit of [
+      'ops/sonarqube/systemd/nexus-sonarqube.service',
+      'ops/sonarqube/systemd/nexus-sonarqube-backup.service',
+      'ops/sonarqube/systemd/nexus-sonarqube-backup.timer',
+    ]) {
+      expect(read(runtimeUnit)).toContain(
+        'Wants=nexus-sonarqube-install-recovery.service',
+      );
+      expect(read(runtimeUnit)).toContain(
+        'After=' + (
+          runtimeUnit.endsWith('nexus-sonarqube.service')
+            ? 'network-online.target docker.service '
+            : runtimeUnit.endsWith('nexus-sonarqube-backup.service')
+              ? 'docker.service '
+              : ''
+        ) + 'nexus-sonarqube-install-recovery.service',
+      );
+    }
+  });
+
+  it('treats recovery-anchor enrollment as a reversible non-overwriting phase', () => {
+    const installer = read('scripts/quality-sonar-systemd-install.sh');
+    const transaction = read('scripts/quality-sonar-install-transaction.py');
+    const promotionInstaller = read(
+      'scripts/remote-promotion-systemd-install.sh',
+    );
+    const runbook = read('ops/sonarqube/README.md');
+    expect(installer).toContain(
+      'python3 "${sources[$recovery_program_index]}" enroll-anchors',
+    );
+    expect(installer).toContain(
+      'resume-anchor-cleanup',
+    );
+    expect(installer).toContain(
+      'retire-anchor-cleanup-result',
+    );
+    expect(installer.indexOf('resume-anchor-cleanup')).toBeLessThan(
+      installer.indexOf('userns_map_json="$('),
+    );
+    expect(installer.indexOf('retire-anchor-cleanup-result')).toBeLessThan(
+      installer.indexOf('userns_map_json="$('),
+    );
+    expect(transaction).toContain(
+      'preexisting recovery anchor differs',
+    );
+    expect(transaction).toContain(
+      'preexisting recovery unit must already be enabled',
+    );
+    expect(transaction).toContain(
+      'nexus.sonarqube-recovery-anchor-enrollment.v2',
+    );
+    expect(transaction).toContain(
+      'nexus.sonarqube-recovery-anchor-enrollment-intent.v2',
+    );
+    expect(transaction).toContain(
+      'recovery-anchor intent binds another source',
+    );
+    expect(transaction).toContain('createdFromAbsence');
+    expect(transaction).toContain('anchor-plan');
+    expect(transaction).toContain('anchor-unenroll');
+    expect(transaction).toContain('NEXUS_SONAR_OWNER_AUTHORIZED');
+    expect(transaction).toContain('remove-retainedRecoveryProgram');
+    expect(transaction).toContain(
+      'recovery-anchor-unenrollment-result.v1.json',
+    );
+    expect(transaction).toContain(
+      'remove-continuation-unit',
+    );
+    expect(transaction).toContain('validate-anchor-current');
+    expect(promotionInstaller).toContain(
+      'install_release_sonar_lock_config',
+    );
+    expect(promotionInstaller).toContain(
+      'python3 "$anchor_program" validate-anchor-current',
+    );
+    expect(promotionInstaller).toContain(
+      '"$control_root/recovery-anchor-enrollment-in-progress.v2.json"',
+    );
+    expect(promotionInstaller).toContain(
+      '"$control_root/recovery-anchor-unenrollment-in-progress.v1.json"',
+    );
+    expect(promotionInstaller).toContain(
+      '"$control_root/recovery-anchor-unenrollment-result.v1.json"',
+    );
+    expect(promotionInstaller).toContain(
+      'flock -n "$lock_fd"',
+    );
+    expect(promotionInstaller.indexOf('flock -n "$lock_fd"')).toBeLessThan(
+      promotionInstaller.indexOf('for marker in'),
+    );
+    const promotionMutexAcquire = promotionInstaller.indexOf(
+      'materialize_release_sonar_mutex \\\n' +
+        '  "$SOURCE_ROOT/ops/sonarqube/nexus-release-sonar-lock.conf"',
+    );
+    expect(promotionMutexAcquire).toBeGreaterThan(-1);
+    expect(promotionMutexAcquire).toBeLessThan(
+      promotionInstaller.indexOf(
+        'exec 8>"/var/lib/nexus-release-promotion/.control.lock"',
+      ),
+    );
+    expect(
+      read(
+        'ops/sonarqube/systemd/nexus-sonarqube-install-recovery.service',
+      ),
+    ).not.toContain('RemainAfterExit=');
+    expect(runbook).toContain(
+      'Recovery-anchor enrollment is independently reversible',
+    );
+    expect(runbook).toContain(
+      'preserves preexisting-identical anchors',
+    );
+  });
+
+  it('preserves an interrupted Sonar enrollment and rejects a contended shared lock', () => {
+    const promotionInstaller = read(
+      'scripts/remote-promotion-systemd-install.sh',
+    );
+    const lockConfigInstaller = promotionInstaller.match(
+      /(install_release_sonar_lock_config\(\) \{[\s\S]*?\n\})\n\nmaterialize_release_sonar_mutex/,
+    )?.[1];
+    expect(lockConfigInstaller).toBeTruthy();
+
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-promotion-sonar-lock-'));
+    const fixtureBin = join(temp, 'bin');
+    const control = join(temp, 'control');
+    const source = join(temp, 'reviewed-lock.conf');
+    const target = join(temp, 'installed-lock.conf');
+    const lock = join(temp, 'shared.lock');
+    const intent = join(
+      control,
+      'recovery-anchor-enrollment-in-progress.v2.json',
+    );
+    const harness = join(temp, 'install-lock-config.sh');
+    const contendedHarness = join(temp, 'install-lock-config-contended.sh');
+    const holder = join(temp, 'hold-lock.py');
+    const ready = join(temp, 'holder.ready');
+    const uid = process.geteuid?.() ?? 0;
+    const gid = process.getegid?.() ?? 0;
+    const existing = 'f /run/lock/nexus-release-sonar.lock 0660 root old - -\n';
+    const changed = 'f /run/lock/nexus-release-sonar.lock 0660 root new - -\n';
+
+    try {
+      mkdirSync(fixtureBin);
+      mkdirSync(control);
+      writeFileSync(target, existing, { mode: 0o644 });
+      chmodSync(target, 0o644);
+      writeFileSync(source, changed, { mode: 0o644 });
+      chmodSync(source, 0o644);
+      writeFileSync(intent, '{}\n', { mode: 0o600 });
+      chmodSync(intent, 0o600);
+      writeFileSync(lock, '', { mode: 0o600 });
+      chmodSync(lock, 0o600);
+      const preserved = statSync(target);
+
+      writeFileSync(
+        join(fixtureBin, 'stat'),
+        [
+          '#!/usr/bin/env python3',
+          'import os,stat,sys',
+          'fmt=sys.argv[sys.argv.index("-c")+1]',
+          'value=os.lstat(sys.argv[-1])',
+          'fields={',
+          ' "%u":str(value.st_uid),"%g":str(value.st_gid),',
+          ' "%a":format(stat.S_IMODE(value.st_mode),"o"),',
+          ' "%h":str(value.st_nlink),"%d":str(value.st_dev),',
+          ' "%i":str(value.st_ino),',
+          '}',
+          'for key,replacement in fields.items():fmt=fmt.replace(key,replacement)',
+          'print(fmt)',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      chmodSync(join(fixtureBin, 'stat'), 0o755);
+      writeFileSync(
+        join(fixtureBin, 'flock'),
+        [
+          '#!/usr/bin/env python3',
+          'import fcntl,sys',
+          'flags=fcntl.LOCK_EX|(fcntl.LOCK_NB if "-n" in sys.argv else 0)',
+          'try:fcntl.flock(int(sys.argv[-1]),flags)',
+          'except BlockingIOError:raise SystemExit(1)',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      chmodSync(join(fixtureBin, 'flock'), 0o755);
+      writeFileSync(
+        harness,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          lockConfigInstaller!,
+          'exec 9<>"$4"',
+          'install_release_sonar_lock_config "$1" "$2" "$3" 9 "$5" "$6"',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      chmodSync(harness, 0o755);
+      const fixtureEnv = {
+        ...process.env,
+        PATH: `${fixtureBin}:${process.env.PATH ?? ''}`,
+      };
+      const interruptedIntent = spawnSync(
+        'bash',
+        [harness, source, target, control, lock, String(uid), String(gid)],
+        { encoding: 'utf8', env: fixtureEnv },
+      );
+      expect(interruptedIntent.status).not.toBe(0);
+      expect(interruptedIntent.stderr).toContain(
+        'active Sonar recovery state protects a different lock config',
+      );
+      expect(statSync(target).ino).toBe(preserved.ino);
+      expect(readFileSync(target, 'utf8')).toBe(existing);
+
+      writeFileSync(source, existing, { mode: 0o644 });
+      chmodSync(source, 0o644);
+      writeFileSync(
+        holder,
+        [
+          'import fcntl,os,pathlib,sys,time',
+          'descriptor=os.open(sys.argv[1],os.O_RDWR)',
+          'fcntl.flock(descriptor,fcntl.LOCK_EX)',
+          'pathlib.Path(sys.argv[2]).write_text("ready\\n")',
+          'time.sleep(30)',
+          '',
+        ].join('\n'),
+        { mode: 0o700 },
+      );
+      chmodSync(holder, 0o700);
+      writeFileSync(
+        contendedHarness,
+        [
+          '#!/usr/bin/env bash',
+          'set -euo pipefail',
+          lockConfigInstaller!,
+          'python3 "$7" "$4" "$8" &',
+          'holder_pid=$!',
+          'trap \'kill "$holder_pid" 2>/dev/null || true; wait "$holder_pid" 2>/dev/null || true\' EXIT',
+          'attempt=0',
+          'while [ ! -e "$8" ]; do',
+          '  attempt=$((attempt + 1))',
+          '  [ "$attempt" -lt 500 ] || exit 98',
+          '  sleep 0.01',
+          'done',
+          'exec 9<>"$4"',
+          'install_release_sonar_lock_config "$1" "$2" "$3" 9 "$5" "$6"',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      chmodSync(contendedHarness, 0o755);
+      const contended = spawnSync(
+        'bash',
+        [
+          contendedHarness,
+          source,
+          target,
+          control,
+          lock,
+          String(uid),
+          String(gid),
+          holder,
+          ready,
+        ],
+        { encoding: 'utf8', env: fixtureEnv, timeout: 5_000 },
+      );
+      expect(contended.error, contended.stderr).toBeUndefined();
+      expect(contended.status).toBe(75);
+      expect(contended.stderr).toContain(
+        'shared release/Sonar mutex is held by another operation',
+      );
+      expect(statSync(target).ino).toBe(preserved.ino);
+      expect(readFileSync(target, 'utf8')).toBe(existing);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a power-loss journal idempotently and retains fail-closed evidence', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'nexus-sonar-install-recovery-'));
+    const root = join(realpathSync(temp), 'root');
+    const state = join(root, 'var', 'lib', 'nexus-sonarqube');
+    const controlParent = join(root, 'var', 'lib', 'nexus-release-promotion');
+    const control = join(controlParent, 'sonarqube-install-control');
+    const transaction = join(control, '.install-transaction.v2.test');
+    const journal = join(control, 'asset-install-in-progress.v2');
+    const journalLinkWindow = join(
+      control,
+      '.asset-install-in-progress.v2.999.tmp',
+    );
+    const program = join(control, 'install-recovery-program.v2.py');
+    const recoveryReceipt = join(
+      control,
+      'asset-install-recovery-receipt.v1.json',
+    );
+    const installCommit = join(control, 'install-commit.v1.json');
+    const lock = join(root, 'run', 'lock', 'nexus-release-sonar.lock');
+    const systemctl = join(temp, 'systemctl');
+    const existingTarget = join(root, 'usr', 'local', 'sbin', 'quality-sonar-stack');
+    const newTarget = join(root, 'usr', 'local', 'sbin', 'quality-sonar-health');
+    const installReceipt = join(state, 'install-receipt.v1.json');
+    const lockConfig = join(
+      root,
+      'etc',
+      'tmpfiles.d',
+      'nexus-release-sonar-lock.conf',
+    );
+    const existingStage = join(
+      root,
+      'usr',
+      'local',
+      'sbin',
+      '.nexus-sonarqube.stage.existing',
+    );
+    const newStage = join(
+      root,
+      'usr',
+      'local',
+      'sbin',
+      '.nexus-sonarqube.stage.new',
+    );
+    const receiptStage = join(state, '.nexus-sonarqube.stage.receipt');
+    const existingBackup = join(
+      root,
+      'usr',
+      'local',
+      'sbin',
+      '.nexus-sonarqube.backup.existing',
+    );
+    const receiptBackup = join(state, '.nexus-sonarqube.backup.receipt');
+    const plan = join(transaction, 'plan.tsv');
+    const uid = process.geteuid?.() ?? 0;
+    const gid = process.getegid?.() ?? 0;
+    const sha = (value: string) =>
+      createHash('sha256').update(value).digest('hex');
+    const oldAsset = 'old reviewed stack\n';
+    const newAsset = 'new reviewed stack\n';
+    const newOnly = 'new reviewed health\n';
+    const oldReceipt = 'prior receipt\n';
+    const sourceSha = 'a'.repeat(40);
+    const archiveSha = 'b'.repeat(64);
+    const installTransactionId = 'c'.repeat(64);
+    let newReceipt = '';
+
+    try {
+      for (const directory of [
+        state,
+        controlParent,
+        control,
+        transaction,
+        join(root, 'run', 'lock'),
+        join(root, 'usr', 'local', 'sbin'),
+        join(root, 'etc', 'tmpfiles.d'),
+      ]) {
+        mkdirSync(directory, { recursive: true, mode: 0o755 });
+      }
+      chmodSync(control, 0o700);
+      writeFileSync(
+        program,
+        read('scripts/quality-sonar-install-transaction.py'),
+        { mode: 0o600 },
+      );
+      chmodSync(program, 0o600);
+      writeFileSync(lock, '', { mode: 0o600 });
+      chmodSync(lock, 0o600);
+      writeFileSync(existingTarget, oldAsset, { mode: 0o755 });
+      writeFileSync(lockConfig, 'd /run/lock 0755 root root -\n', {
+        mode: 0o644,
+      });
+      chmodSync(lockConfig, 0o644);
+      const preservedLockConfig = statSync(lockConfig);
+      const receiptValue = {
+        schema: 'nexus.sonarqube-asset-install.v1',
+        status: 'complete',
+        sourceSha,
+        archiveSha256: archiveSha,
+        installedAssets: 2,
+        assets: [
+          {
+            target: existingTarget,
+            sha256: sha(newAsset),
+            owner: 'root:root',
+            mode: '0755',
+          },
+          {
+            target: newTarget,
+            sha256: sha(newOnly),
+            owner: 'root:root',
+            mode: '0755',
+          },
+        ],
+        preservedDependencies: [{
+          name: 'releaseSonarLockConfig',
+          target: lockConfig,
+          sha256: sha(readFileSync(lockConfig, 'utf8')),
+          uid: preservedLockConfig.uid,
+          gid: preservedLockConfig.gid,
+          mode: '0644',
+          dev: preservedLockConfig.dev,
+          ino: preservedLockConfig.ino,
+          nlink: preservedLockConfig.nlink,
+        }],
+        configurationWritten: false,
+        dockerTouched: false,
+        servicesEnabled: false,
+        installRecoveryServiceEnabled: true,
+        applicationDataWritten: false,
+        installedAt: '2026-07-25T00:00:00Z',
+      };
+      newReceipt = `${JSON.stringify(receiptValue)}\n`;
+      writeFileSync(existingStage, newAsset, { mode: 0o755 });
+      writeFileSync(newStage, newOnly, { mode: 0o755 });
+      writeFileSync(installReceipt, oldReceipt, { mode: 0o600 });
+      writeFileSync(receiptStage, newReceipt, { mode: 0o600 });
+      linkSync(existingTarget, existingBackup);
+      linkSync(installReceipt, receiptBackup);
+      writeFileSync(
+        plan,
+        [
+          [
+            0,
+            'layout',
+            existingTarget,
+            existingStage,
+            existingBackup,
+            true,
+            sha(newAsset),
+            uid,
+            gid,
+            '0755',
+            sha(oldAsset),
+            uid,
+            gid,
+            '0755',
+          ].join('\t'),
+          [
+            1,
+            'layout',
+            newTarget,
+            newStage,
+            '-',
+            false,
+            sha(newOnly),
+            uid,
+            gid,
+            '0755',
+            '-',
+            '-',
+            '-',
+            '-',
+          ].join('\t'),
+          [
+            2,
+            'receipt',
+            installReceipt,
+            receiptStage,
+            receiptBackup,
+            true,
+            sha(newReceipt),
+            uid,
+            gid,
+            '0600',
+            sha(oldReceipt),
+            uid,
+            gid,
+            '0600',
+          ].join('\t'),
+        ].join('\n') + '\n',
+        { mode: 0o600 },
+      );
+      chmodSync(plan, 0o600);
+      writeFileSync(
+        systemctl,
+        [
+          '#!/usr/bin/env bash',
+          'case "$1:$2" in',
+          '  daemon-reload:*) exit 0 ;;',
+          '  is-active:*) printf "inactive\\n"; exit 3 ;;',
+          '  is-enabled:nexus-sonarqube-install-recovery.service) printf "enabled\\n"; exit 0 ;;',
+          '  is-enabled:nexus-sonarqube-backup.service) printf "static\\n"; exit 0 ;;',
+          '  is-enabled:*) printf "disabled\\n"; exit 1 ;;',
+          'esac',
+          'exit 1',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      chmodSync(systemctl, 0o755);
+      const baseEnv = {
+        ...process.env,
+        NEXUS_RELEASE_TEST_MODE: '1',
+        NEXUS_SONAR_INSTALL_TEST_ROOT: root,
+        NEXUS_SONAR_INSTALL_TEST_SYSTEMCTL: systemctl,
+      };
+      const run = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
+        spawnSync('python3', [program, ...args], {
+          encoding: 'utf8',
+          env: { ...baseEnv, ...extraEnv },
+        });
+      const begun = run([
+        'begin',
+        '--journal',
+        journal,
+        '--plan',
+        plan,
+        '--program',
+        program,
+        '--install-transaction-id',
+        installTransactionId,
+        '--source-sha',
+        sourceSha,
+        '--archive-sha256',
+        archiveSha,
+      ]);
+      expect(begun.status, begun.stderr).toBe(0);
+      // Simulate power loss after the exclusive journal hard link became
+      // visible but before its temporary sibling was unlinked.
+      linkSync(journal, journalLinkWindow);
+
+      renameSync(existingStage, existingTarget);
+      renameSync(newStage, newTarget);
+      renameSync(receiptStage, installReceipt);
+      for (const index of [0, 1, 2]) {
+        const checkpoint = run([
+          'checkpoint',
+          '--journal',
+          journal,
+          '--program',
+          program,
+          '--phase',
+          `committed-${index}`,
+          '--committed-index',
+          String(index),
+        ]);
+        expect(checkpoint.status, checkpoint.stderr).toBe(0);
+        if (index === 0) {
+          expect(() => readFileSync(journalLinkWindow, 'utf8')).toThrow();
+        }
+      }
+
+      const interrupted = run(
+        [
+          'recover',
+          '--journal',
+          journal,
+          '--program',
+          program,
+          '--receipt',
+          recoveryReceipt,
+          '--lock',
+          lock,
+        ],
+        { NEXUS_SONAR_INSTALL_TEST_CRASH_AFTER_RESTORES: '1' },
+      );
+      expect(interrupted.status).toBe(91);
+      expect(readFileSync(journal, 'utf8')).toContain(
+        'nexus.sonarqube-asset-install-transaction.v3',
+      );
+      expect(readFileSync(installReceipt, 'utf8')).toBe(oldReceipt);
+
+      writeFileSync(existingBackup, 'tampered predecessor\n', { mode: 0o755 });
+      const rejectedDrift = run([
+        'recover',
+        '--journal',
+        journal,
+        '--program',
+        program,
+        '--receipt',
+        recoveryReceipt,
+        '--lock',
+        lock,
+      ]);
+      expect(rejectedDrift.status).not.toBe(0);
+      expect(rejectedDrift.stderr).toContain(
+        'recovery predecessor',
+      );
+      expect(readFileSync(journal, 'utf8')).toContain(
+        'nexus.sonarqube-asset-install-transaction.v3',
+      );
+      rmSync(existingBackup);
+      writeFileSync(existingBackup, oldAsset, { mode: 0o755 });
+      chmodSync(existingBackup, 0o755);
+
+      const recovered = run([
+        'recover',
+        '--journal',
+        journal,
+        '--program',
+        program,
+        '--receipt',
+        recoveryReceipt,
+        '--lock',
+        lock,
+      ]);
+      expect(recovered.status, recovered.stderr).toBe(0);
+      expect(readFileSync(existingTarget, 'utf8')).toBe(oldAsset);
+      expect(() => readFileSync(newTarget, 'utf8')).toThrow();
+      expect(readFileSync(installReceipt, 'utf8')).toBe(oldReceipt);
+      expect(() => readFileSync(journal, 'utf8')).toThrow();
+      const evidence = JSON.parse(readFileSync(recoveryReceipt, 'utf8'));
+      expect(evidence).toMatchObject({
+        schema: 'nexus.sonarqube-asset-install-recovery.v1',
+        status: 'rolled_back',
+        sourceSha,
+        archiveSha256: archiveSha,
+        restoredAssets: 2,
+        sonarRuntimeStarted: false,
+      });
+      expect(evidence.transactionBindingSha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(statSync(lockConfig).ino).toBe(preservedLockConfig.ino);
+
+      // A complete asset transaction records, validates, and preserves the
+      // promotion-owned shared lock dependency without staging it.
+      mkdirSync(transaction, { mode: 0o700 });
+      writeFileSync(existingStage, newAsset, { mode: 0o755 });
+      writeFileSync(newStage, newOnly, { mode: 0o755 });
+      writeFileSync(receiptStage, newReceipt, { mode: 0o600 });
+      linkSync(existingTarget, existingBackup);
+      linkSync(installReceipt, receiptBackup);
+      writeFileSync(
+        plan,
+        [
+          [
+            0, 'layout', existingTarget, existingStage, existingBackup, true,
+            sha(newAsset), uid, gid, '0755', sha(oldAsset), uid, gid, '0755',
+          ].join('\t'),
+          [
+            1, 'layout', newTarget, newStage, '-', false,
+            sha(newOnly), uid, gid, '0755', '-', '-', '-', '-',
+          ].join('\t'),
+          [
+            2, 'receipt', installReceipt, receiptStage, receiptBackup, true,
+            sha(newReceipt), uid, gid, '0600', sha(oldReceipt), uid, gid, '0600',
+          ].join('\t'),
+        ].join('\n') + '\n',
+        { mode: 0o600 },
+      );
+      chmodSync(plan, 0o600);
+      const successfulInstallId = '9'.repeat(64);
+      const successfulBegin = run([
+        'begin',
+        '--journal', journal,
+        '--plan', plan,
+        '--program', program,
+        '--install-transaction-id', successfulInstallId,
+        '--source-sha', sourceSha,
+        '--archive-sha256', archiveSha,
+      ]);
+      expect(successfulBegin.status, successfulBegin.stderr).toBe(0);
+      renameSync(existingStage, existingTarget);
+      renameSync(newStage, newTarget);
+      renameSync(receiptStage, installReceipt);
+      for (const index of [0, 1, 2]) {
+        const checkpoint = run([
+          'checkpoint',
+          '--journal', journal,
+          '--program', program,
+          '--phase', `successful-committed-${index}`,
+          '--committed-index', String(index),
+        ]);
+        expect(checkpoint.status, checkpoint.stderr).toBe(0);
+      }
+      const completedInstall = run([
+        'complete',
+        '--journal', journal,
+        '--program', program,
+      ]);
+      expect(completedInstall.status, completedInstall.stderr).toBe(0);
+      expect(readFileSync(existingTarget, 'utf8')).toBe(newAsset);
+      expect(readFileSync(newTarget, 'utf8')).toBe(newOnly);
+      expect(JSON.parse(readFileSync(installReceipt, 'utf8')))
+        .toMatchObject({
+          preservedDependencies: [{
+            name: 'releaseSonarLockConfig',
+            ino: preservedLockConfig.ino,
+          }],
+        });
+      expect(statSync(lockConfig).ino).toBe(preservedLockConfig.ino);
+
+      // Restore the predecessor fixture before modeling an interrupted
+      // reinstall with an unrelated prior success marker.
+      writeFileSync(existingTarget, oldAsset, { mode: 0o755 });
+      rmSync(newTarget);
+      writeFileSync(installReceipt, oldReceipt, { mode: 0o600 });
+      chmodSync(installReceipt, 0o600);
+
+      // A previous successful exact-SHA marker must not finalize a later
+      // interrupted reinstall whose random stage/backup inventory differs.
+      mkdirSync(transaction, { mode: 0o700 });
+      writeFileSync(existingStage, newAsset, { mode: 0o755 });
+      writeFileSync(newStage, newOnly, { mode: 0o755 });
+      writeFileSync(receiptStage, newReceipt, { mode: 0o600 });
+      linkSync(existingTarget, existingBackup);
+      linkSync(installReceipt, receiptBackup);
+      const reinstallTransactionId = 'd'.repeat(64);
+      writeFileSync(
+        plan,
+        [
+          [
+            0,
+            'layout',
+            existingTarget,
+            existingStage,
+            existingBackup,
+            true,
+            sha(newAsset),
+            uid,
+            gid,
+            '0755',
+            sha(oldAsset),
+            uid,
+            gid,
+            '0755',
+          ].join('\t'),
+          [
+            1,
+            'layout',
+            newTarget,
+            newStage,
+            '-',
+            false,
+            sha(newOnly),
+            uid,
+            gid,
+            '0755',
+            '-',
+            '-',
+            '-',
+            '-',
+          ].join('\t'),
+          [
+            2,
+            'receipt',
+            installReceipt,
+            receiptStage,
+            receiptBackup,
+            true,
+            sha(newReceipt),
+            uid,
+            gid,
+            '0600',
+            sha(oldReceipt),
+            uid,
+            gid,
+            '0600',
+          ].join('\t'),
+        ].join('\n') + '\n',
+        { mode: 0o600 },
+      );
+      chmodSync(plan, 0o600);
+      const reinstallBegun = run([
+        'begin',
+        '--journal',
+        journal,
+        '--plan',
+        plan,
+        '--program',
+        program,
+        '--install-transaction-id',
+        reinstallTransactionId,
+        '--source-sha',
+        sourceSha,
+        '--archive-sha256',
+        archiveSha,
+      ]);
+      expect(reinstallBegun.status, reinstallBegun.stderr).toBe(0);
+      renameSync(existingStage, existingTarget);
+      renameSync(newStage, newTarget);
+      renameSync(receiptStage, installReceipt);
+      for (const index of [0, 1, 2]) {
+        const checkpoint = run([
+          'checkpoint',
+          '--journal',
+          journal,
+          '--program',
+          program,
+          '--phase',
+          `reinstall-committed-${index}`,
+          '--committed-index',
+          String(index),
+        ]);
+        expect(checkpoint.status, checkpoint.stderr).toBe(0);
+      }
+      writeFileSync(
+        installCommit,
+        `${JSON.stringify({
+          schema: 'nexus.sonarqube-install-commit.v2',
+          status: 'committed',
+          installTransactionId: 'e'.repeat(64),
+          sourceSha,
+          archiveSha256: archiveSha,
+          assetTransactionBindingSha256: 'f'.repeat(64),
+          directoryPlanSha256: '1'.repeat(64),
+          recoveryProgramSha256: sha(
+            readFileSync(program, 'utf8'),
+          ),
+          committedAt: '2026-07-25T00:00:00Z',
+        })}\n`,
+        { mode: 0o600 },
+      );
+      chmodSync(installCommit, 0o600);
+      const autoRecovered = run([
+        'auto-recover',
+        '--program',
+        program,
+        '--lock',
+        lock,
+        '--asset-journal',
+        journal,
+        '--asset-receipt',
+        recoveryReceipt,
+        '--directory-journal',
+        join(control, 'directory-install-in-progress.v1.json'),
+        '--directory-receipt',
+        join(control, 'directory-install-recovery-receipt.v1.json'),
+        '--anchor-intent',
+        join(control, 'recovery-anchor-enrollment-in-progress.v2.json'),
+        '--anchor-receipt',
+        join(control, 'recovery-anchor-enrollment.v2.json'),
+        '--unenroll-journal',
+        join(
+          control,
+          'recovery-anchor-unenrollment-in-progress.v1.json',
+        ),
+        '--unenroll-result',
+        join(control, 'recovery-anchor-unenrollment-result.v1.json'),
+        '--install-commit',
+        installCommit,
+      ]);
+      expect(autoRecovered.status, autoRecovered.stderr).toBe(0);
+      expect(readFileSync(existingTarget, 'utf8')).toBe(oldAsset);
+      expect(existsSync(newTarget)).toBe(false);
+      expect(readFileSync(installReceipt, 'utf8')).toBe(oldReceipt);
+      const reinstallEvidence = JSON.parse(
+        readFileSync(recoveryReceipt, 'utf8'),
+      );
+      expect(reinstallEvidence.installTransactionId).toBe(
+        reinstallTransactionId,
+      );
+      expect(JSON.parse(readFileSync(installCommit, 'utf8')))
+        .toMatchObject({ installTransactionId: 'e'.repeat(64) });
+      expect(statSync(lockConfig).ino).toBe(preservedLockConfig.ino);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it('rejects incomplete installer identity before any mutation', () => {
@@ -331,7 +1243,12 @@ describe('advisory SonarQube operational assets', () => {
     expect(dataLayout).toContain('/srv/sonarqube/data/sonarqube\t1000:1000\t0750');
     expect(runbook).toContain('/etc/sonarqube/sonarqube.env');
     expect(runbook).toContain('mode 0600');
-    expect(runbook).toContain('Do not add the application or deploy account to the docker group');
+    expect(runbook).toContain(
+      'Do not add `dominguez` or `nexus-release` to the Docker group',
+    );
+    expect(runbook).toContain(
+      'Docker-socket ownership, group, or named-ACL access',
+    );
     expect(runbook).toContain('not a release, signing, application-health, or');
     expect(stack).toContain('Sonar secrets file must have mode 0600');
     expect(stack).toContain('validate_data_layout');
@@ -531,7 +1448,9 @@ describe('advisory SonarQube operational assets', () => {
     expect(preflight).toContain('backend=not_installed');
     expect(preflight).toContain('no_authoritative_firewall_backend_snapshot');
     expect(preflight).toContain('quality-sonar-start-evidence');
-    expect(preflight).toContain('/proc/sys/kernel/random/boot_id');
+    expect(preflight).toContain(
+      '"$PROC_ROOT/sys/kernel/random/boot_id"',
+    );
     expect(preflight).toContain('PM2_USER=dominguez');
     expect(preflight).toContain('PM2_HOME=/home/dominguez/.pm2');
     expect(preflight).toContain('PM2_BIN=/usr/local/bin/pm2');
@@ -548,12 +1467,16 @@ describe('advisory SonarQube operational assets', () => {
     expect(preflight).toContain('value.closureDigest');
     expect(preflight).toContain('value.payloadDigest');
     expect(preflight).not.toContain('/home/dominguez/.npm-global/bin/pm2');
-    expect(preflight).toContain('RUNUSER_BIN=/usr/sbin/runuser');
+    expect(preflight).toContain(
+      'RUNUSER_BIN="${NEXUS_SONAR_RUNUSER_BIN:-/usr/sbin/runuser}"',
+    );
     expect(preflight).toContain('CLOUDFLARED_UNIT=nexus-cloudflared.service');
     expect(preflight).toContain('"$RUNUSER_BIN" -u "$PM2_USER" --');
     expect(preflight).toContain('/usr/bin/env -i');
     expect(preflight).toContain('PM2_HOME="$PM2_HOME"');
-    expect(preflight).toContain('systemctl show "$CLOUDFLARED_UNIT"');
+    expect(preflight).toContain(
+      '"$SYSTEMCTL_BIN" show "$CLOUDFLARED_UNIT"',
+    );
     expect(preflight).not.toContain('pm2_snapshot() {\n  "$PM2_BIN" jlist');
     expect(preflight).not.toMatch(/systemctl show (?:cloudflared|cloudflared\.service)\b/);
     for (const evidence of [
@@ -690,6 +1613,38 @@ describe('advisory SonarQube operational assets', () => {
         'pm2-after.json': '{"services":[]}\n',
         'pm2-before.json': '{"services":[]}\n',
         'routes.txt': 'baseline\n',
+        'runtime-authority.json': `${JSON.stringify({
+          schema: 'nexus.sonarqube-runtime-authority.v1',
+          status: 'passed',
+          host: 'serverdominguez',
+          protectedAccounts: ['dominguez', 'nexus-release'],
+          containerUserIds: [999, 1000],
+          dockerAuthority: 'root_socket_userns_remap',
+          dockerUserns: {
+            schema: 'nexus.docker-userns-map.v1',
+            status: 'passed',
+            daemonSetting: 'default',
+            account: 'dockremap',
+            rangeSize: 65536,
+            subuidBase: 231072,
+            subgidBase: 296608,
+            postgres: {
+              containerUid: 999,
+              containerGid: 999,
+              hostUid: 232071,
+              hostGid: 297607,
+            },
+            sonarqube: {
+              containerUid: 1000,
+              containerGid: 1000,
+              hostUid: 232072,
+              hostGid: 297608,
+            },
+            dockerRootDir: '/var/lib/docker',
+            namespacedRoot: '/var/lib/docker/231072.296608',
+          },
+          automaticUpdaterCount: 0,
+        })}\n`,
         'sysctl.txt': 'baseline\n',
         'tailscale.txt': 'ActiveState=active\n',
       };
@@ -851,7 +1806,10 @@ describe('advisory SonarQube operational assets', () => {
     expect(stack).toContain('flock -n 8');
     expect(stack).toContain('exec 8<>"$SHARED_MUTEX"');
     expect(read('ops/sonarqube/nexus-release-sonar-lock.conf')).toContain('0660 root dominguez');
-    expect(read('ops/sonarqube/install-layout.tsv')).toContain('/etc/tmpfiles.d/nexus-release-sonar-lock.conf');
+    expect(read('ops/sonarqube/install-layout.tsv'))
+      .not.toContain('/etc/tmpfiles.d/nexus-release-sonar-lock.conf');
+    expect(read('scripts/quality-sonar-systemd-install.sh'))
+      .toContain('"preservedDependencies": [{');
     expect(read('scripts/quality-sonar-backup.sh')).toContain('/run/lock/nexus-release-sonar.lock');
     expect(read('scripts/quality-sonar-restore-drill.sh')).toContain('/run/lock/nexus-release-sonar.lock');
     expect(sudoers).toContain('/usr/local/sbin/quality-sonar-release-state --project nexus-hub-backend --json');
@@ -860,7 +1818,9 @@ describe('advisory SonarQube operational assets', () => {
     expect(monitor).toContain('Sonar release-monitor token must have mode 0600');
     expect(monitor).toContain('--data-urlencode "component=$PROJECT_KEY"');
     expect(monitor).toContain('"$SONAR_URL/api/ce/component"');
-    expect(monitor).toContain('Array.isArray(x.queue)');
+    expect(monitor).toContain('Array.isArray(value.queue)');
+    expect(monitor).toContain("value.current.status === 'IN_PROGRESS'");
+    expect(monitor).toContain('seen.has(task.id)');
     expect(monitor).not.toContain('/api/ce/activity');
     expect(monitor).toContain('nexus.sonarqube-release-state.v1');
     expect(monitor).toContain('printf \'Authorization: Bearer %s\\n\' "$token" >"$auth_header"');
@@ -958,6 +1918,15 @@ describe('advisory SonarQube operational assets', () => {
     );
     expect(backup).toContain('pg_restore --list');
     expect(backup).toContain('--enable-timer');
+    expect(backup).toContain('SONAR_AWS_LIFECYCLE_EVIDENCE');
+    expect(backup).toContain(
+      "lifecycle.authorization?.mode !== 'lifecycle-transition'",
+    );
+    expect(backup).toContain(
+      'lifecycle.authorization?.lifecycle?.successfulTransition !== true',
+    );
+    expect(backup).toContain('postDenialPositiveCredentialsPassed');
+    expect(backup).toContain('revokedCredentialProcessFailed');
     expect(backup).toContain('--verify-freshness');
     expect(backup).toContain("schemaVersion: 'SonarBackupSuccessV2'");
     expect(backup).toContain('remoteObjectVerified: true');
@@ -987,6 +1956,10 @@ describe('advisory SonarQube operational assets', () => {
     expect(backup).toContain('--helper-sha256 "$SONAR_BACKUP_AWS_SIGNING_HELPER_SHA256"');
     expect(backupConfig).toContain('AWS_SHARED_CREDENTIALS_FILE=/dev/null');
     expect(backupConfig).toContain('AWS_PROFILE=nexus-sonarqube-backup');
+    expect(backupConfig).toContain(
+      'SONAR_AWS_LIFECYCLE_EVIDENCE=/var/lib/nexus-sonarqube/aws/'
+      + 'lifecycle-transition.v3.json',
+    );
     expect(backupConfig).toContain(
       'SONAR_BACKUP_AWS_ROLE_ARN=arn:aws:iam::111122223333:role/nexus-sonarqube-backup',
     );

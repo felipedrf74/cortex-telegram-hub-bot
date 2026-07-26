@@ -1,0 +1,12 @@
+[Unit]
+Description=Monitor hourly Nexus application disaster-recovery freshness
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=nexus-application-dr-health.service
+
+[Install]
+WantedBy=timers.target

@@ -1,8 +1,11 @@
 [Unit]
 Description=Encrypted off-host SonarQube PostgreSQL backup
-After=docker.service nexus-sonarqube.service
+After=docker.service nexus-sonarqube-install-recovery.service nexus-sonarqube.service
 Requires=docker.service
-ConditionPathExists=!/var/lib/nexus-sonarqube/install-in-progress.v1
+Wants=nexus-sonarqube-install-recovery.service
+ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/asset-install-in-progress.v2
+ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/directory-install-in-progress.v1.json
+ConditionPathExists=!/var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-unenrollment-in-progress.v1.json
 StartLimitIntervalSec=0
 
 [Service]

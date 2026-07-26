@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe
-Last verified: 2026-07-23
+Last verified: 2026-07-25
 
 Current runtime truth is `release-state.json`. Release evidence is an ignored
 artifact, not a Markdown narrative.
@@ -49,23 +49,22 @@ canonical migration cutover, not every future release.
 
 ## Commands
 
+The resumable coordinator is the only primary production-release command:
+
 ```bash
-npm run release:status
-npm run release:prepare -- --base <sha> --backend-only
-gh workflow run release-candidate-evidence.yml --ref <candidate-ref> -f contract_scope=backend_only
-scripts/request-release-manifest-signature.sh <sha> <rc-run-id> --backend-only
-npm run release:staging -- --manifest .local/release/manifests/<sha>.json
-npm run release:promote -- --manifest .local/release/manifests/<sha>.json
+npm run release:resume -- --backend-only
+
+# Only after the coordinator has persisted its explicit owner stop:
+NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  npm run release:resume -- --owner-authorized --promote
 ```
 
 For a release that changes a shared backend/iOS contract, use
-`--includes-ios --ios-sha <ios-sha> --ios-build-number <build> --ios-contract-result passed`
-for `release:prepare`. Dispatch the RC workflow with
-`contract_scope=shared_backend_ios` plus matching `ios_sha`,
-`ios_build_number`, and `ios_contract_result=passed` fields. RC creation and
-protected signing both fail closed when the scope is omitted, contradictory,
-or incomplete. Tag pushes do not infer contract scope or create RC evidence.
-RC iOS fields are untrusted candidate intent, not compatibility evidence.
+`npm run release:resume -- --includes-ios` for the first invocation, then
+provide the two exact signed iOS attestations when the coordinator requests
+them. RC creation and protected signing fail closed when the scope or evidence
+is omitted, contradictory, or incomplete. Tag pushes do not infer contract
+scope or create RC evidence.
 
 Once the RC artifact exists, run `trusted-release-signer.mjs
 ios-contract-request` against its downloaded root, then dispatch the iOS
@@ -99,8 +98,11 @@ does not prove archive or App Store binary identity; distribution proof alone
 does not prove the backend payload decodes. Missing, expired, or mismatched
 proofs make a shared release non-promotable.
 
-`release:prepare` runs the release gate, builds one governed runtime bundle,
-and writes an unsigned candidate payload. The RC workflow also contains no
+The coordinator dispatches and binds the exact RC artifact before requesting
+protected signing; it does not call `release:prepare`. The legacy
+`release:prepare` command remains a manual diagnostic/fallback only. It repeats
+the local release gate, production build, bundle, and unsigned-payload work and
+must not precede a normal coordinated release. The RC workflow contains no
 signing secret. Only the protected-main signer, gated by the `release-signing`
 environment, may turn a successful exact-run artifact into a promotable
 `ReleaseManifestV2`. A changed artifact or test policy invalidates the result.
@@ -194,7 +196,7 @@ artifact, and signed-manifest digests. The coordinator calls the operator with
 recovery runtime digests, and then performs the protected signing phase
 itself. If the Mac disconnects after staging has already switched to the exact
 candidate, only the private coordinator checkpoint authorizes resume. That
-path first invokes the root-installed promotion control v3 verifier. Before
+path first invokes the root-installed promotion control v4 verifier. Before
 the original switch, root independently verified and sealed the artifact and
 installed tree, computed recovery identity with the root-installed DR helper,
 and durably bound those digests, the request UUID, runtime path, SHA, and
@@ -218,7 +220,664 @@ manifest path. Missing, stale, changed, or ambiguous evidence keeps the normal
 four-shard RC fallback. The RC planner itself performs no dependency install or
 standalone typecheck: its two executable entrypoints have a recursively tested
 Node-built-in-only dependency closure, while the trusted protected-main build
-continues to own typecheck and build correctness.
+continues to own typecheck and build correctness. The unsigned-candidate job
+also performs one production `npm run build`, whose first command is the same
+default-project `tsc` compilation; a retained workflow-contract test binds
+that equivalence and prevents a separate `tsc --noEmit` pass from returning.
+
+The same sequential lane removes post-test duplication without weakening its
+verdict. When exact protected-main reuse is active, the RC job verifies and
+uses that signed Ubuntu bundle, safely extracts its locked Node dependency
+archive, and skips both network `npm ci` and rebuild. Otherwise it keeps the
+normal clean install and production build. Release build, content-engine test,
+and nightly Python are pinned to 3.12.3 because the governed production
+interpreter is `/usr/bin/python3.12` at exactly that patch and the
+network-independent installer rejects patch drift. The release-test image uses a
+pinned Buildx cache only as an acceleration hint; Buildx setup failure falls
+back once to the ordinary Docker build, while an actual image-build failure is
+reported immediately instead of redundantly retrying the same invalid input.
+This image is only a pinned Debian 12
+sandbox compatibility check: it smokes the compiled tree with dependencies
+freshly installed from the lockfile and Python requirements, and a cold cache
+may contact the registries. It is never Ubuntu artifact ABI evidence. The exact
+archived dependency payload remains governed by its lock/digests, the
+network-independent staging install, installed-tree attestation, and runtime
+smoke. The sandbox contract does not repeat typecheck, build, migration, the
+full/selected Vitest suite, or pytest; it retains one focused
+notification/decision fixture as the container-specific release invariant. The
+deterministic Node archive uses gzip level 6 because representative measurement
+saved about six seconds for roughly one MiB of additional transfer; its bytes
+remain part of the signed artifact identity.
+
+Staging also remains serial. Under both staging and global release locks,
+`rsync --checksum --copy-dest` finds unchanged predecessor bytes even when
+artifact mtimes differ, then copies them into the new release without shared
+inodes; the complete bundle and installed tree are still rehashed afterward.
+The smoke gate reuses one private, short-lived SSH control socket and one
+coherent response per repeated endpoint while retaining every field assertion.
+Its domain classifier uses the base SHA from the already validated signed RC
+selection, not an empty `origin/main..main` diff, and all database checks
+resolve the exact supplied staging directory. No cache, transport socket,
+predecessor copy, or classifier result can bypass the existing staging
+attestation.
+
+### Sequential optimization activation ledger
+
+Apply release-speed changes in this order and measure their individual stage
+durations in the same ten-release window:
+
+1. The RC planner inspects recent successful nightly artifacts newest first
+   and stops downloading as soon as the canonical validator finds one fresh,
+   same-policy ancestor. The final planner revalidates that file; no candidate
+   still means the full-suite fallback.
+2. CI and RC `npm ci` retain lockfile and integrity enforcement, prefer the
+   setup-node cache, and omit the non-gating audit and funding network calls.
+   The exact-SHA security workflow remains the dependency-audit authority.
+   Both Python requirement files key the pytest cache, and the artifact job
+   separately restores the production-requirements wheel cache.
+3. Activate exact protected-main test and artifact reuse only after the five
+   signed shadow agreements. Until then, retain one RC execution and use the
+   container, compression, staging-transfer, and smoke-I/O reductions above.
+4. Report the selected Buildx/fallback path, nightly candidates considered,
+   bundle compression time and size, rsync transfer statistics, and smoke
+   duration in advisory logs. The authoritative release-stage intervals remain
+   in the signed timing evidence. Optimization telemetry is never a verdict
+   input, and a missing advisory field never changes a release verdict.
+
+The next serial-path reductions preserve the same jobs and four Vitest shards:
+
+5. The required JavaScript/TypeScript CodeQL job performs source extraction
+   without `npm ci` or `npm run build`. GitHub's interpreted-language extractor
+   does not need a JavaScript build, while the pinned Node setup remains in the
+   same job. SARIF upload and processing remain mandatory, while the
+   non-gating CodeQL database archive upload is disabled. Exact-SHA CodeQL
+   success remains mandatory before RC dispatch.
+   Narrowing extraction to deployed first-party roots remains shadow-only:
+   compare two sequential broad and scoped scans, their extracted-file
+   inventories, and runtime-source alerts before activating a production-source
+   config. Protected-main push scans remain broad; only the explicitly
+   dispatched `deployed_source_shadow` mode uses the separate shadow category.
+   Do not add a matrix or a second concurrent security lane.
+6. Test-policy behavior uses a bounded synthetic repository for inventory
+   history/error cases and retains real-repository partition and runner
+   contracts. Disposition matching compiles the seven glob rules once and
+   indexes exact rules while preserving first-rule-wins order. This reduced the
+   focused governance file from the observed nightly 94.85 seconds to 1.93
+   seconds locally on Node 22 without deleting a test or changing a disposition.
+7. Project-map tests retain two independent real-tree generations for
+   determinism and one fail-closed drift invocation, while reusing the first
+   immutable parsed result for read-only route/module/document assertions.
+   This reduced the focused file from the observed nightly 17.85 seconds to
+   2.03 seconds locally without weakening the production `--check` gate.
+8. The test-tier launcher may create one private, ordered-migration-digest-bound
+   default SQLite template before its existing Vitest process tree. Each test
+   receives a fresh in-memory copy; non-default migration shapes retain the
+   current full migration fallback. Activate only after symlink, stale-digest,
+   tamper, isolation, and focused timing tests pass. This changes neither shard
+   count nor worker topology and never replaces the canonical migration
+   rehearsal.
+9. Retire the blocking Debian release-test image only after the notification
+   release fixture is governed as a critical/cannot-skip selection and exact
+   protected-main/RC evidence proves it ran. The Ubuntu 24.04 artifact build,
+   locked runtime archive verification, network-blocked staging install,
+   installed-tree attestation, PM2 identity, authenticated smoke, and rollback
+   checks remain the production artifact authority. Until that mapping is
+   approved, describe the Docker probe only as a pinned Debian sandbox
+   compatibility check; it is not exact Ubuntu artifact ABI evidence.
+10. Keep RC pytest mandatory under the current evidence schema. A later schema
+   may bind the exact pytest result/count, Python toolchain, both requirement
+   digests, workflow/run identity, and exact SHA into protected-main evidence.
+   Shadow that comparison for five releases before permitting same-SHA pytest
+   reuse; any missing or ambiguous field keeps the existing full pytest
+   fallback. This uses the existing Python job and adds no release lane.
+11. Add a Linux x86-64/Python 3.12.3 generated runtime requirements lock with
+   exact transitive versions and hashes, then bind its digest into the existing
+   runtime dependency lock and release evidence. The current artifact already
+   binds every resolved wheel by digest, so this is a reproducible-rebuild
+   improvement rather than a reason to weaken staging. Activate it only after
+   two clean same-SHA rebuilds produce identical wheel identities and the full
+   content-engine tests pass; keep the current requirements-driven builder as
+   the reversible fallback during that rollout.
+12. Treat artifact transport as a measured release stage. The latest observed
+    protected-main bundle archive was 93,032,715 bytes and its upload occupied
+    about 6.9 seconds. The protected-main, RC, and signer uploads now use
+    `compression-level: 0` because the payload is dominated by already
+    gzip-compressed, digest-bound runtime archives. Immutable bundle assembly
+    and signer copying request copy-on-write clones with automatic ordinary
+    copy fallback. Staging classifier flags are parsed once rather than by
+    repeated Node launches. Promotion retains the early client fail-fast
+    capacity sample and the authoritative root-worker sample after it owns the
+    release/Sonar mutex; the redundant 10-second client sample between signed
+    request creation and durable submission is removed. Record five releases
+    before claiming the remaining realized time reduction; artifact content
+    verification and GitHub archive-digest binding remain unchanged.
+    When either protected signing run is identified, the coordinator persists
+    and immediately prints its direct URL plus `approval_required`,
+    `workflow_pending`, `already_completed`, or `terminal_failure`; it never
+    approves the environment. This targets observed human handoffs where
+    manifest signing waited about 6m34s before 32s of runner work and staging
+    signing waited about 1m41s before 11s of runner work.
+13. Reuse one private SSH ControlMaster for the complete staging command and
+    one for the promotion client. Use a mode-0700 temporary directory, a
+    `%C`-bound short control path, `ControlMaster=auto`, 15-30 second
+    `ControlPersist`, explicit teardown, and the same socket for short-lived
+    `ssh`, `scp`, and rsync channels. Preserve normal `known_hosts` and
+    `HostKeyAlias` authority. The long-lived release/Sonar mutex must retain
+    its own non-multiplexed connection, and no master may survive the explicit
+    owner-approval stop. Teardown closes the mutex channel first, removes
+    remote then local locks while the short-lived master is usable, explicitly
+    exits the master, and removes only its validated private directory. The
+    existing staging-smoke pattern is the reference. Shadow connection counts
+    and wall time for five releases, then activate only if master loss before
+    launch, disconnect after durable launch, stale-socket, signal cleanup, and
+    resume tests preserve identical evidence and recovery. Retain a one-flag
+    ordinary-SSH fallback. This is expected to remove roughly 6-12 seconds of
+    handshake latency; it does not overlap remote work.
+14. Keep the self-contained signed artifact as the default. Only after exact
+    protected-main reuse, runtime-footprint reduction, and the seal/receipt
+    work below are active should five releases shadow a single-upload artifact
+    chain; the measured signer upload alone is about seven seconds and does not
+    justify weakening recovery. RC evidence must bind repository identity,
+    workflow path/name/database ID, push/main/head SHA, run ID and attempt,
+    status/conclusion, artifact ID/name/size, GitHub archive digest, extracted
+    content digest, and expiry. The protected signer revalidates all of those
+    fields live and emits the signed manifest plus transfer provenance without
+    copying and uploading the same runtime bundle again. Immediately before
+    Mac download, revalidate them again, download the immutable artifact ID as
+    a raw ZIP, verify its signed archive digest, then perform bounded safe
+    extraction that rejects extra, duplicate, traversal, symlink, and special
+    entries before verifying the exact manifest tree. `gh run download` is not
+    sufficient for this authority because it selects by run/name and extracts
+    before the caller can prove the ZIP bytes. Cover deletion, access failure,
+    rate limiting, partial download, and retention shorter than the resume
+    window. Availability failures such as confirmed expiry or deletion abort
+    and retire the transaction; after owner review, a fresh legacy RC/signing
+    run may start with new provenance and approval. Substitution, ambiguity,
+    partial bytes, or any digest mismatch is an integrity signal that halts for
+    owner investigation and cannot trigger an automatic rerun. There is no
+    same-transaction fallback once the self-contained artifact was
+    intentionally omitted. This removes two large serial uploads only after
+    five exact shadow agreements.
+15. Shadow removal of the immediate second full content hash in runtime
+    sealing. Retain the first full byte verification, replace only the
+    post-permission-change rehash with strict inode, link, size, ownership,
+    mode, and metadata-closure checks, and retain the independent full
+    pre-switch verification in the root promotion worker. Activate after race,
+    symlink, replacement, and mutation fault tests plus five staging
+    agreements; any discrepancy keeps both hashes.
+16. Reduce signer checkout cost only through a shadowed single-branch history
+    design. The signer still needs current protected tooling, an inert exact
+    candidate worktree, qualifying-nightly history, and offline ancestry
+    verification after credentials are removed. Do not replace the two full
+    checkouts merely with shallow or lazy private-repository clones. First
+    prove that a single protected object store plus detached candidate
+    worktree produces identical source, ancestry, selection, and manifest
+    identities for five releases.
+17. Create a separate runtime-footprint change replacing the 196-MiB
+    `googleapis` meta-package with only the governed Calendar, Gmail, Drive,
+    and authentication clients. The observed staged runtime is approximately
+    614 MiB with at least 38,120 files, so dependency reduction improves every
+    upload, download, extraction, hash, staging copy, rollback bundle, and
+    retention operation. Land this as its own exact-SHA dependency PR with
+    focused provider tests, one final full suite, and staging parity; never
+    mix it into the release-control change or silently alter provider routing.
+18. Reduce evidence-tail startup without weakening ancestry. The observed
+    protected-main evidence job took about 13.9 seconds after runner start,
+    including a 3.9-second full-history checkout and 3.4-second pinned Node
+    setup. Shadow a single-main-branch history fetch that still proves an
+    arbitrary multi-commit push base is an ancestor. Also evaluate starting
+    evidence directly from the already-bound test-lane results while retaining
+    whole-workflow success as a reuse prerequisite. Shallow checkout, omitted
+    base proof, unpinned Node, and an independently green evidence artifact
+    from a failed workflow are prohibited.
+19. Coalesce protected-workflow revalidation into one live check at the latest
+    pre-RC-dispatch boundary. Successful polling checkpoints exact run
+    identities, but cannot authorize dispatch. After the correlation baseline
+    is persisted, the coordinator live-revalidates workflow path/database
+    identity, latest run/attempt/SHA/URL/conclusion, and CodeQL job identity,
+    binds the results, and applies the existing pre-spawn 60-second freshness
+    assertion. No remote result is cached or reused at this boundary. This
+    removes six duplicate GitHub calls on the normal path without changing
+    “latest live attempt at dispatch,” creating another evidence store, or
+    adding a release lane.
+20. Make coordinator status inspection genuinely local and read-only.
+    `--status` must read an existing private checkpoint without fetching,
+    creating directories or locks, writing a checkpoint, waiting, dispatching,
+    watching, staging, or promoting, and must label the result as unrefreshed.
+    `--status --refresh` may perform bounded one-shot repository/workflow reads
+    but still must not mutate local or external state. This is an operator
+    recovery and safety improvement rather than automated-path latency.
+21. Shadow safe resume of a pinned release SHA after protected main advances.
+    New releases still start only from the current clean protected tip. After
+    an RC run is durably identified, a resume may continue only when the pinned
+    SHA is still an ancestor of current main and a protected current-tip
+    tooling checkout classifies the intervening delta as release-neutral. The
+    delta must not change runtime code, dependencies or lockfiles, migrations,
+    test policy, release/security workflows, toolchains, auth or tenant
+    isolation, provider routing, or any critical fix. Current-tip required
+    checks must be green; package/version and old signed evidence remain exact;
+    and authoritative server release history must prove no newer superseding
+    release. The owner acknowledgement is single-use, time-bounded, and binds
+    pinned/current SHAs, version, artifact and evidence digests. Candidate code
+    remains an inert detached worktree. Before RC identification, retain the
+    current restart behavior. Compare five releases before activation; this
+    prevents an occasional 10-minute-plus RC restart but never silently
+    promotes an outdated candidate.
+22. Reduce duplicate signer API reads through bounded completion/provenance
+    receipts. Before an exact `--run-id` helper may omit a workflow lookup, the
+    coordinator must first add and validate remote workflow path, database ID,
+    and run attempt; current state does not yet bind all three. A manifest
+    helper may replace its post-watch view only with the richer exact REST run
+    document already bound into the private, manifest-linked provenance
+    receipt. Staging first needs an equivalent private request, attestation,
+    run-attempt, and terminal-completion receipt; the signed attestation alone
+    is insufficient. Reuse a receipt only when repository, workflow, run
+    ID/attempt, tooling SHA, candidate SHA, conclusion, artifact identity,
+    original verification time, and an explicit maximum age match. Preserve
+    the watch/terminal proof and fail closed on missing, stale, or ambiguous
+    fields. Shadow before claiming the estimated two-to-eight-second saving.
+23. Avoid repeated full-tree validation on status-only coordinator transitions.
+    The current owner-stop and promotion-resume status probes can traverse the
+    approximately 614-MiB, 38,120-file bundle before the authoritative
+    pre-use validation traverses it again. Split a read-only signed
+    envelope/attestation status check from full bundle validation. Retain full
+    byte/tree validation after download, immediately before staging transfer,
+    and immediately before promotion. Shadow tamper, symlink, manifest,
+    checkpoint-resume, and owner-stop cases before removing either redundant
+    status traversal; measure the saving rather than estimating it. A
+    metadata-only result is never promotable and cannot become reusable release
+    evidence.
+24. Measure the RC contract-binding job's queue and runner delay before
+    changing it. Remove the separate job only if every direct-dispatch path can
+    consume one versioned, digest-bound predicate with identical fail-closed
+    behavior and without duplicating policy across jobs. Shadow five RCs and
+    retain the current job on any mismatch. This may remove the observed
+    roughly seven-second fan-out delay, but it must not add a matrix, worker,
+    lane, or parallel release path. Whole-workflow required success, exact
+    predicate input/tooling identity, and owner-reviewed branch-protection
+    changes remain mandatory.
+25. Use a single-freeze verification budget while implementing release-control
+    changes. Run classifier-selected and directly affected tests after each
+    bounded change, freeze the branch once, then run one Node 22 risk gate
+    (which owns the single full integration suite when the classifier requires
+    it), followed by the science-policy check, docs audit, and verifier. Do not
+    rerun the 14,000-plus-test suite for every documentation, shell, or
+    workflow edit. If the final suite fails, diagnose and verify the affected
+    area first; rerun the full suite only after a test-critical correction
+    changes the frozen candidate or an infrastructure failure invalidates the
+    run. Protected-main and RC evidence requirements remain unchanged.
+26. Remove redundant artifact hashing without removing a verification
+    boundary. Bundle verification now computes each file SHA-256 once and
+    reuses that value for comparison and returned identity. Next, bind the
+    already-verified bundle manifest/receipt into unsigned-manifest creation
+    rather than rescanning the workspace. Retain the full verification after
+    signer download and the full destination verification after rename: inode
+    and size alone cannot detect same-size writes through an already-open
+    descriptor, and the measured warm verification is only about 0.5 seconds.
+    Existing-destination resume also performs one full governed validation.
+    Tamper, duplicate, symlink, undeclared-file, and cross-filesystem cases
+    remain fail-closed. Keep this a focused mechanical change.
+27. Shadow Node runtime archive gzip level 1 against the current deterministic
+    level 6 outside the release path. The observed RC bundle stage spent about
+    29 of 36 seconds compressing a 69,610,105-byte archive representing
+    436,244,480 uncompressed bytes and 27,552 entries. Compare exact extracted
+    inventory and file digests, installed and recovery aggregate digests,
+    archive size, compression, GitHub and Mac transfer, staging transfer, and
+    extraction time. Compare semantic extracted-tree identities across levels;
+    archive bytes and digest chains will differ, so each variant must validate
+    its own artifact, runtime-lock, installed, and recovery aggregate chain.
+    Activate only when total end-to-end p50/p95 improves; otherwise retain
+    level 6. This may save 15-25 build seconds, but extra transfer time is part
+    of the decision.
+28. Introduce a one-use root staging seal receipt before avoiding immediate
+    recomputation. The receipt binds a nonce/ID, request ID, boot ID, runtime
+    SHA, artifact digest, canonical base/runtime paths, a complete recursive
+    filesystem-identity digest, signed manifest and request digests, installed
+    and recovery digests, attestation body digests, sealed timestamp,
+    verifier schema/version and tool digest, and a short expiry. Under the root
+    release lock, consumption atomically writes and fsyncs a root-owned
+    single-use marker before the attestation proceeds. Reboot, expiry, resume,
+    replay, identity drift, or missing fields force the current full root
+    verification. Shadow five releases and the seal/tamper/reboot drills before
+    activation. Expected saving is approximately 4-20 seconds depending on
+    ServerDominguez storage cache.
+29. Stop recursively resealing already sealed production runtimes only after
+    proof. The root worker currently seals both predecessor and candidate even
+    though preparation sealed the target and the current predecessor should
+    already be immutable. Shadow fail-closed trusted `verify` in place of
+    permission-repairing `seal`; wrong mode, owner, byte, link, inode, reboot,
+    and legacy-predecessor fixtures must fail rather than self-heal. During
+    shadow measurement only, the current seal path remains the control; any
+    shadow verify mismatch invalidates that agreement. Once activated, a
+    mismatch aborts and never reseals or self-heals. Expected saving is
+    approximately 10-40 seconds across both trees.
+30. Replace the Mac's terminal heavy recomputation only with richer root-owned
+    terminal evidence. Bind post-escrow trusted-attestation and recovery
+    digests, verification and tool identities, selector identity, PM2 identity,
+    owner-signed request/envelope digest, signed manifest and staging
+    attestation digests, boot ID, target device/inode identity, terminal
+    journal/result digest, transaction ID, and timestamps into the root result.
+    The Mac still checks the signed/root receipt plus lightweight live selector
+    and PM2 identity. Disconnect, replay, stale-result, target-replacement,
+    tool-drift, and post-result mutation drills must pass before removing the
+    duplicate client traversal. Expected saving is approximately 3-15 seconds
+    after promotion.
+31. Shadow copy-on-write for same-host staging-to-production materialization
+    only when `/srv` proves verified reflink support. Clone into the new empty
+    root-owned target with `--reflink=always`, then retain the complete trusted
+    digest and seal checks. Fall back to current rsync only when an isolated
+    preflight proves reflinks unsupported before the governed target is
+    populated. Before activation, prove every regular source and target entry
+    has `nlink == 1` and distinct inode identity so no hardlink can cross the
+    trust boundary. A clone, digest, seal, link-count, or inode mismatch aborts,
+    retires the target, and requires a fresh transaction; never use hardlinks.
+    The opportunity is approximately 5-30 seconds on a reflink-capable
+    filesystem and zero on an unsupported one.
+32. Treat protected-workflow authority as a transaction boundary. Immediately
+    before RC dispatch, require one live lookup proving that each bound run is
+    still the latest exact-SHA attempt and successful. After `dispatch_started`
+    is durably written, later resumes validate the immutable bound run,
+    workflow path/database identity, attempt, URL, conclusion, and CodeQL job
+    directly; they do not require that no newer attempt exists. This removes
+    redundant run-list calls from every approval/status resume and prevents a
+    benign rerun from stranding an already-bound release. A failed final live
+    lookup leaves `intent_persisted`, so resume can safely revalidate and
+    dispatch once. Newer runs cannot replace or mutate the transaction's
+    evidence, and any drift in the bound run/job remains fail-closed.
+33. Reuse one local full-suite result across the manual final gate,
+    pre-commit, and pre-push only through an exact candidate receipt. Create
+    its snapshot and result atomically under ignored mode-0600 `.local` state
+    around one full, unsharded, `--no-cache` deterministic run. Require no
+    unstaged tracked or untracked non-ignored files and the same raw staged Git
+    blobs, executable/symlink modes, and tree before and after. Bind base HEAD,
+    governed test inventory/count, JSON result digest, test policy, locks,
+    runner bytes, the complete installed dependency tree except Vitest's
+    unused mutable `.vite` cache, resolved core/Python/CloudFormation tools,
+    hashed environment and dotenv inputs, Node, Vitest, OS, and architecture,
+    with a strict 30-minute maximum age. Pre-commit reuses only an identical
+    index; pre-push accepts one exact branch or commit-resolving tag, binds its
+    commit/tree before and after the gate, and treats empty retry input as an
+    already-complete no-op. Reuse skips only Vitest: typecheck, science-policy,
+    notification, Python, and migration checks still run. CI, explicit JSON
+    evidence runs, shards, non-default reporters, injection-capable child
+    environments, or any missing/stale/partial/dirty/drifting evidence run the
+    normal gate. The measured dependency-byte proof costs approximately
+    16 seconds on reuse and 25 seconds on initial recording for the current
+    503-MiB install, still avoiding up to two duplicate local
+    14,000-plus-test executions. This is local advisory evidence only and
+    never replaces protected-main or RC evidence.
+34. Make local change selection status-aware and fail fast. Pre-commit passes
+    the exact staged index through NUL-delimited Git name/status parsing rather
+    than a comma-joined path list; both sides of renames and test deletion or
+    file-type changes force the required topology coverage. A classifier error
+    stops immediately instead of fabricating a “full” result that silently
+    disables Python, migration, and cannot-skip gates. Pre-push rejects
+    ambiguous multi-ref and deletion updates but returns success for a genuine
+    zero-update retry after network ambiguity.
+35. Keep one TypeScript compilation at every remaining local fallback
+    boundary. The production build's first command is the same default-project
+    `tsc`, so the legacy diagnostic release gate and direct-main pre-push run
+    the build once and omit standalone `tsc --noEmit`. More importantly,
+    `release:resume` is the only primary production-release command; the
+    legacy `release:prepare` flow is explicitly diagnostic/manual fallback
+    because invoking it before the coordinator repeats a release gate, build,
+    bundle, and unsigned-manifest pass.
+36. Protect local test evidence paths before spending test time. JSON reporter
+    output must resolve strictly below the checkout's real `.local/` tree,
+    reject traversal, newline, symlink-parent, symlink-file, hardlink,
+    foreign-owner, and non-regular targets, and be recreated mode 0600 on a
+    fresh inode. Receipt report paths must normalize to repository-owned
+    `__tests__` files; a foreign absolute path with a matching suffix is
+    rejected.
+37. Shadow an immutable installed-dependency generation receipt to reduce the
+    local receipt's 16-25-second byte-hash overhead. `npm ci` would produce one
+    atomic generation ID plus lockfile, Node/npm, platform, root realpath,
+    complete dependency digest, and read-only/seal evidence. Hook reuse may
+    consume it only while the generation remains immutable and all directory,
+    symlink, device/inode, and permission checks agree; otherwise retain the
+    current full byte scans. Five adversarial shadow comparisons, including a
+    same-size dependency rewrite and root replacement, are required before
+    activation.
+38. Prune generated declaration files from the production artifact.
+    TypeScript `.d.ts` and `.d.ts.map` outputs are build-time API metadata, not
+    Node runtime inputs; the current `dist` contains roughly 2,000 such files,
+    while `.js.map` files remain for Sentry. The artifact manifest omits only
+    those two declaration suffixes and binds the smaller file set into its own
+    signed identity. Runtime module closure, authenticated staging smoke,
+    migration, rollback, and installed/recovery verification remain mandatory;
+    record bundle/hash/transfer improvement over the next five releases.
+39. Keep remaining runner and smoke reductions conditional and sequential.
+    When exact protected-main bundle reuse is active, condition aggregate
+    `setup-python` off only if no aggregate step executes Python. In the Debian
+    compatibility image, install only production Python requirements because
+    its contract imports runtime modules and does not run pytest; the separate
+    Python-full job retains dev test dependencies. Combine each staging HTTP
+    status/body pair into one authenticated remote response and reuse
+    already-validated domain probes, with response-size bounds and identical
+    field assertions. Surface the root journal's durable
+    `candidate_available` milestone once while continuing through the required
+    soak and escrow. A disabled training E2E check must be blocking or signed
+    `not_applicable`, never recorded as passed. None of these changes may add a
+    worker, shard, matrix, lane, or parallel command.
+40. Measure the notification fixture's duplicate execution but do not change
+    its mapping without the exact governance acknowledgement
+    `APPROVE CI MAPPING FIX`. A notification change currently runs the focused
+    notification gate in each of four full shards while the governed
+    deterministic inventory also runs that file once. The proposed contract
+    removes only the standalone invocation from sharded-full mode after proving
+    the exact policy digest and every shard union still contains the test;
+    focused/changed mode retains the dedicated gate. Until approval and proof,
+    preserve all executions.
+41. Keep soak and post-soak reductions shadow-only. During the existing
+    staging 60 seconds, record sequential 10/30/60 health and PM2 checkpoints
+    for ten real releases; preserve production's 60-second soak, and consider a
+    shorter staging interval only with zero missed degradation. In the same
+    natural releases, compare a richer one-use root readiness receipt against
+    duplicate post-soak probes, benchmark rsync without compression for the
+    already-compressed payload, and shadow a signed transitive classifier for
+    the training preview. Any mismatch keeps the current checks and timing.
+
+42. Keep mutation analysis outside the release lane, but make its evidence
+    deterministic so an advisory verifier cannot create avoidable rework.
+    Mutation-only Vitest uses one fork worker, matching the repository's stable
+    native-module process boundary. When sequential Stryker batches repeat an
+    owner test file, canonicalize each process-local test ID to the normalized
+    file plus full Vitest name and rewrite `coveredBy` and `killedBy` before
+    merging. Duplicate logical names and unresolved IDs fail closed. Cleanup
+    mappings bind one unambiguous full owner name per governed range. Verify
+    this with focused tests and one bounded Stryker run; never rerun the full
+    deterministic suite solely for mutation analysis.
+43. Apply the remaining cheap serial-path reductions before another full
+    candidate freeze. The diagnostic `release-verify.sh` relies on the
+    production build's existing `tsc` and does not compile twice. Receipt reuse
+    compares cheap HEAD/index/pushed-tree identity before hashing the installed
+    dependency tree, while an otherwise matching candidate still receives the
+    complete byte-level proof. Exact protected-main bundle reuse keeps pinned
+    Node setup but does not restore an unused npm cache. Staging HTTP probes use
+    bounded connect/overall timeouts and normalize transport failure to one
+    `000`. Release tagging reads the package version with runner-provided `jq`;
+    best-effort Notion closeout has bounded timeouts and remains after customer
+    availability. Together these remove one full local compile, avoid a
+    16-25-second stale-receipt scan, save an estimated 1-5 seconds on exact
+    reuse, and prevent unbounded smoke/closeout waits.
+44. Make post-soak rollback escrow recovery server-owned. The same root-owned
+    promotion oneshot performs at most eight journaled monotonic-backoff
+    attempts within one strict 1,200-second same-boot budget, records attempt,
+    next-attempt time, boot and error class, and caps both each S3 operation
+    and its candidate-readiness proofs to the remaining monotonic budget.
+    Candidate degradation restores the predecessor immediately; exit 75 is
+    reserved for exhausted resumable escrow. The Mac only observes the journal
+    and is never required to keep rollback protection alive. Before expensive
+    preparation, the transaction also waits a bounded interval for an
+    already-running hourly DR backup lease after publishing its active marker.
+    It never stops PM2 while waiting, and the existing unit condition prevents
+    a new timer backup from entering. Reboot, timeout, recovered-S3,
+    degraded-candidate, and Mac-disconnect fault tests are mandatory. This adds
+    no timer, worker, or release lane.
+45. Enforce staging dependency installation inside a root-created private
+    Linux network namespace while executing artifact-owned installers only as
+    the release worker user. Bind host/child namespace identity, the trusted
+    `unshare` tool digest, empty route/non-loopback-interface proof, locked
+    dependency evidence, and installed-tree digest into the staging evidence.
+    DNS and TCP must fail while locked Node extraction and `pip --no-index`
+    succeed. Missing namespace support fails closed. Activate only after one
+    exact-artifact staging drill proves the installed-tree digest matches the
+    current path; normal overhead should remain below one second.
+46. Shadow a promotion-specific DR escrow mode against the complete hourly
+    maintenance path. Each pre/post release escrow still creates and verifies a
+    fresh hourly database point plus the exact candidate, predecessor, version,
+    retention, and download-confirmed objects required by that transaction.
+    Daily/weekly/monthly reconciliation and unrelated local rollback inventory
+    stay in the hourly unit instead of being repeated twice in the customer
+    release. Compare all required object keys, VersionIds, ciphertext/plaintext
+    digests, and retention fields for five releases plus one restore drill
+    before activation. Preserve the current full DR path as fallback on any
+    mismatch. Expected saving is 10-60 seconds per escrow phase with fewer S3
+    calls.
+47. Shadow one deterministic candidate recovery archive per transaction. Pack,
+    inspect, and hash the sealed plaintext once under root transaction state;
+    revalidate its inode, tool, request, target seal, and digest before fresh
+    phase-distinct age encryption for pre-mutation and post-soak keys. The two
+    ciphertexts, keys, and retained object versions must remain distinct.
+    Durably remove plaintext only after a terminal result. Five byte-identity
+    comparisons plus tamper, reboot, stale-tool, and restore drills are required
+    before activation. Expected post-soak saving is 15-60 seconds.
+48. Optimize actual unavailability independently from the mandatory soak.
+    Candidate-availability probes fail fast in the order loopback, content,
+    PM2/current identity, then public network; the public timeout is never paid
+    for a locally invalid candidate. Next shadow a one-use sealed receipt for
+    the online-prestaged predecessor rollback closure and gzip level 1 for that
+    outage-window archive, while retaining the quiescent database addition and
+    exact extracted manifest/database hashes. PM2 command coalescing is also
+    shadow-only. Reboot, failed-health, slow-local, slow-public, and automatic
+    rollback drills must pass before activation. Expected customer-unavailable
+    reduction is 2-15 seconds; the 60-second post-candidate soak is unchanged.
+49. Reconcile the durable systemd promotion without hammering it. Pending or
+    recovery-required authority triggers `ensure-started` immediately on each
+    status transition and then no more often than every 15 seconds. Ordinary
+    running polls remain read-only; server-owned recovery remains authoritative
+    if the client disconnects or the transaction unit exits. Journal entries add phase
+    sequence, start/end/duration, boot ID, systemd invocation ID, retry state,
+    and the latest durable external confirmation. Missing new status fields
+    remain `unknown` during a rolling control-plane upgrade and cannot be
+    interpreted as healthy. This removes roughly 25 SSH/sudo/systemctl calls
+    during a normal soak without introducing a background controller.
+50. Publish an encrypted immutable transaction recovery-set locator off-host.
+    The bounded descriptor binds transaction and request identity, runtime,
+    artifact, installed, signed-manifest and staging-attestation digests, plus
+    every database/runtime/rollback object key, VersionId, phase,
+    ciphertext/plaintext digest, and retention date. Start advisory; after an
+    isolated restore succeeds using only the locator with local host state
+    removed, make post-soak locator publication terminal-required. This adds
+    less than an estimated two seconds and reduces host-loss pairing ambiguity
+    and restore time.
+51. Keep the next GitHub and container reductions shadow-only. Coalesce RC
+    artifact downloads only behind an exact artifact-name and content
+    allowlist, and narrow the current Docker build context only after a
+    generated container-contract inventory proves every transitive input.
+    Compare five runs and retain separate download/fallback behavior on
+    ambiguity. Expected combined saving is 3-11 seconds; neither change may add
+    a job, matrix, shard, or parallel command.
+52. Optimize the slow release-control test harness before deleting any
+    behavior coverage. The latest complete local receipt took 329 seconds of
+    wall time; its four slowest files accumulated approximately 489 seconds of
+    cold-file work:
+    `rollback-drill-legacy-staging-adapter.test.ts` (146 seconds),
+    `v2-normalization-attestor-installer-transactions.test.ts` (133 seconds),
+    `release-sequence.test.ts` (132 seconds), and
+    `persistent-promotion-transaction.test.ts` (78 seconds). These fixtures
+    already replace real poll, backoff, and soak waits; their dominant cost is
+    repeated Git, Node, key/archive, and durable-filesystem subprocess startup.
+    Optimize in this order: create one digest-checked immutable Git seed and
+    isolated mutable clone per release-sequence case; replace nested Node in
+    its mocks with shell arithmetic, `jq`, and the governed digest utility;
+    batch each ordered legacy/V2 test-mode filesystem phase into one bounded
+    Node helper call with an asserted operation log; reuse only immutable
+    key/archive/SQLite seed inputs; and cache the path-independent signed KVM
+    proof while retaining fresh mutable transaction state. Production defaults,
+    operation order, every test name, and security-boundary assertions remain
+    unchanged. Benchmark each file cold three times before and after and accept
+    only a stable median improvement with no flaky retry. Cold timing stays
+    advisory and never changes a correctness verdict. The conservative
+    four-shard critical-path forecast is 45-80 seconds without adding a shard,
+    scheduler, daemon, or release concurrency. The first seed step is active:
+    all 47 release-sequence tests retained their names and passed under exact
+    Node 22, while measured single-file wall time fell from 101.69 to 93.61
+    seconds (8.08 seconds, 7.9%). The remaining mock and installer batching
+    steps stay benchmark-gated.
+53. Bind post-availability release closeout to production instead of the
+    workflow-dispatch branch tip. The closeout accepts the exact promoted
+    runtime SHA, artifact digest, root transaction ID, and terminal promotion
+    evidence digest; checks out that SHA shallowly; and tags that commit only.
+    It is owner-dispatched, passes all free-form inputs as data rather than
+    shell source, and creates Notion JSON with `jq`. A retry accepts an existing
+    tag only when it peels to the same promoted SHA, then resumes GitHub Release
+    publication instead of orphaning the tag. Add this as a checkpointed,
+    resumable coordinator phase only after customer availability; missing
+    release notes or closeout failure must be visible but cannot change the
+    completed production verdict. Shallow checkout saves an estimated 2-5
+    seconds of non-customer-blocking closeout while the primary gain is exact
+    release identity and recovery from transient publication failure.
+54. Remove only byte validations that are immediately and equivalently
+    repeated. Runtime dependency `write-lock` already hashes and validates the
+    Node archive and every wheel before writing the lock, so the builder does
+    not invoke a third immediate full `verify`; the protected signer and
+    staging still revalidate the transported bytes. Promotion resolves bounded
+    manifest metadata first and lets the enforced release reward check own the
+    single immediate full manifest, bundle, and signed-staging validation
+    before any remote action. Preserve the later server-owned artifact and
+    installed-tree boundaries. Expected combined saving is approximately
+    0.7-4 seconds with fewer redundant disk traversals.
+55. Shadow one-pass Node dependency extraction in staging. Stream-validate
+    every tar member into a fresh owner-only same-filesystem temporary tree,
+    reject duplicates, traversal, links, devices, unsupported metadata, and a
+    late invalid member, then atomically rename only after the complete archive
+    and installed tree validate. Interruption or any invalid member removes the
+    temporary tree. Compare the current two-pass Python `getmembers()` plus
+    extraction path against the streaming path with adversarial archives and
+    exact installed-tree digests for five releases before activation. Expected
+    staging saving is 3-10 seconds for the current approximately 436-MiB
+    uncompressed dependency tree.
+56. Shadow signer-resume validation consolidation. A newly downloaded signer
+    result, an already published destination, and the final installed
+    destination each retain one governed full validation, but an unchanged
+    destination is not traversed twice within the same resume attempt. Prove
+    same-size mutation, symlink substitution, inode drift, interrupted
+    publication, and resume equivalence before removing the extra pass.
+    Expected resume-only saving is approximately 0.5-1 second.
+57. Treat the server-owned retry and DR-lease contract as a new privileged
+    control-plane capability. The installer and every staging, production,
+    legacy-adapter, and KVM readiness consumer require exact
+    `nexus-release-promotion-control.v4`; an installed v3 must fail preflight
+    rather than masquerade as capable. Bootstrap and re-read exact v4 on
+    ServerDominguez before the first v4 staging install, then run a no-mutation
+    status/version probe and the disconnect/retry fault case. The v4 bump adds
+    no release work after installation, but prevents a rolling-upgrade stall in
+    which the Mac observes retries that an old server worker cannot perform.
+
+The non-cumulative planning opportunity for compatible items 12-57 is
+approximately 135-365 seconds on the common exact-evidence-reuse path, separate
+from the larger saved RC test run. Several items overlap or depend on
+filesystem, object-store, and network behavior; items 20, 21, 44, and 50
+primarily improve recovery rather than the common automated path; and items
+23, 37-41, 45, and 49 are deliberately unestimated. This is
+not a release promise: replace it with signed p50/p95 stage measurements after
+the five-release shadows, and revert any item that increases failed releases,
+artifact ambiguity, or rollback time.
+
+Additional candidates remain measurement-only. Before downloading nightly
+artifacts, the RC planner may use GitHub run metadata to discard only
+provably stale or non-ancestor candidates; the downloaded signed evidence
+remains the authority, and any uncertainty keeps the current newest-first
+probe and full-suite fallback. Do not remove the
+protected-main upload/download proof until a versioned evidence schema binds
+the GitHub artifact ID and archive digest and five shadow downloads prove the
+same extracted bundle digest. Do not collapse the pre-secret signer validation
+and signing passes until a protected immutable prevalidation receipt preserves
+the current private-key isolation and is independently reviewed. Retain both
+steps by default. Full Python release testing, migration rehearsal, the
+production-owner stop, the 60-second soak, pre-mutation recovery escrow, and
+post-soak rollback escrow are not optimization candidates.
 
 SonarQube is advisory quality feedback, not a time-saving release stage. Run
 `npm run quality:sonar` only from its Mac-side exact-origin/main launcher and
@@ -416,7 +1075,7 @@ R2 variance/not-applicable output before it can arm recovery or stop PM2.
 Disabled bootstrap, missing fields, additional output, or older provisioning
 ends only as `failed_before_stop`.
 
-The expected control version is `nexus-release-promotion-control.v3`; the lock
+The expected control version is `nexus-release-promotion-control.v4`; the lock
 identity is `root:dominguez:660`. Remove the temporary public-key input after
 the installed copy is verified. Never copy the private key, a signing command,
 or a reusable owner decision onto the server. `dominguez` may submit a signed
@@ -542,8 +1201,16 @@ Only `NEXUS_ROLLBACK_DRILL_STAGING_PRIVATE_KEY_PEM` is a protected
 file at
 `docs/release/evidence/rollback-drill-staging-public-key.pem`; signing fails
 closed while that file is absent. The production release private key is not
-exposed to this branch. After the future governed staging adapter has produced
-the exact ordinary request, protected signing is requested with:
+exposed to this branch. After the governed legacy staging broker has produced
+the exact drill-only request, the sequential operator reads
+`.local/release/signing-provenance/<sha>.json`. The release-manifest requester
+installs that mode-0600 SHA-scoped receipt atomically from the exact downloaded
+signer artifact. It binds the repository, SHA, manifest and payload digests,
+candidate run, protected signer workflow/path/run/attempt, and GitHub artifact
+ID/digest. Drill staging re-fetches that run and artifact metadata from GitHub
+and rejects missing, stale, partial, RC-run, or mismatched receipts. It never
+mistakes the manifest's deliberately RC-bound `payload.ci.runId` for the
+protected manifest-signing run. The lower-level protected signing request is:
 
 ```bash
 scripts/request-rollback-drill-staging-attestation.sh \
@@ -553,12 +1220,89 @@ scripts/request-rollback-drill-staging-attestation.sh \
   --manifest-signing-run-id <exact-protected-run-id>
 ```
 
-This is preparation only. `npm run release:drill-staging` currently requires
-`--acknowledge-first-drill-bootstrap` and then exits with code 78 before any
-remote action because ServerDominguez still has promotion control v2 and the
-legacy `/home` staging layout. It must remain disabled until a separately
-reviewed v2 legacy-base adapter binds those exact paths and control semantics.
-It must not silently reuse the v3 `/srv` staging implementation.
+The operator supplies `<exact-protected-run-id>` only from the validated
+SHA-scoped receipt; it is not a caller-selected release argument.
+
+`npm run release:drill-staging -- --acknowledge-first-drill-bootstrap` now has a
+dedicated, sequential adapter for the exact control-v2 legacy base
+`/home/dominguez/telegram-hub-bot-staging`. Source presence does not install or
+activate it. Before non-dry execution, an owner must bootstrap the reviewed
+protected-main archive and install the root assets:
+
+```bash
+sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/remote-rollback-drill-legacy-staging-install.sh \
+  install \
+  /var/lib/nexus-release-bootstrap/<sha>/source \
+  <40-hex-protected-main-sha> \
+  /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+  <64-hex-root-side-archive-sha256>
+```
+
+The installer proves the archive's Git PAX commit and byte identity before it
+transactionally installs the mode-0700 broker/tooling, static systemd
+transaction and boot-recovery units, fail-closed PM2 dependency drop-ins,
+mode-0440 `NOSETENV` allowlisted sudoers entry, and mode-0600 receipt. It also
+requires the application-DR-owned
+`/usr/local/libexec/nexus-application-dr/application-dr-sqlite.py` to be a
+root-owned mode-0644 regular file with reviewed SHA-256
+`e1f1a92d4dc49bd6fe6c1d8c1a3573ec2db61f6374a1831b2765a5541943708d`.
+The helper is verified against the SHA-bound source archive and recorded in
+the install receipt; this installer does not overwrite the application-DR
+asset. The application account can invoke only `version`,
+`inspect`, `prepare`, `launch`, `status`, and `fetch-evidence`; it cannot invoke
+the root worker or recovery command directly.
+
+The operator uploads the exact signed artifact before submitting one bounded
+request to the root broker, then only polls its durable journal. The broker
+requires the reviewed control-v2 digest, holds the ordinary-promotion and
+release/Sonar locks, pins the dependency attestations before candidate code,
+seals both candidate and predecessor trees root-owned and non-writable, and
+revalidates their root-pinned installed/recovery identities immediately before
+each selector or PM2 mutation. It persists and fsyncs the predecessor plus
+outage clock before either allowlisted
+staging PM2 process is changed. It stops only `nexus-hub-staging` and
+`content-engine-staging`, proves that no process holds `data/bot.db` or its
+WAL/SHM sidecars, creates and verifies a mode-0600 SQLite recovery point in the
+root-private transaction directory, and fsyncs its bounded digest, size,
+original uid/gid/mode, and creation time into the journal before changing
+`current`. Database and
+recovery-point inputs above 2 GiB fail closed; that is more than seven times
+the currently observed 275,808,256-byte staging database while keeping the
+120-second recovery target credible. It then runs the
+existing 60-second readiness soak. That root-held readiness record is also the
+required drill smoke: it binds each allowlisted PM2 name, cwd, executable,
+Sentry/release SHA, stable PID/restart counters, database integrity, backend
+health, and authenticated Content Engine readiness to the candidate. It
+finishes under the same locks before the journal may become `completed`; the
+Mac no longer runs a required post-terminal smoke for this legacy path. SSH
+loss does not own the transaction.
+Failed readiness and boot recovery stop the candidate, verify the journaled
+backup, recreate a deleted or truncated database with the journaled original
+uid/gid/mode, restore it atomically after removing WAL/SHM sidecars,
+restore the exact predecessor selector, and prove predecessor health. A
+missing, corrupt, unbound, helper-invalid, or drifted predecessor identity
+fails closed before the predecessor is started. Both PM2 units require
+successful boot recovery and execute a final no-unfinished-journal guard, so
+ordering alone cannot permit application start after failed recovery. The
+dependency installation and preflight occur before the outage is armed.
+
+The resulting request contains
+`nexus.rollback-drill-legacy-staging-bootstrap.v1`, fixed scope
+`isolated-kvm-first-drill`, exact broker/control/predecessor/journal evidence,
+the database recovery-point SHA-256 and byte count (never database contents or
+its host path), and `promotionAllowed: false`. The protected drill signer binds the canonical
+bootstrap digest in its outer record. `release-staging-attestation.mjs`
+explicitly rejects any `drillBootstrap`, so even a production-key-shaped
+envelope cannot satisfy ordinary staging or promotion. The actual drill
+envelopes remain signed only by the distinct drill key. This branch never calls
+the v3 `/srv` implementation and adds no promotion command.
+
+Control-v2 pinning remains exact. Before retiring or replacing this adapter,
+root must run
+`nexus-rollback-drill-legacy-staging-broker assert-terminal-retirement-ready`.
+It succeeds only with no unfinished transaction and explicitly requires the
+`nexus.release-layout-fault-drill.v1` successor integration to be installed
+before the active adapter is removed.
 
 The outer record is not rollback-freshness evidence and cannot authorize
 production. The two inner files are ordinary recovery inputs, but their drill
@@ -1121,10 +1865,10 @@ activation envelope is created by implementation itself; with the currently
 available one eligible production comparison, the path remains shadow-only at
 1/5.
 
-## Inactive v2 production-layout normalization substrate
+## Release-layout normalization and activation status
 
-The repository contains a deliberately unreachable, production-only bridge for
-the exact installed e168 promotion v2 control and strict attestor identities:
+The repository contains the inactive v2 production-only bridge for the exact
+installed e168 promotion v2 control and strict attestor identities:
 
 - `scripts/trusted-release-runtime-attestation-v2-bridge.mjs` accepts a legacy
   installed-tree identity only for the exact predecessor named by one
@@ -1189,17 +1933,9 @@ the exact installed e168 promotion v2 control and strict attestor identities:
   escrow, observed 60-second soak, exact target, and production `0440`
   environment evidence.
 
-This substrate is not an activation path. Nothing installs a service, sudoers
-entry, signer hook, release-operator command, selector, PM2 process, or
-scheduler, and no current release command can create its
-`v2_layout_normalization` owner envelope. Staging normalization is intentionally
-absent: it requires its own owner-signed request and independent journal rather
-than reusing production authority. Before activation, a separate reviewed
-change must prove the two-phase PM2 boot-authority handover with at most one
-daemon, install the authorization creator without exposing owner keys, and
-adopt selectors only after terminal success. Until all three contracts and a
-fault-injection rehearsal exist, installing this bridge in any environment is
-prohibited.
+That v2 bridge remains a substrate, not an activation path. No current release
+command can create its `v2_layout_normalization` owner envelope, and it must not
+be installed independently.
 
 The currently observed legacy production base below `/home/dominguez` does not
 meet the root-exclusive-parent prerequisite because its parent is application
@@ -1208,6 +1944,152 @@ normalization journal or changing runtime metadata. Activation therefore also
 requires a separately reviewed move to a root-exclusive parent (for example,
 the governed `/srv/nexus-release` layout); weakening the parent check or
 normalizing the existing home-directory path in place is not permitted.
+
+The repository now also contains a separate, sequential release-layout
+activation transaction. It does not weaken that parent rule. Instead, while
+each role is stopped, it atomically renames the complete legacy application
+base into a root-only transaction below
+`/srv/nexus-release/layout-predecessors/<migration-id>/`, rematerializes the
+strict `/srv/nexus-release/{staging,production}` bases, and exposes them at the
+unchanged `/home/dominguez` application paths with exact bind mounts. The
+worker home itself is never renamed, re-owned, or made non-traversable. A boot
+recovery command reconstructs missing compatibility mounts only after it
+revalidates the terminal attestation, home identity, and authoritative target
+inodes.
+
+The migration takes an advisory online SQLite recovery point before outage,
+then, after PM2 is stopped and `/proc` proves there are no process references
+to the protected predecessor, checkpoints WAL and saves an exact private
+stopped-boundary database copy. The root journal binds the source inode, digest,
+size, observation evidence, and copy evidence. During recovery, the exact live
+inode is stopped, checkpointed, and re-attested first so writes accepted after
+availability returned are preserved. An unhealthy or identity-drifted live
+database falls back to the stopped copy; the earlier online point is used only
+when failure occurred before the stopped boundary. Snapshot restore
+removes the bounded SQLite WAL, shared-memory, and rollback-journal sidecars
+before restart so superseded pages cannot replay. Both recovered role roots
+remain root-pinned while runtime and database bytes are re-attested. Their
+original metadata is restored only immediately before the guarded process
+start.
+
+Activation installation is two-phase and checkpointed. Phase A installs exact
+protected-main source bytes, the exact preflight, boot-first recovery unit, PM2
+startup guard, layout controls, and sudoers surface while leaving the running
+PM2 and ingress process identity unchanged. It requires the already-installed
+root-owned PM2 closure, holds the ordinary control and release/Sonar locks,
+then consumes the legacy installer's canonical, receipt-bound retirement plan.
+That plan must bind every legacy-v2 transaction as terminal, all 12 adapter
+targets and their predecessor dispositions, the v2 control and service state,
+and the shared application-DR SQLite helper as a retained dependency. Phase A
+independently validates the fixed target allowlist, journals every active byte
+and metadata field, applies the predecessor dispositions, and checkpoints
+completed asset retirement before removing the v2 receipt or replacing its
+control. The shared SQLite helper is never removed or restored and must remain
+byte-for-byte and metadata-identical before and after both installation and
+recovery. An interrupted Phase A restores its journaled targets and PM2 remains
+blocked until the retained recovery anchors publish a verifiable rollback
+receipt.
+Phase B is a separate reversible handover after a successful layout
+attestation. It validates layout readiness before taking the shared locks,
+then revalidates the attestation digest and inactive promotion state while
+holding them. It also proves the PM2 and ingress PID/start/restart identity is
+unchanged across the unit-file handover; it does not restart either service and
+requires a reboot.
+
+The activation path is production-capable but remains fail-closed until its
+live prerequisites exist. Phase A invokes `assert-root-pm2-ready` from the
+exact archive-verified protected-main source before replacing an older
+installed promotion control, then invokes the installed reviewed control and
+requires byte-identical PM2 closure proof. This permits a safe upgrade from the
+legacy interface without trusting it to implement the new assertion. The
+Phase A receipt binds that proof and the installed deep KVM verifier.
+
+KVM provisioning generates one dedicated Ed25519 hypervisor evidence key and
+one distinct guest evidence key inside each fixed guest seed. It publishes the
+canonical public keys and immutable scenario-to-guest mapping in the
+root-owned, mode-0600
+`/var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json`.
+That manifest binds the active provision receipt digest, provision set ID,
+guest SSH host-key digests, QEMU digest, reviewed runner digest, and the exact
+SHA-256 digests of the root controller, controller unit, deep verifier, guest
+executor, and guest boot-recovery unit. The fixed
+mapping is `ssh_disconnect_after_pm2_stop` to `guest-1`,
+`failed_health_check` to `guest-2`, and
+`host_reboot_during_migration` to `guest-3`.
+
+`release:layout-fault-drill prepare` accepts only that trust manifest. It
+creates a random 256-bit challenge and binds its raw digest, active provision
+receipt digest and set ID, all four canonical public keys, exact source
+identities, fixed producer paths/digests, strict sequential execution policy,
+and migration ID. Each
+hypervisor isolation observation and guest execution result repeats the
+challenge and canonical plan SHA-256. Sign the exact JSON bytes inside the
+matching lab authority: the hypervisor private key remains root-only in the
+provisioned set and each guest private key remains inside its isolated guest.
+The root controller is the only production scenario-result producer. It starts
+one fixed guest at a time, observes the live QEMU process, SSH/boot boundary,
+and recovery interval, then asks the guest root executor to seal its measured
+transaction. The guest executor cannot emit production evidence in test mode.
+The controller invokes `collect`, which re-verifies every nested producer
+digest, observation, signature, and result digest before producing the
+owner-signable `nexus.release-layout-fault-drill.v1` payload. There is no
+operator-facing `record` command.
+
+```bash
+npm run release:layout-fault-drill -- prepare \
+  --migration-id <uuid-v4> \
+  --source <exact-source-identities.json> \
+  --trust-manifest \
+    /var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json \
+  --output <plan.json>
+
+sudo /usr/local/libexec/nexus-rollback-drill-vm/\
+release-layout-fault-controller submit <plan.json>
+
+sudo /usr/local/libexec/nexus-rollback-drill-vm/\
+release-layout-fault-controller status <plan-id>
+
+# After status=completed, copy the immutable owner-signable payload from:
+# /var/lib/nexus-rollback-drill-vm/release-layout-fault-drills/
+#   <plan-id>/fault-drill.json
+```
+
+The hypervisor controller signs the isolation observation together with the
+exact guest-execution digest, guest boot identity, and monotonic observer
+record. Each guest signs only its own execution result. Do not move a guest
+private key to the host, reuse a production key, or use one key for two roles.
+Before submission, install the dedicated lab SSH private key that corresponds
+to the provisioned public key as the root-owned, single-link, mode-0600
+`/etc/nexus-release/rollback-drill-vm-ssh-private.pem`. The evidence JSON is the
+controller's collector output; do not hand-author success booleans or use
+OpenSSL to manufacture scenario records.
+
+The root broker first verifies the active root trust manifest and provision
+receipt, owner request/drill signatures, and every nested hypervisor/guest
+signature. It refuses activation while KVM provisioning is incomplete. It
+then copies the exact envelopes, re-verifies both proof layers, revalidates
+Phase A and the PM2 closure, and binds all verification digests into the
+durable submitted journal. The journal records the acceptance instant and it
+must fall inside the signed request's creation/expiry window before the active
+marker can be published. The systemd transaction repeats those checks
+immediately before changing the journal to `running`; after the accepted
+request later expires, recovery must supply the root-owned accepted transaction
+journal and its exact immutable request envelope to the narrow
+`--accepted-recovery-journal`/`--accepted-request-envelope` verifier mode.
+There is no fresh expired-submission path. A Mac or SSH loss after
+submission cannot weaken or own recovery. If power is lost after the submitted
+journal is durable but before the active marker is published, boot recovery
+accepts at most one nonterminal orphan, repeats admission verification,
+reconstructs the marker, and resumes the one transaction. Ambiguous, unsafe,
+multiple, or out-of-window orphan journals fail closed. Operator-authored
+unsigned JSON, arbitrary plan-controlled keys, the ordinary promotion drill,
+repository tests, reused keys, cross-plan evidence, and an owner signature
+over evidence with invalid machine signatures all fail closed.
+
+ServerDominguez must still install Phase A from protected main, retain the
+three real KVM outcomes, and receive explicit owner authorization before the
+one-time migration. Until those live facts exist, report the environment as
+`NOT_ACTIVATED`; do not describe repository tests as production evidence.
 
 ## Required Sequence
 

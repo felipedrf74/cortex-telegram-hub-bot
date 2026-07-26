@@ -1438,7 +1438,13 @@ function writeSignedOutput(candidate) {
     candidate.payload.artifact.digest,
   );
   fs.mkdirSync(path.dirname(destinationBundle), { recursive: true, mode: 0o700 });
-  fs.cpSync(candidate.bundleRoot, destinationBundle, { recursive: true, errorOnExist: true });
+  fs.cpSync(candidate.bundleRoot, destinationBundle, {
+    recursive: true,
+    errorOnExist: true,
+    // Preserve the isolated destination tree while allowing a same-filesystem
+    // copy-on-write clone. COPYFILE_FICLONE falls back to a normal byte copy.
+    mode: fs.constants.COPYFILE_FICLONE,
+  });
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true, mode: 0o700 });
   const envelope = {
     schema: 'nexus.release-manifest.v2',
