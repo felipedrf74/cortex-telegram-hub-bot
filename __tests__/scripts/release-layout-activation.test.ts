@@ -185,6 +185,22 @@ describe('release-layout activation safety transaction', () => {
         'install_file_atomically \\\n    "$source_root/scripts/remote-promotion-control.sh"',
       ));
     expect(phaseA).toContain('remote-release-preflight.sh');
+    expect(phaseA).toContain('remote-release-boot-health.sh');
+    expect(phaseA).toContain('remote-staging-attestation-broker.sh');
+    expect(phaseA).toContain('nexus-release-pm2-recovery-daemon.service');
+    expect(phaseA).toContain('nexus-release-promotion-recovery.service');
+    expect(phaseA.indexOf('remote-release-boot-health.sh'))
+      .toBeLessThan(phaseA.indexOf(
+        'install_file_atomically \\\n    "$source_root/scripts/remote-promotion-control.sh"',
+      ));
+    expect(phaseA.indexOf('nexus-release-promotion-recovery.service" \\'))
+      .toBeLessThan(phaseA.indexOf(
+        'enable nexus-release-promotion-recovery.service',
+      ));
+    expect(phaseA.indexOf('enable nexus-release-promotion-recovery.service'))
+      .toBeLessThan(phaseA.indexOf(
+        'install_file_atomically \\\n    "$source_root/scripts/remote-promotion-control.sh"',
+      ));
     expect(installer).toContain(
       'PREFLIGHT_TARGET="${NEXUS_LAYOUT_PREFLIGHT_TARGET:-/usr/local/libexec/nexus-release-layout-preflight.sh}"',
     );
@@ -200,6 +216,9 @@ describe('release-layout activation safety transaction', () => {
     expect(installer).toContain('competing pm2-root.service must already be absent or masked');
     expect(installer).toContain('restore_handover');
     expect(installer).toContain('layoutAttestationSha256');
+    expect(installer).toContain(
+      'Phase A receipt belongs to a different protected source',
+    );
     expect(installer).toContain('recover_phase_a_strict');
     expect(installer).toContain('restore_handover_strict');
     expect(installer).toContain('restore_unit_enablement_state');
@@ -942,6 +961,13 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       selector: target('selector.py'),
       preflight: target('layout-preflight.sh'),
       promotion: target('promotion-control'),
+      filesystemIdentity: target('filesystem-identity.mjs'),
+      stagingBroker: target('staging-broker.sh'),
+      pm2CaptureAuthority: target('capture-pm2-dump-authority.mjs'),
+      pm2DumpAuthority: target('pm2-dump-authority.py'),
+      bootHealth: target('release-boot-health'),
+      pm2RecoveryUnit: target('pm2-recovery-daemon.service'),
+      promotionRecoveryUnit: target('promotion-recovery.service'),
       activationUnit: target('activation@.service'),
       layoutRecovery: target('layout-recovery.service'),
       installRecovery: target('install-recovery.service'),
@@ -974,6 +1000,13 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       targets.selector,
       targets.preflight,
       targets.promotion,
+      targets.filesystemIdentity,
+      targets.stagingBroker,
+      targets.pm2CaptureAuthority,
+      targets.pm2DumpAuthority,
+      targets.bootHealth,
+      targets.pm2RecoveryUnit,
+      targets.promotionRecoveryUnit,
       targets.activationUnit,
       targets.layoutRecovery,
       targets.installRecovery,
@@ -1005,6 +1038,7 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       sourceArchiveSha256: '2'.repeat(64),
       unitStates: {
         'nexus-release-layout-install-recovery.service': 'disabled',
+        'nexus-release-promotion-recovery.service': 'not-found',
         'nexus-rollback-drill-legacy-staging-install-recovery.service':
           'not-found',
         'nexus-rollback-drill-legacy-staging-recovery.service': 'not-found',
@@ -1038,6 +1072,14 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       NEXUS_LAYOUT_SELECTOR_TARGET: targets.selector,
       NEXUS_LAYOUT_PREFLIGHT_TARGET: targets.preflight,
       NEXUS_LAYOUT_PROMOTION_CONTROL_TARGET: targets.promotion,
+      NEXUS_LAYOUT_FILESYSTEM_IDENTITY_TARGET: targets.filesystemIdentity,
+      NEXUS_LAYOUT_STAGING_BROKER_TARGET: targets.stagingBroker,
+      NEXUS_LAYOUT_PM2_CAPTURE_AUTHORITY_TARGET: targets.pm2CaptureAuthority,
+      NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET: targets.pm2DumpAuthority,
+      NEXUS_LAYOUT_BOOT_HEALTH_TARGET: targets.bootHealth,
+      NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET: targets.pm2RecoveryUnit,
+      NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET:
+        targets.promotionRecoveryUnit,
       NEXUS_LAYOUT_ACTIVATION_UNIT_TARGET: targets.activationUnit,
       NEXUS_LAYOUT_RECOVERY_UNIT_TARGET: targets.layoutRecovery,
       NEXUS_LAYOUT_INSTALL_RECOVERY_UNIT_TARGET: targets.installRecovery,
@@ -1105,6 +1147,10 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       unitStates,
       'nexus-release-layout-install-recovery.service',
     ), 'utf8')).toBe('disabled\n');
+    expect(fs.existsSync(path.join(
+      unitStates,
+      'nexus-release-promotion-recovery.service',
+    ))).toBe(false);
     expect(fs.readFileSync(targets.control)).toEqual(originalControl);
     expect(fs.existsSync(journal)).toBe(false);
     for (const anchor of [targets.guard, targets.installer, targets.installRecovery]) {
@@ -1138,6 +1184,13 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       selector: fixed('selector.py'),
       preflight: fixed('layout-preflight.sh'),
       promotion: fixed('promotion-control'),
+      filesystemIdentity: fixed('filesystem-identity.mjs'),
+      stagingBroker: fixed('staging-broker.sh'),
+      pm2CaptureAuthority: fixed('capture-pm2-dump-authority.mjs'),
+      pm2DumpAuthority: fixed('pm2-dump-authority.py'),
+      bootHealth: fixed('release-boot-health'),
+      pm2RecoveryUnit: fixed('pm2-recovery-daemon.service'),
+      promotionRecoveryUnit: fixed('promotion-recovery.service'),
       activationUnit: fixed('activation@.service'),
       layoutRecovery: fixed('layout-recovery.service'),
       installRecovery: fixed('install-recovery.service'),
@@ -1272,6 +1325,13 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       fixedTargets.selector,
       fixedTargets.preflight,
       fixedTargets.promotion,
+      fixedTargets.filesystemIdentity,
+      fixedTargets.stagingBroker,
+      fixedTargets.pm2CaptureAuthority,
+      fixedTargets.pm2DumpAuthority,
+      fixedTargets.bootHealth,
+      fixedTargets.pm2RecoveryUnit,
+      fixedTargets.promotionRecoveryUnit,
       fixedTargets.activationUnit,
       fixedTargets.layoutRecovery,
       fixedTargets.installRecovery,
@@ -1333,6 +1393,7 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       sourceArchiveSha256: '4'.repeat(64),
       unitStates: {
         'nexus-release-layout-install-recovery.service': 'disabled',
+        'nexus-release-promotion-recovery.service': 'not-found',
         'nexus-rollback-drill-legacy-staging-install-recovery.service':
           'enabled',
         'nexus-rollback-drill-legacy-staging-recovery.service':
@@ -1374,6 +1435,17 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       NEXUS_LAYOUT_SELECTOR_TARGET: fixedTargets.selector,
       NEXUS_LAYOUT_PREFLIGHT_TARGET: fixedTargets.preflight,
       NEXUS_LAYOUT_PROMOTION_CONTROL_TARGET: fixedTargets.promotion,
+      NEXUS_LAYOUT_FILESYSTEM_IDENTITY_TARGET:
+        fixedTargets.filesystemIdentity,
+      NEXUS_LAYOUT_STAGING_BROKER_TARGET: fixedTargets.stagingBroker,
+      NEXUS_LAYOUT_PM2_CAPTURE_AUTHORITY_TARGET:
+        fixedTargets.pm2CaptureAuthority,
+      NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET:
+        fixedTargets.pm2DumpAuthority,
+      NEXUS_LAYOUT_BOOT_HEALTH_TARGET: fixedTargets.bootHealth,
+      NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET: fixedTargets.pm2RecoveryUnit,
+      NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET:
+        fixedTargets.promotionRecoveryUnit,
       NEXUS_LAYOUT_ACTIVATION_UNIT_TARGET: fixedTargets.activationUnit,
       NEXUS_LAYOUT_RECOVERY_UNIT_TARGET: fixedTargets.layoutRecovery,
       NEXUS_LAYOUT_INSTALL_RECOVERY_UNIT_TARGET: fixedTargets.installRecovery,
@@ -2024,6 +2096,13 @@ describe('layout-specific KVM evidence is cryptographically fail-closed', () => 
       '/usr/local/libexec/nexus-release-selector-switch.py',
       '/usr/local/libexec/nexus-release-layout-preflight.sh',
       '/usr/local/sbin/nexus-release-promotion-control',
+      '/usr/local/libexec/nexus-trusted-release-filesystem-identity.mjs',
+      '/usr/local/libexec/nexus-staging-attestation-broker.sh',
+      '/usr/local/libexec/nexus-capture-pm2-dump-authority.mjs',
+      '/usr/local/libexec/nexus-pm2-dump-authority.py',
+      '/usr/local/sbin/nexus-release-boot-health',
+      '/etc/systemd/system/nexus-release-pm2-recovery-daemon.service',
+      '/etc/systemd/system/nexus-release-promotion-recovery.service',
       '/etc/systemd/system/nexus-release-layout-activation@.service',
       '/etc/systemd/system/nexus-release-layout-recovery.service',
       '/etc/systemd/system/nexus-release-layout-install-recovery.service',

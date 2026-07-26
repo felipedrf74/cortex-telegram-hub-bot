@@ -43,6 +43,13 @@ ATTESTOR_TARGET="${NEXUS_LAYOUT_ATTESTOR_TARGET:-/usr/local/libexec/nexus-truste
 SELECTOR_TARGET="${NEXUS_LAYOUT_SELECTOR_TARGET:-/usr/local/libexec/nexus-release-selector-switch.py}"
 PREFLIGHT_TARGET="${NEXUS_LAYOUT_PREFLIGHT_TARGET:-/usr/local/libexec/nexus-release-layout-preflight.sh}"
 PROMOTION_CONTROL_TARGET="${NEXUS_LAYOUT_PROMOTION_CONTROL_TARGET:-/usr/local/sbin/nexus-release-promotion-control}"
+FILESYSTEM_IDENTITY_TARGET="${NEXUS_LAYOUT_FILESYSTEM_IDENTITY_TARGET:-/usr/local/libexec/nexus-trusted-release-filesystem-identity.mjs}"
+STAGING_BROKER_TARGET="${NEXUS_LAYOUT_STAGING_BROKER_TARGET:-/usr/local/libexec/nexus-staging-attestation-broker.sh}"
+PM2_CAPTURE_AUTHORITY_TARGET="${NEXUS_LAYOUT_PM2_CAPTURE_AUTHORITY_TARGET:-/usr/local/libexec/nexus-capture-pm2-dump-authority.mjs}"
+PM2_DUMP_AUTHORITY_TARGET="${NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET:-/usr/local/libexec/nexus-pm2-dump-authority.py}"
+BOOT_HEALTH_TARGET="${NEXUS_LAYOUT_BOOT_HEALTH_TARGET:-/usr/local/sbin/nexus-release-boot-health}"
+PM2_RECOVERY_UNIT_TARGET="${NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET:-/etc/systemd/system/nexus-release-pm2-recovery-daemon.service}"
+PROMOTION_RECOVERY_UNIT_TARGET="${NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET:-/etc/systemd/system/nexus-release-promotion-recovery.service}"
 ACTIVATION_UNIT_TARGET="${NEXUS_LAYOUT_ACTIVATION_UNIT_TARGET:-/etc/systemd/system/nexus-release-layout-activation@.service}"
 LAYOUT_RECOVERY_UNIT_TARGET="${NEXUS_LAYOUT_RECOVERY_UNIT_TARGET:-/etc/systemd/system/nexus-release-layout-recovery.service}"
 INSTALL_RECOVERY_UNIT_TARGET="${NEXUS_LAYOUT_INSTALL_RECOVERY_UNIT_TARGET:-/etc/systemd/system/nexus-release-layout-install-recovery.service}"
@@ -92,6 +99,13 @@ PHASE_A_TARGETS=(
   "$SELECTOR_TARGET"
   "$PREFLIGHT_TARGET"
   "$PROMOTION_CONTROL_TARGET"
+  "$FILESYSTEM_IDENTITY_TARGET"
+  "$STAGING_BROKER_TARGET"
+  "$PM2_CAPTURE_AUTHORITY_TARGET"
+  "$PM2_DUMP_AUTHORITY_TARGET"
+  "$BOOT_HEALTH_TARGET"
+  "$PM2_RECOVERY_UNIT_TARGET"
+  "$PROMOTION_RECOVERY_UNIT_TARGET"
   "$ACTIVATION_UNIT_TARGET"
   "$LAYOUT_RECOVERY_UNIT_TARGET"
   "$INSTALL_RECOVERY_UNIT_TARGET"
@@ -349,6 +363,13 @@ REQUIRED_INPUTS=(
   scripts/remote-release-selector-switch.py
   scripts/remote-release-preflight.sh
   scripts/remote-promotion-control.sh
+  scripts/trusted-release-filesystem-identity.mjs
+  scripts/remote-staging-attestation-broker.sh
+  scripts/capture-pm2-dump-authority.mjs
+  scripts/remote-pm2-dump-authority.py
+  scripts/remote-release-boot-health.sh
+  scripts/systemd/nexus-release-pm2-recovery-daemon.service
+  scripts/systemd/nexus-release-promotion-recovery.service
   scripts/systemd/nexus-release-layout-activation@.service
   scripts/systemd/nexus-release-layout-recovery.service
   scripts/systemd/nexus-release-layout-install-recovery.service
@@ -931,12 +952,13 @@ PY
 
 write_phase_a_journal() {
   local source_sha="$1" archive_sha="$2" install_recovery_state="$3"
-  local legacy_recovery_state="$4" legacy_install_recovery_state="$5"
-  local retirement_plan="$6" retirement_plan_sha="$7"
+  local promotion_recovery_state="$4" legacy_recovery_state="$5"
+  local legacy_install_recovery_state="$6"
+  local retirement_plan="$7" retirement_plan_sha="$8"
   [ ! -e "$PHASE_A_JOURNAL" ] && [ ! -L "$PHASE_A_JOURNAL" ] \
     || die "Phase A recovery is required before installation"
   "$PYTHON_BIN" - "$PHASE_A_JOURNAL" "$source_sha" "$archive_sha" \
-    "$install_recovery_state" "$legacy_recovery_state" \
+    "$install_recovery_state" "$promotion_recovery_state" "$legacy_recovery_state" \
     "$legacy_install_recovery_state" \
     "${retirement_plan:--}" "${retirement_plan_sha:--}" \
     "${#PHASE_A_TARGETS[@]}" "${#LEGACY_RETIREMENT_ALLOWLIST[@]}" \
@@ -956,6 +978,7 @@ import sys
     source_sha,
     archive_sha,
     install_state,
+    promotion_state,
     legacy_state,
     legacy_install_state,
     retirement_plan_value,
@@ -1065,6 +1088,7 @@ value = {
     "sourceArchiveSha256": archive_sha,
     "unitStates": {
         "nexus-release-layout-install-recovery.service": install_state,
+        "nexus-release-promotion-recovery.service": promotion_state,
         "nexus-rollback-drill-legacy-staging-recovery.service": legacy_state,
         "nexus-rollback-drill-legacy-staging-install-recovery.service": legacy_install_state,
     },
@@ -1325,13 +1349,14 @@ NODE
 }
 
 recover_phase_a_strict() {
-  local states install_state legacy_state legacy_install_state
+  local states install_state promotion_state legacy_state legacy_install_state
   states="$("$NODE_BIN" - "$PHASE_A_JOURNAL" <<'NODE'
 const fs=require('fs');const x=JSON.parse(fs.readFileSync(process.argv[2]));
 if(x.schema!=='nexus.release-layout-phase-a-journal.v1'
  ||x.status!=='in_progress')process.exit(1);
 const states=[
  x.unitStates?.['nexus-release-layout-install-recovery.service']??'not-found',
+ x.unitStates?.['nexus-release-promotion-recovery.service']??'not-found',
  x.unitStates?.['nexus-rollback-drill-legacy-staging-recovery.service']??'not-found',
  x.unitStates?.['nexus-rollback-drill-legacy-staging-install-recovery.service']??'not-found',
 ];
@@ -1340,11 +1365,14 @@ if(states.some((state)=>!new Set(['enabled','enabled-runtime','disabled','not-fo
 process.stdout.write(states.join('\t'));
 NODE
   )"
-  IFS=$'\t' read -r install_state legacy_state legacy_install_state <<<"$states"
+  IFS=$'\t' read -r install_state promotion_state legacy_state \
+    legacy_install_state <<<"$states"
   restore_phase_a_files
   "$SYSTEMCTL_BIN" daemon-reload
   restore_unit_enablement_state \
     nexus-release-layout-install-recovery.service "$install_state"
+  restore_unit_enablement_state \
+    nexus-release-promotion-recovery.service "$promotion_state"
   restore_unit_enablement_state \
     nexus-rollback-drill-legacy-staging-recovery.service "$legacy_state"
   restore_unit_enablement_state \
@@ -1725,7 +1753,7 @@ phase_a() {
   local source_root="$1" source_sha="$2" source_archive="$3" archive_sha="$4"
   local before after sudoers_tmp receipt_tmp retirement_plan="" retirement_plan_sha=""
   local pm2_proof pm2_proof_after pm2_prerequisite_control legacy_present=false
-  local install_recovery_state legacy_recovery_state
+  local install_recovery_state promotion_recovery_state legacy_recovery_state
   local legacy_install_recovery_state
   validate_source "$source_root" "$source_sha" "$source_archive" "$archive_sha"
   if { [ -e "$PHASE_A_RECEIPT" ] || [ -L "$PHASE_A_RECEIPT" ]; } \
@@ -1798,6 +1826,9 @@ phase_a() {
     recovery_anchor_enablement_state \
       nexus-release-layout-install-recovery.service
   )"
+  promotion_recovery_state="$(
+    unit_enablement_state nexus-release-promotion-recovery.service
+  )"
   legacy_recovery_state="$(
     unit_enablement_state nexus-rollback-drill-legacy-staging-recovery.service
   )"
@@ -1840,7 +1871,7 @@ phase_a() {
   trap 'phase_a_failure 129' HUP
   trap 'phase_a_failure $?' EXIT
   write_phase_a_journal "$source_sha" "$archive_sha" \
-    "$install_recovery_state" "$legacy_recovery_state" \
+    "$install_recovery_state" "$promotion_recovery_state" "$legacy_recovery_state" \
     "$legacy_install_recovery_state" \
     "$retirement_plan" "$retirement_plan_sha"
 
@@ -1908,6 +1939,34 @@ phase_a() {
     fsync_path "$LEGACY_STATE_ROOT"
     phase_a_checkpoint legacy_v2_adapter_receipt_retired
   fi
+  # Complete the recovery call graph before replacing promotion-control or
+  # making its recovery unit reachable from the PM2 handover. This prevents a
+  # reboot from binding a healthy legacy PM2 service to a partial closure.
+  install_file_atomically \
+    "$source_root/scripts/trusted-release-filesystem-identity.mjs" \
+    "$FILESYSTEM_IDENTITY_TARGET" 700
+  install_file_atomically \
+    "$source_root/scripts/remote-staging-attestation-broker.sh" \
+    "$STAGING_BROKER_TARGET" 700
+  install_file_atomically \
+    "$source_root/scripts/capture-pm2-dump-authority.mjs" \
+    "$PM2_CAPTURE_AUTHORITY_TARGET" 700
+  install_file_atomically \
+    "$source_root/scripts/remote-pm2-dump-authority.py" \
+    "$PM2_DUMP_AUTHORITY_TARGET" 700
+  install_file_atomically \
+    "$source_root/scripts/remote-release-boot-health.sh" \
+    "$BOOT_HEALTH_TARGET" 700
+  install_file_atomically \
+    "$source_root/scripts/systemd/nexus-release-pm2-recovery-daemon.service" \
+    "$PM2_RECOVERY_UNIT_TARGET" 644
+  install_file_atomically \
+    "$source_root/scripts/systemd/nexus-release-promotion-recovery.service" \
+    "$PROMOTION_RECOVERY_UNIT_TARGET" 644
+  "$SYSTEMCTL_BIN" daemon-reload
+  "$SYSTEMCTL_BIN" enable nexus-release-promotion-recovery.service >/dev/null
+  phase_a_checkpoint promotion_recovery_closure_installed
+
   install_file_atomically \
     "$source_root/scripts/remote-promotion-control.sh" \
     "$PROMOTION_CONTROL_TARGET" 755
@@ -1952,6 +2011,10 @@ NODE
     "$SQLITE_TARGET" "$AUTH_TARGET" "$DRILL_VERIFY_TARGET" \
     "$ATTESTOR_TARGET" "$SELECTOR_TARGET" \
     "$PREFLIGHT_TARGET" "$PROMOTION_CONTROL_TARGET" "$ACTIVATION_UNIT_TARGET" \
+    "$FILESYSTEM_IDENTITY_TARGET" "$STAGING_BROKER_TARGET" \
+    "$PM2_CAPTURE_AUTHORITY_TARGET" "$PM2_DUMP_AUTHORITY_TARGET" \
+    "$BOOT_HEALTH_TARGET" "$PM2_RECOVERY_UNIT_TARGET" \
+    "$PROMOTION_RECOVERY_UNIT_TARGET" \
     "$LAYOUT_RECOVERY_UNIT_TARGET" "$INSTALL_RECOVERY_UNIT_TARGET" \
     "$INSTALL_GUARD_TARGET" \
     "$SUDOERS_TARGET" <<'NODE'
@@ -2286,6 +2349,16 @@ phase_b() {
   [ -f "$PHASE_A_RECEIPT" ] && [ ! -L "$PHASE_A_RECEIPT" ] \
     || die "Phase A receipt is unavailable"
   assert_phase_a_safe
+  "$NODE_BIN" - "$PHASE_A_RECEIPT" "$source_sha" "$archive_sha" <<'NODE' \
+    || die "Phase A receipt belongs to a different protected source"
+const fs=require('fs');
+const [receiptFile,sourceSha,archiveSha]=process.argv.slice(2);
+const receipt=JSON.parse(fs.readFileSync(receiptFile));
+if(receipt.schema!=='nexus.release-layout-phase-a-receipt.v1'
+ ||receipt.status!=='completed'
+ ||receipt.sourceSha!==sourceSha
+ ||receipt.sourceArchiveSha256!==archiveSha)process.exit(1);
+NODE
   [ ! -e "$PHASE_B_RECEIPT" ] && [ ! -L "$PHASE_B_RECEIPT" ] \
     || die "Phase B was already completed"
   [ ! -e "$PHASE_B_JOURNAL" ] && [ ! -L "$PHASE_B_JOURNAL" ] \
