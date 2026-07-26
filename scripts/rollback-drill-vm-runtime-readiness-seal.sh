@@ -136,14 +136,20 @@ load_pinned_owner_key() {
     || die "pinned owner public key mode is unsafe"
   [ "$(stat -c '%U:%G:%a:%h' -- "$OWNER_PUBLIC_KEY_DIGEST")" = root:root:400:1 ] \
     || die "pinned owner public-key digest mode is unsafe"
-  PINNED_OWNER_SHA256="$(tr -d '\n' <"$OWNER_PUBLIC_KEY_DIGEST")"
-  [[ "$PINNED_OWNER_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  PINNED_OWNER_FILE_SHA256="$(tr -d '\n' <"$OWNER_PUBLIC_KEY_DIGEST")"
+  [[ "$PINNED_OWNER_FILE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
     || die "pinned owner public-key digest is invalid"
-  [ "$(sha256sum -- "$OWNER_PUBLIC_KEY" | cut -d' ' -f1)" = "$PINNED_OWNER_SHA256" ] \
+  [ "$(sha256sum -- "$OWNER_PUBLIC_KEY" | cut -d' ' -f1)" = "$PINNED_OWNER_FILE_SHA256" ] \
     || die "pinned owner public key differs from its independent digest"
   [ "$(openssl pkey -pubin -in "$OWNER_PUBLIC_KEY" -text_pub -noout | head -n 1)" \
       = "ED25519 Public-Key:" ] \
     || die "pinned owner public key is not Ed25519"
+  PINNED_OWNER_IDENTITY_SHA256="$(
+    openssl pkey -pubin -in "$OWNER_PUBLIC_KEY" -outform DER \
+      | sha256sum | cut -d' ' -f1
+  )"
+  [[ "$PINNED_OWNER_IDENTITY_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || die "pinned owner public-key identity is invalid"
 }
 
 pin_owner_key() {
@@ -168,8 +174,8 @@ pin_owner_key() {
       fsync_path "$OWNER_ROOT"
     fi
     load_pinned_owner_key
-    [ "$PINNED_OWNER_SHA256" = "$expected" ] \
-      || die "pinned owner public-key identity differs"
+    [ "$PINNED_OWNER_FILE_SHA256" = "$expected" ] \
+      || die "pinned owner public-key file digest differs"
     printf '{"ok":true,"schema":"nexus.rollback-drill-vm-runtime-owner-key.v1","sha256":"%s","alreadyPresent":true}\n' "$expected"
     return
   fi
@@ -208,7 +214,7 @@ register_bundle() {
     --source-root "$source" \
     --target-parent "$BUNDLE_PARENT" \
     --expected-manifest-sha256 "$manifest_sha" \
-    --expected-public-key-sha256 "$PINNED_OWNER_SHA256"
+    --expected-public-key-sha256 "$PINNED_OWNER_FILE_SHA256"
 }
 
 verify_registered_bundle() {
@@ -221,7 +227,7 @@ verify_registered_bundle() {
   [ "$(sha256sum -- "$BUNDLE_ROOT/manifest.json" | cut -d' ' -f1)" = "$manifest_sha" ] \
     || die "registered runtime manifest identity drifted"
   [ "$(sha256sum -- "$BUNDLE_ROOT/manifest-owner-public-key.pem" | cut -d' ' -f1)" \
-      = "$PINNED_OWNER_SHA256" ] \
+      = "$PINNED_OWNER_FILE_SHA256" ] \
     || die "registered bundle is not signed by the independently pinned owner"
   cmp -s -- "$OWNER_PUBLIC_KEY" "$BUNDLE_ROOT/manifest-owner-public-key.pem" \
     || die "registered bundle owner public key bytes differ from the pin"
@@ -649,7 +655,7 @@ PY
     controller_uptime_seconds="$(
       awk '{print int($1)}' /proc/uptime
     )"
-    python3 - "$authorization" "$PINNED_OWNER_SHA256" "$SET_ID" "$guest" "$PORT" \
+    python3 - "$authorization" "$PINNED_OWNER_IDENTITY_SHA256" "$SET_ID" "$guest" "$PORT" \
       "$provision_sha" "$manifest_sha" "$HOST_PUBLIC_KEY_SHA256" "$drill" \
       "$resume_authorization" "$controller_boot_id_sha256" \
       "$controller_uptime_seconds" <<'PY'
@@ -1054,7 +1060,7 @@ PY
     ssh_ready=false
     for ((attempt=0; attempt<60; attempt+=1)); do
       if ssh "${ssh_options[@]}" dominguez@127.0.0.1 \
-          'sudo -n cloud-init status --wait >/dev/null && printf ready' \
+          '/usr/bin/cloud-init status --wait >/dev/null && printf ready' \
           2>/dev/null | grep -qx ready; then
         ssh_ready=true
         break
@@ -1080,7 +1086,7 @@ PY
       "sudo -n '$GUEST_CONTROL' stage-provision '$remote_root/provision.json' '$provision_sha' >/dev/null" \
       || die "guest refused the provision receipt"
     ssh "${ssh_options[@]}" dominguez@127.0.0.1 \
-      "sudo -n '$GUEST_CONTROL' stage-bundle '$remote_root/bundle' '$manifest_sha' '$PINNED_OWNER_SHA256' >/dev/null" \
+      "sudo -n '$GUEST_CONTROL' stage-bundle '$remote_root/bundle' '$manifest_sha' '$PINNED_OWNER_FILE_SHA256' >/dev/null" \
       || die "guest refused the owner-signed runtime bundle"
     ssh "${ssh_options[@]}" dominguez@127.0.0.1 \
       "rm -rf -- '$remote_root'" \
@@ -1088,13 +1094,13 @@ PY
     guest_provision="/var/lib/nexus-rollback-drill-vm/provision-receipts/$provision_sha.json"
     guest_bundle="/var/lib/nexus-rollback-drill-vm/toolchain-bundles/$manifest_sha"
     ssh "${ssh_options[@]}" dominguez@127.0.0.1 \
-      "sudo -n '$GUEST_CONTROL' install '$guest_bundle' '$guest_provision' '$provision_sha' '$guest' '$manifest_sha' '$PINNED_OWNER_SHA256' >/dev/null" \
+      "sudo -n '$GUEST_CONTROL' install '$guest_bundle' '$guest_provision' '$provision_sha' '$guest' '$manifest_sha' '$PINNED_OWNER_FILE_SHA256' >/dev/null" \
       || die "offline guest runtime installation failed"
     challenge="$(openssl rand -hex 32)"
     [[ "$challenge" =~ ^[0-9a-f]{64}$ ]] || die "cannot create a measurement challenge"
     measurement_result="$(
       ssh "${ssh_options[@]}" dominguez@127.0.0.1 \
-        "sudo -n '$GUEST_CONTROL' measure '$guest_bundle' '$guest_provision' '$provision_sha' '$guest' '$manifest_sha' '$PINNED_OWNER_SHA256' '$challenge'"
+        "sudo -n '$GUEST_CONTROL' measure '$guest_bundle' '$guest_provision' '$provision_sha' '$guest' '$manifest_sha' '$PINNED_OWNER_FILE_SHA256' '$challenge'"
     )" || die "live guest runtime measurement failed"
     measurement="$work/measurement.json"
     signature="$work/measurement.sig"
@@ -1321,7 +1327,7 @@ PY
   python3 - "$readiness_stage" "$SET_ID" "$guest" "$PORT" "$provision_sha" \
     "$manifest_sha" "$auth_id" "$drill" "$auth_issued" "$auth_expires" \
     "$auth_controller_boot" "$auth_issued_monotonic" "$auth_expires_monotonic" \
-    "$auth_sha" "$auth_sig_sha" "$PINNED_OWNER_SHA256" "$measurement_sha" \
+    "$auth_sha" "$auth_sig_sha" "$PINNED_OWNER_IDENTITY_SHA256" "$measurement_sha" \
     "$signature_sha" "$challenge" "$MACHINE_UUID" "$INSTANCE_ID" "$MAC" \
     "$HOST_KEY_FINGERPRINT" "$HOST_PUBLIC_KEY_SHA256" "$UNIT" "$supervisor_pid" \
     "$supervisor_start" "$proof_systemd_state" "$lock_holder" "$holder_pid" \

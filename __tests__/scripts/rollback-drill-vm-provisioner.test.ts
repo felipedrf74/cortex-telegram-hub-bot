@@ -307,6 +307,9 @@ describe('rollback-drill KVM provisioner', () => {
     expect(unit).toContain(
       'ConditionPathExists=/run/nexus-rollback-drill-vm/admission.lock',
     );
+    expect(unit).toContain('After=systemd-tmpfiles-setup.service');
+    expect(unit).not.toContain('ConditionPathExists=/dev/kvm');
+    expect(unit).not.toContain('dev-kvm.device');
     expect(unit).toContain('User=nexus-drill-vm');
     expect(unit).toContain('SupplementaryGroups=kvm');
     expect(unit).toContain(
@@ -899,6 +902,7 @@ describe('rollback-drill KVM provisioner', () => {
     expect(provisioner).toContain('PasswordAuthentication no');
     expect(provisioner).toContain('PermitRootLogin no');
     expect(provisioner).toContain('AllowUsers dominguez');
+    expect(provisioner).not.toContain('cloud-init status');
     expect(provisioner).toContain('ssh_deletekeys: true');
     expect(provisioner).toContain('ed25519_private: |');
     expect(provisioner).toContain('mv -T -- "$set_stage" "$set_target"');

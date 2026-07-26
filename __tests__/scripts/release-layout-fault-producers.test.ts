@@ -536,8 +536,12 @@ describe('trusted release-layout fault producers', () => {
     );
     expect(unit).not.toContain('[Install]');
     expect(unit).toContain('Restart=on-failure');
-    expect(unit).toContain('Wants=dev-kvm.device');
-    expect(unit).toContain('After=systemd-tmpfiles-setup.service dev-kvm.device');
+    expect(unit).toContain('ExecStartPre=/usr/bin/test -c /dev/kvm');
+    expect(unit).not.toContain('dev-kvm.device');
+    expect(unit).toContain(
+      'After=systemd-tmpfiles-setup.service '
+      + 'nexus-release-layout-fault-drill-recovery.service',
+    );
     expect(unit).toContain(
       'ReadOnlyPaths=/etc/nexus-release '
       + '/var/lib/nexus-rollback-drill-vm/active.json '
@@ -553,7 +557,10 @@ describe('trusted release-layout fault producers', () => {
       'release-layout-fault-controller recover-all',
     );
     expect(recoveryUnit).toContain('WantedBy=multi-user.target');
-    expect(recoveryUnit).toContain('Wants=dev-kvm.device');
+    expect(recoveryUnit).toContain(
+      'ExecStartPre=/usr/bin/test -c /dev/kvm',
+    );
+    expect(recoveryUnit).not.toContain('dev-kvm.device');
     expect(recoveryUnit).toContain('Restart=on-failure');
     expect(recoveryUnit).toContain('StartLimitBurst=4');
     const guestRecoveryUnit = fs.readFileSync(

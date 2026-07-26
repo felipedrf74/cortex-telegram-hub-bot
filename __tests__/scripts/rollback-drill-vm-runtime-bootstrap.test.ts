@@ -13,7 +13,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -2048,6 +2048,47 @@ exit "$status"
     expect(guestControl).not.toMatch(/systemctl\s+(?:start|restart)\b/);
   });
 
+  it("separates the canonical owner-key identity from exact PEM bundle bytes", () => {
+    const root = temporaryRoot();
+    const privateKey = join(root, "owner-private.pem");
+    const publicKey = join(root, "owner-public.pem");
+    const generated = spawnSync(
+      "openssl",
+      ["genpkey", "-algorithm", "ED25519", "-out", privateKey],
+      { encoding: "utf8" },
+    );
+    expect(generated.status, generated.stderr).toBe(0);
+    const exported = spawnSync(
+      "openssl",
+      ["pkey", "-in", privateKey, "-pubout", "-out", publicKey],
+      { encoding: "utf8" },
+    );
+    expect(exported.status, exported.stderr).toBe(0);
+    const pem = readFileSync(publicKey);
+    const nodeDer = createPublicKey(pem).export({
+      type: "spki",
+      format: "der",
+    });
+    const opensslDer = spawnSync(
+      "openssl",
+      ["pkey", "-pubin", "-in", publicKey, "-outform", "DER"],
+    );
+    expect(opensslDer.status, opensslDer.stderr.toString()).toBe(0);
+    expect(sha256(opensslDer.stdout)).toBe(sha256(nodeDer));
+    expect(sha256(pem)).not.toBe(sha256(nodeDer));
+    expect(hostSealer).toContain("PINNED_OWNER_FILE_SHA256");
+    expect(hostSealer).toContain("PINNED_OWNER_IDENTITY_SHA256");
+    expect(hostSealer).toContain(
+      'python3 - "$authorization" "$PINNED_OWNER_IDENTITY_SHA256"',
+    );
+    expect(hostSealer).toContain(
+      '--expected-public-key-sha256 "$PINNED_OWNER_FILE_SHA256"',
+    );
+    expect(hostSealer).toContain(
+      '"$auth_sig_sha" "$PINNED_OWNER_IDENTITY_SHA256"',
+    );
+  });
+
   it("collects readiness from one live nonce-bound guest and a stable stopped overlay", () => {
     expect(hostSealer).toContain("flock -n 9");
     expect(hostSealer).toContain(
@@ -2059,6 +2100,10 @@ exit "$status"
     expect(hostSealer).toContain("ClearAllForwardings=yes");
     expect(hostSealer).toContain("ProxyCommand=none");
     expect(hostSealer).toContain("StrictHostKeyChecking=yes");
+    expect(hostSealer).toContain(
+      "'/usr/bin/cloud-init status --wait >/dev/null && printf ready'",
+    );
+    expect(hostSealer).not.toContain("sudo -n cloud-init status --wait");
     expect(hostSealer).toContain("measure");
     expect(hostSealer).toContain('kill -USR1 "$supervisor_pid"');
     expect(hostSealer).toContain("O_NOFOLLOW");
