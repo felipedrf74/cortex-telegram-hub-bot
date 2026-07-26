@@ -409,13 +409,19 @@ function validateSpec(spec, specPath) {
     DRILL_NAMES,
     'spec_runtime_bundle_manifests',
   );
+  const runtimeBundleDigests = new Set();
   for (const drill of DRILL_NAMES) {
-    resolveSpecPath(
+    const runtimeBundleManifest = resolveSpecPath(
       specPath,
       spec.runtimeBundleManifests[drill],
       `runtime_bundle_${drill}`,
     );
+    runtimeBundleDigests.add(rawFileSha256(runtimeBundleManifest));
   }
+  if (runtimeBundleDigests.size !== 1) {
+    fail('spec_runtime_bundle_manifests_must_share_provision_set');
+  }
+  const [sharedRuntimeBundleManifestSha256] = runtimeBundleDigests;
 
   exactObject(
     spec.releaseEvidence,
@@ -452,7 +458,7 @@ function validateSpec(spec, specPath) {
       fail(`spec_migration_${field}_must_be_null`);
     }
   }
-  return spec;
+  return { spec, sharedRuntimeBundleManifestSha256 };
 }
 
 function readSpec(specPath) {
@@ -866,8 +872,7 @@ function buildPlan(spec, specPath, receipt, keys, issuedAt) {
 }
 
 function buildRuntimeAuthorizations(
-  spec,
-  specPath,
+  sharedRuntimeBundleManifestSha256,
   plan,
   receipt,
   provisionSha256,
@@ -886,12 +891,7 @@ function buildRuntimeAuthorizations(
   }
   return DRILL_BINDINGS.map((binding, index) => {
     const guest = receipt.guests[index];
-    const bundleManifestPath = resolveSpecPath(
-      specPath,
-      spec.runtimeBundleManifests[binding.drill],
-      `runtime_bundle_${binding.drill}`,
-    );
-    const bundleManifestSha256 = rawFileSha256(bundleManifestPath);
+    const bundleManifestSha256 = sharedRuntimeBundleManifestSha256;
     const payload = {
       schema: RUNTIME_AUTHORIZATION_SCHEMA,
       authorizationId: sha256Bytes(Buffer.from(
@@ -1042,7 +1042,7 @@ function templateSpec() {
 
 function prepare(specPath, requestedOutputDirectory) {
   const issuedAt = Math.floor(nowMs() / 1000) * 1000;
-  const spec = readSpec(specPath);
+  const { spec, sharedRuntimeBundleManifestSha256 } = readSpec(specPath);
   const provisionPath = resolveSpecPath(
     specPath,
     spec.provisionReceipt,
@@ -1069,8 +1069,7 @@ function prepare(specPath, requestedOutputDirectory) {
     fail('controller_boot_id_changed_during_prepare');
   }
   const runtimeAuthorizations = buildRuntimeAuthorizations(
-    spec,
-    specPath,
+    sharedRuntimeBundleManifestSha256,
     plan,
     receipt,
     provisionSha256,
@@ -1177,6 +1176,11 @@ function validateGenerationManifest(value, plan, provisionSha256) {
       'generation_manifest_bundle_digest_invalid',
     );
   });
+  if (new Set(value.runtimeAuthorizations.map(
+    (entry) => entry.bundleManifestSha256,
+  )).size !== 1) {
+    fail('generation_manifest_bundle_manifests_must_share_provision_set');
+  }
   return value;
 }
 
@@ -1586,7 +1590,7 @@ function authorize(
   requestedOutputDirectory,
 ) {
   const issuedAt = nowMs();
-  const spec = readSpec(specPath);
+  const { spec } = readSpec(specPath);
   const plan = readBoundedJson(planPath, 'plan');
   assertPlanMatchesSpec(plan, spec);
   const isolation = readBoundedJson(isolationPath, 'isolation');

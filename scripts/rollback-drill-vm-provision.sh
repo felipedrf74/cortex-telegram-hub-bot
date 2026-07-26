@@ -40,6 +40,7 @@ GPGV="/usr/bin/gpgv"
 DPKG_QUERY="/usr/bin/dpkg-query"
 OPENSSL="/usr/bin/openssl"
 UNIT_TEMPLATE="nexus-rollback-drill-vm@.service"
+UNIT_TEMPLATE_PROBE="nexus-rollback-drill-vm@guest-1.service"
 
 die() {
   echo "rollback drill VM provisioner: $*" >&2
@@ -148,7 +149,9 @@ assert_guest_unit_inactive() {
 }
 
 assert_template_static() {
-  read_systemd_unit_state "$UNIT_TEMPLATE"
+  # systemd rejects a bare template name for `show` on supported Ubuntu
+  # hosts. Query one fixed instance to inspect the template without starting it.
+  read_systemd_unit_state "$UNIT_TEMPLATE_PROBE"
   [ "$SYSTEMD_LOAD_STATE" = loaded ] \
     && [ "$SYSTEMD_ACTIVE_STATE" = inactive ] \
     && [ "$SYSTEMD_UNIT_FILE_STATE" = static ] \

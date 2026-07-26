@@ -257,6 +257,9 @@ describe('rollback-drill KVM provisioner', () => {
       'LAYOUT_TRUST_MANIFEST="$STATE_ROOT/release-layout-evidence-trust.v1.json"',
     );
     expect(provisioner).toContain(
+      'UNIT_TEMPLATE_PROBE="nexus-rollback-drill-vm@guest-1.service"',
+    );
+    expect(provisioner).toContain(
       '"$OPENSSL" genpkey -algorithm ED25519 '
         + '-out "$layout_hypervisor_private"',
     );
@@ -719,6 +722,51 @@ describe('rollback-drill KVM provisioner', () => {
     );
     expect(unknown.status).not.toBe(0);
     expect(unknown.stderr).toContain('load state is unsafe');
+  });
+
+  it('queries a concrete inactive instance when the provisioner validates the template', () => {
+    const helpers = provisioner.match(
+      /(read_systemd_unit_state\(\) \{[\s\S]*?)\n\nvalidate_root_trusted_path/,
+    )?.[1];
+    expect(helpers).toBeTruthy();
+    const exercise = (expectedUnit: string) =>
+      spawnSync(
+        'bash',
+        [
+          '-c',
+          [
+            'die() { echo "$*" >&2; exit 1; }',
+            'UNIT_TEMPLATE=nexus-rollback-drill-vm@.service',
+            'UNIT_TEMPLATE_PROBE=nexus-rollback-drill-vm@guest-1.service',
+            'systemctl() {',
+            '  local last=""',
+            '  for last in "$@"; do :; done',
+            '  [ "$last" = "$MOCK_EXPECTED_UNIT" ] || {',
+            '    printf "unexpected systemd unit: %s\\n" "$last" >&2',
+            '    return 64',
+            '  }',
+            '  printf "LoadState=loaded\\nActiveState=inactive\\nUnitFileState=static\\n"',
+            '}',
+            helpers!,
+            'assert_template_static',
+          ].join('\n'),
+        ],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            MOCK_EXPECTED_UNIT: expectedUnit,
+          },
+        },
+      );
+
+    const concreteProbe = exercise(
+      'nexus-rollback-drill-vm@guest-1.service',
+    );
+    expect(concreteProbe.status, concreteProbe.stderr).toBe(0);
+    const bareTemplate = exercise('nexus-rollback-drill-vm@.service');
+    expect(bareTemplate.status).not.toBe(0);
+    expect(bareTemplate.stderr).toContain('systemd state query failed');
   });
 
   it('root-copies an optional unprivileged cache before independently verifying Canonical identity', () => {

@@ -341,8 +341,11 @@ function createFixture() {
     body: Buffer;
     signature: Buffer;
   }> = {};
+  const sharedBundleManifestSha256 = digest(
+    'shared-provision-set-runtime-bundle',
+  );
   const runtimeAuthorizations = bindings.map((binding, index) => {
-    const bundleManifestSha256 = digest(`${binding.drill}-runtime-bundle`);
+    const bundleManifestSha256 = sharedBundleManifestSha256;
     const payload = {
       schema: 'nexus.rollback-drill-vm-runtime-authorization.v1',
       authorizationId: digest(
@@ -967,6 +970,12 @@ describe('rollback-drill KVM readiness sequence', () => {
 
   it('admits and completes only the fixed guest order with one active request', () => {
     const fixture = createFixture();
+    expect(new Set(fixture.generation.runtimeAuthorizations.map(
+      (entry: any) => entry.bundleManifestSha256,
+    )).size).toBe(1);
+    expect(new Set(Object.values(fixture.runtime).map(
+      (entry) => entry.payload.authorizationId,
+    )).size).toBe(3);
     const initialized = run(fixture, initArgs(fixture));
     expect(initialized.result.status, initialized.result.stderr).toBe(0);
     expect(initialized.body).toMatchObject({
@@ -1148,6 +1157,22 @@ describe('rollback-drill KVM readiness sequence', () => {
       status: 'readiness_already_complete',
       alreadyComplete: true,
     });
+  });
+
+  it('rejects generation input with guest-specific runtime bundles', () => {
+    const fixture = createFixture();
+    fixture.generation.runtimeAuthorizations[1].bundleManifestSha256 =
+      digest('guest-specific-runtime-bundle');
+    privateFile(
+      fixture.generationPath,
+      canonicalJson(fixture.generation),
+    );
+
+    const rejected = run(fixture, initArgs(fixture));
+    expect(rejected.result.status).not.toBe(0);
+    expect(rejected.body.code).toBe(
+      'generation_bundle_manifests_must_share_provision_set',
+    );
   });
 
   it('fails closed across controller reboot and wall-clock rollback', () => {
