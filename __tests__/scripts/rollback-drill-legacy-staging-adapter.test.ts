@@ -1081,7 +1081,7 @@ describe('legacy staging drill adapter', () => {
 describe('root broker and installer contracts', () => {
   it('requires safe runner-owned ancestry for Linux fixture roots', () => {
     const root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-linux-fixture-parent-')),
+      fs.mkdtempSync(path.join(fixtureParent(), 'nexus-linux-fixture-parent-')),
     );
     fs.chmodSync(root, 0o700);
     roots.push(root);
