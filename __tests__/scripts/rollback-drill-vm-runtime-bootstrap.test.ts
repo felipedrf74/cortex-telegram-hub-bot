@@ -294,7 +294,7 @@ function structuralManifest(publicKey: Buffer) {
   );
   const publicKeySha256 = sha256(publicKey);
   return {
-    schema: "nexus.rollback-drill-vm-runtime-bundle.v1",
+    schema: "nexus.rollback-drill-vm-runtime-bundle.v2",
     target: {
       os: {
         id: "ubuntu",
@@ -381,12 +381,13 @@ function structuralManifest(publicKey: Buffer) {
       python: {
         verification: "provisioned-guest-ssh-host-key-signature",
         namespace: "nexus-rollback-drill-vm-python-provenance",
+        scope: "provision-set-immutable-base-image",
         provenancePath: "provenance/python/base-image-python.json",
         provenanceSha256: digest("9"),
         signaturePath: "provenance/python/base-image-python.json.sig",
         signatureSha256: digest("a"),
         provisionReceiptSha256: digest("b"),
-        guest: "guest-1",
+        witnessGuest: "guest-1",
         hostKeyFingerprint: hostKey(1).fingerprint,
         hostPublicKeySha256: sha256(hostKey(1).publicKey),
       },
@@ -688,6 +689,112 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
     );
   });
 
+  it("reuses one guest-1-witnessed provision-set bundle across independently measured guests", () => {
+    const root = temporaryRoot();
+    const receiptPath = join(root, "active.json");
+    const manifestPath = join(root, "manifest.json");
+    const receipt = provisionReceipt();
+    writeFileSync(receiptPath, canonicalJson(receipt), { mode: 0o600 });
+    const provisionSha = sha256(readFileSync(receiptPath));
+    const witness = receipt.guests[0];
+    const manifest = structuralManifest(Buffer.from("test-owner-public-key"));
+    manifest.target.os.baseImageSha256 = receipt.image.sha256;
+    manifest.provenance.python.provisionReceiptSha256 = provisionSha;
+    manifest.provenance.python.witnessGuest = "guest-1";
+    manifest.provenance.python.hostKeyFingerprint =
+      witness.hostKeyFingerprint;
+    manifest.provenance.python.hostPublicKeySha256 = sha256(
+      witness.hostPublicKey,
+    );
+    writeFileSync(manifestPath, canonicalJson(manifest), { mode: 0o600 });
+    const manifestSha = sha256(readFileSync(manifestPath));
+
+    for (const guest of ["guest-1", "guest-2", "guest-3"]) {
+      const context = runHelper([
+        "context",
+        "--provision-receipt",
+        receiptPath,
+        "--expected-provision-sha256",
+        provisionSha,
+        "--guest",
+        guest,
+        "--manifest",
+        manifestPath,
+        "--expected-manifest-sha256",
+        manifestSha,
+      ]);
+      expect(context.status, `${context.stdout}${context.stderr}`).toBe(0);
+      expect(JSON.parse(context.stdout).guest).toBe(guest);
+    }
+
+    manifest.provenance.python.witnessGuest = "guest-2";
+    writeFileSync(manifestPath, canonicalJson(manifest), { mode: 0o600 });
+    const wrongWitnessSha = sha256(readFileSync(manifestPath));
+    const wrongWitness = runHelper([
+      "context",
+      "--provision-receipt",
+      receiptPath,
+      "--expected-provision-sha256",
+      provisionSha,
+      "--guest",
+      "guest-2",
+      "--manifest",
+      manifestPath,
+      "--expected-manifest-sha256",
+      wrongWitnessSha,
+    ]);
+    expect(wrongWitness.status).not.toBe(0);
+    expect(wrongWitness.stderr).toContain(
+      "Python provenance is invalid",
+    );
+
+    manifest.provenance.python.witnessGuest = "guest-1";
+    manifest.provenance.python.hostPublicKeySha256 = sha256(
+      receipt.guests[1].hostPublicKey,
+    );
+    writeFileSync(manifestPath, canonicalJson(manifest), { mode: 0o600 });
+    const wrongHostKey = runHelper([
+      "context",
+      "--provision-receipt",
+      receiptPath,
+      "--expected-provision-sha256",
+      provisionSha,
+      "--guest",
+      "guest-3",
+      "--manifest",
+      manifestPath,
+      "--expected-manifest-sha256",
+      sha256(readFileSync(manifestPath)),
+    ]);
+    expect(wrongHostKey.status).not.toBe(0);
+    expect(wrongHostKey.stderr).toContain(
+      "Python provenance witness is invalid",
+    );
+
+    manifest.provenance.python.hostPublicKeySha256 = sha256(
+      witness.hostPublicKey,
+    );
+    manifest.target.os.baseImageSha256 = "e".repeat(64);
+    writeFileSync(manifestPath, canonicalJson(manifest), { mode: 0o600 });
+    const wrongImage = runHelper([
+      "context",
+      "--provision-receipt",
+      receiptPath,
+      "--expected-provision-sha256",
+      provisionSha,
+      "--guest",
+      "guest-2",
+      "--manifest",
+      manifestPath,
+      "--expected-manifest-sha256",
+      sha256(readFileSync(manifestPath)),
+    ]);
+    expect(wrongImage.status).not.toBe(0);
+    expect(wrongImage.stderr).toContain(
+      "targets a different provisioned base image",
+    );
+  });
+
   it("validates the final readiness receipt against stopped-overlay and guest evidence", () => {
     const root = temporaryRoot();
     const receiptPath = join(root, "active.json");
@@ -704,7 +811,7 @@ describe("offline rollback-drill VM runtime bootstrap", () => {
     const manifest = structuralManifest(Buffer.from("test-owner-public-key"));
     manifest.target.os.baseImageSha256 = receipt.image.sha256;
     manifest.provenance.python.provisionReceiptSha256 = provisionSha;
-    manifest.provenance.python.guest = "guest-1";
+    manifest.provenance.python.witnessGuest = "guest-1";
     manifest.provenance.python.hostKeyFingerprint = guest.hostKeyFingerprint;
     manifest.provenance.python.hostPublicKeySha256 = sha256(
       guest.hostPublicKey,
@@ -1810,6 +1917,13 @@ exit "$status"
     expect(builder).toContain("npm_config_offline=true");
     expect(builder).toContain("npm_config_ignore_scripts=true");
     expect(builder).toContain('lifecycleScriptsExecuted":false');
+    expect(builder).toContain("--witness-guest <guest-1>");
+    expect(builder).toContain(
+      "provision-set Python provenance witness must be guest-1",
+    );
+    expect(builder).toContain(
+      '--python-provenance-witness-guest "$WITNESS_GUEST"',
+    );
     expect(builder).toContain("refs/remotes/origin/main^{commit}");
     expect(builder).toContain("owner private key must be an Ed25519 key");
     expect(builder).toContain(

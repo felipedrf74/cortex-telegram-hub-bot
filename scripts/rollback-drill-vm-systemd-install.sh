@@ -141,7 +141,7 @@ assert_guest_unit_inactive() {
 assert_template_static() {
   local missing_allowed="$1"
   # systemd rejects a bare template name for `show` on supported Ubuntu
-  # hosts. Query one fixed, never-started instance to inspect the template's
+  # hosts. Query one fixed instance to inspect the template's
   # load and unit-file state without changing service state.
   read_systemd_unit_state "$UNIT_TEMPLATE_PROBE"
   [ "$SYSTEMD_ACTIVE_STATE" = inactive ] \

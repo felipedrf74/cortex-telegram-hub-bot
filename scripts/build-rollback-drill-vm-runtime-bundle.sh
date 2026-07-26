@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build one content-addressed, owner-signed guest runtime bundle. This command
+# Build one content-addressed, owner-signed provision-set runtime bundle. This command
 # is intentionally network-free: the Node release inputs and npm cache must be
 # prepared before it starts, and npm is forced into offline/ignore-scripts mode.
 set -euo pipefail
@@ -20,8 +20,8 @@ Usage: build-rollback-drill-vm-runtime-bundle.sh
   --output-parent <existing-private-directory>
   --provision-receipt <immutable-active.json-copy>
   --expected-provision-sha256 <64-hex-sha256>
-  --guest <guest-1|guest-2|guest-3>
-  --python-provenance <guest-host-key-signed-json>
+  --witness-guest <guest-1>
+  --python-provenance <witness-host-key-signed-json>
   --python-provenance-signature <ssh-signature>
   --node-signer-fingerprint <40-uppercase-hex>
   --owner-private-key <lab-only-ed25519-pem>
@@ -35,7 +35,7 @@ SOURCE_COMMIT=""
 OUTPUT_PARENT=""
 PROVISION_RECEIPT=""
 EXPECTED_PROVISION_SHA256=""
-GUEST=""
+WITNESS_GUEST=""
 PYTHON_PROVENANCE=""
 PYTHON_PROVENANCE_SIGNATURE=""
 NODE_SIGNER_FINGERPRINT=""
@@ -50,7 +50,7 @@ while [ "$#" -gt 0 ]; do
     --output-parent) OUTPUT_PARENT="$2" ;;
     --provision-receipt) PROVISION_RECEIPT="$2" ;;
     --expected-provision-sha256) EXPECTED_PROVISION_SHA256="$2" ;;
-    --guest) GUEST="$2" ;;
+    --witness-guest) WITNESS_GUEST="$2" ;;
     --python-provenance) PYTHON_PROVENANCE="$2" ;;
     --python-provenance-signature) PYTHON_PROVENANCE_SIGNATURE="$2" ;;
     --node-signer-fingerprint) NODE_SIGNER_FINGERPRINT="$2" ;;
@@ -80,7 +80,8 @@ npm_version="$(npm --version)"
 [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "source commit is invalid"
 [[ "$EXPECTED_PROVISION_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || die "provision receipt digest is invalid"
-case "$GUEST" in guest-1|guest-2|guest-3) ;; *) die "guest is outside the fixed allowlist" ;; esac
+[ "$WITNESS_GUEST" = guest-1 ] \
+  || die "provision-set Python provenance witness must be guest-1"
 [[ "$NODE_SIGNER_FINGERPRINT" =~ ^[0-9A-F]{40}$ ]] \
   || die "Node signer fingerprint is invalid"
 
@@ -113,7 +114,7 @@ owner_key_type="$(openssl pkey -in "$OWNER_PRIVATE_KEY" -pubout -text_pub -noout
   || die "owner private key must be an Ed25519 key"
 for evidence in "$PROVISION_RECEIPT" "$PYTHON_PROVENANCE" "$PYTHON_PROVENANCE_SIGNATURE"; do
   [ -f "$evidence" ] && [ ! -L "$evidence" ] && [ "$(stat -c '%h' "$evidence")" = 1 ] \
-    || die "guest provenance input must be one regular non-symlink file"
+    || die "witness provenance input must be one regular non-symlink file"
 done
 [ "$(sha256sum "$PROVISION_RECEIPT" | cut -d' ' -f1)" = "$EXPECTED_PROVISION_SHA256" ] \
   || die "provision receipt differs from the reviewed digest"
@@ -196,11 +197,11 @@ trap cleanup EXIT
 provision_json="$(python3 "$MANIFEST_HELPER" provision \
   --provision-receipt "$PROVISION_RECEIPT" \
   --expected-provision-sha256 "$EXPECTED_PROVISION_SHA256" \
-  --guest "$GUEST")"
+  --guest "$WITNESS_GUEST")"
 python_validation_json="$(python3 "$MANIFEST_HELPER" validate-python-provenance \
   --provision-receipt "$PROVISION_RECEIPT" \
   --expected-provision-sha256 "$EXPECTED_PROVISION_SHA256" \
-  --guest "$GUEST" \
+  --guest "$WITNESS_GUEST" \
   --provenance "$PYTHON_PROVENANCE")"
 mapfile -t python_context < <(
   python3 - "$provision_json" "$python_validation_json" <<'PY'
@@ -225,9 +226,9 @@ PY
 [ "${#python_context[@]}" -eq 9 ] \
   || die "cannot select the signed guest Python identity"
 BASE_IMAGE_SHA256="${python_context[0]}"
-GUEST_HOST_PUBLIC_KEY="${python_context[1]}"
-GUEST_HOST_KEY_FINGERPRINT="${python_context[2]}"
-GUEST_HOST_PUBLIC_KEY_SHA256="${python_context[3]}"
+WITNESS_HOST_PUBLIC_KEY="${python_context[1]}"
+WITNESS_HOST_KEY_FINGERPRINT="${python_context[2]}"
+WITNESS_HOST_PUBLIC_KEY_SHA256="${python_context[3]}"
 PYTHON_VERSION="${python_context[4]}"
 PYTHON_BINARY_SHA256="${python_context[5]}"
 PYTHON_PACKAGE_NAME="${python_context[6]}"
@@ -235,11 +236,11 @@ PYTHON_PACKAGE_VERSION="${python_context[7]}"
 PYTHON_PACKAGE_ARCHITECTURE="${python_context[8]}"
 
 allowed_signers="$pm2_work/python-provenance.allowed-signers"
-printf '%s %s\n' "$GUEST" "$GUEST_HOST_PUBLIC_KEY" >"$allowed_signers"
+printf '%s %s\n' "$WITNESS_GUEST" "$WITNESS_HOST_PUBLIC_KEY" >"$allowed_signers"
 chmod 0600 "$allowed_signers"
 ssh-keygen -Y verify \
   -f "$allowed_signers" \
-  -I "$GUEST" \
+  -I "$WITNESS_GUEST" \
   -n nexus-rollback-drill-vm-python-provenance \
   -s "$PYTHON_PROVENANCE_SIGNATURE" \
   <"$PYTHON_PROVENANCE" >/dev/null \
@@ -510,9 +511,9 @@ python3 "$MANIFEST_HELPER" build \
   --python-package-version "$PYTHON_PACKAGE_VERSION" \
   --python-package-architecture "$PYTHON_PACKAGE_ARCHITECTURE" \
   --provision-receipt-sha256 "$EXPECTED_PROVISION_SHA256" \
-  --python-provenance-guest "$GUEST" \
-  --python-host-key-fingerprint "$GUEST_HOST_KEY_FINGERPRINT" \
-  --python-host-public-key-sha256 "$GUEST_HOST_PUBLIC_KEY_SHA256" \
+  --python-provenance-witness-guest "$WITNESS_GUEST" \
+  --python-host-key-fingerprint "$WITNESS_HOST_KEY_FINGERPRINT" \
+  --python-host-public-key-sha256 "$WITNESS_HOST_PUBLIC_KEY_SHA256" \
   --output "$stage/manifest.json" >/dev/null
 chmod 0400 "$stage/manifest.json"
 

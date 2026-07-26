@@ -1147,6 +1147,11 @@ function validateGeneration(
       'generation_bundle_digest_invalid',
     );
   });
+  if (new Set(generation.runtimeAuthorizations.map(
+    (entry) => entry.bundleManifestSha256,
+  )).size !== 1) {
+    fail('generation_bundle_manifests_must_share_provision_set');
+  }
   return generation;
 }
 

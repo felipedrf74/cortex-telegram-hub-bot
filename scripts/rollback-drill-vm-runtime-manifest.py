@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-BUNDLE_SCHEMA = "nexus.rollback-drill-vm-runtime-bundle.v1"
+BUNDLE_SCHEMA = "nexus.rollback-drill-vm-runtime-bundle.v2"
 PROVISION_SCHEMA = "nexus.rollback-drill-vm-provision.v2"
 GUEST_MEASUREMENT_SCHEMA = "nexus.rollback-drill-vm-runtime-measurement.v1"
 READINESS_SCHEMA = "nexus.rollback-drill-vm-runtime-readiness.v2"
@@ -1748,12 +1748,13 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         {
             "verification",
             "namespace",
+            "scope",
             "provenancePath",
             "provenanceSha256",
             "signaturePath",
             "signatureSha256",
             "provisionReceiptSha256",
-            "guest",
+            "witnessGuest",
             "hostKeyFingerprint",
             "hostPublicKeySha256",
         },
@@ -1763,6 +1764,8 @@ def validate_manifest(value: Any) -> dict[str, Any]:
         python_provenance["verification"]
         != "provisioned-guest-ssh-host-key-signature"
         or python_provenance["namespace"] != PYTHON_PROVENANCE_NAMESPACE
+        or python_provenance["scope"]
+        != "provision-set-immutable-base-image"
         or python_provenance["provenancePath"] != PYTHON_PROVENANCE
         or python_provenance["signaturePath"] != PYTHON_PROVENANCE_SIGNATURE
         or any(
@@ -1773,7 +1776,7 @@ def validate_manifest(value: Any) -> dict[str, Any]:
                 "provisionReceiptSha256",
             )
         )
-        or python_provenance["guest"] not in {"guest-1", "guest-2", "guest-3"}
+        or python_provenance["witnessGuest"] != "guest-1"
         or not HEX64.fullmatch(python_provenance["hostPublicKeySha256"])
         or not SSH_FINGERPRINT.fullmatch(
             python_provenance["hostKeyFingerprint"]
@@ -3759,7 +3762,7 @@ def build_command(args: argparse.Namespace) -> None:
         or args.python_package_architecture != "amd64"
         or args.npm_version != NPM_VERSION
         or not HEX64.fullmatch(args.provision_receipt_sha256)
-        or args.python_provenance_guest not in {"guest-1", "guest-2", "guest-3"}
+        or args.python_provenance_witness_guest != "guest-1"
         or not SSH_FINGERPRINT.fullmatch(args.python_host_key_fingerprint)
         or not HEX64.fullmatch(args.python_host_public_key_sha256)
     ):
@@ -3771,7 +3774,7 @@ def build_command(args: argparse.Namespace) -> None:
         or python_provenance_value.get("provisionReceiptSha256")
         != args.provision_receipt_sha256
         or python_provenance_value.get("guest")
-        != args.python_provenance_guest
+        != args.python_provenance_witness_guest
         or python_provenance_value.get("machine", {}).get(
             "sshHostKeyFingerprint"
         )
@@ -3869,6 +3872,7 @@ def build_command(args: argparse.Namespace) -> None:
             "python": {
                 "verification": "provisioned-guest-ssh-host-key-signature",
                 "namespace": PYTHON_PROVENANCE_NAMESPACE,
+                "scope": "provision-set-immutable-base-image",
                 "provenancePath": PYTHON_PROVENANCE,
                 "provenanceSha256": sha256_file(root / PYTHON_PROVENANCE),
                 "signaturePath": PYTHON_PROVENANCE_SIGNATURE,
@@ -3876,7 +3880,7 @@ def build_command(args: argparse.Namespace) -> None:
                     root / PYTHON_PROVENANCE_SIGNATURE
                 ),
                 "provisionReceiptSha256": args.provision_receipt_sha256,
-                "guest": args.python_provenance_guest,
+                "witnessGuest": args.python_provenance_witness_guest,
                 "hostKeyFingerprint": args.python_host_key_fingerprint,
                 "hostPublicKeySha256": args.python_host_public_key_sha256,
             },
@@ -3962,15 +3966,15 @@ def context_command(args: argparse.Namespace) -> None:
     if manifest["target"]["os"]["baseImageSha256"] != receipt["image"]["sha256"]:
         fail("runtime bundle targets a different provisioned base image")
     python_provenance = manifest["provenance"]["python"]
+    witness = provision_guest(receipt, python_provenance["witnessGuest"])
     if (
         python_provenance["provisionReceiptSha256"] != provision_sha
-        or python_provenance["guest"] != args.guest
         or python_provenance["hostKeyFingerprint"]
-        != guest["hostKeyFingerprint"]
+        != witness["hostKeyFingerprint"]
         or python_provenance["hostPublicKeySha256"]
-        != guest["hostPublicKeySha256"]
+        != witness["hostPublicKeySha256"]
     ):
-        fail("runtime bundle Python provenance targets a different guest")
+        fail("runtime bundle Python provenance witness is invalid")
     print(
         json.dumps(
             {
@@ -4322,7 +4326,7 @@ def parse_args() -> argparse.Namespace:
     build.add_argument("--python-package-version", required=True)
     build.add_argument("--python-package-architecture", required=True)
     build.add_argument("--provision-receipt-sha256", required=True)
-    build.add_argument("--python-provenance-guest", required=True)
+    build.add_argument("--python-provenance-witness-guest", required=True)
     build.add_argument("--python-host-key-fingerprint", required=True)
     build.add_argument("--python-host-public-key-sha256", required=True)
     build.add_argument("--output", required=True)

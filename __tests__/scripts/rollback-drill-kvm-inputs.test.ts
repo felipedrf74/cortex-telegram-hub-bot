@@ -144,9 +144,8 @@ function makeInputs(root: string, nowMs: number) {
     'controller-boot-id': 'serverdominguez-boot-id\n',
     'controller-uptime': '100000.00 200000.00\n',
     'synthetic.seed': 'synthetic-only-seed\n',
-    'ssh-loss.runtime-manifest.json': '{"bundle":"ssh-loss"}\n',
-    'failed-health.runtime-manifest.json': '{"bundle":"failed-health"}\n',
-    'guest-reboot.runtime-manifest.json': '{"bundle":"guest-reboot"}\n',
+    'provision-set.runtime-manifest.json':
+      '{"bundle":"shared-provision-set"}\n',
   };
   for (const [name, body] of Object.entries(files)) {
     writeText(path.join(root, name), body);
@@ -368,9 +367,9 @@ function makeInputs(root: string, nowMs: number) {
       seedFile: 'synthetic.seed',
     },
     runtimeBundleManifests: {
-      'ssh-loss': 'ssh-loss.runtime-manifest.json',
-      'failed-health': 'failed-health.runtime-manifest.json',
-      'guest-reboot': 'guest-reboot.runtime-manifest.json',
+      'ssh-loss': 'provision-set.runtime-manifest.json',
+      'failed-health': 'provision-set.runtime-manifest.json',
+      'guest-reboot': 'provision-set.runtime-manifest.json',
     },
     releaseEvidence: {
       releaseManifest: 'release-manifest.envelope.json',
@@ -588,13 +587,21 @@ describe('rollback-drill KVM input generator', () => {
       'failed-health',
       'guest-reboot',
     ]);
+    expect(new Set(generation.runtimeAuthorizations.map(
+      (entry: any) => entry.bundleManifestSha256,
+    )).size).toBe(1);
+    const authorizationIds = new Set<string>();
     for (const drill of generation.orderedDrills) {
       const body = fs.readFileSync(
         path.join(prepared, 'runtime-authorizations', `${drill}.json`),
         'utf8',
       );
       expect(body.endsWith('\n')).toBe(false);
-      expect(JSON.parse(body).operation).toBe('collect-runtime-readiness');
+      const runtimeAuthorization = JSON.parse(body);
+      expect(runtimeAuthorization.operation).toBe(
+        'collect-runtime-readiness',
+      );
+      authorizationIds.add(runtimeAuthorization.authorizationId);
       writeText(
         path.join(
           prepared,
@@ -608,6 +615,7 @@ describe('rollback-drill KVM input generator', () => {
         ),
       );
     }
+    expect(authorizationIds.size).toBe(3);
     const sequenceStateRoot = path.join(root, 'readiness-state');
     const initialized = runReadinessSequence([
       'init',
@@ -849,6 +857,68 @@ describe('rollback-drill KVM input generator', () => {
     ], nowMs + 120_000);
     expect(failed.status).toBe(1);
     expect(failed.stderr).toContain('observation_captured_at_invalid');
+    expect(fs.existsSync(output)).toBe(false);
+  });
+
+  it('rejects guest-specific runtime bundle bytes before creating inputs', () => {
+    const fixture = makeInputs(root, nowMs);
+    writeText(
+      path.join(root, 'different.runtime-manifest.json'),
+      '{"bundle":"guest-specific"}\n',
+    );
+    fixture.spec.runtimeBundleManifests['guest-reboot'] =
+      'different.runtime-manifest.json';
+    fs.writeFileSync(
+      fixture.specPath,
+      `${JSON.stringify(fixture.spec, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const output = path.join(root, 'must-not-exist');
+    const rejected = runGenerator([
+      'prepare',
+      '--spec', fixture.specPath,
+      '--output-dir', output,
+    ], nowMs);
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain(
+      'spec_runtime_bundle_manifests_must_share_provision_set',
+    );
+    expect(fs.existsSync(output)).toBe(false);
+  });
+
+  it('rejects finalized isolation with guest-specific bundle digests', () => {
+    const fixture = makeInputs(root, nowMs);
+    const prepared = path.join(root, 'prepared');
+    expect(runGenerator([
+      'prepare',
+      '--spec', fixture.specPath,
+      '--output-dir', prepared,
+    ], nowMs).status).toBe(0);
+    const generationPath = path.join(prepared, 'generation-manifest.json');
+    const generation = JSON.parse(fs.readFileSync(generationPath, 'utf8'));
+    generation.runtimeAuthorizations[1].bundleManifestSha256 =
+      digest('guest-specific-runtime-bundle');
+    fs.writeFileSync(generationPath, canonicalJson(generation), {
+      mode: 0o600,
+    });
+    const output = path.join(root, 'must-not-exist.json');
+
+    const rejected = runGenerator([
+      'finalize-isolation',
+      '--plan', path.join(prepared, 'plan.json'),
+      '--generation-manifest', generationPath,
+      '--provision-receipt', fixture.provisionPath,
+      '--readiness-ledger', path.join(root, 'unused-readiness-ledger.json'),
+      '--observation', path.join(root, 'unused-observation.json'),
+      '--ssh-loss-readiness', path.join(root, 'unused-ssh-loss.json'),
+      '--failed-health-readiness', path.join(root, 'unused-failed-health.json'),
+      '--guest-reboot-readiness', path.join(root, 'unused-guest-reboot.json'),
+      '--output', output,
+    ], nowMs);
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain(
+      'generation_manifest_bundle_manifests_must_share_provision_set',
+    );
     expect(fs.existsSync(output)).toBe(false);
   });
 

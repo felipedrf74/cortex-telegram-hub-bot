@@ -209,8 +209,10 @@ ssh_only_bootstrap_required and drillReady=false. With QEMU restrict=on it
 cannot fetch the promotion toolchain, and the exact release artifact does not
 contain the Node or PM2 executables. A boot proves only KVM/cloud-init/SSH.
 
-Before any promotion drill, build and register a separately reviewed,
-owner-signed offline bundle for that exact guest. It contains and verifies:
+Before any promotion drill, build and register one separately reviewed,
+owner-signed offline bundle for the immutable provision set. Guest 1 is the
+only Python-provenance witness; all three guests are still installed and
+measured independently. The bundle contains and verifies:
 
 - Node 22.23.1, including a root-owned mode-0755 regular
   /usr/bin/node file with link count one;
@@ -227,8 +229,10 @@ owner-signed offline bundle for that exact guest. It contains and verifies:
 The bundle builder runs only on a trusted Ubuntu 24.04/x86-64 builder with
 Node 22.23.1/npm 10.9.8. It requires a clean checkout whose HEAD and
 origin/main both equal the reviewed full SHA, prepared Node release inputs,
-an offline npm cache, the selected guest's host-key-signed Python provenance,
-and a lab-only Ed25519 owner key. It forces npm offline, disables lifecycle
+an offline npm cache, guest 1's host-key-signed Python provenance, and a
+lab-only Ed25519 owner key. The signed manifest scopes that witness to the
+exact provision receipt and immutable base-image digest; it does not attest
+another guest's live runtime. The builder forces npm offline, disables lifecycle
 scripts, verifies the Node release signature and pinned identities, constructs
 the complete PM2 lock closure, signs the canonical manifest, fsyncs the full
 tree, and publishes one content-addressed directory. It performs no download.
@@ -249,13 +253,24 @@ a subset of that union fails closed. Before readiness is signed, the guest
 invokes the installed v4 promotion control's assert-root-pm2-ready command;
 failure prevents readiness publication and therefore prevents every drill.
 
-Each provisioned guest is assigned to one drill. Start its first boot, collect
-the Python provenance with strict host-key checking through
-`nexus-rollback-drill-vm-runtime-control inspect-python`, and keep that same
-guest running while its guest-bound bundle is built and registered. Do not stop
-and restart between provenance collection and the readiness collector: until a
-readiness v2 receipt exists, the runner accepts only the initial overlay
-digest. Repeat this sequence independently for each guest.
+Start guest 1's first boot, collect its Python provenance with strict host-key
+checking through `nexus-rollback-drill-vm-runtime-control inspect-python`, and
+keep guest 1 running while the provision-set bundle is built and registered.
+Before the first readiness claim, guest 1 may perform only cloud-init, SSH
+readiness, Python inspection, and bundle construction inputs; do not install
+the runtime or invoke a promotion control. Set all three
+runtimeBundleManifests entries in the reviewed input spec to the same
+content-addressed manifest. Do not stop and restart guest 1 between provenance
+collection and its readiness collector: until a readiness v2 receipt exists,
+the runner accepts only the initial overlay digest.
+
+After the three authorizations are signed and the sequence ledger is
+initialized, claim and collect guest 1. The collector independently installs
+and measures the shared bundle, stops guest 1, and publishes its receipt.
+Only then start, claim, install, and measure guest 2, followed by guest 3.
+Each authorization still binds a distinct guest, port, SSH host key, drill,
+and authorization ID, and every readiness receipt binds that guest's live
+Python package/binary, runtime, QEMU, and sealed overlay identities.
 
 Pin the separately transported owner public key exactly once, then register the
 signed bundle:
@@ -268,7 +283,8 @@ signed bundle:
     register-bundle <copied-content-addressed-bundle> \
     <bundle-manifest-sha256>
 
-Create compact, sorted canonical JSON with no trailing newline using schema
+Create three compact, sorted canonical JSON payloads with no trailing newline
+using schema
 `nexus.rollback-drill-vm-runtime-authorization.v1`. The signed authorization
 must bind a unique 64-hex authorizationId, issuedAt, expiresAt no more than 24
 hours later, the current Linux boot-ID SHA-256, matching `/proc/uptime`
@@ -281,7 +297,7 @@ bytes with the same lab owner key:
   openssl pkeyutl -sign -inkey <lab-owner-private-key.pem> -rawin \
     -in <authorization.json> -out <authorization.sig>
 
-While the selected first-boot unit is still active, run:
+While the currently claimed first-boot unit is still active, run:
 
   sudo /usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness collect \
     <guest-1|guest-2|guest-3> <provision-receipt-sha256> \
@@ -317,8 +333,8 @@ Use the protected-main
 `scripts/rollback-drill-kvm-readiness-sequence.mjs` control before operating
 the three runtime-readiness guests. It is an offline, root-only admission
 ledger, not a guest runner. It snapshots the exact plan, generation manifest,
-provision receipt, lab owner public key, and all three signed runtime
-authorizations under
+provision receipt, lab owner public key, and all three signed, guest-specific
+runtime authorizations under
 `/var/lib/nexus-rollback-drill-vm/readiness-sequences/<plan-sha256>`.
 The fixed non-waiting control lock permits only one state transition at a time.
 An existing plan ledger is never reinitialized or overwritten. Every command
@@ -337,8 +353,8 @@ Initialize once. The authorization directory must contain the canonical
     --guest-owner-public-key <lab-owner-public-key.pem>
 
 Use the request path emitted by `init` or `status`; never handcraft or copy a
-request from another plan. Immediately before operating a guest, checkpoint
-the exact next request:
+request from another plan. Immediately before installing the runtime or
+starting readiness collection for a guest, checkpoint the exact next request:
 
   sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-readiness-sequence.mjs claim \
     --plan <plan.json> \
@@ -395,6 +411,10 @@ created:
 
   sudo /usr/bin/node /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-kvm-inputs.mjs template \
     --output-dir <new-root-private-template-directory>
+
+The reviewed spec must point all three runtimeBundleManifests entries at the
+same guest-1-witnessed provision-set manifest bytes. Preparation rejects
+different bundle digests before creating its output.
 
 After review, generate the plan, three canonical runtime authorization
 payloads, a plan-bound isolation-observation template, and a generation
