@@ -2223,6 +2223,42 @@ def remove_bundle_repair(path: Path, target_parent: Path) -> None:
     fsync_directory(target_parent)
 
 
+def ensure_staged_parent_directories(
+    destination_root: Path,
+    relative: PurePosixPath,
+) -> None:
+    current = destination_root
+    for component in relative.parent.parts:
+        current = current / component
+        created = False
+        try:
+            os.mkdir(current, 0o755)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError as error:
+            fail(f"cannot create staged bundle parent directory: {error}")
+        try:
+            identity = current.lstat()
+        except OSError as error:
+            fail(f"cannot inspect staged bundle parent directory: {error}")
+        if (
+            stat.S_ISLNK(identity.st_mode)
+            or not stat.S_ISDIR(identity.st_mode)
+            or identity.st_uid != os.geteuid()
+            or identity.st_gid != os.getegid()
+        ):
+            fail("staged bundle parent is not one owned real directory")
+        if created:
+            try:
+                os.chmod(current, 0o755)
+                identity = current.lstat()
+            except OSError as error:
+                fail(f"cannot normalize staged bundle parent directory: {error}")
+        if stat.S_IMODE(identity.st_mode) != 0o755:
+            fail("staged bundle parent directory mode is unsafe")
+
+
 def copy_signed_regular(
     source_descriptor: int,
     destination_root: Path,
@@ -2246,7 +2282,7 @@ def copy_signed_regular(
         os.close(parent_descriptor)
         fail(f"cannot open signed bundle file {entry['path']}: {error}")
     destination = destination_root.joinpath(*relative.parts)
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    ensure_staged_parent_directories(destination_root, relative)
     destination_descriptor: int | None = None
     try:
         before = os.fstat(descriptor)
@@ -2345,7 +2381,7 @@ def copy_signed_symlink(
     finally:
         os.close(parent_descriptor)
     destination = destination_root.joinpath(*relative.parts)
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    ensure_staged_parent_directories(destination_root, relative)
     os.symlink(entry["target"], destination)
     if hasattr(os, "lchown"):
         os.lchown(destination, os.geteuid(), os.getegid())
