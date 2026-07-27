@@ -676,7 +676,7 @@ class AwsCli:
         self.wait_timeout = wait_timeout
         self.environment = {
             "HOME": str(config.parent),
-            "PATH": "/usr/bin:/bin",
+            "PATH": f"{binary.parent}:/usr/bin:/bin",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
             "AWS_CONFIG_FILE": str(config),

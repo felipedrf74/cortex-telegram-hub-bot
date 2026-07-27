@@ -56,6 +56,9 @@ describe('advisory SonarQube operational assets', () => {
     expect(script).toContain('required member is not regular');
     expect(script).toContain('source drift for');
     expect(script).toContain('install target is outside the exact allowlist');
+    expect(script).toContain(
+      '[[ "$relative" =~ ^[A-Za-z0-9._@/-]+$ ]]',
+    );
     expect(script).toContain('component is group/world writable');
     expect(script).toContain(
       'installer must execute from the exact reviewed bootstrap source path',

@@ -531,7 +531,7 @@ while IFS=$'\t' read -r relative target owner mode extra; do
   [ -z "$extra" ] || die "install layout contains an extra column"
   [ -n "$relative" ] && [ -n "$target" ] && [ -n "$owner" ] && [ -n "$mode" ] \
     || die "install layout contains an incomplete row"
-  [[ "$relative" =~ ^[A-Za-z0-9._/-]+$ ]] \
+  [[ "$relative" =~ ^[A-Za-z0-9._@/-]+$ ]] \
     && [[ "/$relative/" != *"/../"* && "/$relative/" != *"/./"* ]] \
     && [[ "$relative" != /* ]] \
     || die "install layout source is unsafe"

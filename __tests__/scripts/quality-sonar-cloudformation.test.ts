@@ -52,6 +52,33 @@ function runGuard(template: string) {
 }
 
 describe('SonarQube backup CloudFormation boundary', () => {
+  it('canonicalizes the AWS-required PEM CRL to its receipt-bound DER digest', () => {
+    const der = Buffer.from('sonar-crl-der-fixture', 'utf8');
+    const encoded = der.toString('base64');
+    const pem = `-----BEGIN X509 CRL-----\n${encoded}\n-----END X509 CRL-----\n`;
+    const harness = [
+      'import base64,hashlib,importlib.util,sys',
+      'spec=importlib.util.spec_from_file_location("controller",sys.argv[1])',
+      'module=importlib.util.module_from_spec(spec)',
+      'spec.loader.exec_module(module)',
+      'pem=base64.b64decode(sys.argv[2],validate=True)',
+      'der=module.canonical_pem_crl_der(pem)',
+      'assert hashlib.sha256(der).hexdigest()==sys.argv[3]',
+    ].join('\n');
+    const result = spawnSync(
+      'python3',
+      [
+        '-c',
+        harness,
+        activationControllerPath,
+        Buffer.from(pem, 'utf8').toString('base64'),
+        sha256(der),
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it('creates retained private versioned storage separate from application DR', () => {
     const template = fs.readFileSync(templatePath, 'utf8');
 
@@ -101,6 +128,12 @@ describe('SonarQube backup CloudFormation boundary', () => {
     expect(template.match(/Type: AWS::RolesAnywhere::Profile/g)).toHaveLength(2);
     expect(template.match(/Type: AWS::RolesAnywhere::TrustAnchor/g)).toHaveLength(1);
     expect(template.match(/Type: AWS::RolesAnywhere::CRL/g)).toHaveLength(1);
+    expect(template).toContain(
+      'Canonical PEM CRL for the Sonar-only private CA.',
+    );
+    expect(template).toContain(
+      'SHA-256 of the exact DER bytes encoded by the PEM CRL above.',
+    );
     expect(template.match(/DurationSeconds: 900/g)).toHaveLength(2);
     expect(template.match(/AcceptRoleSessionName: false/g)).toHaveLength(2);
     expect(template.match(/Enabled: !If \[EnableRolesAnywhere, true, false\]/g))

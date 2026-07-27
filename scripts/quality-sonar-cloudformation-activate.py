@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import configparser
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -208,6 +209,38 @@ def crl_serials(
     if not serials:
         fail("live Sonar CRL contains no revoked certificate serial")
     return serials
+
+
+def canonical_pem_crl_der(crl_data: bytes) -> bytes:
+    begin = b"-----BEGIN X509 CRL-----\n"
+    end = b"-----END X509 CRL-----\n"
+    if not crl_data.startswith(begin) or not crl_data.endswith(end):
+        fail("live Sonar CRL is not canonical PEM")
+    encoded = crl_data[len(begin) : -len(end)]
+    if not encoded.endswith(b"\n"):
+        fail("live Sonar CRL PEM body is not canonical")
+    encoded = encoded[:-1]
+    lines = encoded.split(b"\n")
+    if (
+        not lines
+        or any(not line or len(line) > 64 for line in lines)
+        or any(len(line) != 64 for line in lines[:-1])
+    ):
+        fail("live Sonar CRL PEM body is not canonical")
+    compact = b"".join(lines)
+    try:
+        der = base64.b64decode(compact, validate=True)
+    except (ValueError, binascii.Error):
+        fail("live Sonar CRL PEM body is invalid")
+    encoded_der = base64.b64encode(der)
+    canonical_lines = [
+        encoded_der[index : index + 64]
+        for index in range(0, len(encoded_der), 64)
+    ]
+    canonical = begin + b"\n".join(canonical_lines) + b"\n" + end
+    if not der or canonical != crl_data:
+        fail("live Sonar CRL PEM body is not canonical")
+    return der
 
 
 def trusted_file(
@@ -979,13 +1012,23 @@ def validate_identity_plane(
         fail("live Sonar CRL identity, bytes, or state is mismatched")
     try:
         live_crl = base64.b64decode(crl.get("crlData", ""), validate=True)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, binascii.Error):
         fail("live Sonar CRL data is invalid")
+    parameter_crl = parameters.get("CertificateRevocationListData")
+    if not isinstance(parameter_crl, str):
+        fail("CloudFormation Sonar CRL data is invalid")
+    try:
+        expected_crl = parameter_crl.encode("ascii")
+    except UnicodeEncodeError:
+        fail("CloudFormation Sonar CRL data is invalid")
+    live_crl_der = canonical_pem_crl_der(live_crl)
     if (
         crl.get("crlId") != crl_id
         or crl.get("trustAnchorArn") != outputs["RolesAnywhereTrustAnchorArn"]
         or crl.get("enabled") is not enabled
-        or sha256_bytes(live_crl) != parameters.get("CertificateRevocationListSha256")
+        or live_crl != expected_crl
+        or sha256_bytes(live_crl_der)
+        != parameters.get("CertificateRevocationListSha256")
         or outputs.get("RolesAnywhereCrlSha256")
         != parameters.get("CertificateRevocationListSha256")
     ):

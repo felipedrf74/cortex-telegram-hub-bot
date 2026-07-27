@@ -1509,6 +1509,16 @@ function canonicalBase64(value, label) {
   return decoded;
 }
 
+function pemCrlFromDerBase64(value, label) {
+  const der = canonicalBase64(value, label);
+  const encoded = der.toString('base64');
+  const lines = encoded.match(/.{1,64}/gu);
+  if (!lines || lines.join('') !== encoded) {
+    fail(`${label} could not be encoded as canonical PEM`);
+  }
+  return `-----BEGIN X509 CRL-----\n${lines.join('\n')}\n-----END X509 CRL-----\n`;
+}
+
 function normalizeCertificateSerial(value, label) {
   const compact = String(value || '').replace(/[:\s]/gu, '').toUpperCase();
   if (!/^[0-9A-F]+$/u.test(compact)) fail(`${label} is invalid`);
@@ -1613,10 +1623,21 @@ function validateTrustAnchorAndCrl(
     ['rolesanywhere', 'get-crl', '--crl-id', crlId],
     'Sonar Roles Anywhere CRL',
   ).crl;
-  const liveCrl = canonicalBase64(crl?.crlData, 'live Sonar CRL');
+  const liveCrlPem = canonicalBase64(crl?.crlData, 'live Sonar CRL');
+  const expectedCrlPem = Buffer.from(
+    parameters.get('CertificateRevocationListData') || '',
+    'utf8',
+  );
   const expectedCrl = canonicalBase64(
-    parameters.get('CertificateRevocationListData'),
-    'CloudFormation Sonar CRL',
+    activationPayload.material.crlData,
+    'activation Sonar CRL',
+  );
+  const receiptCrlPem = Buffer.from(
+    pemCrlFromDerBase64(
+      activationPayload.material.crlData,
+      'activation Sonar CRL',
+    ),
+    'utf8',
   );
   const expectedDigest = parameters.get('CertificateRevocationListSha256');
   if (!crl
@@ -1624,8 +1645,9 @@ function validateTrustAnchorAndCrl(
       || crl.name !== `${options.stackName}-crl`
       || crl.trustAnchorArn !== stack.trustAnchorArn
       || crl.enabled !== true
-      || !liveCrl.equals(expectedCrl)
-      || sha256(liveCrl) !== expectedDigest
+      || !liveCrlPem.equals(expectedCrlPem)
+      || !expectedCrlPem.equals(receiptCrlPem)
+      || sha256(expectedCrl) !== expectedDigest
       || expectedDigest !== outputs.get('RolesAnywhereCrlSha256')
       || expectedDigest !== activationPayload.evidence.revocationMaterialSha256) {
     fail('Sonar CRL identity, state, or bytes are mismatched');
@@ -1644,7 +1666,7 @@ function validateTrustAnchorAndCrl(
     },
     'Sonar CRL',
   );
-  return liveCrl;
+  return expectedCrl;
 }
 
 function runRevokedProbe(options) {
@@ -2081,7 +2103,10 @@ function verifyLive(options) {
   const expectedParameters = {
     BackupCertificateSubjectCommonName:
       activationPayload.identities.backup.subjectCommonName,
-    CertificateRevocationListData: activationPayload.material.crlData,
+    CertificateRevocationListData: pemCrlFromDerBase64(
+      activationPayload.material.crlData,
+      'activation Sonar CRL',
+    ),
     CertificateRevocationListSha256:
       activationPayload.evidence.revocationMaterialSha256,
     CertificateIssuerCommonName: activationPayload.issuerCommonName,

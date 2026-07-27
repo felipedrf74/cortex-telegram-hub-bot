@@ -35,6 +35,12 @@ function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function pemCrlFromDerBase64(value: string): string {
+  const encoded = Buffer.from(value, 'base64').toString('base64');
+  const lines = encoded.match(/.{1,64}/gu) as string[];
+  return `-----BEGIN X509 CRL-----\n${lines.join('\n')}\n-----END X509 CRL-----\n`;
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -520,7 +526,9 @@ function buildLiveAwsResponses(
   const parameters = {
     BackupCertificateSubjectCommonName: backup.subjectCommonName,
     BucketName: '',
-    CertificateRevocationListData: state.activationPayload.material.crlData,
+    CertificateRevocationListData: pemCrlFromDerBase64(
+      state.activationPayload.material.crlData,
+    ),
     CertificateRevocationListSha256:
       state.activationPayload.evidence.revocationMaterialSha256,
     CertificateIssuerCommonName: state.activationPayload.issuerCommonName,
@@ -752,7 +760,10 @@ function buildLiveAwsResponses(
       crl: {
         crlArn: `arn:aws:rolesanywhere:${region}:${accountId}:crl/${crlId}`,
         crlId,
-        crlData: state.activationPayload.material.crlData,
+        crlData: Buffer.from(
+          pemCrlFromDerBase64(state.activationPayload.material.crlData),
+          'utf8',
+        ).toString('base64'),
         name: `${stackName}-crl`,
         trustAnchorArn: stack.trustAnchorArn,
         enabled: true,
