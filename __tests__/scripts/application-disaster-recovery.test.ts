@@ -1956,13 +1956,46 @@ describe('Nexus application disaster-recovery assets', () => {
     fs.chmodSync(archive, 0o600);
     const destination = path.join(root, 'restored');
     fs.mkdirSync(destination, { mode: 0o700 });
-    const extracted = runPython([archiveHelper, archive, destination]);
+    const extracted = spawnSync(python, [
+      '-c',
+      [
+        'import importlib.util,json,os,pathlib,sys',
+        'spec=importlib.util.spec_from_file_location("nexus_archive",sys.argv[1])',
+        'module=importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(module)',
+        'destination=pathlib.Path(sys.argv[3])',
+        'calls=[]',
+        'original_chown=os.chown',
+        'def tracked_chown(path,uid,gid,*,follow_symlinks=True):',
+        ' calls.append({"path":str(pathlib.Path(path).relative_to(destination)),"uid":uid,"gid":gid,"followSymlinks":follow_symlinks})',
+        ' return original_chown(path,uid,gid,follow_symlinks=follow_symlinks)',
+        'module.os.chown=tracked_chown',
+        'result=module.extract(pathlib.Path(sys.argv[2]),destination)',
+        'print(json.dumps({"calls":calls,"result":result},sort_keys=True))',
+      ].join('\n'),
+      archiveHelper,
+      archive,
+      destination,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    });
     expect(extracted.status, extracted.stderr).toBe(0);
-    expect(JSON.parse(extracted.stdout)).toMatchObject({
+    const extractionProof = JSON.parse(extracted.stdout);
+    expect(extractionProof.result).toMatchObject({
       schemaVersion: 'NexusReleaseRollbackEscrowV1',
       archivedVersion: '4.14.230',
     });
-    expect(fs.statSync(path.join(destination, 'package.json')).mode & 0o777).toBe(0o600);
+    const extractedPackage = fs.statSync(path.join(destination, 'package.json'));
+    expect(extractedPackage.mode & 0o777).toBe(0o600);
+    expect(extractedPackage.uid).toBe(process.getuid?.() ?? extractedPackage.uid);
+    expect(extractedPackage.gid).toBe(process.getgid?.() ?? extractedPackage.gid);
+    expect(extractionProof.calls).toContainEqual({
+      path: 'package.json',
+      uid: process.getuid?.() ?? extractedPackage.uid,
+      gid: process.getgid?.() ?? extractedPackage.gid,
+      followSymlinks: false,
+    });
 
     const hostile = path.join(root, 'hostile.tar.gz');
     execFileSync(
