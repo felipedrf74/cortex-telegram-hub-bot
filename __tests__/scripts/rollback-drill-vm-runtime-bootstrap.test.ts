@@ -419,6 +419,60 @@ function structuralManifest(publicKey: Buffer) {
 }
 
 describe("offline rollback-drill VM runtime bootstrap", () => {
+  it("binds the complete v4 pre-layout drill closure into the guest control manifest", () => {
+    const destinations = new Map(
+      runtimeControlContract().files.map(
+        ([source, destination, owner, mode]: [
+          string,
+          string,
+          string,
+          number,
+        ]) => [destination, { source, owner, mode }],
+      ),
+    );
+    expect(destinations.get(
+      "/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install",
+    )).toEqual({
+      source: "scripts/remote-rollback-drill-legacy-staging-install.sh",
+      owner: "root:root",
+      mode: 0o700,
+    });
+    expect(destinations.get(
+      "/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker",
+    )).toEqual({
+      source: "scripts/remote-rollback-drill-legacy-staging-broker.sh",
+      owner: "root:root",
+      mode: 0o700,
+    });
+    for (const destination of [
+      "/usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-adapter.mjs",
+      "/usr/local/libexec/nexus-rollback-drill-v4-prelayout-runtime-dependencies.mjs",
+      "/usr/local/libexec/nexus-rollback-drill-v4-prelayout-installed-tree-attestation.mjs",
+      "/usr/local/libexec/nexus-rollback-drill-v4-prelayout-recovery-runtime-identity.mjs",
+      "/usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-fs.py",
+      "/etc/nexus-release/rollback-drill-v4-prelayout-release-evidence-public-key.pem",
+      "/etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging@.service",
+      "/etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging-recovery.service",
+      "/etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging-install-recovery.service",
+    ]) {
+      expect(destinations.has(destination), destination).toBe(true);
+    }
+    expect(destinations.has(
+      "/etc/systemd/system/pm2-dominguez.service.d/15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf",
+    )).toBe(false);
+    expect(destinations.has(
+      "/etc/systemd/system/pm2-root.service.d/15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf",
+    )).toBe(false);
+    expect(destinations.has(
+      "/etc/systemd/system/nexus-release-promotion-recovery.service.d/15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf",
+    )).toBe(false);
+    expect(runtimeControlContract().services).not.toContainEqual([
+      "nexus-rollback-drill-v4-prelayout-staging-recovery.service",
+      "loaded",
+      "enabled",
+    ]);
+  });
+
   it("selects one exact guest from the immutable SSH-only provision receipt", () => {
     const root = temporaryRoot();
     const receiptPath = join(root, "active.json");

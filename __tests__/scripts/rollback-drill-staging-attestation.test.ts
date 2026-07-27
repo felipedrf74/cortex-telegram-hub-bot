@@ -36,7 +36,15 @@ function sha256(value: string | Buffer) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function fixture({ legacy = false } = {}) {
+function fixture({
+  legacy = false,
+  v4Prelayout = false,
+}: {
+  legacy?: boolean;
+  v4Prelayout?: boolean;
+} = {}) {
+  if (legacy && v4Prelayout) throw new Error('drill fixture profile is ambiguous');
+  const drillProfile = legacy || v4Prelayout;
   const root = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-rollback-drill-staging-')),
   );
@@ -102,7 +110,7 @@ function fixture({ legacy = false } = {}) {
       sha256(canonicalJson(manifestPayload.ci)),
   };
   const verifiedAt = new Date(Date.now() - 10_000).toISOString();
-  const base = legacy ? legacyBase : '/srv/nexus-release/staging';
+  const base = drillProfile ? legacyBase : '/srv/nexus-release/staging';
   const releaseDir =
     `${base}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
   const predecessor =
@@ -167,12 +175,12 @@ function fixture({ legacy = false } = {}) {
         sqliteIntegrity: true,
         sqliteForeignKeys: true,
         backendHealth: true,
-        ...(legacy ? { authenticatedBackendSnapshot: true } : {}),
+        ...(drillProfile ? { authenticatedBackendSnapshot: true } : {}),
         authenticatedContentEngine: true,
         pm2ExactIdentity: true,
         pm2RestartStable: true,
       },
-      ...(legacy ? {
+      ...(drillProfile ? {
         checkedAt: new Date(Date.now() - 10_000).toISOString(),
         readinessAttempts: 1,
         services: remoteServices,
@@ -194,29 +202,42 @@ function fixture({ legacy = false } = {}) {
     },
     smoke: {
       status: 'passed',
-      command: legacy
+      command: drillProfile
         ? 'scripts/remote-release-readiness.sh'
         : 'scripts/staging-smoke.sh',
       logSha256: 'f'.repeat(64),
     },
     verifiedAt,
     expiresAt: new Date(Date.parse(verifiedAt) + 60 * 60_000).toISOString(),
-    ...(legacy ? {
+    ...(drillProfile ? {
       drillBootstrap: {
-        schema: 'nexus.rollback-drill-legacy-staging-bootstrap.v1',
+        schema: v4Prelayout
+          ? 'nexus.rollback-drill-v4-prelayout-staging-bootstrap.v1'
+          : 'nexus.rollback-drill-legacy-staging-bootstrap.v1',
         profile: 'isolated-kvm-first-drill',
         promotionAllowed: false,
         transactionId: requestId,
         base,
         broker: {
-          version: 'nexus-rollback-drill-legacy-staging-broker.v1',
+          version: v4Prelayout
+            ? 'nexus-rollback-drill-v4-prelayout-staging-broker.v1'
+            : 'nexus-rollback-drill-legacy-staging-broker.v1',
           sha256: '3'.repeat(64),
           adapterSha256: '4'.repeat(64),
         },
         control: {
-          version: 'nexus-release-promotion-control.v2',
-          sha256: controlSha,
+          version: v4Prelayout
+            ? 'nexus-release-promotion-control.v4'
+            : 'nexus-release-promotion-control.v2',
+          sha256: v4Prelayout ? '0'.repeat(64) : controlSha,
         },
+        ...(v4Prelayout ? {
+          phaseA: {
+            sourceSha: 'd'.repeat(40),
+            archiveSha256: 'e'.repeat(64),
+            receiptSha256: 'f'.repeat(64),
+          },
+        } : {}),
         predecessor: {
           runtime: predecessor,
           runtimeSha: '1'.repeat(40),
@@ -471,6 +492,57 @@ describe('rollback-drill ordinary release-evidence bundle', () => {
 });
 
 describe('rollback-drill legacy staging bootstrap binding', () => {
+  it('binds the v4 pre-layout Phase A identity and remains drill-key-only', () => {
+    const state = fixture({ v4Prelayout: true });
+    const result = JSON.parse(execFileSync(process.execPath, [
+      script,
+      'validate',
+      '--root', state.root,
+      '--bundle', state.files.signedBundle,
+      '--request', state.files.signingRequest,
+      '--source-manifest', state.files.sourceManifest,
+      '--drill-public-key', state.files.drillPublic,
+      '--production-public-key', state.files.productionPublic,
+      '--expect-runtime-sha', runtimeSha,
+      '--allow-test-key',
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    }));
+    expect(result).toMatchObject({
+      ok: true,
+      promotable: false,
+      rollbackDrillEligible: true,
+      scope: 'isolated-kvm-first-drill',
+    });
+    expect(state.stagingRequest.drillBootstrap).toMatchObject({
+      schema: 'nexus.rollback-drill-v4-prelayout-staging-bootstrap.v1',
+      promotionAllowed: false,
+      broker: {
+        version: 'nexus-rollback-drill-v4-prelayout-staging-broker.v1',
+      },
+      control: { version: 'nexus-release-promotion-control.v4' },
+      phaseA: {
+        sourceSha: 'd'.repeat(40),
+        archiveSha256: 'e'.repeat(64),
+        receiptSha256: 'f'.repeat(64),
+      },
+    });
+    const ordinary = spawnSync(process.execPath, [
+      ordinaryStaging,
+      'validate-request',
+      '--root', state.root,
+      '--request', state.files.stagingRequest,
+      '--expect-runtime-sha', runtimeSha,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_ENV: 'test' },
+    });
+    expect(ordinary.status).not.toBe(0);
+    expect(`${ordinary.stdout}${ordinary.stderr}`)
+      .toContain('drill-only legacy staging evidence cannot satisfy');
+  });
+
   it('accepts only the governed five-second protected-signing chronology', async () => {
     const state = fixture({ legacy: true });
     const { validateLegacyStagingRequest } = await import(
@@ -618,15 +690,25 @@ describe('rollback-drill legacy staging bootstrap binding', () => {
 });
 
 describe('drill-staging operator entry', () => {
-  it('requires acknowledgement and exposes only a non-promotable dry-run', () => {
-    const missingAcknowledgement = spawnSync('bash', [
+  it('exposes a non-promotable dry-run without claiming owner bootstrap', () => {
+    const dryRunWithoutAcknowledgement = spawnSync('bash', [
       releaseOperator,
       'drill-staging',
       '--dry-run',
     ], { encoding: 'utf8' });
-    expect(missingAcknowledgement.status).toBe(64);
-    expect(missingAcknowledgement.stderr)
-      .toContain('--acknowledge-first-drill-bootstrap');
+    expect(dryRunWithoutAcknowledgement.status).toBe(0);
+    expect(dryRunWithoutAcknowledgement.stderr).toBe('');
+    expect(JSON.parse(dryRunWithoutAcknowledgement.stdout)).toMatchObject({
+      ok: true,
+      dryRun: true,
+      promotable: false,
+      rollbackDrillEligible: false,
+      featureEnabled: true,
+      reason: 'execution_and_protected_drill_signature_required',
+      base: legacyBase,
+      broker:
+        '/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker',
+    });
 
     const dryRun = spawnSync('bash', [
       releaseOperator,
@@ -644,7 +726,7 @@ describe('drill-staging operator entry', () => {
       reason: 'execution_and_protected_drill_signature_required',
       base: legacyBase,
       broker:
-        '/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker',
+        '/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker',
     });
   });
 });

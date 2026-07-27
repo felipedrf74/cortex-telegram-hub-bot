@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Root-owned, one-shot adapter for the exact control-v2 legacy staging layout.
-# It is deliberately drill-only. The accepted request, predecessor, selector,
-# outage clock, readiness, and terminal evidence are journaled independently
-# from ordinary release promotion state.
+# Root-owned, one-shot adapter for the legacy staging layout. The original
+# profile remains pinned to promotion control v2. The separately installed
+# v4-prelayout profile exists only to break the first-drill/layout-activation
+# dependency cycle after Phase A has retired v2. Both profiles are drill-only:
+# the accepted request, predecessor, selector, outage clock, readiness, and
+# terminal evidence are journaled independently from ordinary promotion state.
 set -euo pipefail
 umask 077
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-VERSION=nexus-rollback-drill-legacy-staging-broker.v1
+SCRIPT_NAME="$(basename -- "${BASH_SOURCE[0]}")"
 COMMAND="${1:-}"
 [ "$#" -gt 0 ] && shift
 TEST_MODE="${NEXUS_LEGACY_DRILL_TEST_MODE:-0}"
@@ -16,24 +18,79 @@ if [ "$TEST_MODE" = 1 ] && [ "$EUID" -eq 0 ]; then
   echo "legacy staging drill broker: test mode may not cross a privileged uid boundary" >&2
   exit 77
 fi
-STATE_ROOT="${NEXUS_LEGACY_DRILL_STATE_ROOT:-/var/lib/nexus-rollback-drill-legacy-staging}"
+PROFILE_MODE=control-v2
+if [ "$SCRIPT_NAME" = nexus-rollback-drill-v4-prelayout-staging-broker ] \
+    || { [ "$TEST_MODE" = 1 ] \
+      && [ "${NEXUS_LEGACY_DRILL_PROFILE:-}" = v4-prelayout ]; }; then
+  PROFILE_MODE=v4-prelayout
+fi
+case "$PROFILE_MODE" in
+  control-v2)
+    VERSION=nexus-rollback-drill-legacy-staging-broker.v1
+    DEFAULT_STATE_ROOT=/var/lib/nexus-rollback-drill-legacy-staging
+    DEFAULT_INSTALLER=/usr/local/sbin/nexus-rollback-drill-legacy-staging-install
+    DEFAULT_INSTALL_RECOVERY_UNIT=/etc/systemd/system/nexus-rollback-drill-legacy-staging-install-recovery.service
+    DEFAULT_ADAPTER_BIN=/usr/local/libexec/nexus-rollback-drill-legacy-staging-adapter.mjs
+    DEFAULT_DEPENDENCY_BIN=/usr/local/libexec/nexus-release-runtime-dependencies.mjs
+    DEFAULT_INSTALLED_ATTESTOR=/usr/local/libexec/nexus-release-installed-tree-attestation.mjs
+    DEFAULT_RECOVERY_ATTESTOR=/usr/local/libexec/nexus-release-recovery-runtime-identity.mjs
+    DEFAULT_RELEASE_PUBLIC_KEY=/etc/nexus-release/release-evidence-public-key.pem
+    DEFAULT_FILESYSTEM_HELPER=/usr/local/libexec/nexus-rollback-drill-legacy-staging-fs.py
+    DEFAULT_TRANSACTION_UNIT=/etc/systemd/system/nexus-rollback-drill-legacy-staging@.service
+    DEFAULT_RECOVERY_UNIT=/etc/systemd/system/nexus-rollback-drill-legacy-staging-recovery.service
+    DEFAULT_PM2_DOMINGUEZ_DROP_IN=/etc/systemd/system/pm2-dominguez.service.d/10-nexus-rollback-drill-legacy-staging-recovery.conf
+    DEFAULT_PM2_ROOT_DROP_IN=/etc/systemd/system/pm2-root.service.d/10-nexus-rollback-drill-legacy-staging-recovery.conf
+    DEFAULT_PROMOTION_RECOVERY_DROP_IN=
+    DEFAULT_SUDOERS_FILE=/etc/sudoers.d/nexus-rollback-drill-legacy-staging
+    TRANSACTION_UNIT_NAME=nexus-rollback-drill-legacy-staging@
+    EXPECTED_CONTROL_VERSION=nexus-release-promotion-control.v2
+    ;;
+  v4-prelayout)
+    VERSION=nexus-rollback-drill-v4-prelayout-staging-broker.v1
+    DEFAULT_STATE_ROOT=/var/lib/nexus-rollback-drill-v4-prelayout-staging
+    DEFAULT_INSTALLER=/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install
+    DEFAULT_INSTALL_RECOVERY_UNIT=/etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging-install-recovery.service
+    DEFAULT_ADAPTER_BIN=/usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-adapter.mjs
+    DEFAULT_DEPENDENCY_BIN=/usr/local/libexec/nexus-rollback-drill-v4-prelayout-runtime-dependencies.mjs
+    DEFAULT_INSTALLED_ATTESTOR=/usr/local/libexec/nexus-rollback-drill-v4-prelayout-installed-tree-attestation.mjs
+    DEFAULT_RECOVERY_ATTESTOR=/usr/local/libexec/nexus-rollback-drill-v4-prelayout-recovery-runtime-identity.mjs
+    DEFAULT_RELEASE_PUBLIC_KEY=/etc/nexus-release/rollback-drill-v4-prelayout-release-evidence-public-key.pem
+    DEFAULT_FILESYSTEM_HELPER=/usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-fs.py
+    DEFAULT_TRANSACTION_UNIT=/etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging@.service
+    DEFAULT_RECOVERY_UNIT=/etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging-recovery.service
+    DEFAULT_PM2_DOMINGUEZ_DROP_IN=/etc/systemd/system/pm2-dominguez.service.d/15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf
+    DEFAULT_PM2_ROOT_DROP_IN=/etc/systemd/system/pm2-root.service.d/15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf
+    DEFAULT_PROMOTION_RECOVERY_DROP_IN=/etc/systemd/system/nexus-release-promotion-recovery.service.d/15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf
+    DEFAULT_SUDOERS_FILE=/etc/sudoers.d/nexus-rollback-drill-v4-prelayout-staging
+    TRANSACTION_UNIT_NAME=nexus-rollback-drill-v4-prelayout-staging@
+    EXPECTED_CONTROL_VERSION=nexus-release-promotion-control.v4
+    ;;
+esac
+STATE_ROOT="${NEXUS_LEGACY_DRILL_STATE_ROOT:-$DEFAULT_STATE_ROOT}"
 BASE="${NEXUS_LEGACY_DRILL_BASE:-/home/dominguez/telegram-hub-bot-staging}"
 WORKER_USER="${NEXUS_LEGACY_DRILL_WORKER_USER:-dominguez}"
 CONTROL_BIN="${NEXUS_LEGACY_DRILL_CONTROL_BIN:-/usr/local/sbin/nexus-release-promotion-control}"
-ADAPTER_BIN="${NEXUS_LEGACY_DRILL_ADAPTER_BIN:-/usr/local/libexec/nexus-rollback-drill-legacy-staging-adapter.mjs}"
-DEPENDENCY_BIN="${NEXUS_LEGACY_DRILL_DEPENDENCY_BIN:-/usr/local/libexec/nexus-release-runtime-dependencies.mjs}"
-INSTALLED_ATTESTOR="${NEXUS_LEGACY_DRILL_INSTALLED_ATTESTOR:-/usr/local/libexec/nexus-release-installed-tree-attestation.mjs}"
-RECOVERY_ATTESTOR="${NEXUS_LEGACY_DRILL_RECOVERY_ATTESTOR:-/usr/local/libexec/nexus-release-recovery-runtime-identity.mjs}"
+LAYOUT_CONTROL_BIN="${NEXUS_LEGACY_DRILL_LAYOUT_CONTROL_BIN:-/usr/local/sbin/nexus-release-layout-activation-control}"
+INSTALLER_BIN="${NEXUS_LEGACY_DRILL_INSTALLER_BIN:-$DEFAULT_INSTALLER}"
+INSTALL_RECOVERY_UNIT="${NEXUS_LEGACY_DRILL_INSTALL_RECOVERY_UNIT:-$DEFAULT_INSTALL_RECOVERY_UNIT}"
+ADAPTER_BIN="${NEXUS_LEGACY_DRILL_ADAPTER_BIN:-$DEFAULT_ADAPTER_BIN}"
+DEPENDENCY_BIN="${NEXUS_LEGACY_DRILL_DEPENDENCY_BIN:-$DEFAULT_DEPENDENCY_BIN}"
+INSTALLED_ATTESTOR="${NEXUS_LEGACY_DRILL_INSTALLED_ATTESTOR:-$DEFAULT_INSTALLED_ATTESTOR}"
+RECOVERY_ATTESTOR="${NEXUS_LEGACY_DRILL_RECOVERY_ATTESTOR:-$DEFAULT_RECOVERY_ATTESTOR}"
 SQLITE_HELPER="${NEXUS_LEGACY_DRILL_SQLITE_HELPER:-/usr/local/libexec/nexus-application-dr/application-dr-sqlite.py}"
-FILESYSTEM_HELPER="${NEXUS_LEGACY_DRILL_FILESYSTEM_HELPER:-/usr/local/libexec/nexus-rollback-drill-legacy-staging-fs.py}"
+FILESYSTEM_HELPER="${NEXUS_LEGACY_DRILL_FILESYSTEM_HELPER:-$DEFAULT_FILESYSTEM_HELPER}"
 PROC_ROOT="${NEXUS_LEGACY_DRILL_PROC_ROOT:-/proc}"
-RELEASE_PUBLIC_KEY="${NEXUS_LEGACY_DRILL_RELEASE_PUBLIC_KEY:-/etc/nexus-release/release-evidence-public-key.pem}"
+RELEASE_PUBLIC_KEY="${NEXUS_LEGACY_DRILL_RELEASE_PUBLIC_KEY:-$DEFAULT_RELEASE_PUBLIC_KEY}"
 INSTALL_RECEIPT="${NEXUS_LEGACY_DRILL_INSTALL_RECEIPT:-$STATE_ROOT/install-receipt.v1.json}"
-TRANSACTION_UNIT="${NEXUS_LEGACY_DRILL_TRANSACTION_UNIT:-/etc/systemd/system/nexus-rollback-drill-legacy-staging@.service}"
-RECOVERY_UNIT="${NEXUS_LEGACY_DRILL_RECOVERY_UNIT:-/etc/systemd/system/nexus-rollback-drill-legacy-staging-recovery.service}"
-PM2_DOMINGUEZ_DROP_IN="${NEXUS_LEGACY_DRILL_PM2_DOMINGUEZ_DROP_IN:-/etc/systemd/system/pm2-dominguez.service.d/10-nexus-rollback-drill-legacy-staging-recovery.conf}"
-PM2_ROOT_DROP_IN="${NEXUS_LEGACY_DRILL_PM2_ROOT_DROP_IN:-/etc/systemd/system/pm2-root.service.d/10-nexus-rollback-drill-legacy-staging-recovery.conf}"
-SUDOERS_FILE="${NEXUS_LEGACY_DRILL_SUDOERS_FILE:-/etc/sudoers.d/nexus-rollback-drill-legacy-staging}"
+TRANSACTION_UNIT="${NEXUS_LEGACY_DRILL_TRANSACTION_UNIT:-$DEFAULT_TRANSACTION_UNIT}"
+RECOVERY_UNIT="${NEXUS_LEGACY_DRILL_RECOVERY_UNIT:-$DEFAULT_RECOVERY_UNIT}"
+PM2_DOMINGUEZ_DROP_IN="${NEXUS_LEGACY_DRILL_PM2_DOMINGUEZ_DROP_IN:-$DEFAULT_PM2_DOMINGUEZ_DROP_IN}"
+PM2_ROOT_DROP_IN="${NEXUS_LEGACY_DRILL_PM2_ROOT_DROP_IN:-$DEFAULT_PM2_ROOT_DROP_IN}"
+PROMOTION_RECOVERY_DROP_IN="${NEXUS_LEGACY_DRILL_PROMOTION_RECOVERY_DROP_IN:-$DEFAULT_PROMOTION_RECOVERY_DROP_IN}"
+SUDOERS_FILE="${NEXUS_LEGACY_DRILL_SUDOERS_FILE:-$DEFAULT_SUDOERS_FILE}"
+PHASE_A_RECEIPT="${NEXUS_LEGACY_DRILL_PHASE_A_RECEIPT:-/var/lib/nexus-release-promotion/layout-activation/phase-a-receipt.v1.json}"
+LEGACY_V2_ACTIVE_RECEIPT="${NEXUS_LEGACY_DRILL_V2_ACTIVE_RECEIPT:-/var/lib/nexus-rollback-drill-legacy-staging/install-receipt.v1.json}"
+LEGACY_V2_RETIRED_RECEIPT="${NEXUS_LEGACY_DRILL_V2_RETIRED_RECEIPT:-/var/lib/nexus-rollback-drill-legacy-staging/install-receipt.retired.v1.json}"
 NODE_BIN="${NEXUS_LEGACY_DRILL_NODE_BIN:-/usr/bin/node}"
 PYTHON_BIN="${NEXUS_LEGACY_DRILL_PYTHON_BIN:-/usr/bin/python3}"
 FUSER_BIN="${NEXUS_LEGACY_DRILL_FUSER_BIN:-/usr/bin/fuser}"
@@ -48,7 +105,11 @@ FLOCK_BIN="${NEXUS_LEGACY_DRILL_FLOCK_BIN:-/usr/bin/flock}"
 PROMOTION_STATE_ROOT="${NEXUS_PROMOTION_STATE_ROOT:-/var/lib/nexus-release-promotion}"
 PROMOTION_CONTROL_LOCK="$PROMOTION_STATE_ROOT/.control.lock"
 SONAR_LOCK="${NEXUS_LEGACY_DRILL_SONAR_LOCK:-/run/lock/nexus-release-sonar.lock}"
-UPLOAD_ROOT="$BASE/.local/release/legacy-staging-drill"
+if [ "$PROFILE_MODE" = v4-prelayout ]; then
+  UPLOAD_ROOT="$BASE/.local/release/v4-prelayout-staging-drill"
+else
+  UPLOAD_ROOT="$BASE/.local/release/legacy-staging-drill"
+fi
 REQUESTS="$STATE_ROOT/requests"
 TRANSACTIONS="$STATE_ROOT/transactions"
 PREPARATIONS="$STATE_ROOT/preparations"
@@ -58,6 +119,11 @@ EXPECTED_NODE_VERSION=v22.23.1
 STABILITY_SECONDS=60
 RECOVERY_TARGET_SECONDS=120
 LOCKS_HELD=false
+BOOT_RECOVERY_OWNER=v4
+PHASE_A_SOURCE_SHA=
+PHASE_A_ARCHIVE_SHA256=
+PHASE_A_RECEIPT_SHA256=
+PHASE_A_CONTROL_SHA256=
 
 die() {
   echo "legacy staging drill broker: $*" >&2
@@ -100,12 +166,30 @@ if [ "$TEST_MODE" != 1 ]; then
     || die "production legacy staging worker may not be overridden"
   [ "$CONTROL_BIN" = /usr/local/sbin/nexus-release-promotion-control ] \
     || die "production control identity may not be overridden"
-  [ "$EXPECTED_CONTROL_SHA256" = fb66d9257ec0b7b6f2c582d326c5ed3f6c01071f5792a4045c42199b6691edf1 ] \
-    || die "production control digest may not be overridden"
+  if [ "$PROFILE_MODE" = control-v2 ]; then
+    [ "$EXPECTED_CONTROL_SHA256" = fb66d9257ec0b7b6f2c582d326c5ed3f6c01071f5792a4045c42199b6691edf1 ] \
+      || die "production control digest may not be overridden"
+  else
+    [ "$STATE_ROOT" = /var/lib/nexus-rollback-drill-v4-prelayout-staging ] \
+      && [ "$INSTALLER_BIN" = /usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install ] \
+      && [ "$INSTALL_RECOVERY_UNIT" = /etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging-install-recovery.service ] \
+      && [ "$ADAPTER_BIN" = /usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-adapter.mjs ] \
+      && [ "$DEPENDENCY_BIN" = /usr/local/libexec/nexus-rollback-drill-v4-prelayout-runtime-dependencies.mjs ] \
+      && [ "$INSTALLED_ATTESTOR" = /usr/local/libexec/nexus-rollback-drill-v4-prelayout-installed-tree-attestation.mjs ] \
+      && [ "$RECOVERY_ATTESTOR" = /usr/local/libexec/nexus-rollback-drill-v4-prelayout-recovery-runtime-identity.mjs ] \
+      && [ "$RELEASE_PUBLIC_KEY" = /etc/nexus-release/rollback-drill-v4-prelayout-release-evidence-public-key.pem ] \
+      && [ "$FILESYSTEM_HELPER" = /usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-fs.py ] \
+      && [ "$PROMOTION_RECOVERY_DROP_IN" = /etc/systemd/system/nexus-release-promotion-recovery.service.d/15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf ] \
+      && [ "$PHASE_A_RECEIPT" = /var/lib/nexus-release-promotion/layout-activation/phase-a-receipt.v1.json ] \
+      && [ "$LAYOUT_CONTROL_BIN" = /usr/local/sbin/nexus-release-layout-activation-control ] \
+      && [ "$LEGACY_V2_ACTIVE_RECEIPT" = /var/lib/nexus-rollback-drill-legacy-staging/install-receipt.v1.json ] \
+      && [ "$LEGACY_V2_RETIRED_RECEIPT" = /var/lib/nexus-rollback-drill-legacy-staging/install-receipt.retired.v1.json ] \
+      || die "production v4 pre-layout identity may not be overridden"
+  fi
   [ "$SQLITE_HELPER" = /usr/local/libexec/nexus-application-dr/application-dr-sqlite.py ] \
     && [ "$EXPECTED_SQLITE_HELPER_SHA256" = e1f1a92d4dc49bd6fe6c1d8c1a3573ec2db61f6374a1831b2765a5541943708d ] \
     || die "production SQLite helper identity may not be overridden"
-  [ "$FILESYSTEM_HELPER" = /usr/local/libexec/nexus-rollback-drill-legacy-staging-fs.py ] \
+  [ "$FILESYSTEM_HELPER" = "$DEFAULT_FILESYSTEM_HELPER" ] \
     || die "production filesystem helper path may not be overridden"
   [ "$PROC_ROOT" = /proc ] \
     || die "production procfs root may not be overridden"
@@ -289,19 +373,199 @@ ADAPTER_SHA256="$(sha256_file "$ADAPTER_BIN")"
 CONTROL_SHA256="$(sha256_file "$CONTROL_BIN")"
 CONTROL_VERSION="$("$CONTROL_BIN" version)"
 
+phase_a_identity() {
+  [ "$PROFILE_MODE" = v4-prelayout ] || return 0
+  "$NODE_BIN" - "$PHASE_A_RECEIPT" "$CONTROL_BIN" "$LAYOUT_CONTROL_BIN" \
+    "$TEST_MODE" \
+    "$LEGACY_V2_ACTIVE_RECEIPT" "$LEGACY_V2_RETIRED_RECEIPT" <<'NODE'
+const crypto=require('node:crypto');const fs=require('node:fs');
+const [receiptFile,controlFile,layoutControlFile,testMode,activeV2,retiredV2]
+ =process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
+const digest=(body)=>crypto.createHash('sha256').update(body).digest('hex');
+const read=(file,label,maximum)=>{
+ const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{
+  const before=fs.fstatSync(descriptor),body=fs.readFileSync(descriptor);
+  const after=fs.fstatSync(descriptor);
+  if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+   ||before.gid!==rootGid||(before.mode&0o7777)!==(label==='Phase A receipt'?0o600:0o755)
+   ||before.size<=0||before.size>maximum||before.dev!==after.dev
+   ||before.ino!==after.ino||before.size!==after.size
+   ||before.mtimeMs!==after.mtimeMs)throw new Error(`${label} identity is unsafe`);
+  return {body,value:label==='Phase A receipt'?JSON.parse(body):null};
+ }finally{fs.closeSync(descriptor);}
+};
+const receipt=read(receiptFile,'Phase A receipt',2*1024*1024);
+const control=read(controlFile,'promotion control',16*1024*1024);
+const layoutControl=read(
+ layoutControlFile,'layout activation control',16*1024*1024,
+);
+const value=receipt.value;
+if(value.schema!=='nexus.release-layout-phase-a-receipt.v1'
+ ||value.status!=='completed'||value.phaseARecoveryGuard!==true
+ ||typeof value.legacyV2AdapterRetired!=='boolean'
+ ||!/^[a-f0-9]{40}$/u.test(value.sourceSha??'')
+ ||!/^[a-f0-9]{64}$/u.test(value.sourceArchiveSha256??'')
+ ||!Array.isArray(value.installedAssets)
+ ||value.installedAssets.some((item)=>!item||typeof item!=='object'
+   ||Object.keys(item).sort().join(',')!=='path,sha256'
+   ||typeof item.path!=='string'||!/^[a-f0-9]{64}$/u.test(item.sha256??''))){
+ throw new Error('Phase A receipt contract is invalid');
+}
+if(fs.existsSync(activeV2)){
+ throw new Error('active v2 staging authority survived Phase A');
+}
+if(value.legacyV2AdapterRetired){
+ const retired=fs.readFileSync(retiredV2);
+ if(!/^[a-f0-9]{64}$/u.test(value.legacyRetirementSha256??'')
+  ||digest(retired)!==value.legacyRetirementSha256){
+  throw new Error('retired v2 staging authority is not bound by Phase A');
+ }
+}else if(value.legacyRetirementSha256!==null||fs.existsSync(retiredV2)){
+ throw new Error('fresh Phase A has unexpected v2 retirement state');
+}
+const matches=value.installedAssets.filter((item)=>item.path===controlFile);
+const layoutMatches=value.installedAssets.filter(
+ (item)=>item.path===layoutControlFile,
+);
+const controlSha256=digest(control.body);
+if(matches.length!==1||matches[0].sha256!==controlSha256
+ ||layoutMatches.length!==1
+ ||layoutMatches[0].sha256!==digest(layoutControl.body)){
+ throw new Error('Phase A receipt does not bind the live control closure');
+}
+process.stdout.write([
+ value.sourceSha,value.sourceArchiveSha256,digest(receipt.body),controlSha256,
+].join('\t'));
+NODE
+}
+
 verify_control() {
-  [ "$CONTROL_VERSION" = nexus-release-promotion-control.v2 ] \
-    && [ "$CONTROL_SHA256" = "$EXPECTED_CONTROL_SHA256" ] || {
-    echo "exact installed promotion control v2 is required" >&2
+  [ "$CONTROL_VERSION" = "$EXPECTED_CONTROL_VERSION" ] || {
+    echo "exact installed $EXPECTED_CONTROL_VERSION is required" >&2
     exit 75
   }
+  if [ "$PROFILE_MODE" = control-v2 ]; then
+    [ "$CONTROL_SHA256" = "$EXPECTED_CONTROL_SHA256" ] || {
+      echo "exact installed promotion control v2 is required" >&2
+      exit 75
+    }
+  else
+    PHASE_A_FIELDS="$(phase_a_identity)" || {
+      echo "completed Phase A receipt does not bind the live v4 control" >&2
+      exit 75
+    }
+    IFS=$'\t' read -r PHASE_A_SOURCE_SHA PHASE_A_ARCHIVE_SHA256 \
+      PHASE_A_RECEIPT_SHA256 PHASE_A_CONTROL_SHA256 <<<"$PHASE_A_FIELDS"
+    [ "$CONTROL_SHA256" = "$PHASE_A_CONTROL_SHA256" ] || {
+      echo "live v4 promotion control differs from Phase A" >&2
+      exit 75
+    }
+  fi
 }
 
 validate_install_receipt() {
-  [ "$TEST_MODE" = 1 ] && return 0
+  if [ "$TEST_MODE" = 1 ] \
+      && [ "${NEXUS_LEGACY_DRILL_TEST_VALIDATE_INSTALL_RECEIPT:-0}" != 1 ]; then
+    return 0
+  fi
   [ -f "$INSTALL_RECEIPT" ] && [ ! -L "$INSTALL_RECEIPT" ] \
-    && [ "$(stat -c '%U:%G:%a:%h' -- "$INSTALL_RECEIPT")" = root:root:600:1 ] \
     || die "root install receipt is unavailable or unsafe"
+  if [ "$TEST_MODE" = 1 ]; then
+    "$NODE_BIN" - "$INSTALL_RECEIPT" <<'NODE' \
+      || die "test install receipt is unavailable or unsafe"
+const fs=require('node:fs');const stat=fs.lstatSync(process.argv[2]);
+if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+ ||stat.uid!==process.getuid()||stat.gid!==process.getgid()
+ ||(stat.mode&0o7777)!==0o600)process.exit(1);
+NODE
+  else
+    [ "$(stat -c '%U:%G:%a:%h' -- "$INSTALL_RECEIPT")" = root:root:600:1 ] \
+      || die "root install receipt is unavailable or unsafe"
+  fi
+  if [ "$PROFILE_MODE" = v4-prelayout ]; then
+    "$NODE_BIN" - "$INSTALL_RECEIPT" "$PHASE_A_RECEIPT" "$CONTROL_BIN" \
+      "$INSTALLER_BIN" "$INSTALL_RECOVERY_UNIT" \
+      "$(realpath -- "${BASH_SOURCE[0]}")" "$ADAPTER_BIN" "$DEPENDENCY_BIN" \
+      "$INSTALLED_ATTESTOR" "$RECOVERY_ATTESTOR" "$RELEASE_PUBLIC_KEY" \
+      "$TRANSACTION_UNIT" "$RECOVERY_UNIT" "$PM2_DOMINGUEZ_DROP_IN" \
+      "$PM2_ROOT_DROP_IN" "$PROMOTION_RECOVERY_DROP_IN" "$SUDOERS_FILE" \
+      "$TEST_MODE" \
+      "$SQLITE_HELPER" "$FILESYSTEM_HELPER" <<'NODE'
+const crypto=require('node:crypto');const fs=require('node:fs');
+const [receiptFile,phaseAFile,control,installer,installRecoveryUnit,
+ broker,adapter,dependencies,
+ installedAttestor,recoveryAttestor,releasePublicKey,transactionUnit,recoveryUnit,
+ pm2DominguezDropIn,pm2RootDropIn,promotionRecoveryDropIn,sudoers,testMode,
+ sqliteTool,filesystemHelper]
+ =process.argv.slice(2);
+const digest=(body)=>crypto.createHash('sha256').update(body).digest('hex');
+const body=fs.readFileSync(receiptFile),receipt=JSON.parse(body);
+const phaseABody=fs.readFileSync(phaseAFile),phaseA=JSON.parse(phaseABody);
+const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)
+ &&Object.keys(value).sort().join(',')===[...keys].sort().join(',');
+const hex=/^[a-f0-9]{64}$/u;
+if(!exact(receipt,['schema','status','promotionAllowed','source','phaseA',
+ 'control','installed','installedAt'])
+ ||!exact(receipt.source,['sourceSha','archiveSha256'])
+ ||!exact(receipt.phaseA,['sourceSha','archiveSha256','receiptSha256'])
+ ||!exact(receipt.control,['version','sha256'])
+ ||!exact(receipt.installed,['installer','installRecoveryUnit',
+  'broker','adapter','dependencies',
+  'installedAttestor','recoveryAttestor','releasePublicKey',
+  'transactionUnit','recoveryUnit','pm2DominguezDropIn','pm2RootDropIn',
+  'promotionRecoveryDropIn','sudoers','sqliteTool','filesystemHelper'])
+ ||receipt.schema!=='nexus.rollback-drill-v4-prelayout-staging-install-receipt.v1'
+ ||receipt.status!=='active'||receipt.promotionAllowed!==false
+ ||!/^[a-f0-9]{40}$/u.test(receipt.source.sourceSha??'')
+ ||!hex.test(receipt.source.archiveSha256??'')
+ ||receipt.control.version!=='nexus-release-promotion-control.v4'
+ ||!Number.isFinite(Date.parse(receipt.installedAt??''))
+ ||phaseA.schema!=='nexus.release-layout-phase-a-receipt.v1'
+ ||phaseA.status!=='completed'||phaseA.phaseARecoveryGuard!==true
+ ||typeof phaseA.legacyV2AdapterRetired!=='boolean'
+ ||receipt.source.sourceSha!==phaseA.sourceSha
+ ||receipt.source.archiveSha256!==phaseA.sourceArchiveSha256
+ ||receipt.phaseA.sourceSha!==phaseA.sourceSha
+ ||receipt.phaseA.archiveSha256!==phaseA.sourceArchiveSha256
+ ||receipt.phaseA.receiptSha256!==digest(phaseABody))process.exit(1);
+const files={
+ installer:[installer,0o700],installRecoveryUnit:[installRecoveryUnit,0o644],
+ broker:[broker,0o700],adapter:[adapter,0o700],dependencies:[dependencies,0o700],
+ installedAttestor:[installedAttestor,0o700],
+ recoveryAttestor:[recoveryAttestor,0o700],
+ releasePublicKey:[releasePublicKey,0o644],
+ transactionUnit:[transactionUnit,0o644],recoveryUnit:[recoveryUnit,0o644],
+ pm2DominguezDropIn:[pm2DominguezDropIn,0o644],
+ pm2RootDropIn:[pm2RootDropIn,0o644],
+ promotionRecoveryDropIn:[promotionRecoveryDropIn,0o644],
+ sudoers:[sudoers,0o440],
+ sqliteTool:[sqliteTool,0o644],filesystemHelper:[filesystemHelper,0o700],
+};
+const expectedUid=testMode==='1'?process.getuid():0;
+const expectedGid=testMode==='1'?process.getgid():0;
+for(const [name,[file,mode]] of Object.entries(files)){
+ const stat=fs.lstatSync(file);
+ const observed=digest(fs.readFileSync(file));
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+  ||stat.uid!==expectedUid||stat.gid!==expectedGid
+  ||(stat.mode&0o7777)!==mode
+  ||!hex.test(receipt.installed[name]??'')
+  ||receipt.installed[name]!==observed)process.exit(1);
+}
+const controlObserved=digest(fs.readFileSync(control));
+const phaseAControl=phaseA.installedAssets?.filter(
+ (item)=>item?.path===control,
+);
+if(receipt.control.sha256!==controlObserved
+ ||phaseAControl?.length!==1||phaseAControl[0].sha256!==controlObserved){
+ process.exit(1);
+}
+NODE
+    return
+  fi
   "$NODE_BIN" - "$INSTALL_RECEIPT" "$CONTROL_BIN" \
     "$(realpath -- "${BASH_SOURCE[0]}")" "$ADAPTER_BIN" "$DEPENDENCY_BIN" \
     "$INSTALLED_ATTESTOR" "$RECOVERY_ATTESTOR" "$RELEASE_PUBLIC_KEY" \
@@ -358,6 +622,7 @@ adapter_env() {
     NEXUS_LEGACY_DRILL_PYTHON_BIN="$PYTHON_BIN" \
     NEXUS_LEGACY_DRILL_FUSER_BIN="$FUSER_BIN" \
     NEXUS_LEGACY_DRILL_EXPECTED_CONTROL_SHA256="$EXPECTED_CONTROL_SHA256" \
+    NEXUS_LEGACY_DRILL_PROFILE="$PROFILE_MODE" \
       "$NODE_BIN" "$ADAPTER_BIN" "$@"
   else
     "$NODE_BIN" "$ADAPTER_BIN" "$@"
@@ -460,9 +725,300 @@ run_worker_release_guarded_fd() {
   fi
 }
 
+assert_v4_prelayout_idle() {
+  [ "$PROFILE_MODE" = v4-prelayout ] || return 0
+  local marker
+  for marker in \
+    "$PROMOTION_STATE_ROOT/layout-activation/active.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-activation/phase-a-install-in-progress.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-activation/phase-a-recovery-failed.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-activation/phase-b-handover-in-progress.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-migration-in-progress.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-migration.v1.json" \
+    "$PROMOTION_STATE_ROOT/boot-recovery-in-progress.v1.json" \
+    "$PROMOTION_STATE_ROOT/active.json"; do
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] \
+      || die "v4 pre-layout staging admission marker is active: $marker"
+  done
+  phase_a_identity >/dev/null \
+    || die "v4 pre-layout staging Phase A identity changed"
+}
+
+assert_v4_boot_state() {
+  [ "$PROFILE_MODE" = v4-prelayout ] || return 0
+  local inherited_control_fd="${1:-}" marker
+  for marker in \
+    "$PROMOTION_STATE_ROOT/layout-activation/active.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-activation/phase-a-install-in-progress.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-activation/phase-a-recovery-failed.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-activation/phase-b-handover-in-progress.v1.json" \
+    "$PROMOTION_STATE_ROOT/layout-migration-in-progress.v1.json" \
+    ; do
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] \
+      || die "v4 pre-layout boot recovery marker is active: $marker"
+  done
+  marker="$PROMOTION_STATE_ROOT/active.json"
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    "$NODE_BIN" - "$marker" "$TEST_MODE" <<'NODE' \
+      || die "ordinary promotion authority is unsafe"
+const fs=require('node:fs');const [file,testMode]=process.argv.slice(2);
+const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+try{
+ const before=fs.fstatSync(fd),body=fs.readFileSync(fd),after=fs.fstatSync(fd);
+ const value=JSON.parse(body),rootUid=testMode==='1'?process.getuid():0;
+ const rootGid=testMode==='1'?process.getgid():0;
+ const exact=['schema','transactionId','requestSha256','envelopeSha256','activatedAt'];
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+  ||before.gid!==rootGid||(before.mode&0o7777)!==0o600
+  ||before.size<=0||before.size>1024*1024
+  ||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+  ||Object.keys(value).sort().join(',')!==exact.sort().join(',')
+  ||value.schema!=='nexus.promotion-active.v1'
+  ||!/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u
+    .test(value.transactionId??'')
+  ||!/^[a-f0-9]{64}$/u.test(value.requestSha256??'')
+  ||!/^[a-f0-9]{64}$/u.test(value.envelopeSha256??'')
+  ||!Number.isFinite(Date.parse(value.activatedAt??'')))process.exit(1);
+}finally{fs.closeSync(fd);}
+NODE
+    BOOT_RECOVERY_OWNER=promotion
+  fi
+  marker="$PROMOTION_STATE_ROOT/boot-recovery-in-progress.v1.json"
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    local marker_owner
+    marker_owner="$("$NODE_BIN" - "$marker" "$TEST_MODE" "$PROC_ROOT" \
+      "${NEXUS_LEGACY_DRILL_TEST_BOOT_ID:-test-boot}" \
+      "$PROMOTION_STATE_ROOT/boot-health-pending.v1.json" "$COMMAND" <<'NODE'
+const crypto=require('node:crypto');const fs=require('node:fs');
+const [file,testMode,procRoot,testBootId,pendingFile,command]=process.argv.slice(2);
+const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+try{
+ const before=fs.fstatSync(descriptor),body=fs.readFileSync(descriptor);
+ const after=fs.fstatSync(descriptor),value=JSON.parse(body);
+ const rootUid=testMode==='1'?process.getuid():0;
+ const rootGid=testMode==='1'?process.getgid():0;
+ const currentBootId=testMode==='1'?testBootId
+  :fs.readFileSync(`${procRoot}/sys/kernel/random/boot_id`,'utf8').trim();
+ const exactKeys=[
+  'schema','status','bootId','bootDetectedAt','bootDetectedEpoch',
+  'outageStartedAt','outageStartedEpoch','outageStartedMonotonic',
+  'outageBootId','recoveryDeadlineEpoch','timingSource','activeTransactionId',
+ ];
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+  ||before.gid!==rootGid||(before.mode&0o7777)!==0o600
+  ||before.size<=0||before.size>1024*1024
+  ||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+  ||Object.keys(value).sort().join(',')!==exactKeys.sort().join(',')
+  ||value.schema!=='nexus.release-boot-recovery.v1'
+  ||value.status!=='in_progress'||typeof value.bootId!=='string'||!value.bootId
+  ||!Number.isSafeInteger(value.bootDetectedEpoch)
+  ||Math.floor(Date.parse(value.bootDetectedAt??'')/1000)!==value.bootDetectedEpoch
+  ||!Number.isSafeInteger(value.outageStartedEpoch)
+  ||Math.floor(Date.parse(value.outageStartedAt??'')/1000)!==value.outageStartedEpoch
+  ||value.bootDetectedEpoch<value.outageStartedEpoch
+  ||!Number.isSafeInteger(value.outageStartedMonotonic)
+  ||value.outageStartedMonotonic<0
+  ||typeof value.outageBootId!=='string'||!value.outageBootId
+  ||value.recoveryDeadlineEpoch!==value.outageStartedEpoch+120)process.exit(1);
+ const pendingExists=Boolean(
+  fs.lstatSync(pendingFile,{throwIfNoEntry:false}),
+ );
+ let pending=null;
+ if(pendingExists){
+  const pendingFd=fs.openSync(
+   pendingFile,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0),
+  );
+  try{
+   const stat=fs.fstatSync(pendingFd),pendingBody=fs.readFileSync(pendingFd);
+   const afterPending=fs.fstatSync(pendingFd);
+   pending=JSON.parse(pendingBody);
+   const transaction=/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u;
+   const digest=/^[a-f0-9]{64}$/u,sha=/^[a-f0-9]{40}$/u;
+   const timingSources=new Set([
+    'boot_detection','layout_recovery','layout_journal',
+    'promotion_recovery_attempt','promotion_cutover',
+   ]);
+   const pendingV2Keys=[
+    'schema','status','production','staging','canonicalDumpSha256',
+    'pm2ClosureDigest','nodeSha256','recoveryAuthoritySha256','bootId',
+    'outageBootId','outageStartedAt','outageStartedEpoch',
+    'outageStartedMonotonic','recoveryDeadlineEpoch','temporaryPreparedAt',
+   ];
+   const pendingV3Keys=[
+    'schema','status','profile','production','staging','canonicalDumpSha256',
+    'pm2ClosureDigest','nodeSha256','recoveryAuthoritySha256','bootId',
+    'outageBootId','outageStartedAt','outageStartedEpoch',
+    'outageStartedMonotonic','recoveryDeadlineEpoch','temporaryPreparedAt',
+   ];
+   const roleV3Keys=[
+    'schema','role','profile','base','runtime','runtimeSha','artifactDigest',
+    'installedRuntimeDigest','selector','runtimeIdentity','markerSha256',
+    'installedAttestationSha256','authoritySha256','transaction',
+   ];
+   const pendingV2=pending.schema==='nexus.release-boot-health-pending.v2';
+   const pendingV3=pending.schema==='nexus.release-boot-health-pending.v3';
+   if(!stat.isFile()||stat.nlink!==1||stat.uid!==rootUid||stat.gid!==rootGid
+    ||(stat.mode&0o7777)!==0o600
+    ||stat.size<=0||stat.size>1024*1024
+    ||stat.dev!==afterPending.dev||stat.ino!==afterPending.ino
+    ||stat.size!==afterPending.size||stat.mtimeMs!==afterPending.mtimeMs
+    ||(!pendingV2&&!pendingV3)
+    ||Object.keys(pending).sort().join(',')
+      !==(pendingV2?pendingV2Keys:pendingV3Keys).sort().join(',')
+    ||pending.status!=='pending'
+    ||(pendingV3&&!new Set(['layout','legacy','v4-prelayout'])
+      .has(pending.profile))
+    ||pending.recoveryAuthoritySha256
+      !==crypto.createHash('sha256').update(body).digest('hex')
+    ||pending.bootId!==value.bootId||pending.outageBootId!==value.outageBootId
+    ||pending.outageStartedAt!==value.outageStartedAt
+    ||pending.outageStartedEpoch!==value.outageStartedEpoch
+    ||pending.outageStartedMonotonic!==value.outageStartedMonotonic
+    ||pending.recoveryDeadlineEpoch!==value.recoveryDeadlineEpoch
+    ||!digest.test(pending.canonicalDumpSha256??'')
+    ||!digest.test(pending.pm2ClosureDigest??'')
+    ||!digest.test(pending.nodeSha256??'')
+    ||!Number.isFinite(Date.parse(pending.temporaryPreparedAt??''))
+    ||!['production','staging'].every((role)=>{
+     const item=pending[role];
+     const keys=pendingV2?['base','runtime','runtimeSha']:roleV3Keys;
+     return item&&typeof item==='object'&&!Array.isArray(item)
+      &&Object.keys(item).sort().join(',')===keys.sort().join(',')
+      &&(!pendingV3||(item.schema==='nexus.release-boot-role.v1'
+        &&item.role===role&&typeof item.profile==='string'&&item.profile
+        &&digest.test(item.artifactDigest??'')
+        &&digest.test(item.installedRuntimeDigest??'')
+        &&digest.test(item.markerSha256??'')
+        &&digest.test(item.installedAttestationSha256??'')))
+      &&typeof item.base==='string'&&item.base.startsWith('/')
+      &&typeof item.runtime==='string'
+      &&item.runtime.startsWith(`${item.base}/releases/`)
+      &&sha.test(item.runtimeSha??'');
+    })
+    ||!timingSources.has(value.timingSource)
+    ||!(value.activeTransactionId===null
+      ||transaction.test(value.activeTransactionId)))process.exit(1);
+  }finally{fs.closeSync(pendingFd);}
+ }
+ const oldBoot=value.bootId!==currentBootId;
+ if(oldBoot){
+  const transaction=/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u;
+  const timingSources=new Set([
+   'boot_detection','layout_recovery','layout_journal',
+   'promotion_recovery_attempt','promotion_cutover',
+  ]);
+  if(!timingSources.has(value.timingSource)
+   ||!(value.activeTransactionId===null
+     ||transaction.test(value.activeTransactionId)))process.exit(1);
+  process.stdout.write('promotion');
+ }else if(command==='assert-boot-safe'&&pendingExists){
+  process.stdout.write('promotion');
+ }else if(command==='recover-all'&&value.timingSource==='boot_detection'){
+  if(pendingExists||value.activeTransactionId!==null)process.exit(1);
+  if(value.outageBootId!==currentBootId
+   ||value.bootDetectedEpoch!==value.outageStartedEpoch
+   ||value.bootDetectedAt!==value.outageStartedAt)process.exit(1);
+  process.stdout.write('v4');
+ }else if(command==='recover-all'&&value.timingSource==='layout_recovery'){
+  if(pendingExists||value.activeTransactionId!==null)process.exit(1);
+  process.stdout.write('promotion');
+ }else process.exit(1);
+}finally{fs.closeSync(descriptor);}
+NODE
+    )" \
+      || die "promotion boot-recovery marker is unsafe"
+    [ "$marker_owner" = promotion ] && BOOT_RECOVERY_OWNER=promotion
+  fi
+  if [ "$COMMAND" = assert-boot-safe ] \
+      && { [ -e "$PROMOTION_STATE_ROOT/boot-recovery-in-progress.v1.json" ] \
+        || [ -L "$PROMOTION_STATE_ROOT/boot-recovery-in-progress.v1.json" ] \
+        || [ -e "$PROMOTION_STATE_ROOT/boot-health-pending.v1.json" ] \
+        || [ -L "$PROMOTION_STATE_ROOT/boot-health-pending.v1.json" ]; }; then
+    local boot_authority_profile=v4-prelayout
+    if [ -e "$PROMOTION_STATE_ROOT/layout-migration.v1.json" ] \
+        || [ -L "$PROMOTION_STATE_ROOT/layout-migration.v1.json" ]; then
+      [ -f "$PROMOTION_STATE_ROOT/layout-migration.v1.json" ] \
+        && [ ! -L "$PROMOTION_STATE_ROOT/layout-migration.v1.json" ] \
+        || die "terminal layout attestation is unsafe"
+      boot_authority_profile=layout
+    fi
+    if [ -n "$inherited_control_fd" ]; then
+      NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD="$inherited_control_fd" \
+        "$CONTROL_BIN" assert-boot-recovery-prepared \
+          "$boot_authority_profile" >/dev/null \
+        || die "exact boot recovery authority is unsafe"
+    else
+      "$CONTROL_BIN" assert-boot-recovery-prepared \
+        "$boot_authority_profile" >/dev/null \
+        || die "exact boot recovery authority is unsafe"
+    fi
+  fi
+  if [ "$COMMAND" = recover-all ] \
+      && [ "${BOOT_RECOVERY_OWNER:-}" = promotion ]; then
+    # Promotion recovery owns the old-boot handoff.  Calling the layout
+    # authority here would re-enter its exact-current boot assertion before
+    # promotion has replaced the stale marker, deadlocking the ordered boot
+    # chain.  The promotion recovery service performs that assertion after
+    # this V4 service returns.
+    :
+  elif [ -n "$inherited_control_fd" ]; then
+    NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD="$inherited_control_fd" \
+      "$LAYOUT_CONTROL_BIN" assert-boot-safe >/dev/null \
+      || die "release-layout boot authority is unsafe"
+  else
+    "$LAYOUT_CONTROL_BIN" assert-boot-safe >/dev/null \
+      || die "release-layout boot authority is unsafe"
+  fi
+  phase_a_identity >/dev/null \
+    || die "v4 pre-layout staging Phase A identity changed"
+}
+
+ordinary_promotion_active() {
+  [ -f "$PROMOTION_STATE_ROOT/active.json" ] \
+    && [ ! -L "$PROMOTION_STATE_ROOT/active.json" ]
+}
+
+acquire_boot_locks() {
+  if [ "$PROFILE_MODE" != v4-prelayout ]; then
+    acquire_locks
+    return
+  fi
+  [ "$LOCKS_HELD" = false ] || return 0
+  verify_control
+  [ -f "$PROMOTION_STATE_ROOT/layout-activation/.activation.lock" ] \
+    && [ ! -L "$PROMOTION_STATE_ROOT/layout-activation/.activation.lock" ] \
+    || die "release-layout activation lock is unavailable"
+  exec 7<>"$PROMOTION_STATE_ROOT/layout-activation/.activation.lock"
+  "$FLOCK_BIN" -s 7
+  assert_v4_boot_state
+  [ -f "$PROMOTION_CONTROL_LOCK" ] && [ ! -L "$PROMOTION_CONTROL_LOCK" ] \
+    || die "promotion control lock is unavailable"
+  [ -f "$SONAR_LOCK" ] && [ ! -L "$SONAR_LOCK" ] \
+    || die "shared release/Sonar lock is unavailable"
+  exec 9>"$PROMOTION_CONTROL_LOCK"
+  "$FLOCK_BIN" -x 9
+  exec 8>"$SONAR_LOCK"
+  "$FLOCK_BIN" -x 8
+  LOCKS_HELD=true
+  # The layout control reserves fd 9 for its activation lock. Preserve the
+  # promotion lock on a non-colliding descriptor for its nested proof.
+  exec 6>&9
+  assert_v4_boot_state 6
+}
+
 acquire_locks() {
   [ "$LOCKS_HELD" = false ] || return 0
   verify_control
+  if [ "$PROFILE_MODE" = v4-prelayout ]; then
+    [ -f "$PROMOTION_STATE_ROOT/layout-activation/.activation.lock" ] \
+      && [ ! -L "$PROMOTION_STATE_ROOT/layout-activation/.activation.lock" ] \
+      || die "release-layout activation lock is unavailable"
+    exec 7<>"$PROMOTION_STATE_ROOT/layout-activation/.activation.lock"
+    "$FLOCK_BIN" -s 7
+  fi
+  assert_v4_prelayout_idle
   "$CONTROL_BIN" assert-idle >/dev/null
   [ -f "$PROMOTION_CONTROL_LOCK" ] && [ ! -L "$PROMOTION_CONTROL_LOCK" ] \
     || die "promotion control lock is unavailable"
@@ -476,6 +1032,9 @@ acquire_locks() {
   [ ! -e "$PROMOTION_STATE_ROOT/active.json" ] \
     && [ ! -L "$PROMOTION_STATE_ROOT/active.json" ] \
     || die "ordinary promotion is active"
+  assert_v4_prelayout_idle
+  NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD=9 \
+    "$CONTROL_BIN" assert-idle >/dev/null
 }
 
 acquire_successor_locks() {
@@ -502,8 +1061,10 @@ acquire_successor_locks() {
   [ ! -e "$PROMOTION_STATE_ROOT/active.json" ] \
     && [ ! -L "$PROMOTION_STATE_ROOT/active.json" ] \
     || die "ordinary promotion is active"
-  "$CONTROL_BIN" assert-idle >/dev/null \
-    && "$CONTROL_BIN" assert-layout-ready >/dev/null \
+  NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD=9 \
+    "$CONTROL_BIN" assert-idle >/dev/null \
+    && NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD=9 \
+      "$CONTROL_BIN" assert-layout-ready >/dev/null \
     || die "successor layout changed while retirement locks were acquired"
 }
 
@@ -658,9 +1219,13 @@ write_queued_journal() {
   install -d -m 700 "$transaction_root"
   root_own "$transaction_root"
   "$NODE_BIN" - "$request" "$journal" "$BROKER_SHA256" \
-    "$ADAPTER_SHA256" "$CONTROL_SHA256" "$TEST_MODE" <<'NODE'
+    "$ADAPTER_SHA256" "$CONTROL_SHA256" "$VERSION" \
+    "$EXPECTED_CONTROL_VERSION" "$PROFILE_MODE" "$PHASE_A_SOURCE_SHA" \
+    "$PHASE_A_ARCHIVE_SHA256" "$PHASE_A_RECEIPT_SHA256" "$TEST_MODE" <<'NODE'
 const crypto=require('node:crypto');const fs=require('node:fs');const path=require('node:path');
-const [requestFile,journal,brokerSha256,adapterSha256,controlSha256,testMode]=process.argv.slice(2);
+const [requestFile,journal,brokerSha256,adapterSha256,controlSha256,
+ brokerVersion,controlVersion,profileMode,phaseASourceSha,phaseAArchiveSha256,
+ phaseAReceiptSha256,testMode]=process.argv.slice(2);
 if(fs.lstatSync(journal,{throwIfNoEntry:false}))process.exit(1);
 const requestBody=fs.readFileSync(requestFile),request=JSON.parse(requestBody);
 const manifestBody=Buffer.from(request.releaseManifestBase64,'base64');
@@ -680,15 +1245,25 @@ const provenance={
 for(const field of Object.keys(provenance).filter((name)=>name!=='rootRequestSha256')){
  if(request[field]!==provenance[field])process.exit(1);
 }
+const phaseA=profileMode==='v4-prelayout'?{
+ sourceSha:phaseASourceSha,archiveSha256:phaseAArchiveSha256,
+ receiptSha256:phaseAReceiptSha256,
+}:undefined;
+if(profileMode==='v4-prelayout'){
+ if(canonical(request.phaseA)!==canonical(phaseA))process.exit(1);
+}else if(request.phaseA!==undefined){
+ process.exit(1);
+}
 const value={
  schema:'nexus.rollback-drill-legacy-staging-journal.v1',
  phase:'queued',requestId:request.requestId,runtimeSha:request.runtimeSha,
  artifactDigest:request.artifactDigest,base:request.base,
  candidateRuntime:request.releaseDir,
  requestSha256:provenance.rootRequestSha256,sourceProvenance:provenance,
- broker:{version:'nexus-rollback-drill-legacy-staging-broker.v1',
+ broker:{version:brokerVersion,
   sha256:brokerSha256,adapterSha256},
- control:{version:'nexus-release-promotion-control.v2',sha256:controlSha256},
+ control:{version:controlVersion,sha256:controlSha256},
+ ...(phaseA?{phaseA}:{}),
  queuedAt:new Date().toISOString(),updatedAt:new Date().toISOString(),
 };
 const fd=fs.openSync(journal,'wx',0o600);
@@ -1600,6 +2175,7 @@ const evidence={
  runtimeSha:journal.runtimeSha,artifactDigest:journal.artifactDigest,
  base:journal.base,releaseDir:journal.candidateRuntime,
  broker:journal.broker,control:journal.control,
+ ...(journal.phaseA?{phaseA:journal.phaseA}:{}),
  sourceProvenance:journal.sourceProvenance,
  predecessor:journal.predecessor,currentSelector:JSON.parse(currentSelectorJson),
  installedRuntimeAttestation:installed,recoveryRuntimeAttestation:recovery,
@@ -1886,16 +2462,18 @@ const x=require(process.argv[1]);process.stdout.write(x.databaseBackup?"true":"f
 }
 
 recover_all() {
-  local journal phase request_id
-  local -a unfinished=()
+  local journal phase request_id unfinished_count=0
+  local -a unfinished
   shopt -s nullglob
   for journal in "$TRANSACTIONS"/*/journal.json; do
     phase="$(journal_phase "$journal")"
     case "$phase" in completed|recovered) continue ;; esac
     unfinished+=("$journal")
+    unfinished_count=$((unfinished_count + 1))
   done
-  [ "${#unfinished[@]}" -le 1 ] \
+  [ "$unfinished_count" -le 1 ] \
     || die "multiple unfinished legacy staging transactions require owner review"
+  [ "$unfinished_count" -gt 0 ] || return 0
   for journal in "${unfinished[@]}"; do
     request_id="$(basename -- "$(dirname -- "$journal")")"
     ( set -euo pipefail; restore_transaction "$request_id" )
@@ -1927,14 +2505,22 @@ case "$COMMAND" in
     ;;
   inspect)
     "$NODE_BIN" - "$BROKER_SHA256" "$ADAPTER_SHA256" \
-      "$CONTROL_SHA256" "$BASE" "$WORKER_USER" <<'NODE'
-const [brokerSha256,adapterSha256,controlSha256,base,workerUser]=process.argv.slice(2);
+      "$CONTROL_SHA256" "$BASE" "$WORKER_USER" "$VERSION" \
+      "$EXPECTED_CONTROL_VERSION" "$PROFILE_MODE" "$PHASE_A_SOURCE_SHA" \
+      "$PHASE_A_ARCHIVE_SHA256" "$PHASE_A_RECEIPT_SHA256" <<'NODE'
+const [brokerSha256,adapterSha256,controlSha256,base,workerUser,
+ brokerVersion,controlVersion,profileMode,phaseASourceSha,
+ phaseAArchiveSha256,phaseAReceiptSha256]=process.argv.slice(2);
 process.stdout.write(`${JSON.stringify({
  schema:'nexus.rollback-drill-legacy-staging-broker-inspection.v1',
  promotionAllowed:false,base,workerUser,
- broker:{version:'nexus-rollback-drill-legacy-staging-broker.v1',
+ broker:{version:brokerVersion,
   sha256:brokerSha256,adapterSha256},
- control:{version:'nexus-release-promotion-control.v2',sha256:controlSha256},
+ control:{version:controlVersion,sha256:controlSha256},
+ ...(profileMode==='v4-prelayout'?{phaseA:{
+  sourceSha:phaseASourceSha,archiveSha256:phaseAArchiveSha256,
+  receiptSha256:phaseAReceiptSha256,
+ }}:{}),
 })}\n`);
 NODE
     ;;
@@ -2051,7 +2637,7 @@ NODE
       run_transaction "$REQUEST_ID"
     else
       "$SYSTEMCTL_BIN" start --no-block \
-        "nexus-rollback-drill-legacy-staging@$REQUEST_ID.service"
+        "$TRANSACTION_UNIT_NAME$REQUEST_ID.service"
     fi
     printf '{"ok":true,"promotable":false,"requestId":"%s","status":"submitted"}\n' \
       "$REQUEST_ID"
@@ -2091,21 +2677,43 @@ const x=require(process.argv[1]);process.stdout.write(x.evidenceSha256||"");' "$
     cat -- "$EVIDENCE"
     ;;
   recover-all)
-    acquire_locks
-    recover_all
-    printf '{"ok":true,"promotable":false,"status":"reconciled"}\n'
+    acquire_boot_locks
+    if ordinary_promotion_active; then
+      assert_transaction_slot
+      printf '{"ok":true,"promotable":false,"status":"ordinary_promotion_recovery_owned"}\n'
+    elif [ "$BOOT_RECOVERY_OWNER" = promotion ]; then
+      # A prior-boot promotion marker owns its own rewrite, but it must not
+      # prevent this adapter from restoring its independently journaled
+      # staging predecessor first.
+      recover_all
+      assert_transaction_slot
+      printf '{"ok":true,"promotable":false,"status":"ordinary_promotion_recovery_owned"}\n'
+    else
+      recover_all
+      printf '{"ok":true,"promotable":false,"status":"reconciled"}\n'
+    fi
     ;;
   assert-boot-safe)
-    acquire_locks
+    acquire_boot_locks
     assert_transaction_slot
-    printf '{"ok":true,"promotable":false,"status":"boot_safe"}\n'
+    if ordinary_promotion_active || [ "$BOOT_RECOVERY_OWNER" = promotion ]; then
+      printf '{"ok":true,"promotable":false,"status":"ordinary_promotion_recovery_owned"}\n'
+    else
+      printf '{"ok":true,"promotable":false,"status":"boot_safe"}\n'
+    fi
     ;;
   assert-terminal-retirement-ready)
-    acquire_successor_locks
+    if [ "$PROFILE_MODE" = v4-prelayout ]; then
+      acquire_locks
+      validate_install_receipt
+    else
+      acquire_successor_locks
+    fi
     assert_transaction_slot
-    "$NODE_BIN" - "$TRANSACTIONS" "$CONTROL_SHA256" <<'NODE'
+    "$NODE_BIN" - "$TRANSACTIONS" "$CONTROL_SHA256" "$PROFILE_MODE" \
+      "$PHASE_A_RECEIPT_SHA256" <<'NODE'
 const fs=require('node:fs');const path=require('node:path');
-const [root,successorSha256]=process.argv.slice(2);
+const [root,successorSha256,profile,phaseAReceiptSha256]=process.argv.slice(2);
 for(const entry of fs.readdirSync(root,{withFileTypes:true})){
  if(!entry.isDirectory())continue;
  const journal=path.join(root,entry.name,'journal.json');
@@ -2118,8 +2726,11 @@ process.stdout.write(`${JSON.stringify({
  successor:{
   version:'nexus-release-promotion-control.v4',
   sha256:successorSha256,
-  layoutEvidenceVerified:true,
+  layoutEvidenceVerified:profile==='control-v2',
  },
+ ...(profile==='v4-prelayout'?{
+  prelayout:true,phaseAReceiptSha256,
+ }:{}),
 })}\n`);
 NODE
     ;;

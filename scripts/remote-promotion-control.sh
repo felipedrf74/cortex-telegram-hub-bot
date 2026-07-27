@@ -37,6 +37,7 @@ LAYOUT_KVM_PROVISION_JOURNAL="${NEXUS_PROMOTION_LAYOUT_KVM_PROVISION_JOURNAL:-/v
 PM2_ATTESTATION="${NEXUS_PROMOTION_PM2_ATTESTATION:-/var/lib/nexus-release-promotion/pm2-root-install.v1.json}"
 ROOT_PM2_BIN="${NEXUS_PROMOTION_PM2_BIN:-/usr/local/bin/pm2}"
 ROOT_NODE_BIN="${NEXUS_PROMOTION_NODE_BIN:-/usr/bin/node}"
+PHASE_A_RECEIPT="${NEXUS_LAYOUT_PHASE_A_RECEIPT:-$STATE_ROOT/layout-activation/phase-a-receipt.v1.json}"
 PM2_INSTALL_JOURNAL="${NEXUS_PROMOTION_PM2_INSTALL_JOURNAL:-/var/lib/nexus-release-promotion/pm2-install-in-progress.v1.json}"
 PM2_TRUSTED_LOCK="${NEXUS_PROMOTION_PM2_TRUSTED_LOCK:-/usr/local/share/nexus-release/pm2-package-lock.json}"
 BOOT_HEALTH_BIN="${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-/usr/local/sbin/nexus-release-boot-health}"
@@ -234,14 +235,10 @@ ensure_state_root() {
   fsync_directory "$STATE_ROOT"
 }
 
-assert_layout_ready() {
+assert_layout_evidence_ready() {
   local worker_uid worker_gid identity evidence
   [ ! -e "$LAYOUT_ACTIVATION_ACTIVE" ] && [ ! -L "$LAYOUT_ACTIVATION_ACTIVE" ] || {
     echo "release layout activation is active; ordinary releases remain blocked" >&2
-    return 75
-  }
-  [ ! -e "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] || {
-    echo "boot recovery or SLA incident is unresolved; releases remain blocked" >&2
     return 75
   }
   assert_root_pm2_ready >/dev/null
@@ -516,6 +513,146 @@ process.stdout.write(`${JSON.stringify({ok:true,schema:value.schema,
 NODE
 }
 
+validate_boot_recovery_prepared() {
+  local profile="$1" active_id pending_digest pair_fields
+  case "$profile" in
+    layout|legacy|v4-prelayout) ;;
+    *)
+      echo "boot recovery profile must be layout, legacy, or v4-prelayout" >&2
+      return 64
+      ;;
+  esac
+  [ -f "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] \
+    && [ -f "$BOOT_PENDING" ] && [ ! -L "$BOOT_PENDING" ] || {
+    echo "boot recovery and pending health authority are incomplete" >&2
+    return 75
+  }
+  pair_fields="$("$SYSTEM_NODE_BIN" - "$BOOT_RECOVERY" "$BOOT_PENDING" \
+    "${NEXUS_RELEASE_TEST_MODE:-0}" "$profile" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');
+const [recoveryFile,pendingFile,testMode,profile]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
+const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)
+ &&JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
+const readSafe=(file)=>{
+ const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{
+  const before=fs.fstatSync(fd),body=fs.readFileSync(fd),after=fs.fstatSync(fd);
+  if(!before.isFile()||before.nlink!==1||before.uid!==rootUid||before.gid!==rootGid
+   ||(before.mode&0o7777)!==0o600||before.dev!==after.dev||before.ino!==after.ino
+   ||before.size!==after.size||before.mtimeMs!==after.mtimeMs)process.exit(1);
+  return {body,value:JSON.parse(body)};
+ }finally{fs.closeSync(fd);}
+};
+const recoveryInput=readSafe(recoveryFile),pendingInput=readSafe(pendingFile);
+const recovery=recoveryInput.value,pending=pendingInput.value;
+const currentBootId=testMode==='1'
+ ?(process.env.NEXUS_PROMOTION_TEST_BOOT_ID||'test-boot')
+ :fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+const digest=/^[a-f0-9]{64}$/u,sha=/^[a-f0-9]{40}$/u;
+const transaction=/^[0-9]{8}T[0-9]{6}Z-[0-9]+-[a-f0-9]{12}$/u;
+const recoveryKeys=['schema','status','bootId','bootDetectedAt','bootDetectedEpoch',
+ 'outageStartedAt','outageStartedEpoch','outageStartedMonotonic','outageBootId',
+ 'recoveryDeadlineEpoch','timingSource','activeTransactionId'];
+const pendingKeys=['schema','status','profile','production','staging','canonicalDumpSha256',
+ 'pm2ClosureDigest','nodeSha256','recoveryAuthoritySha256','bootId','outageBootId',
+ 'outageStartedAt','outageStartedEpoch','outageStartedMonotonic',
+ 'recoveryDeadlineEpoch','temporaryPreparedAt'];
+const roleKeys=['schema','role','profile','base','runtime','runtimeSha',
+ 'artifactDigest','installedRuntimeDigest','selector','runtimeIdentity',
+ 'markerSha256','installedAttestationSha256','authoritySha256','transaction'];
+const timingSources=new Set(['boot_detection','layout_recovery','layout_journal',
+ 'promotion_recovery_attempt','promotion_cutover']);
+if(!exact(recovery,recoveryKeys)
+ ||recovery.schema!=='nexus.release-boot-recovery.v1'||recovery.status!=='in_progress'
+ ||recovery.bootId!==currentBootId||typeof recovery.outageBootId!=='string'
+ ||!recovery.outageBootId||!Number.isFinite(Date.parse(recovery.bootDetectedAt||''))
+ ||!Number.isFinite(Date.parse(recovery.outageStartedAt||''))
+ ||!Number.isSafeInteger(recovery.bootDetectedEpoch)
+ ||Math.floor(Date.parse(recovery.bootDetectedAt)/1000)!==recovery.bootDetectedEpoch
+ ||!Number.isSafeInteger(recovery.outageStartedEpoch)
+ ||Math.floor(Date.parse(recovery.outageStartedAt)/1000)!==recovery.outageStartedEpoch
+ ||recovery.bootDetectedEpoch<recovery.outageStartedEpoch
+ ||!Number.isSafeInteger(recovery.outageStartedMonotonic)
+ ||recovery.outageStartedMonotonic<0
+ ||recovery.recoveryDeadlineEpoch!==recovery.outageStartedEpoch+120
+ ||!timingSources.has(recovery.timingSource)
+ ||!(recovery.activeTransactionId===null
+   ||transaction.test(recovery.activeTransactionId)))process.exit(1);
+if(!exact(pending,pendingKeys)
+ ||pending.schema!=='nexus.release-boot-health-pending.v3'||pending.status!=='pending'
+ ||pending.profile!==profile
+ ||pending.recoveryAuthoritySha256
+   !==crypto.createHash('sha256').update(recoveryInput.body).digest('hex')
+ ||pending.bootId!==recovery.bootId||pending.outageBootId!==recovery.outageBootId
+ ||pending.outageStartedAt!==recovery.outageStartedAt
+ ||pending.outageStartedEpoch!==recovery.outageStartedEpoch
+ ||pending.outageStartedMonotonic!==recovery.outageStartedMonotonic
+ ||pending.recoveryDeadlineEpoch!==recovery.recoveryDeadlineEpoch
+ ||!digest.test(pending.canonicalDumpSha256||'')
+ ||!digest.test(pending.pm2ClosureDigest||'')||!digest.test(pending.nodeSha256||'')
+ ||!Number.isFinite(Date.parse(pending.temporaryPreparedAt||'')))process.exit(1);
+for(const role of ['production','staging']){
+ const value=pending[role];
+ if(!exact(value,roleKeys)||value.schema!=='nexus.release-boot-role.v1'
+  ||value.role!==role||!sha.test(value.runtimeSha||'')
+  ||!digest.test(value.artifactDigest||'')
+  ||!digest.test(value.installedRuntimeDigest||'')
+  ||!digest.test(value.markerSha256||'')
+  ||!digest.test(value.installedAttestationSha256||''))process.exit(1);
+}
+process.stdout.write(`${recovery.activeTransactionId??'none'}\t${
+ crypto.createHash('sha256').update(pendingInput.body).digest('hex')}`);
+NODE
+  )" || {
+    echo "boot recovery and pending health authority are invalid" >&2
+    return 75
+  }
+  IFS=$'\t' read -r active_id pending_digest <<<"$pair_fields"
+  "$BOOT_HEALTH_BIN" verify-pending-roles "$profile" "$pending_digest" >/dev/null \
+    || {
+      echo "boot recovery live role evidence is invalid" >&2
+      return 75
+    }
+  if [ "$active_id" = none ]; then
+    [ ! -e "$STATE_ROOT/active.json" ] && [ ! -L "$STATE_ROOT/active.json" ] || {
+      echo "boot recovery omits the active promotion authority" >&2
+      return 75
+    }
+    return 0
+  fi
+  validate_id "$active_id"
+  [ -f "$STATE_ROOT/active.json" ] && [ ! -L "$STATE_ROOT/active.json" ] || {
+    echo "boot recovery active promotion authority is unavailable" >&2
+    return 75
+  }
+  local observed_id request_sha
+  IFS=$'\t' read -r observed_id request_sha < <(read_active_fields) || return 75
+  [ "$observed_id" = "$active_id" ] \
+    && journal_terminal "$observed_id" "$request_sha" || {
+    echo "boot promotion recovery has not reached a terminal state" >&2
+    return 75
+  }
+}
+
+assert_layout_ready() {
+  [ ! -e "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] \
+    && [ ! -e "$BOOT_PENDING" ] && [ ! -L "$BOOT_PENDING" ] || {
+    echo "boot recovery or pending health authority is unresolved; releases remain blocked" >&2
+    return 75
+  }
+  assert_layout_evidence_ready
+}
+
+assert_layout_boot_ready() {
+  if [ -e "$BOOT_RECOVERY" ] || [ -L "$BOOT_RECOVERY" ] \
+      || [ -e "$BOOT_PENDING" ] || [ -L "$BOOT_PENDING" ]; then
+    validate_boot_recovery_prepared layout
+  fi
+  assert_layout_evidence_ready
+}
+
 assert_root_pm2_ready() {
   local identity
   if [ -e "$PM2_INSTALL_JOURNAL" ] || [ -L "$PM2_INSTALL_JOURNAL" ]; then
@@ -763,6 +900,25 @@ clear_terminal_active() {
   if journal_terminal "$id" "$request_sha"; then durable_remove "$STATE_ROOT/active.json" 600; fi
 }
 
+clear_terminal_active_during_boot_finalization() {
+  local id request_sha
+  [ -f "$STATE_ROOT/active.json" ] || return 0
+  [ -f "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] || {
+    echo "boot recovery authority disappeared before active-state finalization" >&2
+    return 1
+  }
+  IFS=$'\t' read -r id request_sha < <(read_active_fields) || {
+    echo "authoritative active promotion state is invalid" >&2
+    return 1
+  }
+  validate_id "$id"
+  journal_terminal "$id" "$request_sha" || {
+    echo "boot promotion transaction is not terminal after real service health" >&2
+    return 1
+  }
+  durable_remove "$STATE_ROOT/active.json" 600
+}
+
 write_boot_recovery_authority() {
   local output active_id="" timing_file="" layout_journal
   layout_journal="$STATE_ROOT/layout-migration-in-progress.v1.json"
@@ -833,11 +989,15 @@ if(timing?.schema==='nexus.promotion-recovery-attempt-timing.v1'){
 if(candidates.length===0)candidates.push({epoch:nowEpoch,monotonic:nowMonotonic,
  outageBootId:bootId,startedAt:new Date(nowEpoch*1000).toISOString(),source:'boot_detection'});
 candidates.sort((a,b)=>a.epoch-b.epoch);
-const origin=candidates[0];
+let origin=candidates[0];
 if(!Number.isSafeInteger(origin.epoch)||origin.epoch>nowEpoch+1
  ||!Number.isSafeInteger(origin.monotonic)||origin.monotonic<0
  ||typeof origin.outageBootId!=='string'||!origin.outageBootId
  ||!Number.isFinite(Date.parse(origin.startedAt)))process.exit(1);
+if(origin.epoch===nowEpoch+1){
+ origin={epoch:nowEpoch,monotonic:nowMonotonic,outageBootId:bootId,
+  startedAt:new Date(nowEpoch*1000).toISOString(),source:'boot_detection'};
+}
 fs.writeFileSync(output,`${JSON.stringify({
  schema:'nexus.release-boot-recovery.v1',status:'in_progress',bootId,
  bootDetectedAt:new Date(nowEpoch*1000).toISOString(),bootDetectedEpoch:nowEpoch,
@@ -866,7 +1026,7 @@ const recovery=JSON.parse(recoveryBody),pending=JSON.parse(pendingBody);
 const proof=JSON.parse(fs.readFileSync(proofFile));
 const digest=(body)=>crypto.createHash('sha256').update(body).digest('hex');
 if(recovery.schema!=='nexus.release-boot-recovery.v1'||recovery.status!=='in_progress'
- ||pending.schema!=='nexus.release-boot-health-pending.v2'||pending.status!=='pending'
+ ||pending.schema!=='nexus.release-boot-health-pending.v3'||pending.status!=='pending'
  ||proof.schema!=='nexus.release-boot-health-proof.v2'||proof.status!=='passed'
  ||proof.pendingSha256!==digest(pendingBody)
  ||pending.recoveryAuthoritySha256!==digest(recoveryBody)
@@ -901,9 +1061,13 @@ NODE
     chmod 600 "$temporary"; root_own "$temporary"
     durable_publish "$temporary" "$journal" 600
   fi
-  durable_remove "$BOOT_RECOVERY" 600
+  # BOOT_RECOVERY remains the durable admission blocker until all subordinate
+  # mutable authority is gone. A crash before the final unlink is therefore
+  # reconstructed by recover-all; a crash after it cannot leave orphaned
+  # pending health or active promotion state.
+  clear_terminal_active_during_boot_finalization
   durable_remove "$BOOT_PENDING" 600
-  clear_terminal_active
+  durable_remove "$BOOT_RECOVERY" 600
 }
 
 resolve_boot_sla_incident() {
@@ -935,7 +1099,7 @@ const recovery=JSON.parse(recoveryBody),pending=JSON.parse(pendingBody);
 const proof=JSON.parse(fs.readFileSync(proofFile));
 const digest=(body)=>crypto.createHash('sha256').update(body).digest('hex');
 if(recovery.schema!=='nexus.release-boot-recovery.v1'||recovery.status!=='in_progress'
- ||pending.schema!=='nexus.release-boot-health-pending.v2'||pending.status!=='pending'
+ ||pending.schema!=='nexus.release-boot-health-pending.v3'||pending.status!=='pending'
  ||proof.schema!=='nexus.release-boot-health-proof.v2'
  ||proof.status!=='healthy_sla_missed'||proof.targetMet!==false
  ||proof.pendingSha256!==digest(pendingBody)
@@ -946,14 +1110,16 @@ if(recovery.schema!=='nexus.release-boot-recovery.v1'||recovery.status!=='in_pro
 NODE
   else
     "$SYSTEM_NODE_BIN" - "$BOOT_RECOVERY" "$BOOT_PROOF" "$archive" \
-      "$expected_digest" <<'NODE'
+      "$expected_digest" "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
 const crypto=require('crypto');const fs=require('fs');
-const [recoveryFile,proofFile,resolutionFile,proofSha256]=process.argv.slice(2);
+const [recoveryFile,proofFile,resolutionFile,proofSha256,testMode]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
 const readSafe=(file)=>{
  const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
  try{
   const stat=fs.fstatSync(fd),body=fs.readFileSync(fd);
-  if(!stat.isFile()||stat.nlink!==1||stat.uid!==0||stat.gid!==0
+  if(!stat.isFile()||stat.nlink!==1||stat.uid!==rootUid||stat.gid!==rootGid
    ||(stat.mode&0o7777)!==0o600)process.exit(1);
   return {body,value:JSON.parse(body)};
  }finally{fs.closeSync(fd);}
@@ -984,7 +1150,11 @@ NODE
       return 1
     }
   fi
-  install -d -o root -g root -m 700 "$archive_dir"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then
+    install -d -m 700 "$archive_dir"
+  else
+    install -d -o root -g root -m 700 "$archive_dir"
+  fi
   if [ ! -e "$archive" ] && [ ! -L "$archive" ]; then
     temporary="$(durable_staging_file "$archive" 600)"
     "$SYSTEM_NODE_BIN" - "$BOOT_RECOVERY" "$BOOT_PENDING" "$BOOT_PROOF" \
@@ -1026,10 +1196,307 @@ NODE
     chmod 600 "$journal_next"; root_own "$journal_next"
     durable_publish "$journal_next" "$journal" 600
   fi
-  durable_remove "$BOOT_RECOVERY" 600
+  # Keep BOOT_RECOVERY as the admission blocker until every subordinate
+  # authority is gone. This ordering also makes an interrupted owner
+  # acknowledgement resumable from the durable resolution archive.
+  clear_terminal_active_during_boot_finalization
   durable_remove "$BOOT_PENDING" 600
-  clear_terminal_active
+  durable_remove "$BOOT_RECOVERY" 600
   printf '{"ok":true,"schema":"nexus.release-boot-sla-incident-resolution.v1","status":"owner_acknowledged","proofSha256":"%s"}\n' \
+    "$expected_digest"
+}
+
+validate_prelayout_boot_marker() {
+  local expected_digest="$1"
+  "$SYSTEM_NODE_BIN" - "$BOOT_RECOVERY" "$expected_digest" \
+    "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
+const crypto=require('crypto');const fs=require('fs');
+const [file,expectedDigest,testMode]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
+const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+try{
+ const before=fs.fstatSync(fd),body=fs.readFileSync(fd),after=fs.fstatSync(fd);
+ const value=JSON.parse(body),digest=crypto.createHash('sha256').update(body).digest('hex');
+ const currentBootId=testMode==='1'
+  ?(process.env.NEXUS_PROMOTION_TEST_BOOT_ID||'test-boot')
+  :fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid||before.gid!==rootGid
+  ||(before.mode&0o7777)!==0o600||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+  ||digest!==expectedDigest
+  ||value.schema!=='nexus.release-boot-recovery.v1'||value.status!=='in_progress'
+  ||value.bootId!==currentBootId||value.outageBootId!==currentBootId
+  ||value.timingSource!=='boot_detection'||value.activeTransactionId!==null
+  ||!Number.isSafeInteger(value.bootDetectedEpoch)
+  ||!Number.isSafeInteger(value.outageStartedEpoch)
+  ||value.bootDetectedEpoch!==value.outageStartedEpoch
+  ||value.bootDetectedAt!==value.outageStartedAt
+  ||!Number.isSafeInteger(value.outageStartedMonotonic)
+  ||value.outageStartedMonotonic<0
+  ||value.recoveryDeadlineEpoch!==value.outageStartedEpoch+120
+  ||!Number.isFinite(Date.parse(value.bootDetectedAt)))process.exit(1);
+ process.stdout.write(JSON.stringify(value));
+}finally{fs.closeSync(fd);}
+NODE
+}
+
+assert_no_unfinished_staging_transaction() {
+  "$SYSTEM_NODE_BIN" - "$STATE_ROOT/staging" "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
+const fs=require('fs');const path=require('path');
+const [directory,testMode]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0;
+const rootGid=testMode==='1'?process.getgid():0;
+for(const name of fs.readdirSync(directory)){
+ if(!name.endsWith('.transaction.json'))continue;
+ const file=path.join(directory,name);
+ const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{
+  const before=fs.fstatSync(fd),body=fs.readFileSync(fd),after=fs.fstatSync(fd);
+  const value=JSON.parse(body);
+  if(!before.isFile()||before.nlink!==1||before.uid!==rootUid
+   ||before.gid!==rootGid||(before.mode&0o7777)!==0o600
+   ||before.dev!==after.dev||before.ino!==after.ino
+   ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+   ||value.schema!=='nexus.staging-attestation-transaction.v1'
+   ||!['completed','recovered'].includes(value.phase))process.exit(1);
+ }finally{fs.closeSync(fd);}
+}
+NODE
+}
+
+validate_live_prelayout_proof() {
+  local marker_json="$1" proof_json="$2" worker_uid worker_gid
+  worker_uid="$(/usr/bin/id -u "$WORKER_USER")"
+  worker_gid="$(/usr/bin/id -g "$WORKER_USER")"
+  "$SYSTEM_NODE_BIN" - "$marker_json" "$proof_json" \
+    "$COMPAT_PRODUCTION" "$COMPAT_STAGING" "$PHASE_A_RECEIPT" \
+    "${NEXUS_RELEASE_TEST_MODE:-0}" "$worker_uid" "$worker_gid" \
+    /home/linuxbrew/.linuxbrew/Cellar/node <<'NODE'
+const crypto=require('crypto');const fs=require('fs');const path=require('path');
+const [markerRaw,proofRaw,productionBase,stagingBase,phaseAReceipt,testMode,
+ workerUidRaw,workerGidRaw,legacyNodeRoot]
+ =process.argv.slice(2);
+const marker=JSON.parse(markerRaw),proof=JSON.parse(proofRaw);
+const digest=/^[a-f0-9]{64}$/u,sha=/^[a-f0-9]{40}$/u,digits=/^[0-9]+$/u;
+const rootUid=testMode==='1'?process.getuid():0,rootGid=testMode==='1'?process.getgid():0;
+const workerUid=Number(workerUidRaw),workerGid=Number(workerGidRaw);
+const receiptFd=fs.openSync(phaseAReceipt,
+ fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+let receiptBody,receipt;
+try{
+ const before=fs.fstatSync(receiptFd);receiptBody=fs.readFileSync(receiptFd);
+ const after=fs.fstatSync(receiptFd);receipt=JSON.parse(receiptBody);
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid||before.gid!==rootGid
+  ||(before.mode&0o7777)!==0o600||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs)process.exit(1);
+}finally{fs.closeSync(receiptFd);}
+const requiredChecks=new Set(['phase_a_service_receipt',
+ 'legacy_real_systemd_daemon_identity',
+ 'future_root_pm2_attestation','four_exact_pm2_apps_stable','production_authenticated_readiness',
+ 'staging_authenticated_readiness','legacy_selector_and_runtime_identity_stable']);
+const role=(value,name,base)=>value?.name===name&&value.base===base
+ &&path.dirname(value.runtime)===path.join(base,'releases')
+ &&sha.test(value.runtimeSha||'')&&digest.test(value.artifactDigest||'')
+ &&digest.test(value.installedRuntimeDigest||'')
+ &&digits.test(value.selector?.dev||'')&&digits.test(value.selector?.ino||'')
+ &&digits.test(value.runtimeIdentity?.dev||'')&&digits.test(value.runtimeIdentity?.ino||'')
+ &&digest.test(value.markerSha256||'')
+ &&digest.test(value.installedAttestationSha256||'');
+const service=proof.pm2Dominguez;
+const executablePath=service?.executable?.path??'';
+const relativeExecutable=path.relative(legacyNodeRoot,executablePath).split(path.sep);
+const checks=[
+ ['marker_authority',marker.timingSource==='boot_detection'
+   &&marker.activeTransactionId===null],
+ ['proof_schema',proof.schema==='nexus.release-live-prelayout-health-proof.v1'
+   &&proof.status==='verified_no_mutation'],
+ ['no_mutation',Array.isArray(proof.mutationOperations)
+   &&proof.mutationOperations.length===0],
+ ['required_checks',Array.isArray(proof.checks)
+   &&[...requiredChecks].every((check)=>proof.checks.includes(check))],
+ ['service_authority',service?.activeState==='active'&&service?.subState==='running'
+   &&Number.isSafeInteger(service.mainPid)&&service.mainPid>0
+   &&service.controlGroup==='/system.slice/pm2-dominguez.service'
+   &&Number.isSafeInteger(service.execMainStartTimestampMonotonic)
+   &&service.execMainStartTimestampMonotonic>0
+   &&service.execMainStartTimestampMonotonic
+     <=(marker.outageStartedMonotonic+1)*1_000_000
+   &&service.nRestarts===0&&digest.test(service.unitRuntimeSha256||'')],
+ ['legacy_observed_executable',
+   service?.executable?.classification==='worker_owned_legacy_observation'
+   &&service?.executable?.ancestryPolicy
+     ==='linuxbrew_worker_owned_no_world_write'
+   &&path.isAbsolute(executablePath)
+   &&relativeExecutable.length===3
+   &&/^[0-9]+\.[0-9]+\.[0-9]+$/u.test(relativeExecutable[0])
+   &&relativeExecutable[1]==='bin'&&relativeExecutable[2]==='node'
+   &&digest.test(service?.executable?.sha256||'')
+   &&digits.test(service?.executable?.dev||'')
+   &&digits.test(service?.executable?.ino||'')
+   &&Number.isSafeInteger(workerUid)&&Number.isSafeInteger(workerGid)
+   &&service?.executable?.uid===workerUid
+   &&service?.executable?.gid===workerGid
+   &&service?.executable?.mode===0o555],
+ ['phase_a_receipt',receipt.schema==='nexus.release-layout-phase-a-receipt.v1'
+   &&receipt.status==='completed'&&receipt.sourceSha===proof.phaseA?.sourceSha
+   &&receipt.sourceArchiveSha256===proof.phaseA?.sourceArchiveSha256
+   &&crypto.createHash('sha256').update(receiptBody).digest('hex')
+     ===proof.phaseA?.receiptSha256],
+ ['phase_a_identity',sha.test(proof.phaseA?.sourceSha||'')
+   &&digest.test(proof.phaseA?.receiptSha256||'')
+   &&digest.test(proof.phaseA?.sourceArchiveSha256||'')
+   &&digest.test(proof.phaseA?.existingServiceRuntimeSha256||'')
+   &&digest.test(proof.phaseA?.pm2PrerequisiteEvidenceSha256||'')
+   &&digest.test(proof.phaseA?.unitCatSha256||'')
+   &&digest.test(proof.phaseA?.unitShowSha256||'')
+   &&Number.isFinite(Date.parse(proof.phaseA?.completedAt||''))
+   &&Date.parse(proof.phaseA.completedAt)<=Date.parse(marker.bootDetectedAt)],
+ ['future_pm2',digest.test(proof.futureRootPm2Attestation?.closureDigest||'')
+   &&digest.test(proof.futureRootPm2Attestation?.nodeSha256||'')],
+ ['production_role',role(proof.production,'production',productionBase)],
+ ['staging_role',role(proof.staging,'staging',stagingBase)],
+ ['verified_at',Number.isFinite(Date.parse(proof.verifiedAt||''))],
+];
+const failed=checks.find(([,passed])=>!passed);
+if(failed){process.stderr.write(`live pre-layout proof check failed: ${failed[0]}\n`);process.exit(1);}
+NODE
+}
+
+validate_prelayout_resolution_archive() {
+  local archive="$1" expected_digest="$2" expected_marker_json="${3:-}"
+  "$SYSTEM_NODE_BIN" - "$archive" "$expected_digest" "$expected_marker_json" \
+    "${NEXUS_RELEASE_TEST_MODE:-0}" <<'NODE'
+const fs=require('fs');const [file,digest,expectedMarkerRaw,testMode]=process.argv.slice(2);
+const rootUid=testMode==='1'?process.getuid():0,rootGid=testMode==='1'?process.getgid():0;
+const canonical=(value)=>value===null||typeof value!=='object'?JSON.stringify(value)
+ :Array.isArray(value)?`[${value.map(canonical).join(',')}]`
+ :`{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${
+  canonical(value[key])}`).join(',')}}`;
+const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+try{
+ const before=fs.fstatSync(fd),body=fs.readFileSync(fd),after=fs.fstatSync(fd);
+ const value=JSON.parse(body),proof=value.liveHealthProof,marker=value.marker;
+ const expectedMarker=expectedMarkerRaw?JSON.parse(expectedMarkerRaw):null;
+ if(!before.isFile()||before.nlink!==1||before.uid!==rootUid||before.gid!==rootGid
+  ||(before.mode&0o7777)!==0o600||before.dev!==after.dev||before.ino!==after.ino
+  ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
+  ||value.schema!=='nexus.release-prelayout-boot-recovery-resolution.v1'
+  ||value.status!=='reconciled_no_mutation'||value.markerSha256!==digest
+  ||marker?.schema!=='nexus.release-boot-recovery.v1'
+  ||marker?.status!=='in_progress'||marker?.timingSource!=='boot_detection'
+  ||marker?.activeTransactionId!==null
+  ||(expectedMarker&&canonical(marker)!==canonical(expectedMarker))
+  ||proof?.schema!=='nexus.release-live-prelayout-health-proof.v1'
+  ||proof?.status!=='verified_no_mutation'
+  ||!Array.isArray(proof?.mutationOperations)||proof.mutationOperations.length!==0
+  ||!/^[a-f0-9]{64}$/u.test(proof?.phaseA?.receiptSha256||'')
+  ||!Number.isFinite(Date.parse(value.resolvedAt||'')))process.exit(1);
+}finally{fs.closeSync(fd);}
+NODE
+}
+
+resolve_prelayout_boot_recovery() {
+  local expected_digest="$1" archive_dir archive marker_json proof_json
+  local repeated_marker temporary
+  [[ "$expected_digest" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "resolve-prelayout-boot-recovery requires the exact marker SHA-256" >&2
+    return 64
+  }
+  archive_dir="$STATE_ROOT/boot-recovery-incidents"
+  archive="$archive_dir/${expected_digest}.prelayout-resolution.json"
+  if [ ! -e "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ]; then
+    [ -f "$archive" ] && [ ! -L "$archive" ] || {
+      echo "no unresolved pre-layout boot recovery marker exists" >&2
+      return 75
+    }
+    validate_prelayout_resolution_archive "$archive" "$expected_digest" || {
+      echo "pre-layout reconciliation archive is invalid" >&2
+      return 73
+    }
+    printf '{"ok":true,"schema":"nexus.release-prelayout-boot-recovery-resolution.v1","status":"reconciled_no_mutation","markerSha256":"%s","idempotent":true}\n' \
+      "$expected_digest"
+    return 0
+  fi
+  [ -f "$BOOT_RECOVERY" ] && [ ! -L "$BOOT_RECOVERY" ] || {
+    echo "pre-layout boot recovery marker is unsafe" >&2
+    return 73
+  }
+  marker_json="$(validate_prelayout_boot_marker "$expected_digest")" || {
+    echo "pre-layout boot recovery marker does not match the governed live scenario" >&2
+    return 73
+  }
+  for forbidden in "$BOOT_PENDING" "$BOOT_PROOF" "$STATE_ROOT/active.json" \
+    "$STATE_ROOT/layout-migration-in-progress.v1.json" "$LAYOUT_ACTIVATION_ACTIVE" \
+    "$LAYOUT_ATTESTATION" "$LAYOUT_RESULT" "$LAYOUT_TERMINAL_JOURNAL" \
+    "$LAYOUT_REQUEST" "$LAYOUT_DRILL"; do
+    [ ! -e "$forbidden" ] && [ ! -L "$forbidden" ] || {
+      echo "release or layout authority changed; pre-layout reconciliation refused" >&2
+      return 75
+    }
+  done
+  assert_no_unfinished_staging_transaction || {
+    echo "an unfinished or unsafe staging transaction blocks pre-layout reconciliation" >&2
+    return 75
+  }
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    [ -f "$archive" ] && [ ! -L "$archive" ] \
+      && validate_prelayout_resolution_archive \
+        "$archive" "$expected_digest" "$marker_json" || {
+      echo "pre-layout reconciliation archive differs from current authority" >&2
+      return 73
+    }
+    durable_remove "$BOOT_RECOVERY" 600
+    printf '{"ok":true,"schema":"nexus.release-prelayout-boot-recovery-resolution.v1","status":"reconciled_no_mutation","markerSha256":"%s","idempotent":false,"resumedArchive":true}\n' \
+      "$expected_digest"
+    return 0
+  fi
+  proof_json="$("$BOOT_HEALTH_BIN" verify-live-prelayout)" || {
+    echo "live pre-layout PM2 and release verification failed" >&2
+    return 1
+  }
+  validate_live_prelayout_proof "$marker_json" "$proof_json" || {
+    echo "live pre-layout verification proof is invalid" >&2
+    return 73
+  }
+  repeated_marker="$(validate_prelayout_boot_marker "$expected_digest")" || {
+    echo "pre-layout boot recovery marker changed during verification" >&2
+    return 73
+  }
+  [ "$repeated_marker" = "$marker_json" ] || {
+    echo "pre-layout boot recovery authority changed during verification" >&2
+    return 73
+  }
+  install -d -m 700 "$archive_dir"
+  root_own "$archive_dir"
+  if [ ! -e "$archive" ] && [ ! -L "$archive" ]; then
+    temporary="$(durable_staging_file "$archive" 600)"
+    "$SYSTEM_NODE_BIN" - "$temporary" "$expected_digest" "$marker_json" \
+      "$proof_json" <<'NODE'
+const fs=require('fs');
+const [output,markerSha256,markerRaw,proofRaw]=process.argv.slice(2);
+fs.writeFileSync(output,`${JSON.stringify({
+ schema:'nexus.release-prelayout-boot-recovery-resolution.v1',
+ status:'reconciled_no_mutation',markerSha256,
+ marker:JSON.parse(markerRaw),liveHealthProof:JSON.parse(proofRaw),
+ resolvedAt:new Date().toISOString(),
+},null,2)}\n`,{mode:0o600,flag:'w'});
+NODE
+    chmod 600 "$temporary"; root_own "$temporary"
+    durable_publish "$temporary" "$archive" 600
+  else
+    [ -f "$archive" ] && [ ! -L "$archive" ] || {
+      echo "pre-layout reconciliation archive is unsafe" >&2
+      return 73
+    }
+    validate_prelayout_resolution_archive \
+      "$archive" "$expected_digest" "$marker_json" || {
+      echo "pre-layout reconciliation archive differs from current authority" >&2
+      return 73
+    }
+  fi
+  durable_remove "$BOOT_RECOVERY" 600
+  printf '{"ok":true,"schema":"nexus.release-prelayout-boot-recovery-resolution.v1","status":"reconciled_no_mutation","markerSha256":"%s","idempotent":false}\n' \
     "$expected_digest"
 }
 
@@ -1363,6 +1830,10 @@ case "$COMMAND" in
       echo "boot recovery or SLA incident is unresolved" >&2
       exit 73
     }
+    [ ! -e "$BOOT_PENDING" ] && [ ! -L "$BOOT_PENDING" ] || {
+      echo "boot health preparation is unresolved" >&2
+      exit 73
+    }
     if [ -f "$STATE_ROOT/active.json" ]; then
       read -r active_id _ < <(read_active_fields)
       printf 'promotion transaction active: %s\n' "$active_id" >&2
@@ -1376,6 +1847,22 @@ case "$COMMAND" in
   assert-layout-ready)
     ensure_state_root; acquire_control_lock
     assert_layout_ready
+    ;;
+  assert-layout-boot-ready)
+    [ "$#" -eq 0 ] || {
+      echo "assert-layout-boot-ready accepts no arguments" >&2
+      exit 64
+    }
+    ensure_state_root; acquire_control_lock
+    assert_layout_boot_ready
+    ;;
+  assert-boot-recovery-prepared)
+    [ "$#" -eq 1 ] || {
+      echo "assert-boot-recovery-prepared requires layout, legacy, or v4-prelayout" >&2
+      exit 64
+    }
+    ensure_state_root; acquire_control_lock
+    validate_boot_recovery_prepared "$1"
     ;;
   prepare-runtime-target)
     runtime="${1:-}"; base="${2:-}"; validate_runtime_target "$runtime" "$base"
@@ -1766,6 +2253,15 @@ NODE
     ;;
   recover-all)
     ensure_state_root; acquire_control_lock
+    # This read-only preflight runs before the durable timing marker. A live
+    # invocation with the real PM2 service already active therefore cannot
+    # manufacture an unresolved boot-recovery incident.
+    if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] \
+        && [ -z "${NEXUS_PROMOTION_BOOT_HEALTH_BIN:-}" ]; then
+      :
+    else
+      "$BOOT_HEALTH_BIN" preflight-temporary >/dev/null
+    fi
     write_boot_recovery_authority
     # All nested PM2 clients must attach to this root-owned cgroup. Starting it
     # before either recovery broker prevents PM2 CLI auto-spawn in a transient
@@ -1868,6 +2364,14 @@ process.stdout.write(String(x.targetMet));
     ensure_state_root; acquire_control_lock
     resolve_boot_sla_incident "$1"
     ;;
+  resolve-prelayout-boot-recovery)
+    [ "$#" -eq 1 ] || {
+      echo "resolve-prelayout-boot-recovery requires the exact marker SHA-256" >&2
+      exit 64
+    }
+    ensure_state_root; acquire_control_lock
+    resolve_prelayout_boot_recovery "$1"
+    ;;
   fetch)
     transaction_id="${1:-}"; artifact="${2:-}"; validate_id "$transaction_id"; ensure_state_root
     authority="$(authority_path "$transaction_id")"; [ -f "$authority" ] || { echo "promotion transaction is unknown" >&2; exit 1; }
@@ -1885,7 +2389,7 @@ process.stdout.write(String(x.targetMet));
     cat "$file"
     ;;
   *)
-    echo "Usage: nexus-release-promotion-control <version|assert-idle|assert-layout-ready|prepare-runtime-target|prepare-staging-runtime-target|seal-runtime|seal-staging-runtime|verify-staging-runtime|attest-staging-runtime|fetch-staging-evidence|launch|status|ensure-started|recover|retry-escrow|recover-all|boot-postcheck|resolve-boot-sla-incident|fetch>" >&2
+    echo "Usage: nexus-release-promotion-control <version|assert-idle|assert-layout-ready|assert-layout-boot-ready|assert-boot-recovery-prepared|prepare-runtime-target|prepare-staging-runtime-target|seal-runtime|seal-staging-runtime|verify-staging-runtime|attest-staging-runtime|fetch-staging-evidence|launch|status|ensure-started|recover|retry-escrow|recover-all|boot-postcheck|resolve-boot-sla-incident|resolve-prelayout-boot-recovery|fetch>" >&2
     exit 64
     ;;
 esac

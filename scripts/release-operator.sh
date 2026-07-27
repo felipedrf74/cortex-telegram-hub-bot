@@ -8,9 +8,9 @@ source "$ROOT/scripts/lib/release-gates.sh"
 COMMAND="${1:-status}"
 [ $# -gt 0 ] && shift
 usage() {
-  echo "Usage: scripts/release-operator.sh <prepare|staging|drill-staging|promote|status|resume> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request] [--request-id <uuid>] [--coordinator-checkpoint <file>] [--acknowledge-first-drill-bootstrap]"
+  echo "Usage: scripts/release-operator.sh <prepare|staging|drill-staging|promote|status|resume> [--base <sha>] [--manifest <file>] [--staging-attestation <file>] [--dry-run] [--no-sign-request] [--request-id <uuid>] [--coordinator-checkpoint <file>] [--acknowledge-first-drill-bootstrap] [--prelayout-boot-recovery-sha256 <digest>]"
   echo "       prepare requires exactly one contract scope: --backend-only OR --includes-ios --ios-sha <sha> --ios-build-number <number> --ios-contract-result passed"
-  echo "       drill-staging uses the installed control-v2 legacy-base broker and always remains non-promotable"
+  echo "       drill-staging uses the installed control-v4 pre-layout legacy-base broker and always remains non-promotable"
   echo "       resume coordinates RC -> signing -> staging -> explicit owner stop -> promotion with a local checkpoint"
 }
 if [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ]; then usage; exit 0; fi
@@ -29,6 +29,7 @@ IOS_CONTRACT_RESULT=""
 STAGING_REQUEST_ID=""
 COORDINATOR_CHECKPOINT=""
 ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP=false
+PRELAYOUT_BOOT_RECOVERY_SHA256=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
@@ -41,6 +42,10 @@ while [ $# -gt 0 ]; do
     --acknowledge-first-drill-bootstrap)
       ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP=true
       shift
+      ;;
+    --prelayout-boot-recovery-sha256)
+      PRELAYOUT_BOOT_RECOVERY_SHA256="$2"
+      shift 2
       ;;
     --backend-only)
       [ -z "$CONTRACT_SCOPE" ] || { echo "release contract scope may be specified only once" >&2; exit 64; }
@@ -73,6 +78,14 @@ if [ "$COMMAND" != "drill-staging" ] && [ "$ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP" =
   echo "--acknowledge-first-drill-bootstrap is valid only for release:drill-staging" >&2
   exit 64
 fi
+if [ "$COMMAND" != "drill-staging" ] \
+    && [ -n "$PRELAYOUT_BOOT_RECOVERY_SHA256" ]; then
+  echo "--prelayout-boot-recovery-sha256 is valid only for release:drill-staging" >&2
+  exit 64
+fi
+[ -z "$PRELAYOUT_BOOT_RECOVERY_SHA256" ] \
+  || [[ "$PRELAYOUT_BOOT_RECOVERY_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+  || { echo "pre-layout boot recovery SHA-256 is invalid" >&2; exit 64; }
 [ -z "$STAGING_REQUEST_ID" ] \
   || [[ "$STAGING_REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] \
   || { echo "staging request id is invalid" >&2; exit 64; }
@@ -213,18 +226,14 @@ resolve_remote_pm2() {
 
 case "$COMMAND" in
   drill-staging)
-    [ "$ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP" = true ] || {
-      echo "release:drill-staging requires --acknowledge-first-drill-bootstrap" >&2
-      exit 64
-    }
     SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
     BASE_DIR=/home/dominguez/telegram-hub-bot-staging
-    BROKER="${NEXUS_LEGACY_DRILL_BROKER:-/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker}"
+    BROKER="${NEXUS_LEGACY_DRILL_BROKER:-/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker}"
     [ "${STAGING_PATH:-$BASE_DIR}" = "$BASE_DIR" ] || {
       echo "release:drill-staging accepts only the governed legacy staging base" >&2
       exit 64
     }
-    [ "$BROKER" = /usr/local/sbin/nexus-rollback-drill-legacy-staging-broker ] || {
+    [ "$BROKER" = /usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker ] || {
       echo "release:drill-staging accepts only the root-installed broker path" >&2
       exit 64
     }
@@ -368,6 +377,7 @@ NODE
     TERMINAL=false
     SUCCESSFUL=false
     TRANSACTION_PHASE=missing
+    INITIAL_STATUS_UNEXPECTED=""
     set +e
     INITIAL_STATUS_JSON="$(
       ssh "$SERVER" sudo -n "$BROKER" status "$STAGING_REQUEST_ID"
@@ -389,11 +399,48 @@ NODE
         echo "root broker status is unreachable; exact request checkpoint retained" >&2
         exit 75
         ;;
-      *)
-        echo "root broker transaction status failed closed" >&2
-        exit "$INITIAL_STATUS_CODE"
-        ;;
+      *) INITIAL_STATUS_UNEXPECTED="$INITIAL_STATUS_CODE" ;;
     esac
+    set +e
+    V4_INSPECTION="$(ssh "$SERVER" sudo -n "$BROKER" inspect)"
+    V4_INSPECTION_STATUS=$?
+    set -e
+    if [ "$V4_INSPECTION_STATUS" -ne 0 ]; then
+      [ "$ACKNOWLEDGE_FIRST_DRILL_BOOTSTRAP" = true ] || {
+        echo "v4 pre-layout staging closure is not installed or its receipt is invalid" >&2
+        echo "rerun with --acknowledge-first-drill-bootstrap to print the reviewed one-time owner command" >&2
+        exit 75
+      }
+      if [ -n "$PRELAYOUT_BOOT_RECOVERY_SHA256" ]; then
+        printf '%s\n' \
+          "owner action 1/2: ssh -t $SERVER 'sudo /usr/local/sbin/nexus-release-promotion-control resolve-prelayout-boot-recovery $PRELAYOUT_BOOT_RECOVERY_SHA256'" >&2
+      fi
+      printf '%s\n' \
+        "owner action: ssh -t $SERVER 'sudo /var/lib/nexus-release-bootstrap/$SHA/source/scripts/remote-rollback-drill-legacy-staging-install.sh activate-from-phase-a ${PRELAYOUT_BOOT_RECOVERY_SHA256:-none}'" >&2
+      echo "the release operator never receives installer or retirement sudo authority; rerun after the owner command succeeds" >&2
+      exit 75
+    fi
+    [ -z "$PRELAYOUT_BOOT_RECOVERY_SHA256" ] || {
+      echo "--prelayout-boot-recovery-sha256 is only for the one-time owner bootstrap" >&2
+      exit 64
+    }
+    [ -z "${INITIAL_STATUS_UNEXPECTED:-}" ] || {
+      echo "root broker transaction status failed closed" >&2
+      exit "$INITIAL_STATUS_UNEXPECTED"
+    }
+    node -e '
+const x=JSON.parse(process.argv[1]),sourceSha=process.argv[2];
+if(x.schema!=="nexus.rollback-drill-legacy-staging-broker-inspection.v1"
+ ||x.promotionAllowed!==false
+ ||x.broker?.version!=="nexus-rollback-drill-v4-prelayout-staging-broker.v1"
+ ||x.control?.version!=="nexus-release-promotion-control.v4"
+ ||x.phaseA?.sourceSha!==sourceSha
+ ||!/^[a-f0-9]{64}$/.test(x.phaseA?.archiveSha256??"")
+ ||!/^[a-f0-9]{64}$/.test(x.phaseA?.receiptSha256??""))process.exit(1);' \
+      "$V4_INSPECTION" "$SHA" || {
+      echo "installed v4 pre-layout staging closure is not bound to this exact main SHA" >&2
+      exit 75
+    }
     if [ "$REMOTE_TRANSACTION" = true ]; then
       [ "$DRILL_CHECKPOINT_RESUMED" = true ] || {
         echo "remote transaction predates the durable local request checkpoint" >&2
@@ -446,7 +493,7 @@ process.stdout.write(`${x.broker.sha256}\t${x.broker.adapterSha256}`);' \
 const path=require('node:path');
 const [raw,requestId,releaseDir,base]=process.argv.slice(2);
 const x=JSON.parse(raw);
-const expectedUpload=`${base}/.local/release/legacy-staging-drill/${requestId}/request.json`;
+const expectedUpload=`${base}/.local/release/v4-prelayout-staging-drill/${requestId}/request.json`;
 const keys=['ok','promotable','releaseDir','requestId','requestUpload'];
 if(!x||typeof x!=='object'||Array.isArray(x)
  ||Object.keys(x).sort().join(',')!==keys.sort().join(',')

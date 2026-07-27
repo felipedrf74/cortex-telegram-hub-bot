@@ -844,10 +844,16 @@ exit 3
       ['staging', stagingBase, stagingRuntime],
     ] as const) {
       writeJson(path.join(runtime, '.complete.json'), {
+        schema: 'nexus.release-bundle.v1',
         runtimeSha: runtimeIdentities[role].runtimeSha,
         artifactDigest: runtimeIdentities[role].artifactDigest,
       }, 0o440);
       writeJson(path.join(runtime, '.nexus-installed-runtime.json'), {
+        schema: 'nexus.installed-runtime-attestation.v1',
+        identity: {
+          runtimeSha: runtimeIdentities[role].runtimeSha,
+          artifactDigest: runtimeIdentities[role].artifactDigest,
+        },
         aggregateDigest: runtimeIdentities[role].installedRuntimeDigest,
       }, 0o440);
       fs.chmodSync(runtime, 0o550);
@@ -1075,6 +1081,25 @@ set -euo pipefail
   exit 64
 }
 `, { mode: 0o755 });
+    const bootHealth = path.join(root, 'bin', 'boot-health-role-verifier');
+    fs.writeFileSync(bootHealth, `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  preflight-temporary|start-temporary|prepare|postcheck)
+    [ "$#" -eq 1 ] || exit 64
+    printf '{"ok":true,"command":"%s"}\\n' "$1"
+    ;;
+  verify-pending-roles)
+    [ "$#" -eq 3 ] \
+      && [[ "$2" =~ ^(layout|legacy|v4-prelayout)$ ]] \
+      && [[ "$3" =~ ^[a-f0-9]{64}$ ]] || exit 64
+    printf '{"ok":true,"profile":"%s","pendingSha256":"%s"}\\n' "$2" "$3"
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+`, { mode: 0o755 });
     cleanupV3ControlFixtures = () => {
       for (const runtimePath of [productionRuntime, stagingRuntime]) {
         if (fs.existsSync(runtimePath)) fs.chmodSync(runtimePath, 0o750);
@@ -1116,6 +1141,7 @@ set -euo pipefail
         'pm2-install-in-progress.absent',
       ),
       NEXUS_PROMOTION_STAGING_BROKER: stagingBroker,
+      NEXUS_TEST_BOOT_HEALTH_BIN: bootHealth,
       NEXUS_PROMOTION_SELECTOR_SWITCH: path.resolve(
         'scripts/remote-release-selector-switch.py',
       ),
@@ -1747,6 +1773,229 @@ exec "$@"
     expect(run(['assert-idle']).status).toBe(73);
   });
 
+  it('admits only an exact current-boot recovery/pending pair for PM2 layout boot', () => {
+    const recoveryPath = path.join(
+      stateRoot,
+      'boot-recovery-in-progress.v1.json',
+    );
+    const pendingPath = path.join(stateRoot, 'boot-health-pending.v1.json');
+    const productionBase = v3ControlFixtureEnv
+      .NEXUS_PROMOTION_PRODUCTION_BASE!;
+    const stagingBase = v3ControlFixtureEnv.NEXUS_PROMOTION_STAGING_BASE!;
+    const role = (name: 'production' | 'staging', base: string) => {
+      const runtime = fs.realpathSync(path.join(base, 'current'));
+      const markerBody = fs.readFileSync(path.join(runtime, '.complete.json'));
+      const installedBody = fs.readFileSync(
+        path.join(runtime, '.nexus-installed-runtime.json'),
+      );
+      const complete = JSON.parse(markerBody.toString('utf8')) as {
+        runtimeSha: string;
+        artifactDigest: string;
+      };
+      const installed = JSON.parse(installedBody.toString('utf8')) as {
+        aggregateDigest: string;
+      };
+      const identity = (target: string) => {
+        const stat = fs.lstatSync(target);
+        return {
+          dev: String(stat.dev),
+          ino: String(stat.ino),
+          uid: stat.uid,
+          gid: stat.gid,
+          mode: stat.mode & 0o7777,
+        };
+      };
+      return {
+        schema: 'nexus.release-boot-role.v1',
+        role: name,
+        profile: 'layout',
+        base,
+        runtime,
+        runtimeSha: complete.runtimeSha,
+        artifactDigest: complete.artifactDigest,
+        installedRuntimeDigest: installed.aggregateDigest,
+        selector: identity(path.join(base, 'current')),
+        runtimeIdentity: identity(runtime),
+        markerSha256: createHash('sha256').update(markerBody).digest('hex'),
+        installedAttestationSha256:
+          createHash('sha256').update(installedBody).digest('hex'),
+        authoritySha256: createHash('sha256').update(fs.readFileSync(
+          v3ControlFixtureEnv.NEXUS_PROMOTION_LAYOUT_ATTESTATION!,
+        )).digest('hex'),
+        transaction: null,
+      };
+    };
+    const epoch = Math.floor(Date.now() / 1000);
+    const timestamp = new Date(epoch * 1000).toISOString();
+    const recovery = {
+      schema: 'nexus.release-boot-recovery.v1',
+      status: 'in_progress',
+      bootId: 'test-boot',
+      bootDetectedAt: timestamp,
+      bootDetectedEpoch: epoch,
+      outageStartedAt: timestamp,
+      outageStartedEpoch: epoch,
+      outageStartedMonotonic: 100,
+      outageBootId: 'test-boot',
+      recoveryDeadlineEpoch: epoch + 120,
+      timingSource: 'boot_detection',
+      activeTransactionId: null,
+    };
+    const writePair = (
+      recoveryValue: Record<string, unknown>,
+      pendingOverrides: Record<string, unknown> = {},
+    ) => {
+      fs.mkdirSync(stateRoot, { recursive: true });
+      const recoveryBody = Buffer.from(
+        `${JSON.stringify(recoveryValue, null, 2)}\n`,
+      );
+      fs.writeFileSync(recoveryPath, recoveryBody, { mode: 0o600 });
+      fs.writeFileSync(pendingPath, `${JSON.stringify({
+        schema: 'nexus.release-boot-health-pending.v3',
+        status: 'pending',
+        profile: 'layout',
+        production: role('production', productionBase),
+        staging: role('staging', stagingBase),
+        canonicalDumpSha256: '1'.repeat(64),
+        pm2ClosureDigest: '2'.repeat(64),
+        nodeSha256: '3'.repeat(64),
+        recoveryAuthoritySha256:
+          createHash('sha256').update(recoveryBody).digest('hex'),
+        bootId: recoveryValue.bootId,
+        outageBootId: recoveryValue.outageBootId,
+        outageStartedAt: recoveryValue.outageStartedAt,
+        outageStartedEpoch: recoveryValue.outageStartedEpoch,
+        outageStartedMonotonic: recoveryValue.outageStartedMonotonic,
+        recoveryDeadlineEpoch: recoveryValue.recoveryDeadlineEpoch,
+        temporaryPreparedAt: new Date().toISOString(),
+        ...pendingOverrides,
+      }, null, 2)}\n`, { mode: 0o600 });
+    };
+    const bootVerifierEnv = {
+      NEXUS_PROMOTION_BOOT_HEALTH_BIN:
+        v3ControlFixtureEnv.NEXUS_TEST_BOOT_HEALTH_BIN!,
+    };
+
+    const quiescent = run(['assert-layout-boot-ready']);
+    expect(quiescent.status, quiescent.stderr).toBe(0);
+
+    fs.mkdirSync(stateRoot, { recursive: true });
+    fs.writeFileSync(pendingPath, '{}\n', { mode: 0o600 });
+    expect(run(['assert-layout-ready']).status).toBe(75);
+    expect(run(['assert-layout-boot-ready']).status).toBe(75);
+    expect(run(['assert-idle']).status).toBe(73);
+    fs.rmSync(pendingPath);
+
+    fs.writeFileSync(
+      recoveryPath,
+      `${JSON.stringify(recovery, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    expect(run(['assert-layout-boot-ready']).status).toBe(75);
+    fs.rmSync(recoveryPath);
+
+    writePair(recovery);
+    const prepared = run(['assert-layout-boot-ready'], bootVerifierEnv);
+    expect(prepared.status, prepared.stderr).toBe(0);
+    const preparedLayout = run([
+      'assert-boot-recovery-prepared',
+      'layout',
+    ], bootVerifierEnv);
+    expect(preparedLayout.status, preparedLayout.stderr).toBe(0);
+    expect(run([
+      'assert-boot-recovery-prepared',
+      'legacy',
+    ]).status).toBe(75);
+    expect(run(['assert-layout-ready']).status).toBe(75);
+
+    writePair({ ...recovery, bootId: 'wrong-boot' });
+    expect(run(['assert-layout-boot-ready']).status).toBe(75);
+
+    writePair({ ...recovery, unexpectedAuthority: true });
+    expect(run(['assert-layout-boot-ready']).status).toBe(75);
+
+    writePair(recovery, { recoveryDeadlineEpoch: epoch + 121 });
+    expect(run(['assert-layout-boot-ready']).status).toBe(75);
+
+    writePair({ ...recovery, activeTransactionId: id });
+    expect(run(['assert-layout-boot-ready']).status).toBe(75);
+  });
+
+  it('resumes SLA incident closure after pending authority was durably removed', () => {
+    const recoveryPath = path.join(
+      stateRoot,
+      'boot-recovery-in-progress.v1.json',
+    );
+    const pendingPath = path.join(stateRoot, 'boot-health-pending.v1.json');
+    const proofPath = path.join(stateRoot, 'boot-health-proof.v1.json');
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    const recoveryBody = Buffer.from(`${JSON.stringify({
+      schema: 'nexus.release-boot-recovery.v1',
+      status: 'in_progress',
+      bootId: 'test-boot',
+    }, null, 2)}\n`);
+    fs.writeFileSync(recoveryPath, recoveryBody, { mode: 0o600 });
+    const pendingBody = Buffer.from(`${JSON.stringify({
+      schema: 'nexus.release-boot-health-pending.v3',
+      status: 'pending',
+      profile: 'layout',
+      production: {},
+      staging: {},
+      canonicalDumpSha256: '1'.repeat(64),
+      recoveryAuthoritySha256:
+        createHash('sha256').update(recoveryBody).digest('hex'),
+    }, null, 2)}\n`);
+    fs.writeFileSync(pendingPath, pendingBody, { mode: 0o600 });
+    const proofBody = Buffer.from(`${JSON.stringify({
+      schema: 'nexus.release-boot-health-proof.v2',
+      status: 'healthy_sla_missed',
+      targetMet: false,
+      pendingSha256: createHash('sha256').update(pendingBody).digest('hex'),
+      canonicalDumpSha256: '1'.repeat(64),
+      actualServiceHealthyAt: new Date().toISOString(),
+      outageToActualServiceHealthySeconds: 121,
+    }, null, 2)}\n`);
+    fs.writeFileSync(proofPath, proofBody, { mode: 0o600 });
+    const proofSha256 = createHash('sha256').update(proofBody).digest('hex');
+    const archiveDirectory = path.join(stateRoot, 'boot-recovery-incidents');
+    fs.mkdirSync(archiveDirectory, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(archiveDirectory, `${proofSha256}.resolution.json`),
+      `${JSON.stringify({
+        schema: 'nexus.release-boot-sla-incident-resolution.v1',
+        status: 'owner_acknowledged',
+        proofSha256,
+        recoveryAuthoritySha256:
+          createHash('sha256').update(recoveryBody).digest('hex'),
+        pendingSha256:
+          createHash('sha256').update(pendingBody).digest('hex'),
+        actualServiceHealthyAt: JSON.parse(proofBody.toString())
+          .actualServiceHealthyAt,
+        outageToActualServiceHealthySeconds: 121,
+        acknowledgedAt: new Date().toISOString(),
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    fs.rmSync(pendingPath);
+    const healthySystemctl = path.join(root, 'bin', 'healthy-systemctl');
+    fs.writeFileSync(healthySystemctl, `#!/usr/bin/env bash
+set -euo pipefail
+[ "\${1:-}" = show ] || exit 64
+case "\${4:-}" in
+  ActiveState) printf 'active\\n' ;;
+  SubState) printf 'running\\n' ;;
+  *) exit 64 ;;
+esac
+`, { mode: 0o755 });
+    const result = run(
+      ['resolve-boot-sla-incident', proofSha256],
+      { NEXUS_PROMOTION_SYSTEMCTL_BIN: healthySystemctl },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(recoveryPath)).toBe(false);
+    expect(fs.existsSync(pendingPath)).toBe(false);
+  });
+
   it('reports the authoritative transaction unit activity with status', () => {
     const launch = run(['launch', envelopePath]);
     expect(launch.status, launch.stderr).toBe(0);
@@ -1764,6 +2013,289 @@ exec "$@"
     const inactiveStatus = run(['status', id]);
     expect(inactiveStatus.status, inactiveStatus.stderr).toBe(0);
     expect(JSON.parse(inactiveStatus.stdout).unitActive).toBe(false);
+  });
+
+  it('refuses live recover-all before publishing a boot-recovery marker', () => {
+    const bootLog = path.join(root, 'boot-health.log');
+    const bootHealth = path.join(root, 'bin', 'boot-health-live-refusal');
+    fs.writeFileSync(bootHealth, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$BOOT_HEALTH_LOG"
+[ "$#" -eq 1 ] && [ "$1" = preflight-temporary ] || exit 64
+printf 'real pm2-dominguez is active\\n' >&2
+exit 1
+`, { mode: 0o755 });
+
+    const result = run(['recover-all'], {
+      NEXUS_PROMOTION_BOOT_HEALTH_BIN: bootHealth,
+      BOOT_HEALTH_LOG: bootLog,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(fs.readFileSync(bootLog, 'utf8').trim()).toBe('preflight-temporary');
+    expect(fs.existsSync(path.join(
+      stateRoot,
+      'boot-recovery-in-progress.v1.json',
+    ))).toBe(false);
+  });
+
+  it('archives and clears only the exact Phase A-bound live pre-layout marker', () => {
+    const now = new Date();
+    const completedAt = new Date(now.getTime() - 60_000).toISOString();
+    const epoch = Math.floor(now.getTime() / 1000);
+    const marker = {
+      schema: 'nexus.release-boot-recovery.v1',
+      status: 'in_progress',
+      bootId: 'test-boot',
+      bootDetectedAt: new Date(epoch * 1000).toISOString(),
+      bootDetectedEpoch: epoch,
+      outageStartedAt: new Date(epoch * 1000).toISOString(),
+      outageStartedEpoch: epoch,
+      outageStartedMonotonic: 100,
+      outageBootId: 'test-boot',
+      recoveryDeadlineEpoch: epoch + 120,
+      timingSource: 'boot_detection',
+      activeTransactionId: null,
+    };
+    const markerPath = path.join(
+      stateRoot,
+      'boot-recovery-in-progress.v1.json',
+    );
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o755 });
+    const markerBody = Buffer.from(`${JSON.stringify(marker, null, 2)}\n`);
+    fs.writeFileSync(markerPath, markerBody, { mode: 0o600 });
+    const markerSha256 = createHash('sha256').update(markerBody).digest('hex');
+
+    const activationRoot = path.join(stateRoot, 'layout-activation');
+    fs.mkdirSync(activationRoot, { recursive: true, mode: 0o700 });
+    const phaseAReceipt = path.join(activationRoot, 'phase-a-receipt.v1.json');
+    const phaseA = {
+      schema: 'nexus.release-layout-phase-a-receipt.v1',
+      status: 'completed',
+      sourceSha: '3'.repeat(40),
+      sourceArchiveSha256: '4'.repeat(64),
+      completedAt,
+    };
+    const phaseABody = Buffer.from(`${JSON.stringify(phaseA, null, 2)}\n`);
+    fs.writeFileSync(phaseAReceipt, phaseABody, { mode: 0o600 });
+    const phaseASha256 = createHash('sha256').update(phaseABody).digest('hex');
+    const legacyRole = (
+      name: 'production' | 'staging',
+      base: string,
+    ) => ({
+      name,
+      base,
+      runtime: path.join(base, 'releases', `legacy-${'3'.repeat(12)}`),
+      runtimeSha: '3'.repeat(40),
+      artifactDigest: '4'.repeat(64),
+      installedRuntimeDigest: '5'.repeat(64),
+      selector: { dev: '66306', ino: name === 'production' ? '11' : '12' },
+      runtimeIdentity: {
+        dev: '66306',
+        ino: name === 'production' ? '21' : '22',
+      },
+      markerSha256: '6'.repeat(64),
+      installedAttestationSha256: '7'.repeat(64),
+    });
+    const proof = {
+      schema: 'nexus.release-live-prelayout-health-proof.v1',
+      status: 'verified_no_mutation',
+      phaseA: {
+        receiptSha256: phaseASha256,
+        sourceSha: phaseA.sourceSha,
+        sourceArchiveSha256: phaseA.sourceArchiveSha256,
+        completedAt,
+        existingServiceRuntimeSha256: '8'.repeat(64),
+        pm2PrerequisiteEvidenceSha256: '9'.repeat(64),
+        unitCatSha256: 'a'.repeat(64),
+        unitShowSha256: 'b'.repeat(64),
+      },
+      pm2Dominguez: {
+        activeState: 'active',
+        subState: 'running',
+        mainPid: 3736,
+        controlGroup: '/system.slice/pm2-dominguez.service',
+        execMainStartTimestampMonotonic: 50_000_000,
+        nRestarts: 0,
+        unitRuntimeSha256: 'c'.repeat(64),
+        executable: {
+          classification: 'worker_owned_legacy_observation',
+          ancestryPolicy: 'linuxbrew_worker_owned_no_world_write',
+          path: '/home/linuxbrew/.linuxbrew/Cellar/node/25.6.1/bin/node',
+          sha256: 'd'.repeat(64),
+          dev: '66306',
+          ino: '31',
+          uid: process.getuid?.() ?? os.userInfo().uid,
+          gid: process.getgid?.() ?? os.userInfo().gid,
+          mode: 0o555,
+        },
+      },
+      futureRootPm2Attestation: {
+        closureDigest: 'e'.repeat(64),
+        nodeSha256: 'f'.repeat(64),
+      },
+      production: legacyRole(
+        'production',
+        '/home/dominguez/telegram-hub-bot',
+      ),
+      staging: legacyRole(
+        'staging',
+        '/home/dominguez/telegram-hub-bot-staging',
+      ),
+      checks: [
+        'phase_a_service_receipt',
+        'legacy_real_systemd_daemon_identity',
+        'future_root_pm2_attestation',
+        'four_exact_pm2_apps_stable',
+        'production_authenticated_readiness',
+        'staging_authenticated_readiness',
+        'legacy_selector_and_runtime_identity_stable',
+      ],
+      mutationOperations: [],
+      verifiedAt: new Date().toISOString(),
+    };
+    const bootLog = path.join(root, 'boot-health.log');
+    const bootHealth = path.join(root, 'bin', 'boot-health-prelayout-proof');
+    fs.writeFileSync(bootHealth, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$BOOT_HEALTH_LOG"
+[ "$#" -eq 1 ] && [ "$1" = verify-live-prelayout ] || exit 64
+printf '%s\\n' "$LIVE_PRELAYOUT_PROOF"
+`, { mode: 0o755 });
+    const missing = (name: string) => path.join(root, `missing-${name}`);
+    const extra = {
+      NEXUS_PROMOTION_BOOT_HEALTH_BIN: bootHealth,
+      NEXUS_LAYOUT_PHASE_A_RECEIPT: phaseAReceipt,
+      NEXUS_PROMOTION_LAYOUT_ACTIVATION_ACTIVE: missing('activation'),
+      NEXUS_PROMOTION_LAYOUT_ATTESTATION: missing('attestation'),
+      NEXUS_PROMOTION_LAYOUT_RESULT: missing('result'),
+      NEXUS_PROMOTION_LAYOUT_TERMINAL_JOURNAL: missing('terminal'),
+      NEXUS_PROMOTION_LAYOUT_REQUEST: missing('request'),
+      NEXUS_PROMOTION_LAYOUT_DRILL: missing('drill'),
+      NEXUS_PROMOTION_COMPAT_PRODUCTION:
+        '/home/dominguez/telegram-hub-bot',
+      NEXUS_PROMOTION_COMPAT_STAGING:
+        '/home/dominguez/telegram-hub-bot-staging',
+      BOOT_HEALTH_LOG: bootLog,
+      LIVE_PRELAYOUT_PROOF: JSON.stringify(proof),
+    };
+
+    const wrongDigest = run([
+      'resolve-prelayout-boot-recovery',
+      '0'.repeat(64),
+    ], extra);
+    expect(wrongDigest.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(bootLog)).toBe(false);
+
+    const stagingJournal = path.join(
+      stateRoot,
+      'staging',
+      '12345678-1234-4123-8123-123456789abc.transaction.json',
+    );
+    fs.writeFileSync(stagingJournal, `${JSON.stringify({
+      schema: 'nexus.staging-attestation-transaction.v1',
+      phase: 'prepared',
+    })}\n`, { mode: 0o600 });
+    const unfinished = run([
+      'resolve-prelayout-boot-recovery',
+      markerSha256,
+    ], extra);
+    expect(unfinished.status).toBe(75);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(bootLog)).toBe(false);
+    fs.rmSync(stagingJournal);
+
+    const archive = path.join(
+      stateRoot,
+      'boot-recovery-incidents',
+      `${markerSha256}.prelayout-resolution.json`,
+    );
+    fs.mkdirSync(path.dirname(archive), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(archive, '{"schema":"forged"}\n', { mode: 0o600 });
+    const forgedArchive = run([
+      'resolve-prelayout-boot-recovery',
+      markerSha256,
+    ], extra);
+    expect(forgedArchive.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(bootLog)).toBe(false);
+    fs.rmSync(archive);
+
+    const invalidLegacyExecutableProofs = [
+      {
+        ...proof,
+        pm2Dominguez: {
+          ...proof.pm2Dominguez,
+          executable: {
+            ...proof.pm2Dominguez.executable,
+            classification: 'trusted_root_executable',
+          },
+        },
+      },
+      {
+        ...proof,
+        pm2Dominguez: {
+          ...proof.pm2Dominguez,
+          executable: {
+            ...proof.pm2Dominguez.executable,
+            path: '/opt/observed-node/bin/node',
+          },
+        },
+      },
+      {
+        ...proof,
+        pm2Dominguez: {
+          ...proof.pm2Dominguez,
+          executable: {
+            ...proof.pm2Dominguez.executable,
+            uid: proof.pm2Dominguez.executable.uid + 1,
+          },
+        },
+      },
+    ];
+    for (const invalidProof of invalidLegacyExecutableProofs) {
+      const invalidLegacyExecutable = run([
+        'resolve-prelayout-boot-recovery',
+        markerSha256,
+      ], {
+        ...extra,
+        LIVE_PRELAYOUT_PROOF: JSON.stringify(invalidProof),
+      });
+      expect(invalidLegacyExecutable.status).toBe(73);
+      expect(fs.existsSync(markerPath)).toBe(true);
+      expect(fs.existsSync(archive)).toBe(false);
+    }
+
+    const resolved = run([
+      'resolve-prelayout-boot-recovery',
+      markerSha256,
+    ], extra);
+    expect(resolved.status, resolved.stderr).toBe(0);
+    expect(JSON.parse(resolved.stdout)).toMatchObject({
+      status: 'reconciled_no_mutation',
+      markerSha256,
+      idempotent: false,
+    });
+    expect(fs.readFileSync(bootLog, 'utf8').trim().split('\n'))
+      .toEqual(Array(4).fill('verify-live-prelayout'));
+    expect(fs.existsSync(markerPath)).toBe(false);
+    expect(fs.statSync(archive).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(fs.readFileSync(archive, 'utf8'))).toMatchObject({
+      schema: 'nexus.release-prelayout-boot-recovery-resolution.v1',
+      status: 'reconciled_no_mutation',
+      markerSha256,
+      liveHealthProof: {
+        phaseA: { receiptSha256: phaseASha256 },
+        mutationOperations: [],
+      },
+    });
+
+    const resumed = run([
+      'resolve-prelayout-boot-recovery',
+      markerSha256,
+    ], extra);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(JSON.parse(resumed.stdout).idempotent).toBe(true);
+    expect(fs.readFileSync(bootLog, 'utf8').trim().split('\n')).toHaveLength(4);
   });
 
   it('reconciles synchronously after reboot before recovery intent is armed', () => {

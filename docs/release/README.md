@@ -1241,26 +1241,31 @@ scripts/request-rollback-drill-staging-attestation.sh \
 The operator supplies `<exact-protected-run-id>` only from the validated
 SHA-scoped receipt; it is not a caller-selected release argument.
 
-`npm run release:drill-staging -- --acknowledge-first-drill-bootstrap` now has a
-dedicated, sequential adapter for the exact control-v2 legacy base
-`/home/dominguez/telegram-hub-bot-staging`. Source presence does not install or
-activate it. Before non-dry execution, an owner must bootstrap the reviewed
-protected-main archive and install the root assets:
+The first post-Phase-A drill uses one dedicated, sequential, non-promotable v4
+pre-layout adapter for `/home/dominguez/telegram-hub-bot-staging`. Phase A
+upgrades the release/layout controls and transactionally retires control-v2;
+it does not activate the v4 drill closure. If Phase A finds a stale pre-layout
+boot marker, the owner first runs the digest-bound
+`resolve-prelayout-boot-recovery` command. The owner then invokes the installer
+from the exact Phase-A archive once:
 
 ```bash
-sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/remote-rollback-drill-legacy-staging-install.sh \
-  install \
-  /var/lib/nexus-release-bootstrap/<sha>/source \
-  <40-hex-protected-main-sha> \
-  /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
-  <64-hex-root-side-archive-sha256>
+ssh -t ServerDominguez \
+  'sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/remote-rollback-drill-legacy-staging-install.sh activate-from-phase-a <resolution-sha256-or-none>'
 ```
 
-The installer proves the archive's Git PAX commit and byte identity before it
-transactionally installs the mode-0700 broker/tooling, static systemd
-transaction and boot-recovery units, fail-closed PM2 dependency drop-ins,
-mode-0440 `NOSETENV` allowlisted sudoers entry, and mode-0600 receipt. It also
-requires the application-DR-owned
+When the closure is absent,
+`npm run release:drill-staging -- --acknowledge-first-drill-bootstrap` prints
+that reviewed owner action and exits without attempting sudo. After the owner
+action succeeds, rerun `npm run release:drill-staging` normally. The operator
+verifies the broker inspection/receipt against its exact protected-main SHA;
+it never reinstalls the closure.
+
+The v4 pre-layout installer becomes the transactional repair/recovery anchor.
+It proves the archive's Git PAX commit and byte identity before reconciling the
+mode-0700 broker/tooling, static systemd transaction and boot-recovery units,
+fail-closed PM2 dependency drop-ins, mode-0440 `NOSETENV` allowlisted sudoers
+entry, and mode-0600 receipt. It also requires the application-DR-owned
 `/usr/local/libexec/nexus-application-dr/application-dr-sqlite.py` to be a
 root-owned mode-0644 regular file with reviewed SHA-256
 `e1f1a92d4dc49bd6fe6c1d8c1a3573ec2db61f6374a1831b2765a5541943708d`.
@@ -1268,12 +1273,14 @@ The helper is verified against the SHA-bound source archive and recorded in
 the install receipt; this installer does not overwrite the application-DR
 asset. The application account can invoke only `version`,
 `inspect`, `prepare`, `launch`, `status`, and `fetch-evidence`; it cannot invoke
-the root worker or recovery command directly.
+the installer, retirement, root worker, or recovery command directly.
 
 The operator uploads the exact signed artifact before submitting one bounded
 request to the root broker, then only polls its durable journal. The broker
-requires the reviewed control-v2 digest, holds the ordinary-promotion and
-release/Sonar locks, pins the dependency attestations before candidate code,
+requires the Phase A-bound control-v4 identity, rejects active layout,
+promotion, boot-recovery, or Sonar work, holds the ordinary-promotion and
+release/Sonar locks, and never calls `assert-layout-ready` in this bounded
+pre-layout phase. It pins the dependency attestations before candidate code,
 seals both candidate and predecessor trees root-owned and non-writable, and
 revalidates their root-pinned installed/recovery identities immediately before
 each selector or PM2 mutation. It persists and fsyncs the predecessor plus
@@ -1302,7 +1309,38 @@ missing, corrupt, unbound, helper-invalid, or drifted predecessor identity
 fails closed before the predecessor is started. Both PM2 units require
 successful boot recovery and execute a final no-unfinished-journal guard, so
 ordering alone cannot permit application start after failed recovery. The
-dependency installation and preflight occur before the outage is armed.
+boot chain is exact and sequential:
+`nexus-rollback-drill-v4-prelayout-staging-install-recovery`,
+layout-install recovery, layout recovery, v4 transaction recovery, promotion
+recovery, then PM2. Each recovery stage also asserts its predecessor state, so
+unit ordering is not treated as recovery evidence. The v4 PM2 guard remains
+installed through layout activation and the Phase B handover; Phase B must
+publish and verify the permanent layout/promotion guard before v4 authority can
+be retired. While V4 is active, its exact-source installer also publishes a
+promotion-recovery drop-in with explicit `Requires=` and `After=` bindings to
+the V4 recovery service. Phase B removes that drop-in durably in the same
+checkpointed retirement transaction, so promotion recovery cannot run past a
+failed V4 predecessor recovery and the dependency cannot outlive V4 authority.
+The dependency installation and preflight occur before the outage is armed. At
+boot, the root-owned temporary PM2 daemon is started and
+re-attested before any unfinished v4 transaction may issue a PM2 command; the
+later promotion recovery reuses and stops that same governed daemon. Boot
+pending evidence is `nexus.release-boot-health-pending.v3`: before terminal
+layout it uses the explicit `v4-prelayout` profile and role evidence, and after
+terminal layout it uses `layout`. A valid marker from an older boot is left for
+promotion recovery to rewrite, but it cannot prevent the v4 broker from first
+restoring its own independently journaled predecessor.
+
+After a successful first v4 drill, the staging base and `releases` parent are
+root-owned mode 0755, `current` is a root-owned symlink to the exact runtime,
+and the selected runtime is recursively sealed root-owned: directories and
+executables are mode 0555 and non-executable files, including
+`.complete.json`, are mode 0444. Before that first switch the active selector
+and runtime can retain their exact worker-owned predecessor identity; after a
+recovery, a root-published selector can point to the journal-proven restored
+worker-owned mode-0700 predecessor. The v3 role evidence distinguishes these
+states through terminal transaction evidence rather than accepting them as an
+unbound ownership alternative.
 
 The resulting request contains
 `nexus.rollback-drill-legacy-staging-bootstrap.v1`, fixed scope
@@ -1315,12 +1353,20 @@ envelope cannot satisfy ordinary staging or promotion. The actual drill
 envelopes remain signed only by the distinct drill key. This branch never calls
 the v3 `/srv` implementation and adds no promotion command.
 
-Control-v2 pinning remains exact. Before retiring or replacing this adapter,
-root must run
-`nexus-rollback-drill-legacy-staging-broker assert-terminal-retirement-ready`.
-It succeeds only with no unfinished transaction and explicitly requires the
-`nexus.release-layout-fault-drill.v1` successor integration to be installed
-before the active adapter is removed.
+Retirement is a separate root-only Phase B operation, not an application
+sudoers command. It requires at least one completed v4 drill whose retained
+evidence digest matches its terminal journal, the exact Phase A source/archive
+identity, the exact Phase B receipt, an absent handover journal, and the
+installed permanent PM2 guard with its reviewed digest and semantics.
+`retire-for-layout` takes the layout-activation lock exclusively before the
+ordinary-promotion and release/Sonar locks; Phase B may pass those three
+already-held descriptors only after proving the same files and exclusive lock
+modes. Retirement checkpoints disabling recovery, removing both temporary PM2
+drop-ins, removing the temporary promotion-recovery dependency and sudoers,
+closing admission, archiving the receipt, and removing active authority.
+Install recovery resumes any interrupted checkpoint sequence before PM2 can
+start. A recovered-only transaction or a zero-drill install cannot authorize
+retirement.
 
 The outer record is not rollback-freshness evidence and cannot authorize
 production. The two inner files are ordinary recovery inputs, but their drill
