@@ -1508,6 +1508,7 @@ exit 0
     systemctlActive = path.join(root, 'systemctl.active');
     selectorFixtureRuntimes = [];
     fs.writeFileSync(path.join(root, 'release-sonar.lock'), '', { mode: 0o660 });
+    fs.chmodSync(path.join(root, 'release-sonar.lock'), 0o660);
     const pair = generateKeyPairSync('ed25519');
     fs.writeFileSync(privateKeyPath, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
     fs.writeFileSync(publicKeyPath, pair.publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o600 });
@@ -2296,6 +2297,306 @@ printf '%s\\n' "$LIVE_PRELAYOUT_PROOF"
     expect(resumed.status, resumed.stderr).toBe(0);
     expect(JSON.parse(resumed.stdout).idempotent).toBe(true);
     expect(fs.readFileSync(bootLog, 'utf8').trim().split('\n')).toHaveLength(4);
+  });
+
+  it('acknowledges only the allowlisted historical pre-layout SLA incident', () => {
+    const epoch = Math.floor(Date.now() / 1000) - 10;
+    const outageStartedEpoch = epoch - 3600;
+    const outageStartedMonotonic = 4;
+    const bootTimeEpoch = outageStartedEpoch - outageStartedMonotonic;
+    const detectionMonotonic = epoch - bootTimeEpoch;
+    const marker = {
+      schema: 'nexus.release-boot-recovery.v1',
+      status: 'in_progress',
+      bootId: 'test-boot',
+      bootDetectedAt: new Date(epoch * 1000).toISOString(),
+      bootDetectedEpoch: epoch,
+      outageStartedAt: new Date(outageStartedEpoch * 1000).toISOString(),
+      outageStartedEpoch,
+      outageStartedMonotonic,
+      outageBootId: 'test-boot',
+      recoveryDeadlineEpoch: outageStartedEpoch + 120,
+      timingSource: 'boot_detection',
+      activeTransactionId: null,
+    };
+    const markerPath = path.join(
+      stateRoot,
+      'boot-recovery-in-progress.v1.json',
+    );
+    fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+    const writeMarker = (value: Record<string, unknown> = marker) => {
+      const body = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+      fs.writeFileSync(markerPath, body, { mode: 0o600 });
+      fs.utimesSync(markerPath, epoch, epoch);
+      return {
+        body,
+        digest: createHash('sha256').update(body).digest('hex'),
+      };
+    };
+    const markerIdentity = writeMarker();
+
+    const activationRoot = path.join(stateRoot, 'layout-activation');
+    fs.mkdirSync(activationRoot, { recursive: true, mode: 0o700 });
+    const predecessorPath = path.join(
+      activationRoot,
+      'phase-a-predecessor-receipt.v1.json',
+    );
+    const predecessor = {
+      schema: 'nexus.release-layout-phase-a-receipt.v1',
+      status: 'completed',
+      sourceSha: '2'.repeat(40),
+    };
+    const predecessorBody = Buffer.from(
+      `${JSON.stringify(predecessor, null, 2)}\n`,
+    );
+    fs.writeFileSync(predecessorPath, predecessorBody, { mode: 0o600 });
+    const predecessorSha256 = createHash('sha256')
+      .update(predecessorBody).digest('hex');
+    const completedAt = new Date((epoch - 60) * 1000).toISOString();
+    const phaseAReceipt = path.join(
+      activationRoot,
+      'phase-a-receipt.v1.json',
+    );
+    const phaseA = {
+      schema: 'nexus.release-layout-phase-a-receipt.v1',
+      status: 'completed',
+      sourceSha: '3'.repeat(40),
+      sourceArchiveSha256: '4'.repeat(64),
+      completedAt,
+      upgradedAt: new Date((epoch + 1) * 1000).toISOString(),
+      phaseAUpgrade: {
+        performed: true,
+        predecessorReceiptPath: predecessorPath,
+        predecessorReceiptSha256: predecessorSha256,
+        predecessorSourceSha: predecessor.sourceSha,
+      },
+      existingServiceIdentity: {
+        runtimeUnchanged: true,
+        beforeSha256: '5'.repeat(64),
+        afterSha256: '6'.repeat(64),
+        runtimeSha256: '7'.repeat(64),
+      },
+    };
+    const phaseABody = Buffer.from(`${JSON.stringify(phaseA, null, 2)}\n`);
+    fs.writeFileSync(phaseAReceipt, phaseABody, { mode: 0o600 });
+    const phaseASha256 = createHash('sha256').update(phaseABody).digest('hex');
+    const legacyRole = (
+      name: 'production' | 'staging',
+      base: string,
+    ) => ({
+      name,
+      base,
+      runtime: path.join(base, 'releases', `legacy-${'3'.repeat(12)}`),
+      runtimeSha: '3'.repeat(40),
+      artifactDigest: '4'.repeat(64),
+      installedRuntimeDigest: '5'.repeat(64),
+      selector: { dev: '66306', ino: name === 'production' ? '11' : '12' },
+      runtimeIdentity: {
+        dev: '66306',
+        ino: name === 'production' ? '21' : '22',
+      },
+      markerSha256: '6'.repeat(64),
+      installedAttestationSha256: '7'.repeat(64),
+    });
+    const proof = {
+      schema: 'nexus.release-live-prelayout-health-proof.v1',
+      status: 'verified_no_mutation',
+      phaseA: {
+        receiptSha256: phaseASha256,
+        sourceSha: phaseA.sourceSha,
+        sourceArchiveSha256: phaseA.sourceArchiveSha256,
+        completedAt,
+        existingServiceRuntimeSha256: '8'.repeat(64),
+        pm2PrerequisiteEvidenceSha256: '9'.repeat(64),
+        unitCatSha256: 'a'.repeat(64),
+        unitShowSha256: 'b'.repeat(64),
+      },
+      pm2Dominguez: {
+        activeState: 'active',
+        subState: 'running',
+        mainPid: 3736,
+        controlGroup: '/system.slice/pm2-dominguez.service',
+        execMainStartTimestampMonotonic:
+          (outageStartedMonotonic + 121) * 1_000_000,
+        nRestarts: 0,
+        unitRuntimeSha256: 'c'.repeat(64),
+        executable: {
+          classification: 'worker_owned_legacy_observation',
+          ancestryPolicy: 'linuxbrew_worker_owned_no_world_write',
+          path: '/home/linuxbrew/.linuxbrew/Cellar/node/25.6.1/bin/node',
+          sha256: 'd'.repeat(64),
+          dev: '66306',
+          ino: '31',
+          uid: process.getuid?.() ?? os.userInfo().uid,
+          gid: process.getgid?.() ?? os.userInfo().gid,
+          mode: 0o555,
+        },
+      },
+      futureRootPm2Attestation: {
+        closureDigest: 'e'.repeat(64),
+        nodeSha256: 'f'.repeat(64),
+      },
+      production: legacyRole(
+        'production',
+        '/home/dominguez/telegram-hub-bot',
+      ),
+      staging: legacyRole(
+        'staging',
+        '/home/dominguez/telegram-hub-bot-staging',
+      ),
+      checks: [
+        'phase_a_service_receipt',
+        'legacy_real_systemd_daemon_identity',
+        'future_root_pm2_attestation',
+        'four_exact_pm2_apps_stable',
+        'production_authenticated_readiness',
+        'staging_authenticated_readiness',
+        'legacy_selector_and_runtime_identity_stable',
+      ],
+      mutationOperations: [],
+      verifiedAt: new Date((epoch + 2) * 1000).toISOString(),
+    };
+    const bootLog = path.join(root, 'historical-boot-health.log');
+    const bootHealth = path.join(root, 'bin', 'historical-boot-health');
+    fs.writeFileSync(bootHealth, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$BOOT_HEALTH_LOG"
+[ "$#" -eq 1 ] && [ "$1" = verify-live-prelayout ] || exit 64
+printf '%s\\n' "$LIVE_PRELAYOUT_PROOF"
+`, { mode: 0o755 });
+    const missing = (name: string) => path.join(root, `missing-historical-${name}`);
+    const extra = {
+      NEXUS_PROMOTION_BOOT_HEALTH_BIN: bootHealth,
+      NEXUS_LAYOUT_PHASE_A_RECEIPT: phaseAReceipt,
+      NEXUS_LAYOUT_PHASE_A_PREDECESSOR_RECEIPT: predecessorPath,
+      NEXUS_PROMOTION_LAYOUT_ACTIVATION_ACTIVE: missing('activation'),
+      NEXUS_PROMOTION_LAYOUT_ATTESTATION: missing('attestation'),
+      NEXUS_PROMOTION_LAYOUT_RESULT: missing('result'),
+      NEXUS_PROMOTION_LAYOUT_TERMINAL_JOURNAL: missing('terminal'),
+      NEXUS_PROMOTION_LAYOUT_REQUEST: missing('request'),
+      NEXUS_PROMOTION_LAYOUT_DRILL: missing('drill'),
+      NEXUS_PROMOTION_PM2_INSTALL_JOURNAL: missing('pm2-install'),
+      NEXUS_PROMOTION_COMPAT_PRODUCTION:
+        '/home/dominguez/telegram-hub-bot',
+      NEXUS_PROMOTION_COMPAT_STAGING:
+        '/home/dominguez/telegram-hub-bot-staging',
+      NEXUS_PROMOTION_TEST_HISTORICAL_PRELAYOUT_MARKER_SHA256:
+        markerIdentity.digest,
+      NEXUS_PROMOTION_TEST_BOOT_TIME_EPOCH: String(bootTimeEpoch),
+      NEXUS_PROMOTION_TEST_UPTIME_SECONDS: String(detectionMonotonic + 100),
+      BOOT_HEALTH_LOG: bootLog,
+      LIVE_PRELAYOUT_PROOF: JSON.stringify(proof),
+    };
+
+    const canonical = run([
+      'resolve-prelayout-boot-recovery',
+      markerIdentity.digest,
+    ], extra);
+    expect(canonical.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(bootLog)).toBe(false);
+
+    const wrongBootTime = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], {
+      ...extra,
+      NEXUS_PROMOTION_TEST_BOOT_TIME_EPOCH: String(bootTimeEpoch + 1),
+    });
+    expect(wrongBootTime.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(bootLog)).toBe(false);
+
+    fs.utimesSync(markerPath, epoch - 1, epoch - 1);
+    const wrongMtime = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], extra);
+    expect(wrongMtime.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    fs.utimesSync(markerPath, epoch, epoch);
+
+    const insufficientLowerBound = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], {
+      ...extra,
+      LIVE_PRELAYOUT_PROOF: JSON.stringify({
+        ...proof,
+        pm2Dominguez: {
+          ...proof.pm2Dominguez,
+          execMainStartTimestampMonotonic:
+            (outageStartedMonotonic + 120) * 1_000_000,
+        },
+      }),
+    });
+    expect(insufficientLowerBound.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+
+    const resolved = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], extra);
+    expect(resolved.status, resolved.stderr).toBe(0);
+    expect(JSON.parse(resolved.stdout)).toMatchObject({
+      status: 'owner_acknowledged_sla_miss',
+      markerSha256: markerIdentity.digest,
+      targetMet: false,
+      idempotent: false,
+    });
+    expect(fs.existsSync(markerPath)).toBe(false);
+    const archive = path.join(
+      stateRoot,
+      'boot-recovery-incidents',
+      `${markerIdentity.digest}.prelayout-sla-resolution.json`,
+    );
+    expect(fs.statSync(archive).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(fs.readFileSync(archive, 'utf8'))).toMatchObject({
+      schema: 'nexus.release-prelayout-boot-sla-incident-resolution.v1',
+      status: 'owner_acknowledged_sla_miss',
+      markerSha256: markerIdentity.digest,
+      targetSeconds: 120,
+      targetMet: false,
+      minimumOutageMilliseconds: 121_000,
+      exactHealthyTimeKnown: false,
+      basis: 'pm2_main_process_start_lower_bound',
+      phaseAReceiptSha256: phaseASha256,
+    });
+
+    writeMarker();
+    const unhealthyResume = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], {
+      ...extra,
+      LIVE_PRELAYOUT_PROOF: JSON.stringify({
+        ...proof,
+        pm2Dominguez: {
+          ...proof.pm2Dominguez,
+          nRestarts: 1,
+        },
+      }),
+    });
+    expect(unhealthyResume.status).toBe(73);
+    expect(fs.existsSync(markerPath)).toBe(true);
+    expect(fs.existsSync(archive)).toBe(true);
+
+    const resumed = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], extra);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(JSON.parse(resumed.stdout)).toMatchObject({
+      resumedArchive: true,
+      idempotent: false,
+    });
+    expect(fs.existsSync(markerPath)).toBe(false);
+
+    const idempotent = run([
+      'resolve-historical-prelayout-boot-sla-incident',
+      markerIdentity.digest,
+    ], extra);
+    expect(idempotent.status, idempotent.stderr).toBe(0);
+    expect(JSON.parse(idempotent.stdout).idempotent).toBe(true);
   });
 
   it('reconciles synchronously after reboot before recovery intent is armed', () => {

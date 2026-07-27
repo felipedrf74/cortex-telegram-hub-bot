@@ -976,7 +976,8 @@ PY
 
 activate_from_phase_a() {
   local resolved_marker_sha256="$1"
-  local bootstrap_root source_root source_archive source_installer archive
+  local bootstrap_root source_root source_archive source_installer
+  local canonical_archive incident_archive
   local invoked_installer
   [ "$PROFILE_MODE" = v4-prelayout ] \
     || die "Phase A activation is available only to the v4 pre-layout profile"
@@ -1008,12 +1009,22 @@ activate_from_phase_a() {
   if [ "$resolved_marker_sha256" != none ]; then
     [[ "$resolved_marker_sha256" =~ ^[a-f0-9]{64}$ ]] \
       || die "resolved pre-layout marker SHA-256 is invalid"
-    archive="$PROMOTION_STATE_ROOT/boot-recovery-incidents/${resolved_marker_sha256}.prelayout-resolution.json"
-    "$NODE_BIN" - "$archive" "$resolved_marker_sha256" \
+    canonical_archive="$PROMOTION_STATE_ROOT/boot-recovery-incidents/${resolved_marker_sha256}.prelayout-resolution.json"
+    incident_archive="$PROMOTION_STATE_ROOT/boot-recovery-incidents/${resolved_marker_sha256}.prelayout-sla-resolution.json"
+    "$NODE_BIN" - "$canonical_archive" "$incident_archive" \
+      "$resolved_marker_sha256" \
       "$PHASE_A_RECEIPT_SHA256" "$TEST_MODE" <<'NODE' \
       || die "governed pre-layout recovery resolution is unavailable or invalid"
 const crypto=require('node:crypto');const fs=require('node:fs');
-const [file,digest,phaseAReceiptSha256,testMode]=process.argv.slice(2);
+const [canonicalFile,incidentFile,digest,phaseAReceiptSha256,testMode]
+ =process.argv.slice(2);
+const present=[canonicalFile,incidentFile].filter((file)=>{
+ try{fs.lstatSync(file);return true;}catch(error){
+  if(error?.code==='ENOENT')return false;throw error;
+ }
+});
+if(present.length!==1)process.exit(1);
+const file=present[0],incident=file===incidentFile;
 const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
 try{
  const before=fs.fstatSync(descriptor),body=fs.readFileSync(descriptor);
@@ -1025,14 +1036,25 @@ try{
   ||before.size<=0||before.size>2*1024*1024
   ||before.dev!==after.dev||before.ino!==after.ino
   ||before.size!==after.size||before.mtimeMs!==after.mtimeMs
-  ||value.schema!=='nexus.release-prelayout-boot-recovery-resolution.v1'
-  ||value.status!=='reconciled_no_mutation'||value.markerSha256!==digest
+  ||value.markerSha256!==digest
   ||value.liveHealthProof?.schema!=='nexus.release-live-prelayout-health-proof.v1'
   ||value.liveHealthProof?.status!=='verified_no_mutation'
   ||value.liveHealthProof?.phaseA?.receiptSha256!==phaseAReceiptSha256
   ||!Array.isArray(value.liveHealthProof?.mutationOperations)
   ||value.liveHealthProof.mutationOperations.length!==0
-  ||!Number.isFinite(Date.parse(value.resolvedAt??'')))process.exit(1);
+  ||(incident
+   ?(value.schema!=='nexus.release-prelayout-boot-sla-incident-resolution.v1'
+    ||value.status!=='owner_acknowledged_sla_miss'
+    ||value.targetSeconds!==120||value.targetMet!==false
+    ||value.exactHealthyTimeKnown!==false
+    ||value.basis!=='pm2_main_process_start_lower_bound'
+    ||!Number.isSafeInteger(value.minimumOutageMilliseconds)
+    ||value.minimumOutageMilliseconds<=120_000
+    ||value.phaseAReceiptSha256!==phaseAReceiptSha256
+    ||!Number.isFinite(Date.parse(value.acknowledgedAt??'')))
+   :(value.schema!=='nexus.release-prelayout-boot-recovery-resolution.v1'
+    ||value.status!=='reconciled_no_mutation'
+    ||!Number.isFinite(Date.parse(value.resolvedAt??'')))))process.exit(1);
 }finally{fs.closeSync(descriptor);}
 NODE
   fi
