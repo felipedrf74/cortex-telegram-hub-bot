@@ -66,9 +66,15 @@ for command in awk cp cut dirname find git gpgv gzip id install ln mktemp mv nod
 done
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] \
   || die "bundle construction requires Linux x86-64"
-[ -f /etc/os-release ] && [ ! -L /etc/os-release ] \
+OS_RELEASE=/usr/lib/os-release
+[ -f "$OS_RELEASE" ] && [ ! -L "$OS_RELEASE" ] \
+  && [ "$(stat -c '%U:%G:%h' "$OS_RELEASE")" = root:root:1 ] \
   || die "bundle construction requires a trusted OS identity"
-. /etc/os-release
+os_release_mode="$(stat -c '%a' "$OS_RELEASE")"
+(( (8#$os_release_mode & 0022) == 0 )) \
+  || die "bundle construction OS identity must not be group/world writable"
+unset ID VERSION_ID
+. "$OS_RELEASE"
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] \
   || die "bundle construction requires Ubuntu 24.04"
 [ "$(node --version)" = v22.23.1 ] \
@@ -157,10 +163,19 @@ import sys
 package_path, lock_path = map(pathlib.Path, sys.argv[1:])
 package = json.loads(package_path.read_text(encoding="utf-8"))
 lock = json.loads(lock_path.read_text(encoding="utf-8"))
-if set(package) - {"name", "version", "private", "description", "dependencies"}:
+if set(package) - {
+    "name",
+    "version",
+    "private",
+    "description",
+    "engines",
+    "dependencies",
+}:
     raise SystemExit("PM2 preparation package.json contains unsupported fields")
 if package.get("private") is not True or package.get("dependencies") != {"pm2": "6.0.14"}:
     raise SystemExit("PM2 preparation package.json must bind only pm2 6.0.14")
+if package.get("engines") != {"node": "22.23.1"}:
+    raise SystemExit("PM2 preparation package.json must bind Node 22.23.1")
 if lock.get("lockfileVersion") != 3:
     raise SystemExit("PM2 preparation lockfile must use npm lockfile version 3")
 for package_path in lock.get("packages", {}):

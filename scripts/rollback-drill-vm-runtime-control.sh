@@ -165,9 +165,15 @@ for command in awk bash chmod chown cp cut date dirname dpkg-query env find floc
   sha256sum ssh-keygen stat systemctl timeout tr uname; do
   command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
-[ -f /etc/os-release ] && [ ! -L /etc/os-release ] \
+OS_RELEASE=/usr/lib/os-release
+[ -f "$OS_RELEASE" ] && [ ! -L "$OS_RELEASE" ] \
+  && [ "$(stat -c '%U:%G:%h' "$OS_RELEASE")" = root:root:1 ] \
   || die "guest OS identity is missing or unsafe"
-. /etc/os-release
+os_release_mode="$(stat -c '%a' "$OS_RELEASE")"
+(( (8#$os_release_mode & 0022) == 0 )) \
+  || die "guest OS identity must not be group/world writable"
+unset ID VERSION_ID
+. "$OS_RELEASE"
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] \
   || die "guest OS must be Ubuntu 24.04"
 [ -f "$MANIFEST_HELPER" ] && [ ! -L "$MANIFEST_HELPER" ] \

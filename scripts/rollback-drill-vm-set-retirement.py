@@ -671,6 +671,9 @@ def validate_source(
         "desiredRuntimeManifestSha256": asset_digests[
             "scripts/rollback-drill-vm-runtime-manifest.py"
         ],
+        "desiredRuntimeControlSha256": asset_digests[
+            "scripts/rollback-drill-vm-runtime-control.sh"
+        ],
         "installLayoutSha256": asset_digests[layout_relative],
         "installerSha256": asset_digests[
             "scripts/rollback-drill-vm-systemd-install.sh"
@@ -872,6 +875,8 @@ def validate_active_state(
     expected_set_id: str,
     expected_active_sha256: str,
     expected_runtime_manifest_sha256: str,
+    expected_runtime_control_sha256: str | None,
+    expected_current_overlay_sha256s: dict[str, str],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     root = state_root()
     active_path = root / "active.json"
@@ -909,7 +914,13 @@ def validate_active_state(
     if not isinstance(hypervisor, dict):
         fail("active provision hypervisor identity is missing")
     if hypervisor.get("runtimeManifestSha256") != expected_runtime_manifest_sha256:
-        fail("active runtime manifest differs from the explicit stale digest")
+        fail("active runtime manifest differs from the explicit expected digest")
+    if (
+        expected_runtime_control_sha256 is not None
+        and hypervisor.get("runtimeControlSha256")
+        != expected_runtime_control_sha256
+    ):
+        fail("active runtime control differs from the explicit expected digest")
     set_directory = root / "sets" / expected_set_id
     base_sha = active.get("image", {}).get("sha256")
     base_path = root / "base" / f"{base_sha}.qcow2"
@@ -1166,8 +1177,11 @@ def validate_active_state(
     for guest in guests:
         overlay_entry = entry_records[f"{guest['name']}/root.qcow2"]
         seed_entry = entry_records[f"{guest['name']}/seed.img"]
+        expected_overlay_sha256 = expected_current_overlay_sha256s.get(
+            guest["name"], guest.get("overlayInitialSha256")
+        )
         if (
-            overlay_entry["sha256"] != guest.get("overlayInitialSha256")
+            overlay_entry["sha256"] != expected_overlay_sha256
             or seed_entry["sha256"] != guest.get("seedSha256")
         ):
             fail(f"{guest['name']} bytes differ from the active provision receipt")
@@ -2275,12 +2289,45 @@ def quarantine_command(args: argparse.Namespace, source: dict[str, str]) -> None
         if not pattern.fullmatch(value or ""):
             fail(f"{label} is invalid")
     if (
+        args.expected_runtime_control_sha256 is not None
+        and not DIGEST.fullmatch(args.expected_runtime_control_sha256)
+    ):
+        fail("expected runtime control digest is invalid")
+    runtime_asset_changed = (
         source["desiredRuntimeManifestSha256"]
-        == args.expected_runtime_manifest_sha256
+        != args.expected_runtime_manifest_sha256
+        or (
+            args.expected_runtime_control_sha256 is not None
+            and source["desiredRuntimeControlSha256"]
+            != args.expected_runtime_control_sha256
+        )
+    )
+    if not runtime_asset_changed:
+        fail(
+            "desired protected-main runtime assets are not different from the "
+            "explicit active identities"
+        )
+    expected_current_overlay_sha256s: dict[str, str] = {}
+    for binding in args.expected_current_overlay_sha256 or ():
+        guest, separator, digest = binding.partition("=")
+        if (
+            separator != "="
+            or guest not in GUESTS
+            or not DIGEST.fullmatch(digest)
+        ):
+            fail(
+                "expected current overlay identity must be "
+                "guest-1|guest-2|guest-3=<64-hex-sha256>"
+            )
+        if guest in expected_current_overlay_sha256s:
+            fail(f"expected current overlay identity repeats {guest}")
+        expected_current_overlay_sha256s[guest] = digest
+    if bool(expected_current_overlay_sha256s) != bool(
+        args.acknowledge_booted_overlay_state
     ):
         fail(
-            "desired protected-main runtime manifest is not different from the "
-            "explicit stale active digest"
+            "booted overlay acknowledgement and exact current overlay "
+            "identities must be supplied together"
         )
     root = state_root()
     assert_state_directory_contract()
@@ -2295,7 +2342,19 @@ def quarantine_command(args: argparse.Namespace, source: dict[str, str]) -> None
             args.expected_set_id,
             args.expected_active_sha256,
             args.expected_runtime_manifest_sha256,
+            args.expected_runtime_control_sha256,
+            expected_current_overlay_sha256s,
         )
+        for guest in active["guests"]:
+            explicit_digest = expected_current_overlay_sha256s.get(guest["name"])
+            if (
+                explicit_digest is not None
+                and explicit_digest == guest["overlayInitialSha256"]
+            ):
+                fail(
+                    f"{guest['name']} current overlay identity is still the "
+                    "provisioned initial identity"
+                )
         assert_no_nonterminal_state(args.expected_active_sha256, args.expected_set_id)
         assert_no_live_process_or_open_file(bindings)
         assert_ports_not_listening(active)
@@ -2462,10 +2521,17 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--expected-set-id")
     result.add_argument("--expected-active-sha256")
     result.add_argument("--expected-runtime-manifest-sha256")
+    result.add_argument("--expected-runtime-control-sha256")
+    result.add_argument(
+        "--expected-current-overlay-sha256",
+        action="append",
+        metavar="GUEST=SHA256",
+    )
     result.add_argument("--transaction-id")
     result.add_argument(
         "--acknowledge-incomplete-set-replacement", action="store_true"
     )
+    result.add_argument("--acknowledge-booted-overlay-state", action="store_true")
     result.add_argument("--acknowledge-restore-incomplete-set", action="store_true")
     return result
 

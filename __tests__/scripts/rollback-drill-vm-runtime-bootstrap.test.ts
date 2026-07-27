@@ -1986,6 +1986,20 @@ exit "$status"
     expect(builder).toContain(
       "output parent must not be accessible by group or world",
     );
+    expect(builder).toContain("OS_RELEASE=/usr/lib/os-release");
+    expect(builder).toContain(
+      `stat -c '%U:%G:%h' "$OS_RELEASE")" = root:root:1`,
+    );
+    expect(builder).toContain(
+      "bundle construction OS identity must not be group/world writable",
+    );
+    expect(builder).not.toContain(". /etc/os-release");
+    expect(builder).toContain(
+      `package.get("engines") != {"node": "22.23.1"}`,
+    );
+    expect(builder).toContain(
+      "PM2 preparation package.json must bind Node 22.23.1",
+    );
     expect(builder).not.toMatch(/\b(?:curl|wget)\b/);
     expect(builder).toContain("--prefix=source/");
     expect(builder).toContain("payload/control-source.tar.gz");
@@ -2027,6 +2041,14 @@ exit "$status"
   it("keeps guest installation sequential, journaled, offline, and pending host seal", () => {
     expect(guestControl).toContain("stage-provision");
     expect(guestControl).toContain("stage-bundle");
+    expect(guestControl).toContain("OS_RELEASE=/usr/lib/os-release");
+    expect(guestControl).toContain(
+      `stat -c '%U:%G:%h' "$OS_RELEASE")" = root:root:1`,
+    );
+    expect(guestControl).toContain(
+      "guest OS identity must not be group/world writable",
+    );
+    expect(guestControl).not.toContain(". /etc/os-release");
     expect(guestControl).toContain(
       "/var/lib/nexus-rollback-drill-vm/toolchain-bundles",
     );
