@@ -30,12 +30,13 @@ Parameters:
     Type: String
     MaxLength: 4096
     Description: >-
-      Base64-encoded DER CRL for the Sonar-only private CA. This bounded stack
-      deliberately supports only the small Sonar certificate inventory.
+      Canonical PEM CRL for the Sonar-only private CA. Owner receipts retain
+      canonical base64 DER and deterministically wrap those exact DER bytes as
+      PEM for this AWS parameter.
   CertificateRevocationListSha256:
     Type: String
     AllowedPattern: '^[0-9a-f]{64}$'
-    Description: SHA-256 of the exact decoded DER CRL supplied above.
+    Description: SHA-256 of the exact DER bytes encoded by the PEM CRL above.
   ProtectedMainTemplateSha256:
     Type: String
     AllowedPattern: '^[0-9a-f]{64}$'

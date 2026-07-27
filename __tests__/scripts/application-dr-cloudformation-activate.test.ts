@@ -367,7 +367,7 @@ function makeFixture(
     rollbackOnExecute: options.rollbackOnExecute ?? false,
   })}\n`, 0o600);
   const commandLog = path.join(privateDir, 'commands.jsonl');
-  const realAws = path.join(versioned, 'aws-real');
+  const realAws = path.join(versioned, 'aws');
   const fakeSource = `#!${systemPython}
 import json
 import os
@@ -559,7 +559,7 @@ else:
 `;
   writeTrusted(realAws, fakeSource, 0o700);
   const aws = path.join(tools, 'aws');
-  fs.symlinkSync('aws-cli-v2/aws-real', aws);
+  fs.symlinkSync('aws-cli-v2/aws', aws);
 
   const awsConfig = path.join(configDir, 'aws-config');
   writeTrusted(
@@ -604,9 +604,16 @@ else:
     const crlVerifier = path.join(versioned, 'post-enable-crl-verifier');
     const crlVerifierSource = `#!${systemPython}
 import json
+import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+
+expected_aws = ${JSON.stringify(realAws)}
+resolved_aws = shutil.which("aws")
+if resolved_aws is None or os.path.realpath(resolved_aws) != expected_aws:
+    raise SystemExit("post-enable CRL verifier cannot resolve the reviewed AWS CLI")
 
 arguments = dict(zip(sys.argv[2::2], sys.argv[3::2]))
 evidence = {

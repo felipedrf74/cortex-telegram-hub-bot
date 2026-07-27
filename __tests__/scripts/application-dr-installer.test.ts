@@ -48,6 +48,9 @@ describe('application DR root installer', () => {
     expect(script).toContain('install layout differs from the exact allowlist');
     expect(script).toContain('install target is outside the allowlist');
     expect(script).toContain(
+      '[[ "$relative" =~ ^[A-Za-z0-9._@/-]+$ ]]',
+    );
+    expect(script).toContain(
       '/etc/systemd/system/nexus-application-dr-install-recovery.service)',
     );
     expect(script).toContain('[ "$(realpath -m -- "$target")" = "$target" ]');

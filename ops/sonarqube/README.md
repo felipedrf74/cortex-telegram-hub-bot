@@ -313,6 +313,14 @@ Explicit preparation
      --type CFNTemplate --output-format json
    ```
 
+   `CertificateRevocationListData` is the exact canonical PEM CRL required by
+   IAM Roles Anywhere. The owner activation receipt continues to bind the same
+   CRL as canonical base64 DER; wrap those decoded DER bytes at 64 characters
+   per line between the `BEGIN X509 CRL` and `END X509 CRL` markers, with a
+   final newline, for the CloudFormation parameter.
+   `CertificateRevocationListSha256` remains the SHA-256 of the decoded DER
+   bytes, never the digest of the PEM presentation.
+
    The first reviewed CloudFormation change set must keep both
    `RolesAnywhereActivation=DISABLED` and `LifecycleActivation=DISABLED`.
    Pass the exact byte digest of the protected-main template as
