@@ -1,0 +1,29 @@
+[Unit]
+Description=Recover interrupted Nexus release-layout activation and handover
+DefaultDependencies=no
+Requires=nexus-release-layout-install-recovery.service
+After=local-fs.target nexus-release-layout-install-recovery.service
+Before=network-online.target nexus-release-promotion-recovery.service pm2-dominguez.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=NEXUS_RELEASE_BOOT_RECOVERY=1
+ExecStart=/usr/local/sbin/nexus-release-layout-activation-control recover-all
+# The script enforces the 120-second production-availability deadline from
+# its durable outage journal. This wider unit bound covers staging validation,
+# the availability check, and the mandatory production soak without allowing
+# systemd to kill a healthy recovery after availability has already returned.
+TimeoutStartSec=360s
+KillMode=control-group
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/etc/systemd/system /home/dominguez /srv/nexus-release /var/lib/nexus-release-promotion /var/lib/nexus-rollback-drill-legacy-staging /run/lock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

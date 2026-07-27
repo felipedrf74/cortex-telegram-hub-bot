@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,6 +50,7 @@ function installClassifierFixture(repo: string): void {
     'scripts/lib/changed-area-classifier.mjs',
     'scripts/lib/git-changed-paths.mjs',
     'scripts/lib/irreversible-migration-policy.mjs',
+    'scripts/lib/migration-safety-policy-classifier.mjs',
     'scripts/lib/git-ref.mjs',
     'config/test-policy.json',
     'config/irreversible-migrations.json',
@@ -93,6 +95,21 @@ const routingFixtures: RoutingFixture[] = [
     flags: { authOrTenant: true, portal: true },
     gates: ['tenant-auth-security'],
     vitest: ['__tests__/api/auth-*.test.ts', '__tests__/services/google-sign-in.test.ts', '__tests__/services/apple-sign-in-nonce.test.ts', '__tests__/services/oauth*.test.ts', '__tests__/portal/portal-oauth-routes.test.ts'],
+  },
+  {
+    name: 'OAuth token store',
+    files: ['src/services/oauth-store.ts'],
+    flags: { authOrTenant: true },
+    gates: ['tenant-auth-security'],
+    vitest: ['__tests__/services/oauth*.test.ts', '__tests__/security/**/*.test.ts'],
+    mode: 'focused',
+  },
+  {
+    name: 'finance tenant safety',
+    files: ['src/services/finance-tracker.ts'],
+    flags: { finance: true },
+    vitest: ['__tests__/services/finance-*.test.ts', '__tests__/security/finance-*.test.ts'],
+    mode: 'focused',
   },
   {
     name: 'iOS auth',
@@ -203,6 +220,7 @@ const routingFixtures: RoutingFixture[] = [
       '__tests__/scripts/rollback-versioned-runtime.test.ts',
       '__tests__/scripts/pm2-sanitized-start.test.ts',
       '__tests__/scripts/release-evidence-container.test.ts',
+      '__tests__/scripts/release-plan-evaluator.test.ts',
     ],
     mode: 'focused',
   },
@@ -249,7 +267,7 @@ describe('changed-area-classifier pure routing fixtures', () => {
 
   it('keeps enrichment flags false on an unrelated backend change', () => {
     const result = classify('src/services/plain-helper.ts');
-    for (const flag of ['logger', 'scheduler', 'notification', 'healthIntegration', 'rateLimit', 'audit', 'deployConfig', 'releaseOperator', 'iosNavigation', 'iosDto']) {
+    for (const flag of ['logger', 'scheduler', 'notification', 'healthIntegration', 'rateLimit', 'audit', 'deployConfig', 'releaseOperator', 'operationsTooling', 'iosNavigation', 'iosDto']) {
       expect(result.flags[flag]).toBe(false);
     }
   });
@@ -263,11 +281,13 @@ const fullSuiteTriggers = [
   'scripts/lib/changed-area-classifier.mjs',
   'scripts/lib/git-changed-paths.mjs',
   'scripts/lib/irreversible-migration-policy.mjs',
+  'scripts/lib/migration-safety-policy-classifier.mjs',
   'scripts/migration-safety-check.mjs',
   'scripts/release-test-gate.sh',
   'scripts/release-verify.sh',
   'scripts/resolve-ci-change-base.sh',
   'scripts/select-vitest-files.mjs',
+  'scripts/protected-main-ci-evidence.mjs',
   'scripts/run-test-tier.mjs',
   'scripts/risk-gate.sh',
   'scripts/lib/git-ref.mjs',
@@ -372,6 +392,7 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     ['scripts/lib/changed-area-classifier.mjs', true],
     ['scripts/lib/git-changed-paths.mjs', true],
     ['scripts/lib/irreversible-migration-policy.mjs', true],
+    ['scripts/lib/migration-safety-policy-classifier.mjs', true],
     ['config/production-migration-lineages.json', true],
     ['scripts/lib/production-migration-lineage.mjs', true],
     ['scripts/migration-safety-check.mjs', true],
@@ -433,18 +454,89 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
     'scripts/remote-start-sanitized-pm2.sh',
     'scripts/rollback.sh',
     'scripts/restore.sh',
+    'scripts/remote-promotion-control.sh',
+    'scripts/remote-promotion-worker-control.sh',
+    'scripts/remote-promotion-systemd-install.sh',
+    'scripts/remote-promotion-transaction.sh',
+    'scripts/remote-release-capacity.sh',
     'scripts/release-artifact-manifest.mjs',
     'scripts/release-bundle.mjs',
     'scripts/release-manifest-v2.mjs',
+    'scripts/release-plan-evaluator.mjs',
+    'scripts/release-sequence.mjs',
+    'scripts/protected-main-ci-evidence.mjs',
+    'scripts/complete-promotion-migration-gate.mjs',
     'scripts/trusted-release-signer.mjs',
+    'scripts/rollback-drill-kvm-coordinator.mjs',
     'scripts/lib/release-artifact-manifest.mjs',
+    'scripts/lib/release-plan-evaluation.mjs',
+    'scripts/lib/rollback-drill-kvm-evidence.mjs',
   ])('routes exact release entrypoint %s through the operator gate', (file) => {
     const result = classify(file);
     expect(result.flags.releaseOperator).toBe(true);
     expect(result.cannotSkip).toContain('exact-release-promotion-rehearsal');
     expect(result.tiers).toContain('T4');
+    expect(result.vitest.mode).toBe(file === 'scripts/protected-main-ci-evidence.mjs' ? 'full' : 'focused');
+    expect(result.stagingSmoke.generic).toBe(true);
+  });
+
+  it.each([
+    'ops/sonarqube/compose.yaml',
+    'scripts/quality-sonar-scan.sh',
+    'scripts/ollama-observation-collector.mjs',
+    'scripts/ollama-soak-evidence.mjs',
+    'ops/application-dr/backup.env.example',
+    'scripts/application-dr-backup.sh',
+    'scripts/application-dr-recovery-runtime.mjs',
+    'scripts/application-dr-systemd-install.sh',
+    'ops/rollback-drill-vm/install-layout.tsv',
+    'scripts/rollback-drill-vm-provision.sh',
+  ])('routes advisory/backup operations tooling %s to focused checks without a staging release gate', (file) => {
+    const result = classify(file);
+    expect(result.flags.operationsTooling).toBe(true);
+    expect(result.flags.releaseOperator).toBe(false);
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.stagingSmoke.generic).toBe(false);
+  });
+
+  it('selects the KVM rollback-drill contract test for VM operations changes', () => {
+    const result = classify('scripts/rollback-drill-vm-systemd-install.sh');
+    expect(result.flags.operationsTooling).toBe(true);
+    expect(result.vitest.globs).toContain(
+      '__tests__/scripts/rollback-drill-vm-provisioner.test.ts',
+    );
+    expect(result.vitest.globs).toContain(
+      '__tests__/scripts/rollback-drill-vm-transaction-failures.test.ts',
+    );
+  });
+
+  it('selects every application DR contract test for DR operations changes', () => {
+    const result = classify('scripts/application-dr-recovery-runtime.mjs');
+    expect(result.vitest.globs).toContain(
+      '__tests__/scripts/application-disaster-recovery.test.ts',
+    );
+    expect(result.vitest.globs).toContain('__tests__/scripts/application-dr-*.test.ts');
+  });
+
+  it.each([
+    'scripts/install-ollama.sh',
+    'scripts/staging-smoke-ollama.sh',
+  ])('routes Ollama host policy %s through deploy-config verification', (file) => {
+    const result = classify(file);
+    expect(result.flags.deployConfig).toBe(true);
     expect(result.vitest.mode).toBe('focused');
     expect(result.stagingSmoke.generic).toBe(true);
+  });
+
+  it.each([
+    'src/services/ollama-model-policy.ts',
+    'src/services/ollama-provider.ts',
+    'src/services/model-config.ts',
+  ])('routes local-model policy %s through model-routing safety tests', (file) => {
+    const result = classify(file);
+    expect(result.flags.modelRouting).toBe(true);
+    expect(result.cannotSkip).toContain('model-routing-cost-attribution');
+    expect(result.vitest.globs).toContain('__tests__/services/ollama-small-only-policy.test.ts');
   });
 
   it.each([
@@ -492,6 +584,41 @@ describe('changed-area-classifier pure CI and release policy fixtures', () => {
 });
 
 describe('changed-area-classifier process-boundary integration', () => {
+  it.each(['delete', 'rename'] as const)('forces the full suite when a test file is %sd', (operation) => {
+    const repo = mkdtempSync(join(tmpdir(), `nexus-classifier-test-${operation}-`));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    try {
+      installClassifierFixture(repo);
+      mkdirSync(join(repo, '__tests__/services'), { recursive: true });
+      writeFileSync(join(repo, '__tests__/services/obsolete.test.ts'), 'export {};\n');
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      const base = git('rev-parse', 'HEAD');
+      if (operation === 'delete') git('rm', '__tests__/services/obsolete.test.ts');
+      else git('mv', '__tests__/services/obsolete.test.ts', '__tests__/services/renamed.test.ts');
+
+      const result = JSON.parse(execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--base', base],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      ));
+
+      expect(result.flags).toMatchObject({ testTopologyChange: true, fullSuiteTrigger: true });
+      expect(result.vitest).toMatchObject({ mode: 'full' });
+      expect(result.cannotSkip).toContain('test-infrastructure-full-suite');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('preserves both sides of a tracked rename whose paths contain spaces', () => {
     const repo = mkdtempSync(join(tmpdir(), 'nexus-classifier-spaced-rename-'));
     const gitEnv = cleanGitEnv();
@@ -520,6 +647,78 @@ describe('changed-area-classifier process-boundary integration', () => {
 
       expect(result.changedFiles).toEqual(['src/new feature.ts', 'src/old feature.ts']);
       expect(result.flags.backendSrc).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies the exact staged index and forces full coverage for a test rename', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-classifier-staged-rename-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    try {
+      installClassifierFixture(repo);
+      mkdirSync(join(repo, '__tests__'), { recursive: true });
+      writeFileSync(join(repo, '__tests__/old behavior.test.ts'), 'export const value = 1;\n');
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      mkdirSync(join(repo, 'archive'), { recursive: true });
+      git('mv', '__tests__/old behavior.test.ts', 'archive/old behavior.test.ts');
+
+      const result = JSON.parse(execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--staged'],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      ));
+
+      expect(result.baseRef).toBe('staged-index');
+      expect(result.changedFiles).toEqual([
+        '__tests__/old behavior.test.ts',
+        'archive/old behavior.test.ts',
+      ]);
+      expect(result.vitest.mode).toBe('full');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('forces full coverage for a staged test-file type change', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'nexus-classifier-staged-type-change-'));
+    const gitEnv = cleanGitEnv();
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: gitEnv,
+    }).trim();
+    try {
+      installClassifierFixture(repo);
+      mkdirSync(join(repo, '__tests__'), { recursive: true });
+      writeFileSync(join(repo, '__tests__/typed.test.ts'), 'export const value = 1;\n');
+      writeFileSync(join(repo, 'replacement-target.ts'), 'export const replacement = true;\n');
+      git('init', '--initial-branch=main');
+      git('config', 'user.name', 'Nexus CI Fixture');
+      git('config', 'user.email', 'ci-fixture@example.invalid');
+      git('add', '.');
+      git('commit', '-m', 'fixture: base');
+      rmSync(join(repo, '__tests__/typed.test.ts'));
+      symlinkSync('../replacement-target.ts', join(repo, '__tests__/typed.test.ts'));
+      git('add', '__tests__/typed.test.ts');
+
+      const result = JSON.parse(execFileSync(
+        'bash',
+        ['scripts/changed-area-classifier.sh', '--json', '--staged'],
+        { cwd: repo, encoding: 'utf8', env: gitEnv },
+      ));
+
+      expect(result.changedFiles).toContain('__tests__/typed.test.ts');
+      expect(result.vitest.mode).toBe('full');
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -583,6 +782,7 @@ describe('changed-area-classifier process-boundary integration', () => {
     const files = ['__tests__/services/product-learning.test.ts', 'src/services/product-learning.ts', ...Array.from({ length: 2_000 }, (_, index) => `docs/generated-${index}.md`)];
     const raw = execFileSync('bash', ['scripts/changed-area-classifier.sh', '--json', '--files', files.join(',')], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
     const result = JSON.parse(raw);
+    expect(result.head).toMatch(/^[0-9a-f]{40}$/);
     expect(result.flags).toMatchObject({ backendSrc: true, backendTest: true, docsOnly: false });
     expect(result.vitest.mode).toBe('changed-only');
   });

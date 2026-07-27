@@ -35,6 +35,10 @@
  *      but with a distinct warning so operators understand why their
  *      legacy config no longer escalates.
  *
+ *      The caller must explicitly classify every request. A missing or
+ *      non-boolean `containsPrivateData` value is rejected as unknown; it
+ *      never defaults to public.
+ *
  *      Behavior for `containsPrivateData=true` requests:
  *      - `mode='never'`                     → REJECT (privacy_never)
  *      - missing `allowCloudEscalation`     → REJECT (request_disallows_cloud)
@@ -59,6 +63,8 @@
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { AIProvider } from './ai-provider';
+import { createHash } from 'crypto';
+import { isAnthropicRuntimeEnabled } from './runtime-flags';
 // v3.0/v3.1: `OllamaProvider` is kept as a type-only import for
 // backwards-compat in the `selectApprovedCloudReasoningProvider`
 // signature. The local model is NOT on the privacy escalation path in
@@ -67,7 +73,7 @@ import type { OllamaProvider } from './ollama-provider';
 
 export interface CloudReasoningRequest {
   prompt: string;
-  containsPrivateData?: boolean;
+  containsPrivateData: boolean;
   allowCloudEscalation?: boolean;
   /**
    * v3.1: kept in the type for backwards-compat with existing callers,
@@ -100,7 +106,10 @@ export interface CloudReasoningRejection {
     | 'disallowed_substring'
     | 'not_in_approved_list'
     | 'preview_blocked'
+    | 'provider_model_mismatch'
+    | 'provider_identity_mismatch'
     | 'provider_unavailable'
+    | 'structured_generation_unsupported'
     | 'privacy_never'
     | 'request_disallows_cloud'
     | 'redaction_unsupported'  // v3.1: replaces v3.0's 'redaction_failed'
@@ -110,10 +119,109 @@ export interface CloudReasoningRejection {
 
 export type CloudReasoningResolution = CloudReasoningSelection | CloudReasoningRejection;
 
+/** The complete, normalized payload covered by a ScriptGen cloud approval. */
+export interface CloudScriptGenerationApprovalPayload {
+  description: string;
+  targetPath?: string;
+  domainContext?: string;
+  userId?: number;
+  tenantId?: number;
+  runId?: string;
+  containsPrivateData: boolean;
+  allowCloudEscalation?: boolean;
+  redactionRequired?: boolean;
+}
+
+/**
+ * Runtime-opaque, one-use approval. The object has no meaningful public
+ * properties; authenticity and payload binding live in the module-private
+ * WeakMap below. A structural cast cannot manufacture a usable permit.
+ */
+export type ApprovedCloudScriptGenerationPermit = Readonly<{
+  readonly __nexusCloudScriptGenerationPermit: unique symbol;
+}>;
+
+export interface CloudScriptGenerationApproval {
+  rejected: false;
+  permit: ApprovedCloudScriptGenerationPermit;
+  providerName: string;
+  model: string;
+  privacyAction: 'sent_raw';
+}
+
+export type CloudScriptGenerationApprovalResolution =
+  | CloudScriptGenerationApproval
+  | CloudReasoningRejection;
+
+export interface ConsumedCloudScriptGenerationApproval {
+  payloadDigest: string;
+  provider: AIProvider;
+  model: string;
+  privacyAction: 'sent_raw';
+}
+
+const cloudScriptGenerationApprovals = new WeakMap<object, ConsumedCloudScriptGenerationApproval>();
+
+function stableCanonicalValue(value: unknown): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('cloud script approval payload contains a non-finite number');
+    return value;
+  }
+  if (value === undefined) return { $type: 'undefined' };
+  if (Array.isArray(value)) return value.map(stableCanonicalValue);
+  if (typeof value === 'object') {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => [key, stableCanonicalValue((value as Record<string, unknown>)[key])]);
+  }
+  throw new Error('cloud script approval payload contains an unsupported value');
+}
+
+function cloudScriptGenerationPayloadDigest(payload: CloudScriptGenerationApprovalPayload): string {
+  return createHash('sha256')
+    .update(JSON.stringify(stableCanonicalValue(payload)))
+    .digest('hex');
+}
+
+/** Canonical form of every caller-controlled byte that ScriptGen sends. */
+export function canonicalCloudScriptGenerationOutboundInput(
+  payload: CloudScriptGenerationApprovalPayload,
+): string {
+  return JSON.stringify(stableCanonicalValue({
+    description: payload.description,
+    ...(payload.domainContext !== undefined ? { domainContext: payload.domainContext } : {}),
+  }));
+}
+
+/** Canonical form of every caller-controlled byte generic reasoning sends. */
+export function canonicalCloudLocalReasoningOutboundInput(payload: {
+  prompt: string;
+  systemContext?: string;
+  outputSchema?: unknown;
+}): string {
+  return JSON.stringify(stableCanonicalValue({
+    prompt: payload.prompt,
+    ...(payload.systemContext !== undefined ? { systemContext: payload.systemContext } : {}),
+    ...(payload.outputSchema !== undefined ? { outputSchema: payload.outputSchema } : {}),
+  }));
+}
+
+/** Provider/model families are paired before any provider object is returned. */
+export function isProviderCompatibleReasoningModel(providerName: string, model: string): boolean {
+  const normalizedProvider = providerName.trim().toLowerCase();
+  const normalizedModel = model.trim().toLowerCase();
+  if (normalizedProvider === 'gemini') return /^gemini(?:[-.:]|$)/.test(normalizedModel);
+  if (normalizedProvider === 'anthropic') return /^claude(?:[-.:]|$)/.test(normalizedModel);
+  if (normalizedProvider === 'openai') return /^(?:gpt|chatgpt|o[1-9])(?:[-.:]|$)/.test(normalizedModel);
+  return false;
+}
+
 /**
  * Resolve the gate against the active request and config. Returns either
  * a `CloudReasoningSelection` (the caller invokes
- * `selection.provider.callDomain(..., { modelOverride: selection.model })`)
+ * the provider's isolated structured-generation capability with the exact
+ * selected model)
  * or a `CloudReasoningRejection` (the caller applies the configured
  * `onUnapproved` policy).
  *
@@ -177,9 +285,26 @@ export async function selectApprovedCloudReasoningProvider(
   if (!cfg.allowPreviewModels && hasNonNegatedPreviewToken(modelLower)) {
     return { rejected: true, reason: 'preview_blocked', warning: 'preview_model_blocked' };
   }
+  if (!isProviderCompatibleReasoningModel(cfg.provider, cfg.model)) {
+    return {
+      rejected: true,
+      reason: 'provider_model_mismatch',
+      warning: 'configured_cloud_provider_model_mismatch',
+    };
+  }
+  if (cfg.provider === 'anthropic' && !isAnthropicRuntimeEnabled()) {
+    return { rejected: true, reason: 'provider_unavailable', warning: 'cloud_provider_unavailable' };
+  }
   const provider = getProvider(cfg.provider);
   if (!provider) {
     return { rejected: true, reason: 'provider_unavailable', warning: 'cloud_provider_unavailable' };
+  }
+  if (provider.name.trim().toLowerCase() !== cfg.provider.trim().toLowerCase()) {
+    return {
+      rejected: true,
+      reason: 'provider_identity_mismatch',
+      warning: 'configured_cloud_provider_identity_mismatch',
+    };
   }
 
   // ── Privacy gate (v3.1 — `redacted_only` removed) ───────────────
@@ -207,6 +332,13 @@ export async function selectApprovedCloudReasoningProvider(
   // Callers that have pre-redacted their content before calling the
   // gate should pass `containsPrivateData=false` — that signals the
   // operator has already taken responsibility for redaction.
+  if (typeof request.containsPrivateData !== 'boolean') {
+    return {
+      rejected: true,
+      reason: 'privacy_default_block',
+      warning: 'privacy_classification_required',
+    };
+  }
   if (request.containsPrivateData) {
     // `ollama` and `redactionRequired` are kept in the signature/request
     // type for backwards-compat but no longer change behavior in v3.1.
@@ -250,6 +382,92 @@ export async function selectApprovedCloudReasoningProvider(
     model: cfg.model,
     privacyAction: 'sent_raw',
   };
+}
+
+/**
+ * Run the normal quality/privacy gate for the complete normalized ScriptGen
+ * payload and mint a one-use permit bound to every byte of that payload.
+ * The permit, rather than a caller-constructible provider/model object, is the
+ * only input accepted by the ScriptGen cloud adapter.
+ */
+export async function approveCloudScriptGeneration(
+  payload: CloudScriptGenerationApprovalPayload,
+  getProvider: (name: string) => AIProvider | null,
+): Promise<CloudScriptGenerationApprovalResolution> {
+  // Script generation is an optional large-reasoning workload, not a raw
+  // private-data transport. Its adapter boundary is deliberately stricter
+  // than the generic gate: operator allow_raw drift can never authorize it.
+  if (payload.containsPrivateData) {
+    return {
+      rejected: true,
+      reason: 'privacy_never',
+      warning: 'private_script_generation_cloud_forbidden',
+    };
+  }
+  const selection = await selectApprovedCloudReasoningProvider(
+    {
+      prompt: canonicalCloudScriptGenerationOutboundInput(payload),
+      containsPrivateData: payload.containsPrivateData,
+      allowCloudEscalation: payload.allowCloudEscalation,
+      redactionRequired: payload.redactionRequired,
+    },
+    getProvider,
+    null,
+  );
+  if (selection.rejected) return selection;
+  if (!config.cloudReasoningFallback.approvedReasoningModels
+    .some((model) => model.toLowerCase() === selection.model.toLowerCase())) {
+    return {
+      rejected: true,
+      reason: 'not_in_approved_list',
+      warning: 'configured_cloud_model_not_in_approved_list',
+    };
+  }
+  if (typeof selection.provider.callStructuredGeneration !== 'function') {
+    return {
+      rejected: true,
+      reason: 'structured_generation_unsupported',
+      warning: 'approved_cloud_provider_lacks_structured_generation',
+    };
+  }
+
+  const permit = Object.freeze(Object.create(null)) as ApprovedCloudScriptGenerationPermit;
+  cloudScriptGenerationApprovals.set(permit, {
+    payloadDigest: cloudScriptGenerationPayloadDigest(payload),
+    provider: selection.provider,
+    model: selection.model,
+    privacyAction: selection.privacyAction,
+  });
+  return {
+    rejected: false,
+    permit,
+    providerName: selection.provider.name,
+    model: selection.model,
+    privacyAction: selection.privacyAction,
+  };
+}
+
+/**
+ * Consume a permit exactly once and verify it covers the exact normalized
+ * payload the adapter is about to send. The stored provider/model never come
+ * from caller-controlled permit properties.
+ */
+export function consumeCloudScriptGenerationApproval(
+  permit: ApprovedCloudScriptGenerationPermit,
+  payload: CloudScriptGenerationApprovalPayload,
+): ConsumedCloudScriptGenerationApproval {
+  if (!permit || typeof permit !== 'object') {
+    throw new Error('cloud_script_generation_approval_invalid');
+  }
+  const approval = cloudScriptGenerationApprovals.get(permit);
+  if (!approval) throw new Error('cloud_script_generation_approval_invalid');
+
+  // One-use even on a digest mismatch: a tamper attempt invalidates the grant.
+  cloudScriptGenerationApprovals.delete(permit);
+  if (approval.payloadDigest !== cloudScriptGenerationPayloadDigest(payload)) {
+    throw new Error('cloud_script_generation_approval_payload_mismatch');
+  }
+  return approval;
 }
 
 /**

@@ -32,11 +32,24 @@ validate_remote_dir_arg() {
 validate_remote_dir_arg STAGING_DIR "$STAGING_DIR"
 validate_remote_dir_arg PROD_DIR "$PROD_DIR"
 
-ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PROD_DIR" <<'REMOTE'
+if [ "$STAGING_DIR" = /srv/nexus-release/staging ] \
+  && [ "$PROD_DIR" = /srv/nexus-release/production ]; then
+  ENV_LAYOUT_POLICY=canonical
+elif [[ "$STAGING_DIR" == /srv/nexus-release || "$STAGING_DIR" == /srv/nexus-release/* \
+  || "$PROD_DIR" == /srv/nexus-release || "$PROD_DIR" == /srv/nexus-release/* ]]; then
+  echo "Invalid release layout: canonical /srv staging and production paths must be used together" >&2
+  exit 2
+else
+  ENV_LAYOUT_POLICY=legacy
+fi
+
+ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PROD_DIR" "$ENV_LAYOUT_POLICY" <<'REMOTE'
 set -euo pipefail
 
 STAGING_DIR="$1"
 PROD_DIR="$2"
+ENV_LAYOUT_POLICY="$3"
+CANONICAL_WORKER=dominguez
 
 for env_file in "$STAGING_DIR/.env" "$PROD_DIR/.env"; do
   if [ ! -f "$env_file" ] || [ -L "$env_file" ]; then
@@ -44,9 +57,29 @@ for env_file in "$STAGING_DIR/.env" "$PROD_DIR/.env"; do
     exit 1
   fi
   mode="$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || true)"
-  case "$mode" in 400|600) ;; *) echo "unsafe_env_mode:$env_file"; exit 1 ;; esac
-  owner="$(stat -c '%U' "$env_file" 2>/dev/null || stat -f '%Su' "$env_file" 2>/dev/null || true)"
-  [ "$owner" = "$(id -un)" ] || { echo "unsafe_env_owner:$env_file"; exit 1; }
+  owner_uid="$(stat -c '%u' "$env_file" 2>/dev/null || stat -f '%u' "$env_file" 2>/dev/null || true)"
+  group_gid="$(stat -c '%g' "$env_file" 2>/dev/null || stat -f '%g' "$env_file" 2>/dev/null || true)"
+  worker_uid="$(id -u)"
+  worker_gid="$(id -g)"
+
+  if [ "$ENV_LAYOUT_POLICY" = canonical ]; then
+    [ "$(id -un)" = "$CANONICAL_WORKER" ] \
+      || { echo "unsafe_env_worker:$env_file"; exit 1; }
+    [ "$mode" = 440 ] || { echo "unsafe_env_mode:$env_file"; exit 1; }
+    # The canonical /srv layout is sealed root:worker so PM2 can read the
+    # environment without retaining write authority.
+    [ "$owner_uid" = 0 ] || { echo "unsafe_env_owner:$env_file"; exit 1; }
+    [ "$group_gid" = "$worker_gid" ] || { echo "unsafe_env_group:$env_file"; exit 1; }
+  else
+    case "$mode" in
+      400|600) ;;
+      *) echo "unsafe_env_mode:$env_file"; exit 1 ;;
+    esac
+    # Compatibility for the pre-layout worker-owned environment. Keep this
+    # exact: a private mode does not excuse a foreign owner or group.
+    [ "$owner_uid" = "$worker_uid" ] || { echo "unsafe_env_owner:$env_file"; exit 1; }
+    [ "$group_gid" = "$worker_gid" ] || { echo "unsafe_env_group:$env_file"; exit 1; }
+  fi
 done
 
 node - "$STAGING_DIR/.env" "$PROD_DIR/.env" <<'NODE'

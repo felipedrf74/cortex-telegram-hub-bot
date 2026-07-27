@@ -1,0 +1,62 @@
+name: "${SONAR_DRILL_PROJECT:?set a unique restore-drill project name}"
+
+services:
+  postgres:
+    image: "${POSTGRES_IMAGE:?resolve the PostgreSQL image lock first}"
+    environment:
+      POSTGRES_DB: sonar_drill
+      POSTGRES_USER: sonar_drill
+      POSTGRES_PASSWORD: "${SONAR_DRILL_DB_PASSWORD:?set an ephemeral drill password}"
+    cpus: 1.0
+    mem_limit: 2g
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar_drill -d sonar_drill"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - drill_postgres_data:/var/lib/postgresql/data
+    networks:
+      - drill_backend
+
+  sonarqube:
+    image: "${SONARQUBE_IMAGE:?resolve the SonarQube image lock first}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/sonar_drill
+      SONAR_JDBC_USERNAME: sonar_drill
+      SONAR_JDBC_PASSWORD: "${SONAR_DRILL_DB_PASSWORD}"
+      SONAR_AUTH_JWTBASE64HS256SECRET: "${SONAR_DRILL_JWT_SECRET:?set an ephemeral drill JWT secret}"
+      SONAR_TELEMETRY_ENABLE: "false"
+    ports:
+      - "127.0.0.1:19000:9000"
+    cpus: 2.0
+    mem_limit: 6g
+    pids_limit: 16384
+    stop_grace_period: 1h
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+      nproc:
+        soft: 8192
+        hard: 8192
+    volumes:
+      - drill_sonarqube_data:/opt/sonarqube/data
+      - drill_sonarqube_logs:/opt/sonarqube/logs
+      - drill_sonarqube_extensions:/opt/sonarqube/extensions
+    networks:
+      - drill_backend
+
+networks:
+  drill_backend:
+    internal: true
+
+volumes:
+  drill_postgres_data:
+  drill_sonarqube_data:
+  drill_sonarqube_logs:
+  drill_sonarqube_extensions:

@@ -3,6 +3,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let db: Database.Database;
 
+const observedAsyncLocalStores = vi.hoisted(() => new Set<Record<string, unknown>>());
+
+vi.mock('async_hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('async_hooks')>();
+  class ObservedAsyncLocalStorage<T> extends actual.AsyncLocalStorage<T> {
+    override run<R, TArgs extends unknown[]>(
+      store: T,
+      callback: (...args: TArgs) => R,
+      ...args: TArgs
+    ): R {
+      if (store && typeof store === 'object') {
+        observedAsyncLocalStores.add(store as Record<string, unknown>);
+      }
+      return super.run(store, callback, ...args);
+    }
+
+    override enterWith(store: T): void {
+      if (store && typeof store === 'object') {
+        observedAsyncLocalStores.add(store as Record<string, unknown>);
+      }
+      super.enterWith(store);
+    }
+  }
+  return { ...actual, AsyncLocalStorage: ObservedAsyncLocalStorage };
+});
+
 vi.mock('../../src/services/database', () => ({
   getDb: () => db,
   initDatabase: vi.fn(),
@@ -248,12 +274,33 @@ function installScalarReadOverrideForTest(
   };
 }
 
+function installPrepareFailureForTest(predicate: (sql: string) => boolean): () => void {
+  const originalDb = db;
+  const originalPrepare = originalDb.prepare.bind(originalDb);
+  db = new Proxy(originalDb, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql: string) => {
+          if (predicate(sql)) throw new Error('simulated durable accounting read failure');
+          return originalPrepare(sql);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as Database.Database;
+  return () => {
+    db = originalDb;
+  };
+}
+
 describe('paid AI budget enforcement', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: new Date('2026-07-09T12:00:00.000Z') });
     delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
     _resetPortalOverridesForTests();
     _resetApiUsagePersistenceFailureForTests();
+    observedAsyncLocalStores.clear();
     db = new Database(':memory:');
     createSchema();
   });
@@ -264,6 +311,7 @@ describe('paid AI budget enforcement', () => {
     _resetApiUsagePersistenceFailureForTests();
     vi.unstubAllEnvs();
     vi.useRealTimers();
+    observedAsyncLocalStores.clear();
     db.close();
   });
 
@@ -1578,6 +1626,108 @@ describe('paid AI budget enforcement', () => {
     } finally {
       restoreJobRead();
     }
+  });
+
+  it('fails closed when durable job usage or provider reservations cannot be read', () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(911);
+
+    const restoreJobUsage = installPrepareFailureForTest((sql) => (
+      sql.includes('SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd')
+        && sql.includes('AND job_name = ?')
+    ));
+    try {
+      expect(checkAiBudget({
+        userId: 911,
+        requestSource: 'interactive',
+        baseCategory: 'content_live_eval',
+        jobName: 'content_live_eval:unreadable-job',
+        runId: 'unreadable-job-run',
+        estimatedCostUsd: 0.001,
+        hardJobCostLimitUsd: 0.02,
+      })).toMatchObject({
+        allowed: false,
+        code: 'SERVICE_DEGRADED',
+        window: 'global',
+      });
+    } finally {
+      restoreJobUsage();
+    }
+
+    const restoreProviderReservations = installPrepareFailureForTest((sql) => (
+      sql.includes('SELECT COALESCE(SUM(reserved_cost_usd), 0) AS reserved_cost_usd')
+    ));
+    try {
+      expect(checkAiBudget({
+        userId: 911,
+        requestSource: 'interactive',
+        baseCategory: 'content_live_eval',
+        runId: 'unreadable-reservations-run',
+        estimatedCostUsd: 0.001,
+        hardRunCostLimitUsd: 0.02,
+      })).toMatchObject({
+        allowed: false,
+        code: 'SERVICE_DEGRADED',
+        window: 'global',
+      });
+    } finally {
+      restoreProviderReservations();
+    }
+  });
+
+  it('fails closed if an approved hard-ceiling context loses its durable run scope', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    addPaidUser(912);
+
+    await withAiBudgetReservation({
+      userId: 912,
+      requestSource: 'interactive',
+      baseCategory: 'chat_secretary',
+      runId: 'scope-loss-run',
+      estimatedCostUsd: 0.001,
+      hardRunCostLimitUsd: 0.02,
+    }, async () => {
+      const activeContext = [...observedAsyncLocalStores].find((store) => (
+        store.userId === 912
+          && store.approved === true
+          && typeof store.reservationId === 'string'
+      ));
+      expect(activeContext).toBeDefined();
+
+      // Model an invariant loss between outer approval and the concrete
+      // provider boundary. The budget recheck sees no hard ceiling, while the
+      // boundary still requires a durable hard-ceiling reservation. It must
+      // fail visibly before any provider call can start.
+      activeContext!.runId = null;
+      let hardLimitReads = 0;
+      Object.defineProperty(activeContext!, 'hardRunCostLimitUsd', {
+        configurable: true,
+        get: () => (++hardLimitReads === 1 ? undefined : 0.02),
+      });
+
+      let failure: AiBudgetError | null = null;
+      try {
+        assertAiBudgetReservationForProvider({
+          userId: 912,
+          category: 'chat_secretary',
+          provider: 'openai',
+          model: 'gpt-5-mini',
+          maxCostUsd: 0.001,
+        });
+      } catch (error) {
+        failure = error as AiBudgetError;
+      }
+      expect(failure?.decision).toMatchObject({
+        code: 'SERVICE_DEGRADED',
+        internalReason: 'metering_unavailable',
+      });
+      expect(failure?.decision.message).toContain('durable provider-attempt reservation could not be recorded');
+      expect(db.prepare(`
+        SELECT COUNT(*) AS count
+          FROM ai_provider_attempt_reservations
+         WHERE user_id = 912
+      `).get()).toEqual({ count: 0 });
+    });
   });
 
   it('fails closed when durable provider reservations contain invalid accounting', () => {

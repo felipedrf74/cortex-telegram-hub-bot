@@ -60,7 +60,7 @@ const { mockConfig } = vi.hoisted(() => ({
     ollama: {
       enabled: true,
       baseUrl: 'http://127.0.0.1:11434',
-      model: 'qwen3.6:35b-a3b-q4_K_M',
+      model: 'qwen2.5:3b-instruct-q4_K_M',
       classifierModel: 'qwen2.5:3b-instruct-q4_K_M',
       timeoutMs: 200,
     },

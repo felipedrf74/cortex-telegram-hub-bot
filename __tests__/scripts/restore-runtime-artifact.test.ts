@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe('restore runtime artifact boundary', () => {
-  it('refuses apply when an unknown-version backup omits the release-bound catalog', () => {
+  it('retires apply before inspecting even an unknown-version backup', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-restore-catalog-'));
     temporaryRoots.push(root);
     const source = path.join(root, 'source');
@@ -44,14 +44,13 @@ describe('restore runtime artifact boundary', () => {
       env: { ...process.env, BACKUP_DIR: root, REMOTE_DIR: remote },
     });
 
-    expect(result.status).toBe(1);
-    expect(`${result.stdout}${result.stderr}`).toContain(
-      'Refusing --apply: backup is missing required runtime paths: catalog',
-    );
+    expect(result.status).toBe(77);
+    expect(`${result.stdout}${result.stderr}`).toContain('Direct restore apply is retired');
     expect(fs.readFileSync(path.join(source, 'dist/index.js'), 'utf8')).toBe('old runtime');
+    expect(fs.readdirSync(remote)).toEqual([]);
   });
 
-  it('restores a pre-v4.14.217 backup and removes a newer live catalog', () => {
+  it('refuses a legacy apply without changing the live runtime or creating a snapshot', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-restore-legacy-catalog-'));
     temporaryRoots.push(root);
     const source = path.join(root, 'source');
@@ -99,19 +98,19 @@ describe('restore runtime artifact boundary', () => {
       },
     });
 
-    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
-    expect(`${result.stdout}${result.stderr}`).toContain(
-      'Legacy pre-v4.14.217 backup (4.14.215): catalog will be removed on apply.',
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(77);
+    expect(`${result.stdout}${result.stderr}`).toContain('Direct restore apply is retired');
+    expect(fs.readFileSync(path.join(remote, 'dist/index.js'), 'utf8')).toBe('current runtime');
+    expect(fs.readFileSync(path.join(remote, 'content-engine/main.py'), 'utf8')).toBe(
+      'current engine',
     );
-    expect(fs.readFileSync(path.join(remote, 'dist/index.js'), 'utf8')).toBe('legacy runtime');
-    expect(fs.readFileSync(path.join(remote, 'content-engine/main.py'), 'utf8')).toBe('legacy engine');
     expect(fs.readFileSync(path.join(remote, 'content-engine/.venv/preserved'), 'utf8')).toBe('venv');
     expect(fs.readFileSync(path.join(remote, 'content-engine/data/preserved'), 'utf8')).toBe('data');
-    expect(fs.existsSync(path.join(remote, 'catalog'))).toBe(false);
-    expect(fs.readdirSync(backups).some((name) => name.startsWith('pre-restore-'))).toBe(true);
+    expect(fs.existsSync(path.join(remote, 'catalog/training/catalog.json'))).toBe(true);
+    expect(fs.existsSync(backups)).toBe(false);
   });
 
-  it('refuses replacement when the complete pre-restore snapshot fails', () => {
+  it('retires apply before archive extraction or a pre-restore snapshot attempt', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-restore-snapshot-failure-'));
     temporaryRoots.push(root);
     const source = path.join(root, 'source');
@@ -172,12 +171,12 @@ exit 9
       },
     });
 
-    expect(result.status).toBe(1);
-    expect(`${result.stdout}${result.stderr}`).toContain(
-      'Pre-restore snapshot failed; refusing to replace production files.',
-    );
+    expect(result.status).toBe(77);
+    expect(`${result.stdout}${result.stderr}`).toContain('Direct restore apply is retired');
+    expect(fs.existsSync(counter)).toBe(false);
     expect(fs.readFileSync(path.join(remote, 'dist/index.js'), 'utf8')).toBe('current runtime');
     expect(fs.existsSync(path.join(remote, 'catalog/training/catalog.json'))).toBe(true);
+    expect(fs.existsSync(backups)).toBe(false);
   });
 
   it('rejects hostile Content Engine protected paths and symlinks before touching live state', () => {
@@ -218,7 +217,7 @@ exit 9
     const archive = path.join(root, 'hostile-backup.tar.gz');
     execFileSync('tar', ['czf', archive, '-C', source, '.']);
 
-    const result = spawnSync('bash', [restoreScript, '--apply', archive], {
+    const result = spawnSync('bash', [restoreScript, archive], {
       encoding: 'utf8',
       input: 'YES\n',
       env: {

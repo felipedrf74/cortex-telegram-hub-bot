@@ -1562,9 +1562,11 @@ export function assertAiBudgetReservationForProvider(input: {
   hasUnboundedProviderInjectedContext?: boolean;
 }): void {
   const active = currentActiveAiBudgetReservation();
-  const hasHardCeiling = active?.hardRunCostLimitUsd !== undefined
-    || active?.hardJobCostLimitUsd !== undefined;
-  if (!isPaidAiCostControlsEnforcementEnabled() && !hasHardCeiling) return;
+  if (!isPaidAiCostControlsEnforcementEnabled()) {
+    const hasHardCeiling = active?.hardRunCostLimitUsd !== undefined
+      || active?.hardJobCostLimitUsd !== undefined;
+    if (!hasHardCeiling) return;
+  }
   const userMatches = active?.requestSource === 'system'
     || active?.userId === input.userId;
   const lockUserId = active?.requestSource === 'system' ? 0 : active?.userId;

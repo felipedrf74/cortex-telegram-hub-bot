@@ -5,6 +5,7 @@ export type ChatCoreV2FailureMode =
   | 'schema_validation_fail'
   | 'composer_mode_drift'
   | 'plan_repair_loop'
+  // Legacy telemetry key retained for persisted dashboard compatibility.
   | 'escalation_rate_to_35b'
   | 'local_queue_saturation'
   | 'background_timeout'

@@ -3,6 +3,8 @@
 # identity are deliberately independent, and two PM2 samples must remain stable.
 set -euo pipefail
 umask 077
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 ROLE=""
 BASE_DIR=""
@@ -10,14 +12,15 @@ RELEASE_DIR=""
 RUNTIME_SHA=""
 PM2_BIN=""
 NODE_BIN="/usr/bin/node"
-CURL_BIN="$(command -v curl 2>/dev/null || true)"
+CURL_BIN="/usr/bin/curl"
 OUTPUT=""
+OUTPUT_FD=""
 STABILITY_SECONDS=""
 READINESS_ATTEMPTS=""
 POLL_SECONDS=""
 
 usage() {
-  echo "Usage: remote-release-readiness.sh --role <staging|production> --base-dir <path> --release-dir <path> --runtime-sha <sha> --pm2-bin <path> --output <file> [--node-bin <path>] [--curl-bin <path>] [--readiness-attempts <1-60>] [--poll-seconds <0-10>] [--stability-seconds <0-60>]"
+  echo "Usage: remote-release-readiness.sh --role <staging|production> --base-dir <path> --release-dir <path> --runtime-sha <sha> --pm2-bin <path> (--output <file> | --output-fd <3-63>) [--node-bin <path>] [--curl-bin <path>] [--readiness-attempts <1-60>] [--poll-seconds <0-10>] [--stability-seconds <0-60>]"
 }
 
 while [ $# -gt 0 ]; do
@@ -30,6 +33,7 @@ while [ $# -gt 0 ]; do
     --node-bin) NODE_BIN="$2"; shift 2 ;;
     --curl-bin) CURL_BIN="$2"; shift 2 ;;
     --output) OUTPUT="$2"; shift 2 ;;
+    --output-fd) OUTPUT_FD="$2"; shift 2 ;;
     --readiness-attempts) READINESS_ATTEMPTS="$2"; shift 2 ;;
     --poll-seconds) POLL_SECONDS="$2"; shift 2 ;;
     --stability-seconds) STABILITY_SECONDS="$2"; shift 2 ;;
@@ -44,7 +48,23 @@ case "$ROLE" in staging|production) ;; *) echo "invalid readiness role" >&2; exi
 [ -x "$PM2_BIN" ] || { echo "PM2 is unavailable for readiness" >&2; exit 1; }
 [ -x "$NODE_BIN" ] || { echo "Node is unavailable for readiness" >&2; exit 1; }
 [ -x "$CURL_BIN" ] || { echo "curl is unavailable for readiness" >&2; exit 1; }
-[ -n "$OUTPUT" ] || { echo "readiness output is required" >&2; exit 64; }
+if [ -n "$OUTPUT" ] && [ -n "$OUTPUT_FD" ]; then
+  echo "readiness output path and descriptor are mutually exclusive" >&2
+  exit 64
+fi
+if [ -n "$OUTPUT_FD" ]; then
+  [[ "$OUTPUT_FD" =~ ^[0-9]+$ ]] \
+    && [ "$OUTPUT_FD" -ge 3 ] && [ "$OUTPUT_FD" -le 63 ] || {
+    echo "readiness output descriptor must be between 3 and 63" >&2
+    exit 64
+  }
+  OUTPUT_TARGET="fd:$OUTPUT_FD"
+elif [ -n "$OUTPUT" ]; then
+  OUTPUT_TARGET="path:$OUTPUT"
+else
+  echo "readiness output is required" >&2
+  exit 64
+fi
 case "$STABILITY_SECONDS" in
   # Span PM2's memory monitor and the configured 60-second minimum-uptime
   # boundary so an early supervised restart cannot escape release evidence.
@@ -79,18 +99,28 @@ cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT
 chmod 700 "$tmp_dir"
 backend_health="$tmp_dir/backend-health.json"
-content_ready="$tmp_dir/content-ready.json"
+initial_backend_snapshot="$tmp_dir/initial-backend-snapshot.json"
+final_backend_snapshot="$tmp_dir/final-backend-snapshot.json"
+initial_content_ready="$tmp_dir/initial-content-ready.json"
+final_content_ready="$tmp_dir/final-content-ready.json"
 content_header="$tmp_dir/content-header"
+portal_header="$tmp_dir/portal-header"
 baseline="$tmp_dir/pm2-baseline.json"
 final="$tmp_dir/pm2-final.json"
 probe_error="$tmp_dir/probe-error.log"
 : > "$backend_health"
-: > "$content_ready"
+: > "$initial_backend_snapshot"
+: > "$final_backend_snapshot"
+: > "$initial_content_ready"
+: > "$final_content_ready"
 : > "$content_header"
+: > "$portal_header"
 : > "$baseline"
 : > "$final"
 : > "$probe_error"
-chmod 600 "$backend_health" "$content_ready" "$content_header" "$baseline" "$final" "$probe_error"
+chmod 600 "$backend_health" "$initial_backend_snapshot" \
+  "$final_backend_snapshot" "$initial_content_ready" "$final_content_ready" \
+  "$content_header" "$portal_header" "$baseline" "$final" "$probe_error"
 
 # This both loads the native addon with the exact runtime Node and checks the
 # live database before release success can suppress automatic rollback.
@@ -125,11 +155,19 @@ const fs = require('fs');
 const [releaseDir, runtimeSha, backendName, contentName, output, raw] = process.argv.slice(2);
 const rows = JSON.parse(fs.readFileSync(raw, 'utf8'));
 const expected = new Map([
-  [backendName, releaseDir],
-  [contentName, `${releaseDir}/content-engine`],
+  [backendName, {
+    cwd: releaseDir,
+    executable: `${releaseDir}/dist/index.js`,
+    interpreter: 'node',
+  }],
+  [contentName, {
+    cwd: `${releaseDir}/content-engine`,
+    executable: `${releaseDir}/content-engine/.venv/bin/python3.12`,
+    interpreter: 'none',
+  }],
 ]);
 const services = [];
-for (const [name, cwd] of expected) {
+for (const [name, identity] of expected) {
   const matches = rows.filter((entry) => entry?.name === name);
   if (matches.length !== 1) throw new Error(`PM2 readiness requires exactly one ${name} process`);
   const row = matches[0];
@@ -139,13 +177,20 @@ for (const [name, cwd] of expected) {
     name,
     status: env.status || null,
     cwd: env.pm_cwd || null,
+    executable: env.pm_exec_path || null,
+    interpreter: env.exec_interpreter || null,
     releaseSha: observedSha,
+    sentryRelease: env.SENTRY_RELEASE || null,
     pid: Number(row.pid || 0),
     restartTime: Number(env.restart_time || 0),
     unstableRestarts: Number(env.unstable_restarts || 0),
     uptime: Number(env.pm_uptime || 0),
   };
-  if (observed.status !== 'online' || observed.cwd !== cwd || observed.releaseSha !== runtimeSha || observed.pid <= 0) {
+  if (observed.status !== 'online' || observed.cwd !== identity.cwd
+      || observed.executable !== identity.executable
+      || observed.interpreter !== identity.interpreter
+      || observed.releaseSha !== runtimeSha || observed.sentryRelease !== runtimeSha
+      || observed.pid <= 0) {
     throw new Error(`PM2 exact identity mismatch: ${name}`);
   }
   for (const key of ['restartTime', 'unstableRestarts', 'uptime']) {
@@ -184,8 +229,36 @@ NODE
 printf 'x-internal-secret: %s\n' "$internal_secret" > "$content_header"
 unset internal_secret
 
+require_session="$(awk -F= '$1=="PORTAL_REQUIRE_SESSION_AUTH" {print substr($0,index($0,"=")+1); exit}' \
+  "$BASE_DIR/.env" 2>/dev/null || true)"
+if [ "$require_session" = true ]; then
+  portal_token="$(cd "$RELEASE_DIR" \
+    && DOTENV_CONFIG_PATH="$BASE_DIR/.env" "$NODE_BIN" -r dotenv/config \
+      dist/tools/portal-session-token.js \
+      --actor release-readiness@nexushub.me --scope admin \
+      --ttl-ms 300000 --json \
+    | "$NODE_BIN" -e '
+let body="";
+process.stdin.on("data",(chunk)=>body+=chunk);
+process.stdin.on("end",()=>{
+ const value=JSON.parse(body);
+ if(typeof value.token!=="string"||value.token.length<16)process.exit(1);
+ process.stdout.write(value.token);
+});')"
+  [ -n "$portal_token" ] \
+    || { echo "authenticated backend readiness session is unavailable" >&2; exit 1; }
+  printf 'x-portal-session: %s\n' "$portal_token" >"$portal_header"
+else
+  portal_token="$(awk -F= '$1=="PORTAL_TOKEN" {print substr($0,index($0,"=")+1); exit}' \
+    "$BASE_DIR/.env" 2>/dev/null || true)"
+  [ -n "$portal_token" ] \
+    || { echo "authenticated backend readiness credential is missing" >&2; exit 1; }
+  printf 'Authorization: Bearer %s\n' "$portal_token" >"$portal_header"
+fi
+unset portal_token require_session
+
 validate_content_ready() {
-  "$NODE_BIN" - "$content_ready" <<'NODE'
+  "$NODE_BIN" - "$1" <<'NODE'
 const fs = require('fs');
 const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (body.status !== 'ready' || body.internalAuthConfigured !== true) {
@@ -194,9 +267,25 @@ if (body.status !== 'ready' || body.internalAuthConfigured !== true) {
 NODE
 }
 
+validate_backend_snapshot() {
+  "$NODE_BIN" - "$1" <<'NODE'
+const fs = require('fs');
+const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+if (typeof body.version !== 'string' || body.version.length === 0
+    || !Number.isFinite(body.uptime) || body.uptime < 0) {
+  throw new Error('authenticated backend snapshot is invalid');
+}
+NODE
+}
+
+monotonic_nanoseconds() {
+  "$NODE_BIN" -e 'process.stdout.write(process.hrtime.bigint().toString())'
+}
+
 probe_readiness() {
   : > "$backend_health"
-  : > "$content_ready"
+  : > "$initial_backend_snapshot"
+  : > "$initial_content_ready"
   : > "$probe_error"
   {
     snapshot_pm2 "$baseline" \
@@ -204,8 +293,13 @@ probe_readiness() {
         "http://127.0.0.1:$BACKEND_PORT/health" -o "$backend_health" \
       && validate_backend_health \
       && "$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
-        -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" -o "$content_ready" \
-      && validate_content_ready
+        -H @"$portal_header" "http://127.0.0.1:$BACKEND_PORT/api/snapshot" \
+        -o "$initial_backend_snapshot" \
+      && validate_backend_snapshot "$initial_backend_snapshot" \
+      && "$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+        -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" \
+        -o "$initial_content_ready" \
+      && validate_content_ready "$initial_content_ready"
   } >"$probe_error" 2>&1
 }
 
@@ -230,12 +324,49 @@ if [ "$ready" != true ]; then
   exit 1
 fi
 
+STABILITY_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+STABILITY_STARTED_MONOTONIC_NS="$(monotonic_nanoseconds)"
 [ "$STABILITY_SECONDS" -eq 0 ] || sleep "$STABILITY_SECONDS"
 snapshot_pm2 "$final"
+: >"$final_backend_snapshot"
+: >"$final_content_ready"
+"$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+  -H @"$portal_header" "http://127.0.0.1:$BACKEND_PORT/api/snapshot" \
+  -o "$final_backend_snapshot"
+validate_backend_snapshot "$final_backend_snapshot"
+"$CURL_BIN" --fail --silent --show-error --connect-timeout 1 --max-time 5 \
+  -H @"$content_header" "http://127.0.0.1:$CONTENT_PORT/ready" \
+  -o "$final_content_ready"
+validate_content_ready "$final_content_ready"
+STABILITY_COMPLETED_MONOTONIC_NS="$(monotonic_nanoseconds)"
+STABILITY_COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+STABILITY_OBSERVED_NS="$("$NODE_BIN" -e '
+const started=BigInt(process.argv[1]),completed=BigInt(process.argv[2]);
+if(completed<started)process.exit(1);
+process.stdout.write(String(completed-started));' \
+  "$STABILITY_STARTED_MONOTONIC_NS" "$STABILITY_COMPLETED_MONOTONIC_NS")"
+"$NODE_BIN" -e '
+const observed=BigInt(process.argv[1]);
+const required=BigInt(process.argv[2])*1000000000n;
+if(observed<required)process.exit(1);' \
+  "$STABILITY_OBSERVED_NS" "$STABILITY_SECONDS" || {
+    echo "release stability observation did not cover the configured soak" >&2
+    exit 1
+  }
 
-"$NODE_BIN" - "$baseline" "$final" "$OUTPUT" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" <<'NODE'
+"$NODE_BIN" - "$baseline" "$final" "$OUTPUT_TARGET" "$ROLE" "$RUNTIME_SHA" "$STABILITY_SECONDS" "$ready_attempt" \
+  "$STABILITY_STARTED_AT" "$STABILITY_COMPLETED_AT" \
+  "$STABILITY_STARTED_MONOTONIC_NS" "$STABILITY_COMPLETED_MONOTONIC_NS" \
+  "$STABILITY_OBSERVED_NS" "$initial_backend_snapshot" \
+  "$final_backend_snapshot" "$initial_content_ready" \
+  "$final_content_ready" <<'NODE'
+const crypto = require('crypto');
 const fs = require('fs');
-const [baselinePath, finalPath, output, role, runtimeSha, stabilitySeconds, readinessAttempts] = process.argv.slice(2);
+const [baselinePath, finalPath, outputTarget, role, runtimeSha, stabilitySeconds, readinessAttempts,
+  stabilityStartedAt, stabilityCompletedAt, stabilityStartedMonotonicNs,
+  stabilityCompletedMonotonicNs, stabilityObservedNanoseconds,
+  initialBackendPath, finalBackendPath, initialContentPath, finalContentPath] =
+  process.argv.slice(2);
 const before = JSON.parse(fs.readFileSync(baselinePath, 'utf8')).services;
 const after = JSON.parse(fs.readFileSync(finalPath, 'utf8')).services;
 for (const initial of before) {
@@ -246,25 +377,85 @@ for (const initial of before) {
     throw new Error(`PM2 restart stability failed: ${initial.name}`);
   }
 }
+const digest = (body) => crypto.createHash('sha256').update(body).digest('hex');
+const endpoint = (backendPath, contentPath) => {
+  const backendBody = fs.readFileSync(backendPath);
+  const contentBody = fs.readFileSync(contentPath);
+  const backend = JSON.parse(backendBody);
+  const content = JSON.parse(contentBody);
+  if (typeof backend.version !== 'string' || backend.version.length === 0
+      || !Number.isFinite(backend.uptime) || backend.uptime < 0
+      || content.status !== 'ready'
+      || content.internalAuthConfigured !== true) {
+    throw new Error('readiness endpoint evidence is invalid');
+  }
+  return {
+    backendSnapshotSha256: digest(backendBody),
+    backendVersion: backend.version,
+    backendUptime: backend.uptime,
+    contentReadySha256: digest(contentBody),
+    contentStatus: content.status,
+    internalAuthConfigured: content.internalAuthConfigured,
+  };
+};
+const observed = BigInt(stabilityObservedNanoseconds);
+const started = BigInt(stabilityStartedMonotonicNs);
+const completed = BigInt(stabilityCompletedMonotonicNs);
+const requiredSeconds = Number(stabilitySeconds);
+if (completed - started !== observed
+    || observed < BigInt(requiredSeconds) * 1000000000n) {
+  throw new Error('monotonic readiness soak evidence is invalid');
+}
 const evidence = {
   schema: 'nexus.release-readiness.v1',
   role,
   runtimeSha,
   checkedAt: new Date().toISOString(),
   stabilitySeconds: Number(stabilitySeconds),
+  stabilityStartedAt,
+  stabilityCompletedAt,
+  stabilityObservedSeconds: Number(observed) / 1_000_000_000,
   readinessAttempts: Number(readinessAttempts),
+  soak: {
+    schema: 'nexus.release-readiness-soak.v1',
+    clock: 'monotonic',
+    requiredSeconds,
+    startedMonotonicNs: stabilityStartedMonotonicNs,
+    completedMonotonicNs: stabilityCompletedMonotonicNs,
+    observedNanoseconds: stabilityObservedNanoseconds,
+    initial: endpoint(initialBackendPath, initialContentPath),
+    final: endpoint(finalBackendPath, finalContentPath),
+  },
   checks: {
     nativeBinding: true,
     sqliteIntegrity: true,
     sqliteForeignKeys: true,
     backendHealth: true,
+    authenticatedBackendSnapshot: true,
     authenticatedContentEngine: true,
     pm2ExactIdentity: true,
     pm2RestartStable: true,
   },
   services: after,
 };
-fs.writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+const body = `${JSON.stringify(evidence, null, 2)}\n`;
+if (outputTarget.startsWith('fd:')) {
+  const descriptor = Number(outputTarget.slice(3));
+  if (!Number.isSafeInteger(descriptor) || descriptor < 3 || descriptor > 63) {
+    throw new Error('readiness output descriptor is invalid');
+  }
+  const stat = fs.fstatSync(descriptor);
+  if (!stat.isFile() || stat.nlink !== 1) {
+    throw new Error('readiness output descriptor is not a private regular file');
+  }
+  fs.ftruncateSync(descriptor, 0);
+  fs.writeSync(descriptor, body, 0, 'utf8');
+  fs.fsyncSync(descriptor);
+} else if (outputTarget.startsWith('path:')) {
+  fs.writeFileSync(outputTarget.slice(5), body, { mode: 0o600 });
+} else {
+  throw new Error('readiness output target is invalid');
+}
 NODE
 
 printf 'release_readiness_ok role=%s runtimeSha=%s readinessAttempts=%s stabilitySeconds=%s\n' \

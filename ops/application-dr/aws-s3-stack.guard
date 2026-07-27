@@ -1,0 +1,823 @@
+# Nexus application DR CloudFormation invariants.
+# Run this policy together with cfn-lint before creating or reviewing a change
+# set. It intentionally validates the template's fail-closed structure, not a
+# deployed stack or an owner authorization.
+
+let s3_buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
+let s3_bucket_policies = Resources.*[ Type == 'AWS::S3::BucketPolicy' ]
+let iam_roles = Resources.*[ Type == 'AWS::IAM::Role' ]
+let roles_anywhere_profiles = Resources.*[ Type == 'AWS::RolesAnywhere::Profile' ]
+let cloudwatch_alarms = Resources.*[ Type == 'AWS::CloudWatch::Alarm' ]
+let iam_users = Resources.*[ Type == 'AWS::IAM::User' ]
+let iam_access_keys = Resources.*[ Type == 'AWS::IAM::AccessKey' ]
+let retained_lifecycle_rules = Resources.DisasterRecoveryBucket.Properties.LifecycleConfiguration.Rules[
+  Id != 'GovernedNamespaceHygiene'
+]
+let hourly_lifecycle = %retained_lifecycle_rules[
+  Id == 'DatabaseHourlyWriteOnceRetention'
+]
+let daily_lifecycle = %retained_lifecycle_rules[
+  Id == 'DatabaseDailyWriteOnceRetention'
+]
+let weekly_lifecycle = %retained_lifecycle_rules[
+  Id == 'DatabaseWeeklyWriteOnceRetention'
+]
+let monthly_lifecycle = %retained_lifecycle_rules[
+  Id == 'DatabaseMonthlyWriteOnceRetention'
+]
+let release_lifecycle = %retained_lifecycle_rules[
+  Id == 'ReleaseWriteOnceRetention'
+]
+
+let backup_role_statements = Resources.BackupRole.Properties.Policies[0].PolicyDocument.Statement[*]
+let backup_list_statement = %backup_role_statements[ Sid == 'ListExactPrefix' ]
+let backup_database_statement = %backup_role_statements[ Sid == 'DatabaseObjectIO' ]
+let backup_release_statement = %backup_role_statements[ Sid == 'ReleaseObjectIOAndRetention' ]
+let restore_role_statements = Resources.RestoreRole.Properties.Policies[0].PolicyDocument.Statement[*]
+let restore_list_statement = %restore_role_statements[ Sid == 'ListExactPrefixVersions' ]
+let restore_read_statement = %restore_role_statements[ Sid == 'ReadExactPrefixVersions' ]
+let backup_profile_mappings = Resources.BackupRolesAnywhereProfile.Properties.AttributeMappings[*]
+let restore_profile_mappings = Resources.RestoreRolesAnywhereProfile.Properties.AttributeMappings[*]
+let backup_profile_role_arns = Resources.BackupRolesAnywhereProfile.Properties.RoleArns[*]
+let restore_profile_role_arns = Resources.RestoreRolesAnywhereProfile.Properties.RoleArns[*]
+let backup_trust_statements = Resources.BackupRole.Properties.AssumeRolePolicyDocument.Statement[*]
+let restore_trust_statements = Resources.RestoreRole.Properties.AssumeRolePolicyDocument.Statement[*]
+let backup_role_policies = Resources.BackupRole.Properties.Policies[*]
+let restore_role_policies = Resources.RestoreRole.Properties.Policies[*]
+let backup_profile_session_policy = json_parse(Resources.BackupRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub')
+let restore_profile_session_policy = json_parse(Resources.RestoreRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub')
+let backup_profile_session_statements = %backup_profile_session_policy.Statement[*]
+let restore_profile_session_statements = %restore_profile_session_policy.Statement[*]
+let backup_profile_list_session = %backup_profile_session_statements[
+  Resource == '${DisasterRecoveryBucket.Arn}'
+]
+let backup_profile_database_session = %backup_profile_session_statements[
+  Resource is_list
+]
+let backup_profile_release_session = %backup_profile_session_statements[
+  Resource == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+]
+let restore_profile_list_session = %restore_profile_session_statements[
+  Resource == '${DisasterRecoveryBucket.Arn}'
+]
+let restore_profile_read_session = %restore_profile_session_statements[
+  Resource == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+]
+
+let bucket_policy_statements = Resources.DisasterRecoveryBucketPolicy.Properties.PolicyDocument.Statement[*]
+let allow_prefix_listing = %bucket_policy_statements[ Sid == 'AllowExactPrefixListing' ]
+let allow_database_io = %bucket_policy_statements[ Sid == 'AllowDatabaseObjectIO' ]
+let allow_release_io = %bucket_policy_statements[ Sid == 'AllowReleaseObjectIOAndRetention' ]
+let conditional_bucket_policy_wrappers = %bucket_policy_statements[
+  'Fn::If' exists
+]
+let conditional_bucket_policy_statements = %conditional_bucket_policy_wrappers.'Fn::If'[1]
+let allow_restore_version_listing = %conditional_bucket_policy_statements[
+  Sid == 'AllowRestoreExactPrefixVersionListing'
+]
+let allow_restore_read = %conditional_bucket_policy_statements[
+  Sid == 'AllowRestoreReadOnlyObjects'
+]
+let writer_allow_statements = %bucket_policy_statements[
+  Sid in [
+    'AllowExactPrefixListing',
+    'AllowDatabaseObjectIO',
+    'AllowReleaseObjectIOAndRetention'
+  ]
+]
+let deny_unversioned_delete = %bucket_policy_statements[ Sid == 'DenyUnversionedObjectDeletion' ]
+let deny_version_delete = %bucket_policy_statements[ Sid == 'DenyDirectVersionDeletion' ]
+let deny_plaintext_transport = %bucket_policy_statements[ Sid == 'DenyPlaintextTransport' ]
+let deny_legacy_tls = %bucket_policy_statements[ Sid == 'DenyLegacyTls' ]
+let deny_writer_deletion = %bucket_policy_statements[ Sid == 'DenyBackupPrincipalObjectDeletion' ]
+let deny_writer_control_mutation = %bucket_policy_statements[ Sid == 'DenyBackupPrincipalStorageControlMutation' ]
+let deny_writer_outside_namespaces = %bucket_policy_statements[ Sid == 'DenyBackupPrincipalWritesOutsideGovernedNamespaces' ]
+let deny_non_writer_writes = %bucket_policy_statements[ Sid == 'DenyGovernedWritesFromNonBackupPrincipals' ]
+let deny_missing_if_none_match = %bucket_policy_statements[ Sid == 'DenyGovernedPutWithoutIfNoneMatch' ]
+let deny_missing_retention = %bucket_policy_statements[ Sid == 'DenyGovernedWriteWithoutRetentionDeadline' ]
+let deny_non_compliance = %bucket_policy_statements[ Sid == 'DenyGovernedWriteWithoutCompliance' ]
+let retention_shorter_denies = %bucket_policy_statements[
+  Sid in [
+    'DenyHourlyRetentionShorterThan2Days',
+    'DenyDailyRetentionShorterThan8Days',
+    'DenyWeeklyRetentionShorterThan35Days',
+    'DenyMonthlyRetentionShorterThan190Days',
+    'DenyReleaseRetentionShorterThan90Days'
+  ]
+]
+let retention_longer_denies = %bucket_policy_statements[
+  Sid in [
+    'DenyHourlyRetentionLongerThan3Days',
+    'DenyDailyRetentionLongerThan9Days',
+    'DenyWeeklyRetentionLongerThan36Days',
+    'DenyMonthlyRetentionLongerThan191Days',
+    'DenyReleaseRetentionLongerThan91Days'
+  ]
+]
+
+let s3_bucket_count = count(%s3_buckets)
+let s3_bucket_policy_count = count(%s3_bucket_policies)
+let iam_role_count = count(%iam_roles)
+let roles_anywhere_profile_count = count(%roles_anywhere_profiles)
+let cloudwatch_alarm_count = count(%cloudwatch_alarms)
+let iam_user_count = count(%iam_users)
+let iam_access_key_count = count(%iam_access_keys)
+let retained_lifecycle_rule_count = count(%retained_lifecycle_rules)
+let hourly_lifecycle_count = count(%hourly_lifecycle)
+let daily_lifecycle_count = count(%daily_lifecycle)
+let weekly_lifecycle_count = count(%weekly_lifecycle)
+let monthly_lifecycle_count = count(%monthly_lifecycle)
+let release_lifecycle_count = count(%release_lifecycle)
+let backup_role_statement_count = count(%backup_role_statements)
+let backup_list_statement_count = count(%backup_list_statement)
+let backup_database_statement_count = count(%backup_database_statement)
+let backup_release_statement_count = count(%backup_release_statement)
+let restore_role_statement_count = count(%restore_role_statements)
+let restore_list_statement_count = count(%restore_list_statement)
+let restore_read_statement_count = count(%restore_read_statement)
+let backup_profile_mapping_count = count(%backup_profile_mappings)
+let restore_profile_mapping_count = count(%restore_profile_mappings)
+let backup_profile_role_arn_count = count(%backup_profile_role_arns)
+let restore_profile_role_arn_count = count(%restore_profile_role_arns)
+let backup_trust_statement_count = count(%backup_trust_statements)
+let restore_trust_statement_count = count(%restore_trust_statements)
+let backup_role_policy_count = count(%backup_role_policies)
+let restore_role_policy_count = count(%restore_role_policies)
+let backup_profile_session_statement_count = count(%backup_profile_session_statements)
+let restore_profile_session_statement_count = count(%restore_profile_session_statements)
+let backup_profile_list_session_count = count(%backup_profile_list_session)
+let backup_profile_database_session_count = count(%backup_profile_database_session)
+let backup_profile_release_session_count = count(%backup_profile_release_session)
+let restore_profile_list_session_count = count(%restore_profile_list_session)
+let restore_profile_read_session_count = count(%restore_profile_read_session)
+let allow_prefix_listing_count = count(%allow_prefix_listing)
+let allow_database_io_count = count(%allow_database_io)
+let allow_release_io_count = count(%allow_release_io)
+let allow_restore_version_listing_count = count(%allow_restore_version_listing)
+let allow_restore_read_count = count(%allow_restore_read)
+let conditional_bucket_policy_wrapper_count = count(%conditional_bucket_policy_wrappers)
+let writer_allow_statement_count = count(%writer_allow_statements)
+let bucket_policy_statement_count = count(%bucket_policy_statements)
+let deny_plaintext_transport_count = count(%deny_plaintext_transport)
+let deny_legacy_tls_count = count(%deny_legacy_tls)
+let deny_unversioned_delete_count = count(%deny_unversioned_delete)
+let deny_version_delete_count = count(%deny_version_delete)
+let deny_writer_deletion_count = count(%deny_writer_deletion)
+let deny_writer_control_mutation_count = count(%deny_writer_control_mutation)
+let deny_writer_outside_namespaces_count = count(%deny_writer_outside_namespaces)
+let deny_non_writer_writes_count = count(%deny_non_writer_writes)
+let deny_missing_if_none_match_count = count(%deny_missing_if_none_match)
+let deny_missing_retention_count = count(%deny_missing_retention)
+let deny_non_compliance_count = count(%deny_non_compliance)
+let retention_shorter_deny_count = count(%retention_shorter_denies)
+let retention_longer_deny_count = count(%retention_longer_denies)
+
+rule retained_private_object_lock_bucket {
+  %s3_bucket_count == 1
+    <<The application DR template must define exactly one S3 bucket.>>
+
+  %s3_buckets {
+    DeletionPolicy == 'Retain'
+      <<The application DR bucket must survive stack deletion.>>
+    UpdateReplacePolicy == 'Retain'
+      <<The application DR bucket must survive replacement.>>
+    Properties.ObjectLockEnabled == true
+      <<The application DR bucket must enable Object Lock at creation.>>
+    Properties.VersioningConfiguration.Status == 'Enabled'
+      <<The application DR bucket must have versioning enabled.>>
+    Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm == 'AES256'
+      <<The application DR bucket must use S3-managed AES256 encryption.>>
+    Properties.PublicAccessBlockConfiguration.BlockPublicAcls == true
+    Properties.PublicAccessBlockConfiguration.BlockPublicPolicy == true
+    Properties.PublicAccessBlockConfiguration.IgnorePublicAcls == true
+    Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets == true
+    Properties.OwnershipControls.Rules[*].ObjectOwnership == 'BucketOwnerEnforced'
+      <<The application DR bucket must reject ACL ownership delegation.>>
+  }
+}
+
+rule retained_bucket_policy {
+  %s3_bucket_policy_count == 1
+    <<The application DR template must define exactly one bucket policy.>>
+
+  %s3_bucket_policies {
+    DeletionPolicy == 'Retain'
+      <<The application DR bucket policy must survive stack deletion.>>
+    UpdateReplacePolicy == 'Retain'
+      <<The application DR bucket policy must survive replacement.>>
+  }
+}
+
+rule managed_identity_plane_is_exact_and_ephemeral {
+  Parameters.PrincipalProvisioningMode.Default == 'EXTERNAL'
+  Parameters.PrincipalProvisioningMode.AllowedValues == [
+    'EXTERNAL',
+    'IAM_ROLES_ANYWHERE'
+  ]
+  Parameters.RolesAnywhereActivation.Default == 'DISABLED'
+    <<The managed identity plane must default to disabled.>>
+  Parameters.RolesAnywhereActivation.AllowedValues == ['DISABLED', 'ENABLED']
+  Conditions.ProvisionRolesAnywhere == {
+    "Fn::Equals": [
+      {"Ref": "PrincipalProvisioningMode"},
+      "IAM_ROLES_ANYWHERE"
+    ]
+  }
+  Conditions.EnableRolesAnywhere == {
+    "Fn::And": [
+      {"Condition": "ProvisionRolesAnywhere"},
+      {
+        "Fn::Equals": [
+          {"Ref": "RolesAnywhereActivation"},
+          "ENABLED"
+        ]
+      }
+    ]
+  }
+  %iam_role_count == 2
+    <<Managed mode must contain exactly the backup and restore IAM roles.>>
+  %roles_anywhere_profile_count == 2
+    <<Managed mode must contain exactly the backup and restore Roles Anywhere profiles.>>
+  %cloudwatch_alarm_count == 1
+    <<Managed mode must contain exactly one activation rollback alarm.>>
+  %iam_user_count == 0
+    <<The application DR template must not create IAM users.>>
+  %iam_access_key_count == 0
+    <<The application DR template must not create IAM access keys.>>
+
+  %iam_roles {
+    Condition == 'ProvisionRolesAnywhere'
+      <<Every managed IAM role must be conditional on managed mode.>>
+  }
+
+  %roles_anywhere_profiles {
+    Condition == 'ProvisionRolesAnywhere'
+      <<Every Roles Anywhere profile must be conditional on managed mode.>>
+    Properties.AcceptRoleSessionName == false
+    Properties.DurationSeconds == 900
+    Properties.Enabled.'Fn::If'[0] == 'EnableRolesAnywhere'
+    Properties.Enabled.'Fn::If'[1] == true
+    Properties.Enabled.'Fn::If'[2] == false
+      <<Every managed profile must remain disabled until activation.>>
+  }
+
+  Resources.RolesAnywhereTrustAnchor.Condition == 'ProvisionRolesAnywhere'
+  Resources.RolesAnywhereTrustAnchor.Properties.Enabled.'Fn::If'[0] == 'EnableRolesAnywhere'
+  Resources.RolesAnywhereTrustAnchor.Properties.Enabled.'Fn::If'[1] == true
+  Resources.RolesAnywhereTrustAnchor.Properties.Enabled.'Fn::If'[2] == false
+  Resources.RolesAnywhereTrustAnchor.Properties.Source.SourceType == 'CERTIFICATE_BUNDLE'
+  Resources.RolesAnywhereTrustAnchor.Properties.Source.SourceData.X509CertificateData.Ref == 'TrustAnchorCertificateData'
+
+  Resources.RolesAnywhereCertificateRevocationList.Condition == 'ProvisionRolesAnywhere'
+  Resources.RolesAnywhereCertificateRevocationList.Properties.Enabled.'Fn::If'[0] == 'EnableRolesAnywhere'
+  Resources.RolesAnywhereCertificateRevocationList.Properties.Enabled.'Fn::If'[1] == true
+  Resources.RolesAnywhereCertificateRevocationList.Properties.Enabled.'Fn::If'[2] == false
+  Resources.RolesAnywhereCertificateRevocationList.Properties.TrustAnchorArn.'Fn::GetAtt' == 'RolesAnywhereTrustAnchor.TrustAnchorArn'
+
+  Resources.RolesAnywhereActivationRollbackAlarm {
+    Type == 'AWS::CloudWatch::Alarm'
+    Condition == 'ProvisionRolesAnywhere'
+    Properties.ComparisonOperator == 'LessThanThreshold'
+    Properties.DatapointsToAlarm == 24
+    Properties.Dimensions == [
+      {"Name": "StackName", "Value": {"Ref": "AWS::StackName"}}
+    ]
+    Properties.EvaluationPeriods == 24
+    Properties.MetricName == 'ActivationLease'
+    Properties.Namespace == 'Nexus/ApplicationDR'
+    Properties.Period == 30
+    Properties.Statistic == 'Minimum'
+    Properties.Threshold == 1
+    Properties.TreatMissingData == 'breaching'
+    Properties.Unit == 'Count'
+  }
+  Outputs.RolesAnywhereActivationRollbackAlarmArn.Value.'Fn::GetAtt' ==
+    'RolesAnywhereActivationRollbackAlarm.Arn'
+
+  %backup_trust_statement_count == 1
+  %restore_trust_statement_count == 1
+  %backup_role_policy_count == 1
+  %restore_role_policy_count == 1
+  Resources.BackupRole.Properties.MaxSessionDuration == 3600
+  Resources.RestoreRole.Properties.MaxSessionDuration == 3600
+  Resources.BackupRole.Properties.Path == '/nexus/application-dr/'
+  Resources.RestoreRole.Properties.Path == '/nexus/application-dr/'
+  Resources.BackupRole.Properties.AssumeRolePolicyDocument.Statement[0] {
+    Effect == 'Allow'
+    Principal.Service == 'rolesanywhere.amazonaws.com'
+    Action == ['sts:AssumeRole', 'sts:SetSourceIdentity', 'sts:TagSession']
+    Condition.ArnEquals.'aws:SourceArn'.'Fn::GetAtt' == 'RolesAnywhereTrustAnchor.TrustAnchorArn'
+    Condition.StringEquals.'aws:SourceAccount'.Ref == 'AWS::AccountId'
+    Condition.StringEquals.'aws:PrincipalTag/x509Issuer/CN'.Ref == 'CertificateIssuerCommonName'
+    Condition.StringEquals.'aws:PrincipalTag/x509Subject/CN'.Ref == 'BackupCertificateSubjectCommonName'
+  }
+  Resources.RestoreRole.Properties.AssumeRolePolicyDocument.Statement[0] {
+    Effect == 'Allow'
+    Principal.Service == 'rolesanywhere.amazonaws.com'
+    Action == ['sts:AssumeRole', 'sts:SetSourceIdentity', 'sts:TagSession']
+    Condition.ArnEquals.'aws:SourceArn'.'Fn::GetAtt' == 'RolesAnywhereTrustAnchor.TrustAnchorArn'
+    Condition.StringEquals.'aws:SourceAccount'.Ref == 'AWS::AccountId'
+    Condition.StringEquals.'aws:PrincipalTag/x509Issuer/CN'.Ref == 'CertificateIssuerCommonName'
+    Condition.StringEquals.'aws:PrincipalTag/x509Subject/CN'.Ref == 'RestoreCertificateSubjectCommonName'
+  }
+
+  %backup_profile_mapping_count == 2
+  %restore_profile_mapping_count == 2
+  Resources.BackupRolesAnywhereProfile.Properties.AttributeMappings[0] == {
+    "CertificateField": "x509Issuer",
+    "MappingRules": [{"Specifier": "CN"}]
+  }
+  Resources.BackupRolesAnywhereProfile.Properties.AttributeMappings[1] == {
+    "CertificateField": "x509Subject",
+    "MappingRules": [{"Specifier": "CN"}]
+  }
+  Resources.RestoreRolesAnywhereProfile.Properties.AttributeMappings[0] == {
+    "CertificateField": "x509Issuer",
+    "MappingRules": [{"Specifier": "CN"}]
+  }
+  Resources.RestoreRolesAnywhereProfile.Properties.AttributeMappings[1] == {
+    "CertificateField": "x509Subject",
+    "MappingRules": [{"Specifier": "CN"}]
+  }
+  %backup_profile_role_arn_count == 1
+  %restore_profile_role_arn_count == 1
+  Resources.BackupRolesAnywhereProfile.Properties.RoleArns[0].'Fn::GetAtt' == 'BackupRole.Arn'
+  Resources.RestoreRolesAnywhereProfile.Properties.RoleArns[0].'Fn::GetAtt' == 'RestoreRole.Arn'
+  Resources.BackupRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub' == /DrPrefix/
+  Resources.BackupRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub' != /s3:(Delete|Bypass)/
+  Resources.RestoreRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub' == /ListBucketVersions/
+  Resources.RestoreRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub' == /GetObjectVersion/
+  Resources.RestoreRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub' == /DrPrefix/
+  Resources.RestoreRolesAnywhereProfile.Properties.SessionPolicy.'Fn::Sub' != /s3:(Put|Delete|Bypass)/
+}
+
+rule roles_and_profiles_are_exact_prefix_least_privilege {
+  Resources.BackupRole.Properties.Policies[0].PolicyName == 'NexusApplicationDrBackup'
+  %backup_role_statement_count == 3
+  %backup_list_statement_count == 1
+  %backup_database_statement_count == 1
+  %backup_release_statement_count == 1
+
+  %backup_list_statement {
+    Effect == 'Allow'
+    Action == ['s3:ListBucket', 's3:ListBucketVersions']
+    Resource.'Fn::GetAtt' == 'DisasterRecoveryBucket.Arn'
+    Condition.StringLike.'s3:prefix'[0].'Fn::Sub' == '${DrPrefix}/*'
+  }
+  %backup_database_statement {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention',
+      's3:PutObject',
+      's3:PutObjectRetention'
+    ]
+    Resource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*"}
+    ]
+  }
+  %backup_release_statement {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:PutObject',
+      's3:GetObjectRetention',
+      's3:PutObjectRetention'
+    ]
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+  }
+  %backup_profile_session_statement_count == 3
+  %backup_profile_list_session_count == 1
+  %backup_profile_database_session_count == 1
+  %backup_profile_release_session_count == 1
+  %backup_profile_list_session {
+    Effect == 'Allow'
+    Action == ['s3:ListBucket', 's3:ListBucketVersions']
+    Resource == '${DisasterRecoveryBucket.Arn}'
+    Condition.StringLike.'s3:prefix' == ['${DrPrefix}/*']
+  }
+  %backup_profile_database_session {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention',
+      's3:PutObject',
+      's3:PutObjectRetention'
+    ]
+    Resource == [
+      '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*',
+      '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*',
+      '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*',
+      '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+    ]
+  }
+  %backup_profile_release_session {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:PutObject',
+      's3:GetObjectRetention',
+      's3:PutObjectRetention'
+    ]
+    Resource == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+  }
+
+  Resources.RestoreRole.Properties.Policies[0].PolicyName == 'NexusApplicationDrRestore'
+  %restore_role_statement_count == 2
+  %restore_list_statement_count == 1
+  %restore_read_statement_count == 1
+
+  %restore_list_statement {
+    Effect == 'Allow'
+    Action == 's3:ListBucketVersions'
+    Resource.'Fn::GetAtt' == 'DisasterRecoveryBucket.Arn'
+    Condition.StringLike.'s3:prefix'[0].'Fn::Sub' == '${DrPrefix}/*'
+  }
+  %restore_read_statement {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention'
+    ]
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+  }
+  %restore_profile_session_statement_count == 2
+  %restore_profile_list_session_count == 1
+  %restore_profile_read_session_count == 1
+  %restore_profile_list_session {
+    Effect == 'Allow'
+    Action == 's3:ListBucketVersions'
+    Resource == '${DisasterRecoveryBucket.Arn}'
+    Condition.StringLike.'s3:prefix' == ['${DrPrefix}/*']
+  }
+  %restore_profile_read_session {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention'
+    ]
+    Resource == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+  }
+
+  %allow_prefix_listing_count == 1
+  %allow_database_io_count == 1
+  %allow_release_io_count == 1
+  %allow_restore_version_listing_count == 1
+  %allow_restore_read_count == 1
+  %writer_allow_statement_count == 3
+  %conditional_bucket_policy_wrapper_count == 2
+  %writer_allow_statements {
+    Principal.AWS.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Principal.AWS.'Fn::If'[1].'Fn::GetAtt' == 'BackupRole.Arn'
+    Principal.AWS.'Fn::If'[2].Ref == 'BackupPrincipalArn'
+  }
+  %conditional_bucket_policy_wrappers {
+    'Fn::If'[0] == 'HasRestorePrincipal'
+    'Fn::If'[2].Ref == 'AWS::NoValue'
+  }
+  %allow_prefix_listing {
+    Effect == 'Allow'
+    Action == ['s3:ListBucket', 's3:ListBucketVersions']
+    Resource.'Fn::GetAtt' == 'DisasterRecoveryBucket.Arn'
+    Condition.StringLike.'s3:prefix'[0].'Fn::Sub' == '${DrPrefix}/*'
+  }
+  %allow_database_io {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention',
+      's3:PutObject',
+      's3:PutObjectRetention'
+    ]
+    Resource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*"}
+    ]
+  }
+  %allow_release_io {
+    Effect == 'Allow'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention',
+      's3:PutObject',
+      's3:PutObjectRetention'
+    ]
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+  }
+  %allow_restore_version_listing {
+    Effect == 'Allow'
+    Principal.AWS.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Principal.AWS.'Fn::If'[1].'Fn::GetAtt' == 'RestoreRole.Arn'
+    Principal.AWS.'Fn::If'[2].Ref == 'RestorePrincipalArn'
+    Action == 's3:ListBucketVersions'
+    Resource.'Fn::GetAtt' == 'DisasterRecoveryBucket.Arn'
+    Condition.StringLike.'s3:prefix'[0].'Fn::Sub' == '${DrPrefix}/*'
+  }
+  %allow_restore_read {
+    Effect == 'Allow'
+    Principal.AWS.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Principal.AWS.'Fn::If'[1].'Fn::GetAtt' == 'RestoreRole.Arn'
+    Principal.AWS.'Fn::If'[2].Ref == 'RestorePrincipalArn'
+    Action == [
+      's3:GetObject',
+      's3:GetObjectVersion',
+      's3:GetObjectRetention'
+    ]
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+  }
+}
+
+rule bucket_policy_preserves_write_once_object_lock_and_control_denies {
+  %bucket_policy_statement_count == 26
+    <<The bucket policy must contain only the exact reviewed allow and deny statements.>>
+  %deny_plaintext_transport_count == 1
+  %deny_legacy_tls_count == 1
+  %deny_unversioned_delete_count == 1
+  %deny_version_delete_count == 1
+  %deny_writer_deletion_count == 1
+  %deny_writer_control_mutation_count == 1
+  %deny_writer_outside_namespaces_count == 1
+  %deny_non_writer_writes_count == 1
+  %deny_missing_if_none_match_count == 1
+  %deny_missing_retention_count == 1
+  %deny_non_compliance_count == 1
+  %retention_shorter_deny_count == 5
+  %retention_longer_deny_count == 5
+
+  %deny_plaintext_transport {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == 's3:*'
+    Resource == [
+      {"Fn::GetAtt": "DisasterRecoveryBucket.Arn"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/*"}
+    ]
+    Condition.Bool.'aws:SecureTransport' == 'false'
+    Condition.Bool.'aws:PrincipalIsAWSService' == 'false'
+  }
+  %deny_legacy_tls {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == 's3:*'
+    Resource == [
+      {"Fn::GetAtt": "DisasterRecoveryBucket.Arn"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/*"}
+    ]
+    Condition.NumericLessThan.'s3:TlsVersion' == 1.2
+    Condition.Bool.'aws:PrincipalIsAWSService' == 'false'
+  }
+  %deny_unversioned_delete {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == 's3:DeleteObject'
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+  }
+  %deny_version_delete {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == 's3:DeleteObjectVersion'
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+  }
+  %deny_writer_deletion {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == [
+      's3:BypassGovernanceRetention',
+      's3:DeleteObject',
+      's3:DeleteObjectVersion',
+      's3:PutObjectLegalHold'
+    ]
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/*'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[1].'Fn::GetAtt' == 'BackupRole.Arn'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[2].Ref == 'BackupPrincipalArn'
+  }
+  %deny_writer_control_mutation {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == [
+      's3:DeleteBucketPolicy',
+      's3:PutBucketObjectLockConfiguration',
+      's3:PutBucketPolicy',
+      's3:PutBucketVersioning',
+      's3:PutLifecycleConfiguration'
+    ]
+    Resource.'Fn::GetAtt' == 'DisasterRecoveryBucket.Arn'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[1].'Fn::GetAtt' == 'BackupRole.Arn'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[2].Ref == 'BackupPrincipalArn'
+  }
+  %deny_writer_outside_namespaces {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == ['s3:PutObject', 's3:PutObjectLegalHold', 's3:PutObjectRetention']
+    NotResource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*"}
+    ]
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[1].'Fn::GetAtt' == 'BackupRole.Arn'
+    Condition.ArnEquals.'aws:PrincipalArn'.'Fn::If'[2].Ref == 'BackupPrincipalArn'
+  }
+  %deny_non_writer_writes {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == ['s3:PutObject', 's3:PutObjectLegalHold', 's3:PutObjectRetention']
+    Resource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*"}
+    ]
+    Condition.ArnNotEquals.'aws:PrincipalArn'.'Fn::If'[0] == 'ProvisionRolesAnywhere'
+    Condition.ArnNotEquals.'aws:PrincipalArn'.'Fn::If'[1].'Fn::GetAtt' == 'BackupRole.Arn'
+    Condition.ArnNotEquals.'aws:PrincipalArn'.'Fn::If'[2].Ref == 'BackupPrincipalArn'
+  }
+  %deny_missing_if_none_match {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == 's3:PutObject'
+    Resource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*"}
+    ]
+    Condition.StringNotEquals.'s3:if-none-match' == '*'
+  }
+  %deny_missing_retention {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == ['s3:PutObject', 's3:PutObjectRetention']
+    Resource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*"}
+    ]
+    Condition.Null.'s3:object-lock-remaining-retention-days' == 'true'
+  }
+  %deny_non_compliance {
+    Effect == 'Deny'
+    Principal == '*'
+    Action == ['s3:PutObject', 's3:PutObjectRetention']
+    Resource == [
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/*"},
+      {"Fn::Sub": "${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*"}
+    ]
+    Condition.StringNotEquals.'s3:object-lock-mode' == 'COMPLIANCE'
+  }
+
+  some %retention_shorter_denies.Sid == 'DenyHourlyRetentionShorterThan2Days'
+  some %retention_shorter_denies.Sid == 'DenyDailyRetentionShorterThan8Days'
+  some %retention_shorter_denies.Sid == 'DenyWeeklyRetentionShorterThan35Days'
+  some %retention_shorter_denies.Sid == 'DenyMonthlyRetentionShorterThan190Days'
+  some %retention_shorter_denies.Sid == 'DenyReleaseRetentionShorterThan90Days'
+  some %retention_longer_denies.Sid == 'DenyHourlyRetentionLongerThan3Days'
+  some %retention_longer_denies.Sid == 'DenyDailyRetentionLongerThan9Days'
+  some %retention_longer_denies.Sid == 'DenyWeeklyRetentionLongerThan36Days'
+  some %retention_longer_denies.Sid == 'DenyMonthlyRetentionLongerThan191Days'
+  some %retention_longer_denies.Sid == 'DenyReleaseRetentionLongerThan91Days'
+
+  %bucket_policy_statements[ Sid == 'DenyHourlyRetentionShorterThan2Days' ] {
+    Condition.NumericLessThan.'s3:object-lock-remaining-retention-days' == 2
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyHourlyRetentionLongerThan3Days' ] {
+    Condition.NumericGreaterThan.'s3:object-lock-remaining-retention-days' == 3
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/hourly/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyDailyRetentionShorterThan8Days' ] {
+    Condition.NumericLessThan.'s3:object-lock-remaining-retention-days' == 8
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyDailyRetentionLongerThan9Days' ] {
+    Condition.NumericGreaterThan.'s3:object-lock-remaining-retention-days' == 9
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/daily/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyWeeklyRetentionShorterThan35Days' ] {
+    Condition.NumericLessThan.'s3:object-lock-remaining-retention-days' == 35
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyWeeklyRetentionLongerThan36Days' ] {
+    Condition.NumericGreaterThan.'s3:object-lock-remaining-retention-days' == 36
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/weekly/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyMonthlyRetentionShorterThan190Days' ] {
+    Condition.NumericLessThan.'s3:object-lock-remaining-retention-days' == 190
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyMonthlyRetentionLongerThan191Days' ] {
+    Condition.NumericGreaterThan.'s3:object-lock-remaining-retention-days' == 191
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/database/monthly/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyReleaseRetentionShorterThan90Days' ] {
+    Condition.NumericLessThan.'s3:object-lock-remaining-retention-days' == 90
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+  }
+  %bucket_policy_statements[ Sid == 'DenyReleaseRetentionLongerThan91Days' ] {
+    Condition.NumericGreaterThan.'s3:object-lock-remaining-retention-days' == 91
+    Resource.'Fn::Sub' == '${DisasterRecoveryBucket.Arn}/${DrPrefix}/releases/*'
+  }
+}
+
+rule lifecycle_remains_disabled_until_receipt_bound_activation {
+  Parameters.LifecycleActivation.Default == 'DISABLED'
+    <<S3 Lifecycle must default to disabled for first-backup bootstrap.>>
+  Parameters.LifecycleActivation.AllowedValues == ['DISABLED', 'ENABLED']
+    <<Lifecycle activation must expose only the reviewed disabled/enabled states.>>
+  Parameters.LifecycleBootstrapReceiptSha256.Default == ''
+    <<The lifecycle bootstrap receipt must default to empty.>>
+  Rules.LifecycleEnableRequiresFirstBackupReceipt.RuleCondition == {
+    "Fn::Equals": [
+      {"Ref": "LifecycleActivation"},
+      "ENABLED"
+    ]
+  }
+    <<Lifecycle enablement must retain its exact receipt-bound rule condition.>>
+  Rules.LifecycleEnableRequiresFirstBackupReceipt.Assertions[0].Assert == {
+    "Fn::Not": [
+      {
+        "Fn::Equals": [
+          {"Ref": "LifecycleBootstrapReceiptSha256"},
+          ""
+        ]
+      }
+    ]
+  }
+    <<Lifecycle enablement must reject an empty bootstrap receipt digest.>>
+  Rules.DisabledLifecycleRejectsBootstrapReceipt.RuleCondition == {
+    "Fn::Equals": [
+      {"Ref": "LifecycleActivation"},
+      "DISABLED"
+    ]
+  }
+  Rules.DisabledLifecycleRejectsBootstrapReceipt.Assertions[0].Assert == {
+    "Fn::Equals": [
+      {"Ref": "LifecycleBootstrapReceiptSha256"},
+      ""
+    ]
+  }
+    <<A disabled lifecycle must not pre-stage an arbitrary bootstrap receipt.>>
+  Conditions.EnableLifecycle == {
+    "Fn::Equals": [
+      {"Ref": "LifecycleActivation"},
+      "ENABLED"
+    ]
+  }
+    <<Lifecycle rules must remain controlled by the exact activation condition.>>
+  Outputs.LifecycleActivation.Value.Ref == 'LifecycleActivation'
+  Outputs.LifecycleBootstrapReceiptSha256.Value.Ref == 'LifecycleBootstrapReceiptSha256'
+    <<The stack outputs must bind the exact lifecycle activation and receipt parameters.>>
+  %retained_lifecycle_rule_count == 5
+    <<Every database tier and release escrow must retain a lifecycle rule.>>
+  %hourly_lifecycle_count == 1
+  %daily_lifecycle_count == 1
+  %weekly_lifecycle_count == 1
+  %monthly_lifecycle_count == 1
+  %release_lifecycle_count == 1
+
+  %retained_lifecycle_rules {
+    Status.'Fn::If'[0] == 'EnableLifecycle'
+      <<Every retention lifecycle rule must use the activation condition.>>
+    Status.'Fn::If'[1] == 'Enabled'
+    Status.'Fn::If'[2] == 'Disabled'
+      <<Every retention lifecycle rule must be disabled until activation.>>
+  }
+
+  %hourly_lifecycle {
+    Prefix.'Fn::Sub' == '${DrPrefix}/database/hourly/'
+    ExpirationInDays == 3
+    NoncurrentVersionExpiration.NoncurrentDays == 1
+  }
+  %daily_lifecycle {
+    Prefix.'Fn::Sub' == '${DrPrefix}/database/daily/'
+    ExpirationInDays == 9
+    NoncurrentVersionExpiration.NoncurrentDays == 1
+  }
+  %weekly_lifecycle {
+    Prefix.'Fn::Sub' == '${DrPrefix}/database/weekly/'
+    ExpirationInDays == 36
+    NoncurrentVersionExpiration.NoncurrentDays == 1
+  }
+  %monthly_lifecycle {
+    Prefix.'Fn::Sub' == '${DrPrefix}/database/monthly/'
+    ExpirationInDays == 191
+    NoncurrentVersionExpiration.NoncurrentDays == 1
+  }
+  %release_lifecycle {
+    Prefix.'Fn::Sub' == '${DrPrefix}/releases/'
+    ExpirationInDays == 92
+    NoncurrentVersionExpiration.NoncurrentDays == 1
+  }
+}

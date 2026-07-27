@@ -1,0 +1,46 @@
+[Unit]
+Description=Trusted sequential Nexus release-layout fault drill %i
+ConditionPathExists=/var/lib/nexus-rollback-drill-vm/active.json
+ConditionPathExists=/var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json
+ConditionPathExists=/run/nexus-rollback-drill-vm/release-layout-fault-controller.lock
+ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/install-in-progress.v1
+ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/provision-in-progress.v1
+After=systemd-tmpfiles-setup.service nexus-release-layout-fault-drill-recovery.service
+StartLimitIntervalSec=60s
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStartPre=/usr/bin/test -c /dev/kvm
+ExecStart=/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller run %i
+UMask=0077
+TimeoutStartSec=900s
+KillMode=control-group
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateDevices=false
+PrivateMounts=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=default
+ProtectSystem=strict
+ReadOnlyPaths=/etc/nexus-release /var/lib/nexus-rollback-drill-vm/active.json /var/lib/nexus-rollback-drill-vm/release-layout-evidence-trust.v1.json /var/lib/nexus-rollback-drill-vm/sets
+ReadWritePaths=/var/lib/nexus-rollback-drill-vm/release-layout-fault-drills /run
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_KILL
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+# Deliberately no installation stanza. The controller is owner-submitted and
+# strictly sequential; it never becomes a background release lane.

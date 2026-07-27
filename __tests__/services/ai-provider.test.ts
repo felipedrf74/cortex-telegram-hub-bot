@@ -209,6 +209,7 @@ describe('FallbackProvider', () => {
 vi.mock('../../src/services/anthropic', () => ({
   classifyMessage: vi.fn(),
   callDomain: vi.fn(),
+  callStructuredGeneration: vi.fn(),
   continueWithToolResults: vi.fn(),
   DOMAIN_SYSTEM_PROMPTS: {},
   buildReplyLanguageInstruction: vi.fn().mockReturnValue(''),
@@ -230,10 +231,16 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { AnthropicProvider } from '../../src/services/anthropic-provider';
-import { classifyMessage, callDomain, continueWithToolResults } from '../../src/services/anthropic';
+import {
+  classifyMessage,
+  callDomain,
+  callStructuredGeneration,
+  continueWithToolResults,
+} from '../../src/services/anthropic';
 
 const mockClassify = vi.mocked(classifyMessage);
 const mockCallDomain = vi.mocked(callDomain);
+const mockCallStructuredGeneration = vi.mocked(callStructuredGeneration);
 const mockContinue = vi.mocked(continueWithToolResults);
 
 describe('AnthropicProvider', () => {
@@ -243,6 +250,7 @@ describe('AnthropicProvider', () => {
     provider = new AnthropicProvider();
     mockClassify.mockReset();
     mockCallDomain.mockReset();
+    mockCallStructuredGeneration.mockReset();
     mockContinue.mockReset();
   });
 
@@ -311,6 +319,27 @@ describe('AnthropicProvider', () => {
       await provider.callDomain('secretary', [], 'msg', 'ctx', 4096);
       expect(mockCallDomain).toHaveBeenCalledWith('secretary', [], 'msg', 'ctx', 4096);
     });
+  });
+
+  it('delegates dedicated structured generation without routing through callDomain', async () => {
+    mockCallStructuredGeneration.mockResolvedValue({ text: '{"ok":true}', stopReason: 'end_turn' });
+    const request = {
+      systemPrompt: 'schema',
+      userPrompt: 'task',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 4096,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_script_generation_artifacts' as const,
+      responseFormat: 'json' as const,
+    };
+
+    await expect(provider.callStructuredGeneration(request)).resolves.toEqual({
+      text: '{"ok":true}',
+      stopReason: 'end_turn',
+    });
+    expect(mockCallStructuredGeneration).toHaveBeenCalledWith(request);
+    expect(mockCallDomain).not.toHaveBeenCalled();
   });
 
   describe('continueWithToolResults', () => {

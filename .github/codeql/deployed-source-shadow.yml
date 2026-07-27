@@ -1,0 +1,21 @@
+name: Nexus deployed source shadow
+
+# This scope is intentionally not wired into the required CodeQL job yet.
+# Activate it only for two sequential shadow scans and compare extracted files
+# and runtime-source alerts with the broad exact-SHA scan first.
+paths:
+  - .github/workflows
+  - src
+  - scripts
+  - config
+  - ecosystem.config.js
+  - ecosystem.release.config.js
+  - ecosystem.staging.config.js
+
+paths-ignore:
+  - '**/*.test.ts'
+  - dist
+  - node_modules
+  - coverage
+  - reports
+  - .local

@@ -1,0 +1,632 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private, versioned S3 storage and dedicated IAM Roles Anywhere writer and
+  restore identities for encrypted Nexus SonarQube backups. This stack is
+  deliberately separate from application disaster recovery and creates no
+  access keys, login profiles, certificates, private keys, or public endpoints.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional globally unique Sonar backup bucket name. Leave empty to let
+      CloudFormation generate a name.
+    AllowedPattern: '^$|^(?![0-9]{1,3}(\.[0-9]{1,3}){3}$)(?!xn--)(?!sthree-)(?!amzn-s3-demo-)(?!.*-s3alias$)(?!.*--ol-s3$)(?!.*\.mrap$)(?!.*--x-s3$)(?!.*--table-s3$)(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  SonarPrefix:
+    Type: String
+    Default: nexus-hub/sonarqube
+    MaxLength: 128
+    AllowedPattern: '^(?!.*\.\.)(?!.*//)[A-Za-z0-9][A-Za-z0-9._/-]*[A-Za-z0-9]$'
+    Description: Exact namespace dedicated to SonarQube daily and weekly backups.
+  TrustAnchorCertificateData:
+    Type: String
+    MaxLength: 4096
+    Description: >-
+      PEM-encoded public certificate for the Sonar-only private CA. The private
+      CA key must never enter CloudFormation, AWS, this repository, or
+      ServerDominguez.
+  CertificateRevocationListData:
+    Type: String
+    MaxLength: 4096
+    Description: >-
+      Canonical PEM CRL for the Sonar-only private CA. Owner receipts retain
+      canonical base64 DER and deterministically wrap those exact DER bytes as
+      PEM for this AWS parameter.
+  CertificateRevocationListSha256:
+    Type: String
+    AllowedPattern: '^[0-9a-f]{64}$'
+    Description: SHA-256 of the exact DER bytes encoded by the PEM CRL above.
+  ProtectedMainTemplateSha256:
+    Type: String
+    AllowedPattern: '^[0-9a-f]{64}$'
+    Description: >-
+      SHA-256 of the exact protected-main aws-s3-stack.yaml bytes supplied to
+      the reviewed CloudFormation change set.
+  OwnerReceiptKeyId:
+    Type: String
+    MinLength: 1
+    MaxLength: 128
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$'
+    Description: Exact owner Ed25519 key identifier bound by both signed receipts.
+  OwnerReceiptPublicKeySha256:
+    Type: String
+    AllowedPattern: '^[0-9a-f]{64}$'
+    Description: >-
+      SHA-256 of the DER SPKI for the owner Ed25519 public key. The private key
+      remains outside this template, repository, ServerDominguez, and AWS.
+  RolesAnywhereActivation:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - DISABLED
+      - ENABLED
+    Description: >-
+      Keep disabled until leaf certificate issuance, revocation, private-key
+      custody, and the ServerDominguez credential helper are owner-approved.
+  RolesAnywhereActivationReceiptSha256:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[0-9a-f]{64}$'
+    Description: >-
+      SHA-256 of the owner-reviewed certificate and credential-boundary
+      activation receipt. Required before the two profiles can be enabled.
+  LifecycleActivation:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - DISABLED
+      - ENABLED
+    Description: >-
+      Keep disabled through the first remotely verified backup. Enable only
+      after binding the exact first-backup receipt below.
+  LifecycleBootstrapReceiptSha256:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[0-9a-f]{64}$'
+    Description: >-
+      SHA-256 of the first remotely verified Sonar backup receipt. Required
+      before noncurrent-version lifecycle cleanup can be enabled.
+  CertificateIssuerCommonName:
+    Type: String
+    Default: nexus-sonarqube-ca
+    MinLength: 2
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:@/+ -]{0,63}$'
+    Description: Exact issuer CN required on both Sonar leaf certificates.
+  BackupCertificateSubjectCommonName:
+    Type: String
+    Default: serverdominguez-nexus-sonar-backup
+    MinLength: 2
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:@/+ -]{0,63}$'
+    Description: Exact subject CN required on the ServerDominguez writer certificate.
+  RestoreCertificateSubjectCommonName:
+    Type: String
+    Default: nexus-isolated-sonar-restore
+    MinLength: 2
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:@/+ -]{0,63}$'
+    Description: Exact subject CN required on the isolated restore certificate.
+
+Conditions:
+  HasExplicitBucketName: !Not [!Equals [!Ref BucketName, '']]
+  EnableRolesAnywhere: !Equals [!Ref RolesAnywhereActivation, ENABLED]
+  EnableLifecycle: !Equals [!Ref LifecycleActivation, ENABLED]
+
+Rules:
+  DistinctCertificateSubjects:
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - !Ref BackupCertificateSubjectCommonName
+            - !Ref RestoreCertificateSubjectCommonName
+        AssertDescription: Writer and restore certificates must use distinct subject CNs.
+  RolesAnywhereActivationRequiresReceipt:
+    RuleCondition: !Equals [!Ref RolesAnywhereActivation, ENABLED]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref RolesAnywhereActivationReceiptSha256, '']]
+        AssertDescription: >-
+          Enabling Sonar IAM Roles Anywhere profiles requires the exact
+          owner-reviewed activation receipt SHA-256.
+  DisabledRolesAnywhereRejectsReceipt:
+    RuleCondition: !Equals [!Ref RolesAnywhereActivation, DISABLED]
+    Assertions:
+      - Assert: !Equals [!Ref RolesAnywhereActivationReceiptSha256, '']
+        AssertDescription: >-
+          A Roles Anywhere activation receipt is accepted only in the enabling
+          change set, not while profiles remain disabled.
+  LifecycleActivationRequiresFirstBackup:
+    RuleCondition: !Equals [!Ref LifecycleActivation, ENABLED]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LifecycleBootstrapReceiptSha256, '']]
+        AssertDescription: >-
+          Enabling Sonar lifecycle cleanup requires the exact remotely verified
+          first-backup receipt SHA-256.
+  DisabledLifecycleRejectsReceipt:
+    RuleCondition: !Equals [!Ref LifecycleActivation, DISABLED]
+    Assertions:
+      - Assert: !Equals [!Ref LifecycleBootstrapReceiptSha256, '']
+        AssertDescription: >-
+          A lifecycle bootstrap receipt is accepted only in the lifecycle
+          enabling change set.
+
+Resources:
+  SonarRolesAnywhereTrustAnchor:
+    Type: AWS::RolesAnywhere::TrustAnchor
+    Properties:
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-ca'
+      Source:
+        SourceType: CERTIFICATE_BUNDLE
+        SourceData:
+          X509CertificateData: !Ref TrustAnchorCertificateData
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: sonarqube-backup-authentication
+        - Key: isolation-boundary
+          Value: separate-from-application-dr
+
+  SonarRolesAnywhereCertificateRevocationList:
+    Type: AWS::RolesAnywhere::CRL
+    Properties:
+      CrlData: !Ref CertificateRevocationListData
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-crl'
+      TrustAnchorArn: !GetAtt SonarRolesAnywhereTrustAnchor.TrustAnchorArn
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: sonarqube-backup-revocation
+        - Key: isolation-boundary
+          Value: separate-from-application-dr
+        - Key: crl-sha256
+          Value: !Ref CertificateRevocationListSha256
+
+  SonarRolesAnywhereActivationRollbackAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >-
+        Rolls back the reviewed Sonar Roles Anywhere enablement when its
+        sequential controller lease stops.
+      AlarmName: !Sub '${AWS::StackName}-roles-anywhere-activation-rollback'
+      ComparisonOperator: LessThanThreshold
+      DatapointsToAlarm: 4
+      Dimensions:
+        - Name: StackName
+          Value: !Ref 'AWS::StackName'
+      EvaluationPeriods: 4
+      MetricName: ActivationLease
+      Namespace: Nexus/SonarQube
+      Period: 30
+      Statistic: Minimum
+      Threshold: 1
+      TreatMissingData: breaching
+      Unit: Count
+
+  SonarBackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If [HasExplicitBucketName, !Ref BucketName, !Ref 'AWS::NoValue']
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: SonarNamespaceHygiene
+            Prefix: !Sub '${SonarPrefix}/'
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: SonarDailyNoncurrentVersionRetention
+            Prefix: !Sub '${SonarPrefix}/daily/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpiredObjectDeleteMarker: true
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 35
+          - Id: SonarWeeklyNoncurrentVersionRetention
+            Prefix: !Sub '${SonarPrefix}/weekly/'
+            Status: !If [EnableLifecycle, Enabled, Disabled]
+            ExpiredObjectDeleteMarker: true
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 120
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: encrypted-sonarqube-backup
+        - Key: isolation-boundary
+          Value: separate-from-application-dr
+        - Key: owner-activation-receipt-sha256
+          Value: !Ref RolesAnywhereActivationReceiptSha256
+        - Key: first-backup-receipt-sha256
+          Value: !Ref LifecycleBootstrapReceiptSha256
+        - Key: receipt-signing-public-key-sha256
+          Value: !Ref OwnerReceiptPublicKeySha256
+        - Key: protected-main-template-sha256
+          Value: !Ref ProtectedMainTemplateSha256
+
+  SonarBackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Prefix-scoped writer used only by ServerDominguez Sonar backups.
+      MaxSessionDuration: 3600
+      Path: /nexus/sonarqube/
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rolesanywhere.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:SetSourceIdentity
+              - sts:TagSession
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt SonarRolesAnywhereTrustAnchor.TrustAnchorArn
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+                aws:PrincipalTag/x509Issuer/CN: !Ref CertificateIssuerCommonName
+                aws:PrincipalTag/x509Subject/CN: !Ref BackupCertificateSubjectCommonName
+      Policies:
+        - PolicyName: NexusSonarBackupWriter
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InspectBucketVersioning
+                Effect: Allow
+                Action:
+                  - s3:GetBucketVersioning
+                Resource: !GetAtt SonarBackupBucket.Arn
+              - Sid: ListExactSonarPrefix
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt SonarBackupBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - !Sub '${SonarPrefix}/*'
+              - Sid: SonarBackupObjectIO
+                Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/daily/*'
+                  - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/weekly/*'
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: sonarqube-backup-writer
+        - Key: owner-activation-receipt-sha256
+          Value: !Ref RolesAnywhereActivationReceiptSha256
+        - Key: receipt-signing-public-key-sha256
+          Value: !Ref OwnerReceiptPublicKeySha256
+        - Key: protected-main-template-sha256
+          Value: !Ref ProtectedMainTemplateSha256
+
+  SonarRestoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Read-only role used only by an isolated Sonar restore drill.
+      MaxSessionDuration: 3600
+      Path: /nexus/sonarqube/
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rolesanywhere.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:SetSourceIdentity
+              - sts:TagSession
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt SonarRolesAnywhereTrustAnchor.TrustAnchorArn
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+                aws:PrincipalTag/x509Issuer/CN: !Ref CertificateIssuerCommonName
+                aws:PrincipalTag/x509Subject/CN: !Ref RestoreCertificateSubjectCommonName
+      Policies:
+        - PolicyName: NexusSonarBackupRestore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadExactSonarVersions
+                Effect: Allow
+                Action:
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/daily/*'
+                  - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/weekly/*'
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: sonarqube-backup-restore
+        - Key: owner-activation-receipt-sha256
+          Value: !Ref RolesAnywhereActivationReceiptSha256
+        - Key: receipt-signing-public-key-sha256
+          Value: !Ref OwnerReceiptPublicKeySha256
+        - Key: protected-main-template-sha256
+          Value: !Ref ProtectedMainTemplateSha256
+
+  SonarBackupRolesAnywhereProfile:
+    Type: AWS::RolesAnywhere::Profile
+    DependsOn: SonarRolesAnywhereCertificateRevocationList
+    Properties:
+      AcceptRoleSessionName: false
+      AttributeMappings:
+        - CertificateField: x509Issuer
+          MappingRules:
+            - Specifier: CN
+        - CertificateField: x509Subject
+          MappingRules:
+            - Specifier: CN
+      DurationSeconds: 900
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-backup'
+      RoleArns:
+        - !GetAtt SonarBackupRole.Arn
+      SessionPolicy: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetBucketVersioning",
+              "Resource": "${SonarBackupBucket.Arn}"
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:ListBucket"],
+              "Resource": "${SonarBackupBucket.Arn}",
+              "Condition": {"StringLike": {"s3:prefix": ["${SonarPrefix}/*"]}}
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:DeleteObject", "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
+              "Resource": [
+                "${SonarBackupBucket.Arn}/${SonarPrefix}/daily/*",
+                "${SonarBackupBucket.Arn}/${SonarPrefix}/weekly/*"
+              ]
+            }
+          ]
+        }
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: sonarqube-backup-writer
+        - Key: owner-activation-receipt-sha256
+          Value: !Ref RolesAnywhereActivationReceiptSha256
+        - Key: receipt-signing-public-key-sha256
+          Value: !Ref OwnerReceiptPublicKeySha256
+        - Key: protected-main-template-sha256
+          Value: !Ref ProtectedMainTemplateSha256
+
+  SonarRestoreRolesAnywhereProfile:
+    Type: AWS::RolesAnywhere::Profile
+    DependsOn: SonarRolesAnywhereCertificateRevocationList
+    Properties:
+      AcceptRoleSessionName: false
+      AttributeMappings:
+        - CertificateField: x509Issuer
+          MappingRules:
+            - Specifier: CN
+        - CertificateField: x509Subject
+          MappingRules:
+            - Specifier: CN
+      DurationSeconds: 900
+      Enabled: !If [EnableRolesAnywhere, true, false]
+      Name: !Sub '${AWS::StackName}-restore'
+      RoleArns:
+        - !GetAtt SonarRestoreRole.Arn
+      SessionPolicy: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObjectVersion"],
+              "Resource": [
+                "${SonarBackupBucket.Arn}/${SonarPrefix}/daily/*",
+                "${SonarBackupBucket.Arn}/${SonarPrefix}/weekly/*"
+              ]
+            }
+          ]
+        }
+      Tags:
+        - Key: application
+          Value: nexus-hub
+        - Key: purpose
+          Value: sonarqube-backup-restore
+        - Key: owner-activation-receipt-sha256
+          Value: !Ref RolesAnywhereActivationReceiptSha256
+        - Key: receipt-signing-public-key-sha256
+          Value: !Ref OwnerReceiptPublicKeySha256
+        - Key: protected-main-template-sha256
+          Value: !Ref ProtectedMainTemplateSha256
+
+  SonarBackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref SonarBackupBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyPlaintextTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt SonarBackupBucket.Arn
+              - !Sub '${SonarBackupBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+                aws:PrincipalIsAWSService: 'false'
+          - Sid: DenyLegacyTls
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt SonarBackupBucket.Arn
+              - !Sub '${SonarBackupBucket.Arn}/*'
+            Condition:
+              NumericLessThan:
+                s3:TlsVersion: 1.2
+              Bool:
+                aws:PrincipalIsAWSService: 'false'
+          - Sid: DenyDirectVersionDeletion
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:DeleteObjectVersion
+            Resource: !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/*'
+          - Sid: DenyWriterBucketControlMutation
+            Effect: Deny
+            Principal:
+              AWS: !GetAtt SonarBackupRole.Arn
+            Action:
+              - s3:DeleteBucketPolicy
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketPolicy
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketVersioning
+              - s3:PutLifecycleConfiguration
+            Resource: !GetAtt SonarBackupBucket.Arn
+          - Sid: DenyWriterObjectIOOutsideSonarPrefix
+            Effect: Deny
+            Principal:
+              AWS: !GetAtt SonarBackupRole.Arn
+            Action:
+              - s3:DeleteObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+            NotResource: !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/*'
+          - Sid: AllowWriterBucketInspection
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SonarBackupRole.Arn
+            Action:
+              - s3:GetBucketVersioning
+            Resource: !GetAtt SonarBackupBucket.Arn
+          - Sid: AllowWriterExactPrefixListing
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SonarBackupRole.Arn
+            Action:
+              - s3:ListBucket
+            Resource: !GetAtt SonarBackupBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - !Sub '${SonarPrefix}/*'
+          - Sid: AllowWriterExactPrefixObjects
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SonarBackupRole.Arn
+            Action:
+              - s3:DeleteObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+            Resource:
+              - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/daily/*'
+              - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/weekly/*'
+          - Sid: AllowRestoreExactPrefixVersions
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SonarRestoreRole.Arn
+            Action:
+              - s3:GetObjectVersion
+            Resource:
+              - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/daily/*'
+              - !Sub '${SonarBackupBucket.Arn}/${SonarPrefix}/weekly/*'
+
+Outputs:
+  BucketName:
+    Description: Private Sonar backup bucket name.
+    Value: !Ref SonarBackupBucket
+  BucketArn:
+    Description: Private Sonar backup bucket ARN.
+    Value: !GetAtt SonarBackupBucket.Arn
+  SonarPrefix:
+    Description: Exact prefix granted to the Sonar backup identities.
+    Value: !Ref SonarPrefix
+  BackupPrincipalArn:
+    Description: Exact Sonar writer role ARN for backup.env.
+    Value: !GetAtt SonarBackupRole.Arn
+  RestorePrincipalArn:
+    Description: Exact read-only Sonar restore role ARN for backup.env.
+    Value: !GetAtt SonarRestoreRole.Arn
+  RolesAnywhereTrustAnchorArn:
+    Description: Exact Sonar-owned trust anchor ARN used by both profiles.
+    Value: !GetAtt SonarRolesAnywhereTrustAnchor.TrustAnchorArn
+  RolesAnywhereCrlId:
+    Description: Exact Sonar-owned certificate revocation list identifier.
+    Value: !Ref SonarRolesAnywhereCertificateRevocationList
+  RolesAnywhereCrlSha256:
+    Description: SHA-256 of the exact Sonar-owned decoded DER CRL.
+    Value: !Ref CertificateRevocationListSha256
+  RolesAnywhereActivationRollbackAlarmArn:
+    Description: >-
+      Precreated static alarm required as the sole activation UPDATE rollback
+      trigger.
+    Value: !GetAtt SonarRolesAnywhereActivationRollbackAlarm.Arn
+  BackupRolesAnywhereProfileArn:
+    Description: Exact single-role Sonar writer profile ARN.
+    Value: !GetAtt SonarBackupRolesAnywhereProfile.ProfileArn
+  RestoreRolesAnywhereProfileArn:
+    Description: Exact single-role Sonar restore profile ARN.
+    Value: !GetAtt SonarRestoreRolesAnywhereProfile.ProfileArn
+  RolesAnywhereActivation:
+    Description: Fail-closed activation state for both Sonar profiles.
+    Value: !Ref RolesAnywhereActivation
+  RolesAnywhereActivationReceiptSha256:
+    Description: Canonical digest of the exact owner-signed activation receipt.
+    Value: !Ref RolesAnywhereActivationReceiptSha256
+  LifecycleActivation:
+    Description: Fail-closed noncurrent-version cleanup state.
+    Value: !Ref LifecycleActivation
+  LifecycleBootstrapReceiptSha256:
+    Description: Canonical digest of the exact owner-signed first-backup receipt.
+    Value: !Ref LifecycleBootstrapReceiptSha256
+  ProtectedMainTemplateSha256:
+    Description: Exact protected-main template byte digest reviewed for this stack.
+    Value: !Ref ProtectedMainTemplateSha256
+  OwnerReceiptKeyId:
+    Description: Exact owner Ed25519 key identifier used for both receipts.
+    Value: !Ref OwnerReceiptKeyId
+  OwnerReceiptPublicKeySha256:
+    Description: DER SPKI SHA-256 of the owner Ed25519 receipt verification key.
+    Value: !Ref OwnerReceiptPublicKeySha256
+  S3Endpoint:
+    Description: Credential-free regional S3 HTTPS endpoint.
+    Value: !Sub 'https://s3.${AWS::Region}.${AWS::URLSuffix}'

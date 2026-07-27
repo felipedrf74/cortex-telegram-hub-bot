@@ -17,6 +17,7 @@ export type ChatCoreV2WriteEscalationReason =
 export interface ChatCoreV2WriteRiskPolicy {
   riskClass: ChatCoreV2WriteRiskClass;
   requires3BCritic: boolean;
+  /** Legacy contract name; now means approved strong reasoning or background review. */
   requires35BOrBackground: boolean;
   requiresConfirmation: boolean;
   requiresReadbackVerification: boolean;
@@ -50,6 +51,7 @@ export function getWriteRiskPolicy(riskClass: ChatCoreV2WriteRiskClass): ChatCor
   return WRITE_RISK_POLICIES[riskClass];
 }
 
+/** Legacy exported name retained for stored/internal contract compatibility. */
 export function requires35BOrBackgroundEscalation(input: {
   riskClass: ChatCoreV2WriteRiskClass;
   escalationReasons?: ChatCoreV2WriteEscalationReason[];
@@ -64,7 +66,7 @@ export function requires35BOrBackgroundEscalation(input: {
  * background lifecycle.
  *
  * Class ladder (highest wins):
- *  - C  (block + 3B critic + 35B/background + human review):
+ *  - C  (block + 3B critic + strong cloud/background + human review):
  *        any `finance` write, any `training` plan write, OR a `restricted`
  *        capability risk. These never auto-execute and never receive an execute
  *        envelope from the action gateway.
@@ -110,7 +112,8 @@ function isPlanWriteCommandType(commandType: string): boolean {
  * Pure escalation-reason classifier (WP-10). Returns the ordered, de-duplicated
  * list of escalation reasons implied by the (commandType, domain, capability)
  * tuple. Used both for telemetry and to decide whether
- * `requires35BOrBackgroundEscalation` fires. Side-effect free.
+ * `requires35BOrBackgroundEscalation` fires. The name is a legacy contract;
+ * no large local model is selected. Side-effect free.
  */
 export function classifyCommandEscalationReasons(
   commandType: string,
@@ -128,7 +131,7 @@ export function classifyCommandEscalationReasons(
 /**
  * Convenience: resolve the full governance policy for a command in one call.
  * Combines the A/B/C class, its base policy, the escalation reasons, and the
- * 35B/background escalation decision. Pure.
+ * strong-reasoning/background escalation decision. Pure.
  */
 export interface ChatCoreV2CommandWriteRiskAssessment {
   riskClass: ChatCoreV2WriteRiskClass;

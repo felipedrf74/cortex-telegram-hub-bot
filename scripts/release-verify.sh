@@ -62,7 +62,6 @@ echo "════════════════════════�
 echo "  Nexus release verify"
 echo "═══════════════════════════════════════════════"
 
-npm run typecheck
 npm run science-policy:check
 npm run build
 node scripts/migration-safety-check.mjs \

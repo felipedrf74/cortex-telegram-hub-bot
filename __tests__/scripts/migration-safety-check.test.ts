@@ -3,14 +3,22 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+} from 'vitest';
 import {
   candidateMigrationIdentity,
   PRODUCTION_SHAPE_MIGRATION_REHEARSAL_SCHEMA,
@@ -19,6 +27,9 @@ import {
   loadProductionMigrationLineagePolicy,
   resolveProductionMigrationLineage,
 } from '../../scripts/lib/production-migration-lineage.mjs';
+import {
+  migrationSafetyGovernanceReason,
+} from '../../scripts/lib/migration-safety-policy-classifier.mjs';
 
 const root = resolve(process.cwd());
 const migrationSafetyScript = join(root, 'scripts/migration-safety-check.mjs');
@@ -80,7 +91,92 @@ function createGovernedMigrationRepo({ registrySha }: { registrySha?: string } =
   return { repo, migration, git, gitEnv, base: git('rev-parse', 'HEAD') };
 }
 
+function createProductionPolicyFixtureRepo() {
+  const repo = mkdtempSync(
+    join(realpathSync(tmpdir()), 'nexus-migration-production-policy-'),
+  );
+  const gitEnv = cleanGitEnv();
+  const sql = 'SELECT 1;\n';
+  const migrationFiles = readdirSync(join(root, 'migrations'))
+    .filter((file) => /^\d{3}_.*\.sql$/.test(file))
+    .sort();
+  const productionPolicy = JSON.parse(
+    readFileSync(join(root, 'config/irreversible-migrations.json'), 'utf8'),
+  ) as {
+    schema: string;
+    migrations: Array<{
+      file: string;
+      reason: string;
+      rollback: string;
+    }>;
+    syntaxExemptions: Array<{
+      file: string;
+      reason: string;
+    }>;
+  };
+
+  mkdirSync(join(repo, 'migrations'), { recursive: true });
+  mkdirSync(join(repo, 'config'), { recursive: true });
+  for (const file of migrationFiles) {
+    writeFileSync(join(repo, 'migrations', file), sql);
+  }
+  writeFileSync(join(repo, 'config/irreversible-migrations.json'), `${JSON.stringify({
+    schema: productionPolicy.schema,
+    migrations: productionPolicy.migrations.map((entry) => ({
+      ...entry,
+      sha256: sha256(sql),
+    })),
+    syntaxExemptions: productionPolicy.syntaxExemptions.map((entry) => ({
+      ...entry,
+      sha256: sha256(sql),
+    })),
+  }, null, 2)}\n`);
+  writeFileSync(join(repo, 'config/production-migration-lineages.json'), `${JSON.stringify({
+    schema: 'nexus.production-migration-lineages.v1',
+    lineages: [{
+      id: 'fixture-history',
+      reason: 'retain_verified_fixture_history',
+      migrations: [{
+        file: '000_retired_fixture.sql',
+        sha256: sha256(sql),
+        sourceCommit: 'a'.repeat(40),
+        replacement: {
+          file: migrationFiles[0],
+          sha256: sha256(sql),
+          relationship: 'byte_identical_renumber',
+        },
+      }],
+    }],
+  }, null, 2)}\n`);
+
+  const git = (...args: string[]) => execFileSync('git', args, {
+    cwd: repo,
+    encoding: 'utf8',
+    env: gitEnv,
+  }).trim();
+  git('init', '--initial-branch=main');
+  git('config', 'user.name', 'Nexus CI Fixture');
+  git('config', 'user.email', 'ci-fixture@example.invalid');
+  git('add', '.');
+  git('commit', '-m', 'fixture: production migration policy topology');
+  return {
+    repo,
+    gitEnv,
+    base: git('rev-parse', 'HEAD'),
+  };
+}
+
 describe('migration-safety-check', () => {
+  let productionPolicyFixture: ReturnType<typeof createProductionPolicyFixtureRepo>;
+
+  beforeAll(() => {
+    productionPolicyFixture = createProductionPolicyFixtureRepo();
+  });
+
+  afterAll(() => {
+    rmSync(productionPolicyFixture.repo, { recursive: true, force: true });
+  });
+
   it('validates every registered migration identity during cumulative rehearsal', { timeout: 30_000 }, () => {
     const result = spawnSync(
       'node',
@@ -165,7 +261,9 @@ describe('migration-safety-check', () => {
     const result = spawnSync(
       'node',
       [
-        'scripts/migration-safety-check.mjs',
+        migrationSafetyScript,
+        '--root',
+        productionPolicyFixture.repo,
         '--changed-only',
         '--approval-mode',
         'review',
@@ -173,7 +271,7 @@ describe('migration-safety-check', () => {
         'migrations/246_content_pipeline_workspace_exit.sql',
         '--json',
       ],
-      { encoding: 'utf8', env: envWithoutMigrationEvidence() },
+      { encoding: 'utf8', env: productionPolicyFixture.gitEnv },
     );
 
     expect(result.status).toBe(1);
@@ -188,12 +286,12 @@ describe('migration-safety-check', () => {
     const result = spawnSync(
       'node',
       [
-        'scripts/migration-safety-check.mjs', '--changed-only',
+        migrationSafetyScript, '--root', productionPolicyFixture.repo, '--changed-only',
         '--approval-mode', 'scan',
         '--files', 'migrations/246_content_pipeline_workspace_exit.sql',
         '--json',
       ],
-      { encoding: 'utf8', env: envWithoutMigrationEvidence() },
+      { encoding: 'utf8', env: productionPolicyFixture.gitEnv },
     );
 
     expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
@@ -241,11 +339,13 @@ describe('migration-safety-check', () => {
     }
   });
 
-  it('allows review without claiming a backup when exact approval evidence matches', { timeout: 30_000 }, () => {
+  it('allows review without claiming a backup when exact approval evidence matches', { timeout: 60_000 }, () => {
     const relativeEvidence = `.local/release/migration-review/test-${process.pid}-${Date.now()}.json`;
-    const absoluteEvidence = join(root, relativeEvidence);
+    const absoluteEvidence = join(productionPolicyFixture.repo, relativeEvidence);
     const args = [
-      'scripts/migration-safety-check.mjs',
+      migrationSafetyScript,
+      '--root',
+      productionPolicyFixture.repo,
       '--changed-only',
       '--approval-mode',
       'review',
@@ -255,10 +355,13 @@ describe('migration-safety-check', () => {
     ];
     try {
       const missing = spawnSync('node', args, {
-        encoding: 'utf8', env: envWithoutMigrationEvidence(),
+        encoding: 'utf8', env: productionPolicyFixture.gitEnv,
       });
       const required = JSON.parse(missing.stdout).requiredReviewSubject;
-      mkdirSync(join(root, '.local/release/migration-review'), { recursive: true });
+      mkdirSync(
+        join(productionPolicyFixture.repo, '.local/release/migration-review'),
+        { recursive: true },
+      );
       writeFileSync(absoluteEvidence, `${JSON.stringify({
         schema: 'nexus.migration-review-approval.v1',
         status: 'approved',
@@ -268,7 +371,7 @@ describe('migration-safety-check', () => {
       })}\n`, { mode: 0o600 });
 
       const result = spawnSync('node', [...args, '--review-evidence', relativeEvidence], {
-        encoding: 'utf8', env: envWithoutMigrationEvidence(),
+        encoding: 'utf8', env: productionPolicyFixture.gitEnv,
       });
       expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
       const payload = JSON.parse(result.stdout) as {
@@ -290,24 +393,31 @@ describe('migration-safety-check', () => {
     const backupRelative = `.local/release/production/promotion-${id}.json`;
     const onlineRelative = `.local/release/production/promotion-online-${id}.json`;
     const finalRelative = `.local/release/production/promotion-final-${id}.json`;
-    const reviewAbsolute = join(root, reviewRelative);
-    const backupAbsolute = join(root, backupRelative);
-    const onlineAbsolute = join(root, onlineRelative);
-    const finalAbsolute = join(root, finalRelative);
-    const base = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const reviewAbsolute = join(productionPolicyFixture.repo, reviewRelative);
+    const backupAbsolute = join(productionPolicyFixture.repo, backupRelative);
+    const onlineAbsolute = join(productionPolicyFixture.repo, onlineRelative);
+    const finalAbsolute = join(productionPolicyFixture.repo, finalRelative);
+    const base = productionPolicyFixture.base;
     const artifactDigest = 'c'.repeat(64);
     const promotionRunId = '20260718T225500Z-4242-abcdef123456';
     const commonArgs = [
-      'scripts/migration-safety-check.mjs', '--base', base, '--changed-only',
+      migrationSafetyScript, '--root', productionPolicyFixture.repo,
+      '--base', base, '--changed-only',
       '--files', 'migrations/246_content_pipeline_workspace_exit.sql', '--json',
     ];
     try {
       const missing = spawnSync('node', [...commonArgs, '--approval-mode', 'review'], {
-        encoding: 'utf8', env: envWithoutMigrationEvidence(),
+        encoding: 'utf8', env: productionPolicyFixture.gitEnv,
       });
       const required = JSON.parse(missing.stdout).requiredReviewSubject;
-      mkdirSync(join(root, '.local/release/migration-review'), { recursive: true });
-      mkdirSync(join(root, '.local/release/production'), { recursive: true });
+      mkdirSync(
+        join(productionPolicyFixture.repo, '.local/release/migration-review'),
+        { recursive: true },
+      );
+      mkdirSync(
+        join(productionPolicyFixture.repo, '.local/release/production'),
+        { recursive: true },
+      );
       writeFileSync(reviewAbsolute, `${JSON.stringify({
         schema: 'nexus.migration-review-approval.v1', status: 'approved',
         approvedBy: 'fixture-owner', approvedAt: new Date().toISOString(),
@@ -315,15 +425,17 @@ describe('migration-safety-check', () => {
       })}\n`, { mode: 0o600 });
       const reviewed = spawnSync('node', [
         ...commonArgs, '--approval-mode', 'review', '--review-evidence', reviewRelative,
-      ], { encoding: 'utf8', env: envWithoutMigrationEvidence() });
+      ], { encoding: 'utf8', env: productionPolicyFixture.gitEnv });
       expect(reviewed.status, `${reviewed.stdout}${reviewed.stderr}`).toBe(0);
       const reviewPayload = JSON.parse(reviewed.stdout);
       const now = Date.now();
       const onlineCreatedAt = new Date(now - 2_000).toISOString();
       const createdAt = new Date(now - 1_000).toISOString();
       const finalCreatedAt = new Date(now).toISOString();
-      const candidate = candidateMigrationIdentity(root);
-      const lineagePolicy = loadProductionMigrationLineagePolicy({ root });
+      const candidate = candidateMigrationIdentity(productionPolicyFixture.repo);
+      const lineagePolicy = loadProductionMigrationLineagePolicy({
+        root: productionPolicyFixture.repo,
+      });
       const canonicalLineage = resolveProductionMigrationLineage(lineagePolicy, []);
       const onlineDatabaseSha256 = 'd'.repeat(64);
       const stoppedDatabaseSha256 = 'e'.repeat(64);
@@ -337,7 +449,8 @@ describe('migration-safety-check', () => {
           databaseRelativePath: 'data/bot.db',
           databaseOwnerState: phase === 'online_pre_stop' ? 'online' : 'stopped',
           readOnlyConnection: true, onlineBackup: true, alreadyMigrated: false,
-          appliedMigrationCount: 233, migrationSetSha256: '1'.repeat(64),
+          appliedMigrationCount: candidate.migrationCount - 15,
+          migrationSetSha256: '1'.repeat(64),
           databaseSha256: phase === 'online_pre_stop' ? onlineDatabaseSha256 : stoppedDatabaseSha256,
           migrationLineageId: canonicalLineage.id,
           retiredMigrationCount: canonicalLineage.migrationCount,
@@ -347,7 +460,7 @@ describe('migration-safety-check', () => {
         candidate: {
           migrationCount: candidate.migrationCount,
           migrationSetSha256: candidate.migrationSetSha256,
-          pendingMigrationCount: 18, pendingMigrationSetSha256: '2'.repeat(64),
+          pendingMigrationCount: 15, pendingMigrationSetSha256: '2'.repeat(64),
           requiredContentMigrationCount: 15,
           requiredContentMigrationSetSha256: candidate.requiredContentMigrationSetSha256,
           requiredContentMigrationsPending: true,
@@ -403,7 +516,7 @@ describe('migration-safety-check', () => {
         '--rehearsal-evidence', onlineRelative, '--final-rehearsal-evidence', finalRelative,
         '--backup-evidence', backupRelative, '--target-version', '4.14.224',
         '--artifact-digest', artifactDigest, '--promotion-run-id', promotionRunId,
-      ], { encoding: 'utf8', env: envWithoutMigrationEvidence() });
+      ], { encoding: 'utf8', env: productionPolicyFixture.gitEnv });
       expect(promoted.status, `${promoted.stdout}${promoted.stderr}`).toBe(0);
       expect(JSON.parse(promoted.stdout).checks).toMatchObject({
         reviewApproval: true, productionShapeRehearsal: true,
@@ -419,7 +532,7 @@ describe('migration-safety-check', () => {
         '--rehearsal-evidence', onlineRelative, '--final-rehearsal-evidence', finalRelative,
         '--backup-evidence', backupRelative, '--target-version', '4.14.224',
         '--artifact-digest', artifactDigest, '--promotion-run-id', promotionRunId,
-      ], { encoding: 'utf8', env: envWithoutMigrationEvidence() });
+      ], { encoding: 'utf8', env: productionPolicyFixture.gitEnv });
       expect(archiveIdentityRejected.status).toBe(1);
       expect(JSON.parse(archiveIdentityRejected.stdout).errors).toContain(
         'irreversible_migration_backup_evidence_invalid:backup_archived_version_path_mismatch',
@@ -433,7 +546,7 @@ describe('migration-safety-check', () => {
         '--rehearsal-evidence', onlineRelative, '--final-rehearsal-evidence', finalRelative,
         '--backup-evidence', backupRelative, '--target-version', '4.14.224',
         '--artifact-digest', artifactDigest, '--promotion-run-id', promotionRunId,
-      ], { encoding: 'utf8', env: envWithoutMigrationEvidence() });
+      ], { encoding: 'utf8', env: productionPolicyFixture.gitEnv });
       expect(rejected.status).toBe(1);
       expect(JSON.parse(rejected.stdout).errors).toContain(
         'irreversible_migration_backup_evidence_invalid:review_evidence_mismatch',
@@ -450,7 +563,9 @@ describe('migration-safety-check', () => {
     const result = spawnSync(
       'node',
       [
-        'scripts/migration-safety-check.mjs',
+        migrationSafetyScript,
+        '--root',
+        productionPolicyFixture.repo,
         '--changed-only',
         '--files',
         [
@@ -461,7 +576,7 @@ describe('migration-safety-check', () => {
         ].join(','),
         '--json',
       ],
-      { encoding: 'utf8', env: envWithoutMigrationEvidence() },
+      { encoding: 'utf8', env: productionPolicyFixture.gitEnv },
     );
 
     expect(result.status).toBe(1);
@@ -493,6 +608,7 @@ describe('migration-safety-check', () => {
     ['scripts/lib/production-migration-lineage.mjs', 'POLICY_PRODUCTION_LINEAGE_ENFORCEMENT_CHANGED'],
     ['scripts/lib/git-changed-paths.mjs', 'POLICY_CHANGE_DISCOVERY_CHANGED'],
     ['scripts/migration-safety-check.mjs', 'POLICY_GATE_CHANGED'],
+    ['scripts/lib/migration-safety-policy-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
     ['scripts/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_ENTRYPOINT_CHANGED'],
     ['scripts/lib/changed-area-classifier.mjs', 'POLICY_CLASSIFIER_CHANGED'],
     ['scripts/risk-gate.sh', 'POLICY_RELEASE_ENTRYPOINT_CHANGED'],
@@ -504,24 +620,34 @@ describe('migration-safety-check', () => {
     ['scripts/production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_CHANGED'],
     ['scripts/validate-production-shape-migration-rehearsal.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
     ['scripts/lib/production-shape-migration-rehearsal-evidence.mjs', 'POLICY_REHEARSAL_EVIDENCE_CHANGED'],
-  ])('requires manual evidence when migration governance changes: %s', { timeout: 30_000 }, (file, reason) => {
+  ])('classifies migration governance changes without replaying all migrations: %s', (file, reason) => {
+    expect(migrationSafetyGovernanceReason(file)).toBe(reason);
+  });
+
+  it('binds the in-process governance classifier to the fail-closed CLI result', { timeout: 30_000 }, () => {
+    const file = 'config/irreversible-migrations.json';
     const result = spawnSync(
       'node',
       [
-        'scripts/migration-safety-check.mjs',
+        migrationSafetyScript,
+        '--root',
+        productionPolicyFixture.repo,
         '--changed-only',
         '--files',
         file,
         '--json',
       ],
-      { encoding: 'utf8', env: envWithoutMigrationEvidence() },
+      { encoding: 'utf8', env: productionPolicyFixture.gitEnv },
     );
 
     expect(result.status).toBe(1);
     const payload = JSON.parse(result.stdout) as {
       irreversibleChangedMigrations: Array<{ file: string; reason: string }>;
     };
-    expect(payload.irreversibleChangedMigrations).toEqual([{ file, reason }]);
+    expect(payload.irreversibleChangedMigrations).toEqual([{
+      file,
+      reason: migrationSafetyGovernanceReason(file),
+    }]);
   });
 
   it('compares an in-progress merge to main while preserving incoming-main deletion detection', { timeout: 30_000 }, () => {

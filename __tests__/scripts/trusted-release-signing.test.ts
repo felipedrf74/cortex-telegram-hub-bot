@@ -852,16 +852,47 @@ describe('trusted release signing boundary', () => {
     }
     fs.writeFileSync(path.join(resultsRoot, 'pytest-results.log'), '1 passed in 0.01s\n');
     fs.writeFileSync(path.join(temp, '.local/release/test-results.json'), JSON.stringify({
-      schema: 'nexus.release-test-results.v2',
+      schema: 'nexus.release-test-results.v3',
       status: 'passed',
       runtimeSha: actualHead,
       completedAt: new Date(trustedReferenceTimeMs - 60_000).toISOString(),
       tier: 'full-sharded',
       selection,
       testPolicyDigest: policyDigest,
+      artifactDigest: 'f'.repeat(64),
+      lockfiles: {
+        packageLockSha256: createHash('sha256').update(fs.readFileSync('package-lock.json')).digest('hex'),
+        pythonRequirementsSha256: createHash('sha256')
+          .update(fs.readFileSync('content-engine/requirements.txt')).digest('hex'),
+      },
       toolchain: { node: 'v22.23.1', python: 'Python 3.12.0' },
       counts: { vitest: files.length, pytest: 1 },
       ci: { runId: '12345', runAttempt: '1' },
+      protectedMainShadow: {
+        mode: 'shadow',
+        comparison: {
+          schema: 'nexus.release-evidence-shadow-comparison.v1',
+          status: 'ineligible',
+          reason: 'protected_main_evidence_missing',
+          reuseScope: 'vitest-and-exact-runtime-bundle-shadow',
+          runtimeSha: actualHead,
+          comparedAt: new Date(trustedReferenceTimeMs - 30_000).toISOString(),
+          mainCi: null,
+          releaseCi: { runId: '12345', runAttempt: '1' },
+          checks: {
+            exactRuntimeSha: false,
+            testPolicyMatch: false,
+            packageLockMatch: false,
+            pythonRequirementsMatch: false,
+            nodeToolchainMatch: false,
+            pythonToolchainMatch: false,
+            mainSelectionCoversRelease: false,
+            protectedJobsPassed: false,
+            runtimeArtifactMatch: false,
+          },
+        },
+        evidence: null,
+      },
     }));
 
     expect(validateTestEvidence({
@@ -874,6 +905,7 @@ describe('trusted release signing boundary', () => {
       trustedPolicy: policy,
       trustedPolicyDigest: policyDigest,
       candidateSourceRoot: process.cwd(),
+      artifactDigest: 'f'.repeat(64),
     })).toMatchObject({ status: 'passed', tier: 'full-sharded' });
   });
 
@@ -918,8 +950,10 @@ describe('trusted release signing boundary', () => {
 
     expect(Number.parseInt(maliciousRunId, 10)).toBe(29407618419);
     expect(/^[0-9]+$/.test(maliciousRunId)).toBe(false);
+    expect(signer).toContain('request ${{ inputs.request_id }}');
     expect(signer).toContain('[[ "$RUNTIME_SHA" =~ ^[0-9a-f]{40}$ ]]');
     expect(signer).toContain('[[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]');
+    expect(signer).toContain('[[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]');
     expect(signer).toContain('[[ -n "$IOS_ATTESTATION_BASE64" && ${#IOS_ATTESTATION_BASE64} -le 32768 ]]');
     expect(signer).toContain('[[ "$IOS_ATTESTATION_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]');
     expect(signer).toContain('[[ -n "$IOS_DISTRIBUTION_ATTESTATION_BASE64" && ${#IOS_DISTRIBUTION_ATTESTATION_BASE64} -le 131072 ]]');

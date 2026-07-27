@@ -197,6 +197,145 @@ describe('OpenAIProvider', () => {
     expect(provider.name).toBe('openai');
   });
 
+  it('maps approved cloud reasoning to a real system message, exact model, schema mode, and no tools', async () => {
+    mockChatResponse('{"answer":"bounded"}');
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['answer'],
+      properties: { answer: { type: 'string' } },
+    };
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'gpt-4o',
+      maxTokens: 777,
+      userId: 306,
+      tenantId: 901,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'json',
+      jsonSchema: schema,
+    });
+
+    expect(result).toEqual({ text: '{"answer":"bounded"}', stopReason: 'stop' });
+    const request = mockCreate.mock.calls[0][0];
+    expect(request).toMatchObject({
+      model: 'gpt-4o',
+      max_tokens: 777,
+      messages: [
+        { role: 'system', content: 'SYSTEM_BOUNDARY_MARKER' },
+        { role: 'user', content: 'USER_BOUNDARY_MARKER' },
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'nexus_cloud_local_reasoning',
+          strict: false,
+          schema,
+        },
+      },
+    });
+    expect(request.tools).toBeUndefined();
+    expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 306,
+        category: 'cloud_local_reasoning',
+        provider: 'openai',
+        model: 'gpt-4o',
+      }),
+    );
+    expect(mockDbRun).toHaveBeenCalledWith(
+      'cloud_local_reasoning',
+      'gpt-4o',
+      901,
+      306,
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+      'resolved',
+      'gpt-4o',
+      'interactive',
+      null,
+      'cloud_local_reasoning',
+      null,
+    );
+  });
+
+  it('supports the same exact-model no-tools boundary for ScriptGen JSON', async () => {
+    mockChatResponse('{"plan":[]}');
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'SCRIPTGEN_SYSTEM_SCHEMA',
+      userPrompt: '{"description":"create a helper"}',
+      model: 'gpt-4o',
+      maxTokens: 3000,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_script_generation_plan',
+      responseFormat: 'json',
+    });
+
+    expect(result.text).toBe('{"plan":[]}');
+    const request = mockCreate.mock.calls[0][0];
+    expect(request).toMatchObject({
+      model: 'gpt-4o',
+      max_tokens: 3000,
+      messages: [
+        { role: 'system', content: 'SCRIPTGEN_SYSTEM_SCHEMA' },
+        { role: 'user', content: '{"description":"create a helper"}' },
+      ],
+      response_format: { type: 'json_object' },
+    });
+    expect(request.tools).toBeUndefined();
+    expect(mockAssertAiBudgetReservationForProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'cloud_script_generation_plan',
+        provider: 'openai',
+        model: 'gpt-4o',
+      }),
+    );
+  });
+
+  it('rejects a non-OpenAI structured-generation model before SDK dispatch', async () => {
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'claude-sonnet-4-6',
+      maxTokens: 256,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'text',
+    })).rejects.toThrow('requires an OpenAI model');
+
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it('supports text mode and fails closed to empty text with a bounded stop reason', async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [],
+      usage: { prompt_tokens: 10, completion_tokens: 0 },
+      model: 'gpt-4o',
+    });
+
+    const result = await provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM_BOUNDARY_MARKER',
+      userPrompt: 'USER_BOUNDARY_MARKER',
+      model: 'gpt-4o',
+      maxTokens: 256,
+      userId: 7,
+      tenantId: 8,
+      category: 'cloud_local_reasoning',
+      responseFormat: 'text',
+    });
+
+    expect(result).toEqual({ text: '', stopReason: 'stop' });
+    expect(mockCreate.mock.calls[0][0]).not.toHaveProperty('response_format');
+  });
+
   // ── classify ──────────────────────────────────────────────────────
 
   describe('classify', () => {

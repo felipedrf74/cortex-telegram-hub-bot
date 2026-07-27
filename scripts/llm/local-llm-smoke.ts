@@ -29,7 +29,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
-const MODEL    = process.env.OLLAMA_MODEL    || 'qwen3.6:35b-a3b-q4_K_M';
+const SMALL_ONLY_MODEL = 'qwen2.5:3b-instruct-q4_K_M';
+const MODEL = process.env.OLLAMA_MODEL || SMALL_ONLY_MODEL;
+if (MODEL !== SMALL_ONLY_MODEL) {
+  throw new Error(`small-only policy rejects OLLAMA_MODEL=${MODEL}`);
+}
 
 interface SmokeCase {
   label: string;
@@ -134,7 +138,7 @@ function buildPlanCase(label: string, task: string): SmokeCase {
       keep_alive: -1,
       // v1.1: bumped num_predict 800→3000 after the first smoke (2026-05-26)
       // showed 5/6 think:true cases truncating before they could emit JSON.
-      options: { num_ctx: 8192, num_predict: 3000, temperature: 0.2 },
+      options: { num_ctx: 4096, num_predict: 3000, temperature: 0.2 },
     },
     validate: (resp) => {
       // Thinking must be SEPARATE from content (in message.thinking or absent
@@ -167,7 +171,7 @@ function buildReasoningCase(label: string, question: string): SmokeCase {
       stream: false,
       keep_alive: -1,
       // v1.1: bumped num_predict 600→2500 — see plan smoke above.
-      options: { num_ctx: 8192, num_predict: 2500, temperature: 0.2 },
+      options: { num_ctx: 4096, num_predict: 2500, temperature: 0.2 },
     },
     validate: (resp) => {
       const content = resp?.message?.content ?? '';
@@ -197,7 +201,7 @@ const CASES: SmokeCase[] = [
 
   buildReasoningCase('reason_1', 'A bat and a ball cost $1.10. The bat costs $1.00 more than the ball. How much does the ball cost?'),
   buildReasoningCase('reason_2', 'If a server has 30 GB RAM and a 24 GB model weight + 2 GB KV cache + 2 GB system overhead, is there enough headroom for a 1 GB request burst?'),
-  buildReasoningCase('reason_3', 'Why does Ollama need OLLAMA_NUM_PARALLEL=1 on CPU-only hardware for a 36B MoE model?'),
+  buildReasoningCase('reason_3', 'Why should a CPU-only local inference service use a bounded queue and one loaded model?'),
 ];
 
 async function runCase(c: SmokeCase) {

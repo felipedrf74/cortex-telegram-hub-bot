@@ -9,6 +9,7 @@ import {
   FULL_RELEASE_TIER,
   RELEASE_RESULTS_SCHEMA,
   RELEASE_SELECTION_SCHEMA,
+  validateReusedReleaseToolchain,
   validateNightlyEvidence,
   validateReleaseSelection,
 } from '../../scripts/release-test-evidence.mjs';
@@ -47,6 +48,7 @@ function installIrreversibleMigrationPolicyFixture(repo: string): void {
   for (const relative of [
     'scripts/lib/git-changed-paths.mjs',
     'scripts/lib/irreversible-migration-policy.mjs',
+    'scripts/lib/migration-safety-policy-classifier.mjs',
     policyRelative,
     ...policy.migrations.map((entry) => entry.file),
     ...policy.syntaxExemptions.map((entry) => entry.file),
@@ -58,6 +60,29 @@ function installIrreversibleMigrationPolicyFixture(repo: string): void {
 }
 
 const headSha = git(process.cwd(), 'rev-parse', 'HEAD');
+
+describe('protected-main reuse toolchain parity', () => {
+  const mismatchedNodeVersion = process.version === 'v0.0.0' ? 'v0.0.1' : 'v0.0.0';
+  const evidence = {
+    toolchain: {
+      node: process.version,
+      python: 'Python 3.12.11',
+    },
+  };
+
+  it('requires the current RC Node and Python toolchains to match exactly', () => {
+    expect(validateReusedReleaseToolchain(evidence, {
+      pythonVersion: 'Python 3.12.11',
+    })).toEqual(evidence.toolchain);
+    expect(() => validateReusedReleaseToolchain(evidence, {
+      nodeVersion: mismatchedNodeVersion,
+      pythonVersion: 'Python 3.12.11',
+    })).toThrow('toolchain does not match');
+    expect(() => validateReusedReleaseToolchain(evidence, {
+      pythonVersion: 'Python 3.12.12',
+    })).toThrow('toolchain does not match');
+  });
+});
 const policyBody = fs.readFileSync('config/test-policy.json');
 const policyDigest = createHash('sha256').update(policyBody).digest('hex');
 const testFile = '__tests__/scripts/filter-existing-vitest-globs.test.ts';
@@ -233,7 +258,7 @@ describe('release test evidence policy', () => {
     expect(result.stderr).toContain('does not cover every deterministic Vitest file');
   });
 
-  it('writes exact v2 selected evidence without a raw full-suite count floor', () => {
+  it('writes exact v3 selected evidence without a raw full-suite count floor', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-selected-evidence-'));
     roots.push(temp);
     const resultDir = path.join(temp, 'results');
@@ -256,6 +281,7 @@ describe('release test evidence policy', () => {
       '--vitest-results-dir', resultDir,
       '--pytest-log', pytestPath,
       '--python-version', 'Python 3.12',
+      '--artifact-digest', 'f'.repeat(64),
       '--run-id', '12345',
       '--run-attempt', '1',
       '--out', outputPath,
@@ -267,11 +293,66 @@ describe('release test evidence policy', () => {
       tier: DEFAULT_RELEASE_TIER,
       testPolicyDigest: policyDigest,
       counts: { vitest: 1, pytest: 1 },
+      artifactDigest: 'f'.repeat(64),
+      lockfiles: {
+        packageLockSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        pythonRequirementsSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+      protectedMainShadow: null,
       selection: { fullRequired: false, fullRequiredReason: null },
     });
   });
 
-  it('keeps missing qualifying nightly evidence fail-closed to full', { timeout: 30_000 }, () => {
+  it('runs selected RC tests with one runner-owned migrated template and removes it', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-selected-runner-'));
+    roots.push(temp);
+    fs.chmodSync(temp, 0o700);
+    const selectedTestFile = '__tests__/services/account-lockout.test.ts';
+    const selected = selection();
+    selected.selected = {
+      ...selected.selected,
+      changed: [selectedTestFile],
+      files: [selectedTestFile],
+      filesDigest: createHash('sha256')
+        .update(JSON.stringify([selectedTestFile]))
+        .digest('hex'),
+    };
+    const selectionPath = path.join(temp, 'selection.json');
+    const outputPath = path.join(temp, 'vitest-results-selected.json');
+    fs.writeFileSync(selectionPath, `${JSON.stringify(selected, null, 2)}\n`);
+
+    const result = spawnSync(process.execPath, [
+      'scripts/release-test-evidence.mjs',
+      'run-selected',
+      '--selection',
+      selectionPath,
+      '--output',
+      outputPath,
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: cleanGitEnv({
+        TMPDIR: `${temp}${path.sep}`,
+        NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_PATH: '/ambient/template.sqlite',
+        NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_RECEIPT_PATH: '/ambient/template-receipt.json',
+        NEXUS_MIGRATED_TEST_DATABASE_TEMPLATE_SHA256: '0'.repeat(64),
+        NEXUS_MIGRATED_TEST_DATABASE_MIGRATION_SHA256: '1'.repeat(64),
+      }),
+      timeout: 30_000,
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(fs.readFileSync(outputPath, 'utf8'))).toMatchObject({
+      success: true,
+      numFailedTests: 0,
+    });
+    expect(
+      fs.readdirSync(temp)
+        .filter((entry) => entry.startsWith('nexus-migrated-test-database-')),
+    ).toEqual([]);
+  });
+
+  it('keeps missing qualifying nightly evidence fail-closed to full', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-plan-'));
     roots.push(temp);
     const outputPath = path.join(temp, 'selection.json');
@@ -292,6 +373,62 @@ describe('release test evidence policy', () => {
     });
   });
 
+  it('probes downloaded nightlies with the canonical validator before more downloads', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-nightly-probe-'));
+    roots.push(temp);
+    const policyDigest = createHash('sha256')
+      .update(fs.readFileSync('config/test-policy.json'))
+      .digest('hex');
+    fs.writeFileSync(path.join(temp, 'nightly-full-suite-evidence.json'), `${JSON.stringify({
+      schema: 'nexus.nightly-full-suite-evidence.v1',
+      status: 'passed',
+      tier: FULL_RELEASE_TIER,
+      headSha,
+      completedAt: new Date().toISOString(),
+      testPolicyDigest: policyDigest,
+      counts: { vitest: 1 },
+      testFiles: { count: 1, digest: 'a'.repeat(64) },
+      ci: {
+        runId: '54321',
+        runAttempt: '1',
+        workflow: 'Nightly — Full regression + coverage',
+      },
+    }, null, 2)}\n`);
+
+    const usable = spawnSync(process.execPath, [
+      'scripts/release-test-evidence.mjs',
+      'probe-nightly',
+      '--head',
+      headSha,
+      '--nightly-dir',
+      temp,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(usable.status, usable.stderr).toBe(0);
+    expect(JSON.parse(usable.stdout)).toMatchObject({
+      usable: true,
+      runId: '54321',
+      staleEvidencePresent: false,
+    });
+
+    fs.writeFileSync(
+      path.join(temp, 'nightly-full-suite-evidence.json'),
+      '{"schema":"untrusted"}\n',
+    );
+    const missing = spawnSync(process.execPath, [
+      'scripts/release-test-evidence.mjs',
+      'probe-nightly',
+      '--head',
+      headSha,
+      '--nightly-dir',
+      temp,
+    ], { cwd: process.cwd(), encoding: 'utf8', env: cleanGitEnv() });
+    expect(missing.status, missing.stderr).toBe(3);
+    expect(JSON.parse(missing.stdout)).toMatchObject({
+      usable: false,
+      runId: null,
+    });
+  });
+
   it('parses CLI --force-full false as false when qualifying nightly evidence exists', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-release-plan-cli-'));
     roots.push(temp);
@@ -300,6 +437,7 @@ describe('release test evidence policy', () => {
     }
     for (const relative of [
       'scripts/release-test-evidence.mjs',
+      'scripts/protected-main-ci-evidence.mjs',
       'scripts/select-vitest-files.mjs',
       'scripts/changed-area-classifier.sh',
       'scripts/changed-area-classifier.mjs',
@@ -368,6 +506,7 @@ describe('release test evidence policy', () => {
     }
     for (const relative of [
       'scripts/release-test-evidence.mjs',
+      'scripts/protected-main-ci-evidence.mjs',
       'scripts/select-vitest-files.mjs',
       'scripts/changed-area-classifier.sh',
       'scripts/changed-area-classifier.mjs',

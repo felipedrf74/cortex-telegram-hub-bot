@@ -33,6 +33,29 @@ SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
 STAGING_DIR="${STAGING_PATH:-/home/dominguez/telegram-hub-bot-staging}"
 VERBOSE=false
 
+# Every remote check remains sequential, but they reuse one authenticated SSH
+# transport instead of paying a new handshake for each endpoint and database
+# probe. The control socket lives in a private, short-path directory and is
+# explicitly closed when the smoke command exits.
+SSH_CONTROL_DIR="$(mktemp -d /tmp/nexus-staging-ssh.XXXXXX)"
+chmod 700 "$SSH_CONTROL_DIR"
+SSH_CONTROL_PATH="$SSH_CONTROL_DIR/control"
+
+smoke_ssh() {
+  command ssh \
+    -o ControlMaster=auto \
+    -o ControlPersist=30 \
+    -o "ControlPath=$SSH_CONTROL_PATH" \
+    "$@"
+}
+
+cleanup_smoke_transport() {
+  command ssh -o "ControlPath=$SSH_CONTROL_PATH" -O exit "$SERVER" >/dev/null 2>&1 || true
+  rm -f "$SSH_CONTROL_PATH" 2>/dev/null || true
+  rmdir "$SSH_CONTROL_DIR" 2>/dev/null || true
+}
+trap cleanup_smoke_transport EXIT
+
 if [ "${1:-}" = "-v" ]; then
   VERBOSE=true
 fi
@@ -74,11 +97,11 @@ evidence_record() {
 # signed ps_ sessions, in which case the legacy PORTAL_TOKEN must not be used.
 # Tokens are read/minted only inside the remote shell and passed to curl via a
 # 0600 header file so they never appear in local ssh or remote curl argv.
-PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
+PORTAL_REQUIRE_SESSION_AUTH=$(smoke_ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
 
 portal_auth_curl() {
   local url="$1"
-  ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PORTAL_REQUIRE_SESSION_AUTH" "$url" <<'REMOTE_PORTAL_CURL'
+  smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" "$PORTAL_REQUIRE_SESSION_AUTH" "$url" <<'REMOTE_PORTAL_CURL'
 set -e
 STAGING_DIR="$1"
 PORTAL_REQUIRE_SESSION_AUTH="$2"
@@ -105,6 +128,33 @@ curl -sf -H @"$HEADER_FILE" "$URL" 2>/dev/null
 REMOTE_PORTAL_CURL
 }
 
+# Repeated field assertions for the same endpoint share one coherent response.
+# This keeps every assertion and evidence record intact while avoiding repeated
+# SSH execution and repeated staging-session minting for /api/snapshot and the
+# cost dashboard.
+ENDPOINT_CACHE_URLS=()
+ENDPOINT_CACHE_RESULTS=()
+ENDPOINT_RESULT=""
+
+fetch_endpoint_once() {
+  local url="$1"
+  local index
+  for index in "${!ENDPOINT_CACHE_URLS[@]}"; do
+    if [ "${ENDPOINT_CACHE_URLS[$index]}" = "$url" ]; then
+      ENDPOINT_RESULT="${ENDPOINT_CACHE_RESULTS[$index]}"
+      return
+    fi
+  done
+
+  if [[ "$url" =~ /health ]]; then
+    ENDPOINT_RESULT=$(smoke_ssh "$SERVER" "curl -sf '$url' 2>/dev/null" || echo "__CURL_FAILED__")
+  else
+    ENDPOINT_RESULT=$(portal_auth_curl "$url" || echo "__CURL_FAILED__")
+  fi
+  ENDPOINT_CACHE_URLS+=("$url")
+  ENDPOINT_CACHE_RESULTS+=("$ENDPOINT_RESULT")
+}
+
 # test_endpoint NAME URL EXPECTED_FIELD  → curls URL, JSON-parses, asserts
 # the named field exists and is non-null. Auth header is added unless URL
 # includes /health.
@@ -115,11 +165,8 @@ test_endpoint() {
 
   # Run on the server because staging is localhost-only
   local result
-  if [[ "$url" =~ /health ]]; then
-    result=$(ssh "$SERVER" "curl -sf '$url' 2>/dev/null" || echo "__CURL_FAILED__")
-  else
-    result=$(portal_auth_curl "$url" || echo "__CURL_FAILED__")
-  fi
+  fetch_endpoint_once "$url"
+  result="$ENDPOINT_RESULT"
 
   if [ "$result" = "__CURL_FAILED__" ] || [ -z "$result" ]; then
     echo "  ❌ $name — curl failed (URL not responding)"
@@ -202,14 +249,75 @@ test_endpoint "provider-stats.providers"     "http://localhost:8201/api/provider
 #      /api/v1 uses, so a future drift on any route shows up here.
 echo ""
 echo "📱 iOS-surface contract smoke"
+IOS_RESPONSE_CACHE_KEYS=()
+IOS_RESPONSE_CACHE_VALUES=()
+IOS_HTTP_CODE="000"
+IOS_HTTP_BODY=""
+
+fetch_ios_remote_response() {
+  smoke_ssh "$SERVER" bash -s -- "$1" "$2" <<'REMOTE_IOS_CURL'
+set -euo pipefail
+method="$1"
+url="$2"
+case "$method" in GET|POST) ;; *) exit 64 ;; esac
+case "$url" in http://localhost:8201/*) ;; *) exit 64 ;; esac
+body_file="$(mktemp /tmp/nexus-staging-smoke.XXXXXX)"
+trap 'rm -f "$body_file"' EXIT
+curl_args=(-sS --connect-timeout 2 --max-time 10 -o "$body_file" -w '%{http_code}')
+if [ "$method" = "POST" ]; then
+  curl_args+=(-X POST -H 'Content-Type: application/json' -d '{}')
+fi
+if ! http_code="$(curl "${curl_args[@]}" "$url" 2>/dev/null)"; then
+  http_code="000"
+fi
+case "$http_code" in
+  [0-9][0-9][0-9]) ;;
+  *) http_code="000" ;;
+esac
+body_size="$(wc -c < "$body_file" | tr -d ' ')"
+[ "$body_size" -le 1048576 ] || exit 65
+printf '%s\t' "$http_code"
+base64 -w 0 "$body_file"
+printf '\n'
+REMOTE_IOS_CURL
+}
+
+fetch_ios_response_once() {
+  local method="$1"
+  local url="$2"
+  local cache_key="$method $url"
+  local index
+  local capture=""
+  for index in "${!IOS_RESPONSE_CACHE_KEYS[@]}"; do
+    if [ "${IOS_RESPONSE_CACHE_KEYS[$index]}" = "$cache_key" ]; then
+      capture="${IOS_RESPONSE_CACHE_VALUES[$index]}"
+      break
+    fi
+  done
+  if [ -z "$capture" ]; then
+    capture="$(fetch_ios_remote_response "$method" "$url")" || capture=$'000\t'
+    IOS_RESPONSE_CACHE_KEYS+=("$cache_key")
+    IOS_RESPONSE_CACHE_VALUES+=("$capture")
+  fi
+  IOS_HTTP_CODE="${capture%%$'\t'*}"
+  local body_base64="${capture#*$'\t'}"
+  IOS_HTTP_BODY="$(printf '%s' "$body_base64" | node -e '
+    let body = "";
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      try { process.stdout.write(Buffer.from(body.trim(), "base64")); }
+      catch { process.exitCode = 1; }
+    });
+  ' 2>/dev/null || true)"
+}
+
 test_ios_401() {
   local name="$1"
   local url="$2"
   # No Authorization header — we EXPECT a 401
-  local http_code
-  http_code=$(ssh "$SERVER" "curl -s -o /tmp/_smoke_body -w '%{http_code}' '$url' 2>/dev/null" || echo "000")
-  local body
-  body=$(ssh "$SERVER" "cat /tmp/_smoke_body 2>/dev/null" || echo "")
+  fetch_ios_response_once GET "$url"
+  local http_code="$IOS_HTTP_CODE"
+  local body="$IOS_HTTP_BODY"
 
   if [ "$http_code" != "401" ]; then
     echo "  ❌ $name — expected 401, got $http_code"
@@ -265,10 +373,9 @@ test_ios_401 "iOS /api/v1/plan/today"    "http://localhost:8201/api/v1/plan/toda
 # 200-leaking-data".
 test_ios_chat_route_mounted() {
   local url="http://localhost:8201/api/v1/chat/message"
-  local http_code
-  http_code=$(ssh "$SERVER" "curl -s -o /tmp/_smoke_chat_body -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' '$url' 2>/dev/null" || echo "000")
-  local body
-  body=$(ssh "$SERVER" "cat /tmp/_smoke_chat_body 2>/dev/null" || echo "")
+  fetch_ios_response_once POST "$url"
+  local http_code="$IOS_HTTP_CODE"
+  local body="$IOS_HTTP_BODY"
 
   if [ "$http_code" = "401" ]; then
     local shape
@@ -314,7 +421,7 @@ test_ios_chat_route_mounted
 
 echo ""
 echo "🏃 5/6 — Process state via PM2"
-PM2_STATUS=$(ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/null | /usr/bin/node -e \"
+PM2_STATUS=$(smoke_ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/null | /usr/bin/node -e \"
   let body = '';
   process.stdin.on('data', c => body += c);
   process.stdin.on('end', () => {
@@ -378,13 +485,14 @@ echo ""
 echo "🏋️  Training plan preview E2E (isolated fixture seed, preview API only)"
 TRAINING_E2E_ENABLED="${NEXUS_SMOKE_TRAINING_E2E:-1}"
 if [ "$TRAINING_E2E_ENABLED" = "0" ]; then
-  echo "  ⚠️  Training plan preview E2E skipped by NEXUS_SMOKE_TRAINING_E2E=0"
-  PASS=$((PASS + 1))
-  evidence_record "training plan preview e2e" "passed" "skipped_by_kill_switch"
+  echo "  ❌ Training plan preview E2E disabled by NEXUS_SMOKE_TRAINING_E2E=0"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("training plan preview e2e disabled")
+  evidence_record "training plan preview e2e" "failed" "disabled_by_kill_switch"
 else
   TRAINING_SMOKE_RESULT=""
   TRAINING_SMOKE_RC=0
-  TRAINING_SMOKE_RESULT=$(ssh "$SERVER" "
+  TRAINING_SMOKE_RESULT=$(smoke_ssh "$SERVER" "
     set -e
     cd $STAGING_DIR
     set -a
@@ -614,17 +722,19 @@ echo "🌐 Locale-fidelity chat smoke (es-419 + pt-BR canned turns)"
 # 'unknown' detections (short acks like "OK") — it only fails the smoke when
 # the detector confidently names a language that contradicts the prompt
 # locale (the recurring es-419 → Portuguese leak). Uses an isolated staging
-# fixture user like the training preview E2E. Disable with
-# NEXUS_SMOKE_LOCALE_FIDELITY=0.
+# fixture user like the training preview E2E. The signed release gate treats
+# NEXUS_SMOKE_LOCALE_FIDELITY=0 as a failure rather than accepting missing
+# locale evidence.
 LOCALE_FIDELITY_ENABLED="${NEXUS_SMOKE_LOCALE_FIDELITY:-1}"
 if [ "$LOCALE_FIDELITY_ENABLED" = "0" ]; then
-  echo "  ⚠️  Locale-fidelity chat smoke skipped by NEXUS_SMOKE_LOCALE_FIDELITY=0"
-  PASS=$((PASS + 1))
-  evidence_record "locale fidelity chat smoke" "passed" "skipped_by_kill_switch"
+  echo "  ❌ Locale-fidelity chat smoke disabled by NEXUS_SMOKE_LOCALE_FIDELITY=0"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("locale fidelity chat smoke disabled")
+  evidence_record "locale fidelity chat smoke" "failed" "disabled_by_kill_switch"
 else
   LOCALE_SMOKE_RESULT=""
   LOCALE_SMOKE_RC=0
-  LOCALE_SMOKE_RESULT=$(ssh "$SERVER" "
+  LOCALE_SMOKE_RESULT=$(smoke_ssh "$SERVER" "
     set -e
     cd $STAGING_DIR
     set -a
@@ -776,14 +886,20 @@ fi
 
 echo ""
 echo "🗃  6/6 — DB integrity"
-DB_CHECK=$(ssh "$SERVER" "
-  cd /home/dominguez/telegram-hub-bot-staging
-  /usr/bin/node -e \"
-    const db = require('better-sqlite3')('data/bot.db', { readonly: true });
-    const r = db.pragma('integrity_check');
-    console.log(JSON.stringify(r));
-  \"
-" 2>&1 || echo "FAILED")
+DB_CHECK_RC=0
+DB_CHECK=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" 2>&1 <<'REMOTE_DB_CHECK'
+set -euo pipefail
+cd "$1"
+exec /usr/bin/node <<'NODE'
+const db = require('better-sqlite3')('data/bot.db', { readonly: true });
+const result = db.pragma('integrity_check');
+console.log(JSON.stringify(result));
+NODE
+REMOTE_DB_CHECK
+) || DB_CHECK_RC=$?
+if [ "$DB_CHECK_RC" -ne 0 ]; then
+  DB_CHECK="FAILED (staging DB integrity transport status $DB_CHECK_RC)"
+fi
 if echo "$DB_CHECK" | grep -q '"integrity_check":"ok"'; then
   echo "  ✅ Staging DB integrity_check: ok"
   PASS=$((PASS + 1))
@@ -798,8 +914,9 @@ fi
 # ── Classifier-driven domain appendation (release-pipeline-risk-based-
 # optimization, 2026-05-03):
 # Past this point, the 17 generic checks have all run. We additionally
-# probe for domain-specific risk based on what the changed-area
-# classifier says about the diff currently on staging vs origin/main.
+# probe for domain-specific risk based on what the changed-area classifier says
+# about the signed RC selection base versus the exact staging SHA. Standalone
+# smoke runs retain origin/main as a diagnostic fallback.
 # This turns staging-smoke from "always 17 checks" into "17 generic +
 # (classifier-driven) domain checks" without changing the generic
 # pass/fail contract above.
@@ -819,41 +936,109 @@ fi
 #
 # Disable with NEXUS_SMOKE_DOMAIN_PROBES=0.
 DOMAIN_PROBES_ENABLED="${NEXUS_SMOKE_DOMAIN_PROBES:-1}"
+if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
+  [ "$DOMAIN_PROBES_ENABLED" = "1" ] || {
+    echo "  ❌ signed release domain probes cannot be disabled"
+    exit 1
+  }
+  [ -x "$LOCAL_DIR/scripts/changed-area-classifier.sh" ] || {
+    echo "  ❌ signed release changed-area classifier is missing or not executable"
+    exit 1
+  }
+fi
 if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-classifier.sh" ]; then
   echo ""
   echo "🎯 Bonus — classifier-driven domain probes"
 
-  CLASSIFIER_JSON="$("$LOCAL_DIR/scripts/changed-area-classifier.sh" --base origin/main --format json 2>/dev/null || true)"
-  if [ -n "$CLASSIFIER_JSON" ]; then
-    has_flag() {
-      printf '%s' "$CLASSIFIER_JSON" \
-        | NODE_NO_WARNINGS=1 node -e "let b='';process.stdin.on('data',c=>b+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(b);process.stdout.write(String(!!j.flags['$1']))}catch(_){process.stdout.write('false')}})" 2>/dev/null
+  CLASSIFIER_BASE_SHA="${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-origin/main}"
+  if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
+    [[ "$CLASSIFIER_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] \
+      && git -C "$LOCAL_DIR" merge-base --is-ancestor "$CLASSIFIER_BASE_SHA" HEAD || {
+      echo "  ❌ signed release classifier base is invalid or not an ancestor"
+      exit 1
     }
+  fi
+  CLASSIFIER_STATUS=0
+  CLASSIFIER_JSON="$("$LOCAL_DIR/scripts/changed-area-classifier.sh" \
+    --base "$CLASSIFIER_BASE_SHA" --format json 2>/dev/null)" || CLASSIFIER_STATUS=$?
+  if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
+    CLASSIFIER_HEAD="$(git -C "$LOCAL_DIR" rev-parse HEAD)"
+    if [ "$CLASSIFIER_STATUS" -ne 0 ] || [ -z "$CLASSIFIER_JSON" ] \
+      || ! printf '%s' "$CLASSIFIER_JSON" | node -e '
+        let body = "";
+        process.stdin.on("data", (chunk) => { body += chunk; });
+        process.stdin.on("end", () => {
+          try {
+            const value = JSON.parse(body);
+            const valid = value?.baseRef === process.argv[1]
+              && value?.head === process.argv[2]
+              && value?.flags && typeof value.flags === "object"
+              && !Array.isArray(value.flags)
+              && Array.isArray(value?.stagingSmoke?.domains);
+            process.exit(valid ? 0 : 1);
+          } catch {
+            process.exit(1);
+          }
+        });
+      ' "$CLASSIFIER_BASE_SHA" "$CLASSIFIER_HEAD"; then
+      echo "  ❌ signed release changed-area classification failed or drifted"
+      exit 1
+    fi
+  fi
+  if [ -n "$CLASSIFIER_JSON" ]; then
+    FLAGS_STATUS=0
+    FLAGS_TSV="$(printf '%s' "$CLASSIFIER_JSON" | NODE_NO_WARNINGS=1 node -e '
+      let body = "";
+      process.stdin.on("data", (chunk) => { body += chunk; });
+      process.stdin.on("end", () => {
+        const value = JSON.parse(body);
+        const names = [
+          "training", "coachKernel", "calendar", "cooking",
+          "content", "secretary", "migration",
+        ];
+        process.stdout.write(names.map((name) => String(value.flags?.[name] === true)).join("\t"));
+      });
+    ' 2>/dev/null)" || FLAGS_STATUS=$?
+    if [ "$FLAGS_STATUS" -ne 0 ]; then
+      if [ -n "${NEXUS_SMOKE_CLASSIFIER_BASE_SHA:-}" ]; then
+        echo "  ❌ signed release classifier flags could not be parsed"
+        exit 1
+      fi
+      echo "  ⚠️ classifier flags could not be parsed — skipping standalone domain probes"
+      FLAGS_TSV="false	false	false	false	false	false	false"
+    fi
+    IFS=$'\t' read -r TRAINING_FLAG COACH_FLAG CALENDAR_FLAG COOKING_FLAG \
+      CONTENT_FLAG SECRETARY_FLAG MIGRATION_FLAG <<<"$FLAGS_TSV"
 
-    if [ "$(has_flag training)" = "true" ]; then
+    if [ "$TRAINING_FLAG" = "true" ]; then
       test_ios_401 "domain training /api/v1/training/today" "http://localhost:8201/api/v1/training/today"
     fi
-    if [ "$(has_flag coachKernel)" = "true" ]; then
+    if [ "$COACH_FLAG" = "true" ]; then
       test_ios_401 "domain coach /api/v1/training/coach/briefing" "http://localhost:8201/api/v1/training/coach/briefing"
     fi
-    if [ "$(has_flag calendar)" = "true" ]; then
+    if [ "$CALENDAR_FLAG" = "true" ]; then
       test_ios_401 "domain calendar /api/v1/training/calendar" "http://localhost:8201/api/v1/training/calendar"
     fi
-    if [ "$(has_flag cooking)" = "true" ]; then
+    if [ "$COOKING_FLAG" = "true" ]; then
       test_ios_401 "domain cooking /api/v1/cooking/recipes" "http://localhost:8201/api/v1/cooking/recipes"
     fi
-    if [ "$(has_flag content)" = "true" ]; then
+    if [ "$CONTENT_FLAG" = "true" ]; then
       test_ios_401 "domain content /api/v1/content/ideas" "http://localhost:8201/api/v1/content/ideas"
     fi
-    if [ "$(has_flag secretary)" = "true" ]; then
+    if [ "$SECRETARY_FLAG" = "true" ]; then
       test_ios_401 "domain secretary /api/v1/plan/today" "http://localhost:8201/api/v1/plan/today"
     fi
-    if [ "$(has_flag migration)" = "true" ]; then
-      MIG_COUNT=$(ssh "$SERVER" "cd /home/dominguez/telegram-hub-bot-staging && /usr/bin/node -e \"
-        const db = require('better-sqlite3')('data/bot.db', { readonly: true });
-        const r = db.prepare('SELECT COUNT(*) AS c FROM _migrations').get();
-        console.log(r.c);
-      \"" 2>&1 || echo "ERR")
+    if [ "$MIGRATION_FLAG" = "true" ]; then
+      MIG_COUNT=$(smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" 2>&1 <<'REMOTE_MIGRATION_COUNT'
+set -euo pipefail
+cd "$1"
+exec /usr/bin/node <<'NODE'
+const db = require('better-sqlite3')('data/bot.db', { readonly: true });
+const result = db.prepare('SELECT COUNT(*) AS c FROM _migrations').get();
+console.log(result.c);
+NODE
+REMOTE_MIGRATION_COUNT
+) || MIG_COUNT="ERR"
       if [[ "$MIG_COUNT" =~ ^[0-9]+$ ]] && [ "$MIG_COUNT" -gt 0 ]; then
         echo "  ✅ migrations applied — count=$MIG_COUNT"
         PASS=$((PASS + 1))
@@ -867,11 +1052,11 @@ if [ "$DOMAIN_PROBES_ENABLED" = "1" ] && [ -x "$LOCAL_DIR/scripts/changed-area-c
     fi
 
     # If no domain flags were active, say so explicitly.
-    if [ "$(has_flag training)$(has_flag coachKernel)$(has_flag calendar)$(has_flag cooking)$(has_flag content)$(has_flag secretary)$(has_flag migration)" = "falsefalsefalsefalsefalsefalsefalse" ]; then
+    if [ "$FLAGS_TSV" = $'false\tfalse\tfalse\tfalse\tfalse\tfalse\tfalse' ]; then
       echo "  ℹ️ No domain probes triggered by current diff (docs-only / scripts-only)"
     fi
   else
-    echo "  ⚠️ classifier returned empty output — skipping domain probes"
+    echo "  ⚠️ classifier returned empty output — skipping standalone domain probes"
   fi
 fi
 
@@ -949,6 +1134,53 @@ else
   echo "🛡  Cloudflare edge contract — skipped (set NEXUS_SMOKE_EDGE_VERIFY=1 to enable)"
   echo "    Enable after the WAF allowlist rule is configured in the Cloudflare dashboard."
   echo "    See: docs/runbooks/cloudflared-tunnel.md -> Edge Protection And AI Crawler Policy"
+fi
+
+# The exact-artifact release path runs the Ollama policy smoke here, inside the
+# existing staging gate. This is deliberately sequential: no extra workflow,
+# shard, worker, or release lane is introduced. The governed inventory phase
+# accepts only the reviewed pre-cleanup four-tag set or the post-cleanup sole
+# retained 3B tag, so releases remain possible on either side of the one-time
+# owner-authorized deletion.
+echo ""
+echo "🦙 Ollama routing, inventory, and bounded-runtime policy"
+OLLAMA_SMOKE_RESULT=""
+OLLAMA_SMOKE_RC=0
+run_ollama_release_smoke() {
+smoke_ssh "$SERVER" bash -s -- "$STAGING_DIR" <<'REMOTE_OLLAMA_SMOKE'
+set -euo pipefail
+release_dir="$1"
+case "$release_dir" in /*) ;; *) echo "release directory must be absolute" >&2; exit 64 ;; esac
+[ "$release_dir" != / ] && [ -d "$release_dir" ] && [ ! -L "$release_dir" ] || {
+  echo "release directory is missing, unsafe, or a symlink" >&2
+  exit 1
+}
+smoke_script="$release_dir/scripts/staging-smoke-ollama.sh"
+[ -f "$smoke_script" ] && [ ! -L "$smoke_script" ] || {
+  echo "exact-release Ollama smoke is missing or a symlink" >&2
+  exit 1
+}
+cd "$release_dir"
+exec env \
+  OLLAMA_INVENTORY_PHASE=governed \
+  NEXUS_HUB_BASE_URL=http://127.0.0.1:8201 \
+  PM2_APP_NAME=nexus-hub-staging \
+  PM2_BIN=/home/dominguez/.npm-global/bin/pm2 \
+  /usr/bin/bash "$smoke_script"
+REMOTE_OLLAMA_SMOKE
+}
+OLLAMA_SMOKE_RESULT=$(run_ollama_release_smoke) || OLLAMA_SMOKE_RC=$?
+OLLAMA_SMOKE_DETAIL="$(printf '%s' "$OLLAMA_SMOKE_RESULT" | tail -c 1000 | tr '\n' '; ')"
+if [ "$OLLAMA_SMOKE_RC" -eq 0 ]; then
+  echo "  ✅ Ollama release policy — exact staging release passed"
+  PASS=$((PASS + 1))
+  evidence_record "Ollama release policy" "passed" "$OLLAMA_SMOKE_DETAIL"
+else
+  echo "  ❌ Ollama release policy — exact staging release failed"
+  FAIL=$((FAIL + 1))
+  FAILED_TESTS+=("Ollama release policy")
+  evidence_record "Ollama release policy" "failed" "$OLLAMA_SMOKE_DETAIL"
+  [ "$VERBOSE" = true ] && printf '     Detail: %s\n' "$OLLAMA_SMOKE_RESULT"
 fi
 
 # ── Smoke-evidence JSON ───────────────────────────────

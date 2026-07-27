@@ -28,9 +28,8 @@ vi.mock('../../src/config', () => ({
     ollama: {
       enabled: true,
       baseUrl: 'http://127.0.0.1:11434',
-      model: 'qwen3.6:35b-a3b-q4_K_M',
-      classifierModel: 'qwen3.6:35b-a3b-q4_K_M',
-      operationalRollbackModel: 'qwen3.6:27b-q4_K_M',
+      model: 'qwen2.5:3b-instruct-q4_K_M',
+      classifierModel: 'qwen2.5:3b-instruct-q4_K_M',
       maxTokens: 2048,
       secretaryMaxTokens: 4096,
       timeoutMs: 200,                       // short for tests
@@ -151,7 +150,7 @@ function makeChatResponse(payload: {
   done_reason?: string;
 }) {
   return new Response(JSON.stringify({
-    model: 'qwen3.6:35b-a3b-q4_K_M',
+    model: 'qwen2.5:3b-instruct-q4_K_M',
     message: { role: 'assistant', content: payload.content, ...(payload.thinking !== undefined ? { thinking: payload.thinking } : {}) },
     done: true,
     done_reason: payload.done_reason ?? 'stop',
@@ -166,7 +165,7 @@ function makeChatResponse(payload: {
 
 function makeTagsResponse() {
   return new Response(JSON.stringify({
-    models: [{ name: 'qwen3.6:35b-a3b-q4_K_M', digest: 'sha256:abc' }],
+    models: [{ name: 'qwen2.5:3b-instruct-q4_K_M', digest: 'sha256:abc' }],
   }), { status: 200 });
 }
 
@@ -205,16 +204,62 @@ describe('OllamaProvider — construction guards', () => {
   it('initializes cleanly when memory backend + single instance', () => {
     expect(() => new OllamaProvider()).not.toThrow();
   });
+
+  it('refuses script generation and large local reasoning outside explicit evaluation mode', async () => {
+    const mod = await import('../../src/config');
+    const originalEnabled = mod.config.localLLMEvaluation.enabled;
+    mod.config.localLLMEvaluation.enabled = false;
+    try {
+      const provider = new OllamaProvider();
+      await expect(provider.generateScript({ description: 'make a release script' } as never))
+        .rejects.toMatchObject({ kind: 'unsupported_capability' });
+      await expect(provider.localReason({ prompt: 'perform a large reasoning task' }))
+        .rejects.toMatchObject({ kind: 'unsupported_capability' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      mod.config.localLLMEvaluation.enabled = originalEnabled;
+    }
+  });
+
+  it('refuses script generation when local evaluation does not require it', async () => {
+    const mod = await import('../../src/config');
+    const originalRequired = mod.config.localLLMEvaluation.requireLocalForScriptGen;
+    mod.config.localLLMEvaluation.requireLocalForScriptGen = false;
+    try {
+      await expect(new OllamaProvider().generateScript({
+        description: 'make a release script',
+      } as never)).rejects.toMatchObject({
+        kind: 'unsupported_capability',
+        meta: expect.objectContaining({
+          capability: 'production_script_generation_requires_approved_cloud_reasoning',
+        }),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      mod.config.localLLMEvaluation.requireLocalForScriptGen = originalRequired;
+    }
+  });
 });
 
 describe('OllamaProvider — classify', () => {
+  it('fails closed for live classification because only classifier shadow owns a local role', async () => {
+    const p = new OllamaProvider();
+    await expect(p.classify('hello')).rejects.toMatchObject({
+      kind: 'unsupported_capability',
+      meta: expect.objectContaining({ capability: 'local_workload_role_not_allowed' }),
+    });
+    expect(assertBudgetMock).not.toHaveBeenCalled();
+    expect(rateLimitMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects an ineligible request before consuming local rate-limit capacity', async () => {
     assertBudgetMock.mockImplementationOnce(() => {
       throw new Error('AI_PLAN_REQUIRED');
     });
 
     const p = new OllamaProvider();
-    await expect(p.classify('hello')).rejects.toThrow('AI_PLAN_REQUIRED');
+    await expect(p.classify('hello', undefined, { source: 'shadow' })).rejects.toThrow('AI_PLAN_REQUIRED');
 
     expect(rateLimitMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -225,7 +270,7 @@ describe('OllamaProvider — classify', () => {
       .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"content","confidence":0.91}' }))
       .mockResolvedValueOnce(makeTagsResponse());
     const p = new OllamaProvider();
-    const result = await p.classify('write me a youtube hook for triathlon');
+    const result = await p.classify('write me a youtube hook for triathlon', undefined, { source: 'shadow' });
     expect(result.domain).toBe('content');
     expect(result.confidence).toBeCloseTo(0.91);
   });
@@ -235,7 +280,7 @@ describe('OllamaProvider — classify', () => {
       .mockResolvedValueOnce(makeChatResponse({ content: 'not json at all' }))
       .mockResolvedValueOnce(makeTagsResponse());
     const p = new OllamaProvider();
-    await expect(p.classify('hello')).rejects.toBeInstanceOf(LocalLLMError);
+    await expect(p.classify('hello', undefined, { source: 'shadow' })).rejects.toBeInstanceOf(LocalLLMError);
   });
 
   it('throws LocalLLMError(invalid_json) when the JSON does not match the schema', async () => {
@@ -243,13 +288,13 @@ describe('OllamaProvider — classify', () => {
       .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"not-a-domain","confidence":0.5}' }))
       .mockResolvedValueOnce(makeTagsResponse());
     const p = new OllamaProvider();
-    await expect(p.classify('hello')).rejects.toMatchObject({ kind: 'invalid_json' });
+    await expect(p.classify('hello', undefined, { source: 'shadow' })).rejects.toMatchObject({ kind: 'invalid_json' });
   });
 
   it('throws LocalLLMError(input_token_overflow) when prompt exceeds cap', async () => {
     const p = new OllamaProvider();
     const massive = 'x'.repeat(5000); // > classifyMaxInput=1500 with /3 estimator
-    await expect(p.classify(massive)).rejects.toMatchObject({ kind: 'input_token_overflow' });
+    await expect(p.classify(massive, undefined, { source: 'shadow' })).rejects.toMatchObject({ kind: 'input_token_overflow' });
   });
 
   it('writes exactly one api_usage row per successful classify with correct columns', async () => {
@@ -257,7 +302,7 @@ describe('OllamaProvider — classify', () => {
       .mockResolvedValueOnce(makeChatResponse({ content: '{"domain":"content","confidence":0.5}' }))
       .mockResolvedValueOnce(makeTagsResponse());
     const p = new OllamaProvider();
-    await p.classify('hello');
+    await p.classify('hello', undefined, { source: 'shadow' });
     // v2.7 hardening: assert the INSERT bind values, not just call count.
     // The runMock signature is `run(...values)` where values are passed in
     // the order they appear in the parameterized SQL:
@@ -272,9 +317,9 @@ describe('OllamaProvider — classify', () => {
     expect(runMock).toHaveBeenCalledTimes(1);
     const callArgs = runMock.mock.calls[0] as unknown[];
     // Position 0: category
-    expect(callArgs[0]).toBe('classify_message');
+    expect(callArgs[0]).toBe('classify_shadow');
     // Position 1: model
-    expect(callArgs[1]).toBe('qwen3.6:35b-a3b-q4_K_M');
+    expect(callArgs[1]).toBe('qwen2.5:3b-instruct-q4_K_M');
     // Position 2: tenant_id (0 in this test, no user)
     expect(callArgs[2]).toBe(0);
     // Position 3: user_id (0)
@@ -304,6 +349,118 @@ describe('OllamaProvider — scoped state context', () => {
   });
 });
 
+describe('OllamaProvider — explicit workload roles', () => {
+  it('allows validated local chat in normal runtime without evaluation mode', async () => {
+    const mod = await import('../../src/config');
+    const originalEnabled = mod.config.localLLMEvaluation.enabled;
+    mod.config.localLLMEvaluation.enabled = false;
+    fetchMock
+      .mockResolvedValueOnce(makeChatResponse({ content: 'local answer' }))
+      .mockResolvedValueOnce(makeTagsResponse());
+    try {
+      const result = await new OllamaProvider().localReason({
+        workloadRole: 'validated_local_chat',
+        prompt: 'bounded local chat',
+        think: false,
+        numCtx: 8192,
+      });
+      expect(result.text).toBe('local answer');
+      const [, fetchOptions] = fetchMock.mock.calls[0] as [string, { body: string }];
+      expect(JSON.parse(fetchOptions.body).options.num_ctx).toBe(4096);
+    } finally {
+      mod.config.localLLMEvaluation.enabled = originalEnabled;
+    }
+  });
+
+  it('prevents chatPrimitive from bypassing a missing workload role', async () => {
+    const p = new OllamaProvider();
+    await expect((p.chatPrimitive as unknown as (args: unknown) => Promise<unknown>)({
+      taskType: 'localReasoning',
+      category: 'generic_reasoning',
+      request: {
+        model: 'qwen2.5:3b-instruct-q4_K_M',
+        messages: [{ role: 'user', content: 'complex request' }],
+        stream: false,
+      },
+    })).rejects.toMatchObject({
+      kind: 'unsupported_capability',
+      meta: expect.objectContaining({
+        taskType: 'localReasoning',
+        capability: 'local_workload_role_not_allowed',
+        workloadRole: 'missing',
+      }),
+    });
+    expect(assertBudgetMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports an unsupported named workload role without dispatching', async () => {
+    const p = new OllamaProvider();
+    await expect((p.chatPrimitive as unknown as (args: unknown) => Promise<unknown>)({
+      taskType: 'localReasoning',
+      workloadRole: 'unapproved_local_role',
+      category: 'generic_reasoning',
+      request: {
+        model: 'qwen2.5:3b-instruct-q4_K_M',
+        messages: [{ role: 'user', content: 'complex request' }],
+        stream: false,
+      },
+    })).rejects.toMatchObject({
+      kind: 'unsupported_capability',
+      meta: expect.objectContaining({
+        taskType: 'localReasoning',
+        capability: 'local_workload_role_not_allowed',
+        workloadRole: 'unapproved_local_role',
+      }),
+    });
+    expect(assertBudgetMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('allows offline evaluation for local reasoning while independently denying optional local script generation', async () => {
+    const mod = await import('../../src/config');
+    const originalRequired = mod.config.localLLMEvaluation.requireLocalForScriptGen;
+    mod.config.localLLMEvaluation.requireLocalForScriptGen = false;
+    const request = {
+      model: 'qwen2.5:3b-instruct-q4_K_M',
+      messages: [{ role: 'user' as const, content: 'bounded evaluation' }],
+      stream: false,
+    };
+    try {
+      const provider = new OllamaProvider();
+      await expect((provider.chatPrimitive as unknown as (args: unknown) => Promise<unknown>)({
+        taskType: 'scriptGeneration',
+        workloadRole: 'offline_evaluation',
+        category: 'script_evaluation',
+        request,
+      })).rejects.toMatchObject({
+        kind: 'unsupported_capability',
+        meta: expect.objectContaining({
+          taskType: 'scriptGeneration',
+          workloadRole: 'offline_evaluation',
+        }),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      fetchMock
+        .mockResolvedValueOnce(makeChatResponse({ content: 'bounded result' }))
+        .mockResolvedValueOnce(makeTagsResponse());
+      await expect(provider.chatPrimitive({
+        taskType: 'localReasoning',
+        workloadRole: 'offline_evaluation',
+        category: 'reasoning_evaluation',
+        request,
+      })).resolves.toMatchObject({
+        response: {
+          message: { content: 'bounded result' },
+        },
+      });
+    } finally {
+      mod.config.localLLMEvaluation.requireLocalForScriptGen = originalRequired;
+    }
+  });
+});
+
 describe('OllamaProvider — thinking-trace strip', () => {
   it('stripThinkBlocks removes inline <think>...</think>', () => {
     expect(stripThinkBlocks('hello <think>internal</think> world')).toBe('hello  world');
@@ -319,7 +476,7 @@ describe('OllamaProvider — thinking-trace strip', () => {
       }))
       .mockResolvedValueOnce(makeTagsResponse());
     const p = new OllamaProvider();
-    const result = await p.classify('hello');
+    const result = await p.classify('hello', undefined, { source: 'shadow' });
     expect(JSON.stringify(result)).not.toMatch(/<think>/);
     expect(JSON.stringify(result)).not.toMatch(/secret reasoning/);
   });
@@ -332,7 +489,7 @@ describe('OllamaProvider — thinking-trace strip', () => {
       }))
       .mockResolvedValueOnce(makeTagsResponse());
     const p = new OllamaProvider();
-    await p.classify('hello');
+    await p.classify('hello', undefined, { source: 'shadow' });
     const joined = JSON.stringify(logCalls);
     expect(joined).not.toMatch(/private chain of thought/);
     expect(joined).not.toMatch(/<think>/);
@@ -360,7 +517,7 @@ describe('OllamaProvider — timeout maps to LocalLLMError(timeout)', () => {
       });
     });
     const p = new OllamaProvider();
-    await expect(p.classify('hello')).rejects.toMatchObject({ kind: 'timeout' });
+    await expect(p.classify('hello', undefined, { source: 'shadow' })).rejects.toMatchObject({ kind: 'timeout' });
   });
 });
 
@@ -374,7 +531,7 @@ describe('completeLocalReasoningOneShot — module-level one-shot helper (local-
       'You are a synthesizer.',
       'Synthesize the patterns.',
       'knowledge_synthesis_local',
-      { maxTokens: 512, temperature: 0.3, userId: 7, tenantId: 7 },
+      { maxTokens: 512, numCtx: 8192, temperature: 0.3, userId: 7, tenantId: 7 },
     );
 
     expect(result.text).toBe('{"categories":[]}');
@@ -386,7 +543,7 @@ describe('completeLocalReasoningOneShot — module-level one-shot helper (local-
     expect(runMock).toHaveBeenCalledTimes(1);
     const callArgs = runMock.mock.calls[0] as unknown[];
     expect(callArgs[0]).toBe('knowledge_synthesis_local');
-    expect(callArgs[1]).toBe('qwen3.6:35b-a3b-q4_K_M');
+    expect(callArgs[1]).toBe('qwen2.5:3b-instruct-q4_K_M');
     expect(callArgs[2]).toBe(7); // tenant_id
     expect(callArgs[3]).toBe(7); // user_id
 
@@ -396,6 +553,7 @@ describe('completeLocalReasoningOneShot — module-level one-shot helper (local-
     const sent = JSON.parse(fetchOpts.body);
     expect(sent.think).toBe(false);
     expect(sent.keep_alive).toBe(-1);
+    expect(sent.options.num_ctx).toBe(4096);
     expect(sent.options.num_predict).toBe(512);
     expect(sent.messages).toEqual([
       { role: 'system', content: 'You are a synthesizer.' },
@@ -414,6 +572,23 @@ describe('completeLocalReasoningOneShot — module-level one-shot helper (local-
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       (mod.config.ollama as { enabled: boolean }).enabled = orig;
+    }
+  });
+
+  it('cannot bypass explicit evaluation mode through the one-shot helper', async () => {
+    const mod = await import('../../src/config');
+    const originalEnabled = mod.config.localLLMEvaluation.enabled;
+    mod.config.localLLMEvaluation.enabled = false;
+    try {
+      await expect(
+        completeLocalReasoningOneShot('sys', 'user', 'knowledge_synthesis_local'),
+      ).rejects.toMatchObject({
+        kind: 'unsupported_capability',
+        meta: expect.objectContaining({ capability: 'local_workload_role_not_allowed' }),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      mod.config.localLLMEvaluation.enabled = originalEnabled;
     }
   });
 

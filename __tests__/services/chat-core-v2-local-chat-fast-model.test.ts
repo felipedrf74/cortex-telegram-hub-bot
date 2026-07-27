@@ -51,7 +51,7 @@ import {
 import { _resetLocalInferenceGateForTests } from '../../src/services/chat-core-v2/local-inference-concurrency-gate';
 
 const STANDARD_MODEL = 'qwen2.5:3b-instruct-q4_K_M';
-const RECIPE_MODEL = 'qwen2.5:7b-instruct-q4_K_M';
+const RECIPE_MODEL = STANDARD_MODEL;
 
 function fastEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return {
@@ -141,15 +141,22 @@ describe('WP-11 resolveLocalChatModel selection matrix', () => {
     expect(resolveLocalChatModel(env, true, 'standard_command')).toBe(RECIPE_MODEL);
   });
 
-  it('non-recipe fast_extraction/none turns use the fast model (default value)', () => {
+  it('disables the fast path by default and uses the standard 3B model', () => {
     const env = fastEnv();
-    expect(resolveLocalChatModel(env, false, 'none')).toBe(CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT);
-    expect(resolveLocalChatModel(env, false, 'fast_extraction')).toBe(CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT);
+    expect(CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT).toBe('off');
+    expect(resolveLocalChatModel(env, false, 'none')).toBe(STANDARD_MODEL);
+    expect(resolveLocalChatModel(env, false, 'fast_extraction')).toBe(STANDARD_MODEL);
   });
 
-  it('honors an explicit fast model override', () => {
+  it('honors an explicit small-only fast model override', () => {
+    const env = fastEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: STANDARD_MODEL });
+    expect(resolveLocalChatModel(env, false, 'fast_extraction')).toBe(STANDARD_MODEL);
+  });
+
+  it('rejects a non-approved fast model override', () => {
     const env = fastEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'tiny-model:custom' });
-    expect(resolveLocalChatModel(env, false, 'fast_extraction')).toBe('tiny-model:custom');
+    expect(() => resolveLocalChatModel(env, false, 'fast_extraction'))
+      .toThrow('CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL must be');
   });
 
   it('non-recipe standard_command turns use the standard model', () => {
@@ -191,7 +198,7 @@ describe('WP-11 kill-switch invariants', () => {
       CHAT_CORE_V2_ORCHESTRATOR_MODE: 'off',
       CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE: 'on',
       // Fast model present + a trivial turn — still must NOT run.
-      CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'tiny-model:custom',
+      CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: STANDARD_MODEL,
     });
 
     expect(isChatCoreV2LocalChatVisibleEnabled(env, { surface: 'ios', userId: 42, tenantId: 84 })).toBe(false);
@@ -214,9 +221,9 @@ describe('WP-11 kill-switch invariants', () => {
   it('selects the fast model on a visible trivial turn and surfaces fastModelUsed=true', async () => {
     mocks.dispatchLocalReasoning.mockResolvedValue({
       text: 'Pick one small next action and finish it.',
-      providerMetadata: { providerUsed: 'ollama', modelUsed: 'tiny-model:custom', fallbackUsed: false },
+      providerMetadata: { providerUsed: 'ollama', modelUsed: STANDARD_MODEL, fallbackUsed: false },
     });
-    const env = visibleEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'tiny-model:custom' });
+    const env = visibleEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: STANDARD_MODEL });
 
     const result = await runChatCoreV2LocalChatTurn({
       normalizedText: 'how do I stay focused?',
@@ -234,7 +241,7 @@ describe('WP-11 kill-switch invariants', () => {
       fastModelUsed: true,
     }));
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledWith(expect.objectContaining({
-      modelOverride: 'tiny-model:custom',
+      modelOverride: STANDARD_MODEL,
     }));
   });
 
@@ -270,7 +277,7 @@ describe('WP-11 kill-switch invariants', () => {
       text: 'Here is a focused breakdown of your week.',
       providerMetadata: { providerUsed: 'ollama', modelUsed: STANDARD_MODEL, fallbackUsed: false },
     });
-    const env = visibleEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: 'tiny-model:custom' });
+    const env = visibleEnv({ CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL: STANDARD_MODEL });
 
     const result = await runChatCoreV2LocalChatTurn({
       normalizedText: 'I have been thinking a lot about how to organize my week and I want a detailed breakdown of priorities, energy, and recovery across training and work please',

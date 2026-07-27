@@ -6,8 +6,12 @@
  * the old path cannot disappear through a same-prefix rename.
  */
 export function parseGitNameStatusZ(value) {
+  return parseGitNameStatusRecordsZ(value).flatMap((record) => record.paths);
+}
+
+export function parseGitNameStatusRecordsZ(value) {
   const fields = splitNul(value);
-  const paths = [];
+  const records = [];
   for (let index = 0; index < fields.length;) {
     const status = fields[index++];
     if (!/^[A-Z?][0-9]*$/.test(status)) {
@@ -17,11 +21,11 @@ export function parseGitNameStatusZ(value) {
     if (index + pathCount > fields.length) {
       throw new Error(`truncated Git name-status record: ${status}`);
     }
-    for (let offset = 0; offset < pathCount; offset += 1) {
-      paths.push(fields[index++]);
-    }
+    const paths = [];
+    for (let offset = 0; offset < pathCount; offset += 1) paths.push(fields[index++]);
+    records.push({ status, paths });
   }
-  return paths;
+  return records;
 }
 
 export function parseGitPathsZ(value) {

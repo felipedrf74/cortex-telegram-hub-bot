@@ -4,21 +4,29 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   buildMutationPlan,
+  buildStrykerEnvironment,
+  buildWeeklyMutationSelection,
   buildStrykerInvocation,
+  coalesceMutationLineTargets,
   countTestDeclarations,
   extractTestEvidence,
   extractReferencedSourceLiterals,
   extractRelativeImports,
   isCriticalModule,
   isTestCleanupChange,
+  mergeMutationReports,
   mutationPlanExitCode,
+  parseAddedLines,
   parseMutationTarget,
   resolveImportedSourcePaths,
+  resolveEmptyRangeFallback,
   resolveReferencedSourcePaths,
   resolveDeletedTestCleanupMappings,
   validateCleanupMapping,
   validateGovernedMutationTarget,
   validateMutationException,
+  validateMutationExecutionReport,
+  validateMutationOwnerTestMapping,
   validateMutationReport,
 } from '../../scripts/mutation-gate.mjs';
 
@@ -116,6 +124,302 @@ function currentMutationReport() {
 }
 
 describe('changed-critical mutation gate', () => {
+  it('selects every changed critical range and isolates each source in a sequential batch', () => {
+    expect([...parseAddedLines([
+      '@@ -1,0 +2,3 @@',
+      '@@ -8 +10 @@',
+    ].join('\n'))]).toEqual([2, 3, 4, 10]);
+    expect(coalesceMutationLineTargets('src/services/database.ts', [10, 3, 2, 3, 4])).toEqual([
+      'src/services/database.ts:2-4',
+      'src/services/database.ts:10-10',
+    ]);
+
+    const plan = buildWeeklyMutationSelection({
+      schema: 'nexus.mutation-plan.v5',
+      base: 'fixture-base',
+      head: 'fixture-head',
+      scope: 'changed-critical',
+      targets: [
+        'src/services/database.ts',
+        'src/services/provider-fallback.ts',
+      ],
+      governedSources: [
+        'src/services/database.ts',
+        'src/services/provider-fallback.ts',
+      ],
+      governedRanges: [],
+      minimumMutants: 2,
+      testFiles: [],
+    }, (_base, file) => (
+      file.endsWith('database.ts')
+        ? '@@ -1,0 +2,3 @@\n@@ -8 +10 @@'
+        : '@@ -4,2 +4,0 @@'
+    ));
+
+    expect(plan.targets).toEqual([
+      'src/services/database.ts:2-4',
+      'src/services/database.ts:10-10',
+      'src/services/provider-fallback.ts',
+    ]);
+    expect(plan.mutationBatches).toEqual([
+      {
+        index: 0,
+        sources: ['src/services/database.ts'],
+        targets: [
+          'src/services/database.ts:2-4',
+          'src/services/database.ts:10-10',
+        ],
+      },
+      {
+        index: 1,
+        sources: ['src/services/provider-fallback.ts'],
+        targets: ['src/services/provider-fallback.ts'],
+      },
+    ]);
+    expect(plan.weeklySelection).toEqual([
+      {
+        source: 'src/services/database.ts',
+        addedLines: 4,
+        ranges: 2,
+        fallback: null,
+        ownerTestFiles: [],
+      },
+      {
+        source: 'src/services/provider-fallback.ts',
+        addedLines: 0,
+        ranges: 1,
+        fallback: 'full-file-deletion-only',
+        ownerTestFiles: [],
+      },
+    ]);
+  });
+
+  it('binds an explicit retained owner suite to only its sequential source batch', () => {
+    const plan = buildWeeklyMutationSelection({
+      schema: 'nexus.mutation-plan.v5',
+      base: 'fixture-base',
+      head: 'fixture-head',
+      scope: 'changed-critical',
+      targets: ['src/services/database.ts', 'src/services/content-intelligence.ts'],
+      governedSources: ['src/services/content-intelligence.ts', 'src/services/database.ts'],
+      governedRanges: [],
+      minimumMutants: 2,
+      testFiles: [],
+      ownerTestMappings: [{
+        source: 'src/services/content-intelligence.ts',
+        testFiles: ['__tests__/services/content-intelligence.test.ts'],
+        reason: 'The focused behavior suite avoids unrelated native integration teardown.',
+      }],
+    }, () => '@@ -1,0 +2 @@');
+
+    expect(plan.mutationBatches).toEqual([
+      {
+        index: 0,
+        sources: ['src/services/content-intelligence.ts'],
+        targets: ['src/services/content-intelligence.ts:2-2'],
+        testFiles: ['__tests__/services/content-intelligence.test.ts'],
+      },
+      {
+        index: 1,
+        sources: ['src/services/database.ts'],
+        targets: ['src/services/database.ts:2-2'],
+      },
+    ]);
+    expect(plan.weeklySelection[0]).toMatchObject({
+      source: 'src/services/content-intelligence.ts',
+      ownerTestFiles: ['__tests__/services/content-intelligence.test.ts'],
+    });
+    expect(plan.weeklySelection[1]).toMatchObject({
+      source: 'src/services/database.ts',
+      ownerTestFiles: [],
+    });
+  });
+
+  it('cannot inherit a stale owner-test selector into an unmapped batch', () => {
+    const invocation = buildStrykerInvocation({
+      config: 'config/stryker.config.mjs',
+      targets: ['src/services/database.ts:2-2'],
+      thresholds: { high: 80, low: 70, break: 70 },
+      testFiles: [],
+      scope: 'changed-critical',
+    });
+    const environment = buildStrykerEnvironment({
+      NODE_ENV: 'production',
+      NEXUS_MUTATION_TEST_FILES: '["__tests__/stale-owner.test.ts"]',
+      RETAINED_VALUE: 'retained',
+    }, invocation.env);
+
+    expect(environment).toMatchObject({
+      NODE_ENV: 'test',
+      RETAINED_VALUE: 'retained',
+    });
+    expect(environment).not.toHaveProperty('NEXUS_MUTATION_TEST_FILES');
+  });
+
+  it('binds every accepted Stryker report to the exact batch targets and owner tests', () => {
+    const targets = ['src/services/content-intelligence.ts:8-13'];
+    const testFiles = ['__tests__/services/content-intelligence.test.ts'];
+    const report = {
+      config: {
+        mutate: targets,
+        testFiles,
+        concurrency: 1,
+        testRunner: 'vitest',
+        vitest: {
+          related: true,
+          configFile: 'config/vitest.stryker.config.ts',
+        },
+      },
+    };
+    expect(validateMutationExecutionReport(report, { targets, testFiles })).toEqual([]);
+    expect(validateMutationExecutionReport({
+      config: {
+        ...report.config,
+        mutate: ['src/services/database.ts'],
+      },
+    }, { targets, testFiles })).toContain(
+      'Stryker report mutate targets differ from the batch execution targets',
+    );
+    expect(validateMutationExecutionReport({
+      config: {
+        ...report.config,
+        testFiles: ['__tests__/services/unrelated.test.ts'],
+      },
+    }, { targets, testFiles })).toContain(
+      'Stryker report testFiles differ from the batch owner-test mapping',
+    );
+    expect(validateMutationExecutionReport({
+      config: {
+        ...report.config,
+        testFiles,
+      },
+    }, { targets, testFiles: [] })).toContain(
+      'Stryker report unexpectedly narrows an unmapped batch with testFiles',
+    );
+    expect(validateMutationExecutionReport({
+      config: {
+        ...report.config,
+        concurrency: 2,
+      },
+    }, { targets, testFiles })).toContain(
+      'Stryker report concurrency must be 1, found 2',
+    );
+  });
+
+  it('merges sequential reports and rejects repeated governed sources', () => {
+    const first = {
+      files: {
+        'src/services/database.ts': { mutants: [mutant('db', 2, ['db-owner'])] },
+      },
+      testFiles: {
+        '__tests__/services/database.test.ts': { tests: [{ id: 'db-owner', name: 'database owner' }] },
+      },
+    };
+    const second = {
+      files: {
+        '/repo/src/services/provider-fallback.ts': { mutants: [mutant('provider', 4, ['provider-owner'])] },
+      },
+      testFiles: {
+        '__tests__/services/provider-fallback.test.ts': {
+          tests: [{ id: 'provider-owner', name: 'provider owner' }],
+        },
+      },
+    };
+    expect(Object.keys(mergeMutationReports([first, second]).files)).toHaveLength(2);
+    expect(() => mergeMutationReports([
+      first,
+      {
+        files: {
+          'src/services/database.ts': { mutants: [] },
+        },
+      },
+    ])).toThrow('mutation batches repeat governed source');
+  });
+
+  it('canonicalizes process-local owner ids across sequential mutation reports', () => {
+    const ownerFile = '__tests__/services/gemini-provider.test.ts';
+    const ownerName = 'GeminiProvider reserves unbounded grounded context and meters the provider search fee when grounding is used';
+    const first = {
+      files: {
+        'src/services/gemini-provider.ts': {
+          mutants: [{ ...mutant('gemini', 639, ['4']), coveredBy: ['4'] }],
+        },
+      },
+      testFiles: {
+        [ownerFile]: { source: 'owner source', tests: [{ id: '4', name: ownerName }] },
+      },
+    };
+    const second = {
+      files: {
+        'src/services/openai-provider.ts': {
+          mutants: [{ ...mutant('openai', 375, ['7']), coveredBy: ['7'] }],
+        },
+      },
+      testFiles: {
+        [ownerFile]: { source: 'owner source', tests: [{ id: '7', name: ownerName }] },
+      },
+    };
+
+    for (const merged of [
+      mergeMutationReports([first, second]),
+      mergeMutationReports([second, first]),
+    ]) {
+      const canonicalId = JSON.stringify([ownerFile, ownerName]);
+      expect(merged.testFiles[ownerFile].tests).toEqual([{
+        id: canonicalId,
+        name: ownerName,
+      }]);
+      expect(Object.values(merged.files).flatMap(({ mutants }) => mutants)
+        .map(({ coveredBy, killedBy }) => ({ coveredBy, killedBy }))).toEqual([
+        { coveredBy: [canonicalId], killedBy: [canonicalId] },
+        { coveredBy: [canonicalId], killedBy: [canonicalId] },
+      ]);
+    }
+  });
+
+  it('fails closed when one mutation batch repeats a logical test name', () => {
+    expect(() => mergeMutationReports([{
+      files: {
+        'src/services/gemini-provider.ts': {
+          mutants: [mutant('gemini', 639, ['4'])],
+        },
+      },
+      testFiles: {
+        '__tests__/services/gemini-provider.test.ts': {
+          source: 'owner source',
+          tests: [
+            { id: '4', name: 'repeated governed owner test name' },
+            { id: '7', name: 'repeated governed owner test name' },
+          ],
+        },
+      },
+    }])).toThrow('repeats logical test');
+  });
+
+  it('falls back only when one source has zero mutants in exact changed ranges', () => {
+    expect(resolveEmptyRangeFallback({
+      generatedMutants: 0,
+      targets: [
+        'src/services/database.ts:2-4',
+        'src/services/database.ts:10-10',
+      ],
+      sources: ['src/services/database.ts'],
+    })).toEqual({
+      reason: 'full-file-no-generated-mutants',
+      targets: ['src/services/database.ts'],
+    });
+    expect(resolveEmptyRangeFallback({
+      generatedMutants: 1,
+      targets: ['src/services/database.ts:2-4'],
+      sources: ['src/services/database.ts'],
+    })).toBeNull();
+    expect(resolveEmptyRangeFallback({
+      generatedMutants: 0,
+      targets: ['src/services/database.ts'],
+      sources: ['src/services/database.ts'],
+    })).toBeNull();
+  });
+
   it('extracts static, dynamic, and require imports without package imports', () => {
     expect(extractRelativeImports(`
       import { authenticate } from '../../src/middleware/auth';
@@ -344,7 +648,7 @@ describe('changed-critical mutation gate', () => {
     expect(policy.mutation.minimumMutants).toBeUndefined();
     expect(policy.mutation.cleanupMappings.flatMap(
       ({ mutationTargets = [] }) => mutationTargets,
-    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(50);
+    ).reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(59);
   });
 
   it('maps deleted-test source text back to repository source dependencies', () => {
@@ -801,6 +1105,85 @@ describe('changed-critical mutation gate', () => {
     )).toContain(`mutation exception file is outside governed critical module patterns: ${source}`);
   });
 
+  it('validates explicit weekly mutation owner tests and fails malformed mappings closed', () => {
+    const source = 'src/services/content-intelligence.ts';
+    const testFile = '__tests__/services/content-intelligence.test.ts';
+    const files = new Set([source, testFile]);
+    const exists = (candidate: string) => files.has(
+      path.relative(path.resolve('.'), candidate).split(path.sep).join('/'),
+    );
+    const valid = {
+      source,
+      testFiles: [testFile],
+      reason: 'This focused behavior suite owns stable mutation scoring for the source.',
+    };
+    expect(validateMutationOwnerTestMapping(
+      valid,
+      exists,
+      ['src/services/content-intelligence.ts'],
+      {
+        dispositionRules: [{
+          pattern: testFile,
+          disposition: 'keep',
+          reason: 'Retained deterministic owner.',
+        }],
+      },
+    )).toEqual([]);
+    expect(validateMutationOwnerTestMapping(
+      valid,
+      exists,
+      ['src/services/content-intelligence.ts'],
+      {
+        dispositionRules: [{
+          pattern: testFile,
+          disposition: 'eval',
+          reason: 'Evaluation-only test.',
+        }],
+      },
+    )).toContain(
+      `mutation owner test file must have keep disposition, found eval: ${testFile}`,
+    );
+    expect(validateMutationOwnerTestMapping(
+      valid,
+      exists,
+      ['src/services/content-intelligence.ts'],
+      { dispositionRules: [] },
+    )).toContain(`mutation owner test file has no policy disposition: ${testFile}`);
+
+    const plan = buildMutationPlan({
+      base: 'fixture-base',
+      changes: [{ status: 'M', file: source, previous: null }],
+      patterns: ['src/services/content-intelligence.ts'],
+      scope: 'changed-critical',
+      ownerTestMappings: [
+        valid,
+        {
+          source,
+          testFiles: [testFile, testFile],
+          reason: 'This duplicate mapping must be rejected instead of silently replacing ownership.',
+        },
+      ],
+      exists,
+      testPolicy: {
+        dispositionRules: [{
+          pattern: '__tests__/**/*.test.ts',
+          disposition: 'keep',
+          reason: 'Retained deterministic tests.',
+        }],
+      },
+    });
+    expect(plan.invalidOwnerTestMappings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source,
+        errors: expect.arrayContaining([
+          `duplicate mutation owner source: ${source}`,
+          `duplicate mutation owner test file: ${testFile}`,
+        ]),
+      }),
+    ]));
+    expect(mutationPlanExitCode(plan)).toBe(3);
+  });
+
   it('maps removed provider metering assertions to both provider implementations and suites', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-policy.json', 'utf8')) as {
       mutation: {
@@ -831,11 +1214,11 @@ describe('changed-critical mutation gate', () => {
       '__tests__/services/openai-provider.test.ts',
     ]));
     expect(mapping?.mutationTargets?.map(({ pattern }) => pattern)).toEqual([
-      'src/services/gemini-provider.ts:657-657',
-      'src/services/openai-provider.ts:381-381',
-      'src/services/openai-provider.ts:428-428',
-      'src/services/openai-provider.ts:566-566',
-      'src/services/openai-provider.ts:610-610',
+      'src/services/gemini-provider.ts:659-659',
+      'src/services/openai-provider.ts:383-383',
+      'src/services/openai-provider.ts:430-430',
+      'src/services/openai-provider.ts:568-568',
+      'src/services/openai-provider.ts:612-612',
     ]);
     expect(mapping?.mutationTargets?.reduce((sum, target) => sum + target.minimumMutants, 0)).toBe(8);
   });
@@ -1022,7 +1405,11 @@ describe('changed-critical mutation gate', () => {
       process.env.NEXUS_MUTATION_SCOPE = 'changed-critical';
       const weekly = (await import(`${configUrl}?weekly=${Date.now()}`)).default;
       expect(weekly.testFiles).toBeUndefined();
-      expect(weekly.vitest).toEqual({ related: true });
+      expect(weekly.vitest).toEqual({
+        related: true,
+        configFile: 'config/vitest.stryker.config.ts',
+      });
+      expect(weekly.concurrency).toBe(1);
       expect(weekly.ignoreStatic).toBe(false);
 
       process.env.NEXUS_MUTATION_TEST_FILES = JSON.stringify(['__tests__/services/database.test.ts']);
@@ -1030,6 +1417,11 @@ describe('changed-critical mutation gate', () => {
       const cleanup = (await import(`${configUrl}?cleanup=${Date.now()}`)).default;
       expect(cleanup.testFiles).toEqual(['__tests__/services/database.test.ts']);
       expect(cleanup.ignoreStatic).toBe(true);
+      expect(cleanup.vitest).toEqual({
+        related: true,
+        configFile: 'config/vitest.stryker.config.ts',
+      });
+      expect(cleanup.concurrency).toBe(1);
       expect(cleanup.ignorePatterns).toEqual(['/.local', '/.local/**']);
       expect(cleanup.dryRunTimeoutMinutes).toBe(10);
     } finally {

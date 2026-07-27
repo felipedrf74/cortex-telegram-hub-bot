@@ -60,9 +60,8 @@ if (classifier.vitest?.mode === 'full' && !coverageSelection) {
   } else {
     process.stdout.write(`${allFiles.join('\n')}\n`);
   }
-  // No process.exit() here: exiting before stdout flushes truncates output
-  // at the 64KiB pipe buffer once the selection JSON grows past it, which
-  // corrupts the consumer's JSON.parse in the signer/RC pipeline.
+  // Do not call process.exit() immediately after a large write: when stdout is
+  // a pipe, Node can otherwise discard bytes still buffered beyond 64 KiB.
   process.exitCode = 0;
 } else {
   emitSelection();

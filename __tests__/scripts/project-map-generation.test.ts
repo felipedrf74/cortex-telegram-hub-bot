@@ -67,15 +67,20 @@ function proposedFiles(): string[] {
     .sort();
 }
 
-function generatedMap(): { serialized: string; map: ProjectMap } {
+let cachedGeneratedMap: { serialized: string; map: ProjectMap } | null = null;
+
+function generatedMap(options: { fresh?: boolean } = {}): { serialized: string; map: ProjectMap } {
+  if (!options.fresh && cachedGeneratedMap) return cachedGeneratedMap;
   const serialized = execFileSync(process.execPath, [generator, '--stdout'], { encoding: 'utf8' });
-  return { serialized, map: JSON.parse(serialized) as ProjectMap };
+  const generated = { serialized, map: JSON.parse(serialized) as ProjectMap };
+  if (!options.fresh) cachedGeneratedMap = generated;
+  return generated;
 }
 
 describe('project map generation', () => {
   it('is deterministic and binds freshness to the proposed-tree digest', { timeout: 60_000 }, () => {
     const first = generatedMap();
-    const second = generatedMap();
+    const second = generatedMap({ fresh: true });
 
     expect(second.serialized).toBe(first.serialized);
     expect(first.map.schema).toBe('nexus.project-map.v3');
@@ -136,7 +141,7 @@ describe('project map generation', () => {
     expect(map.documentation).toMatchObject({
       policy: 'config/documentation-policy.json',
       policySchema: 'nexus.documentation-policy.v1',
-      policyVersion: '2026-07-15.1',
+      policyVersion: '2026-07-22.1',
       count: markdown.length,
       active: markdown.length,
     });

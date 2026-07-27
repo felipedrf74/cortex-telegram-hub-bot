@@ -74,6 +74,7 @@ function ciReleaseResults({
   runId = '12345',
   runAttempt = '1',
   artifactDigest,
+  sourceRoot = process.cwd(),
 }: {
   runtimeSha: string;
   policyDigest: string;
@@ -82,6 +83,7 @@ function ciReleaseResults({
   runId?: string;
   runAttempt?: string;
   artifactDigest?: string;
+  sourceRoot?: string;
 }) {
   const testFile = '__tests__/scripts/release-manifest-v2.test.ts';
   const files = [testFile];
@@ -108,17 +110,48 @@ function ciReleaseResults({
     nightlyEvidence: { headSha: runtimeSha, completedAt, runId: '777', runAttempt: '1' },
   };
   return {
-    schema: 'nexus.release-test-results.v2',
+    schema: 'nexus.release-test-results.v3',
     status: 'passed',
     runtimeSha,
     completedAt,
     tier: selection.tier,
     selection,
     testPolicyDigest: policyDigest,
-    toolchain: { node: process.version, python: 'Python 3.12.0' },
+    artifactDigest: artifactDigest ?? buildReleaseArtifactManifest(sourceRoot).digest,
+    lockfiles: {
+      packageLockSha256: createHash('sha256')
+        .update(fs.readFileSync(path.join(sourceRoot, 'package-lock.json'))).digest('hex'),
+      pythonRequirementsSha256: createHash('sha256')
+        .update(fs.readFileSync(path.join(sourceRoot, 'content-engine/requirements.txt'))).digest('hex'),
+    },
+    toolchain: { node: process.version, python: 'Python 3.12' },
     counts,
     ci: { runId, runAttempt },
-    ...(artifactDigest ? { artifactDigest } : {}),
+    protectedMainShadow: {
+      mode: 'shadow',
+      comparison: {
+        schema: 'nexus.release-evidence-shadow-comparison.v1',
+        status: 'ineligible',
+        reason: 'protected_main_evidence_missing',
+        reuseScope: 'vitest-and-exact-runtime-bundle-shadow',
+        runtimeSha,
+        comparedAt: completedAt,
+        mainCi: null,
+        releaseCi: { runId, runAttempt },
+        checks: {
+          exactRuntimeSha: false,
+          testPolicyMatch: false,
+          packageLockMatch: false,
+          pythonRequirementsMatch: false,
+          nodeToolchainMatch: false,
+          pythonToolchainMatch: false,
+          mainSelectionCoversRelease: false,
+          protectedJobsPassed: false,
+          runtimeArtifactMatch: false,
+        },
+      },
+      evidence: null,
+    },
   };
 }
 
@@ -134,10 +167,12 @@ function createSharedManifestFixtureRoot(parent: string) {
   };
   fs.mkdirSync(path.join(root, 'dist/release'), { recursive: true });
   fs.mkdirSync(path.join(root, 'config'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'content-engine'), { recursive: true });
   fs.mkdirSync(path.join(root, 'migrations'), { recursive: true });
   fs.mkdirSync(path.join(root, 'catalog/training/exercise-media/v1/authored-content'), { recursive: true });
   fs.writeFileSync(path.join(root, 'package.json'), '{"name":"fixture","version":"4.14.224"}\n');
   fs.writeFileSync(path.join(root, 'package-lock.json'), '{"name":"fixture","lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(root, 'content-engine/requirements.txt'), 'fastapi==0.136.1\n');
   fs.copyFileSync('config/test-policy.json', path.join(root, 'config/test-policy.json'));
   fs.writeFileSync(path.join(root, 'dist/index.js'), 'module.exports = {};\n');
   fs.writeFileSync(
@@ -186,7 +221,10 @@ describe('ReleaseManifestV2', () => {
       },
     })}\n`;
     fs.mkdirSync(path.join(bundleRoot, 'config'), { recursive: true });
+    fs.mkdirSync(path.join(bundleRoot, 'content-engine'), { recursive: true });
     fs.writeFileSync(path.join(bundleRoot, 'package.json'), '{"version":"4.14.220"}\n');
+    fs.writeFileSync(path.join(bundleRoot, 'package-lock.json'), '{"lockfileVersion":3}\n');
+    fs.writeFileSync(path.join(bundleRoot, 'content-engine/requirements.txt'), 'fastapi==0.136.1\n');
     fs.writeFileSync(path.join(bundleRoot, 'config/test-policy.json'), policyBody);
 
     const artifact = buildReleaseArtifactManifest(bundleRoot);
@@ -226,6 +264,7 @@ describe('ReleaseManifestV2', () => {
           completedAt: generatedAt,
           counts: { vitest: 13_310, pytest: 208 },
           artifactDigest: artifact.digest,
+          sourceRoot: bundleRoot,
         }),
       },
       ios: null,
@@ -386,6 +425,7 @@ describe('ReleaseManifestV2', () => {
       runtimeSha,
       policyDigest,
       counts: { vitest: 13_512, pytest: 194 },
+      sourceRoot: fixtureRoot,
     })));
 
     const incompleteIos = spawnSync(process.execPath, [script, 'write',

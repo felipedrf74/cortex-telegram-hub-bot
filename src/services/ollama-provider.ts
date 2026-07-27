@@ -51,6 +51,7 @@ import {
   type LocalLLMRateLimitScope,
 } from './local-llm-rate-limiter';
 import { buildScopedStateContextPrefix } from './provider-state-context';
+import { assertSmallOnlyOllamaModel } from './ollama-model-policy';
 
 // ─── Public types for the new task dispatch paths ──────────────────
 
@@ -61,6 +62,18 @@ export type OllamaTaskType =
   | 'tool-use'         // callDomain / continueWithToolResults — UNSUPPORTED in v1
   | 'scriptGeneration'
   | 'localReasoning';
+
+/**
+ * Explicit workload identity enforced at the final boundary before an
+ * Ollama HTTP request is admitted. Production local inference is deliberately
+ * limited to the two calibrated small-model roles below. Larger/generic work
+ * may use the privacy-gated cloud route, but must never acquire a local role by
+ * inference from a category string or task type.
+ */
+export type OllamaWorkloadRole =
+  | 'validated_local_chat'
+  | 'classifier_shadow'
+  | 'offline_evaluation';
 
 export interface ScriptGenTask {
   description: string;
@@ -99,6 +112,8 @@ export interface ScriptGenResult extends ScriptGenPlan {
 }
 
 export interface LocalReasoningTask {
+  /** Required local workload identity; unknown/missing roles fail closed. */
+  workloadRole: OllamaWorkloadRole;
   prompt: string;
   systemContext?: string;
   userId?: number;
@@ -125,6 +140,26 @@ export interface LocalReasoningTask {
   keepAliveSeconds?: number;
   /** Optional caller abort signal composed into the Ollama fetch. */
   abortSignal?: AbortSignal;
+}
+
+function assertAllowedOllamaWorkloadRole(
+  workloadRole: unknown,
+  taskType: OllamaTaskType,
+): asserts workloadRole is OllamaWorkloadRole {
+  if (workloadRole === 'validated_local_chat' || workloadRole === 'classifier_shadow') {
+    return;
+  }
+  if (workloadRole === 'offline_evaluation') {
+    const evaluationEnabled = config.localLLMEvaluation.enabled === true;
+    const scriptLocalRequired = taskType !== 'scriptGeneration'
+      || config.localLLMEvaluation.requireLocalForScriptGen === true;
+    if (evaluationEnabled && scriptLocalRequired) return;
+  }
+  throw new LocalLLMError('unsupported_capability', {
+    taskType,
+    capability: 'local_workload_role_not_allowed',
+    workloadRole: typeof workloadRole === 'string' ? workloadRole : 'missing',
+  });
 }
 
 export interface LocalReasoningResult {
@@ -367,6 +402,12 @@ interface QueueState {
   chain: Promise<unknown>;
 }
 
+type TaskQueueDepthKey =
+  | 'classifyDepth'
+  | 'scriptGenDepth'
+  | 'localReasoningDepth'
+  | 'chatDepth';
+
 const queueState: QueueState = {
   classifyDepth: 0,
   scriptGenDepth: 0,
@@ -376,7 +417,7 @@ const queueState: QueueState = {
   chain: Promise.resolve(),
 };
 
-function depthFor(taskType: OllamaTaskType): { depth: number; cap: number; key: keyof QueueState } {
+function depthFor(taskType: OllamaTaskType): { depth: number; cap: number; key: TaskQueueDepthKey } {
   const cfg = config.ollama.queue;
   switch (taskType) {
     case 'classify':         return { depth: queueState.classifyDepth, cap: cfg.classifyDepth, key: 'classifyDepth' };
@@ -409,8 +450,11 @@ async function withQueueSlot<T>(taskType: OllamaTaskType, fn: () => Promise<T>):
     });
   }
 
-  (queueState[key] as number)++;
-  queueState.totalDepth++;
+  // Avoid postfix updates on a type assertion: Stryker's UpdateOperator
+  // mutant can otherwise emit invalid TypeScript (`(value as number)--`).
+  // Explicit arithmetic remains mutation-testable without parser failures.
+  queueState[key] = (queueState[key] as number) + 1;
+  queueState.totalDepth = queueState.totalDepth + 1;
 
   const wait = maxWaitMs(taskType);
   const enqueuedAt = Date.now();
@@ -444,8 +488,8 @@ async function withQueueSlot<T>(taskType: OllamaTaskType, fn: () => Promise<T>):
     }
     return await fn();
   } finally {
-    (queueState[key] as number)--;
-    queueState.totalDepth--;
+    queueState[key] = (queueState[key] as number) - 1;
+    queueState.totalDepth = queueState.totalDepth - 1;
     release();
   }
 }
@@ -798,7 +842,7 @@ export class OllamaProvider implements AIProvider {
     // qwen2.5:3b on this CPU: num_ctx=2048 (compact prompt + short user
     // message fits comfortably), num_predict=32 (JSON output is ~20
     // tokens). Both env-overridable for future tuning.
-    const classifierNumCtx = readPositiveInt('OLLAMA_CLASSIFIER_NUM_CTX', 2048);
+    const classifierNumCtx = Math.min(4096, readPositiveInt('OLLAMA_CLASSIFIER_NUM_CTX', 2048));
     const classifierNumPredict = readPositiveInt('OLLAMA_CLASSIFIER_NUM_PREDICT', 32);
 
     const baseRequest = {
@@ -840,6 +884,7 @@ export class OllamaProvider implements AIProvider {
 
       const result = await this.callOllamaForTask({
         taskType: 'classify',
+        workloadRole: options?.source === 'shadow' ? 'classifier_shadow' : undefined,
         category: options?.source === 'shadow' ? 'classify_shadow' : 'classify_message',
         request: { ...baseRequest, messages },
         userId: options?.userId,
@@ -941,13 +986,14 @@ export class OllamaProvider implements AIProvider {
     // exactly what went over the wire. Future per-domain temperature
     // overrides (Phase 3) plug in here.
     const requestOptions = {
-      num_ctx: 8192,
+      num_ctx: 4096,
       num_predict: maxOutput,
       temperature: 0.3,
     };
 
     const result = await this.callOllamaForTask({
       taskType: 'chat',
+      workloadRole: 'validated_local_chat',
       category: `chat_${domain}`,
       userId: options.userId,
       tenantId: options.tenantId,
@@ -1007,6 +1053,12 @@ export class OllamaProvider implements AIProvider {
   // ── Optional: generateScript (delegates to script-generation.ts) ─
 
   async generateScript(task: ScriptGenTask): Promise<ScriptGenResult> {
+    if (!config.localLLMEvaluation.enabled || !config.localLLMEvaluation.requireLocalForScriptGen) {
+      throw new LocalLLMError('unsupported_capability', {
+        taskType: 'scriptGeneration',
+        capability: 'production_script_generation_requires_approved_cloud_reasoning',
+      });
+    }
     // Delayed require to avoid a circular import at module load.
     const { runScriptGenerationPipeline } = require('./script-generation') as
       typeof import('./script-generation');
@@ -1016,11 +1068,12 @@ export class OllamaProvider implements AIProvider {
   // ── Optional: localReason (single-shot, think:true) ──────────────
 
   async localReason(task: LocalReasoningTask): Promise<LocalReasoningResult> {
+    assertAllowedOllamaWorkloadRole(task.workloadRole, 'localReasoning');
     const sys = task.systemContext ?? 'You are an expert reasoning assistant.';
     enforceInputTokenCap('localReasoning', [sys, task.prompt]);
     const numCtx = Number.isFinite(task.numCtx) && (task.numCtx ?? 0) > 0
-      ? Math.floor(task.numCtx!)
-      : 8192;
+      ? Math.min(4096, Math.floor(task.numCtx!))
+      : 4096;
     const numPredict = Number.isFinite(task.numPredict) && (task.numPredict ?? 0) > 0
       ? Math.floor(task.numPredict!)
       : outputCapFor('localReasoning');
@@ -1046,6 +1099,7 @@ export class OllamaProvider implements AIProvider {
 
     const result = await this.callOllamaForTask({
       taskType: 'localReasoning',
+      workloadRole: task.workloadRole,
       category: 'local_reasoning',
       userId: task.userId,
       tenantId: task.tenantId,
@@ -1089,6 +1143,7 @@ export class OllamaProvider implements AIProvider {
 
   async chatPrimitive(args: {
     taskType: OllamaTaskType;
+    workloadRole: OllamaWorkloadRole;
     category: string;
     request: OllamaChatRequest;
     userId?: number;
@@ -1155,6 +1210,7 @@ export class OllamaProvider implements AIProvider {
 
   private async callOllamaForTask(args: {
     taskType: OllamaTaskType;
+    workloadRole: unknown;
     category: string;
     request: OllamaChatRequest;
     userId?: number;
@@ -1181,6 +1237,7 @@ export class OllamaProvider implements AIProvider {
   }): Promise<{ response: OllamaChatResponse; modelDigest?: string }> {
     const {
       taskType,
+      workloadRole,
       category,
       request,
       userId = 0,
@@ -1189,6 +1246,12 @@ export class OllamaProvider implements AIProvider {
       externalSignal,
       timeoutMsOverride,
     } = args;
+    // This is the final shared boundary for every Ollama request, including
+    // chatPrimitive and module-level helpers. Keep this check ahead of budget,
+    // rate-limit, queue, digest, and network work so a missing/generic/complex
+    // role cannot consume local capacity or reach the daemon.
+    assertAllowedOllamaWorkloadRole(workloadRole, taskType);
+    assertSmallOnlyOllamaModel(request.model, `ollama_request:${taskType}`);
     // Entitlement/budget denial must happen before the local capacity meter.
     // Otherwise an ineligible request could consume a per-user/global Ollama
     // rate-limit unit even though it is forbidden from reaching the model.
@@ -1238,6 +1301,7 @@ export class OllamaProvider implements AIProvider {
       logger.info(
         {
           taskType,
+          workloadRole,
           category,
           provider: 'ollama',
           model: request.model,
@@ -1284,13 +1348,12 @@ export interface LocalReasoningOneShotOptions {
   maxTokens?: number;
   /** Defaults to 0.2 (matches localReason). */
   temperature?: number;
-  /** Context window. Defaults to 8192 (matches localReason). */
+  /** Context window. Defaults to the small-only 4096 service limit. */
   numCtx?: number;
   /**
-   * Thinking toggle. Defaults to FALSE for one-shot calls: think:true on
-   * the 35B-A3B gen model measured 4-7 min per run, which structured
-   * synthesis-style callers don't need. Legacy localReason() keeps its
-   * think:true default — this helper is a separate, additive entry point.
+   * Thinking toggle. Defaults to FALSE for bounded synthesis latency.
+   * Legacy localReason() keeps its think:true default — this helper is a
+   * separate, additive entry point.
    */
   think?: boolean;
   /** Per-call timeout override. Defaults to config.ollama.timeoutMs. */
@@ -1344,8 +1407,8 @@ export async function completeLocalReasoningOneShot(
   enforceInputTokenCap('localReasoning', [systemPrompt, userPrompt]);
 
   const numCtx = Number.isFinite(opts.numCtx) && (opts.numCtx ?? 0) > 0
-    ? Math.floor(opts.numCtx!)
-    : 8192;
+    ? Math.min(4096, Math.floor(opts.numCtx!))
+    : 4096;
   const numPredict = Number.isFinite(opts.maxTokens) && (opts.maxTokens ?? 0) > 0
     ? Math.floor(opts.maxTokens!)
     : outputCapFor('localReasoning');
@@ -1370,6 +1433,7 @@ export async function completeLocalReasoningOneShot(
 
   const result = await getModuleOneShotProvider().chatPrimitive({
     taskType: 'localReasoning',
+    workloadRole: 'offline_evaluation',
     category,
     request,
     userId: opts.userId,

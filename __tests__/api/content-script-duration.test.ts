@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
-import fs from 'fs';
-import path from 'path';
 import {
   CONTENT_LIVE_EVAL_CORPUS,
   CONTENT_LIVE_EVAL_OPT_IN,
@@ -536,6 +534,7 @@ describe('Content API — script duration presets', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     const args = mockGetScript.mock.calls.at(-1) ?? [];
+    expect(args[1]).toBe('general');
     expect(args[4]).toBe('draft');
     expect(response.body.data.generationMode).toBe('draft');
     expect(response.body.data.usageImpact).toBe('low');
@@ -1073,34 +1072,34 @@ describe('Content API — script duration presets', () => {
   });
 
   it('content route resolves and forwards first-party topic context into canonical script generation', async () => {
-    const routeSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/api/routes/content-script-routes.ts'),
-      'utf8',
-    );
-    const contentRouteSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/api/routes/content.ts'),
-      'utf8',
-    );
-    const topicContextSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/api/routes/content-topic-context.ts'),
-      'utf8',
-    );
+    const topicContext = {
+      pipelineId: 451,
+      niche: 'creator operations',
+      hookIdea: 'The workflow most creators skip',
+      whyNow: 'New first-party workflow evidence is available',
+      angleTag: 'proof',
+      sourceJob: 'content_agency',
+    };
+    mockResolveScriptTopicContext.mockReturnValueOnce(topicContext);
 
-    expect(contentRouteSource).toContain("import { registerContentScriptRoutes } from './content-script-routes';");
-    expect(contentRouteSource).toContain('registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);');
-    expect(routeSource).toContain("import { resolveScriptTopicContext } from './content-topic-context';");
-    expect(routeSource).toContain('const scriptTopicContext = liveEvalContext');
-    expect(routeSource).toContain(': resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);');
-    expect(routeSource).toContain("scriptTopicContext?.niche || niche || 'general'");
-    expect(routeSource).toContain('durationPreset.targetDurationSeconds,');
-    expect(routeSource).toContain('scriptTopicContext,');
-    expect(routeSource).not.toContain('draftFirst=true');
-    expect(routeSource).not.toContain('budgetState=${budgetState}');
-    expect(routeSource).toContain("Budget enforcement is external to the model and must not shorten, simplify, or reduce delivery quality.");
-    expect(topicContextSource).toContain('function resolveScriptTopicContext(');
-    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.workspaceItemId)');
-    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.pipelineId)');
-    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.topicFeedbackId)');
-    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.ideaId)');
+    const body = {
+      topic: '  Build a repeatable creator workflow  ',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      workspaceItemId: 451,
+      niche: 'untrusted request niche',
+    };
+    const response = await dispatch(body);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(mockResolveScriptTopicContext).toHaveBeenCalledWith(12, body, undefined, 12);
+    const engineArgs = mockGetScript.mock.calls.at(-1) ?? [];
+    expect(engineArgs[0]).toBe('Build a repeatable creator workflow');
+    expect(engineArgs[1]).toBe('creator operations');
+    expect(engineArgs[2]).toBe(8);
+    expect(engineArgs[9]).toBe(480);
+    expect(engineArgs[10]).toEqual(topicContext);
+    expect(engineArgs[15]).toBe(12);
   });
 });

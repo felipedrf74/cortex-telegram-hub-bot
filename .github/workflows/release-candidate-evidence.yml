@@ -1,9 +1,13 @@
 name: RC — Release Evidence
-run-name: RC evidence ${{ github.sha }}
+run-name: RC evidence ${{ github.sha }} request ${{ inputs.correlation_nonce }}
 
 on:
   workflow_dispatch:
     inputs:
+      correlation_nonce:
+        description: 'Coordinator-generated UUID binding this exact RC dispatch'
+        required: true
+        type: string
       contract_scope:
         description: 'Classify this candidate as backend-only or shared backend/iOS'
         required: true
@@ -29,6 +33,10 @@ on:
         required: false
         default: false
         type: boolean
+      protected_reuse_activation_b64:
+        description: 'Optional GitHub-signed protected-main reuse activation; invalid or absent evidence falls back to RC Vitest'
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -40,9 +48,20 @@ concurrency:
 
 env:
   NODE_VERSION: '22.23.1'
-  PYTHON_VERSION: '3.12'
+  # ServerDominguez /usr/bin/python3.12 reports 3.12.3. The offline installer
+  # rejects patch drift, so build and test the artifact against that contract.
+  PYTHON_VERSION: '3.12.3'
   TZ: Europe/Lisbon
+  # Security scanning remains owned by the required security workflow. Keep
+  # lockfile installs exact while avoiding duplicate advisory/funding network
+  # calls and preferring the setup-node integrity-checked cache.
+  NPM_CONFIG_AUDIT: 'false'
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_PREFER_OFFLINE: 'true'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PIP_NO_INPUT: '1'
   CONTRACT_SCOPE: ${{ inputs.contract_scope }}
+  CORRELATION_NONCE: ${{ inputs.correlation_nonce }}
   IOS_SHA: ${{ inputs.ios_sha }}
   IOS_BUILD_NUMBER: ${{ inputs.ios_build_number }}
   IOS_CONTRACT_RESULT: ${{ inputs.ios_contract_result }}
@@ -55,6 +74,10 @@ jobs:
     steps:
       - name: Require an explicit, complete contract scope
         run: |
+          [[ "$CORRELATION_NONCE" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+            echo "correlation_nonce must be a coordinator-generated lowercase UUIDv4" >&2
+            exit 64
+          }
           case "$CONTRACT_SCOPE" in
             backend_only)
               [[ -z "$IOS_SHA" && -z "$IOS_BUILD_NUMBER" && -z "$IOS_CONTRACT_RESULT" ]] || {
@@ -91,6 +114,10 @@ jobs:
       full_required: ${{ steps.plan.outputs.full_required }}
       full_required_reason: ${{ steps.plan.outputs.full_required_reason }}
       tier: ${{ steps.plan.outputs.tier }}
+      reuse_allowed: ${{ steps.reuse.outputs.reuse_allowed }}
+      protected_main_run_id: ${{ steps.reuse.outputs.main_run_id }}
+      protected_main_artifact_name: ${{ steps.reuse.outputs.artifact_name }}
+      protected_main_artifact_digest: ${{ steps.reuse.outputs.artifact_digest }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -99,9 +126,6 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - run: npm ci
 
       - name: Download recent qualifying-nightly candidates
         env:
@@ -111,13 +135,23 @@ jobs:
           gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=main&status=success&per_page=10" \
             --jq '.workflow_runs[].id' > .local/release/nightly-run-ids.txt
+          considered=0
+          usable=false
           while IFS= read -r run_id; do
             [ -n "$run_id" ] || continue
+            considered=$((considered + 1))
             gh run download "$run_id" \
               --repo "$GITHUB_REPOSITORY" \
               --pattern 'nightly-full-suite-evidence-*' \
               --dir ".local/release/nightly-evidence/$run_id" >/dev/null 2>&1 || true
+            if node scripts/release-test-evidence.mjs probe-nightly \
+              --head "$GITHUB_SHA" \
+              --nightly-dir .local/release/nightly-evidence; then
+              usable=true
+              break
+            fi
           done < .local/release/nightly-run-ids.txt
+          echo "Inspected $considered recent nightly run(s); usable=$usable."
 
       - name: Resolve exact release test selection
         id: plan
@@ -136,18 +170,84 @@ jobs:
           console.log(`tier=${selection.tier}`);
           NODE
 
+      - name: Authorize exact-SHA protected-main evidence reuse
+        id: reuse
+        env:
+          ACTIVATION_B64: ${{ inputs.protected_reuse_activation_b64 }}
+          FORCE_FULL: ${{ inputs.force_full || 'false' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "reuse_allowed=false" >> "$GITHUB_OUTPUT"
+          echo "main_run_id=" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=" >> "$GITHUB_OUTPUT"
+          echo "artifact_digest=" >> "$GITHUB_OUTPUT"
+          if [[ -z "$ACTIVATION_B64" || "$FORCE_FULL" == 'true' ]]; then
+            echo "Protected-main reuse is inactive; the existing RC Vitest path remains selected."
+            exit 0
+          fi
+          [[ ${#ACTIVATION_B64} -le 60000 && "$ACTIVATION_B64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] \
+            || { echo "Reuse activation input is malformed; retaining RC fallback."; exit 0; }
+          install -d -m 700 .local/release/protected-main-reuse/main
+          if ! printf '%s' "$ACTIVATION_B64" | base64 --decode \
+            > .local/release/protected-main-reuse/activation.json; then
+            echo "Reuse activation cannot be decoded; retaining RC fallback."
+            exit 0
+          fi
+          main_run_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=10" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main")][0].id // empty')"
+          if [[ ! "$main_run_id" =~ ^[1-9][0-9]*$ ]] || ! gh run download "$main_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "protected-main-ci-evidence-$main_run_id-*" \
+            --dir .local/release/protected-main-reuse/main; then
+            echo "Exact protected-main evidence is unavailable; retaining RC fallback."
+            exit 0
+          fi
+          mapfile -t evidence_files < <(find .local/release/protected-main-reuse/main \
+            -type f -name protected-main-ci-evidence.json -print)
+          [[ "${#evidence_files[@]}" -eq 1 ]] || {
+            echo "Exact protected-main evidence is ambiguous; retaining RC fallback."
+            exit 0
+          }
+          if ! node scripts/protected-main-reuse-activation.mjs authorize \
+            --activation .local/release/protected-main-reuse/activation.json \
+            --main-evidence "${evidence_files[0]}" \
+            --selection .local/release/test-selection.json \
+            --release-public-key docs/release/evidence/release-evidence-public-key.pem \
+            --repository "$GITHUB_REPOSITORY" \
+            --output .local/release/protected-main-reuse/decision.json; then
+            echo "Reuse activation verification failed; retaining RC fallback."
+            exit 0
+          fi
+          allowed="$(jq -r '.allowed' .local/release/protected-main-reuse/decision.json)"
+          [[ "$allowed" == 'true' ]] || {
+            echo "Protected-main evidence is not reusable; retaining RC fallback."
+            exit 0
+          }
+          cp "${evidence_files[0]}" .local/release/protected-main-reuse/protected-main-ci-evidence.json
+          echo "reuse_allowed=true" >> "$GITHUB_OUTPUT"
+          echo "main_run_id=$(jq -r '.mainRunId' .local/release/protected-main-reuse/decision.json)" \
+            >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$(jq -r '.artifactName' .local/release/protected-main-reuse/decision.json)" \
+            >> "$GITHUB_OUTPUT"
+          echo "artifact_digest=$(jq -r '.artifactDigest' .local/release/protected-main-reuse/decision.json)" \
+            >> "$GITHUB_OUTPUT"
+
       - name: Upload exact release test selection
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-test-selection-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .local/release/test-selection.json
+          path: |
+            .local/release/test-selection.json
+            .local/release/protected-main-reuse/*
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
   vitest-full:
     name: 🧪 Full Vitest shard ${{ matrix.shard }}/4
     needs: test-plan
-    if: ${{ needs.test-plan.outputs.full_required == 'true' }}
+    if: ${{ needs.test-plan.outputs.full_required == 'true' && needs.test-plan.outputs.reuse_allowed != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -177,20 +277,22 @@ jobs:
           node scripts/run-test-tier.mjs deterministic \
             --shard '${{ matrix.shard }}/4' \
             --reporter json \
-            --json-output 'vitest-results-${{ matrix.shard }}.json'
+            --json-output '.local/release/rc-test-results/vitest-results-${{ matrix.shard }}.json'
 
       - name: Upload shard result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vitest-results-${{ matrix.shard }}
-          path: vitest-results-${{ matrix.shard }}.json
+          path: .local/release/rc-test-results/vitest-results-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
   vitest-selected:
     name: 🧪 Policy-selected Vitest
     needs: test-plan
-    if: ${{ needs.test-plan.outputs.full_required == 'false' }}
+    if: ${{ needs.test-plan.outputs.full_required == 'false' && needs.test-plan.outputs.reuse_allowed != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -220,14 +322,16 @@ jobs:
         run: |
           node scripts/release-test-evidence.mjs run-selected \
             --selection .local/release/test-selection.json \
-            --output vitest-results-selected.json
+            --output .local/release/rc-test-results/vitest-results-selected.json
 
       - name: Upload selected result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vitest-results-selected
-          path: vitest-results-selected.json
+          path: .local/release/rc-test-results/vitest-results-selected.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
   python-full:
@@ -235,6 +339,8 @@ jobs:
     needs: contract-binding
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      python_version: ${{ steps.python_identity.outputs.version }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -242,7 +348,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
-          cache-dependency-path: content-engine/requirements.txt
+          cache-dependency-path: |
+            content-engine/requirements.txt
+            content-engine/requirements-dev.txt
+
+      - name: Record exact Python test toolchain
+        id: python_identity
+        run: echo "version=$(python --version)" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: |
@@ -268,7 +380,7 @@ jobs:
 
   release-evidence:
     name: 📦 Write unsigned release candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [contract-binding, test-plan, vitest-full, vitest-selected, python-full]
     if: ${{ always() }}
     timeout-minutes: 30
@@ -277,15 +389,42 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - name: Setup Node.js with npm cache for an RC-built artifact
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      - run: npm ci
+      - name: Setup Node.js without dependency cache for exact reuse
+        if: ${{ needs.test-plan.outputs.reuse_allowed == 'true' }}
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: content-engine/requirements.txt
+
+      - name: Install build dependencies only for an RC-built artifact
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        run: npm ci
+
+      - name: Verify production artifact build platform
+        run: |
+          test "$(uname -m)" = 'x86_64'
+          . /etc/os-release
+          test "$ID" = 'ubuntu'
+          test "$VERSION_ID" = '24.04'
+          if [[ '${{ needs.test-plan.outputs.reuse_allowed }}' != 'true' ]]; then
+            test "$(python --version)" = '${{ needs.python-full.outputs.python_version }}'
+          fi
 
       - name: Stop when selected test prerequisites failed
-        if: ${{ needs.contract-binding.result != 'success' || needs.test-plan.result != 'success' || needs.python-full.result != 'success' || (needs.test-plan.outputs.full_required == 'true' && needs.vitest-full.result != 'success') || (needs.test-plan.outputs.full_required == 'false' && needs.vitest-selected.result != 'success') }}
+        if: ${{ needs.contract-binding.result != 'success' || needs.test-plan.result != 'success' || needs.python-full.result != 'success' || (needs.test-plan.outputs.reuse_allowed != 'true' && needs.test-plan.outputs.full_required == 'true' && needs.vitest-full.result != 'success') || (needs.test-plan.outputs.reuse_allowed != 'true' && needs.test-plan.outputs.full_required == 'false' && needs.vitest-selected.result != 'success') }}
         run: |
           echo "Release test prerequisites did not pass."
           echo "contract-binding=${{ needs.contract-binding.result }}"
@@ -293,6 +432,7 @@ jobs:
           echo "tier=${{ needs.test-plan.outputs.tier }}"
           echo "full-required=${{ needs.test-plan.outputs.full_required }}"
           echo "full-required-reason=${{ needs.test-plan.outputs.full_required_reason }}"
+          echo "reuse-allowed=${{ needs.test-plan.outputs.reuse_allowed }}"
           echo "vitest-full=${{ needs.vitest-full.result }}"
           echo "vitest-selected=${{ needs.vitest-selected.result }}"
           echo "python-full=${{ needs.python-full.result }}"
@@ -307,6 +447,7 @@ jobs:
           path: .local/release
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
         with:
           pattern: vitest-results-*
           path: .local/release/rc-test-results
@@ -317,10 +458,37 @@ jobs:
           name: pytest-results
           path: .local/release/rc-test-results
 
-      - name: Typecheck
-        id: typecheck
-        continue-on-error: true
-        run: npx tsc --noEmit
+      - name: Reuse and verify the exact protected-main runtime bundle
+        id: reuse_bundle
+        if: ${{ needs.test-plan.outputs.reuse_allowed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_RUN_ID: ${{ needs.test-plan.outputs.protected_main_run_id }}
+          ARTIFACT_NAME: ${{ needs.test-plan.outputs.protected_main_artifact_name }}
+          ARTIFACT_DIGEST: ${{ needs.test-plan.outputs.protected_main_artifact_digest }}
+        run: |
+          [[ "$MAIN_RUN_ID" =~ ^[1-9][0-9]*$ \
+            && "$ARTIFACT_NAME" == "release-bundle-$GITHUB_SHA-$ARTIFACT_DIGEST" \
+            && "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 64
+          bundle_root=".local/release/bundles/$GITHUB_SHA/$ARTIFACT_DIGEST"
+          install -d -m 700 "$bundle_root"
+          gh run download "$MAIN_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir "$bundle_root"
+          node scripts/release-artifact-manifest.mjs \
+            --verify-bundle "$bundle_root" \
+            --expected-runtime-sha "$GITHUB_SHA" \
+            --expected-digest "$ARTIFACT_DIGEST"
+          node scripts/release-runtime-dependencies.mjs verify --root "$bundle_root"
+          test "$(jq -r '.target.python' \
+            "$bundle_root/dist/runtime-dependencies/lock.json")" \
+            = '${{ needs.python-full.outputs.python_version }}'
+          test -d "$bundle_root/dist" && test ! -L "$bundle_root/dist"
+          test ! -e ./dist && test ! -L ./dist
+          cp -a "$bundle_root/dist" ./dist
+          node scripts/release-runtime-dependencies.mjs extract-node \
+            --root "$GITHUB_WORKSPACE"
 
       - name: Science policy
         id: science_policy
@@ -329,6 +497,7 @@ jobs:
 
       - name: Build
         id: build
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
         continue-on-error: true
         run: npm run build
 
@@ -342,8 +511,33 @@ jobs:
         continue-on-error: true
         run: scripts/cannot-skip-gate-dashboard.sh --json --no-evidence > .local/release/cannot-skip-dashboard.json
 
+      - name: Set up release-test Buildx cache
+        id: release_test_buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          version: v0.35.0
+          driver-opts: |
+            image=moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+
       - name: Build release-test container
         id: release_test_image
+        if: ${{ steps.release_test_buildx.outcome == 'success' }}
+        continue-on-error: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: Dockerfile.release-test
+          load: true
+          push: false
+          tags: nexus-hub-release-test:ci
+          provenance: false
+          cache-from: type=gha,scope=nexus-release-test
+          cache-to: type=gha,scope=nexus-release-test,mode=min,ignore-error=true,timeout=2m
+
+      - name: Build without Buildx only when Buildx setup is unavailable
+        id: release_test_image_fallback
+        if: ${{ steps.release_test_buildx.outcome != 'success' }}
         continue-on-error: true
         run: DOCKER_BUILDKIT=1 docker build -f Dockerfile.release-test -t nexus-hub-release-test:ci .
 
@@ -353,25 +547,105 @@ jobs:
         env:
           NEXUS_RELEASE_TEST_IMAGE: nexus-hub-release-test:ci
           NEXUS_RELEASE_TEST_SKIP_BUILD: '1'
-        run: scripts/release-verify-container.sh --skip-vitest --skip-pytest
+        run: scripts/release-verify-container.sh --contract-only
+
+      - name: Report advisory sandbox build path
+        if: ${{ always() }}
+        env:
+          BUILDX_SETUP_OUTCOME: ${{ steps.release_test_buildx.outcome }}
+          BUILDX_BUILD_OUTCOME: ${{ steps.release_test_image.outcome }}
+          DOCKER_FALLBACK_OUTCOME: ${{ steps.release_test_image_fallback.outcome }}
+        run: |
+          printf '{"schema":"nexus.release-optimization-telemetry.v1","metric":"sandbox-build-path","buildxSetup":"%s","buildxBuild":"%s","dockerFallback":"%s","advisory":true}\n' \
+            "$BUILDX_SETUP_OUTCOME" "$BUILDX_BUILD_OUTCOME" "$DOCKER_FALLBACK_OUTCOME"
+
+      - name: Build immutable runtime bundle
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        run: |
+          scripts/build-release-runtime-dependencies.sh
+          node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
 
       - name: Write exact release-test result
         id: write_test_result
         env:
-          NEXUS_RELEASE_VERDICT: ${{ steps.typecheck.outcome == 'success' && steps.science_policy.outcome == 'success' && steps.build.outcome == 'success' && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && steps.release_test_image.outcome == 'success' && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
-          NEXUS_RELEASE_PYTHON_VERSION: Python ${{ env.PYTHON_VERSION }}
+          NEXUS_RELEASE_VERDICT: ${{ steps.science_policy.outcome == 'success' && ((needs.test-plan.outputs.reuse_allowed == 'true' && steps.reuse_bundle.outcome == 'success') || (needs.test-plan.outputs.reuse_allowed != 'true' && steps.build.outcome == 'success')) && steps.migrations.outcome == 'success' && steps.cannot_skip_dashboard.outcome == 'success' && (steps.release_test_image.outcome == 'success' || steps.release_test_image_fallback.outcome == 'success') && steps.sandbox_smoke.outcome == 'success' && 'passed' || 'failed' }}
+          NEXUS_RELEASE_PYTHON_VERSION: ${{ needs.python-full.outputs.python_version }}
         run: |
-          node scripts/release-test-evidence.mjs write-result \
-            --status "$NEXUS_RELEASE_VERDICT" \
-            --runtime-sha "$GITHUB_SHA" \
-            --selection .local/release/test-selection.json \
-            --vitest-results-dir .local/release/rc-test-results \
-            --pytest-log .local/release/rc-test-results/pytest-results.log \
-            --python-version "$NEXUS_RELEASE_PYTHON_VERSION" \
-            --out .local/release/test-results.json
+          if [[ '${{ needs.test-plan.outputs.reuse_allowed }}' == 'true' ]]; then
+            node scripts/release-test-evidence.mjs write-reused-result \
+              --status "$NEXUS_RELEASE_VERDICT" \
+              --runtime-sha "$GITHUB_SHA" \
+              --selection .local/release/test-selection.json \
+              --main-evidence .local/release/protected-main-reuse/protected-main-ci-evidence.json \
+              --activation .local/release/protected-main-reuse/activation.json \
+              --pytest-log .local/release/rc-test-results/pytest-results.log \
+              --python-version "$NEXUS_RELEASE_PYTHON_VERSION" \
+              --repository "$GITHUB_REPOSITORY" \
+              --out .local/release/test-results.json
+          else
+            node scripts/release-test-evidence.mjs write-result \
+              --status "$NEXUS_RELEASE_VERDICT" \
+              --runtime-sha "$GITHUB_SHA" \
+              --selection .local/release/test-selection.json \
+              --vitest-results-dir .local/release/rc-test-results \
+              --pytest-log .local/release/rc-test-results/pytest-results.log \
+              --python-version "$NEXUS_RELEASE_PYTHON_VERSION" \
+              --artifact-digest "$(node scripts/release-artifact-manifest.mjs --digest | tr -d '\n')" \
+              --out .local/release/test-results.json
+          fi
 
-      - name: Build immutable runtime bundle
-        run: node scripts/release-bundle.mjs --runtime-sha "${{ github.sha }}"
+      - name: Compare protected-main evidence in shadow mode
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .local/release/protected-main
+          main_run_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=10" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main")][0].id // empty')"
+          if [ -z "$main_run_id" ]; then
+            node scripts/protected-main-ci-evidence.mjs missing \
+              --release-results .local/release/test-results.json \
+              --reason protected_main_evidence_missing \
+              --out .local/release/protected-main-shadow-comparison.json
+          elif ! gh run download "$main_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "protected-main-ci-evidence-$main_run_id-*" \
+            --dir .local/release/protected-main; then
+            node scripts/protected-main-ci-evidence.mjs missing \
+              --release-results .local/release/test-results.json \
+              --reason protected_main_artifact_missing \
+              --out .local/release/protected-main-shadow-comparison.json
+          else
+            mapfile -t protected_main_files < <(find .local/release/protected-main \
+              -type f -name protected-main-ci-evidence.json -print)
+            if [ "${#protected_main_files[@]}" -ne 1 ] \
+              || ! node scripts/protected-main-ci-evidence.mjs compare \
+                --main-evidence "${protected_main_files[0]:-missing}" \
+                --release-results .local/release/test-results.json \
+                --out .local/release/protected-main-shadow-comparison.json; then
+              node scripts/protected-main-ci-evidence.mjs missing \
+                --release-results .local/release/test-results.json \
+                --reason protected_main_evidence_invalid \
+                --out .local/release/protected-main-shadow-comparison.json
+            fi
+          fi
+
+      - name: Bind the protected-main shadow record into release-test evidence
+        if: ${{ needs.test-plan.outputs.reuse_allowed != 'true' }}
+        run: |
+          bind_args=(
+            --results .local/release/test-results.json
+            --comparison .local/release/protected-main-shadow-comparison.json
+          )
+          mapfile -t protected_main_files < <(find .local/release/protected-main \
+            -type f -name protected-main-ci-evidence.json -print 2>/dev/null || true)
+          comparison_has_main="$(node -e \
+            'const x=require("./.local/release/protected-main-shadow-comparison.json"); process.stdout.write(x.mainCi === null ? "false" : "true")')"
+          if [ "${#protected_main_files[@]}" -eq 1 ] && [ "$comparison_has_main" = 'true' ]; then
+            bind_args+=(--main-evidence "${protected_main_files[0]}")
+          fi
+          node scripts/release-test-evidence.mjs bind-protected-main-shadow "${bind_args[@]}"
 
       - name: Write unsigned ReleaseManifestV2 candidate
         env:
@@ -420,7 +694,11 @@ jobs:
             .local/release/bundles/${{ github.sha }}/**/.complete.json
             .local/release/test-selection.json
             .local/release/test-results.json
+            .local/release/protected-main-shadow-comparison.json
             .local/release/cannot-skip-dashboard.json
             .local/release/rc-test-results/*
+          # Runtime dependency archives are already gzip-compressed and
+          # digest-bound. Avoid a second expensive compression pass.
+          compression-level: 0
           include-hidden-files: true
           retention-days: 30

@@ -58,6 +58,10 @@ vi.mock('../../src/config', () => ({
       maxTokens: 1024,
       secretaryMaxTokens: 2048,
     },
+    ollama: {
+      model: 'qwen2.5:3b-instruct-q4_K_M',
+      classifierModel: 'qwen2.5:3b-instruct-q4_K_M',
+    },
   },
 }));
 
@@ -175,6 +179,12 @@ describe('model-config', () => {
 
       expect(mockConfig.anthropic.model).toBe('claude-opus-4-6');
       expect(mockConfig.anthropic.classifierModel).toBe('claude-sonnet-4-6');
+    });
+
+    it('allows only the approved 3B model for Ollama overrides', () => {
+      expect(() => setActiveModel('ollama', 'chat', 'qwen2.5:3b-instruct-q4_K_M')).not.toThrow();
+      expect(() => setActiveModel('ollama', 'chat', 'qwen3.6:35b-a3b-q4_K_M'))
+        .toThrow('model_override:ollama:chat must be');
     });
   });
 
@@ -309,6 +319,11 @@ describe('model-config', () => {
       testDb.exec('DROP TABLE IF EXISTS kv_store');
       expect(() => loadModelOverrides()).not.toThrow();
     });
+
+    it('fails closed on a persisted non-approved Ollama override', () => {
+      testDb.prepare(`INSERT INTO kv_store (key, value) VALUES ('model_override:ollama:chat', '"qwen3.6:35b-a3b-q4_K_M"')`).run();
+      expect(() => loadModelOverrides()).toThrow('model_override:ollama:chat must be');
+    });
   });
 
   // ── getAllModelStates ──────────────────────────────────────────────
@@ -368,6 +383,13 @@ describe('model-config', () => {
     it('exposes the runtime OpenAI nano default in both portal pickers', () => {
       expect(MODEL_OPTIONS.openai.chat).toContain('gpt-5.4-nano');
       expect(MODEL_OPTIONS.openai.classifier).toContain('gpt-5.4-nano');
+    });
+
+    it('exposes exactly one small-only Ollama model', () => {
+      expect(MODEL_OPTIONS.ollama).toEqual({
+        chat: ['qwen2.5:3b-instruct-q4_K_M'],
+        classifier: ['qwen2.5:3b-instruct-q4_K_M'],
+      });
     });
   });
 

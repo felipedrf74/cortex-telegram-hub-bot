@@ -1,5 +1,5 @@
 name: Release — Sign exact candidate
-run-name: Sign release candidate ${{ inputs.runtime_sha }} run ${{ inputs.candidate_run_id }}
+run-name: Sign release candidate ${{ inputs.runtime_sha }} run ${{ inputs.candidate_run_id }} request ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -10,6 +10,10 @@ on:
         type: string
       candidate_run_id:
         description: Successful RC workflow run ID for the exact runtime SHA
+        required: true
+        type: string
+      request_id:
+        description: Unique coordinator request identifier used for crash-safe run correlation
         required: true
         type: string
       contract_scope:
@@ -42,6 +46,7 @@ jobs:
     env:
       RUNTIME_SHA: ${{ inputs.runtime_sha }}
       CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      REQUEST_ID: ${{ inputs.request_id }}
       CONTRACT_SCOPE: ${{ inputs.contract_scope }}
       IOS_ATTESTATION_BASE64: ${{ inputs.ios_attestation_base64 }}
       IOS_DISTRIBUTION_ATTESTATION_BASE64: ${{ inputs.ios_distribution_attestation_base64 }}
@@ -54,6 +59,10 @@ jobs:
           }
           [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]] || {
             echo "candidate_run_id must contain decimal digits only" >&2
+            exit 64
+          }
+          [[ "$REQUEST_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || {
+            echo "request_id must be a canonical lowercase UUID" >&2
             exit 64
           }
           case "$CONTRACT_SCOPE" in
@@ -130,6 +139,59 @@ jobs:
           run-id: ${{ env.CANDIDATE_RUN_ID }}
           github-token: ${{ github.token }}
 
+      - name: Resolve protected-main reuse provenance request
+        run: |
+          mode="$(jq -r '.protectedMainShadow.mode // "invalid"' \
+            candidate-artifact/.local/release/test-results.json)"
+          case "$mode" in
+            shadow)
+              echo "NEXUS_PROTECTED_MAIN_REUSE=false" >> "$GITHUB_ENV"
+              ;;
+            reuse)
+              run_id="$(jq -r '.protectedMainShadow.evidence.ci.runId // empty' \
+                candidate-artifact/.local/release/test-results.json)"
+              [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || {
+                echo "reused protected-main run identity is invalid" >&2
+                exit 64
+              }
+              echo "NEXUS_PROTECTED_MAIN_REUSE=true" >> "$GITHUB_ENV"
+              echo "NEXUS_PROTECTED_MAIN_RUN_ID=$run_id" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "candidate protected-main evidence mode is invalid" >&2
+              exit 64
+              ;;
+          esac
+          run_id="$(jq -r '.protectedMainShadow.evidence.ci.runId // empty' \
+            candidate-artifact/.local/release/test-results.json)"
+          if [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "NEXUS_PROTECTED_TIMING_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "NEXUS_PROTECTED_MAIN_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          else
+            echo "NEXUS_PROTECTED_TIMING_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "Exact protected-main timing is unavailable; release timing remains advisory." >&2
+          fi
+
+      - name: Fetch exact reused protected-main GitHub identity
+        if: ${{ env.NEXUS_PROTECTED_TIMING_AVAILABLE == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NEXUS_PROTECTED_MAIN_RUN_ID}" \
+            > trusted-input/protected-main-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${NEXUS_PROTECTED_MAIN_RUN_ID}/artifacts?per_page=100" \
+            > trusted-input/protected-main-artifacts.json
+
+      - name: Fetch current protected signing run and job timing
+        if: ${{ env.NEXUS_PROTECTED_TIMING_AVAILABLE == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > trusted-input/signing-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            > trusted-input/signing-jobs.json
+
       - name: Resolve protected nightly evidence request
         run: |
           node trusted-tooling/scripts/trusted-release-signer.mjs nightly-request \
@@ -200,6 +262,19 @@ jobs:
               --nightly-evidence-root trusted-input/nightly-evidence
             )
           fi
+          protected_timing_args=()
+          if [[ "$NEXUS_PROTECTED_TIMING_AVAILABLE" == 'true' ]]; then
+            protected_timing_args+=(
+              --protected-main-run-metadata trusted-input/protected-main-run.json
+              --signing-run-metadata trusted-input/signing-run.json
+              --signing-jobs-metadata trusted-input/signing-jobs.json
+            )
+          fi
+          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
+            protected_timing_args+=(
+              --protected-main-artifact-metadata trusted-input/protected-main-artifacts.json
+            )
+          fi
           node trusted-tooling/scripts/trusted-release-signer.mjs verify-candidate \
             --trusted-root trusted-tooling \
             --candidate-source candidate-source \
@@ -211,7 +286,8 @@ jobs:
             --runtime-sha "$RUNTIME_SHA" \
             --candidate-run-id "$CANDIDATE_RUN_ID" \
             "${contract_args[@]}" \
-            "${nightly_args[@]}"
+            "${nightly_args[@]}" \
+            "${protected_timing_args[@]}"
 
       - name: Sign exact ReleaseManifestV2 with protected-main tooling
         env:
@@ -232,6 +308,19 @@ jobs:
               --nightly-evidence-root trusted-input/nightly-evidence
             )
           fi
+          protected_timing_args=()
+          if [[ "$NEXUS_PROTECTED_TIMING_AVAILABLE" == 'true' ]]; then
+            protected_timing_args+=(
+              --protected-main-run-metadata trusted-input/protected-main-run.json
+              --signing-run-metadata trusted-input/signing-run.json
+              --signing-jobs-metadata trusted-input/signing-jobs.json
+            )
+          fi
+          if [[ "$NEXUS_PROTECTED_MAIN_REUSE" == 'true' ]]; then
+            protected_timing_args+=(
+              --protected-main-artifact-metadata trusted-input/protected-main-artifacts.json
+            )
+          fi
           node trusted-tooling/scripts/trusted-release-signer.mjs sign-manifest \
             --trusted-root trusted-tooling \
             --candidate-source candidate-source \
@@ -244,6 +333,7 @@ jobs:
             --candidate-run-id "$CANDIDATE_RUN_ID" \
             "${contract_args[@]}" \
             "${nightly_args[@]}" \
+            "${protected_timing_args[@]}" \
             --output-root signed-artifact
 
       - name: Upload signed immutable release artifact
@@ -251,6 +341,9 @@ jobs:
         with:
           name: release-manifest-v2-${{ env.RUNTIME_SHA }}
           path: signed-artifact/
+          # The signed artifact currently carries the already-compressed exact
+          # runtime bundle. Preserve bytes while skipping redundant deflate.
+          compression-level: 0
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error

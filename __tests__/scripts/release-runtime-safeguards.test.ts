@@ -1,8 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  closeSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -86,6 +88,9 @@ if (process.env.CONTENT_WORKSPACE_V1_MODE !== 'write'
 }
 console.log('fixture-private-owner=41');
 `);
+  writeFileSync(join(release, 'dist', 'tools', 'portal-session-token.js'), `
+process.stdout.write(JSON.stringify({ token: 'fixture-session-token-123456' }));
+`);
   const db = new Database(join(data, 'bot.db'));
   db.exec('CREATE TABLE fixture (id INTEGER PRIMARY KEY)');
   db.close();
@@ -133,6 +138,10 @@ case "$url" in
     [ "$count" -gt "$delay" ] || exit 7
     printf '%s\n' '{"status":"healthy","server":{"status":"online"},"database":"connected"}' > "$output"
     ;;
+  *:8200/api/snapshot|*:8201/api/snapshot)
+    [ -n "$header" ] && grep -q 'x-portal-session: fixture-session-token-123456' "\${header#@}"
+    printf '%s\n' '{"version":"4.14.999","uptime":123}' > "$output"
+    ;;
   *:8100/ready|*:8101/ready)
     [ -n "$header" ] && grep -q 'x-internal-secret: do-not-print-internal' "\${header#@}"
     printf '%s\n' '{"status":"ready","internalAuthConfigured":true}' > "$output"
@@ -158,8 +167,8 @@ observed_sha='${runtimeSha}'
 if [ "\${PM2_WRONG_SHA:-0}" = 1 ]; then observed_sha='${'b'.repeat(40)}'; fi
 cat <<JSON
 [
-  {"name":"${backend}","pid":101,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}","NEXUS_RELEASE_SHA":"$observed_sha","restart_time":$restart,"unstable_restarts":0,"pm_uptime":1000}},
-  {"name":"${content}","pid":102,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}/content-engine","NEXUS_RELEASE_SHA":"$observed_sha","restart_time":2,"unstable_restarts":0,"pm_uptime":1000}}
+  {"name":"${backend}","pid":101,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}","pm_exec_path":"${fixture.release}/dist/index.js","exec_interpreter":"node","NEXUS_RELEASE_SHA":"$observed_sha","SENTRY_RELEASE":"$observed_sha","restart_time":$restart,"unstable_restarts":0,"pm_uptime":1000}},
+  {"name":"${content}","pid":102,"pm2_env":{"status":"online","pm_cwd":"${fixture.release}/content-engine","pm_exec_path":"${fixture.release}/content-engine/.venv/bin/python3.12","exec_interpreter":"none","NEXUS_RELEASE_SHA":"$observed_sha","SENTRY_RELEASE":"$observed_sha","restart_time":2,"unstable_restarts":0,"pm_uptime":1000}}
 ]
 JSON
 `);
@@ -267,6 +276,8 @@ describe('exact release extended readiness', () => {
       schema: 'nexus.release-readiness.v1',
       role: 'staging',
       runtimeSha,
+      stabilitySeconds: 0,
+      stabilityObservedSeconds: expect.any(Number),
       checks: {
         nativeBinding: true,
         sqliteIntegrity: true,
@@ -275,6 +286,67 @@ describe('exact release extended readiness', () => {
         pm2RestartStable: true,
       },
     });
+    expect(evidence.stabilityObservedSeconds).toBeGreaterThanOrEqual(0);
+    expect(Date.parse(evidence.stabilityCompletedAt)).toBeGreaterThanOrEqual(
+      Date.parse(evidence.stabilityStartedAt),
+    );
+  });
+
+  it('writes evidence only through an inherited root-broker descriptor when requested', () => {
+    const fixture = releaseFixture('staging');
+    const bin = join(fixture.root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const curl = join(bin, 'curl');
+    const pm2 = join(bin, 'pm2');
+    writeCurl(curl, fixture);
+    writePm2(pm2, fixture, 'staging');
+    const output = join(fixture.root, 'readiness-fd.json');
+    const descriptor = openSync(output, 'w+', 0o600);
+    let result;
+    try {
+      result = spawnSync('bash', [
+        READINESS,
+        '--role', 'staging',
+        '--base-dir', fixture.base,
+        '--release-dir', fixture.release,
+        '--runtime-sha', runtimeSha,
+        '--pm2-bin', pm2,
+        '--node-bin', process.execPath,
+        '--curl-bin', curl,
+        '--output-fd', '3',
+        '--readiness-attempts', '4',
+        '--poll-seconds', '0',
+        '--stability-seconds', '0',
+      ], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe', descriptor],
+      });
+    } finally {
+      closeSync(descriptor);
+    }
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({
+      schema: 'nexus.release-readiness.v1',
+      role: 'staging',
+      runtimeSha,
+    });
+
+    const conflicting = spawnSync('bash', [
+      READINESS,
+      '--role', 'staging',
+      '--base-dir', fixture.base,
+      '--release-dir', fixture.release,
+      '--runtime-sha', runtimeSha,
+      '--pm2-bin', pm2,
+      '--node-bin', process.execPath,
+      '--curl-bin', curl,
+      '--output', output,
+      '--output-fd', '3',
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env } });
+    expect(conflicting.status).toBe(64);
+    expect(conflicting.stderr).toContain('mutually exclusive');
   });
 
   it('rejects a PM2 restart between independent samples', () => {
@@ -333,6 +405,77 @@ describe('canonical environment parity', () => {
     return { root, bin, staging, production };
   }
 
+  function installStatFixture(bin: string) {
+    executable(join(bin, 'stat'), `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}:\${2:-}" in
+  -c:%a|-f:%Lp) printf '%s\\n' "\${FIXTURE_STAT_MODE:?}" ;;
+  -c:%u|-f:%u) printf '%s\\n' "\${FIXTURE_STAT_UID:?}" ;;
+  -c:%g|-f:%g) printf '%s\\n' "\${FIXTURE_STAT_GID:?}" ;;
+  *) exit 64 ;;
+esac
+`);
+  }
+
+  function installCanonicalSshFixture(bin: string) {
+    executable(join(bin, 'ssh'), `#!/usr/bin/env bash
+set -euo pipefail
+shift
+[ "$#" -eq 6 ] && [ "$1" = bash ] && [ "$2" = -s ] && [ "$3" = -- ]
+exec "$1" "$2" "$3" "\${FIXTURE_STAGING_DIR:?}" "\${FIXTURE_PRODUCTION_DIR:?}" "$6"
+`);
+  }
+
+  function installIdFixture(bin: string) {
+    executable(join(bin, 'id'), `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  -u) printf '%s\\n' "\${FIXTURE_ID_UID:?}" ;;
+  -g) printf '%s\\n' "\${FIXTURE_ID_GID:?}" ;;
+  -un) printf '%s\\n' "\${FIXTURE_ID_NAME:?}" ;;
+  *) exit 64 ;;
+esac
+`);
+  }
+
+  function runParityWithIdentity(
+    fixture: ReturnType<typeof parityFixture>,
+    identity: {
+      mode: string;
+      uid: number;
+      gid: number;
+      canonical?: boolean;
+      workerName?: string;
+      workerUid?: number;
+      workerGid?: number;
+    },
+  ) {
+    installStatFixture(fixture.bin);
+    if (identity.canonical) {
+      installCanonicalSshFixture(fixture.bin);
+      installIdFixture(fixture.bin);
+    }
+    return spawnSync('bash', [
+      ENV_PARITY, '--server', 'fixture',
+      '--staging-dir', identity.canonical ? '/srv/nexus-release/staging' : fixture.staging,
+      '--prod-dir', identity.canonical ? '/srv/nexus-release/production' : fixture.production,
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${fixture.bin}:${process.env.PATH}`,
+        FIXTURE_STAT_MODE: identity.mode,
+        FIXTURE_STAT_UID: String(identity.uid),
+        FIXTURE_STAT_GID: String(identity.gid),
+        FIXTURE_ID_NAME: identity.workerName ?? 'dominguez',
+        FIXTURE_ID_UID: String(identity.workerUid ?? process.getuid()),
+        FIXTURE_ID_GID: String(identity.workerGid ?? process.getgid()),
+        FIXTURE_STAGING_DIR: fixture.staging,
+        FIXTURE_PRODUCTION_DIR: fixture.production,
+      },
+    });
+  }
+
   it('compares configuration shape without comparing or exposing secret values', () => {
     const fixture = parityFixture();
     const output = execFileSync('bash', [
@@ -343,9 +486,70 @@ describe('canonical environment parity', () => {
     expect(output).not.toContain('prod');
   });
 
+  it('accepts canonical staging and production environments sealed root:worker 0440', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '440', uid: 0, gid: process.getgid(), canonical: true,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('env_parity_ok');
+  });
+
+  it('retains compatibility with worker-owned private 0400 environments', () => {
+    const fixture = parityFixture();
+    chmodSync(join(fixture.staging, '.env'), 0o400);
+    chmodSync(join(fixture.production, '.env'), 0o400);
+    const output = execFileSync('bash', [
+      ENV_PARITY, '--server', 'fixture', '--staging-dir', fixture.staging, '--prod-dir', fixture.production,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}` } });
+    expect(output).toContain('env_parity_ok');
+  });
+
+  it('rejects canonical mode when the environment group is not the SSH worker group', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '440', uid: 0, gid: process.getgid() + 1, canonical: true,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_group');
+  });
+
+  it('rejects root or another SSH identity even when canonical metadata matches it', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '440',
+      uid: 0,
+      gid: 0,
+      canonical: true,
+      workerName: 'root',
+      workerUid: 0,
+      workerGid: 0,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_worker');
+  });
+
+  it('does not permit the legacy worker-private identity on canonical /srv paths', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '600', uid: process.getuid(), gid: process.getgid(), canonical: true,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_mode');
+  });
+
+  it('rejects a worker-owned legacy environment assigned to a foreign group', () => {
+    const fixture = parityFixture();
+    const result = runParityWithIdentity(fixture, {
+      mode: '600', uid: process.getuid(), gid: process.getgid() + 1,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain('unsafe_env_group');
+  });
+
   it('fails on unsafe env permissions and missing production backup keys', () => {
     const fixture = parityFixture();
-    chmodSync(join(fixture.production, '.env'), 0o644);
+    chmodSync(join(fixture.production, '.env'), 0o620);
     const unsafe = spawnSync('bash', [
       ENV_PARITY, '--server', 'fixture', '--staging-dir', fixture.staging, '--prod-dir', fixture.production,
     ], { encoding: 'utf8', env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}` } });

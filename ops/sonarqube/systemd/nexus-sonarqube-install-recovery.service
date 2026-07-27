@@ -1,0 +1,27 @@
+[Unit]
+Description=Recover an interrupted Nexus SonarQube asset installation
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=nexus-sonarqube.service nexus-sonarqube-backup.service nexus-sonarqube-backup.timer
+ConditionPathIsDirectory=/var/lib/nexus-release-promotion/sonarqube-install-control
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /var/lib/nexus-release-promotion/sonarqube-install-control/install-recovery-program.v2.py auto-recover --program /var/lib/nexus-release-promotion/sonarqube-install-control/install-recovery-program.v2.py --lock /run/lock/nexus-release-sonar.lock --asset-journal /var/lib/nexus-release-promotion/sonarqube-install-control/asset-install-in-progress.v2 --asset-receipt /var/lib/nexus-release-promotion/sonarqube-install-control/asset-install-recovery-receipt.v1.json --directory-journal /var/lib/nexus-release-promotion/sonarqube-install-control/directory-install-in-progress.v1.json --directory-receipt /var/lib/nexus-release-promotion/sonarqube-install-control/directory-install-recovery-receipt.v1.json --anchor-intent /var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-enrollment-in-progress.v2.json --anchor-receipt /var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-enrollment.v2.json --unenroll-journal /var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-unenrollment-in-progress.v1.json --unenroll-result /var/lib/nexus-release-promotion/sonarqube-install-control/recovery-anchor-unenrollment-result.v1.json --install-commit /var/lib/nexus-release-promotion/sonarqube-install-control/install-commit.v1.json
+TimeoutStartSec=180s
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/sudoers.d /etc/systemd/system /etc/tmpfiles.d /run/lock
+ReadWritePaths=-/etc/sonarqube -/srv/sonarqube /usr/local/sbin
+ReadWritePaths=/var/lib/nexus-release-promotion/sonarqube-install-control -/var/lib/nexus-sonarqube
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

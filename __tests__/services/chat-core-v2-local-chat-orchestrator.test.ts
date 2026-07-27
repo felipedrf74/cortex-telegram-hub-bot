@@ -221,6 +221,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       chatCoreV2ResponseKind: 'message',
     }));
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledWith(expect.objectContaining({
+      workloadRole: 'validated_local_chat',
       modelOverride: 'qwen2.5:3b-instruct-q4_K_M',
       think: false,
       numCtx: 512,
@@ -1160,7 +1161,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       text: unsafeRecipe,
       providerMetadata: {
         providerUsed: 'ollama',
-        modelUsed: 'qwen3.6:35b-a3b-q4_K_M',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
         fallbackUsed: false,
       },
     });
@@ -1183,7 +1184,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-recipe-late-allergen',
       locale: 'en',
       surface: 'ios',
-      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M' }),
     });
 
     expect(result?.response.text).toContain('saved cooking safety preference');
@@ -1239,7 +1240,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-recipe-length',
       locale: 'pt-BR',
       surface: 'ios',
-      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M' }),
     });
 
     expect(result?.degraded).toBe(false);
@@ -1253,7 +1254,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     expect(result?.response.text).not.toBe('**Kibe de forno recheado**\n**Modo de preparo:**');
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(2);
     expect(mocks.dispatchLocalReasoning).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      modelOverride: 'qwen3.6:35b-a3b-q4_K_M',
+      modelOverride: 'qwen2.5:3b-instruct-q4_K_M',
       numPredict: 380,
       timeoutMs: 50000,
       keepAliveSeconds: -1,
@@ -1261,7 +1262,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
     }));
     expect(mocks.dispatchLocalReasoning.mock.calls[0][0].prompt).toContain('Preserva o prato pedido');
     expect(mocks.dispatchLocalReasoning).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      modelOverride: 'qwen3.6:35b-a3b-q4_K_M',
+      modelOverride: 'qwen2.5:3b-instruct-q4_K_M',
       numPredict: 380,
       timeoutMs: 50000,
       keepAliveSeconds: -1,
@@ -1321,7 +1322,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-recipe-repair-allergen',
       locale: 'en',
       surface: 'ios',
-      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M' }),
     });
 
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledTimes(2);
@@ -1354,7 +1355,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       text: completeRecipe,
       providerMetadata: {
         providerUsed: 'ollama',
-        modelUsed: 'qwen3.6:35b-a3b-q4_K_M',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
         fallbackUsed: false,
       },
     });
@@ -1366,14 +1367,14 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-recipe-generic-cooking',
       locale: 'pt-BR',
       surface: 'ios',
-      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M' }),
     });
 
     expect(result?.degraded).toBe(false);
     expect(result?.response.domain).toBe('cooking');
     expect(result?.response.text).toBe(completeRecipe);
     expect(mocks.dispatchLocalReasoning).toHaveBeenCalledWith(expect.objectContaining({
-      modelOverride: 'qwen3.6:35b-a3b-q4_K_M',
+      modelOverride: 'qwen2.5:3b-instruct-q4_K_M',
       numPredict: 380,
       timeoutMs: 50000,
       prompt: expect.stringContaining('Formato da receita:'),
@@ -1404,7 +1405,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       stopReason: 'length',
       providerMetadata: {
         providerUsed: 'ollama',
-        modelUsed: 'qwen3.6:35b-a3b-q4_K_M',
+        modelUsed: 'qwen2.5:3b-instruct-q4_K_M',
         fallbackUsed: false,
         evalCount: 380,
       },
@@ -1417,7 +1418,7 @@ describe('ChatCoreV2 local chat orchestrator', () => {
       requestId: 'req-recipe-complete-at-cap',
       locale: 'pt-BR',
       surface: 'ios',
-      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen3.6:35b-a3b-q4_K_M' }),
+      env: baseEnv({ CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL: 'qwen2.5:3b-instruct-q4_K_M' }),
     });
 
     expect(result?.degraded).toBe(false);

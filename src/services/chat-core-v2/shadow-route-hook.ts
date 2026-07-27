@@ -431,6 +431,7 @@ function buildLocalReasoningPlanner(
   return async (packet) => {
     const result = await runWithLocalInferenceSlot(
       () => provider.dispatchLocalReasoning({
+        workloadRole: 'classifier_shadow',
         prompt: JSON.stringify(packet),
         // PROVEN wire method: static instruction prompt + Ollama format schema so
         // the model emits the tiny WIRE shape that the orchestrator auto-expands.

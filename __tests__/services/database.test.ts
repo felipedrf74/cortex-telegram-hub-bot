@@ -23,6 +23,8 @@ import {
 } from '../../src/services/database';
 import { ensureMigrationSqlFunctions } from '../../src/services/migration-runner';
 import { assertContentWorkspaceBootReadiness } from '../../src/services/content-workspace-boot-readiness';
+import { OllamaSmallOnlyPolicyError } from '../../src/services/ollama-model-policy';
+import { loadPersistedModelOverrides } from '../../src/services/persisted-model-overrides';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -204,6 +206,18 @@ describe('Database Migrations', () => {
     expect(() => closeDatabase()).not.toThrow();
     expect(() => closeDatabase()).not.toThrow();
     expect(() => getDb()).toThrow('Database not initialized');
+  });
+
+  it('fails startup when persisted Ollama model validation rejects an override', () => {
+    const violation = new OllamaSmallOnlyPolicyError(
+      'model_override:ollama:chat',
+      'qwen3.6:35b-a3b-q4_K_M',
+    );
+
+    expect(() => loadPersistedModelOverrides(() => {})).not.toThrow();
+    expect(() => loadPersistedModelOverrides(() => {
+      throw violation;
+    })).toThrow(violation);
   });
 
   it('migration filenames follow non-decreasing numbering', () => {

@@ -1,0 +1,53 @@
+[Unit]
+Description=Isolated Nexus rollback-drill KVM guest %i
+ConditionPathExists=/run/lock/nexus-release-sonar.lock
+ConditionPathExists=/run/nexus-rollback-drill-vm/admission.lock
+ConditionPathExists=/var/lib/nexus-rollback-drill-vm/active.json
+ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/install-in-progress.v1
+ConditionPathExists=!/var/lib/nexus-rollback-drill-vm/provision-in-progress.v1
+After=systemd-tmpfiles-setup.service
+
+[Service]
+Type=simple
+User=nexus-drill-vm
+Group=nexus-drill-vm
+SupplementaryGroups=kvm
+OpenFile=/run/lock/nexus-release-sonar.lock:release-sonar-lock
+OpenFile=/run/nexus-rollback-drill-vm/active.lock:rollback-drill-run-lock
+ExecStartPre=+/usr/local/libexec/nexus-rollback-drill-vm/host-preflight
+ExecStart=/usr/local/libexec/nexus-rollback-drill-vm/run %i
+Restart=no
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=45s
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=false
+PrivateMounts=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus-rollback-drill-vm/sets
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CPUQuota=400%
+MemoryHigh=10G
+MemoryMax=12G
+MemorySwapMax=512M
+TasksMax=2048
+
+# Deliberately no installation stanza. Guests are owner-started, never enabled.

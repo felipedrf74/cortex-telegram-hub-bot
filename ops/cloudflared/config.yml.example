@@ -1,0 +1,9 @@
+# Copy to a root-owned mode-0600 staging path and replace only the UUID.
+# The credential is injected by systemd LoadCredential; never put a token here.
+tunnel: 00000000-0000-0000-0000-000000000000
+credentials-file: /run/credentials/nexus-cloudflared.service/tunnel.json
+
+ingress:
+  - hostname: api.nexushub.me
+    service: http://127.0.0.1:8200
+  - service: http_status:404

@@ -1084,7 +1084,11 @@ function repairTruncatedCalendarJson(text: string): ImageCalendarResult | null {
 
 import { getToolsForDomain } from '../skills/skill-manager';
 import { getFilteredToolsForMessage, secretaryNeedsHeavyModel } from './secretary-tools';
-import type { CallDomainOptions } from './ai-provider';
+import type {
+  CallDomainOptions,
+  StructuredGenerationRequest,
+  StructuredGenerationResult,
+} from './ai-provider';
 import { normalizeCallDomainOptions } from './ai-provider';
 
 /** Service availability filter — removes tools for unconfigured services. */
@@ -1308,6 +1312,38 @@ export interface CallDomainResult {
   text: string;
   toolCalls: Anthropic.ToolUseBlock[];
   stopReason: string;
+}
+
+/**
+ * Provider-native ScriptGen completion. Unlike `callDomain`, this path uses
+ * the supplied schema prompt as the real system instruction and deliberately
+ * has no domain prompt, tools, history, training signals, or tenant knowledge
+ * enrichment. `trackedCreate` retains the normal budget, timeout, usage, and
+ * attribution controls at the SDK boundary.
+ */
+export async function callStructuredGeneration(
+  request: StructuredGenerationRequest,
+): Promise<StructuredGenerationResult> {
+  if (!/^claude(?:[-.:]|$)/i.test(request.model)) {
+    throw new Error('Anthropic structured generation requires a Claude model');
+  }
+  const response = await trackedCreate(client, {
+    model: request.model,
+    max_tokens: request.maxTokens,
+    system: [{ type: 'text', text: request.systemPrompt }],
+    messages: [{ role: 'user', content: request.userPrompt }],
+  }, request.category, {
+    userId: request.userId,
+    tenantId: request.tenantId,
+    isUserMessage: true,
+  });
+  return {
+    text: response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n'),
+    stopReason: response.stop_reason || 'end_turn',
+  };
 }
 
 // Legacy getCachedTools — kept for backwards compatibility, delegates to secretary domain

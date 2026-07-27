@@ -15,12 +15,15 @@ import {
   AIToolResultMessage,
   CallDomainOptions,
   ClassifyOptions,
+  StructuredGenerationRequest,
+  StructuredGenerationResult,
 } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import {
   classifyMessage,
   callDomain,
   continueWithToolResults,
+  callStructuredGeneration as callAnthropicStructuredGeneration,
   CallDomainResult,
 } from './anthropic';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -74,6 +77,12 @@ export class AnthropicProvider implements AIProvider {
     // stays a thin adapter — all optimization logic lives downstream.
     const result = await callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     return toAICallResult(result);
+  }
+
+  async callStructuredGeneration(
+    request: StructuredGenerationRequest,
+  ): Promise<StructuredGenerationResult> {
+    return callAnthropicStructuredGeneration(request);
   }
 
   async continueWithToolResults(

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Compatibility refusal only. The supported implementation is
+# scripts/application-dr-isolated-harness.sh, installed root:root mode 0700 at
+# the path declared in install-layout.tsv. Do not copy or customize this file
+# as a site harness.
+set -euo pipefail
+umask 077
+
+action="${1:-}"
+runtime="${2:-}"
+[[ "${NEXUS_DRILL_MODE:-}" = isolated-restore ]] || { echo "isolated drill mode is required" >&2; exit 78; }
+[[ "$runtime" == /* && "$runtime" != / && "$runtime" = "${NEXUS_DRILL_ROOT:-}" ]] \
+  || { echo "isolated runtime root is invalid" >&2; exit 78; }
+[[ "${NEXUS_DRILL_DATABASE_PATH:-}" = "$runtime/data/bot.db" ]] \
+  || { echo "isolated database path is invalid" >&2; exit 78; }
+[[ "${NEXUS_DRILL_BASE_URL:-}" =~ ^http://127\.0\.0\.1:[0-9]{4,5}$ ]] \
+  || { echo "isolated loopback URL is invalid" >&2; exit 78; }
+
+case "$action" in
+  boot|smoke|stop)
+    echo "unsupported template: install application-dr-isolated-harness.sh" >&2
+    ;;
+  *) echo "expected boot, smoke, or stop" >&2 ;;
+esac
+exit 78

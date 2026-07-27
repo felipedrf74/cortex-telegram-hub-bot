@@ -32,8 +32,8 @@ const { mockConfig, mockLogger } = vi.hoisted(() => ({
     ollama: {
       enabled: true,
       baseUrl: 'http://127.0.0.1:11434',
-      model: 'qwen3.6:35b-a3b-q4_K_M',
-      classifierModel: 'qwen3.6:35b-a3b-q4_K_M',
+      model: 'qwen2.5:3b-instruct-q4_K_M',
+      classifierModel: 'qwen2.5:3b-instruct-q4_K_M',
       timeoutMs: 5000,
       tokenCaps: {
         classifyMaxInput: 1500, classifyMaxOutput: 128,
@@ -216,7 +216,7 @@ describe('v3.1 Privacy gate — allow_raw is the only forward-private path', () 
   });
 });
 
-describe('v3.1 Privacy gate — non-private requests always forward raw', () => {
+describe('v3.1 Privacy gate — explicitly non-private requests forward raw', () => {
   it('containsPrivateData=false + mode=redacted_only → sent_raw (mode only matters for private)', async () => {
     const result = await selectApprovedCloudReasoningProvider(
       { prompt: 'general public question about TypeScript', containsPrivateData: false },
@@ -228,13 +228,16 @@ describe('v3.1 Privacy gate — non-private requests always forward raw', () => 
     }
   });
 
-  it('omitting containsPrivateData entirely → defaults to non-private → sent_raw', async () => {
+  it('omitting containsPrivateData entirely → rejects unknown privacy classification', async () => {
     const result = await selectApprovedCloudReasoningProvider(
-      { prompt: 'general public question' },
+      { prompt: 'general public question' } as unknown as Parameters<typeof selectApprovedCloudReasoningProvider>[0],
       (name) => name === 'gemini' ? makeCloudProvider('gemini') : null,
     );
-    expect(result.rejected).toBe(false);
-    if (!result.rejected) expect(result.privacyAction).toBe('sent_raw');
+    expect(result.rejected).toBe(true);
+    if (result.rejected) {
+      expect(result.reason).toBe('privacy_default_block');
+      expect(result.warning).toBe('privacy_classification_required');
+    }
   });
 });
 

@@ -20,7 +20,10 @@ jobs:
   changed-critical-mutation:
     name: Mutation score — changed critical modules
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Advisory only: execute every changed critical range in sequential
+    # one-source processes. Start conservatively, then ratchet this timeout
+    # from measured successful sweeps instead of dropping deferred targets.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -50,5 +53,6 @@ jobs:
         with:
           name: mutation-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/mutation/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

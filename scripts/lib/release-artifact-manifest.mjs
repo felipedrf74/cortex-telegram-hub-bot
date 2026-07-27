@@ -29,9 +29,12 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'content-engine/requirements-dev.txt',
   'content-engine/pyproject.toml',
   'scripts/release-installed-tree-attestation.mjs',
+  'scripts/release-recovery-runtime-identity.mjs',
+  'scripts/release-runtime-dependencies.mjs',
   'scripts/env-parity-check.sh',
   'scripts/lib/release-gates.sh',
   'scripts/promote-exact-release.sh',
+  'scripts/remote-release-capacity.sh',
   'scripts/remote-release-preflight.sh',
   'scripts/remote-release-readiness.sh',
   'scripts/release-operator.sh',
@@ -44,12 +47,17 @@ export const RELEASE_RUNTIME_FILES = Object.freeze([
   'scripts/lib/production-shape-migration-rehearsal-evidence.mjs',
   'scripts/remote-prepare-release-backup.sh',
   'scripts/remote-start-sanitized-pm2.sh',
+  'scripts/staging-smoke-ollama.sh',
   'scripts/restore.sh',
   'scripts/rollback.sh',
 ]);
 
 export function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export function canonicalJson(value) {
@@ -87,6 +95,10 @@ function gitValue(root, commandArgs) {
 }
 
 function shouldSkip(relativePath) {
+  if (relativePath.startsWith('dist/')
+      && (relativePath.endsWith('.d.ts') || relativePath.endsWith('.d.ts.map'))) {
+    return true;
+  }
   return [
     '/.venv',
     '/__pycache__/',
@@ -280,7 +292,7 @@ export function buildReleaseArtifactManifest(rootInput = process.cwd()) {
     }
   }
   validateReleaseScriptStaticEsmDependencyClosure(root, fileSet);
-  const files = [...fileSet].sort().map((relativePath) => {
+  const files = [...fileSet].sort(compareCodeUnits).map((relativePath) => {
     if (!safeRelativePath(relativePath)) throw new Error(`unsafe release artifact path: ${relativePath}`);
     const content = fs.readFileSync(path.join(root, relativePath));
     return { path: relativePath, size: content.length, sha256: sha256(content) };
@@ -328,13 +340,16 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
       throw new Error(`release bundle artifact is not a regular file: ${relativePath}`);
     }
     const body = fs.readFileSync(fullPath);
-    if (entry.size !== body.length || entry.sha256 !== sha256(body)) {
+    const bodySha256 = sha256(body);
+    if (entry.size !== body.length || entry.sha256 !== bodySha256) {
       throw new Error(`release bundle artifact byte identity mismatch: ${relativePath}`);
     }
-    return { path: relativePath, size: body.length, sha256: sha256(body) };
+    return { path: relativePath, size: body.length, sha256: bodySha256 };
   });
   validateReleaseScriptStaticEsmDependencyClosure(bundleRoot, seen);
-  if (canonicalJson(files) !== canonicalJson([...files].sort((a, b) => a.path.localeCompare(b.path)))) {
+  if (canonicalJson(files) !== canonicalJson(
+    [...files].sort((a, b) => compareCodeUnits(a.path, b.path)),
+  )) {
     throw new Error('release bundle artifact file list is not sorted');
   }
   const digest = releaseArtifactDigest(files);
@@ -360,7 +375,8 @@ export function verifyReleaseBundle(bundleRootInput, expectedRuntimeSha = '') {
   };
   walk(bundleRoot);
   const expectedEntries = new Set([...files.map((entry) => entry.path), 'artifact-manifest.json', '.complete.json']);
-  if (canonicalJson([...actualEntries].sort()) !== canonicalJson([...expectedEntries].sort())) {
+  if (canonicalJson([...actualEntries].sort(compareCodeUnits))
+      !== canonicalJson([...expectedEntries].sort(compareCodeUnits))) {
     throw new Error('release bundle contains undeclared or missing files');
   }
   return { manifest: { ...declared, files }, marker, digest, bundleRoot };

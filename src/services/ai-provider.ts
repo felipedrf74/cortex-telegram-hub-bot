@@ -252,6 +252,37 @@ export interface CallDomainOptions {
 }
 
 /**
+ * Dedicated no-tools structured-generation request.
+ *
+ * This is intentionally separate from `callDomain`: implementations must use
+ * `systemPrompt` as the provider's real system/developer instruction and must
+ * not add domain prompts, conversation history, tools, tenant knowledge, or
+ * other implicit state. The approved-cloud gate owns provider/model selection;
+ * implementations only execute the exact pinned model supplied here.
+ */
+export interface StructuredGenerationRequest {
+  systemPrompt: string;
+  userPrompt: string;
+  model: string;
+  maxTokens: number;
+  userId: number;
+  tenantId: number;
+  category:
+    | 'cloud_script_generation_plan'
+    | 'cloud_script_generation_artifacts'
+    | 'cloud_local_reasoning';
+  /** Request provider-native JSON output. */
+  responseFormat: 'text' | 'json';
+  /** Optional schema sent to capable providers and always revalidated locally. */
+  jsonSchema?: unknown;
+}
+
+export interface StructuredGenerationResult {
+  text: string;
+  stopReason: string;
+}
+
+/**
  * Options bag for `classify()`. Mirrors `CallDomainOptions` for the
  * lightweight classify path. Added 2026-05-26 for Option 3 (small
  * dedicated classifier on Ollama with shadow-eval), but every field is
@@ -348,11 +379,21 @@ export interface AIProvider {
 
   /**
    * Two-step structured script generation (plan → artifacts → sandboxed
-   * validation). Only the local provider supports this in v1; cloud
-   * providers leave it undefined so `scriptGeneration` task type cannot
-   * silently escalate.
+   * validation). Ollama exposes this capability only for explicit offline
+   * evaluation. Approved cloud execution is implemented by the routing
+   * layer's dedicated adapter plus the isolated `callStructuredGeneration`
+   * capability below; generic domain calls never satisfy this contract.
    */
   generateScript?(task: unknown): Promise<unknown>;
+
+  /**
+   * Provider-native structured generation with the strict isolation contract
+   * defined by `StructuredGenerationRequest`. Only approved cloud providers
+   * implement this capability; generic domain calls are not a substitute.
+   */
+  callStructuredGeneration?(
+    request: StructuredGenerationRequest,
+  ): Promise<StructuredGenerationResult>;
 
   /**
    * Single-shot reasoning with optional structured-output schema. Used

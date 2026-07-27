@@ -120,6 +120,7 @@ describe('Nexus security baseline source pins', () => {
 
   it('adds supply-chain security automation without broad workflow permissions', () => {
     const workflow = read('.github/workflows/security.yml');
+    const codeqlShadow = read('.github/codeql/deployed-source-shadow.yml');
     const dependabot = read('.github/dependabot.yml');
 
     expect(workflow).toMatch(/github\/codeql-action\/init@[a-f0-9]{40}\s+# v4/);
@@ -130,6 +131,15 @@ describe('Nexus security baseline source pins', () => {
     expect(workflow).not.toContain('contents: write');
     expect(workflow).not.toContain('pull-requests: write');
     expect(workflow).not.toContain('id-token: write');
+    expect(workflow).toContain('config-file: ./.github/codeql/deployed-source-shadow.yml');
+    expect(workflow).toContain("inputs.codeql_scope == 'deployed_source_shadow'");
+    expect(workflow).toContain('category: /language:javascript-typescript/scope:deployed-source-shadow');
+    expect(codeqlShadow).toContain('name: Nexus deployed source shadow');
+    expect(codeqlShadow).toContain('  - .github/workflows');
+    expect(codeqlShadow).toContain('  - src');
+    expect(codeqlShadow).toContain('  - scripts');
+    expect(codeqlShadow).toContain("  - '**/*.test.ts'");
+    expect(codeqlShadow).toContain('Activate it only for two sequential shadow scans');
 
     expect(dependabot).toContain('package-ecosystem: npm');
     expect(dependabot).toContain('package-ecosystem: pip');

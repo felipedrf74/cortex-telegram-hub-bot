@@ -38,6 +38,11 @@ import { shouldServeCanaryForTenant } from './canary-gate-guard';
 import { maybeRecordCanaryTurn } from './canary-turn-log';
 import { resolveKeepAliveForRole } from './model-residency-policy';
 import {
+  assertSmallOnlyOllamaModel,
+  OLLAMA_FAST_MODEL_DISABLED,
+  OLLAMA_SMALL_ONLY_MODEL,
+} from '../ollama-model-policy';
+import {
   CHAT_CORE_V2_EVIDENCE_ITEM_SCHEMA_VERSION,
   renderChatCoreV2PromptEvidence,
 } from './evidence-policy';
@@ -80,7 +85,7 @@ export type ChatCoreV2LocalChatLlmMode = 'off' | 'shadow' | 'canary' | 'on';
  */
 export type ChatCoreV2LocalReasoningTier = 'none' | 'fast_extraction' | 'standard_command';
 
-export const CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT = 'qwen2.5:1.5b-instruct-q4_K_M';
+export const CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT = OLLAMA_FAST_MODEL_DISABLED;
 
 /**
  * The literal env value that DISABLES the fast path (WP-11, §5.A). Setting
@@ -401,6 +406,7 @@ export async function runChatCoreV2LocalChatTurn(
   const cookingSafetyPromptBlock = cookingResponseRequest ? buildCookingSafetyPromptBlock(input, locale) : null;
   const systemEvidenceBlock = [memoryPromptBlock, cookingSafetyPromptBlock].filter(Boolean).join('\n\n') || null;
   const task: LocalReasoningTask = {
+    workloadRole: 'validated_local_chat',
     systemContext: buildSystemPrompt(locale, requireJson, systemEvidenceBlock),
     prompt: buildUserPrompt(input, locale, recipeRequest, cookingSafetyPromptBlock),
     userId: input.userId,
@@ -1031,6 +1037,7 @@ async function tryRepairLocaleDrift(
 ): Promise<{ text: string } | null> {
   try {
     const result = await runWithLocalInferenceSlot(() => provider.dispatchLocalReasoning({
+      workloadRole: 'validated_local_chat',
       systemContext: [
         'You are Nexus Hub answer locale repair.',
         languageInstructionForLocale(locale),
@@ -1372,6 +1379,7 @@ async function tryRepairRecipeDraft(
   try {
     const cookingSafetyPromptBlock = buildCookingSafetyPromptBlock(input, locale);
     const result = await runWithLocalInferenceSlot(() => provider.dispatchLocalReasoning({
+      workloadRole: 'validated_local_chat',
       systemContext: [
         'You are Nexus Hub recipe composer.',
         `Locale: ${locale}. Answer in the user's language.`,
@@ -1548,8 +1556,9 @@ function looksGeneratedCookingAnswer(foldedText: string): boolean {
  */
 function resolveFastModelOrNull(env: EnvLike): string | null {
   const raw = String(env.CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL ?? '').trim();
-  if (raw.toLowerCase() === CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DISABLED_LITERAL) return null;
-  return raw || CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT;
+  const selected = raw || CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DEFAULT;
+  if (selected.toLowerCase() === CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL_DISABLED_LITERAL) return null;
+  return assertSmallOnlyOllamaModel(selected, 'CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL');
 }
 
 /**
@@ -1574,7 +1583,9 @@ export function resolveLocalChatModel(
 ): string {
   if (recipeRequest) {
     const recipeModel = String(env.CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL ?? '').trim();
-    if (recipeModel) return recipeModel;
+    if (recipeModel) {
+      return assertSmallOnlyOllamaModel(recipeModel, 'CHAT_CORE_V2_LOCAL_CHAT_RECIPE_MODEL');
+    }
   }
   // WP-11 fast-model branch: non-recipe trivial/light-extraction turns may use
   // the smaller/faster model unless it is disabled with the literal `off`.
@@ -1582,9 +1593,11 @@ export function resolveLocalChatModel(
     const fastModel = resolveFastModelOrNull(env);
     if (fastModel) return fastModel;
   }
-  return String(env.CHAT_CORE_V2_LOCAL_CHAT_MODEL ?? '').trim()
+  const selected = String(env.CHAT_CORE_V2_LOCAL_CHAT_MODEL ?? '').trim()
     || config.ollama.classifierModel
-    || config.ollama.model;
+    || config.ollama.model
+    || OLLAMA_SMALL_ONLY_MODEL;
+  return assertSmallOnlyOllamaModel(selected, 'CHAT_CORE_V2_LOCAL_CHAT_MODEL');
 }
 
 function normalizeLocale(raw: string | null | undefined): ChatCoreV2Locale {

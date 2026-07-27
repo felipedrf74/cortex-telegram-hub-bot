@@ -24,6 +24,15 @@ import {
   validateReleaseSelection,
   vitestTestFiles,
 } from './release-test-evidence.mjs';
+import {
+  compareProtectedMainToRelease,
+  validateProtectedMainCiEvidence,
+  validateReleaseShadowComparison,
+} from './protected-main-ci-evidence.mjs';
+import {
+  protectedMainReusePolicyDigest,
+  validateProtectedMainReuseActivation,
+} from './protected-main-reuse-activation.mjs';
 import { loadTestPolicy, partitionTestFiles, walkTestFiles } from './lib/test-policy.mjs';
 import {
   BACKEND_IOS_CONTRACT_FIXTURE_PATH,
@@ -35,6 +44,7 @@ import {
   IOS_DISTRIBUTION_ATTESTATION_FILE,
   validateIosDistributionAttestation,
 } from './lib/ios-distribution-attestation.mjs';
+import { validateRuntimeDependencyLock } from './release-runtime-dependencies.mjs';
 
 export { backendIosContractDigest } from './lib/backend-ios-contract-fixture.mjs';
 
@@ -45,6 +55,8 @@ const valueOf = (name, fallback = '') => {
   return index === -1 ? fallback : args[index + 1] || fallback;
 };
 const TRUSTED_KEY_ID = 'github-environment-release-signing-2026-07';
+const PROTECTED_TIMING_SCHEMA = 'nexus.release-protected-timing.v1';
+const PROTECTED_TIMING_PAYLOAD_SCHEMA = 'nexus.release-protected-timing-payload.v1';
 const TRUSTED_WORKFLOW_PATH = '.github/workflows/release-candidate-evidence.yml';
 const TRUSTED_WORKFLOW_NAME = 'RC — Release Evidence';
 const CANDIDATE_ARTIFACT_PREFIX = 'release-candidate-v2-';
@@ -523,6 +535,7 @@ export function validateGitHubIdentity({
   repository,
   candidateRunId,
   selection,
+  protectedMainMode = 'shadow',
 }) {
   const expectedRunId = String(candidateRunId ?? '');
   if (!/^\d+$/.test(expectedRunId)) fail('candidate run id is invalid');
@@ -551,7 +564,11 @@ export function validateGitHubIdentity({
     '🐍 Content Engine full pytest',
     '📦 Write unsigned release candidate',
   ];
-  if (selection?.tier === FULL_RELEASE_TIER && selection.fullRequired === true) {
+  if (protectedMainMode === 'reuse') {
+    // Existing Vitest jobs remain in the workflow and must be skipped. The
+    // protected-main run is independently verified later against the signed
+    // activation and exact candidate evidence.
+  } else if (selection?.tier === FULL_RELEASE_TIER && selection.fullRequired === true) {
     expectedJobs.push(
       '🧪 Full Vitest shard 1/4',
       '🧪 Full Vitest shard 2/4',
@@ -570,7 +587,15 @@ export function validateGitHubIdentity({
       fail(`candidate GitHub job is missing, duplicated, or unsuccessful: ${name}`);
     }
   }
-  const forbiddenSuccessfulJobs = selection.fullRequired
+  const forbiddenSuccessfulJobs = protectedMainMode === 'reuse'
+    ? [
+      '🧪 Policy-selected Vitest',
+      '🧪 Full Vitest shard 1/4',
+      '🧪 Full Vitest shard 2/4',
+      '🧪 Full Vitest shard 3/4',
+      '🧪 Full Vitest shard 4/4',
+    ]
+    : selection.fullRequired
     ? ['🧪 Policy-selected Vitest']
     : [
       '🧪 Full Vitest shard 1/4',
@@ -602,6 +627,88 @@ export function validateGitHubIdentity({
     runUpdatedAtMs,
     artifact,
     expectedArtifactName,
+  };
+}
+
+function canonicalGithubTimestamp(value, label) {
+  const milliseconds = Date.parse(value ?? '');
+  if (typeof value !== 'string'
+      || !/Z$/u.test(value)
+      || !Number.isFinite(milliseconds)
+      || milliseconds > Date.now() + 5 * 60_000) {
+    fail(`${label} is not a valid UTC GitHub timestamp`);
+  }
+  return milliseconds;
+}
+
+function validateCompletedRunTiming(run, {
+  label,
+  repository,
+  runtimeSha,
+  runId,
+  runAttempt,
+  path: workflowPath,
+  event,
+}) {
+  if (String(run?.id) !== String(runId)
+      || String(run?.run_attempt) !== String(runAttempt)
+      || run.path !== workflowPath
+      || run.event !== event
+      || run.head_sha !== runtimeSha
+      || run.status !== 'completed'
+      || run.conclusion !== 'success'
+      || run.repository?.full_name !== repository
+      || run.head_repository?.full_name !== repository) {
+    fail(`${label} GitHub run identity is invalid`);
+  }
+  const startedAtMs = canonicalGithubTimestamp(
+    run.run_started_at ?? run.created_at,
+    `${label}.startedAt`,
+  );
+  const completedAtMs = canonicalGithubTimestamp(run.updated_at, `${label}.completedAt`);
+  if (completedAtMs < startedAtMs) fail(`${label} GitHub run chronology is invalid`);
+  return {
+    workflow: workflowPath,
+    runId: String(run.id),
+    runAttempt: String(run.run_attempt),
+    startedAt: new Date(startedAtMs).toISOString(),
+    githubCompletedAt: new Date(completedAtMs).toISOString(),
+  };
+}
+
+function validateSigningRunTiming(run, jobs, {
+  repository,
+  runtimeSha,
+  candidateRunId,
+}) {
+  if (String(run?.id) !== String(process.env.GITHUB_RUN_ID ?? '')
+      || run.path !== '.github/workflows/sign-release-manifest.yml'
+      || run.event !== 'workflow_dispatch'
+      || run.head_branch !== 'main'
+      || !['in_progress', 'completed'].includes(run.status)
+      || (run.status === 'completed' && run.conclusion !== 'success')
+      || run.repository?.full_name !== repository
+      || run.head_repository?.full_name !== repository
+      || !String(run.display_title ?? '').includes(runtimeSha)
+      || !String(run.display_title ?? '').includes(`run ${candidateRunId}`)) {
+    fail('release signing GitHub run identity is invalid');
+  }
+  if (!Array.isArray(jobs?.jobs)) fail('release signing GitHub jobs are missing');
+  const matches = jobs.jobs.filter((job) => job?.name === 'sign');
+  if (matches.length !== 1
+      || !['in_progress', 'completed'].includes(matches[0].status)
+      || (matches[0].status === 'completed' && matches[0].conclusion !== 'success')) {
+    fail('release signing GitHub job identity is invalid');
+  }
+  const startedAtMs = canonicalGithubTimestamp(
+    matches[0].started_at,
+    'release signing job.startedAt',
+  );
+  return {
+    workflow: '.github/workflows/sign-release-manifest.yml',
+    runId: String(run.id),
+    runAttempt: String(run.run_attempt),
+    startedAt: new Date(startedAtMs).toISOString(),
   };
 }
 
@@ -741,13 +848,21 @@ export function validateTestEvidence({
   trustedPolicy,
   trustedPolicyDigest,
   candidateSourceRoot,
+  artifactDigest,
+  protectedMainRun = null,
+  protectedMainArtifacts = null,
+  repository = '',
 }) {
   const resultPath = path.join(candidateArtifactRoot, '.local/release/test-results.json');
   const results = readJson(resultPath);
   exactKeys(results, [
     'schema', 'status', 'runtimeSha', 'completedAt', 'tier', 'selection',
-    'testPolicyDigest', 'toolchain', 'counts', 'ci',
+    'testPolicyDigest', 'artifactDigest', 'lockfiles', 'toolchain', 'counts',
+    'ci', 'protectedMainShadow',
   ], 'release test results');
+  exactKeys(results.lockfiles, [
+    'packageLockSha256', 'pythonRequirementsSha256',
+  ], 'release test lockfiles');
   exactKeys(results.toolchain, ['node', 'python'], 'release test toolchain');
   exactKeys(results.counts, ['vitest', 'pytest'], 'release test counts');
   exactKeys(results.ci, ['runId', 'runAttempt'], 'release test CI identity');
@@ -758,6 +873,19 @@ export function validateTestEvidence({
       || String(results.ci.runId) !== runId
       || String(results.ci.runAttempt) !== runAttempt) {
     fail('release test result is not bound to the exact runtime and CI run');
+  }
+  if (results.artifactDigest !== artifactDigest) {
+    fail('release test result artifact digest does not match the candidate bundle');
+  }
+  const expectedLockfiles = {
+    packageLockSha256: sha256(fs.readFileSync(path.join(candidateSourceRoot, 'package-lock.json'))),
+    pythonRequirementsSha256: sha256(fs.readFileSync(path.join(
+      candidateSourceRoot,
+      'content-engine/requirements.txt',
+    ))),
+  };
+  if (canonicalJson(results.lockfiles) !== canonicalJson(expectedLockfiles)) {
+    fail('release test result lockfiles do not match the exact candidate source');
   }
   if (results.toolchain.node !== 'v22.23.1' || !/^Python 3\.12(?:\.|$)/.test(results.toolchain.python)) {
     fail('release test result toolchain is outside the governed versions');
@@ -792,11 +920,17 @@ export function validateTestEvidence({
     fail('release test result timestamp is invalid, future, or stale');
   }
 
+  const reuseMode = results.protectedMainShadow?.mode === 'reuse';
+  if (!reuseMode && protectedMainArtifacts !== null) {
+    fail('protected-main GitHub reuse artifacts were supplied for a shadow-only candidate');
+  }
   const resultsRoot = path.join(candidateArtifactRoot, '.local/release/rc-test-results');
   const vitestFiles = fs.readdirSync(resultsRoot)
     .filter((name) => /^vitest-results-(?:[1-4]|selected)\.json$/.test(name))
     .sort();
-  const expectedVitestFiles = selection.fullRequired
+  const expectedVitestFiles = reuseMode
+    ? []
+    : selection.fullRequired
     ? ['vitest-results-1.json', 'vitest-results-2.json', 'vitest-results-3.json', 'vitest-results-4.json']
     : ['vitest-results-selected.json'];
   if (canonicalJson(vitestFiles) !== canonicalJson(expectedVitestFiles)) {
@@ -813,14 +947,103 @@ export function validateTestEvidence({
   const pytestLog = fs.readFileSync(path.join(resultsRoot, 'pytest-results.log'), 'utf8');
   const pytestMatch = pytestLog.match(/(\d+)\s+passed(?:,|\s|$)/);
   const pytestCount = pytestMatch ? Number(pytestMatch[1]) : 0;
-  if (results.counts.vitest !== vitestCount || vitestCount <= 0
+  if ((!reuseMode && (results.counts.vitest !== vitestCount || vitestCount <= 0))
+      || (reuseMode && (!Number.isSafeInteger(results.counts.vitest)
+        || results.counts.vitest <= 0))
       || results.counts.pytest !== pytestCount || pytestCount <= 0) {
     fail('release test counts do not match the uploaded suite results');
   }
-  if (canonicalJson([...reportedTestFiles].sort()) !== canonicalJson(selection.selected.files)) {
+  if (!reuseMode
+      && canonicalJson([...reportedTestFiles].sort()) !== canonicalJson(selection.selected.files)) {
     fail('release candidate Vitest files do not match the signed selection');
   }
+  const shadow = results.protectedMainShadow;
+  exactKeys(
+    shadow,
+    reuseMode
+      ? ['mode', 'activation', 'comparison', 'evidence']
+      : ['mode', 'comparison', 'evidence'],
+    'protected-main release binding',
+  );
+  if (!['shadow', 'reuse'].includes(shadow.mode)) {
+    fail('protected-main release evidence mode is invalid');
+  }
+  const comparison = validateReleaseShadowComparison(shadow.comparison, {
+    expectedRuntimeSha: runtimeSha,
+  });
+  if (shadow.evidence === null) {
+    if (comparison.status !== 'ineligible' || comparison.mainCi !== null) {
+      fail('missing protected-main evidence has a reusable shadow verdict');
+    }
+  } else {
+    const evidence = validateProtectedMainCiEvidence(shadow.evidence, {
+      expectedHeadSha: runtimeSha,
+      expectedPolicyDigest: trustedPolicyDigest,
+    });
+    const recomputed = compareProtectedMainToRelease(evidence, results);
+    recomputed.comparedAt = comparison.comparedAt;
+    if (canonicalJson(recomputed) !== canonicalJson(comparison)) {
+      fail('protected-main shadow verdict does not match its signed evidence');
+    }
+    if (reuseMode) {
+      validateProtectedMainReuseActivation(shadow.activation, {
+        releaseEvidencePublicKeyPem: fs.readFileSync(path.join(
+          scriptRoot,
+          'docs/release/evidence/release-evidence-public-key.pem',
+        ), 'utf8'),
+        expectedPolicyDigest: protectedMainReusePolicyDigest(scriptRoot),
+        repository,
+        nowMs: trustedReferenceTimeMs,
+      });
+      if (comparison.status !== 'eligible'
+          || results.counts.vitest !== evidence.vitest.tests) {
+        fail('protected-main reused test identity is inconsistent');
+      }
+      validateProtectedMainReuseGithubIdentity({
+        run: protectedMainRun,
+        artifacts: protectedMainArtifacts,
+        evidence,
+        repository,
+      });
+    }
+  }
   return results;
+}
+
+export function validateProtectedMainReuseGithubIdentity({
+  run,
+  artifacts,
+  evidence,
+  repository,
+}) {
+  if (!run || !artifacts || String(run.id) !== String(evidence.ci.runId)
+      || String(run.run_attempt) !== String(evidence.ci.runAttempt)
+      || run.path !== '.github/workflows/ci.yml'
+      || run.event !== 'push'
+      || run.head_branch !== 'main'
+      || run.head_sha !== evidence.headSha
+      || run.status !== 'completed'
+      || run.conclusion !== 'success'
+      || run.repository?.full_name !== repository
+      || run.head_repository?.full_name !== repository) {
+    fail('reused protected-main GitHub run identity is invalid');
+  }
+  if (!Array.isArray(artifacts.artifacts)) {
+    fail('reused protected-main GitHub artifacts are missing');
+  }
+  const names = [
+    `protected-main-ci-evidence-${evidence.ci.runId}-${evidence.ci.runAttempt}`,
+    evidence.build.artifactName,
+  ];
+  for (const name of names) {
+    const matches = artifacts.artifacts.filter((artifact) => artifact?.name === name);
+    if (matches.length !== 1 || matches[0].expired === true
+        || !/^sha256:[0-9a-f]{64}$/u.test(matches[0].digest ?? '')
+        || String(matches[0].workflow_run?.id) !== String(evidence.ci.runId)
+        || matches[0].workflow_run?.head_sha !== evidence.headSha) {
+      fail(`reused protected-main artifact identity is missing or ambiguous: ${name}`);
+    }
+  }
 }
 
 function validateCandidate() {
@@ -867,6 +1090,14 @@ function validateCandidate() {
     expectedHeadSha: runtimeSha,
     expectedPolicyDigest: trustedPolicyDigest,
   });
+  const untrustedTestResults = readJson(path.join(
+    candidateArtifactRoot,
+    '.local/release/test-results.json',
+  ));
+  const protectedMainMode = untrustedTestResults?.protectedMainShadow?.mode;
+  if (!['shadow', 'reuse'].includes(protectedMainMode)) {
+    fail('candidate protected-main evidence mode is invalid');
+  }
   const githubIdentity = validateGitHubIdentity({
     run,
     artifacts,
@@ -875,6 +1106,7 @@ function validateCandidate() {
     repository,
     candidateRunId: valueOf('--candidate-run-id'),
     selection,
+    protectedMainMode,
   });
 
   if (git(candidateSourceRoot, 'rev-parse', 'HEAD') !== runtimeSha) fail('candidate source checkout SHA mismatch');
@@ -902,6 +1134,10 @@ function validateCandidate() {
   if (artifact.git?.sha !== runtimeSha || path.basename(bundleRoot) !== artifact.digest) {
     fail('candidate bundle source SHA or digest directory mismatch');
   }
+  validateRuntimeDependencyLock(
+    readJson(path.join(bundleRoot, 'dist/runtime-dependencies/lock.json')),
+    bundleRoot,
+  );
   const fixtureIdentity = backendIosContractFixtureIdentity({ bundleRoot, artifact });
   for (const entry of artifact.files) {
     if (entry.path.startsWith('dist/')) continue;
@@ -984,7 +1220,68 @@ function validateCandidate() {
     trustedPolicy,
     trustedPolicyDigest,
     candidateSourceRoot,
+    artifactDigest: artifact.digest,
+    protectedMainRun: valueOf('--protected-main-run-metadata')
+      ? readJson(resolveRequired('--protected-main-run-metadata'))
+      : null,
+    protectedMainArtifacts: valueOf('--protected-main-artifact-metadata')
+      ? readJson(resolveRequired('--protected-main-artifact-metadata'))
+      : null,
+    repository,
   });
+  const timingRequested = Boolean(valueOf('--signing-run-metadata'))
+    || Boolean(valueOf('--signing-jobs-metadata'));
+  let protectedTiming = null;
+  if (timingRequested) {
+    const protectedMainEvidence = testResults.protectedMainShadow?.evidence;
+    if (protectedMainEvidence === null) {
+      fail('protected-main GitHub timing cannot be bound without exact protected-main evidence');
+    }
+    const protectedMainRun = readJson(resolveRequired('--protected-main-run-metadata'));
+    const protectedMainTiming = validateCompletedRunTiming(protectedMainRun, {
+      label: 'protected-main CI',
+      repository,
+      runtimeSha,
+      runId: protectedMainEvidence.ci.runId,
+      runAttempt: protectedMainEvidence.ci.runAttempt,
+      path: '.github/workflows/ci.yml',
+      event: 'push',
+    });
+    const releaseCandidateTiming = {
+      workflow: TRUSTED_WORKFLOW_PATH,
+      runId: String(valueOf('--candidate-run-id')),
+      runAttempt: githubIdentity.runAttempt,
+      startedAt: new Date(githubIdentity.runStartedAtMs).toISOString(),
+      githubCompletedAt: new Date(githubIdentity.runUpdatedAtMs).toISOString(),
+    };
+    const protectedSigningTiming = validateSigningRunTiming(
+      readJson(resolveRequired('--signing-run-metadata')),
+      readJson(resolveRequired('--signing-jobs-metadata')),
+      { repository, runtimeSha, candidateRunId: valueOf('--candidate-run-id') },
+    );
+    for (const [label, completedAt, timing] of [
+      ['protected-main CI', protectedMainEvidence.completedAt, protectedMainTiming],
+      ['release candidate', testResults.completedAt, releaseCandidateTiming],
+    ]) {
+      const completedAtMs = canonicalGithubTimestamp(completedAt, `${label}.evidenceCompletedAt`);
+      if (completedAtMs < Date.parse(timing.startedAt)
+          || completedAtMs > Date.parse(timing.githubCompletedAt)) {
+        fail(`${label} evidence completion is outside its GitHub run`);
+      }
+      timing.completedAt = completedAt;
+    }
+    if (Date.parse(protectedMainTiming.completedAt) > Date.parse(releaseCandidateTiming.startedAt)
+        || Date.parse(releaseCandidateTiming.completedAt)
+          > Date.parse(protectedSigningTiming.startedAt)) {
+      fail('protected release timing overlaps or is not sequential');
+    }
+    protectedTiming = {
+      repository,
+      protectedMainCi: protectedMainTiming,
+      releaseCandidate: releaseCandidateTiming,
+      protectedSigning: protectedSigningTiming,
+    };
+  }
   if (payload.toolchain.node !== testResults.toolchain.node
       || payload.toolchain.python !== testResults.toolchain.python
       || !/^\d+\.\d+(?:\.\d+)?$/.test(payload.toolchain.npm ?? '')) {
@@ -1052,6 +1349,7 @@ function validateCandidate() {
     iosEvidence: iosResolution.evidence,
     candidateRunId: valueOf('--candidate-run-id'),
     candidateRunAttempt: githubIdentity.runAttempt,
+    protectedTiming,
   };
 }
 
@@ -1140,7 +1438,13 @@ function writeSignedOutput(candidate) {
     candidate.payload.artifact.digest,
   );
   fs.mkdirSync(path.dirname(destinationBundle), { recursive: true, mode: 0o700 });
-  fs.cpSync(candidate.bundleRoot, destinationBundle, { recursive: true, errorOnExist: true });
+  fs.cpSync(candidate.bundleRoot, destinationBundle, {
+    recursive: true,
+    errorOnExist: true,
+    // Preserve the isolated destination tree while allowing a same-filesystem
+    // copy-on-write clone. COPYFILE_FICLONE falls back to a normal byte copy.
+    mode: fs.constants.COPYFILE_FICLONE,
+  });
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true, mode: 0o700 });
   const envelope = {
     schema: 'nexus.release-manifest.v2',
@@ -1159,7 +1463,55 @@ function writeSignedOutput(candidate) {
     trackedPublic,
     Buffer.from(envelope.signature, 'base64'),
   )) fail('trusted release manifest self-verification failed');
-  fs.writeFileSync(manifestPath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  const manifestBytes = `${JSON.stringify(envelope, null, 2)}\n`;
+  fs.writeFileSync(manifestPath, manifestBytes, { mode: 0o600 });
+  let timingPath = null;
+  if (candidate.protectedTiming !== null) {
+    const timingCompletedAt = new Date().toISOString();
+    if (Date.parse(timingCompletedAt)
+          < Date.parse(candidate.protectedTiming.protectedSigning.startedAt)
+        || Date.parse(timingCompletedAt)
+          < Date.parse(candidate.protectedTiming.releaseCandidate.completedAt)) {
+      fail('protected release signing completion is not sequential');
+    }
+    const timingPayload = {
+      schema: PROTECTED_TIMING_PAYLOAD_SCHEMA,
+      repository: candidate.repository,
+      runtimeSha: candidate.runtimeSha,
+      releaseManifestSha256: sha256(manifestBytes),
+      generatedAt: timingCompletedAt,
+      stages: {
+        protectedMainCi: candidate.protectedTiming.protectedMainCi,
+        releaseCandidate: candidate.protectedTiming.releaseCandidate,
+        protectedSigning: {
+          ...candidate.protectedTiming.protectedSigning,
+          completedAt: timingCompletedAt,
+          githubCompletedAt: timingCompletedAt,
+        },
+      },
+    };
+    const timingEnvelope = {
+      schema: PROTECTED_TIMING_SCHEMA,
+      keyId: TRUSTED_KEY_ID,
+      signatureAlgorithm: 'ed25519',
+      payload: timingPayload,
+      signature: cryptoSign(
+        null,
+        Buffer.from(canonicalJson(timingPayload)),
+        privateKey,
+      ).toString('base64'),
+    };
+    timingPath = path.join(
+      outputRoot,
+      `.local/release/timing/${candidate.runtimeSha}.json`,
+    );
+    fs.mkdirSync(path.dirname(timingPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      timingPath,
+      `${JSON.stringify(timingEnvelope, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+  }
 
   const evidenceFiles = [
     '.local/release/test-selection.json',
@@ -1226,7 +1578,7 @@ function writeSignedOutput(candidate) {
     `${JSON.stringify(provenance, null, 2)}\n`,
     { mode: 0o600 },
   );
-  return { manifestPath, outputRoot, provenance };
+  return { manifestPath, timingPath, outputRoot, provenance };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -1256,6 +1608,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         runtimeSha: candidate.runtimeSha,
         artifactDigest: candidate.payload.artifact.digest,
         manifest: result.manifestPath,
+        protectedTiming: result.timingPath,
         outputRoot: result.outputRoot,
         keyId: TRUSTED_KEY_ID,
       }, null, 2)}\n`);

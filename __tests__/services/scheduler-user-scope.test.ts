@@ -40,6 +40,7 @@ const mockCalculateReadiness = vi.hoisted(() => vi.fn());
 const mockPersistReadinessScore = vi.hoisted(() => vi.fn());
 const mockGetEffectiveEntitlement = vi.hoisted(() => vi.fn());
 const mockResolveAiAutomationEligibility = vi.hoisted(() => vi.fn());
+const mockRecordAiAutomationEligibilitySkip = vi.hoisted(() => vi.fn());
 const mockGenerateAndStoreTopicCandidates = vi.hoisted(() => vi.fn());
 const mockGenerateWeeklyPackage = vi.hoisted(() => vi.fn());
 const mockGetMissingScheduledInventoryCount = vi.hoisted(() => vi.fn());
@@ -180,7 +181,7 @@ vi.mock('../../src/services/agent-job-runner', () => ({
   runGovernedAgentJob: (...args: unknown[]) => mockRunGovernedAgentJob(...args),
 }));
 vi.mock('../../src/services/ai-automation-policy', () => ({
-  recordAiAutomationEligibilitySkip: vi.fn(),
+  recordAiAutomationEligibilitySkip: (...args: unknown[]) => mockRecordAiAutomationEligibilitySkip(...args),
   resolveAiAutomationEligibility: (...args: unknown[]) => mockResolveAiAutomationEligibility(...args),
 }));
 vi.mock('../../src/services/cost-guardrail', () => {
@@ -515,20 +516,15 @@ describe('scheduler tenant scoping', () => {
     expect(source).toContain('tenantId: targetTenantId');
   });
 
-  it('pins the production autoresearch schedule to evaluate_only', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
-    const adapterSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/services/scheduled-agent-jobs.ts'),
-      'utf8',
+  it('registers the production autoresearch schedule in the scheduler timezone', () => {
+    startScheduler();
+
+    const autoresearchJob = mockCronSchedule.mock.calls.find(
+      (call) => call[0] === '19 1 * * 0',
     );
-    const cronStart = source.indexOf("cron.schedule('19 1 * * 0'");
-    const cronEnd = source.indexOf('// ── Database Backup', cronStart);
-    const scheduledBlock = source.slice(cronStart, cronEnd);
-    expect(cronStart).toBeGreaterThan(-1);
-    expect(scheduledBlock).toContain('runScheduledAutoresearch()');
-    expect(adapterSource).toContain("{ mode: 'evaluate_only', runId }");
-    expect(adapterSource).not.toContain("mode: 'apply'");
-    expect(adapterSource).not.toContain("mode: 'propose'");
+    expect(autoresearchJob).toBeDefined();
+    expect(autoresearchJob?.[1]).toBeTypeOf('function');
+    expect(autoresearchJob?.[2]).toEqual({ timezone: 'Europe/Lisbon' });
   });
 
   it('continues processing later reminders when one reminder delivery fails', async () => {
@@ -1390,6 +1386,208 @@ describe('scheduler tenant scoping', () => {
 
     expect(mockGetMissingScheduledInventoryCount).not.toHaveBeenCalled();
     expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+    expect(mockRecordAiAutomationEligibilitySkip).toHaveBeenCalledTimes(2);
+    expect(mockRecordAiAutomationEligibilitySkip).toHaveBeenCalledWith(
+      11,
+      expect.objectContaining({
+        allowed: false,
+        reason: 'automation_entitlement_required',
+      }),
+      {
+        jobName: 'thursday_youtube',
+        baseCategory: 'content_workflow_youtube',
+      },
+    );
+    expect(logger.error).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Scheduled Content topic job failed for tenant',
+    );
+  });
+
+  it('skips Friday generation before inventory reads when paid automation is ineligible', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockResolveAiAutomationEligibility.mockReturnValue({
+      allowed: false,
+      reason: 'automation_entitlement_required',
+      entitlement: { source: 'free' },
+    });
+
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    expect(mockGetMissingScheduledInventoryCount).not.toHaveBeenCalled();
+    expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
+    expect(mockRecordAiAutomationEligibilitySkip).toHaveBeenCalledTimes(2);
+    expect(mockRecordAiAutomationEligibilitySkip).toHaveBeenCalledWith(
+      11,
+      expect.objectContaining({
+        allowed: false,
+        reason: 'automation_entitlement_required',
+      }),
+      {
+        jobName: 'friday_weekly',
+        baseCategory: 'content_workflow_weekly',
+      },
+    );
+    expect(logger.error).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Scheduled weekly Content job failed for tenant',
+    );
+  });
+
+  it('returns the exact topic engagement skip after initial inventory is complete', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      automationAllowed: true,
+    });
+    mockGetMissingScheduledInventoryCount.mockReturnValue(1);
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
+        get: vi.fn(() => (
+          sql.includes('AS engaged')
+            ? { engaged: 0 }
+            : { count: 5, present: 1 }
+        )),
+      })),
+    });
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+
+    const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
+    expect(adapter.prepare({ tenantId: 11, userId: 11 })).toEqual({
+      kind: 'skip',
+      status: 'skipped_no_work',
+      reason: 'engagement_gate',
+      fingerprintMaterial: {
+        format: 'reel',
+        sourceJob: 'tuesday_reels',
+        missingCount: 1,
+      },
+    });
+    expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      { userId: 11, sourceJob: 'tuesday_reels' },
+      'Scheduled Content generation skipped: no Content-surface engagement in 30 days',
+    );
+  });
+
+  it('fails the topic engagement gate closed with a bounded non-Error code', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      automationAllowed: true,
+    });
+    mockGetMissingScheduledInventoryCount.mockReturnValue(1);
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
+        get: vi.fn(() => {
+          throw 'database-unavailable';
+        }),
+      })),
+    });
+
+    await runContentTopicCronForActiveUsers('youtube', 'thursday_youtube');
+
+    const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
+    expect(adapter.prepare({ tenantId: 11, userId: 11 })).toEqual({
+      kind: 'skip',
+      status: 'skipped_no_work',
+      reason: 'engagement_gate',
+      fingerprintMaterial: {
+        format: 'youtube',
+        sourceJob: 'thursday_youtube',
+        missingCount: 1,
+      },
+    });
+    expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      {
+        errorCode: 'UnknownError',
+        userId: 11,
+        sourceJob: 'thursday_youtube',
+      },
+      'Scheduled Content engagement gate failed closed',
+    );
+  });
+
+  it('bypasses the paid engagement query only in explicit local test mode', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    process.env.CONTENT_CRON_ENGAGEMENT_GATE = 'off';
+    process.env.NODE_ENV = 'test';
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      automationAllowed: true,
+    });
+    mockGetMissingScheduledInventoryCount.mockReturnValue(1);
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+
+    const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
+    expect(adapter.prepare({ tenantId: 11, userId: 11 })).toEqual({
+      kind: 'ready',
+      input: {
+        format: 'reel',
+        sourceJob: 'tuesday_reels',
+        missingCount: 1,
+      },
+      fingerprintMaterial: {
+        format: 'reel',
+        sourceJob: 'tuesday_reels',
+        missingCount: 1,
+      },
+    });
+    expect(mockGenerateAndStoreTopicCandidates).toHaveBeenCalledTimes(2);
+
+    delete process.env.CONTENT_CRON_ENGAGEMENT_GATE;
+  });
+
+  it('returns the exact weekly engagement skip after both initial inventories are complete', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      automationAllowed: true,
+    });
+    mockGetMissingScheduledInventoryCount
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(1)
+      .mockReturnValue(1);
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
+        get: vi.fn((...params: unknown[]) => {
+          if (sql.includes('AS engaged')) return { engaged: 0 };
+          if (sql.includes('COUNT(*) AS count')) {
+            return { count: params[3] === 'reel' ? 4 : 2 };
+          }
+          return { present: 1 };
+        }),
+      })),
+    });
+
+    await runWeeklyContentPackageCronForActiveUsers();
+
+    const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
+    expect(adapter.prepare({ tenantId: 11, userId: 11 })).toEqual({
+      kind: 'skip',
+      status: 'skipped_no_work',
+      reason: 'engagement_gate',
+      fingerprintMaterial: {
+        missingReels: 1,
+        missingYoutube: 1,
+        sourceJob: 'friday_weekly',
+      },
+    });
+    expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      { userId: 11, sourceJob: 'friday_weekly' },
+      'Scheduled Content generation skipped: no Content-surface engagement in 30 days',
+    );
   });
 
   it('passes only missing Friday inventory into one batched package call', async () => {
@@ -1569,7 +1767,32 @@ describe('scheduler tenant scoping', () => {
     await runScheduledAutoresearch();
     const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
     expect(adapter.jobId).toBe('autoresearch');
+    expect(adapter.providerRouting).toBe('gemini-or-openai-primary-anthropic-fallback');
+    expect(adapter.prepare()).toEqual({
+      kind: 'ready',
+      input: { targetId: 'voice-evolution' },
+      fingerprintMaterial: {
+        targetId: 'voice-evolution',
+        promptStateHash: 'prompt-state-hash',
+        mode: 'evaluate_only',
+      },
+    });
+    expect(mockComputePromptStateHash).toHaveBeenCalledWith({
+      id: 'voice-evolution',
+      prompt: 'stable prompt',
+    });
+    expect(mockRunAutoresearch).toHaveBeenCalledWith(
+      'voice-evolution',
+      1,
+      true,
+      expect.any(Function),
+      { mode: 'evaluate_only', runId: 'scheduler-test-run' },
+    );
     await progress?.('round complete');
+    expect(logger.info).toHaveBeenCalledWith(
+      { targetId: 'voice-evolution', message: 'round complete' },
+      'Scheduled autoresearch progress',
+    );
 
     const input = { targetId: 'voice-evolution' };
     const validOutput = {
@@ -1580,6 +1803,9 @@ describe('scheduler tenant scoping', () => {
       totalDurationMs: 12,
     };
     expect(() => adapter.validateOutput(validOutput, input)).not.toThrow();
+    expect(() => adapter.validateOutput({ ...validOutput, finalScore: 0 }, input)).not.toThrow();
+    expect(() => adapter.validateOutput({ ...validOutput, finalScore: 1 }, input)).not.toThrow();
+    expect(() => adapter.validateOutput({ ...validOutput, totalDurationMs: 0 }, input)).not.toThrow();
     for (const output of [
       { ...validOutput, targetId: 'other' },
       { ...validOutput, mode: 'apply' },
@@ -1595,10 +1821,46 @@ describe('scheduler tenant scoping', () => {
 
     expect(adapter.classifyOutput({ ...validOutput, skipped: 'skipped_unchanged' })).toBe('skipped_unchanged');
     expect(adapter.classifyOutput(validOutput)).toBe('success');
+    mockRecordOperatorAlert.mockClear();
     await adapter.notify({ status: 'skipped_unchanged', providerCalls: 0, output: validOutput });
     await adapter.notify({ status: 'success', providerCalls: 1, output: validOutput });
     await adapter.notify({ status: 'success', providerCalls: 2 });
-    expect(mockRecordOperatorAlert).toHaveBeenCalledTimes(3);
+    expect(mockRecordOperatorAlert).toHaveBeenNthCalledWith(1, {
+      severity: 'info',
+      source: 'autoresearch',
+      dedupeKey: expect.stringMatching(
+        /^autoresearch:skipped_unchanged:voice-evolution:\d{4}-\d{2}-\d{2}$/,
+      ),
+      title: 'Autoresearch unchanged: voice-evolution',
+      detail: 'Skipped unchanged prompt/eval fingerprint before provider routing (0 model calls).',
+      owner: 'ops',
+      suspectedArea: 'ai_quality',
+      userImpact: 'None — scheduled evaluation telemetry; prompts and Git state were not mutated.',
+    });
+    expect(mockRecordOperatorAlert).toHaveBeenNthCalledWith(2, {
+      severity: 'info',
+      source: 'autoresearch',
+      dedupeKey: expect.stringMatching(
+        /^autoresearch:success:voice-evolution:\d{4}-\d{2}-\d{2}$/,
+      ),
+      title: 'Autoresearch evaluated: voice-evolution',
+      detail: 'Evaluate-only score 90.0% with 1 attributed provider call.',
+      owner: 'ops',
+      suspectedArea: 'ai_quality',
+      userImpact: 'None — scheduled evaluation telemetry; prompts and Git state were not mutated.',
+    });
+    expect(mockRecordOperatorAlert).toHaveBeenNthCalledWith(3, {
+      severity: 'info',
+      source: 'autoresearch',
+      dedupeKey: expect.stringMatching(
+        /^autoresearch:success:voice-evolution:\d{4}-\d{2}-\d{2}$/,
+      ),
+      title: 'Autoresearch evaluated: voice-evolution',
+      detail: 'Evaluate-only score recorded with 2 attributed provider calls.',
+      owner: 'ops',
+      suspectedArea: 'ai_quality',
+      userImpact: 'None — scheduled evaluation telemetry; prompts and Git state were not mutated.',
+    });
 
     mockGetEvalTarget.mockReturnValueOnce(undefined);
     expect(() => adapter.prepare()).toThrow('UnknownScheduledAutoresearchTargetError');

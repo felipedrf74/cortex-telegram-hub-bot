@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: QA + release lead
-Last verified: 2026-07-15
+Last verified: 2026-07-25
 Update policy: update when test categories, evidence requirements, or
 risk-based test selection rules change. `config/test-policy.json` is the
 machine-readable tier/disposition policy; `docs/release/README.md` describes
@@ -51,10 +51,23 @@ Every test must:
    dependency directly.
 6. **Be deterministic.** A test that "sometimes passes" is broken;
    investigate via `--repeat 30` before merging.
-7. **Be fast.** A unit test normally runs in <100 ms; integration setup must not
-   replay the migration tree. No non-exempt deterministic test file may exceed
-   10 s. Shared-runner wall-clock benchmarks belong in `test:benchmark`, not a
-   correctness assertion.
+7. **Be fast and measure honestly.** A unit test normally runs in <100 ms;
+   integration setup must not replay the migration tree. Nightly cold-file
+   timing is advisory: a passing correctness suite is not failed solely because
+   one cold sample exceeded 10 s. Reproduce a regression with a warmed,
+   repeated focused benchmark before enforcing it. Shared-runner wall-clock
+   benchmarks belong in `test:benchmark`, not a correctness assertion.
+   The nightly inventory serially combines the current sample with at most the
+   four most recent compatible protected-main inventory artifacts. Compatibility
+   requires the exact inventory/timing schema, test-policy digest, timing scope,
+   Node/Vitest toolchain, platform, and architecture. Per-file p50/p95 remain
+   null until five samples qualify; unavailable or incompatible history is
+   reported as advisory and cannot fail an otherwise-correct nightly suite.
+   Discovery is bounded to ten candidate inventories, 64 entries, four
+   directory levels, and 2 MiB per regular non-symlink inventory. The serial
+   downloader inspects at most ten completed prior runs, accepts exactly one
+   non-expired run/attempt-bound artifact per run, and rejects archives above
+   5 MiB before extracting only the canonical inventory entry.
 
 ## 3. `vi.mock` completeness (must)
 
@@ -87,7 +100,7 @@ The stable commands are:
 | `npm run test:fast` | Deterministic unit, schema, policy, and release-tooling subset; target ≤90 s. |
 | `npm run test:changed -- --base <sha>` | Static changed dependencies ∪ critical ∪ cannot-skip/focused risks; unresolved production impact fails closed to all Vitest files. |
 | `npm run test:critical` | Auth, tenant, migration, billing, provider fallback, public contract, release-safety, and production-regression set. |
-| `npm run test:release -- --base <sha>` | Local release gate: Node/toolchain check, typecheck, build, migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. |
+| `npm run test:release -- --base <sha>` | Local diagnostic release gate: Node/toolchain check, production build (including the default-project typecheck), migration rehearsal, selected Vitest, full Content Engine pytest, artifact validation, and inventory. The canonical production path is `npm run release:resume`. |
 | `npm run test:full:sharded` | Complete deterministic Vitest suite across four local shards; files with the `eval` disposition are excluded. |
 | `npm run test:evaluate` | Exactly the files with the `eval` disposition: persona, provider-quality, subjective product, and long-running evaluation corpora. Runs on the scheduled/manual `evaluation.yml` workflow, outside release correctness evidence. |
 | `npm run test:profile` | Full machine-readable timings and inventory under ignored `.local/`. |
@@ -103,6 +116,13 @@ The classifier maps changed files to:
 - Staging smoke domains (generic 17 + per-domain smokes)
 - Cannot-skip safety gates (tenant-auth-security, etc.)
 
+The exact release operator supplies staging smoke with the base SHA from the
+validated signed RC selection. A smoke run from an exact protected-main
+checkout must not reclassify against `origin/main` and silently produce an
+empty domain diff. Repeated assertions for one endpoint may reuse one response
+and one private SSH transport, but every assertion remains independently
+recorded and no staging acceptance check may be cached across releases.
+
 **Cannot-skip gates take precedence over minimization.** The release-candidate
 workflow runs the exact `changed ∪ critical ∪ cannot-skip` selection only when
 a successful full nightly no more than 36 hours old is an ancestor of the
@@ -111,6 +131,43 @@ file set. Missing/stale/mismatched nightly proof, test-infrastructure changes,
 removed tests, or unresolved production impact force the complete four-shard
 suite. The full suite is therefore nightly/manual/conditional, not a routine
 gate for every production artifact.
+
+Protected-main CI also emits a separate exact-SHA shadow record containing its
+workflow/run identity, Node and Python toolchains, lockfile and test-policy
+digests, per-job results, selected-file identity, and build artifact digest.
+The RC workflow compares that record with the normal RC result. Activation
+requires exactly five consecutive production comparisons with exact agreement.
+A root-owned ServerDominguez evaluator derives them from signed manifests,
+signed staging attestations, and the latest completed root promotion
+journals/results, then signs the bounded request with the server-only provenance
+key. The existing protected operational signer independently verifies all five
+protected-main and RC GitHub runs/artifacts before issuing the activation
+envelope. Reuse applies only to later exact SHAs and is reverified by the
+protected manifest signer. Any missing, stale, expired, ambiguous, locally
+authored, policy-drifted, or mismatched field retains the existing RC Vitest
+fallback. This extends current release evidence rather than creating a
+competing release lane. At implementation time only one eligible production
+comparison exists, so activation remains off.
+
+Weekly Stryker mutation analysis remains advisory and outside signing,
+staging, and promotion. Mutation output may drive a focused regression test or
+test-removal decision, but it is not release evidence and never substitutes for
+the deterministic suite. The weekly plan retains every added line in each
+changed critical source, coalesces adjacent lines into exact Stryker ranges,
+and runs one source per process in a single sequential lane. The persisted
+batch plan must reach `complete` for every source before the advisory verdict
+is valid; a crash, timeout, missing report, deletion-only fallback failure, or
+pending batch leaves the sweep failed rather than silently sampling or
+deferring coverage. If exact changed ranges generate no Stryker mutants, that
+source is rerun in its own full-file process and both reports are retained.
+Its timeout is ratcheted only from measured successful sweeps and does not
+affect customer release readiness.
+
+A critical source may declare an explicit retained owner-test mapping when its
+transitive Vitest graph is unstable or needlessly broad. The mapping is
+validated fail-closed, applies only to that source's sequential batch, and
+never relaxes the global mutation threshold or the zero-`NoCoverage`
+requirement.
 
 ## 5. Two-user / two-tenant matrix (must)
 
@@ -236,6 +293,11 @@ wrapper changes:
    transaction.** `npm run test:migration-hook-lint` rejects full migration
    execution from per-test hooks. Do not add a private migration replay helper
    to bypass the guard.
+8. **Migration-policy path cases execute the dependency-free classifier in
+   process.** Keep one representative CLI binding assertion plus the dedicated
+   cumulative SQLite rehearsal; do not replay the complete migration history
+   once per table-driven governance-path case. The existing serial CI lint
+   step runs `npm run test:migration-hook-lint` without adding a job or lane.
 
 ## 11. iOS unit / contract tests (must, when iOS code touched)
 
@@ -640,18 +702,28 @@ device proof. The recommended additions to lock these in:
    collect repeated samples, and compare p95 with a governed baseline. A raw
    shared-runner assertion such as "50,000 events in <1 second" must not fail
    correctness CI.
+3. **Shared-host Sonar enablement has a one-time rollout gate.** Capture at
+   least 30 sequential loopback application samples before and after one
+   successful exact-SHA advisory scan. Bind both captures and the scan evidence
+   to the same deployed runtime, and require both p50 and p95 regression to be
+   at most 5%. This is private operations evidence from
+   `quality-sonar-latency-gate.mjs`; it never becomes a PR, signing, staging,
+   or production release gate while Sonar shares the production host.
 
 ## 16. Stale or skipped tests
 
-Tests are removed only when:
+Tests are rationalized by behavior and risk, never by a target file count. A
+test may be removed only when it is obsolete or duplicates another test,
+protects no unique regression, and both focused verification and the remaining
+full suite pass. Deleting or renaming any test therefore forces the complete
+four-shard suite.
 
-1. The behavior they assert is removed from production AND every other
-   test that asserted overlapping behavior continues to pass.
-2. The test was skipped (`it.skip` / `xit`) for >30 days. Skipped
-   tests rot. A skipped test must have an OPEN_ITEMS entry within
-   one week or be removed.
-3. A test that "tests itself" (asserts its own mock) is removed
-   without ceremony.
+Additionally:
+
+1. A test skipped (`it.skip` / `xit`) for more than 30 days is not silently
+   retained. It must have a canonical open item within one week or be removed.
+2. A test that "tests itself" by asserting only its own mock is removed without
+   ceremony.
 
 ## 17. Evidence requirements (per change)
 

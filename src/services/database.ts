@@ -5,6 +5,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { SQLiteStorage, setStorageProvider, clearStorageProvider } from './storage-provider';
 import { assertContentWorkspaceBootReadiness } from './content-workspace-boot-readiness';
+import { loadPersistedModelOverrides } from './persisted-model-overrides';
 import {
   applyMigrationFile,
   applyPendingMigrations,
@@ -62,11 +63,13 @@ export function initDatabase(): Database.Database {
     logger.warn({ err }, 'Telegram identity archive backfill failed — non-critical, retried next boot');
   }
 
-  // Load persisted model overrides from kv_store (after migrations create the table)
-  try {
+  // Load persisted model overrides from kv_store after migrations create the
+  // table. This is fail-closed: an invalid local-model selector must prevent
+  // startup rather than silently falling back to another routing state.
+  loadPersistedModelOverrides(() => {
     const { loadModelOverrides } = require('./model-config');
     loadModelOverrides();
-  } catch { /* model-config not yet available — non-critical */ }
+  });
 
   // Load persisted settings overrides from kv_store
   try {
