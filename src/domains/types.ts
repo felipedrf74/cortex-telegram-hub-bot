@@ -33,6 +33,18 @@ export interface DomainResponse {
 export interface ClassificationResult {
   domain: DomainName;
   confidence: number;
+  /**
+   * Option 3 (O3-A7): confidence-driven second-opinion telemetry.
+   * These fields are set only when TaskRoutingProvider.classify accepts
+   * a primary classifier result, deems it below the configured confidence
+   * floor, and then returns the fallback provider's classification.
+   */
+  fallbackUsed?: boolean;
+  fallbackReason?: 'low_confidence';
+  primaryProvider?: string;
+  fallbackProvider?: string;
+  primaryDomain?: DomainName;
+  primaryConfidence?: number;
 }
 
 export interface Todo {
