@@ -677,3 +677,68 @@ unknown systemd state also fails closed.
 This first version deliberately has no automatic guest deletion or replacement
 command. Deprovisioning is a separate destructive owner action after evidence
 retention and is not implied by installation or a completed drill.
+
+Incomplete-set quarantine and exact recovery
+---------------------------------------------
+
+An active v2 set whose runtime readiness is still exactly
+`ssh_only_bootstrap_required` with `drillReady=false` may be replaced without
+deleting its bytes. This is a narrow owner action for source-drift recovery; it
+does not retire a completed or partially evidenced drill. Record the exact
+active receipt, set, stale runtime-manifest, protected-main source, and
+root-side archive digests before invoking it:
+
+  sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-vm-set-retirement.py \
+    quarantine \
+    /var/lib/nexus-release-bootstrap/<sha>/source \
+    <40-hex-protected-main-sha> \
+    /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+    <64-hex-root-side-archive-sha256> \
+    --expected-set-id <64-hex-active-set-id> \
+    --expected-active-sha256 <64-hex-active-receipt-sha256> \
+    --expected-runtime-manifest-sha256 <64-hex-stale-runtime-manifest-sha256> \
+    --acknowledge-incomplete-set-replacement
+
+The command non-blockingly freezes the readiness-sequence, runtime-readiness,
+fault-controller, release/Sonar, install/provision, guest-admission, and
+active-guest locks in their fixed order. It requires all guest/controller and
+recovery units to be exactly idle, rejects QEMU or any open set/base file,
+rejects handoffs and nonterminal journals/evidence, verifies the active/trust/
+base/set byte, inode, path, and tree chain, and installs fail-closed systemd
+drop-in guards before writing its mode-0600 journal. It then renames active
+authority first, followed by trust, set, and base, into one same-filesystem
+mode-0700 quarantine. It never unlinks those governed bytes.
+
+If the command or host stops after its journal is durable, do not move files or
+remove the journal. Recovery is forward-only and completes the journaled
+direction from the same exact source/archive:
+
+  sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-vm-set-retirement.py \
+    recover \
+    /var/lib/nexus-release-bootstrap/<sha>/source \
+    <40-hex-protected-main-sha> \
+    /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+    <64-hex-root-side-archive-sha256>
+
+After terminal quarantine, the normal exact-source VM installer may publish the
+new root-only mode-0700 control and the provisioner may create one fresh set.
+The quarantine receipt and terminal journal remain below
+`/var/lib/nexus-rollback-drill-vm/quarantine/<transaction-id>/`; the canonical
+receipt copy is below `set-retirement-receipts/`.
+
+Restore is a separate explicit owner action and publishes base, set, and trust
+before active authority. It is allowed only while canonical active/trust are
+absent, canonical base/sets are empty, no transaction/evidence is live, and
+all thirteen installed runtime assets still match the quarantined receipt.
+Consequently it must not be used to overwrite a newly provisioned set or to
+pair an old set with newly installed runtime controls:
+
+  sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-vm-set-retirement.py \
+    restore \
+    /var/lib/nexus-release-bootstrap/<sha>/source \
+    <40-hex-protected-main-sha> \
+    /var/lib/nexus-release-bootstrap/<sha>/source.tar.gz \
+    <64-hex-root-side-archive-sha256> \
+    --transaction-id <quarantine-uuid> \
+    --expected-active-sha256 <64-hex-active-receipt-sha256> \
+    --acknowledge-restore-incomplete-set

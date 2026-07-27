@@ -6,6 +6,7 @@ scripts/rollback-drill-vm-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm
 scripts/rollback-drill-vm-runtime-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest	root:root	0755
 scripts/rollback-drill-vm-runtime-control.sh	/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest	root:root	0755
 scripts/rollback-drill-vm-runtime-readiness-seal.sh	/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness	root:root	0755
+scripts/rollback-drill-vm-set-retirement.py	/usr/local/libexec/nexus-rollback-drill-vm/retire-set	root:root	0700
 scripts/release-layout-fault-drill-controller.mjs	/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller	root:root	0755
 scripts/release-layout-fault-drill-guest.mjs	/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest	root:root	0755
 scripts/release-layout-fault-drill.mjs	/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs	root:root	0755

@@ -16,6 +16,7 @@ LAYOUT_RELATIVE="ops/rollback-drill-vm/install-layout.tsv"
 INSTALLER_RELATIVE="scripts/rollback-drill-vm-systemd-install.sh"
 STATE_ROOT="/var/lib/nexus-rollback-drill-vm"
 INSTALL_JOURNAL="$STATE_ROOT/install-in-progress.v1"
+RETIREMENT_JOURNAL="$STATE_ROOT/set-retirement-in-progress.v1.json"
 CONTROL_LOCK="$STATE_ROOT/control.lock"
 ACTIVE_RECEIPT="$STATE_ROOT/active.json"
 UNIT_TEMPLATE="nexus-rollback-drill-vm@.service"
@@ -210,6 +211,7 @@ scripts/rollback-drill-vm-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm
 scripts/rollback-drill-vm-runtime-manifest.py	/usr/local/libexec/nexus-rollback-drill-vm/runtime-manifest	root:root	0755
 scripts/rollback-drill-vm-runtime-control.sh	/usr/local/libexec/nexus-rollback-drill-vm/runtime-control-guest	root:root	0755
 scripts/rollback-drill-vm-runtime-readiness-seal.sh	/usr/local/libexec/nexus-rollback-drill-vm/runtime-readiness	root:root	0755
+scripts/rollback-drill-vm-set-retirement.py	/usr/local/libexec/nexus-rollback-drill-vm/retire-set	root:root	0700
 scripts/release-layout-fault-drill-controller.mjs	/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-controller	root:root	0755
 scripts/release-layout-fault-drill-guest.mjs	/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-guest	root:root	0755
 scripts/release-layout-fault-drill.mjs	/usr/local/libexec/nexus-rollback-drill-vm/release-layout-fault-drill.mjs	root:root	0755
@@ -341,7 +343,7 @@ while IFS=$'\t' read -r relative target owner mode extra; do
   [ "$(realpath -e -- "$source_path")" = "$source_path" ] \
     || die "install source traverses a symlink: $relative"
   validate_root_owned_chain "$source_path"
-  [[ "$mode" =~ ^0(644|755)$ ]] || die "install target mode is outside the allowlist"
+  [[ "$mode" =~ ^0(644|700|755)$ ]] || die "install target mode is outside the allowlist"
   [[ "$target" == /* && "$target" != / && "$(realpath -m -- "$target")" = "$target" ]] \
     || die "install target is noncanonical"
   case "$target" in
@@ -396,7 +398,7 @@ while IFS=$'\t' read -r relative target owner mode extra; do
     fault_controller_recovery_unit_index=$((${#targets[@]} - 1))
   fi
 done <<<"$actual_layout"
-[ "${#sources[@]}" -eq 16 ] || die "install layout asset count is invalid"
+[ "${#sources[@]}" -eq 17 ] || die "install layout asset count is invalid"
 [ "$unit_index" -ge 0 ] || die "install layout omits the journal-guarded unit"
 [ "$runner_index" -ge 0 ] || die "install layout omits the receipt-bound runner"
 [ "$preflight_index" -ge 0 ] || die "install layout omits the receipt-bound host preflight"
@@ -638,6 +640,9 @@ elif [ -e "$INSTALL_JOURNAL" ]; then
   [[ -f "$INSTALL_JOURNAL" && "$(stat -c '%U:%G:%a' -- "$INSTALL_JOURNAL")" = root:root:600 ]] \
     || die "install journal is unsafe"
   die "an interrupted install requires owner inspection before retry"
+fi
+if [ -e "$RETIREMENT_JOURNAL" ] || [ -L "$RETIREMENT_JOURNAL" ]; then
+  die "an interrupted set-retirement transaction requires exact-source recovery"
 fi
 if [ -L "$ACTIVE_RECEIPT" ]; then
   die "active provision receipt is a symlink"
@@ -968,5 +973,5 @@ done
 durable_remove "$INSTALL_JOURNAL"
 journal_armed=false
 install_succeeded=true
-printf '{"ok":true,"schema":"nexus.rollback-drill-vm-install.v1","sourceSha":"%s","archiveSha256":"%s","installedAssets":16,"serviceUser":"%s","servicesStarted":false,"servicesEnabled":false,"recoveryServiceEnabled":true,"guestDataCreated":false}\n' \
+printf '{"ok":true,"schema":"nexus.rollback-drill-vm-install.v1","sourceSha":"%s","archiveSha256":"%s","installedAssets":17,"serviceUser":"%s","servicesStarted":false,"servicesEnabled":false,"recoveryServiceEnabled":true,"guestDataCreated":false}\n' \
   "$SOURCE_SHA" "$EXPECTED_ARCHIVE_SHA256" "$EXPECTED_USER"
