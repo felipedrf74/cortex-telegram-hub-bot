@@ -1431,7 +1431,20 @@ def validate_pm2_archive(
                 }
                 if not required.issubset(regular_paths):
                     fail("PM2 closure archive is missing a required payload")
-                archive.extractall(destination, filter="data")
+
+                def governed_data_filter(
+                    member: tarfile.TarInfo,
+                    destination_path: str,
+                ) -> tarfile.TarInfo | None:
+                    filtered = tarfile.data_filter(member, destination_path)
+                    if filtered is not None and filtered.isdir():
+                        # data_filter deliberately discards directory modes.
+                        # Restore only the 0755 mode already required above so
+                        # restrictive caller umasks cannot alter validation.
+                        return filtered.replace(mode=0o755)
+                    return filtered
+
+                archive.extractall(destination, filter=governed_data_filter)
         except (OSError, tarfile.TarError) as error:
             fail(f"cannot inspect PM2 closure archive: {error}")
         extracted = destination / "pm2-closure"

@@ -213,6 +213,23 @@ function runHelper(args: string[]) {
   });
 }
 
+function runHelperWithRestrictiveUmask(args: string[]) {
+  return spawnSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import os,sys",
+        "os.umask(0o077)",
+        "os.execv(sys.executable,[sys.executable,*sys.argv[1:]])",
+      ].join(";"),
+      helper,
+      ...args,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
@@ -1526,7 +1543,7 @@ exit "$status"
     },
   );
 
-  it("accepts a real lock-v3 shape without package name fields and rejects SRI drift", () => {
+  it("validates a real lock-v3 PM2 archive under umask 077 and rejects unsafe drift", () => {
     const root = temporaryRoot();
     const prefix = join(root, "prefix");
     const packageRoot = join(prefix, "node_modules/pm2");
@@ -1657,6 +1674,60 @@ exit "$status"
       payloadDigest,
       fileCount: payloadFiles.length + 1,
     });
+
+    const validArchive = join(root, "pm2-closure.tar.gz");
+    const invalidModeArchive = join(root, "pm2-closure-mode-0700.tar.gz");
+    const archived = spawnSync(
+      "python3",
+      [
+        "-c",
+        [
+          "import pathlib,sys,tarfile",
+          "source=pathlib.Path(sys.argv[1])",
+          "def build(output,root_mode):",
+          " def policy(member):",
+          "  if member.name=='pm2-closure':member.mode=root_mode",
+          "  return member",
+          " with tarfile.open(output,'w:gz',format=tarfile.PAX_FORMAT) as archive:",
+          "  archive.add(source,arcname='pm2-closure',recursive=True,filter=policy)",
+          "build(sys.argv[2],0o755)",
+          "build(sys.argv[3],0o700)",
+        ].join("\n"),
+        prefix,
+        validArchive,
+        invalidModeArchive,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(archived.status, archived.stderr).toBe(0);
+
+    const restrictiveUmask = runHelperWithRestrictiveUmask([
+      "validate-pm2-archive",
+      "--archive",
+      validArchive,
+      "--lock",
+      lockPath,
+    ]);
+    expect(
+      restrictiveUmask.status,
+      `${restrictiveUmask.stdout}${restrictiveUmask.stderr}`,
+    ).toBe(0);
+    expect(JSON.parse(restrictiveUmask.stdout)).toMatchObject({
+      payloadDigest,
+      fileCount: payloadFiles.length + 1,
+    });
+
+    const invalidMode = runHelperWithRestrictiveUmask([
+      "validate-pm2-archive",
+      "--archive",
+      invalidModeArchive,
+      "--lock",
+      lockPath,
+    ]);
+    expect(invalidMode.status).not.toBe(0);
+    expect(invalidMode.stderr).toContain(
+      "PM2 closure archive directory mode is invalid",
+    );
 
     lock.packages["node_modules/pm2"].integrity =
       `sha512-${Buffer.alloc(64, 1).toString("base64")}`;
