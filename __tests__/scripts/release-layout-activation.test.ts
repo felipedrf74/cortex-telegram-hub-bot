@@ -1355,6 +1355,10 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       unitStates,
       'nexus-release-promotion-recovery.service',
     ), 'utf8')).toBe('disabled\n');
+    expect(fs.existsSync(path.join(
+      unitStates,
+      'nexus-release-promotion-recovery.service',
+    ))).toBe(true);
     expect(fs.readFileSync(targets.control)).toEqual(originalControl);
     expect(fs.existsSync(targets.ollamaInstallState)).toBe(false);
     expect(fs.existsSync(targets.ollamaInstallGuard)).toBe(false);
