@@ -685,7 +685,7 @@ An active v2 set whose runtime readiness is still exactly
 `ssh_only_bootstrap_required` with `drillReady=false` may be replaced without
 deleting its bytes. This is a narrow owner action for source-drift recovery; it
 does not retire a completed or partially evidenced drill. Record the exact
-active receipt, set, stale runtime-manifest, protected-main source, and
+active receipt, set, current runtime-asset, protected-main source, and
 root-side archive digests before invoking it:
 
   sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-vm-set-retirement.py \
@@ -696,8 +696,34 @@ root-side archive digests before invoking it:
     <64-hex-root-side-archive-sha256> \
     --expected-set-id <64-hex-active-set-id> \
     --expected-active-sha256 <64-hex-active-receipt-sha256> \
-    --expected-runtime-manifest-sha256 <64-hex-stale-runtime-manifest-sha256> \
+    --expected-runtime-manifest-sha256 <64-hex-active-runtime-manifest-sha256> \
+    --expected-runtime-control-sha256 <64-hex-active-runtime-control-sha256> \
     --acknowledge-incomplete-set-replacement
+
+At least one explicitly bound active runtime asset must differ from the desired
+protected-main source. The runtime-control argument is optional only when the
+runtime-manifest digest itself is the source-drift reason.
+
+If a guest was already booted but no host runtime-readiness handoff, pending
+evidence, or sequence was created, stop the guest and wait for the unit, QEMU,
+and its loopback listener to become idle. Hash each overlay whose bytes differ
+from its `overlayInitialSha256`, then add one exact binding per changed guest:
+
+  sudo systemctl stop nexus-rollback-drill-vm@guest-1.service
+  sudo systemctl show --no-pager \
+    --property=ActiveState --property=SubState \
+    --property=MainPID --property=ControlPID \
+    nexus-rollback-drill-vm@guest-1.service
+  sudo sha256sum \
+    /var/lib/nexus-rollback-drill-vm/sets/<set-id>/guest-1/root.qcow2
+
+    --expected-current-overlay-sha256 guest-1=<64-hex-stopped-overlay-sha256> \
+    --acknowledge-booted-overlay-state
+
+The acknowledgement and exact stopped-overlay bindings are accepted only
+together. Unlisted overlays must still equal their initial provision digests.
+The transaction journal binds the complete observed tree before any rename, so
+recovery cannot substitute a different evolved overlay.
 
 The command non-blockingly freezes the readiness-sequence, runtime-readiness,
 fault-controller, release/Sonar, install/provision, guest-admission, and

@@ -22,7 +22,6 @@ const control = resolve('scripts/rollback-drill-vm-set-retirement.py');
 const layout = resolve('ops/rollback-drill-vm/install-layout.tsv');
 const sourceSha = 'a'.repeat(40);
 const staleRuntimeManifestBody = 'installed-runtime-manifest';
-const staleRuntimeManifest = sha256(staleRuntimeManifestBody);
 const setId = 'c'.repeat(64);
 
 function sha256(value: Buffer | string): string {
@@ -35,7 +34,9 @@ function writeMode(path: string, body: Buffer | string, mode: number): void {
   chmodSync(path, mode);
 }
 
-function fixture() {
+function fixture(
+  options: { activeManifestMatchesSource?: boolean } = {},
+) {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), 'nexus-kvm-retirement-')),
   );
@@ -128,6 +129,12 @@ with tarfile.open(
   );
   const installedRoot = join(root, 'installed');
   mkdirSync(installedRoot, { mode: 0o700 });
+  const activeRuntimeManifestBody = options.activeManifestMatchesSource
+    ? readFileSync(
+        join(repository, 'scripts/rollback-drill-vm-runtime-manifest.py'),
+      )
+    : Buffer.from(staleRuntimeManifestBody);
+  const activeRuntimeManifest = sha256(activeRuntimeManifestBody);
   const installed = Object.fromEntries(
     [
       'runner',
@@ -146,7 +153,7 @@ with tarfile.open(
     ].map((name) => {
       const path = join(installedRoot, name);
       const body = name === 'runtime-manifest'
-        ? Buffer.from(staleRuntimeManifestBody)
+        ? activeRuntimeManifestBody
         : Buffer.from(`installed-${name}`);
       writeMode(path, body, 0o600);
       return [name, { path, digest: sha256(body) }];
@@ -165,7 +172,7 @@ with tarfile.open(
     hostPreflightPath: installed.preflight.path,
     hostPreflightSha256: installed.preflight.digest,
     runtimeManifestPath: installed['runtime-manifest'].path,
-    runtimeManifestSha256: staleRuntimeManifest,
+    runtimeManifestSha256: activeRuntimeManifest,
     runtimeControlSourcePath: installed['runtime-control'].path,
     runtimeControlSha256: installed['runtime-control'].digest,
     runtimeReadinessPath: installed['runtime-readiness'].path,
@@ -346,7 +353,8 @@ exit 0
     ...baseArgs,
     '--expected-set-id', setId,
     '--expected-active-sha256', activeSha,
-    '--expected-runtime-manifest-sha256', staleRuntimeManifest,
+    '--expected-runtime-manifest-sha256', activeRuntimeManifest,
+    '--expected-runtime-control-sha256', installed['runtime-control'].digest,
     '--acknowledge-incomplete-set-replacement',
   ];
   return { state, env, baseArgs, quarantineArgs, activeSha };
@@ -404,6 +412,16 @@ describe('rollback-drill VM incomplete-set retirement', () => {
         `${output.transactionId}.quarantine.json`,
       )),
     );
+  });
+
+  it('accepts exact source drift bound only to runtime control', () => {
+    const value = fixture({ activeManifestMatchesSource: true });
+    const result = spawnSync(control, value.quarantineArgs, {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe('quarantined');
   });
 
   it('recovers forward after interruption immediately after authority withdrawal', () => {
@@ -516,6 +534,199 @@ describe('rollback-drill VM incomplete-set retirement', () => {
     expect(
       existsSync(join(value.state, 'set-retirement-in-progress.v1.json')),
     ).toBe(false);
+  });
+
+  it('quarantines an explicitly bound boot-mutated incomplete overlay', () => {
+    const value = fixture();
+    const overlay = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-1',
+      'root.qcow2',
+    );
+    writeFileSync(overlay, 'boot-mutated-overlay');
+    chmodSync(overlay, 0o600);
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${sha256(readFileSync(overlay))}`,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe('quarantined');
+  });
+
+  it('requires booted-overlay acknowledgement and identities together', () => {
+    const value = fixture();
+    const overlay = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-1',
+      'root.qcow2',
+    );
+    writeFileSync(overlay, 'boot-mutated-overlay');
+    chmodSync(overlay, 0o600);
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${sha256(readFileSync(overlay))}`,
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'booted overlay acknowledgement and exact current overlay identities',
+    );
+    expect(
+      existsSync(join(value.state, 'set-retirement-in-progress.v1.json')),
+    ).toBe(false);
+  });
+
+  it('rejects acknowledgement without an exact changed-overlay identity', () => {
+    const value = fixture();
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'booted overlay acknowledgement and exact current overlay identities',
+    );
+    expect(
+      existsSync(join(value.state, 'set-retirement-in-progress.v1.json')),
+    ).toBe(false);
+  });
+
+  it('rejects a wrong explicit stopped-overlay digest without a journal', () => {
+    const value = fixture();
+    const overlay = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-1',
+      'root.qcow2',
+    );
+    writeFileSync(overlay, 'boot-mutated-overlay');
+    chmodSync(overlay, 0o600);
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${'f'.repeat(64)}`,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'guest-1 bytes differ from the active provision receipt',
+    );
+    expect(
+      existsSync(join(value.state, 'set-retirement-in-progress.v1.json')),
+    ).toBe(false);
+  });
+
+  it('rejects duplicate changed-overlay identities before arming a journal', () => {
+    const value = fixture();
+    const digest = 'f'.repeat(64);
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${digest}`,
+      '--expected-current-overlay-sha256',
+      `guest-1=${digest}`,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'expected current overlay identity repeats guest-1',
+    );
+    expect(
+      existsSync(join(value.state, 'set-retirement-in-progress.v1.json')),
+    ).toBe(false);
+  });
+
+  it('requires every changed overlay to have its own exact binding', () => {
+    const value = fixture();
+    const guest1 = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-1',
+      'root.qcow2',
+    );
+    const guest2 = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-2',
+      'root.qcow2',
+    );
+    writeFileSync(guest1, 'boot-mutated-overlay-1');
+    writeFileSync(guest2, 'boot-mutated-overlay-2');
+    chmodSync(guest1, 0o600);
+    chmodSync(guest2, 0o600);
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${sha256(readFileSync(guest1))}`,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'guest-2 bytes differ from the active provision receipt',
+    );
+    expect(
+      existsSync(join(value.state, 'set-retirement-in-progress.v1.json')),
+    ).toBe(false);
+  });
+
+  it('recovers a changed-overlay quarantine from its exact tree binding', () => {
+    const value = fixture();
+    const overlay = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-1',
+      'root.qcow2',
+    );
+    writeFileSync(overlay, 'boot-mutated-overlay');
+    chmodSync(overlay, 0o600);
+    const interrupted = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${sha256(readFileSync(overlay))}`,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: {
+        ...value.env,
+        NEXUS_KVM_SET_RETIREMENT_TEST_INTERRUPT_AFTER:
+          'active_receipt_quarantined',
+      },
+      encoding: 'utf8',
+    });
+    expect(interrupted.status, interrupted.stderr).toBe(198);
+    const recovered = spawnSync(control, ['recover', ...value.baseArgs], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(JSON.parse(recovered.stdout).status).toBe('quarantined');
   });
 
   it.each(['both', 'neither', 'mutated'])(
