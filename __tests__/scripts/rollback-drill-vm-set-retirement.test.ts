@@ -35,7 +35,10 @@ function writeMode(path: string, body: Buffer | string, mode: number): void {
 }
 
 function fixture(
-  options: { activeManifestMatchesSource?: boolean } = {},
+  options: {
+    activeManifestMatchesSource?: boolean;
+    activeControlMatchesSource?: boolean;
+  } = {},
 ) {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), 'nexus-kvm-retirement-')),
@@ -135,6 +138,11 @@ with tarfile.open(
       )
     : Buffer.from(staleRuntimeManifestBody);
   const activeRuntimeManifest = sha256(activeRuntimeManifestBody);
+  const activeRuntimeControlBody = options.activeControlMatchesSource
+    ? readFileSync(
+        join(repository, 'scripts/rollback-drill-vm-runtime-control.sh'),
+      )
+    : Buffer.from('installed-runtime-control');
   const installed = Object.fromEntries(
     [
       'runner',
@@ -154,7 +162,9 @@ with tarfile.open(
       const path = join(installedRoot, name);
       const body = name === 'runtime-manifest'
         ? activeRuntimeManifestBody
-        : Buffer.from(`installed-${name}`);
+        : name === 'runtime-control'
+          ? activeRuntimeControlBody
+          : Buffer.from(`installed-${name}`);
       writeMode(path, body, 0o600);
       return [name, { path, digest: sha256(body) }];
     }),
@@ -422,6 +432,73 @@ describe('rollback-drill VM incomplete-set retirement', () => {
     });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).status).toBe('quarantined');
+  });
+
+  it('quarantines a same-source boot-mutated incomplete set for exact retry', () => {
+    const value = fixture({
+      activeManifestMatchesSource: true,
+      activeControlMatchesSource: true,
+    });
+    const overlay = join(
+      value.state,
+      'sets',
+      setId,
+      'guest-1',
+      'root.qcow2',
+    );
+    writeFileSync(overlay, 'boot-mutated-overlay');
+    chmodSync(overlay, 0o600);
+    const result = spawnSync(control, [
+      ...value.quarantineArgs,
+      '--expected-current-overlay-sha256',
+      `guest-1=${sha256(readFileSync(overlay))}`,
+      '--acknowledge-booted-overlay-state',
+    ], {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe('quarantined');
+  });
+
+  it('rejects a pristine same-source set without changed-overlay evidence', () => {
+    const value = fixture({
+      activeManifestMatchesSource: true,
+      activeControlMatchesSource: true,
+    });
+    const result = spawnSync(control, value.quarantineArgs, {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'same-source retry requires an explicitly bound changed overlay',
+    );
+  });
+
+  it('rejects terminal fault-controller evidence for the active receipt', () => {
+    const value = fixture();
+    writeMode(
+      join(
+        value.state,
+        'release-layout-fault-drills',
+        '00000000-0000-4000-8000-000000000001',
+        'controller-journal.v1.json',
+      ),
+      `${JSON.stringify({
+        status: 'completed',
+        provisionReceiptSha256: value.activeSha,
+      })}\n`,
+      0o600,
+    );
+    const result = spawnSync(control, value.quarantineArgs, {
+      env: value.env,
+      encoding: 'utf8',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'fault-controller evidence exists for incomplete set',
+    );
   });
 
   it('recovers forward after interruption immediately after authority withdrawal', () => {

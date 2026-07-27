@@ -1594,6 +1594,8 @@ def assert_no_nonterminal_state(active_sha256: str, set_id: str) -> None:
             _, value = read_json(journal, "fault-controller journal")
             if value.get("status") not in TERMINAL_CONTROLLER_STATUSES:
                 fail("a fault-controller journal is nonterminal")
+            if value.get("provisionReceiptSha256") == active_sha256:
+                fail("fault-controller evidence exists for incomplete set")
 
 
 def item_locations(
@@ -2282,7 +2284,7 @@ def quarantine_command(args: argparse.Namespace, source: dict[str, str]) -> None
         (args.expected_active_sha256, "expected active receipt digest", DIGEST),
         (
             args.expected_runtime_manifest_sha256,
-            "expected stale runtime manifest digest",
+            "expected active runtime manifest digest",
             DIGEST,
         ),
     ):
@@ -2293,20 +2295,6 @@ def quarantine_command(args: argparse.Namespace, source: dict[str, str]) -> None
         and not DIGEST.fullmatch(args.expected_runtime_control_sha256)
     ):
         fail("expected runtime control digest is invalid")
-    runtime_asset_changed = (
-        source["desiredRuntimeManifestSha256"]
-        != args.expected_runtime_manifest_sha256
-        or (
-            args.expected_runtime_control_sha256 is not None
-            and source["desiredRuntimeControlSha256"]
-            != args.expected_runtime_control_sha256
-        )
-    )
-    if not runtime_asset_changed:
-        fail(
-            "desired protected-main runtime assets are not different from the "
-            "explicit active identities"
-        )
     expected_current_overlay_sha256s: dict[str, str] = {}
     for binding in args.expected_current_overlay_sha256 or ():
         guest, separator, digest = binding.partition("=")
@@ -2328,6 +2316,19 @@ def quarantine_command(args: argparse.Namespace, source: dict[str, str]) -> None
         fail(
             "booted overlay acknowledgement and exact current overlay "
             "identities must be supplied together"
+        )
+    runtime_assets_match_source = (
+        source["desiredRuntimeManifestSha256"]
+        == args.expected_runtime_manifest_sha256
+        and (
+            args.expected_runtime_control_sha256 is None
+            or source["desiredRuntimeControlSha256"]
+            == args.expected_runtime_control_sha256
+        )
+    )
+    if runtime_assets_match_source and not expected_current_overlay_sha256s:
+        fail(
+            "same-source retry requires an explicitly bound changed overlay"
         )
     root = state_root()
     assert_state_directory_contract()

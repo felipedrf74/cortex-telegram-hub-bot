@@ -684,8 +684,9 @@ Incomplete-set quarantine and exact recovery
 An active v2 set whose runtime readiness is still exactly
 `ssh_only_bootstrap_required` with `drillReady=false` may be replaced without
 deleting its bytes. This is a narrow owner action for source-drift recovery; it
-does not retire a completed or partially evidenced drill. Record the exact
-active receipt, set, current runtime-asset, protected-main source, and
+also permits an exact same-source retry after an interrupted pre-evidence first
+boot. It does not retire a completed or partially evidenced drill. Record the
+exact active receipt, set, current runtime-asset, protected-main source, and
 root-side archive digests before invoking it:
 
   sudo /var/lib/nexus-release-bootstrap/<sha>/source/scripts/rollback-drill-vm-set-retirement.py \
@@ -700,9 +701,11 @@ root-side archive digests before invoking it:
     --expected-runtime-control-sha256 <64-hex-active-runtime-control-sha256> \
     --acknowledge-incomplete-set-replacement
 
-At least one explicitly bound active runtime asset must differ from the desired
-protected-main source. The runtime-control argument is optional only when the
-runtime-manifest digest itself is the source-drift reason.
+The runtime-control argument is optional only when the runtime-manifest digest
+itself is the source-drift reason. When the source and active runtime assets
+match, the same command remains fail-closed on the exact set and receipt
+identities, stopped guests and listeners, absence of readiness/controller
+evidence, and every changed-overlay digest supplied below.
 
 If a guest was already booted but no host runtime-readiness handoff, pending
 evidence, or sequence was created, stop the guest and wait for the unit, QEMU,
