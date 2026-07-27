@@ -8,6 +8,7 @@ Before=network.target network-online.target multi-user.target pm2-dominguez.serv
 
 [Service]
 Type=oneshot
+ExecCondition=/usr/local/sbin/nexus-release-boot-health preflight-temporary
 ExecStart=/usr/local/sbin/nexus-release-promotion-control recover-all
 TimeoutStartSec=300s
 

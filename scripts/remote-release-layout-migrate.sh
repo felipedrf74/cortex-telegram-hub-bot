@@ -200,12 +200,22 @@ write_boot_recovery_origin() {
     "$outage_started" "$recovery_deadline" <<'NODE'
 const fs=require('fs');
 const [output,existingFile,journalFile,startedRaw,deadlineRaw]=process.argv.slice(2);
-const started=Number(startedRaw),deadline=Number(deadlineRaw),now=Math.floor(Date.now()/1000);
-const bootId=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
-const monotonic=Math.floor(Number(fs.readFileSync('/proc/uptime','utf8').split(/\s+/u)[0]));
+let started=Number(startedRaw),deadline=Number(deadlineRaw);
+const now=Math.floor(Date.now()/1000);
+const testMode=process.env.NEXUS_RELEASE_TEST_MODE==='1';
+const bootId=testMode
+ ?(process.env.NEXUS_PROMOTION_TEST_BOOT_ID||'test-boot')
+ :fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+const monotonic=testMode
+ ?Number(process.env.NEXUS_PROMOTION_TEST_MONOTONIC_SECONDS||1)
+ :Math.floor(Number(fs.readFileSync('/proc/uptime','utf8').split(/\s+/u)[0]));
 const journal=JSON.parse(fs.readFileSync(journalFile));
 if(!Number.isSafeInteger(started)||!Number.isSafeInteger(deadline)
+ ||!Number.isSafeInteger(monotonic)||monotonic<0
  ||deadline-started!==120||started>now+1)process.exit(1);
+// A one-second wall-clock step between the shell timestamp and this writer
+// must never produce authority that the current-boot validator cannot admit.
+if(started===now+1){started=now;deadline=now+120;}
 let origin={epoch:started,startedAt:new Date(started*1000).toISOString(),
  monotonic:journal.productionOutageStartedEpoch===started
   &&(Number.isSafeInteger(journal.productionOutageStartedMonotonicMs)
@@ -862,14 +872,17 @@ NODE
 
 persist_and_verify_pm2_dump() {
   local production_runtime="$1" production_sha="$2"
-  local staging_runtime="$3" staging_sha="$4" result
+  local staging_runtime="$3" staging_sha="$4" profile="$5" result
   # The role identities are intentionally accepted only as a consistency
   # check here. The root helper derives them again from root-owned selectors.
   [ -n "$production_runtime" ] && [ -n "$staging_runtime" ] \
     && [[ "$production_sha" =~ ^[a-f0-9]{40}$ ]] \
     && [[ "$staging_sha" =~ ^[a-f0-9]{40}$ ]] \
     || die "PM2 authority publication inputs are invalid"
-  result="$("$BOOT_HEALTH_BIN" publish-current)"
+  case "$profile" in layout|legacy) ;; *)
+    die "PM2 authority publication profile is invalid"
+  esac
+  result="$("$BOOT_HEALTH_BIN" publish-current-profile "$profile")"
   "$NODE_BIN" -e '
 const x=JSON.parse(process.argv[1]);
 if(x.schema!=="nexus.pm2-resurrection-authority.v2"
@@ -1446,11 +1459,12 @@ NODE
 const fs=require('fs');const [file,nowRaw]=process.argv.slice(2);const now=Number(nowRaw);
 const x=JSON.parse(fs.readFileSync(file,'utf8'));
 const candidateHadRestored=Number.isSafeInteger(x.productionAvailabilityRestoredEpoch);
-const started=candidateHadRestored?now
+let started=candidateHadRestored?now
  :Number.isSafeInteger(x.productionOutageStartedEpoch)?x.productionOutageStartedEpoch:now;
-const deadline=candidateHadRestored?started+120
+let deadline=candidateHadRestored?started+120
  :Number.isSafeInteger(x.recoveryDeadlineEpoch)?x.recoveryDeadlineEpoch:started+120;
 if(deadline!==started+120||started>now+1)process.exit(1);
+if(started===now+1){started=now;deadline=now+120;}
 process.stdout.write(`${started}\t${deadline}\n`);
 NODE
 )
@@ -1561,7 +1575,8 @@ NODE
   # resurrect the newer /srv dump after rollback already removed those paths.
   local pm2_dump_sha256
   pm2_dump_sha256="$(persist_and_verify_pm2_dump \
-    "$production_runtime" "$production_sha" "$staging_runtime" "$staging_sha")"
+    "$production_runtime" "$production_sha" "$staging_runtime" "$staging_sha" \
+    legacy)"
   verify_pm2_identity "$production_runtime" "$production_sha" \
     "$staging_runtime" "$staging_sha"
   local recovery_seconds recovery_details recovery_target_met=true
@@ -1913,7 +1928,7 @@ NODE
   local pm2_dump_sha256
   pm2_dump_sha256="$(persist_and_verify_pm2_dump \
     "$new_production_runtime" "$production_sha" \
-    "$new_staging_runtime" "$staging_sha")"
+    "$new_staging_runtime" "$staging_sha" layout)"
   verify_pm2_identity "$new_production_runtime" "$production_sha" \
     "$new_staging_runtime" "$staging_sha"
 

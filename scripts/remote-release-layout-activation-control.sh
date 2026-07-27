@@ -115,10 +115,11 @@ NODE
 
 verify_phase_a_receipt() {
   "$SYSTEM_NODE" - "$PHASE_A_RECEIPT" "$TEST_MODE" \
-    "$PHASE_A_TEST_ASSET_ROOT" <<'NODE' \
+    "$PHASE_A_TEST_ASSET_ROOT" \
+    "$ACTIVATION_ROOT/phase-a-predecessor-receipt.v1.json" <<'NODE' \
     || die "exact Phase A receipt or installed asset identity is invalid"
 const crypto=require('crypto');const fs=require('fs');
-const [receiptFile,testMode,testRoot]=process.argv.slice(2);
+const [receiptFile,testMode,testRoot,predecessorReceipt]=process.argv.slice(2);
 const receiptStat=fs.lstatSync(receiptFile);
 if(!receiptStat.isFile()||receiptStat.isSymbolicLink()||receiptStat.nlink!==1
  ||(receiptStat.mode&0o7777)!==0o600
@@ -140,6 +141,8 @@ const fixed=[
  '/usr/local/libexec/nexus-capture-pm2-dump-authority.mjs',
  '/usr/local/libexec/nexus-pm2-dump-authority.py',
  '/usr/local/sbin/nexus-release-boot-health',
+ '/usr/local/sbin/nexus-ollama-install-state-check.mjs',
+ '/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf',
  '/etc/systemd/system/nexus-release-pm2-recovery-daemon.service',
  '/etc/systemd/system/nexus-release-promotion-recovery.service',
  '/etc/systemd/system/nexus-release-layout-activation@.service',
@@ -151,6 +154,7 @@ const fixed=[
 if(testMode==='1'&&testRoot&&!testRoot.startsWith('/'))process.exit(1);
 const expected=new Set(fixed.map((asset)=>testMode==='1'&&testRoot
  ?`${testRoot}${asset}`:asset));
+const upgrade=receipt.phaseAUpgrade;
 if(receipt.schema!=='nexus.release-layout-phase-a-receipt.v1'
  ||receipt.status!=='completed'
  ||!/^[a-f0-9]{40}$/u.test(receipt.sourceSha??'')
@@ -163,10 +167,32 @@ if(receipt.schema!=='nexus.release-layout-phase-a-receipt.v1'
  ||typeof receipt.legacyV2AdapterRetired!=='boolean'
  ||receipt.pm2Prerequisite?.verified!==true
  ||!/^[a-f0-9]{64}$/u.test(receipt.pm2Prerequisite?.evidenceSha256??'')
+ ||!upgrade||typeof upgrade!=='object'||Array.isArray(upgrade)
+ ||Object.keys(upgrade).sort().join(',')
+  !==['performed','predecessorReceiptPath','predecessorReceiptSha256',
+      'predecessorSourceSha'].sort().join(',')
+ ||typeof upgrade.performed!=='boolean'
  ||!Array.isArray(receipt.installedAssets)
  ||receipt.installedAssets.length!==expected.size
  ||JSON.stringify(receipt.prohibitedCommands)!==JSON.stringify(['run','recover-all'])
  ||!Number.isFinite(Date.parse(receipt.completedAt??'')))process.exit(1);
+if(upgrade.performed){
+ if(upgrade.predecessorReceiptPath!==predecessorReceipt
+  ||!/^[a-f0-9]{64}$/u.test(upgrade.predecessorReceiptSha256??'')
+  ||!/^[a-f0-9]{40}$/u.test(upgrade.predecessorSourceSha??'')
+  ||!Number.isFinite(Date.parse(receipt.upgradedAt??''))
+  ||Date.parse(receipt.upgradedAt)<=Date.parse(receipt.completedAt))process.exit(1);
+ const identity=fs.lstatSync(predecessorReceipt);
+ if(!identity.isFile()||identity.isSymbolicLink()||identity.nlink!==1
+  ||(identity.mode&0o7777)!==0o600
+  ||(testMode!=='1'&&(identity.uid!==0||identity.gid!==0))
+  ||crypto.createHash('sha256').update(fs.readFileSync(predecessorReceipt)).digest('hex')
+    !==upgrade.predecessorReceiptSha256)process.exit(1);
+}else if(upgrade.predecessorReceiptPath!==null
+ ||upgrade.predecessorReceiptSha256!==null
+ ||upgrade.predecessorSourceSha!==null
+ ||receipt.upgradedAt!==null
+ ||fs.existsSync(predecessorReceipt))process.exit(1);
 for(const asset of receipt.installedAssets){
  if(!expected.delete(asset.path)||!/^[a-f0-9]{64}$/u.test(asset.sha256??''))process.exit(1);
  const identity=fs.lstatSync(asset.path);
@@ -706,7 +732,7 @@ assert_boot_safe() {
   if [ -e "$LAYOUT_ATTESTATION" ] || [ -L "$LAYOUT_ATTESTATION" ]; then
     [ -f "$LAYOUT_ATTESTATION" ] && [ ! -L "$LAYOUT_ATTESTATION" ] \
       || die "release-layout attestation is unsafe"
-    "$PROMOTION_CONTROL" assert-layout-ready >/dev/null
+    "$PROMOTION_CONTROL" assert-layout-boot-ready >/dev/null
   fi
   printf '{"ok":true,"schema":"%s","status":"boot_safe"}\n' "$VERSION"
 }
@@ -794,7 +820,10 @@ case "$COMMAND" in
         || { [ -f "$LAYOUT_ATTESTATION" ] && [ ! -L "$LAYOUT_ATTESTATION" ]; }; then
       "$MIGRATE_BIN" recover
     fi
-    if [ -x "$HANDOVER_BIN" ]; then "$HANDOVER_BIN" recover-handover; fi
+    if [ -x "$HANDOVER_BIN" ]; then
+      NEXUS_LAYOUT_INHERITED_ACTIVATION_LOCK_FD=9 \
+        "$HANDOVER_BIN" recover-handover
+    fi
     ;;
   assert-boot-safe)
     [ "$#" -eq 0 ] || exit 64

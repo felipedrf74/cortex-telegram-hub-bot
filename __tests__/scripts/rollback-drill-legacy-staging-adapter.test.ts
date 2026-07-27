@@ -27,10 +27,32 @@ const recoveryUnit = path.resolve(
 const installRecoveryUnit = path.resolve(
   'scripts/systemd/nexus-rollback-drill-legacy-staging-install-recovery.service',
 );
+const v4InstallRecoveryUnit = path.resolve(
+  'scripts/systemd/'
+  + 'nexus-rollback-drill-v4-prelayout-staging-install-recovery.service',
+);
+const v4RecoveryUnit = path.resolve(
+  'scripts/systemd/'
+  + 'nexus-rollback-drill-v4-prelayout-staging-recovery.service',
+);
+const v4Pm2RecoveryDropIn = path.resolve(
+  'scripts/systemd/'
+  + '15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf',
+);
+const v4PromotionRecoveryDropIn = path.resolve(
+  'scripts/systemd/'
+  + '15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf',
+);
 const pm2RecoveryDropIn = path.resolve(
   'scripts/systemd/10-nexus-rollback-drill-legacy-staging-recovery.conf',
 );
 const releaseOperator = path.resolve('scripts/release-operator.sh');
+const layoutActivationInstaller = path.resolve(
+  'scripts/remote-release-layout-activation-install.sh',
+);
+const layoutActivationControl = path.resolve(
+  'scripts/remote-release-layout-activation-control.sh',
+);
 const sqliteToolSource = path.resolve('scripts/application-dr-sqlite.py');
 const filesystemHelper = path.resolve(
   'scripts/rollback-drill-legacy-staging-fs.py',
@@ -259,7 +281,11 @@ function fixture() {
   };
 }
 
-function installerBootstrap(state: ReturnType<typeof fixture>, label: string) {
+function installerBootstrap(
+  state: ReturnType<typeof fixture>,
+  label: string,
+  profile: 'control-v2' | 'v4-prelayout' = 'control-v2',
+) {
   const bootstrapBase = path.join(state.root, `bootstrap-${label}`);
   const pending = path.join(bootstrapBase, 'pending');
   const pendingSource = path.join(pending, 'source');
@@ -273,12 +299,22 @@ function installerBootstrap(state: ReturnType<typeof fixture>, label: string) {
     'scripts/release-recovery-runtime-identity.mjs',
     'scripts/application-dr-sqlite.py',
     'scripts/rollback-drill-legacy-staging-fs.py',
-    'scripts/systemd/nexus-rollback-drill-legacy-staging@.service',
-    'scripts/systemd/nexus-rollback-drill-legacy-staging-recovery.service',
-    'scripts/systemd/nexus-rollback-drill-legacy-staging-install-recovery.service',
-    'scripts/systemd/10-nexus-rollback-drill-legacy-staging-recovery.conf',
     'docs/release/evidence/release-evidence-public-key.pem',
   ];
+  required.push(...(profile === 'v4-prelayout'
+    ? [
+        'scripts/systemd/nexus-rollback-drill-v4-prelayout-staging@.service',
+        'scripts/systemd/nexus-rollback-drill-v4-prelayout-staging-recovery.service',
+        'scripts/systemd/nexus-rollback-drill-v4-prelayout-staging-install-recovery.service',
+        'scripts/systemd/15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf',
+        'scripts/systemd/15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf',
+      ]
+    : [
+        'scripts/systemd/nexus-rollback-drill-legacy-staging@.service',
+        'scripts/systemd/nexus-rollback-drill-legacy-staging-recovery.service',
+        'scripts/systemd/nexus-rollback-drill-legacy-staging-install-recovery.service',
+        'scripts/systemd/10-nexus-rollback-drill-legacy-staging-recovery.conf',
+      ]));
   for (const relative of required) {
     const source = path.resolve(relative);
     const destination = path.join(pendingSource, relative);
@@ -376,6 +412,423 @@ esac
     NEXUS_PROMOTION_STATE_ROOT: path.join(state.root, 'promotion-state'),
     NEXUS_LEGACY_DRILL_SONAR_LOCK: path.join(state.root, 'sonar.lock'),
   };
+}
+
+function installedV4PrelayoutFixture(
+  label: string,
+  powerLossAfter = '',
+) {
+  const state = fixture();
+  const bootstrap = installerBootstrap(state, label, 'v4-prelayout');
+  const targetRoot = path.join(state.root, `${label}-target`);
+  const installState = path.join(state.root, `${label}-state`);
+  const promotionState = path.join(state.root, `${label}-promotion`);
+  fs.mkdirSync(targetRoot, { mode: 0o700 });
+  fs.mkdirSync(promotionState, { mode: 0o700 });
+  fs.writeFileSync(path.join(promotionState, '.control.lock'), '', {
+    mode: 0o600,
+  });
+  const activationRoot = path.join(promotionState, 'layout-activation');
+  fs.mkdirSync(activationRoot, { mode: 0o700 });
+  fs.writeFileSync(path.join(activationRoot, '.activation.lock'), '', {
+    mode: 0o600,
+  });
+  const sonarLock = path.join(state.root, `${label}-sonar.lock`);
+  fs.writeFileSync(sonarLock, '', { mode: 0o600 });
+  const control = executable(
+    state.root,
+    `${label}-control`,
+    `#!/bin/sh
+case "$1" in
+  version) printf '%s\\n' nexus-release-promotion-control.v4 ;;
+  assert-idle) exit 0 ;;
+  assert-boot-recovery-prepared)
+    { [ "$2" = v4-prelayout ] || [ "$2" = layout ]; } || exit 64
+    if [ -n "\${NEXUS_TEST_BOOT_PROFILE_LOG:-}" ]; then
+      printf '%s\\n' "$2" >>"\$NEXUS_TEST_BOOT_PROFILE_LOG"
+    fi
+    ;;
+  *) exit 64 ;;
+esac
+`,
+  );
+  fs.chmodSync(control, 0o755);
+  const layoutControl = executable(
+    state.root,
+    `${label}-layout-control`,
+    `#!/bin/sh
+case "$1" in
+  version) printf '%s\\n' nexus-release-layout-activation-control.v1 ;;
+  assert-boot-safe)
+    [ "\${NEXUS_TEST_LAYOUT_ASSERT_MUST_BE_SKIPPED:-0}" != 1 ] || exit 91
+    ;;
+  *) exit 64 ;;
+esac
+`,
+  );
+  fs.chmodSync(layoutControl, 0o755);
+  const phaseAReceipt = path.join(state.root, `${label}-phase-a-receipt.v1.json`);
+  const controlDigest = sha256(fs.readFileSync(control));
+  fs.writeFileSync(phaseAReceipt, `${JSON.stringify({
+    schema: 'nexus.release-layout-phase-a-receipt.v1',
+    status: 'completed',
+    sourceSha: bootstrap.sourceSha,
+    sourceArchiveSha256: bootstrap.archiveSha256,
+    phaseARecoveryGuard: true,
+    legacyV2AdapterRetired: false,
+    legacyRetirementSha256: null,
+    installedAssets: [
+      { path: control, sha256: controlDigest },
+      { path: layoutControl, sha256: sha256(fs.readFileSync(layoutControl)) },
+    ],
+  }, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(phaseAReceipt, 0o600);
+  const sqliteTarget = path.join(
+    targetRoot,
+    'usr/local/libexec/nexus-application-dr/application-dr-sqlite.py',
+  );
+  fs.mkdirSync(path.dirname(sqliteTarget), {
+    recursive: true,
+    mode: 0o755,
+  });
+  fs.copyFileSync(sqliteToolSource, sqliteTarget);
+  fs.chmodSync(sqliteTarget, 0o644);
+  const sourceInstaller = path.join(
+    bootstrap.sourceRoot,
+    'scripts',
+    'remote-rollback-drill-legacy-staging-install.sh',
+  );
+  const absentV2Active = path.join(state.root, `${label}-absent-v2-active.json`);
+  const absentV2Retired = path.join(
+    state.root,
+    `${label}-absent-v2-retired.json`,
+  );
+  const env = {
+    ...process.env,
+    NEXUS_LEGACY_DRILL_INSTALL_TEST_MODE: '1',
+    NEXUS_LEGACY_DRILL_TEST_MODE: '1',
+    NEXUS_LEGACY_DRILL_PROFILE: 'v4-prelayout',
+    NEXUS_LEGACY_DRILL_INSTALL_TARGET_ROOT: targetRoot,
+    NEXUS_LEGACY_DRILL_STATE_ROOT: installState,
+    NEXUS_LEGACY_DRILL_BOOTSTRAP_BASE: bootstrap.bootstrapBase,
+    NEXUS_PROMOTION_STATE_ROOT: promotionState,
+    NEXUS_LEGACY_DRILL_SONAR_LOCK: sonarLock,
+    NEXUS_LEGACY_DRILL_CONTROL_BIN: control,
+    NEXUS_LEGACY_DRILL_LAYOUT_CONTROL_BIN: layoutControl,
+    NEXUS_LEGACY_DRILL_EXPECTED_CONTROL_SHA256: controlDigest,
+    NEXUS_LEGACY_DRILL_PHASE_A_RECEIPT: phaseAReceipt,
+    NEXUS_LEGACY_DRILL_V2_ACTIVE_RECEIPT: absentV2Active,
+    NEXUS_LEGACY_DRILL_V2_RETIRED_RECEIPT: absentV2Retired,
+    NEXUS_LEGACY_DRILL_EXPECTED_SQLITE_HELPER_SHA256:
+      sha256(fs.readFileSync(sqliteTarget)),
+    NEXUS_LEGACY_DRILL_NODE_BIN: process.execPath,
+    NEXUS_LEGACY_DRILL_SYSTEMCTL_BIN: '/usr/bin/true',
+    NEXUS_LEGACY_DRILL_FLOCK_BIN: '/usr/bin/true',
+    NEXUS_LEGACY_DRILL_WORKER_USER: os.userInfo().username,
+    NEXUS_LEGACY_DRILL_TEST_POWER_LOSS_AFTER: powerLossAfter,
+  };
+  const installed = spawnSync('bash', [
+    sourceInstaller,
+    'activate-from-phase-a',
+    'none',
+  ], { encoding: 'utf8', env });
+  expect(
+    installed.status,
+    `${installed.stdout}\n${installed.stderr}`,
+  ).toBe(powerLossAfter ? 197 : 0);
+  const fixed = (relative: string) => path.join(targetRoot, relative);
+  const fixedInstaller = fixed(
+    'usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install',
+  );
+  const fixedBroker = fixed(
+    'usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker',
+  );
+  const brokerEnv = {
+    ...env,
+    NEXUS_LEGACY_DRILL_BASE: fixed(
+      'home/dominguez/telegram-hub-bot-staging',
+    ),
+    NEXUS_LEGACY_DRILL_INSTALLER_BIN: fixedInstaller,
+    NEXUS_LEGACY_DRILL_INSTALL_RECOVERY_UNIT: fixed(
+      'etc/systemd/system/'
+      + 'nexus-rollback-drill-v4-prelayout-staging-install-recovery.service',
+    ),
+    NEXUS_LEGACY_DRILL_ADAPTER_BIN: fixed(
+      'usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-adapter.mjs',
+    ),
+    NEXUS_LEGACY_DRILL_DEPENDENCY_BIN: fixed(
+      'usr/local/libexec/nexus-rollback-drill-v4-prelayout-runtime-dependencies.mjs',
+    ),
+    NEXUS_LEGACY_DRILL_INSTALLED_ATTESTOR: fixed(
+      'usr/local/libexec/nexus-rollback-drill-v4-prelayout-installed-tree-attestation.mjs',
+    ),
+    NEXUS_LEGACY_DRILL_RECOVERY_ATTESTOR: fixed(
+      'usr/local/libexec/nexus-rollback-drill-v4-prelayout-recovery-runtime-identity.mjs',
+    ),
+    NEXUS_LEGACY_DRILL_RELEASE_PUBLIC_KEY: fixed(
+      'etc/nexus-release/'
+      + 'rollback-drill-v4-prelayout-release-evidence-public-key.pem',
+    ),
+    NEXUS_LEGACY_DRILL_TRANSACTION_UNIT: fixed(
+      'etc/systemd/system/nexus-rollback-drill-v4-prelayout-staging@.service',
+    ),
+    NEXUS_LEGACY_DRILL_RECOVERY_UNIT: fixed(
+      'etc/systemd/system/'
+      + 'nexus-rollback-drill-v4-prelayout-staging-recovery.service',
+    ),
+    NEXUS_LEGACY_DRILL_PM2_DOMINGUEZ_DROP_IN: fixed(
+      'etc/systemd/system/pm2-dominguez.service.d/'
+      + '15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf',
+    ),
+    NEXUS_LEGACY_DRILL_PM2_ROOT_DROP_IN: fixed(
+      'etc/systemd/system/pm2-root.service.d/'
+      + '15-nexus-rollback-drill-v4-prelayout-staging-recovery.conf',
+    ),
+    NEXUS_LEGACY_DRILL_PROMOTION_RECOVERY_DROP_IN: fixed(
+      'etc/systemd/system/nexus-release-promotion-recovery.service.d/'
+      + '15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf',
+    ),
+    NEXUS_LEGACY_DRILL_SUDOERS_FILE: fixed(
+      'etc/sudoers.d/nexus-rollback-drill-v4-prelayout-staging',
+    ),
+    NEXUS_LEGACY_DRILL_SQLITE_HELPER: sqliteTarget,
+    NEXUS_LEGACY_DRILL_FILESYSTEM_HELPER: fixed(
+      'usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-fs.py',
+    ),
+    NEXUS_LEGACY_DRILL_INSTALL_RECEIPT: path.join(
+      installState,
+      'install-receipt.v1.json',
+    ),
+    NEXUS_LEGACY_DRILL_PERMANENT_PM2_DROP_IN: fixed(
+      'etc/systemd/system/pm2-dominguez.service.d/nexus-release-recovery.conf',
+    ),
+  };
+  return {
+    state,
+    bootstrap,
+    targetRoot,
+    installState,
+    promotionState,
+    control,
+    layoutControl,
+    controlDigest,
+    phaseAReceipt,
+    env,
+    brokerEnv,
+    fixedInstaller,
+    fixedBroker,
+    installed,
+  };
+}
+
+function writeValidV4DrillEvidence(
+  installed: ReturnType<typeof installedV4PrelayoutFixture>,
+) {
+  const { state, installState, fixedBroker, controlDigest, phaseAReceipt } =
+    installed;
+  const base = installed.brokerEnv.NEXUS_LEGACY_DRILL_BASE!;
+  const releaseDir =
+    `${base}/releases/${runtimeSha}-${state.artifactDigest.slice(0, 12)}`;
+  const predecessor =
+    `${base}/releases/${'1'.repeat(40)}-${'2'.repeat(12)}`;
+  const selector = (target: string, ino: string) => ({
+    path: `${base}/current`,
+    target,
+    dev: '10',
+    ino,
+    uid: 1000,
+    gid: 1000,
+    mode: 0o777,
+  });
+  const installedIdentity = {
+    schema: 'nexus.installed-runtime-identity.v1',
+    runtimeSha,
+    artifactDigest: state.artifactDigest,
+  };
+  const recoveryIdentity = {
+    schema: 'nexus.recovery-installed-runtime-identity.v1',
+    runtimeSha,
+    artifactDigest: state.artifactDigest,
+  };
+  const manifestBody = fs.readFileSync(state.manifest);
+  const manifestValue = JSON.parse(manifestBody.toString('utf8'));
+  const now = Date.now();
+  const endpoint = (uptime: number) => ({
+    backendSnapshotSha256: 'c'.repeat(64),
+    backendVersion: '4.14.999',
+    backendUptime: uptime,
+    contentReadySha256: 'd'.repeat(64),
+    contentStatus: 'ready',
+    internalAuthConfigured: true,
+  });
+  const evidence = {
+    schema: 'nexus.rollback-drill-legacy-staging-evidence.v1',
+    status: 'completed',
+    promotionAllowed: false,
+    requestId,
+    runtimeSha,
+    artifactDigest: state.artifactDigest,
+    base,
+    releaseDir,
+    broker: {
+      version: 'nexus-rollback-drill-v4-prelayout-staging-broker.v1',
+      sha256: sha256(fs.readFileSync(fixedBroker)),
+      adapterSha256: sha256(fs.readFileSync(path.join(
+        installed.targetRoot,
+        'usr/local/libexec/nexus-rollback-drill-v4-prelayout-staging-adapter.mjs',
+      ))),
+    },
+    control: {
+      version: 'nexus-release-promotion-control.v4',
+      sha256: controlDigest,
+    },
+    phaseA: {
+      sourceSha: installed.bootstrap.sourceSha,
+      archiveSha256: installed.bootstrap.archiveSha256,
+      receiptSha256: sha256(fs.readFileSync(phaseAReceipt)),
+    },
+    sourceProvenance: {
+      rootRequestSha256: 'b'.repeat(64),
+      releaseManifestSha256: sha256(manifestBody),
+      releaseManifestPayloadSha256:
+        sha256(canonicalJson(manifestValue.payload)),
+      releaseManifestSignatureSha256:
+        sha256(Buffer.from(manifestValue.signature, 'base64')),
+      releaseManifestSigningRunId: String(manifestValue.payload.ci.runId),
+      releaseManifestSigningRunSha256:
+        sha256(canonicalJson(manifestValue.payload.ci)),
+    },
+    predecessor: {
+      runtime: predecessor,
+      runtimeSha: '1'.repeat(40),
+      artifactDigest: '2'.repeat(64),
+      markerSha256: '5'.repeat(64),
+      installedAttestationSha256: '8'.repeat(64),
+      recoveryAttestationSha256: '9'.repeat(64),
+      metadataSha256: 'e'.repeat(64),
+      runtimeIdentity: {
+        dev: '10',
+        ino: '30',
+        uid: 0,
+        gid: 0,
+        mode: 0o555,
+      },
+      selector: selector(predecessor, '20'),
+    },
+    currentSelector: selector(releaseDir, '21'),
+    installedRuntimeAttestation: {
+      schema: 'nexus.installed-runtime-attestation.v1',
+      identity: installedIdentity,
+      aggregateDigest: sha256(canonicalJson(installedIdentity)),
+    },
+    recoveryRuntimeAttestation: {
+      schema: 'nexus.recovery-runtime-attestation.v1',
+      identity: recoveryIdentity,
+      aggregateDigest: sha256(canonicalJson(recoveryIdentity)),
+    },
+    remoteIdentity: {
+      schema: 'nexus.pm2-release-identity.v1',
+      services: remoteServices(releaseDir),
+    },
+    remoteReadiness: {
+      schema: 'nexus.release-readiness.v1',
+      role: 'staging',
+      runtimeSha,
+      checkedAt: new Date(now - 5_000).toISOString(),
+      stabilitySeconds: 60,
+      stabilityStartedAt: new Date(now - 70_000).toISOString(),
+      stabilityCompletedAt: new Date(now - 8_000).toISOString(),
+      stabilityObservedSeconds: 60,
+      readinessAttempts: 1,
+      soak: {
+        schema: 'nexus.release-readiness-soak.v1',
+        clock: 'monotonic',
+        requiredSeconds: 60,
+        startedMonotonicNs: '1000000000',
+        completedMonotonicNs: '61000000000',
+        observedNanoseconds: '60000000000',
+        initial: endpoint(100),
+        final: endpoint(160),
+      },
+      services: remoteServices(releaseDir),
+      checks: {
+        nativeBinding: true,
+        sqliteIntegrity: true,
+        sqliteForeignKeys: true,
+        backendHealth: true,
+        authenticatedBackendSnapshot: true,
+        authenticatedContentEngine: true,
+        pm2ExactIdentity: true,
+        pm2RestartStable: true,
+      },
+    },
+    transaction: {
+      databaseBackupSha256: '7'.repeat(64),
+      databaseBackupSizeBytes: 4096,
+      journalSha256: '6'.repeat(64),
+      preparedAt: new Date(now - 20_000).toISOString(),
+      selectorSwitchedAt: new Date(now - 15_000).toISOString(),
+      readinessCompletedAt: new Date(now - 12_000).toISOString(),
+      publishedAt: new Date(now - 10_000).toISOString(),
+      stabilitySeconds: 60,
+      recoveryTargetSeconds: 120,
+    },
+  };
+  const transaction = path.join(installState, 'transactions', requestId);
+  fs.mkdirSync(transaction, { recursive: true, mode: 0o700 });
+  const evidenceFile = path.join(transaction, 'evidence.json');
+  const evidenceBody = Buffer.from(`${JSON.stringify(evidence, null, 2)}\n`);
+  fs.writeFileSync(evidenceFile, evidenceBody, { mode: 0o600 });
+  const journalFile = path.join(transaction, 'journal.json');
+  fs.writeFileSync(journalFile, `${JSON.stringify({
+    schema: 'nexus.rollback-drill-legacy-staging-journal.v1',
+    requestId,
+    phase: 'completed',
+    evidenceSha256: sha256(evidenceBody),
+  }, null, 2)}\n`, { mode: 0o600 });
+  return { evidenceFile, journalFile };
+}
+
+function installV4PhaseBGuard(
+  installed: ReturnType<typeof installedV4PrelayoutFixture>,
+) {
+  const pm2DropIn = installed.brokerEnv
+    .NEXUS_LEGACY_DRILL_PERMANENT_PM2_DROP_IN!;
+  const ingressDropIn = path.join(
+    installed.targetRoot,
+    'etc/systemd/system/cloudflared.service.d/nexus-release-ordering.conf',
+  );
+  fs.mkdirSync(path.dirname(pm2DropIn), { recursive: true, mode: 0o755 });
+  fs.mkdirSync(path.dirname(ingressDropIn), { recursive: true, mode: 0o755 });
+  fs.writeFileSync(pm2DropIn, `[Unit]
+Requires=nexus-release-layout-recovery.service nexus-release-promotion-recovery.service
+After=nexus-release-layout-recovery.service nexus-release-promotion-recovery.service
+[Service]
+ExecCondition=+/usr/local/sbin/nexus-release-layout-activation-control assert-boot-safe
+ExecStartPost=+/usr/local/sbin/nexus-release-promotion-control boot-postcheck
+`, { mode: 0o644 });
+  fs.writeFileSync(ingressDropIn, '[Unit]\n', { mode: 0o644 });
+  const receipt = path.join(
+    installed.promotionState,
+    'layout-activation/phase-b-receipt.v1.json',
+  );
+  fs.writeFileSync(receipt, `${JSON.stringify({
+    schema: 'nexus.release-layout-phase-b-receipt.v1',
+    status: 'completed',
+    sourceSha: installed.bootstrap.sourceSha,
+    sourceArchiveSha256: installed.bootstrap.archiveSha256,
+    layoutAttestationSha256: 'a'.repeat(64),
+    phaseAReceiptSha256: sha256(fs.readFileSync(installed.phaseAReceipt)),
+    completedAt: new Date().toISOString(),
+    runningServiceIdentity: { runtimeUnchanged: true },
+    handoverTargets: [
+      { path: pm2DropIn, sha256: sha256(fs.readFileSync(pm2DropIn)) },
+      { path: ingressDropIn, sha256: sha256(fs.readFileSync(ingressDropIn)) },
+    ],
+    serviceRestarted: false,
+    ingressRestarted: false,
+    rebootRequired: true,
+  }, null, 2)}\n`, { mode: 0o600 });
 }
 
 function waitForPath(file: string) {
@@ -1915,6 +2368,739 @@ esac
     }
   }, 75_000);
 
+  it('installs the first v4 pre-layout drill against the Phase A 0755 control', () => {
+    const {
+      bootstrap,
+      targetRoot,
+      installState,
+      controlDigest,
+      phaseAReceipt,
+      env,
+      brokerEnv,
+      fixedInstaller,
+      fixedBroker,
+      installed,
+    } = installedV4PrelayoutFixture('v4-prelayout');
+    expect(JSON.parse(installed.stdout)).toMatchObject({
+      ok: true,
+      installed: true,
+      promotable: false,
+      sourceSha: bootstrap.sourceSha,
+    });
+    const receiptFile = path.join(installState, 'install-receipt.v1.json');
+    const receiptBody = fs.readFileSync(receiptFile);
+    const receipt = JSON.parse(receiptBody.toString('utf8'));
+    expect(receipt).toMatchObject({
+      schema: 'nexus.rollback-drill-v4-prelayout-staging-install-receipt.v1',
+      promotionAllowed: false,
+      control: {
+        version: 'nexus-release-promotion-control.v4',
+        sha256: controlDigest,
+      },
+      phaseA: {
+        sourceSha: bootstrap.sourceSha,
+        archiveSha256: bootstrap.archiveSha256,
+        receiptSha256: sha256(fs.readFileSync(phaseAReceipt)),
+      },
+    });
+    const promotionRecoveryDropIn = path.join(
+      targetRoot,
+      'etc/systemd/system/nexus-release-promotion-recovery.service.d/'
+      + '15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf',
+    );
+    expect(receipt.installed.promotionRecoveryDropIn).toBe(
+      sha256(fs.readFileSync(promotionRecoveryDropIn)),
+    );
+    expect(fs.existsSync(fixedBroker)).toBe(true);
+    const sudoers = path.join(
+      targetRoot,
+      'etc/sudoers.d/nexus-rollback-drill-v4-prelayout-staging',
+    );
+    expect(fs.readFileSync(sudoers, 'utf8')).not.toContain(
+      'activate-from-phase-a',
+    );
+    fs.chmodSync(fixedBroker, 0o755);
+    const drifted = spawnSync('bash', [fixedInstaller, 'status'], {
+      encoding: 'utf8',
+      env,
+    });
+    expect(drifted.status).not.toBe(0);
+    fs.chmodSync(fixedBroker, 0o700);
+    expect(JSON.parse(execFileSync('bash', [
+      fixedInstaller,
+      'status',
+    ], { encoding: 'utf8', env }))).toMatchObject({
+      ok: true,
+      installed: true,
+      promotable: false,
+    });
+    const inspectEnv = {
+      ...brokerEnv,
+      NEXUS_LEGACY_DRILL_TEST_VALIDATE_INSTALL_RECEIPT: '1',
+    };
+    expect(JSON.parse(execFileSync('bash', [
+      fixedBroker,
+      'inspect',
+    ], { encoding: 'utf8', env: inspectEnv }))).toMatchObject({
+      promotionAllowed: false,
+      control: { version: 'nexus-release-promotion-control.v4' },
+    });
+    const missingDependency = JSON.parse(receiptBody.toString('utf8'));
+    delete missingDependency.installed.promotionRecoveryDropIn;
+    fs.writeFileSync(
+      receiptFile,
+      `${JSON.stringify(missingDependency, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    expect(spawnSync('bash', [
+      fixedBroker,
+      'inspect',
+    ], { encoding: 'utf8', env: inspectEnv }).status).not.toBe(0);
+    fs.writeFileSync(receiptFile, receiptBody, { mode: 0o600 });
+    fs.chmodSync(promotionRecoveryDropIn, 0o600);
+    expect(spawnSync('bash', [
+      fixedBroker,
+      'inspect',
+    ], { encoding: 'utf8', env: inspectEnv }).status).not.toBe(0);
+    fs.chmodSync(promotionRecoveryDropIn, 0o644);
+  }, 30_000);
+
+  it('recovers V4 activation after the promotion dependency is durably installed', () => {
+    const installed = installedV4PrelayoutFixture(
+      'v4-promotion-dependency-power-loss',
+      'promotion_recovery_dropin_installed',
+    );
+    const promotionRecoveryDropIn = path.join(
+      installed.targetRoot,
+      'etc/systemd/system/nexus-release-promotion-recovery.service.d/'
+      + '15-nexus-rollback-drill-v4-prelayout-promotion-recovery.conf',
+    );
+    const journal = path.join(
+      installed.installState,
+      'install/install-in-progress.v1.json',
+    );
+    const receipt = path.join(
+      installed.installState,
+      'install-receipt.v1.json',
+    );
+    expect(fs.existsSync(promotionRecoveryDropIn)).toBe(true);
+    expect(fs.existsSync(journal)).toBe(true);
+    expect(fs.existsSync(receipt)).toBe(false);
+
+    const recovered = spawnSync('bash', [
+      installed.fixedInstaller,
+      'recover-journal',
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...installed.brokerEnv,
+        NEXUS_LEGACY_DRILL_TEST_POWER_LOSS_AFTER: '',
+      },
+    });
+    expect(
+      recovered.status,
+      `${recovered.stdout}\n${recovered.stderr}`,
+    ).toBe(0);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({
+      ok: true,
+      installed: false,
+      promotable: false,
+      status: 'recovered_predecessor',
+    });
+    expect(fs.existsSync(promotionRecoveryDropIn)).toBe(false);
+    expect(fs.existsSync(journal)).toBe(false);
+    expect(fs.existsSync(receipt)).toBe(false);
+  }, 30_000);
+
+  it('keeps v4 boot recovery ordered and retires it only inside Phase B locks', () => {
+    const installRecovery = fs.readFileSync(v4InstallRecoveryUnit, 'utf8');
+    const recovery = fs.readFileSync(v4RecoveryUnit, 'utf8');
+    const pm2Guard = fs.readFileSync(v4Pm2RecoveryDropIn, 'utf8');
+    const promotionRecoveryGuard = fs.readFileSync(
+      v4PromotionRecoveryDropIn,
+      'utf8',
+    );
+    const installerBody = fs.readFileSync(installer, 'utf8');
+    const brokerBody = fs.readFileSync(broker, 'utf8');
+    const activation = fs.readFileSync(layoutActivationInstaller, 'utf8');
+    const activationControl = fs.readFileSync(
+      layoutActivationControl,
+      'utf8',
+    );
+    const operator = fs.readFileSync(releaseOperator, 'utf8');
+
+    expect(installRecovery).toContain(
+      'Before=nexus-rollback-drill-v4-prelayout-staging-recovery.service '
+      + 'nexus-release-layout-install-recovery.service '
+      + 'nexus-release-promotion-recovery.service '
+      + 'pm2-dominguez.service pm2-root.service',
+    );
+    expect(recovery).toContain(
+      'Requires=nexus-rollback-drill-v4-prelayout-staging-install-recovery.service '
+      + 'nexus-release-layout-install-recovery.service '
+      + 'nexus-release-layout-recovery.service',
+    );
+    expect(recovery).toContain(
+      'After=local-fs.target '
+      + 'nexus-rollback-drill-v4-prelayout-staging-install-recovery.service '
+      + 'nexus-release-layout-install-recovery.service '
+      + 'nexus-release-layout-recovery.service',
+    );
+    expect(recovery).toContain(
+      'Before=network.target network-online.target multi-user.target '
+      + 'nexus-release-promotion-recovery.service',
+    );
+    expect(recovery).toContain(
+      'ExecStartPre=/usr/local/sbin/nexus-release-boot-health start-temporary',
+    );
+    expect(recovery).toContain(
+      'ExecStartPre=/usr/local/sbin/nexus-release-boot-health preflight-temporary',
+    );
+    expect(pm2Guard).toContain(
+      'ExecStartPre=+/usr/local/sbin/'
+      + 'nexus-rollback-drill-v4-prelayout-staging-broker assert-boot-safe',
+    );
+    expect(promotionRecoveryGuard).toContain(
+      'Requires=nexus-rollback-drill-v4-prelayout-staging-recovery.service',
+    );
+    expect(promotionRecoveryGuard).toContain(
+      'After=nexus-rollback-drill-v4-prelayout-staging-recovery.service',
+    );
+    expect(installerBody).toContain(
+      'atomic_install "$PROMOTION_RECOVERY_DROP_IN_SOURCE"',
+    );
+    expect(installerBody).toContain(
+      'durable_remove_retirement_asset promotionRecoveryDropIn',
+    );
+    expect(brokerBody).toContain(
+      '[ "$CONTROL_SHA256" = "$PHASE_A_CONTROL_SHA256" ]',
+    );
+    expect(installerBody).toContain(
+      'EXPECTED_CONTROL_SHA256="$PHASE_A_CONTROL_SHA256"',
+    );
+    expect(brokerBody).not.toContain(
+      'cbca74ac7da46b8c3f40a399b001fd12670969daff66523a3e25d6b539930dad',
+    );
+    expect(installerBody).not.toContain(
+      'cbca74ac7da46b8c3f40a399b001fd12670969daff66523a3e25d6b539930dad',
+    );
+    expect(activation).toContain('exec 6<>"$ACTIVATION_LOCK"');
+    expect(activation).toContain('"$FLOCK_BIN" -x 6');
+    expect(activation).toContain(
+      'NEXUS_V4_RETIRE_INHERITED_ACTIVATION_LOCK_FD='
+      + '"$PHASE_B_ACTIVATION_LOCK_FD"',
+    );
+    expect(activation).toContain(
+      'NEXUS_V4_RETIRE_INHERITED_CONTROL_LOCK_FD=7',
+    );
+    expect(activation).toContain(
+      'NEXUS_V4_RETIRE_INHERITED_SONAR_LOCK_FD=8',
+    );
+    expect(activation).toContain(
+      '"$V4_PRELAYOUT_INSTALLER" retire-for-layout',
+    );
+    expect(activationControl).toContain(
+      'NEXUS_LAYOUT_INHERITED_ACTIVATION_LOCK_FD=9',
+    );
+    expect(operator).toContain(
+      'the release operator never receives installer or retirement sudo authority',
+    );
+    expect(operator).not.toContain('sudo -n "$V4_PRELAYOUT_INSTALLER"');
+  });
+
+  it('reuses the caller-held activation lock for idle and journaled Phase B recovery', () => {
+    const root = fs.mkdtempSync(path.join(
+      fixtureParent(),
+      'nexus-layout-nested-handover-',
+    ));
+    roots.push(root);
+    const stateRoot = path.join(root, 'promotion');
+    const activationRoot = path.join(stateRoot, 'layout-activation');
+    const activationLock = path.join(activationRoot, '.activation.lock');
+    const pm2Target = path.join(root, 'pm2', 'nexus-release-recovery.conf');
+    const ingressTarget = path.join(root, 'ingress', 'nexus-release-ready.conf');
+    const retirementLog = path.join(root, 'retirement.log');
+    const v4Installer = executable(root, 'v4-installer', `#!/bin/sh
+[ "$1" = retire-for-layout ] || exit 64
+[ "$NEXUS_V4_RETIRE_INHERITED_ACTIVATION_LOCK_FD" = 9 ] || exit 65
+[ "$NEXUS_V4_RETIRE_INHERITED_CONTROL_LOCK_FD" = 7 ] || exit 66
+[ "$NEXUS_V4_RETIRE_INHERITED_SONAR_LOCK_FD" = 8 ] || exit 67
+[ -e /dev/fd/9 ] && [ -e /dev/fd/7 ] && [ -e /dev/fd/8 ] || exit 68
+printf 'retired\\n' >>${JSON.stringify(retirementLog)}
+`);
+    fs.mkdirSync(activationRoot, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(activationLock, '', { mode: 0o600 });
+    const env = {
+      ...process.env,
+      NEXUS_RELEASE_TEST_MODE: '1',
+      NEXUS_PROMOTION_STATE_ROOT: stateRoot,
+      NEXUS_LAYOUT_ACTIVATION_ROOT: activationRoot,
+      NEXUS_LAYOUT_ACTIVATION_LOCK: activationLock,
+      NEXUS_LAYOUT_CONTROL_LOCK: path.join(stateRoot, '.control.lock'),
+      NEXUS_RELEASE_MUTEX: path.join(root, 'release-sonar.lock'),
+      NEXUS_LEGACY_DRILL_STATE_ROOT: path.join(root, 'legacy-state'),
+      NEXUS_LAYOUT_PM2_DROPIN: pm2Target,
+      NEXUS_LAYOUT_INGRESS_DROPIN: ingressTarget,
+      NEXUS_LAYOUT_SYSTEMCTL_BIN: '/usr/bin/true',
+      NEXUS_LAYOUT_FLOCK_BIN: '/usr/bin/true',
+      NEXUS_LAYOUT_NODE_BIN: process.execPath,
+      NEXUS_LAYOUT_PYTHON_BIN: process.env.PYTHON ?? 'python3',
+      NEXUS_LAYOUT_V4_PRELAYOUT_INSTALLER: v4Installer,
+    };
+    const nested = () => spawnSync('bash', [
+      '-c',
+      'exec 9<>"$2"; '
+      + 'NEXUS_LAYOUT_INHERITED_ACTIVATION_LOCK_FD=9 '
+      + 'exec bash "$1" recover-handover',
+      'nested-phase-b-recovery',
+      layoutActivationInstaller,
+      activationLock,
+    ], { encoding: 'utf8', env });
+    const idle = nested();
+    expect(idle.status, `${idle.stdout}\n${idle.stderr}`).toBe(0);
+    expect(JSON.parse(idle.stdout)).toMatchObject({ status: 'idle' });
+
+    const journal = path.join(
+      activationRoot,
+      'phase-b-handover-in-progress.v1.json',
+    );
+    fs.writeFileSync(journal, `${JSON.stringify({
+      schema: 'nexus.release-layout-phase-b-journal.v1',
+      status: 'in_progress',
+      sourceSha: '1'.repeat(40),
+      sourceArchiveSha256: '2'.repeat(64),
+      layoutAttestationSha256: '3'.repeat(64),
+      createdAt: new Date().toISOString(),
+      targets: [
+        { path: pm2Target, parentPresent: false, present: false },
+        { path: ingressTarget, parentPresent: false, present: false },
+      ],
+    }, null, 2)}\n`, { mode: 0o600 });
+    const recovered = nested();
+    expect(
+      recovered.status,
+      `${recovered.stdout}\n${recovered.stderr}`,
+    ).toBe(0);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({
+      status: 'recovered',
+    });
+    expect(fs.existsSync(journal)).toBe(false);
+    fs.writeFileSync(
+      path.join(activationRoot, 'phase-b-receipt.v1.json'),
+      '{}\n',
+      { mode: 0o600 },
+    );
+    const reconciled = nested();
+    expect(
+      reconciled.status,
+      `${reconciled.stdout}\n${reconciled.stderr}`,
+    ).toBe(0);
+    expect(JSON.parse(reconciled.stdout)).toMatchObject({
+      status: 'completed_reconciled',
+    });
+    expect(fs.readFileSync(retirementLog, 'utf8')).toBe('retired\n');
+  });
+
+  it('accepts only canonical v4 boot authorities and never overlaps recovery owners', () => {
+    const installed = installedV4PrelayoutFixture('v4-boot-authority');
+    const marker = path.join(
+      installed.promotionState,
+      'boot-recovery-in-progress.v1.json',
+    );
+    const epoch = Math.floor(Date.now() / 1000);
+    const canonicalMarker = {
+      schema: 'nexus.release-boot-recovery.v1',
+      status: 'in_progress',
+      bootId: 'v4-test-boot',
+      bootDetectedAt: new Date(epoch * 1000).toISOString(),
+      bootDetectedEpoch: epoch,
+      outageStartedAt: new Date(epoch * 1000).toISOString(),
+      outageStartedEpoch: epoch,
+      outageStartedMonotonic: 10,
+      outageBootId: 'v4-test-boot',
+      recoveryDeadlineEpoch: epoch + 120,
+      timingSource: 'boot_detection',
+      activeTransactionId: null,
+    };
+    const env = {
+      ...installed.brokerEnv,
+      NEXUS_LEGACY_DRILL_TEST_BOOT_ID: 'v4-test-boot',
+      NEXUS_TEST_BOOT_PROFILE_LOG: path.join(
+        installed.state.root,
+        'boot-profile.log',
+      ),
+    };
+    const writeMarker = (value: Record<string, unknown>) => {
+      fs.writeFileSync(marker, `${JSON.stringify(value, null, 2)}\n`, {
+        mode: 0o600,
+      });
+      fs.chmodSync(marker, 0o600);
+    };
+    const writePending = (
+      value: typeof canonicalMarker,
+      version: 2 | 3 = 3,
+      profile: 'v4-prelayout' | 'layout' = 'v4-prelayout',
+    ) => {
+      const markerBody = fs.readFileSync(marker);
+      const role = (name: 'production' | 'staging') => {
+        const base = name === 'production'
+          ? '/home/dominguez/telegram-hub-bot'
+          : '/home/dominguez/telegram-hub-bot-staging';
+        const basic = {
+          base,
+          runtime: `${base}/releases/${runtimeSha}`,
+          runtimeSha,
+        };
+        return version === 2 ? basic : {
+          schema: 'nexus.release-boot-role.v1',
+          role: name,
+          profile: profile === 'layout'
+            ? 'layout'
+            : name === 'production'
+              ? 'legacy-worker'
+              : 'v4-prelayout-sealed',
+          ...basic,
+          artifactDigest: installed.state.artifactDigest,
+          installedRuntimeDigest: '4'.repeat(64),
+          selector: { dev: '1', ino: '2', uid: 0, gid: 0, mode: 0o777 },
+          runtimeIdentity: {
+            dev: '3',
+            ino: '4',
+            uid: 0,
+            gid: 0,
+            mode: profile === 'layout' ? 0o550 : 0o555,
+          },
+          markerSha256: '5'.repeat(64),
+          installedAttestationSha256: '6'.repeat(64),
+          authoritySha256: '7'.repeat(64),
+          transaction: null,
+        };
+      };
+      fs.writeFileSync(
+        path.join(installed.promotionState, 'boot-health-pending.v1.json'),
+        `${JSON.stringify({
+          schema: `nexus.release-boot-health-pending.v${version}`,
+          status: 'pending',
+          ...(version === 3 ? { profile } : {}),
+          production: role('production'),
+          staging: role('staging'),
+          canonicalDumpSha256: '1'.repeat(64),
+          pm2ClosureDigest: '2'.repeat(64),
+          nodeSha256: '3'.repeat(64),
+          recoveryAuthoritySha256: sha256(markerBody),
+          bootId: value.bootId,
+          outageBootId: value.outageBootId,
+          outageStartedAt: value.outageStartedAt,
+          outageStartedEpoch: value.outageStartedEpoch,
+          outageStartedMonotonic: value.outageStartedMonotonic,
+          recoveryDeadlineEpoch: value.recoveryDeadlineEpoch,
+          temporaryPreparedAt: new Date().toISOString(),
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    };
+    writeMarker(canonicalMarker);
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env }))).toMatchObject({
+      ok: true,
+      status: 'reconciled',
+    });
+    const ordinaryAdmission = spawnSync('bash', [
+      installed.fixedBroker,
+      'prepare',
+      requestId,
+      runtimeSha,
+      installed.state.artifactDigest,
+    ], { encoding: 'utf8', env });
+    expect(ordinaryAdmission.status).not.toBe(0);
+    for (const invalid of [
+      { ...canonicalMarker, bootId: '' },
+      { ...canonicalMarker, activeTransactionId: 'not-null' },
+      { ...canonicalMarker, timingSource: 'promotion_cutover' },
+      { ...canonicalMarker, recoveryDeadlineEpoch: epoch + 121 },
+    ]) {
+      writeMarker(invalid);
+      const blocked = spawnSync('bash', [
+        installed.fixedBroker,
+        'recover-all',
+      ], { encoding: 'utf8', env });
+      expect(blocked.status).not.toBe(0);
+    }
+
+    fs.rmSync(marker);
+    const ordinaryActive = path.join(installed.promotionState, 'active.json');
+    fs.writeFileSync(ordinaryActive, `${JSON.stringify({
+      schema: 'nexus.promotion-active.v1',
+      transactionId: '20260726T010203Z-1-abcdef123456',
+      requestSha256: '1'.repeat(64),
+      envelopeSha256: '2'.repeat(64),
+      activatedAt: new Date().toISOString(),
+    }, null, 2)}\n`, { mode: 0o600 });
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+    const unfinished = path.join(
+      installed.installState,
+      'transactions',
+      requestId,
+    );
+    fs.mkdirSync(unfinished, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(unfinished, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.rollback-drill-legacy-staging-journal.v1',
+      requestId,
+      phase: 'selector_switched',
+    })}\n`, { mode: 0o600 });
+    const ambiguous = spawnSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env });
+    expect(ambiguous.status).not.toBe(0);
+    fs.rmSync(unfinished, { recursive: true });
+    fs.rmSync(ordinaryActive);
+
+    const layoutMarker = {
+      ...canonicalMarker,
+      outageStartedAt: new Date((epoch - 5) * 1000).toISOString(),
+      outageStartedEpoch: epoch - 5,
+      outageBootId: 'prior-layout-boot',
+      recoveryDeadlineEpoch: epoch + 115,
+      timingSource: 'layout_recovery',
+    };
+    writeMarker(layoutMarker);
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+    const prematurePm2 = spawnSync('bash', [
+      installed.fixedBroker,
+      'assert-boot-safe',
+    ], { encoding: 'utf8', env });
+    expect(prematurePm2.status).not.toBe(0);
+    writePending(layoutMarker);
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'assert-boot-safe',
+    ], { encoding: 'utf8', env }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+    expect(fs.readFileSync(
+      env.NEXUS_TEST_BOOT_PROFILE_LOG,
+      'utf8',
+    ).trim().split('\n').at(-1)).toBe('v4-prelayout');
+    fs.writeFileSync(
+      path.join(installed.promotionState, 'layout-migration.v1.json'),
+      '{}\n',
+      { mode: 0o600 },
+    );
+    writePending(layoutMarker, 3, 'layout');
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'assert-boot-safe',
+    ], { encoding: 'utf8', env }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+    expect(fs.readFileSync(
+      env.NEXUS_TEST_BOOT_PROFILE_LOG,
+      'utf8',
+    ).trim().split('\n').at(-1)).toBe('layout');
+
+    const terminalLayout = path.join(
+      installed.promotionState,
+      'layout-migration.v1.json',
+    );
+    const pending = path.join(
+      installed.promotionState,
+      'boot-health-pending.v1.json',
+    );
+    const oldBootMarker = {
+      ...canonicalMarker,
+      bootId: 'prior-boot',
+      outageBootId: 'prior-boot',
+      timingSource: 'promotion_cutover',
+    };
+    const oldBootEnv = {
+      ...env,
+      NEXUS_TEST_LAYOUT_ASSERT_MUST_BE_SKIPPED: '1',
+    };
+    fs.rmSync(pending);
+    writeMarker(oldBootMarker);
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env: oldBootEnv }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+    writePending(oldBootMarker, 2);
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env: oldBootEnv }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+    fs.rmSync(terminalLayout);
+    expect(JSON.parse(execFileSync('bash', [
+      installed.fixedBroker,
+      'recover-all',
+    ], { encoding: 'utf8', env: oldBootEnv }))).toMatchObject({
+      status: 'ordinary_promotion_recovery_owned',
+    });
+
+    fs.mkdirSync(unfinished, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(unfinished, 'journal.json'), `${JSON.stringify({
+      schema: 'nexus.rollback-drill-legacy-staging-journal.v1',
+      requestId,
+      phase: 'selector_switched',
+    })}\n`, { mode: 0o600 });
+    for (const withLayout of [false, true]) {
+      if (withLayout) {
+        fs.writeFileSync(terminalLayout, '{}\n', { mode: 0o600 });
+      }
+      const recoveryAttempt = spawnSync('bash', [
+        installed.fixedBroker,
+        'recover-all',
+      ], { encoding: 'utf8', env: oldBootEnv });
+      expect(recoveryAttempt.status).not.toBe(0);
+      expect(recoveryAttempt.stderr).not.toContain(
+        'another legacy staging drill transaction is unfinished',
+      );
+    }
+  }, 45_000);
+
+  it('retires v4 only after Phase B and one validated successful drill, resuming every durable boundary', () => {
+    const installed = installedV4PrelayoutFixture('v4-retirement');
+    installV4PhaseBGuard(installed);
+    fs.mkdirSync(
+      path.join(installed.installState, 'transactions'),
+      { recursive: true, mode: 0o700 },
+    );
+    const withoutDrill = spawnSync('bash', [
+      installed.fixedInstaller,
+      'retire-for-layout',
+    ], { encoding: 'utf8', env: installed.brokerEnv });
+    expect(withoutDrill.status).not.toBe(0);
+    expect(fs.existsSync(path.join(
+      installed.installState,
+      'retirement-receipt.v1.json',
+    ))).toBe(false);
+
+    writeValidV4DrillEvidence(installed);
+    const targetSnapshot = path.join(installed.state.root, 'v4-target-snapshot');
+    const stateSnapshot = path.join(installed.state.root, 'v4-state-snapshot');
+    fs.cpSync(installed.targetRoot, targetSnapshot, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
+    fs.cpSync(installed.installState, stateSnapshot, {
+      recursive: true,
+      preserveTimestamps: true,
+    });
+    const checkpoints = [
+      'retirement_prepared',
+      'retirement_recovery_disabled',
+      'retirement_pm2_dominguez_removed',
+      'retirement_pm2_root_removed',
+      'retirement_promotion_recovery_dropin_removed',
+      'retirement_sudoers_removed',
+      'retirement_admission_closed',
+      'retirement_receipt_archived',
+      'retirement_active_receipt_removed',
+      'retirement_authority_retired',
+    ];
+    for (const [index, checkpoint] of checkpoints.entries()) {
+      fs.rmSync(installed.targetRoot, { recursive: true, force: true });
+      fs.rmSync(installed.installState, { recursive: true, force: true });
+      fs.cpSync(targetSnapshot, installed.targetRoot, {
+        recursive: true,
+        preserveTimestamps: true,
+      });
+      fs.cpSync(stateSnapshot, installed.installState, {
+        recursive: true,
+        preserveTimestamps: true,
+      });
+      const interrupted = spawnSync('bash', [
+        installed.fixedInstaller,
+        'retire-for-layout',
+      ], {
+        encoding: 'utf8',
+        env: {
+          ...installed.brokerEnv,
+          NEXUS_LEGACY_DRILL_TEST_RETIRE_POWER_LOSS_AFTER: checkpoint,
+        },
+      });
+      expect(
+        interrupted.status,
+        `${checkpoint}\n${interrupted.stdout}\n${interrupted.stderr}`,
+      ).toBe(198);
+      const retirementJournal = path.join(
+        installed.installState,
+        'install/retire-for-layout-in-progress.v1.json',
+      );
+      expect(fs.existsSync(retirementJournal)).toBe(true);
+      if (index === 0) {
+        const original = fs.readFileSync(retirementJournal);
+        fs.appendFileSync(retirementJournal, '\nmalformed\n');
+        const malformed = spawnSync('bash', [
+          installed.fixedInstaller,
+          'recover-journal',
+        ], { encoding: 'utf8', env: installed.brokerEnv });
+        expect(malformed.status).not.toBe(0);
+        fs.writeFileSync(retirementJournal, original, { mode: 0o600 });
+      }
+      const recovered = spawnSync('bash', [
+        installed.fixedInstaller,
+        'recover-journal',
+      ], { encoding: 'utf8', env: installed.brokerEnv });
+      expect(
+        recovered.status,
+        `${checkpoint}\n${recovered.stdout}\n${recovered.stderr}`,
+      ).toBe(0);
+      expect(JSON.parse(recovered.stdout)).toMatchObject({
+        ok: true,
+        installed: false,
+        promotable: false,
+        status: 'retired_for_layout',
+      });
+      const retirementReceipt = path.join(
+        installed.installState,
+        'retirement-receipt.v1.json',
+      );
+      expect(JSON.parse(fs.readFileSync(
+        retirementReceipt,
+        'utf8',
+      ))).toMatchObject({
+        schema: 'nexus.rollback-drill-v4-prelayout-staging-retirement.v1',
+        status: 'retired',
+        successful: { count: 1 },
+        retiredAssets: {
+          promotionRecoveryDropIn: {
+            sha256: sha256(fs.readFileSync(v4PromotionRecoveryDropIn)),
+          },
+        },
+      });
+      expect(fs.existsSync(path.join(
+        installed.installState,
+        'install-receipt.v1.json',
+      ))).toBe(false);
+      if (index === 0) {
+        const retained = `${retirementReceipt}.retained`;
+        fs.renameSync(retirementReceipt, retained);
+        fs.symlinkSync(retained, retirementReceipt);
+        const symlinked = spawnSync('bash', [
+          installed.fixedInstaller,
+          'recover-journal',
+        ], { encoding: 'utf8', env: installed.brokerEnv });
+        expect(symlinked.status).not.toBe(0);
+      }
+    }
+  }, 180_000);
+
   it('retains the install journal when trap recovery cannot prove systemd restoration', () => {
     for (const recoveryFailure of [
       'daemon_reload',
@@ -2511,17 +3697,20 @@ esac
     expect(rollbackLoopIndex).toBeGreaterThan(-1);
     expect(installRollbackBody).toContain(
       'disable_recovery_unit_if_present \\\n'
-      + '            nexus-rollback-drill-legacy-staging-install-recovery.service',
+      + '            "$RECOVERY_UNIT_NAME" \\\n'
+      + '            "$RECOVERY_UNIT_TARGET"',
     );
     expect(installRollbackBody).toContain(
       'disable_recovery_unit_if_present \\\n'
-      + '            nexus-rollback-drill-legacy-staging-recovery.service',
+      + '            "$INSTALL_RECOVERY_UNIT_NAME" \\\n'
+      + '            "$INSTALL_RECOVERY_UNIT_TARGET"',
     );
     expect(installRollbackBody.indexOf('disable_recovery_unit_if_present'))
       .toBeGreaterThan(rollbackLoopIndex);
     expect(installRollbackBody).toContain(
       'restore_recovery_unit_state \\\n'
-      + '      nexus-rollback-drill-legacy-staging-install-recovery.service',
+      + '      "$RECOVERY_UNIT_NAME" \\\n'
+      + '      "$RECOVERY_UNIT_TARGET" "$enabled_state"',
     );
     expect(installRollbackBody).not.toContain('2>&1 || true');
     expect(installerBody).toContain(
@@ -2537,16 +3726,16 @@ esac
       .toBeLessThan(restoreBody.indexOf('atomic_selector_switch'));
     expect(restoreBody.indexOf('atomic_selector_switch'))
       .toBeLessThan(restoreBody.indexOf('"$PM2_BIN" start'));
-    const sudoersStart = installerBody.indexOf("cat >\"$SUDOERS_SOURCE\"");
+    const sudoersStart = installerBody.indexOf("cat >>\"$SUDOERS_SOURCE\"");
     const sudoersBlock = installerBody.slice(
       sudoersStart,
       installerBody.indexOf('\nEOF', sudoersStart) + 4,
     );
-    expect(sudoersBlock).toContain('broker prepare *');
-    expect(sudoersBlock).toContain('broker launch *');
+    expect(sudoersBlock).toContain('$BROKER_NAME prepare *');
+    expect(sudoersBlock).toContain('$BROKER_NAME launch *');
     expect(sudoersBlock).toContain('NOPASSWD: NOSETENV:');
-    expect(sudoersBlock).not.toContain('broker run');
-    expect(sudoersBlock).not.toContain('broker recover-all');
+    expect(sudoersBlock).not.toContain('$BROKER_NAME run');
+    expect(sudoersBlock).not.toContain('$BROKER_NAME recover-all');
     expect(operatorBody).not.toContain('exit 78');
     expect(operatorBody).toContain('execution_and_protected_drill_signature_required');
     expect(operatorBody).not.toContain(

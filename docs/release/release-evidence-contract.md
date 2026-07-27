@@ -120,11 +120,16 @@ production-signed manifest artifact, then emits:
    output raw digests, fixed `isolated-kvm-first-drill` scope, and
    `promotionAllowed: false`.
 
-For the control-v2 legacy staging bootstrap, the source request additionally
-contains exact `nexus.rollback-drill-legacy-staging-bootstrap.v1` evidence:
-root broker and control digests, predecessor/current selector identities, the
-fsynced transaction journal digest, the stopped-state SQLite recovery-point
+After layout Phase A retires the control-v2 authority, the first-drill source
+request contains exact
+`nexus.rollback-drill-v4-prelayout-staging-bootstrap.v1` evidence. It binds the
+completed Phase A source/archive/receipt identity, live control-v4 digest,
+distinct pre-layout broker identity, predecessor/current selector identities,
+the fsynced transaction journal digest, the stopped-state SQLite recovery-point
 SHA-256 and byte count, the 60-second soak, and the 120-second recovery target.
+The historical control-v2
+`nexus.rollback-drill-legacy-staging-bootstrap.v1` remains verifiable for
+retained evidence only and is not reinstalled or reactivated.
 The root journal retains only the bounded recovery-point schema, digest, size,
 original uid/gid/mode, and creation time; staging evidence exposes only digest
 and size and never database bytes or a database or backup path. Selector

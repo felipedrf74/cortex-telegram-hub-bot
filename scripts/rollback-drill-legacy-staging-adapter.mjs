@@ -19,12 +19,17 @@ const OPERATOR_CHECKPOINT_SCHEMA =
   'nexus.rollback-drill-legacy-staging-operator-checkpoint.v1';
 const BOOTSTRAP_SCHEMA =
   'nexus.rollback-drill-legacy-staging-bootstrap.v1';
+const V4_PRELAYOUT_BOOTSTRAP_SCHEMA =
+  'nexus.rollback-drill-v4-prelayout-staging-bootstrap.v1';
 const STAGING_REQUEST_SCHEMA = 'nexus.staging-attestation-request.v1';
 const RELEASE_MANIFEST_SCHEMA = 'nexus.release-manifest.v2';
 const RELEASE_MANIFEST_PAYLOAD_SCHEMA = 'nexus.release-manifest-payload.v2';
 const RELEASE_KEY_ID = 'github-environment-release-signing-2026-07';
 const CONTROL_VERSION = 'nexus-release-promotion-control.v2';
+const V4_PRELAYOUT_CONTROL_VERSION = 'nexus-release-promotion-control.v4';
 const BROKER_VERSION = 'nexus-rollback-drill-legacy-staging-broker.v1';
+const V4_PRELAYOUT_BROKER_VERSION =
+  'nexus-rollback-drill-v4-prelayout-staging-broker.v1';
 const PROFILE = 'isolated-kvm-first-drill';
 const LEGACY_BASE = process.env.NODE_ENV === 'test'
     && path.isAbsolute(process.env.NEXUS_LEGACY_DRILL_BASE ?? '')
@@ -109,6 +114,10 @@ const TRANSACTION_REQUEST_FIELDS = Object.freeze([
   'runtimeSha',
   'schema',
 ]);
+const V4_PRELAYOUT_TRANSACTION_REQUEST_FIELDS = Object.freeze([
+  ...TRANSACTION_REQUEST_FIELDS,
+  'phaseA',
+]);
 const BROKER_IDENTITY_FIELDS = Object.freeze([
   'adapterSha256',
   'sha256',
@@ -174,6 +183,15 @@ const BOOTSTRAP_FIELDS = Object.freeze([
   'sourceProvenance',
   'transaction',
   'transactionId',
+]);
+const V4_PRELAYOUT_BOOTSTRAP_FIELDS = Object.freeze([
+  ...BOOTSTRAP_FIELDS,
+  'phaseA',
+]);
+const PHASE_A_FIELDS = Object.freeze([
+  'archiveSha256',
+  'receiptSha256',
+  'sourceSha',
 ]);
 const STAGING_REQUEST_FIELDS = Object.freeze([
   'artifactDigest',
@@ -396,9 +414,35 @@ function expectedReleaseDir(runtimeSha, artifactDigest, base = LEGACY_BASE) {
   return `${base}/releases/${runtimeSha}-${artifactDigest.slice(0, 12)}`;
 }
 
-function validateBrokerIdentity(value, label) {
+function profileForControl(value, label = 'drill staging control identity') {
+  exactObject(value, CONTROL_IDENTITY_FIELDS, label);
+  if (value.version === CONTROL_VERSION
+      && value.sha256 === EXPECTED_CONTROL_SHA256) {
+    return 'control-v2';
+  }
+  if (value.version === V4_PRELAYOUT_CONTROL_VERSION
+      && DIGEST.test(value.sha256 ?? '')) {
+    return 'v4-prelayout';
+  }
+  fail(`${label} is not a reviewed drill-staging control identity`);
+}
+
+function validatePhaseAIdentity(value, label) {
+  exactObject(value, PHASE_A_FIELDS, label);
+  if (!FULL_SHA.test(value.sourceSha ?? '')
+      || !DIGEST.test(value.archiveSha256 ?? '')
+      || !DIGEST.test(value.receiptSha256 ?? '')) {
+    fail(`${label} is invalid`);
+  }
+  return value;
+}
+
+function validateBrokerIdentity(value, label, profile = 'control-v2') {
   exactObject(value, BROKER_IDENTITY_FIELDS, label);
-  if (value.version !== BROKER_VERSION || !DIGEST.test(value.sha256 ?? '')
+  const expectedVersion = profile === 'v4-prelayout'
+    ? V4_PRELAYOUT_BROKER_VERSION
+    : BROKER_VERSION;
+  if (value.version !== expectedVersion || !DIGEST.test(value.sha256 ?? '')
       || !DIGEST.test(value.adapterSha256 ?? '')) {
     fail(`${label} is invalid`);
   }
@@ -406,19 +450,20 @@ function validateBrokerIdentity(value, label) {
 }
 
 function validateControlIdentity(value, label) {
-  exactObject(value, CONTROL_IDENTITY_FIELDS, label);
-  if (value.version !== CONTROL_VERSION
-      || value.sha256 !== EXPECTED_CONTROL_SHA256) {
-    fail(`${label} is not the exact reviewed control v2 identity`);
-  }
+  profileForControl(value, label);
   return value;
 }
 
 function validateInspection(value) {
+  const profile = profileForControl(
+    value?.control,
+    'legacy staging inspection control identity',
+  );
   exactObject(value, [
     'base',
     'broker',
     'control',
+    ...(profile === 'v4-prelayout' ? ['phaseA'] : []),
     'promotionAllowed',
     'schema',
     'workerUser',
@@ -429,8 +474,15 @@ function validateInspection(value) {
       || value.promotionAllowed !== false) {
     fail('legacy staging broker inspection identity is invalid');
   }
-  validateBrokerIdentity(value.broker, 'legacy staging broker identity');
+  validateBrokerIdentity(
+    value.broker,
+    'legacy staging broker identity',
+    profile,
+  );
   validateControlIdentity(value.control, 'legacy staging control identity');
+  if (profile === 'v4-prelayout') {
+    validatePhaseAIdentity(value.phaseA, 'v4 pre-layout Phase A identity');
+  }
   return value;
 }
 
@@ -444,11 +496,13 @@ export function validateTransactionRequest(
     allowExpired = false,
   } = {},
 ) {
-  exactObject(
-    request,
-    TRANSACTION_REQUEST_FIELDS,
-    'legacy staging transaction request',
+  const profile = profileForControl(
+    request?.control,
+    'legacy staging transaction control identity',
   );
+  exactObject(request, profile === 'v4-prelayout'
+    ? V4_PRELAYOUT_TRANSACTION_REQUEST_FIELDS
+    : TRANSACTION_REQUEST_FIELDS, 'legacy staging transaction request');
   if (request.schema !== TRANSACTION_REQUEST_SCHEMA
       || request.purpose !== PROFILE
       || request.promotionAllowed !== false
@@ -468,8 +522,18 @@ export function validateTransactionRequest(
       || !DIGEST.test(request.releaseManifestSigningRunSha256 ?? '')) {
     fail('legacy staging transaction request identity is invalid');
   }
-  validateBrokerIdentity(request.broker, 'legacy staging request broker');
+  validateBrokerIdentity(
+    request.broker,
+    'legacy staging request broker',
+    profile,
+  );
   validateControlIdentity(request.control, 'legacy staging request control');
+  if (profile === 'v4-prelayout') {
+    validatePhaseAIdentity(
+      request.phaseA,
+      'v4 pre-layout staging request Phase A identity',
+    );
+  }
   if ((expectedBrokerSha256
       && request.broker.sha256 !== expectedBrokerSha256)
       || (expectedAdapterSha256
@@ -796,6 +860,10 @@ function validateTransactionChronology(transaction) {
 }
 
 export function validateBrokerEvidence(evidence, evidenceBody = null) {
+  const profile = profileForControl(
+    evidence?.control,
+    'legacy staging evidence control identity',
+  );
   exactObject(evidence, [
     'artifactDigest',
     'base',
@@ -803,6 +871,7 @@ export function validateBrokerEvidence(evidence, evidenceBody = null) {
     'control',
     'currentSelector',
     'installedRuntimeAttestation',
+    ...(profile === 'v4-prelayout' ? ['phaseA'] : []),
     'predecessor',
     'promotionAllowed',
     'recoveryRuntimeAttestation',
@@ -835,8 +904,18 @@ export function validateBrokerEvidence(evidence, evidenceBody = null) {
       )) {
     fail('legacy staging broker evidence identity is invalid');
   }
-  validateBrokerIdentity(evidence.broker, 'legacy staging evidence broker');
+  validateBrokerIdentity(
+    evidence.broker,
+    'legacy staging evidence broker',
+    profile,
+  );
   validateControlIdentity(evidence.control, 'legacy staging evidence control');
+  if (profile === 'v4-prelayout') {
+    validatePhaseAIdentity(
+      evidence.phaseA,
+      'v4 pre-layout staging evidence Phase A identity',
+    );
+  }
   validateSourceProvenance(evidence.sourceProvenance);
   exactObject(evidence.predecessor, PREDECESSOR_FIELDS, 'legacy staging predecessor');
   if (!FULL_SHA.test(evidence.predecessor.runtimeSha ?? '')
@@ -961,8 +1040,21 @@ export function validateLegacyStagingRequest(
   validateRemoteIdentity(request.remoteIdentity, request);
   validateReadiness(request.remoteReadiness, request);
   const bootstrap = request.drillBootstrap;
-  exactObject(bootstrap, BOOTSTRAP_FIELDS, 'legacy drill bootstrap');
-  if (bootstrap.schema !== BOOTSTRAP_SCHEMA
+  const profile = profileForControl(
+    bootstrap?.control,
+    'drill staging bootstrap control identity',
+  );
+  exactObject(
+    bootstrap,
+    profile === 'v4-prelayout'
+      ? V4_PRELAYOUT_BOOTSTRAP_FIELDS
+      : BOOTSTRAP_FIELDS,
+    'legacy drill bootstrap',
+  );
+  const expectedBootstrapSchema = profile === 'v4-prelayout'
+    ? V4_PRELAYOUT_BOOTSTRAP_SCHEMA
+    : BOOTSTRAP_SCHEMA;
+  if (bootstrap.schema !== expectedBootstrapSchema
       || bootstrap.profile !== PROFILE
       || bootstrap.promotionAllowed !== false
       || bootstrap.base !== LEGACY_BASE
@@ -970,8 +1062,18 @@ export function validateLegacyStagingRequest(
       || !DIGEST.test(bootstrap.brokerReceiptSha256 ?? '')) {
     fail('legacy drill bootstrap identity is invalid');
   }
-  validateBrokerIdentity(bootstrap.broker, 'legacy drill bootstrap broker');
+  validateBrokerIdentity(
+    bootstrap.broker,
+    'legacy drill bootstrap broker',
+    profile,
+  );
   validateControlIdentity(bootstrap.control, 'legacy drill bootstrap control');
+  if (profile === 'v4-prelayout') {
+    validatePhaseAIdentity(
+      bootstrap.phaseA,
+      'v4 pre-layout drill bootstrap Phase A identity',
+    );
+  }
   exactObject(
     bootstrap.predecessor,
     PREDECESSOR_FIELDS,
@@ -1056,7 +1158,10 @@ function operatorCheckpointIdentity(values) {
     fail('legacy staging operator checkpoint release identity is invalid');
   }
   if (base !== LEGACY_BASE
-      || broker !== '/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker'
+      || !new Set([
+        '/usr/local/sbin/nexus-rollback-drill-legacy-staging-broker',
+        '/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-broker',
+      ]).has(broker)
       || !/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.:-]+$/u.test(server)) {
     fail('legacy staging operator checkpoint remote identity is invalid');
   }
@@ -1540,6 +1645,10 @@ function validateStagingRequestSources(
     manifest.payload.runtimeSha,
     { allowProtectedSigning: false },
   );
+  const profile = profileForControl(
+    evidence.control,
+    'legacy staging source control identity',
+  );
   const expected = {
     schema: STAGING_REQUEST_SCHEMA,
     requestId: evidence.requestId,
@@ -1559,13 +1668,16 @@ function validateStagingRequestSources(
       logSha256: sha256(canonicalJson(evidence.remoteReadiness)),
     },
     drillBootstrap: {
-      schema: BOOTSTRAP_SCHEMA,
+      schema: profile === 'v4-prelayout'
+        ? V4_PRELAYOUT_BOOTSTRAP_SCHEMA
+        : BOOTSTRAP_SCHEMA,
       profile: PROFILE,
       promotionAllowed: false,
       transactionId: evidence.requestId,
       base: evidence.base,
       broker: evidence.broker,
       control: evidence.control,
+      ...(profile === 'v4-prelayout' ? { phaseA: evidence.phaseA } : {}),
       predecessor: evidence.predecessor,
       currentSelector: evidence.currentSelector,
       sourceProvenance: evidence.sourceProvenance,
@@ -1616,6 +1728,9 @@ function main() {
       ),
       broker: inspection.broker,
       control: inspection.control,
+      ...(inspection.control.version === V4_PRELAYOUT_CONTROL_VERSION
+        ? { phaseA: inspection.phaseA }
+        : {}),
       releaseManifestSha256: sha256(manifestEvidence.body),
       releaseManifestPayloadSha256: sha256(canonicalJson(manifest.payload)),
       releaseManifestSignatureSha256: sha256(
@@ -1726,6 +1841,10 @@ function main() {
       evidenceInput.value,
       evidenceInput.body,
     );
+    const profile = profileForControl(
+      evidence.control,
+      'legacy staging source control identity',
+    );
     const verifiedAt = new Date();
     const request = {
       schema: STAGING_REQUEST_SCHEMA,
@@ -1746,13 +1865,16 @@ function main() {
         logSha256: sha256(canonicalJson(evidence.remoteReadiness)),
       },
       drillBootstrap: {
-        schema: BOOTSTRAP_SCHEMA,
+        schema: profile === 'v4-prelayout'
+          ? V4_PRELAYOUT_BOOTSTRAP_SCHEMA
+          : BOOTSTRAP_SCHEMA,
         profile: PROFILE,
         promotionAllowed: false,
         transactionId: evidence.requestId,
         base: evidence.base,
         broker: evidence.broker,
         control: evidence.control,
+        ...(profile === 'v4-prelayout' ? { phaseA: evidence.phaseA } : {}),
         predecessor: evidence.predecessor,
         currentSelector: evidence.currentSelector,
         sourceProvenance: evidence.sourceProvenance,

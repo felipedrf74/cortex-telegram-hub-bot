@@ -159,6 +159,18 @@ describe('release-layout activation safety transaction', () => {
       installer.indexOf('\nphase_a() {'),
       installer.indexOf('write_handover_journal() {'),
     );
+    const phaseATargets = installer.slice(
+      installer.indexOf('PHASE_A_TARGETS=('),
+      installer.indexOf('\n)\n# This is the exact target order'),
+    );
+    const predecessorTargets = installer.slice(
+      installer.indexOf('PHASE_A_PREDECESSOR_TARGETS=('),
+      installer.indexOf('\n)\nPHASE_A_PREDECESSOR_RECEIPT_ASSETS=('),
+    );
+    const requiredInputs = installer.slice(
+      installer.indexOf('REQUIRED_INPUTS=('),
+      installer.indexOf('\n)\n\nvalidate_source() {'),
+    );
 
     expect(phaseA).toContain('capture_service_identity "$before"');
     expect(phaseA).toContain('capture_service_identity "$after"');
@@ -186,6 +198,8 @@ describe('release-layout activation safety transaction', () => {
       ));
     expect(phaseA).toContain('remote-release-preflight.sh');
     expect(phaseA).toContain('remote-release-boot-health.sh');
+    expect(phaseA).toContain('ollama-install-state-check.mjs');
+    expect(phaseA).toContain('00-nexus-ollama-install-guard.conf');
     expect(phaseA).toContain('remote-staging-attestation-broker.sh');
     expect(phaseA).toContain('nexus-release-pm2-recovery-daemon.service');
     expect(phaseA).toContain('nexus-release-promotion-recovery.service');
@@ -193,6 +207,57 @@ describe('release-layout activation safety transaction', () => {
       .toBeLessThan(phaseA.indexOf(
         'install_file_atomically \\\n    "$source_root/scripts/remote-promotion-control.sh"',
       ));
+    expect(phaseA.indexOf('write_phase_a_journal'))
+      .toBeLessThan(phaseA.indexOf('ollama-install-state-check.mjs'));
+    expect(phaseA.indexOf('ollama-install-state-check.mjs'))
+      .toBeLessThan(phaseA.indexOf('00-nexus-ollama-install-guard.conf'));
+    expect(phaseA.indexOf('00-nexus-ollama-install-guard.conf'))
+      .toBeLessThan(phaseA.indexOf(
+        'install_file_atomically \\\n    "$source_root/scripts/remote-promotion-control.sh"',
+      ));
+    expect(phaseA).toContain(
+      'phase_a_checkpoint ollama_install_guard_installed',
+    );
+    expect(installer).toContain(
+      'upgrade-phase-a <source-root> <protected-main-sha>',
+    );
+    expect(installer).toContain('upgrade-phase-a) phase_a "$@"');
+    expect(phaseA).toContain('validate_phase_a_upgrade_authority');
+    expect(installer).toContain(
+      'completedAt:upgrading?predecessorCompletedAt:now',
+    );
+    expect(installer).toContain('upgradedAt:upgrading?now:null');
+    expect(phaseA).toContain(
+      'phase_a_checkpoint upgrade_recovery_anchor_installed',
+    );
+    expect(phaseA).toContain('expand_phase_a_upgrade_journal');
+    expect(phaseA).toContain('phase_a_checkpoint predecessor_receipt_archived');
+    expect(phaseA.indexOf('write_phase_a_journal'))
+      .toBeLessThan(phaseA.indexOf(
+        'phase_a_checkpoint upgrade_recovery_anchor_installed',
+      ));
+    expect(phaseA.indexOf('phase_a_checkpoint upgrade_recovery_anchor_installed'))
+      .toBeLessThan(phaseA.indexOf('expand_phase_a_upgrade_journal'));
+    expect(phaseA.indexOf('expand_phase_a_upgrade_journal'))
+      .toBeLessThan(phaseA.indexOf(
+        '"$PHASE_A_RECEIPT" "$PHASE_A_PREDECESSOR_RECEIPT" 600',
+      ));
+    expect(phaseA.indexOf(
+      '"$PHASE_A_RECEIPT" "$PHASE_A_PREDECESSOR_RECEIPT" 600',
+    )).toBeLessThan(phaseA.indexOf(
+      'install_file_atomically \\\n    "$source_root/scripts/remote-promotion-control.sh"',
+    ));
+    expect(phaseATargets).toContain('"$OLLAMA_INSTALL_STATE_TARGET"');
+    expect(phaseATargets).toContain('"$OLLAMA_INSTALL_GUARD_TARGET"');
+    expect(phaseATargets).toContain('"$PHASE_A_PREDECESSOR_RECEIPT"');
+    expect(phaseATargets).not.toContain('V4_DRILL_');
+    expect(phaseA).not.toContain('v4-prelayout');
+    expect(predecessorTargets).not.toContain('OLLAMA_INSTALL_');
+    expect(requiredInputs).toContain('scripts/ollama-install-state-check.mjs');
+    expect(requiredInputs).toContain(
+      'scripts/systemd/00-nexus-ollama-install-guard.conf',
+    );
+    expect(requiredInputs).not.toContain('v4-prelayout');
     expect(phaseA.indexOf('nexus-release-promotion-recovery.service" \\'))
       .toBeLessThan(phaseA.indexOf(
         'enable nexus-release-promotion-recovery.service',
@@ -273,6 +338,117 @@ describe('release-layout activation safety transaction', () => {
     expect(legacy).toContain('safe Phase B layout handover is incomplete');
     expect(legacy.indexOf('safe Phase B layout handover is incomplete'))
       .toBeLessThan(legacy.indexOf('BOOTSTRAP_JOURNAL='));
+  });
+
+  it('accepts only the exact completed predecessor receipt as upgrade authority', () => {
+    const fixture = makeRoot();
+    const stateRoot = path.join(fixture, 'state');
+    const activationRoot = path.join(stateRoot, 'layout-activation');
+    const assetRoot = path.join(fixture, 'assets');
+    fs.mkdirSync(activationRoot, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(assetRoot, { mode: 0o700 });
+    const asset = (name: string) => path.join(assetRoot, name);
+    const layout: Array<[string, string]> = [
+      ['NEXUS_LAYOUT_INSTALLER_TARGET', asset('activation-install')],
+      ['NEXUS_LAYOUT_CONTROL_TARGET', asset('activation-control')],
+      ['NEXUS_LAYOUT_MIGRATE_TARGET', asset('layout-migrate')],
+      ['NEXUS_LAYOUT_SQLITE_TARGET', asset('layout-sqlite.py')],
+      ['NEXUS_LAYOUT_AUTH_TARGET', asset('layout-authorization.mjs')],
+      ['NEXUS_LAYOUT_DRILL_VERIFY_TARGET', asset('layout-fault-drill.mjs')],
+      ['NEXUS_LAYOUT_ATTESTOR_TARGET', asset('runtime-attestor.mjs')],
+      ['NEXUS_LAYOUT_SELECTOR_TARGET', asset('selector.py')],
+      ['NEXUS_LAYOUT_PREFLIGHT_TARGET', asset('layout-preflight.sh')],
+      ['NEXUS_LAYOUT_PROMOTION_CONTROL_TARGET', asset('promotion-control')],
+      ['NEXUS_LAYOUT_ACTIVATION_UNIT_TARGET', asset('activation@.service')],
+      ['NEXUS_LAYOUT_FILESYSTEM_IDENTITY_TARGET', asset('filesystem-identity.mjs')],
+      ['NEXUS_LAYOUT_STAGING_BROKER_TARGET', asset('staging-broker.sh')],
+      [
+        'NEXUS_LAYOUT_PM2_CAPTURE_AUTHORITY_TARGET',
+        asset('capture-pm2-dump-authority.mjs'),
+      ],
+      ['NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET', asset('pm2-dump-authority.py')],
+      ['NEXUS_LAYOUT_BOOT_HEALTH_TARGET', asset('release-boot-health')],
+      ['NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET', asset('pm2-recovery.service')],
+      [
+        'NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET',
+        asset('promotion-recovery.service'),
+      ],
+      ['NEXUS_LAYOUT_RECOVERY_UNIT_TARGET', asset('layout-recovery.service')],
+      [
+        'NEXUS_LAYOUT_INSTALL_RECOVERY_UNIT_TARGET',
+        asset('layout-install-recovery.service'),
+      ],
+      ['NEXUS_LAYOUT_INSTALL_GUARD_TARGET', asset('layout-install-guard.conf')],
+      ['NEXUS_LAYOUT_SUDOERS_TARGET', asset('layout-sudoers')],
+    ];
+    for (const [, target] of layout) {
+      fs.writeFileSync(target, `reviewed:${path.basename(target)}\n`, { mode: 0o600 });
+    }
+    const receipt = path.join(activationRoot, 'phase-a-receipt.v1.json');
+    const initialCompletedAt = '2026-07-26T22:25:59.574Z';
+    const existingBootDetectedAt = '2026-07-26T22:28:24.000Z';
+    expect(Date.parse(initialCompletedAt)).toBeLessThan(
+      Date.parse(existingBootDetectedAt),
+    );
+    const receiptBody = writeJson(receipt, {
+      schema: 'nexus.release-layout-phase-a-receipt.v1',
+      status: 'completed',
+      sourceSha: '8'.repeat(40),
+      sourceArchiveSha256: '9'.repeat(64),
+      completedAt: initialCompletedAt,
+      existingServiceIdentity: {
+        runtimeUnchanged: true,
+        beforeSha256: 'a'.repeat(64),
+        afterSha256: 'b'.repeat(64),
+        runtimeSha256: 'c'.repeat(64),
+      },
+      installedAssets: layout.map(([, target]) => ({
+        path: target,
+        sha256: digest(fs.readFileSync(target)),
+      })),
+      phaseARecoveryGuard: true,
+      legacyV2AdapterRetired: false,
+      legacyRetirementSha256: null,
+      pm2Prerequisite: {
+        verified: true,
+        evidenceSha256: 'd'.repeat(64),
+      },
+      prohibitedCommands: ['run', 'recover-all'],
+    });
+    const env = {
+      NEXUS_RELEASE_TEST_MODE: '1',
+      NEXUS_PROMOTION_STATE_ROOT: stateRoot,
+      NEXUS_LAYOUT_ACTIVATION_ROOT: activationRoot,
+      NEXUS_LEGACY_DRILL_STATE_ROOT: path.join(fixture, 'legacy'),
+      NEXUS_LAYOUT_NODE_BIN: process.execPath,
+      NEXUS_LAYOUT_PYTHON_BIN: process.env.PYTHON ?? 'python3',
+      NEXUS_LAYOUT_SYSTEMCTL_BIN: '/usr/bin/true',
+      NEXUS_LAYOUT_FLOCK_BIN: '/usr/bin/true',
+      ...Object.fromEntries(layout),
+      NEXUS_LAYOUT_OLLAMA_INSTALL_STATE_TARGET: asset('future-ollama-state'),
+      NEXUS_LAYOUT_OLLAMA_INSTALL_GUARD_TARGET: asset('future-ollama-guard'),
+    };
+    const accepted = run('/usr/bin/env', [
+      'bash',
+      activationInstaller,
+      'test-validate-phase-a-upgrade-authority',
+    ], env);
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(accepted.stdout.trim()).toBe(
+      `${digest(receiptBody)}\t${'8'.repeat(40)}\t${'9'.repeat(64)}`
+        + `\t${initialCompletedAt}`,
+    );
+
+    fs.writeFileSync(layout[0][1], 'tampered predecessor\n', { mode: 0o600 });
+    const rejected = run('/usr/bin/env', [
+      'bash',
+      activationInstaller,
+      'test-validate-phase-a-upgrade-authority',
+    ], env);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain(
+      'completed Phase A receipt is not valid upgrade authority',
+    );
   });
 
   it('accepts only the canonical receipt-bound legacy retirement plan', () => {
@@ -966,6 +1142,12 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       pm2CaptureAuthority: target('capture-pm2-dump-authority.mjs'),
       pm2DumpAuthority: target('pm2-dump-authority.py'),
       bootHealth: target('release-boot-health'),
+      ollamaInstallState: target('ollama-install-state-check.mjs'),
+      ollamaInstallGuard: path.join(
+        targetRoot,
+        'ollama.service.d',
+        '00-nexus-ollama-install-guard.conf',
+      ),
       pm2RecoveryUnit: target('pm2-recovery-daemon.service'),
       promotionRecoveryUnit: target('promotion-recovery.service'),
       activationUnit: target('activation@.service'),
@@ -983,9 +1165,22 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       fs.writeFileSync(anchor, `new-${path.basename(anchor)}\n`, { mode: 0o755 });
     }
     fs.writeFileSync(targets.control, 'mutated-control\n', { mode: 0o755 });
+    fs.writeFileSync(targets.ollamaInstallState, 'mutated-state-checker\n', {
+      mode: 0o700,
+    });
+    fs.mkdirSync(path.dirname(targets.ollamaInstallGuard), {
+      mode: 0o755,
+    });
+    fs.writeFileSync(targets.ollamaInstallGuard, 'mutated-install-guard\n', {
+      mode: 0o644,
+    });
     const originalControl = Buffer.from('original-control\n');
     const controlIdentity = fs.statSync(targets.control);
     const phaseAReceipt = path.join(activationRoot, 'phase-a-receipt.v1.json');
+    const phaseAPredecessorReceipt = path.join(
+      activationRoot,
+      'phase-a-predecessor-receipt.v1.json',
+    );
     const legacyReceipt = path.join(legacyRoot, 'install-receipt.v1.json');
     const legacyRetired = path.join(legacyRoot, 'install-receipt.retired.v1.json');
     const ordered = [
@@ -1005,12 +1200,15 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       targets.pm2CaptureAuthority,
       targets.pm2DumpAuthority,
       targets.bootHealth,
+      targets.ollamaInstallState,
+      targets.ollamaInstallGuard,
       targets.pm2RecoveryUnit,
       targets.promotionRecoveryUnit,
       targets.activationUnit,
       targets.layoutRecovery,
       targets.installRecovery,
       targets.sudoers,
+      phaseAPredecessorReceipt,
       phaseAReceipt,
       legacyReceipt,
       legacyRetired,
@@ -1027,6 +1225,9 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
           sha256: digest(originalControl),
           bodyBase64: originalControl.toString('base64'),
         };
+      }
+      if (file === targets.ollamaInstallGuard) {
+        return { path: file, parentPresent: false, present: false };
       }
       return { path: file, parentPresent: true, present: false };
     });
@@ -1050,6 +1251,7 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
     const unitStates = path.join(fixture, 'unit-states');
     writeStatefulSystemctl(systemctl, unitStates, {
       'nexus-release-layout-install-recovery.service': 'enabled',
+      'nexus-release-promotion-recovery.service': 'enabled',
     });
     const env = {
       NEXUS_RELEASE_TEST_MODE: '1',
@@ -1077,6 +1279,8 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       NEXUS_LAYOUT_PM2_CAPTURE_AUTHORITY_TARGET: targets.pm2CaptureAuthority,
       NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET: targets.pm2DumpAuthority,
       NEXUS_LAYOUT_BOOT_HEALTH_TARGET: targets.bootHealth,
+      NEXUS_LAYOUT_OLLAMA_INSTALL_STATE_TARGET: targets.ollamaInstallState,
+      NEXUS_LAYOUT_OLLAMA_INSTALL_GUARD_TARGET: targets.ollamaInstallGuard,
       NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET: targets.pm2RecoveryUnit,
       NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET:
         targets.promotionRecoveryUnit,
@@ -1147,11 +1351,14 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       unitStates,
       'nexus-release-layout-install-recovery.service',
     ), 'utf8')).toBe('disabled\n');
-    expect(fs.existsSync(path.join(
+    expect(fs.readFileSync(path.join(
       unitStates,
       'nexus-release-promotion-recovery.service',
-    ))).toBe(false);
+    ), 'utf8')).toBe('disabled\n');
     expect(fs.readFileSync(targets.control)).toEqual(originalControl);
+    expect(fs.existsSync(targets.ollamaInstallState)).toBe(false);
+    expect(fs.existsSync(targets.ollamaInstallGuard)).toBe(false);
+    expect(fs.existsSync(path.dirname(targets.ollamaInstallGuard))).toBe(false);
     expect(fs.existsSync(journal)).toBe(false);
     for (const anchor of [targets.guard, targets.installer, targets.installRecovery]) {
       expect(fs.existsSync(anchor)).toBe(true);
@@ -1162,6 +1369,73 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       'assert-phase-a-safe',
     ], env);
     expect(bootSafe.status, bootSafe.stderr).toBe(0);
+
+    const predecessorInstaller = Buffer.from('predecessor-activation-install\n');
+    const predecessorReceipt = Buffer.from('{"status":"completed-predecessor"}\n');
+    fs.writeFileSync(phaseAReceipt, predecessorReceipt, { mode: 0o600 });
+    const predecessorOrdered = ordered.filter((file) => ![
+      targets.ollamaInstallState,
+      targets.ollamaInstallGuard,
+      phaseAPredecessorReceipt,
+    ].includes(file));
+    const upgradeRecords = predecessorOrdered.map((file) => {
+      if (file === targets.installer) {
+        const identity = fs.statSync(file);
+        return {
+          path: file,
+          parentPresent: true,
+          present: true,
+          uid: identity.uid,
+          gid: identity.gid,
+          mode: identity.mode & 0o7777,
+          sha256: digest(predecessorInstaller),
+          bodyBase64: predecessorInstaller.toString('base64'),
+        };
+      }
+      if ([targets.guard, targets.installRecovery, phaseAReceipt].includes(file)) {
+        const body = fs.readFileSync(file);
+        const identity = fs.statSync(file);
+        return {
+          path: file,
+          parentPresent: true,
+          present: true,
+          uid: identity.uid,
+          gid: identity.gid,
+          mode: identity.mode & 0o7777,
+          sha256: digest(body),
+          bodyBase64: body.toString('base64'),
+        };
+      }
+      return { path: file, parentPresent: true, present: false };
+    });
+    writeJson(journal, {
+      schema: 'nexus.release-layout-phase-a-journal.v1',
+      status: 'in_progress',
+      checkpoint: 'upgrade_recovery_anchor_installed',
+      sourceSha: '3'.repeat(40),
+      sourceArchiveSha256: '4'.repeat(64),
+      installMode: 'upgrade',
+      predecessorReceiptSha256: digest(predecessorReceipt),
+      unitStates: {
+        'nexus-release-layout-install-recovery.service': 'disabled',
+        'nexus-release-promotion-recovery.service': 'not-found',
+        'nexus-rollback-drill-legacy-staging-install-recovery.service':
+          'not-found',
+        'nexus-rollback-drill-legacy-staging-recovery.service': 'not-found',
+      },
+      legacyRetirement: null,
+      targets: upgradeRecords,
+      createdAt: new Date().toISOString(),
+    });
+    const recoveredUpgrade = run('/usr/bin/env', [
+      'bash',
+      activationInstaller,
+      'recover-phase-a',
+    ], env);
+    expect(recoveredUpgrade.status, recoveredUpgrade.stderr).toBe(0);
+    expect(fs.readFileSync(targets.installer)).toEqual(predecessorInstaller);
+    expect(fs.readFileSync(phaseAReceipt)).toEqual(predecessorReceipt);
+    expect(fs.existsSync(journal)).toBe(false);
   });
 
   it('recovers every legacy adapter byte after a crash following receipt retirement', () => {
@@ -1189,6 +1463,8 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       pm2CaptureAuthority: fixed('capture-pm2-dump-authority.mjs'),
       pm2DumpAuthority: fixed('pm2-dump-authority.py'),
       bootHealth: fixed('release-boot-health'),
+      ollamaInstallState: fixed('ollama-install-state-check.mjs'),
+      ollamaInstallGuard: fixed('ollama-install-guard.conf'),
       pm2RecoveryUnit: fixed('pm2-recovery-daemon.service'),
       promotionRecoveryUnit: fixed('promotion-recovery.service'),
       activationUnit: fixed('activation@.service'),
@@ -1313,6 +1589,10 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       targets: planTargets,
     };
     const phaseAReceipt = path.join(activationRoot, 'phase-a-receipt.v1.json');
+    const phaseAPredecessorReceipt = path.join(
+      activationRoot,
+      'phase-a-predecessor-receipt.v1.json',
+    );
     const fixedOrdered = [
       fixedTargets.guard,
       fixedTargets.installer,
@@ -1330,12 +1610,15 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       fixedTargets.pm2CaptureAuthority,
       fixedTargets.pm2DumpAuthority,
       fixedTargets.bootHealth,
+      fixedTargets.ollamaInstallState,
+      fixedTargets.ollamaInstallGuard,
       fixedTargets.pm2RecoveryUnit,
       fixedTargets.promotionRecoveryUnit,
       fixedTargets.activationUnit,
       fixedTargets.layoutRecovery,
       fixedTargets.installRecovery,
       fixedTargets.sudoers,
+      phaseAPredecessorReceipt,
       phaseAReceipt,
       legacyReceipt,
       legacyRetired,
@@ -1443,6 +1726,10 @@ printf '%s\\n' "$1" >>${JSON.stringify(log)}
       NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET:
         fixedTargets.pm2DumpAuthority,
       NEXUS_LAYOUT_BOOT_HEALTH_TARGET: fixedTargets.bootHealth,
+      NEXUS_LAYOUT_OLLAMA_INSTALL_STATE_TARGET:
+        fixedTargets.ollamaInstallState,
+      NEXUS_LAYOUT_OLLAMA_INSTALL_GUARD_TARGET:
+        fixedTargets.ollamaInstallGuard,
       NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET: fixedTargets.pm2RecoveryUnit,
       NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET:
         fixedTargets.promotionRecoveryUnit,
@@ -1578,6 +1865,13 @@ print(db.execute("SELECT COUNT(*) FROM child").fetchone()[0])
 `, database]);
     expect(count.status, count.stderr).toBe(0);
     expect(count.stdout.trim()).toBe('1');
+    // Reopening a WAL-mode database can recreate SQLite sidecars even after
+    // the preceding restore correctly removed the stale set. Closeout has
+    // completed here, so reset those fresh test-only files before constructing
+    // the deliberately unsafe symlink scenario below.
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      fs.rmSync(`${database}${suffix}`, { force: true });
+    }
 
     const sentinel = path.join(fixture, 'sentinel');
     fs.writeFileSync(sentinel, 'do-not-touch\n', { mode: 0o600 });
@@ -2101,6 +2395,9 @@ describe('layout-specific KVM evidence is cryptographically fail-closed', () => 
       '/usr/local/libexec/nexus-capture-pm2-dump-authority.mjs',
       '/usr/local/libexec/nexus-pm2-dump-authority.py',
       '/usr/local/sbin/nexus-release-boot-health',
+      '/usr/local/sbin/nexus-ollama-install-state-check.mjs',
+      '/etc/systemd/system/ollama.service.d/'
+        + '00-nexus-ollama-install-guard.conf',
       '/etc/systemd/system/nexus-release-pm2-recovery-daemon.service',
       '/etc/systemd/system/nexus-release-promotion-recovery.service',
       '/etc/systemd/system/nexus-release-layout-activation@.service',
@@ -2124,6 +2421,7 @@ describe('layout-specific KVM evidence is cryptographically fail-closed', () => 
       status: 'completed',
       sourceSha: '8'.repeat(40),
       sourceArchiveSha256: '9'.repeat(64),
+      upgradedAt: null,
       existingServiceIdentity: {
         runtimeUnchanged: true,
         beforeSha256: 'a'.repeat(64),
@@ -2135,6 +2433,12 @@ describe('layout-specific KVM evidence is cryptographically fail-closed', () => 
       pm2Prerequisite: {
         verified: true,
         evidenceSha256: 'd'.repeat(64),
+      },
+      phaseAUpgrade: {
+        performed: false,
+        predecessorReceiptPath: null,
+        predecessorReceiptSha256: null,
+        predecessorSourceSha: null,
       },
       installedAssets: phaseAssets.map((asset) => ({
         path: asset,

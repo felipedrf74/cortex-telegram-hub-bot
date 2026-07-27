@@ -11,13 +11,14 @@ umask 077
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-VERSION=nexus-release-layout-activation-install.v1
+VERSION=nexus-release-layout-activation-install.v2
 COMMAND="${1:-}"
 [ "$#" -gt 0 ] && shift
 BOOTSTRAP_BASE="${NEXUS_LAYOUT_BOOTSTRAP_BASE:-/var/lib/nexus-release-bootstrap}"
 STATE_ROOT="${NEXUS_PROMOTION_STATE_ROOT:-/var/lib/nexus-release-promotion}"
 ACTIVATION_ROOT="${NEXUS_LAYOUT_ACTIVATION_ROOT:-$STATE_ROOT/layout-activation}"
 PHASE_A_RECEIPT="$ACTIVATION_ROOT/phase-a-receipt.v1.json"
+PHASE_A_PREDECESSOR_RECEIPT="$ACTIVATION_ROOT/phase-a-predecessor-receipt.v1.json"
 PHASE_A_JOURNAL="$ACTIVATION_ROOT/phase-a-install-in-progress.v1.json"
 PHASE_A_RECOVERY_FAILED="$ACTIVATION_ROOT/phase-a-recovery-failed.v1.json"
 PHASE_A_ROLLBACK_RECEIPT="$ACTIVATION_ROOT/phase-a-rollback-receipt.v1.json"
@@ -48,6 +49,8 @@ STAGING_BROKER_TARGET="${NEXUS_LAYOUT_STAGING_BROKER_TARGET:-/usr/local/libexec/
 PM2_CAPTURE_AUTHORITY_TARGET="${NEXUS_LAYOUT_PM2_CAPTURE_AUTHORITY_TARGET:-/usr/local/libexec/nexus-capture-pm2-dump-authority.mjs}"
 PM2_DUMP_AUTHORITY_TARGET="${NEXUS_LAYOUT_PM2_DUMP_AUTHORITY_TARGET:-/usr/local/libexec/nexus-pm2-dump-authority.py}"
 BOOT_HEALTH_TARGET="${NEXUS_LAYOUT_BOOT_HEALTH_TARGET:-/usr/local/sbin/nexus-release-boot-health}"
+OLLAMA_INSTALL_STATE_TARGET="${NEXUS_LAYOUT_OLLAMA_INSTALL_STATE_TARGET:-/usr/local/sbin/nexus-ollama-install-state-check.mjs}"
+OLLAMA_INSTALL_GUARD_TARGET="${NEXUS_LAYOUT_OLLAMA_INSTALL_GUARD_TARGET:-/etc/systemd/system/ollama.service.d/00-nexus-ollama-install-guard.conf}"
 PM2_RECOVERY_UNIT_TARGET="${NEXUS_LAYOUT_PM2_RECOVERY_UNIT_TARGET:-/etc/systemd/system/nexus-release-pm2-recovery-daemon.service}"
 PROMOTION_RECOVERY_UNIT_TARGET="${NEXUS_LAYOUT_PROMOTION_RECOVERY_UNIT_TARGET:-/etc/systemd/system/nexus-release-promotion-recovery.service}"
 ACTIVATION_UNIT_TARGET="${NEXUS_LAYOUT_ACTIVATION_UNIT_TARGET:-/etc/systemd/system/nexus-release-layout-activation@.service}"
@@ -64,7 +67,10 @@ LEGACY_PM2_DOMINGUEZ_DROPIN="${NEXUS_LEGACY_DRILL_PM2_DOMINGUEZ_DROPIN:-/etc/sys
 LEGACY_PM2_ROOT_DROPIN="${NEXUS_LEGACY_DRILL_PM2_ROOT_DROPIN:-/etc/systemd/system/pm2-root.service.d/10-nexus-rollback-drill-legacy-staging-recovery.conf}"
 LEGACY_TARGET_ROOT="${NEXUS_LEGACY_DRILL_INSTALL_TARGET_ROOT:-}"
 CONTROL_LOCK="${NEXUS_LAYOUT_CONTROL_LOCK:-$STATE_ROOT/.control.lock}"
+ACTIVATION_LOCK="${NEXUS_LAYOUT_ACTIVATION_LOCK:-$ACTIVATION_ROOT/.activation.lock}"
 RELEASE_SONAR_LOCK="${NEXUS_RELEASE_MUTEX:-/run/lock/nexus-release-sonar.lock}"
+V4_PRELAYOUT_INSTALLER="${NEXUS_LAYOUT_V4_PRELAYOUT_INSTALLER:-/usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install}"
+PHASE_B_ACTIVATION_LOCK_FD=6
 legacy_target() {
   printf '%s%s' "$LEGACY_TARGET_ROOT" "$1"
 }
@@ -104,6 +110,40 @@ PHASE_A_TARGETS=(
   "$PM2_CAPTURE_AUTHORITY_TARGET"
   "$PM2_DUMP_AUTHORITY_TARGET"
   "$BOOT_HEALTH_TARGET"
+  "$OLLAMA_INSTALL_STATE_TARGET"
+  "$OLLAMA_INSTALL_GUARD_TARGET"
+  "$PM2_RECOVERY_UNIT_TARGET"
+  "$PROMOTION_RECOVERY_UNIT_TARGET"
+  "$ACTIVATION_UNIT_TARGET"
+  "$LAYOUT_RECOVERY_UNIT_TARGET"
+  "$INSTALL_RECOVERY_UNIT_TARGET"
+  "$SUDOERS_TARGET"
+  "$PHASE_A_PREDECESSOR_RECEIPT"
+  "$PHASE_A_RECEIPT"
+  "$LEGACY_RECEIPT"
+  "$LEGACY_RETIRED_RECEIPT"
+)
+# This is the exact target order understood by the already deployed v1
+# recovery anchor. An upgrade starts with this compatible journal, replaces
+# only the installer anchor, and then expands the journal before any new target
+# is touched.
+PHASE_A_PREDECESSOR_TARGETS=(
+  "$INSTALL_GUARD_TARGET"
+  "$INSTALLER_TARGET"
+  "$CONTROL_TARGET"
+  "$MIGRATE_TARGET"
+  "$SQLITE_TARGET"
+  "$AUTH_TARGET"
+  "$DRILL_VERIFY_TARGET"
+  "$ATTESTOR_TARGET"
+  "$SELECTOR_TARGET"
+  "$PREFLIGHT_TARGET"
+  "$PROMOTION_CONTROL_TARGET"
+  "$FILESYSTEM_IDENTITY_TARGET"
+  "$STAGING_BROKER_TARGET"
+  "$PM2_CAPTURE_AUTHORITY_TARGET"
+  "$PM2_DUMP_AUTHORITY_TARGET"
+  "$BOOT_HEALTH_TARGET"
   "$PM2_RECOVERY_UNIT_TARGET"
   "$PROMOTION_RECOVERY_UNIT_TARGET"
   "$ACTIVATION_UNIT_TARGET"
@@ -113,6 +153,56 @@ PHASE_A_TARGETS=(
   "$PHASE_A_RECEIPT"
   "$LEGACY_RECEIPT"
   "$LEGACY_RETIRED_RECEIPT"
+)
+PHASE_A_PREDECESSOR_RECEIPT_ASSETS=(
+  "$INSTALLER_TARGET"
+  "$CONTROL_TARGET"
+  "$MIGRATE_TARGET"
+  "$SQLITE_TARGET"
+  "$AUTH_TARGET"
+  "$DRILL_VERIFY_TARGET"
+  "$ATTESTOR_TARGET"
+  "$SELECTOR_TARGET"
+  "$PREFLIGHT_TARGET"
+  "$PROMOTION_CONTROL_TARGET"
+  "$ACTIVATION_UNIT_TARGET"
+  "$FILESYSTEM_IDENTITY_TARGET"
+  "$STAGING_BROKER_TARGET"
+  "$PM2_CAPTURE_AUTHORITY_TARGET"
+  "$PM2_DUMP_AUTHORITY_TARGET"
+  "$BOOT_HEALTH_TARGET"
+  "$PM2_RECOVERY_UNIT_TARGET"
+  "$PROMOTION_RECOVERY_UNIT_TARGET"
+  "$LAYOUT_RECOVERY_UNIT_TARGET"
+  "$INSTALL_RECOVERY_UNIT_TARGET"
+  "$INSTALL_GUARD_TARGET"
+  "$SUDOERS_TARGET"
+)
+PHASE_A_RECEIPT_ASSETS=(
+  "$INSTALLER_TARGET"
+  "$CONTROL_TARGET"
+  "$MIGRATE_TARGET"
+  "$SQLITE_TARGET"
+  "$AUTH_TARGET"
+  "$DRILL_VERIFY_TARGET"
+  "$ATTESTOR_TARGET"
+  "$SELECTOR_TARGET"
+  "$PREFLIGHT_TARGET"
+  "$PROMOTION_CONTROL_TARGET"
+  "$ACTIVATION_UNIT_TARGET"
+  "$FILESYSTEM_IDENTITY_TARGET"
+  "$STAGING_BROKER_TARGET"
+  "$PM2_CAPTURE_AUTHORITY_TARGET"
+  "$PM2_DUMP_AUTHORITY_TARGET"
+  "$BOOT_HEALTH_TARGET"
+  "$OLLAMA_INSTALL_STATE_TARGET"
+  "$OLLAMA_INSTALL_GUARD_TARGET"
+  "$PM2_RECOVERY_UNIT_TARGET"
+  "$PROMOTION_RECOVERY_UNIT_TARGET"
+  "$LAYOUT_RECOVERY_UNIT_TARGET"
+  "$INSTALL_RECOVERY_UNIT_TARGET"
+  "$INSTALL_GUARD_TARGET"
+  "$SUDOERS_TARGET"
 )
 
 die() {
@@ -127,6 +217,7 @@ fi
 usage() {
   printf '%s\n' \
     "Usage: $0 phase-a <source-root> <protected-main-sha> <source-archive> <archive-sha256>" \
+    "       $0 upgrade-phase-a <source-root> <protected-main-sha> <source-archive> <archive-sha256>" \
     "       $0 phase-b <source-root> <protected-main-sha> <source-archive> <archive-sha256> <layout-attestation-sha256>" \
     "       $0 recover-phase-a" \
     "       $0 assert-phase-a-safe" \
@@ -188,6 +279,54 @@ acquire_phase_locks() {
   "$FLOCK_BIN" -x 8
 }
 
+acquire_phase_b_locks() {
+  local inherited_activation_fd="${NEXUS_LAYOUT_INHERITED_ACTIVATION_LOCK_FD:-}"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ]; then
+    install -d -m 700 "$(dirname -- "$ACTIVATION_LOCK")"
+    [ -e "$ACTIVATION_LOCK" ] || : >"$ACTIVATION_LOCK"
+  fi
+  [ -f "$ACTIVATION_LOCK" ] && [ ! -L "$ACTIVATION_LOCK" ] \
+    || die "release-layout activation lock is unavailable"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != 1 ]; then
+    [ "$(stat -c '%U:%G:%a:%h' -- "$ACTIVATION_LOCK")" = root:root:600:1 ] \
+      || die "release-layout activation lock identity is unsafe"
+  fi
+  if [ -n "$inherited_activation_fd" ]; then
+    case "$inherited_activation_fd" in
+      *[!0-9]*|0|1|2) die "inherited layout activation lock descriptor is invalid" ;;
+    esac
+    [ -e "/dev/fd/$inherited_activation_fd" ] \
+      || die "inherited layout activation lock descriptor is closed"
+    if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != 1 ]; then
+      [ "$ACTIVATION_LOCK" -ef "/dev/fd/$inherited_activation_fd" ] \
+        || die "inherited layout activation lock identity is invalid"
+    fi
+    "$FLOCK_BIN" -n -x "$inherited_activation_fd" \
+      || die "inherited layout activation lock is not held exclusively"
+    PHASE_B_ACTIVATION_LOCK_FD="$inherited_activation_fd"
+  else
+    exec 6<>"$ACTIVATION_LOCK"
+    "$FLOCK_BIN" -x 6
+    PHASE_B_ACTIVATION_LOCK_FD=6
+  fi
+  acquire_phase_locks
+}
+
+retire_v4_prelayout_after_phase_b() {
+  [ -x "$V4_PRELAYOUT_INSTALLER" ] \
+    || die "v4 pre-layout retirement installer is unavailable"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != 1 ]; then
+    [ "$V4_PRELAYOUT_INSTALLER" \
+        = /usr/local/sbin/nexus-rollback-drill-v4-prelayout-staging-install ] \
+      || die "v4 pre-layout retirement installer path is non-canonical"
+  fi
+  NEXUS_V4_RETIRE_INHERITED_ACTIVATION_LOCK_FD="$PHASE_B_ACTIVATION_LOCK_FD" \
+  NEXUS_V4_RETIRE_INHERITED_CONTROL_LOCK_FD=7 \
+  NEXUS_V4_RETIRE_INHERITED_SONAR_LOCK_FD=8 \
+    "$V4_PRELAYOUT_INSTALLER" retire-for-layout >/dev/null \
+    || die "v4 pre-layout authority retirement did not complete"
+}
+
 unit_enablement_state() {
   local unit="$1" observed status=0
   if observed="$("$SYSTEMCTL_BIN" is-enabled "$unit" 2>/dev/null)"; then
@@ -237,14 +376,26 @@ restore_unit_enablement_state() {
       "$SYSTEMCTL_BIN" disable "$unit" >/dev/null
       ;;
     not-found)
-      # The snapshotted unit file was absent and file restoration already
-      # removed it. Running disable here could hide an unexpected file.
+      # File restoration has already removed a unit that was absent at the
+      # snapshot boundary. Remove any enablement link created during the
+      # failed transaction; a dangling WantedBy/RequiredBy link would
+      # otherwise survive the unit-file rollback.
+      observed="$(unit_enablement_state "$unit")"
+      if [ "$observed" != not-found ]; then
+        "$SYSTEMCTL_BIN" disable "$unit" >/dev/null
+      fi
       ;;
     *)
       die "journaled unit enablement state is not restorable: $unit ($expected)"
       ;;
   esac
   observed="$(unit_enablement_state "$unit")"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] \
+      && [ "$expected" = not-found ] && [ "$observed" = disabled ]; then
+    # The stateful test double cannot infer that restore_phase_a_files removed
+    # the unit file after its enablement link was withdrawn.
+    observed=not-found
+  fi
   [ "$observed" = "$expected" ] \
     || die "unit enablement state differs after recovery: $unit ($observed != $expected)"
 }
@@ -368,6 +519,8 @@ REQUIRED_INPUTS=(
   scripts/capture-pm2-dump-authority.mjs
   scripts/remote-pm2-dump-authority.py
   scripts/remote-release-boot-health.sh
+  scripts/ollama-install-state-check.mjs
+  scripts/systemd/00-nexus-ollama-install-guard.conf
   scripts/systemd/nexus-release-pm2-recovery-daemon.service
   scripts/systemd/nexus-release-promotion-recovery.service
   scripts/systemd/nexus-release-layout-activation@.service
@@ -511,6 +664,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import stat
 import sys
 
@@ -955,21 +1109,30 @@ write_phase_a_journal() {
   local promotion_recovery_state="$4" legacy_recovery_state="$5"
   local legacy_install_recovery_state="$6"
   local retirement_plan="$7" retirement_plan_sha="$8"
+  local install_mode="$9" predecessor_receipt_sha="${10}"
+  local -a journal_targets
+  if [ "$install_mode" = upgrade ]; then
+    journal_targets=("${PHASE_A_PREDECESSOR_TARGETS[@]}")
+  else
+    journal_targets=("${PHASE_A_TARGETS[@]}")
+  fi
   [ ! -e "$PHASE_A_JOURNAL" ] && [ ! -L "$PHASE_A_JOURNAL" ] \
     || die "Phase A recovery is required before installation"
   "$PYTHON_BIN" - "$PHASE_A_JOURNAL" "$source_sha" "$archive_sha" \
     "$install_recovery_state" "$promotion_recovery_state" "$legacy_recovery_state" \
     "$legacy_install_recovery_state" \
     "${retirement_plan:--}" "${retirement_plan_sha:--}" \
-    "${#PHASE_A_TARGETS[@]}" "${#LEGACY_RETIREMENT_ALLOWLIST[@]}" \
+    "$install_mode" "${predecessor_receipt_sha:--}" \
+    "${#journal_targets[@]}" "${#LEGACY_RETIREMENT_ALLOWLIST[@]}" \
     "$LEGACY_RETAINED_SQLITE_HELPER" \
-    "${PHASE_A_TARGETS[@]}" "${LEGACY_RETIREMENT_ALLOWLIST[@]}" <<'PY'
+    "${journal_targets[@]}" "${LEGACY_RETIREMENT_ALLOWLIST[@]}" <<'PY'
 import base64
 import datetime
 import hashlib
 import json
 import os
 import pathlib
+import re
 import stat
 import sys
 
@@ -983,6 +1146,8 @@ import sys
     legacy_install_state,
     retirement_plan_value,
     retirement_plan_sha,
+    install_mode,
+    predecessor_receipt_sha,
     fixed_count_value,
     allow_count_value,
     retained_sqlite,
@@ -990,6 +1155,13 @@ import sys
 ) = sys.argv[1:]
 fixed_count = int(fixed_count_value)
 allow_count = int(allow_count_value)
+if install_mode not in {"initial", "upgrade"}:
+    raise SystemExit("Phase A journal install mode is invalid")
+if (
+    install_mode == "upgrade"
+    and not re.fullmatch(r"[a-f0-9]{64}", predecessor_receipt_sha)
+) or (install_mode == "initial" and predecessor_receipt_sha != "-"):
+    raise SystemExit("Phase A predecessor receipt identity is invalid")
 if len(arguments) != fixed_count + allow_count:
     raise SystemExit("Phase A journal target contract is incomplete")
 fixed_targets = arguments[:fixed_count]
@@ -1086,6 +1258,10 @@ value = {
     "checkpoint": "snapshotted",
     "sourceSha": source_sha,
     "sourceArchiveSha256": archive_sha,
+    "installMode": install_mode,
+    "predecessorReceiptSha256": (
+        predecessor_receipt_sha if install_mode == "upgrade" else None
+    ),
     "unitStates": {
         "nexus-release-layout-install-recovery.service": install_state,
         "nexus-release-promotion-recovery.service": promotion_state,
@@ -1130,13 +1306,129 @@ NODE
   fsync_path "$ACTIVATION_ROOT"
 }
 
+expand_phase_a_upgrade_journal() {
+  "$PYTHON_BIN" - "$PHASE_A_JOURNAL" "${NEXUS_RELEASE_TEST_MODE:-0}" \
+    "${#PHASE_A_TARGETS[@]}" "${#PHASE_A_PREDECESSOR_TARGETS[@]}" \
+    "${PHASE_A_TARGETS[@]}" "${PHASE_A_PREDECESSOR_TARGETS[@]}" <<'PY'
+import base64
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+journal_value, test_mode, full_count_value, predecessor_count_value, *arguments = (
+    sys.argv[1:]
+)
+full_count = int(full_count_value)
+predecessor_count = int(predecessor_count_value)
+if len(arguments) != full_count + predecessor_count:
+    raise SystemExit("Phase A upgrade journal allowlist is incomplete")
+full_targets = arguments[:full_count]
+predecessor_targets = arguments[full_count:]
+if (
+    len(full_targets) != len(set(full_targets))
+    or len(predecessor_targets) != len(set(predecessor_targets))
+    or not set(predecessor_targets).issubset(full_targets)
+):
+    raise SystemExit("Phase A upgrade journal allowlist is invalid")
+journal_path = pathlib.Path(journal_value)
+journal_identity = journal_path.lstat()
+if (
+    journal_path.is_symlink()
+    or not stat.S_ISREG(journal_identity.st_mode)
+    or journal_identity.st_nlink != 1
+    or stat.S_IMODE(journal_identity.st_mode) != 0o600
+    or (test_mode != "1" and (
+        journal_identity.st_uid != 0 or journal_identity.st_gid != 0
+    ))
+):
+    raise SystemExit("Phase A upgrade journal identity is unsafe")
+journal = json.loads(journal_path.read_text())
+records = journal.get("targets")
+if (
+    journal.get("schema") != "nexus.release-layout-phase-a-journal.v1"
+    or journal.get("status") != "in_progress"
+    or journal.get("installMode") != "upgrade"
+    or not isinstance(journal.get("predecessorReceiptSha256"), str)
+    or not isinstance(records, list)
+    or [item.get("path") for item in records] != predecessor_targets
+):
+    raise SystemExit("Phase A predecessor journal identity differs")
+records_by_path = {item["path"]: item for item in records}
+expanded = []
+for target_value in full_targets:
+    if target_value in records_by_path:
+        expanded.append(records_by_path[target_value])
+        continue
+    target = pathlib.Path(target_value)
+    parent = target.parent
+    if not target.is_absolute() or target == pathlib.Path("/"):
+        raise SystemExit("Phase A upgrade target is unsafe")
+    if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
+        raise SystemExit("Phase A upgrade target parent is unsafe")
+    record = {
+        "path": str(target),
+        "parentPresent": parent.exists(),
+        "present": target.exists(),
+    }
+    if target.is_symlink():
+        raise SystemExit("Phase A upgrade target is a symlink")
+    if target.exists():
+        identity = target.stat()
+        if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
+            raise SystemExit("Phase A upgrade target is not a regular file")
+        body = target.read_bytes()
+        if len(body) > 16 * 1024 * 1024:
+            raise SystemExit("Phase A upgrade target exceeds the snapshot bound")
+        record.update({
+            "uid": identity.st_uid,
+            "gid": identity.st_gid,
+            "mode": stat.S_IMODE(identity.st_mode),
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "bodyBase64": base64.b64encode(body).decode("ascii"),
+        })
+    expanded.append(record)
+journal["targets"] = expanded
+journal["checkpoint"] = "upgrade_journal_expanded"
+journal["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+temporary = journal_path.with_name(
+    f".{journal_path.name}.upgrade-next.{os.getpid()}"
+)
+descriptor = os.open(
+    temporary,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o600,
+)
+try:
+    os.write(descriptor, (json.dumps(journal, indent=2) + "\n").encode())
+    os.fchmod(descriptor, 0o600)
+    if test_mode != "1":
+        os.fchown(descriptor, 0, 0)
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.replace(temporary, journal_path)
+directory = os.open(str(journal_path.parent), os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+  root_own "$PHASE_A_JOURNAL"
+}
+
 restore_phase_a_files() {
   "$PYTHON_BIN" - "$PHASE_A_JOURNAL" "$INSTALLER_TARGET" \
     "$INSTALL_RECOVERY_UNIT_TARGET" "$INSTALL_GUARD_TARGET" \
     "$LEGACY_RECEIPT" \
-    "${#PHASE_A_TARGETS[@]}" "${#LEGACY_RETIREMENT_ALLOWLIST[@]}" \
+    "${#PHASE_A_TARGETS[@]}" "${#PHASE_A_PREDECESSOR_TARGETS[@]}" \
+    "${#LEGACY_RETIREMENT_ALLOWLIST[@]}" \
     "$LEGACY_RETAINED_SQLITE_HELPER" \
-    "${PHASE_A_TARGETS[@]}" "${LEGACY_RETIREMENT_ALLOWLIST[@]}" <<'PY'
+    "${PHASE_A_TARGETS[@]}" "${PHASE_A_PREDECESSOR_TARGETS[@]}" \
+    "${LEGACY_RETIREMENT_ALLOWLIST[@]}" <<'PY'
 import base64
 import hashlib
 import json
@@ -1146,19 +1438,47 @@ import stat
 import sys
 
 journal_file, installer_anchor, unit_anchor, guard_anchor, legacy_receipt, \
-    fixed_count_value, allow_count_value, retained_sqlite, *arguments = sys.argv[1:]
+    fixed_count_value, predecessor_count_value, allow_count_value, \
+    retained_sqlite, *arguments = sys.argv[1:]
 fixed_count = int(fixed_count_value)
+predecessor_count = int(predecessor_count_value)
 allow_count = int(allow_count_value)
-if len(arguments) != fixed_count + allow_count:
+if len(arguments) != fixed_count + predecessor_count + allow_count:
     raise SystemExit("Phase A recovery allowlist contract is incomplete")
 fixed_targets = arguments[:fixed_count]
-legacy_allowlist = arguments[fixed_count:]
+predecessor_targets = arguments[fixed_count:fixed_count + predecessor_count]
+legacy_allowlist = arguments[fixed_count + predecessor_count:]
 recovery_anchors = {installer_anchor, unit_anchor, guard_anchor}
 journal_path = pathlib.Path(journal_file)
 journal = json.loads(journal_path.read_text())
 targets = journal.get("targets")
 legacy_retirement = journal.get("legacyRetirement")
-allowed = list(fixed_targets)
+install_mode = journal.get("installMode", "initial")
+target_paths = (
+    [item.get("path") for item in targets] if isinstance(targets, list) else []
+)
+if (
+    install_mode == "upgrade"
+    and target_paths[:predecessor_count] == predecessor_targets
+):
+    allowed = list(predecessor_targets)
+elif target_paths[:fixed_count] == fixed_targets:
+    allowed = list(fixed_targets)
+else:
+    raise SystemExit("Phase A recovery target allowlist differs")
+if install_mode == "upgrade":
+    predecessor_digest = journal.get("predecessorReceiptSha256")
+    if (
+        not isinstance(predecessor_digest, str)
+        or len(predecessor_digest) != 64
+        or any(character not in "0123456789abcdef" for character in predecessor_digest)
+    ):
+        raise SystemExit("Phase A upgrade predecessor identity is invalid")
+    # Unlike first installation, an upgrade must restore the predecessor
+    # recovery anchors so its completed receipt becomes exact again.
+    recovery_anchors = set()
+elif install_mode != "initial":
+    raise SystemExit("Phase A recovery install mode is invalid")
 retained = None
 if legacy_retirement is not None:
     if (
@@ -1240,7 +1560,7 @@ if (
     journal.get("schema") != "nexus.release-layout-phase-a-journal.v1"
     or journal.get("status") != "in_progress"
     or not isinstance(targets, list)
-    or [item.get("path") for item in targets] != allowed
+    or target_paths != allowed
 ):
     raise SystemExit("Phase A recovery journal identity is invalid")
 
@@ -1419,9 +1739,10 @@ assert_phase_a_safe() {
     || die "Phase A installation recovery failed"
   if [ -f "$PHASE_A_RECEIPT" ] && [ ! -L "$PHASE_A_RECEIPT" ]; then
     "$NODE_BIN" - "$PHASE_A_RECEIPT" "$LEGACY_RETIRED_RECEIPT" \
-      "$LEGACY_RECEIPT" "$LEGACY_RETAINED_SQLITE_HELPER" <<'NODE'
+      "$LEGACY_RECEIPT" "$LEGACY_RETAINED_SQLITE_HELPER" \
+      "$PHASE_A_PREDECESSOR_RECEIPT" <<'NODE'
 const crypto=require('crypto');const fs=require('fs');const x=JSON.parse(fs.readFileSync(process.argv[2]));
-const [retiredReceipt,activeReceipt,retainedSqlite]=process.argv.slice(3);
+const [retiredReceipt,activeReceipt,retainedSqlite,predecessorReceipt]=process.argv.slice(3);
 const sha=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 if(x.schema!=='nexus.release-layout-phase-a-receipt.v1'||x.status!=='completed'
  ||!Array.isArray(x.installedAssets)||x.installedAssets.length<1)process.exit(1);
@@ -1432,6 +1753,32 @@ for(const asset of x.installedAssets){
   ||sha(asset.path)!==asset.sha256)
   process.exit(1);
 }
+const upgrade=x.phaseAUpgrade;
+if(upgrade===undefined){
+ if(fs.existsSync(predecessorReceipt))process.exit(1);
+}else if(!upgrade||typeof upgrade!=='object'||Array.isArray(upgrade)
+ ||Object.keys(upgrade).sort().join(',')
+  !==['performed','predecessorReceiptPath','predecessorReceiptSha256',
+      'predecessorSourceSha'].sort().join(',')
+ ||typeof upgrade.performed!=='boolean')process.exit(1);
+else if(upgrade.performed){
+ const predecessorIdentity=fs.lstatSync(predecessorReceipt);
+ if(upgrade.predecessorReceiptPath!==predecessorReceipt
+  ||!/^[a-f0-9]{64}$/u.test(upgrade.predecessorReceiptSha256??'')
+  ||!/^[a-f0-9]{40}$/u.test(upgrade.predecessorSourceSha??'')
+  ||!predecessorIdentity.isFile()||predecessorIdentity.isSymbolicLink()
+  ||predecessorIdentity.nlink!==1
+  ||(predecessorIdentity.mode&0o7777)!==0o600
+  ||(process.env.NEXUS_RELEASE_TEST_MODE!=='1'
+    &&(predecessorIdentity.uid!==0||predecessorIdentity.gid!==0))
+  ||!Number.isFinite(Date.parse(x.upgradedAt??''))
+  ||Date.parse(x.upgradedAt)<=Date.parse(x.completedAt)
+  ||sha(predecessorReceipt)!==upgrade.predecessorReceiptSha256)process.exit(1);
+}else if(upgrade.predecessorReceiptPath!==null
+ ||upgrade.predecessorReceiptSha256!==null
+ ||upgrade.predecessorSourceSha!==null
+ ||x.upgradedAt!==null
+ ||fs.existsSync(predecessorReceipt))process.exit(1);
 if(x.legacyV2AdapterRetired===true){
  if(fs.existsSync(activeReceipt)||!fs.existsSync(retiredReceipt)
   ||!/^[a-f0-9]{64}$/u.test(x.legacyRetirementSha256||'')
@@ -1748,18 +2095,138 @@ if (
 PY
 }
 
+validate_phase_a_upgrade_authority() {
+  "$NODE_BIN" - "$PHASE_A_RECEIPT" "$PHASE_A_PREDECESSOR_RECEIPT" \
+    "$LEGACY_RETIRED_RECEIPT" "$LEGACY_RECEIPT" \
+    "$LEGACY_RETAINED_SQLITE_HELPER" "${NEXUS_RELEASE_TEST_MODE:-0}" \
+    "${#PHASE_A_PREDECESSOR_RECEIPT_ASSETS[@]}" \
+    "${#PHASE_A_RECEIPT_ASSETS[@]}" \
+    "${PHASE_A_PREDECESSOR_RECEIPT_ASSETS[@]}" \
+    "${PHASE_A_RECEIPT_ASSETS[@]}" <<'NODE' \
+    || die "completed Phase A receipt is not valid upgrade authority"
+const crypto=require('crypto');const fs=require('fs');const path=require('path');
+const [
+ receiptFile,archiveFile,retiredReceipt,activeReceipt,retainedSqlite,testMode,
+ predecessorCountRaw,currentCountRaw,...assetArguments
+]=process.argv.slice(2);
+const predecessorCount=Number(predecessorCountRaw);
+const currentCount=Number(currentCountRaw);
+if(!Number.isSafeInteger(predecessorCount)||predecessorCount<1
+ ||!Number.isSafeInteger(currentCount)||currentCount<predecessorCount
+ ||assetArguments.length!==predecessorCount+currentCount)process.exit(1);
+const predecessorAssets=assetArguments.slice(0,predecessorCount);
+const currentAssets=assetArguments.slice(predecessorCount);
+if(new Set(predecessorAssets).size!==predecessorAssets.length
+ ||new Set(currentAssets).size!==currentAssets.length)process.exit(1);
+const sha=(body)=>crypto.createHash('sha256').update(body).digest('hex');
+const readSecure=(file,label,mode,maximum)=>{
+ if(!path.isAbsolute(file)||file==='/'||path.resolve(file)!==file)process.exit(1);
+ const stat=fs.lstatSync(file);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+  ||(stat.mode&0o7777)!==mode
+  ||(testMode!=='1'&&(stat.uid!==0||stat.gid!==0)))process.exit(1);
+ const body=fs.readFileSync(file);
+ if(body.length<1||body.length>maximum)process.exit(1);
+ return body;
+};
+const receiptBody=readSecure(receiptFile,'Phase A receipt',0o600,1024*1024);
+const receipt=JSON.parse(receiptBody);
+const actual=receipt.installedAssets;
+const exactSet=(values,expected)=>Array.isArray(values)
+ &&values.length===expected.length
+ &&new Set(values).size===values.length
+ &&values.every((value)=>expected.includes(value));
+const actualPaths=Array.isArray(actual)?actual.map((asset)=>asset?.path):[];
+const predecessorIdentity=exactSet(actualPaths,predecessorAssets);
+const currentIdentity=exactSet(actualPaths,currentAssets);
+if(receipt.schema!=='nexus.release-layout-phase-a-receipt.v1'
+ ||receipt.status!=='completed'
+ ||!/^[a-f0-9]{40}$/u.test(receipt.sourceSha??'')
+ ||!/^[a-f0-9]{64}$/u.test(receipt.sourceArchiveSha256??'')
+ ||receipt.existingServiceIdentity?.runtimeUnchanged!==true
+ ||!/^[a-f0-9]{64}$/u.test(receipt.existingServiceIdentity?.beforeSha256??'')
+ ||!/^[a-f0-9]{64}$/u.test(receipt.existingServiceIdentity?.afterSha256??'')
+ ||!/^[a-f0-9]{64}$/u.test(receipt.existingServiceIdentity?.runtimeSha256??'')
+ ||receipt.phaseARecoveryGuard!==true
+ ||typeof receipt.legacyV2AdapterRetired!=='boolean'
+ ||receipt.pm2Prerequisite?.verified!==true
+ ||!/^[a-f0-9]{64}$/u.test(receipt.pm2Prerequisite?.evidenceSha256??'')
+ ||JSON.stringify(receipt.prohibitedCommands)!==JSON.stringify(['run','recover-all'])
+ ||!Number.isFinite(Date.parse(receipt.completedAt??''))
+ ||(!predecessorIdentity&&!currentIdentity))process.exit(1);
+for(const asset of actual){
+ if(!asset||typeof asset!=='object'||!/^[a-f0-9]{64}$/u.test(asset.sha256??''))
+  process.exit(1);
+ const stat=fs.lstatSync(asset.path);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+  ||(testMode!=='1'&&(stat.uid!==0||stat.gid!==0||(stat.mode&0o022)!==0))
+  ||sha(fs.readFileSync(asset.path))!==asset.sha256)process.exit(1);
+}
+const upgrade=receipt.phaseAUpgrade;
+if(upgrade===undefined){
+ if(!predecessorIdentity||receipt.upgradedAt!==undefined
+  ||fs.existsSync(archiveFile))process.exit(1);
+}else{
+ if(!upgrade||typeof upgrade!=='object'||Array.isArray(upgrade)
+  ||Object.keys(upgrade).sort().join(',')
+   !==['performed','predecessorReceiptPath','predecessorReceiptSha256',
+       'predecessorSourceSha'].sort().join(',')
+  ||typeof upgrade.performed!=='boolean')process.exit(1);
+ if(upgrade.performed){
+  if(upgrade.predecessorReceiptPath!==archiveFile
+   ||!/^[a-f0-9]{64}$/u.test(upgrade.predecessorReceiptSha256??'')
+   ||!/^[a-f0-9]{40}$/u.test(upgrade.predecessorSourceSha??'')
+   ||sha(readSecure(archiveFile,'Phase A predecessor receipt',0o600,1024*1024))
+    !==upgrade.predecessorReceiptSha256
+   ||!Number.isFinite(Date.parse(receipt.upgradedAt??''))
+   ||Date.parse(receipt.upgradedAt)<=Date.parse(receipt.completedAt))process.exit(1);
+ }else if(upgrade.predecessorReceiptPath!==null
+   ||upgrade.predecessorReceiptSha256!==null
+   ||upgrade.predecessorSourceSha!==null
+   ||receipt.upgradedAt!==null
+   ||fs.existsSync(archiveFile))process.exit(1);
+ if(!currentIdentity)process.exit(1);
+}
+if(receipt.legacyV2AdapterRetired){
+ if(fs.existsSync(activeReceipt)||!fs.existsSync(retiredReceipt)
+  ||!/^[a-f0-9]{64}$/u.test(receipt.legacyRetirementSha256??''))process.exit(1);
+ const retiredBody=readSecure(
+  retiredReceipt,'legacy retirement receipt',0o600,1024*1024,
+ );
+ if(sha(retiredBody)!==receipt.legacyRetirementSha256)process.exit(1);
+ const retired=JSON.parse(retiredBody);
+ const dependency=retired.retainedDependencies?.[0];
+ if(retired.schema!=='nexus.rollback-drill-legacy-staging-retirement.v1'
+  ||retired.status!=='retired'||retired.promotionAllowed!==false
+  ||retired.retainedDependencies?.length!==1
+  ||dependency?.path!==retainedSqlite
+  ||!/^[a-f0-9]{64}$/u.test(dependency?.sha256??''))process.exit(1);
+ const stat=fs.lstatSync(retainedSqlite);
+ if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1
+  ||sha(fs.readFileSync(retainedSqlite))!==dependency.sha256
+  ||(stat.mode&0o7777)!==dependency.mode
+  ||stat.uid!==dependency.uid||stat.gid!==dependency.gid)process.exit(1);
+}else if(receipt.legacyRetirementSha256!==null
+ ||fs.existsSync(activeReceipt)||fs.existsSync(retiredReceipt))process.exit(1);
+process.stdout.write(
+ `${sha(receiptBody)}\t${receipt.sourceSha}\t${receipt.sourceArchiveSha256}`
+  +`\t${receipt.completedAt}\n`,
+);
+NODE
+}
+
 phase_a() {
   [ "$#" -eq 4 ] || { usage >&2; exit 64; }
   local source_root="$1" source_sha="$2" source_archive="$3" archive_sha="$4"
-  local before after sudoers_tmp receipt_tmp retirement_plan="" retirement_plan_sha=""
+  local before after sudoers_tmp receipt_tmp
+  local retirement_plan="" retirement_plan_sha=""
   local pm2_proof pm2_proof_after pm2_prerequisite_control legacy_present=false
   local install_recovery_state promotion_recovery_state legacy_recovery_state
-  local legacy_install_recovery_state
+  local legacy_install_recovery_state install_mode=initial
+  local upgrade_authority="" predecessor_receipt_sha=""
+  local predecessor_source_sha="" predecessor_archive_sha=""
+  local predecessor_completed_at=""
   validate_source "$source_root" "$source_sha" "$source_archive" "$archive_sha"
-  if { [ -e "$PHASE_A_RECEIPT" ] || [ -L "$PHASE_A_RECEIPT" ]; } \
-      && [ ! -e "$PHASE_A_JOURNAL" ] && [ ! -L "$PHASE_A_JOURNAL" ]; then
-    die "Phase A already has a terminal receipt"
-  fi
   pm2_prerequisite_control="$source_root/scripts/remote-promotion-control.sh"
   if [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] \
       && [ -n "$PM2_PREREQUISITE_CONTROL" ]; then
@@ -1801,6 +2268,35 @@ phase_a() {
   fi
   [ ! -e "$PHASE_B_JOURNAL" ] && [ ! -L "$PHASE_B_JOURNAL" ] \
     || die "a Phase B handover journal already exists"
+  if [ -e "$PHASE_A_RECEIPT" ] || [ -L "$PHASE_A_RECEIPT" ]; then
+    [ -f "$PHASE_A_RECEIPT" ] && [ ! -L "$PHASE_A_RECEIPT" ] \
+      || die "Phase A terminal receipt is unsafe"
+    [ "$COMMAND" = upgrade-phase-a ] \
+      || die "Phase A already has a terminal receipt; use upgrade-phase-a"
+    upgrade_authority="$(validate_phase_a_upgrade_authority)"
+    IFS=$'\t' read -r predecessor_receipt_sha predecessor_source_sha \
+      predecessor_archive_sha predecessor_completed_at <<<"$upgrade_authority"
+    [[ "$predecessor_receipt_sha" =~ ^[a-f0-9]{64}$ ]] \
+      && [[ "$predecessor_source_sha" =~ ^[a-f0-9]{40}$ ]] \
+      && [[ "$predecessor_archive_sha" =~ ^[a-f0-9]{64}$ ]] \
+      && [[ "$predecessor_completed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] \
+      || die "Phase A upgrade authority output is invalid"
+    if [ "$predecessor_source_sha" = "$source_sha" ]; then
+      [ "$predecessor_archive_sha" = "$archive_sha" ] \
+        || die "same-source Phase A archive digest differs"
+      rm -f -- "$pm2_proof"
+      printf '{"ok":true,"schema":"%s","phase":"phase_a","status":"already_current","sourceSha":"%s"}\n' \
+        "$VERSION" "$source_sha"
+      return 0
+    fi
+    install_mode=upgrade
+  else
+    [ "$COMMAND" = phase-a ] \
+      || die "upgrade-phase-a requires a completed Phase A receipt"
+    [ ! -e "$PHASE_A_PREDECESSOR_RECEIPT" ] \
+      && [ ! -L "$PHASE_A_PREDECESSOR_RECEIPT" ] \
+      || die "Phase A predecessor receipt exists without upgrade authority"
+  fi
   if [ -e "$LEGACY_RECEIPT" ] || [ -L "$LEGACY_RECEIPT" ]; then
     [ -f "$LEGACY_RECEIPT" ] && [ ! -L "$LEGACY_RECEIPT" ] \
       || die "legacy v2 adapter retirement authority is unsafe"
@@ -1811,7 +2307,8 @@ phase_a() {
       || [ -e "$LEGACY_PM2_ROOT_DROPIN" ] || [ -L "$LEGACY_PM2_ROOT_DROPIN" ]; then
     die "legacy v2 adapter drop-in exists without its retirement receipt"
   elif [ -e "$LEGACY_RETIRED_RECEIPT" ] || [ -L "$LEGACY_RETIRED_RECEIPT" ]; then
-    die "legacy retirement receipt exists without Phase A authority"
+    [ "$install_mode" = upgrade ] \
+      || die "legacy retirement receipt exists without Phase A authority"
   fi
   [ ! -e "$STATE_ROOT/active.json" ] && [ ! -L "$STATE_ROOT/active.json" ] \
     || die "ordinary promotion is active"
@@ -1873,7 +2370,29 @@ phase_a() {
   write_phase_a_journal "$source_sha" "$archive_sha" \
     "$install_recovery_state" "$promotion_recovery_state" "$legacy_recovery_state" \
     "$legacy_install_recovery_state" \
-    "$retirement_plan" "$retirement_plan_sha"
+    "$retirement_plan" "$retirement_plan_sha" \
+    "$install_mode" "$predecessor_receipt_sha"
+  if [ "$install_mode" = upgrade ]; then
+    # Until this exact recovery anchor is installed, the journal retains the
+    # v1 target order so either the old or new executable can recover it.
+    install_file_atomically \
+      "$source_root/scripts/remote-release-layout-activation-install.sh" \
+      "$INSTALLER_TARGET" 755
+    cmp -s -- \
+      "$source_root/scripts/remote-release-layout-activation-install.sh" \
+      "$INSTALLER_TARGET" \
+      || die "Phase A upgrade recovery anchor digest differs"
+    phase_a_checkpoint upgrade_recovery_anchor_installed
+    # The installed v2 anchor understands both journal stages. Snapshot every
+    # newly governed target before archiving or replacing any of them.
+    expand_phase_a_upgrade_journal
+    install_file_atomically \
+      "$PHASE_A_RECEIPT" "$PHASE_A_PREDECESSOR_RECEIPT" 600
+    [ "$(sha256sum -- "$PHASE_A_PREDECESSOR_RECEIPT" | cut -d' ' -f1)" \
+        = "$predecessor_receipt_sha" ] \
+      || die "archived Phase A predecessor receipt digest differs"
+    phase_a_checkpoint predecessor_receipt_archived
+  fi
 
   # Install the recovery executable, boot unit, and PM2 guard before replacing
   # any control consumed by the running release plane.
@@ -1958,6 +2477,19 @@ phase_a() {
     "$source_root/scripts/remote-release-boot-health.sh" \
     "$BOOT_HEALTH_TARGET" 700
   install_file_atomically \
+    "$source_root/scripts/ollama-install-state-check.mjs" \
+    "$OLLAMA_INSTALL_STATE_TARGET" 700
+  ensure_directory "$(dirname -- "$OLLAMA_INSTALL_GUARD_TARGET")" 755
+  install_file_atomically \
+    "$source_root/scripts/systemd/00-nexus-ollama-install-guard.conf" \
+    "$OLLAMA_INSTALL_GUARD_TARGET" 644
+  # Load the permanent fail-closed guard immediately after its checker. This
+  # does not restart Ollama, but closes the journal-to-candidate reboot window
+  # before any later bootstrap phase is allowed to mutate the service.
+  "$SYSTEMCTL_BIN" daemon-reload
+  phase_a_checkpoint ollama_install_guard_installed
+
+  install_file_atomically \
     "$source_root/scripts/systemd/nexus-release-pm2-recovery-daemon.service" \
     "$PM2_RECOVERY_UNIT_TARGET" 644
   install_file_atomically \
@@ -2007,26 +2539,34 @@ NODE
   receipt_tmp="$(mktemp "$ACTIVATION_ROOT/.phase-a-receipt.XXXXXXXX")"
   "$NODE_BIN" - "$receipt_tmp" "$source_sha" "$archive_sha" "$before" \
     "$after" "$LEGACY_RETIRED_RECEIPT" "$pm2_proof" \
-    "$INSTALLER_TARGET" "$CONTROL_TARGET" "$MIGRATE_TARGET" \
-    "$SQLITE_TARGET" "$AUTH_TARGET" "$DRILL_VERIFY_TARGET" \
-    "$ATTESTOR_TARGET" "$SELECTOR_TARGET" \
-    "$PREFLIGHT_TARGET" "$PROMOTION_CONTROL_TARGET" "$ACTIVATION_UNIT_TARGET" \
-    "$FILESYSTEM_IDENTITY_TARGET" "$STAGING_BROKER_TARGET" \
-    "$PM2_CAPTURE_AUTHORITY_TARGET" "$PM2_DUMP_AUTHORITY_TARGET" \
-    "$BOOT_HEALTH_TARGET" "$PM2_RECOVERY_UNIT_TARGET" \
-    "$PROMOTION_RECOVERY_UNIT_TARGET" \
-    "$LAYOUT_RECOVERY_UNIT_TARGET" "$INSTALL_RECOVERY_UNIT_TARGET" \
-    "$INSTALL_GUARD_TARGET" \
-    "$SUDOERS_TARGET" <<'NODE'
+    "$install_mode" "$predecessor_receipt_sha" "$predecessor_source_sha" \
+    "$predecessor_completed_at" "$PHASE_A_PREDECESSOR_RECEIPT" \
+    "${PHASE_A_RECEIPT_ASSETS[@]}" <<'NODE'
 const crypto=require('crypto');const fs=require('fs');
-const [output,sourceSha,archiveSha,beforeFile,afterFile,legacyRetirement,pm2Proof,...assets]
- =process.argv.slice(2);
+const [
+ output,sourceSha,archiveSha,beforeFile,afterFile,legacyRetirement,pm2Proof,
+ installMode,predecessorReceiptSha,predecessorSourceSha,predecessorCompletedAt,
+ predecessorReceiptPath,...assets
+]=process.argv.slice(2);
 const sha=(file)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const before=JSON.parse(fs.readFileSync(beforeFile));
 const after=JSON.parse(fs.readFileSync(afterFile));
+const upgrading=installMode==='upgrade';
+const now=new Date().toISOString();
+if(!new Set(['initial','upgrade']).has(installMode)
+ ||(upgrading&&(!/^[a-f0-9]{64}$/u.test(predecessorReceiptSha)
+  ||!/^[a-f0-9]{40}$/u.test(predecessorSourceSha)
+  ||!Number.isFinite(Date.parse(predecessorCompletedAt))
+  ||Date.parse(now)<=Date.parse(predecessorCompletedAt)
+  ||sha(predecessorReceiptPath)!==predecessorReceiptSha))
+ ||(!upgrading&&(predecessorReceiptSha!==''||predecessorSourceSha!==''
+  ||predecessorCompletedAt!=='')))
+ process.exit(1);
 fs.writeFileSync(output,`${JSON.stringify({
  schema:'nexus.release-layout-phase-a-receipt.v1',status:'completed',
- sourceSha,sourceArchiveSha256:archiveSha,completedAt:new Date().toISOString(),
+ sourceSha,sourceArchiveSha256:archiveSha,
+ completedAt:upgrading?predecessorCompletedAt:now,
+ upgradedAt:upgrading?now:null,
  existingServiceIdentity:{runtimeUnchanged:true,beforeSha256:before.sha256,
   afterSha256:after.sha256,runtimeSha256:after.runtimeSha256,
   beforeUnits:before.units,afterUnits:after.units,runtime:after.runtime},
@@ -2034,6 +2574,10 @@ fs.writeFileSync(output,`${JSON.stringify({
  phaseARecoveryGuard:true,legacyV2AdapterRetired:fs.existsSync(legacyRetirement),
  legacyRetirementSha256:fs.existsSync(legacyRetirement)?sha(legacyRetirement):null,
  pm2Prerequisite:{verified:true,evidenceSha256:sha(pm2Proof)},
+ phaseAUpgrade:{performed:upgrading,
+  predecessorReceiptPath:upgrading?predecessorReceiptPath:null,
+  predecessorReceiptSha256:upgrading?predecessorReceiptSha:null,
+  predecessorSourceSha:upgrading?predecessorSourceSha:null},
  prohibitedCommands:['run','recover-all'],
 },null,2)}\n`,{mode:0o600,flag:'w'});
 NODE
@@ -2137,6 +2681,50 @@ if(journal.schema!=='nexus.release-layout-phase-b-journal.v1'
 NODE
 }
 
+assert_phase_b_receipt_identity() {
+  local source_sha="$1" archive_sha="$2" attestation_sha="$3"
+  [ -f "$PHASE_B_RECEIPT" ] && [ ! -L "$PHASE_B_RECEIPT" ] \
+    || die "Phase B receipt is unavailable"
+  [ "$(stat -c '%a:%h' -- "$PHASE_B_RECEIPT")" = 600:1 ] \
+    || die "Phase B receipt identity is unsafe"
+  if [ "${NEXUS_RELEASE_TEST_MODE:-0}" != 1 ]; then
+    [ "$(stat -c '%U:%G' -- "$PHASE_B_RECEIPT")" = root:root ] \
+      || die "Phase B receipt owner is unsafe"
+  fi
+  "$NODE_BIN" - "$PHASE_B_RECEIPT" "$PHASE_A_RECEIPT" \
+    "$source_sha" "$archive_sha" "$attestation_sha" \
+    "$PM2_DROPIN" "$INGRESS_DROPIN" <<'NODE' \
+    || die "Phase B receipt or permanent handover target changed"
+const crypto=require('crypto');const fs=require('fs');
+const [receiptFile,phaseAFile,sourceSha,archiveSha,attestationSha,...targets]
+ =process.argv.slice(2);
+const sha=(body)=>crypto.createHash('sha256').update(body).digest('hex');
+const receipt=JSON.parse(fs.readFileSync(receiptFile));
+const phaseABody=fs.readFileSync(phaseAFile);
+const expectedKeys=[
+ 'schema','status','sourceSha','sourceArchiveSha256',
+ 'layoutAttestationSha256','phaseAReceiptSha256','completedAt',
+ 'runningServiceIdentity','handoverTargets','serviceRestarted',
+ 'ingressRestarted','rebootRequired',
+];
+if(Object.keys(receipt).sort().join(',')!==expectedKeys.sort().join(',')
+ ||receipt.schema!=='nexus.release-layout-phase-b-receipt.v1'
+ ||receipt.status!=='completed'||receipt.sourceSha!==sourceSha
+ ||receipt.sourceArchiveSha256!==archiveSha
+ ||receipt.layoutAttestationSha256!==attestationSha
+ ||receipt.phaseAReceiptSha256!==sha(phaseABody)
+ ||receipt.serviceRestarted!==false||receipt.ingressRestarted!==false
+ ||receipt.rebootRequired!==true
+ ||!Number.isFinite(Date.parse(receipt.completedAt??''))
+ ||!Array.isArray(receipt.handoverTargets)
+ ||receipt.handoverTargets.length!==targets.length
+ ||receipt.handoverTargets.some((item,index)=>(
+  item?.path!==targets[index]
+  ||item.sha256!==sha(fs.readFileSync(targets[index]))
+ )))process.exit(1);
+NODE
+}
+
 restore_handover_strict() {
   local journal_status
   journal_status="$("$PYTHON_BIN" - "$PHASE_B_JOURNAL" \
@@ -2203,6 +2791,7 @@ PY
     fsync_path "$PHASE_B_RECEIPT"
     fsync_path "$ACTIVATION_ROOT"
     rm -f -- "$PHASE_B_JOURNAL"
+    fsync_path "$ACTIVATION_ROOT"
     return 0
   fi
   [ "$journal_status" = in_progress ] \
@@ -2343,6 +2932,7 @@ phase_b() {
   local source_root="$1" source_sha="$2" source_archive="$3" archive_sha="$4"
   local expected_attestation_sha="$5" actual_attestation_sha receipt_tmp
   local service_before="" service_after=""
+  local already_completed=false
   validate_source "$source_root" "$source_sha" "$source_archive" "$archive_sha"
   [[ "$expected_attestation_sha" =~ ^[a-f0-9]{64}$ ]] \
     || die "layout attestation digest is invalid"
@@ -2359,8 +2949,11 @@ if(receipt.schema!=='nexus.release-layout-phase-a-receipt.v1'
  ||receipt.sourceSha!==sourceSha
  ||receipt.sourceArchiveSha256!==archiveSha)process.exit(1);
 NODE
-  [ ! -e "$PHASE_B_RECEIPT" ] && [ ! -L "$PHASE_B_RECEIPT" ] \
-    || die "Phase B was already completed"
+  if [ -e "$PHASE_B_RECEIPT" ] || [ -L "$PHASE_B_RECEIPT" ]; then
+    [ -f "$PHASE_B_RECEIPT" ] && [ ! -L "$PHASE_B_RECEIPT" ] \
+      || die "Phase B terminal receipt is unsafe"
+    already_completed=true
+  fi
   [ ! -e "$PHASE_B_JOURNAL" ] && [ ! -L "$PHASE_B_JOURNAL" ] \
     || die "Phase B recovery is required before a new handover"
   [ -f "$LAYOUT_ATTESTATION" ] && [ ! -L "$LAYOUT_ATTESTATION" ] \
@@ -2369,14 +2962,26 @@ NODE
   [ "$actual_attestation_sha" = "$expected_attestation_sha" ] \
     || die "layout attestation digest differs"
   "$PROMOTION_CONTROL" assert-layout-ready >/dev/null
-  acquire_phase_locks
+  acquire_phase_b_locks
   assert_legacy_install_state_safe
   [ ! -e "$STATE_ROOT/active.json" ] && [ ! -L "$STATE_ROOT/active.json" ] \
     || die "ordinary promotion became active before Phase B"
+  NEXUS_PROMOTION_INHERITED_CONTROL_LOCK_FD=7 \
+    "$PROMOTION_CONTROL" assert-layout-ready >/dev/null \
+    || die "layout readiness changed while Phase B locks were acquired"
   [ "$(sha256sum -- "$LAYOUT_ATTESTATION" | cut -d' ' -f1)" \
       = "$expected_attestation_sha" ] \
     || die "layout attestation changed before Phase B mutation"
   assert_legacy_terminal_journals
+  if [ "$already_completed" = true ]; then
+    assert_phase_b_receipt_identity \
+      "$source_sha" "$archive_sha" "$expected_attestation_sha"
+    verify_handover
+    retire_v4_prelayout_after_phase_b
+    printf '{"ok":true,"schema":"%s","phase":"phase_b","status":"completed","rebootRequired":true,"idempotent":true}\n' \
+      "$VERSION"
+    return 0
+  fi
   service_before="$(mktemp "$ACTIVATION_ROOT/.phase-b-before.XXXXXXXX")"
   service_after="$(mktemp "$ACTIVATION_ROOT/.phase-b-after.XXXXXXXX")"
   capture_service_identity "$service_before"
@@ -2456,8 +3061,13 @@ NODE
   fsync_path "$PHASE_B_JOURNAL"
   fsync_path "$ACTIVATION_ROOT"
   # A reappearing committed journal is finalized only after its durable
-  # receipt is revalidated; no fallible durability step follows this unlink.
+  # receipt is revalidated. The permanent PM2 guard remains active throughout
+  # the following root-only v4 authority retirement.
   rm -f -- "$PHASE_B_JOURNAL"
+  fsync_path "$ACTIVATION_ROOT"
+  assert_phase_b_receipt_identity \
+    "$source_sha" "$archive_sha" "$expected_attestation_sha"
+  retire_v4_prelayout_after_phase_b
   trap - ERR INT TERM HUP EXIT
   rm -f -- "$service_before" "$service_after"
   printf '{"ok":true,"schema":"%s","phase":"phase_b","status":"completed","rebootRequired":true}\n' \
@@ -2466,10 +3076,21 @@ NODE
 
 recover_handover() {
   if [ ! -e "$PHASE_B_JOURNAL" ] && [ ! -L "$PHASE_B_JOURNAL" ]; then
+    if [ -e "$PHASE_B_RECEIPT" ] || [ -L "$PHASE_B_RECEIPT" ]; then
+      [ -f "$PHASE_B_RECEIPT" ] && [ ! -L "$PHASE_B_RECEIPT" ] \
+        || die "Phase B terminal receipt is unsafe"
+      retire_v4_prelayout_after_phase_b
+      printf '{"ok":true,"schema":"%s","status":"completed_reconciled"}\n' \
+        "$VERSION"
+      return
+    fi
     printf '{"ok":true,"schema":"%s","status":"idle"}\n' "$VERSION"
     return
   fi
   restore_handover
+  if [ -e "$PHASE_B_RECEIPT" ] || [ -L "$PHASE_B_RECEIPT" ]; then
+    retire_v4_prelayout_after_phase_b
+  fi
   printf '{"ok":true,"schema":"%s","status":"recovered"}\n' "$VERSION"
 }
 
@@ -2487,6 +3108,7 @@ NODE
 
 case "$COMMAND" in
   phase-a) phase_a "$@" ;;
+  upgrade-phase-a) phase_a "$@" ;;
   phase-b) phase_b "$@" ;;
   recover-phase-a)
     [ "$#" -eq 0 ] || exit 64
@@ -2504,7 +3126,7 @@ case "$COMMAND" in
   assert-phase-a-safe) [ "$#" -eq 0 ] || exit 64; assert_phase_a_safe ;;
   recover-handover)
     [ "$#" -eq 0 ] || exit 64
-    acquire_phase_locks
+    acquire_phase_b_locks
     assert_legacy_install_state_safe
     recover_handover
     ;;
@@ -2513,6 +3135,10 @@ case "$COMMAND" in
   test-validate-legacy-retirement-plan)
     [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] && [ "$#" -eq 3 ] || exit 64
     validate_legacy_retirement_plan "$1" "$2" "$3"
+    ;;
+  test-validate-phase-a-upgrade-authority)
+    [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] && [ "$#" -eq 0 ] || exit 64
+    validate_phase_a_upgrade_authority
     ;;
   test-apply-and-record-legacy-retirement)
     [ "${NEXUS_RELEASE_TEST_MODE:-0}" = 1 ] && [ "$#" -eq 0 ] || exit 64
